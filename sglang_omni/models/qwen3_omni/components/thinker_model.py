@@ -1,9 +1,12 @@
 import logging
 import math
 import re
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from collections.abc import Mapping
+from typing import Iterable, Optional, Tuple
 
 import torch
+from sglang.kernels.fused_op import get_fused_op_backend
+from sglang.kernels.spec import KernelBackend
 from sglang.srt.runtime_context import get_exec, get_parallel, get_stream
 from torch import nn
 from transformers import PretrainedConfig
@@ -14,14 +17,8 @@ from sglang_omni.platforms import current_platform
 from sglang_omni.quantization import get_weight_preprocessor
 from sglang_omni.utils import add_prefix
 from sglang_omni.vendor.sglang.core import ForwardBatch
-from sglang_omni.vendor.sglang.distributed import (
-    get_tensor_model_parallel_rank,
-    get_tensor_model_parallel_world_size,
-    tensor_model_parallel_all_reduce,
-)
 from sglang_omni.vendor.sglang.layers import (
-    LayerCommunicator,
-    LayerScatterModes,
+    AuxHiddenStateList,
     MRotaryEmbedding,
     QKVParallelLinear,
     QuantizationConfig,
@@ -30,11 +27,15 @@ from sglang_omni.vendor.sglang.layers import (
     RMSNorm,
     RoutingMethodType,
     RowParallelLinear,
+    StageDeclaration,
     TopK,
     VocabParallelEmbedding,
+    append_stages,
+    declare_attn,
+    declare_ffn,
     get_moe_impl_class,
     get_rope,
-    should_use_flashinfer_cutlass_moe_fp4_allgather,
+    residual_batch,
 )
 from sglang_omni.vendor.sglang.models import (
     apply_qk_norm,
@@ -160,7 +161,7 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
         num_kv_heads: int,
         layer_id: int = 0,
         rope_theta: float = 10000,
-        rope_scaling: Optional[Dict[str, Any]] = None,
+        rope_scaling: Optional[Mapping[str, object]] = None,
         max_position_embeddings: int = 8192,
         head_dim: Optional[int] = None,
         rms_norm_eps: float = 1e-06,
@@ -168,14 +169,13 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
         config: Optional[PretrainedConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
-        dual_chunk_attention_config: Optional[dict[str, Any]] = None,
+        dual_chunk_attention_config: Optional[Mapping[str, object]] = None,
         alt_stream: Optional[torch.Stream] = None,
     ) -> None:
         super().__init__()
         self.hidden_size = hidden_size
         self.layer_id = layer_id
 
-        attn_tp_rank = get_parallel().attn_tp_rank
         attn_tp_size = get_parallel().attn_tp_size
 
         self.config = config
@@ -198,7 +198,7 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
         self.scaling = self.head_dim**-0.5
         self.rope_theta = rope_theta
         self.max_position_embeddings = max_position_embeddings
-        self.tp_rank = get_tensor_model_parallel_rank()
+        self.tp_rank = get_parallel().tp_rank
 
         self.qkv_proj = QKVParallelLinear(
             hidden_size,
@@ -207,8 +207,7 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
             self.total_num_kv_heads,
             bias=attention_bias,
             quant_config=quant_config,
-            tp_rank=attn_tp_rank,
-            tp_size=attn_tp_size,
+            parallel_group="attn_tp",
             prefix=add_prefix("qkv_proj", prefix),
         )
 
@@ -217,8 +216,7 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
             hidden_size,
             bias=attention_bias,
             quant_config=quant_config,
-            tp_rank=attn_tp_rank,
-            tp_size=attn_tp_size,
+            parallel_group="attn_tp",
             reduce_results=False,
             prefix=add_prefix("o_proj", prefix),
         )
@@ -319,10 +317,14 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
                 head_dim=self.head_dim,
                 alt_stream=self.alt_stream,
             )
+            # note (ratish): a forced torch backend runs the rope's native
+            # forward, which cannot store K and V, so attention stores them.
             use_fused_set_kv_buffer = (
                 current_platform.is_cuda()
                 and enable_fused_set_kv_buffer(forward_batch)
                 and self.compatible_with_fused_kv_buffer
+                and get_fused_op_backend()
+                not in (KernelBackend.TORCH, KernelBackend.TORCH_COMPILE)
             )
             q, k = self.rotary_emb(
                 positions,
@@ -413,7 +415,7 @@ class Qwen3OmniMoeThinkerTextSparseMoeBlock(nn.Module):
         prefix: str = "",
     ):
         super().__init__()
-        self.tp_size = get_tensor_model_parallel_world_size()
+        self.tp_size = get_parallel().tp_size
         self.layer_id = layer_id
         if self.tp_size > config.num_experts:
             raise ValueError(
@@ -453,20 +455,11 @@ class Qwen3OmniMoeThinkerTextSparseMoeBlock(nn.Module):
         self,
         hidden_states: torch.Tensor,
         forward_batch: Optional[ForwardBatch] = None,
-        should_allreduce_fusion: bool = False,
-        use_reduce_scatter: bool = False,
     ) -> torch.Tensor:
 
-        return self.forward_normal(
-            hidden_states, should_allreduce_fusion, use_reduce_scatter
-        )
+        return self.forward_normal(hidden_states)
 
-    def forward_normal(
-        self,
-        hidden_states: torch.Tensor,
-        should_allreduce_fusion: bool = False,
-        use_reduce_scatter: bool = False,
-    ) -> torch.Tensor:
+    def forward_normal(self, hidden_states: torch.Tensor) -> torch.Tensor:
         num_tokens, hidden_dim = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_dim)
 
@@ -474,16 +467,6 @@ class Qwen3OmniMoeThinkerTextSparseMoeBlock(nn.Module):
         router_logits, _ = self.gate(hidden_states)
         topk_output = self.topk(hidden_states, router_logits)
         final_hidden_states = self.experts(hidden_states, topk_output)
-        if (
-            self.tp_size > 1
-            and not should_allreduce_fusion
-            and not use_reduce_scatter
-            and not should_use_flashinfer_cutlass_moe_fp4_allgather()
-        ):
-            final_hidden_states = tensor_model_parallel_all_reduce(final_hidden_states)
-        else:
-            pass
-
         return final_hidden_states.view(num_tokens, hidden_dim)
 
 
@@ -531,18 +514,8 @@ class Qwen3OmniMoeThinkerTextDecoderLayer(nn.Module):
         self.attn_tp_size = get_parallel().attn_tp_size
         self.attn_tp_rank = get_parallel().attn_tp_rank
 
-        # Qwen3MoE all layers are sparse and have no nextn now
-        self.is_layer_sparse = True
-        is_previous_layer_sparse = True
-        is_next_layer_sparse = True
-
-        self.layer_scatter_modes = LayerScatterModes.init_new(
-            layer_id=layer_id,
-            num_layers=config.num_hidden_layers,
-            is_layer_sparse=self.is_layer_sparse,
-            is_previous_layer_sparse=is_previous_layer_sparse,
-            is_next_layer_sparse=is_next_layer_sparse,
-        )
+        attn, ffn = self.stage_facts(config, layer_id)
+        self.is_layer_sparse = ffn.sparse
 
         if self.is_layer_sparse:
             self.mlp = self.sparse_moe_block_cls(
@@ -561,12 +534,22 @@ class Qwen3OmniMoeThinkerTextDecoderLayer(nn.Module):
             config.hidden_size, eps=config.rms_norm_eps
         )
 
-        self.layer_communicator = LayerCommunicator(
-            layer_scatter_modes=self.layer_scatter_modes,
-            input_layernorm=self.input_layernorm,
-            post_attention_layernorm=self.post_attention_layernorm,
-            allow_reduce_scatter=True,
-            is_last_layer=(self.layer_id == self.config.num_hidden_layers - 1),
+        self.attn_boundary, self.ffn_boundary = append_stages(
+            (attn, self.input_layernorm),
+            (ffn, self.post_attention_layernorm),
+        )
+
+    @staticmethod
+    def stage_facts(
+        config: Qwen3OmniMoeTextConfig, layer_id: int
+    ) -> tuple[StageDeclaration, StageDeclaration]:
+        """The stages the layer declares, from the config alone (see make_layers)."""
+        # Qwen3MoE all layers are sparse and have no nextn now
+        is_layer_sparse = True
+        is_next_layer_sparse = True
+        return (
+            declare_attn(),
+            declare_ffn(sparse=is_layer_sparse, next_layer_sparse=is_next_layer_sparse),
         )
 
     def forward(
@@ -574,18 +557,14 @@ class Qwen3OmniMoeThinkerTextDecoderLayer(nn.Module):
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
-        residual: Optional[torch.Tensor],
-        captured_last_layer_outputs: Optional[List[torch.Tensor]] = None,
+        captured_last_layer_outputs: Optional[AuxHiddenStateList] = None,
         **kwargs,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        hidden_states, residual = (
-            self.layer_communicator.prepare_attn_and_capture_last_layer_outputs(
-                hidden_states,
-                residual,
-                forward_batch,
-                captured_last_layer_outputs=captured_last_layer_outputs,
-                **kwargs,
-            )
+    ) -> torch.Tensor:
+        hidden_states = self.attn_boundary.prepare(
+            hidden_states,
+            forward_batch,
+            capture_gathered=captured_last_layer_outputs,
+            **kwargs,
         )
 
         if hidden_states.shape[0] != 0:
@@ -597,33 +576,11 @@ class Qwen3OmniMoeThinkerTextDecoderLayer(nn.Module):
         else:
             pass
 
-        hidden_states, residual = self.layer_communicator.prepare_mlp(
-            hidden_states, residual, forward_batch
-        )
+        hidden_states = self.attn_boundary.finish(hidden_states, forward_batch)
+        hidden_states = self.ffn_boundary.prepare(hidden_states, forward_batch)
 
-        should_allreduce_fusion = (
-            self.layer_communicator.should_fuse_mlp_allreduce_with_next_layer(
-                forward_batch
-            )
-        )
-
-        # For DP with padding, reduce scatter can be used instead of all-reduce.
-        use_reduce_scatter = self.layer_communicator.should_use_reduce_scatter(
-            forward_batch
-        )
-
-        hidden_states = self.mlp(
-            hidden_states, forward_batch, should_allreduce_fusion, use_reduce_scatter
-        )
-
-        if should_allreduce_fusion:
-            hidden_states._sglang_needs_allreduce_fusion = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-        else:
-            hidden_states, residual = self.layer_communicator.postprocess_layer(
-                hidden_states, residual, forward_batch
-            )
-
-        return hidden_states, residual
+        hidden_states = self.mlp(hidden_states, forward_batch)
+        return self.ffn_boundary.finish(hidden_states, forward_batch)
 
 
 class Qwen3OmniMoeThinkerTextModel(nn.Module):
@@ -661,6 +618,9 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
                 alt_stream=alt_stream,
             ),
             prefix=add_prefix("layers", prefix),
+            stage_facts=lambda idx: Qwen3OmniMoeThinkerTextDecoderLayer.stage_facts(
+                config, idx
+            ),
         )
         self.layers = result
         self.start_layer = 0
@@ -686,8 +646,8 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
         else:
             hidden_states = input_embeds
 
-        residual = None
-        aux_hidden_states = []
+        residual_batch.start(forward_batch)
+        aux_hidden_states = AuxHiddenStateList()
 
         # Capture word embeddings (before any transformer layer) if requested
         if "embed" in self.layers_to_capture:
@@ -697,11 +657,10 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
 
         for layer_idx in range(self.start_layer, self.end_layer):
             layer = self.layers[layer_idx]
-            hidden_states, residual = layer(
+            hidden_states = layer(
                 positions,
                 hidden_states,
                 forward_batch,
-                residual,
                 captured_last_layer_outputs=(
                     aux_hidden_states if layer_idx in self.layers_to_capture else None
                 ),
@@ -710,19 +669,15 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
                 len(deepstack_visual_embeds)
             ):
                 hidden_states = self.deepstack_process(
-                    hidden_states,
+                    residual_batch.complete_output(hidden_states, forward_batch),
                     visual_pos_masks,
                     deepstack_visual_embeds[layer_idx],
                 )
             else:
                 pass
-        if hidden_states.shape[0] != 0:
-            if residual is None:
-                hidden_states = self.norm(hidden_states)
-            else:
-                hidden_states, _ = self.norm(hidden_states, residual)
-        else:
-            pass
+        hidden_states = residual_batch.final_norm(
+            hidden_states, forward_batch, self.norm, skip_empty=True
+        )
 
         if len(aux_hidden_states) == 0:
             return hidden_states

@@ -50,7 +50,7 @@ Last verified: 2026-04-26
 
 Accuracy (full set)
 
-| Model      | Config                      | accuracy | correct   | failed | mc_fallback | Source                                                                    |
+| Model      | Config                      | accuracy | correct   | failed | unparseable | Source                                                                    |
 | ---------- | --------------------------- | -------- | --------- | ------ | ----------- | ------------------------------------------------------------------------- |
 | Qwen3-Omni | thinker-only, full-set, c=4 | 64.74%   | 1616/2496 | 0      | 81          | PR #411 [H200, c=4, max_tokens=256]                                 |
 | Qwen3-Omni | thinker-only, full-set, c=4 | 65.06%   | 1624/2496 | 0      | 72          | PR #411 [H100, c=4, max_tokens=256]                                 |
@@ -97,11 +97,8 @@ from benchmarks.tasks.video_understanding import (
     build_videomme_result_records,
     make_video_send_fn,
 )
+from sglang_omni.utils.logging import configure_dependency_loggers
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(name)s %(levelname)s %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 
@@ -352,6 +349,11 @@ async def benchmark(args: argparse.Namespace) -> dict:
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    configure_dependency_loggers()
     parser = argparse.ArgumentParser(
         description="Video-MME benchmark for video understanding models."
     )

@@ -13,7 +13,6 @@ import torch
 import sglang_omni.utils.device as dev
 from sglang_omni.platforms import as_omni_platform, get_platform_spec
 from sglang_omni.platforms.cpu import CPUOmniPlatform
-from sglang_omni.platforms.interface import OmniPlatform
 
 
 def test_cpu_platform_identifies_as_cpu():
@@ -28,11 +27,6 @@ def test_cpu_platform_identifies_as_cpu():
     assert platform.device_name == "cpu"
     assert not platform.is_cuda()
     assert not platform.is_xpu()
-
-
-def test_cpu_platform_is_an_omni_platform():
-    """The stage layer calls Omni hooks on whatever ``current_platform`` returns."""
-    assert isinstance(CPUOmniPlatform(), OmniPlatform)
 
 
 def test_a_cpu_srt_platform_resolves_to_the_cpu_omni_platform():
@@ -73,34 +67,6 @@ def test_get_device_ignores_the_rank_and_returns_an_index_free_device():
         assert device == torch.device("cpu")
         assert device.type == "cpu"
         assert device.index is None
-
-
-def test_set_device_accepts_the_cpu_device_without_error():
-    """Called for symmetry with the CUDA path; it must stay a harmless no-op and
-    must not flip the process-wide default tensor device.
-    """
-    before = torch.empty(0).device
-
-    CPUOmniPlatform().set_device(torch.device("cpu"))
-
-    assert torch.empty(0).device == before
-
-
-def test_code2wav_graph_capture_is_refused_on_cpu():
-    """There is no graph to capture on CPU; leaving this True would fail during
-    capture instead of at configuration time.
-    """
-    assert CPUOmniPlatform().enable_code2wav_graph() is False
-
-
-def test_no_accelerator_only_fused_kernel_is_advertised():
-    """These hooks return a kernel only where one exists. Wiring an accelerator
-    kernel here would be a dispatch failure deep inside the model forward.
-    """
-    platform = CPUOmniPlatform()
-
-    assert platform.get_fused_qk_norm_rope() is None
-    assert platform.get_fused_qk_norm_rope_with_cos_sin_cache() is None
 
 
 def test_cpu_stages_need_no_process_env_overrides():

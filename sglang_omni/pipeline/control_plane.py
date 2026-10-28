@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from collections.abc import Callable
 
 import msgpack
 import zmq
@@ -14,6 +15,7 @@ from sglang_omni.proto import (
     CompleteMessage,
     DataAckMessage,
     DataReadyMessage,
+    FreezeGCMessage,
     KVTransferPrepareMessage,
     KVTransferReadyMessage,
     ProfilerStartMessage,
@@ -36,6 +38,7 @@ ControlMessage = (
     | CompleteMessage
     | StreamMessage
     | ShutdownMessage
+    | FreezeGCMessage
     | SubmitMessage
     | ProfilerStartMessage
     | ProfilerStopMessage
@@ -92,14 +95,33 @@ class PushSocket:
         self.socket.connect(self.endpoint)
         logger.debug("PUSH socket connected to %s", self.endpoint)
 
-    async def send(self, msg: ControlMessage) -> None:
-        """Send a message."""
+    async def send(
+        self,
+        msg: ControlMessage,
+        *,
+        on_submitted: Callable[[], None] | None = None,
+    ) -> None:
+        """Send a message and optionally report transport acceptance."""
         if self.socket is None:
             raise RuntimeError("Socket not connected")
         else:
             pass
         data = serialize_message(msg)
-        await self.socket.send(data)
+        pending = self.socket.send(data)
+        try:
+            await pending
+        finally:
+            # Cancellation can reach this task after ZMQ accepted the message.
+            # Report the exact send outcome before the caller releases resources.
+            if (
+                on_submitted is not None
+                and pending.done()
+                and not pending.cancelled()
+                and pending.exception() is None
+            ):
+                on_submitted()
+            else:
+                pass
         logger.debug("PUSH sent %s to %s", type(msg).__name__, self.endpoint)
 
     def close(self) -> None:
@@ -300,6 +322,7 @@ class StageControlPlane:
         | DataReadyMessage
         | SubmitMessage
         | ShutdownMessage
+        | FreezeGCMessage
         | ProfilerStartMessage
         | ProfilerStopMessage
     ):
@@ -316,6 +339,7 @@ class StageControlPlane:
                 DataAckMessage,
                 SubmitMessage,
                 ShutdownMessage,
+                FreezeGCMessage,
                 ProfilerStartMessage,
                 ProfilerStopMessage,
                 AdminMessage,
@@ -335,13 +359,18 @@ class StageControlPlane:
         """Send a stage-to-stage control message."""
         await send_to_endpoint(self.next_stage_sockets, next_stage_endpoint, msg)
 
-    async def send_complete(self, msg: CompleteMessage) -> None:
-        """Send completion notification to coordinator."""
+    async def send_complete(
+        self,
+        msg: CompleteMessage,
+        *,
+        on_submitted: Callable[[], None] | None = None,
+    ) -> None:
+        """Send completion, with an optional nonthrowing acceptance callback."""
         if self.coordinator_socket is None:
             raise RuntimeError("Control plane not started")
         else:
             pass
-        await self.coordinator_socket.send(msg)
+        await self.coordinator_socket.send(msg, on_submitted=on_submitted)
 
     async def send_stream(self, msg: StreamMessage) -> None:
         """Send a stream chunk to coordinator."""
@@ -417,7 +446,7 @@ class CoordinatorControlPlane:
         self,
         stage_name: str,
         stage_endpoint: str,
-        msg: SubmitMessage | AdminMessage | ShutdownMessage,
+        msg: SubmitMessage | AdminMessage | ShutdownMessage | FreezeGCMessage,
     ) -> None:
         """Submit a request to a stage."""
         if stage_name not in self.stage_sockets:

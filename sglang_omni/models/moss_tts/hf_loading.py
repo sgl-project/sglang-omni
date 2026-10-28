@@ -6,22 +6,76 @@ from __future__ import annotations
 import copy
 import json
 import math
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from numbers import Integral, Real
-from typing import Any
+from os import PathLike
+from types import ModuleType
+from typing import Literal, Protocol, TypeAlias, TypeVar
 
+import torch
 from sglang.srt.utils.hf_transformers import (
     CONTEXT_LENGTH_KEYS,
     get_config,
     get_context_length,
     get_hf_text_config,
 )
+from transformers import BatchFeature, PretrainedConfig
 
 MOSS_TTS_DEFAULT_CONTEXT_LENGTH = 8192
 
 
-def validate_context_length_metadata(text_config: Any) -> bool:
+class MossAudioConfig(Protocol):
+    @property
+    def n_vq(self) -> int: ...
+
+
+class MossProcessorConfigSource(Protocol):
+    @property
+    def model_config(self) -> MossAudioConfig: ...
+
+
+MossAudioReference: TypeAlias = str | PathLike[str] | PathLike[bytes] | torch.Tensor
+MossDelayReferences: TypeAlias = list[str | torch.Tensor | None]
+MossLocalReferences: TypeAlias = list[MossAudioReference | None]
+MossUserMessage: TypeAlias = dict[str, str | int | None | list[MossAudioReference]]
+MossReferenceT = TypeVar(
+    "MossReferenceT",
+    bound=MossDelayReferences | MossLocalReferences,
+    contravariant=True,
+)
+
+
+class MossRequestProcessor(Protocol[MossReferenceT]):
+    def build_user_message(
+        self,
+        text: str | None = None,
+        reference: MossReferenceT | None = None,
+        instruction: str | None = None,
+        tokens: int | None = None,
+        quality: str | None = None,
+        sound_event: str | None = None,
+        ambient_sound: str | None = None,
+        language: str | None = None,
+    ) -> MossUserMessage: ...
+
+    def __call__(
+        self,
+        conversations: list[list[MossUserMessage]],
+        *,
+        mode: Literal["generation"] = "generation",
+    ) -> BatchFeature: ...
+
+
+class MossLoadedProcessor(
+    MossRequestProcessor[MossReferenceT],
+    MossProcessorConfigSource,
+    Protocol[MossReferenceT],
+):
+    """Request processor with audio configuration."""
+
+
+def validate_context_length_metadata(text_config: PretrainedConfig) -> bool:
     context_value = None
     for key in CONTEXT_LENGTH_KEYS:
         value = getattr(text_config, key, None)
@@ -117,7 +171,7 @@ def validate_context_length_metadata(text_config: Any) -> bool:
 def resolve_moss_tts_context_length(
     checkpoint_dir: str,
     *,
-    server_args_overrides: Mapping[str, Any] | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
 ) -> int:
     """Resolve MOSS-TTS text context from the runtime model settings."""
     overrides = server_args_overrides or {}
@@ -133,7 +187,7 @@ def resolve_moss_tts_context_length(
     else:
         pass
 
-    config_kwargs: dict[str, Any] = {
+    config_kwargs: dict[str, object] = {
         "trust_remote_code": overrides.get("trust_remote_code", True),
         "model_config_parser": overrides.get("model_config_parser", "auto"),
         "model_override_args": dict(model_override_args),
@@ -156,19 +210,26 @@ def resolve_moss_tts_context_length(
 
 
 @contextmanager
-def moss_transformers_processor_compat() -> Iterator[None]:
+def moss_transformers_processor_compat() -> Generator[None, None, None]:
     """Scope Transformers API-drift patches to MOSS processor/code loading."""
     import transformers.configuration_utils as configuration_utils
     from transformers import PreTrainedModel, processing_utils
 
     missing = object()
-    undo: list[tuple[str, Any, str, Any]] = []
+    undo: list[
+        tuple[Literal["attr"], ModuleType, str, object]
+        | tuple[Literal["item"], dict[str, object], str, object]
+    ] = []
 
-    def patch_attr(obj: Any, name: str, value: Any) -> None:
+    def patch_attr(
+        obj: ModuleType,
+        name: str,
+        value: type[PretrainedConfig] | type[PreTrainedModel] | dict[str, object],
+    ) -> None:
         undo.append(("attr", obj, name, getattr(obj, name, missing)))
         setattr(obj, name, value)
 
-    def patch_item(mapping: dict, key: str, value: Any) -> None:
+    def patch_item(mapping: dict[str, object], key: str, value: str) -> None:
         undo.append(("item", mapping, key, mapping.get(key, missing)))
         mapping[key] = value
 
@@ -203,19 +264,22 @@ def moss_transformers_processor_compat() -> Iterator[None]:
             pass
         yield
     finally:
-        for kind, obj, key, old in reversed(undo):
-            if kind == "attr":
+        for record in reversed(undo):
+            if record[0] == "attr":
+                _, obj, name, old = record
                 if old is missing:
-                    if hasattr(obj, key):
-                        delattr(obj, key)
+                    if hasattr(obj, name):
+                        delattr(obj, name)
                     else:
                         pass
                 else:
-                    setattr(obj, key, old)
-            elif old is missing:
-                obj.pop(key, None)
+                    setattr(obj, name, old)
             else:
-                obj[key] = old
+                _, mapping, key, old = record
+                if old is missing:
+                    mapping.pop(key, None)
+                else:
+                    mapping[key] = old
 
 
 def load_moss_processor_class(checkpoint: str) -> type:

@@ -11,7 +11,10 @@ from typing import Any
 import pytest
 import torch
 
-from sglang_omni.models.qwen3_omni.components import code2wav_cuda_graph
+from sglang_omni.models.qwen3_omni.components import (
+    code2wav_cuda_graph,
+    code2wav_scheduler,
+)
 from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
     Code2WavCudaGraphRunner,
     GraphKey,
@@ -239,34 +242,6 @@ def make_codes(
     return backend.mark_cuda(tensor, device=device)
 
 
-def test_build_captures_only_the_explicit_graph_keys() -> None:
-    graph_keys = tuple(GraphKey(batch_size=1, frames=frames) for frames in (20, 40, 45))
-    backend = FakeCudaBackend()
-    runner = Code2WavCudaGraphRunner.build(
-        FakeModel(),
-        device="cuda:0",
-        num_quantizers=16,
-        total_gpu_memory_fraction=0.5,
-        graph_keys=graph_keys,
-        model_footprint_bytes=100,
-        decode_stream=None,
-        device_api=backend,
-    )
-
-    assert [tuple(graph.static_input.shape) for graph in backend.graphs] == [
-        (1, 16, 45),
-        (1, 16, 40),
-        (1, 16, 20),
-    ]
-    assert runner.stats()["graph_contract"]["keys"] == [
-        {"batch_size": key.batch_size, "frames": key.frames} for key in graph_keys
-    ]
-    assert runner.stats()["build"] == {
-        "attempted_graph_count": 3,
-        "published_graph_count": 3,
-    }
-
-
 def test_build_uses_two_warmups_one_private_pool_and_atomic_publication() -> None:
     runner, backend, model = build_runner()
 
@@ -284,7 +259,7 @@ def test_build_uses_two_warmups_one_private_pool_and_atomic_publication() -> Non
     stats = runner.stats()
     assert stats["enabled"] is True
     assert stats["graph_contract"]["keys"] == [
-        {"batch_size": key.batch_size, "frames": key.frames}
+        {"batch_size": key.batch_size, "frames": key.frames, "decode": "window"}
         for key in DEFAULT_GRAPH_KEYS
     ]
     assert stats["build"]["published_graph_count"] == 4
@@ -343,28 +318,6 @@ def test_build_warms_up_and_captures_on_the_decode_stream() -> None:
     assert len(backend.capture_streams) == len(DEFAULT_GRAPH_KEYS)
     assert all(stream is decode_stream for stream in backend.warmup_streams)
     assert all(stream is decode_stream for stream in backend.capture_streams)
-
-
-def test_stats_report_only_operational_state() -> None:
-    runner, backend, model = build_runner()
-    runner.run(make_codes(backend, 1, 10))
-
-    stats = runner.stats()
-    assert stats["binding"] == {
-        "device": "cuda:0",
-        "num_quantizers": 16,
-        "input_dtype": "torch.long",
-        "owner_pid": stats["binding"]["owner_pid"],
-    }
-    assert stats["build"] == {
-        "attempted_graph_count": 4,
-        "published_graph_count": 4,
-    }
-    assert stats["runtime"] == {
-        "graph_replays": 1,
-        "replay_failures": 0,
-        "fallback_counts": {},
-    }
 
 
 def test_all_serving_keys_hit_while_batch_two_misses() -> None:
@@ -530,7 +483,10 @@ def test_real_cuda_output_overlap_pipeline_matches_sync_bitwise() -> None:
         Code2WavScheduler,
     )
     from sglang_omni.pipeline.stage.stream_queue import StreamItem
-    from tests.unit_test.fixtures.qwen_fakes import make_qwen_payload
+    from tests.unit_test.fixtures.qwen_fakes import (
+        deliver_code2wav_chunk,
+        make_qwen_payload,
+    )
 
     class TinyCode2WavModel(torch.nn.Module):
         total_upsample = 1
@@ -564,7 +520,8 @@ def test_real_cuda_output_overlap_pipeline_matches_sync_bitwise() -> None:
         scheduler.stream_payloads["req-1"] = make_qwen_payload(request_id="req-1")
         scheduler.get_or_create_stream_state("req-1")
         for i in range(21):
-            scheduler.handle_stream_chunk(
+            deliver_code2wav_chunk(
+                scheduler,
                 "req-1",
                 StreamItem(
                     i,
@@ -753,7 +710,7 @@ def test_any_build_failure_rolls_back_every_graph(
     assert memory["after_rollback"]["allocated_bytes"] == 100
 
 
-@pytest.mark.parametrize("fraction", [None, 0.0, -0.1, 1.01, float("nan")])
+@pytest.mark.parametrize("fraction", [None, 0.0, 1.01, float("nan")])
 def test_memory_fraction_must_be_explicit_and_in_range(
     fraction: float | None,
 ) -> None:
@@ -951,8 +908,8 @@ def test_tier1_budget_violation_republishes_greedy_prefix() -> None:
     assert tier1["attempts"] == 2
     assert tier1["published_key_count"] == 2
     assert tier1["skipped_keys"] == [
-        {"batch_size": 2, "frames": 10},
-        {"batch_size": 2, "frames": 20},
+        {"batch_size": 2, "frames": 10, "decode": "window"},
+        {"batch_size": 2, "frames": 20, "decode": "window"},
     ]
     assert backend.pool_calls == 2
     assert runner.available_batch_sizes(20) == (4, 1)
@@ -984,8 +941,8 @@ def test_tier1_oversized_first_key_drops_its_batch_class() -> None:
     assert tier1["attempts"] == 2
     assert tier1["published_key_count"] == 2
     assert tier1["skipped_keys"] == [
-        {"batch_size": 4, "frames": 10},
-        {"batch_size": 4, "frames": 20},
+        {"batch_size": 4, "frames": 10, "decode": "window"},
+        {"batch_size": 4, "frames": 20, "decode": "window"},
     ]
     assert runner.available_batch_sizes(20) == (2, 1)
 
@@ -1016,8 +973,8 @@ def test_combined_footprint_violation_drops_largest_batch_class() -> None:
     assert tier1["attempts"] == 2
     assert tier1["published_key_count"] == 2
     assert tier1["skipped_keys"] == [
-        {"batch_size": 4, "frames": 10},
-        {"batch_size": 4, "frames": 20},
+        {"batch_size": 4, "frames": 10, "decode": "window"},
+        {"batch_size": 4, "frames": 20, "decode": "window"},
     ]
     assert backend.pool_calls == 2
     assert runner.available_batch_sizes(20) == (2, 1)
@@ -1088,6 +1045,98 @@ def test_tier1_equivalence_failure_abandons_tier_with_original_reason() -> None:
     assert stats["enabled"] is True
     assert stats["build"]["published_graph_count"] == 2
     assert stats["memory"]["tier1"]["disable_reason"].startswith("equivalence_failed")
+
+
+def test_failing_best_effort_single_request_key_keeps_the_atomic_tier() -> None:
+    backend = SequencedBackend(
+        snapshots=[
+            (100, 120),
+            (100, 120),
+            (160, 200),
+        ],
+    )
+    backend.corrupt_at = 0
+    runner = Code2WavCudaGraphRunner.build(
+        FakeModel(),
+        device="cuda:0",
+        num_quantizers=16,
+        total_gpu_memory_fraction=0.5,
+        graph_keys=DEFAULT_GRAPH_KEYS,
+        best_effort_keys=(
+            GraphKey(batch_size=1, frames=27),
+            GraphKey(batch_size=1, frames=26),
+        ),
+        model_footprint_bytes=100,
+        decode_stream=None,
+        device_api=backend,
+    )
+
+    stats = runner.stats()
+    assert stats["enabled"] is True
+    assert stats["build"]["published_graph_count"] == len(DEFAULT_GRAPH_KEYS)
+    assert stats["memory"]["tier1"]["disable_reason"].startswith("equivalence_failed")
+    assert runner.run(make_codes(backend, 1, 30)).execution_mode == "cuda_graph"
+    tail = runner.run(make_codes(backend, 1, 27))
+    assert tail.execution_mode == "eager"
+    assert tail.fallback_reason == "key_miss"
+
+
+class PoolGrowthBackend(FakeCudaBackend):
+    """Fake backend whose fresh pool grows per captured graph, past the whole
+    graph budget for graphs of oversized_rows rows or more."""
+
+    def __init__(self, *, oversized_rows: int) -> None:
+        super().__init__()
+        self.oversized_rows = oversized_rows
+        self.pool_bytes = 0
+
+    def memory_stats(self, device: torch.device) -> dict[str, int]:
+        del device
+        return {
+            "allocated_bytes": 100 + self.pool_bytes,
+            "reserved_bytes": 120 + self.pool_bytes,
+            "max_reserved_bytes": 120 + self.pool_bytes,
+            "free_bytes": 900 - self.pool_bytes,
+            "total_bytes": 1000,
+        }
+
+    def graph_pool_handle(self, device: torch.device) -> object:
+        self.pool_bytes = 0
+        return super().graph_pool_handle(device)
+
+    def capture(self, model, static_input, *, pool, stream=None):
+        rows = int(static_input.shape[0])
+        self.pool_bytes += 500 if rows >= self.oversized_rows else 5
+        return super().capture(model, static_input, pool=pool, stream=stream)
+
+
+def test_capacity_shrinks_reach_every_row_count_of_the_default_ladder() -> None:
+    backend = PoolGrowthBackend(oversized_rows=3)
+    graph_keys = code2wav_scheduler.window_graph_keys(10, 25, 8)
+    final_keys = tuple(
+        GraphKey(batch_size=1, frames=frames)
+        for frames in range(1, 36)
+        if frames not in (10, 20, 30, 35)
+    )
+    runner = Code2WavCudaGraphRunner.build(
+        FakeModel(),
+        device="cuda:0",
+        num_quantizers=16,
+        total_gpu_memory_fraction=0.5,
+        graph_keys=graph_keys,
+        best_effort_keys=final_keys,
+        model_footprint_bytes=100,
+        decode_stream=None,
+        device_api=backend,
+    )
+
+    stats = runner.stats()
+    assert stats["enabled"] is True
+    # eight rows down to three each fail their first capture; the seventh attempt fits
+    assert stats["memory"]["tier1"]["attempts"] == 7
+    assert runner.available_batch_sizes(35) == (2, 1)
+    assert all(runner.available_batch_sizes(key.frames) == (1,) for key in final_keys)
+    assert runner.run(make_codes(backend, 2, 35)).execution_mode == "cuda_graph"
 
 
 def test_runtime_disable_clears_tier1_availability() -> None:

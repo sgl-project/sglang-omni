@@ -14,13 +14,18 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 import types
+from concurrent.futures import Future
 from unittest import mock
 
 import pytest
 import torch
+from sglang.srt.managers.scheduler import Scheduler
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.sglang_execution import SGLangExecutionBridge
+from sglang_omni.scheduling import omni_scheduler
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler, PendingDecode
 from sglang_omni.scheduling.types import (
     ModelRunnerOutput,
@@ -113,7 +118,7 @@ def patch_event(ready: bool):
 
 
 def test_launch_event_comes_from_the_runners_device_module():
-    """execute_launch must build the event on the runner's own device backend.
+    """execute_launch's completion event must come from the runner's own device backend.
 
     Guards against a regression to a hardcoded backend (e.g. torch.cuda.Event or
     torch.cpu.Event): a fixed-backend call would not construct the patched class.
@@ -126,7 +131,7 @@ def test_launch_event_comes_from_the_runners_device_module():
     accel = torch.device(current_platform.device_type)
     runner = StubRunner()
     runner.device = accel
-    runner.execution_bridge = FakeExecutionBridge(accel)
+    fake_bridge = FakeExecutionBridge(accel)
 
     seen = []
     real_event = torch.get_device_module(accel).Event
@@ -137,6 +142,15 @@ def test_launch_event_comes_from_the_runners_device_module():
             return super().__new__(cls)
 
     with mock.patch.object(torch.get_device_module(accel), "Event", RecordingEvent):
+        bridge = SGLangExecutionBridge(
+            device=accel,
+            worker=types.SimpleNamespace(model_runner=runner),
+            spec_algorithm=types.SimpleNamespace(is_none=lambda: True),
+            future_map=None,
+        )
+        bridge.forward_context = fake_bridge.forward_context
+        bridge.publish_next_tokens = fake_bridge.publish_next_tokens
+        runner.execution_bridge = bridge
         pending = runner.execute_launch(make_sched_output(1))
 
     assert seen, "no event built from the runner's device module"
@@ -533,7 +547,7 @@ def commit_step_slot(allocator, req_to_token_pool, req):
 
 def test_prompt_only_radix_reuses_prompt_without_caching_tail():
     from sglang.srt.managers.schedule_batch import Req
-    from sglang.srt.mem_cache.common import maybe_cache_unfinished_req, release_kv_cache
+    from sglang.srt.mem_cache.common import checkpoint_kv_cache, release_kv_cache
     from sglang.srt.mem_cache.radix_cache import MatchPrefixParams, RadixKey
     from sglang.srt.runtime_context import get_context
     from sglang.srt.sampling.sampling_params import SamplingParams
@@ -545,13 +559,13 @@ def test_prompt_only_radix_reuses_prompt_without_caching_tail():
         first = decoding_req(allocator, req_to_token_pool, "first", prompt, [20])
         first.extra_key = "qwen3_tts:prompt:v1"
         first.init_next_round_input(cache)
-        first.set_extend_range(0, len(prompt))
-        maybe_cache_unfinished_req(first, cache)
+        first.extend_end = len(prompt)
+        checkpoint_kv_cache(first, cache)
 
         first.skip_radix_cache_insert = True
         commit_step_slot(allocator, req_to_token_pool, first)
         first.output_ids.append(21)
-        release_kv_cache(first, cache)
+        release_kv_cache(first, cache, checkpoint=True)
 
         second = Req(
             "second",
@@ -568,8 +582,8 @@ def test_prompt_only_radix_reuses_prompt_without_caching_tail():
             )
         )
 
-        assert len(second.prefix_indices) == len(prompt) - 1
-        assert len(tail_match.device_indices) == cache.total_size() == len(prompt)
+        assert second.prefix_len == len(prompt) - 1
+        assert tail_match.device_prefix_len == cache.total_size() == len(prompt)
         assert allocator.available_size() + cache.evictable_size() == total
 
 
@@ -605,9 +619,9 @@ def test_drop_stale_overrun_leaves_drained_rows_single_owned():
         ]
 
         finished.finished_reason = FINISH_MATCHED_TOKEN(matched=31)
-        release_kv_cache(finished, cache)
+        release_kv_cache(finished, cache, checkpoint=True)
         retracted.is_retracted = True
-        release_kv_cache(retracted, cache, is_insert=False)
+        release_kv_cache(retracted, cache, checkpoint=False)
 
         s = OmniScheduler.__new__(OmniScheduler)
         s.page_size = 1
@@ -628,9 +642,8 @@ def test_drop_stale_overrun_leaves_drained_rows_single_owned():
             == total - survivor_slots
         )
         free = allocator.free_pages.tolist()
-        cached = cache.match_prefix(
-            MatchPrefixParams(key=RadixKey([3, 4, 30, 31]))
-        ).device_indices.tolist()
+        match = cache.match_prefix(MatchPrefixParams(key=RadixKey([3, 4, 30, 31])))
+        cached = cache.path_device_indices(match.last_device_node).tolist()
         assert step_slots[0] not in free and step_slots[0] not in cached
         assert free.count(step_slots[1]) == 0 and cached.count(step_slots[1]) == 1
         assert free.count(step_slots[2]) == 1 and step_slots[2] not in cached
@@ -665,16 +678,12 @@ def test_batch_is_decode():
     assert (
         OmniScheduler.batch_is_decode(types.SimpleNamespace(forward_mode=None)) is False
     )
-
-
-def test_async_pending_batch_uses_initialized_state():
-    s = OmniScheduler.__new__(OmniScheduler)
-    s.async_pending = None
-    assert s.async_pending_batch() is None
-    s.async_pending = PendingDecode(
-        batch="batchX", scheduler_output="sched_out", device_step="pending_step"
+    idle = types.SimpleNamespace(
+        forward_mode=types.SimpleNamespace(
+            is_decode=lambda: False, is_extend=lambda: False
+        )
     )
-    assert s.async_pending_batch() == "batchX"
+    assert OmniScheduler.batch_is_decode(idle) is True
 
 
 # ---------------------------------------------------------------------------
@@ -1288,3 +1297,501 @@ def test_drop_stale_overrun_filters_decoding_reqs():
     live_decode = batch.reqs[2]
     out = s.drop_stale_overrun(batch)
     assert out.decoding_reqs == [live_decode]
+
+
+class RunningBatch:
+    def __init__(self, request_count: int, *, batch_is_full: bool = False) -> None:
+        self.reqs = [object() for _ in range(request_count)]
+        self.batch_is_full = batch_is_full
+
+    def is_empty(self) -> bool:
+        return not self.reqs
+
+
+def scaffold_resolve_before_prefill(
+    events: list[str], *, async_pending: PendingDecode | None
+) -> OmniScheduler:
+    s = scaffold_async_loop(async_pending=async_pending)
+    s.async_decode_resolve_before_prefill = True
+    s.dllm_config = None
+    s._prefill_decode_interval_remaining = (
+        0  # noqa: leading-underscore  # production name
+    )
+    s.enable_priority_preemption = False
+    s.is_hybrid_swa = False
+    s.enable_hisparse = False
+    s.min_free_slots_delayer = None
+    s.prefill_coalesce_requests = 0
+    s.running_batch = RunningBatch(2)
+    s.get_num_allocatable_reqs = lambda running_bs, running_batch: 4
+    s.waiting_queue = [object()]
+    s.process_admin_requests = lambda: events.append("admin")
+    s.resolve_and_process = lambda *args: events.append("resolve")
+    s.process_batch_result = lambda batch, result: None
+
+    def launch(batch: FakeBatch) -> tuple[str, str]:
+        events.append("launch")
+        return "sched_output", "pending_step"
+
+    def run_batch(batch: FakeBatch) -> object:
+        events.append("prefill")
+        return object()
+
+    s.run_batch_launch = launch
+    s.run_batch = run_batch
+    return s
+
+
+def in_flight_step() -> PendingDecode:
+    return PendingDecode(
+        batch=FakeBatch(2), scheduler_output="prev_sched", device_step="prev_step"
+    )
+
+
+def schedule_once(
+    s: OmniScheduler, events: list[str], batch: FakeBatch, *, is_decode: bool
+) -> None:
+    s.batch_is_decode = lambda selected: is_decode
+
+    def get_next_batch_to_run() -> FakeBatch:
+        events.append("schedule")
+        s.running = False
+        return batch
+
+    s.get_next_batch_to_run = get_next_batch_to_run
+
+
+def test_a_predicted_prefill_resolves_first_then_receives_again_before_selecting() -> (
+    None
+):
+    events: list[str] = []
+    s = scaffold_resolve_before_prefill(events, async_pending=in_flight_step())
+    late_request = object()
+    receives = iter(([], [late_request]))
+    s.recv_requests = lambda: events.append("receive") or next(receives)
+    s.process_input_requests = lambda requests: s.waiting_queue.extend(requests)
+    selected_waiting: list[list[object]] = []
+
+    def get_next_batch_to_run() -> FakeBatch:
+        events.append("schedule")
+        selected_waiting.append(list(s.waiting_queue))
+        s.running = False
+        return FakeBatch(1)
+
+    s.batch_is_decode = lambda batch: False
+    s.get_next_batch_to_run = get_next_batch_to_run
+    s.event_loop_async_decode()
+
+    assert events == [
+        "admin",
+        "receive",
+        "resolve",
+        "admin",
+        "receive",
+        "schedule",
+        "prefill",
+    ]
+    assert late_request in selected_waiting[0]
+    assert s.async_pending is None
+
+
+@pytest.mark.parametrize(
+    ("interval_remaining", "batch_is_full", "has_waiting", "has_chunked_request"),
+    [
+        pytest.param(1, False, True, False, id="interval-not-reached"),
+        pytest.param(0, True, True, False, id="running-batch-full"),
+        pytest.param(0, False, False, False, id="nothing-waiting"),
+    ],
+)
+def test_lookahead_continues_when_no_prefill_is_expected(
+    interval_remaining: int,
+    batch_is_full: bool,
+    has_waiting: bool,
+    has_chunked_request: bool,
+) -> None:
+    events: list[str] = []
+    s = scaffold_resolve_before_prefill(events, async_pending=in_flight_step())
+    s._prefill_decode_interval_remaining = (
+        interval_remaining  # noqa: leading-underscore  # production name
+    )
+    s.running_batch = RunningBatch(2, batch_is_full=batch_is_full)
+    s.waiting_queue = [object()] if has_waiting else []
+    s.chunked_req = object() if has_chunked_request else None
+    schedule_once(s, events, FakeBatch(2), is_decode=True)
+
+    s.event_loop_async_decode()
+
+    assert events == ["admin", "schedule", "launch", "resolve"]
+
+
+def test_a_chunked_request_resolves_first_even_with_nothing_waiting() -> None:
+    events: list[str] = []
+    s = scaffold_resolve_before_prefill(events, async_pending=in_flight_step())
+    s.waiting_queue = []
+    s.chunked_req = object()
+    schedule_once(s, events, FakeBatch(1), is_decode=False)
+
+    s.event_loop_async_decode()
+
+    assert events == ["admin", "resolve", "admin", "schedule", "prefill"]
+
+
+def test_a_coalescing_hold_keeps_the_lookahead() -> None:
+    events: list[str] = []
+    s = scaffold_resolve_before_prefill(events, async_pending=in_flight_step())
+    s.prefill_coalesce_requests = 8
+    s.prefill_coalesce_when_idle = False
+    s.prefill_coalesce_requires_pending_builds = False
+    s.prefill_coalesce_wait_s = 60.0
+    s.waiting_queue = [types.SimpleNamespace(_coalesce_enqueue_t=time.perf_counter())]
+    schedule_once(s, events, FakeBatch(2), is_decode=True)
+
+    s.event_loop_async_decode()
+
+    assert events == ["admin", "schedule", "launch", "resolve"]
+
+
+def test_a_wrong_prefill_guess_launches_the_decode_without_a_step_in_flight() -> None:
+    events: list[str] = []
+    s = scaffold_resolve_before_prefill(events, async_pending=in_flight_step())
+    schedule_once(s, events, FakeBatch(2), is_decode=True)
+
+    s.event_loop_async_decode()
+
+    assert events == ["admin", "resolve", "admin", "schedule", "launch"]
+    assert s.async_pending is not None
+
+
+def test_a_missed_prefill_falls_back_to_resolving_after_selection() -> None:
+    events: list[str] = []
+    s = scaffold_resolve_before_prefill(events, async_pending=in_flight_step())
+    s._prefill_decode_interval_remaining = (
+        2  # noqa: leading-underscore  # production name
+    )
+
+    def drop_stale_overrun(batch: FakeBatch) -> FakeBatch:
+        events.append("drop stale")
+        return batch
+
+    s.drop_stale_overrun = drop_stale_overrun
+    schedule_once(s, events, FakeBatch(1), is_decode=False)
+
+    s.event_loop_async_decode()
+
+    assert events == ["admin", "schedule", "resolve", "drop stale", "prefill"]
+
+
+def test_both_session_steps_in_flight_resolve_in_launch_order() -> None:
+    events: list[str] = []
+    older, newer = in_flight_step(), in_flight_step()
+    s = scaffold_resolve_before_prefill(events, async_pending=newer)
+    s.session_bridge = object()
+    s.previous_pending_decode = older
+    names = {id(older): "older", id(newer): "newer"}
+    s.wait_async_device = lambda batch, step: events.append("wait")
+    s.process_owned_async = lambda pending: events.append(names[id(pending)])
+    schedule_once(s, events, FakeBatch(1), is_decode=False)
+
+    s.event_loop_async_decode()
+
+    assert events == [
+        "admin",
+        "wait",
+        "older",
+        "wait",
+        "newer",
+        "admin",
+        "schedule",
+        "prefill",
+    ]
+    assert s.previous_pending_decode is None
+    assert s.async_pending is None
+
+
+def test_a_failing_early_resolve_is_handled_and_the_loop_goes_on() -> None:
+    events: list[str] = []
+    pending = in_flight_step()
+    s = scaffold_resolve_before_prefill(events, async_pending=pending)
+    failures: list[object] = []
+
+    def resolve_and_process(*args: object) -> None:
+        events.append("resolve")
+        raise RuntimeError("device error")
+
+    s.resolve_and_process = resolve_and_process
+    s.handle_batch_failure = lambda batch, exc: failures.append(batch)
+    schedule_once(s, events, FakeBatch(1), is_decode=False)
+
+    s.event_loop_async_decode()
+
+    assert events == ["admin", "resolve", "admin", "schedule", "prefill"]
+    assert failures == [pending.batch]
+
+
+def test_requests_finished_by_the_early_resolve_stay_out_of_the_next_batch() -> None:
+    events: list[str] = []
+    s = scaffold_resolve_before_prefill(events, async_pending=in_flight_step())
+    requests = [DFReq("finishing"), DFReq("running")]
+
+    def resolve_and_process(*args: object) -> None:
+        events.append("resolve")
+        requests[0].done = True
+
+    s.resolve_and_process = resolve_and_process
+    selected: list[list[str]] = []
+
+    def get_next_batch_to_run() -> FakeBatch:
+        events.append("schedule")
+        selected.append([req.name for req in requests if not req.finished()])
+        s.running = False
+        return FakeBatch(1)
+
+    s.batch_is_decode = lambda batch: False
+    s.get_next_batch_to_run = get_next_batch_to_run
+
+    s.event_loop_async_decode()
+
+    assert events == ["admin", "resolve", "admin", "schedule", "prefill"]
+    assert selected == [["running"]]
+
+
+def test_a_pause_during_the_early_resolve_skips_selection() -> None:
+    events: list[str] = []
+    s = scaffold_resolve_before_prefill(events, async_pending=in_flight_step())
+
+    def resolve_and_process(*args: object) -> None:
+        events.append("resolve")
+        s._engine_paused = True  # noqa: leading-underscore  # production name
+
+    def process_admin_requests() -> None:
+        events.append("admin")
+        if events.count("admin") == 3:
+            s.running = False
+        else:
+            pass
+
+    s.resolve_and_process = resolve_and_process
+    s.process_admin_requests = process_admin_requests
+    schedule_once(s, events, FakeBatch(1), is_decode=False)
+
+    s.event_loop_async_decode()
+
+    assert events == ["admin", "resolve", "admin", "admin"]
+
+
+def test_with_the_parameter_off_the_prediction_is_never_consulted() -> None:
+    events: list[str] = []
+    s = scaffold_resolve_before_prefill(events, async_pending=in_flight_step())
+    s.async_decode_resolve_before_prefill = False
+
+    def is_prefill_expected() -> bool:
+        raise AssertionError("predicted with the parameter off")
+
+    s.is_prefill_expected = is_prefill_expected
+    schedule_once(s, events, FakeBatch(2), is_decode=True)
+
+    s.event_loop_async_decode()
+
+    assert events == ["admin", "schedule", "launch", "resolve"]
+
+
+@pytest.mark.parametrize("interval_remaining", [0, 1, 4])
+def test_the_prediction_defers_exactly_when_upstream_defers(
+    interval_remaining: int,
+) -> None:
+    s = scaffold_resolve_before_prefill([], async_pending=in_flight_step())
+    s._prefill_decode_interval_remaining = (
+        interval_remaining  # noqa: leading-underscore  # production name
+    )
+    upstream_state = types.SimpleNamespace(
+        _prefill_decode_interval_remaining=interval_remaining  # noqa: leading-underscore  # production name
+    )
+
+    expected = not Scheduler._should_defer_prefill(  # noqa: leading-underscore  # production name
+        upstream_state
+    )
+
+    assert s.is_prefill_expected() is expected
+    assert (
+        s._prefill_decode_interval_remaining  # noqa: leading-underscore  # production name
+        == interval_remaining
+    )
+
+
+@pytest.mark.parametrize(
+    ("change", "expected"),
+    [
+        pytest.param({}, True, id="all-gates-open"),
+        pytest.param({"is_mixed_chunk": True}, False, id="mixed-chunk"),
+        pytest.param({"dllm_config": object()}, False, id="dllm"),
+        pytest.param({"waiting_queue": []}, False, id="nothing-waiting"),
+        pytest.param(
+            {"running_batch": RunningBatch(2, batch_is_full=True)}, False, id="full"
+        ),
+        pytest.param(
+            {
+                "running_batch": RunningBatch(2, batch_is_full=True),
+                "enable_priority_preemption": True,
+            },
+            True,
+            id="full-with-preemption",
+        ),
+        pytest.param(
+            {
+                "running_batch": RunningBatch(2, batch_is_full=True),
+                "is_hybrid_swa": True,
+            },
+            True,
+            id="full-with-hybrid-swa",
+        ),
+        pytest.param(
+            {
+                "running_batch": RunningBatch(2, batch_is_full=True),
+                "enable_hisparse": True,
+            },
+            True,
+            id="full-with-hisparse",
+        ),
+        pytest.param(
+            {"running_batch": RunningBatch(0, batch_is_full=True)},
+            True,
+            id="stale-full-flag-on-an-empty-batch",
+        ),
+        pytest.param(
+            {"get_num_allocatable_reqs": lambda running_bs, running_batch: 0},
+            False,
+            id="no-request-slot",
+        ),
+        pytest.param(
+            {
+                "get_num_allocatable_reqs": lambda running_bs, running_batch: 0,
+                "enable_priority_preemption": True,
+            },
+            True,
+            id="no-request-slot-with-preemption",
+        ),
+        pytest.param(
+            {
+                "min_free_slots_delayer": types.SimpleNamespace(
+                    should_delay=lambda running_bs, num_allocatable_reqs: True
+                )
+            },
+            False,
+            id="min-free-slots-delay",
+        ),
+        pytest.param(
+            {"chunked_req": object(), "waiting_queue": []}, True, id="chunked"
+        ),
+    ],
+)
+def test_the_prediction_follows_each_upstream_gate(
+    change: dict[str, object], expected: bool
+) -> None:
+    s = scaffold_resolve_before_prefill([], async_pending=in_flight_step())
+    for name, value in change.items():
+        setattr(s, name, value)
+
+    assert s.is_prefill_expected() is expected
+
+
+def test_the_prediction_follows_the_retract_test_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    s = scaffold_resolve_before_prefill([], async_pending=in_flight_step())
+    monkeypatch.setattr(omni_scheduler, "TEST_RETRACT", True)
+    monkeypatch.setattr(omni_scheduler, "TEST_RETRACT_NO_PREFILL_BS", 1)
+
+    assert s.is_prefill_expected() is False
+
+    monkeypatch.setattr(omni_scheduler, "TEST_RETRACT_NO_PREFILL_BS", 2)
+
+    assert s.is_prefill_expected() is True
+
+
+@pytest.mark.parametrize(
+    "unsupported_state",
+    ["chunked_req", "decoding_reqs", "is_prefill_only", "return_logprob"],
+)
+def test_async_prefill_rejects_partial_or_special_batches(unsupported_state):
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.async_prefill = True
+    scheduler.session_bridge = None
+    scheduler.chunked_req = None
+    batch = types.SimpleNamespace(
+        forward_mode=types.SimpleNamespace(
+            is_extend=lambda: True,
+            is_target_verify=lambda: False,
+            is_draft_extend_v2=lambda: False,
+        ),
+        chunked_req=None,
+        decoding_reqs=[],
+        is_prefill_only=False,
+        return_logprob=False,
+        reqs=[types.SimpleNamespace(inflight_middle_chunks=0)],
+    )
+    assert scheduler.is_async_prefill_batch(batch)
+    setattr(batch, unsupported_state, True)
+    assert not scheduler.is_async_prefill_batch(batch)
+
+
+def test_async_prefill_runs_prefill_hook_before_publishing_tokens():
+    runner = StubRunner()
+    build_forward_batch = runner.build_forward_batch
+    events = []
+
+    def build_prefill(scheduler_output):
+        forward_batch, schedule_batch, _ = build_forward_batch(scheduler_output)
+        return forward_batch, schedule_batch, True
+
+    def finish_prefill(*arguments):
+        events.append("prefill")
+
+    publish_next_tokens = runner.publish_next_tokens
+
+    def publish(*arguments):
+        events.append("publish")
+        return publish_next_tokens(*arguments)
+
+    runner.build_forward_batch = build_prefill
+    runner.post_prefill = finish_prefill
+    runner.publish_next_tokens = publish
+    with patch_event(ready=True):
+        step = runner.execute_launch(make_sched_output(1))
+        assert step is not None
+        assert events == ["prefill", "publish"]
+        runner.execute_resolve(step)
+    assert events == ["prefill", "publish"]
+
+
+def test_zero_admission_wait_does_not_block_prefill_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A model's zero wait must release its ready prefill without waiting on unfinished builds."""
+    scheduler = new_scheduler_for_async_loop()
+    scheduler.async_prefill = True
+    scheduler.aborted_request_ids = set()
+    scheduler.admit_or_defer_built_request = mock.Mock()
+    completed = Future()
+    completed.set_result("built-request")
+    unfinished = Future()
+    ready_admission = Future()
+    ready_admission.set_result(None)
+    deferred = types.SimpleNamespace(ready=ready_admission)
+    scheduler.pending_request_builds = {
+        "unfinished": ("unfinished-payload", False, unfinished),
+        "completed": ("completed-payload", False, completed),
+    }
+    scheduler.pending_request_admissions = {"ready": ("ready-payload", False, deferred)}
+    scheduler.request_build_admission_wait_s = 0.0
+    scheduler.waiting_queue = [mock.Mock()]
+    wait = mock.Mock(side_effect=AssertionError("prefill release waited on a build"))
+    monkeypatch.setattr(omni_scheduler, "wait_futures", wait)
+    scheduler.admit_imminent_request_builds()
+    wait.assert_not_called()
+    assert len(scheduler.waiting_queue) == 1
+
+    assert [
+        call.args[0] for call in scheduler.admit_or_defer_built_request.call_args_list
+    ] == ["completed-payload", "ready-payload"]
+    assert list(scheduler.pending_request_builds) == ["unfinished"]
+    assert not scheduler.pending_request_admissions

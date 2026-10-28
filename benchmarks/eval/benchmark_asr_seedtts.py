@@ -90,6 +90,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import statistics
 import time
@@ -110,6 +111,7 @@ from benchmarks.tasks.asr import (
     build_asr_eval_results,
     run_asr_transcription,
 )
+from sglang_omni.utils.logging import configure_dependency_loggers
 
 DEFAULT_CONCURRENCIES = "1,2,4,8,16,32,64"
 
@@ -155,17 +157,12 @@ def _fetch_worker_snapshot(host: str, port: int) -> dict | None:
     """Best-effort read of per-worker router dispatch counters."""
     with requests.Session() as session:
         session.trust_env = False
-        for path in ("/diagnostics", "/workers"):
-            try:
-                response = session.get(f"http://{host}:{port}{path}", timeout=10)
-                response.raise_for_status()
-                payload = response.json()
-                if path == "/diagnostics":
-                    return _normalize_rust_worker_snapshot(payload)
-                return payload
-            except (requests.RequestException, ValueError, TypeError):
-                continue
-    return None
+        try:
+            response = session.get(f"http://{host}:{port}/diagnostics", timeout=10)
+            response.raise_for_status()
+            return _normalize_rust_worker_snapshot(response.json())
+        except (requests.RequestException, ValueError, TypeError):
+            return None
 
 
 def _normalize_rust_worker_snapshot(snapshot: dict) -> dict:
@@ -772,6 +769,11 @@ async def _sweep(args, samples, concurrencies: list[int]) -> list[dict]:
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    configure_dependency_loggers()
     args = parse_args()
     concurrencies = args.concurrencies
     max_samples = args.max_samples if args.max_samples > 0 else None

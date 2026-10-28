@@ -9,8 +9,6 @@ steps, written in place and re-made every frame.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
 import torch
 from einops import rearrange
 from torch import nn
@@ -22,6 +20,7 @@ from sglang_omni.models.personaplex.architecture import (
     TEXT_CARD,
     DepformerSpec,
 )
+from sglang_omni.models.personaplex.sampling import AudioTokenSampler
 
 
 def rms_norm_f32(x: torch.Tensor, alpha: torch.Tensor, eps: float) -> torch.Tensor:
@@ -75,8 +74,9 @@ class Depformer(nn.Module):
     def __init__(self, spec: DepformerSpec = DEPFORMER) -> None:
         super().__init__()
         self.spec = spec
-        self.depformer_in = nn.ModuleList(
-            nn.Linear(spec.input_dim, spec.dim, bias=False) for _ in range(spec.steps)
+        # Note (edwardzh): Shared temporal input lets projections run before sampling.
+        self.depformer_in_weight = nn.Parameter(
+            torch.empty(spec.steps, spec.dim, spec.input_dim)
         )
         self.depformer_text_emb = nn.Embedding(TEXT_CARD + 1, spec.dim)
         # Note (wilsonzheng0327): The last codebook is never an input.
@@ -90,12 +90,29 @@ class Depformer(nn.Module):
             nn.Linear(spec.dim, AUDIO_CARD, bias=False) for _ in range(spec.steps)
         )
 
+    def create_key_value_caches(
+        self, hidden_states: torch.Tensor
+    ) -> list[torch.Tensor]:
+        return [
+            hidden_states.new_empty(
+                2,
+                hidden_states.shape[0],
+                self.spec.num_heads,
+                self.spec.steps,
+                self.spec.head_dim,
+            )
+            for _ in self.layers
+        ]
+
     def generate(
         self,
         text_token_B: torch.Tensor,
         transformer_out_BD: torch.Tensor,
         forced_BK: torch.Tensor,
-        sample: Callable[[torch.Tensor], torch.Tensor],
+        sample: AudioTokenSampler,
+        *,
+        key_value_caches: list[torch.Tensor] | None = None,
+        output_codes: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Spell out one frame of agent codes.
 
@@ -106,18 +123,18 @@ class Depformer(nn.Module):
                 where the step is free. A forced code still conditions the
                 steps after it, as teacher forcing does in the reference.
             sample: [B, card] float logits → [B] ids.
+            key_value_caches: Preallocated per-layer caches reused during generation.
+            output_codes: Preallocated [B, steps] result overwritten by this call.
         """
         spec = self.spec
-        caches = [
-            transformer_out_BD.new_empty(
-                2,
-                transformer_out_BD.shape[0],
-                spec.num_heads,
-                spec.steps,
-                spec.head_dim,
-            )
-            for _ in self.layers
-        ]
+        caches = (
+            self.create_key_value_caches(transformer_out_BD)
+            if key_value_caches is None
+            else key_value_caches
+        )
+        step_inputs_BSD = functional.linear(
+            transformer_out_BD, self.depformer_in_weight.flatten(0, 1)
+        ).unflatten(-1, (spec.steps, spec.dim))
         previous = text_token_B
         codes = []
         for step in range(spec.steps):
@@ -126,14 +143,17 @@ class Depformer(nn.Module):
                 if step == 0
                 else self.depformer_emb[step - 1](previous)
             )
-            x = self.depformer_in[step](transformer_out_BD) + token_emb
+            x = step_inputs_BSD[:, step] + token_emb
             for layer, cache in zip(self.layers, caches, strict=True):
                 x = layer.step(x, step, cache)
             sampled = sample(self.linears[step](x).float())
             forced = forced_BK[:, step]
             previous = torch.where(forced >= 0, forced, sampled)
             codes.append(previous)
-        return torch.stack(codes, dim=1)
+        if output_codes is None:
+            return torch.stack(codes, dim=1)
+        else:
+            return torch.stack(codes, dim=1, out=output_codes)
 
     def load_reference_weights(self, weights: dict[str, torch.Tensor]) -> None:
         """Load depformer* / linears.* tensors in the checkpoint's names.
@@ -142,11 +162,12 @@ class Depformer(nn.Module):
         with more steps than we run (16 vs 8) simply has its tail ignored.
         """
         spec = self.spec
-        state: dict[str, torch.Tensor] = {}
+        state: dict[str, torch.Tensor] = {
+            "depformer_in_weight": torch.stack(
+                [weights[f"depformer_in.{step}.weight"] for step in range(spec.steps)]
+            )
+        }
         for step in range(spec.steps):
-            state[f"depformer_in.{step}.weight"] = weights[
-                f"depformer_in.{step}.weight"
-            ]
             state[f"linears.{step}.weight"] = weights[f"linears.{step}.weight"]
         for step in range(spec.steps - 1):
             state[f"depformer_emb.{step}.weight"] = weights[

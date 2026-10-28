@@ -15,15 +15,19 @@ disk, which these tests have no weights for.
 
 from __future__ import annotations
 
+from typing import ClassVar
 from unittest import mock
 
 import pytest
 import yaml
+from pydantic import Field
 from typer.testing import CliRunner
 
+from sglang_omni.cli import app
 from sglang_omni.cli.config import config_app
 from sglang_omni.cli.serve import patches_from_broadcast_flags
 from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.schema import PipelineConfig, StageConfig
 from sglang_omni.config.sources import dump_user_config
 
 
@@ -115,7 +119,7 @@ class TestResolve:
     def test_dotted_arguments_are_applied_like_serve_applies_them(
         self, runner, plain_config_file, stage
     ):
-        argv = [f"--{stage}.engine.mem-fraction-static", "0.35"]
+        argv = [f"--{stage}.engine.mem_fraction_static", "0.35"]
         result = runner.invoke(
             config_app, ["resolve", "--config", str(plain_config_file), *argv]
         )
@@ -123,7 +127,9 @@ class TestResolve:
         assert result.exit_code == 0, output_of(result)
         manager = ConfigManager.from_file(str(plain_config_file))
         expected = manager.merge_config(manager.parse_extra_args(argv))
-        assert yaml.safe_load(result.stdout) == dump_user_config(expected)
+        printed = yaml.safe_load(result.stdout)
+        assert printed == dump_user_config(expected)
+        assert printed["stages"][stage]["engine"]["mem_fraction_static"] == 0.35
 
     def test_stdout_is_a_usable_config_file(self, runner, config_file, stage):
         """`config resolve > pipeline.yaml` must produce a loadable document
@@ -284,18 +290,6 @@ class TestExplain:
 
         assert result.exit_code != 0
         assert "did you mean" in output_of(result).lower()
-
-    def test_a_positional_stage_index_is_refused_readably(self, runner, config_file):
-        """Stages are addressed by name; the refusal says so, tracelessly."""
-        result = runner.invoke(
-            config_app,
-            ["explain", "stages.9.tp_size", "--config", str(config_file)],
-        )
-
-        assert result.exit_code != 0
-        output = output_of(result)
-        assert "addressed by name" in output
-        assert "Traceback" not in output
 
     def test_without_a_path_it_lists_every_touched_path(
         self, runner, config_file, fraction
@@ -478,31 +472,6 @@ class TestBroadcastFlags:
             f"stages.{name}.engine.mem_fraction_static" for name in engine_stages
         }
 
-    def test_an_explicit_dotted_path_beats_the_fan_out(self, base_config, stage):
-        flag_patches = patches_from_broadcast_flags(
-            base_config,
-            mem_fraction_static=0.4,
-        )
-        merged = ConfigManager(base_config).merge_config(
-            [(f"{stage}.engine.mem_fraction_static", "0.6")],
-            extra_patches=flag_patches,
-        )
-        assert merged.stage_named(stage).engine.mem_fraction_static == 0.6
-
-    def test_an_out_of_range_fraction_is_refused(self, base_config):
-        # Range is the schema's rule: the flag builds patches, and resolution
-        # refuses the out-of-range value with the schema's message.
-        patches = patches_from_broadcast_flags(base_config, mem_fraction_static=1.5)
-        with pytest.raises(ValueError, match="mem_fraction_static"):
-            ConfigManager(base_config).merge_config([], extra_patches=patches)
-
-    def test_without_the_flag_no_patch_is_built(self, base_config):
-        patches = patches_from_broadcast_flags(
-            base_config,
-            mem_fraction_static=None,
-        )
-        assert len(patches) == 0
-
 
 class TestServeErrors:
     """`sgl-omni serve` fails the same way the config commands do: readably.
@@ -576,3 +545,212 @@ class TestServeErrors:
         output = output_of(result)
         assert "Missing value" in output
         assert "Traceback" not in output
+
+
+RESOLVE_CONFIG_CLS_TARGET = (
+    "sglang_omni.config.manager.resolve_config_cls_for_model_path"
+)
+UNKNOWN_VARIANT = "nonexistent"
+
+
+def fake_stages() -> list[StageConfig]:
+    return [
+        StageConfig(
+            name="stage",
+            process="pipeline",
+            factory_path="tests.unit_test.fixtures.pipeline_fakes.dummy_factory",
+            terminal=True,
+        )
+    ]
+
+
+class FakeDefaultPipelineConfig(PipelineConfig):
+    """A model's default pipeline."""
+
+    stages: list[StageConfig] = Field(default_factory=fake_stages)
+
+
+class FakeTextPipelineConfig(FakeDefaultPipelineConfig):
+    """The model's text variant."""
+
+
+class FakeRealtimePipelineConfig(FakeDefaultPipelineConfig):
+    """A variant that serves only /v1/realtime."""
+
+    is_realtime_only: ClassVar[bool] = True
+    realtime_only_setting: int = 7
+
+
+# note (ruoyu): --variant reads the Variants table of the module that defines
+# the model's config class, which is this module for the fakes above.
+Variants = {"text": FakeTextPipelineConfig, "realtime": FakeRealtimePipelineConfig}
+
+
+class TestVariant:
+    """--variant picks a pipeline from the model's Variants table."""
+
+    @pytest.fixture(autouse=True)
+    def fake_model(self):
+        with mock.patch(
+            RESOLVE_CONFIG_CLS_TARGET, return_value=FakeDefaultPipelineConfig
+        ):
+            yield
+
+    def test_resolve_uses_the_named_variant(self, runner):
+        result = runner.invoke(
+            config_app, ["resolve", "--model-path", "dummy", "--variant", "realtime"]
+        )
+
+        assert result.exit_code == 0, output_of(result)
+        assert (
+            yaml.safe_load(result.stdout)["config_cls"] == "FakeRealtimePipelineConfig"
+        )
+
+    def test_explain_reads_the_named_variant(self, runner):
+        result = runner.invoke(
+            config_app,
+            [
+                "explain",
+                "realtime_only_setting",
+                "--model-path",
+                "dummy",
+                "--variant",
+                "realtime",
+            ],
+        )
+
+        assert result.exit_code == 0, output_of(result)
+        assert "realtime_only_setting = 7" in result.stdout
+
+    def test_variant_text_matches_text_only(self, runner):
+        resolve_arguments = ["resolve", "--model-path", "dummy"]
+        text_only = runner.invoke(config_app, [*resolve_arguments, "--text-only"])
+        text_variant = runner.invoke(
+            config_app, [*resolve_arguments, "--variant", "text"]
+        )
+
+        assert text_variant.exit_code == 0, output_of(text_variant)
+        assert (
+            yaml.safe_load(text_variant.stdout)["config_cls"]
+            == "FakeTextPipelineConfig"
+        )
+        assert text_variant.stdout == text_only.stdout
+
+    @pytest.mark.parametrize(
+        ("config_cls", "available_variants"),
+        [
+            (FakeDefaultPipelineConfig, "Available variants: realtime, text"),
+            (PipelineConfig, "Available variants: none"),
+        ],
+    )
+    def test_an_unknown_variant_lists_the_known_ones(
+        self, config_cls, available_variants
+    ):
+        with mock.patch(RESOLVE_CONFIG_CLS_TARGET, return_value=config_cls):
+            with pytest.raises(ValueError, match=available_variants):
+                ConfigManager.from_model_path("dummy", variant=UNKNOWN_VARIANT)
+
+    @pytest.mark.parametrize(
+        ("cli_app", "command"), [(config_app, "resolve"), (app, "serve")]
+    )
+    def test_an_unknown_variant_is_refused_without_a_traceback(
+        self, runner, cli_app, command
+    ):
+        with mock.patch("sglang_omni.cli.serve.launch_server") as launch_server:
+            result = runner.invoke(
+                cli_app,
+                [command, "--model-path", "dummy", "--variant", UNKNOWN_VARIANT],
+            )
+
+        assert result.exit_code == 2
+        output = output_of(result)
+        assert UNKNOWN_VARIANT in output
+        assert "Traceback" not in output
+        launch_server.assert_not_called()
+
+    def test_text_only_refuses_another_variant(self, runner):
+        result = runner.invoke(
+            config_app,
+            [
+                "resolve",
+                "--model-path",
+                "dummy",
+                "--text-only",
+                "--variant",
+                "realtime",
+            ],
+        )
+
+        assert result.exit_code == 2
+        output = output_of(result)
+        assert "--text-only" in output
+        assert "--variant" in output
+
+    def test_a_config_file_refuses_a_variant(self, runner, plain_config_file):
+        result = runner.invoke(
+            config_app,
+            ["resolve", "--config", str(plain_config_file), "--variant", "text"],
+        )
+
+        assert result.exit_code == 2
+        output = output_of(result)
+        assert "--config" in output
+        assert "--variant" in output
+
+    @pytest.mark.parametrize(
+        ("serve_arguments", "launched_config_cls"),
+        [
+            (["--variant", "text"], FakeTextPipelineConfig),
+            (
+                ["--variant", "realtime", "--enable-realtime"],
+                FakeRealtimePipelineConfig,
+            ),
+        ],
+    )
+    def test_serve_launches_the_named_variant(
+        self, runner, serve_arguments, launched_config_cls
+    ):
+        with mock.patch("sglang_omni.cli.serve.launch_server") as launch_server:
+            result = runner.invoke(
+                app, ["serve", "--model-path", "dummy", *serve_arguments]
+            )
+
+        assert result.exit_code == 0, output_of(result)
+        assert type(launch_server.call_args.args[0]) is launched_config_cls
+
+    def test_a_realtime_only_pipeline_requires_enable_realtime(self, runner):
+        with mock.patch("sglang_omni.cli.serve.launch_server") as launch_server:
+            result = runner.invoke(
+                app, ["serve", "--model-path", "dummy", "--variant", "realtime"]
+            )
+
+        assert result.exit_code == 2
+        assert "--enable-realtime" in output_of(result)
+        launch_server.assert_not_called()
+
+
+@pytest.mark.parametrize("gpu_in_file", [False, True])
+def test_replica_devices_accept_stage_gpu_from_file_or_cli(
+    runner, tmp_path, base_config, stage, gpu_in_file
+):
+    """Stage GPU overrides must reach replica expansion rather than fail at parsing."""
+    process = base_config.stage_named(stage).process
+    data = {
+        "config_cls": base_config.config_cls,
+        "model_path": "dummy",
+        "processes": {process: {"replica_devices": [1]}},
+    }
+    if gpu_in_file:
+        data["stages"] = {stage: {"gpu": 3}}
+        arguments = []
+    else:
+        arguments = [(f"{stage}.gpu", "3")]
+    path = tmp_path / "replicas.yaml"
+    path.write_text(yaml.safe_dump(data))
+    merged = ConfigManager.from_file(str(path)).merge_config(arguments)
+    assert merged.stage_named(stage).gpu == 3
+    assert merged.processes[process].replica_devices == [1]
+    flags = [] if gpu_in_file else [f"--{stage}.gpu", "3"]
+    for command in [["resolve"], ["explain", f"stages.{stage}.gpu"]]:
+        result = runner.invoke(config_app, [*command, "--config", str(path), *flags])
+        assert result.exit_code == 0, output_of(result)

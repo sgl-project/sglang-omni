@@ -13,9 +13,20 @@ import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Iterable, Iterator
+
+from typing_extensions import NotRequired, TypedDict
+
+from sglang_omni.utils.json import JsonValue
 
 logger = logging.getLogger(__name__)
+
+
+class ProfilerReport(TypedDict):
+    timelines: NotRequired[dict[str, list[dict[str, JsonValue]]]]
+    stage_breakdown: list[dict[str, str | int | float]]
+    hop_breakdown: list[dict[str, str | int | float]]
+    request_count: int
 
 
 # ---------------------------------------------------------------------------
@@ -23,7 +34,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def iter_events(source: str | Path | Iterable[str | Path]) -> Iterator[dict[str, Any]]:
+def iter_events(source: str | Path | Iterable[str | Path]) -> Iterator[JsonValue]:
     """Yield every JSON event from a file, directory, or list of either."""
     paths: list[Path] = []
     if isinstance(source, (str, Path)):
@@ -56,7 +67,9 @@ def iter_events(source: str | Path | Iterable[str | Path]) -> Iterator[dict[str,
                     )
 
 
-def load_events(source: str | Path | Iterable[str | Path]) -> list[dict[str, Any]]:
+def load_events(
+    source: str | Path | Iterable[str | Path],
+) -> list[dict[str, JsonValue]]:
     """Return all events sorted by ``timestamp_ns`` (stable)."""
     events = list(iter_events(source))
     events.sort(key=lambda e: e.get("timestamp_ns", 0))
@@ -73,7 +86,7 @@ class RequestTimeline:
     """All events for a single request, sorted by time."""
 
     request_id: str
-    events: list[dict[str, Any]] = field(default_factory=list)
+    events: list[dict[str, JsonValue]] = field(default_factory=list)
 
     @property
     def t0_ns(self) -> int | None:
@@ -102,7 +115,7 @@ class RequestTimeline:
         assert t0 is not None and t1 is not None
         return (t1 - t0) / 1e6
 
-    def to_relative(self) -> list[dict[str, Any]]:
+    def to_relative(self) -> list[dict[str, JsonValue]]:
         """Return events with an added ``t_rel_ms`` field anchored at t0."""
         if not self.events:
             return []
@@ -110,7 +123,7 @@ class RequestTimeline:
             pass
         t0 = self.t0_ns
         assert t0 is not None
-        result = []
+        result: list[dict[str, JsonValue]] = []
         for ev in self.events:
             out = dict(ev)
             out["t_rel_ms"] = (ev["timestamp_ns"] - t0) / 1e6
@@ -123,7 +136,7 @@ def reconstruct_timelines(
 ) -> dict[str, RequestTimeline]:
     """Group every event by ``request_id`` into a per-request timeline."""
     events = load_events(source)
-    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    grouped: dict[str, list[dict[str, JsonValue]]] = defaultdict(list)
     for ev in events:
         rid = ev.get("request_id")
         if not rid:
@@ -187,7 +200,7 @@ class StageBreakdownRow:
     p95_ms: float
     max_ms: float
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, str | int | float]:
         return {
             "stage": self.stage,
             "interval": self.interval_name,
@@ -327,7 +340,7 @@ class HopBreakdownRow:
     p95_ms: float
     max_ms: float
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, str | int | float]:
         return {
             "src": self.src_stage,
             "dst": self.dst_stage,
@@ -432,7 +445,7 @@ def hop_breakdown(
 # ---------------------------------------------------------------------------
 
 
-def build_report(source: str | Path | Iterable[str | Path]) -> dict[str, Any]:
+def build_report(source: str | Path | Iterable[str | Path]) -> ProfilerReport:
     """Return all three views as a single dict for JSON serialization."""
     timelines = reconstruct_timelines(source)
     return {
@@ -443,7 +456,7 @@ def build_report(source: str | Path | Iterable[str | Path]) -> dict[str, Any]:
     }
 
 
-def format_table(rows: list[dict[str, Any]], columns: list[str]) -> str:
+def format_table(rows: list[dict[str, str | int | float]], columns: list[str]) -> str:
     """Pretty-print a list of dicts as a fixed-width table."""
     if not rows:
         return "(empty)\n"

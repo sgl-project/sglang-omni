@@ -10,6 +10,7 @@ from torch.nn import functional as F
 from sglang_omni.models.qwen3_tts import predictor_kernels
 from sglang_omni.models.qwen3_tts.predictor_kernels import (
     gather_codec_embedding_and_add,
+    short_cache_gqa_npu,
 )
 from sglang_omni.models.qwen3_tts.sglang_model import predictor_gqa_attention
 from sglang_omni.platforms import current_platform
@@ -57,21 +58,118 @@ def test_predictor_gqa_attention_pair_attends_causally() -> None:
 
 
 @pytest.mark.skipif(not current_platform.is_npu(), reason="requires Ascend NPU")
-def test_predictor_npu_fused_attention_matches_sdpa() -> None:
+@pytest.mark.parametrize(
+    "query_length,cache_length,is_causal", [(1, 5, False), (2, 2, True)]
+)
+def test_predictor_npu_fused_attention_matches_sdpa(
+    query_length: int, cache_length: int, is_causal: bool
+) -> None:
     device = torch.device("npu:0")
-    q = torch.randn(2, 4, 1, 128, device=device, dtype=torch.bfloat16)
-    key = torch.randn(2, 2, 5, 128, device=device, dtype=torch.bfloat16)
-    value = torch.randn(2, 2, 5, 128, device=device, dtype=torch.bfloat16)
+    q = torch.randn(2, 4, query_length, 128, device=device, dtype=torch.bfloat16)
+    key = torch.randn(2, 2, cache_length, 128, device=device, dtype=torch.bfloat16)
+    value = torch.randn(2, 2, cache_length, 128, device=device, dtype=torch.bfloat16)
 
     actual = predictor_gqa_attention(
-        q, key, value, num_heads=4, num_key_value_heads=2, is_causal=False
+        q, key, value, num_heads=4, num_key_value_heads=2, is_causal=is_causal
     )
     expected = F.scaled_dot_product_attention(
-        q, key, value, is_causal=False, enable_gqa=True
+        q, key, value, is_causal=is_causal, enable_gqa=True
     )
     torch.npu.synchronize(device)
 
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@pytest.mark.skipif(not current_platform.is_npu(), reason="requires Ascend NPU")
+@pytest.mark.parametrize("batch,length", [(1, 1), (8, 5), (8, 6), (16, 16), (32, 9)])
+def test_predictor_short_cache_gqa_matches_float32_reference(
+    batch: int, length: int
+) -> None:
+    generator = torch.Generator().manual_seed(1234)
+    query = torch.randn(batch, 16, 1, 128, generator=generator).bfloat16()
+    key = torch.randn(batch, 17, 8, 128, generator=generator).bfloat16()
+    value = torch.randn(batch, 17, 8, 128, generator=generator).bfloat16()
+    key_npu = key.npu()[:, :length].transpose(1, 2)
+    value_npu = value.npu()[:, :length].transpose(1, 2)
+    for scale in (1.0, 10.0):
+        scaled_query = query * scale
+        expected = F.scaled_dot_product_attention(
+            scaled_query.float(),
+            key[:, :length].transpose(1, 2).float(),
+            value[:, :length].transpose(1, 2).float(),
+            enable_gqa=True,
+        ).bfloat16()
+        actual = predictor_gqa_attention(
+            scaled_query.npu(),
+            key_npu,
+            value_npu,
+            num_heads=16,
+            num_key_value_heads=8,
+            is_causal=False,
+        )
+        torch.testing.assert_close(actual.cpu(), expected, atol=1e-3, rtol=8e-3)
+
+
+@pytest.mark.skipif(not current_platform.is_npu(), reason="requires Ascend NPU")
+def test_predictor_short_cache_graph_replay_and_fallback() -> None:
+    generator = torch.Generator().manual_seed(5678)
+    query_cpu = torch.randn(4, 16, 1, 128, generator=generator).bfloat16()
+    key_cpu = torch.randn(4, 17, 8, 128, generator=generator).bfloat16()
+    value_cpu = torch.randn(4, 17, 8, 128, generator=generator).bfloat16()
+    query, key, value = query_cpu.npu(), key_cpu.npu(), value_cpu.npu()
+    for _ in range(2):
+        short_cache_gqa_npu(
+            query, key[:, :7].transpose(1, 2), value[:, :7].transpose(1, 2)
+        )
+    graph = torch.npu.NPUGraph()
+    with torch.npu.graph(graph):
+        actual = short_cache_gqa_npu(
+            query, key[:, :7].transpose(1, 2), value[:, :7].transpose(1, 2)
+        )
+    for _ in range(4):
+        key_cpu = torch.randn(4, 17, 8, 128, generator=generator).bfloat16()
+        value_cpu = torch.randn(4, 17, 8, 128, generator=generator).bfloat16()
+        key.copy_(key_cpu)
+        value.copy_(value_cpu)
+        graph.replay()
+        expected = F.scaled_dot_product_attention(
+            query_cpu.float(),
+            key_cpu[:, :7].transpose(1, 2).float(),
+            value_cpu[:, :7].transpose(1, 2).float(),
+            enable_gqa=True,
+        ).bfloat16()
+        torch.testing.assert_close(actual.cpu(), expected, atol=1e-3, rtol=8e-3)
+    assert (
+        short_cache_gqa_npu(query, key.transpose(1, 2), value.transpose(1, 2)) is None
+    )
+    assert (
+        short_cache_gqa_npu(
+            query.float(),
+            key[:, :7].transpose(1, 2).float(),
+            value[:, :7].transpose(1, 2).float(),
+        )
+        is None
+    )
+    assert (
+        short_cache_gqa_npu(
+            query[:, :8], key[:, :7].transpose(1, 2), value[:, :7].transpose(1, 2)
+        )
+        is None
+    )
+
+
+@pytest.mark.skipif(not current_platform.is_npu(), reason="requires Ascend NPU")
+@pytest.mark.parametrize("invalid_tensor", ["query", "key"])
+def test_predictor_short_cache_rejects_one_non_4d_tensor(invalid_tensor: str) -> None:
+    """A single malformed query or cache must fall back before indexing shapes."""
+    query = torch.zeros(1, 16, 1, 128, device="npu", dtype=torch.bfloat16)
+    key = torch.zeros(1, 8, 4, 128, device="npu", dtype=torch.bfloat16)
+    if invalid_tensor == "query":
+        query = query.flatten()[0]
+    else:
+        key = key.flatten(0, 2)
+    value = torch.zeros_like(key)
+    assert short_cache_gqa_npu(query, key, value) is None
 
 
 def test_gather_codec_embedding_and_add_cpu_falls_back_without_writes():
@@ -128,12 +226,13 @@ def test_gather_codec_embedding_and_add_rejects_unsafe_input_without_writes(
 
 @pytest.mark.accelerator
 @pytest.mark.parametrize(
-    ("batch_size", "hidden_size"),
-    [(1, 8), (4, 8), (8, 2048)],
+    ("batch_size", "hidden_size", "projected_size"),
+    [(1, 8, 0), (4, 8, 0), (8, 2048, 0), (1, 8, 4), (8, 2048, 1024)],
 )
 def test_gather_codec_embedding_and_add_matches_bf16_reference(
     batch_size: int,
     hidden_size: int,
+    projected_size: int,
 ):
     if not torch.cuda.is_available():
         pytest.skip("Triton predictor kernel needs CUDA")
@@ -167,14 +266,56 @@ def test_gather_codec_embedding_and_add_matches_bf16_reference(
     expected_accumulated = accumulated.clone()
     expected_accumulated.add_(expected_gathered)
     gathered = torch.empty_like(expected_gathered)
+    if projected_size:
+        projected_weight = torch.randn(
+            vocab_size,
+            projected_size,
+            generator=generator,
+            dtype=torch.float32,
+        ).to(device=device, dtype=torch.bfloat16)
+        projected = torch.empty(
+            batch_size, projected_size, device=device, dtype=torch.bfloat16
+        )
+    else:
+        projected_weight = None
+        projected = None
 
     assert gather_codec_embedding_and_add(
         token_ids,
         embedding_weight,
         gathered,
         accumulated,
+        projected_weight=projected_weight,
+        projected=projected,
     )
     torch.cuda.synchronize()
 
     assert torch.equal(gathered, expected_gathered)
     assert torch.equal(accumulated, expected_accumulated)
+    if projected_size:
+        assert torch.equal(projected, F.embedding(token_ids, projected_weight))
+    else:
+        pass
+
+
+@pytest.mark.accelerator
+def test_gather_codec_embedding_and_add_rejects_an_overlapping_projection():
+    if not torch.cuda.is_available():
+        pytest.skip("Triton predictor kernel needs CUDA")
+    device = torch.device("cuda")
+    token_ids = torch.tensor([1, 3], dtype=torch.long, device=device)
+    embedding_weight = torch.randn(8, 8, dtype=torch.bfloat16, device=device)
+    accumulated = torch.full((2, 8), -3.0, dtype=torch.bfloat16, device=device)
+    gathered = torch.full((2, 8), 2.0, dtype=torch.bfloat16, device=device)
+    projected_weight = torch.randn(8, 4, dtype=torch.bfloat16, device=device)
+    expected_gathered = gathered.clone()
+
+    assert not gather_codec_embedding_and_add(
+        token_ids,
+        embedding_weight,
+        gathered,
+        accumulated,
+        projected_weight=projected_weight,
+        projected=gathered.view(4, 4)[:2],
+    )
+    assert torch.equal(gathered, expected_gathered)

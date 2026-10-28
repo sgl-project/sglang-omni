@@ -10,21 +10,30 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 import torch
 import torch.nn.functional as F
+from sglang.srt.server_args import ServerArgs
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
+from transformers import AutoConfig
 
 from sglang_omni.models.qwen3_omni.bootstrap import create_thinker_scheduler
 from sglang_omni.models.qwen3_omni.components.audio_encoder import Qwen3OmniAudioEncoder
-from sglang_omni.models.qwen3_omni.components.image_encoder import Qwen3OmniImageEncoder
+from sglang_omni.models.qwen3_omni.components.image_encoder import (
+    ImageEncoderOutput,
+    Qwen3OmniImageEncoder,
+)
 from sglang_omni.models.qwen3_omni.components.preprocessor import Qwen3OmniPreprocessor
 from sglang_omni.models.qwen3_omni.components.streaming_detokenizer import (
+    StreamingDetokenizeScheduler,
     create_streaming_detokenize_scheduler,
 )
 from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
 from sglang_omni.models.qwen3_omni.request_builders import (
+    EncoderRequestData,
     apply_encoder_result,
     build_encoder_request,
 )
@@ -41,15 +50,54 @@ from sglang_omni.scheduling.sglang_backend import (
     apply_encoder_mem_reserve,
     build_sglang_server_args,
 )
+from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache
+from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.utils.gpu_memory import format_bytes_gib, get_process_gpu_memory_bytes
 from sglang_omni.utils.misc import avail_gpu_mem
+
+if TYPE_CHECKING:
+
+    from sglang_omni.models.qwen3_omni.talker_scheduler import QwenTalkerScheduler
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+else:
+    pass
 
 IMAGE_STAGE = "image_encoder"
 AUDIO_STAGE = "audio_encoder"
 THINKER_STAGE = "thinker"
 
 logger = logging.getLogger(__name__)
+
+
+def disable_torch_compile_on_npu(
+    server_args_overrides: Mapping[str, object] | None,
+) -> Mapping[str, object] | None:
+    """Keep Qwen3-Omni from enabling torch.compile on NPU.
+
+    NPU graph capture reaches several known dynamo/Triton/ATB incompatibilities,
+    so set the switch explicitly instead of relying on the builder default.
+    """
+    from sglang_omni.platforms import current_platform
+
+    if not current_platform.is_npu():
+        return server_args_overrides
+    else:
+        pass
+
+    if server_args_overrides and server_args_overrides.get("enable_torch_compile"):
+        logger.warning(
+            "Qwen3-Omni: torch.compile is disabled on NPU due to known "
+            "dynamo/Triton/ATB incompatibilities."
+        )
+    else:
+        pass
+
+    overrides = dict(server_args_overrides or {})
+    overrides["enable_torch_compile"] = False
+    return overrides
+
 
 # Image-encoder batching budget; the multiplier accounts for transient activations.
 QWEN3_IMAGE_ENCODER_BATCH_BUDGET_BYTES = 10 * 1024**3
@@ -60,6 +108,28 @@ QWEN3_ENCODER_CACHE_MAX_BYTES = 4 * 1024**3
 QWEN3_ENCODER_CACHE_MAX_ENTRIES = 64
 
 
+class ImageBatchMeta(TypedDict):
+    idx: int
+    payload: StagePayload
+    state: Qwen3OmniPipelineState
+    request: EncoderRequestData
+    image_rows: int
+    video_rows: int
+    image_token_total: int
+    video_token_total: int
+
+
+class AudioBatchItem(TypedDict):
+    idx: int
+    payload: StagePayload
+    state: Qwen3OmniPipelineState
+    request: EncoderRequestData
+    features: torch.Tensor
+    mask: torch.Tensor
+    lengths: torch.Tensor
+    count: int
+
+
 @dataclass(frozen=True)
 class ArMemoryContract:
     mem_fraction_static_pinned: bool
@@ -68,7 +138,7 @@ class ArMemoryContract:
 
 
 def apply_qwen_thinker_encoder_reserve(
-    server_args: Any,
+    server_args: ServerArgs | None,
     *,
     has_explicit_mem_fraction_static: bool,
     encoder_mem_reserve: float,
@@ -82,7 +152,7 @@ def apply_qwen_thinker_encoder_reserve(
 
 
 def apply_colocated_ar_memory_contract(
-    overrides: dict[str, Any],
+    overrides: dict[str, object],
     *,
     stage_name: str,
     total_gpu_memory_fraction: float | None,
@@ -185,7 +255,7 @@ def run_single_encoder_payload(
     payload: StagePayload,
     *,
     stage_name: str,
-    model: Any,
+    model: Qwen3OmniImageEncoder | Qwen3OmniAudioEncoder | None,
     cache: StageOutputCache | None = None,
 ) -> StagePayload:
     state = load_state(payload)
@@ -215,7 +285,7 @@ def run_single_encoder_payload(
     return store_state(payload, state)
 
 
-def image_request_is_batchable(request: Any) -> bool:
+def image_request_is_batchable(request: EncoderRequestData) -> bool:
     if request.skip_result is not None:
         return False
     else:
@@ -261,7 +331,9 @@ def split_visual_multiscale(
     return [tensor[start:end] for tensor in tensors]
 
 
-def create_image_encoder_request_cost_fn(model: Qwen3OmniImageEncoder):
+def create_image_encoder_request_cost_fn(
+    model: Qwen3OmniImageEncoder,
+) -> Callable[[StagePayload], int]:
     merge = int(model.spatial_merge_size) ** 2
     hidden = int(model.out_hidden_size)
     output_layers = 1 + int(model.deepstack_layers)
@@ -288,7 +360,7 @@ def create_image_encoder_request_cost_fn(model: Qwen3OmniImageEncoder):
     return _cost
 
 
-def tensor_bytes(value: Any) -> int:
+def tensor_bytes(value: object) -> int:
     if not isinstance(value, torch.Tensor):
         return 0
     else:
@@ -296,7 +368,7 @@ def tensor_bytes(value: Any) -> int:
     return int(value.numel() * value.element_size())
 
 
-def nested_tensor_bytes(value: Any) -> int:
+def nested_tensor_bytes(value: object) -> int:
     if isinstance(value, torch.Tensor):
         return tensor_bytes(value)
     else:
@@ -391,11 +463,11 @@ def trace_encoder_cache(
 
 def lookup_cached_encoder_output(
     *,
-    request: Any,
+    request: EncoderRequestData,
     request_id: str,
     stage_name: str,
     cache: StageOutputCache | None,
-) -> Any | None:
+) -> ImageEncoderOutput | dict[str, torch.Tensor] | None:
     if cache is None or request.cache_key is None:
         return None
     else:
@@ -425,11 +497,11 @@ def lookup_cached_encoder_output(
 
 def store_cached_encoder_output(
     *,
-    request: Any,
+    request: EncoderRequestData,
     request_id: str,
     stage_name: str,
     cache: StageOutputCache | None,
-    result: Any,
+    result: ImageEncoderOutput | dict[str, torch.Tensor],
 ) -> None:
     if cache is None or request.cache_key is None:
         return
@@ -446,7 +518,7 @@ def store_cached_encoder_output(
     )
 
 
-def grid_visual_tokens(grid: Any, merge: int) -> int:
+def grid_visual_tokens(grid: object, merge: int) -> int:
     if not isinstance(grid, torch.Tensor) or grid.numel() == 0:
         return 0
     else:
@@ -457,12 +529,16 @@ def grid_visual_tokens(grid: Any, merge: int) -> int:
 def batch_image_encoder_payloads(
     payloads: list[StagePayload],
     *,
-    model: Any,
+    model: Qwen3OmniImageEncoder | None,
     cache: StageOutputCache | None = None,
 ) -> list[StagePayload]:
     results: list[StagePayload | None] = [None] * len(payloads)
-    active: list[tuple[int, StagePayload, Any, Any]] = []
-    duplicate_waiters: dict[str, list[tuple[int, StagePayload, Any]]] = {}
+    active: list[
+        tuple[int, StagePayload, Qwen3OmniPipelineState, EncoderRequestData]
+    ] = []
+    duplicate_waiters: dict[
+        str, list[tuple[int, StagePayload, Qwen3OmniPipelineState]]
+    ] = {}
     active_cache_keys: set[str] = set()
     active_cache_leaders: dict[str, str] = {}
 
@@ -535,7 +611,7 @@ def batch_image_encoder_payloads(
     image_grids: list[torch.Tensor] = []
     video_pixels: list[torch.Tensor] = []
     video_grids: list[torch.Tensor] = []
-    metas: list[dict[str, Any]] = []
+    metas: list[ImageBatchMeta] = []
     merge = model.spatial_merge_size**2
 
     for idx, payload, state, request in active:
@@ -591,7 +667,7 @@ def batch_image_encoder_payloads(
             }
         )
 
-    batched_inputs: dict[str, Any] = {}
+    batched_inputs: dict[str, torch.Tensor] = {}
     if image_pixels:
         batched_inputs["pixel_values"] = torch.cat(image_pixels, dim=0)
         batched_inputs["image_grid_thw"] = torch.cat(image_grids, dim=0)
@@ -619,9 +695,9 @@ def batch_image_encoder_payloads(
     image_token_cursor = 0
     video_row_cursor = 0
     video_token_cursor = 0
-    computed_by_cache_key: dict[str, dict[str, Any]] = {}
+    computed_by_cache_key: dict[str, ImageEncoderOutput] = {}
     for meta in metas:
-        stage_result: dict[str, Any] = {}
+        stage_result: ImageEncoderOutput = {}
         if meta["image_rows"] > 0:
             row_end = image_row_cursor + meta["image_rows"]
             token_end = image_token_cursor + meta["image_token_total"]
@@ -676,19 +752,21 @@ def batch_image_encoder_payloads(
         results[meta["idx"]] = store_state(meta["payload"], meta["state"])
 
     for cache_key, waiters in duplicate_waiters.items():
-        stage_result = computed_by_cache_key.get(cache_key)
-        if stage_result is None:
+        cached_stage_result = computed_by_cache_key.get(cache_key)
+        if cached_stage_result is None:
             continue
         else:
             pass
         for idx, payload, state in waiters:
-            apply_encoder_result(state, stage_name=IMAGE_STAGE, result=stage_result)
+            apply_encoder_result(
+                state, stage_name=IMAGE_STAGE, result=cached_stage_result
+            )
             results[idx] = store_state(payload, state)
 
     return [result for result in results if result is not None]
 
 
-def audio_request_is_batchable(request: Any) -> bool:
+def audio_request_is_batchable(request: EncoderRequestData) -> bool:
     if request.skip_result is not None:
         return False
     else:
@@ -707,7 +785,7 @@ def audio_request_is_batchable(request: Any) -> bool:
 
 
 def normalize_audio_request_tensors(
-    request: Any,
+    request: EncoderRequestData,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     input_dict = request.model_inputs
     features = input_dict["input_features"]
@@ -760,12 +838,16 @@ def pad_audio_mask(mask: torch.Tensor, target_time: int) -> torch.Tensor:
 def batch_audio_encoder_payloads(
     payloads: list[StagePayload],
     *,
-    model: Any,
+    model: Qwen3OmniAudioEncoder | None,
     cache: StageOutputCache | None = None,
 ) -> list[StagePayload]:
     results: list[StagePayload | None] = [None] * len(payloads)
-    active: list[tuple[int, StagePayload, Any, Any]] = []
-    duplicate_waiters: dict[str, list[tuple[int, StagePayload, Any]]] = {}
+    active: list[
+        tuple[int, StagePayload, Qwen3OmniPipelineState, EncoderRequestData]
+    ] = []
+    duplicate_waiters: dict[
+        str, list[tuple[int, StagePayload, Qwen3OmniPipelineState]]
+    ] = {}
     active_cache_keys: set[str] = set()
     active_cache_leaders: dict[str, str] = {}
 
@@ -834,7 +916,7 @@ def batch_audio_encoder_payloads(
     else:
         pass
 
-    normalized = []
+    normalized: list[AudioBatchItem] = []
     max_time = 0
     for idx, payload, state, request in active:
         features, mask, lengths = normalize_audio_request_tensors(request)
@@ -871,7 +953,7 @@ def batch_audio_encoder_payloads(
     embeds = combined["audio_embeds"]
     row_cursor = 0
     token_cursor = 0
-    computed_by_cache_key: dict[str, dict[str, Any]] = {}
+    computed_by_cache_key: dict[str, dict[str, torch.Tensor]] = {}
     for item in normalized:
         row_end = row_cursor + item["count"]
         req_output_lengths = output_lengths[row_cursor:row_end]
@@ -927,6 +1009,9 @@ def create_preprocessing_executor(
     video_min_pixels: int | None = None,
     video_max_pixels: int | None = None,
     video_total_pixels: int | None = None,
+) -> (
+    SimpleScheduler[StagePayload, StagePayload]
+    | ThreadedSimpleScheduler[StagePayload, StagePayload]
 ):
     preprocessor = Qwen3OmniPreprocessor(
         model_path=model_path,
@@ -946,20 +1031,22 @@ def create_preprocessing_executor(
     if max_concurrency <= 1:
         from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
-        return SimpleScheduler(_preprocess)
+        return SimpleScheduler[StagePayload, StagePayload](_preprocess)
     else:
         pass
 
     from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 
-    return ThreadedSimpleScheduler(_preprocess, max_concurrency=max_concurrency)
+    return ThreadedSimpleScheduler[StagePayload, StagePayload](
+        _preprocess, max_concurrency=max_concurrency
+    )
 
 
 def create_aggregate_executor(
     *,
     device: str | None = None,
     gpu_id: int | None = None,
-):
+) -> SimpleScheduler[StagePayload, StagePayload]:
     # note (lennox): identity stage placed on GPU for colocation only;
     # it does not touch the device.
     del device, gpu_id
@@ -977,7 +1064,7 @@ def create_image_encoder_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     dtype: str | None = None,
-):
+) -> SimpleScheduler[StagePayload, StagePayload]:
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
     from sglang_omni.utils.device import resolve_concrete_device
 
@@ -1053,7 +1140,7 @@ def create_audio_encoder_executor(
     gpu_id: int | None = None,
     dtype: str | None = None,
     enable_layer_cuda_graph: bool = False,
-):
+) -> SimpleScheduler[StagePayload, StagePayload]:
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
     from sglang_omni.utils.device import resolve_concrete_device
 
@@ -1124,7 +1211,7 @@ def create_audio_encoder_executor(
     )
 
 
-def create_decode_executor(model_path: str):
+def create_decode_executor(model_path: str) -> StreamingDetokenizeScheduler:
     return create_streaming_detokenize_scheduler(model_path)
 
 
@@ -1141,17 +1228,19 @@ def create_sglang_thinker_executor_from_config(
     tp_rank: int = 0,
     tp_size: int = 1,
     nccl_port: int | None = None,
-    max_seq_len: int = 8192,
-    server_args_overrides: dict[str, Any] | None = None,
+    max_seq_len: int | None = None,
+    server_args_overrides: Mapping[str, object] | None = None,
     encoder_mem_reserve: float = 0.05,
     speech_enabled: bool = False,
     total_gpu_memory_fraction: float | None = None,
     enable_async_decode: bool = True,
-    async_decode_min_batch_size: int = 2,
+    async_decode_min_batch_size: int = 1,
     prefill_coalesce_requests: int = 0,
     prefill_coalesce_wait_ms: float = 60.0,
     prefill_coalesce_when_idle: bool = False,
-):
+    execution_mode: Literal["request", "session"] = "request",
+    continuation_aware_admission: bool = True,
+) -> "OmniScheduler[SGLangARRequestData]":
     """Returns OmniScheduler for thinker."""
     from sglang_omni.scheduling.sglang_backend import pin_resolved_device_type
     from sglang_omni.utils.device import resolve_concrete_device
@@ -1170,6 +1259,13 @@ def create_sglang_thinker_executor_from_config(
     # the streaming-SST thinker path benefits out of the box; either key can be
     # overridden via server_args_overrides (set enable_mixed_chunk=False to opt
     # out). Note: mixed-chunk only engages when chunked_prefill_size > 0.
+    from sglang_omni.platforms import current_platform
+
+    if current_platform.is_cuda():
+        prefill_graph_backend = CudaGraphBackend.BREAKABLE
+    else:
+        prefill_graph_backend = CudaGraphBackend.DISABLED
+    server_args_overrides = disable_torch_compile_on_npu(server_args_overrides)
     overrides = build_generation_batch_overrides(
         max_running_requests=64,
         server_args_overrides=server_args_overrides,
@@ -1178,10 +1274,77 @@ def create_sglang_thinker_executor_from_config(
         enable_torch_compile=False,
         enable_mixed_chunk=True,
         chunked_prefill_size=8192,
-        sampling_backend="pytorch",
+        sampling_backend="flashinfer" if current_platform.is_cuda() else "pytorch",
+        cuda_graph_backend_prefill=prefill_graph_backend,
     )
     overrides["tp_size"] = tp_size
-    from sglang_omni.platforms import current_platform
+    if execution_mode == "session":
+        overrides["enable_streaming_session"] = True
+    else:
+        pass
+    draft_model_path = overrides.get("speculative_draft_model_path")
+    speculative_algorithm = SpeculativeAlgorithm.from_string(
+        overrides.get("speculative_algorithm")
+    )
+    if speculative_algorithm.is_none():
+        if draft_model_path is not None:
+            raise ValueError(
+                "speculative_draft_model_path needs a speculative_algorithm"
+            )
+        else:
+            pass
+    else:
+        # note (wilsonzheng0327): the draft worker drives a synchronous loop that
+        # verifies whole blocks, so mixed prefill tails and the lookahead stay off.
+        if not (speculative_algorithm.is_dflash() or speculative_algorithm.is_eagle3()):
+            raise ValueError(
+                "Qwen3-Omni speculative thinker decoding supports DFLASH and EAGLE3, "
+                f"not {speculative_algorithm.name}"
+            )
+        elif draft_model_path is None:
+            raise ValueError(
+                f"speculative_algorithm={speculative_algorithm.name} needs "
+                "speculative_draft_model_path"
+            )
+        elif (server_args_overrides or {}).get("enable_mixed_chunk"):
+            raise ValueError(
+                "speculative thinker decoding needs enable_mixed_chunk off"
+            )
+        elif speech_enabled:
+            # note (wilsonzheng0327): with speech output the thinker captures the
+            # talker's accept layer through the same layers_to_capture a draft sets,
+            # and sets it after the draft is built, so the draft would read the wrong
+            # hidden states. The speculative prefill also skips post_prefill, which
+            # stores the talker's multimodal prompt rows. Lifting this needs both
+            # captures side by side and the rows stored on the speculative prefill.
+            raise ValueError(
+                "speculative thinker decoding does not support speech output yet; "
+                "serve the thinker with --text-only"
+            )
+        else:
+            pass
+        overrides["enable_mixed_chunk"] = False
+        enable_async_decode = False
+        # note (wilsonzheng0327): an EAGLE draft extends on the composed multimodal
+        # prefill embeddings, which a captured draft prefill graph would ignore.
+        if speculative_algorithm.is_eagle():
+            overrides["cuda_graph_backend_prefill"] = CudaGraphBackend.DISABLED
+        else:
+            pass
+        # The draft has its own positional capacity; the target serves within it.
+        draft_context_length = int(
+            AutoConfig.from_pretrained(
+                draft_model_path,
+                revision=overrides.get("speculative_draft_model_revision"),
+            ).max_position_embeddings
+        )
+        if max_seq_len is not None and max_seq_len > draft_context_length:
+            raise ValueError(
+                f"max_seq_len={max_seq_len} exceeds the draft's "
+                f"{draft_context_length}-token context"
+            )
+        else:
+            max_seq_len = max_seq_len or draft_context_length
 
     if not current_platform.enable_thinker_decode_graph():
         overrides.setdefault("disable_decode_cuda_graph", True)
@@ -1262,6 +1425,7 @@ def create_sglang_thinker_executor_from_config(
         server_args,
         gpu_id,
         speech_enabled=speech_enabled,
+        execution_mode=execution_mode,
         tp_rank=tp_rank,
         nccl_port=nccl_port,
         total_gpu_memory_fraction=effective_total_gpu_memory_fraction,
@@ -1273,6 +1437,7 @@ def create_sglang_thinker_executor_from_config(
         operator_selected_prefill_backend=operator_selected_prefill_backend(
             server_args_overrides
         ),
+        continuation_aware_admission=continuation_aware_admission,
     )
     from sglang.srt.runtime_context import get_schedule
 
@@ -1305,8 +1470,9 @@ def create_talker_ar_executor_from_config(
     tp_rank: int = 0,
     tp_size: int = 1,
     nccl_port: int | None = None,
-    max_seq_len: int = 4096,
-    server_args_overrides: dict[str, Any] | None = None,
+    max_seq_len: int | None = None,
+    max_running_requests: int,
+    server_args_overrides: Mapping[str, object] | None = None,
     speech_enabled: bool = True,
     feedback_enabled: bool = True,
     weight_prefix: str = "talker.",
@@ -1318,7 +1484,9 @@ def create_talker_ar_executor_from_config(
     codec_coalesce_frames: int = 0,
     codec_coalesce_first_frames: int = 0,
     codec_coalesce_early_frames: int = 0,
-):
+    execution_mode: Literal["request", "session"] = "request",
+    continuation_aware_admission: bool = True,
+) -> QwenTalkerScheduler:
     """Returns OmniScheduler for talker."""
     from sglang_omni.models.qwen3_omni.bootstrap import create_talker_scheduler
     from sglang_omni.platforms import current_platform
@@ -1340,8 +1508,9 @@ def create_talker_ar_executor_from_config(
         prefill_graph_backend = CudaGraphBackend.BREAKABLE
     else:
         prefill_graph_backend = CudaGraphBackend.DISABLED
+    server_args_overrides = disable_torch_compile_on_npu(server_args_overrides)
     overrides = build_generation_batch_overrides(
-        max_running_requests=32,
+        max_running_requests=max_running_requests,
         server_args_overrides=server_args_overrides,
         disable_cuda_graph=False,
         # note (zhaochenyang20): the native rotary path under torch compile rejects fused_set_kv_buffer_arg.
@@ -1360,6 +1529,10 @@ def create_talker_ar_executor_from_config(
     else:
         pass
     overrides["tp_size"] = tp_size
+    if execution_mode == "session":
+        overrides["enable_streaming_session"] = True
+    else:
+        pass
     apply_colocated_ar_memory_contract(
         overrides,
         stage_name="talker_ar",
@@ -1394,6 +1567,7 @@ def create_talker_ar_executor_from_config(
         gpu_id,
         weight_prefix=weight_prefix,
         speech_enabled=speech_enabled,
+        execution_mode=execution_mode,
         feedback_enabled=feedback_enabled,
         tp_rank=tp_rank,
         nccl_port=nccl_port,
@@ -1408,6 +1582,7 @@ def create_talker_ar_executor_from_config(
         codec_coalesce_frames=codec_coalesce_frames,
         codec_coalesce_first_frames=codec_coalesce_first_frames,
         codec_coalesce_early_frames=codec_coalesce_early_frames,
+        continuation_aware_admission=continuation_aware_admission,
     )
     from sglang.srt.runtime_context import get_schedule
 

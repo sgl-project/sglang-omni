@@ -5,16 +5,20 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Iterable
+from dataclasses import replace
 from typing import Protocol
 
+from sglang_omni.admission import ContextExhaustedError
 from sglang_omni.client.client import Client
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import (
+    DEFAULT_IDLE_TIMEOUT_S,
     OutputChunk,
     SessionIdentity,
     SessionLimits,
     TimedChunk,
 )
+from sglang_omni.serve.realtime.constants import CLOSE_REASON_INTERNAL
 from sglang_omni.serve.realtime.output import OutputEvent, TurnFailure
 from sglang_omni.serve.realtime.schema import SessionConfiguration
 from sglang_omni.serve.realtime.task_cleanup import cancel_local_tasks
@@ -27,6 +31,21 @@ from sglang_omni.serve.realtime.types import (
 )
 
 logger = logging.getLogger(__name__)
+RUNTIME_IDLE_TIMEOUT_PERIODS = 2
+
+
+def pipeline_limits_with_idle_backup(
+    pipeline_limits: SessionLimits, runtime_limits: RuntimeLimits
+) -> SessionLimits:
+    # note (Haiyang Luo): Leave time for runtime idle checks and native cleanup.
+    pipeline_idle_timeout_seconds = max(
+        DEFAULT_IDLE_TIMEOUT_S,
+        pipeline_limits.idle_timeout_s,
+        RUNTIME_IDLE_TIMEOUT_PERIODS * runtime_limits.idle_timeout_s
+        + runtime_limits.cleanup_timeout_s
+        + pipeline_limits.operation_timeout_s,
+    )
+    return replace(pipeline_limits, idle_timeout_s=pipeline_idle_timeout_seconds)
 
 
 class RequestBuilder(Protocol):
@@ -44,7 +63,6 @@ class CoordinatorAdapter(InteractionAdapter):
         self,
         client: Client,
         *,
-        stages: list[str],
         request_builder: RequestBuilder,
         output_converter: OutputConverter,
         input_sample_rate_hz: int | None = None,
@@ -56,7 +74,6 @@ class CoordinatorAdapter(InteractionAdapter):
         else:
             pass
         self.client = client
-        self.stages = stages
         self.request_builder = request_builder
         self.output_converter = output_converter
         self.input_sample_rate_hz = input_sample_rate_hz
@@ -72,8 +89,9 @@ class CoordinatorAdapter(InteractionAdapter):
         self.reader_error: Exception | None = None
         self.is_closing = False
 
-    def set_limits(self, limits: RuntimeLimits) -> None:
-        self.cleanup_timeout_s = limits.cleanup_timeout_s
+    def set_limits(self, runtime_limits: RuntimeLimits) -> None:
+        self.cleanup_timeout_s = runtime_limits.cleanup_timeout_s
+        self.limits = pipeline_limits_with_idle_backup(self.limits, runtime_limits)
 
     async def open(
         self, session_id: str, config: SessionConfiguration, emit: OutputSink
@@ -92,7 +110,6 @@ class CoordinatorAdapter(InteractionAdapter):
         self.output_sink = emit
         self.session_identity = await self.client.open_session(
             self.request_builder(config),
-            stages=self.stages,
             limits=self.limits,
             session_id=session_id,
         )
@@ -141,13 +158,17 @@ class CoordinatorAdapter(InteractionAdapter):
             else:
                 pass
         except Exception as exc:
-            logger.exception("Realtime session output reader failed")
+            if ContextExhaustedError.matches(exc):
+                failure_code = ContextExhaustedError.CODE
+            else:
+                logger.exception("Realtime session output reader failed")
+                failure_code = CLOSE_REASON_INTERNAL
             self.reader_error = exc
             if self.unit_completion is not None and not self.unit_completion.done():
                 self.unit_completion.set_exception(exc)
             else:
                 await self.output_sink(
-                    TurnFailure("server_error", "internal", str(exc))
+                    TurnFailure("server_error", failure_code, str(exc))
                 )
 
     async def process(self, unit: Unit) -> int:
@@ -165,12 +186,28 @@ class CoordinatorAdapter(InteractionAdapter):
             samples_to_ms(unit.start_sample, self.input_sample_rate_hz),
             samples_to_ms(unit.real_samples, self.input_sample_rate_hz),
             unit.index,
-            unit.pcm,
+            (
+                unit.pcm
+                if not unit.images
+                else {"pcm": unit.pcm, "images": list(unit.images)}
+            ),
             format="pcm16",
             eos=unit.eos,
         )
         try:
-            await self.client.append_session(self.session_identity, timed_chunk)
+            ready_observation = unit.ready_observation
+            await self.client.append_session(
+                self.session_identity,
+                timed_chunk,
+                ready_timestamp_ns=(
+                    ready_observation.timestamp_ns
+                    if ready_observation is not None
+                    else None
+                ),
+                ready_run_id=(
+                    ready_observation.run_id if ready_observation is not None else None
+                ),
+            )
             return await self.unit_completion
         finally:
             self.active_unit = None

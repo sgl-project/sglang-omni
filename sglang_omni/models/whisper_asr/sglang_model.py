@@ -12,11 +12,11 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Iterable
-from typing import Any
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn.functional as F
-from sglang.srt.layers.logits_processor import LogitsProcessor
+from sglang.srt.layers.logits_processor import LogitsProcessor, LogitsProcessorOutput
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.layers.radix_attention import RadixAttention
 from sglang.srt.mem_cache.memory_pool import KVWriteLoc
@@ -30,6 +30,16 @@ from transformers.activations import ACT2FN
 from sglang_omni.models.whisper_asr.encoder_cuda_graph import (
     WhisperEncoderCudaGraphRunner,
 )
+
+if TYPE_CHECKING:
+    from sglang.srt.managers.schedule_batch import MultimodalDataItem
+else:
+    pass
+
+try:
+    from flash_attn.cute.interface import flash_attn_func
+except ImportError:
+    flash_attn_func = None
 
 try:
     from flashinfer.norm import layernorm as flashinfer_layer_norm
@@ -73,12 +83,54 @@ def load_projection_shard(
     default_weight_loader(target, loaded_weight)
 
 
+@torch.library.custom_op("sglang_omni::whisper_encoder_attention", mutates_args=())
+def whisper_encoder_attention(
+    query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, backend: str
+) -> torch.Tensor:
+    """Non-causal attention over [batch, frames, heads, head_dim] encoder states."""
+    if backend not in ("auto", "sdpa", "fa4"):
+        raise ValueError(f"Unknown Whisper encoder attention backend: {backend}")
+    else:
+        pass
+    can_use_fa4 = (
+        flash_attn_func is not None
+        and query.device.type == "cuda"
+        and query.dtype in (torch.float16, torch.bfloat16)
+        and query.shape[-1] == 64
+        and torch.cuda.get_device_capability(query.device)[0] >= 9
+    )
+    if backend == "fa4" and not can_use_fa4:
+        raise RuntimeError("FA4 requires an installed backend and eligible CUDA inputs")
+    elif backend != "sdpa" and can_use_fa4:
+        attention_output = flash_attn_func(query, key, value, causal=False)
+        if isinstance(attention_output, tuple):
+            return attention_output[0].contiguous()
+        else:
+            return attention_output.contiguous()
+    else:
+        return (
+            F.scaled_dot_product_attention(
+                query.transpose(1, 2), key.transpose(1, 2), value.transpose(1, 2)
+            )
+            .transpose(1, 2)
+            .contiguous()
+        )
+
+
+@whisper_encoder_attention.register_fake
+def whisper_encoder_attention_shape(
+    query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, backend: str
+) -> torch.Tensor:
+    return torch.empty_like(query, memory_format=torch.contiguous_format)
+
+
 class WhisperEncoderAttention(nn.Module):
     def __init__(self, config: WhisperConfig) -> None:
         super().__init__()
         self.embed_dim = config.d_model
         self.num_heads = config.encoder_attention_heads
         self.head_dim = self.embed_dim // self.num_heads
+        self.backend = config.to_dict().get("encoder_attention_backend", "auto")
         self.qkv_proj = nn.Linear(self.embed_dim, 3 * self.embed_dim)
         # Whisper K projections have no bias. The zero K shard preserves that
         # checkpoint structure while issuing one GEMM for all three projections.
@@ -88,23 +140,14 @@ class WhisperEncoderAttention(nn.Module):
 
     def shape(self, states: torch.Tensor) -> torch.Tensor:
         batch_size, seq_len, _ = states.shape
-        return states.view(
-            batch_size, seq_len, self.num_heads, self.head_dim
-        ).transpose(1, 2)
+        return states.reshape(batch_size, seq_len, self.num_heads, self.head_dim)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         query, key, value = self.qkv_proj(hidden_states).chunk(3, dim=-1)
-        query = self.shape(query)
-        key = self.shape(key)
-        value = self.shape(value)
-        attn_output = F.scaled_dot_product_attention(
-            query,
-            key,
-            value,
-            dropout_p=0.0,
-            is_causal=False,
+        attn_output = whisper_encoder_attention(
+            self.shape(query), self.shape(key), self.shape(value), self.backend
         )
-        attn_output = attn_output.transpose(1, 2).reshape(
+        attn_output = attn_output.reshape(
             hidden_states.shape[0],
             hidden_states.shape[1],
             self.embed_dim,
@@ -446,7 +489,7 @@ class WhisperForConditionalGeneration(nn.Module):
             pass
         return self.model.encoder(audio_features)
 
-    def encode_audio_features(self, items: list[Any]) -> torch.Tensor:
+    def encode_audio_features(self, items: list["MultimodalDataItem"]) -> torch.Tensor:
         """Batch-encode mel features into encoder states [B, T, H]."""
         if not items:
             raise ValueError(
@@ -570,8 +613,8 @@ class WhisperForConditionalGeneration(nn.Module):
         input_ids: torch.Tensor,
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
-        **kwargs: Any,
-    ) -> Any:
+        **kwargs: object,
+    ) -> LogitsProcessorOutput:
         del kwargs
 
         cross_attention_states = self.batch_precomputed_encoder_states(forward_batch)

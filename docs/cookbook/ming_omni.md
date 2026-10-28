@@ -12,6 +12,8 @@ Install `sglang-omni` by following [Installation](../get_started/installation.md
 hf download inclusionAI/Ming-flash-omni-2.0
 ```
 
+For Intel GPUs, follow the [Ming-Omni XPU recipe](../get_started/installation_xpu.md#ming-omni-omni-chat-and-speech-one-or-two-xpus).
+
 The speech path expects the checkpoint to include the `talker/` assets, including `talker/data/voice_name.json` and `talker/vae/`. The default voice in the current Ming speech pipeline is `DB30`. `campplus.onnx` and `talker_tn` are optional runtime helpers: missing `campplus.onnx` disables speaker embedding extraction, and missing `talker_tn` falls back to identity text normalization.
 
 `Ming-flash-omni-2.0` on HF does not ship top-level thinker tokenizer files. `load_ming_tokenizer` falls back to `inclusionAI/Ming-flash-omni-Preview` (~12 MB) to copy `tokenizer.json`, `tokenizer_config.json`, and `special_tokens_map.json`. In offline environments, download those files too:
@@ -419,7 +421,7 @@ The streamed WAV chunks carry the same 44.1 kHz speech as the non-streaming repl
 | `video_max_pixels` | `null` | Maximum per-frame pixel budget passed to video preprocessing. |
 | `video_total_pixels` | `null` | Total pixel budget across sampled frames. |
 | `max_tokens` | `2048` | Forwarded to Ming as `max_new_tokens`. |
-| `temperature` | `1.0` | Chat-completions default. Set 0.0 for greedy deterministic examples. |
+| `temperature` | `1.0` | Thinker sampling. Set 0.0 for greedy deterministic examples. |
 | `top_p` | `1.0` | Thinker sampling. |
 | `top_k` | `-1` | Thinker sampling. |
 | `min_p` | `0.0` | Thinker sampling. |
@@ -487,6 +489,15 @@ Streaming speech is a low-concurrency UX path: it trades some throughput for muc
 | 16 | `4.474 s` | `3.697 s` | `1.448 req/s` | `3.011 req/s` |
 
 At c=1 streaming delivers first audio ~2.2× sooner at a ~38% throughput cost. The crossover is around c≈4; past it, single-stream queuing makes streaming's first chunk arrive later than the non-streaming full response. Each streaming request emits ~20 chunks at ~19 ms intervals. The streaming measurements are from PR/local-patch evidence, not a release-wide guarantee; cite streaming as a low-concurrency first-audio win rather than a universal throughput win.
+
+### SeedTTS English Speech Results
+
+Results for the full 1,088-sample English SeedTTS split on 3× H200 (Thinker TP=2 and a dedicated Talker GPU), at concurrency 4 with voice `DB30`, temperature 0.7, seed 42, and `max_new_tokens=256`. AudioVAE uses FlashAttention-2. WER is corpus WER from Qwen3-ASR-1.7B. Each mode was measured once after four warmup requests.
+
+| Mode | Throughput (req/s) | Mean latency (s) | First audio (s) | Audio throughput (audio-s/s) | EN WER |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Non-streaming | 4.606 | 0.867 | — | 29.988 | 1.666% |
+| Streaming | 1.503 | 2.658 | 2.059 | 9.712 | 1.591% |
 
 ### Audio Equivalence
 

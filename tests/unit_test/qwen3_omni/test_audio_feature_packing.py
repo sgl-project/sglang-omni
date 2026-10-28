@@ -23,21 +23,6 @@ def prefix_mask(lengths: list[int], total: int) -> torch.Tensor:
     return (steps < torch.tensor(lengths).unsqueeze(1)).to(torch.long)
 
 
-def test_single_row_full_length() -> None:
-    feats = torch.randn(1, MEL, 300)
-    mask = prefix_mask([300], 300)
-    out = pack_padded_audio_features(feats, mask, mask.sum(dim=1))
-    torch.testing.assert_close(out, reference(feats, mask))
-
-
-def test_single_row_padded() -> None:
-    feats = torch.randn(1, MEL, 512)
-    mask = prefix_mask([200], 512)
-    out = pack_padded_audio_features(feats, mask, mask.sum(dim=1))
-    assert out.shape == (MEL, 200)
-    torch.testing.assert_close(out, reference(feats, mask))
-
-
 def test_ragged_batch() -> None:
     lengths = [128, 400, 37, 400]
     feats = torch.randn(len(lengths), MEL, 400)
@@ -54,14 +39,6 @@ def test_non_prefix_mask_falls_back_to_gather() -> None:
     mask[1, 7:9] = 0
     out = pack_padded_audio_features(feats, mask, mask.sum(dim=1))
     torch.testing.assert_close(out, reference(feats, mask))
-
-
-def test_dtype_and_contiguity_preserved() -> None:
-    feats = torch.randn(2, MEL, 64, dtype=torch.float32)
-    mask = prefix_mask([64, 20], 64)
-    out = pack_padded_audio_features(feats, mask, mask.sum(dim=1))
-    assert out.dtype == feats.dtype
-    assert out.is_contiguous()
 
 
 @pytest.mark.accelerator

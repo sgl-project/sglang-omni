@@ -7,10 +7,11 @@ from typing import Literal
 
 import pytest
 
-from sglang_omni.admission import QueueFullError
+from sglang_omni.admission import AdminDroppedRequestError, QueueFullError
 from sglang_omni.config.schema import replica_instance_name
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import OmniRequest
+from sglang_omni.proto.messages import CompleteMessage
 from sglang_omni.proto.session import SessionLimits, TimedChunk
 from tests.unit_test.fixtures.session_pipeline import (
     PipelineResources,
@@ -124,6 +125,36 @@ async def test_worker_failure_wakes_output_and_fails_session(tmp_path, monkeypat
             await asyncio.wait_for(waiting, 5)
         with pytest.raises(RuntimeError, match="worker exited"):
             await coordinator.open_session(OmniRequest(None), stages=["source", "sink"])
+
+
+@pytest.mark.parametrize("drop", ["stage_admin_drop", "coordinator_abort"])
+@pytest.mark.asyncio(loop_scope="session")
+async def test_aborted_append_closes_session_and_wakes_reader(
+    linear_pair: PipelineResources, drop: str
+) -> None:
+    coordinator, events, _ = linear_pair
+    session_identity = await coordinator.open_session(
+        OmniRequest(None, {"delay": 30}), stages=["source", "sink"]
+    )
+    output = coordinator.session_outputs(session_identity)
+    waiting = asyncio.create_task(anext(output))
+    await coordinator.append_session(session_identity, chunk(0))
+    await wait_until(
+        lambda: bool(coordinator.sessions[session_identity.id].submitted_appends)
+    )
+    request_id = next(iter(coordinator.sessions[session_identity.id].submitted_appends))
+    if drop == "stage_admin_drop":
+        await coordinator.handle_completion(
+            CompleteMessage(
+                request_id, "sink", False, error=AdminDroppedRequestError.MESSAGE
+            )
+        )
+    else:
+        await coordinator.abort(request_id)
+    with pytest.raises(RuntimeError, match="session append was aborted"):
+        await asyncio.wait_for(waiting, 5)
+    await wait_until(lambda: session_identity.id not in coordinator.sessions)
+    assert [e[1] for e in event_log(events) if e[0] == "close"] == ["sink", "source"]
 
 
 @pytest.mark.asyncio

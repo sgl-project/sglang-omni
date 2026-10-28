@@ -3,79 +3,85 @@
 
 from __future__ import annotations
 
-from typing import Any
+from types import ModuleType
+from typing import TYPE_CHECKING, TypedDict
 
 import torch
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.prefill_inputs import (
     OmniPrefillInputs,
     attach_omni_prefill_inputs,
 )
 from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
-from sglang_omni.scheduling.types import RequestOutput
+from sglang_omni.scheduling.types import (
+    RequestOutput,
+    SchedulerOutput,
+    SchedulerRequest,
+)
+from sglang_omni.utils.device import has_device_streams
+
+if TYPE_CHECKING:
+    from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+    from sglang.srt.managers.schedule_batch import ScheduleBatch
+    from sglang.srt.managers.scheduler import GenerationBatchResult
+    from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+
+    from sglang_omni.models.qwen3_tts.request_builders import Qwen3TTSSGLangRequestData
+    from sglang_omni.models.qwen3_tts.sglang_model import (
+        PredictorGraphStats,
+        Qwen3TTSTalker,
+    )
+    from sglang_omni.scheduling.sglang_backend.output_processor import (
+        SGLangOutputProcessor,
+    )
+else:
+    pass
 
 
-def ensure_mrope_positions(forward_batch: Any, *, prefill_graph_runner: Any) -> None:
-    """Give a graph-replayed batch MRoPE positions mirroring its plain ones.
-
-    The Talker declares ``is_mrope_enabled``, so a captured prefill graph binds
-    the runner's ``mrope_positions`` slot, and that slot is only refreshed at
-    replay when the live batch carries mrope positions. A TTS request has no
-    multimodal inputs to provide them, so a replay would otherwise rotate on
-    whatever positions capture happened to leave behind.
-
-    All three MRoPE rows are equal for the Talker, and ``MRotaryEmbedding``
-    selects row ``i`` of each mrope section, so a mirrored ``[3, T]`` collapses
-    to exactly the 1-D result. It is not the same kernel though: on CUDA a 1-D
-    positions tensor runs ``forward_native`` while a 2-D one runs the fused
-    ``forward_triton``. Mirroring only the batches that replay keeps every
-    other prefill on the kernel it already used: SGLang hands out an
-    ``EagerRunner`` when prefill graphs are off, and a runner that holds graphs
-    still declines batches outside its captured shapes.
-    """
-    if prefill_graph_runner is None or not prefill_graph_runner.can_run_graph(
-        forward_batch
-    ):
-        return
-    else:
-        pass
-    if forward_batch.mrope_positions is None:
-        forward_batch.mrope_positions = (
-            forward_batch.positions.unsqueeze(0).expand(3, -1).contiguous()
-        )
-    else:
-        pass
+class Qwen3TTSModelInfo(TypedDict):
+    predictor_cuda_graph: PredictorGraphStats
 
 
 class Qwen3TTSModelRunner(ModelRunner):
     """Runs Qwen3-TTS AR steps and stores generated codec frames per request."""
 
+    model: Qwen3TTSTalker
+    tp_worker: ModelWorker
+    # Resolved in __init__: post_process_outputs records a readiness event per
+    # decode step, and the device cannot change under the runner.
+    codes_event_module: ModuleType | None = None
+
     def __init__(
         self,
-        tp_worker: Any,
-        output_processor: Any,
+        tp_worker: ModelWorker,
+        output_processor: SGLangOutputProcessor,
         *,
         leading_silence_mask_frames: int,
         silence_codec_ids: torch.Tensor,
-    ):
+    ) -> None:
         super().__init__(tp_worker, output_processor)
         self.has_pending_code_step = False
         self.row_ids_cache: torch.Tensor | None = None
         self.leading_silence_mask_frames = leading_silence_mask_frames
         self.silence_codec_ids = silence_codec_ids
+        self.codes_event_module = (
+            torch.get_device_module(self.device)
+            if has_device_streams(self.device)
+            else None
+        )
+
+    def model_info(self) -> Qwen3TTSModelInfo:
+        return {"predictor_cuda_graph": self.model.predictor_graph_stats()}
 
     def before_prefill(
         self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         del schedule_batch
-        ensure_mrope_positions(
-            forward_batch,
-            prefill_graph_runner=self.tp_worker.model_runner.prefill_cuda_graph_runner,
-        )
         self.model.prepare_decode_buffers(requests)
         attach_omni_prefill_inputs(
             forward_batch,
@@ -89,9 +95,9 @@ class Qwen3TTSModelRunner(ModelRunner):
 
     def before_decode(
         self,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
         *,
         is_lookahead: bool = False,
     ) -> None:
@@ -102,60 +108,53 @@ class Qwen3TTSModelRunner(ModelRunner):
 
     def post_prefill(
         self,
-        result: Any,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         self.collect_codes(result, forward_batch, schedule_batch, requests)
 
     def post_decode(
         self,
-        result: Any,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         self.collect_codes(result, forward_batch, schedule_batch, requests)
 
     def sample_before_post_prefill(
-        self, forward_batch: Any, schedule_batch: Any, requests: list
+        self,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> bool:
         del forward_batch, schedule_batch, requests
         return True
 
     def sample_before_post_decode(
-        self, forward_batch: Any, schedule_batch: Any, requests: list
+        self,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> bool:
         del forward_batch, schedule_batch, requests
         return True
 
-    def lookahead_eligible(self, batch: Any) -> bool:
+    def lookahead_eligible(self, batch: ScheduleBatch | None) -> bool:
         # note(ratish): the lookahead's launch and resolve hooks do not run the
         # codec collect, they would feed token embeddings back.
         del batch
         return False
 
-    def sample_next_token_ids(
-        self,
-        logits_output: Any,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
-    ) -> Any:
-        self.install_semantic_sampling_seeds(forward_batch, requests)
-        return super().sample_next_token_ids(
-            logits_output,
-            forward_batch,
-            schedule_batch,
-            requests,
-        )
-
     # ------------------------------------------------------------------
     # Qwen3-TTS logit shaping
     # ------------------------------------------------------------------
 
-    def apply_codec_suppress_tokens(self, logits_output: Any, requests: list) -> None:
+    def apply_codec_suppress_tokens(
+        self, logits_output: LogitsProcessorOutput, requests: list[SchedulerRequest]
+    ) -> None:
         logits = logits_output.next_token_logits
         if logits is None or logits.ndim != 2 or not requests:
             return
@@ -198,22 +197,32 @@ class Qwen3TTSModelRunner(ModelRunner):
         else:
             pass
 
-    def install_semantic_sampling_seeds(
+    def install_sampling_seeds(
         self,
-        forward_batch: Any,
-        requests: list,
+        forward_batch: ForwardBatch,
+        requests: list[SchedulerRequest],
     ) -> None:
-        batch_size = len(requests)
-        forward_batch.sampling_info.sampling_seed = (
-            self.model.semantic_sampling_seed_tensor[:batch_size]
-        )
+        """Install the staged semantic seeds when a request in the batch carries a
+        seed, or deterministic inference has already seeded every row."""
+        sampling_info = forward_batch.sampling_info
+        if sampling_info.sampling_seed is None and all(
+            scheduled_request.data.req.sampling_params.sampling_seed is None
+            for scheduled_request in requests
+        ):
+            return
+        else:
+            pass
+        self.validate_seeded_sampling_supported(sampling_info)
+        sampling_info.sampling_seed = self.model.semantic_sampling_seed_tensor[
+            : len(requests)
+        ]
 
     def collect_codes(
         self,
-        result: Any,
-        forward_batch: Any,
-        schedule_batch: Any,
-        requests: list,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
     ) -> None:
         self.has_pending_code_step = False
         if result.next_token_ids is None:
@@ -244,8 +253,8 @@ class Qwen3TTSModelRunner(ModelRunner):
 
     def post_process_outputs(
         self,
-        result: Any,
-        scheduler_output: Any,
+        result: GenerationBatchResult | None,
+        scheduler_output: SchedulerOutput | None,
         outputs: dict[str, RequestOutput],
     ) -> None:
         del result
@@ -261,14 +270,20 @@ class Qwen3TTSModelRunner(ModelRunner):
         codes_snap = self.model.output_codes[:batch_size].detach().clone()
         embeds_snap = self.model.output_embeds[:batch_size].detach().clone()
         codes_ready = None
-        if codes_snap.is_cuda:
-            codes_ready = torch.cuda.Event()
+        if self.codes_event_module is not None:
+            codes_ready = self.codes_event_module.Event()
             codes_ready.record()
         else:
             pass
         for row_idx, sched_req in enumerate(scheduler_output.requests):
             req_output = outputs[sched_req.request_id]
-            if req_output.data is None or int(req_output.data) == eos_id:
+            # note (ratish): a middle prefill chunk samples at a prompt row; SGLang drops
+            # that token, so it gives no frame, feedback or stream chunk either.
+            if (
+                sched_req.data.req.inflight_middle_chunks > 0
+                or req_output.data is None
+                or int(req_output.data) == eos_id
+            ):
                 continue
             else:
                 pass
@@ -278,39 +293,25 @@ class Qwen3TTSModelRunner(ModelRunner):
             sched_req.data.codes_ready_event = codes_ready
             sched_req.data.pending_feedback_queue.append(embeds_snap[row_idx])
 
+    def finalize_skip_rids(self, scheduler_output: SchedulerOutput) -> set[str]:
+        return {
+            sched_req.request_id
+            for sched_req in scheduler_output.requests
+            if sched_req.data.req.inflight_middle_chunks > 0
+        }
+
     def sample_positions(
-        self, forward_batch: Any, device: torch.device
+        self, forward_batch: ForwardBatch, device: torch.device
     ) -> torch.Tensor:
-        forward_mode = getattr(forward_batch, "forward_mode", None)
-        is_decode = (
-            forward_mode is not None
-            and hasattr(forward_mode, "is_decode")
-            and bool(forward_mode.is_decode())
-        )
-        if is_decode:
-            positions = getattr(forward_batch, "positions", None)
-            if positions is not None:
-                return positions.to(device=device, dtype=torch.long)
-            else:
-                pass
+        if forward_batch.forward_mode.is_decode():
+            return forward_batch.positions.to(device=device, dtype=torch.long)
         else:
-            pass
+            seq_lens = forward_batch.seq_lens.to(device=device, dtype=torch.long)
+            return (seq_lens - 1).clamp_min(0)
 
-        seq_lens = getattr(forward_batch, "seq_lens", None)
-        if seq_lens is not None:
-            return (seq_lens.to(device=device, dtype=torch.long) - 1).clamp_min(0)
-        else:
-            pass
-
-        positions = getattr(forward_batch, "positions", None)
-        if positions is not None:
-            return positions.to(device=device, dtype=torch.long)
-        else:
-            pass
-
-        raise RuntimeError("Qwen3-TTS subtalker sampling requires semantic positions")
-
-    def write_feedback_buffers(self, forward_batch: Any, requests: list) -> None:
+    def write_feedback_buffers(
+        self, forward_batch: ForwardBatch | None, requests: list[SchedulerRequest]
+    ) -> None:
         batch_size = len(requests)
         if batch_size == 0:
             return
@@ -336,15 +337,14 @@ class Qwen3TTSModelRunner(ModelRunner):
         dtype = weight.dtype
         feedback_rows: list[torch.Tensor] = []
         text_rows: list[torch.Tensor] = []
-        batched_row_ids: list[int] = []
-        rows: list[torch.Tensor | None] = [None] * batch_size
-        for row_idx, sched_req in enumerate(requests):
-            data = sched_req.data
+        for sched_req in requests:
+            data: Qwen3TTSSGLangRequestData = sched_req.data
             inputs = QwenTalkerModelRunner.peek_next_decode_inputs(data)
             if inputs is None:
-                token_id = input_ids[row_idx : row_idx + 1].to(device=device)
-                rows[row_idx] = self.model.get_input_embeddings()(token_id).reshape(-1)
-                continue
+                raise RuntimeError(
+                    f"Qwen3-TTS decode for {sched_req.request_id} has no queued "
+                    "feedback embedding"
+                )
             else:
                 pass
             feedback, text = inputs
@@ -354,24 +354,12 @@ class Qwen3TTSModelRunner(ModelRunner):
             text_rows.append(
                 QwenTalkerModelRunner.decode_row(text, device=device, dtype=dtype)
             )
-            batched_row_ids.append(row_idx)
             QwenTalkerModelRunner.pop_next_decode_inputs(data)
 
         with torch.no_grad():
             target = weight[:batch_size]
-            if len(batched_row_ids) == batch_size:
-                torch.stack(feedback_rows, dim=0, out=target)
-                target.add_(torch.stack(text_rows, dim=0))
-            else:
-                if feedback_rows:
-                    combined = torch.stack(feedback_rows, dim=0) + torch.stack(
-                        text_rows, dim=0
-                    )
-                    for slot, row_idx in enumerate(batched_row_ids):
-                        rows[row_idx] = combined[slot]
-                else:
-                    pass
-                torch.stack(rows, dim=0, out=target)
+            torch.stack(feedback_rows, dim=0, out=target)
+            target.add_(torch.stack(text_rows, dim=0))
             # note(ratish): the history outlives the buffer, a retracted request
             # replays it in its re-prefill.
             history = target.detach().clone()
@@ -383,7 +371,7 @@ class Qwen3TTSModelRunner(ModelRunner):
         input_ids[:batch_size].copy_(row_ids)
 
     def decode_row_ids(self, batch_size: int, input_ids: torch.Tensor) -> torch.Tensor:
-        cached = getattr(self, "row_ids_cache", None)
+        cached = self.row_ids_cache
         if (
             cached is None
             or cached.numel() < batch_size
@@ -402,15 +390,15 @@ class Qwen3TTSModelRunner(ModelRunner):
 
     def build_prefill_input_embeds(
         self,
-        forward_batch: Any,
-        requests: list,
+        forward_batch: ForwardBatch,
+        requests: list[SchedulerRequest],
     ) -> torch.Tensor:
-        pieces = []
+        pieces: list[torch.Tensor] = []
         for sched_req in requests:
-            data = sched_req.data
+            data: Qwen3TTSSGLangRequestData = sched_req.data
             req = data.req
-            req_len = int(req.extend_range.length)
-            prefix_len = len(req.prefix_indices)
+            req_len = req.extend_len
+            prefix_len = req.prefix_len
             if data.prefill_input_embeds is None:
                 data.prefill_input_embeds = data.prompt_input_embeds
             else:

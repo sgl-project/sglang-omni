@@ -28,7 +28,7 @@ Last verified: 2026-05-04
 
 Accuracy (summary)
 
-| Model      | Config             | accuracy | correct | failed | mc_fallback | Source                                                 |
+| Model      | Config             | accuracy | correct | failed | unparseable | Source                                                 |
 | ---------- | ------------------ | -------- | ------- | ------ | ----------- | ------------------------------------------------------ |
 | Qwen3-Omni | enable_audio=False | 67.89%   | 611/900 | 0      | 22          | PR #411 [H200, V1-pipeline, full-set, c=8, max_tokens=2048]   |
 | Qwen3-Omni | enable_audio=True  | 62.00%   | 31/50   | 0      | 3           | PR #411 [H200, V1-pipeline, 50-sample subset, c=1, max_tokens=2048] |
@@ -55,7 +55,7 @@ Local v1 Pipeline Result (this workspace, 2026-05-01)
 
 Accuracy (summary)
 
-| Model      | Config             | accuracy | correct | failed | mc_fallback | Source                                                       |
+| Model      | Config             | accuracy | correct | failed | unparseable | Source                                                       |
 | ---------- | ------------------ | -------- | ------- | ------ | ----------- | ------------------------------------------------------------ |
 | Qwen3-Omni | enable_audio=False | 67.11%   | 604/900 | 0      | 26          | local v1 sweep [H200, full-set, c=8, max_tokens=2048]       |
 
@@ -96,11 +96,8 @@ from benchmarks.tasks.visual_understand import (
     build_mmmu_result_records,
     make_mmmu_send_fn,
 )
+from sglang_omni.utils.logging import configure_dependency_loggers
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(name)s %(levelname)s %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 
@@ -262,6 +259,11 @@ async def benchmark(args: argparse.Namespace) -> dict:
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    configure_dependency_loggers()
     parser = argparse.ArgumentParser(
         description="MMMU benchmark for VLM models served by sglang-omni."
     )

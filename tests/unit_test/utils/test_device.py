@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Host-independent cases of the stage device resolver."""
 
+from contextlib import AbstractContextManager, nullcontext
+from types import SimpleNamespace
+
 import pytest
 
 from sglang_omni.platforms import current_platform
@@ -30,3 +33,36 @@ def test_a_foreign_device_type_is_refused(monkeypatch):
     monkeypatch.setattr(current_platform, "device_type", "cuda", raising=False)
     with pytest.raises(ValueError, match="this host resolved to"):
         dev.resolve_concrete_device("xpu", 0)
+
+
+def test_the_audio_paths_stage_through_cuda_musa_and_xpu() -> None:
+    """supports_device_streams names the device types whose torch module answers
+    Stream, Event and graph_pool_handle the way torch.cuda does. NPU is absent
+    until someone measures those paths on it."""
+    for device_type in ("cuda", "musa", "xpu"):
+        assert dev.supports_device_streams(SimpleNamespace(type=device_type))
+    for device_type in ("cpu", "mps", "npu"):
+        assert not dev.supports_device_streams(SimpleNamespace(type=device_type))
+
+
+@pytest.mark.parametrize("device_type", ["cpu", "mps", "cuda", "musa", "xpu", "npu"])
+def test_device_guard_selects_the_accelerator(
+    monkeypatch: pytest.MonkeyPatch, device_type: str
+) -> None:
+    selected_devices: list[SimpleNamespace] = []
+    device = SimpleNamespace(type=device_type, index=2)
+
+    def select_device(
+        selected_device: SimpleNamespace,
+    ) -> AbstractContextManager[None]:
+        selected_devices.append(selected_device)
+        return nullcontext()
+
+    monkeypatch.setattr(
+        dev.torch,
+        "get_device_module",
+        lambda selected_device: SimpleNamespace(device=select_device),
+    )
+
+    with dev.device_guard(device):
+        assert selected_devices == ([] if device_type in {"cpu", "mps"} else [device])
