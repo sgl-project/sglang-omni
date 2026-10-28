@@ -6,7 +6,14 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Generic, Protocol, SupportsIndex, SupportsInt, runtime_checkable
+from typing import (
+    TYPE_CHECKING,
+    Generic,
+    Protocol,
+    SupportsIndex,
+    SupportsInt,
+    runtime_checkable,
+)
 
 from typing_extensions import TypeVar
 
@@ -58,9 +65,13 @@ class SequenceParallelScheduler(Protocol):
 
     def validate_sequence_parallel(self) -> None: ...
 
-    def mark_request_aborted_for_drain(self, request_id: str, dispatch_id: int) -> None: ...
+    def mark_request_aborted_for_drain(
+        self, request_id: str, dispatch_id: int
+    ) -> None: ...
 
-    def acknowledge_request_terminal(self, request_id: str, dispatch_id: int) -> None: ...
+    def acknowledge_request_terminal(
+        self, request_id: str, dispatch_id: int
+    ) -> None: ...
 
 
 @dataclass

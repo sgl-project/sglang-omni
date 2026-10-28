@@ -74,8 +74,11 @@ from sglang_omni.scheduling.message import (
     ResultOwningScheduler,
     StageScheduler,
 )
+from sglang_omni.scheduling.types import (
+    SequenceParallelScheduler,
+    SynchronizedRequestError,
+)
 from sglang_omni.serve.stage_routes import StageHttpServer, StageRoutesError
-from sglang_omni.scheduling.types import SequenceParallelScheduler, SynchronizedRequestError
 
 TorchProfiler = current_platform.get_torch_profiler()
 
@@ -180,9 +183,13 @@ class Stage:
         self.sp_rank, self.sp_size = sp_rank, sp_size
         self.dispatches = RequestDispatchTracker()
         self.sp_scheduler = (
-            scheduler if sp_size > 1 and isinstance(scheduler, SequenceParallelScheduler) else None
+            scheduler
+            if sp_size > 1 and isinstance(scheduler, SequenceParallelScheduler)
+            else None
         )
-        capabilities = self.sp_scheduler.parallel_capabilities if self.sp_scheduler else None
+        capabilities = (
+            self.sp_scheduler.parallel_capabilities if self.sp_scheduler else None
+        )
         self.fanout_work = (
             capabilities.fanout_work
             if capabilities is not None
@@ -211,8 +218,12 @@ class Stage:
             self.sp_scheduler.validate_sequence_parallel()
         else:
             pass
-        if self.sp_scheduler is not None:
-            self.sp_scheduler.enable_parallel_failure_handling()
+        if (
+            self.fanout_work
+            and max(tp_size, sp_size) > 1
+            and isinstance(scheduler, SequenceParallelScheduler)
+        ):
+            scheduler.enable_parallel_failure_handling()
         else:
             pass
         self.project_payload = project_payload or {}

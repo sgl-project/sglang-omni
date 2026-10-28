@@ -8,8 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
 from typing import Literal
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -19,9 +19,13 @@ import torch.multiprocessing as mp
 from sglang_omni.models.llada2_uni.components import decoder_runtime as runtime
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.tp_control import TPLeaderFanout
+from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling import types as scheduling_types
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
-from tests.unit_test.fixtures.pipeline_fakes import RecordingStageControlPlane
+from tests.unit_test.fixtures.pipeline_fakes import (
+    RecordingStageControlPlane,
+    make_stage_payload,
+)
 
 
 def collective_worker(rank, rendezvous):
@@ -121,7 +125,7 @@ def parallel_failure_worker(
     handle.cpu_group = dist.group.WORLD
     started: list[str] = []
 
-    def compute(payload: SimpleNamespace) -> int:
+    def compute(payload: StagePayload) -> int:
         started.append(payload.request_id)
         if synchronized:
             with handle.preparation("conditioning"):
@@ -157,7 +161,7 @@ def parallel_failure_worker(
     async def enqueue() -> None:
         for dispatch, request_id in enumerate(("first", "second"), start=1):
             await stage.execute(
-                SimpleNamespace(request_id=request_id), dispatch_id=dispatch
+                make_stage_payload(request_id=request_id), dispatch_id=dispatch
             )
 
     try:
