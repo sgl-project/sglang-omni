@@ -507,11 +507,13 @@ class ChunkRecordingTranscriptionClient:
         *,
         fail_chunk: int | None = None,
         fail_message: str = "cuda out of memory",
+        detected_language: str | None = None,
     ) -> None:
         self.requests: list[tuple[str, GenerateRequest]] = []
         self.aborted: list[str] = []
         self.fail_chunk = fail_chunk
         self.fail_message = fail_message
+        self.detected_language = detected_language
 
     def health(self) -> dict[str, Any]:
         return {"running": True}
@@ -540,7 +542,11 @@ class ChunkRecordingTranscriptionClient:
             index = arrival
         if self.fail_chunk is not None and index == self.fail_chunk:
             raise ClientError(self.fail_message)
-        return CompletionResult(request_id=request_id, text=f"part{index}")
+        return CompletionResult(
+            request_id=request_id,
+            text=f"part{index}",
+            language=self.detected_language,
+        )
 
     async def abort(self, request_id: str) -> None:
         self.aborted.append(request_id)
@@ -2623,6 +2629,22 @@ def test_verbose_json_reports_per_chunk_segments() -> None:
     assert body["duration"] == pytest.approx(2.5, abs=0.01)
 
 
+def test_chunked_verbose_json_preserves_detected_language() -> None:
+    transcription_client = ChunkRecordingTranscriptionClient(
+        detected_language="English"
+    )
+    client = chunking_test_client(transcription_client)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "asr", "response_format": "verbose_json"},
+        files={"file": ("long.wav", wav_upload(2.5), "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["language"] == "English"
+
+
 def test_chunk_segments_skip_silent_chunks() -> None:
     from sglang_omni.serve.transcription_adapters.base import (
         DefaultTranscriptionAdapter,
@@ -2779,7 +2801,7 @@ def tiny_plan(num_chunks: int):
     )
 
 
-def run_chunks(
+async def run_chunks(
     client: Any,
     plan: Any,
     *,
@@ -2787,7 +2809,7 @@ def run_chunks(
     prompt: str | None = None,
     condition_on_previous_text: bool = False,
     adapter: Any = None,
-):
+) -> list[str]:
     from sglang_omni.serve.transcription_adapters.base import (
         DefaultTranscriptionAdapter,
     )
@@ -2795,7 +2817,7 @@ def run_chunks(
 
     if adapter is None:
         adapter = DefaultTranscriptionAdapter()
-    return asyncio.wait_for(
+    transcribed_chunks = await asyncio.wait_for(
         transcribe_audio_chunks(
             client,
             plan,
@@ -2813,6 +2835,7 @@ def run_chunks(
         ),
         timeout=10.0,
     )
+    return [chunk.text for chunk in transcribed_chunks]
 
 
 class ScriptedChunkClient:
