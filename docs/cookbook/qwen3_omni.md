@@ -188,8 +188,8 @@ Text-only ASR on LibriSpeech test-clean (`--text-only`, thinker on one H200 141G
 
 | Concurrency | Baseline | DFlash | EAGLE3 |
 |---|---|---|---|
-| 1 | 7.56 | 12.56 (1.66x) | 7.69 (1.02x) |
-| 4 | 16.45 | 24.41 (1.48x) | 12.06 (0.73x) |
-| 8 | 24.00 | 36.17 (1.51x) | 18.05 (0.75x) |
+| 1 | 7.78 | 12.95 (1.66x) | 11.57 (1.49x) |
+| 4 | 16.54 | 24.23 (1.46x) | 21.43 (1.30x) |
+| 8 | 23.94 | 37.19 (1.55x) | 31.80 (1.33x) |
 
 DFlash accepts 4.7 tokens per verify and EAGLE3 3.4, with WER unchanged. Requests that repeat earlier audio hit the prefix cache, which speeds the baseline up and slows DFlash down, so benchmark each pass on utterances its server has not seen.
