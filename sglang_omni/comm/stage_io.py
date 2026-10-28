@@ -131,8 +131,8 @@ def extract_cuda_tensors(
             }, {path: obj}
         else:
             pass
-        # note (ratish): pickle moves a CPU tensor's whole storage twice (dumps and loads) while a copy moves a view's own bytes three times (copy, dumps, loads), so a view is copied out only when that moves fewer bytes.
-        if 2 * obj.untyped_storage().nbytes() > 3 * obj.numel() * obj.element_size():
+        # note (ratish): pickle writes a CPU tensor's whole storage and the receiver keeps all of it, so a view of a larger storage is sent as a copy of its own bytes.
+        if obj.untyped_storage().nbytes() > obj.numel() * obj.element_size():
             return obj.clone(), {}
         else:
             return obj, {}

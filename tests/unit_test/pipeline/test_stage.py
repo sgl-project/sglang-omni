@@ -1473,18 +1473,24 @@ def test_direct_cuda_ipc_payload_header_sends_a_cpu_views_own_bytes() -> None:
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_direct_cuda_ipc_payload_header_sends_a_mostly_filled_view_whole() -> None:
+def test_direct_cuda_ipc_payload_header_copies_only_views_of_a_larger_storage() -> None:
     transfer_buffer = torch.arange(1 << 20, dtype=torch.int64)
     features = transfer_buffer[: 3 << 18]
+    mask = torch.ones(1, dtype=torch.int64).expand(1 << 20)
     payload = make_stage_payload(
-        data={"gpu": torch.arange(2, device="cuda:0"), "features": features}
+        data={
+            "gpu": torch.arange(2, device="cuda:0"),
+            "features": features,
+            "mask": mask,
+        }
     )
 
     payload_reference = stage_io.serialize_direct_cuda_ipc_payload(payload)
     header = pickle.loads(payload_reference["header"])
 
-    assert len(payload_reference["header"]) > transfer_buffer.untyped_storage().nbytes()
+    assert len(payload_reference["header"]) < transfer_buffer.untyped_storage().nbytes()
     assert torch.equal(header.data["features"], features)
+    assert torch.equal(header.data["mask"], mask)
 
 
 def test_direct_cuda_ipc_payload_allows_large_ordinary_header(monkeypatch) -> None:
