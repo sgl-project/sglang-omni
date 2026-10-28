@@ -259,13 +259,14 @@ std::vector<float> RealtimeSession::SegmentSamples(const Segment &segment,
   return std::vector<float>(samples_.begin() + begin, samples_.begin() + end);
 }
 
-TranscriptionOptions RealtimeSession::DecodeOptions(Segment &segment) {
+TranscriptionOptions RealtimeSession::DecodeOptions(Segment &segment,
+                                                    bool should_reuse_prefix) {
   TranscriptionOptions options;
   options.language = segment.language;
-  const bool use_prefix = segment.decode_count >= kPrefixAfterRefreshCount &&
-                          !segment.transcript.empty() &&
-                          segment.language.has_value();
-  if (use_prefix) {
+  const bool should_use_prefix =
+      should_reuse_prefix && segment.decode_count >= kPrefixAfterRefreshCount &&
+      !segment.transcript.empty() && segment.language.has_value();
+  if (should_use_prefix) {
     auto [ids, text] = transcriber_.RetainedPrefix(segment.transcript,
                                                    kPrefixRollbackTokenCount);
     options.prefix_token_ids = std::move(ids);
@@ -320,7 +321,7 @@ void RealtimeSession::MaybeStartRefresh() {
       return;
     } else {
     }
-    options = DecodeOptions(segment);
+    options = DecodeOptions(segment, true);
     segment_id = segment.segment_id;
     refreshing_ = true;
   }
@@ -399,7 +400,9 @@ void RealtimeSession::FinalizeThrough(long end_sample) {
       TranscriptionOptions options;
       {
         std::lock_guard<std::mutex> lock(mutex_);
-        options = DecodeOptions(segment);
+        // Note (VLa1111): an early preview can settle on the wrong language, so
+        // the final decode starts from the audio instead of its prefix.
+        options = DecodeOptions(segment, false);
       }
       try {
         const TranscriptionResult result = worker_.Transcribe(
