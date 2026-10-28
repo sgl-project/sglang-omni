@@ -120,6 +120,8 @@ class Qwen3ASRPreLMEncoderService(
     """Encode before admission with single-flight deduplication and a CPU LRU."""
 
     ENCODE_TIMEOUT_S = 300.0
+    MODEL_NAME = "Qwen3-ASR"
+    WORKER_NAME = "qwen3-asr-audio-encode"
 
     def __init__(
         self,
@@ -132,10 +134,10 @@ class Qwen3ASRPreLMEncoderService(
         max_batch_wait_ms: int = 0,
     ) -> None:
         self.model = model
-        reference = next(model.audio_tower.parameters())
+        reference = next(self.encoder_module(model).parameters())
         self.device = reference.device
         self.dtype = reference.dtype
-        self.hidden_size = text_hidden_size(model)
+        self.hidden_size = self.output_hidden_size(model)
         # Keep encoder submissions off the generation lane on Ascend, where the
         # decode graph replay and update threads can otherwise stall behind it.
         self.stream = (
@@ -165,7 +167,15 @@ class Qwen3ASRPreLMEncoderService(
         self.queue_wait_total_s = 0.0
         self.queue_wait_max_s = 0.0
         self.encoder_time_s = 0.0
-        super().__init__(worker_name="qwen3-asr-audio-encode")
+        super().__init__(worker_name=self.WORKER_NAME)
+
+    @staticmethod
+    def encoder_module(model: Qwen3ASRForConditionalGeneration) -> torch.nn.Module:
+        return model.audio_tower
+
+    @staticmethod
+    def output_hidden_size(model: Qwen3ASRForConditionalGeneration) -> int:
+        return text_hidden_size(model)
 
     def close(self) -> None:
         """Stop the encoder worker after all queued requests finish."""
@@ -185,7 +195,9 @@ class Qwen3ASRPreLMEncoderService(
     ) -> None:
         with self.lifecycle_lock:
             if self.closed:
-                raise RuntimeError("Qwen3-ASR pre-LM encoder service is closed")
+                raise RuntimeError(
+                    f"{self.MODEL_NAME} pre-LM encoder service is closed"
+                )
             else:
                 pass
             self.queue.put(
@@ -203,7 +215,7 @@ class Qwen3ASRPreLMEncoderService(
         expected_tokens = expected_audio_tokens(item)
         if expected_tokens is None:
             raise RuntimeError(
-                "Qwen3-ASR pre-LM encode requires the item's num_audio_tokens"
+                f"{self.MODEL_NAME} pre-LM encode requires the item's num_audio_tokens"
             )
         else:
             pass
@@ -280,7 +292,7 @@ class Qwen3ASRPreLMEncoderService(
                 embedding = done.result()
                 if not self.is_valid(embedding, expected_tokens):
                     raise RuntimeError(
-                        f"Qwen3-ASR pre-LM encode leader for {key} returned an "
+                        f"{self.MODEL_NAME} pre-LM encode leader for {key} returned an "
                         "invalid embedding"
                     )
                 else:
@@ -348,8 +360,9 @@ class Qwen3ASRPreLMEncoderService(
         else:
             pass
         logger.warning(
-            "Qwen3-ASR pre-LM cache entry %s failed validation "
+            "%s pre-LM cache entry %s failed validation "
             "(shape=%s, dtype=%s); discarding it if unchanged before re-encoding",
+            self.MODEL_NAME,
             key,
             getattr(cached, "shape", None),
             getattr(cached, "dtype", None),
@@ -480,7 +493,7 @@ class Qwen3ASRPreLMEncoderService(
             expected = expected_audio_tokens(item)
             if expected is None:
                 raise RuntimeError(
-                    "Qwen3-ASR pre-LM encode item is missing its audio token count"
+                    f"{self.MODEL_NAME} pre-LM encode item is missing its audio token count"
                 )
             else:
                 pass
@@ -500,7 +513,7 @@ class Qwen3ASRPreLMEncoderService(
             or embedding.dtype != self.dtype
         ):
             raise RuntimeError(
-                f"Qwen3-ASR encoder output {tuple(embedding.shape)} "
+                f"{self.MODEL_NAME} encoder output {tuple(embedding.shape)} "
                 f"({embedding.dtype}) != expected rows "
                 f"{sum(token_counts)}x{self.hidden_size} ({self.dtype})"
             )
@@ -541,13 +554,15 @@ class Qwen3ASRPreLMEncoderService(
         failure = self.detach_failure(exc)
         if len(batch) == 1:
             logger.error(
-                "Qwen3-ASR audio encode failed:\n%s",
+                "%s audio encode failed:\n%s",
+                self.MODEL_NAME,
                 failure.formatted_traceback,
             )
         else:
             logger.error(
-                "Qwen3-ASR batched audio encode failed for %d items; "
+                "%s batched audio encode failed for %d items, "
                 "retrying per item:\n%s",
+                self.MODEL_NAME,
                 len(batch),
                 failure.formatted_traceback,
             )
@@ -561,7 +576,8 @@ class Qwen3ASRPreLMEncoderService(
     ) -> Exception:
         failure = self.detach_failure(exc)
         logger.error(
-            "Qwen3-ASR per-item audio encode retry failed:\n%s",
+            "%s per-item audio encode retry failed:\n%s",
+            self.MODEL_NAME,
             failure.formatted_traceback,
         )
         self.recover_after_failure(failure.exception)
@@ -599,7 +615,8 @@ class Qwen3ASRPreLMEncoderService(
                 self.stream.synchronize()
             except Exception:
                 logger.warning(
-                    "Qwen3-ASR encoder stream cleanup failed after OOM",
+                    "%s encoder stream cleanup failed after OOM",
+                    self.MODEL_NAME,
                     exc_info=True,
                 )
         else:
@@ -610,7 +627,9 @@ class Qwen3ASRPreLMEncoderService(
                 device_module.empty_cache()
         except Exception:
             logger.warning(
-                "Qwen3-ASR device cache cleanup failed after OOM", exc_info=True
+                "%s device cache cleanup failed after OOM",
+                self.MODEL_NAME,
+                exc_info=True,
             )
 
     def on_batch_start(
@@ -655,7 +674,7 @@ class Qwen3ASRPreLMEncoderService(
             item_count = self.item_count
         if batch_count % 50 == 1:
             logger.info(
-                f"Qwen3-ASR pre-LM encoder stage: {batch_count} batches, "
+                f"{self.MODEL_NAME} pre-LM encoder stage: {batch_count} batches, "
                 f"{item_count} items (avg "
                 f"{item_count / batch_count:.2f} items/batch, "
                 f"last batch: {len(batch)}), cache: {self.stats()}"

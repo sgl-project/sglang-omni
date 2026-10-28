@@ -79,6 +79,72 @@ def test_assemble_uses_the_caller_probed_duration(monkeypatch) -> None:
     )
 
     assert json.loads(response.body)["usage"] == {"seconds": 3, "type": "duration"}
+    assert "finish_reason" not in json.loads(response.body)
+    assert "x-finish-reason" not in {name.lower() for name in response.headers}
+
+
+def test_assemble_surfaces_a_token_budget_stop() -> None:
+    response = speech_to_text.assemble_speech_to_text_response(
+        text="repeated sentence",
+        response_format="json",
+        endpoint_path="/v1/audio/transcriptions",
+        task="transcribe",
+        language="en",
+        audio_bytes=b"not-a-real-audio-file",
+        architectures=None,
+        duration_s=3600,
+        finish_reason="length",
+    )
+
+    assert response.status_code == 200
+    assert json.loads(response.body)["finish_reason"] == "length"
+    assert response.headers["x-finish-reason"] == "length"
+
+
+def test_text_response_surfaces_truncation_in_a_header() -> None:
+    response = speech_to_text.assemble_speech_to_text_response(
+        text="repeated sentence",
+        response_format="text",
+        endpoint_path="/v1/audio/transcriptions",
+        task="transcribe",
+        language="en",
+        audio_bytes=b"not-a-real-audio-file",
+        architectures=None,
+        duration_s=3600,
+        finish_reason="length",
+    )
+
+    assert response.body == b"repeated sentence"
+    assert response.headers["x-finish-reason"] == "length"
+
+
+@pytest.mark.asyncio
+async def test_stream_done_event_surfaces_a_token_budget_stop() -> None:
+    from sglang_omni.client import GenerateChunk
+
+    async def chunks():
+        yield GenerateChunk(request_id="req", text="hello ", modality="text")
+        yield GenerateChunk(
+            request_id="req",
+            text="hello again",
+            modality="text",
+            finish_reason="length",
+        )
+
+    events = [
+        line
+        async for line in speech_to_text.speech_to_text_stream(
+            chunks(),
+            first_chunk=None,
+            request_id="req",
+            adapter=speech_to_text.resolve_speech_to_text_adapter(None),
+            duration_s=3600,
+        )
+    ]
+
+    done = json.loads(events[-2].removeprefix("data: ").strip())
+    assert done["finish_reason"] == "length"
+    assert done["text"] == "hello again"
 
 
 def test_probe_measures_wav_without_the_av_fallback(monkeypatch) -> None:

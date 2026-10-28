@@ -1325,12 +1325,6 @@ def create_sglang_thinker_executor_from_config(
             pass
         overrides["enable_mixed_chunk"] = False
         enable_async_decode = False
-        # note (wilsonzheng0327): an EAGLE draft extends on the composed multimodal
-        # prefill embeddings, which a captured draft prefill graph would ignore.
-        if speculative_algorithm.is_eagle():
-            overrides["cuda_graph_backend_prefill"] = CudaGraphBackend.DISABLED
-        else:
-            pass
         # The draft has its own positional capacity; the target serves within it.
         draft_context_length = int(
             AutoConfig.from_pretrained(
