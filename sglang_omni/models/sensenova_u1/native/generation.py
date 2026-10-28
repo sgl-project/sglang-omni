@@ -25,12 +25,12 @@ from sglang_omni.vendor.sensenova_u1.modeling_neo_chat import NEOChatModel
 
 @dataclass(frozen=True)
 class SenseNovaU1GenerationOptions:
-    cfg_norm: ClassifierFreeGuidanceNormalization = DEFAULT_CFG_NORM
-    timestep_shift: float = DEFAULT_TIMESTEP_SHIFT
-    enable_timestep_shift: bool = DEFAULT_ENABLE_TIMESTEP_SHIFT
-    cfg_interval: tuple[float, float] = DEFAULT_CFG_INTERVAL
-    t_eps: float = DEFAULT_T_EPS
-    think_mode: bool = DEFAULT_THINK_MODE
+    cfg_norm: ClassifierFreeGuidanceNormalization
+    timestep_shift: float
+    enable_timestep_shift: bool
+    cfg_interval: tuple[float, float]
+    t_eps: float
+    think_mode: bool
 
     @classmethod
     def from_batch(cls, batch: Req) -> SenseNovaU1GenerationOptions:

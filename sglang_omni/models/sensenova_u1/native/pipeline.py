@@ -14,18 +14,12 @@ from transformers import PreTrainedTokenizerBase
 
 from sglang_omni.models.sensenova_u1.native.generation import SenseNovaU1GenerationStage
 from sglang_omni.models.sensenova_u1.native.loader import load_model_and_tokenizer
-from sglang_omni.models.sensenova_u1.native.pipeline_config import (
-    SenseNovaU1PipelineConfig,
-)
-from sglang_omni.models.sensenova_u1.native.sampling import SenseNovaU1SamplingParams
 
 logger = logging.getLogger(__name__)
 
 
 class SenseNovaU1Pipeline(ComposedPipelineBase):
     pipeline_name: str = "SenseNovaU1Pipeline"
-    pipeline_config_cls: type[SenseNovaU1PipelineConfig] = SenseNovaU1PipelineConfig
-    sampling_params_cls: type[SenseNovaU1SamplingParams] = SenseNovaU1SamplingParams
     _required_config_modules: list[str] = []
 
     def load_modules(
@@ -53,6 +47,3 @@ class SenseNovaU1Pipeline(ComposedPipelineBase):
             ),
             "sensenova_u1_generation_stage",
         )
-
-
-EntryClass = SenseNovaU1Pipeline

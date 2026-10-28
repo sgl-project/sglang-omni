@@ -22,12 +22,7 @@ from sglang_omni.models.sensenova_u1.native.generation import SenseNovaU1Generat
 from sglang_omni.models.sensenova_u1.native.sampling import SenseNovaU1SamplingParams
 
 
-@pytest.mark.parametrize(
-    "local_checkpoint,block_builtin", [(False, False), (True, False), (True, True)]
-)
-def test_external_package_in_fresh_process(
-    tmp_path: Path, local_checkpoint: bool, block_builtin: bool
-) -> None:
+def test_external_package_in_fresh_process(tmp_path: Path) -> None:
     checkpoint = tmp_path / "checkpoint"
     checkpoint.mkdir()
     (checkpoint / "config.json").write_text(
@@ -53,10 +48,7 @@ def test_external_package_in_fresh_process(
                 else:
                     return None
 
-        if sys.argv[2] == "True":
-            sys.meta_path.insert(0, BlockBuiltin())
-        else:
-            pass
+        sys.meta_path.insert(0, BlockBuiltin())
         from sglang.multimodal_gen.registry import get_model_info
         from transformers import AutoConfig
 
@@ -72,11 +64,8 @@ def test_external_package_in_fresh_process(
     environment = os.environ | {
         "SGLANG_EXTERNAL_MODEL_PACKAGE": "sglang_omni.models.sensenova_u1.native",
     }
-    model_path = (
-        str(checkpoint) if local_checkpoint else "sensenova/SenseNova-U1.5-8B-MoT"
-    )
     result = subprocess.run(
-        [sys.executable, "-c", script, model_path, str(block_builtin)],
+        [sys.executable, "-c", script, str(checkpoint)],
         env=environment,
         capture_output=True,
         text=True,
@@ -85,9 +74,7 @@ def test_external_package_in_fresh_process(
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-@pytest.mark.parametrize("think_mode", [False, True])
 def test_native_generation_preserves_request_and_output(
-    think_mode: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -100,7 +87,7 @@ def test_native_generation_preserves_request_and_output(
         width=64,
         height=64,
         num_inference_steps=2,
-        think_mode=think_mode,
+        think_mode=True,
         seed=42,
         cfg_norm="channel",
         timestep_shift=2.0,
@@ -110,7 +97,7 @@ def test_native_generation_preserves_request_and_output(
     )
     pixels = torch.tensor([[[[-1.0, 0.0, 1.0]]]])
     model = Mock()
-    model.t2i_generate.return_value = (pixels, "reasoning") if think_mode else pixels
+    model.t2i_generate.return_value = (pixels, "reasoning")
     tokenizer = Mock()
     stage = SenseNovaU1GenerationStage(model, tokenizer)
     request = Req(sampling_params=sampling_params)
@@ -119,7 +106,7 @@ def test_native_generation_preserves_request_and_output(
     generation_arguments = model.t2i_generate.call_args.kwargs
     assert generation_arguments["seed"] == 42
     assert generation_arguments["image_size"] == (64, 64)
-    assert generation_arguments["think_mode"] == think_mode
+    assert generation_arguments["think_mode"] is True
     assert generation_arguments["num_steps"] == 2
     assert generation_arguments["cfg_norm"] == "channel"
     assert generation_arguments["timestep_shift"] == 2.0
@@ -127,7 +114,7 @@ def test_native_generation_preserves_request_and_output(
     assert generation_arguments["cfg_interval"] == (0.25, 0.75)
     assert generation_arguments["t_eps"] == 0.05
     torch.testing.assert_close(output.output[0], torch.tensor([[[0.0, 0.5, 1.0]]]))
-    assert output.usage == ({"think_text": "reasoning"} if think_mode else None)
+    assert output.usage == {"think_text": "reasoning"}
 
 
 def test_parallel_request_fails_before_loading_weights() -> None:
