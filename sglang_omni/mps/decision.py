@@ -99,8 +99,7 @@ def collect_mps_facts(process_specs) -> tuple[MpsProcessFact, ...]:
             stage_spec.tp_size > 1 for stage_spec in process_spec.stage_specs
         )
         contains_sp[name] = contains_sp[name] or any(
-            getattr(stage_spec, "sp_size", 1) > 1
-            for stage_spec in process_spec.stage_specs
+            stage_spec.sp_size > 1 for stage_spec in process_spec.stage_specs
         )
 
     for process_spec in process_specs:

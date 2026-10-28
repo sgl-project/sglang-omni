@@ -41,9 +41,7 @@ generation settings. CUDA Graph execution is controlled separately.
 
 ### Native Decoder Sequence Parallelism
 
-The native SGLang adapter supports single-rank decoding and opt-in sequence
-parallelism. The thinker TP setting is independent of decoder SP. Set the
-following stage overrides in the pipeline YAML for two decoder GPUs:
+The native SGLang adapter supports single-rank decoding and opt-in sequence parallelism. Decoder SP does not change thinker execution. Set the following stage overrides in the pipeline YAML for two decoder GPUs:
 
 ```yaml
 stages:
@@ -60,10 +58,7 @@ stages:
       ring_degree: 1
 ```
 
-GPU IDs are relative to the parent's visible devices. Each decoder rank owns
-one process; SP followers do not participate in the thinker's TP/KV groups.
-SigVQ conditioning and VAE/image encoding run on rank zero. All ranks use the
-same noise seed and SGLang's spatial sharding, RoPE, attention, and gather.
+GPU IDs are relative to the parent's visible devices. Each decoder rank owns one process; SP followers do not participate in the thinker's TP/KV groups. SigVQ conditioning and VAE/image encoding run on rank zero. All ranks use the same noise seed. Omni shards the contiguous image/caption token sequence and its RoPE positions through SGLang's sequence-sharding helpers; SGLang attention performs the Ulysses or Ring collectives.
 
 | Configuration | `gpu` | `sp_size` | Ulysses | Ring | Attention backend |
 | --- | --- | --- | --- | --- | --- |
@@ -71,23 +66,16 @@ same noise seed and SGLang's spatial sharding, RoPE, attention, and gather.
 | Native SP2 Ulysses | `[1, 2]` | 2 | 2 | 1 | `torch_sdpa` |
 | Native SP2 ring | `[1, 2]` | 2 | 1 | 2 | `torch_sdpa` is unsupported |
 
-SGLang's ring path requires `fa` or `sage_attn`; configuration rejects SDPA
-with ring instead of changing the backend. A ring comparison must also run
-SP1 and Ulysses with the same explicitly selected backend. Ulysses degree
-must divide the checkpoint's attention head count. Spatial layouts that add
-learned padding tokens relative to SP1 are rejected to preserve semantics.
+SGLang's ring path requires `fa` or `sage_attn`; configuration rejects SDPA with ring instead of changing the backend. Compare Ring, Ulysses, and SP1 using the same attention backend. Ulysses degree must divide the checkpoint's attention head count, and SP degree must divide the padded token sequence length.
 
-The opt-in GPU test checks a small checkpoint against diffusers and verifies
-the instantiated attention backend. It does not replace full server validation:
+The accelerator test checks SP1, Ulysses2, and Ring2 against a small Diffusers checkpoint, including padded inputs. It does not replace full server validation:
 
 ```bash
-LLADA_DECODER_GPU_TEST=1 python -m pytest -q \
-  tests/unit_test/llada2_uni/test_decoder_native_gpu.py
+python -m pytest -q -m accelerator \
+  tests/unit_test/llada2_uni/test_image_decoder.py -k sglang_backend_matches_diffusers
 ```
 
-For generation/performance comparisons, use the same checkpoint, request,
-seed, resolution, CFG, dtype, decode mode and step count. Warm each server
-before timing; report request latency separately from decoder GPU time.
+For generation/performance comparisons, use the same checkpoint, request, seed, resolution, CFG, dtype, decode mode and step count. Warm each server before timing; report request latency separately from decoder time.
 
 ### Requests
 

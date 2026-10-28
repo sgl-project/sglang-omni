@@ -274,7 +274,10 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
             else:
                 pass
         except Exception:
-            if self.consume_if_aborted(msg.request_id) and not self.fail_on_unsynchronized_error:
+            if (
+                self.consume_if_aborted(msg.request_id)
+                and not self.fail_on_unsynchronized_error
+            ):
                 return
             else:
                 pass
@@ -375,7 +378,7 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
                                 f"SimpleScheduler: compute_fn failed for {msg.request_id}"
                             )
                             for failed_msg in batch:
-                                if self.is_aborted(failed_msg.request_id):
+                                if self.consume_if_aborted(failed_msg.request_id):
                                     continue
                                 else:
                                     self.emit_error(

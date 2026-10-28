@@ -276,7 +276,7 @@ def create_image_decode_executor(
     nccl_port: int | None = None,
     ulysses_degree: int = 1,
     ring_degree: int = 1,
-) -> SimpleScheduler[StagePayload, StagePayload]:
+) -> SimpleScheduler[StagePayload, StagePayload | None]:
     concrete_device = resolve_concrete_device(device, gpu_id)
     dtype = resolve_dtype(dtype)
     if backend != "sglang" and (
@@ -401,7 +401,7 @@ def create_image_decode_executor(
     else:
         pass
 
-    class ImageDecoderScheduler(SimpleScheduler[StagePayload, StagePayload]):
+    class ImageDecoderScheduler(SimpleScheduler[StagePayload, StagePayload | None]):
         def start(self) -> None:
             try:
                 super().start()

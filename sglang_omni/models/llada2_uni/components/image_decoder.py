@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Literal
 from contextlib import nullcontext
+from typing import Literal
 
 import torch
 import torch.nn.functional as F
@@ -323,7 +323,9 @@ class LLaDA2ImageDecoder:
             self.ensure_diff_model(mode)
             if self.is_leader:
                 self.ensure_sigvq()
-                token_grid = torch.tensor(token_ids).view(1, 1, h, w).float().to(self.device)
+                token_grid = (
+                    torch.tensor(token_ids).view(1, 1, h, w).float().to(self.device)
+                )
                 upsampled_tokens = (
                     F.interpolate(token_grid, scale_factor=2, mode="nearest")
                     .long()
@@ -378,10 +380,13 @@ class LLaDA2ImageDecoder:
             if self.is_leader:
                 self.ensure_vae()
                 vae_latents = samples.to(self.dtype)
-                vae_latents = (vae_latents / self.vae.config.scaling_factor) + self.vae.config.shift_factor
-                pixels = ((self.vae.decode(vae_latents, return_dict=False)[0] + 1) / 2).clamp_(0, 1)
+                vae_latents = (
+                    vae_latents / self.vae.config.scaling_factor
+                ) + self.vae.config.shift_factor
+                pixels = (
+                    (self.vae.decode(vae_latents, return_dict=False)[0] + 1) / 2
+                ).clamp_(0, 1)
                 image = to_pil_image(pixels[0].float())
             else:
                 pass
         return image
-
