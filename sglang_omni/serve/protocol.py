@@ -396,6 +396,7 @@ class SpeechReference(BaseModel):
     media_type: str | None = None
     text: str | None = None
     vq_codes: list[list[int]] | list[int] | None = None
+    speaker_embedding: list[float] | None = None
 
 
 class CreateSpeechRequest(BaseModel):

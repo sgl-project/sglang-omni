@@ -467,6 +467,48 @@ def test_qwen_talker_prefill_appends_text_chunks_to_tensor_queue() -> None:
     assert torch.equal(req_data.pending_text_queue[0], torch.tensor([11.0, 12.0]))
 
 
+def test_qwen_talker_projects_each_assistant_token_id_once() -> None:
+    builder = object.__new__(TalkerPrefillBuilder)
+    builder.im_end_token_id = 99
+    builder.device = torch.device("cpu")
+    builder.dtype = torch.float32
+    builder.projected_text_cache = {}
+    projected_rows: list[torch.Tensor] = []
+
+    def text_projection(rows: torch.Tensor) -> torch.Tensor:
+        projected_rows.append(rows)
+        return rows * 2.0 + 1.0
+
+    builder.model = SimpleNamespace(text_projection=text_projection)
+    builder.load_prompt_token_embeddings = lambda token_ids: torch.stack(
+        [torch.full((2,), float(token_id)) for token_id in token_ids.tolist()]
+    )
+    first_request = SimpleNamespace(thinker_chunks_done=False, pending_text_queue=None)
+    second_request = SimpleNamespace(thinker_chunks_done=False, pending_text_queue=None)
+
+    for token_id in (11, 12):
+        builder.append_text_chunk(
+            first_request, SimpleNamespace(data=None, metadata={"token_id": token_id})
+        )
+    for token_id in (12, 11):
+        builder.append_text_chunk(
+            second_request, SimpleNamespace(data=None, metadata={"token_id": token_id})
+        )
+    builder.append_text_chunk(
+        second_request, SimpleNamespace(data=torch.tensor([5.0, 6.0]), metadata={})
+    )
+
+    assert torch.equal(
+        torch.stack(list(first_request.pending_text_queue)),
+        torch.tensor([[23.0, 23.0], [25.0, 25.0]]),
+    )
+    assert torch.equal(
+        torch.stack(list(second_request.pending_text_queue)),
+        torch.tensor([[25.0, 25.0], [23.0, 23.0], [11.0, 13.0]]),
+    )
+    assert len(projected_rows) == 3
+
+
 def test_qwen_code_predictor_keeps_4d_logits_token_shape() -> None:
     """Preserves 4D code-predictor logits as a two-dimensional token tensor."""
     logits = torch.tensor(
