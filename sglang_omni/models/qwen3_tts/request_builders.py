@@ -393,11 +393,14 @@ def build_qwen3_tts_state(
         pass
 
     text, references = normalize_qwen3_tts_inputs(inputs)
+    speaker_embedding = references[0].get("speaker_embedding") if references else None
     has_reference = has_voice_clone_reference(references, tts_params)
     task_type_raw = tts_params.get("task_type") or params.get("task_type")
     task_type_explicit = task_type_raw is not None and str(task_type_raw).strip() != ""
+    # note (Zhifu-Liu): a precomputed embedding replaces the reference audio, so it counts as Base-cloning intent for task inference.
     task_type = normalize_qwen3_tts_task_type(
-        task_type_raw, has_reference=has_reference
+        task_type_raw,
+        has_reference=has_reference or speaker_embedding is not None,
     )
     language = normalize_language(tts_params.get("language") or params.get("language"))
     instructions = resolve_optional_text(
@@ -424,11 +427,14 @@ def build_qwen3_tts_state(
     )
 
     if task_type == QWEN3_TTS_TASK_BASE:
-        ref_audio, ref_text = resolve_voice_clone_reference(references, tts_params)
+        ref_audio, ref_text = resolve_voice_clone_reference(
+            references, tts_params, speaker_embedding=speaker_embedding
+        )
         x_vector_only_mode = resolve_x_vector_only_mode(
             params=params,
             tts_params=tts_params,
             ref_text=ref_text,
+            speaker_embedding=speaker_embedding,
         )
         if not x_vector_only_mode and not ref_text:
             raise ValueError(
@@ -511,6 +517,7 @@ def build_qwen3_tts_state(
         instructions=instructions,
         ref_audio=ref_audio,
         ref_text=ref_text,
+        speaker_embedding=speaker_embedding,
         uploaded_voice_name=resolve_optional_text(
             tts_params.get("uploaded_voice_name")
         ),
@@ -552,6 +559,8 @@ def normalize_qwen3_tts_inputs(inputs: object) -> tuple[str, list[dict[str, obje
 def resolve_voice_clone_reference(
     references: list[dict[str, object]],
     tts_params: dict[str, object],
+    *,
+    speaker_embedding: list[float] | None,
 ) -> tuple[object, str | None]:
     reference = references[0] if references else {}
     ref_audio = (
@@ -562,9 +571,10 @@ def resolve_voice_clone_reference(
         or tts_params.get("ref_audio")
     )
     ref_text = reference.get("text") or tts_params.get("ref_text")
-    if ref_audio is None:
+    if ref_audio is None and speaker_embedding is None:
         raise ValueError(
-            "Qwen3-TTS Base requires reference audio via ref_audio or references[0].audio_path"
+            "Qwen3-TTS Base requires reference audio via ref_audio or "
+            "references[0].audio_path, or references[0].speaker_embedding"
         )
     else:
         pass
@@ -759,12 +769,17 @@ def resolve_x_vector_only_mode(
     params: dict[str, object],
     tts_params: dict[str, object],
     ref_text: str | None,
+    speaker_embedding: list[float] | None,
 ) -> bool:
     for source in (params, tts_params):
         if "x_vector_only_mode" in source:
             return bool(source["x_vector_only_mode"])
         else:
             pass
+    if speaker_embedding is not None:
+        return True
+    else:
+        pass
     return not bool(ref_text)
 
 
@@ -1410,7 +1425,7 @@ def validate_qwen3_tts_model_task(model: PromptModel, state: Qwen3TTSState) -> N
     if model_type == "base" and state.task_type != QWEN3_TTS_TASK_BASE:
         if not state.task_type_explicit:
             raise ValueError(
-                "Qwen3-TTS Base requires ref_audio or speaker_embedding; "
+                "Qwen3-TTS Base requires ref_audio or references[0].speaker_embedding; "
                 "text-only requests require a CustomVoice or VoiceDesign checkpoint"
             )
         else:
@@ -1449,7 +1464,22 @@ def prepare_qwen3_tts_base_request(
         if isinstance(cached_artifact, dict)
         else None
     )
-    if cached_prompt is not None:
+    if state.speaker_embedding is not None:
+        speaker_embedding = torch.tensor(state.speaker_embedding, dtype=torch.float32)
+        if not bool(torch.isfinite(speaker_embedding.to(model.dtype)).all()):
+            raise ValueError(
+                "Qwen3-TTS Base does not accept a speaker_embedding with values that "
+                f"are not finite in the talker's {model.dtype}"
+            )
+        else:
+            pass
+        voice_clone_prompt = {
+            "ref_spk_embedding": [speaker_embedding],
+            "ref_code": [None],
+            "icl_mode": [False],
+        }
+        ref_text = state.ref_text
+    elif cached_prompt is not None:
         voice_clone_prompt, ref_text = cached_prompt
     elif cache_key is None:
         reference_service = get_qwen3_tts_adhoc_reference_service(model, wrapper)

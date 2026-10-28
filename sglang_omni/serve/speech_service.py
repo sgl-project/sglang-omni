@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypeAlias, TypedDict
 from urllib.parse import urlparse
 
+import torch
 from pydantic import AliasChoices, BaseModel, ValidationError
 
 from sglang_omni.client import ClientError, GenerateRequest, SamplingParams
@@ -92,7 +93,9 @@ class TTSParams(RequiredTTSParams, total=False):
     seed: int
 
 
-SpeechReferenceDescriptor = dict[str, str | int | list[int] | list[list[int]]]
+SpeechReferenceDescriptor = dict[
+    str, str | int | list[int] | list[list[int]] | list[float]
+]
 
 
 class SpeechPrompt(TypedDict):
@@ -134,6 +137,7 @@ class SpeechRequestValidator:
         supports_uploaded_voice_references: bool = True,
         custom_voice_config: CustomVoiceConfig | None = None,
         required_speech_reference_count: int | None = None,
+        speaker_embedding_size: int | None = None,
         speech_reference_text_required: bool = False,
         speech_reference_text_excludes_instructions: bool = False,
         additional_speech_languages: frozenset[str] = frozenset(),
@@ -153,6 +157,14 @@ class SpeechRequestValidator:
             and required_speech_reference_count < 1
         ):
             raise ValueError("required_speech_reference_count must be greater than 0")
+        else:
+            pass
+        if speaker_embedding_size is not None and (
+            isinstance(speaker_embedding_size, bool) or speaker_embedding_size < 1
+        ):
+            raise ValueError(
+                "speaker_embedding_size must be a positive integer or None"
+            )
         else:
             pass
         if max_speech_input_chars is not None and (
@@ -187,6 +199,7 @@ class SpeechRequestValidator:
             else frozenset()
         )
         self.required_speech_reference_count = required_speech_reference_count
+        self.speaker_embedding_size = speaker_embedding_size
         self.speech_reference_text_required = speech_reference_text_required
         self.max_speech_input_chars = max_speech_input_chars
         self.speech_reference_text_excludes_instructions = (
@@ -348,6 +361,7 @@ class SpeechRequestValidator:
         else:
             pass
         self.validate_custom_voice_request(request, task_type=updates.get("task_type"))
+        self.validate_speaker_embedding(request, task_type=updates.get("task_type"))
         if request.language is not None:
             updates["language"] = self.normalize_language(request.language)
         else:
@@ -403,6 +417,78 @@ class SpeechRequestValidator:
             f"Unknown voice '{request.voice}'. Supported voices: {supported}",
             param="voice",
         )
+
+    def validate_speaker_embedding(
+        self,
+        request: CreateSpeechRequest | CreateSpeechBatchRequest,
+        *,
+        task_type: str | None,
+    ) -> None:
+        references = request.references or []
+        embedded_indexes = [
+            index
+            for index, reference in enumerate(references)
+            if reference.speaker_embedding is not None
+        ]
+        if not embedded_indexes:
+            return
+        else:
+            pass
+        index = embedded_indexes[0]
+        reference = references[index]
+        param = f"references.{index}.speaker_embedding"
+        if self.speaker_embedding_size is None:
+            raise bad_request(
+                "speaker_embedding is not supported by this model", param=param
+            )
+        elif len(references) != 1 or request.ref_audio is not None:
+            raise bad_request(
+                "a reference given as speaker_embedding must be the only reference",
+                param=param,
+            )
+        elif any(
+            value is not None
+            for value in (
+                reference.audio_path,
+                reference.ref_audio,
+                reference.audio,
+                reference.data,
+                reference.vq_codes,
+            )
+        ):
+            raise bad_request(
+                "a reference given as speaker_embedding cannot also carry audio or "
+                "vq_codes",
+                param=param,
+            )
+        elif len(reference.speaker_embedding) != self.speaker_embedding_size:
+            raise bad_request(
+                f"speaker_embedding must contain {self.speaker_embedding_size} "
+                f"values, got {len(reference.speaker_embedding)}",
+                param=param,
+            )
+        elif not bool(
+            torch.isfinite(
+                torch.tensor(reference.speaker_embedding, dtype=torch.float32)
+            ).all()
+        ):
+            raise bad_request(
+                "speaker_embedding values must be finite float32 numbers",
+                param=param,
+            )
+        elif request.x_vector_only_mode is False:
+            raise bad_request(
+                "speaker_embedding implies x-vector-only mode; omit "
+                "x_vector_only_mode or set it to true",
+                param="x_vector_only_mode",
+            )
+        elif task_type is not None and task_type != "Base":
+            raise bad_request(
+                "speaker_embedding is only supported for the Base task",
+                param="task_type",
+            )
+        else:
+            pass
 
     def normalize_language(self, value: str) -> str:
         normalized = self.tts_language_aliases.get(value.strip().lower())
@@ -765,6 +851,7 @@ class SpeechRequestValidator:
             else None
         )
         self.validate_custom_voice_request(batch, task_type=task_type)
+        self.validate_speaker_embedding(batch, task_type=task_type)
         if batch.language is not None:
             self.normalize_language(batch.language)
         else:
@@ -902,6 +989,28 @@ class SpeechRequestValidator:
                     )
                 else:
                     pass
+            else:
+                pass
+        references = payload.get("references")
+        for index, reference in enumerate(
+            references if isinstance(references, list) else []
+        ):
+            value = (
+                reference.get("speaker_embedding")
+                if isinstance(reference, Mapping)
+                else None
+            )
+            if value is not None and (
+                not isinstance(value, list)
+                or any(
+                    isinstance(item, bool) or not isinstance(item, (int, float))
+                    for item in value
+                )
+            ):
+                raise bad_request(
+                    "speaker_embedding must be a list of numbers",
+                    param=f"references.{index}.speaker_embedding",
+                )
             else:
                 pass
         for field_name in (
