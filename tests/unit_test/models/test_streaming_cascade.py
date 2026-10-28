@@ -1104,6 +1104,41 @@ async def test_a_dialog_without_audio_answers_the_next_utterance_after_a_cancell
     ]
 
 
+def dialog_stage(identity):
+    """The text dialog under its session scheduler, a builder of the stage's operations, and a runner of one on its own thread."""
+    settings = ComponentGraphConfig.model_validate(yaml.safe_load(TEXT_ONLY_STOPPABLE))
+    scheduler = SessionScheduler(
+        ComponentHooks("dialog", settings, timeout_s=5), max_concurrency=2
+    )
+
+    def operation(request_id, kind, chunk=None, *, should_preempt=False):
+        metadata = operation_metadata(
+            kind, identity, chunk, should_preempt=should_preempt
+        )
+        return StagePayload(request_id, OmniRequest(None, metadata=metadata), {})
+
+    def start(payload):
+        scheduler.inbox.put(IncomingMessage(payload.request_id, "new_request", payload))
+        message = scheduler.inbox.get_nowait()
+        thread = threading.Thread(target=scheduler.compute, args=(message.data,))
+        thread.start()
+        return thread
+
+    return scheduler, operation, start
+
+
+def streamed(scheduler):
+    """The request id and chunk of each stream message the stage sent so far."""
+    messages = []
+    while not scheduler.outbox.empty():
+        message = scheduler.outbox.get_nowait()
+        if message.type == "stream":
+            messages.append((message.request_id, TimedChunk.from_dict(message.data)))
+        else:
+            pass
+    return messages
+
+
 def test_a_client_cancel_while_a_dialog_append_is_in_flight_keeps_the_session(
     monkeypatch,
 ):
@@ -1120,25 +1155,8 @@ def test_a_client_cancel_while_a_dialog_append_is_in_flight_keeps_the_session(
         handle(dialog, chunk)
 
     monkeypatch.setattr(Dialog, "handle", held_handle)
-    settings = ComponentGraphConfig.model_validate(yaml.safe_load(TEXT_ONLY_STOPPABLE))
-    scheduler = SessionScheduler(
-        ComponentHooks("dialog", settings, timeout_s=5), max_concurrency=2
-    )
     identity = SessionIdentity("session")
-
-    def operation(request_id, kind, chunk=None, *, should_preempt=False):
-        metadata = operation_metadata(
-            kind, identity, chunk, should_preempt=should_preempt
-        )
-        return StagePayload(request_id, OmniRequest(None, metadata=metadata), {})
-
-    def start(payload):
-        scheduler.inbox.put(IncomingMessage(payload.request_id, "new_request", payload))
-        message = scheduler.inbox.get_nowait()
-        thread = threading.Thread(target=scheduler.compute, args=(message.data,))
-        thread.start()
-        return thread
-
+    scheduler, operation, start = dialog_stage(identity)
     compute_registered(scheduler, operation("open", "open"))
     scheduler.inbox.put(
         IncomingMessage("read", "new_request", operation("read", "read"))
@@ -1156,20 +1174,58 @@ def test_a_client_cancel_while_a_dialog_append_is_in_flight_keeps_the_session(
         thread.join(10)
     assert not question.is_alive() and not cancel.is_alive()
     assert identity in scheduler.open_sessions
-    streamed = []
-    while not scheduler.outbox.empty():
-        message = scheduler.outbox.get_nowait()
-        if message.type == "stream":
-            streamed.append(TimedChunk.from_dict(message.data))
-        else:
-            pass
-    assert prompts(streamed) == [
+    assert prompts([chunk for _, chunk in streamed(scheduler)]) == [
         [("system", DialogConfig().system_prompt), ("user", "hi")]
     ]
     later = compute_registered(
         scheduler, operation("later", "append", transcript_chunk("again", True))
     )
     assert later.data == {"accepted": True}
+    compute_registered(scheduler, operation("close", "close"))
+
+
+def test_a_client_cancel_while_the_dialog_interrupts_its_reply_keeps_the_interrupt(
+    monkeypatch,
+):
+    """A client cancel that lands as the dialog cuts its reply for speech.started leaves the dialog's interrupt to reach the graph, since every dialog output goes out on the session's read."""
+    identity = SessionIdentity("session")
+    scheduler, operation, _ = dialog_stage(identity)
+    interrupt_reply = Dialog.interrupt_reply
+
+    def preempted_interrupt_reply(dialog):
+        scheduler.inbox.put(
+            IncomingMessage(
+                "cancel",
+                "new_request",
+                operation(
+                    "cancel", "control", control_chunk(INTERRUPT), should_preempt=True
+                ),
+            )
+        )
+        assert scheduler.append_cancel_events["speech"].is_set()
+        interrupt_reply(dialog)
+
+    monkeypatch.setattr(Dialog, "interrupt_reply", preempted_interrupt_reply)
+    compute_registered(scheduler, operation("open", "open"))
+    scheduler.inbox.put(
+        IncomingMessage("read", "new_request", operation("read", "read"))
+    )
+    compute_registered(
+        scheduler, operation("question", "append", transcript_chunk("hi", True))
+    )
+    speech = compute_registered(
+        scheduler, operation("speech", "append", control_chunk(SPEECH_STARTED))
+    )
+    assert speech.data == {"accepted": True}
+    scheduler.compute(scheduler.inbox.get_nowait().data)
+    assert identity in scheduler.open_sessions
+    outputs = streamed(scheduler)
+    assert [
+        (control_type(chunk), chunk.turn)
+        for _, chunk in outputs
+        if control_type(chunk) in (INTERRUPT, TURN_INTERRUPTED)
+    ] == [(INTERRUPT, 1), (TURN_INTERRUPTED, 1)]
+    assert {request_id for request_id, _ in outputs} == {"read"}
     compute_registered(scheduler, operation("close", "close"))
 
 

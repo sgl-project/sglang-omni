@@ -49,7 +49,6 @@ class ComponentSession:
         self.emit: ChunkEmitter | None = None
         self.fail: Callable[[BaseException], None] | None = None
         self.failure: BaseException | None = None
-        self.append_emit: ChunkEmitter | None = None
         self.is_speaking = False
         self.pending_settings: ComponentGraphConfig | None = None
         self.is_closing = False
@@ -78,11 +77,11 @@ class ComponentSession:
             pass
 
     def output(self, chunk: TimedChunk) -> None:
-        emit = self.append_emit or self.emit
-        if emit is None:
+        # note (luojiaxuan): every output goes out on the session's read, also while an append is in flight: a preempt drops what a cancelled append streams back, and an append only hands its chunk to the component's task.
+        if self.emit is None:
             raise RuntimeError("component has no output reader")
         else:
-            emit(chunk)
+            self.emit(chunk)
 
     async def inputs(self) -> AsyncIterator[TimedChunk]:
         while (item := await self.queue.get()) is not None:
@@ -90,7 +89,7 @@ class ComponentSession:
             yield chunk
             consumed.set_result(None)
 
-    async def append(self, chunk: TimedChunk, emit: ChunkEmitter) -> None:
+    async def append(self, chunk: TimedChunk) -> None:
         assert self.task is not None
         if self.task.done():
             self.task.result()
@@ -105,36 +104,30 @@ class ComponentSession:
             raise ValueError("PCM16 byte length must match duration_ms")
         else:
             pass
-        self.append_emit = emit
-        try:
-            await self.apply_pending()
-            event = control_type(chunk)
-            if event == CONFIGURE:
-                await self.configure(chunk)
-                return
-            elif event == SPEECH_STARTED or (chunk.format == PCM16 and chunk.payload):
-                self.is_speaking = True
-            elif event in (SPEECH_STOPPED, COMMIT):
-                self.is_speaking = False
-            else:
-                pass
-            consumed = asyncio.get_running_loop().create_future()
-            await self.queue.put((replace(chunk, eos=False), consumed))
-            await asyncio.wait(
-                {consumed, self.task}, return_when=asyncio.FIRST_COMPLETED
-            )
-            if self.task.done():
-                self.task.result()
-                raise RuntimeError("component stopped while handling input")
-            elif chunk.eos:
-                self.is_input_ended = True
-                await self.queue.put(None)
-                await self.task
-            else:
-                pass
-            await self.apply_pending()
-        finally:
-            self.append_emit = None
+        await self.apply_pending()
+        event = control_type(chunk)
+        if event == CONFIGURE:
+            await self.configure(chunk)
+            return
+        elif event == SPEECH_STARTED or (chunk.format == PCM16 and chunk.payload):
+            self.is_speaking = True
+        elif event in (SPEECH_STOPPED, COMMIT):
+            self.is_speaking = False
+        else:
+            pass
+        consumed = asyncio.get_running_loop().create_future()
+        await self.queue.put((replace(chunk, eos=False), consumed))
+        await asyncio.wait({consumed, self.task}, return_when=asyncio.FIRST_COMPLETED)
+        if self.task.done():
+            self.task.result()
+            raise RuntimeError("component stopped while handling input")
+        elif chunk.eos:
+            self.is_input_ended = True
+            await self.queue.put(None)
+            await self.task
+        else:
+            pass
+        await self.apply_pending()
 
     async def configure(self, chunk: TimedChunk) -> None:
         settings = (self.pending_settings or self.settings).apply(
@@ -239,18 +232,9 @@ class ComponentHooks(SessionHooks):
     def append(
         self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
     ) -> StagePayload:
-        session = self.sessions[context.session_identity]
-
-        def emit(output: TimedChunk) -> None:
-            # note (luojiaxuan): a preempt drops what a cancelled append streams back, but this append only hands the chunk to the component, so what the component sends meanwhile goes out on the session's read.
-            if context.cancelled.is_set():
-                session.emit(output)
-            else:
-                context.emit(output)
-
         # note (luojiaxuan): the component's own task takes an interrupt as a control, so a preempt leaves the handoff to finish rather than losing the chunk and closing the session.
         future = asyncio.run_coroutine_threadsafe(
-            session.append(chunk, emit), self.loop
+            self.sessions[context.session_identity].append(chunk), self.loop
         )
         try:
             future.result(self.timeout_s)
