@@ -71,6 +71,7 @@ from sglang_omni.scheduling.engine_factory import (
     SGLangGenerationEngineBuilder,
 )
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
+from sglang_omni.scheduling.stage_kv_budget import peek_stage_kv_cache_bytes
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 
 FISH_OMNI_ARCHITECTURE = "FishOmniModel"
@@ -157,7 +158,10 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
 
     def adjust_overrides(self, overrides: dict[str, object]) -> None:
         overrides.setdefault("page_size", 1)
-        if overrides.get("max_total_tokens") is None:
+        if (
+            overrides.get("max_total_tokens") is None
+            and peek_stage_kv_cache_bytes() is None
+        ):
             max_request_count = overrides["max_running_requests"]
             assert isinstance(max_request_count, int)
             # Drama 3 disables prefix caching, so only live contexts consume KV rows.

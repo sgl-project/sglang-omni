@@ -179,7 +179,7 @@ Change the cap with `--tts_engine.factory.max_prompt_rows`. A prompt and its `ma
 
 The engine defaults `max_total_tokens` to `context_length × max_running_requests`: 262144 tokens with the default context length of 16384 and 16 running requests. The memory budget may produce a smaller pool. Drama 3 disables prefix caching, so KV capacity beyond all live request contexts cannot serve additional requests; bounding it leaves memory available for prefill and audio decoding without reducing the context length or request limit.
 
-An explicit `--tts_engine.engine.max_total_tokens` overrides this default. Smaller pools can make requests wait or retract; larger pools require more GPU memory. Request admission still follows the existing prefill, KV and request-slot budgets.
+An explicit `--tts_engine.engine.max_total_tokens` overrides this default. When `engine.kv_cache_bytes` is set, the builder leaves `max_total_tokens` unset and delegates sizing and support checks to the byte-budget path. The two capacity settings cannot be specified together. Smaller pools can make requests wait or retract; larger pools require more GPU memory. Request admission still follows the existing prefill, KV and request-slot budgets.
 
 ## Attention Backend
 

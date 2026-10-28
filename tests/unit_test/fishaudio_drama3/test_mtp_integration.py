@@ -89,6 +89,10 @@ from sglang_omni.scheduling.generation_batch_policy import (
 )
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
+from sglang_omni.scheduling.stage_kv_budget import (
+    consume_stage_kv_cache_bytes,
+    stage_kv_cache_budget,
+)
 from sglang_omni.scheduling.types import (
     ModelRunnerOutput,
     RequestOutput,
@@ -2328,6 +2332,21 @@ def test_engine_bounds_default_kv_capacity_and_honors_explicit_limits(
 
     assert server_args.max_total_tokens == expected_max_total_tokens
     assert server_args.context_length == context_length
+
+
+@pytest.mark.parametrize("overrides", [{}, {"max_total_tokens": None}])
+def test_engine_leaves_kv_capacity_to_explicit_byte_budget(
+    tmp_path: Path, overrides: dict[str, int | None]
+) -> None:
+    """An explicit byte budget must not acquire an automatic token cap."""
+    kv_cache_bytes = 2 * 1024**3
+    with stage_kv_cache_budget("tts_engine", kv_cache_bytes):
+        builder, server_args = engine_server_args(tmp_path, overrides)
+
+        builder.validate_before_infrastructure(server_args)
+
+        assert server_args.max_total_tokens is None
+        assert consume_stage_kv_cache_bytes() == kv_cache_bytes
 
 
 def test_engine_context_must_fit_the_tower_rope_table(
