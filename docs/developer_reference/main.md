@@ -123,16 +123,18 @@ Run `pre-commit run --all-files` before submitting a change.
 
 ## Documentation checks
 
-The `doc-style` hook rejects emoji in `docs/**/*.md`, including inline code and URLs,
-while allowing text presentation. Only top-level fences indented by up to three spaces
-are exempt; fences nested in lists or blockquotes are not supported. Unclosed fences
-are reported at their opening line. The checker reports file/line diagnostics without
-modifying files (exit 0: clean, 1: violations).
+The `doc-style` hook scans `docs/**/*.md` and runs when Markdown, RST navigation, or checker files change. It reports file/line diagnostics without modifying files (exit 0: clean, 1: violations).
+
+- Emoji are rejected, including in inline code and URLs, while text presentation is allowed. Only top-level fences indented by up to three spaces are exempt; fences nested in lists or blockquotes are not supported.
+- Opening code fences need a non-empty info string, such as `python`, `text`, or `mermaid`. Unclosed fences are reported at their opening line.
+- Markdown basenames must match `[a-z0-9_]+.md`, except `docs/README.md`.
+- Pages must appear in an explicit RST toctree entry, except the documented non-sidebar pages listed in the checker. Entries can include titles and omit the Markdown extension; relative paths resolve from the containing RST file.
+- Prose must use `CUDA`, `MLX`, `OpenAI`, `SGLang`, and `Hugging Face` instead of `Cuda`, `Mlx`, `Openai`, `Sglang`, and `Huggingface`. Fences, inline code, and URLs are excluded from this spelling check.
+- Identical fenced bodies in multiple files are rejected when they contain at least six lines and 200 characters after stripping trailing whitespace. Every matching location is reported.
 
 ```bash
 python -m pip install -r scripts/requirements-doc-lint.txt
 python scripts/check_doc_style.py
 ```
 
-When upgrading `emoji`, recheck the supplements for standalone regional indicators
-and `[0-9#*]` followed by VS16.
+When upgrading `emoji`, recheck the supplements for standalone regional indicators and `[0-9#*]` followed by VS16.

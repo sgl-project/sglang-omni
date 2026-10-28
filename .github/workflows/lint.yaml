@@ -62,8 +62,8 @@ jobs:
       - name: Install documentation lint dependencies
         run: python -m pip install -r scripts/requirements-doc-lint.txt pytest
 
-      - name: Test documentation emoji checker
-        run: python -m pytest tests/unit_test/scripts/test_check_doc_style.py -q
+      - name: Test documentation style checker
+        run: python -m pytest tests/unit_test/scripts/test_check_doc_style*.py -q
 
   playback-test:
     runs-on: ubuntu-latest

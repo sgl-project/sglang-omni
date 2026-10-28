@@ -231,6 +231,9 @@ def test_check_docs_scans_all_markdown_files_recursively(tmp_path: Path) -> None
     (docs_root / "clean.md").write_text("# Clean\n", encoding="utf-8")
     nested_path = nested_root / "guide.md"
     nested_path.write_text("# Guide\n\nNested 😀.\n", encoding="utf-8")
+    (docs_root / "index.rst").write_text(
+        ".. toctree::\n\n   clean\n   nested/deeper/guide\n", encoding="utf-8"
+    )
     (docs_root / "ignored.txt").write_text("😀\n", encoding="utf-8")
 
     violations = check_docs(docs_root)
@@ -250,6 +253,9 @@ def copy_script_fixture(tmp_path: Path, document_text: str) -> tuple[Path, Path]
     script_path.parent.mkdir(parents=True)
     document_path.parent.mkdir(parents=True)
     shutil.copy2(SCRIPT, script_path)
+    (repository_root / "docs" / "index.rst").write_text(
+        ".. toctree::\n\n   guide\n", encoding="utf-8"
+    )
     document_path.write_text(document_text, encoding="utf-8")
     return repository_root, document_path
 
@@ -277,12 +283,18 @@ def test_cli_scans_the_copied_script_fixture(
     if expected_exit_code == 0:
         assert result.stderr == ""
     else:
-        expected_diagnostic = (
-            "unclosed-fence: unclosed code fence"
-            if "```" in document_text
-            else "no-emoji: remove emoji sequence '😀'"
-        )
-        assert result.stderr == f"docs/{document_path.name}:3: {expected_diagnostic}\n"
+        if "```" in document_text:
+            expected_stderr = (
+                f"docs/{document_path.name}:3: fence-language: "
+                "opening fence needs a non-empty info string\n"
+                f"docs/{document_path.name}:3: unclosed-fence: unclosed code fence\n"
+            )
+        else:
+            expected_stderr = (
+                f"docs/{document_path.name}:3: no-emoji: "
+                "remove emoji sequence '😀'\n"
+            )
+        assert result.stderr == expected_stderr
 
 
 def test_cli_rejects_arguments_with_exit_status_two(tmp_path: Path) -> None:
