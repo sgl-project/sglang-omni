@@ -150,6 +150,17 @@ def test_image_input_without_generation_config_remains_chat(
     )
     assert response.status_code == 200
     assert "image_generation" not in coordinator.requests[0].metadata
+    # Chat returns no image here, so image output points to the image routes.
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "Draw a cat"}],
+            "modalities": ["text", "image"],
+        },
+    )
+    assert response.status_code == 400
+    assert "/v1/images/generations" in response.json()["detail"]
+    assert len(coordinator.requests) == 1
 
 
 @pytest.mark.parametrize(
