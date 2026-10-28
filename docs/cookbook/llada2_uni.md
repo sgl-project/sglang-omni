@@ -96,10 +96,9 @@ the global communication default.
 
 ### Optional H20 TP2 MoE Tuning
 
-For LLaDA2.0-Uni BF16 on NVIDIA H20-3e with TP2, SGLang 0.5.20 and
-Triton 3.7.1, this checkout includes tuned gate/up and down-projection
-configurations in `examples/tuning/llada2_uni/h20_tp2`. Enable them explicitly
-when starting the server from the repository root:
+For LLaDA2.0-Uni BF16 on NVIDIA H20-3e with TP2, this checkout includes gate/up and down-projection configurations originally tuned with SGLang 0.5.20 and Triton 3.7.1. They were also validated with SGLang 0.5.22, Torch 2.14.1, and Triton 3.8.0 through SGLang's configuration-version fallback. This is reuse of existing tuning, not a new Triton 3.8.0 tuning sweep.
+
+Set `SGLANG_MOE_CONFIG_DIR` explicitly when starting the server from the repository root. Installing or upgrading SGLang does not install these repository configurations into its runtime directory. A launcher that clears inherited environment variables must pass this setting to the server process again.
 
 ```bash
 SGLANG_MOE_CONFIG_DIR="$PWD/examples/tuning/llada2_uni/h20_tp2" \
@@ -111,13 +110,9 @@ CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve \
   --thinker.engine.cuda_graph_bs '[1, 2, 3, 4]'
 ```
 
-The TP workers inherit the environment variable. SGLang's existing MoE
-loader reads `configs/triton_3_7_1/` beneath that directory; do not point the
-variable at the `configs` subdirectory. Both JSON files are needed: the
-`_down.json` configuration enables the existing down-projection TMA path.
-No SGLang installation files or kernel implementations need changing.
-Startup or first-forward logs should report `Using MoE kernel config from`
-paths inside this checkout for both files.
+The TP workers inherit the environment variable. Point it at the absolute directory containing `configs/`, not at `configs/` itself. Keep both JSON files: `_down.json` enables the existing down-projection TMA path. No SGLang installation files or kernel implementations need changing.
+
+Check startup or first-forward logs for both `E=256,N=256` configuration paths inside this checkout. Triton 3.7.1 reports `Using MoE kernel config from`; the validated SGLang 0.5.22 / Triton 3.8.0 stack reports `Fallback to triton version 3.7.1 and use MoE kernel config from`. That version-fallback warning is expected for these files. `Using default MoE kernel config` instead means the requested tuned configuration was not loaded.
 
 The configurations were tuned with SGLang's fused-MoE benchmark for
 32/64/96/128 input-token rows, covering common DLLM block and CFG shapes.
@@ -125,13 +120,21 @@ The configurations were tuned with SGLang's fused-MoE benchmark for
 SGLang chooses the nearest token-count entry for other shapes; larger
 prefill shapes were not separately tuned.
 
-This environment variable replaces the entire MoE configuration search
-root, rather than extending the installed configuration library. Omit it
-for TP1, other models, quantized weights, or other hardware/software
-combinations unless they have their own validated configurations. Set it
-before launching workers and restart the server when changing files because
-SGLang caches loaded configurations. The regular TP command above remains
-available without this optional tuning.
+This environment variable replaces the entire MoE configuration search root, rather than extending the installed configuration library. Omit it for TP1, other models, quantized weights, or unvalidated hardware/software combinations. Set it before launching workers and restart the server when changing files because SGLang caches loaded configurations. The regular TP command above remains available without this optional tuning.
+
+On H20-3e, a matched-request comparison measured the following Thinker stage times (seconds, median of three requests after two warmups):
+
+| Configuration | T2I | Edit |
+| --- | ---: | ---: |
+| SGLang 0.5.20, TP1 | 6.557 | 3.130 |
+| SGLang 0.5.20, TP2 with tuning | 5.186 | 2.803 |
+| SGLang 0.5.22, TP1 | 6.543 | 3.097 |
+| SGLang 0.5.22, TP2 with default configuration | 5.794 | 2.897 |
+| SGLang 0.5.22, TP2 with repository tuning | 5.195 | 2.806 |
+
+Both versions used BF16, SGLang TopK, CUDA Graphs, compilation disabled, 32 dLLM steps, text CFG 4, edit image CFG 1.5, CFG rescale 0.7, seed 42, and eight decoder-turbo steps with the SGLang `torch_sdpa` decoder. T2I used a 1024x1024 shipwreck prompt; edit used a raw turtle image with a shell-smoothing instruction. The TopK override above must be added to the launch command to reproduce these measurements; the default remains Torch routing. Runs were serial with exclusive GPUs. Times cover Thinker dispatch through completion, not HTTP E2E or isolated kernel execution.
+
+Explicit tuning reduced the new stack's TP2 Thinker latency by 10.3% for T2I and 3.1% for edit, bringing it within 0.2% of the old tuned stack on these requests. Its TP1-to-TP2 speedups were 1.26x and 1.10x. T2I output was pixel-identical before and after tuning, while edit output changed (RGB MAE 9.47 on a 0-255 scale). These sample checks do not establish full-benchmark accuracy equivalence; no new MMMU or ImgEdit score is implied.
 
 ## Image Generation and Editing
 
