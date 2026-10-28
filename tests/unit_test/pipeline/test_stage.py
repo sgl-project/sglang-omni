@@ -272,15 +272,18 @@ def test_stage_process_accepts_iterable_dynamic_wait_sources() -> None:
 def test_stage_run_raises_when_scheduler_thread_crashes() -> None:
     async def run() -> None:
         scheduler = FakeScheduler(fail_start=RuntimeError("boom"))
+        reported = threading.Event()
         stage_obj = make_stage(
             scheduler=scheduler,
             control_plane=CloseAwareControlPlane(),
+            process_failure_callback=reported.set,
         )
 
         with pytest.raises(RuntimeError, match="Scheduler thread"):
             await asyncio.wait_for(stage_obj.run(), timeout=2.0)
 
         assert scheduler.stopped is True
+        assert reported.is_set()
 
     asyncio.run(run())
 
@@ -1736,6 +1739,27 @@ def test_aborted_request_id_resubmit_fails_without_new_state() -> None:
         assert "req-1" not in stage.active_requests
         assert "req-1" not in stage.replica_bindings
         assert "req-1" in stage.aborted
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("role", ["leader", "follower"])
+def test_tp_rank_runs_fanned_out_work_after_abort(role: str) -> None:
+    async def run() -> None:
+        scheduler = SimpleScheduler(lambda payload: payload)
+        stage = make_stage(role=role, scheduler=scheduler, tp_fanout=Mock())
+        payload = make_stage_payload(request_id="req-1")
+        if role == "leader":
+            await stage.execute(payload)
+            stage.on_abort("req-1")
+        else:
+            stage.on_abort("req-1")
+            await stage.execute(payload)
+        threading.Thread(target=scheduler.start, daemon=True).start()
+        try:
+            assert scheduler.outbox.get(timeout=5).request_id == "req-1"
+        finally:
+            scheduler.stop()
 
     asyncio.run(run())
 

@@ -49,6 +49,8 @@ class PendingSessionChunk:
     chunk: TimedChunk
     encoded_bytes: int
     request_id: str
+    # note (luojiaxuan): the chunk is a fragment the next input continues; it goes only to the route's first owner.
+    continues: bool
 
 
 def check_timing(chunk: TimedChunk, modality_end_ms: dict[str, float] | None) -> None:
@@ -390,10 +392,13 @@ class CoordinatorSessions:
         *,
         ready_timestamp_ns: int | None = None,
         ready_run_id: str | None = None,
+        continues: bool = False,
     ) -> int:
         """Accept input in global seq order, independently of output consumption.
 
-        Rejected input keeps its seq for retry; accepted input must not be resubmitted.
+        Rejected input keeps its seq for retry; accepted input must not be
+        resubmitted. A chunk that `continues` is a fragment of a graph node's
+        chunk over max_chunk_bytes, and the next input continues it.
         """
         graph = self.graphs.get(session_identity.id)
         if graph is not None and graph.session_identity == session_identity:
@@ -426,6 +431,7 @@ class CoordinatorSessions:
                 chunk=chunk,
                 encoded_bytes=encoded_bytes,
                 request_id=request_id,
+                continues=continues,
             )
         )
         session.pending_count += 1
@@ -581,16 +587,21 @@ class CoordinatorSessions:
                 chunk = pending_chunk.chunk
                 session.in_flight_append = "accepted"
                 try:
+                    operation = "fragment" if pending_chunk.continues else "append"
                     request_id = await self.submit_session_operation(
                         session,
-                        "append",
+                        operation,
+                        owner=session.stages[0] if pending_chunk.continues else None,
                         chunk=chunk,
                         request_id=pending_chunk.request_id,
                     )
-                    session.submitted_appends[request_id] = chunk
+                    if operation == "append":
+                        session.submitted_appends[request_id] = chunk
+                    else:
+                        pass
                     session.in_flight_append = "submitted"
                     session.wake.set()
-                    await self.finish_session_operation(session, "append", request_id)
+                    await self.finish_session_operation(session, operation, request_id)
                     self.emit_session_output(
                         session,
                         pending_chunk.request_id,

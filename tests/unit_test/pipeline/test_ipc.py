@@ -464,6 +464,9 @@ async def test_mp_runner_stop_cleans_runtime_dir(
         async def wait_ready(self, timeout: float) -> None:
             del timeout
 
+        def failure_summary(self) -> str:
+            return ""
+
         def any_dead(self) -> bool:
             return False
 
