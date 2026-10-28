@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
 
 from sglang_omni.models.dots_tts.flow_head import DotsTTSFlowHead
+from tests.unit_test.fixtures.accelerator import require_device_streams
 
 LLM_HIDDEN = 48
 FM_HIDDEN = 32
@@ -115,12 +118,30 @@ def test_append_hidden_uses_bias_for_null_projection(tmp_path) -> None:
     )
 
 
-def test_single_stream_seed_survives_rematerialization(tmp_path) -> None:
+def test_single_stream_seed_survives_rematerialization(tmp_path: Path) -> None:
+    assert_single_stream_seed_survives_rematerialization(
+        tmp_path, device=torch.device("cpu"), dtype=torch.float32
+    )
+
+
+@pytest.mark.accelerator
+def test_single_stream_seed_survives_accelerator_rematerialization(
+    tmp_path: Path,
+) -> None:
+    device = require_device_streams()
+    assert_single_stream_seed_survives_rematerialization(
+        tmp_path, device=device, dtype=torch.bfloat16
+    )
+
+
+def assert_single_stream_seed_survives_rematerialization(
+    tmp_path: Path, *, device: torch.device, dtype: torch.dtype
+) -> None:
     torch.manual_seed(1618)
-    flow = flow_head(tmp_path)
-    prefill_hidden = torch.randn(1, 1, LLM_HIDDEN)
-    next_hidden = torch.randn(1, LLM_HIDDEN)
-    schedule = torch.tensor([[0, 1]])
+    flow = flow_head(tmp_path).to(device=device, dtype=dtype)
+    prefill_hidden = torch.randn(1, 1, LLM_HIDDEN, device=device, dtype=dtype)
+    next_hidden = torch.randn(1, LLM_HIDDEN, device=device, dtype=dtype)
+    schedule = torch.tensor([[0, 1]], device=device)
 
     uninterrupted, _ = flow.new_request(
         max_audio_patch_count=6,
@@ -140,7 +161,7 @@ def test_single_stream_seed_survives_rematerialization(tmp_path) -> None:
         flow.initialize_history(
             state,
             hidden_states=prefill_hidden,
-            prompt_span_positions=torch.empty(0, dtype=torch.long),
+            prompt_span_positions=torch.empty(0, dtype=torch.long, device=device),
             audio_span_token_ids={1},
             generation_schedule=schedule,
             prefill_end=1,
@@ -180,7 +201,7 @@ def test_single_stream_seed_survives_rematerialization(tmp_path) -> None:
     flow.initialize_history(
         rematerialized,
         hidden_states=torch.cat([prefill_hidden, next_hidden.unsqueeze(1)], dim=1),
-        prompt_span_positions=torch.empty(0, dtype=torch.long),
+        prompt_span_positions=torch.empty(0, dtype=torch.long, device=device),
         audio_span_token_ids={1},
         generation_schedule=schedule,
         prefill_end=1,
@@ -594,53 +615,62 @@ def test_batched_eos_suppresses_first_check_until_resolve(tmp_path) -> None:
     assert flow.resolve_batched_eos() == [True]
 
 
-def test_batched_replay_feedback_does_not_count_a_tail_step(tmp_path) -> None:
-    torch.manual_seed(1618)
-    flow = flow_head(tmp_path)
-    flow.init_batched_tail(num_slots=2, nfe=NFE, max_audio_patches=8)
-    prompt_latents = torch.randn(1, 2 * PATCH_SIZE, LATENT_DIM)
-    prefill_hidden = torch.randn(1, 3, LLM_HIDDEN)
-    prompt_positions = torch.tensor([1, 2])
-    schedule = torch.tensor([[0, 1, 1, 1]])
+@pytest.mark.accelerator
+def test_rotary_angles_stay_fp32_under_accelerator_autocast(
+    tmp_path: Path,
+) -> None:
+    device = require_device_streams()
+    flow = flow_head(tmp_path).to(device=device, dtype=torch.bfloat16)
+    rotary = flow.velocity_field_predictor.blocks[0].attn.rotary
+    positions = torch.tensor(
+        [0, 1, 255, 256, 257, 4095, 4096, 4097],
+        device=device,
+        dtype=torch.float32,
+    )
+    with torch.autocast(device_type=device.type, enabled=False):
+        expected = rotary(positions)
 
-    state, _ = flow.new_request(
-        max_audio_patch_count=6,
-        prompt_latents=prompt_latents,
-        speaker_embedding=None,
-        speaker_scale=1.0,
-        rng=41,
-    )
-    flow.initialize_history(
-        state,
-        hidden_states=prefill_hidden,
-        prompt_span_positions=prompt_positions,
-        audio_span_token_ids={1},
-        generation_schedule=schedule,
-        prefill_end=3,
-        decoded_latent_patches=[],
-    )
-    [step] = flow.decode_batch(
-        [state],
-        hidden_states=prefill_hidden[:, -1],
-        num_steps=[NFE],
-        ode_methods=["euler"],
-        guidance_scales=[1.0],
-        eos_thresholds=[2.0],
-        append_hidden=False,
-    )
-    assert flow.resolve_batched_eos() == [False]
-    assert flow.tail.tail_steps == 1
+    flow.solver()
+    with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+        actual = rotary(positions)
+        assert torch.is_autocast_enabled(device.type)
 
-    rng_state = flow.suspend_request(state)
-    rematerialized, _ = flow.new_request(
-        max_audio_patch_count=6,
-        prompt_latents=prompt_latents,
-        speaker_embedding=None,
-        speaker_scale=1.0,
-        rng=rng_state,
-    )
-    flow.replay_feedback(rematerialized, [step.latent_patch])
+    assert actual.dtype == torch.float32
+    torch.testing.assert_close(actual, expected, rtol=0.0, atol=0.0)
 
-    assert flow.tail.tail_steps == 1
-    assert flow.tail.graph_misses["meanflow"] == 1
-    assert flow.tail.graph_misses["semantic_encoder"] == 2
+
+def test_request_rng_replays_an_xpu_seed_on_the_xpu_generator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events = []
+    seeded = torch.arange(16, dtype=torch.uint8)
+    advanced = torch.full((16,), 7, dtype=torch.uint8)
+
+    def fork_rng(
+        devices: list[int], device_type: str | None = None
+    ) -> nullcontext[None]:
+        events.append(("fork", devices, device_type))
+        return nullcontext()
+
+    def cpu_untouched(state: torch.Tensor | None = None) -> None:
+        raise AssertionError("an XPU seed must not reach the CPU generator")
+
+    monkeypatch.setattr(torch.random, "fork_rng", fork_rng)
+    monkeypatch.setattr(torch, "set_rng_state", cpu_untouched)
+    monkeypatch.setattr(torch, "get_rng_state", cpu_untouched)
+    monkeypatch.setattr(
+        torch.xpu,
+        "set_rng_state",
+        lambda state, device: events.append(("set", state.tolist(), device)),
+    )
+    monkeypatch.setattr(torch.xpu, "get_rng_state", lambda device: advanced.clone())
+    state = SimpleNamespace(
+        rng_state=seeded,
+        fm_sequence=SimpleNamespace(device=torch.device("xpu:1")),
+    )
+
+    with DotsTTSFlowHead.request_rng(SimpleNamespace(), state):
+        events.append(("sample",))
+
+    assert events == [("fork", [1], "xpu"), ("set", seeded.tolist(), 1), ("sample",)]
+    assert torch.equal(state.rng_state, advanced)

@@ -31,9 +31,13 @@ from sglang_omni.models.weight_loader import (
     resolve_dtype,
     resolve_model_path,
 )
-from sglang_omni.preprocessing.transcription import resolve_audio_source
+from sglang_omni.preprocessing.transcription import (
+    police_request_audio,
+    resolve_audio_source,
+)
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.utils.audio import load_audio
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.device import resolve_concrete_device
@@ -49,14 +53,16 @@ def perception_config(model_path: str) -> dict:
     return config["model"]["stt"]["model"]["perception"]
 
 
-def create_preprocessing_executor(model_path: str, **_):
+def create_preprocessing_executor(
+    model_path: str, *, max_concurrency: int = 4, **_
+) -> ThreadedSimpleScheduler[StagePayload, StagePayload]:
     del model_path
 
     def preprocess(payload: StagePayload) -> StagePayload:
         # Channel 0, not a downmix: this model speaks the other side of the
         # conversation, so a two-party recording carries the agent on channel 1.
         channels = load_audio(
-            resolve_audio_source(payload),
+            police_request_audio(resolve_audio_source(payload)),
             source_name="VoiceChat",
             target_sample_rate=INPUT_SAMPLE_RATE,
             mono=False,
@@ -67,6 +73,7 @@ def create_preprocessing_executor(model_path: str, **_):
             waveform = nn.functional.pad(waveform, (0, SAMPLES_PER_FRAME - remainder))
         else:
             pass
+        waveform = waveform.contiguous()
 
         state = NemotronVoiceChatState.from_dict(payload.data)
         state.waveform = waveform
@@ -74,7 +81,7 @@ def create_preprocessing_executor(model_path: str, **_):
         payload.data = state.to_dict()
         return payload
 
-    return SimpleScheduler(preprocess)
+    return ThreadedSimpleScheduler(preprocess, max_concurrency=max_concurrency)
 
 
 def create_perception_executor(

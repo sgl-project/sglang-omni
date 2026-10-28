@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The predictor kernels: the exact add-norm against the plain path; the fused layer
-against the plain path, an fp32 reference and its own buffer and cache contracts."""
+against the plain path, an fp32 reference and its own buffer and cache contracts; the
+decode attention against fp32 over stale slots."""
 
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ from sglang.srt.model_executor.cuda_graph_config import (
 from sglang.srt.runtime_context import get_context
 from torch import nn
 
+from sglang_omni.models.qwen3_omni.components import talker as talker_module
 from sglang_omni.models.qwen3_omni.components.talker import Qwen3OmniTalker
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
@@ -30,9 +32,12 @@ from sglang_omni.utils.predictor_layers import (
     HIDDEN_SIZE,
     MAX_FUSED_ROWS,
     add_rmsnorm_rounded,
+    codebook_step,
+    decode_attention,
     resolve_fused_predictor_layers,
     resolve_predictor_layer_shape,
     split_count,
+    supports_decode_attention,
     supports_exact_add_rmsnorm,
 )
 from tests.unit_test.fixtures.qwen_predictor import TupleLinear
@@ -58,7 +63,7 @@ class PlainLinear(TupleLinear):
 
     quant_method = UnquantizedLinearMethod()
     bias = None
-    tp_size = 1
+    tp_group = None
 
 
 class SwiGLU(nn.Module):
@@ -81,18 +86,20 @@ def norm_with_random_scale(device: torch.device, size: int) -> RMSNorm:
     return norm
 
 
-def build_layer(device: torch.device) -> SimpleNamespace:
+def build_layer(
+    device: torch.device, num_kv_heads: int = NUM_KV_HEADS
+) -> SimpleNamespace:
     attention = SimpleNamespace(
         hidden_size=HIDDEN,
         q_size=NUM_HEADS * HEAD_DIM,
-        kv_size=NUM_KV_HEADS * HEAD_DIM,
+        kv_size=num_kv_heads * HEAD_DIM,
         num_heads=NUM_HEADS,
-        num_kv_heads=NUM_KV_HEADS,
+        num_kv_heads=num_kv_heads,
         head_dim=HEAD_DIM,
         q_norm=norm_with_random_scale(device, HEAD_DIM),
         k_norm=norm_with_random_scale(device, HEAD_DIM),
         alt_stream=None,
-        qkv_proj=PlainLinear(HIDDEN, (NUM_HEADS + 2 * NUM_KV_HEADS) * HEAD_DIM).to(
+        qkv_proj=PlainLinear(HIDDEN, (NUM_HEADS + 2 * num_kv_heads) * HEAD_DIM).to(
             device, DTYPE
         ),
         o_proj=PlainLinear(NUM_HEADS * HEAD_DIM, HIDDEN).to(device, DTYPE),
@@ -151,6 +158,9 @@ def build_talker(
     )
     talker.predictor_rope_stores_kv = False
     talker.predictor_exact_add_norm = True
+    talker.predictor_triton_attention = supports_decode_attention(
+        NUM_HEADS, NUM_KV_HEADS, DTYPE
+    )
     talker.predictor_fused_layers = None
     return talker
 
@@ -334,6 +344,35 @@ def test_fused_layer_tracks_the_reference_like_the_plain_path(batch_size: int) -
 @accelerator
 @pytest.mark.accelerator
 @pytest.mark.usefixtures("published_server_args")
+@pytest.mark.parametrize("batch_size", [1, 16, 64])
+def test_plain_path_on_the_triton_attention_tracks_the_reference_like_sdpa(
+    batch_size: int,
+) -> None:
+    device = torch.device("cuda")
+    talker = build_talker(device, seed=41)
+    steps = predictor_inputs(device, batch_size, seed=42)
+    talker.predictor_triton_attention = False
+    sdpa = run_sequence(talker, steps)
+    talker.predictor_triton_attention = True
+    triton_attention = run_sequence(talker, steps)
+    reference = Reference(talker, batch_size)
+    cache_len = 0
+    with torch.no_grad():
+        for step, sdpa_out, triton_out in zip(steps, sdpa, triton_attention):
+            expected = reference.forward(step, cache_len)
+            sdpa_error = relative_error(sdpa_out, expected)
+            triton_error = relative_error(triton_out, expected)
+            assert triton_error <= 1.25 * sdpa_error + 1e-4, (
+                cache_len,
+                sdpa_error,
+                triton_error,
+            )
+            cache_len += step.shape[1]
+
+
+@accelerator
+@pytest.mark.accelerator
+@pytest.mark.usefixtures("published_server_args")
 def test_fused_layer_is_deterministic_and_batch_invariant() -> None:
     device = torch.device("cuda")
     talker = fuse(build_talker(device, seed=5))
@@ -461,15 +500,17 @@ def test_split_launches_leave_the_tile_counters_at_zero() -> None:
 @pytest.mark.usefixtures("published_server_args")
 def test_rows_beyond_the_batch_are_not_written() -> None:
     """The launches pad the batch to a tile of 16 rows; the padded rows must not reach
-    the q, residual or activation buffers, which later, larger batches read."""
+    the q, attention output, residual or activation buffers, which later, larger
+    batches read."""
     device = torch.device("cuda")
     talker = fuse(build_talker(device, seed=15))
     fused = talker.predictor_fused_layers
-    for buffer in (fused.q, fused.residual, fused.activated):
+    buffers = (fused.q, fused.attention_output, fused.residual, fused.activated)
+    for buffer in buffers:
         buffer.fill_(7.0)
     step = predictor_inputs(device, 3, seed=16)[1]
     run_sequence(talker, [step])
-    for buffer in (fused.q, fused.residual, fused.activated):
+    for buffer in buffers:
         assert torch.all(buffer[3:] == 7.0)
         assert not torch.all(buffer[:3] == 7.0)
 
@@ -503,11 +544,29 @@ def test_resolver_keeps_the_plain_path_for_a_partitioned_projection() -> None:
     """
     device = torch.device("cuda")
     talker = build_talker(device, seed=19)
-    talker.code_predictor.model.layers[1].mlp.down_proj.tp_size = 2
+    talker.code_predictor.model.layers[1].mlp.down_proj.tp_group = SimpleNamespace(
+        rank_in_group=0, world_size=2
+    )
     assert (
         resolve_predictor_layer_shape(talker.code_predictor, PREDICTOR_LEN, device)
         is None
     )
+
+
+@accelerator
+@pytest.mark.accelerator
+@pytest.mark.parametrize(("num_kv_heads", "is_fused"), [(2, True), (1, False)])
+def test_resolver_fuses_only_where_the_opening_pair_fits_one_attention_tile(
+    num_kv_heads: int, is_fused: bool
+) -> None:
+    """Fused only where the opening pair's two tokens by a kv head's q heads fit the
+    16-row attention tile; more rows would leave the pair's second token unwritten."""
+    device = torch.device("cuda")
+    code_predictor = SimpleNamespace(
+        model=SimpleNamespace(layers=[build_layer(device, num_kv_heads)])
+    )
+    shape = resolve_predictor_layer_shape(code_predictor, PREDICTOR_LEN, device)
+    assert (shape is not None) is is_fused
 
 
 def test_without_triton_the_predictor_keeps_the_plain_path(
@@ -588,3 +647,183 @@ def test_exact_add_rmsnorm_applies_to_the_predictor_shape_only(
     assert not supports_exact_add_rmsnorm(
         HIDDEN_SIZE, torch.bfloat16, torch.device("cpu")
     )
+
+
+def test_decode_attention_applies_to_bf16_caches_on_cuda_where_the_pair_fits_a_tile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(predictor_layers, "HAS_TRITON", True)
+    monkeypatch.setattr(predictor_layers, "current_platform", ROCMOmniPlatform())
+    assert not supports_decode_attention(NUM_HEADS, NUM_KV_HEADS, DTYPE)
+    monkeypatch.setattr(predictor_layers, "current_platform", CUDAOmniPlatform())
+    assert supports_decode_attention(NUM_HEADS, NUM_KV_HEADS, DTYPE)
+    assert not supports_decode_attention(NUM_HEADS, NUM_KV_HEADS, torch.float16)
+    assert not supports_decode_attention(NUM_HEADS, 1, DTYPE)
+
+
+@accelerator
+@pytest.mark.accelerator
+def test_codebook_step_matches_argmax_gather_and_add() -> None:
+    device = torch.device("cuda")
+    vocab, rows, column = 2048, 8, 5
+    generator = torch.Generator(device=device).manual_seed(7)
+    logits = torch.randn(rows, vocab, device=device, generator=generator).to(DTYPE)
+    logits[0, 9] = logits[0, 1700] = logits[0].max() + 1
+    logits[1, 30] = logits[1, 4] = float("nan")
+    logits[2] = float("-inf")
+    logits[3, 11] = logits[3, 2047] = float("inf")
+    weight = torch.randn(vocab, HIDDEN, device=device, generator=generator).to(DTYPE)
+    summed = torch.randn(rows, HIDDEN, device=device, generator=generator).to(DTYPE)
+    codes = torch.full((rows, NUM_CODE_GROUPS), -1, device=device, dtype=torch.long)
+    expected_codes = torch.argmax(logits, dim=-1)
+    expected_matrix = codes.clone()
+    expected_matrix[:, column] = expected_codes
+    expected_summed = summed.clone()
+    expected_summed.add_(weight[expected_codes])
+    codebook_input = codebook_step(logits, weight, codes[:, column], summed)
+    assert expected_codes[:4].tolist() == [9, 4, 0, 11]
+    assert torch.equal(codes, expected_matrix)
+    assert torch.equal(codebook_input[:, 0], weight[expected_codes])
+    assert torch.equal(summed, expected_summed)
+
+
+@accelerator
+@pytest.mark.accelerator
+@pytest.mark.parametrize(
+    ("tokens_per_row", "cache_len", "num_kv_heads"),
+    [(2, 0, NUM_KV_HEADS), (1, 9, NUM_KV_HEADS), (2, 0, 2)],
+)
+def test_decode_attention_tracks_fp32_and_reads_no_slot_past_a_rows_position(
+    tokens_per_row: int, cache_len: int, num_kv_heads: int
+) -> None:
+    device = torch.device("cuda")
+    generator = torch.Generator(device=device).manual_seed(34)
+    row_groups = 3
+    end = cache_len + tokens_per_row
+    qkv = torch.randn(
+        row_groups * tokens_per_row,
+        (NUM_HEADS + 2 * num_kv_heads) * HEAD_DIM,
+        device=device,
+        generator=generator,
+    ).to(DTYPE)
+    q = qkv[:, : NUM_HEADS * HEAD_DIM]
+    cache_shape = (row_groups, PREDICTOR_LEN, num_kv_heads, HEAD_DIM)
+    k_cache = torch.randn(cache_shape, device=device, generator=generator).to(DTYPE)
+    v_cache = torch.randn(cache_shape, device=device, generator=generator).to(DTYPE)
+    k_cache[:, end:] = float("nan")
+    v_cache[:, end:] = float("nan")
+    attention_output = torch.empty(q.shape, device=device, dtype=DTYPE)
+    decode_attention(
+        q=q,
+        tokens_per_row=tokens_per_row,
+        k_cache=k_cache,
+        v_cache=v_cache,
+        end=end,
+        attention_output=attention_output,
+    )
+    queries = q.view(row_groups, tokens_per_row, NUM_HEADS, HEAD_DIM).transpose(1, 2)
+    keys = k_cache[:, :end].transpose(1, 2)
+    values = v_cache[:, :end].transpose(1, 2)
+    expected = torch.nn.functional.scaled_dot_product_attention(
+        queries.float(),
+        keys.float(),
+        values.float(),
+        is_causal=tokens_per_row > 1,
+        enable_gqa=True,
+    )
+    sdpa = torch.nn.functional.scaled_dot_product_attention(
+        queries, keys, values, is_causal=tokens_per_row > 1, enable_gqa=True
+    )
+    actual = attention_output.view(
+        row_groups, tokens_per_row, NUM_HEADS, HEAD_DIM
+    ).transpose(1, 2)
+    assert (
+        relative_error(actual, expected) <= 1.25 * relative_error(sdpa, expected) + 1e-4
+    )
+
+
+@accelerator
+@pytest.mark.accelerator
+@pytest.mark.usefixtures("published_server_args")
+def test_captured_predictor_step_replays_fresh_inputs_as_the_torch_codebook_ops_do(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    device = torch.device("cuda")
+    vocab, rows = 2048, 3
+    talker = fuse(build_talker(device, seed=31))
+    talker.code_predictor.lm_head = [
+        TupleLinear(HIDDEN, vocab).to(device, DTYPE) for _ in range(NUM_CODE_GROUPS - 1)
+    ]
+    talker.code_predictor.model.codec_embedding = [
+        nn.Embedding(vocab, HIDDEN).to(device, DTYPE)
+        for _ in range(NUM_CODE_GROUPS - 1)
+    ]
+    layer0_embedding = nn.Embedding(3072, HIDDEN).to(device, DTYPE)
+    talker.get_input_embeddings = lambda: layer0_embedding
+    talker.config = SimpleNamespace(num_code_groups=NUM_CODE_GROUPS)
+    talker.predictor_input_buffer = torch.zeros(
+        MAX_BS, 2, HIDDEN, device=device, dtype=DTYPE
+    )
+    talker.output_codes = torch.zeros(
+        MAX_BS, NUM_CODE_GROUPS, device=device, dtype=torch.long
+    )
+    talker.output_embeds = torch.zeros(MAX_BS, HIDDEN, device=device, dtype=DTYPE)
+    layer0_codes = torch.zeros(rows, 1, device=device, dtype=torch.long)
+    talker_hidden = torch.zeros(rows, 1, HIDDEN, device=device, dtype=DTYPE)
+
+    def step() -> tuple[torch.Tensor, torch.Tensor]:
+        return talker.code_predictor_forward_incremental_eager(
+            layer0_codes=layer0_codes, talker_hidden=talker_hidden
+        )
+
+    side = torch.cuda.Stream()
+    side.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(side), torch.no_grad():
+        step()
+    torch.cuda.current_stream().wait_stream(side)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph), torch.no_grad():
+        captured_codes, captured_embeds = step()
+
+    def torch_codebook_ops(
+        logits: torch.Tensor,
+        embedding_weight: torch.Tensor,
+        codes: torch.Tensor,
+        summed: torch.Tensor,
+    ) -> torch.Tensor:
+        code = torch.argmax(logits, dim=-1)
+        codes.copy_(code)
+        embedding = embedding_weight[code]
+        summed.add_(embedding)
+        return embedding[:, None, :]
+
+    generator = torch.Generator(device=device).manual_seed(33)
+    for _ in range(2):
+        layer0_codes.copy_(
+            torch.randint(0, 3072, (rows, 1), device=device, generator=generator)
+        )
+        talker_hidden.copy_(
+            torch.randn(rows, 1, HIDDEN, device=device, generator=generator).to(DTYPE)
+        )
+        graph.replay()
+        replayed = (captured_codes.clone(), captured_embeds.clone())
+        with monkeypatch.context() as patch, torch.no_grad():
+            patch.setattr(talker_module, "codebook_step", torch_codebook_ops)
+            expected_codes, expected_embeds = step()
+        assert torch.equal(replayed[0], expected_codes)
+        assert torch.equal(replayed[1], expected_embeds)
+
+
+@accelerator
+@pytest.mark.accelerator
+@pytest.mark.usefixtures("published_server_args")
+def test_fused_layers_match_without_programmatic_dependent_launch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    device = torch.device("cuda")
+    steps = predictor_inputs(device, batch_size=8, seed=24)
+    with_pdl = run_sequence(fuse(build_talker(device, seed=23)), steps)
+    monkeypatch.setattr(predictor_layers, "is_arch_support_pdl", lambda: False)
+    without_pdl = run_sequence(fuse(build_talker(device, seed=23)), steps)
+    for expected, actual in zip(with_pdl, without_pdl, strict=True):
+        assert torch.equal(actual, expected)

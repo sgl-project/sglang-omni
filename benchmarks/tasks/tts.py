@@ -29,7 +29,7 @@ import soundfile as sf
 import torch
 from tqdm import tqdm
 
-from benchmarks.benchmarker.data import FinishReason, RequestResult
+from benchmarks.benchmarker.data import RequestResult, finish_reason_from_server
 from benchmarks.benchmarker.runner import AfterSendFn, SendFn
 from benchmarks.benchmarker.utils import (
     WAV_HEADER_SIZE,
@@ -1111,15 +1111,6 @@ def _resolve_tts_generation_kwargs(
     return resolved
 
 
-def finish_reason_from_server(value: str | None) -> FinishReason:
-    try:
-        return FinishReason(value)
-    except ValueError:
-        # note (Yucheng Hu): absent from servers without the field; other
-        # values are engine states this metric does not classify.
-        return FinishReason.UNKNOWN
-
-
 def set_token_rate(result: RequestResult) -> None:
     if result.completion_tokens > 0 and result.engine_time_s > 0:
         result.tok_per_s = result.completion_tokens / result.engine_time_s
@@ -1337,6 +1328,10 @@ def _collect_chat_streaming_audio(
     event = parse_sse_event(line)
     if event is None:
         return pcm_format
+    if event.get("error") is not None:
+        raise ValueError(f"Streaming response failed: {event['error']}")
+    else:
+        pass
 
     event_usage = event.get("usage")
     if isinstance(event_usage, dict):

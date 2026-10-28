@@ -42,10 +42,7 @@ import pytest
 
 from benchmarks.dataset.prepare import DATASETS, download_dataset
 from benchmarks.metrics.wer import print_wer_summary
-from tests.test_ci.tts_mps_ci_config import (
-    MPS_SIMILARITY_MEAN_MIN,
-    check_mps_performance,
-)
+from tests.test_ci.tts_mps_ci_config import check_mps_performance, similarity_floor
 from tests.test_model.omni_router_utils import (
     CiRouterTopology,
     ManagedRouterHandle,
@@ -435,7 +432,7 @@ def evaluate_quality(
     # DP2; under a shared card the spread straddles it, so this stage carries
     # its own worst-of-five baseline rather than borrowing a line it fails
     # about half the time without a measured MPS penalty.
-    similarity_min = MPS_SIMILARITY_MEAN_MIN[model]
+    similarity_min = similarity_floor(model)
     if similarity_min is None:
         quality.fail(
             "uncalibrated MPS speaker-similarity baseline; run "

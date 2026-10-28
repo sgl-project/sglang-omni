@@ -11,6 +11,10 @@ from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.model_worker import ModelWorker
+from sglang_omni.model_runner.prefill_inputs import (
+    OmniPrefillInputs,
+    attach_omni_prefill_inputs,
+)
 from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
 from sglang_omni.models.moss_tts_local.radix_hash import build_rows_and_radix_token_ids
 from sglang_omni.models.moss_tts_local.request_builders import (
@@ -105,8 +109,11 @@ class MossTTSLocalModelRunner(ModelRunner):
         requests: list[SchedulerRequest],
     ) -> None:
         del schedule_batch
-        forward_batch.input_embeds = self.build_prefill_input_embeds(
-            forward_batch, requests
+        attach_omni_prefill_inputs(
+            forward_batch,
+            OmniPrefillInputs(
+                input_embeds=self.build_prefill_input_embeds(forward_batch, requests)
+            ),
         )
         return None
 
@@ -200,8 +207,8 @@ class MossTTSLocalModelRunner(ModelRunner):
                 raise RuntimeError("MOSS-TTS Local prefill requires prompt_rows")
             else:
                 pass
-            req_len = int(req.extend_range.length)
-            prefix_len = len(req.prefix_indices)
+            req_len = req.extend_len
+            prefix_len = req.prefix_len
             pool = self.model.state_pool
             if data.output_rows:
                 generated = torch.stack(data.output_rows, dim=0)

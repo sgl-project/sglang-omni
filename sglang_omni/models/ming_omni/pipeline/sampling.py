@@ -11,7 +11,7 @@ def build_ming_sampling_kwargs(
 ) -> dict[str, object]:
     return {
         "max_new_tokens": params.get("max_new_tokens", 2048),
-        "temperature": params.get("temperature", 0.0),
+        "temperature": params.get("temperature", 1.0),
         "top_p": params.get("top_p", 1.0),
         "top_k": params.get("top_k", -1),
         "min_p": params.get("min_p", 0.0),

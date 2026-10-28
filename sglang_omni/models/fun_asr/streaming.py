@@ -42,19 +42,11 @@ class FunASRStreamingStrategy:
         is_final: bool,
         request_id: str,
     ) -> GenerateRequest:
-        del request_id
+        del is_final, request_id
         fun_state = self.state(state)
-        # note (Xinhao Tan): rollback exists to leave a safety margin for
-        # audio that has not arrived yet. On the final decode there is no
-        # more audio coming, so rolling back only risks re-generating and
-        # possibly corrupting text that may already be correct, for no
-        # benefit — skip it and trust the accumulated transcript instead.
-        # This only changes the rollback amount, not the _UNFIXED_CHUNK_NUM
-        # cold-start gate below.
         use_prefix = fun_state.chunk_id >= _UNFIXED_CHUNK_NUM and bool(
             fun_state.transcript
         )
-        rollback_chars = 0 if is_final else (_ROLLBACK_CHARS if use_prefix else 0)
         request = build_speech_to_text_generate_request(
             audio_bytes=audio,
             filename="realtime-segment.wav",
@@ -72,7 +64,7 @@ class FunASRStreamingStrategy:
                 "_asr_streaming_prefix_text": (
                     fun_state.transcript if use_prefix else None
                 ),
-                "_asr_streaming_rollback_chars": rollback_chars,
+                "_asr_streaming_rollback_chars": (_ROLLBACK_CHARS if use_prefix else 0),
             }
         )
         return request

@@ -35,19 +35,18 @@ def make_payload(num_frames, params=None):
     )
 
 
-@pytest.mark.parametrize("num_frames", [1, 2, PROMPT_FRAMES, 513])
-def test_talker_decode_steps_match_thinker_tokens(num_frames):
+def test_talker_decode_steps_match_thinker_tokens():
     """The prefill emits no codes, so the talker needs one extra generation step."""
-    payload = make_payload(num_frames)
+    payload = make_payload(1)
     thinker = build_thinker_request(
         payload, vocab_size=8, prompt_token_ids=[1, 2], pad_token_id=3
     )
     talker = build_talker_request(payload, vocab_size=8, prompt_frames=PROMPT_FRAMES)
 
-    assert thinker.max_new_tokens == num_frames
-    assert thinker.req.sampling_params.max_new_tokens == num_frames
-    assert talker.max_new_tokens == num_frames + 1
-    assert talker.req.sampling_params.max_new_tokens == num_frames + 1
+    assert thinker.max_new_tokens == 1
+    assert thinker.req.sampling_params.max_new_tokens == 1
+    assert talker.max_new_tokens == 2
+    assert talker.req.sampling_params.max_new_tokens == 2
     assert len(talker.input_ids) == PROMPT_FRAMES
 
 

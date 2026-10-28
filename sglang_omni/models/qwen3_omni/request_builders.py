@@ -14,7 +14,9 @@ from sglang.srt.tokenizer.tiktoken_tokenizer import TiktokenTokenizer
 from transformers import PreTrainedTokenizerBase
 
 from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
+from sglang_omni.models.qwen3_omni.mrope_positions import talker_can_use_linear_mrope
 from sglang_omni.models.qwen3_omni.payload_types import (
+    NO_SPEECH,
     EncoderInputs,
     Qwen3OmniPipelineState,
     StreamState,
@@ -28,6 +30,10 @@ from sglang_omni.scheduling.pending_text_queue import (
     coerce_pending_text_queue,
 )
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
+from sglang_omni.scheduling.sglang_backend.prompt_hidden import (
+    PromptHiddenRequest,
+    PromptHiddenStore,
+)
 from sglang_omni.scheduling.sglang_backend.request_data import validate_prompt_token_ids
 from sglang_omni.scheduling.types import ARRequestData, RequestOutput
 
@@ -240,7 +246,7 @@ def project_talker_to_code2wav(payload: StagePayload) -> StagePayload:
     return StagePayload(
         request_id=payload.request_id,
         request=payload.request,
-        data={},
+        data={NO_SPEECH: True} if NO_SPEECH in payload.data else {},
     )
 
 
@@ -340,17 +346,9 @@ def project_encoder_to_mm_aggregate(payload: StagePayload) -> StagePayload:
     return payload_with_state(payload, projected)
 
 
-# note (Yue Yin): the talker prefill uses only image/video/audio embeds, never deepstack.
-_TALKER_UNUSED_MODEL_INPUT_KEYS = (
-    "image_deepstack_visual_embeds",
-    "video_deepstack_visual_embeds",
-    "deepstack_visual_embeds",
-)
-
-_TALKER_UNUSED_ENCODER_OUT_KEYS = (
-    "deepstack_visual_embeds_image",
-    "deepstack_visual_embeds_video",
-)
+# note (ratish): the talker reads multimodal prompt rows from the thinker's hidden states, so of
+# the encoder outputs it reads only what its MRoPE positions need.
+TALKER_ENCODER_OUT_KEYS = ("image_grid_thw", "video_grid_thw", "audio_feature_lengths")
 
 
 def project_encoder_to_talker_ar(payload: StagePayload) -> StagePayload:
@@ -359,9 +357,7 @@ def project_encoder_to_talker_ar(payload: StagePayload) -> StagePayload:
     encoder_out = state.encoder_outs.get(stage_name, {})
     if isinstance(encoder_out, dict):
         encoder_out = {
-            k: v
-            for k, v in encoder_out.items()
-            if k not in _TALKER_UNUSED_ENCODER_OUT_KEYS
+            k: v for k, v in encoder_out.items() if k in TALKER_ENCODER_OUT_KEYS
         }
     else:
         pass
@@ -378,21 +374,9 @@ def merge_for_talker(payloads: dict[str, StagePayload]) -> StagePayload:
 def project_mm_aggregate_to_talker_ar(payload: StagePayload) -> StagePayload:
     """Early-submit projection: ship prompt + thinker_inputs to the talker."""
     state = Qwen3OmniPipelineState.from_dict(payload.data)
-    thinker_inputs = (
-        dict(state.thinker_inputs) if isinstance(state.thinker_inputs, dict) else {}
-    )
-    model_inputs = thinker_inputs.get("model_inputs")
-    if isinstance(model_inputs, dict):
-        thinker_inputs["model_inputs"] = {
-            k: v
-            for k, v in model_inputs.items()
-            if k not in _TALKER_UNUSED_MODEL_INPUT_KEYS
-        }
-    else:
-        pass
     projected = Qwen3OmniPipelineState(
         prompt=dict(state.prompt) if isinstance(state.prompt, dict) else None,
-        thinker_inputs=thinker_inputs,
+        thinker_inputs=dict(state.thinker_inputs),
     )
     return payload_with_state(payload, projected)
 
@@ -701,8 +685,11 @@ def compute_mrope_positions(
         second_per_grid_ts=second_per_grid_ts,
         **kwargs,
     )
+    # note (ratish): positions are served as int64, so floor them after the audio-in-video merge and take the delta from the floored largest.
     # mrope_positions: [3, 1, seq_len] -> [3, seq_len]
-    return mrope_positions.squeeze(1), mrope_position_delta
+    positions = mrope_positions.squeeze(1).floor()
+    delta = positions.max() + 1 - positions.shape[-1]
+    return positions, delta.view_as(mrope_position_delta)
 
 
 def build_sglang_thinker_request(
@@ -713,6 +700,7 @@ def build_sglang_thinker_request(
     vocab_size: int,
     request_id: str | None = None,
     thinker_config: Qwen3OmniMoeThinkerConfig | None = None,
+    capture_prompt_hidden_states: bool,
 ) -> "SGLangARRequestData":
     """Build SGLangARRequestData from pipeline state.
 
@@ -795,9 +783,30 @@ def build_sglang_thinker_request(
     sampling_params.normalize(tokenizer)
     sampling_params.verify(vocab_size)
 
+    # note (ratish): any request's cached multimodal slots can serve a later speech request's
+    # prefix, so every request with media writes its rows, not only a speech request.
+    multimodal_positions = None
+    if capture_prompt_hidden_states and thinker_config is not None:
+        multimodal_positions = torch.isin(
+            original_input_ids,
+            original_input_ids.new_tensor(
+                [
+                    thinker_config.image_token_id,
+                    thinker_config.video_token_id,
+                    thinker_config.audio_token_id,
+                ]
+            ),
+        ).nonzero(as_tuple=True)[0]
+    else:
+        pass
+
     # Build SGLang Req
     rid = request_id or "req-0"
-    req = Req(
+    has_prompt_rows = multimodal_positions is not None and bool(
+        multimodal_positions.numel()
+    )
+    request_class = PromptHiddenRequest if has_prompt_rows else Req
+    req = request_class(
         rid=rid,
         origin_input_text="",
         origin_input_ids=input_ids_list,
@@ -805,6 +814,10 @@ def build_sglang_thinker_request(
         vocab_size=vocab_size,
     )
     req.tokenizer = tokenizer
+    if has_prompt_rows:
+        req.prompt_hidden_positions = multimodal_positions
+    else:
+        pass
 
     # Compute M-RoPE positions and attach multimodal_inputs to Req
     if thinker_config is not None and model_inputs:
@@ -958,22 +971,18 @@ def build_sglang_talker_request(
         if suppress_tokens
         else None
     )
-    if thinker_config is not None and talker_model_inputs:
-        from sglang_omni.models.qwen3_omni.mrope_positions import (
-            linear_mrope_positions,
-            talker_can_use_linear_mrope,
+    # note (ratish): omit zero-delta metadata so all-linear decode batches avoid
+    # the blocking delta copy.
+    if (
+        thinker_config is not None
+        and talker_model_inputs
+        and not talker_can_use_linear_mrope(
+            input_ids_tensor, talker_model_inputs, thinker_config
         )
-
-        ids = input_ids_tensor.to(dtype=torch.long)
-        mm_model_inputs = talker_model_inputs or {}
-        if talker_can_use_linear_mrope(ids, mm_model_inputs, thinker_config):
-            mrope_positions, mrope_position_delta = linear_mrope_positions(
-                int(ids.numel())
-            )
-        else:
-            mrope_positions, mrope_position_delta = compute_mrope_positions(
-                ids, mm_model_inputs, thinker_config
-            )
+    ):
+        mrope_positions, mrope_position_delta = compute_mrope_positions(
+            input_ids_tensor, talker_model_inputs, thinker_config
+        )
         mm_inputs = MultimodalInputs(mm_items=[])
         mm_inputs.mrope_positions = mrope_positions
         mm_inputs.mrope_position_delta = mrope_position_delta
@@ -1006,6 +1015,8 @@ def build_sglang_talker_request(
     else:
         req.omni_model_inputs = None
 
+    # note (ratish): sglang's request limits cut the frame cap to the context the
+    # replayed prompt leaves, so a long spoken prompt gets shorter audio, not an error.
     data = SGLangARRequestData(
         input_ids=input_ids_tensor,
         max_new_tokens=max_new_tokens,
@@ -1013,6 +1024,7 @@ def build_sglang_talker_request(
         output_ids=req.output_ids,
         req=req,
         prefill_input_embeds=prefill_embeds_tensor,
+        enforce_request_limits=True,
     )
     data.suppress_tokens = list(
         req._codec_suppress_tokens or []
@@ -1071,7 +1083,7 @@ def apply_thinker_result(
 
 
 def make_thinker_stream_output_builder(
-    *, speech_enabled: bool
+    *, speech_enabled: bool, prompt_hidden_store: PromptHiddenStore | None
 ) -> Callable[[str, SGLangARRequestData, RequestOutput], list[OutgoingMessage]]:
     def _build_stream_output(
         request_id: str, req_data: SGLangARRequestData, req_output: RequestOutput
@@ -1104,16 +1116,33 @@ def make_thinker_stream_output_builder(
         # note (ratish): a cross-process stream chunk must be a tensor, and one
         # this small is pickled inline with the control message
         token_tensor = torch.tensor([token_id], dtype=torch.long)
-        return [
-            OutgoingMessage(
+        messages = []
+        for target in stream_targets:
+            message = OutgoingMessage(
                 request_id=request_id,
                 type="stream",
                 data=token_tensor,
                 target=target,
                 metadata={"token_id": token_id},
             )
-            for target in stream_targets
-        ]
+            # note (ratish): the first talker chunk carries the prompt's hidden rows; its
+            # token id rides in the metadata the talker reads it from.
+            if (
+                target == TALKER_STAGE
+                and isinstance(req_data.req, PromptHiddenRequest)
+                and not req_data.req.is_prompt_hidden_handed_off
+            ):
+                message.data = prompt_hidden_store.read(
+                    req_data.req.kv.req_pool_idx, req_data.req.prompt_hidden_positions
+                )
+                message.metadata["prompt_hidden_positions"] = (
+                    req_data.req.prompt_hidden_positions.tolist()
+                )
+                req_data.req.is_prompt_hidden_handed_off = True
+            else:
+                pass
+            messages.append(message)
+        return messages
 
     return _build_stream_output
 
@@ -1124,6 +1153,8 @@ def make_thinker_scheduler_adapters(
     vocab_size: int,
     thinker_config: Qwen3OmniMoeThinkerConfig | None = None,
     stage_name: str = "thinker",
+    capture_prompt_hidden_states: bool,
+    is_speculative: bool = False,
 ) -> tuple[
     Callable[[StagePayload], SGLangARRequestData],
     Callable[[SGLangARRequestData], StagePayload],
@@ -1140,8 +1171,18 @@ def make_thinker_scheduler_adapters(
             vocab_size=vocab_size,
             request_id=payload.request_id,
             thinker_config=thinker_config,
+            capture_prompt_hidden_states=capture_prompt_hidden_states,
         )
         req_data.stage_payload = payload
+        multimodal_inputs = req_data.req.multimodal_inputs
+        if is_speculative and multimodal_inputs is not None:
+            # note (wilsonzheng0327): verify adds the delta to integer positions without
+            # the integer cast decode applies, so it is cast here the same way.
+            multimodal_inputs.mrope_position_delta = (
+                multimodal_inputs.mrope_position_delta.long()
+            )
+        else:
+            pass
         return req_data
 
     def result_adapter(data: SGLangARRequestData) -> StagePayload:

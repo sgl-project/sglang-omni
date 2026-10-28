@@ -5,12 +5,8 @@ import pytest
 
 from sglang_omni.client.audio import (
     FORMAT_MIME_TYPES,
-    PYAV_ENCODE_CONFIGS,
-    audio_to_base64,
     encode_audio,
     encode_pcm,
-    encode_wav,
-    encode_with_pyav,
     resample_linear,
     to_numpy,
 )
@@ -85,18 +81,6 @@ def test_to_numpy():
     assert np.allclose(expected, res_bytes, atol=1e-4)
 
 
-def test_encode_wav():
-    # Generate 1 sec sine wave
-    sr = 24000
-    t = np.linspace(0, 1, sr, endpoint=False)
-    audio = np.sin(2 * np.pi * 440 * t).astype(np.float32)
-
-    wav_bytes = encode_wav(audio, sr)
-    assert isinstance(wav_bytes, bytes)
-    assert wav_bytes.startswith(b"RIFF")
-    assert b"WAVE" in wav_bytes[:16]
-
-
 def test_encode_pcm():
     audio = np.array([0.0, 0.5, -1.0, 1.2], dtype=np.float32)
     pcm_bytes = encode_pcm(audio, 16000)
@@ -130,23 +114,6 @@ def test_resample_linear_preserves_stereo_channels():
         ]
     ).astype(np.float32)
     assert np.allclose(resampled, expected)
-
-
-@pytest.mark.parametrize("response_format", ["mp3", "aac", "opus"])
-def test_pyav_encode_preserves_stereo_content(response_format: str):
-    audio, sample_rate = stereo_test_signal()
-    config = PYAV_ENCODE_CONFIGS[response_format]
-
-    encoded = encode_with_pyav(
-        audio,
-        sample_rate,
-        container_format=config["container"],
-        codecs=config["codecs"],
-        valid_rates=config["valid_rates"],
-    )
-
-    decoded_sample_rate, decoded = decode_audio(encoded)
-    assert_stereo_content(decoded, decoded_sample_rate)
 
 
 @pytest.mark.parametrize(
@@ -292,16 +259,3 @@ def test_encode_audio_mp3_resampling():
         assert encoded_bytes.startswith(b"ID3")
     except ImportError:
         assert encoded_bytes.startswith(b"RIFF")
-
-
-def test_audio_to_base64():
-    audio = np.array([0.0, 0.1, -0.1], dtype=np.float32)
-    b64_str = audio_to_base64(audio, sample_rate=16000, output_format="pcm")
-    assert isinstance(b64_str, str)
-    # Decode to check
-    import base64
-
-    pcm_bytes = base64.b64decode(b64_str)
-    actual = np.frombuffer(pcm_bytes, dtype=np.int16)
-    expected = (audio * 32767.0).astype(np.int16)
-    assert np.array_equal(expected, actual)

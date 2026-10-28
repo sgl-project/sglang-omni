@@ -10,11 +10,24 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
+import subprocess
+import sys
+import wave
+from pathlib import Path
+from typing import Literal
+from unittest.mock import patch
 
+import numpy as np
 import pytest
+import torch
+import torchaudio
 import websockets
+from pydantic import JsonValue, ValidationError
 
+import sglang_omni.utils.audio as audio_utils
+from benchmarks.eval.benchmark_asr_realtime import load_pcm16
 from benchmarks.realtime_asr.client import (
     SAMPLE_RATE,
     ReceivedEvent,
@@ -29,8 +42,149 @@ from benchmarks.realtime_asr.metrics import (
     percentile,
     summarize,
 )
+from benchmarks.realtime_asr.replay import (
+    TraceArtifact,
+    load_trace,
+    replay_trace,
+    save_trace,
+)
+from benchmarks.tasks.asr import (
+    _load_wav_mono_16k,
+    _transcribe_omni_whisper,
+    load_omni_whisper_asr,
+)
 
 DECODE_INTERVAL_MS = 1000
+
+
+@pytest.fixture(params=[(16000, 1), (16000, 2), (8000, 2)])
+def input_wav(
+    request: pytest.FixtureRequest, tmp_path: Path
+) -> tuple[Path, torch.Tensor]:
+    sample_rate_hz, channel_count = request.param
+    channel_samples = np.tile(
+        np.array(
+            [[4096, 12288], [-8192, 4096], [16384, -4096], [-12288, -8192]],
+            dtype=np.int16,
+        ),
+        (sample_rate_hz // 40, 1),
+    )[:, :channel_count]
+    wav_path = tmp_path / "input.wav"
+    with wave.open(str(wav_path), "wb") as wav_file:
+        wav_file.setnchannels(channel_count)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate_hz)
+        wav_file.writeframes(channel_samples.astype("<i2").tobytes())
+
+    expected_samples = torch.from_numpy(
+        channel_samples.astype(np.float32).mean(axis=1) / 32768.0
+    )
+    if sample_rate_hz != 16000:
+        expected_samples = torchaudio.functional.resample(
+            expected_samples, sample_rate_hz, 16000
+        )
+    else:
+        pass
+    return wav_path, expected_samples
+
+
+@pytest.mark.parametrize(
+    "decoder_available", [False, True], ids=["fallback", "preferred"]
+)
+def test_audio_input_decodes_wav_without_changing_samples(
+    input_wav: tuple[Path, torch.Tensor], decoder_available: bool
+) -> None:
+    """Unavailable TorchCodec prevented valid WAV input from reaching PCM preparation."""
+    if decoder_available and not audio_utils.check_torchcodec_ready():
+        pytest.skip("Preferred decoder requires a loadable TorchCodec backend")
+    else:
+        pass
+    wav_path, expected_samples = input_wav
+    decoder_failure = None if decoder_available else RuntimeError("decoder unavailable")
+    with (
+        patch.object(
+            audio_utils, "check_torchcodec_ready", return_value=decoder_available
+        ),
+        patch.object(
+            torchaudio, "load", wraps=torchaudio.load, side_effect=decoder_failure
+        ) as decode_audio,
+    ):
+        actual_samples = _load_wav_mono_16k(str(wav_path))
+        pcm_bytes = load_pcm16(str(wav_path))
+
+    assert actual_samples.shape == (1600,)
+    assert actual_samples.dtype == torch.float32
+    assert torch.isfinite(actual_samples).all()
+    torch.testing.assert_close(actual_samples, expected_samples, rtol=0, atol=0)
+    expected_pcm = np.array(
+        [int(float(sample) * 32767) for sample in expected_samples], dtype=np.int16
+    )
+    assert len(pcm_bytes) == 3200
+    np.testing.assert_array_equal(
+        np.frombuffer(pcm_bytes, dtype=np.int16), expected_pcm
+    )
+    assert decode_audio.call_count == (2 if decoder_available else 0)
+
+
+@pytest.mark.parametrize("invalid_input", ["missing", "corrupt"])
+def test_audio_input_reports_invalid_wav(
+    tmp_path: Path, invalid_input: Literal["missing", "corrupt"]
+) -> None:
+    wav_path = tmp_path / "invalid.wav"
+    if invalid_input == "corrupt":
+        wav_path.write_bytes(b"not an audio file")
+    else:
+        pass
+    with (
+        patch.object(audio_utils, "check_torchcodec_ready", return_value=False),
+        pytest.raises(audio_utils.AudioDecodeError) as decode_error,
+    ):
+        load_pcm16(str(wav_path))
+    assert decode_error.value.__cause__ is not None
+
+
+@pytest.mark.parametrize(
+    "decoder_failure",
+    [MemoryError("decoder memory exhausted"), torch.OutOfMemoryError("decoder OOM")],
+)
+def test_audio_input_preserves_decoder_memory_failure(
+    tmp_path: Path, decoder_failure: MemoryError | torch.OutOfMemoryError
+) -> None:
+    with (
+        patch.object(audio_utils, "check_torchcodec_ready", return_value=True),
+        patch.object(torchaudio, "load", side_effect=decoder_failure),
+        pytest.raises(type(decoder_failure)) as raised_error,
+    ):
+        load_pcm16(str(tmp_path / "input.wav"))
+    assert raised_error.value is decoder_failure
+
+
+def test_whisper_uploads_original_wav_when_torchcodec_is_unavailable(
+    input_wav: tuple[Path, torch.Tensor],
+) -> None:
+    """Decoder dependency failures also blocked the shared Whisper upload path."""
+    wav_path = input_wav[0]
+    with (
+        patch.object(audio_utils, "check_torchcodec_ready", return_value=False),
+        patch.object(
+            torchaudio, "load", side_effect=RuntimeError("decoder unavailable")
+        ),
+        patch(
+            "benchmarks.tasks.asr.requests.post", autospec=True
+        ) as post_transcription,
+    ):
+        post_transcription.return_value.json.return_value = {"text": "hello world"}
+        transcript = _transcribe_omni_whisper(
+            load_omni_whisper_asr(router_port=0), str(wav_path), "en"
+        )
+
+    assert transcript == "hello world"
+    post_transcription.assert_called_once()
+    assert post_transcription.call_args.kwargs["files"]["file"] == (
+        wav_path.name,
+        wav_path.read_bytes(),
+        "audio/wav",
+    )
 
 
 def pcm_seconds(seconds: float) -> bytes:
@@ -93,6 +247,8 @@ class FakeTranscriptionServer:
                         {
                             "type": "transcription.segment",
                             "segment_id": 0,
+                            "audio_start_ms": 0,
+                            "audio_end_ms": audio_bytes * 1000 // (SAMPLE_RATE * 2),
                             "text": f"partial {audio_bytes}",
                             "is_final": False,
                         }
@@ -106,6 +262,8 @@ class FakeTranscriptionServer:
                         {
                             "type": "transcription.segment",
                             "segment_id": 0,
+                            "audio_start_ms": 0,
+                            "audio_end_ms": audio_bytes * 1000 // (SAMPLE_RATE * 2),
                             "text": "hello world",
                             "is_final": True,
                         }
@@ -217,7 +375,7 @@ def test_trailing_silence_extends_sent_audio_but_not_duration(fake_server):
 def test_timeout_is_reported_not_raised():
     async def hang(websocket):
         await websocket.send(json.dumps({"type": "session.created", "session": {}}))
-        await asyncio.sleep(5)
+        await websocket.wait_closed()
 
     async def run():
         async with websockets.serve(hang, "127.0.0.1", 0) as ws_server:
@@ -266,10 +424,20 @@ def make_trace(
     return trace
 
 
-def seg(segment_id: int, text: str, *, final: bool, index: int) -> dict:
+def seg(
+    segment_id: int,
+    text: str,
+    *,
+    final: bool,
+    index: int,
+    start_ms: int = 0,
+    end_ms: int | None = None,
+) -> dict:
     return {
         "type": "transcription.segment",
         "segment_id": segment_id,
+        "audio_start_ms": start_ms,
+        "audio_end_ms": start_ms + 1000 if end_ms is None else end_ms,
         "text": text,
         "is_final": final,
         "event_index": index,
@@ -290,8 +458,8 @@ def test_first_partial_latency_counts_from_the_packet_crossing_the_refresh_point
                     "event_index": 1,
                 },
             ),
-            (1.5, seg(0, "hel", final=False, index=2)),
-            (2.6, seg(0, "hello wor", final=False, index=3)),
+            (1.5, seg(0, "hel", final=False, index=2, start_ms=400)),
+            (2.6, seg(0, "hello wor", final=False, index=3, start_ms=400)),
             (
                 3.1,
                 {
@@ -300,7 +468,7 @@ def test_first_partial_latency_counts_from_the_packet_crossing_the_refresh_point
                     "event_index": 4,
                 },
             ),
-            (3.4, seg(0, "hello world", final=True, index=5)),
+            (3.4, seg(0, "hello world", final=True, index=5, start_ms=400)),
             (
                 3.5,
                 {
@@ -356,32 +524,72 @@ def test_refresh_point_lookup_is_exact_on_packet_boundaries():
     assert latency_metrics(trace)["first_partial_latency_s"] == [pytest.approx(0.1)]
 
 
-def test_first_partial_skipped_when_segment_start_unknown():
-    # Second segment without a speech_started event: no start, no latency.
+def test_segment_opened_by_hard_cut_is_measured_from_the_cut():
+    # Segment 1 opens at the 1000 ms cut with no speech_started; its refresh
+    # point is 2000 ms, reached by packet 10 sent at t0 + 1.8 s.
     trace = make_trace(
         [
-            (1.0, seg(1, "x", final=False, index=1)),
+            (
+                0.1,
+                {
+                    "type": "input_audio_buffer.speech_started",
+                    "audio_start_ms": 0,
+                    "segment_id": 0,
+                    "event_index": 1,
+                },
+            ),
+            (1.0, seg(0, "a", final=False, index=2)),
+            (
+                1.1,
+                {
+                    "type": "input_audio_buffer.committed",
+                    "segment_id": 0,
+                    "event_index": 3,
+                },
+            ),
+            (1.2, seg(0, "ab", final=True, index=4)),
+            (2.0, seg(1, "c", final=False, index=5, start_ms=1000)),
             (
                 3.1,
                 {
                     "type": "input_audio_buffer.committed",
                     "segment_id": 1,
-                    "event_index": 2,
+                    "event_index": 6,
                 },
             ),
-            (3.2, seg(1, "x", final=True, index=3)),
-            (3.3, {"type": "transcription.completed", "text": "x", "event_index": 4}),
+            (3.2, seg(1, "cd", final=True, index=7, start_ms=1000)),
+            (
+                3.3,
+                {"type": "transcription.completed", "text": "ab cd", "event_index": 8},
+            ),
+        ]
+    )
+    assert latency_metrics(trace)["first_partial_latency_s"] == [
+        pytest.approx(0.2),
+        pytest.approx(0.2),
+    ]
+    assert check_invariants(trace) == []
+
+
+def test_first_partial_skipped_when_segment_start_missing():
+    event = seg(0, "x", final=False, index=1)
+    del event["audio_start_ms"]
+    trace = make_trace(
+        [
+            (1.0, event),
+            (3.3, {"type": "transcription.completed", "text": "x", "event_index": 2}),
         ],
         turn_detection=None,
     )
     assert latency_metrics(trace)["first_partial_latency_s"] == []
+    assert "missing or non-integer" in "\n".join(check_invariants(trace))
 
 
 def test_invariants_flag_each_protocol_violation():
     trace = make_trace(
         [
             (1.0, seg(0, "a", final=True, index=1)),
-            (1.1, seg(0, "b", final=False, index=3)),  # update after final
+            (1.1, seg(0, "b", final=False, index=3, start_ms=5)),  # update after final
             (
                 1.2,
                 {"type": "error", "error": {"code": "boom"}, "event_index": 2},
@@ -395,7 +603,20 @@ def test_invariants_flag_each_protocol_violation():
     assert "event_index not strictly increasing" in joined
     assert "do not match final segments" in joined
     assert "updated after its final event" in joined
+    assert "audio_start_ms changed" in joined
     assert "no transcription.completed" in joined
+
+
+def test_invariants_flag_segment_ending_before_it_starts():
+    trace = make_trace(
+        [
+            (1.0, seg(0, "a", final=False, index=1, start_ms=400, end_ms=400)),
+            (3.3, {"type": "transcription.completed", "text": "a", "event_index": 2}),
+        ]
+    )
+    assert "audio_end_ms 400 not after audio_start_ms 400" in "\n".join(
+        check_invariants(trace)
+    )
 
 
 def test_percentile_and_summarize():
@@ -412,6 +633,150 @@ def test_percentile_and_summarize():
         "n": 20,
     }
     assert summarize([]) is None
+
+
+@pytest.fixture
+def valid_events() -> list[dict[str, JsonValue]]:
+    return [
+        {"type": "session.created", "session": {}, "event_index": 1},
+        {
+            "type": "input_audio_buffer.committed",
+            "segment_id": 0,
+            "event_index": 2,
+        },
+        {
+            "type": "transcription.segment",
+            "segment_id": 0,
+            "audio_start_ms": 0,
+            "audio_end_ms": 1000,
+            "text": "hello",
+            "is_final": True,
+            "event_index": 3,
+        },
+        {"type": "transcription.completed", "text": "hello", "event_index": 4},
+    ]
+
+
+def trace_from_events(events: list[dict[str, JsonValue]]) -> SessionTrace:
+    return SessionTrace(
+        url="ws://example.test/v1/realtime?intent=transcription",
+        received=[
+            ReceivedEvent(recv_s=position / 10, event=event)
+            for position, event in enumerate(events)
+        ],
+    )
+
+
+def test_valid_committed_final_completed_order(
+    valid_events: list[dict[str, JsonValue]],
+) -> None:
+    assert check_invariants(trace_from_events(valid_events)) == []
+
+
+@pytest.mark.parametrize("positions", [(0,), (1,), (2,), (3,), (0, 1, 2, 3)])
+def test_missing_event_indexes_fail(
+    valid_events: list[dict[str, JsonValue]], positions: tuple[int, ...]
+) -> None:
+    for position in positions:
+        valid_events[position].pop("event_index")
+
+    violations = check_invariants(trace_from_events(valid_events))
+
+    assert any(
+        "event_index missing or non-integer" in violation for violation in violations
+    )
+
+
+@pytest.mark.parametrize("event_index", [None, "1", 1.0, True, False])
+def test_non_integer_event_index_fails(
+    valid_events: list[dict[str, JsonValue]], event_index: str | float | bool | None
+) -> None:
+    valid_events[0]["event_index"] = event_index
+
+    violations = check_invariants(trace_from_events(valid_events))
+
+    assert any(
+        "event_index missing or non-integer" in violation for violation in violations
+    )
+
+
+def test_duplicate_completed_fails_with_increasing_indexes(
+    valid_events: list[dict[str, JsonValue]],
+) -> None:
+    valid_events.append(
+        {"type": "transcription.completed", "text": "hello", "event_index": 5}
+    )
+
+    violations = check_invariants(trace_from_events(valid_events))
+
+    assert any(
+        "duplicate transcription.completed" in violation for violation in violations
+    )
+
+
+def test_partial_after_completed_fails_for_a_different_segment(
+    valid_events: list[dict[str, JsonValue]],
+) -> None:
+    valid_events.append(
+        {
+            "type": "transcription.segment",
+            "segment_id": 1,
+            "audio_start_ms": 1000,
+            "audio_end_ms": 2000,
+            "text": "late",
+            "is_final": False,
+            "event_index": 5,
+        }
+    )
+
+    violations = check_invariants(trace_from_events(valid_events))
+
+    assert any("after transcription.completed" in violation for violation in violations)
+
+
+def test_completed_before_final_fails_despite_matching_segment_ids(
+    valid_events: list[dict[str, JsonValue]],
+) -> None:
+    final_event = valid_events[2]
+    completed_event = valid_events[3]
+    final_event["event_index"] = 4
+    completed_event["event_index"] = 3
+    valid_events[2:] = [completed_event, final_event]
+
+    violations = check_invariants(trace_from_events(valid_events))
+
+    assert any("after transcription.completed" in violation for violation in violations)
+
+
+def test_final_before_committed_fails_despite_matching_segment_ids(
+    valid_events: list[dict[str, JsonValue]],
+) -> None:
+    committed_event = valid_events[1]
+    final_event = valid_events[2]
+    committed_event["event_index"] = 3
+    final_event["event_index"] = 2
+    valid_events[1:3] = [final_event, committed_event]
+
+    violations = check_invariants(trace_from_events(valid_events))
+
+    assert any("before its committed event" in violation for violation in violations)
+
+
+def test_session_control_event_after_completed_is_not_transcription_output(
+    valid_events: list[dict[str, JsonValue]],
+) -> None:
+    valid_events.append({"type": "session.updated", "session": {}, "event_index": 5})
+
+    assert check_invariants(trace_from_events(valid_events)) == []
+
+
+def test_empty_transcription_can_complete_without_segments() -> None:
+    events = [
+        {"type": "session.created", "session": {}, "event_index": 1},
+        {"type": "transcription.completed", "text": "", "event_index": 2},
+    ]
+
+    assert check_invariants(trace_from_events(events)) == []
 
 
 # --- paired WER delta ------------------------------------------------------
@@ -455,3 +820,155 @@ def test_paired_wer_delta_is_none_when_baseline_has_no_successes():
     assert paired["common_evaluated"] == 0
     assert paired["corpus_wer_delta_vs_http"] is None
     assert paired["http_corpus_wer_common"] is None
+
+
+@pytest.fixture
+def recorded_trace() -> TraceArtifact:
+    trace = make_trace(
+        [
+            (1.0, seg(0, "hel", final=False, index=1)),
+            (
+                1.1,
+                {
+                    "type": "input_audio_buffer.committed",
+                    "segment_id": 0,
+                    "event_index": 2,
+                },
+            ),
+            (1.2, seg(0, "hello", final=True, index=3)),
+            (
+                1.3,
+                {"type": "transcription.completed", "text": "hello", "event_index": 4},
+            ),
+        ],
+        audio_s=1.0,
+        turn_detection=None,
+    )
+    return TraceArtifact(
+        schema_version=1,
+        sample_id="golden-manual",
+        config={"mode": "manual", "packet_ms": 200},
+        source={"fixture": "hand-timed"},
+        input_pcm_sha256=hashlib.sha256(pcm_seconds(1.0)).hexdigest(),
+        trace=trace,
+    )
+
+
+def test_saved_trace_replays_hand_calculated_metrics(
+    tmp_path: Path, recorded_trace: TraceArtifact
+) -> None:
+    path = tmp_path / "trace.json"
+    save_trace(path, recorded_trace)
+    loaded = load_trace(path)
+    assert loaded == recorded_trace
+    replay = replay_trace(loaded)
+    assert replay["verdict"] == "pass"
+    assert replay["violations"] == []
+    assert replay["metrics"]["first_partial_latency_s"] == [pytest.approx(0.2)]
+    assert replay["metrics"]["final_latency_s"] == [pytest.approx(0.1)]
+    assert replay["metrics"]["done_to_completed_s"] == pytest.approx(0.3)
+    with pytest.raises(FileExistsError):
+        save_trace(path, recorded_trace)
+
+
+@pytest.mark.parametrize("defect", ["missing_index", "duplicate_terminal", "timeout"])
+def test_corrupted_trace_stays_failed_after_save_and_replay(
+    tmp_path: Path, recorded_trace: TraceArtifact, defect: str
+) -> None:
+    if defect == "missing_index":
+        recorded_trace.trace.received[1].event.pop("event_index")
+    elif defect == "duplicate_terminal":
+        recorded_trace.trace.received.append(
+            ReceivedEvent(
+                recv_s=101.4,
+                event={
+                    "type": "transcription.completed",
+                    "text": "hello",
+                    "event_index": 5,
+                },
+            )
+        )
+    else:
+        recorded_trace.trace.received.pop()
+        recorded_trace.trace.error = "timeout after 2s"
+    path = tmp_path / "trace.json"
+    expected = replay_trace(recorded_trace)
+    save_trace(path, recorded_trace)
+    assert expected["verdict"] == "fail"
+    assert expected["violations"]
+    assert replay_trace(load_trace(path)) == expected
+
+
+def test_replay_rejects_unknown_schema(
+    tmp_path: Path, recorded_trace: TraceArtifact
+) -> None:
+    payload = recorded_trace.model_dump()
+    payload["schema_version"] = 2
+    path = tmp_path / "trace.json"
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValidationError, match="schema_version"):
+        load_trace(path)
+
+
+def test_replay_cli_returns_nonzero_for_bad_trace(
+    tmp_path: Path, recorded_trace: TraceArtifact
+) -> None:
+    path = tmp_path / "trace.json"
+    save_trace(path, recorded_trace)
+    command = [sys.executable, "-m", "benchmarks.realtime_asr.replay", str(path)]
+    good = subprocess.run(command, capture_output=True, text=True, check=False)
+    assert good.returncode == 0, good.stderr
+    assert json.loads(good.stdout)["verdict"] == "pass"
+    bad = recorded_trace.model_copy(deep=True)
+    bad.trace.received[0].event.pop("event_index")
+    bad_path = tmp_path / "bad.json"
+    save_trace(bad_path, bad)
+    command[-1] = str(bad_path)
+    failed = subprocess.run(command, capture_output=True, text=True, check=False)
+    assert failed.returncode == 1, failed.stderr
+    assert json.loads(failed.stdout)["verdict"] == "fail"
+
+
+def test_benchmark_persists_observations_before_quality_scoring(
+    tmp_path, fake_server, monkeypatch
+):
+    from benchmarks.dataset.seedtts import SampleInput
+    from benchmarks.eval import benchmark_asr_realtime as benchmark
+
+    _, run = fake_server
+    pcm = pcm_seconds(1.0)
+    samples = [
+        SampleInput("first", "hello", "first.wav", ""),
+        SampleInput("second", "hello", "second.wav", ""),
+    ]
+
+    def fail_scoring(*args, **kwargs):
+        raise RuntimeError("quality scorer unavailable")
+
+    async def run_benchmark(url):
+        monkeypatch.setattr(benchmark, "realtime_url", lambda host, port: url)
+        return await benchmark.run_asr_realtime_once(
+            samples,
+            host="127.0.0.1",
+            port=0,
+            pcm_cache={sample.ref_audio: pcm for sample in samples},
+            mode="manual",
+            paced=False,
+            trailing_silence_ms=0,
+            trace_dir=str(tmp_path),
+        )
+
+    monkeypatch.setattr(benchmark, "wer_metrics", fail_scoring)
+    with pytest.raises(RuntimeError, match="quality scorer unavailable"):
+        asyncio.run(run(run_benchmark))
+
+    manifests = list(tmp_path.glob("*/manifest.json"))
+    assert len(manifests) == 1
+    manifest = json.loads(manifests[0].read_text())
+    assert [row["sample_id"] for row in manifest["samples"]] == ["first", "second"]
+    for row in manifest["samples"]:
+        path = manifests[0].parent / row["trace_file"]
+        saved = load_trace(path)
+        assert saved.sample_id == row["sample_id"]
+        assert replay_trace(saved)["verdict"] == "pass"
+        assert (path.parent / f"input-{saved.input_pcm_sha256}.pcm").read_bytes() == pcm

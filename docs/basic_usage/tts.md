@@ -15,7 +15,7 @@ Fish Audio requires its model-specific DAC dependencies. Complete the
 before starting the server.
 
 Qwen3-TTS uses the upstream `qwen-tts` package. Install it without dependencies
-so the SGLang-Omni Transformers 5.12 / SGLang 0.5.21 stack remains in place:
+so the SGLang-Omni Transformers 5.19 / SGLang 0.5.22 stack remains in place:
 
 ```bash
 apt-get update && apt-get install -y sox
@@ -42,6 +42,8 @@ for details.
 | [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md#customvoice-checkpoints) | `examples/configs/qwen3_tts_0_6b_customvoice.yaml`, `examples/configs/qwen3_tts_1_7b_customvoice.yaml` | Text-only synthesis with built-in speakers; omit `voice` for Vivian. Both sizes support streaming; use 1.7B for instruction control |
 | [Qwen3-TTS VoiceDesign](../cookbook/qwen3_tts.md) | `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` | Requires `task_type="VoiceDesign"` and non-empty `instructions`. No reference audio is required |
 | [Ming-Omni-TTS](../cookbook/ming_tts.md) | `examples/configs/ming_omni_tts.yaml` | Text-only synthesis or one local reference clip with its transcript; streaming; the provided config uses TP1 |
+| [Ming 3 audio](../cookbook/ming3_audio.md) | `--model-path` and `--thinker.tp_size` | Transcription, audio chat, and 44.1 kHz speech. Speech uses one reference clip and its transcript. Thinker tensor parallelism is set at launch |
+| [Ming 3 TTS](../cookbook/ming3_tts.md) | `--model-path` only | 44.1 kHz voice cloning from one reference recording. Tiny accepts `ref_text` and does not use it. The 0.5B checkpoint uses `ref_text` as the reference transcript. One GPU |
 | [Fun-CosyVoice3](../cookbook/fun_cosyvoice3.md) | `--model-path` only | Requires one reference audio clip via `ref_audio` or `references`. Supports zero-shot cloning, cross-lingual, instruct mode, causal streaming, and buffered speed control |
 | [MOSS-TTS](../cookbook/moss_tts.md) | `examples/configs/moss_tts.yaml` | Voice cloning via `ref_audio` or `references[0].audio_path` (+ `text`). Duration via `${token:N}` or `token_count`. Benchmark at `--max-concurrency 8` |
 | [MOSS-TTS Local](../cookbook/moss_tts_local.md) | `examples/configs/moss_tts_local.yaml` | 48 kHz stereo local-transformer MOSS-TTS; voice cloning / reference-less; streaming |

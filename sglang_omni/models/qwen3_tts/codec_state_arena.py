@@ -11,8 +11,10 @@ import torch
 from sglang_omni.models.qwen3_tts.incremental_codec import (
     Qwen3TTSIncrementalCodecState,
     Qwen3TTSIncrementalDecoder,
+    Qwen3TTSKVRings,
 )
-from sglang_omni.utils.device import supports_device_streams
+from sglang_omni.utils.cuda_staging import PinnedTransferSlot
+from sglang_omni.utils.device import has_device_streams
 
 if TYPE_CHECKING:
     from sglang_omni.models.qwen3_tts.incremental_codec_cuda_graph import (
@@ -29,6 +31,7 @@ class DisabledCodecGraphStats(TypedDict):
 class CodecCudaGraphStats(TypedDict):
     cold: IncrementalCodecGraphStats | DisabledCodecGraphStats
     window: IncrementalCodecGraphStats | DisabledCodecGraphStats
+    tail: IncrementalCodecGraphStats | DisabledCodecGraphStats
     warm: list[IncrementalCodecGraphStats]
 
 
@@ -51,7 +54,9 @@ class Qwen3TTSCodecStateArena:
     Every buffer from ``Qwen3TTSIncrementalDecoder.state_spec`` carries a
     leading slot dimension, so the arena is exactly the state a decode of
     ``num_slots`` rows would use: ``gather`` selects a cohort's rows into a
-    contiguous state and ``scatter`` writes the advanced state back.
+    contiguous state and ``scatter`` writes the advanced state back, except the
+    conv state a channels-last decoder exchanges in place at the cohort's slots
+    and the K/V a fused decoder keeps in per-slot rings.
 
     Note (Qihao Liu): ``acquire`` zeroes a slot before handing it out, so a
     reused slot is provably a cold start; ``release`` therefore returns a slot
@@ -65,7 +70,10 @@ class Qwen3TTSCodecStateArena:
         num_slots: int,
         device: torch.device,
         dtype: torch.dtype,
+        in_place_frames: int = 0,
     ) -> None:
+        """in_place_frames: the widest decode a fused decoder attends in place, which sizes
+        its K/V rings; 0 keeps the K/V in gathered buffers."""
         if num_slots <= 0:
             raise ValueError("Qwen3-TTS codec state arena needs at least one slot")
         else:
@@ -76,10 +84,27 @@ class Qwen3TTSCodecStateArena:
         self.dtype = dtype
         self._num_slots = int(num_slots)  # noqa: leading-underscore
         self.scratch_slot = self._num_slots  # noqa: leading-underscore
+        spec = decoder.state_spec()
+        if decoder.fused_transformer is not None and in_place_frames > 0:
+            self.ring_frames = spec.retained_context + int(in_place_frames)
+            ring_rows = (self.scratch_slot + 1) * self.ring_frames
+            ring_width = spec.num_key_value_heads * spec.head_dim
+            self.key_rings: list[torch.Tensor] = [
+                torch.zeros(ring_rows, ring_width, device=self.device, dtype=dtype)
+                for _ in range(spec.num_layers)
+            ]
+            self.value_rings: list[torch.Tensor] = [
+                torch.zeros_like(ring) for ring in self.key_rings
+            ]
+        else:
+            self.ring_frames = 0
+            self.key_rings = []
+            self.value_rings = []
         self.storage = decoder.init_state(
-            self._num_slots + 1,
+            self._num_slots + 1,  # noqa: leading-underscore
             device=self.device,
-            dtype=dtype,  # noqa: leading-underscore
+            dtype=dtype,
+            has_key_value_buffers=not self.key_rings,
         )
         self.lock = threading.Lock()
         self.staging = threading.local()
@@ -89,8 +114,14 @@ class Qwen3TTSCodecStateArena:
         )  # noqa: leading-underscore
         self.retired: set[int] = set()
         self._exhausted_count = 0  # noqa: leading-underscore
-        spec = decoder.state_spec()
-        self._bytes_per_slot = spec.bytes_per_stream(dtype)  # noqa: leading-underscore
+        # note (ratish): a ring holds in_place_frames frames a slot past the retained window.
+        ring_bytes = int(in_place_frames) * sum(
+            ring.element_size() * int(ring.shape[1])
+            for ring in (*self.key_rings, *self.value_rings)
+        )
+        self._bytes_per_slot = (  # noqa: leading-underscore
+            spec.bytes_per_stream(dtype) + ring_bytes
+        )
 
     @property
     def num_slots(self) -> int:
@@ -133,7 +164,7 @@ class Qwen3TTSCodecStateArena:
 
     def release(self, slot: int) -> None:
         released = None
-        if supports_device_streams(self.device):
+        if has_device_streams(self.device):
             released = self.device_module.Event()
             released.record(self.device_module.current_stream(self.device))
         else:
@@ -169,6 +200,10 @@ class Qwen3TTSCodecStateArena:
             else:
                 pass
 
+    def start_slot(self, slot: int, frame_position: int) -> None:
+        """Start an acquired slot's stream at frame_position instead of frame 0."""
+        self.storage.frame_positions[slot].fill_(frame_position)
+
     def _buffers(self, state: Qwen3TTSIncrementalCodecState) -> list[torch.Tensor]:
         return [
             *state.conv_histories.values(),
@@ -178,14 +213,21 @@ class Qwen3TTSCodecStateArena:
         ]
 
     def zero_slot(self, slot: int) -> None:
-        for buffer in self._buffers(self.storage):
-            buffer[slot].zero_()
-        self.storage.frame_positions[slot] = 0
+        # note (ratish): one multi-tensor launch for the slot's buffers: an initial decode resets
+        # a fresh slot per row, and every row of its batch waits for all the resets before launch.
+        torch._foreach_zero_(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            [buffer[slot] for buffer in self._buffers(self.storage)]
+            + [
+                ring.view(-1, self.ring_frames, ring.shape[1])[slot]
+                for ring in (*self.key_rings, *self.value_rings)
+            ]
+        )
+        self.storage.frame_positions[slot].zero_()
 
     STAGING_RING = 4
 
     def staged(self, name: str, values: Sequence[int]) -> torch.Tensor:
-        if not supports_device_streams(self.device):
+        if not has_device_streams(self.device):
             return torch.as_tensor(list(values), dtype=torch.long)
         else:
             pass
@@ -198,9 +240,12 @@ class Qwen3TTSCodecStateArena:
         if ring is None:
             ring = [
                 (
-                    torch.empty(
-                        self._num_slots + 1, dtype=torch.long
-                    ).pin_memory(),  # noqa: leading-underscore
+                    PinnedTransferSlot(
+                        self.device,
+                        torch.long,
+                        initial_capacity=self._num_slots
+                        + 1,  # noqa: leading-underscore
+                    ),
                     torch.empty(
                         self._num_slots + 1,
                         dtype=torch.long,
@@ -215,9 +260,16 @@ class Qwen3TTSCodecStateArena:
             pass
         turn = (getattr(self.staging, f"{name}_turn") + 1) % self.STAGING_RING
         setattr(self.staging, f"{name}_turn", turn)
-        host, device = ring[turn]
-        host[:count].copy_(torch.as_tensor(list(values), dtype=torch.long))
-        device[:count].copy_(host[:count], non_blocking=True)
+        transfer, device = ring[turn]
+        # note (Zhuofeng-Li): a wrapped host slot may still be supplying its copy.
+        if transfer.recorded:
+            transfer.synchronize()
+        else:
+            pass
+        host = transfer.view(count)
+        host.copy_(torch.as_tensor(list(values), dtype=torch.long))
+        device[:count].copy_(host, non_blocking=True)
+        transfer.record(self.device_module.current_stream(self.device))
         return device[:count]
 
     def stage_index(self, slots: Sequence[int]) -> torch.Tensor:
@@ -229,7 +281,8 @@ class Qwen3TTSCodecStateArena:
         return self.gather_by_index(self.stage_index(slots))
 
     def gather_by_index(self, index: torch.Tensor) -> Qwen3TTSIncrementalCodecState:
-        """Select the rows named by a device index tensor.
+        """Select the rows named by a device index tensor; a channels-last decoder's
+        state borrows the arena's conv pools, with the scratch slot as its pad slot.
 
         Capturable: with a static index this is the gather half of a graph
         that reads the arena directly.
@@ -239,10 +292,26 @@ class Qwen3TTSCodecStateArena:
             transformer_context_length=storage.transformer_context_length,
             frame_positions=storage.frame_positions.index_select(0, index),
         )
-        for key, buffer in storage.conv_histories.items():
-            state.conv_histories[key] = buffer.index_select(0, index)
-        for key, buffer in storage.transconv_overlaps.items():
-            state.transconv_overlaps[key] = buffer.index_select(0, index)
+        if self.decoder.channels_last_weights is not None:
+            state.slot_index = index
+            state.pad_slot = self.scratch_slot
+            state.conv_histories = dict(storage.conv_histories)
+            state.transconv_overlaps = dict(storage.transconv_overlaps)
+        else:
+            for key, buffer in storage.conv_histories.items():
+                state.conv_histories[key] = buffer.index_select(0, index)
+            for key, buffer in storage.transconv_overlaps.items():
+                state.transconv_overlaps[key] = buffer.index_select(0, index)
+        if self.key_rings:
+            state.kv_rings = Qwen3TTSKVRings(
+                keys=self.key_rings,
+                values=self.value_rings,
+                ring_frames=self.ring_frames,
+                slot_rows=index * self.ring_frames,
+                trash_slot_row=self.scratch_slot * self.ring_frames,
+            )
+        else:
+            pass
         for layer_index, buffer in storage.transformer_keys.items():
             state.transformer_keys[layer_index] = buffer.index_select(0, index)
         for layer_index, buffer in storage.transformer_values.items():
@@ -267,10 +336,13 @@ class Qwen3TTSCodecStateArena:
         else:
             pass
         self.copy_rows(storage.frame_positions, index, state.frame_positions)
-        for key, buffer in storage.conv_histories.items():
-            self.copy_rows(buffer, index, state.conv_histories[key], key)
-        for key, buffer in storage.transconv_overlaps.items():
-            self.copy_rows(buffer, index, state.transconv_overlaps[key], key)
+        if state.slot_index is None:
+            for key, buffer in storage.conv_histories.items():
+                self.copy_rows(buffer, index, state.conv_histories[key], key)
+            for key, buffer in storage.transconv_overlaps.items():
+                self.copy_rows(buffer, index, state.transconv_overlaps[key], key)
+        else:
+            pass
         for layer_index, buffer in storage.transformer_keys.items():
             self.copy_rows(
                 buffer, index, state.transformer_keys[layer_index], f"key.{layer_index}"

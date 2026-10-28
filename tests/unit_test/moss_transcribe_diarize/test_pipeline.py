@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import inspect
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import httpx
@@ -10,7 +10,11 @@ import pytest
 import torch
 from huggingface_hub.errors import RepositoryNotFoundError
 
-from sglang_omni.models.moss_transcribe_diarize import stages
+from sglang_omni.models.moss_transcribe_diarize import (
+    engine_builder,
+    sglang_model,
+    stages,
+)
 from sglang_omni.models.moss_transcribe_diarize.config import (
     MossTranscribeDiarizePipelineConfig,
 )
@@ -21,11 +25,14 @@ from sglang_omni.models.moss_transcribe_diarize.stages import (
     create_sglang_moss_transcribe_diarize_executor,
     missing_additional_chat_templates_compat,
 )
-from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.preprocessing.audio import decode_audio_bytes
 from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphConfig,
     build_default_prefill_cuda_graph_bs,
     build_generation_batch_overrides,
 )
+from sglang_omni.serve.server_warmup import TranscriptionWarmupRequest
+from sglang_omni.utils.imports import import_string
 
 
 def make_moss_engine_builder() -> MossTranscribeDiarizeEngineBuilder:
@@ -54,49 +61,25 @@ def make_moss_engine_builder() -> MossTranscribeDiarizeEngineBuilder:
     )
 
 
-def test_moss_transcribe_diarize_config_uses_single_batched_stage() -> None:
-    config = MossTranscribeDiarizePipelineConfig(
-        model_path="OpenMOSS-Team/MOSS-Transcribe-Diarize"
-    )
-
-    assert config.entry_stage == "asr"
-    assert [stage.name for stage in config.stages] == ["asr"]
-    assert config.terminal_stages == ["asr"]
-    assert config.gpu_placement == {"asr": 0}
-    assert config.stages[0].factory_path.endswith(
-        "create_sglang_moss_transcribe_diarize_executor"
-    )
-    factory = config.stages[0].factory
-    engine = config.stages[0].engine
-    assert factory.device is None
-    assert engine.max_running_requests == 16
-    assert engine.enable_torch_compile is True
-    assert engine.torch_compile_max_bs == 4
-    assert factory.encoder_max_batch_size == 2
-    assert factory.request_build_max_workers == 8
-    assert factory.request_build_max_pending == 16
-    assert factory.prefill_coalesce_requests == 4
-    assert factory.prefill_coalesce_wait_ms == 12
-    assert factory.prefill_coalesce_when_idle is True
-    assert factory.prefill_coalesce_requires_pending_builds is True
-    assert factory.prefill_coalesce_after_builds_during_decode is True
-    assert (
-        PIPELINE_CONFIG_REGISTRY.get_config(
-            "MossTranscribeDiarizeForConditionalGeneration"
-        )
-        is MossTranscribeDiarizePipelineConfig
-    )
-    assert MossTranscribeDiarizePipelineConfig.stage_config_cls("asr").engine_stage
-
-
-def test_moss_transcribe_diarize_prefill_backend_policy() -> None:
+@pytest.mark.parametrize(
+    ("is_cuda", "expected_backend"), [(True, "full"), (False, "breakable")]
+)
+def test_moss_transcribe_diarize_prefill_backend_policy(
+    monkeypatch: pytest.MonkeyPatch, is_cuda: bool, expected_backend: str
+) -> None:
+    monkeypatch.setattr(engine_builder.current_platform, "is_cuda", lambda: is_cuda)
     builder = make_moss_engine_builder()
 
     assert type(builder).supports_breakable_prefill_cuda_graph is True
     defaults = builder.generation_defaults(dtype="bfloat16")
     assert defaults["enable_torch_compile"] is False
     assert defaults["torch_compile_max_bs"] == 4
-    assert defaults["cuda_graph_backend_prefill"] == "breakable"
+    resolved = build_generation_batch_overrides(server_args_overrides=None, **defaults)
+    assert resolved["cuda_graph_backend_prefill"] == expected_backend
+    opted_out = build_generation_batch_overrides(
+        server_args_overrides={"disable_prefill_cuda_graph": True}, **defaults
+    )
+    assert opted_out["cuda_graph_backend_prefill"] == "disabled"
     assert defaults["cuda_graph_bs_prefill"] == [
         1,
         2,
@@ -189,33 +172,6 @@ def test_moss_transcribe_diarize_preserves_explicit_omp_default(
     assert config.resolved_env_defaults()["OMP_NUM_THREADS"] == "3"
 
 
-def test_moss_transcribe_diarize_stage_reserves_encoder_headroom() -> None:
-    signature = inspect.signature(create_sglang_moss_transcribe_diarize_executor)
-
-    assert signature.parameters["max_running_requests"].default == 16
-    assert signature.parameters["mem_fraction_static"].default == 0.80
-    assert signature.parameters["enable_torch_compile"].default is None
-    assert signature.parameters["torch_compile_max_bs"].default == 4
-    assert signature.parameters["request_build_max_workers"].default == 8
-    assert signature.parameters["request_build_max_pending"].default == 16
-    assert signature.parameters["enable_async_decode"].default is True
-    assert signature.parameters["async_decode_min_batch_size"].default == 1
-    assert signature.parameters["prefill_coalesce_requests"].default == 4
-    assert signature.parameters["prefill_coalesce_wait_ms"].default == 12.0
-    assert signature.parameters["prefill_coalesce_when_idle"].default is True
-    assert (
-        signature.parameters["prefill_coalesce_requires_pending_builds"].default is True
-    )
-    assert (
-        signature.parameters["prefill_coalesce_after_builds_during_decode"].default
-        is True
-    )
-    assert signature.parameters["encoder_max_batch_size"].default == 2
-    assert signature.parameters["mm_embedding_cache_size_bytes"].default == 0
-    assert signature.parameters["encoder_chunk_buckets"].default is None
-    assert signature.parameters["encoder_torch_compile"].default is False
-
-
 def test_compile_encoder_sets_runner_and_warms_each_bucket(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -306,6 +262,7 @@ def test_init_encoder_graphs_uses_platform_backend(
     model = SimpleNamespace(
         whisper_encoder=encoder,
         encoder_graph_runner=None,
+        encoder_is_unquantized=False,
         config=SimpleNamespace(audio_config=SimpleNamespace(num_mel_bins=80)),
     )
 
@@ -316,6 +273,7 @@ def test_init_encoder_graphs_uses_platform_backend(
     get_graph_backend.assert_called_once_with(next(encoder.parameters()).device)
     assert graph_runner.call_args.kwargs["graph_backend"] is backend
     graph_runner.return_value.capture.assert_called_once_with([2, 1])
+    assert model.encoder_graph_runner is graph_runner.return_value
 
 
 def stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool):
@@ -360,6 +318,7 @@ def stub_factory_env(monkeypatch: pytest.MonkeyPatch, *, want_cuda_graph: bool):
         gpu_id=0,
         model_runner=model_runner,
         enable_prefill_input_embeds=False,
+        speculative_worker=None,
     )
     infra = (want_cuda_graph, (model_worker, None, None, None, None))
 
@@ -547,3 +506,157 @@ def test_processor_compat_preserves_non_template_repo_errors(
     with missing_additional_chat_templates_compat():
         with pytest.raises(RepositoryNotFoundError, match="missing-repo"):
             processing_utils.list_repo_templates("missing-repo", local_files_only=False)
+
+
+def test_server_warmup_request_is_a_second_of_audio_to_transcribe() -> None:
+    config = MossTranscribeDiarizePipelineConfig(model_path="dummy")
+    request = import_string(config.server_warmup_request_factory)(config)
+
+    audio, sample_rate = decode_audio_bytes(request.wav_bytes)
+
+    assert isinstance(request, TranscriptionWarmupRequest)
+    assert (len(audio), sample_rate, request.max_new_tokens) == (16000, 16000, 8)
+
+
+def test_factory_preserves_trimmed_fbank_opt_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A configured opt-out must reach the request builder instead of enabling the fast path."""
+    stub_factory_env(monkeypatch, want_cuda_graph=False)
+    adapters = Mock(return_value=(Mock(), Mock()))
+    monkeypatch.setattr(
+        engine_builder.request_builders,
+        "make_moss_transcribe_diarize_scheduler_adapters",
+        adapters,
+    )
+    create_sglang_moss_transcribe_diarize_executor(
+        "OpenMOSS-Team/MOSS-Transcribe-Diarize", enable_trimmed_fbank=False
+    )
+    assert adapters.call_args.kwargs["enable_trimmed_fbank"] is False
+
+
+@pytest.mark.parametrize("explicit_cap", [None, 7])
+@pytest.mark.parametrize("graph_config_kind", ["dict", "native"])
+def test_partial_graph_override_preserves_prefill_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+    explicit_cap: int | None,
+    graph_config_kind: str,
+) -> None:
+    """Decode-only graph overrides must not lower the full-prefill request cap."""
+    monkeypatch.setattr(engine_builder.current_platform, "is_cuda", lambda: True)
+    builder = make_moss_engine_builder()
+    graph_config = {"decode": {"max_bs": 4}}
+    if explicit_cap is not None:
+        graph_config["prefill"] = {"full_prefill_max_req": explicit_cap}
+    else:
+        pass
+    overrides = build_generation_batch_overrides(
+        server_args_overrides={
+            "cuda_graph_config": (
+                CudaGraphConfig.from_dict(graph_config)
+                if graph_config_kind == "native"
+                else graph_config
+            )
+        },
+        **builder.generation_defaults(dtype="bfloat16"),
+    )
+    builder.adjust_overrides(overrides)
+    assert overrides["cuda_graph_config"]["prefill"]["full_prefill_max_req"] == (
+        16 if explicit_cap is None else explicit_cap
+    )
+    assert overrides["cuda_graph_config"]["decode"] == graph_config["decode"]
+
+
+@pytest.mark.parametrize("graph_config", [None, {"prefill": None}])
+def test_empty_graph_override_preserves_prefill_capacity(
+    monkeypatch: pytest.MonkeyPatch, graph_config: dict | None
+) -> None:
+    monkeypatch.setattr(engine_builder.current_platform, "is_cuda", lambda: True)
+    builder = make_moss_engine_builder()
+    overrides = build_generation_batch_overrides(
+        server_args_overrides={"cuda_graph_config": graph_config},
+        **builder.generation_defaults(dtype="bfloat16"),
+    )
+    builder.adjust_overrides(overrides)
+    assert overrides["cuda_graph_config"]["prefill"]["full_prefill_max_req"] == 16
+
+
+@pytest.mark.parametrize(
+    ("backend", "graphs_enabled", "is_cuda", "async_decode", "expected_async"),
+    [
+        ("full", True, True, True, True),
+        ("breakable", True, True, True, False),
+        ("disabled", True, True, True, False),
+        ("full", False, True, True, False),
+        ("full", True, False, True, False),
+        ("full", True, True, False, False),
+    ],
+)
+def test_prefill_scheduling_uses_resolved_graph_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    backend: str,
+    graphs_enabled: bool,
+    is_cuda: bool,
+    async_decode: bool,
+    expected_async: bool,
+) -> None:
+    """An attention-backend fallback must preserve the existing scheduler policy."""
+    monkeypatch.setattr(engine_builder.current_platform, "is_cuda", lambda: is_cuda)
+    monkeypatch.setattr(engine_builder, "init_mm_embedding_cache", Mock())
+    monkeypatch.setattr(
+        engine_builder.request_builders,
+        "make_moss_transcribe_diarize_stream_output_builder",
+        Mock(),
+    )
+    builder = make_moss_engine_builder()
+    builder.enable_async_decode = async_decode
+    builder.processor = SimpleNamespace(
+        feature_extractor=SimpleNamespace(nb_max_frames=3000)
+    )
+    server_args = SimpleNamespace(
+        cuda_graph_config=SimpleNamespace(prefill=SimpleNamespace(backend=backend))
+    )
+    builder.setup_model_resources(
+        Mock(), server_args, generation_cuda_graph_enabled=graphs_enabled
+    )
+
+    scheduler_kwargs = builder.extra_scheduler_kwargs()
+    assert scheduler_kwargs["async_prefill"] is expected_async
+    if expected_async:
+        assert scheduler_kwargs["request_build_admission_wait_s"] == 0.0
+    else:
+        assert "request_build_admission_wait_s" not in scheduler_kwargs
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_packed_encoder_is_restricted_to_verified_dtype(
+    monkeypatch: pytest.MonkeyPatch, dtype: torch.dtype
+) -> None:
+    """FP16 must retain the original encoder's per-layer overflow clamp."""
+    encoder = torch.nn.Linear(1, 1, dtype=dtype)
+    encoder.layers = [
+        SimpleNamespace(
+            self_attn=SimpleNamespace(num_heads=1, total_num_heads=1, head_dim=64)
+        )
+    ]
+    packed_encoder = Mock()
+    packed = Mock(return_value=packed_encoder)
+    runner = Mock()
+    monkeypatch.setattr(sglang_model.current_platform, "is_cuda", lambda: True)
+    monkeypatch.setattr(
+        sglang_model.current_platform, "get_device_graph_backend", lambda device: Mock()
+    )
+    monkeypatch.setattr(sglang_model, "PackedWhisperEncoder", packed)
+    monkeypatch.setattr(sglang_model, "WhisperEncoderCudaGraphRunner", runner)
+    model = SimpleNamespace(
+        whisper_encoder=encoder,
+        encoder_is_unquantized=True,
+        config=SimpleNamespace(audio_config=SimpleNamespace(num_mel_bins=80)),
+    )
+    sglang_model.MossTranscribeDiarizeForConditionalGeneration.init_encoder_graphs(
+        model, [1], 3000
+    )
+    assert runner.call_args.args[0] is (
+        packed_encoder if dtype == torch.bfloat16 else encoder
+    )
+    assert packed.call_count == int(dtype == torch.bfloat16)

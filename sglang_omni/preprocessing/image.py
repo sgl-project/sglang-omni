@@ -120,7 +120,8 @@ async def ensure_image_list_async(
                     url_indices.append(idx)
                     normalized.append(None)  # note (Teery): Placeholder
                 else:
-                    normalized.append(load_image_path(item))
+                    path = media_connector.local_media_path(item)
+                    normalized.append(load_image_path(path))
             else:
                 # note (Teery): Already processed (PIL Image, etc.)
                 normalized.append(item)

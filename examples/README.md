@@ -4,8 +4,9 @@ Run these commands from the repository root after installing `sglang-omni`.
 
 ## Full-duplex audio
 
-See [full_duplex/README.md](full_duplex/README.md) for MiniCPM-o
-native session configuration and launch commands.
+MiniCPM-o and PersonaPlex launch commands, server settings, and the realtime
+protocol are in
+[Full Duplex Interactive Model](../docs/developer_reference/full_duplex_guide.md).
 
 ## Unified Launcher
 

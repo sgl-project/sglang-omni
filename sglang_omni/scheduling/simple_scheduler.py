@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import contextvars
 import inspect
 import logging
 import queue as _queue_mod
 import threading
 import time
 from collections.abc import Coroutine, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from typing import Awaitable, Callable, Generic, Protocol
 
 from sglang_omni.proto.request import StagePayload
@@ -34,6 +36,8 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
     """Process requests one at a time via a callable.
 
     Supports sync and async callables for ``new_request`` messages only.
+    A batch_compute_fn may return a BaseException in an item's
+    result slot to fail only that request while preserving the rest of the batch.
     Streaming stages should provide a dedicated scheduler implementation
     (for example ``Code2WavScheduler``) rather than rely on SimpleScheduler.
     """
@@ -76,7 +80,7 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
         )
         # Note (Chenchen, Chenyang):
         # max_concurrency > 1 spawns N worker coroutines that dispatch compute_fn
-        # via asyncio.to_thread so synchronous chunks do not pin the event loop.
+        # to a pool of N threads so synchronous chunks do not pin the event loop.
         # Requires compute_fn to be re-entrant. Mutually exclusive with the
         # batch_compute_fn path (set one or the other, not both).
         self.max_concurrency = max(int(max_concurrency), 1)
@@ -134,15 +138,12 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
             pass
         return max(int(self.request_cost_fn(msg.data)), 0)
 
-    def next_message(self) -> IncomingMessage | None:
+    def next_message(self) -> IncomingMessage:
         if self.pending_messages:
             return self.pending_messages.popleft()
         else:
             pass
-        try:
-            return self.inbox.get(timeout=0.1)
-        except _queue_mod.Empty:
-            return None
+        return self.inbox.get()
 
     def collect_batch(self, first_msg: IncomingMessage) -> list[IncomingMessage]:
         batch = [first_msg]
@@ -273,7 +274,10 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
                 continue
             else:
                 pass
-            self.emit_result(msg.request_id, result, self.outbox)
+            if isinstance(result, BaseException):
+                self.emit_error(msg.request_id, result, self.outbox)
+            else:
+                self.emit_result(msg.request_id, result, self.outbox)
 
     @staticmethod
     async def await_result(result: Awaitable[ComputeResult]) -> ComputeResult:
@@ -286,6 +290,9 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
         else:
             pass
         return result
+
+    def warm_up_serving_thread(self) -> None:
+        pass
 
     def start(self) -> None:
         """Run the processing loop (blocks the thread)."""
@@ -300,11 +307,6 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
         try:
             while self.running:
                 msg = self.next_message()
-                if msg is None:
-                    continue
-                else:
-                    pass
-
                 if msg.type == "new_request":
                     if self.consume_if_aborted(msg.request_id):
                         continue
@@ -368,8 +370,11 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
                 else:
                     pass
                 try:
-                    result = await asyncio.to_thread(
-                        self.run_compute_in_thread, msg.data
+                    result = await loop.run_in_executor(
+                        compute_executor,
+                        contextvars.copy_context().run,
+                        self.run_compute_in_thread,
+                        msg.data,
                     )
                     if self.consume_if_aborted(msg.request_id):
                         continue
@@ -386,18 +391,24 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
                     )
                     self.emit_error(msg.request_id, exc, self.outbox)
 
-        bridge_task = asyncio.create_task(bridge_inbox())
-        worker_tasks = [
-            asyncio.create_task(worker()) for _ in range(self.max_concurrency)
-        ]
-        try:
-            await asyncio.gather(bridge_task, *worker_tasks)
-        except asyncio.CancelledError:
-            # Expected during shutdown/task cancellation; suppress intentionally.
-            logger.debug("SimpleScheduler: run_workers cancelled during shutdown")
+        # note (luojiaxuan): compute owns exactly max_concurrency threads because every thread that runs a CUDA stage keeps its own cuBLAS and cuDNN handles and workspaces for the life of the process; the loop's default executor, shared with the inbox poll, grows toward 32 threads.
+        with ThreadPoolExecutor(
+            max_workers=self.max_concurrency,
+            thread_name_prefix="simple-scheduler-compute",
+        ) as compute_executor:
+            bridge_task = asyncio.create_task(bridge_inbox())
+            worker_tasks = [
+                asyncio.create_task(worker()) for _ in range(self.max_concurrency)
+            ]
+            try:
+                await asyncio.gather(bridge_task, *worker_tasks)
+            except asyncio.CancelledError:
+                # Expected during shutdown/task cancellation; suppress intentionally.
+                logger.debug("SimpleScheduler: run_workers cancelled during shutdown")
 
     def stop(self) -> None:
         self.running = False
+        self.inbox.put(IncomingMessage(request_id="", type="wakeup"))
         with self.shutdown_lock:
             callback = self.shutdown_callback
             self.shutdown_callback = None

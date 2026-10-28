@@ -5,28 +5,34 @@ from __future__ import annotations
 
 import os
 import signal
-import socket
 import subprocess
 import time
 from collections import deque
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import pytest
 import requests
+import torch
 
 from sglang_omni.utils import find_available_port
-from sglang_omni_router.python.launcher.config import LocalLauncherConfig
-from sglang_omni_router.python.launcher.local import LocalLauncher
 from tests.test_model.rust_router_config import CiRouterTopology, render_router_config
 from tests.utils import (
     disable_proxy,
     server_log_file,
     start_server_from_cmd,
     stop_server,
+)
+from tests.utils.managed_workers import (
+    ManagedWorkerProcess,
+    build_gpu_assignments,
+    port_is_available,
+    start_workers,
+    stop_managed_workers,
+    wait_for_workers,
 )
 
 RUST_ROUTER_BINARY_ENV = "SGLANG_OMNI_ROUTER_BIN"
@@ -44,7 +50,7 @@ class ManagedRouterHandle:
     log_file: Path | None
     router_config: Path | None = None
     cleanup_manifest: Path | None = None
-    worker_launcher: LocalLauncher | None = None
+    workers: list[ManagedWorkerProcess] = field(default_factory=list)
     is_router: bool = True
     router_ready_s: float | None = None
     stopped: bool = False
@@ -56,8 +62,8 @@ class ManagedRouterHandle:
             stop_server(self.proc)
         finally:
             try:
-                if self.worker_launcher is not None:
-                    self.worker_launcher.shutdown()
+                stop_managed_workers(self.workers)
+                self.workers.clear()
             finally:
                 if self.cleanup_manifest is not None:
                     cleanup_process_groups_from_manifest(self.cleanup_manifest)
@@ -118,25 +124,12 @@ def launch_managed_router(
     cleanup_manifest = (
         tmp_path_factory.mktemp("omni_router_cleanup") / "router_pgids.txt"
     )
-    worker_launcher: LocalLauncher | None = None
+    workers: list[ManagedWorkerProcess] = []
 
     if external_worker_urls is None:
         worker_base_port = find_available_port_range(num_workers)
         worker_ports = [worker_base_port + offset for offset in range(num_workers)]
         worker_urls = [f"http://127.0.0.1:{port}" for port in worker_ports]
-        worker_launcher = LocalLauncher(
-            LocalLauncherConfig(
-                model_path=model_path,
-                model_name=model_name,
-                num_workers=num_workers,
-                num_gpus_per_worker=num_gpus_per_worker,
-                worker_host="127.0.0.1",
-                worker_base_port=worker_base_port,
-                worker_extra_args=worker_extra_args,
-                wait_timeout=wait_timeout,
-            ),
-            worker_env=worker_env,
-        )
     else:
         if len(external_worker_urls) != num_workers:
             raise ValueError(
@@ -178,11 +171,33 @@ def launch_managed_router(
         )
         record_process_group(cleanup_manifest, os.getpgid(router_proc.pid))
 
-        if worker_launcher is not None:
-            worker_launcher.launch()
-            for worker in worker_launcher.workers:
+        if external_worker_urls is None:
+            visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+            devices = [
+                device.strip()
+                for device in visible_devices.split(",")
+                if device.strip()
+            ]
+            if not devices:
+                devices = [str(index) for index in range(torch.cuda.device_count())]
+            else:
+                pass
+            workers = start_workers(
+                model_path=model_path,
+                model_name=model_name,
+                worker_host="127.0.0.1",
+                worker_ports=worker_ports,
+                worker_gpu_ids=build_gpu_assignments(
+                    devices, num_workers, num_gpus_per_worker
+                ),
+                worker_extra_args=worker_extra_args,
+                worker_env=worker_env,
+            )
+            for worker in workers:
                 record_process_group(cleanup_manifest, worker.process_group_id)
-            worker_launcher.wait_ready()
+            wait_for_workers(workers, wait_timeout)
+        else:
+            pass
 
         wait_for_all_router_workers(
             router_port,
@@ -202,7 +217,7 @@ def launch_managed_router(
             log_file=router_log,
             router_config=router_config,
             cleanup_manifest=cleanup_manifest,
-            worker_launcher=worker_launcher,
+            workers=workers,
             router_ready_s=router_ready_s,
         )
         yield handle
@@ -212,8 +227,7 @@ def launch_managed_router(
         else:
             if router_proc is not None:
                 stop_server(router_proc)
-            if worker_launcher is not None:
-                worker_launcher.shutdown()
+            stop_managed_workers(workers)
             cleanup_process_groups_from_manifest(cleanup_manifest)
 
 
@@ -507,16 +521,6 @@ def find_available_port_range(count: int) -> int:
         if all(port_is_available(port) for port in candidates):
             return base_port
     raise RuntimeError(f"failed to find {count} consecutive available ports")
-
-
-def port_is_available(port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            sock.bind(("127.0.0.1", port))
-        except OSError:
-            return False
-    return True
 
 
 def worker_port(url: str) -> int:

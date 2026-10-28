@@ -14,6 +14,9 @@ from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.pending_text_queue import PendingTextTensorQueue
 from sglang_omni.scheduling.types import ARRequestData
 
+# ARRequestData.finish_reason of SGLang's FINISH_LENGTH: the request used up its token budget.
+FINISH_LENGTH_KIND = "length"
+
 
 @dataclass(frozen=True, kw_only=True)
 class EmbeddingSpan:
@@ -90,6 +93,9 @@ class SGLangARRequestData(ARRequestData):
     session_embedding_spans: list[EmbeddingSpan] = field(default_factory=list)
     synced: bool = False
     generation_steps: int = 0
+    # Output tokens already handed to the runner and stream builder under
+    # speculative decoding, where one step commits several.
+    emitted_token_count: int = 0
     suppress_tokens: list[int] | None = None
     top_p: float = 1.0
     top_k: int = -1
@@ -115,12 +121,29 @@ class SGLangARRequestData(ARRequestData):
     thinker_chunks_done: bool = True
 
 
+class DllmRequest(Req):
+    """SGLang request with explicit CFG grouping and padding state."""
+
+    _uncond_input_ids: list[int] | None = (
+        None  # noqa: leading-underscore  # DLLM protocol
+    )
+    _uncond_img_input_ids: list[int] | None = (
+        None  # noqa: leading-underscore  # DLLM protocol
+    )
+    _uncond_left_pad_len: int = 0  # noqa: leading-underscore  # DLLM protocol
+    _uncond_img_left_pad_len: int = 0  # noqa: leading-underscore  # DLLM protocol
+    _dllm_left_pad_len: int = 0  # noqa: leading-underscore  # DLLM protocol
+    _is_uncond: bool = False  # noqa: leading-underscore  # DLLM protocol
+    _is_uncond_img: bool = False  # noqa: leading-underscore  # DLLM protocol
+    _cfg_group_rid: str | None = None  # noqa: leading-underscore  # DLLM protocol
+
+
 @dataclass
 class SGLangDLLMRequestData:
     """Per-request state for SGLang-backed dLLM stages."""
 
     output_ids: list[int] = field(default_factory=list)
-    req: Req | None = None
+    req: DllmRequest | None = None
     stage_payload: StagePayload | None = None
     finish_reason: str | None = None
 
@@ -129,15 +152,52 @@ def session_prefill_rows(
     request_data: SGLangARRequestData,
     embed_tokens: TokenEmbedding,
     device: torch.device,
+    *,
+    prefix_len: int,
+    extend_len: int,
 ) -> torch.Tensor:
-    """Embed the uncached window of a native session request with its spans spliced in."""
-    session_request = request_data.req
-    start = session_request.extend_range.start
+    """Embed the row's extend window of a native session request with its spans spliced in.
+
+    prefix_len and extend_len are the row's batch values: a decode tail mixed into a
+    prefill batch keeps Req.prefix_len at its last prefill while its row extends one token.
+    """
+    start, end = prefix_len, prefix_len + extend_len
     token_ids = torch.tensor(
-        session_request.get_fill_ids()[start : session_request.extend_range.end],
-        dtype=torch.long,
-        device=device,
+        request_data.req.get_fill_ids()[start:end], dtype=torch.long, device=device
     )
     return splice_embedding_spans(
         embed_tokens(token_ids), start, request_data.session_embedding_spans
     )
+
+
+def session_projected_prefill_rows(
+    request_data: SGLangARRequestData,
+    embed_tokens: TokenEmbedding,
+    device: torch.device,
+    dtype: torch.dtype,
+    *,
+    prefix_len: int,
+    extend_len: int,
+) -> torch.Tensor:
+    """The row's extend window of a projected native session request: the spans' rows, and the token embedding of each generated token that no decode step fed back. prefix_len and extend_len are the row's batch values, as in session_prefill_rows."""
+    session_request = request_data.req
+    start, end = prefix_len, prefix_len + extend_len
+    spans = request_data.session_embedding_spans
+    rows = torch.zeros(
+        end - start, spans[0].input_embeds.shape[1], device=device, dtype=dtype
+    )
+    covered = torch.zeros(end - start, dtype=torch.bool, device=device)
+    for span in spans:
+        left, right = max(start, span.start), min(end, span.end)
+        if left < right:
+            covered[left - start : right - start] = True
+        else:
+            pass
+    if bool(covered.all()):
+        pass
+    else:
+        token_ids = torch.tensor(
+            session_request.get_fill_ids()[start:end], dtype=torch.long, device=device
+        )
+        rows[~covered] = embed_tokens(token_ids[~covered]).to(dtype)
+    return splice_embedding_spans(rows, start, spans)

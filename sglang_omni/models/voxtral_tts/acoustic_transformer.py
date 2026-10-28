@@ -425,9 +425,9 @@ class FlowMatchingAudioTransformer(nn.Module):
         B = semantic_code.shape[0]
         should_decode = semantic_code != self.end_audio_token_id
 
-        x_0 = torch.randn(B, self.model_args.n_acoustic_codebook).to(
-            dtype=llm_hidden.dtype, device=llm_hidden.device
-        )
+        x_0 = torch.randn(
+            B, self.model_args.n_acoustic_codebook, device=llm_hidden.device
+        ).to(dtype=llm_hidden.dtype)
         x_0 = self.noise_scale * x_0
 
         timesteps = self.timesteps.to(dtype=llm_hidden.dtype)

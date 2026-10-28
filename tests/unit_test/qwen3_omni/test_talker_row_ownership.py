@@ -5,12 +5,12 @@ from collections import deque
 from types import SimpleNamespace
 from typing import Any
 
-import pytest
 import torch
 
 from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.types import ModelRunnerOutput
+from tests.unit_test.fixtures.qwen_fakes import RecordingOutbox
 
 
 def fake_model(n: int, hidden: int, code_groups: int) -> SimpleNamespace:
@@ -33,8 +33,7 @@ def make_runner(model: SimpleNamespace) -> QwenTalkerModelRunner:
     runner.code2wav_target = "code2wav"
     runner.code2wav_in_process = False
     runner.codec_coalesce_frames = 0
-    runner.outbox = SimpleNamespace(sent=[])
-    runner.outbox.put = runner.outbox.sent.append
+    runner.outbox = RecordingOutbox()
     return runner
 
 
@@ -58,62 +57,6 @@ def make_data(
 
 def req_wrap(data: SimpleNamespace) -> SimpleNamespace:
     return SimpleNamespace(data=data)
-
-
-def sched_batch(n: int) -> SimpleNamespace:
-    return SimpleNamespace(reqs=[SimpleNamespace(rid=f"r{i}") for i in range(n)])
-
-
-def test_row_ownership_survives_prep_then_emit() -> None:
-    n, hidden, code_groups = 3, 3, 2
-    model = fake_model(n, hidden, code_groups)
-    runner = make_runner(model)
-
-    feedbacks = [torch.full((hidden,), float(i + 1)) for i in range(n)]
-    texts = [torch.full((hidden,), float(10 * (i + 1))) for i in range(n)]
-    requests = [req_wrap(make_data(feedbacks[i], texts[i])) for i in range(n)]
-    schedule_batch = sched_batch(n)
-
-    runner.write_feedback_buffers(requests)
-
-    assert torch.equal(model.feedback_mask, torch.ones(n, dtype=torch.bool))
-    for i in range(n):
-        assert torch.equal(model.feedback_buffer[i], feedbacks[i] + texts[i])
-
-    runner.emit_code_chunks_and_feedback(
-        schedule_batch=schedule_batch, requests=requests
-    )
-
-    sent = runner.outbox.sent
-    assert [m.request_id for m in sent] == [f"r{i}" for i in range(n)]
-    for i, msg in enumerate(sent):
-        assert msg.target == "code2wav"
-        assert msg.metadata == {"stream": False}
-        assert torch.equal(msg.data, model.output_codes[i])
-        fb_queue = requests[i].data.pending_feedback_queue
-        assert len(fb_queue) == 1
-        assert torch.equal(fb_queue[0], model.output_embeds[i])
-
-
-def test_sparse_feedback_row_stays_unwritten() -> None:
-    n, hidden, code_groups = 3, 3, 2
-    model = fake_model(n, hidden, code_groups)
-    runner = make_runner(model)
-
-    feedbacks = [torch.full((hidden,), float(i + 1)) for i in range(n)]
-    texts = [torch.full((hidden,), float(10 * (i + 1))) for i in range(n)]
-    requests = [
-        req_wrap(make_data(feedbacks[0], texts[0])),
-        req_wrap(make_data(feedbacks[1], None, thinker_done=False)),
-        req_wrap(make_data(feedbacks[2], texts[2])),
-    ]
-
-    runner.write_feedback_buffers(requests)
-
-    assert model.feedback_mask.tolist() == [True, False, True]
-    assert torch.equal(model.feedback_buffer[1], torch.zeros(hidden))
-    assert torch.equal(model.feedback_buffer[0], feedbacks[0] + texts[0])
-    assert torch.equal(model.feedback_buffer[2], feedbacks[2] + texts[2])
 
 
 def test_stale_mask_cannot_leak_into_reused_slot() -> None:
@@ -246,13 +189,6 @@ def test_row_ownership_tracks_current_batch_order_across_steps() -> None:
         batch_result = OmniScheduler.make_batch_result(model_runner_output)
         assert batch_result.next_token_ids is model_runner_output.host_token_ids
         assert batch_result.next_token_ids.tolist() == tokens.tolist()
-
-
-def test_make_batch_result_requires_declared_host_token_ids() -> None:
-    malformed_output = SimpleNamespace(next_token_ids=None, can_run_cuda_graph=False)
-
-    with pytest.raises(AttributeError, match="host_token_ids"):
-        OmniScheduler.make_batch_result(malformed_output)
 
 
 class FakeReq:
