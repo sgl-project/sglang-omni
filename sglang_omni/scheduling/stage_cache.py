@@ -25,11 +25,7 @@ def is_view_of_larger_storage(value: torch.Tensor) -> bool:
 
 
 def to_pinned_host(value: torch.Tensor) -> torch.Tensor:
-    if (
-        value.device.type == "cpu"
-        and value.is_pinned()
-        and not is_view_of_larger_storage(value)
-    ):
+    if value.is_pinned() and not is_view_of_larger_storage(value):
         return value
     else:
         pass
