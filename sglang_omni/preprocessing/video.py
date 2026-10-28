@@ -34,8 +34,7 @@ except (ImportError, OSError, RuntimeError):
     # note (ratish): images whose torchcodec wheel links CUDA-only libraries cannot load it.
     VideoDecoder = None
 
-# note (ratish): sampled frames sit far apart, so each decoder seeks to its own share of them;
-# one video takes at most this many decoder threads.
+# note (ratish): sampled frames sit far apart, so each decoder seeks to its own share of them, on at most this many decoder threads a video.
 MAX_VIDEO_DECODERS = 16
 
 logger = logging.getLogger(__name__)
@@ -446,8 +445,7 @@ def is_invalid_video(path: Path, error: Exception) -> bool:
 def read_video_torchcodec(
     ele: dict[str, str | float | int],
 ) -> tuple[torch.Tensor, float]:
-    """The frames (T, C, H, W) and sample fps of the qwen-vl-utils torchcodec reader, with the
-    sampled frames split over up to MAX_VIDEO_DECODERS decoders decoding in parallel."""
+    """The qwen-vl-utils torchcodec reader's frames (T, C, H, W) and sample fps, decoded on up to MAX_VIDEO_DECODERS parallel decoders."""
     video_path = str(ele["video"])
     first_decoder = VideoDecoder(video_path, num_ffmpeg_threads=1)
     video_fps = first_decoder.metadata.average_fps
