@@ -1278,6 +1278,36 @@ async def test_openai_speech_reports_each_sentence_end_as_a_character_offset(bac
         pytest.param(
             "今天最高25℃，体感20°。", ["今天最高25℃，体感20°。"], id="unit_symbols_stay"
         ),
+        pytest.param(
+            "## 睡眠小贴士\n- 保持规律的作息。\n> 睡前别看手机。",
+            ["睡眠小贴士", "保持规律的作息。", "睡前别看手机。"],
+            id="line_markers",
+        ),
+        pytest.param(
+            "| Feature | Python |\n|---|---|\n| Speed | Slow |",
+            ["Feature, Python", "Speed, Slow"],
+            id="table_rows",
+        ),
+        pytest.param(
+            "Visit `https://python.org` or https://www.python.org/downloads to get Python.",
+            ["Visit python.org or python.org to get Python."],
+            id="bare_url",
+        ),
+        pytest.param(
+            "Did you visit https://python.org? Try http://localhost:8000/v1.",
+            ["Did you visit python.org?", "Try localhost."],
+            id="bare_url_before_punctuation_and_with_port",
+        ),
+        pytest.param(
+            "访问https://www.python.org/downloads下载。",
+            ["访问python.org下载。"],
+            id="bare_url_between_chinese",
+        ),
+        pytest.param(
+            "两种都行 - 看需求。",
+            ["两种都行 - 看需求。"],
+            id="dash_inside_a_line_stays",
+        ),
     ],
 )
 async def test_openai_speech_sends_only_the_spoken_words_to_the_speech_service(

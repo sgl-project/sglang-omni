@@ -1189,7 +1189,8 @@ class Stage:
 
     async def execute(self, payload: StagePayload) -> None:
         request_id = payload.request_id
-        if request_id in self.aborted:
+        # note (Richard Wang): the leader drops aborted work before fanout, so a follower runs all work it receives.
+        if request_id in self.aborted and self.role != "follower":
             return
         else:
             pass
@@ -2565,7 +2566,13 @@ class Stage:
         self.record_aborted_request_id(request_id)
         self.comm.cleanup(request_id)
         self.clear_request_state(request_id)
-        self.scheduler.abort(request_id)
+        # note (Richard Wang): TP ranks run fanned-out work to completion, since a skip on one rank pairs different requests in one collective.
+        if self.role == "single" or not getattr(
+            self.scheduler, "requires_tp_work_fanout", False
+        ):
+            self.scheduler.abort(request_id)
+        else:
+            pass
 
     def on_profiler_start(self, msg: ProfilerStartMessage) -> None:
         run_id = msg.run_id
