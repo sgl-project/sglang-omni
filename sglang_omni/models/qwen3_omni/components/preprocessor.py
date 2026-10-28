@@ -9,6 +9,7 @@ import json
 import logging
 import math
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TypedDict, TypeGuard
 
@@ -57,6 +58,11 @@ from sglang_omni.proto import StagePayload
 from sglang_omni.utils.audio import AudioDecodeError
 
 logger = logging.getLogger(__name__)
+
+# note (ratish): one thread per preprocessing worker hashes a request's video frames while its HF processor runs.
+video_cache_key_pool = ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="qwen3-omni-video-cache-key"
+)
 
 
 class VideoProcessorKwargs(TypedDict, total=False):
@@ -894,7 +900,12 @@ class Qwen3OmniPreprocessor:
         audio_cache_key = compute_audio_cache_key(audios)
         # Image and video keys follow the same rule and hash the loaded media.
         image_cache_key = compute_image_cache_key(images)
-        video_cache_key = compute_video_cache_key(videos)
+        # note (ratish): the video key only tags the encoder inputs, and the HF processor reads float32 frames without writing them, so the hash runs beside the processor.
+        video_cache_key_future = (
+            video_cache_key_pool.submit(compute_video_cache_key, videos)
+            if videos
+            else None
+        )
 
         videos_kwargs: VideoProcessorKwargs = {}
         if sampled_video_fps:
@@ -955,6 +966,11 @@ class Qwen3OmniPreprocessor:
             add_special_tokens=False,
             return_tensors="pt",
             **processor_kwargs,
+        )
+        video_cache_key = (
+            video_cache_key_future.result()
+            if video_cache_key_future is not None
+            else None
         )
 
         input_ids = hf_inputs["input_ids"][0]

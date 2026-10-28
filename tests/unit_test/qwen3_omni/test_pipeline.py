@@ -2429,6 +2429,55 @@ def test_qwen_visual_cache_key_tracks_decoded_content(
     assert run("other") == after
 
 
+def test_qwen_video_cache_key_is_hashed_while_the_processor_runs(
+    decoded_audio_preprocessor, monkeypatch
+):
+    pre, _, _ = decoded_audio_preprocessor
+    frames = torch.zeros(4, 3, 2, 2)
+    processor_running = threading.Event()
+    hash_saw_processor: list[bool] = []
+    compute_video_cache_key = preprocessor_mod.compute_video_cache_key
+
+    class Processor:
+        def apply_chat_template(self, *args, **kwargs):
+            return "video prompt"
+
+        def __call__(self, **kwargs):
+            processor_running.set()
+            return {
+                "input_ids": torch.tensor([[1, 2]]),
+                "pixel_values_videos": torch.ones(1, 3),
+            }
+
+    def video_cache_key(videos):
+        hash_saw_processor.append(processor_running.wait(timeout=5))
+        return compute_video_cache_key(videos)
+
+    async def video_loader(raw, **kwargs):
+        return [frames], [2.0], None
+
+    pre.processor = Processor()
+    monkeypatch.setattr(preprocessor_mod, "ensure_video_list_async", video_loader)
+    monkeypatch.setattr(preprocessor_mod, "compute_video_cache_key", video_cache_key)
+    payload = StagePayload(
+        request_id="video-cache",
+        request=OmniRequest(
+            inputs={
+                "messages": [{"role": "user", "content": "hello"}],
+                "videos": ["https://media.invalid/clip.mp4"],
+            }
+        ),
+        data={},
+    )
+
+    state = Qwen3OmniPipelineState.from_dict(asyncio.run(pre.call_impl(payload)).data)
+
+    assert hash_saw_processor == [True]
+    assert state.encoder_inputs["image_encoder"]["cache_key"].startswith(
+        compute_video_cache_key([frames])
+    )
+
+
 def test_preprocessing_executor_defaults_to_serial_dispatch(monkeypatch):
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
     from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
