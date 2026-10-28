@@ -128,7 +128,7 @@ def build_visual(
     model_path: str,
     *,
     thinker_cfg: Qwen3OmniMoeThinkerConfig,
-    torch_dtype: torch.dtype | None,
+    torch_dtype: torch.dtype,
     device: str,
 ) -> nn.Module:
     # note (yzxiao): Stage imports must not initialize the platform layer.
@@ -139,6 +139,7 @@ def build_visual(
     visual = instantiate_visual(
         thinker_cfg.vision_config,
         device=device,
+        dtype=torch_dtype,
         native_visual_class=VISUAL_CLASS,
     )
     visual = load_module(
