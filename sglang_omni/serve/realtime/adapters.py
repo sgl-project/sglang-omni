@@ -18,8 +18,9 @@ from sglang_omni.proto.session import (
     SessionLimits,
     TimedChunk,
 )
+from sglang_omni.proto.streams import PluginPort
 from sglang_omni.serve.realtime.constants import CLOSE_REASON_INTERNAL
-from sglang_omni.serve.realtime.output import OutputEvent, TurnFailure
+from sglang_omni.serve.realtime.output import OutputEvent, PluginChunk, TurnFailure
 from sglang_omni.serve.realtime.schema import SessionConfiguration
 from sglang_omni.serve.realtime.task_cleanup import cancel_local_tasks
 from sglang_omni.serve.realtime.types import (
@@ -68,6 +69,7 @@ class CoordinatorAdapter(InteractionAdapter):
         input_sample_rate_hz: int | None = None,
         atomic_consumption: bool = False,
         limits: SessionLimits | None = None,
+        plugin_output_ports: tuple[PluginPort, ...] = (),
     ) -> None:
         if not atomic_consumption:
             raise ValueError("a producer atomic-consumption contract is required")
@@ -76,6 +78,9 @@ class CoordinatorAdapter(InteractionAdapter):
         self.client = client
         self.request_builder = request_builder
         self.output_converter = output_converter
+        self.plugin_outputs = {
+            (port.modality, port.format) for port in plugin_output_ports
+        }
         self.input_sample_rate_hz = input_sample_rate_hz
         self.limits = limits or SessionLimits()
         self.cleanup_timeout_s = self.limits.operation_timeout_s
@@ -123,7 +128,10 @@ class CoordinatorAdapter(InteractionAdapter):
         assert self.session_identity is not None and self.output_sink is not None
         try:
             async for output in self.client.session_outputs(self.session_identity):
-                if (
+                if (output.modality, output.format) in self.plugin_outputs:
+                    # Note (Junnan Li): A node downstream of the input node publishes after the unit's input_done, under the latest input's seq; its chunks are not the unit's reply.
+                    await self.output_sink(PluginChunk.from_output(output, None))
+                elif (
                     self.active_unit is None
                     or output.input_seq != self.active_unit.index
                 ):

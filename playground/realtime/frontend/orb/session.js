@@ -28,6 +28,13 @@ export function bytesToBase64(bytes) {
   return btoa(binary);
 }
 
+// Renderers of plugin formats, the sglang.output_chunk events, by format: the page registers the formats it draws; an unknown format is logged once and dropped.
+const pluginRenderers = new Map();
+const unknownPluginFormats = new Set();
+export function registerPluginRenderer(format, render) {
+  pluginRenderers.set(format, render);
+}
+
 export function base64ToBytes(encoded) {
   const binary = atob(encoded);
   const bytes = new Uint8Array(binary.length);
@@ -391,6 +398,15 @@ export class DuplexSession {
         this.responseId = null;
         if (this.transcript && !this.transcript.endsWith("\n")) this.transcript += "\n";
         this.emit("response", { open: false, id: event.response && event.response.id, status, stopConfirmed });
+        break;
+      }
+      case "sglang.output_chunk": {
+        const render = pluginRenderers.get(event.format);
+        if (render) render(event, this);
+        else if (!unknownPluginFormats.has(event.format)) {
+          unknownPluginFormats.add(event.format);
+          console.info(`no renderer for plugin format ${event.modality}/${event.format}; registerPluginRenderer(format, render) adds one`);
+        }
         break;
       }
       case "sglang.unit.done":

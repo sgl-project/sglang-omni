@@ -10,10 +10,11 @@ from functools import partial
 
 import numpy as np
 
-from sglang_omni.admission import ContextExhaustedError
+from sglang_omni.admission import ContextExhaustedError, QueueFullError
 from sglang_omni.client.client import Client
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import (
+    ChunkPayload,
     OutputChunk,
     SessionIdentity,
     SessionLimits,
@@ -56,6 +57,7 @@ from sglang_omni.serve.realtime.output import (
     AudioFinished,
     InputTranscription,
     OutputEvent,
+    PluginChunk,
     ResponseFinished,
     ResponseHeard,
     ResponseProgress,
@@ -126,6 +128,8 @@ def capabilities_of(ports: SessionPorts) -> Capabilities:
         supports_truncate=TRUNCATE in ports.controls,
         supports_cancel=INTERRUPT in ports.controls,
         supports_client_commit=COMMIT in ports.controls,
+        plugin_input_ports=ports.plugin_input,
+        plugin_output_ports=ports.plugin_output,
     )
 
 
@@ -172,6 +176,9 @@ class SessionBridge(InteractionAdapter):
         self.limits = limits or SessionLimits()
         self.cleanup_timeout_s = self.limits.operation_timeout_s
         self.encode_input = INPUT_ENCODERS[ports.audio_input.format]
+        self.plugin_inputs = {
+            (port.modality, port.format) for port in ports.plugin_input
+        }
         self.projections: dict[
             tuple[str, str | None], Callable[[OutputChunk], list[OutputEvent]]
         ] = {
@@ -184,6 +191,8 @@ class SessionBridge(InteractionAdapter):
             self.decode_output = OUTPUT_DECODERS[ports.output.format]
         else:
             pass
+        for port in ports.plugin_output:
+            self.projections[(port.modality, port.format)] = self.on_plugin_chunk
         self.controls: dict[str, Callable[[OutputChunk], list[OutputEvent]]] = {
             SPEECH_STARTED: self.on_speech_started,
             SPEECH_STOPPED: self.on_speech_stopped,
@@ -220,6 +229,8 @@ class SessionBridge(InteractionAdapter):
         self.item_turns: dict[str, int | None] = {}
         self.response_text = ""
         self.has_audio = False
+        # Note (Junnan Li): The turn and response id of the last finished reply, so plugin media trailing it by the delivery lead keeps that response instead of opening a new one; media a whole turn late carries none.
+        self.finished_response: tuple[int | None, str] | None = None
 
     def set_limits(self, runtime_limits: RuntimeLimits) -> None:
         self.cleanup_timeout_s = runtime_limits.cleanup_timeout_s
@@ -291,6 +302,39 @@ class SessionBridge(InteractionAdapter):
         finally:
             self.pending_input_sequence = None
             self.input_done = None
+
+    async def append_plugin_chunk(
+        self,
+        modality: str,
+        format: str,
+        t_ms: float,
+        duration_ms: float,
+        payload: ChunkPayload,
+    ) -> None:
+        if (modality, format) not in self.plugin_inputs:
+            raise ProtocolError(
+                "not_supported", f"no plugin input port takes {modality}/{format}"
+            )
+        else:
+            pass
+        try:
+            async with self.append_lock:
+                await self.append_chunk(
+                    TimedChunk(
+                        modality,
+                        t_ms,
+                        duration_ms,
+                        self.next_input_sequence,
+                        payload,
+                        format=format,
+                    )
+                )
+        except QueueFullError:
+            raise ProtocolError(
+                "buffer_overflow", "input budget exhausted; retry this chunk"
+            ) from None
+        except ValueError as exc:
+            raise ProtocolError("invalid_request", str(exc)) from exc
 
     async def append_control(
         self, control: dict[str, object], *, turn: int | None = None
@@ -399,6 +443,26 @@ class SessionBridge(InteractionAdapter):
         else:
             return projection(output)
 
+    def on_plugin_chunk(self, output: OutputChunk) -> list[OutputEvent]:
+        """A chunk of a format the protocol does not interpret goes out as it is, with the response id of its own turn: the open one, the last finished one, or a new one for a turn newer than both; otherwise none."""
+        events: list[OutputEvent] = []
+        finished_turn, finished_id = self.finished_response or (None, None)
+        if output.turn is None:
+            response_id = None
+        elif output.turn == self.response_turn and self.response_id is not None:
+            response_id = self.response_id
+        elif output.turn == finished_turn:
+            response_id = finished_id
+        elif self.response_id is None and (
+            finished_turn is None or output.turn > finished_turn
+        ):
+            events = self.start_response(output.turn)
+            response_id = self.response_id
+        else:
+            response_id = None
+        events.append(PluginChunk.from_output(output, response_id))
+        return events
+
     def on_control(self, output: OutputChunk) -> list[OutputEvent]:
         projection = self.controls.get(output.payload["type"])
         if projection is None:
@@ -504,6 +568,7 @@ class SessionBridge(InteractionAdapter):
             ResponseFinished(*ids, self.response_text, self.has_audio, status, reason)
         )
         self.ended_response = (self.response_turn, *ids)
+        self.finished_response = (output.turn, self.response_id)
         self.response_id = None
         return events
 
@@ -526,6 +591,7 @@ class SessionBridge(InteractionAdapter):
                 "empty_turn",
             )
         )
+        self.finished_response = (output.turn, self.response_id)
         self.response_id = None
         return events
 

@@ -190,6 +190,8 @@ class SessionGraphRuntime:
     client_sequences: dict[str, dict[int, int]] = field(default_factory=dict)
     pending_input_done: dict[int, int] = field(default_factory=dict)
     output_end_ms: float = 0.0
+    # Note (Junnan Li): The shared timeline's clock of each plugin format with a duration, beside the audio's output_end_ms; a reply ends after all of them.
+    plugin_end_ms: dict[str, float] = field(default_factory=dict)
     reply_start_ms: float = 0.0
     open_turns: set[int] = field(default_factory=set)
     eos_confirmed: set[str] = field(default_factory=set)

@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from typing import Literal
 
+from sglang_omni.proto.session import ChunkPayload, OutputChunk
+
 ResponseStatus = Literal["completed", "cancelled", "failed", "incomplete"]
 
 
@@ -88,6 +90,31 @@ class SpeechStopped:
 
 
 @dataclass(frozen=True)
+class PluginChunk:
+    """A published chunk of a plugin format, one the realtime protocol does not interpret, sent as the Session produced it."""
+
+    response_id: str | None
+    modality: str
+    format: str
+    t_start_ms: float
+    duration_ms: float
+    turn: int | None
+    payload: ChunkPayload
+
+    @classmethod
+    def from_output(cls, output: OutputChunk, response_id: str | None) -> "PluginChunk":
+        return cls(
+            response_id=response_id,
+            modality=output.modality,
+            format=output.format,
+            t_start_ms=output.t_start_ms,
+            duration_ms=output.duration_ms,
+            turn=output.turn,
+            payload=output.payload,
+        )
+
+
+@dataclass(frozen=True)
 class InputTranscription:
     """Transcript of the user's utterance item; is_final closes the item."""
 
@@ -108,6 +135,7 @@ OutputEvent = (
     | TurnFailure
     | SpeechStarted
     | SpeechStopped
+    | PluginChunk
     | InputTranscription
 )
 

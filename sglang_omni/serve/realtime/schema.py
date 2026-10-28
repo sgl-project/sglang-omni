@@ -13,6 +13,7 @@ from pydantic import (
     Field,
     TypeAdapter,
     field_validator,
+    model_validator,
 )
 from typing_extensions import TypedDict
 
@@ -34,6 +35,19 @@ PartialStyle = Literal["append_only", "revising"]
 class AudioFormat(TypedDict):
     type: str
     rate: int
+
+
+class PluginPortDict(TypedDict):
+    modality: str
+    format: str
+    params: dict[str, object]
+
+
+class PluginPorts(TypedDict, total=False):
+    """The Session's ports the protocol does not interpret, present when it declares any; a client renders or sends the formats it knows."""
+
+    plugin_input_ports: list[PluginPortDict]
+    plugin_output_ports: list[PluginPortDict]
 
 
 class ImageFormat(TypedDict):
@@ -186,7 +200,7 @@ class GrantedCapabilities(TypedDict, total=False):
     rejections: list[Rejection]
 
 
-class CapabilityResponse(GrantedCapabilities):
+class CapabilityResponse(GrantedCapabilities, PluginPorts):
     model: str
 
 
@@ -232,6 +246,25 @@ class ImageAppendEvent(ClientEvent):
     sglang: ImageAppendMetadata
 
 
+class PluginChunkAppendEvent(ClientEvent):
+    """A chunk for a plugin input port, one beyond the audio buffer and the camera: a JSON payload or base64 bytes, never both."""
+
+    type: Literal["sglang.input_chunk.append"]
+    modality: str
+    format: str
+    t_ms: float
+    duration_ms: float
+    payload: dict[str, object] | None = None
+    payload_b64: str | None = None
+
+    @model_validator(mode="after")
+    def check_one_payload(self) -> "PluginChunkAppendEvent":
+        if (self.payload is None) == (self.payload_b64 is None):
+            raise ValueError("an input chunk carries payload or payload_b64")
+        else:
+            return self
+
+
 class ConversationItemTruncateEvent(ClientEvent):
     type: Literal["conversation.item.truncate"]
     item_id: str
@@ -254,6 +287,7 @@ CLIENT_EVENT: TypeAdapter[
     SessionUpdateEvent
     | AudioAppendEvent
     | ImageAppendEvent
+    | PluginChunkAppendEvent
     | ConversationItemTruncateEvent
     | SessionCommandEvent
 ] = TypeAdapter(
@@ -261,6 +295,7 @@ CLIENT_EVENT: TypeAdapter[
         SessionUpdateEvent
         | AudioAppendEvent
         | ImageAppendEvent
+        | PluginChunkAppendEvent
         | ConversationItemTruncateEvent
         | SessionCommandEvent,
         Field(discriminator="type"),

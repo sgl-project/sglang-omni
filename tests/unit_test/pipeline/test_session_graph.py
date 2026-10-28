@@ -38,6 +38,7 @@ from sglang_omni.proto.streams import (
     INTERRUPT,
     PCM16,
     REPLY_DELIVERED,
+    control_type,
 )
 from sglang_omni.scheduling.session import (
     ChunkEmitter,
@@ -694,6 +695,132 @@ async def test_a_producer_held_on_a_full_edge_drops_a_turn_interrupted_meanwhile
     assert [
         (chunk.payload, chunk.turn) for _, chunk, _ in graph.inboxes["observer"].queued
     ] == [({"text": "first"}, 1), ({"text": "next"}, 2)]
+
+
+def timeline_runtime(
+    sessions: SessionGraphRunner,
+    publish: tuple[str, ...],
+    plugin_formats: frozenset[str],
+) -> SessionGraphRuntime:
+    """The `reply` graph with a shared timeline, publishing `publish`, after 600 ms of input."""
+    graph = reply_runtime(sessions)
+    graph.graph = replace(
+        graph.graph,
+        publish={"reply": publish},
+        shared_timeline=True,
+        plugin_formats=plugin_formats,
+    )
+    graph.modality_end_ms[AUDIO] = 600.0
+    return graph
+
+
+def media_output(
+    modality: str, output_format: str, duration_ms: float, turn: int
+) -> OutputChunk:
+    return OutputChunk(
+        SessionIdentity("graph:reply"),
+        0,
+        0,
+        modality,
+        0,
+        duration_ms,
+        b"media",
+        output_format,
+        turn=turn,
+    )
+
+
+def published_timeline(graph: SessionGraphRuntime) -> list[tuple[str, float]]:
+    """(label, t_start_ms) of every output waiting for the client."""
+    timeline = []
+    while not graph.outputs.empty():
+        output = graph.outputs.get_nowait()[0]
+        timeline.append((control_type(output) or output.format, output.t_start_ms))
+    return timeline
+
+
+@pytest.mark.asyncio
+async def test_a_shared_timeline_stamps_replies_after_the_input():
+    sessions = NodeOutputsRunner(
+        [
+            reply_output("session", {"type": "speech.stopped", "t_ms": 123.0}, 1),
+            reply_output("session", {"type": "turn.started"}, 1),
+            reply_output("text_delta", {"text": "Hi"}, 1),
+            media_output(AUDIO, PCM16, 100, 1),
+            media_output(AUDIO, PCM16, 100, 1),
+            reply_output("session", {"type": "turn.done"}, 1),
+        ]
+    )
+    graph = timeline_runtime(sessions, (PCM16, "text_delta", "session"), frozenset())
+    await sessions.route_graph_outputs(graph, "reply")
+    assert published_timeline(graph) == [
+        ("speech.stopped", 0.0),
+        ("turn.started", 600.0),
+        ("text_delta", 600.0),
+        (PCM16, 600.0),
+        (PCM16, 700.0),
+        ("turn.done", 800.0),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_shared_timeline_gives_each_plugin_format_a_clock_and_ends_the_turn_after_all():
+    def motion(turn: int) -> OutputChunk:
+        return media_output("motion", "smplx_motion", 80, turn)
+
+    def audio(turn: int) -> OutputChunk:
+        return media_output(AUDIO, PCM16, 100, turn)
+
+    sessions = NodeOutputsRunner(
+        [
+            reply_output("session", {"type": "turn.started"}, 1),
+            audio(1),
+            motion(1),
+            motion(1),
+            motion(1),
+            audio(1),
+            media_output(IMAGE, "image_asset", 0, 1),
+            media_output("video", "video_frame", 500, 1),
+            reply_output("session", {"type": "turn.done"}, 1),
+        ]
+    )
+    graph = timeline_runtime(
+        sessions,
+        (PCM16, "smplx_motion", "image_asset", "video_frame", "session"),
+        frozenset({"smplx_motion", "image_asset"}),
+    )
+    await sessions.route_graph_outputs(graph, "reply")
+    assert published_timeline(graph) == [
+        ("turn.started", 600.0),
+        (PCM16, 600.0),
+        ("smplx_motion", 600.0),
+        ("smplx_motion", 680.0),
+        ("smplx_motion", 760.0),
+        (PCM16, 700.0),
+        ("image_asset", 600.0),
+        ("video_frame", 600.0),
+        ("turn.done", 840.0),
+    ]
+    graph.modality_end_ms[AUDIO] = 1000.0
+    sessions.node_outputs = [
+        reply_output("session", {"type": "turn.started"}, 2),
+        motion(2),
+        reply_output("session", {"type": "turn.interrupted"}, 2),
+        reply_output("session", {"type": "turn.started"}, 3),
+        audio(3),
+        motion(3),
+        reply_output("session", {"type": "turn.done"}, 3),
+    ]
+    await sessions.route_graph_outputs(graph, "reply")
+    assert published_timeline(graph) == [
+        ("turn.started", 1000.0),
+        ("smplx_motion", 1000.0),
+        ("turn.interrupted", 1000.0),
+        ("turn.started", 1000.0),
+        (PCM16, 1000.0),
+        ("smplx_motion", 1000.0),
+        ("turn.done", 1100.0),
+    ]
 
 
 def report_runtime(sessions: SessionGraphRunner) -> SessionGraphRuntime:

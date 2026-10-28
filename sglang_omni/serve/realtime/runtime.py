@@ -16,6 +16,7 @@ from sglang_omni.profiler.duplex_events import (
     SessionUnitReadyObservation,
     capture_session_unit_ready,
 )
+from sglang_omni.proto.session import ChunkPayload
 from sglang_omni.serve.realtime.constants import (
     CLOSE_REASON_CLEANUP_TIMEOUT,
     CLOSE_REASON_CLIENT_CLOSED,
@@ -148,7 +149,14 @@ class SessionRuntime:
         self.admission_deadline_seconds = (
             time.monotonic() + self.limits.session_update_timeout_s
         )
-        self.notify(Created(self.session_id, self.model, "realtime"))
+        self.notify(
+            Created(
+                self.session_id,
+                self.model,
+                "realtime",
+                plugin_ports=self.capabilities.plugin_ports(),
+            )
+        )
         self.watchdog_task = asyncio.create_task(self.watch_activity())
 
     def expire_admission_if_due(self) -> bool:
@@ -260,6 +268,7 @@ class SessionRuntime:
                     granted,
                     event_id,
                     copy.deepcopy(public_config),
+                    plugin_ports=self.capabilities.plugin_ports(),
                 )
             )
 
@@ -396,6 +405,26 @@ class SessionRuntime:
             else:
                 self.pending_frames.setdefault(unit_index, []).append((t_ms, image))
                 self.notify(ImageAccepted(f"unit_{unit_index}", event_id))
+                self.mark_activity()
+
+    async def append_plugin_chunk(
+        self,
+        modality: str,
+        format: str,
+        t_ms: float,
+        duration_ms: float,
+        payload: ChunkPayload,
+    ) -> None:
+        """Hand a chunk of a plugin input port to the adapter; it keeps its own timeline."""
+        async with self.command_lock:
+            self.require_open()
+            assert self.adapter is not None
+            if self.is_input_ended:
+                raise ProtocolError("invalid_state", "input has ended")
+            else:
+                await self.adapter.append_plugin_chunk(
+                    modality, format, t_ms, duration_ms, payload
+                )
                 self.mark_activity()
 
     async def clear(self, event_id: str) -> None:

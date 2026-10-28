@@ -62,9 +62,16 @@ class DeliveryPacer:
     once the first held chunk may leave.
     """
 
-    def __init__(self, lead_ms: float, wake: asyncio.Event) -> None:
+    def __init__(
+        self,
+        lead_ms: float,
+        wake: asyncio.Event,
+        plugin_formats: frozenset[str] = frozenset(),
+    ) -> None:
         self.lead_ms = lead_ms
         self.wake = wake
+        # Note (Junnan Li): A chunk of these formats with a duration is held to the reply's clock like audio, but never cut or joined; any other chunk passes.
+        self.plugin_formats = plugin_formats
         self.items: deque[Budgeted] = deque()
         self.unsent: deque[Budgeted] = deque()
         # note (luojiaxuan): The client plays a reply from its first audio, so the release of a turn's first audio starts the reply's real time; audio before any turn's is not paced.
@@ -78,6 +85,8 @@ class DeliveryPacer:
         # note (luojiaxuan): Where the released audio of released_turn ends on its reply's timeline; its turn.done leaves once the client has played that far.
         self.released_turn: int | None = None
         self.released_end_ms = 0.0
+        # Note (Junnan Li): Where the released plugin media of the latest turn with any ends, so that turn's turn.done also waits until the client has played it.
+        self.released_plugin_end_ms: dict[int | None, float] = {}
 
     def offer(self, output: OutputChunk, size: int) -> int:
         """Queue an output; returns the budgeted bytes a turn.interrupted dropped from its turn."""
@@ -140,15 +149,31 @@ class DeliveryPacer:
         self.released_end_ms = output.t_start_ms + output.duration_ms
         released.append(audio)
 
+    def take_plugin_media(self, released: list[Budgeted], media: Budgeted) -> None:
+        output, _ = media
+        end_ms = max(
+            output.t_start_ms + output.duration_ms,
+            self.released_plugin_end_ms.get(output.turn, 0.0),
+        )
+        self.released_plugin_end_ms = {output.turn: end_ms}
+        released.append(media)
+
     def release(self, now: float) -> list[Budgeted]:
         self.wake.clear()
         released: list[Budgeted] = []
         held: deque[Budgeted] = deque()
         for output, size in self.items:
             is_reply_audio = output.kind == "data" and output.format in AUDIO_FORMATS
-            if held and (is_reply_audio or control_type(output) == TURN_DONE):
+            is_plugin_media = (
+                output.kind == "data"
+                and output.format in self.plugin_formats
+                and output.duration_ms > 0
+            )
+            if held and (
+                is_reply_audio or is_plugin_media or control_type(output) == TURN_DONE
+            ):
                 held.append((output, size))
-            elif is_reply_audio and not self.is_input_ended:
+            elif (is_reply_audio or is_plugin_media) and not self.is_input_ended:
                 if output.turn != self.clock_turn:
                     self.clock_turn = output.turn
                     self.reply_start_ms = output.t_start_ms
@@ -158,6 +183,8 @@ class DeliveryPacer:
                 horizon_ms = self.horizon_ms(now)
                 if output.t_start_ms >= horizon_ms:
                     held.append((output, size))
+                elif is_plugin_media:
+                    self.take_plugin_media(released, (output, size))
                 elif (
                     output.t_start_ms + output.duration_ms > horizon_ms
                     and output.payload
@@ -176,6 +203,14 @@ class DeliveryPacer:
                 and not self.is_input_ended
                 and output.turn == self.released_turn
                 and self.horizon_ms(now) - self.lead_ms < self.released_end_ms
+            ):
+                held.append((output, size))
+            elif (
+                control_type(output) == TURN_DONE
+                and not self.is_input_ended
+                and output.turn in self.released_plugin_end_ms
+                and self.horizon_ms(now) - self.lead_ms
+                < self.released_plugin_end_ms[output.turn]
             ):
                 held.append((output, size))
             else:
@@ -215,7 +250,18 @@ class DeliveryPacer:
         loop = asyncio.get_running_loop()
         if self.items and not self.wake.is_set():
             output, _ = self.items[0]
-            if control_type(output) == TURN_DONE:
+            if (
+                control_type(output) == TURN_DONE
+                and output.turn in self.released_plugin_end_ms
+            ):
+                audio_end_ms = (
+                    self.released_end_ms if output.turn == self.released_turn else 0.0
+                )
+                due_ms = (
+                    max(audio_end_ms, self.released_plugin_end_ms[output.turn])
+                    + self.lead_ms
+                )
+            elif control_type(output) == TURN_DONE:
                 due_ms = self.released_end_ms + self.lead_ms
             else:
                 due_ms = output.t_start_ms + min(output.duration_ms, MIN_SLICE_MS)

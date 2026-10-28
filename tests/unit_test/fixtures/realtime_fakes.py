@@ -7,6 +7,7 @@ import asyncio
 from asyncio import sleep as real_sleep
 from dataclasses import dataclass, field
 
+from sglang_omni.proto.session import ChunkPayload
 from sglang_omni.serve.realtime.output import OutputEvent
 from sglang_omni.serve.realtime.schema import SessionConfiguration
 from sglang_omni.serve.realtime.types import InteractionAdapter, OutputSink, Unit
@@ -71,6 +72,9 @@ class ScriptedAdapter(InteractionAdapter):
     close_error: str | None = None
     should_stall_close: bool = False
     units: list[Unit] = field(default_factory=list)
+    chunks: list[tuple[str, str, float, float, ChunkPayload]] = field(
+        default_factory=list
+    )
     held_samples: int = 0
     output_sink: OutputSink | None = None
     is_closed: bool = False
@@ -97,6 +101,16 @@ class ScriptedAdapter(InteractionAdapter):
     async def clear(self) -> int:
         held_samples, self.held_samples = self.held_samples, 0
         return held_samples
+
+    async def append_plugin_chunk(
+        self,
+        modality: str,
+        format: str,
+        t_ms: float,
+        duration_ms: float,
+        payload: ChunkPayload,
+    ) -> None:
+        self.chunks.append((modality, format, t_ms, duration_ms, payload))
 
     async def close(self) -> None:
         self.is_closed = True

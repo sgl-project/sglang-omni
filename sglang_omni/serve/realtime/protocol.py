@@ -31,6 +31,7 @@ from sglang_omni.serve.realtime.schema import (
     AudioAppendEvent,
     ConversationItemTruncateEvent,
     ImageAppendEvent,
+    PluginChunkAppendEvent,
     SessionUpdateEvent,
 )
 from sglang_omni.serve.realtime.task_cleanup import cancel_local_tasks
@@ -240,6 +241,26 @@ class SharedRealtimeSession:
                     "invalid_request", "invalid base64 image", "image"
                 ) from exc
             await self.runtime.append_image(image, event.sglang.t_ms, event.event_id)
+        elif isinstance(event, PluginChunkAppendEvent):
+            max_encoded_payload_chars = (
+                (self.runtime.limits.max_input_bytes + 2) // 3 * 4
+            )
+            if event.payload_b64 is None:
+                payload = event.payload
+            elif len(event.payload_b64) > max_encoded_payload_chars:
+                raise ProtocolError(
+                    "buffer_overflow", "encoded payload exceeds input budget"
+                )
+            else:
+                try:
+                    payload = base64.b64decode(event.payload_b64, validate=True)
+                except (ValueError, binascii.Error) as exc:
+                    raise ProtocolError(
+                        "invalid_request", "invalid base64 payload", "payload_b64"
+                    ) from exc
+            await self.runtime.append_plugin_chunk(
+                event.modality, event.format, event.t_ms, event.duration_ms, payload
+            )
         elif event.type == "input_audio_buffer.clear":
             await self.runtime.clear(event.event_id)
         elif event.type == "response.cancel":

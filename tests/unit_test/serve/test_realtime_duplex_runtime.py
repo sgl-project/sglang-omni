@@ -21,6 +21,7 @@ import sglang_omni.serve.realtime.runtime as runtime_module
 from sglang_omni.client.client import Client
 from sglang_omni.profiler.duplex_events import SessionUnitReadyObservation
 from sglang_omni.profiler.event_recorder import get_recorder
+from sglang_omni.proto.session import ChunkPayload
 from sglang_omni.serve.realtime.control import (
     Closed,
     Drained,
@@ -156,6 +157,20 @@ class CommandAdapter(GatedAdapter):
         pass
 
     async def truncate(self, item_id: str, audio_end_ms: float) -> None:
+        pass
+
+
+class ChunkInputAdapter(GatedAdapter):
+    """Takes every input chunk of a plugin port."""
+
+    async def append_plugin_chunk(
+        self,
+        modality: str,
+        format: str,
+        t_ms: float,
+        duration_ms: float,
+        payload: ChunkPayload,
+    ) -> None:
         pass
 
 
@@ -997,6 +1012,35 @@ async def test_repeated_failed_admissions_keep_original_deadline(
             "session_update_timeout",
         )
         assert factory_call_count == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_accepted", [False, True])
+async def test_only_accepted_input_chunks_extend_idle_timeout(
+    fake_clock: FakeClock,
+    is_accepted: bool,
+) -> None:
+    adapter = ChunkInputAdapter([]) if is_accepted else GatedAdapter([])
+    async with open_runtime(adapter, ACTIVITY_LIMITS) as runtime:
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS / 2)
+        if is_accepted:
+            await runtime.append_plugin_chunk("motion", "smplx_motion", 0, 40, b"pose")
+        else:
+            with pytest.raises(ProtocolError, match="no plugin input port"):
+                await runtime.append_plugin_chunk(
+                    "motion", "smplx_motion", 0, 40, b"pose"
+                )
+
+        await advance_past_deadline(fake_clock, runtime, ACTIVITY_TIMEOUT_SECONDS / 2)
+        if is_accepted:
+            await advance_past_deadline(
+                fake_clock,
+                runtime,
+                ACTIVITY_TIMEOUT_SECONDS / 2 - DEADLINE_EPSILON_SECONDS,
+            )
+        else:
+            pass
+        await assert_idle_closed(runtime)
 
 
 @pytest.mark.asyncio

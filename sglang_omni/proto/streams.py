@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 from sglang_omni.proto.session import OutputChunk, TimedChunk
 
@@ -134,6 +134,21 @@ class ImagePort:
 
 
 @dataclass(frozen=True)
+class PluginPort:
+    """A stream of a format neither the framework nor the realtime protocol interprets, such as PluginPort("motion", "smplx_motion", {"fps": 25}); a client renders or sends the formats it knows."""
+
+    modality: str
+    format: str
+    params: dict[str, object] = field(default_factory=dict)
+
+    def __hash__(self) -> int:
+        return hash((self.modality, self.format, tuple(sorted(self.params.items()))))
+
+    def to_dict(self) -> dict[str, object]:
+        return {"modality": self.modality, "format": self.format, "params": self.params}
+
+
+@dataclass(frozen=True)
 class SessionPorts:
     """What a pipeline's Session accepts and produces; `input` is one audio port and the image ports of the nodes that see; hot_settings are the realtime session fields a CONFIGURE control may change while it is open; turn_detection_types are the `turn_detection.type` values its nodes implement."""
 
@@ -144,6 +159,9 @@ class SessionPorts:
     hot_settings: frozenset[str] = frozenset()
     sampling_parameters: tuple[str, ...] = ()
     turn_detection_types: tuple[str, ...] = ()
+    # Note (Junnan Li): Ports of formats a model package defines, which the realtime protocol forwards as they are beside its audio and camera.
+    plugin_input: tuple[PluginPort, ...] = ()
+    plugin_output: tuple[PluginPort, ...] = ()
 
     def __post_init__(self) -> None:
         audio_ports = [port for port in self.input if isinstance(port, AudioPort)]
@@ -196,4 +214,6 @@ class SessionPorts:
                 for kind in node.turn_detection_types
                 if kind not in self.turn_detection_types
             ),
+            plugin_input=tuple(dict.fromkeys(self.plugin_input + node.plugin_input)),
+            plugin_output=tuple(dict.fromkeys(self.plugin_output + node.plugin_output)),
         )

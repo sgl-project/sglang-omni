@@ -85,6 +85,8 @@ class HookState:
     reply_ms: float
     # note (luojiaxuan): Seconds between the reply's turn.started and its audio, the reply's first-audio latency.
     reply_after_s: float
+    reply_modality: str
+    reply_format: str
 
 
 def number_param(params: Mapping[str, object], key: str, default: float) -> float:
@@ -136,25 +138,29 @@ def read_hook_state(
         emit_after_s=number_param(params, "emit_after", 0),
         reply_ms=number_param(params, "emit_reply_ms", 0),
         reply_after_s=number_param(params, "emit_reply_after", 0),
+        reply_modality=text_param(params, "emit_reply_modality") or "audio",
+        reply_format=text_param(params, "emit_reply_format") or "pcm16",
     )
 
 
 REPLY_UNIT_MS = 100
 
 
-def reply_chunks(reply_ms: float) -> list[TimedChunk]:
+def reply_chunks(
+    reply_ms: float, modality: str = "audio", output_format: str = "pcm16"
+) -> list[TimedChunk]:
     """Turn 1 with `reply_ms` of 16 kHz pcm16 audio in 100 ms chunks, all at once."""
     units = int(reply_ms // REPLY_UNIT_MS)
     return [
         control_chunk("turn.started", turn=1),
         *(
             TimedChunk(
-                "audio",
+                modality,
                 index * REPLY_UNIT_MS,
                 REPLY_UNIT_MS,
                 0,
                 bytes(REPLY_UNIT_MS * 32),
-                "pcm16",
+                output_format,
                 turn=1,
             )
             for index in range(units)
@@ -205,7 +211,9 @@ class Hooks(SessionHooks):
             else:
                 pass
             if state.reply_ms and state.count == 1:
-                started, *reply = reply_chunks(state.reply_ms)
+                started, *reply = reply_chunks(
+                    state.reply_ms, state.reply_modality, state.reply_format
+                )
                 context.emit(started)
                 time.sleep(state.reply_after_s)
                 for emitted in reply:

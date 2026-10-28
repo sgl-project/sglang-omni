@@ -274,6 +274,8 @@ class SessionGraph:
     publish: dict[str, tuple[str, ...]]
     # note (Junnan Li): Reply components may emit untimed chunks; the coordinator gives their published outputs one shared media clock.
     shared_timeline: bool = False
+    # Note (Junnan Li): The formats of the plugin output ports; their chunks with a duration take a shared timeline clock beside the audio's, and a node's pacer holds them to the reply clock.
+    plugin_formats: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if not self.nodes or GRAPH_INPUT in self.nodes:

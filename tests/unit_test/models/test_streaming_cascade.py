@@ -77,6 +77,7 @@ from sglang_omni.proto.streams import (
     TURN_QUEUED,
     TURN_STARTED,
     AudioPort,
+    PluginPort,
     SessionPorts,
     control_type,
 )
@@ -1253,6 +1254,26 @@ def test_profile_graph_turns_formats_and_ports():
     assert (chat.consumes, chat.required) == ({MESSAGES, SESSION_CONTROL}, {MESSAGES})
     dialog_formats = {TRANSCRIPT_FORMAT, TEXT_DELTA, SESSION_CONTROL}
     assert settings.node("dialog").required == dialog_formats
+
+
+def test_a_kind_s_plugin_ports_join_the_session_ports_and_the_graph_once_published(
+    monkeypatch,
+):
+    motion = PluginPort("motion", "smplx_motion", {"fps": 25})
+    speech = COMPONENTS.kind("openai_speech")
+    monkeypatch.setitem(
+        COMPONENTS.kinds,
+        "openai_speech",
+        replace(
+            speech, produces=speech.produces | {"smplx_motion"}, plugin_ports=(motion,)
+        ),
+    )
+    assert declared().session_ports().plugin_output == ()
+    assert declared().session_graph().plugin_formats == frozenset()
+    gesturing = declared(publish={"tts": [PCM_F32, "smplx_motion", SESSION_CONTROL]})
+    ports = gesturing.session_ports()
+    assert (ports.output, ports.plugin_output) == (CASCADE_PORTS.output, (motion,))
+    assert gesturing.session_graph().plugin_formats == {"smplx_motion"}
 
 
 def test_a_dialog_without_the_input_interrupt_edge_grants_no_client_stop():

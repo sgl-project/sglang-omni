@@ -11,13 +11,16 @@ from sglang_omni.profiler.duplex_events import SessionUnitReadyObservation
 from sglang_omni.proto.session import (
     DEFAULT_IDLE_TIMEOUT_S,
     DEFAULT_SESSION_UPDATE_TIMEOUT_S,
+    ChunkPayload,
 )
+from sglang_omni.proto.streams import PluginPort
 from sglang_omni.serve.realtime.control import ControlEvent
 from sglang_omni.serve.realtime.output import OutputEvent
 from sglang_omni.serve.realtime.schema import (
     GrantedCapabilities,
     Interaction,
     PartialStyle,
+    PluginPorts,
     SessionConfiguration,
     TailPolicy,
 )
@@ -84,6 +87,9 @@ class Capabilities:
     # note (Junnan Li): Frame cap per unit, indexed by the session's max_slice_nums minus one.
     image_frames_per_unit: tuple[int, ...] = (1,)
     default_max_slice_nums: int = 1
+    # Note (Junnan Li): Only the ports the protocol does not interpret; the audio buffer, camera frames and reply audio are the granted formats above.
+    plugin_input_ports: tuple[PluginPort, ...] = ()
+    plugin_output_ports: tuple[PluginPort, ...] = ()
 
     def __post_init__(self) -> None:
         if self.interaction not in get_args(Interaction):
@@ -121,6 +127,20 @@ class Capabilities:
 
     def input_duration_ms(self, sample_count: int) -> float:
         return samples_to_ms(sample_count, self.input_sample_rate_hz)
+
+    def plugin_ports(self) -> PluginPorts:
+        """The plugin ports a session's events and the capabilities response list; none for a Session that declares none."""
+        if self.plugin_input_ports or self.plugin_output_ports:
+            return {
+                "plugin_input_ports": [
+                    port.to_dict() for port in self.plugin_input_ports
+                ],
+                "plugin_output_ports": [
+                    port.to_dict() for port in self.plugin_output_ports
+                ],
+            }
+        else:
+            return {}
 
     def to_granted_capabilities(self) -> GrantedCapabilities:
         granted: GrantedCapabilities = dict(
@@ -216,6 +236,16 @@ class InteractionAdapter:
 
     async def clear(self) -> int:
         return 0
+
+    async def append_plugin_chunk(
+        self,
+        modality: str,
+        format: str,
+        t_ms: float,
+        duration_ms: float,
+        payload: ChunkPayload,
+    ) -> None:
+        raise ProtocolError("not_supported", "this session has no plugin input port")
 
     async def cancel(self) -> None:
         raise ProtocolError("not_supported", "this session does not cancel responses")

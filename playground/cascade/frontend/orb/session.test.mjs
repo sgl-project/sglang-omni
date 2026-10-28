@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { DuplexSession, heardTextEnd, playingTextEnd } from "./session.js";
+import { DuplexSession, heardTextEnd, playingTextEnd, registerPluginRenderer } from "./session.js";
 
 const PROGRESS = [
   { textEnd: 2, audioMs: 400 },
@@ -64,6 +64,16 @@ function openSession(text = "One, two, three.", progress = PROGRESS) {
   }
   return { session, sent };
 }
+
+test("a registered renderer draws sglang.output_chunk of its format and other formats are dropped", () => {
+  const { session } = openSession();
+  const drawn = [];
+  registerPluginRenderer("image_asset", (event, owner) => drawn.push([event.payload.url, owner === session]));
+  session.handle({ type: "sglang.output_chunk", response_id: "resp_0", modality: "image", format: "image_asset", t_start_ms: 0, duration_ms: 0, turn: 1, payload: { url: "a.png" } });
+  session.handle({ type: "sglang.output_chunk", response_id: "resp_0", modality: "motion", format: "smplx_motion", t_start_ms: 0, duration_ms: 80, turn: 1, payload_b64: "cG9zZQ==" });
+  assert.deepEqual(drawn, [["a.png", true]]);
+  assert.equal(session.state, "ready");
+});
 
 test("an interruption freezes the heard text where the truncate cuts the reply", () => {
   const { session, sent } = openSession();

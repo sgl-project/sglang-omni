@@ -233,9 +233,11 @@ class SessionGraphRunner(CoordinatorSessions):
             inboxes={name: NodeInbox() for name in nodes},
             outputs=asyncio.Queue(maxsize=limits.max_output_chunks),
             pacers={
-                name: DeliveryPacer(self.max_output_lead_ms, asyncio.Event())
+                name: DeliveryPacer(
+                    self.max_output_lead_ms, asyncio.Event(), graph.plugin_formats
+                )
                 for name, formats in graph.publish.items()
-                if AUDIO_FORMATS & set(formats)
+                if (AUDIO_FORMATS | graph.plugin_formats) & set(formats)
             },
             client_sequences={name: {} for name in nodes},
         )
@@ -661,13 +663,23 @@ class SessionGraphRunner(CoordinatorSessions):
         if output.format in AUDIO_FORMATS:
             start = max(graph.output_end_ms, graph.reply_start_ms)
             graph.output_end_ms = start + output.duration_ms
+        elif output.format in graph.graph.plugin_formats and output.duration_ms > 0:
+            start = max(
+                graph.plugin_end_ms.get(output.format, 0.0), graph.reply_start_ms
+            )
+            graph.plugin_end_ms[output.format] = start + output.duration_ms
         elif event == TURN_STARTED:
-            start = max(graph.output_end_ms, input_end_ms)
+            start = max(
+                graph.output_end_ms, *graph.plugin_end_ms.values(), input_end_ms
+            )
             graph.reply_start_ms = start
         elif event == TURN_DONE:
-            start = max(graph.output_end_ms, graph.reply_start_ms)
+            start = max(
+                graph.output_end_ms, *graph.plugin_end_ms.values(), graph.reply_start_ms
+            )
         elif event == TURN_INTERRUPTED:
             graph.output_end_ms = input_end_ms
+            graph.plugin_end_ms = dict.fromkeys(graph.plugin_end_ms, input_end_ms)
             start = input_end_ms
         elif event in (SPEECH_STARTED, SPEECH_STOPPED):
             return output
