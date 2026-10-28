@@ -1448,6 +1448,45 @@ def test_direct_cuda_ipc_payload_preserves_inline_cpu_tensors() -> None:
     assert [entry["path"] for entry in ref["tensors"]] == ["gpu"]
 
 
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_direct_cuda_ipc_payload_header_sends_a_cpu_views_own_bytes() -> None:
+    transfer_buffer = torch.arange(1 << 20, dtype=torch.int64)
+    grid = transfer_buffer[3:6].view(1, 3)
+    positions = transfer_buffer[8:20].view(3, 4).t()
+    payload = make_stage_payload(
+        data={
+            "gpu": torch.arange(2, device="cuda:0"),
+            "grid": grid,
+            "positions": positions,
+        }
+    )
+
+    payload_reference = stage_io.serialize_direct_cuda_ipc_payload(payload)
+    header = pickle.loads(payload_reference["header"])
+
+    assert len(payload_reference["header"]) < transfer_buffer.untyped_storage().nbytes()
+    assert torch.equal(header.data["grid"], grid)
+    assert torch.equal(header.data["positions"], positions)
+    assert header.data["positions"].stride() == positions.stride()
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_direct_cuda_ipc_payload_header_sends_a_mostly_filled_view_whole() -> None:
+    transfer_buffer = torch.arange(1 << 20, dtype=torch.int64)
+    features = transfer_buffer[: 3 << 18]
+    payload = make_stage_payload(
+        data={"gpu": torch.arange(2, device="cuda:0"), "features": features}
+    )
+
+    payload_reference = stage_io.serialize_direct_cuda_ipc_payload(payload)
+    header = pickle.loads(payload_reference["header"])
+
+    assert len(payload_reference["header"]) > transfer_buffer.untyped_storage().nbytes()
+    assert torch.equal(header.data["features"], features)
+
+
 def test_direct_cuda_ipc_payload_allows_large_ordinary_header(monkeypatch) -> None:
     payload = make_stage_payload(
         data={"gpu": "placeholder"},
