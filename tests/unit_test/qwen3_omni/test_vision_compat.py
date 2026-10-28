@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Contracts for Qwen3-Omni vision encoding."""
 
+import copy
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal
@@ -9,6 +10,7 @@ from unittest.mock import Mock
 import pytest
 import torch
 from safetensors.torch import save_file
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_modeling
 
 import sglang_omni.models.qwen3_omni.components.vision_encoder as vision_runtime
@@ -290,6 +292,7 @@ def test_flash_backend_receives_host_max_sequence_lengths(
         Qwen3OmniVisionEncoder(
             vision_encoder.config,
             joint_rope_kernel=kernel if has_joint_kernel else None,
+            packed_attention=None,
         )
         .eval()
         .to(torch.bfloat16)
@@ -322,3 +325,82 @@ def test_flash_backend_receives_host_max_sequence_lengths(
         assert isinstance(backend_call.kwargs["max_length_k"], int)
         assert backend_call.kwargs["max_length_q"] == 24
         assert backend_call.kwargs["max_length_k"] == 24
+
+
+def test_packed_attention_receives_every_sequence_and_the_host_max_length(
+    vision_encoder: vision_compat.Qwen3OmniMoeVisionEncoderCompat,
+) -> None:
+    packed_attention = Mock(
+        side_effect=lambda query, key, value, cu_seqlens, **kwargs: value
+    )
+    encoder = (
+        Qwen3OmniVisionEncoder(
+            vision_encoder.config,
+            joint_rope_kernel=None,
+            packed_attention=packed_attention,
+        )
+        .eval()
+        .to(torch.bfloat16)
+    )
+    encoder.load_state_dict(vision_encoder.state_dict(), strict=True)
+    grid = torch.tensor([[1, 4, 4], [2, 4, 6]], dtype=torch.long, device="cpu")
+    pixels = torch.randn(64, 24, dtype=torch.bfloat16, device="cpu")
+
+    with torch.no_grad():
+        encoder(pixels, grid_thw=grid)
+
+    assert packed_attention.call_count == vision_encoder.config.depth
+    metadata = packed_attention.call_args.kwargs["forward_metadata"]
+    assert metadata.cu_seqlens.tolist() == [0, 16, 40, 64]
+    assert isinstance(metadata.max_seqlen, int)
+    assert metadata.max_seqlen == 24
+    for attention_call in packed_attention.call_args_list:
+        assert attention_call.kwargs["forward_metadata"] is metadata
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize(
+    ("dtype", "tolerance"), [("bf16", 2e-2), ("fp32", 1e-3)], ids=["bf16", "fp32"]
+)
+def test_cuda_image_encoder_matches_the_fp32_transformers_encoder(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    vision_encoder: vision_compat.Qwen3OmniMoeVisionEncoderCompat,
+    dtype: Literal["bf16", "fp32"],
+    tolerance: float,
+) -> None:
+    """A CUDA image encoder encodes in fp32, and in bf16 with SGLANG_VIT_ENABLE_CUDA_GRAPH set."""
+    monkeypatch.setenv("SGLANG_VIT_ENABLE_CUDA_GRAPH", "1")
+    save_file(
+        {
+            f"thinker.visual.{name}": tensor
+            for name, tensor in vision_encoder.state_dict().items()
+        },
+        tmp_path / "model.safetensors",
+    )
+    monkeypatch.setattr(
+        image_encoder,
+        "load_thinker_config",
+        Mock(return_value=SimpleNamespace(vision_config=vision_encoder.config)),
+    )
+    model = image_encoder.Qwen3OmniImageEncoder(
+        str(tmp_path), device="cuda", dtype=dtype
+    )
+    reference = copy.deepcopy(vision_encoder).to("cuda", torch.float32)
+    grid = torch.tensor([[1, 4, 4], [2, 4, 6]], dtype=torch.long)
+    torch.manual_seed(0)
+    pixels = torch.randn(64, 24)
+
+    with torch.no_grad():
+        with sdpa_kernel(SDPBackend.MATH):
+            expected = reference(
+                pixels.to("cuda"), grid_thw=grid.to("cuda"), return_dict=True
+            )
+        actual = model(pixel_values=pixels, image_grid_thw=grid)
+
+    for got, want in zip(
+        (actual["image_embeds"], *actual["deepstack_visual_embeds_image"]),
+        (expected.pooler_output, *expected.deepstack_features),
+    ):
+        torch.testing.assert_close(got.float(), want, rtol=tolerance, atol=tolerance)

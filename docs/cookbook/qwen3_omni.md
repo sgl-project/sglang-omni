@@ -17,7 +17,7 @@ pip install --upgrade pip
 pip install uv
 
 uv venv .venv -p 3.12 && source .venv/bin/activate
-uv pip install --prerelease=allow "sglang-omni==0.1.9"
+uv pip install --prerelease=allow "sglang-omni==0.2.0"
 ```
 
 See [Installation](../get_started/installation.md) for Docker digests and source installs.
@@ -151,7 +151,7 @@ Current limits:
 - After an interruption, send `truncate` with the milliseconds of reply audio the listener heard (`conversation.item.truncate`); the model's history then keeps only that much of the reply. Without it, the whole reply generated so far stays in the history.
 - `instructions` cannot change after the first user turn is processed; open a new session instead.
 
-See [Session Graph](../developer_reference/full_duplex_interactive_model.md#session-graph) for the shared routing and delivery contracts.
+See [Session Graph](../developer_reference/full_duplex_guide.md#session-graph) for the shared routing and delivery contracts.
 
 ## Speculative Decoding
 

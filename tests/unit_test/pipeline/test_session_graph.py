@@ -969,6 +969,52 @@ async def test_an_interrupt_tells_the_paced_node_readers_the_audio_it_delivered(
     await outputs.aclose()
 
 
+@pytest.mark.asyncio
+async def test_an_interrupt_naming_a_turn_keeps_the_reply_delivered_its_target_has_not_taken():
+    """A dialog interrupted a reply, and a client interrupt of the same turn then dropped the reply.delivered still queued for the dialog with the turn's other chunks, so a dialog waiting for it never answered again."""
+    runner = NodeOutputsRunner([])
+    nodes = {
+        "speaker": SessionNode(
+            ("speaker",), ("input",), controls=(ControlEdge("dialog", INTERRUPT),)
+        ),
+        "dialog": SessionNode(
+            ("dialog",),
+            ("input", "speaker:session"),
+            controls=(ControlEdge("input", INTERRUPT),),
+        ),
+    }
+    identities = {name: SessionIdentity(f"graph:{name}", 1) for name in nodes}
+    for name, identity in identities.items():
+        runner.sessions[identity.id] = Session(
+            session_identity=identity,
+            request=OmniRequest(None),
+            stages=(name,),
+            bindings={},
+            limits=SessionLimits(),
+            is_node=True,
+        )
+    graph = SessionGraphRuntime(
+        session_identity=SessionIdentity("graph", 1),
+        graph=SessionGraph(nodes=nodes, publish={"speaker": ("pcm16", "session")}),
+        nodes=identities,
+        limits=SessionLimits(),
+        inboxes={name: NodeInbox() for name in nodes},
+        outputs=asyncio.Queue(),
+        pacers={"speaker": DeliveryPacer(250, asyncio.Event())},
+        client_sequences={name: {} for name in nodes},
+    )
+    interrupt = control_chunk(INTERRUPT, turn=1)
+    await runner.put_graph_inbox(
+        graph, "dialog", "speaker", control_chunk("turn.done", turn=1)
+    )
+    [(_, edge)] = graph.graph.control_targets("dialog", INTERRUPT)
+    await runner.control_edge(graph, "speaker", edge, interrupt)
+    await runner.control_graph(graph, interrupt, None, False)
+    assert [
+        (source, chunk.payload) for source, chunk, _ in graph.inboxes["dialog"].queued
+    ] == [("speaker", {"type": REPLY_DELIVERED, "audio_ms": 0.0})]
+
+
 def speaker_audio(turn: int, t_start_ms: float) -> OutputChunk:
     return OutputChunk(
         SessionIdentity("graph:speaker", 1),
