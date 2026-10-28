@@ -81,7 +81,7 @@ Additional model guides, including experimental and research-oriented paths, are
 
 - [Installation](https://sgl-project.github.io/sglang-omni/get_started/installation.html)
 - [TTS usage](https://sgl-project.github.io/sglang-omni/basic_usage/tts.html)
-- [Qwen3-ASR cookbook](https://sgl-project.github.io/sglang-omni/cookbook/qwen3_asr.html)
+- [ASR cookbook](https://sgl-project.github.io/sglang-omni/cookbook/qwen3_asr.html)
 
 ## Community & Support
 
