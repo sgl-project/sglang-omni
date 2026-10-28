@@ -83,7 +83,7 @@ sgl-omni serve \
 
 The first requests compile kernels and capture encoder shapes. Exclude this warmup from throughput measurements. Single-request serving uses static encoder compilation; concurrent serving uses dynamic batch shapes. Explicit encoder graphs use private pools and cache at most four shapes per encoder. Additional shapes run without capturing more graphs. `default` is the pipeline default and skips Inductor's kernel search. `max-autotune-no-cudagraphs` times candidates on the serving GPU and keeps graph ownership outside Inductor.
 
-For c=1, set both decoder limits to `1`. For long recordings, start with the default encoder batch cap rather than the short-clip profile's cap of `32`.
+For c=1, set both decoder limits to `1`. For long recordings, start with the default encoder batch cap rather than this profile's cap of `32`.
 
 ## Validate the integration
 
@@ -113,13 +113,11 @@ This reports corpus WER, RTFx, and request latency. The resource monitor is disa
 
 ## Short-clip validation
 
-On 2026-10-15, the compiled profile above ran on one H100 80 GB with BF16, PyTorch 2.13.0+cu130, SGLang 0.5.21, Transformers 5.12.1, and FlashInfer 0.6.18. Decoder compilation was disabled, so the pinned SGLang release is sufficient for this launch. Both client concurrency levels used the same 16-slot server.
+On 2026-10-27, the default launch above ran on one H100 80 GB with BF16 and SGLang 0.5.22, keeping 64 decoder slots with encoder compilation and encoder graphs disabled.
 
 | Client concurrency | Median RTFx | RTFx range | Median p50 | Median p90 |
 | --- | --- | --- | --- | --- |
-| 1 | 35.02 | 34.98–35.20 | 0.138 s | 0.151 s |
-| 16 | 92.90 | 49.65–96.46 | 0.913 s | 1.162 s |
+| 1 | 23.40 | 23.31 to 23.41 | 0.220 s | 0.229 s |
+| 16 | 102.17 | 100.22 to 104.91 | 0.716 s | 0.999 s |
 
-Each concurrency had three repeats of 256 requests: 1,306.496 audio seconds per repeat, using unique one-LSB variants of two English clips lasting 4.352 s and 5.855 s. Audio embedding caching was disabled. Each repeat discarded 16 warmup requests at c=1 or 128 at c=16; no Nsight or GPU polling ran during timing. Percentiles above are medians of the three per-repeat percentiles. All 1,536 timed requests succeeded with unchanged normalized transcripts.
-
-The first c=16 repeat reached a maximum request latency of 12.61 s despite the initial warmup; its 49.65 RTFx result remains in the reported range and median. These measurements cover short clips and do not establish long-audio throughput or corpus WER.
+Each concurrency had three rounds of 256 measured requests on two English clips lasting 4.352 s and 5.855 s, with warmup requests excluded. All 1,536 measured requests succeeded with matching transcripts. These measurements cover short clips and do not establish long-audio throughput or corpus WER.
