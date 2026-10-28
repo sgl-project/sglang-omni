@@ -200,6 +200,7 @@ class PersonaPlexModelRunner(ModelRunner):
         runs = self.audio_sampling_runs(requests)
         return lambda logits: sample_runs(logits, runs)
 
+    @torch.no_grad()
     def spell_frames(
         self,
         requests: list[SchedulerRequest],

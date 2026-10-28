@@ -16,7 +16,7 @@ from transformers.utils.hub import cached_file
 ModuleT = TypeVar("ModuleT", bound=nn.Module)
 
 
-def resolve_dtype(dtype: str | torch.dtype | None) -> torch.dtype | None:
+def resolve_dtype(dtype: str | torch.dtype | None) -> torch.dtype:
     if isinstance(dtype, torch.dtype):
         return dtype
     else:
