@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 
@@ -31,6 +32,7 @@ from tests.test_model.asr_ci_config import select_asr_ci_preset
 from tests.test_model.omni_router_utils import (
     CiRouterTopology,
     ManagedRouterHandle,
+    RouterWorkerTrafficGuard,
     launch_managed_router,
     router_worker_traffic_guard,
 )
@@ -50,6 +52,91 @@ SEEDTTS_ASR_DATASET_LABEL = format_benchmark_dataset_label(
 EN_RESULTS_BASENAME = "asr_seedtts_en_results.json"
 ZH_RESULTS_BASENAME = "asr_seedtts_zh_results.json"
 STARTUP_TIMEOUT = 600
+
+
+# Note (wenyao): JUnit must distinguish reference failures from runtime assertions.
+class ReferenceThresholdError(AssertionError):
+    pass
+
+
+def record_asr_check(
+    checks: MetricCheckCollector,
+    failed_checks: list[str],
+    check_label: str,
+    condition: bool,
+    message: str,
+) -> None:
+    checks.check(condition, message)
+    if not condition:
+        failed_checks.append(check_label)
+    else:
+        pass
+
+
+def write_asr_result_and_assert(
+    *,
+    checks: MetricCheckCollector,
+    failed_checks: dict[str, list[str]],
+    router_guard: RouterWorkerTrafficGuard,
+    sample_count: int,
+    results_path: Path,
+    summary: dict[str, str | int | float],
+    speed: dict[str, str | int | float | None],
+) -> None:
+    execution_completed = not failed_checks["execution"]
+    router_checked = False
+    try:
+        router_guard.assert_served(
+            min_total_requests=sample_count,
+            min_worker_share=0.40,
+        )
+        router_checked = True
+    finally:
+        if not router_checked:
+            failed_checks["execution"].append("router_traffic")
+        else:
+            pass
+        observation_valid = not failed_checks["execution"]
+        reference_outcomes = {
+            group: {
+                "status": (
+                    "not_checked"
+                    if not PRESET.gate_thresholds
+                    else "failed" if failures else "passed"
+                ),
+                "failed_checks": failures,
+            }
+            for group, failures in failed_checks.items()
+            if group != "execution"
+        }
+        reference_assertion_failed = observation_valid and any(
+            outcome["status"] == "failed" for outcome in reference_outcomes.values()
+        )
+        results_path.write_text(
+            json.dumps(
+                {
+                    "model_path": PRESET.model_path,
+                    "summary": summary,
+                    "speed": speed,
+                    "router_ready_s": router_guard.handle.router_ready_s,
+                    "execution": {
+                        "completed": execution_completed,
+                        "valid": observation_valid,
+                        "failed_checks": failed_checks["execution"],
+                    },
+                    "reference_outcomes": reference_outcomes,
+                    "reference_assertion_failed": reference_assertion_failed,
+                },
+                indent=2,
+            )
+        )
+    try:
+        checks.assert_all()
+    except AssertionError as error:
+        if reference_assertion_failed:
+            raise ReferenceThresholdError(str(error)) from error
+        else:
+            raise
 
 
 def require_cuda() -> None:
@@ -131,7 +218,11 @@ def test_asr_matches_seedtts_reference_text_en(
 ) -> None:
     require_cuda()
     checks = MetricCheckCollector(f"{PRESET.display_name} EN correctness and speed")
-    checks.check(
+    failed_checks: dict[str, list[str]] = {"execution": [], "quality": [], "speed": []}
+    record_asr_check(
+        checks,
+        failed_checks["execution"],
+        "input_sample_count",
         len(seedtts_en_samples) == SEEDTTS_ASR_EN_SAMPLES,
         f"Expected {SEEDTTS_ASR_EN_SAMPLES} SeedTTS samples, "
         f"got {len(seedtts_en_samples)}",
@@ -163,19 +254,6 @@ def test_asr_matches_seedtts_reference_text_en(
     print_asr_wer_summary(summary, PRESET.model_path, dataset=SEEDTTS_ASR_DATASET_LABEL)
     print_asr_speed_summary(speed, PRESET.model_path, dataset=SEEDTTS_ASR_DATASET_LABEL)
 
-    results_path = tmp_path_factory.getbasetemp() / EN_RESULTS_BASENAME
-    results_path.write_text(
-        json.dumps(
-            {
-                "model_path": PRESET.model_path,
-                "summary": summary,
-                "speed": speed,
-                "router_ready_s": asr_router_server.router_ready_s,
-            },
-            indent=2,
-        )
-    )
-
     total_samples = summary["total_samples"]
     evaluated = summary["evaluated"]
     corpus_wer = summary["corpus_wer"]
@@ -185,58 +263,89 @@ def test_asr_matches_seedtts_reference_text_en(
     rtf_mean = speed["rtf_mean"]
     rtf_p95 = speed["rtf_p95"]
 
-    checks.check(
+    record_asr_check(
+        checks,
+        failed_checks["execution"],
+        "scored_sample_count",
         total_samples == SEEDTTS_ASR_EN_SAMPLES,
         f"Expected {SEEDTTS_ASR_EN_SAMPLES} scored samples, " f"got {total_samples}",
     )
-    checks.check(
+    record_asr_check(
+        checks,
+        failed_checks["execution"],
+        "evaluated_samples",
         evaluated == total_samples,
         f"{PRESET.display_name} EN transcribed only {evaluated}/{total_samples} "
         "samples, failed requests are excluded from WER scoring",
     )
     if PRESET.gate_thresholds:
-        checks.check(
+        record_asr_check(
+            checks,
+            failed_checks["quality"],
+            "corpus_wer",
             corpus_wer <= THRESHOLDS.en_corpus_wer_max,
             f"{PRESET.display_name} EN corpus WER {corpus_wer:.4f} exceeds "
             f"{THRESHOLDS.en_corpus_wer_max:.4f}",
         )
-        checks.check(
+        record_asr_check(
+            checks,
+            failed_checks["quality"],
+            "sample_wer",
             not high_wer_samples,
             f"{PRESET.display_name} high-WER SeedTTS EN samples:\n"
             + "\n\n".join(high_wer_samples),
         )
-        checks.check(
+        record_asr_check(
+            checks,
+            failed_checks["speed"],
+            "throughput_samples_per_s",
             throughput_samples_per_s >= THRESHOLDS.throughput_min,
             f"{PRESET.display_name} throughput {throughput_samples_per_s:.3f} "
             f"samples/s is below {THRESHOLDS.throughput_min:.3f}",
         )
-        checks.check(
+        record_asr_check(
+            checks,
+            failed_checks["speed"],
+            "latency_mean_s",
             latency_mean_s <= THRESHOLDS.latency_mean_max_s,
             f"{PRESET.display_name} mean latency {latency_mean_s:.3f}s exceeds "
             f"{THRESHOLDS.latency_mean_max_s:.3f}s",
         )
-        checks.check(
+        record_asr_check(
+            checks,
+            failed_checks["speed"],
+            "latency_p95_s",
             latency_p95_s <= THRESHOLDS.latency_p95_max_s,
             f"{PRESET.display_name} p95 latency {latency_p95_s:.3f}s exceeds "
             f"{THRESHOLDS.latency_p95_max_s:.3f}s",
         )
-        checks.check(
+        record_asr_check(
+            checks,
+            failed_checks["speed"],
+            "rtf_mean",
             rtf_mean <= THRESHOLDS.rtf_mean_max,
             f"{PRESET.display_name} mean RTF {rtf_mean:.4f} exceeds "
             f"{THRESHOLDS.rtf_mean_max:.4f}",
         )
-        checks.check(
+        record_asr_check(
+            checks,
+            failed_checks["speed"],
+            "rtf_p95",
             rtf_p95 <= THRESHOLDS.rtf_p95_max,
             f"{PRESET.display_name} p95 RTF {rtf_p95:.4f} exceeds "
             f"{THRESHOLDS.rtf_p95_max:.4f}",
         )
     else:
         print_report_only_notice("EN")
-    router_guard.assert_served(
-        min_total_requests=len(seedtts_en_samples),
-        min_worker_share=0.40,
+    write_asr_result_and_assert(
+        checks=checks,
+        failed_checks=failed_checks,
+        router_guard=router_guard,
+        sample_count=len(seedtts_en_samples),
+        results_path=tmp_path_factory.getbasetemp() / EN_RESULTS_BASENAME,
+        summary=summary,
+        speed=speed,
     )
-    checks.assert_all()
 
 
 @pytest.mark.benchmark
@@ -247,7 +356,11 @@ def test_asr_matches_seedtts_reference_text_zh(
 ) -> None:
     require_cuda()
     checks = MetricCheckCollector(f"{PRESET.display_name} ZH correctness")
-    checks.check(
+    failed_checks: dict[str, list[str]] = {"execution": [], "quality": []}
+    record_asr_check(
+        checks,
+        failed_checks["execution"],
+        "input_sample_count",
         len(seedtts_zh_samples) == SEEDTTS_ASR_ZH_SAMPLES,
         f"Expected {SEEDTTS_ASR_ZH_SAMPLES} SeedTTS samples, "
         f"got {len(seedtts_zh_samples)}",
@@ -279,46 +392,50 @@ def test_asr_matches_seedtts_reference_text_zh(
     print_asr_wer_summary(summary, PRESET.model_path, dataset=SEEDTTS_ASR_DATASET_LABEL)
     print_asr_speed_summary(speed, PRESET.model_path, dataset=SEEDTTS_ASR_DATASET_LABEL)
 
-    results_path = tmp_path_factory.getbasetemp() / ZH_RESULTS_BASENAME
-    results_path.write_text(
-        json.dumps(
-            {
-                "model_path": PRESET.model_path,
-                "summary": summary,
-                "speed": speed,
-            },
-            indent=2,
-        )
-    )
-
     total_samples = summary["total_samples"]
     evaluated = summary["evaluated"]
     corpus_wer = summary["corpus_wer"]
 
-    checks.check(
+    record_asr_check(
+        checks,
+        failed_checks["execution"],
+        "scored_sample_count",
         total_samples == SEEDTTS_ASR_ZH_SAMPLES,
         f"Expected {SEEDTTS_ASR_ZH_SAMPLES} scored samples, " f"got {total_samples}",
     )
-    checks.check(
+    record_asr_check(
+        checks,
+        failed_checks["execution"],
+        "evaluated_samples",
         evaluated == total_samples,
         f"{PRESET.display_name} ZH transcribed only {evaluated}/{total_samples} "
         "samples, failed requests are excluded from WER scoring",
     )
     if PRESET.gate_thresholds:
-        checks.check(
+        record_asr_check(
+            checks,
+            failed_checks["quality"],
+            "corpus_wer",
             corpus_wer <= THRESHOLDS.zh_corpus_wer_max,
             f"{PRESET.display_name} ZH corpus WER {corpus_wer:.4f} exceeds "
             f"{THRESHOLDS.zh_corpus_wer_max:.4f}",
         )
-        checks.check(
+        record_asr_check(
+            checks,
+            failed_checks["quality"],
+            "sample_wer",
             not high_wer_samples,
             f"{PRESET.display_name} high-WER SeedTTS ZH samples:\n"
             + "\n\n".join(high_wer_samples),
         )
     else:
         print_report_only_notice("ZH")
-    router_guard.assert_served(
-        min_total_requests=len(seedtts_zh_samples),
-        min_worker_share=0.40,
+    write_asr_result_and_assert(
+        checks=checks,
+        failed_checks=failed_checks,
+        router_guard=router_guard,
+        sample_count=len(seedtts_zh_samples),
+        results_path=tmp_path_factory.getbasetemp() / ZH_RESULTS_BASENAME,
+        summary=summary,
+        speed=speed,
     )
-    checks.assert_all()
