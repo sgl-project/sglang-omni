@@ -9,6 +9,7 @@ from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.sampling.sampling_params import SamplingParams
 from transformers import PreTrainedTokenizerBase
 
+from sglang_omni.audio.vad import StatelessVAD
 from sglang_omni.client.client import Client
 from sglang_omni.models.minicpm_o.components.code2wav import OUTPUT_SAMPLE_RATE
 from sglang_omni.models.minicpm_o.components.streaming_perception import (
@@ -90,7 +91,8 @@ class ThinkerAdapter(ARSessionAdapter):
                     key: request.params[key]
                     for key in MiniCPMODuplexSampling.model_fields
                 }
-            )
+            ),
+            speech_detector=StatelessVAD(),
         )
 
     def close(self, session_identity: SessionIdentity) -> None:
@@ -100,6 +102,9 @@ class ThinkerAdapter(ARSessionAdapter):
         if control_type(event) == INTERRUPT:
             state = self.states[session_identity]
             state.is_interrupt_pending = True
+            state.is_listen_held = True
+            # note (luojiaxuan): The detector hears no unit between holds, so each hold starts it afresh.
+            state.speech_detector.reset()
             state.is_latest_reply_ended = True
             self.cut_reply(state, keep_through_unit_of(event))
         elif control_type(event) == TRUNCATE:
@@ -184,6 +189,20 @@ class ThinkerAdapter(ARSessionAdapter):
         plan: PerceptionStepPlan = payload.data
         is_interrupted = state.is_interrupt_pending
         state.is_interrupt_pending = False
+        if state.is_listen_held:
+            pcm = (
+                chunk.payload["pcm"]
+                if isinstance(chunk.payload, dict)
+                else chunk.payload
+            )
+            state.is_listen_held = all(
+                state.speech_detector.step(frame, in_speech=False) is None
+                for frame in state.speech_detector.score(
+                    pcm, round(chunk.t_start_ms * SAMPLE_RATE / 1000)
+                )
+            )
+        else:
+            pass
         prefix = (
             []
             if state.is_prefix_pending
@@ -248,6 +267,7 @@ class ThinkerAdapter(ARSessionAdapter):
             thinker_state=state,
             unit_embedding_spans=spans,
             is_listen_forced=is_interrupted
+            or state.is_listen_held
             or state.force_listen_counter < sampling.force_listen_count,
             is_interrupted=is_interrupted,
             unit_index=chunk.seq,
@@ -505,7 +525,7 @@ class RealtimeAdapter(CoordinatorAdapter):
     output_converter: OutputConverter
 
     async def cancel(self) -> None:
-        """Interrupt the open reply's turn: the turn's later audio is dropped, and the thinker forgets the units the client did not receive before it listens for the next unit."""
+        """Interrupt the open reply's turn: the turn's later audio is dropped, and the thinker forgets the units the client did not receive, then listens until the user speaks again."""
         assert self.session_identity is not None
         kept_reply = self.output_converter.cancel()
         if kept_reply is None:
@@ -600,6 +620,7 @@ def build_realtime_deployment(
             tail_policy="pad",
             supports_reference_audio=True,
             supports_truncate=True,
+            supports_cancel=True,
             sampling_parameters=tuple(MiniCPMODuplexSampling.model_fields),
         ),
         factory,

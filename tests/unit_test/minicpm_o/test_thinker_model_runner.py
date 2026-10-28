@@ -4,15 +4,23 @@
 from __future__ import annotations
 
 import math
+import wave
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
 
+import numpy as np
 import pytest
 import torch
 
+from sglang_omni.audio.vad import StatelessVAD
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
+from sglang_omni.models.minicpm_o.components.streaming_perception import (
+    SAMPLE_RATE,
+    UNIT_SAMPLES,
+)
 from sglang_omni.models.minicpm_o.duplex_sampler import filter_top_k_top_p
 from sglang_omni.models.minicpm_o.native_config import MiniCPMODuplexSampling
 from sglang_omni.models.minicpm_o.native_thinker_model_runner import (
@@ -31,7 +39,13 @@ from sglang_omni.models.minicpm_o.thinker_state import (
 )
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
-from sglang_omni.proto.streams import CONTROL, INTERRUPT, SESSION_CONTROL, TRUNCATE
+from sglang_omni.proto.streams import (
+    CONTROL,
+    INTERRUPT,
+    PCM16_BYTES_PER_SAMPLE,
+    SESSION_CONTROL,
+    TRUNCATE,
+)
 from sglang_omni.scheduling.sglang_backend.ar_session import ARSessionPreparation
 from sglang_omni.scheduling.sglang_backend.request_data import (
     EmbeddingSpan,
@@ -70,6 +84,15 @@ UNIT_PROMPT_LENGTHS = (
 AUDIO_PLACEHOLDER_ID_BASE = 80
 # The listen units after a reply's last spoken unit within which the thinker still cuts the reply.
 TRUNCATE_WINDOW_UNITS = 10
+# note (luojiaxuan): 16 kHz mono PCM16 speech, voiced throughout from 3 s to 4 s.
+SPEECH_FIXTURE = Path(__file__).resolve().parents[2] / "data" / "query_to_draw.wav"
+VOICED_START_SAMPLE = 3 * SAMPLE_RATE
+# note (luojiaxuan): Input levels as RMS in dB of full scale: a voice under an auto-gain microphone, a voice from a quiet microphone with no gain control, and a loud room's steady noise.
+VOICE_DBFS = -20
+QUIET_VOICE_DBFS = -45
+LOUD_ROOM_DBFS = -20
+SHORT_WORD_SAMPLES = SAMPLE_RATE * 300 // 1000
+SILENT_UNIT_PCM = bytes(UNIT_SAMPLES * PCM16_BYTES_PER_SAMPLE)
 
 
 def session_control(payload: dict[str, object]) -> TimedChunk:
@@ -86,8 +109,24 @@ def truncate_through(keep_through_unit: int) -> TimedChunk:
     )
 
 
-def audio_unit(input_seq: int) -> TimedChunk:
-    return TimedChunk("audio", input_seq * 1000, 1000, input_seq, b"")
+def audio_unit(input_seq: int, payload: bytes | dict[str, object] = b"") -> TimedChunk:
+    return TimedChunk("audio", input_seq * 1000, 1000, input_seq, payload)
+
+
+def speech(sample_count: int) -> np.ndarray:
+    """sample_count voiced samples of the speech fixture, in full-scale units."""
+    with wave.open(str(SPEECH_FIXTURE)) as speech_file:
+        speech_file.setpos(VOICED_START_SAMPLE)
+        return np.frombuffer(speech_file.readframes(sample_count), dtype="<i2") / 32768
+
+
+def unit_pcm(signal: np.ndarray, dbfs: float) -> bytes:
+    """One unit of 16 kHz PCM16 input, silent but for signal, scaled to an RMS of dbfs, over its last samples."""
+    samples = np.zeros(UNIT_SAMPLES)
+    samples[UNIT_SAMPLES - len(signal) :] = (
+        signal * 10 ** (dbfs / 20) / np.sqrt(np.mean(signal**2))
+    )
+    return np.round(samples * 32768).astype("<i2").tobytes()
 
 
 def bare_runner() -> MiniCPMOThinkerModelRunner:
@@ -203,7 +242,10 @@ def session_state(
     **sampling_overrides: float | int | bool,
 ) -> MiniCPMOThinkerSessionState:
     sampling = {"greedy": True, "repetition_penalty": 1.0, **sampling_overrides}
-    return MiniCPMOThinkerSessionState(sampling=MiniCPMODuplexSampling(**sampling))
+    return MiniCPMOThinkerSessionState(
+        sampling=MiniCPMODuplexSampling(**sampling),
+        speech_detector=Mock(spec=StatelessVAD),
+    )
 
 
 def unit_request(
@@ -304,44 +346,6 @@ def step_plan_payload(request: OmniRequest) -> StagePayload:
     )
 
 
-@pytest.mark.parametrize(
-    ("is_turn_ended", "interrupted_input_ids"),
-    [
-        (False, [PLAIN_TOKEN_ID, SPECIAL_TOKENS.turn_eos]),
-        (True, [PLAIN_TOKEN_ID]),
-    ],
-    ids=["mid_reply", "after_the_model_ended_its_turn"],
-)
-def test_an_interrupt_forces_one_listen_unit_that_ends_the_turn(
-    is_turn_ended: bool, interrupted_input_ids: list[int]
-) -> None:
-    """A client stop: the next unit closes an open turn with turn_eos, listens and reports the end of the turn, and the one after is free again."""
-    tokenizer = duplex_tokenizer()
-    tokenizer.decode.return_value = ""
-    adapter = ThinkerAdapter(tokenizer, VOCAB_SIZE)
-    request = OmniRequest(
-        None, params=MiniCPMODuplexSampling(force_listen_count=0).model_dump()
-    )
-    adapter.open(SESSION, request)
-    state = adapter.states[SESSION]
-    state.is_turn_ended = is_turn_ended
-
-    adapter.control(SESSION, interrupt_after(0))
-    interrupted = adapter.build(SESSION, audio_unit(0), step_plan_payload(request))
-    interrupted.output_ids = [SPECIAL_TOKENS.listen]
-    result = adapter.result(SESSION, interrupted)
-    following = adapter.build(SESSION, audio_unit(1), step_plan_payload(request))
-
-    assert interrupted.is_listen_forced is True
-    assert interrupted.input_ids.tolist() == interrupted_input_ids
-    assert following.input_ids.tolist() == [SPECIAL_TOKENS.unit_end, PLAIN_TOKEN_ID]
-    assert result.data == dict(
-        talker_conditions=[], text="", is_listen=True, end_of_turn=True
-    )
-    assert state.is_turn_ended is True
-    assert following.is_listen_forced is False
-
-
 def complete_unit(
     adapter: ThinkerAdapter,
     data: SGLangARRequestData,
@@ -376,6 +380,107 @@ def open_duplex_adapter() -> tuple[ThinkerAdapter, OmniRequest]:
     )
     adapter.open(SESSION, request)
     return adapter, request
+
+
+def listen_after_a_stop(
+    adapter: ThinkerAdapter,
+    request: OmniRequest,
+    payloads: list[bytes | dict[str, object]],
+) -> list[tuple[DuplexUnitRequestData, StagePayload]]:
+    """Stop the reply, then build and finish one unit per input payload, each listening, and return each unit with its result."""
+    adapter.control(SESSION, interrupt_after(0))
+    finished_units: list[tuple[DuplexUnitRequestData, StagePayload]] = []
+    for input_seq, payload in enumerate(payloads):
+        unit_request = adapter.build(
+            SESSION, audio_unit(input_seq, payload), step_plan_payload(request)
+        )
+        unit_request.output_ids = [SPECIAL_TOKENS.listen]
+        finished_units.append((unit_request, adapter.result(SESSION, unit_request)))
+    return finished_units
+
+
+@pytest.mark.parametrize(
+    ("is_turn_ended", "interrupted_input_ids"),
+    [
+        (False, [PLAIN_TOKEN_ID, SPECIAL_TOKENS.turn_eos]),
+        (True, [PLAIN_TOKEN_ID]),
+    ],
+    ids=["mid_reply", "after_the_model_ended_its_turn"],
+)
+def test_a_stop_holds_the_listen_through_silence_until_the_user_speaks(
+    is_turn_ended: bool, interrupted_input_ids: list[int]
+) -> None:
+    """A client stop: the next unit closes an open turn with turn_eos, listens and reports the end of the turn. The silent units after it still listen, with no second turn_eos and no second end of turn, so the model cannot resume the stopped reply in the silence; the first unit with the user's voice is free again, and so is every unit after it, and freeing adds nothing to their prompts."""
+    adapter, request = open_duplex_adapter()
+    state = adapter.states[SESSION]
+    state.is_turn_ended = is_turn_ended
+
+    finished_units = listen_after_a_stop(
+        adapter,
+        request,
+        [
+            SILENT_UNIT_PCM,
+            SILENT_UNIT_PCM,
+            unit_pcm(speech(UNIT_SAMPLES), VOICE_DBFS),
+            SILENT_UNIT_PCM,
+        ],
+    )
+
+    assert [unit_request.is_listen_forced for unit_request, _ in finished_units] == [
+        True,
+        True,
+        False,
+        False,
+    ]
+    assert [unit_request.input_ids.tolist() for unit_request, _ in finished_units] == [
+        interrupted_input_ids,
+        *[[SPECIAL_TOKENS.unit_end, PLAIN_TOKEN_ID]] * 3,
+    ]
+    assert [result.data for _, result in finished_units] == [
+        dict(talker_conditions=[], text="", is_listen=True, end_of_turn=end_of_turn)
+        for end_of_turn in (True, False, False, False)
+    ]
+    assert state.is_turn_ended is True
+
+
+@pytest.mark.parametrize(
+    ("payload", "is_listen_held"),
+    [
+        (
+            unit_pcm(
+                np.random.default_rng(0).standard_normal(UNIT_SAMPLES), LOUD_ROOM_DBFS
+            ),
+            True,
+        ),
+        (unit_pcm(speech(UNIT_SAMPLES), QUIET_VOICE_DBFS), False),
+        (unit_pcm(speech(SHORT_WORD_SAMPLES), QUIET_VOICE_DBFS), False),
+        ({"pcm": SILENT_UNIT_PCM, "images": [b"frame"]}, True),
+        (
+            {"pcm": unit_pcm(speech(UNIT_SAMPLES), VOICE_DBFS), "images": [b"frame"]},
+            False,
+        ),
+    ],
+    ids=[
+        "a_loud_room",
+        "a_quiet_microphone",
+        "a_short_quiet_word_at_the_end_of_the_unit",
+        "silence_with_a_camera_frame",
+        "a_voice_with_a_camera_frame",
+    ],
+)
+def test_after_a_stop_only_the_users_voice_frees_the_model(
+    payload: bytes | dict[str, object], is_listen_held: bool
+) -> None:
+    """After a stop and a silent unit, a loud room's steady noise or a camera frame over silence keeps the model listening, while the user's voice frees it from that unit on at any capture level: a whole unit or a short word from a quiet microphone, or a voice sent with a camera frame."""
+    adapter, request = open_duplex_adapter()
+
+    finished_units = listen_after_a_stop(
+        adapter, request, [SILENT_UNIT_PCM, SILENT_UNIT_PCM, payload, SILENT_UNIT_PCM]
+    )
+
+    assert [
+        unit_request.is_listen_forced for unit_request, _ in finished_units[1:]
+    ] == [True, is_listen_held, is_listen_held]
 
 
 def speak_two_units(
@@ -696,7 +801,7 @@ def test_a_cut_at_an_earlier_unit_rewinds_there_and_re_feeds_the_later_units_as_
 def test_cuts_only_move_the_kept_position_back_and_re_feed_every_unit_since_it() -> (
     None
 ):
-    """After a stop that cut nothing, a truncate cuts the reply at the unit the client did not play and re-feeds the forced listen unit; a repeated or later truncate changes nothing; an earlier one rewinds further and re-feeds every unit since that position, the ones a cut already re-fed included, each by its own ids and span."""
+    """After a stop that cut nothing, a truncate cuts the reply at the unit the client did not play and re-feeds the forced listen unit; a repeated or later truncate changes nothing; an earlier one rewinds further and re-feeds every unit since that position, the ones a cut already re-fed included, each by its own ids and span. The truncates leave the stop holding the silent units after it to a listen."""
     adapter, request = open_duplex_adapter()
     state = adapter.states[SESSION]
     feed_unit(adapter, request, 0, spoken_token_id=PLAIN_TOKEN_ID)
@@ -749,6 +854,10 @@ def test_cuts_only_move_the_kept_position_back_and_re_feed_every_unit_since_it()
     assert unchanged_preparation == ARSessionPreparation()
     assert unchanged.input_ids.tolist() == [SPECIAL_TOKENS.unit_end, 85]
     assert spans_of(unchanged) == [(1, 2, 5.0)]
+    assert [
+        unit_request.is_listen_forced
+        for unit_request in (forced_listen, first_cut, unchanged, second_cut)
+    ] == [True, True, True, True]
     assert second_cut_preparation == ARSessionPreparation(
         kept_token_count=SECOND_UNIT_PROMPT_LENGTH
     )

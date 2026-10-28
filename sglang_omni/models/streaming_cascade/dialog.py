@@ -5,7 +5,7 @@ import logging
 import math
 from collections import deque
 from collections.abc import AsyncIterator
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
 
@@ -38,6 +38,11 @@ from sglang_omni.proto.streams import (
     control_type,
 )
 from sglang_omni.scheduling.session import ChunkEmitter
+
+if TYPE_CHECKING:
+    from sglang_omni.models.streaming_cascade.config import ComponentGraphConfig
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -107,11 +112,17 @@ class Dialog(StreamComponent):
     reply stays in the history only up to the last sentence whose audio the
     graph delivered (`reply.delivered`), and a client `truncate` of that
     reply's turn moves the cut back to what the listener heard; from then on
-    each cut is published as reply.heard. A reply the history keeps nothing
-    of when the next reply begins leaves no entry, and the next utterance
-    joins the user message it followed. The language the recognizer last
-    heard in an answered turn is the Session's language, and every messages
-    chunk carries it. A replacement adopts the history, the open reply and
+    each cut is published as reply.heard. In a graph that sends audio, the
+    next reply after an interrupted one begins once the delivered audio or a
+    truncate bounds the cut, so its prompt holds what could have been heard of it, and these
+    reports keep cutting the ended reply until a later reply ends, other
+    than one interrupted before its first text, so one that arrives after
+    the next reply began still cuts the history later prompts read. A reply
+    the history keeps nothing of leaves no entry once an utterance follows
+    it, and that utterance joins the user message the reply answered. The
+    language the recognizer last heard in an answered turn is the Session's
+    language, and every messages chunk carries it. A replacement adopts the
+    history, the open reply and
     the waiting utterances, so new
     settings apply at once and reach the next prompt.
 
@@ -131,17 +142,24 @@ class Dialog(StreamComponent):
         self.turns = 0
         # Reply audio produced so far as (characters of the reply text with audio, audio ms), one entry per spoken sentence, for truncating an interrupted reply to what was heard.
         self.progress: list[tuple[int, float]] = []
-        # Note (Junnan Li): The ended reply a truncate may still cut, as (turn, history index), until the next reply begins.
+        # note (luojiaxuan): The ended reply a truncate, its delivered audio or its progress may still cut, as (turn, history index), until a later reply ends, other than one interrupted before its first text, or its entry leaves the history.
         self.truncatable: tuple[int, int] | None = None
         # Note (Junnan Li): The ended reply's full text, the reply audio the graph delivered (unknown, or all of it once the reply is done) and the last truncate's heard position, so progress that arrives later re-cuts it.
         self.truncatable_text = ""
         # note (Haoling Pu): an interrupted reply was cut even when the listener heard all the text it had produced.
         self.is_truncatable_interrupted = False
+        # note (luojiaxuan): The ended reply's progress, which keeps arriving while the next reply runs.
+        self.truncatable_progress: list[tuple[int, float]] = []
         self.delivered_ms: float | None = math.inf
         self.heard_ms: float | None = None
         self.language: str | None = None
         # note (luojiaxuan): From a speech.started to the speech.stopped or commit that ends the utterance; the node that reports speech also stops it at the end of the input.
         self.is_user_speaking = False
+        # note (luojiaxuan): Whether the graph reports the audio it delivered of a reply this dialog interrupts; a graph without audio does not.
+        self.awaits_delivery = True
+
+    def place(self, settings: "ComponentGraphConfig", name: str) -> None:
+        self.awaits_delivery = bool(settings.delivery_reporters(name))
 
     def adopt(self, previous: StreamComponent) -> None:
         if isinstance(previous, Dialog):
@@ -155,6 +173,7 @@ class Dialog(StreamComponent):
             self.truncatable = previous.truncatable
             self.truncatable_text = previous.truncatable_text
             self.is_truncatable_interrupted = previous.is_truncatable_interrupted
+            self.truncatable_progress = previous.truncatable_progress
             self.delivered_ms = previous.delivered_ms
             self.heard_ms = previous.heard_ms
             self.language = previous.language
@@ -183,12 +202,16 @@ class Dialog(StreamComponent):
         if control_type(event) == INTERRUPT and self.reply is not None:
             self.interrupt_reply()
             self.respond_to_waiting()
-        elif control_type(event) == REPLY_PROGRESS and event.turn == self.reply_turn:
-            self.progress.append(
-                (int(event.payload["text_end"]), float(event.payload["audio_ms"]))
+        elif control_type(event) == REPLY_PROGRESS:
+            boundary = (
+                int(event.payload["text_end"]),
+                float(event.payload["audio_ms"]),
             )
-            if self.truncatable is not None:
+            if self.truncatable is not None and event.turn == self.truncatable[0]:
+                self.truncatable_progress.append(boundary)
                 self.truncate()
+            elif self.reply is not None and event.turn == self.reply_turn:
+                self.progress.append(boundary)
             else:
                 pass
         else:
@@ -218,7 +241,9 @@ class Dialog(StreamComponent):
             self.truncatable = (self.reply_turn, len(self.messages) - 1)
             self.truncatable_text = reply
             self.is_truncatable_interrupted = False
+            self.truncatable_progress, self.progress = self.progress, []
             self.delivered_ms = math.inf
+            self.heard_ms = None
             self.reply = None
         elif control_type(chunk) == SPEECH_STARTED:
             self.is_user_speaking = True
@@ -236,10 +261,9 @@ class Dialog(StreamComponent):
             self.delivered_ms = float(chunk.payload["audio_ms"])
             self.truncate()
         elif control_type(chunk) == TRUNCATE:
-            if self.truncatable is not None and chunk.turn in (
-                None,
-                self.truncatable[0],
-            ):
+            # note (luojiaxuan): A truncate without a turn names the latest reply, which may have begun after the one a truncate can still cut.
+            turn = self.reply_turn if chunk.turn is None else chunk.turn
+            if self.truncatable is not None and turn == self.truncatable[0]:
                 self.heard_ms = float(chunk.payload["t_ms"])
                 self.truncate()
             else:
@@ -252,22 +276,37 @@ class Dialog(StreamComponent):
             pass
 
     def interrupt_reply(self) -> None:
-        """End the open reply; the history keeps none of it until the graph reports the audio it delivered or a truncate says what was heard."""
+        """End the open reply; the history keeps none of it until the graph reports the audio it delivered or a truncate says what was heard. A reply without text, such as one interrupted as it opens, keeps nothing whatever was delivered, so the reply before it stays the one a later report cuts."""
         assert self.emit is not None and self.reply is not None
         turn = self.reply_turn
-        self.truncatable_text = "".join(self.reply)
-        self.is_truncatable_interrupted = True
+        text = "".join(self.reply)
         self.messages.append(ChatMessage(role="assistant"))
-        self.truncatable = (turn, len(self.messages) - 1)
-        self.delivered_ms = None
-        self.truncate()
+        if text:
+            self.truncatable_text = text
+            self.is_truncatable_interrupted = True
+            self.truncatable = (turn, len(self.messages) - 1)
+            self.truncatable_progress, self.progress = self.progress, []
+            self.delivered_ms = None
+            self.heard_ms = None
+            self.truncate()
+        else:
+            pass
         self.reply = None
         self.emit(control_chunk(INTERRUPT, turn=turn))
         self.emit(control_chunk(TURN_INTERRUPTED, turn=turn))
 
     def respond_to_waiting(self) -> None:
         assert self.emit is not None
-        while self.reply is None and self.waiting:
+        # note (luojiaxuan): The next prompt shows the interrupted reply's cut, which has no bound until the graph reports the audio it delivered or a truncate arrives.
+        while (
+            self.reply is None
+            and self.waiting
+            and (
+                not self.awaits_delivery
+                or self.delivered_ms is not None
+                or self.heard_ms is not None
+            )
+        ):
             for output in self.respond(*self.waiting.popleft()):
                 self.emit(output)
             if self.reply is not None and self.is_user_speaking:
@@ -287,7 +326,9 @@ class Dialog(StreamComponent):
             pass
         else:
             content = self.truncatable_text
-            text_end, uncertain = heard_prefix(self.progress, heard_ms, content)
+            text_end, uncertain = heard_prefix(
+                self.truncatable_progress, heard_ms, content
+            )
             logger.info(
                 "truncate turn %d at %.0f ms (client %s, delivered %s) keeps %d of %d chars (uncertain=%s, %d progress points)",
                 turn,
@@ -297,7 +338,7 @@ class Dialog(StreamComponent):
                 text_end,
                 len(content),
                 uncertain,
-                len(self.progress),
+                len(self.truncatable_progress),
             )
             kept = content[:text_end].rstrip()
             self.messages[index] = ChatMessage(
@@ -310,6 +351,22 @@ class Dialog(StreamComponent):
                 self.emit(control_chunk(REPLY_HEARD, turn=turn, text_end=text_end))
             else:
                 pass
+            if not self.messages[index].content and index < len(self.messages) - 1:
+                self.join_around(index)
+            else:
+                pass
+
+    def join_around(self, index: int) -> None:
+        """Drop the reply at index, which the history keeps nothing of, and join the user messages around it: nothing of the reply was heard, so the user kept talking, and an empty assistant entry would only show the model an empty answer to copy."""
+        self.messages[index - 1] = ChatMessage(
+            role="user",
+            content=f"{self.messages[index - 1].content} {self.messages[index + 1].content}",
+        )
+        del self.messages[index : index + 2]
+        if self.truncatable is not None and self.truncatable[1] == index:
+            self.truncatable = None
+        else:
+            pass
 
     def respond(self, turn: int, text: str, language: str | None) -> list[TimedChunk]:
         history_chars = sum(len(message.content) for message in self.messages)
@@ -325,14 +382,11 @@ class Dialog(StreamComponent):
                 "conversation exceeds max_history_chars; open a new session"
             )
         else:
-            if self.messages[-1].role == "assistant" and not self.messages[-1].content:
-                # note (luojiaxuan): Nothing of the last reply was heard, so the user kept talking; an empty assistant entry would only show the model an empty answer to copy.
-                self.messages.pop()
-                self.messages[-1] = ChatMessage(
-                    role="user", content=f"{self.messages[-1].content} {text}"
-                )
+            self.messages.append(ChatMessage(role="user", content=text))
+            if self.messages[-2].role == "assistant" and not self.messages[-2].content:
+                self.join_around(len(self.messages) - 2)
             else:
-                self.messages.append(ChatMessage(role="user", content=text))
+                pass
             if language is not None:
                 self.language = language
             else:
@@ -340,8 +394,6 @@ class Dialog(StreamComponent):
             self.reply = []
             self.reply_turn = turn
             self.progress = []
-            self.truncatable = None
-            self.heard_ms = None
             return [
                 control_chunk(TURN_STARTED, turn=turn),
                 messages_chunk(prompt_messages(self.messages), turn, self.language),

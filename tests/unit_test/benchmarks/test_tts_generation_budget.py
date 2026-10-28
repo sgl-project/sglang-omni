@@ -16,7 +16,7 @@ import soundfile as sf
 from benchmarks.dataset.seedtts import SampleInput
 from benchmarks.eval import benchmark_tts_generation_budget
 from benchmarks.eval.benchmark_tts_generation_budget import (
-    SEEDTTS_RUNAWAY_SAMPLES_PATH,
+    SEEDTTS_RUNAWAY_SAMPLE_IDS,
     GenerationProbeCase,
     run_generation_probe,
     seedtts_probe_cases,
@@ -154,6 +154,71 @@ async def test_paired_probe_only_fails_when_text_budget_is_below_natural_baselin
         assert any(errors[0] in error for error in results[1].errors)
     else:
         assert results[1].errors == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_probe_keeps_only_the_audio_of_failed_pairs(
+    tmp_path: Path, stream: bool
+) -> None:
+    bodies: list[dict[str, object]] = []
+    audio_buffer = io.BytesIO()
+    sf.write(audio_buffer, np.zeros(2400), 24000, format="WAV", subtype="PCM_16")
+    outcomes = {0: (("stop", 40), ("stop", 40)), 1: (("stop", 200), ("length", 125))}
+
+    def outcome() -> tuple[str, int]:
+        baseline, text = outcomes[int(bodies[-1]["seed"])]
+        return baseline if "max_new_tokens" in bodies[-1] else text
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            bodies.append(json.loads(request.content))
+            reason, frames = outcome()
+            return httpx.Response(
+                200,
+                content=bytes(4800) if stream else audio_buffer.getvalue(),
+                headers={
+                    "X-Sample-Rate": "24000",
+                    "X-SGLang-Omni-Speech-Id": "speech-1",
+                    "X-Finish-Reason": reason,
+                    "X-Completion-Tokens": str(frames),
+                },
+            )
+        reason, frames = outcome()
+        return httpx.Response(
+            200,
+            json={
+                "request_id": "speech-1",
+                "finish_reason": reason,
+                "usage": {"completion_tokens": frames},
+            },
+        )
+
+    output_dir = tmp_path / "probe"
+    async with httpx.AsyncClient(transport=httpx.MockTransport(answer)) as client:
+        results = await run_generation_probe(
+            client,
+            "http://test/v1",
+            CreateSpeechRequest(input="unused"),
+            [GenerationProbeCase(id="short", input="Hi.", language="English")],
+            range(2),
+            stream,
+            output_dir,
+            keep_passing_audio=False,
+        )
+    assert [bool(result.errors) for result in results] == [False, False, False, True]
+    kept = sorted(path.name for path in output_dir.iterdir())
+    if stream:
+        assert kept == [
+            "00002.pcm",
+            "00002.wav",
+            "00003.pcm",
+            "00003.wav",
+            "results.jsonl",
+        ]
+    else:
+        assert kept == ["00002.wav", "00003.wav", "results.jsonl"]
+    assert len((output_dir / "results.jsonl").read_text().splitlines()) == 4
 
 
 @pytest.mark.asyncio
@@ -479,13 +544,12 @@ def test_seedtts_cases_keep_their_reference_audio_and_transcript(
         seedtts_probe_cases([], "en")
 
 
-def test_bundled_seedtts_runaway_prompts_are_distinct_ids() -> None:
-    sample_ids = json.loads(SEEDTTS_RUNAWAY_SAMPLES_PATH.read_text())
-    assert sample_ids
-    assert len(set(sample_ids)) == len(sample_ids)
+def test_seedtts_runaway_prompts_are_distinct_ids() -> None:
+    assert SEEDTTS_RUNAWAY_SAMPLE_IDS
+    assert len(set(SEEDTTS_RUNAWAY_SAMPLE_IDS)) == len(SEEDTTS_RUNAWAY_SAMPLE_IDS)
     assert all(
         re.fullmatch(r"common_voice_en_\d+-common_voice_en_\d+", item)
-        for item in sample_ids
+        for item in SEEDTTS_RUNAWAY_SAMPLE_IDS
     )
 
 

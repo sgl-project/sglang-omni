@@ -79,6 +79,7 @@ class Capabilities:
     supports_instruction_updates: bool = False
     supports_sampling_updates: bool = False
     supports_truncate: bool = False
+    supports_cancel: bool = False
     supports_client_commit: bool = False
     # note (Junnan Li): Frame cap per unit, indexed by the session's max_slice_nums minus one.
     image_frames_per_unit: tuple[int, ...] = (1,)
@@ -138,6 +139,7 @@ class Capabilities:
             tail_policy=self.tail_policy,
             supports_server_interrupt=False,
             supports_truncate=self.supports_truncate,
+            supports_cancel=self.supports_cancel,
             supports_resume=False,
             partial_style=self.partial_style,
             pressure_policy="reject",

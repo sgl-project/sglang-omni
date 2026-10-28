@@ -328,9 +328,11 @@ async def test_a_truncate_names_the_turn_of_its_item():
 
 @pytest.mark.asyncio
 async def test_runtime_updates_cancel_and_truncate_reach_the_session_client():
-    ports = replace(PORTS, controls=frozenset({COMMIT, CONFIGURE, TRUNCATE}))
+    ports = replace(PORTS, controls=frozenset({COMMIT, CONFIGURE, INTERRUPT, TRUNCATE}))
     assert capabilities_of(ports).supports_truncate
+    assert capabilities_of(ports).supports_cancel
     assert not capabilities_of(PORTS).supports_truncate
+    assert not capabilities_of(PORTS).supports_cancel
     h = Harness(ports)
     runtime = SessionRuntime(
         "m", capabilities_of(ports), lambda: h.bridge, RuntimeLimits()

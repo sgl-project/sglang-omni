@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 import torch
 
+from sglang_omni.audio.vad import StatelessVAD
 from sglang_omni.models.minicpm_o.native_config import MiniCPMODuplexSampling
 from sglang_omni.scheduling.sglang_backend.request_data import (
     EmbeddingSpan,
@@ -33,6 +34,10 @@ class MiniCPMOThinkerSessionState:
     is_turn_ended: bool = True
     is_prefix_pending: bool = True
     is_interrupt_pending: bool = False
+    # Note (ruoyu): After a client stop the model, hearing only silence, resumes the stopped answer, so every unit listens until one carries the user's voice.
+    is_listen_held: bool = False
+    # note (luojiaxuan): One detector per session, since silero carries its recurrent state from one frame to the next.
+    speech_detector: StatelessVAD
     force_listen_counter: int = 0
     generated_history: list[int] = field(default_factory=list)
     reply_units: list[ReplyUnit] = field(default_factory=list)
