@@ -8,6 +8,7 @@ from contextlib import AbstractContextManager, nullcontext
 from typing import TYPE_CHECKING, Protocol
 
 from sglang.srt.arg_groups.model_override_base import resolved_view
+from sglang.srt.distributed.parallel_state import GroupCoordinator
 from sglang.srt.platforms.device_mixin import DeviceMixin
 
 from sglang_omni.utils.gpu_memory import narrow_visible_devices
@@ -231,6 +232,10 @@ class OmniPlatform(DeviceMixin):
 
     def supports_graph_captured_host_read(self) -> bool:
         """Whether a capture tolerates a body that reads a tensor on the host."""
+        return True
+
+    def graph_capture_records_collectives(self, group: GroupCoordinator) -> bool:
+        """Whether collectives issued on group during a graph capture run on replay."""
         return True
 
     def get_graph_capture_sdpa_backends(self) -> tuple["SDPBackend", ...]:
