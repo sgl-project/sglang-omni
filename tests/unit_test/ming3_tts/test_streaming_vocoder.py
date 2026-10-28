@@ -3,13 +3,22 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+import asyncio
+from contextlib import nullcontext
+from types import SimpleNamespace
+from typing import Literal
+from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
 import torch
 
+import sglang_omni.platforms as platforms
+from sglang_omni.config.runtime import resolve_stage_factory_kwargs
+from sglang_omni.models.ming3_tts import stages as engine_module
 from sglang_omni.models.ming3_tts import vocoder as factory_module
+from sglang_omni.models.ming3_tts.config import Ming3TTSPipelineConfig, default_stages
+from sglang_omni.models.ming3_tts.model_runner import Ming3TTSRequestData
 from sglang_omni.models.ming3_tts.streaming_vocoder import Ming3StreamingVocoder
 from sglang_omni.modules.ming_audio.vae.configuration_audio_vae import AudioVAEconfig
 from sglang_omni.modules.ming_audio.vae.modeling_audio_vae import AudioVAE
@@ -374,3 +383,175 @@ def test_cpu_factory_preserves_full_decode(
     result = scheduler.fn(payload)
     assert result.data["finish_reason"] == "stop"
     assert result.data["audio_waveform"]
+
+
+@pytest.mark.parametrize(
+    "dense,vocoder_device,stream,vocoder_factory,platform_device_type",
+    [
+        (False, "cpu", True, "current", "cuda"),
+        (False, "cpu", True, "legacy", "cuda"),
+        (True, "cpu", True, "current", "cuda"),
+        (True, "cpu", True, "legacy", "cuda"),
+        (True, "cpu", False, "current", "cuda"),
+        (True, "cpu", False, "legacy", "cuda"),
+        (False, None, True, "current", "cuda"),
+        (False, None, True, "legacy", "cuda"),
+        (True, None, True, "current", "cuda"),
+        (True, None, True, "legacy", "cuda"),
+        (True, None, True, "current", "xpu"),
+        (True, None, True, "legacy", "xpu"),
+        (True, None, True, "custom", "cuda"),
+    ],
+)
+@torch.inference_mode()
+def test_gpu_generation_retains_full_latents_for_cpu_vocoder(
+    vocoder: Ming3StreamingVocoder,
+    monkeypatch: pytest.MonkeyPatch,
+    dense: bool,
+    vocoder_device: str | None,
+    stream: bool,
+    vocoder_factory: Literal["current", "legacy", "custom"],
+    platform_device_type: str,
+) -> None:
+    """GPU generation dropped full latents for stream=true even with a CPU vocoder."""
+    monkeypatch.setattr(
+        platforms, "current_platform", SimpleNamespace(device_type=platform_device_type)
+    )
+    stages = default_stages(dense)
+    stages[-1].factory.device = vocoder_device
+    if vocoder_factory == "legacy":
+        stages[-1].factory_path = (
+            "sglang_omni.models.ming3_tts.stages.create_vocoder_executor"
+        )
+    elif vocoder_factory == "custom":
+        stages[-1].factory_path = "test.custom_vocoder"
+    else:
+        pass
+    config = Ming3TTSPipelineConfig(model_path="checkpoint", stages=stages, mps="off")
+    engine_kwargs = resolve_stage_factory_kwargs(
+        config.stage_named("tts_engine"), config
+    )
+    checkpoint_config = {
+        "model_type": "dense" if dense else "tiny",
+        "audio_tokenizer_config": {"enc_kwargs": {"latent_dim": 4}},
+        "tts_config": {
+            "prompt_format": "legacy_antmmf",
+            "with_rml": True,
+            "conditioning_mode": "speaker_only",
+            "decode_alignment": "old_shift",
+            "patch_size": 1,
+            "history_size": 1,
+            "latent_dim": 4,
+            "speaker_embedding_dim": 4,
+            "sampling_temperature": 1.5,
+            "stop_threshold": 0.5,
+            "minimum_decode_steps": 1,
+            "maximum_decode_steps": 32,
+            "audio_patch_token_id": 1,
+            "audio_start_token_id": 2,
+            "audio_end_token_id": 3,
+            "speaker_start_token_id": 4,
+            "speaker_end_token_id": 5,
+        },
+    }
+    scheduler_factory = Mock()
+    with monkeypatch.context() as engine_patches:
+        engine_patches.setattr(
+            engine_module,
+            "resolve_concrete_device",
+            lambda *args: torch.device("cuda", 0),
+        )
+        engine_patches.setattr(engine_module, "resolve_checkpoint", lambda path: path)
+        engine_patches.setattr(
+            engine_module, "load_checkpoint_config", lambda path: checkpoint_config
+        )
+        engine_patches.setattr(
+            engine_module,
+            "build_sglang_server_args",
+            lambda *args, **kwargs: SimpleNamespace(max_running_requests=32),
+        )
+        engine_patches.setattr(
+            engine_module,
+            "create_sglang_infrastructure",
+            lambda *args, **kwargs: (None, None, None, None, None),
+        )
+        engine_patches.setattr(
+            engine_module, "get_tokenizer", lambda *args, **kwargs: None
+        )
+        engine_patches.setattr(engine_module, "Ming3TTSModelRunner", Mock())
+        engine_patches.setattr(engine_module, "OmniScheduler", scheduler_factory)
+        engine_patches.setattr(
+            torch,
+            "get_device_module",
+            lambda device: SimpleNamespace(
+                Stream=lambda **kwargs: None, stream=lambda stream: nullcontext()
+            ),
+        )
+        engine_module.create_tts_engine_executor(
+            "checkpoint",
+            max_seq_len=4096,
+            enable_acoustic_graph=False,
+            **engine_kwargs,
+        )
+        generated_latents = torch.randn(
+            5, 1, 4, generator=torch.Generator().manual_seed(19)
+        )
+        request = Ming3TTSRequestData(
+            stage_payload=StagePayload(
+                "cpu-fallback", OmniRequest("text", params={"stream": stream}), {}
+            ),
+            input_ids=torch.tensor([1, 2]),
+            output_ids=[3] * 5,
+            speaker_embedding=torch.zeros(4),
+            speaker_position=0,
+            sampling_temperature=0.0,
+            noise_generator=torch.Generator(),
+            latent_history=torch.zeros(1, 4),
+            latents=list(generated_latents),
+            finish_reason="length",
+        )
+        result = scheduler_factory.call_args.kwargs["result_adapter"](request)
+    streaming_builder = scheduler_factory.call_args.kwargs["stream_output_builder"]
+    if vocoder_device is None:
+        assert result.data["latents"] is None
+        assert streaming_builder is engine_module.build_stream_output
+    else:
+        assert streaming_builder is None
+        torch.testing.assert_close(result.data["latents"], generated_latents)
+        monkeypatch.setattr(factory_module, "resolve_checkpoint", lambda path: ".")
+        monkeypatch.setattr(
+            factory_module, "load_checkpoint_config", lambda path: checkpoint_config
+        )
+        cpu_vae = vocoder.vae.to(dtype=torch.bfloat16)
+        monkeypatch.setattr(
+            factory_module, "load_audio_vae", lambda *args, **kwargs: (cpu_vae, 44100)
+        )
+        cpu_scheduler = factory_module.create_vocoder_executor(
+            "checkpoint", device="cpu"
+        )
+        loop = asyncio.new_event_loop()
+        try:
+            cpu_scheduler.run_single(
+                IncomingMessage(
+                    request_id="cpu-fallback", type="new_request", data=result
+                ),
+                loop,
+            )
+        finally:
+            loop.close()
+        response = next(
+            message.data
+            for message in cpu_scheduler.outbox.queue
+            if message.type == "result"
+        )
+        waveform, _, _ = cpu_vae.decode(
+            generated_latents.reshape(1, -1, 4).to(torch.bfloat16)
+        )
+        actual = torch.from_numpy(
+            np.frombuffer(response.data["audio_waveform"], dtype=np.float32).copy()
+        )
+        torch.testing.assert_close(
+            actual, waveform.float().reshape(-1), atol=1e-5, rtol=1e-4
+        )
+        assert response.data["finish_reason"] == "length"
+        assert response.data["usage"] == {"prompt_tokens": 2, "completion_tokens": 5}
