@@ -81,12 +81,7 @@ Additional model guides, including experimental and research-oriented paths, are
 
 - [Installation](https://sgl-project.github.io/sglang-omni/get_started/installation.html)
 - [TTS usage](https://sgl-project.github.io/sglang-omni/basic_usage/tts.html)
-- [Qwen3-Omni usage](https://sgl-project.github.io/sglang-omni/basic_usage/qwen3_omni.html)
 - [Qwen3-ASR cookbook](https://sgl-project.github.io/sglang-omni/cookbook/qwen3_asr.html)
-- [Nemotron 3.5 ASR cookbook](https://sgl-project.github.io/sglang-omni/cookbook/nemotron3_5_asr.html)
-- [MOSS-Transcribe-Diarize cookbook](https://sgl-project.github.io/sglang-omni/cookbook/moss_transcribe_diarize.html)
-- [Omni router](https://sgl-project.github.io/sglang-omni/basic_usage/omni_router.html)
-- [Developer reference](https://sgl-project.github.io/sglang-omni/developer_reference/main.html)
 
 ## Community & Support
 
