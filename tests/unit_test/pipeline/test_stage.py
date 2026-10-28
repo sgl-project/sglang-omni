@@ -1450,7 +1450,9 @@ def test_direct_cuda_ipc_payload_preserves_inline_cpu_tensors() -> None:
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_direct_cuda_ipc_payload_header_sends_a_cpu_views_own_bytes() -> None:
+def test_direct_cuda_ipc_payload_header_sends_a_cpu_views_own_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     transfer_buffer = torch.arange(1 << 20, dtype=torch.int64)
     grid = transfer_buffer[3:6].view(1, 3)
     positions = transfer_buffer[8:20].view(3, 4).t()
@@ -1461,6 +1463,7 @@ def test_direct_cuda_ipc_payload_header_sends_a_cpu_views_own_bytes() -> None:
             "positions": positions,
         }
     )
+    monkeypatch.setattr(stage_io, "ipc_pickle", lambda value: b"cuda-handle")
 
     payload_reference = stage_io.serialize_direct_cuda_ipc_payload(payload)
     header = pickle.loads(payload_reference["header"])
@@ -1473,7 +1476,9 @@ def test_direct_cuda_ipc_payload_header_sends_a_cpu_views_own_bytes() -> None:
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_direct_cuda_ipc_payload_header_copies_only_views_of_a_larger_storage() -> None:
+def test_direct_cuda_ipc_payload_header_copies_only_views_of_a_larger_storage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     transfer_buffer = torch.arange(1 << 20, dtype=torch.int64)
     features = transfer_buffer[: 3 << 18]
     mask = torch.ones(1, dtype=torch.int64).expand(1 << 20)
@@ -1484,6 +1489,7 @@ def test_direct_cuda_ipc_payload_header_copies_only_views_of_a_larger_storage() 
             "mask": mask,
         }
     )
+    monkeypatch.setattr(stage_io, "ipc_pickle", lambda value: b"cuda-handle")
 
     payload_reference = stage_io.serialize_direct_cuda_ipc_payload(payload)
     header = pickle.loads(payload_reference["header"])
