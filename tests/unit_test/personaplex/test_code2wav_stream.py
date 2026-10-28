@@ -454,7 +454,7 @@ def test_platforms_without_codec_decode_graphs_batch_eagerly(random_codec, monke
         mimi_decode_graph,
         "current_platform",
         SimpleNamespace(
-            enable_codec_decode_graph=lambda: False,
+            enable_mimi_decode_graph=lambda: False,
             get_device_graph_backend=lambda device: SimpleNamespace(),
         ),
     )
@@ -501,11 +501,12 @@ def decode_plan(
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(
-    not current_platform.enable_codec_decode_graph(),
-    reason="the platform does not capture codec decode graphs",
+    not current_platform.enable_mimi_decode_graph(),
+    reason="the platform does not capture Mimi decode graphs",
 )
 def test_batched_graph_replay_matches_eager_decode_across_slot_reuse(random_codec):
-    codec = random_codec.cuda()
+    device = torch.device(current_platform.device_type)
+    codec = random_codec.to(device)
     graphed = MimiDecodeSlots(
         codec, num_slots=3, max_batch_size=2, max_graph_frames=2, max_chunk_frames=3
     )
@@ -516,7 +517,7 @@ def test_batched_graph_replay_matches_eager_decode_across_slot_reuse(random_code
     assert eager.graphs == {}
     codes = torch.randint(
         0, 2048, (3, 8, 140), generator=torch.Generator().manual_seed(6)
-    ).cuda()
+    ).to(device)
     # Note (nightdecode): Streams advance at different rates, so rows in one step
     # sit at different offsets. Width 3 and the batch of three have no graph and
     # run eager on the same slots; stream 2 takes 140 frames, 280 steps, past the

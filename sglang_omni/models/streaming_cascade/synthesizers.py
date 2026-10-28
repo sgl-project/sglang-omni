@@ -39,6 +39,13 @@ MARKDOWN_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 UNSPOKEN_SYMBOLS = re.compile(
     "[\U0001f000-\U0001faff\u2600-\u27bf\u2b50\u2b55\ufe0e\ufe0f\u200d\u20e3*`]"
 )
+# Note (Haoling Pu): Qwen3-TTS reads a heading, list or quote marker as a word, garbles a table row and can run on for 40 s or more after either, and reads a bare URL out symbol by symbol.
+LINE_MARKER = re.compile(r"(?m)^[ \t]*(?:#{1,6}|[-+\u2022>])[ \t]+")
+TABLE_EDGE_PIPE = re.compile(r"(?m)^[ \t]*\||\|[ \t]*$")
+TABLE_PIPE = re.compile(r"[ \t]*\|[ \t]*")
+BARE_URL = re.compile(
+    r"(?<![A-Za-z0-9])(?:https?://|www\.)(?:www\.)?([A-Za-z0-9.-]+)(?::[0-9]+)?(?:[/?#][!-{}~]*?)??(?=[.,!?;:)\]]*(?:[^!-~]|[|]|$))"
+)
 
 
 def has_chinese_characters(sentence: str) -> bool:
@@ -233,9 +240,12 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
         async for span in sentences(
             self.follow_language(deltas), self.config.max_sentence_words
         ):
-            sentence = " ".join(
-                UNSPOKEN_SYMBOLS.sub("", MARKDOWN_LINK.sub(r"\1", span)).split()
+            text = UNSPOKEN_SYMBOLS.sub("", MARKDOWN_LINK.sub(r"\1", span))
+            text = TABLE_PIPE.sub(
+                ", ",
+                TABLE_EDGE_PIPE.sub("", LINE_MARKER.sub("", BARE_URL.sub(r"\1", text))),
             )
+            sentence = " ".join(text.split())
             # Note (ruoyu): Qwen3-TTS answers 500 to a sentence with no word in it, which would close the session.
             if re.search(r"\w", sentence):
                 async for samples in self.speak(sentence):
