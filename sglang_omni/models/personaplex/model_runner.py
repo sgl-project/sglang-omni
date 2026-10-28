@@ -22,6 +22,7 @@ from sglang.srt.managers.utils import GenerationBatchResult
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.prefill_inputs import (
     OmniPrefillInputs,
     attach_omni_prefill_inputs,
@@ -37,11 +38,14 @@ from sglang_omni.models.personaplex.components.depformer_cuda_graph import (
 from sglang_omni.models.personaplex.sampling import (
     AudioTokenSampler,
     SamplingRun,
-    sample_runs,
+    create_audio_token_sampler,
 )
 from sglang_omni.models.personaplex.timeline import Timeline, output_frame
+from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.types import SchedulerRequest
+
+AUDIO_COUNTER_BUFFER_SLOTS = 2
 
 
 @dataclass(kw_only=True)
@@ -62,6 +66,41 @@ class PersonaPlexFrameBatch:
 
 class PersonaPlexModelRunner(ModelRunner):
     depformer_cuda_graph: DepformerCudaGraphRunner | None = None
+
+    def __init__(
+        self,
+        tp_worker: ModelWorker,
+        output_processor: SGLangOutputProcessor,
+    ) -> None:
+        super().__init__(tp_worker, output_processor)
+        if self.model_device.type == "cuda":
+            max_batch_size = self.model.fusion_buffer.shape[0]
+            self.audio_seed_host_buffers = torch.empty(
+                (AUDIO_COUNTER_BUFFER_SLOTS, max_batch_size),
+                dtype=torch.int64,
+                device="cpu",
+                pin_memory=True,
+            )
+            self.audio_frame_position_host_buffers = torch.empty(
+                (AUDIO_COUNTER_BUFFER_SLOTS, max_batch_size),
+                dtype=torch.int64,
+                device="cpu",
+                pin_memory=True,
+            )
+            self.audio_seed_device_buffers = torch.empty(
+                (AUDIO_COUNTER_BUFFER_SLOTS, max_batch_size),
+                dtype=torch.int64,
+                device=self.model_device,
+            )
+            self.audio_frame_position_device_buffers = torch.empty_like(
+                self.audio_seed_device_buffers
+            )
+        else:
+            self.audio_seed_host_buffers = None
+            self.audio_frame_position_host_buffers = None
+            self.audio_seed_device_buffers = None
+            self.audio_frame_position_device_buffers = None
+        self.audio_counter_buffer_slot = 0
 
     def sample_before_post_prefill(
         self,
@@ -161,6 +200,10 @@ class PersonaPlexModelRunner(ModelRunner):
         inputs = data.talker_model_inputs
         audio_seed = inputs["sampling"].audio_seed
         generator = inputs.get("audio_generator")
+        if self.model_device.type == "cuda":
+            return None
+        else:
+            pass
         if generator is None and audio_seed is not None:
             generator = torch.Generator(device=self.model_device)
             generator.manual_seed(audio_seed)
@@ -169,17 +212,73 @@ class PersonaPlexModelRunner(ModelRunner):
             pass
         return generator
 
+    def stage_audio_counters(
+        self,
+        audio_seeds: list[int | None],
+        frame_positions: list[int],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Stage request counters without waiting for preceding CUDA work."""
+        seed_host_buffers = self.audio_seed_host_buffers
+        frame_host_buffers = self.audio_frame_position_host_buffers
+        seed_device_buffers = self.audio_seed_device_buffers
+        frame_device_buffers = self.audio_frame_position_device_buffers
+        assert seed_host_buffers is not None and frame_host_buffers is not None
+        assert seed_device_buffers is not None and frame_device_buffers is not None
+        batch_size = len(audio_seeds)
+        assert len(frame_positions) == batch_size
+        assert batch_size <= seed_host_buffers.shape[1]
+        slot = self.audio_counter_buffer_slot
+        self.audio_counter_buffer_slot = (slot + 1) % AUDIO_COUNTER_BUFFER_SLOTS
+        host_seeds = seed_host_buffers[slot, :batch_size]
+        host_frames = frame_host_buffers[slot, :batch_size]
+        host_seeds.copy_(
+            torch.tensor(
+                [
+                    audio_seed if audio_seed is not None else -1
+                    for audio_seed in audio_seeds
+                ],
+                dtype=torch.int64,
+            )
+        )
+        host_frames.copy_(torch.tensor(frame_positions, dtype=torch.int64))
+        device_seeds = seed_device_buffers[slot, :batch_size]
+        device_frames = frame_device_buffers[slot, :batch_size]
+        device_seeds.copy_(host_seeds, non_blocking=True)
+        device_frames.copy_(host_frames, non_blocking=True)
+        return device_seeds, device_frames
+
     def audio_sampling_runs(
         self, requests: list[SchedulerRequest]
     ) -> list[SamplingRun]:
         """Sample row i with requests[i]'s audio settings and generator."""
         runs: list[SamplingRun] = []
         start_row = 0
+        audio_seeds = [
+            request.data.talker_model_inputs["sampling"].audio_seed
+            for request in requests
+        ]
+        frame_positions = [
+            self.decode_feedback(request.data).launched_frames for request in requests
+        ]
+        if self.model_device.type == "cuda" and any(
+            audio_seed is not None
+            and not request.data.talker_model_inputs["sampling"].audio.greedy
+            for request, audio_seed in zip(requests, audio_seeds, strict=True)
+        ):
+            counter_seeds, counter_frame_positions = self.stage_audio_counters(
+                audio_seeds, frame_positions
+            )
+        else:
+            counter_seeds = None
+            counter_frame_positions = None
         # Note (edwardzh): Only adjacent requests share a sampling call, so rows are
         # sliced in place and no index tensor reaches the device.
-        for sampling, run_requests in groupby(
+        for (sampling, is_seeded), run_requests in groupby(
             requests,
-            key=lambda request: request.data.talker_model_inputs["sampling"].audio,
+            key=lambda request: (
+                request.data.talker_model_inputs["sampling"].audio,
+                request.data.talker_model_inputs["sampling"].audio_seed is not None,
+            ),
         ):
             generators = [
                 self.audio_generator(request.data) for request in run_requests
@@ -190,6 +289,14 @@ class PersonaPlexModelRunner(ModelRunner):
                     row_slice=slice(start_row, end_row),
                     sampling=sampling,
                     generators=generators,
+                    counter_seeds=(
+                        counter_seeds if is_seeded and not sampling.greedy else None
+                    ),
+                    counter_frame_positions=(
+                        counter_frame_positions
+                        if is_seeded and not sampling.greedy
+                        else None
+                    ),
                 )
             )
             start_row = end_row
@@ -198,7 +305,7 @@ class PersonaPlexModelRunner(ModelRunner):
 
     def audio_sampler(self, requests: list[SchedulerRequest]) -> AudioTokenSampler:
         runs = self.audio_sampling_runs(requests)
-        return lambda logits: sample_runs(logits, runs)
+        return create_audio_token_sampler(runs, self.model.depformer.spec.steps)
 
     def spell_frames(
         self,

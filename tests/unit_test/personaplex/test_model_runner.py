@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+import sglang_omni.models.personaplex.sampling as personaplex_sampling
 from sglang_omni.model_runner.base import PendingStep
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.models.personaplex.architecture import (
@@ -14,6 +15,7 @@ from sglang_omni.models.personaplex.architecture import (
     USER_STREAM_OFFSET,
 )
 from sglang_omni.models.personaplex.model_runner import (
+    AUDIO_COUNTER_BUFFER_SLOTS,
     PersonaPlexFrameBatch,
     PersonaPlexModelRunner,
 )
@@ -747,6 +749,80 @@ def test_resolve_cuda_copy_while_next_forward_is_slow() -> None:
         )
     finally:
         next_completed.synchronize()
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_seeded_cuda_counters_use_distinct_pinned_staging_slots() -> None:
+    runner = make_runner(FakeModel(max_batch=3))
+    runner.model.fusion_buffer = runner.model.fusion_buffer.to("cuda")
+    runner.audio_seed_host_buffers = torch.empty(
+        (AUDIO_COUNTER_BUFFER_SLOTS, 3), dtype=torch.int64, pin_memory=True
+    )
+    runner.audio_frame_position_host_buffers = torch.empty(
+        (AUDIO_COUNTER_BUFFER_SLOTS, 3), dtype=torch.int64, pin_memory=True
+    )
+    runner.audio_seed_device_buffers = torch.empty(
+        (AUDIO_COUNTER_BUFFER_SLOTS, 3), dtype=torch.int64, device="cuda"
+    )
+    runner.audio_frame_position_device_buffers = torch.empty_like(
+        runner.audio_seed_device_buffers
+    )
+    runner.audio_counter_buffer_slot = 0
+
+    first_seeds, first_frames = runner.stage_audio_counters([7, None, 9], [10, 11, 12])
+    second_seeds, second_frames = runner.stage_audio_counters([13], [14])
+    torch.cuda.synchronize()
+
+    assert runner.audio_seed_host_buffers.is_pinned()
+    assert runner.audio_frame_position_host_buffers.is_pinned()
+    assert first_seeds.data_ptr() != second_seeds.data_ptr()
+    assert first_seeds.tolist() == [7, -1, 9]
+    assert first_frames.tolist() == [10, 11, 12]
+    assert second_seeds.tolist() == [13]
+    assert second_frames.tolist() == [14]
+
+
+def test_seeded_cuda_sampler_batches_all_codebooks_in_one_noise_launch(
+    monkeypatch,
+) -> None:
+    runner = make_runner(FakeModel())
+    monkeypatch.setattr(
+        PersonaPlexModelRunner,
+        "model_device",
+        property(lambda self: torch.device("cuda")),
+    )
+    monkeypatch.setattr(
+        runner,
+        "stage_audio_counters",
+        lambda audio_seeds, frame_positions: (
+            torch.tensor([seed if seed is not None else -1 for seed in audio_seeds]),
+            torch.tensor(frame_positions),
+        ),
+    )
+    launches: list[int] = []
+
+    def noises(
+        logits: torch.Tensor,
+        seeds: torch.Tensor,
+        frame_positions: torch.Tensor,
+        codebook_count: int,
+        codebook_start: int = 0,
+    ) -> torch.Tensor:
+        assert seeds.shape == frame_positions.shape
+        assert codebook_start == 0
+        launches.append(codebook_count)
+        return torch.ones(codebook_count, *logits.shape)
+
+    monkeypatch.setattr(
+        personaplex_sampling, "batched_seeded_exponential_noises", noises
+    )
+    sampler = runner.audio_sampler([make_request(1, params={"seed": 7})])
+    logits = torch.randn(1, 64)
+    for _ in range(8):
+        sampler(logits)
+
+    assert launches == [8]
 
 
 @pytest.mark.parametrize(
