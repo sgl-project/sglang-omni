@@ -124,6 +124,7 @@ Supported Models
 
    cookbook/qwen3_tts.md
    cookbook/moss_tts.md
+   cookbook/moss_tts_local.md
    cookbook/whisper_asr.md
    cookbook/nemotron3_5_asr.md
    cookbook/nemotron_transcribe.md
@@ -138,7 +139,6 @@ Supported Models
    cookbook/minicpm_o.md
    cookbook/fun_asr.md
    cookbook/higgs_tts.md
-   cookbook/moss_tts_local.md
    cookbook/nemotron_diarization.md
    cookbook/fishaudio_drama3.md
    cookbook/minimax_music3.md
