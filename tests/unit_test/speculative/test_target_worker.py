@@ -11,7 +11,7 @@ from sglang.srt.managers.utils import GenerationBatchResult
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
-from sglang_omni.model_runner.speculative_target_worker import SpeculativeTargetWorker
+from sglang_omni.speculative.target_worker import SpeculativeTargetWorker
 
 
 class PrefillRunner:

@@ -140,3 +140,29 @@ class WhisperEncoderCudaGraphRunner:
             pass
         graph.replay()
         return static_out[:n].clone()
+
+    def can_run_chunks(self, chunk_count: int, input_feature_len: int) -> bool:
+        return input_feature_len == self.input_feature_len and any(
+            c >= chunk_count for c in self.graphs
+        )
+
+    @torch.no_grad()
+    def run_chunks(self, chunks: list[torch.Tensor]) -> torch.Tensor:
+        """Replay on host mel chunks copied straight into the static input.
+
+        Each chunk lands in its static slot with one host-to-device copy that
+        also casts to the encoder dtype, skipping the host stack and the
+        intermediate device tensor. The returned view aliases the static output
+        and stays valid until the next replay on this runner's stream.
+        """
+        n = len(chunks)
+        chunk_bucket = min(c for c in self.graphs if c >= n)
+        graph, static_feat, _static_pos, static_out = self.graphs[chunk_bucket]
+        for index, chunk in enumerate(chunks):
+            static_feat[index].copy_(chunk)
+        if n < chunk_bucket:
+            static_feat[n:].zero_()
+        else:
+            pass
+        graph.replay()
+        return static_out[:n]

@@ -90,13 +90,25 @@ The fixed caller-frame budget still determines the number of generated frames.
 
 ## Known limitations
 
+### All platforms
+
 - Offline, one request at a time by default (`max_running_requests=1`). If you raise `--lm.engine.max_running_requests`, the requests in a batch share one depformer pass per frame, and each seeded request still draws from its own generator. A seeded reply repeats exactly only with one request in flight, because batched kernels can round differently.
+- Streaming Mimi decode follows `--code2wav.factory.chunk_ramp_frames` (default `[1, 4]`: the first frame alone, then four at a time; a finished stream flushes its shorter remainder). Ready requests whose chunks share a width decode in one batched step of up to `max_batch_size` (default 8), each at its own decode position. `num_decode_slots` resident decode states default to the LM's effective `max_running_requests`, and a smaller explicit value is rejected; a stream that finds every slot taken while another stream's tail drains waits for the next free slot, so sustained overload is not bounded by this queue.
+- The temporal attention window follows the streaming ring, including the masked oldest slot once its 3000-position cache fills. Boundary tests check this rule; they do not measure long-input audio quality.
+
+### CUDA
+
+- On CUDA, the Depformer's RMSNorm and SiLU-gate run as fused Triton kernels whose outputs match the eager operations bit for bit; other devices use the eager operations.
 - On CUDA the backbone's decode step and all 8 Depformer steps replay CUDA graphs. At startup, offline serving captures the default audio-sampling layout for every configured batch bucket through the smallest bucket that covers the effective `max_running_requests`; session serving captures the same buckets with the deployment's resolved audio sampling. Other sampling layouts and batch shapes run eagerly. `--lm.engine.disable_cuda_graph true` disables both backbone and Depformer graphs, while `--lm.factory.depformer_cuda_graph_batch_sizes '[]'` disables only Depformer graphs. Seeded requests preserve their per-request RNG draws.
 - Decode feedback stays on device. On CUDA, `--lm.factory.enable_async_decode true` launches the next decode before collecting the previous result and can add 16–21% throughput with identical audio; synchronous decode remains the default. Other platforms, requests needing host token history for sampling, and requests returning log probabilities use the synchronous path. When any request reaches its caller-frame budget, the whole batch uses synchronous decode for that step.
-- Streaming Mimi decode follows `--code2wav.factory.chunk_ramp_frames` (default `[1, 4]`: the first frame alone, then four at a time; a finished stream flushes its shorter remainder). Ready requests whose chunks share a width decode in one batched step of up to `max_batch_size` (default 8), each at its own decode position. `num_decode_slots` resident decode states default to the LM's effective `max_running_requests`, and a smaller explicit value is rejected; a stream that finds every slot taken while another stream's tail drains waits for the next free slot, so sustained overload is not bounded by this queue. On CUDA, graphs cover every batch size up to `min(max_batch_size, num_decode_slots)` and every chunk width up to `max_graph_frames` (the widest ramp entry unless set; `0` turns the graphs off), 8 × 4 = 32 graphs at LM concurrency 16; other shapes and platforms decode eagerly with the same states.
+- On CUDA, Mimi decode graphs cover every batch size up to `min(max_batch_size, num_decode_slots)` and every chunk width up to `max_graph_frames` (the widest ramp entry unless set; `0` turns the graphs off), 8 × 4 = 32 graphs at LM concurrency 16; other shapes and platforms decode eagerly with the same states.
 - On CUDA, streaming Mimi decode uses a dedicated stream. The stage accepts CPU codes only; transfers and decode-slot reset/replay stay on that stream, so waveform collection does not drain queued LM forwards. Other devices retain their normal execution context.
-- The temporal attention window follows the streaming ring, including the masked oldest slot once its 3000-position cache fills. Boundary tests check this rule; they do not measure long-input audio quality.
 - On a CUDA platform with resolved `device=cuda`, `page_size=1` and radix caching disabled (the default), window KV releases expired positions for reuse. Steady decode holds about 3.1k positions (1.5 GiB of BF16 KV) per long request with the default eviction interval; prefill and retract replay can temporarily hold more. CPU stages, other platforms, page sizes and radix-enabled configurations use the full KV pool. Context and request-length limits remain unchanged, and returning slots does not shrink the preallocated pool. Set `--lm.engine.disable_hybrid_swa_memory true` to use the full pool explicitly.
+
+### Ascend NPU
+
+- On Ascend NPU the backbone graph is off by default; pass `--lm.engine.disable_cuda_graph false` to replay the backbone's NPU graph.
+- On Ascend NPU, the platform enables the same Mimi graph ladder; the capture temporarily disables internal formats so Mimi's convolutions run through [aclnn](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/850/API/aolapi/context/ops-math/op_api_list.md).
 
 ## Tests
 

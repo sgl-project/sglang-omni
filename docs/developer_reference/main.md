@@ -31,6 +31,7 @@ sglang_omni/
 |-- pipeline/       # Inter-stage orchestration, stages, coordinator, processes
 |-- scheduling/     # Scheduler loops and inbox/outbox message types
 |-- model_runner/   # Shared model runner abstractions for AR stages
+|-- speculative/    # Adapters that run SGLang's draft workers on AR stages
 |-- models/         # Model-specific configs, stages, request builders, modules
 |-- config/         # PipelineConfig, StageConfig, config manager, topology
 |-- relay/          # Data transfer backends
