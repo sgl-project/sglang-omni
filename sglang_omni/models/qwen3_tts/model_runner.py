@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 else:
     pass
 
-# note (ratish): Qwen3-TTS generates at least two codec frames; an EOS sampled on the first frame would end a request with no audio.
+# note (ratish): official qwen-tts generates the talker with min_new_tokens=2; an EOS on the first frame ended a request with no audio.
 QWEN3_TTS_MIN_NEW_FRAMES = 2
 
 
