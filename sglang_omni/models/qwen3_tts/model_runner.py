@@ -20,7 +20,7 @@ from sglang_omni.scheduling.types import (
     SchedulerOutput,
     SchedulerRequest,
 )
-from sglang_omni.utils.device import supports_device_streams
+from sglang_omni.utils.device import has_device_streams
 
 if TYPE_CHECKING:
     from sglang.srt.layers.logits_processor import LogitsProcessorOutput
@@ -38,6 +38,9 @@ if TYPE_CHECKING:
     )
 else:
     pass
+
+# note (ratish): official qwen-tts generates the talker with min_new_tokens=2; an EOS on the first frame ended a request with no audio.
+QWEN3_TTS_MIN_NEW_FRAMES = 2
 
 
 class Qwen3TTSModelInfo(TypedDict):
@@ -68,7 +71,7 @@ class Qwen3TTSModelRunner(ModelRunner):
         self.silence_codec_ids = silence_codec_ids
         self.codes_event_module = (
             torch.get_device_module(self.device)
-            if supports_device_streams(self.device)
+            if has_device_streams(self.device)
             else None
         )
 
@@ -178,6 +181,12 @@ class Qwen3TTSModelRunner(ModelRunner):
             active_logits[:, codec_eos + 1 : suppress_stop] = float("-inf")
         else:
             active_logits[:, suppress_start:suppress_stop] = float("-inf")
+        for row_index, scheduled_request in enumerate(requests):
+            if len(scheduled_request.data.output_codes) < QWEN3_TTS_MIN_NEW_FRAMES:
+                # note (ratish): a slice fills on the device; assigning one element copies a host scalar and waits for the stream.
+                active_logits[row_index, codec_eos : codec_eos + 1] = float("-inf")
+            else:
+                pass
 
         # note (luojiaxuan): a cold-start clone that samples a silence id first
         # tends to stay silent for several frames, so silence ids are excluded
@@ -397,8 +406,8 @@ class Qwen3TTSModelRunner(ModelRunner):
         for sched_req in requests:
             data: Qwen3TTSSGLangRequestData = sched_req.data
             req = data.req
-            req_len = int(req.extend_range.length)
-            prefix_len = len(req.prefix_indices)
+            req_len = req.extend_len
+            prefix_len = req.prefix_len
             if data.prefill_input_embeds is None:
                 data.prefill_input_embeds = data.prompt_input_embeds
             else:

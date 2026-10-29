@@ -52,6 +52,7 @@ add_library(common STATIC
   src/common/form.cpp
   src/common/layers.cpp
   src/common/npz.cpp
+  src/common/text.cpp
   src/common/tokenizer.cpp)
 target_include_directories(common PUBLIC src)
 target_link_libraries(common PUBLIC mlx nlohmann_json::nlohmann_json pcre2-8-static
@@ -62,6 +63,7 @@ target_compile_options(common PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 set_source_files_properties(src/common/npz.cpp PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 
 add_library(qwen3_asr STATIC
+  src/qwen3_asr/qwen3_audio.cpp
   src/qwen3_asr/qwen3_asr_model.cpp
   src/qwen3_asr/qwen3_decoder.cpp
   src/qwen3_asr/qwen3_asr_transcriber.cpp
@@ -75,7 +77,7 @@ add_library(silero_vad STATIC src/silero_vad/silero_vad.cpp src/silero_vad/speec
 # it was built with as part of cohere_asr.
 set_source_files_properties(src/silero_vad/speech_segments.cpp PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 target_include_directories(silero_vad PUBLIC src)
-target_link_libraries(silero_vad PUBLIC qwen3_asr)
+target_link_libraries(silero_vad PUBLIC common)
 target_compile_options(silero_vad PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 
 add_library(sortformer STATIC
@@ -84,11 +86,15 @@ add_library(sortformer STATIC
   src/sortformer/sortformer_features.cpp
   src/sortformer/sortformer_state.cpp)
 target_include_directories(sortformer PUBLIC src)
-target_link_libraries(sortformer PUBLIC qwen3_asr)
+target_link_libraries(sortformer PUBLIC common)
 target_compile_options(sortformer PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 
-add_library(asr_service STATIC src/qwen3_asr/asr_service.cpp src/common/http.cpp)
-target_link_libraries(asr_service PUBLIC qwen3_asr civetweb-c-library)
+add_library(omni_service STATIC src/common/service.cpp src/common/http.cpp)
+target_link_libraries(omni_service PUBLIC common civetweb-c-library)
+target_compile_options(omni_service PRIVATE -Wall -Wextra)
+
+add_library(asr_service STATIC src/qwen3_asr/asr_service.cpp)
+target_link_libraries(asr_service PUBLIC qwen3_asr omni_service)
 target_compile_options(asr_service PRIVATE -Wall -Wextra)
 
 add_executable(qwen3_asr_server src/qwen3_asr/qwen3_asr_server.cpp src/silero_vad/vad_service.cpp
@@ -96,10 +102,10 @@ add_executable(qwen3_asr_server src/qwen3_asr/qwen3_asr_server.cpp src/silero_va
 target_link_libraries(qwen3_asr_server PRIVATE asr_service silero_vad sortformer)
 
 add_executable(silero_vad_probe tools/silero_vad_probe.cpp)
-target_link_libraries(silero_vad_probe PRIVATE silero_vad qwen3_asr)
+target_link_libraries(silero_vad_probe PRIVATE silero_vad)
 
 add_executable(sortformer_probe tools/sortformer_probe.cpp)
-target_link_libraries(sortformer_probe PRIVATE sortformer qwen3_asr)
+target_link_libraries(sortformer_probe PRIVATE sortformer)
 
 add_executable(qwen3_asr_transcribe tools/qwen3_asr_transcribe.cpp)
 target_link_libraries(qwen3_asr_transcribe PRIVATE qwen3_asr)
@@ -214,3 +220,34 @@ set_target_properties(sensevoice_server sensevoice_transcribe PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
   INSTALL_RPATH "@loader_path")
 install(TARGETS sensevoice_server sensevoice_transcribe RUNTIME DESTINATION bin)
+
+# Note (Minyi Tang): Voxtral 4B TTS: voxtral_tts_server, with the CUDA server's
+# /v1/audio/speech API, and its parity tool; the text decoder reuses Qwen3's.
+add_library(voxtral_tts STATIC src/voxtral_tts/voxtral_tts_tokenizer.cpp
+  src/voxtral_tts/voxtral_tts_codec.cpp src/voxtral_tts/voxtral_tts_model.cpp)
+target_link_libraries(voxtral_tts PUBLIC qwen3_asr)
+target_compile_options(voxtral_tts PRIVATE -Wall -Wextra -ffp-contract=off)
+add_executable(voxtral_tts_server src/voxtral_tts/voxtral_tts_server.cpp)
+target_link_libraries(voxtral_tts_server PRIVATE voxtral_tts asr_service)
+target_compile_options(voxtral_tts_server PRIVATE -Wall -Wextra)
+add_executable(voxtral_tts_synthesize tools/voxtral_tts_synthesize.cpp)
+target_link_libraries(voxtral_tts_synthesize PRIVATE voxtral_tts)
+set_target_properties(voxtral_tts_server voxtral_tts_synthesize PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS voxtral_tts_server voxtral_tts_synthesize RUNTIME DESTINATION bin)
+
+add_library(music3 STATIC src/music3/music3_model.cpp src/music3/music3_ar.cpp
+  src/music3/music3_acoustic.cpp src/music3/music3_audio.cpp src/music3/music3_request.cpp)
+target_link_libraries(music3 PUBLIC qwen3_asr)
+target_compile_options(music3 PRIVATE -Wall -Wextra -ffp-contract=off)
+add_executable(music3_server src/music3/music3_server.cpp src/music3/music3_service.cpp)
+target_link_libraries(music3_server PRIVATE music3 omni_service)
+add_executable(music3_synthesize tools/music3_synthesize.cpp)
+target_link_libraries(music3_synthesize PRIVATE music3)
+set_target_properties(music3_server music3_synthesize PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS music3_server music3_synthesize RUNTIME DESTINATION bin)
+
+install(FILES licenses/music3-MIT.txt DESTINATION licenses)

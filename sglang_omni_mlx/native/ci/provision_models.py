@@ -38,11 +38,16 @@ def main() -> None:
     parser.add_argument(
         "--model", action="append", help="repo to provision (default: all pinned)"
     )
+    parser.add_argument("--exclude-model", action="append", default=[])
     arguments = parser.parse_args()
     pins: dict[str, ModelPin] = json.loads(
         (CI_DIRECTORY / "model_pins.json").read_text()
     )
     for repo in arguments.model or list(pins):
+        if repo in arguments.exclude_model:
+            continue
+        else:
+            pass
         pin = pins[repo]
         model_directory = provision_model(arguments.data_root, repo, pin)
         if "tokenizer" in pin:

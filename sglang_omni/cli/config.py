@@ -31,6 +31,8 @@ from sglang_omni.config.sources import (
     patches_from_model_path_flag,
     sources_from_config_file,
 )
+from sglang_omni.config.topology import compile_logical_processes
+from sglang_omni.pipeline.replicas import warn_replica_device_overrides
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +175,8 @@ def resolve_sources(
             patches_from_dotted_cli(extra_args, baseline, origin="command line")
         )
         resolved = ConfigResolver(baseline).resolve(patches)
+        logical_plan, logical_stages = compile_logical_processes(resolved.config)
+        warn_replica_device_overrides(logical_stages, logical_plan)
         # The same post-merge derivation `serve` runs; it only fills engine
         # keys no source set, so the previewed config is the launched one.
         derivation_writes = tensor_parallel_engine_writes(resolved.config)

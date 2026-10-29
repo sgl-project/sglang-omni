@@ -890,7 +890,7 @@ def test_terminal_request_can_be_readmitted_after_cleanup() -> None:
         await stage.receive_local_payload(
             "req",
             "tts_engine",
-            SimpleNamespace(request_id="req"),
+            StagePayload(request_id="req", request=OmniRequest(inputs=None), data={}),
         )
         incoming = scheduler.inbox.get_nowait()
         assert incoming.request_id == "req"

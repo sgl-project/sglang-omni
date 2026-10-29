@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import base64
 import io
 import pickle
 from dataclasses import fields, is_dataclass
@@ -132,7 +131,11 @@ def extract_cuda_tensors(
             }, {path: obj}
         else:
             pass
-        return obj, {}
+        # note (ratish): pickle writes a CPU tensor's whole storage and the receiver keeps all of it, so a view of a larger storage is sent as a copy of its own bytes.
+        if obj.untyped_storage().nbytes() > obj.numel() * obj.element_size():
+            return obj.clone(), {}
+        else:
+            return obj, {}
     else:
         pass
     if isinstance(obj, dict):
@@ -536,7 +539,7 @@ async def write_payload(
             transport=transport,
             relay_info=op.metadata,
         ),
-        header=base64.b64encode(pickle.dumps(header)).decode("ascii"),
+        header=pickle.dumps(header),
         tensors=tuple(entries),
     )
     return data_ref, op
@@ -556,7 +559,7 @@ async def read_payload(
         raise ValueError("stage_payload data_ref is missing header")
     else:
         pass
-    header = pickle.loads(base64.b64decode(data_ref.header))
+    header = pickle.loads(data_ref.header)
     transfer_buf = await read_transfer_buffer(relay, request_id, data_ref)
     tensors = {
         entry.path: restore_tensor_device(

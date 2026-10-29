@@ -6,11 +6,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from types import SimpleNamespace
+from typing import Protocol
 
 import pytest
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("sglang")
+transformers = pytest.importorskip("transformers")
 
 from flashinfer.sampling import get_sampling_module
 from sglang.kernels.ops.moe.fused_moe_triton_kernels import fused_moe_kernel
@@ -25,6 +27,7 @@ from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
     PrefillCudaGraphRunner,
 )
 from sglang.srt.models.qwen3_moe import Qwen3MoeDecoderLayer, Qwen3MoeSparseMoeBlock
+from sglang.srt.models.qwen3_vl_moe import Qwen3MoeLLMModel
 from sglang.srt.runtime_context import get_context
 
 from sglang_omni.models.qwen3_omni.components import (
@@ -37,6 +40,7 @@ from sglang_omni.models.qwen3_omni.components.sglang_thinker import (
     config_uses_mrope,
 )
 from sglang_omni.models.qwen3_omni.hf_config import (
+    Qwen3OmniMoeTalkerConfig,
     Qwen3OmniMoeTextConfig,
     Qwen3OmniMoeThinkerConfig,
 )
@@ -129,6 +133,36 @@ def test_real_qwen_config_drives_prefill_positions(
     assert selected is (mrope_positions if expected_mrope else ordinary_positions)
 
 
+def test_talker_config_rebuilt_from_serialized_hf_config_keeps_mrope_and_theta() -> (
+    None
+):
+    """A talker config rebuilt from transformers' to_dict keeps the M-RoPE sections and the theta
+    that transformers serializes under rope_parameters."""
+    hf_text_config = {
+        "hidden_size": 8,
+        "intermediate_size": 16,
+        "num_hidden_layers": 1,
+        "num_attention_heads": 2,
+        "num_key_value_heads": 2,
+        "head_dim": 4,
+        "rope_parameters": {
+            "rope_type": "default",
+            "mrope_section": [1, 1, 2],
+            "interleaved": True,
+            "rope_theta": 123456.0,
+        },
+    }
+    serialized = transformers.Qwen3OmniMoeTalkerConfig(
+        text_config=hf_text_config
+    ).to_dict()
+
+    rebuilt = Qwen3OmniMoeTalkerConfig(**serialized)
+
+    assert rebuilt.text_config.rope_scaling["mrope_section"] == [1, 1, 2]
+    assert rebuilt.text_config.rope_scaling["rope_type"] == "default"
+    assert rebuilt.text_config.rope_theta == 123456.0
+
+
 def test_outer_thinker_forward_accepts_sidecar_request_identity():
     seen: dict[str, object] = {}
 
@@ -139,7 +173,7 @@ def test_outer_thinker_forward_accepts_sidecar_request_identity():
     wrapper = object.__new__(Qwen3OmniThinkerForCausalLM)
     torch.nn.Module.__init__(wrapper)
     wrapper.model = fake_model
-    wrapper.logits_processor = lambda *args: args[0]
+    wrapper.logits_processor = lambda *args, aux_hidden_states: args[0]
     wrapper.lm_head = object()
     wrapper.fused_rope_gate = None
     wrapper.decode_live_rows = DecodeLiveRows()
@@ -237,7 +271,7 @@ def make_bare_wrapper(error: RuntimeError | None = None) -> Qwen3OmniThinkerForC
     torch.nn.Module.__init__(wrapper)
     wrapper.decode_live_rows = DecodeLiveRows()
     wrapper.model = RecordingTextModel(wrapper.decode_live_rows, error)
-    wrapper.logits_processor = lambda *args: args[1]
+    wrapper.logits_processor = lambda *args, aux_hidden_states: args[1]
     wrapper.lm_head = object()
     wrapper.fused_rope_gate = None
     return wrapper
@@ -260,9 +294,33 @@ def run_forward(
 
 
 @pytest.mark.parametrize(
+    ("accept_hidden_layer", "expected_layers"),
+    [(2, [2]), (4, []), (5, None)],
+)
+def test_the_thinker_captures_the_talkers_accept_layer_in_every_forward(
+    accept_hidden_layer: int, expected_layers: list[int] | None
+) -> None:
+    wrapper = object.__new__(Qwen3OmniThinkerForCausalLM)
+    torch.nn.Module.__init__(wrapper)
+    wrapper.root_config = SimpleNamespace(
+        talker_config=SimpleNamespace(accept_hidden_layer=accept_hidden_layer)
+    )
+    wrapper.config = SimpleNamespace(num_hidden_layers=4)
+    wrapper.model = SimpleNamespace(layers_to_capture=[])
+
+    if expected_layers is None:
+        with pytest.raises(ValueError, match="accept_hidden_layer"):
+            wrapper.set_talker_layers_to_capture()
+    else:
+        wrapper.set_talker_layers_to_capture()
+        assert wrapper.model.layers_to_capture == expected_layers
+
+
+@pytest.mark.parametrize(
     ("forward_mode", "out_cache_loc", "expected_live_rows"),
     [
         (ForwardMode.DECODE, [7, 3, 0, 0], [True, True, False, False]),
+        (ForwardMode.TARGET_VERIFY, [7, 8, 3, 4, 0, 0], [True] * 4 + [False] * 2),
         (ForwardMode.DECODE, [7], None),
         (ForwardMode.EXTEND, [7, 3, 0, 0], None),
     ],
@@ -282,6 +340,79 @@ def test_thinker_forward_marks_decode_rows_by_their_kv_slot(
     else:
         assert seen_mask.tolist() == expected_live_rows
     assert wrapper.decode_live_rows.is_live_row is None
+
+
+class LayerCaptureSetter(Protocol):
+    def __call__(
+        self, thinker: Qwen3OmniThinkerForCausalLM, layer_ids: list[int]
+    ) -> None: ...
+
+
+class CapturingTextModel(torch.nn.Module):
+    """Text model that records capture layers through the real setters."""
+
+    set_dflash_layers_to_capture = Qwen3MoeLLMModel.set_dflash_layers_to_capture
+    set_eagle3_layers_to_capture = Qwen3MoeLLMModel.set_eagle3_layers_to_capture
+
+    def __init__(
+        self, hidden_states: torch.Tensor, auxiliary_hidden_states: list[torch.Tensor]
+    ) -> None:
+        super().__init__()
+        self.layers = torch.nn.ModuleList(torch.nn.Identity() for _ in range(48))
+        self.layers_to_capture: list[int] = []
+        self.hidden_states = hidden_states
+        self.auxiliary_hidden_states = auxiliary_hidden_states
+
+    def forward(
+        self,
+        *,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        forward_batch: SimpleNamespace,
+        input_embeds: torch.Tensor | None,
+        pp_proxy_tensors: None,
+        input_deepstack_embeds: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
+        return self.hidden_states, self.auxiliary_hidden_states
+
+
+@pytest.mark.parametrize(
+    "set_layers_to_capture",
+    [
+        Qwen3OmniThinkerForCausalLM.set_dflash_layers_to_capture,
+        Qwen3OmniThinkerForCausalLM.set_eagle3_layers_to_capture,
+    ],
+)
+def test_speculative_capture_hands_the_named_layers_to_the_logits_processor(
+    set_layers_to_capture: LayerCaptureSetter,
+) -> None:
+    wrapper = make_bare_wrapper()
+    hidden_states = torch.zeros(2, 3)
+    auxiliary_hidden_states = [torch.ones(2, 3), torch.full((2, 3), 2.0)]
+    wrapper.model = CapturingTextModel(hidden_states, auxiliary_hidden_states)
+    seen: dict[str, torch.Tensor | list[torch.Tensor]] = {}
+
+    def logits_processor(input_ids, hidden, lm_head, forward_batch, aux_hidden_states):
+        seen.update(hidden=hidden, auxiliary=aux_hidden_states)
+        return "logits"
+
+    wrapper.logits_processor = logits_processor
+    set_layers_to_capture(wrapper, [1, 12, 23])
+    result = wrapper.forward(
+        input_ids=torch.ones(2, dtype=torch.long),
+        positions=torch.zeros(2, dtype=torch.long),
+        forward_batch=SimpleNamespace(
+            mrope_positions=None,
+            forward_mode=ForwardMode.EXTEND,
+            out_cache_loc=torch.tensor([5, 6]),
+        ),
+    )
+
+    # A draft's target layer id i reads the stream after layer i.
+    assert wrapper.model.layers_to_capture == [2, 13, 24]
+    assert result == "logits"
+    assert seen["hidden"] is hidden_states
+    assert seen["auxiliary"] is auxiliary_hidden_states
 
 
 def test_decode_mask_is_cleared_when_the_model_call_fails() -> None:

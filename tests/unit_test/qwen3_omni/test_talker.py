@@ -6,6 +6,7 @@ import threading
 from collections import deque
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -25,6 +26,7 @@ from sglang_omni.models.qwen3_omni.components.talker import (
 from sglang_omni.models.qwen3_omni.components.talker_input import build_assistant_part
 from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
 from sglang_omni.models.qwen3_omni.config import TALKER_START_MIN_CHUNKS
+from sglang_omni.models.qwen3_omni.payload_types import NO_SPEECH
 from sglang_omni.models.qwen3_omni.request_builders import build_sglang_talker_request
 from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
 from sglang_omni.models.qwen3_omni.talker_scheduler import (
@@ -32,7 +34,7 @@ from sglang_omni.models.qwen3_omni.talker_scheduler import (
     QwenTalkerScheduler,
     configure_talker_server_args,
 )
-from sglang_omni.proto.request import OmniRequest
+from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.pending_text_queue import (
@@ -47,7 +49,9 @@ from tests.unit_test.fixtures.qwen_predictor import (
 
 
 def make_sched_req(**data_kwargs: object) -> SimpleNamespace:
-    return SimpleNamespace(data=SimpleNamespace(**data_kwargs))
+    return SimpleNamespace(
+        data=SimpleNamespace(session_embedding_spans=[], **data_kwargs)
+    )
 
 
 def prefill_runner() -> QwenTalkerModelRunner:
@@ -73,6 +77,12 @@ def prefill_sidecar(
     forward_batch: SimpleNamespace,
     requests: list[SimpleNamespace],
 ):
+    forward_batch.extend_prefix_lens_cpu = [
+        request.data.req.prefix_len for request in requests
+    ]
+    forward_batch.extend_seq_lens_cpu = [
+        request.data.req.extend_len for request in requests
+    ]
     runner.before_prefill(forward_batch, schedule_batch=None, requests=requests)
     return get_omni_prefill_inputs(forward_batch)
 
@@ -455,6 +465,48 @@ def test_qwen_talker_prefill_appends_text_chunks_to_tensor_queue() -> None:
 
     assert isinstance(req_data.pending_text_queue, PendingTextTensorQueue)
     assert torch.equal(req_data.pending_text_queue[0], torch.tensor([11.0, 12.0]))
+
+
+def test_qwen_talker_projects_each_assistant_token_id_once() -> None:
+    builder = object.__new__(TalkerPrefillBuilder)
+    builder.im_end_token_id = 99
+    builder.device = torch.device("cpu")
+    builder.dtype = torch.float32
+    builder.projected_text_cache = {}
+    projected_rows: list[torch.Tensor] = []
+
+    def text_projection(rows: torch.Tensor) -> torch.Tensor:
+        projected_rows.append(rows)
+        return rows * 2.0 + 1.0
+
+    builder.model = SimpleNamespace(text_projection=text_projection)
+    builder.load_prompt_token_embeddings = lambda token_ids: torch.stack(
+        [torch.full((2,), float(token_id)) for token_id in token_ids.tolist()]
+    )
+    first_request = SimpleNamespace(thinker_chunks_done=False, pending_text_queue=None)
+    second_request = SimpleNamespace(thinker_chunks_done=False, pending_text_queue=None)
+
+    for token_id in (11, 12):
+        builder.append_text_chunk(
+            first_request, SimpleNamespace(data=None, metadata={"token_id": token_id})
+        )
+    for token_id in (12, 11):
+        builder.append_text_chunk(
+            second_request, SimpleNamespace(data=None, metadata={"token_id": token_id})
+        )
+    builder.append_text_chunk(
+        second_request, SimpleNamespace(data=torch.tensor([5.0, 6.0]), metadata={})
+    )
+
+    assert torch.equal(
+        torch.stack(list(first_request.pending_text_queue)),
+        torch.tensor([[23.0, 23.0], [25.0, 25.0]]),
+    )
+    assert torch.equal(
+        torch.stack(list(second_request.pending_text_queue)),
+        torch.tensor([[25.0, 25.0], [23.0, 23.0], [11.0, 13.0]]),
+    )
+    assert len(projected_rows) == 3
 
 
 def test_qwen_code_predictor_keeps_4d_logits_token_shape() -> None:
@@ -882,6 +934,39 @@ def make_payload(
         prefetched_chunks=list(prefetched_chunks or []),
         prefetched_stream_done=prefetched_stream_done,
     )
+
+
+def thinker_token(token_id: int) -> SimpleNamespace:
+    return SimpleNamespace(metadata={"token_id": token_id})
+
+
+def test_a_finished_reply_without_spoken_tokens_is_not_generated() -> None:
+    """A reply of im_end alone passes on without audio; one spoken token is generated."""
+    scheduler = fresh_partial_scheduler()
+    scheduler.im_end_token_id = 99
+    adapter = Mock()
+    scheduler.session_bridge = SimpleNamespace(adapter=adapter)
+    no_token = StagePayload(request_id="r0", request=OmniRequest(inputs=[]), data={})
+    no_token.prefetched_chunks = [thinker_token(99)]
+    no_token.prefetched_stream_done = True
+    assert scheduler.complete_without_generation(no_token, None).data == {
+        NO_SPEECH: True
+    }
+    unit = SimpleNamespace(session_identity="session", chunk="unit-chunk")
+    assert (
+        scheduler.complete_without_generation(no_token, unit)
+        is adapter.complete_without_generation.return_value
+    )
+    adapter.complete_without_generation.assert_called_once_with(
+        "session", "unit-chunk", no_token
+    )
+    one_token = make_payload(
+        prefetched_chunks=[thinker_token(5), thinker_token(99)],
+        prefetched_stream_done=True,
+    )
+    assert scheduler.complete_without_generation(one_token, None) is None
+    unfinished = make_payload(prefetched_chunks=[thinker_token(5)])
+    assert scheduler.complete_without_generation(unfinished, None) is None
 
 
 def test_partial_disabled_preserves_legacy_path() -> None:
@@ -1965,8 +2050,8 @@ def test_projected_prefill_reads_tensor_from_data() -> None:
         prefill_input_embeds=embeds,
         req=SimpleNamespace(
             input_embeds=None,
-            prefix_indices=[],
-            extend_range=SimpleNamespace(length=10),
+            prefix_len=0,
+            extend_len=10,
         ),
     )
     forward_batch = prefill_forward_batch(10)
@@ -1977,7 +2062,7 @@ def test_projected_prefill_reads_tensor_from_data() -> None:
     assert torch.equal(payload.input_embeds, embeds)
 
 
-def test_projected_prefill_slices_tensor_by_extend_range() -> None:
+def test_projected_prefill_slices_tensor_by_extend_len() -> None:
     """Tensor path slices by prefix and extend length, matching SGLang prefill."""
     full_embeds = torch.randn(10, 64)
     prefix_len = 3
@@ -1987,8 +2072,8 @@ def test_projected_prefill_slices_tensor_by_extend_range() -> None:
         prefill_input_embeds=full_embeds,
         req=SimpleNamespace(
             input_embeds=None,
-            prefix_indices=list(range(prefix_len)),
-            extend_range=SimpleNamespace(length=extend_len),
+            prefix_len=prefix_len,
+            extend_len=extend_len,
         ),
     )
     forward_batch = prefill_forward_batch(extend_len)
@@ -2001,7 +2086,7 @@ def test_projected_prefill_slices_tensor_by_extend_range() -> None:
     assert torch.equal(payload.input_embeds, expected)
 
 
-def test_projected_prefill_list_fallback_slices_by_extend_range() -> None:
+def test_projected_prefill_list_fallback_slices_by_extend_len() -> None:
     """List fallback keeps the same prefill slice contract as the tensor path."""
     full_embeds = torch.randn(10, 64)
     prefix_len = 2
@@ -2011,8 +2096,8 @@ def test_projected_prefill_list_fallback_slices_by_extend_range() -> None:
         prefill_input_embeds=None,
         req=SimpleNamespace(
             input_embeds=full_embeds.tolist(),
-            prefix_indices=list(range(prefix_len)),
-            extend_range=SimpleNamespace(length=extend_len),
+            prefix_len=prefix_len,
+            extend_len=extend_len,
         ),
     )
     forward_batch = prefill_forward_batch(extend_len)
@@ -2030,17 +2115,15 @@ def test_projected_prefill_rejects_mixed_projected_and_list_batch() -> None:
     projected_req = make_sched_req(
         input_embeds_are_projected=True,
         prefill_input_embeds=torch.randn(2, 8),
-        req=SimpleNamespace(
-            input_embeds=None, prefix_indices=[], extend_range=SimpleNamespace(length=2)
-        ),
+        req=SimpleNamespace(input_embeds=None, prefix_len=0, extend_len=2),
     )
     list_req = make_sched_req(
         input_embeds_are_projected=False,
         prefill_input_embeds=None,
         req=SimpleNamespace(
             input_embeds=torch.randn(2, 8).tolist(),
-            prefix_indices=[],
-            extend_range=SimpleNamespace(length=2),
+            prefix_len=0,
+            extend_len=2,
         ),
     )
     forward_batch = prefill_forward_batch(4, input_embeds=torch.randn(2, 8))
@@ -2057,8 +2140,8 @@ def test_projected_prefill_full_prefix_hit_returns_none() -> None:
         prefill_input_embeds=embeds,
         req=SimpleNamespace(
             input_embeds=None,
-            prefix_indices=list(range(5)),
-            extend_range=SimpleNamespace(length=0),
+            prefix_len=5,
+            extend_len=0,
         ),
     )
     forward_batch = prefill_forward_batch(0)
@@ -2121,8 +2204,8 @@ def test_projected_prefill_survives_decode_retract() -> None:
         prefill_input_embeds=full_embeds,
         req=SimpleNamespace(
             input_embeds=None,
-            prefix_indices=[],
-            extend_range=SimpleNamespace(length=10),
+            prefix_len=0,
+            extend_len=10,
         ),
         pending_feedback_queue=deque(),
         pending_text_queue=deque(),
@@ -2145,8 +2228,8 @@ def test_projected_prefill_survives_decode_retract() -> None:
         requests=[sched_req],
     )
 
-    sched_req.data.req.prefix_indices = []
-    sched_req.data.req.extend_range = SimpleNamespace(length=10)
+    sched_req.data.req.prefix_len = 0
+    sched_req.data.req.extend_len = 10
 
     second = prefill_sidecar(runner, forward_batch, [sched_req])
     assert second is not None, "retract+re-prefill must not silently lose embeds"
@@ -2195,8 +2278,8 @@ def test_projected_prefill_retract_replays_generated_decode_inputs() -> None:
         pending_text_queue=deque([torch.tensor([30.0, 40.0])]),
         req=SimpleNamespace(
             input_embeds=None,
-            prefix_indices=list(range(8)),
-            extend_range=SimpleNamespace(length=5),
+            prefix_len=8,
+            extend_len=5,
             output_ids=[11, 12, 13],
         ),
     )
@@ -2234,6 +2317,8 @@ def talker_seed_self(
     fake = SimpleNamespace(
         repetition_mask=torch.zeros(max_bs, vocab, dtype=torch.bool, device=device),
         suppress_mask=torch.zeros(max_bs, vocab, dtype=torch.bool, device=device),
+        suppress_token_cache={},
+        suppress_token_ids_by_request={},
         repetition_penalties=torch.ones(max_bs, 1, device=device),
         sampling_temperatures=torch.ones(max_bs, 1, device=device),
         sampling_top_ps=torch.ones(max_bs, device=device),
@@ -2370,6 +2455,71 @@ def test_talker_prepare_decode_buffers_steady_state_reuse() -> None:
     Qwen3OmniTalker.prepare_decode_buffers(fresh, requests)
     assert torch.equal(fake.repetition_mask, fresh.repetition_mask)
     assert torch.equal(fake.suppress_mask, fresh.suppress_mask)
+
+
+SHARED_SUPPRESS_TOKEN_IDS = [1, 6, 7, 9, -2]
+
+
+@pytest.mark.parametrize(
+    "steps",
+    [
+        pytest.param(
+            [
+                [
+                    ("a", SHARED_SUPPRESS_TOKEN_IDS),
+                    ("b", SHARED_SUPPRESS_TOKEN_IDS),
+                    ("c", SHARED_SUPPRESS_TOKEN_IDS),
+                    ("d", SHARED_SUPPRESS_TOKEN_IDS),
+                ],
+                [
+                    ("e", SHARED_SUPPRESS_TOKEN_IDS),
+                    ("f", SHARED_SUPPRESS_TOKEN_IDS),
+                    ("g", SHARED_SUPPRESS_TOKEN_IDS),
+                ],
+            ],
+            id="shared",
+        ),
+        pytest.param(
+            [
+                [
+                    ("a", SHARED_SUPPRESS_TOKEN_IDS),
+                    ("b", [2, 3]),
+                    ("c", None),
+                    ("d", SHARED_SUPPRESS_TOKEN_IDS),
+                ],
+                [("e", [2, 3]), ("f", SHARED_SUPPRESS_TOKEN_IDS), ("g", [4])],
+            ],
+            id="distinct",
+        ),
+        pytest.param(
+            [
+                [("a", SHARED_SUPPRESS_TOKEN_IDS), ("b", [2, 3]), ("c", None)],
+                [("b", [2, 3]), ("d", [4]), ("a", SHARED_SUPPRESS_TOKEN_IDS)],
+            ],
+            id="kept-at-new-rows",
+        ),
+    ],
+)
+def test_talker_prepare_decode_buffers_masks_each_rows_own_suppress_set(
+    steps: list[list[tuple[str, list[int] | None]]],
+) -> None:
+    vocab = 8
+    fake = talker_seed_self(vocab=vocab)
+    requests_by_id: dict[str, SimpleNamespace] = {}
+    for step, rows in enumerate(steps):
+        requests = [
+            requests_by_id.setdefault(
+                request_id, talker_prep_req(request_id, suppress=suppress)
+            )
+            for request_id, suppress in rows
+        ]
+        Qwen3OmniTalker.prepare_decode_buffers(fake, requests)
+        expected = torch.zeros(len(requests), vocab, dtype=torch.bool)
+        for row, (_, suppress) in enumerate(rows):
+            expected[row, [token for token in suppress or [] if 0 <= token < vocab]] = (
+                True
+            )
+        assert torch.equal(fake.suppress_mask[: len(requests)], expected), step
 
 
 @pytest.mark.accelerator
@@ -2609,7 +2759,9 @@ def test_talker_sampling_buffers_hold_values_bf16_rounds(monkeypatch) -> None:
             self.model = SimpleNamespace(
                 layers=[
                     SimpleNamespace(
-                        self_attn=SimpleNamespace(num_kv_heads=1, head_dim=2)
+                        self_attn=SimpleNamespace(
+                            num_heads=1, num_kv_heads=1, head_dim=2
+                        )
                     )
                 ]
             )

@@ -18,10 +18,15 @@ LOCAL_OPTIMIZATION=true
 UNIVERSAL_BUILD=false
 SIGN_APP=true
 APP_SIGN_IDENTITY="${DEVELOPER_ID_APP_IDENTITY:-}"
+PROVISIONING_PROFILE="${VOXT_PROVISIONING_PROFILE:-}"
 INSTALLER_SIGN_IDENTITY="${DEVELOPER_ID_INSTALLER_IDENTITY:-}"
+NOTARY_KEY=""
+NOTARY_KEY_ID=""
+NOTARY_ISSUER=""
 VERSION=""
 BUILD_NUMBER=""
 APP_NAME="Voxt"
+NATIVE_RUNTIME_DIR="${VOXT_NATIVE_RUNTIME_DIR:-}"
 
 usage() {
   cat <<'EOF'
@@ -44,17 +49,26 @@ Options:
   --universal             Build both arm64 and x86_64 via generic macOS destination.
   --app-sign-identity ID  Developer ID Application identity for app signing.
   --pkg-sign-identity ID  Developer ID Installer identity for pkg signing.
+  --provisioning-profile PATH  Explicit matching Developer ID profile required for signing.
+  --notary-key PATH       App Store Connect API key (.p8) for notarization. With
+                          --notary-key-id and --notary-issuer, the app is notarized
+                          and stapled before packaging, and the DMG and PKG after.
+  --notary-key-id ID      App Store Connect API key ID.
+  --notary-issuer ID      App Store Connect API issuer ID.
+  --native-runtime PATH   Embed a built Omni runtime in the app bundle.
   --no-sign               Do not sign the app after building.
   -h, --help              Show this help.
 
 Optional environment:
   DEVELOPER_ID_APP_IDENTITY        Signs the app when set.
   DEVELOPER_ID_INSTALLER_IDENTITY  Signs the .pkg when set.
+  VOXT_NATIVE_RUNTIME_DIR          Runtime directory used when --native-runtime is omitted.
+  VOXT_PROVISIONING_PROFILE        Explicit profile used when --provisioning-profile is omitted.
 
 Examples:
-  tools/package_local_app.sh
-  tools/package_local_app.sh --install --open
-  tools/package_local_app.sh --version 1.12.0 --build-number 101200099 --install
+  tools/package_local_app.sh --no-sign
+  tools/package_local_app.sh --provisioning-profile Voxt.provisionprofile --install --open
+  tools/package_local_app.sh --provisioning-profile Voxt.provisionprofile --version 1.12.0 --build-number 101200099
 EOF
 }
 
@@ -122,9 +136,34 @@ while [[ "$#" -gt 0 ]]; do
       [[ -n "$APP_SIGN_IDENTITY" ]] || die "--app-sign-identity requires a value"
       shift 2
       ;;
+    --provisioning-profile)
+      PROVISIONING_PROFILE="${2:-}"
+      [[ -n "$PROVISIONING_PROFILE" ]] || die "--provisioning-profile requires a value"
+      shift 2
+      ;;
     --pkg-sign-identity)
       INSTALLER_SIGN_IDENTITY="${2:-}"
       [[ -n "$INSTALLER_SIGN_IDENTITY" ]] || die "--pkg-sign-identity requires a value"
+      shift 2
+      ;;
+    --notary-key)
+      NOTARY_KEY="${2:-}"
+      [[ -n "$NOTARY_KEY" ]] || die "--notary-key requires a value"
+      shift 2
+      ;;
+    --notary-key-id)
+      NOTARY_KEY_ID="${2:-}"
+      [[ -n "$NOTARY_KEY_ID" ]] || die "--notary-key-id requires a value"
+      shift 2
+      ;;
+    --notary-issuer)
+      NOTARY_ISSUER="${2:-}"
+      [[ -n "$NOTARY_ISSUER" ]] || die "--notary-issuer requires a value"
+      shift 2
+      ;;
+    --native-runtime)
+      NATIVE_RUNTIME_DIR="${2:-}"
+      [[ -n "$NATIVE_RUNTIME_DIR" ]] || die "--native-runtime requires a value"
       shift 2
       ;;
     --no-sign)
@@ -141,10 +180,55 @@ while [[ "$#" -gt 0 ]]; do
   esac
 done
 
+if [[ "$SIGN_APP" == "true" ]]; then
+  [[ -n "$PROVISIONING_PROFILE" ]] || die "signed packaging requires an explicit matching Developer ID provisioning profile (--provisioning-profile or VOXT_PROVISIONING_PROFILE); use --no-sign only for unsigned inspection"
+  [[ -f "$PROVISIONING_PROFILE" ]] || die "provisioning profile not found: $PROVISIONING_PROFILE"
+  command -v python3 >/dev/null || die "python3 is required for signing profile validation"
+  command -v security >/dev/null || die "security is required for signing profile validation"
+  command -v codesign >/dev/null || die "codesign is required"
+else
+  :
+fi
+
 [[ -d "$PROJECT" ]] || die "Xcode project not found: $PROJECT"
 command -v xcodebuild >/dev/null || die "xcodebuild is required"
 command -v hdiutil >/dev/null || die "hdiutil is required"
 command -v productbuild >/dev/null || die "productbuild is required"
+
+if [[ -n "$NATIVE_RUNTIME_DIR" ]]; then
+  bash "$ROOT/tools/validate_native_runtime.sh" "$NATIVE_RUNTIME_DIR"
+else
+  :
+fi
+
+NOTARIZE=false
+if [[ -n "$NOTARY_KEY$NOTARY_KEY_ID$NOTARY_ISSUER" ]]; then
+  [[ -n "$NOTARY_KEY" && -n "$NOTARY_KEY_ID" && -n "$NOTARY_ISSUER" ]] \
+    || die "--notary-key, --notary-key-id and --notary-issuer go together"
+  [[ -f "$NOTARY_KEY" ]] || die "notary key not found: $NOTARY_KEY"
+  [[ "$SIGN_APP" == "true" ]] || die "notarization cannot be combined with --no-sign"
+  NOTARIZE=true
+fi
+
+notarize() {
+  local artifact="$1"
+  local result_plist submission_id status
+  result_plist="$(mktemp)"
+  log "Notarizing $(basename "$artifact")"
+  xcrun notarytool submit "$artifact" --key "$NOTARY_KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" \
+    --wait --timeout 60m --output-format plist > "$result_plist" || true
+  submission_id="$(plutil -extract id raw -o - "$result_plist" 2>/dev/null || true)"
+  status="$(plutil -extract status raw -o - "$result_plist" 2>/dev/null || true)"
+  rm -f "$result_plist"
+  [[ -n "$submission_id" ]] || die "notarytool did not accept $artifact for notarization"
+  echo "$(basename "$artifact"): $status ($submission_id)"
+  if [[ "$status" != "Accepted" ]]; then
+    xcrun notarytool log "$submission_id" --key "$NOTARY_KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" || true
+    die "notarization of $artifact ended with status '$status'"
+  else
+    :
+  fi
+}
 
 if [[ "$OPEN_AFTER_INSTALL" == "true" && "$INSTALL_APP" != "true" ]]; then
   die "--open requires --install"
@@ -218,10 +302,25 @@ xcodebuild \
   -configuration "$CONFIGURATION" \
   -destination "$DESTINATION" \
   -derivedDataPath "$DERIVED_DATA" \
+  -skipPackagePluginValidation \
   "${BUILD_ACTIONS[@]}" \
   "${BUILD_OVERRIDES[@]}"
 
 [[ -d "$APP_PATH" ]] || die "built app not found: $APP_PATH"
+[[ ! -e "$APP_PATH/Contents/XPCServices/OmniInference.xpc" ]] || die "Release packaging must not contain the retired OmniInference service"
+
+if [[ -n "$NATIVE_RUNTIME_DIR" ]]; then
+  log "Embedding Omni native runtime"
+  OMNI_RUNTIME_DESTINATION="$APP_PATH/Contents/Resources/OmniRuntime"
+  rm -rf "$OMNI_RUNTIME_DESTINATION"
+  # The native build output also contains .build/ (CMake files and a local
+  # Python virtual environment). It is build machinery, not part of the
+  # runtime, and may contain symlinks into the developer's machine that make
+  # the signed app invalid. Embed only the installed runtime binaries and
+  # resources from bin/.
+  mkdir -p "$OMNI_RUNTIME_DESTINATION"
+  ditto "$NATIVE_RUNTIME_DIR/bin" "$OMNI_RUNTIME_DESTINATION/bin"
+fi
 
 log "Validating app bundle"
 PLIST_PATH="$APP_PATH/Contents/Info.plist"
@@ -233,35 +332,55 @@ BUNDLE_VERSION="$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$PLIST_PA
 if [[ "$SIGN_APP" == "true" && -n "$APP_SIGN_IDENTITY" ]]; then
   log "Signing app with $APP_SIGN_IDENTITY"
 
-  APP_BUNDLE_ID="$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$PLIST_PATH" 2>/dev/null || true)"
-  [[ -n "$APP_BUNDLE_ID" ]] || die "unable to resolve CFBundleIdentifier"
-
-  SIGNING_ENTITLEMENTS="$(mktemp)"
-  sed "s#\\\$(PRODUCT_BUNDLE_IDENTIFIER)#${APP_BUNDLE_ID}#g" "$ROOT/Voxt/Voxt.entitlements" > "$SIGNING_ENTITLEMENTS"
-  if grep -q '\\$(PRODUCT_BUNDLE_IDENTIFIER)' "$SIGNING_ENTITLEMENTS"; then
-    rm -f "$SIGNING_ENTITLEMENTS"
-    die "failed to expand PRODUCT_BUNDLE_IDENTIFIER in entitlements"
-  fi
+  SIGNING_DIRECTORY="$(mktemp -d)"
+  trap 'rm -rf "$SIGNING_DIRECTORY"' EXIT
+  SIGNING_ENTITLEMENTS="$SIGNING_DIRECTORY/entitlements.plist"
+  cp "$PROVISIONING_PROFILE" "$SIGNING_DIRECTORY/profile.provisionprofile"
+  python3 "$ROOT/tools/signing_profile_policy.py" \
+    --profile "$SIGNING_DIRECTORY/profile.provisionprofile" \
+    --source-entitlements "$ROOT/Voxt/Voxt.entitlements" \
+    --info-plist "$PLIST_PATH" \
+    --output-entitlements "$SIGNING_ENTITLEMENTS"
+  rm -f "$APP_PATH/Contents/embedded.provisionprofile"
+  cp "$SIGNING_DIRECTORY/profile.provisionprofile" "$APP_PATH/Contents/embedded.provisionprofile"
 
   sign_if_exists() {
     local target="$1"
     if [[ -e "$target" ]]; then
       echo "Signing: $target"
-      codesign --force --options runtime --timestamp --sign "$APP_SIGN_IDENTITY" "$target"
+      local signing_arguments=(--force --options runtime --timestamp --sign "$APP_SIGN_IDENTITY")
+      if codesign --display "$target" >/dev/null 2>&1; then
+        signing_arguments+=(--preserve-metadata=entitlements)
+      else
+        :
+      fi
+      codesign "${signing_arguments[@]}" "$target"
+    else
+      :
     fi
   }
 
-  SPARKLE_FRAMEWORK="$APP_PATH/Contents/Frameworks/Sparkle.framework"
-  sign_if_exists "$SPARKLE_FRAMEWORK/Versions/B/XPCServices/Installer.xpc"
-  sign_if_exists "$SPARKLE_FRAMEWORK/Versions/B/XPCServices/InstallerLauncher.xpc"
-  sign_if_exists "$SPARKLE_FRAMEWORK/Versions/B/XPCServices/Downloader.xpc"
-  sign_if_exists "$SPARKLE_FRAMEWORK/Versions/B/Autoupdate"
-  sign_if_exists "$SPARKLE_FRAMEWORK/Versions/B/Updater.app"
-  sign_if_exists "$SPARKLE_FRAMEWORK"
+  if [[ -n "$NATIVE_RUNTIME_DIR" ]]; then
+    while IFS= read -r native_runtime_file; do
+      if [[ "$(file -b "$native_runtime_file")" == *"Mach-O"* ]]; then
+        sign_if_exists "$native_runtime_file"
+      else
+        echo "Skipping non-code runtime resource: $native_runtime_file"
+      fi
+    done < <(find "$APP_PATH/Contents/Resources/OmniRuntime/bin" -type f ! -name '*.metallib' -print | sort)
+  fi
 
-  while IFS= read -r dylib; do
-    sign_if_exists "$dylib"
-  done < <(find "$APP_PATH/Contents/Frameworks" -maxdepth 1 -type f -name '*.dylib' 2>/dev/null | sort)
+  while IFS= read -r framework_code; do
+    if [[ "$(file -b "$framework_code")" == *"Mach-O"* ]]; then
+      sign_if_exists "$framework_code"
+    else
+      echo "Skipping non-code framework resource: $framework_code"
+    fi
+  done < <(find "$APP_PATH/Contents/Frameworks" -type f ! -name '*.metallib' -print | sort)
+
+  while IFS= read -r framework_bundle; do
+    sign_if_exists "$framework_bundle"
+  done < <(find "$APP_PATH/Contents/Frameworks" -depth -type d \( -name '*.xpc' -o -name '*.app' -o -name '*.framework' \) -print)
 
   codesign \
     --force \
@@ -270,16 +389,31 @@ if [[ "$SIGN_APP" == "true" && -n "$APP_SIGN_IDENTITY" ]]; then
     --entitlements "$SIGNING_ENTITLEMENTS" \
     --sign "$APP_SIGN_IDENTITY" \
     "$APP_PATH"
-
-  rm -f "$SIGNING_ENTITLEMENTS"
 elif [[ "$SIGN_APP" == "true" ]]; then
-  echo "warning: no Developer ID Application identity found; app will remain unsigned" >&2
+  die "no Developer ID Application identity found; use --no-sign only for unsigned inspection"
+else
+  :
 fi
 
-if codesign --verify --strict --verbose=2 "$APP_PATH"; then
-  echo "codesign verification passed"
+if [[ "$SIGN_APP" == "true" ]]; then
+  codesign --verify --deep --strict --verbose=2 "$APP_PATH" || die "codesign verification failed; refusing to package"
+  cmp "$SIGNING_DIRECTORY/profile.provisionprofile" "$APP_PATH/Contents/embedded.provisionprofile" || die "embedded provisioning profile differs from the supplied profile"
+  python3 "$ROOT/tools/signing_profile_policy.py" \
+    --profile "$APP_PATH/Contents/embedded.provisionprofile" \
+    --source-entitlements "$ROOT/Voxt/Voxt.entitlements" \
+    --info-plist "$PLIST_PATH" \
+    --signed-app "$APP_PATH"
+  echo "codesign and profile compatibility verification passed; not notarization or Keychain runtime proof"
 else
-  echo "warning: codesign verification failed; artifact was still packaged for local inspection" >&2
+  echo "warning: unsigned inspection artifacts, not signed validation proof" >&2
+fi
+
+if [[ "$NOTARIZE" == "true" ]]; then
+  # Stapling the app itself lets it pass Gatekeeper offline from any of the artifacts.
+  ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$OUTPUT_DIR/notarization.zip"
+  notarize "$OUTPUT_DIR/notarization.zip"
+  rm -f "$OUTPUT_DIR/notarization.zip"
+  xcrun stapler staple "$APP_PATH"
 fi
 
 log "Creating artifacts in $OUTPUT_DIR"
@@ -296,6 +430,9 @@ hdiutil create \
   -format UDZO \
   "$DMG_PATH"
 rm -rf "$DMG_STAGING_DIR"
+if [[ "$SIGN_APP" == "true" && -n "$APP_SIGN_IDENTITY" ]]; then
+  codesign --force --timestamp --sign "$APP_SIGN_IDENTITY" "$DMG_PATH"
+fi
 
 PKG_ARGS=(--component "$APP_PATH" /Applications)
 if [[ -n "$INSTALLER_SIGN_IDENTITY" ]]; then
@@ -304,8 +441,20 @@ fi
 PKG_ARGS+=("$PKG_PATH")
 productbuild "${PKG_ARGS[@]}"
 
-shasum -a 256 "$ZIP_PATH" > "$ZIP_PATH.sha256"
-shasum -a 256 "$PKG_PATH" > "$PKG_PATH.sha256"
+if [[ "$NOTARIZE" == "true" ]]; then
+  notarize "$DMG_PATH"
+  notarize "$PKG_PATH"
+  xcrun stapler staple "$DMG_PATH"
+  xcrun stapler staple "$PKG_PATH"
+  spctl --assess --type execute "$APP_PATH" || die "Gatekeeper rejects $APP_PATH"
+  spctl --assess --type open --context context:primary-signature "$DMG_PATH" || die "Gatekeeper rejects $DMG_PATH"
+  spctl --assess --type install "$PKG_PATH" || die "Gatekeeper rejects $PKG_PATH"
+  echo "Gatekeeper accepts the app, the DMG and the PKG"
+fi
+
+for artifact in "$ZIP_PATH" "$DMG_PATH" "$PKG_PATH"; do
+  (cd "$OUTPUT_DIR" && shasum -a 256 "$(basename "$artifact")" > "$(basename "$artifact").sha256")
+done
 
 if [[ "$INSTALL_APP" == "true" ]]; then
   log "Installing $APP_NAME.app into $INSTALL_DIR"

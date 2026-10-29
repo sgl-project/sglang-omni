@@ -191,6 +191,12 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
         torch.index_select(
             state_pool.top_p, 0, row_indices, out=buffers.top_p[:row_count]
         )
+        torch.index_select(
+            state_pool.epsilon_cutoff,
+            0,
+            row_indices,
+            out=buffers.epsilon_cutoff[:row_count],
+        )
 
     def publish_decode_frames(self, row_count: int) -> torch.Tensor:
         state_pool = self.state_pool
@@ -233,6 +239,9 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
             state_pool.temperature.index_copy_(0, rows, prefill_inputs.temperature)
             state_pool.top_k.index_copy_(0, rows, prefill_inputs.top_k)
             state_pool.top_p.index_copy_(0, rows, prefill_inputs.top_p)
+            state_pool.epsilon_cutoff.index_copy_(
+                0, rows, self.decode_buffers.epsilon_cutoff[: rows.shape[0]]
+            )
 
     def prepare_and_forward(
         self,
@@ -282,6 +291,13 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
                 dtype=torch.float32,
                 device=self.device,
             ),
+        )
+        self.decode_buffers.epsilon_cutoff[: len(request_data)].copy_(
+            torch.tensor(
+                [data.epsilon_cutoff for data in request_data],
+                dtype=torch.float32,
+                device=self.device,
+            )
         )
         self.model.step_exchange.stage(step_inputs)
         return step_inputs

@@ -7,9 +7,9 @@ from typing import Literal
 
 import pytest
 
+from sglang_omni.audio.vad import Emit, VADEvent
 from sglang_omni.client.types import CompletionStreamChunk
 from sglang_omni.serve.realtime import session as session_module
-from sglang_omni.serve.realtime.vad import Emit, VADEvent
 from tests.unit_test.serve.test_realtime_barge_in import make_chunk, make_session
 
 

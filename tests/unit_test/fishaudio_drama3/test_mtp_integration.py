@@ -654,12 +654,13 @@ def test_streamed_and_result_frames_stay_on_cpu_under_another_default_device() -
 
 
 def admitted_for_prefill(data: Drama3RequestData, start: int, end: int) -> None:
-    """Leave the request as prefill admission does: fill ids rebuilt, extend range set."""
+    """Leave the request as prefill admission does: fill ids rebuilt, extend bounds set."""
     req = data.req
     assert req is not None
     # Without a tree cache this only rebuilds fill ids; no prefix is matched.
     req.init_next_round_input()
-    req.set_extend_range(start, end)
+    req.prefix_len = start
+    req.extend_end = end
 
 
 def test_prefill_rows_cover_the_whole_history_after_a_retract() -> None:
@@ -678,11 +679,11 @@ def test_prefill_rows_cover_the_whole_history_after_a_retract() -> None:
 
 
 @pytest.mark.parametrize(
-    "extend_range", [(0, 3), (1, 4)], ids=["partial-chunk", "cached-prefix"]
+    "extend_bounds", [(0, 3), (1, 4)], ids=["partial-chunk", "cached-prefix"]
 )
-def test_prefill_rows_reject_a_partial_extend(extend_range: tuple[int, int]) -> None:
+def test_prefill_rows_reject_a_partial_extend(extend_bounds: tuple[int, int]) -> None:
     data = built_request(frame_rows_of([4], seed=4)[0])
-    admitted_for_prefill(data, *extend_range)
+    admitted_for_prefill(data, *extend_bounds)
 
     with pytest.raises(RuntimeError, match="whole sequence"):
         extend_frame_rows(data)
@@ -1113,6 +1114,19 @@ def first_frame_graph_setup(
     model = Mock(spec=Drama3ForCausalLM)
     model.config = FishOmniConfig(**fish_config_dict())
     model.lm_head = SimpleNamespace(weight=torch.zeros(1))
+    model.audio_decoder = SimpleNamespace(
+        main_token_candidate_ids=torch.tensor(
+            sorted(
+                {
+                    model.config.eos_token_id,
+                    *range(
+                        model.config.semantic_start_token_id,
+                        model.config.semantic_end_token_id + 1,
+                    ),
+                }
+            )
+        )
+    )
     model.first_frame_graphs = None
     return builder, model
 
@@ -1153,7 +1167,7 @@ def test_first_frame_graphs_cover_requests_up_to_the_decode_graph_batch(
         sample_first_frames=model.sample_first_frames,
         attention_backend=sglang_runner.attn_backend,
         max_request_count=max_request_count,
-        vocab_size=text_config.vocab_size,
+        vocab_size=int(model.audio_decoder.main_token_candidate_ids.shape[0]),
         hidden_size=text_config.hidden_size,
         hidden_dtype=torch.bfloat16,
         frame_width=FRAME_WIDTH,
@@ -1306,9 +1320,9 @@ class SuppliedBatchRunner(Drama3ModelRunner):
             for request in scheduler_output.requests:
                 sglang_request = request_data_of(request).req
                 assert sglang_request is not None
-                assert sglang_request.extend_range is not None
+                assert sglang_request.extend_end is not None
                 request_slots.append(sglang_request.kv.req_pool_idx)
-                extend_row_count += sglang_request.extend_range.length
+                extend_row_count += sglang_request.extend_len
             forward_batch.req_pool_indices = torch.tensor(
                 request_slots, dtype=torch.int64
             )
@@ -2352,13 +2366,11 @@ def test_engine_also_runs_without_cuda_graphs(tmp_path: Path) -> None:
         ({"disable_radix_cache": False}, "disable_radix_cache"),
         ({"chunked_prefill_size": 64}, "chunked_prefill_size"),
         ({"cuda_graph_backend_prefill": "full"}, "breakable CUDA graph"),
-        ({"cuda_graph_backend_prefill": "tc_piecewise"}, "breakable CUDA graph"),
         (
             {"cuda_graph_config": {"prefill": {"backend": "full"}}},
             "breakable CUDA graph",
         ),
         ({"cuda_graph_backend_decode": "breakable"}, "full decode CUDA graphs"),
-        ({"cuda_graph_backend_decode": "tc_piecewise"}, "full decode CUDA graphs"),
         (
             {"cuda_graph_config": {"decode": {"backend": "breakable"}}},
             "full decode CUDA graphs",
@@ -2373,10 +2385,8 @@ def test_engine_also_runs_without_cuda_graphs(tmp_path: Path) -> None:
         "radix",
         "chunked-prefill",
         "full-prefill-graph",
-        "piecewise-prefill-graph",
         "nested-prefill-graph",
         "breakable-decode-graph",
-        "piecewise-decode-graph",
         "nested-decode-graph",
         "overlap",
         "flashinfer",
@@ -2392,3 +2402,87 @@ def test_engine_rejects_settings_outside_the_supported_runtime(
 
     with pytest.raises(ValueError, match=error):
         builder.validate_before_infrastructure(server_args)
+
+
+def test_reference_sampling_replaces_both_samplers_and_defaults_the_cutoff(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    builder, server_args = engine_server_args(tmp_path, {})
+    builder.reference_sampling = True
+    builder.reference_sampling_fallback = "ras"
+
+    with caplog.at_level(logging.INFO, logger=engine_builder.logger.name):
+        model = set_up_mocked_model(builder, server_args, tmp_path)
+
+    assert (
+        "Drama 3 codebook sampling: reference sampling in PyTorch, ras fallback"
+        in caplog.text
+    )
+    assert model.audio_decoder.reference_sampling_fallback == "ras"
+    assert model.audio_decoder.sampler is None
+    request_builder, _ = builder.make_adapters(
+        ConfigOnlyModel(FishOmniConfig(**fish_config_dict()))
+    )
+    prompt_rows = torch.tensor(frame_rows_of([3], seed=6)[0], dtype=torch.int64)
+    request_data = request_builder(
+        StagePayload(
+            request_id="request-a",
+            request=OmniRequest(inputs="prompt"),
+            data=generation_input(prompt_rows),
+        )
+    )
+    assert request_data.epsilon_cutoff == 1e-3
+
+
+def test_epsilon_cutoffs_follow_their_requests_from_prefill_to_decode() -> None:
+    """A prefill stages each request's cutoff for its first frame and keeps it in the
+    request's slot; decode gathers the cutoffs in batch order as the batch changes."""
+    decode = decode_runner(row_count=4)
+    buffers = decode.runner.decode_buffers
+    requests = prompted_requests([3, 4, 2])
+    cutoffs = [0.002, 0.0, 0.03]
+    for request, cutoff in zip(requests, cutoffs, strict=True):
+        request_data_of(request).epsilon_cutoff = cutoff
+    as_float32 = torch.tensor(cutoffs, dtype=torch.float32).tolist()
+
+    prefill_step(
+        decode,
+        requests,
+        [3, 1, 2],
+        [[81 + index, index, 1, 2, 3] for index in range(3)],
+    )
+
+    assert buffers.epsilon_cutoff[:3].tolist() == as_float32
+    pool_cutoffs = decode.runner.state_pool.epsilon_cutoff
+    assert pool_cutoffs[torch.tensor([3, 1, 2])].tolist() == as_float32
+    decode.forward.next_frames = [[90, 1, 1, 1, 1], [91, 2, 2, 2, 2]]
+    decode_step(decode.runner, [requests[2], requests[0]])
+    assert buffers.epsilon_cutoff[:2].tolist() == [as_float32[2], as_float32[0]]
+
+
+def test_the_first_frame_step_reads_cutoffs_at_the_decode_buffers_address() -> None:
+    """The first-frame CUDA graphs replay the addresses they captured, so the cutoffs
+    come from the decode buffers, not from a per-call tensor."""
+    model = ConfigOnlyModel(FishOmniConfig(**fish_config_dict()))
+    model.decode_buffers = Drama3DecodeBuffers.allocate(
+        row_count=4, frame_width=FRAME_WIDTH, device=torch.device("cpu")
+    )
+    model.audio_decoder = Mock(spec=AudioDecoder)
+    model.tower_attention = torch.nn.ModuleList()
+    request_count = 3
+
+    model.sample_first_frames(
+        torch.zeros(request_count, 9),
+        torch.zeros(request_count, DIM),
+        torch.zeros(request_count, dtype=torch.int64),
+        torch.zeros((request_count, FRAME_WIDTH), dtype=torch.int64),
+        torch.full((request_count, RAS_WINDOW_FRAMES), EMPTY_RAS_SLOT),
+        torch.ones(request_count),
+        torch.ones(request_count, dtype=torch.int64),
+        torch.ones(request_count),
+        Mock(spec=ForwardBatch),
+    )
+
+    epsilon_cutoff = model.audio_decoder.decode_step.call_args.args[9]
+    assert epsilon_cutoff.shape == (request_count,)
+    assert epsilon_cutoff.data_ptr() == model.decode_buffers.epsilon_cutoff.data_ptr()

@@ -33,7 +33,7 @@ The other places a version lives:
 
 | File | What it carries |
 |---|---|
-| `docker/Dockerfile` | `SGLANG_IMAGE` (digest of the new tag's cu13 manifest), the FlashInfer reinstall version, the JIT cache path `/root/.cache/flashinfer/<version>`, `FLASHINFER_CACHE_IMAGE` |
+| `docker/Dockerfile` | `SGLANG_IMAGE` (digest of the new tag's cu13 manifest) and the FlashInfer reinstall version; the base image's FlashInfer AOT packages stay as shipped |
 | `.github/workflows/*.yaml` | Every `image:` line, pinned by digest |
 | `docker/cpu.Dockerfile` | `SGLANG_IMAGE` (digest of the new tag's `-xeon` manifest) |
 | `docker/xpu.Dockerfile` | `SGLANG_XPU_BRANCH` (the tag); SGLang's XPU manifest pins the `sglang-kernel-xpu` wheel |
@@ -119,12 +119,29 @@ upstream's layer forward with Omni's hooks in it. Diff upstream's layer for
 the same architecture between the tags and mirror the change in order: which
 boundary prepares, which finishes, what the exit scope publishes for the MoE
 reduction. Outputs of a boundary are modified in place or through its
-accessors; the boundary checks the stream identity.
+accessors; the boundary checks the stream identity. A layer appends its
+stages to the stack that `make_layers` opens and gives the stack a
+`stage_facts` function that declares them without building the layer, which
+is how a neighbouring pipeline rank binds them. The boundary completes every
+output sum: the MoE blocks return partial sums, every projection under a
+boundary is built with `reduce_results=False`, and the model loader rejects
+a model where one is not.
+
+**The tree cache.** `sglang_omni/scheduling/sglang_backend/cache.py` builds
+upstream's unified radix cache for the radix-disabled stages and for the
+streaming-session stages, with the tree components the pools call for (full
+attention, a sliding window, hybrid state), and keeps the evict-heap radix
+tree for the radix-enabled stages without sessions. The session records live
+inside that cache and are read through `session_records()`. A cache class
+that upstream no longer builds for its own models is a surface to re-check at
+every bump: its base-class contract moves with the one upstream does build.
 
 **The vendor layer.** `sglang_omni/vendor/sglang/layers.py` patches
-`RMSNorm.forward_cuda` and `models.py` patches `apply_qk_norm`; the module
-docstrings state what each patch does, and `models.py` the condition for
-removing it. Check that the wrapped upstream body still has the shape the
+`RMSNorm.forward_cuda`, `models.py` patches `apply_qk_norm`, and
+`flashattention_backend.py` patches `FlashAttentionBackend.__init__` for
+DSpark drafts, installed by the bootstrap only when a DSpark draft is set;
+the module docstrings state what each patch does, and `models.py` and
+`flashattention_backend.py` the condition for removing it. Check that the wrapped upstream body still has the shape the
 patch assumes (a dispatch rewrite upstream can route around a patched method
 without an error) and that `tests/unit_test/vendor/` still pins it.
 
@@ -147,7 +164,15 @@ several write-then-read-back sites into hard errors.
 third-party package to the pinned stack, and each carries its removal
 condition in its docstring. Read the condition against the new stack and
 delete the overlay when it is met. A new overlay is one module that every
-import of the package goes through, with the condition written down.
+import of the package goes through, with the condition written down. The
+Transformers overlays, `qwen3_omni/components/vision_compat.py`,
+`audio_encoder.py` and `code2wav.py`, with the config copy in
+`qwen3_omni/hf_config.py` that carries upstream's defaults, are diffed the
+same way when Transformers moves: the helper names and call shapes they call
+into, and the defaults the copy repeats. A shim is dead only when the new
+stack serves the call itself; qwen-tts reads the rope initializer registry
+by key, which Transformers fills for its scaled types and not for the
+default one, so that shim stays.
 
 **Copies of upstream code.** Omni re-implements a few upstream helpers where
 it needs a different shape, for example the seeded sampling transform in
@@ -226,11 +251,22 @@ that have cost time:
   kernels under `SGLANG_CACHE_DIR`; the CI setup action points it at a
   directory shared across PRs on the persistent CI mount, so only the first
   job after a bump pays the build.
+- Compiled kernels. A Triton upgrade can change the cost of an Omni kernel
+  without changing its output. The torch 2.14 bump brought Triton 3.8, and a
+  `tl.dot` operand computed inside the loop and consumed by two dots was
+  rebuilt per dot: the fused predictor MLP kernel took 2.6 times longer and
+  the Qwen3-TTS decode step grew by a millisecond, with every output bit
+  identical. After a Triton or torch bump, time each fused kernel family
+  alone on both stacks with the torch profiler's GPU durations, and when a
+  step time moves, trace the serving step by kernel name before reading the
+  scheduler.
 
 ## The CI image
 
 GPU CI runs inside `hongccc/sglang-omni`, pinned by digest in every
-workflow. The CI virtualenv uses Python 3.12 with system site-packages and
+workflow. The base image installs its Python with uv, so `/usr/bin/python3`
+is a wrapper for the `/opt/sglang` interpreter; the CI virtualenv is created
+from `/opt/sglang/bin/python3` with system site-packages and
 loads `/opt/sglang/lib/python3.12/site-packages` with `site.addsitedir`, including
 the upstream SGLang editable-install `.pth` file. Torch, FlashInfer and SGLang
 come from the image and only what
@@ -238,7 +274,7 @@ the image lacks is installed on top; `verify_omni_installed_pins.py` then
 checks every exact pin in `pyproject.toml` against what is installed.
 
 The image also installs Qwen-TTS without its conflicting dependencies, system
-SoX, the Descript DAC packages, and the Audar/CosyVoice extras. Apply the
+SoX, the Descript DAC packages, and the Audar/CosyVoice/MiniCPM-o extras. Apply the
 project's dependency overrides when resolving these packages. CosyVoice itself
 has no package release, so the CI venv setup clones it at the commit the
 Fun-CosyVoice3 cookbook pins, with its Matcha-TTS submodule, and adds both to
@@ -248,18 +284,20 @@ SoX executable. It imports llama.cpp before Torch to catch system NCCL
 conflicts; the image prioritizes Torch's NCCL library. A package listing alone
 does not prove a usable runtime.
 
-Reinstalling even the same FlashInfer wheel refreshes bundled header mtimes.
-The Dockerfile preserves the cache donor's mtimes only for byte-identical
-FlashInfer sources; changed sources remain newer and invalidate their objects.
-After rebuilding, run Ninja with `-n -d explain` in the copied `cached_ops`
-directories before GPU validation to catch unintended object recompilation.
+The base image ships FlashInfer's AOT packages at the pinned version:
+`flashinfer-cubin`, the `flashinfer-jit-cache` umbrella and one provider
+package per architecture (`flashinfer-jit-cache-sm90a` and the rest). The
+Dockerfile keeps them, so every kernel they hold loads without a compile and
+only shapes outside them compile into `FLASHINFER_WORKSPACE_BASE` at run time.
+Uninstalling the umbrella alone leaves the providers behind as a package
+without a version, and the flashinfer import fails on it. The reinstall of
+`flashinfer-python` after the Omni dependencies pins the package back to the
+version the AOT packages were built for.
 
 Whether a bump ships a new image follows from the pin diff. When torch, CUDA,
 Python or FlashInfer move, it does: build `docker/Dockerfile` on the
-`lmsysorg/sglang` digest for the new tag, populate the FlashInfer JIT cache
-on a GPU for the architectures CI runs on (Docker builds have none, so the
-Dockerfile copies the cache from a previous image), push it, and put the new
-digest in the Dockerfile and the workflows. CI on the branch means nothing
+`lmsysorg/sglang` digest for the new tag, push it, and put the new digest in
+the workflows. CI on the branch means nothing
 until the workflows point at the new image: on the old one the setup step
 installs the new torch into the virtualenv and nothing after that reflects
 the shipped stack.
@@ -267,11 +305,10 @@ the shipped stack.
 When only SGLang and the wheels it pins move (`sglang-kernel`,
 `sgl-deep-gemm`), the image stays. The setup step installs those pins into the
 virtualenv, whose site-packages precede the image's, and they are the same
-PyPI wheels upstream's CUDA image installs. The FlashInfer cache in the image
-is keyed by a version that did not change. `SGLANG_IMAGE` in
+PyPI wheels upstream's CUDA image installs. The FlashInfer packages in the
+image carry a version that did not change. `SGLANG_IMAGE` in
 `docker/Dockerfile` still moves to the new tag's digest so the next rebuild
-starts from the right base; the workflow digests and
-`FLASHINFER_CACHE_IMAGE` do not.
+starts from the right base; the workflow digests do not.
 
 ## Validation
 
@@ -326,8 +363,8 @@ they are.
 Run CI with `run-all-ci`. A stage without a model label draws its model at
 random, so give each preset its own run on the new image before merge: keep
 `run-all-ci` and add one model label per stage, for example
-`run-tts-moss-tts-local-transformer-v1.5`, `run-asr-fun-asr-nano-2512` and
-`run-omni-minicpm-o-4.5`. The model labels within a stage are exclusive. The
+`run-moss-tts-local-transformer-v1.5`, `run-fun-asr-nano-2512` and
+`run-minicpm-o-4.5`. The model labels within a stage are exclusive. The
 CI section of the pull request template lists every label.
 
 After the merge, everyone pulls the new image and rebuilds their

@@ -767,6 +767,7 @@ class MultiProcessPipelineRunner:
                 if self.config.terminal_stages_fn
                 else None
             )
+            session_graph = self.config.session_graph()
             max_in_flight = resolve_coordinator_max_in_flight(
                 self.config,
                 logical_process_plan=prep.logical_process_plan,
@@ -782,6 +783,11 @@ class MultiProcessPipelineRunner:
                 logical_process_plan=prep.logical_process_plan,
                 max_in_flight=max_in_flight,
                 max_total_backlog_bytes=stream_delivery.max_total_backlog_bytes,
+                session_route=(
+                    self.config.session_route if session_graph is None else None
+                ),
+                session_graph=session_graph,
+                max_output_lead_ms=self.config.max_output_lead_ms,
             )
             logger.info(
                 f"Coordinator stream backlog cap: "
@@ -949,7 +955,12 @@ class MultiProcessPipelineRunner:
                     ready_groups.append(waits.pop(task))
                     task.result()
                 for group in ready_groups:
-                    if group.any_dead():
+                    failure_summary = group.failure_summary()
+                    if failure_summary:
+                        raise RuntimeError(
+                            f"Stage process failure during startup: {failure_summary}"
+                        )
+                    elif group.any_dead():
                         raise RuntimeError(
                             f"Stage process(es) died during startup: "
                             f"{group.dead_summary()}"
@@ -994,7 +1005,15 @@ class MultiProcessPipelineRunner:
     async def monitor_children(self) -> None:
         while self.started:
             for group in self.groups:
-                if group.any_dead():
+                failure_summary = group.failure_summary()
+                if failure_summary:
+                    error = RuntimeError(
+                        f"Stage process failure reported: {failure_summary}"
+                    )
+                    logger.error(f"{error}")
+                    await self.fail_runtime(error)
+                    return
+                elif group.any_dead():
                     error = RuntimeError(
                         f"Dead stage process(es) detected: {group.dead_summary()}"
                     )

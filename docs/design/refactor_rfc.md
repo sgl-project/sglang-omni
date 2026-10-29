@@ -65,7 +65,7 @@ Text form: `HTTP API / WebSocket → Client → Coordinator → Stage → [Sched
 
 ### Directory Layout
 
-```
+```text
 sglang_omni/
 ├── pipeline/           # Inter-stage orchestration (model-agnostic)
 ├── scheduling/         # Scheduling loops (OmniScheduler, SimpleScheduler)
@@ -351,7 +351,7 @@ class OutgoingMessage:
 
 ## Model Runner + Callbacks
 
-```
+```text
 ForwardBatch → before_*() → custom_*_forward() or standard forward → post_*() → sample/output
                     ↑ hook             ↑ explicit custom path          ↑ hook
 ```
@@ -503,7 +503,7 @@ The model class handles steps 1–6 inside `forward()`. `FeedbackARModelRunner` 
 
 Every model follows the same file structure:
 
-```
+```text
 models/<model_name>/
 ├── config.py              — Pipeline config (stage definitions, GPU placement)
 ├── stages.py              — Stage factories (returns callable or OmniScheduler)
@@ -519,7 +519,7 @@ models/<model_name>/
 
 ### Qwen3-Omni
 
-```
+```text
 models/qwen3_omni/
 ├── config.py              — 8-stage speech, 6-stage text
 ├── stages.py              — 8 factories
@@ -550,7 +550,7 @@ The "tower" terminology for image/audio encoders follows the official Qwen3-Omni
 
 ### Fish Audio S2-Pro
 
-```
+```text
 models/fishaudio_s2_pro/
 ├── config.py              — 3-stage TTS
 ├── stages.py              — 3 factories
@@ -656,7 +656,7 @@ The `Pipeline` vs `Stages` distinction in code still needs to be sharper: both n
 
 ## Multi-Process Runner
 
-```
+```text
 pipeline/
 ├── stage_workers.py    # StageLaunchConfig, StageWorkerProcessSpec, entrypoint, StageGroup
 └── mp_runner.py        # MultiProcessRunner — orchestrates all groups
@@ -867,12 +867,7 @@ Reorganized the V1 unit tests into component-focused folders so each file maps d
 
 _State: MERGED 2026-05-13. Part of #376._
 
-Adds the SGLang-Omni Router: a standalone process (`sgl-omni-router`) that fronts complete V1 server replicas behind one OpenAI-compatible endpoint. Selects one routable worker per request and forwards the original bytes.
-
-- **Worker sources:** homogeneous URL pool (`--worker-urls`), heterogeneous JSON manifest with per-worker capabilities (`--worker-config`), or managed local launcher from YAML (`--launcher-config`)
-- **Selection pipeline:** payload-size guard → bounded metadata extraction → routable / capability / model filters → safe-superset resolution → policy (`round_robin` / `least_request` / `random`)
-- **Health and admin:** per-worker failure tracking drives `/ready`; exposes admin and merged `/v1/models` endpoints
-- **Managed launcher:** spawns workers from YAML and waits for all to pass `/health` in parallel before accepting traffic
+Introduced the original Python router for complete V1 server replicas, with worker selection, health checks, administrative broadcasts, and managed local workers. That implementation has been retired. See the [Omni Router guide](../basic_usage/omni_router.md) for the current Rust executable and TOML configuration.
 
 **Why it matters:** Decouples horizontal scaling from the pipeline architecture. Each worker remains a full V1 replica with its own Coordinator — the router never splits a request across stages — which keeps the V1 boundary intact while letting deployments scale by replication.
 

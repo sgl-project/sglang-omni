@@ -328,9 +328,24 @@ async def test_tp_leader_skips_fanout_work_for_omni_scheduler() -> None:
     before_import = set(sys.modules)
     fake_torch = ModuleType("torch")
     fake_torch.Tensor = object
-    fake_torch.uint8 = object()
+    for dtype_name in (
+        "bool",
+        "uint8",
+        "int8",
+        "int16",
+        "int32",
+        "int64",
+        "float16",
+        "bfloat16",
+        "float32",
+        "float64",
+        "complex64",
+        "complex128",
+    ):
+        setattr(fake_torch, dtype_name, object())
     fake_profiler = ModuleType("torch.profiler")
     fake_profiler.ProfilerActivity = SimpleNamespace(CPU="cpu", CUDA="cuda")
+    fake_profiler.supported_activities = lambda: {"cpu"}
 
     class FakeProfile:
         def __init__(self, *args, **kwargs):
@@ -395,7 +410,9 @@ async def test_tp_leader_skips_fanout_work_for_omni_scheduler() -> None:
                     tp_fanout=fanout,
                 )
 
-            payload = SimpleNamespace(request_id="req-1")
+            payload = SimpleNamespace(
+                request_id="req-1", request=SimpleNamespace(metadata={})
+            )
 
             stage_omni = make_stage(omni_like)
             await stage_omni.execute(payload)

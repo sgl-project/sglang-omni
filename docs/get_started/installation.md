@@ -1,6 +1,6 @@
 # Installation — CUDA
 
-Current stable release: **v0.1.8** on [PyPI](https://pypi.org/project/sglang-omni/).
+Current stable release: **v0.2.0** on [PyPI](https://pypi.org/project/sglang-omni/).
 
 This page covers NVIDIA CUDA. Docker is recommended — UCX, flash-attn, SGLang,
 and CUDA are prebuilt.
@@ -41,7 +41,7 @@ pip install uv
 uv venv .venv -p 3.12
 source .venv/bin/activate
 
-uv pip install --prerelease=allow "sglang-omni==0.1.8"
+uv pip install --prerelease=allow "sglang-omni==0.2.0"
 ```
 
 ## Option B: Manual install
@@ -49,7 +49,7 @@ uv pip install --prerelease=allow "sglang-omni==0.1.8"
 Build prerequisites first:
 
 - **UCX 1.20.x** with CUDA + verbs — [upstream](https://github.com/openucx/ucx), or reuse flags in [`docker/Dockerfile`](../../docker/Dockerfile).
-- **flash-attn-4** `>=4.0.0b18`, matching `torch==2.13.0` and SGLang 0.5.21's `nvidia-cutlass-dsl` 4.6.2 pin.
+- **flash-attn-4** `>=4.0.0b18`, matching `torch==2.14.1` and SGLang 0.5.22's `nvidia-cutlass-dsl` 4.8.0 pin.
 
 Then:
 
@@ -60,7 +60,7 @@ pip install uv
 uv venv .venv -p 3.12
 source .venv/bin/activate
 
-uv pip install --prerelease=allow "sglang-omni==0.1.8"
+uv pip install --prerelease=allow "sglang-omni==0.2.0"
 ```
 
 Latest on the index without a pin: `uv pip install --prerelease=allow sglang-omni`.
@@ -82,7 +82,7 @@ source .venv/bin/activate
 uv pip install --prerelease=allow -v -e .   # drop -e for a non-editable install
 ```
 
-For installation problems, see [Troubleshooting](./troubleshooting.md).
+For installation problems, see [Troubleshooting](./troubleshooting.md). `uv pip check` prints a few expected lines on CUDA installs, listed under [Expected output of uv pip check](./troubleshooting.md#expected-output-of-uv-pip-check).
 
 ## Other platforms
 

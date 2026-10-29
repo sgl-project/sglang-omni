@@ -145,14 +145,15 @@ class Drama3ForCausalLM(nn.Module):
         self.model = Drama3Backbone(
             text_config, quant_config=quant_config, prefix=add_prefix("model", prefix)
         )
+        self.audio_decoder = AudioDecoder(config)
         self.lm_head = ParallelLMHead(
-            text_config.vocab_size,
+            int(self.audio_decoder.main_token_candidate_ids.shape[0]),
             text_config.hidden_size,
+            padding_size=1,
             quant_config=quant_config,
             prefix=add_prefix("lm_head", prefix),
         )
         self.logits_processor = LogitsProcessor(text_config)
-        self.audio_decoder = AudioDecoder(config)
         self.tower_attention = nn.ModuleList(
             RadixAttention(
                 num_heads=decoder_config.n_head,
@@ -210,6 +211,7 @@ class Drama3ForCausalLM(nn.Module):
                 decode_buffers.top_k[:row_count],
                 decode_buffers.top_p[:row_count],
                 PagedTowerAttention(self.tower_attention, forward_batch),
+                decode_buffers.epsilon_cutoff[:row_count],
             )
             decode_buffers.sampled_frames[:row_count].copy_(sampled_frames)
             return logits_output
@@ -300,17 +302,24 @@ class Drama3ForCausalLM(nn.Module):
         top_p: torch.Tensor,
         forward_batch: ForwardBatch,
     ) -> torch.Tensor:
-        return self.audio_decoder.decode_step(
-            semantic_logits,
-            hidden_states,
-            positions,
-            input_frames,
-            previous_main_tokens,
-            temperature,
-            top_k,
-            top_p,
-            PagedTowerAttention(self.tower_attention, forward_batch),
-        )
+        """The first frame of every request; its epsilon_cutoff rows are the ones the
+        model runner staged in the decode buffers, at addresses a CUDA graph keeps."""
+        decode_buffers = self.decode_buffers
+        if decode_buffers is None:
+            raise RuntimeError("the engine allocated no Drama 3 decode buffers")
+        else:
+            return self.audio_decoder.decode_step(
+                semantic_logits,
+                hidden_states,
+                positions,
+                input_frames,
+                previous_main_tokens,
+                temperature,
+                top_k,
+                top_p,
+                PagedTowerAttention(self.tower_attention, forward_batch),
+                decode_buffers.epsilon_cutoff[: semantic_logits.shape[0]],
+            )
 
     def backbone_logits(
         self,
@@ -359,5 +368,27 @@ class Drama3ForCausalLM(nn.Module):
             )
         else:
             pass
-        self.lm_head.weight_loader(self.lm_head.weight, lm_head_weights[0])
+        loaded_lm_head = lm_head_weights[0]
+        candidate_ids = self.audio_decoder.main_token_candidate_ids.to(
+            device=loaded_lm_head.device
+        )
+        if loaded_lm_head.ndim != 2 or loaded_lm_head.shape[1] != (
+            self.lm_head.weight.shape[1]
+        ):
+            raise ValueError(
+                f"{LM_HEAD_CHECKPOINT_NAME} must have shape "
+                f"[text vocab, {self.lm_head.weight.shape[1]}]; "
+                f"got {tuple(loaded_lm_head.shape)}"
+            )
+        elif int(candidate_ids.max()) >= loaded_lm_head.shape[0]:
+            raise ValueError(
+                f"{LM_HEAD_CHECKPOINT_NAME} has {loaded_lm_head.shape[0]} rows, "
+                f"fewer than the semantic candidate id {int(candidate_ids.max())}"
+            )
+        else:
+            pass
+        self.lm_head.weight_loader(
+            self.lm_head.weight,
+            loaded_lm_head.index_select(0, candidate_ids),
+        )
         load_audio_decoder_weights(self.audio_decoder, decoder_weights)

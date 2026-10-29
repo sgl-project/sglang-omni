@@ -6,9 +6,25 @@ from unittest.mock import Mock
 import pytest
 
 from sglang_omni.config.schema import EngineArgs, FactoryArgs, ProcessConfig
+from sglang_omni.models.qwen3_tts import config as qwen3_tts_config
 from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
+from sglang_omni.platforms.cuda import CUDAOmniPlatform
+from sglang_omni.platforms.npu import NPUOmniPlatform
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.utils.imports import import_string
+
+
+@pytest.mark.parametrize("use_npu", [True, False])
+def test_vocoder_platform_default_keeps_npu_opt_in(
+    monkeypatch: pytest.MonkeyPatch, use_npu: bool
+) -> None:
+    platform = NPUOmniPlatform() if use_npu else CUDAOmniPlatform()
+    monkeypatch.setattr(qwen3_tts_config, "current_platform", platform)
+    config = Qwen3TTSPipelineConfig(model_path="model")
+
+    expected = {"async_decode": False} if use_npu else {}
+    expected["running_stream_count"] = 64
+    assert config.stage_factory_kwargs("vocoder") == expected
 
 
 @pytest.mark.parametrize("size", ["0.6B"])
@@ -81,6 +97,26 @@ def test_custom_voice_config_rejects_missing_or_invalid_speakers(
 
     with pytest.raises(ValueError, match="spk_id"):
         config.resolve_custom_voice_config()
+
+
+@pytest.mark.parametrize(
+    ("checkpoint_config", "speaker_embedding_size"),
+    [
+        ({"tts_model_type": "base", "speaker_encoder_config": {"enc_dim": 2048}}, 2048),
+        (
+            {"tts_model_type": "custom_voice", "talker_config": {"spk_id": {"a": 1}}},
+            None,
+        ),
+        ({"tts_model_type": "voice_design"}, None),
+    ],
+)
+def test_speaker_embedding_size_is_the_base_speaker_encoder_width(
+    tmp_path, checkpoint_config, speaker_embedding_size
+) -> None:
+    (tmp_path / "config.json").write_text(json.dumps(checkpoint_config))
+    config = Qwen3TTSPipelineConfig(model_path=str(tmp_path))
+
+    assert config.resolve_speaker_embedding_size() == speaker_embedding_size
 
 
 @pytest.mark.parametrize(

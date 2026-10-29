@@ -32,6 +32,7 @@ from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
     GraphKeyStats,
 )
 from sglang_omni.models.qwen3_omni.components.codec_state_pool import CodecStatePool
+from sglang_omni.models.qwen3_omni.payload_types import NO_SPEECH, UNIT_FORMAT
 from sglang_omni.platforms import current_platform
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
@@ -251,7 +252,10 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         self.total_upsample = int(model.total_upsample)
         self.cuda_graph_runner = cuda_graph_runner if bool(enable_cuda_graph) else None
         super().__init__(
-            None, sample_rate=sample_rate, stream_source_hint="Qwen3-Omni code2wav"
+            None,
+            sample_rate=sample_rate,
+            stream_source_hint="Qwen3-Omni code2wav",
+            reply_unit_format=UNIT_FORMAT,
         )
         self.initial_codec_chunk_frames = min(
             max(int(initial_codec_chunk_frames), 0), int(stream_chunk_size)
@@ -926,16 +930,16 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
     def final_result_data(
         self, request_id: str, payload: StagePayload, state: Code2WavStreamState
     ) -> dict[str, bytes | list[int] | str | int]:
-        del payload
-        if not state.audio_parts:
+        if not state.audio_parts and NO_SPEECH not in payload.data:
             raise RuntimeError(f"code2wav produced no audio for {request_id!r}")
         else:
             pass
         if state.stream_enabled:
             return {"modality": "audio", "sample_rate": self.sample_rate}
+        elif not state.audio_parts:
+            full = np.zeros(0, dtype=np.float32)
         else:
-            pass
-        full = np.concatenate(state.audio_parts).astype(np.float32, copy=False)
+            full = np.concatenate(state.audio_parts).astype(np.float32, copy=False)
         return audio_waveform_payload(
             full,
             sample_rate=self.sample_rate,

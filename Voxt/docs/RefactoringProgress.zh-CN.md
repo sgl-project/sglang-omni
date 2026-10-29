@@ -2,7 +2,7 @@
 
 关联：[全项目评估](RefactoringAssessment.zh-CN.md)、[源码地图](Architecture.md)、[回归矩阵](LocalRegressionMatrix.md)。
 
-状态定义：**已实施**表示代码已修改并完成可用的静态检查；**已验收**必须包含 macOS 编译、XCTest 和相关人工检查。实施环境为 Linux，没有 Swift/Xcode；下面各批均不能仅凭静态检查标记为已验收。提交及 PR 状态以 Git 历史和 GitHub 为准；合入前仍需完成下述验收。
+状态定义：**已实施**表示代码已修改并完成可用检查；**已验收**必须包含 macOS 编译、XCTest 和相关人工检查。下面阶段 0–6 的初始实施环境为 Linux，无 Swift/Xcode；各阶段后续真实 CI 结果按自己的 SHA 记录。2026 年 Native HTTP 分支的新一批精简见文末，不继承旧分支的验收结论。提交及 PR 状态以 Git 历史和 GitHub 为准。
 
 ## 阶段总览
 
@@ -425,3 +425,106 @@ xcodebuild test -project Voxt.xcodeproj -scheme Voxt -destination 'platform=macO
 人工检查：六步引导的前进/后退/关闭、三种练习、权限和麦克风切换；设置导航、通知、反馈、历史/Note 编辑、词典一键扫描及远程 provider 保存/测试；会议远程启动配置；本地 ASR live/final/取消；延迟粘贴时取消/重启、关闭答案、正常结束后的 Auto Key、切换应用/窗口和连续用户复制。核对新 suite 的测试发现数量，不能只看 xcodebuild 退出码。
 
 阶段 4–6E 的已识别代码事项已集中处理，LLM 流式故障注入已补齐；五个大型 owner 按评审决定保留。最终设备/模型/编辑器验收和运行时性能前后数据仍缺失。构建命令资源统计不代表应用/Metal 峰值内存，不宣称性能已提升或所有验收已经结束。
+
+## Native HTTP 分支精简：基线 `296ed519`（2026-10）
+
+本批在已退役 MLX Audio、已撤回 XPC 的当前分支上实施，不改共享 Native、catalog/模型目录、HTTP options/limits、Swift LLM/VLM、依赖 pin、项目/签名配置或音频 fixture。
+
+| 热点 | 本批前 | 本批后 | 真实职责边界 |
+| --- | ---: | ---: | --- |
+| MLXModelManager | 1632 | 1252 | 明确端点/root/token/progress 输入的 download attempt（196行）与 artifact preparation/repair（201行）；私有状态、任务、revision、Native ledger 和 shutdown 留在 manager |
+| MLXTranscriber | 1865 | 1703 | 借用原 engine 的 capture graph（123行），final request/VAD orchestration 复用现有 detached inference；不公开 tap/缓冲/session/release 状态 |
+| FeatureSettingsStore | 838 | 795 | 完整值拷贝后应用原来的 prompt/枚举/主开关规范化；删除仅复制bool的reconcile包装 |
+| ModelSettingsSections / Actions / ReusableSections | 1562合计 | 1135合计 | 删除7个无入口旧卡片/section、独占rows与ModelTaskSettingsCard；真实catalog和配置sheet不变 |
+
+应用源码524文件、151885→150966行，净减少919行；这是源码规模，不是binary/性能测量。仍有多个超过千行的状态owner，不以机械拆extension或扩大private访问达标。
+
+### 清理证据及测试迁移
+
+- 核实生产/测试、协议/selector、回调、条件编译、反射、资源、脚本、同步目录组及持久化格式后，移除未调用的下载验证后台包装、clearDirectory旧删除路径、app model-copy facade、meeting3个便利方法和2个展示/政策便利属性；真实验证、lease-aware删除、microphone启动/watchdog、hint和final政策保留。
+- Swift SenseVoice概率→range和split helper只剩4个内部算法测试；删除这条退役链，保留Native `OmniSpeechSegments`、真实merge/metadata与原参数。两个merge测试直接调用实际merge-result函数。
+- Qwen writable-load facade仅有测试caller；退役专属测试，新增直接操作的download/repair回归并保留shadow卸载。shadow preparation仍被read-only repair使用，不能删除兼容目录或真实修复路径。
+- 删除整个无生产入口的 ProjectDictionaryScanner、MeetingTranslationSupport 和 MeetingFileTrace。分别去掉exclusive内部测试、将custom-provider覆盖转向真实resolver（Remote用例已有）、退役未接入trace测试并修正文档；任务ID、redacted error/stage、实际生命周期日志与词典历史/自动学习仍在。
+- 旧设置卡片下游并非一概删除：ResettablePromptSection、ASR配置sheet/private控件、Model配置/安装回调和持久化字段必须保留；新产生的其他展示候选留待下一批逐项核验。
+
+### 验证及边界
+
+工具52、Artifacts独立package79、完整hooks/审计/diff检查通过。独立整合审查无blocking回归：真实FeatureSettings/meeting枚举及实际前后storage函数512组值/JSON/输入不变对照通过；实际capture/helper和family/VAD请求body经声明的CPU peers回放，不能冒充CoreAudio、Native或Metal。保留函数及private ownership等价检查通过。
+
+真实隔离Mac首轮SDK编译通过、XCTest1980：1937通过/42跳过/1失败。唯一失败为既有权限聚合fixture仍假定96提交之前的Reminders默认开启；改为显式开启sync并保留原4项权限断言，新增实际默认关闭不要求Reminders的独立测试。原失败xcresult/log保留。修正后的完整真实Mac重跑1981项：1939通过/42跳过/0失败；新增与迁移的测试已进入实际SDK套件。实际unsigned Release构建也通过；这不是签名、GUI、Native模型或性能验收。
+
+GUI catalog→ASR/Remote/LLM配置、真实device/权限/start取消/rapid restart、真实Native质量与长会议性能、下载Range/ETag/proxy/恢复仍未验证。没有CI/发布门槛激活、部署、私有凭据访问或正式App覆盖。
+
+## Native HTTP 第二批：基线 `4035ee54`
+
+第一批已正常提交/push 为 `4035ee54`，本节是其后的局部精简，不继承第一批测试数量。
+
+- 旧设置provider选择/绑定/标签/警告、未构造的ModelTableView及其瞬时layout preference、modelTableRow builder和独占回调形成封闭子图；核对所有生产/测试/协议/selector/反射/资源后删除438行。全部30个AppStorage字段/键/default不变；实际catalog、配置sheet、selection consistency和Remote/LLM/ASR入口保持。
+- VoxtNoteStore953→522行：357行models保留原enum/raw value/Codable/SwiftData entity字段与unique ID；139行Queries只接收item快照，输出排序、sections和typed manual-rank updates。Store唯一应用record变化、保存/回滚/reload/迁移/archive/rebuild，private/Published状态不开放。仅删除无caller的latestItem/latestIncompleteItem，保留已有12项测试，新增9项query/实际存储契约。
+- FeatureSettingsStore795→510行：289行normalizer不调用Store、不写偏好/不发通知，要求明确fallback。decoded/derived/save各自原有legacy derivation顺序与次数保持，migration整体组合仍照旧；store保留read/write/migration/legacy同步及private storage projection。新增独立保存JSON的损坏meeting raw-value规范化测试和malformed selection read-only fallback测试，原30项方法体保留。
+- 应用Swift源码150966→150597行，第二批净减少369行；Notes和Settings各自的边界抽离会增加少量总行数，不把store变小宣称为净删或性能提升。新文件归同步目录组，项目/依赖/签名/模型/Native及同步默认值不改。
+
+### 第二批验证
+
+真实Mac完整TestDebug **1992项：1950通过、42跳过、0失败**，unsigned Release构建通过；其中VoxtNoteStoreTests **21项**、FeatureSettingsStoreTests **32项**逐项发现并通过，覆盖实际SwiftData宏/数据库、迁移/回滚、溢出manual-rank及默认设置契约。没有使用用户笔记/凭据或覆盖正式App。
+
+工具52、完整hooks/模型栈审计通过；独立source review无blocking finding。Notes实际源码CPU differential和规范化A/B使用声明的数据库/平台peer，分别补充排序/分组/overflow/输入不变及prompt/catalog/fallback/偏好不写入的对照，不替代真实SwiftData/Mac结果。GUI布局/点击、用户旧库真实升级、外部Obsidian/Reminders同步、Native模型质量/性能和恢复仍需独立人工/模型验收。
+
+## Native HTTP 第三批：基线 `0c17436e`
+
+第二批已正常提交/push为 `0c17436e`。本批不改共享Native、项目/依赖pin、模型目录/catalog、现有数值runtime/transport、数据schema或签名/权限。
+
+- CustomLLMModelManager1431→1321行：113行download attempt从明确metadata/endpoint/目录/token输入完成有序transfer；原manager同步处理progress事件并保留200ms polling/task登记、revision、pause/cancel、load/container/use/idle/shutdown。64行diagnostics组装使用明确计时输入，真实stream/模型与发布不移出owner。新增9项契约测试。
+- DictionaryStore996→881行：131行stateless entry/category/match policy复用既有normalizer/preparer/index，接受snapshot和必要index；Store保留UUID/Date、私有Published/cache/reload、mutation/repository写入/import顺序。新增8项契约，原测试不改。既有async reload失败策略和publish-before-best-effort-write限制没有在重构中悄悄修复。
+- 删除已核实无入口的旧Hotkey logging/trigger/delay/side-toggle及5个computed flags、未实例化DictionaryTransferDocument、旧dictionary correction/match和history text/timestamp/notification refresh便利链。实际事件回调/状态、注入marker、Fn/side-key、matcher、字典JSON/panels和格式保留；DEBUG及有意义test API不机械扫除。
+- SelectedTextDictionaryHotkeySupport仅剩测试调用，移除facade并将15处调用改为真实SystemSelectionTextSupport；所有断言/测试体其余部分保持，不删除测试。应用源码150597→150490行，净减少107行；manager/policy抽离本身增加少量源码，不宣称性能收益。大型私有状态owners仍需继续分批。
+
+### 第三批实际验证与失败保留
+
+首轮真实Mac SDK编译exit65：新download file遗漏HuggingFace defining-module import，Repo.ID.description无法访问。只补显式import，保留编译失败xcresult/log；Linux shape-peer/parse不认证该边界。第二轮实际SDK通过，2009项1966通过/42跳过/1失败：新增词典fixture硬编码Latin先排序，中文系统原localizedCaseInsensitiveCompare将猫排在前。只将明确预期词条按原系统比较规则排序，保留精确数组、membership/boundary/count断言，生产locale/排序不变；原失败结果保留。
+
+最终真实Mac TestDebug **2009项：1967通过/42跳过/0失败**，unsigned Release构建通过。实际LLM download/config suites20/14项、Dictionary collection/async10/7项、SessionTextIO28项均发现执行。工具52、完整hooks/审计、独立source review通过。CPU默认transport wiring/cancel/TaskLocal/diagnostics peer与324组dict counterexample只补充接口/body证据，不冒充实际网络、GRDB、MLX/Metal或GUI。
+
+真实下载Range/ETag/token/proxy/暂停续传/root切换、LLM/VLM数值与内存、Hotkey设备/睡眠/左右修饰键、GUI词典category/import/learning、用户真实旧库升级和恢复仍未验收。无私有数据/凭据访问、正式App覆盖、CI/发布门槛激活或部署。
+
+## Native HTTP 第四批：第三批工作区快照之上
+
+本次用户仅要求继续，第三/第四批仍是未提交/push的本地组合；Git HEAD仍`0c17436e`，不能当完整比较基线。第三批2009项Mac验证与第四批不同；已保留组合前source hash和完整patch。
+
+- ModelDebugCore814行按完整独立owner分成ASRDebugViewModel388（私有recorder同文件）、LLMDebugViewModel293及共享值137行。完整原声明body/actor/private/property/Task closures不变，真实debug UI/controllers仍调用这些owner；旧文件删除不等于删除debug功能。原21项focused tests不改。
+- MeetingDetailViewModel1026→941行，131行projection只接收明确segments/failure/language snapshot并返回值；view model仍拥有所有Published/task/revision/cache/history/persist/Combine/summary/chat和取消。原21个测试体不变，新增2个public owner契约。
+- HotkeyManager1851→1778行：ranking/superset五个纯函数复用既有nonisolatedHotkeyModifierInterpreter（显式AppKit import），known modifier+10/side+1/concrete input+100、doubleTap0/longPress1/tap2与strict-superset body原样。private routed value/cache/filter/sortbusiness tiebreak、locks/tap/runloop/tasks/gesture状态不搬；新增4项known/unknown bit与side/priority契约。
+- 删除仅meeting owner无caller的inferredAudioSource（其他owner活跃同名helper留存）、inline custompaste nil predicate、两处capture callback直接调用原nonisolatedAudioLevelMeter.monoSamples并退役包装。epoch/revision/weak capture和数值格式完全保留。
+- 此批应用源码净+33行：职责分开带来少量imports/header，不是净删/性能证明，也不机械开放private state以达行数。sharedNative、project/pins/catalog/model路径/HTTPlimits、数据schema/签名/权限和Audio/XPC退役均不改。
+
+### 第四批真实组合验证
+
+Mac TestDebug全量 **2015项：1973通过、42跳过、0失败**，unsigned Release通过；ModelDebugSupport21项、Detail live/transcript4/7项、Hotkey modifiers23项实际发现执行。测试输入使用task-owned隔离workspace/home，不访问用户录音/词典/笔记/profile/certificate/Keychain。
+
+工具52、完整hooks/审计、原body等价和CPU value/projection回放补充验证；CPU SDK peers不是CoreAudio/Combine/GUI/Native证明。debug owner既有unstructured request/close后late result限制原样保留，不宣称拆文件解决cancel/drain。真实debug窗口recording/model/网络、Detail UI编辑/summary/chat、Hotkey设备/Fn jitter/侧别/恢复、长会议和性能/恢复仍需专门人工验收。
+
+## 第五批：基线 `ae8d3973`
+
+第三/第四批已按授权一起正常提交/push为 `ae8d3973`，第五批随后按授权提交/push为 `1606040c`。第五批独立验证，不继承前一2015项验收。
+
+- HistoryStore934→863行，122行HistoryEntryPolicy取明确entry/text/term/snapshot/segment、period/date/calendar，复用现有entry-updating/normalizer/formatter。Store保留private Published/cache/index/total/loaded/reloadgen/pagegen/repository/audio/defaults、调度及全部写入/legacy/retention；先age deletion再读取count偏好顺序保留。原9项测试不改，新增5项owner契约。
+- 回答卡片974→500行，479行translation-menu独立owner整体原样迁移：style/SwiftUI wrapper/private representable+coordinator/privateNSView+NSMenuDelegate+selector+monitor+state/deinit同文件；conversation/private waveform、View state identity和callback/presentation/布局不改变。只新增imports/header开销，不增加layout-only测试。
+- 删除qualified审查证明的旧settings状态facade、GGUF cancel包装、view allEntries alias和重复filter-tag builder；真实snapshot/current flags/catalogDecoration/取消路由和全部30AppStorage字段/键/default不变。删除未实例化Detail styles/surface/独占colors，保留真实primary style/theme及distinct meetingDetail surface；无caller的provider refresh/overlay clear/旧wave curve/debug prompt-preview/sync sound-start退役，实际refresh/reset/wave/prompt/async sound completion和资源均保留，无测试删除。
+- 应用源码本批净减少118行；purehistory/menu抽离本身略增行数，净删来自174行已核实孤儿展示/便利链。不机械开放私有状态、不改schema/Codeckeys/raw IDs/模型/pins/权限/签名/共享Native或Audio/XPC边界。
+
+### 第五批真实验证
+
+Mac full TestDebug **2020项：1978通过/42跳过/0失败**，unsigned Release通过。HistoryAsync14、TranslationLanguageSwitch8、OverlayConversation9、RecentWaveform6实际发现执行；task-owned workspace/test home，无用户私有历史库/录音/Keychain/profile/cert或正式App覆盖。工具52、完整hooks和模型栈审计通过。
+
+CPU menu coordinator/style506 scenarios/mode、history实际计算/模型A/B及in-memory DB/Combine peers是补充证据，不等于实际AppKit菜单或SQLite/用户旧库验收。真实menu runloop/open/select/outside/Escape/焦点/销毁、conversation scroll/copy/waveform、声音/GUI、用户历史migration/retention/archive、模型/权限/性能/长会议与恢复仍需专门人工/模型验证。
+
+## 第六批：基线 `1606040c`
+
+用户选择录音VAD完整owner、翻译/改写纯逻辑复用及History设置无状态展示；RemoteProviderConfiguration凭据迁移不在本轮。
+
+- RecordingCaptureFlow996→719行，新281行完整FrameDecider actor/decision/stat。整个启动/权限/失败/设备切换/任务/监控/segmenter/drain/停止flush留原处，28个private状态声明及detector/warning/reset/release/threshold/backend/streamID原样。
+- TranslationSupport930→830行，新75行纯TextTransformPromptSupport。普通/strict两入口复用private执行流而保留resolve位置、可传override区别、原strict/普通诊断差异/可用性/guard；rewrite Responses/role history/structured/responseID/progress保持独立。模板/glossary读取次数和顺序、session/task/UUID/取消/发布/injection所有权不变。原PromptBuilders8项测试不改，新增4项实际prompt/delivery/budget边界契约。
+- HistorySettingsView965→861行，新177行两个无状态Notes/Entries列表，明确snapshot/尺寸/行builder和actions，不传owner/store。原所有State/AppStorage/Binding/ObservedObject/Environment、top-levelbody、row编辑/动作、height cache/query/page/generation/suppression、async/navigation/retention/storage/export/toast留原View。新View祖先边界不以source inverse冒称焦点/scroll/编辑GUI验收。
+- 应用源码净增加52行（recording+4、history+73、translation−25）；测试+110行，无删除。收益是完整职责归位及实际重复减少，不是净删/性能承诺，也不机械开放private状态。Native/project/pins/catalog/options/schema/资源/签名/凭据/HTTP边界不变。
+
+工具52、模型栈审计、完整hooks和源代码inverse/private-state/strict specialization检查通过，1061个隔离Mac输入hash一致。新实际Mac TestDebug **2024项：1982通过/42跳过/0失败**，unsigned optimized Release通过，不继承第五批2020项。PromptBuilders12、TranslationPrompt2、LanguageSwitch8、ProviderResolver4、HistorySettingsData10、RowHeightCache4、ASRPlanning34、HistoryAsync14、NoteStore21实际发现执行。Linux prompt debug/optimized投影及defaultMainActor纯模块检查仅为补充，不执行真实AppDelegate/SDK/网络/模型/GUI。真实录音VAD/设备与flush、provider/strict/refresh取消/Responses路径、History/Notes分页/搜索/编辑焦点/scroll/重排/复制/高度/设置sheet/audio/export/retention仍需专门人工验收，不操作用户私有数据。

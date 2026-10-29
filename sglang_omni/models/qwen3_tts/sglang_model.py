@@ -48,11 +48,14 @@ from sglang_omni.models.qwen3_tts.compat import (
 )
 from sglang_omni.models.qwen3_tts.predictor_kernels import (
     gather_codec_embedding_and_add,
+    short_cache_gqa_npu,
 )
 from sglang_omni.models.qwen3_tts.sampling_kernels import (
+    sample_codes_and_gather_codec_embedding,
     sample_from_logits_with_seed_top_k_top_p,
     sample_from_logprobs_with_seed_npu,
     sample_from_sorted_logprobs_with_seed_small_k,
+    sample_top_k,
 )
 from sglang_omni.models.qwen3_tts.speaker_encoder_cuda_graph import (
     Qwen3TTSSpeakerEncoderCudaGraphRunner,
@@ -66,6 +69,7 @@ from sglang_omni.sampling.sampler_compile import (
 from sglang_omni.scheduling.types import SchedulerRequest
 from sglang_omni.utils.predictor_layers import resolve_fused_predictor_layers
 from sglang_omni.vendor.sglang.core import ForwardBatch
+from sglang_omni.vendor.sglang.distributed import get_group_rank_size
 from sglang_omni.vendor.sglang.layers import ReplicatedLinear, RMSNorm
 from sglang_omni.vendor.sglang.models import FusedSetKVBufferArg, apply_qk_norm
 
@@ -118,8 +122,13 @@ def predictor_gqa_attention(
     num_key_value_heads: int,
     is_causal: bool,
 ) -> torch.Tensor:
-    """Run Predictor GQA, preferring Ascend's inference kernel on NPU for one query."""
+    """Run Predictor GQA with shape-specific kernels for non-causal NPU queries."""
     if q.device.type == "npu" and not is_causal:
+        output = short_cache_gqa_npu(q, key, value)
+        if output is not None:
+            return output
+        else:
+            pass
         fused_attention = getattr(
             getattr(torch.ops, "npu", None),
             "npu_fused_infer_attention_score",
@@ -1765,7 +1774,6 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         num_groups = self.config.num_code_groups
         result_codes = self.output_codes[:batch_size].unsqueeze(-1)
         summed_embeddings = self.output_embeds[:batch_size].unsqueeze(1)
-        result_codes.zero_()
         summed_embeddings.zero_()
         embedding_buffer = getattr(self, "predictor_embedding_buffer", None)
         if embedding_buffer is not None:
@@ -1786,7 +1794,6 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             )
             pos_codes = result_codes[:, :, pos]
             pos_summed = summed_embeddings[:, pos, :]
-            pos_summed.zero_()
             pos_codes[:, 0].copy_(layer0_code[:, 0])
             pos_summed.add_(layer0_embed[:, 0, :])
 
@@ -1817,13 +1824,9 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             )
             for layer_idx in range(num_groups - 1):
                 logits, _ = self.code_predictor.lm_head[layer_idx](last_hidden)
-                next_code = self.sample_subtalker_token(
-                    logits[:, -1, :],
-                    sub_positions=(
-                        None if sub_positions is None else sub_positions[layer_idx]
-                    ),
+                layer_sub_positions = (
+                    None if sub_positions is None else sub_positions[layer_idx]
                 )
-                pos_codes[:, layer_idx + 1].copy_(next_code)
                 codec_table = self.code_predictor.model.codec_embedding.weight[
                     layer_idx
                 ]
@@ -1831,24 +1834,41 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                 should_gather_projection = (
                     projected_tables is not None and has_next_step
                 )
-                fused_embedding = (
-                    use_fused_embedding
-                    and embedding_buffer.dtype == predictor_dtype
-                    and gather_codec_embedding_and_add(
-                        next_code,
-                        codec_table,
-                        embedding_buffer,
-                        pos_summed,
-                        projected_weight=(
-                            projected_tables[layer_idx]
-                            if should_gather_projection
-                            else None
-                        ),
-                        projected=(
-                            projected_buffer if should_gather_projection else None
-                        ),
-                    )
+                projected_weight = (
+                    projected_tables[layer_idx] if should_gather_projection else None
                 )
+                projected = projected_buffer if should_gather_projection else None
+                fused_embedding = (
+                    use_fused_embedding and embedding_buffer.dtype == predictor_dtype
+                )
+                fused_step = fused_embedding and self.sample_subtalker_token_and_gather(
+                    logits[:, -1, :],
+                    sub_positions=layer_sub_positions,
+                    codes=pos_codes[:, layer_idx + 1],
+                    codec_table=codec_table,
+                    gathered=embedding_buffer,
+                    summed=pos_summed,
+                    projected_weight=projected_weight,
+                    projected=projected,
+                )
+                if not fused_step:
+                    next_code = self.sample_subtalker_token(
+                        logits[:, -1, :], sub_positions=layer_sub_positions
+                    )
+                    pos_codes[:, layer_idx + 1].copy_(next_code)
+                    fused_embedding = (
+                        fused_embedding
+                        and gather_codec_embedding_and_add(
+                            next_code,
+                            codec_table,
+                            embedding_buffer,
+                            pos_summed,
+                            projected_weight=projected_weight,
+                            projected=projected,
+                        )
+                    )
+                else:
+                    pass
                 if fused_embedding:
                     new_embed = embedding_buffer.unsqueeze(1)
                 else:
@@ -1950,6 +1970,47 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             argmax_tokens,
         )
 
+    def sample_subtalker_token_and_gather(
+        self,
+        logits: torch.Tensor,
+        *,
+        sub_positions: torch.Tensor | None,
+        codes: torch.Tensor,
+        codec_table: torch.Tensor,
+        gathered: torch.Tensor,
+        summed: torch.Tensor,
+        projected_weight: torch.Tensor | None,
+        projected: torch.Tensor | None,
+    ) -> bool:
+        """Sample a codebook's codes into codes and gather their codec rows in the
+        sampler's last launch when every row samples; False leaves both to the caller.
+        """
+        batch_size = int(logits.shape[0])
+        if (
+            not self.sub_has_sampled_rows
+            or self.sub_has_argmax_rows
+            or batch_size > self.sub_batch_size
+        ):
+            return False
+        else:
+            pass
+        return sample_codes_and_gather_codec_embedding(
+            logits,
+            self.sub_temperature_tensor[:batch_size],
+            self.sub_top_k_tensor[:batch_size],
+            self.sub_top_p_tensor[:batch_size],
+            self.sub_sampling_seed_tensor[:batch_size],
+            sub_positions,
+            max_top_k=int(self.sub_sampled_max_top_k),
+            has_top_p=bool(self.sub_sampled_has_top_p),
+            codes=codes,
+            embedding_weight=codec_table,
+            gathered=gathered,
+            accumulated=summed,
+            projected_weight=projected_weight,
+            projected=projected,
+        )
+
     def sample_subtalker_token_seeded(
         self,
         logits: torch.Tensor,
@@ -1986,6 +2047,16 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         scores = logits.float() / temperatures.unsqueeze(1)
         if max_top_k > 0 and max_top_k < vocab_size and not has_unbounded_top_k:
             sorted_scores, sorted_idx = torch.topk(scores, max_top_k, dim=-1)
+            if not self.sub_sampled_has_top_p:
+                sampled = sample_top_k(
+                    sorted_scores, sorted_idx, top_ks, seeds, sub_positions
+                )
+                if sampled is not None:
+                    return sampled
+                else:
+                    pass
+            else:
+                pass
             rank = torch.arange(max_top_k, device=logits.device).unsqueeze(0)
             keep_top_k = rank < top_ks.unsqueeze(1)
             sorted_scores = sorted_scores.masked_fill(~keep_top_k, -float("inf"))
@@ -2113,7 +2184,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             and not is_batch_invariant_mode_enabled()
             and not get_bf16_gemm_backend().is_cutedsl()
             and not torch.is_grad_enabled()
-            and o_proj.tp_size == 1
+            and get_group_rank_size(o_proj.tp_group)[1] == 1
             and o_proj.bias is None
             and weight.is_cuda
             and weight.dtype == torch.bfloat16

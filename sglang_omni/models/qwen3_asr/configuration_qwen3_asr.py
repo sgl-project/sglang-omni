@@ -175,5 +175,7 @@ class Qwen3ASRConfig(PretrainedConfig):
         return self.thinker_config.text_config
 
 
-AutoConfig.register("qwen3_asr", Qwen3ASRConfig)
-AutoConfig.register("qwen3_asr_thinker", Qwen3ASRThinkerConfig)
+# note (ratish): the installed transformers may map these types to its own
+# classes; the model reads this package's layout, so the mapping is replaced.
+AutoConfig.register("qwen3_asr", Qwen3ASRConfig, exist_ok=True)
+AutoConfig.register("qwen3_asr_thinker", Qwen3ASRThinkerConfig, exist_ok=True)

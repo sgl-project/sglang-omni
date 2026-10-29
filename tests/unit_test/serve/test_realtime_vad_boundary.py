@@ -12,19 +12,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 import pytest
 
-from sglang_omni.serve.realtime.audio_buffer import RealtimeAudioBuffer
-from sglang_omni.serve.realtime.events import (
-    InputAudioBufferAppend,
-    InputAudioBufferClear,
-)
-from sglang_omni.serve.realtime.session import RealtimeSession
-from sglang_omni.serve.realtime.vad import (
+from sglang_omni.audio.vad import (
     VAD_FRAME_SAMPLES,
     VAD_SAMPLE_RATE,
     Emit,
     VADEvent,
     offsets_to_ms,
 )
+from sglang_omni.serve.realtime.audio_buffer import RealtimeAudioBuffer
+from sglang_omni.serve.realtime.events import (
+    InputAudioBufferAppend,
+    InputAudioBufferClear,
+)
+from sglang_omni.serve.realtime.session import RealtimeSession
 
 BOUNDARY = [
     "input_audio_buffer.speech_started",

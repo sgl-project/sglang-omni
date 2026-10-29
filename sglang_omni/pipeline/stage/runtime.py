@@ -10,6 +10,7 @@ Dispatches all compute to scheduler (OmniScheduler or SimpleScheduler).
 from __future__ import annotations
 
 import asyncio
+import gc
 import inspect
 import logging
 import os
@@ -19,7 +20,7 @@ from collections.abc import Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import replace
-from typing import Awaitable, Callable, Literal
+from typing import Awaitable, Callable, Literal, Protocol
 
 import torch
 
@@ -51,6 +52,7 @@ from sglang_omni.proto import (
     CompleteMessage,
     DataAckMessage,
     DataReadyMessage,
+    FreezeGCMessage,
     ProfilerStartMessage,
     ProfilerStopMessage,
     ShutdownMessage,
@@ -60,7 +62,7 @@ from sglang_omni.proto import (
     SubmitMessage,
 )
 from sglang_omni.proto.request import RoutedPayloads
-from sglang_omni.proto.session import find_session_operation
+from sglang_omni.proto.session import SessionOperation, find_session_operation
 from sglang_omni.relay.base import Relay
 from sglang_omni.scheduling.message import (
     IncomingMessage,
@@ -84,6 +86,11 @@ GetStreamDoneTargetsFn = Callable[[str, object], str | list[str] | None]
 
 def error_text(exc: BaseException) -> str:
     return str(exc) or type(exc).__name__
+
+
+class ProcessFailureCallback(Protocol):
+    def __call__(self) -> None:
+        """Notify the owner before process cleanup can block."""
 
 
 class Stage:
@@ -136,7 +143,11 @@ class Stage:
         replica_topology: dict[str, list[str]] | None = None,
         allow_child_processes: bool = False,
         http_socket_path: str | None = None,
+        process_failure_callback: ProcessFailureCallback | None = None,
     ) -> None:
+        self.process_failure_callback: ProcessFailureCallback | None = (
+            process_failure_callback
+        )
         self.name = name
         self.role = role
         self.get_next = get_next
@@ -263,8 +274,10 @@ class Stage:
         # Start scheduler in dedicated thread
         if self.scheduler is not None:
             serving_thread_ready = threading.Event()
+            warmup_error: Exception | None = None
 
             def _run_scheduler() -> None:
+                nonlocal warmup_error
                 try:
                     try:
                         # Active-stage binding so ``emit(stage=None)`` from
@@ -285,11 +298,18 @@ class Stage:
                         else:
                             pass
                         self.scheduler.warm_up_serving_thread()
+                    except Exception as exc:
+                        warmup_error = exc
+                        raise
                     finally:
                         serving_thread_ready.set()
                     self.scheduler.start()
                 except Exception as exc:
                     logger.exception("Scheduler thread for stage %s crashed", self.name)
+                    if self.process_failure_callback is not None:
+                        self.process_failure_callback()
+                    else:
+                        pass
                     self.running = False
                     loop = self.loop
                     if loop is not None and not loop.is_closed():
@@ -307,6 +327,10 @@ class Stage:
             )
             self.scheduler_thread.start()
             await asyncio.to_thread(serving_thread_ready.wait)
+            if warmup_error is not None:
+                raise warmup_error
+            else:
+                pass
         else:
             pass
         if self.http_socket_path is not None:
@@ -446,6 +470,7 @@ class Stage:
                         msg,
                         (
                             ShutdownMessage,
+                            FreezeGCMessage,
                             ProfilerStartMessage,
                             ProfilerStopMessage,
                             AdminMessage,
@@ -469,6 +494,10 @@ class Stage:
             pass
         except Exception:
             if self.scheduler_crash_error is None:
+                if self.process_failure_callback is not None:
+                    self.process_failure_callback()
+                else:
+                    pass
                 raise
             else:
                 pass
@@ -497,6 +526,7 @@ class Stage:
             SubmitMessage
             | DataAckMessage
             | DataReadyMessage
+            | FreezeGCMessage
             | ProfilerStartMessage
             | ProfilerStopMessage
             | AdminMessage
@@ -508,6 +538,8 @@ class Stage:
             self.comm.ack_transfer(msg)
         elif isinstance(msg, DataReadyMessage):
             self.schedule_receive_task(msg)
+        elif isinstance(msg, FreezeGCMessage):
+            gc.freeze()
         elif isinstance(msg, ProfilerStartMessage):
             self.on_profiler_start(msg)
         elif isinstance(msg, ProfilerStopMessage):
@@ -1157,8 +1189,24 @@ class Stage:
 
     async def execute(self, payload: StagePayload) -> None:
         request_id = payload.request_id
-        if request_id in self.aborted:
+        # note (Richard Wang): the leader drops aborted work before fanout, so a follower runs all work it receives.
+        if request_id in self.aborted and self.role != "follower":
             return
+        else:
+            pass
+        session_operation = find_session_operation(payload.request.metadata)
+        if session_operation is not None:
+            # Note (Junnan Li): A preempted append dies here as the control arrives: its result here and anything it sends here later are dropped.
+            for preempted_request_id in session_operation.preempted_request_ids:
+                self.on_abort(preempted_request_id)
+        else:
+            pass
+        if (
+            session_operation is not None
+            and session_operation.operation == "append"
+            and self.owns_external_io
+        ):
+            await self.forward_session_append(request_id, payload, session_operation)
         else:
             pass
         _emit_event(
@@ -1180,6 +1228,30 @@ class Stage:
             enqueue(msg)
         else:
             self.scheduler.inbox.put(msg)
+
+    async def forward_session_append(
+        self,
+        request_id: str,
+        payload: StagePayload,
+        session_operation: SessionOperation,
+    ) -> None:
+        """A session unit's payload reaches an owner this stage streams to before the stream; the stream is this stage's whole output to it."""
+        owners = session_operation.stages
+        if self.name not in owners:
+            return
+        else:
+            index = owners.index(self.name)
+        if index + 1 < len(owners) and owners[index + 1] in self.stream_targets:
+            # Note (Junnan Li): Nothing of this request has streamed yet, so the payload cannot overtake a chunk and may go the local way.
+            await self.send_to_stage(
+                request_id,
+                owners[index + 1],
+                payload,
+                allow_local_object=True,
+                stream_targets_for_request=set(),
+            )
+        else:
+            pass
 
     async def on_admin(self, msg: AdminMessage) -> None:
         operation = msg.operation
@@ -1672,21 +1744,30 @@ class Stage:
             return
         else:
             pass
-        if session_operation is not None:
+        actual = self.get_next(request_id, result)
+        is_forwarded_at_admission = False
+        if session_operation is None:
+            pass
+        else:
             owners = session_operation.stages
-            if self.name not in owners or self.stream_targets:
+            if self.name in owners:
+                index = owners.index(self.name)
+            else:
+                await self.send_failure(
+                    request_id, "session route must use fixed, linear payload edges"
+                )
+                return
+            if index + 1 < len(owners):
+                expected = self.logical_source(owners[index + 1])
+            else:
+                expected = None
+            if any(target != expected for target in self.stream_targets):
                 await self.send_failure(
                     request_id, "session route must use fixed, linear payload edges"
                 )
                 return
             else:
                 pass
-            index = owners.index(self.name)
-            if index + 1 < len(owners):
-                expected = self.logical_source(owners[index + 1])
-            else:
-                expected = None
-            actual = self.get_next(request_id, result)
             if isinstance(actual, list) and len(actual) == 1:
                 actual_target = actual[0]
             else:
@@ -1697,16 +1778,10 @@ class Stage:
                 )
                 return
             else:
-                pass
-        else:
-            pass
+                is_forwarded_at_admission = expected in self.stream_targets
         if on_submitted is not None:
             # Claim before any stream completion, so a refused result sends none.
-            next_stages = (
-                self.get_next(request_id, result)
-                if session_operation is None
-                else actual
-            )
+            next_stages = actual
             if not self.result_owner.claim_result(result, terminal=next_stages is None):
                 return
             else:
@@ -1735,14 +1810,12 @@ class Stage:
                 is_done=True,
             )
 
-        if on_submitted is None:
-            next_stages = (
-                self.get_next(request_id, result)
-                if session_operation is None
-                else actual
-            )
+        if is_forwarded_at_admission:
+            self.clear_request_state(request_id)
+            return
         else:
             pass
+        next_stages = actual
         routes_to_self = False
         keeps_state = False
         if next_stages is None:
@@ -2493,7 +2566,13 @@ class Stage:
         self.record_aborted_request_id(request_id)
         self.comm.cleanup(request_id)
         self.clear_request_state(request_id)
-        self.scheduler.abort(request_id)
+        # note (Richard Wang): TP ranks run fanned-out work to completion, since a skip on one rank pairs different requests in one collective.
+        if self.role == "single" or not getattr(
+            self.scheduler, "requires_tp_work_fanout", False
+        ):
+            self.scheduler.abort(request_id)
+        else:
+            pass
 
     def on_profiler_start(self, msg: ProfilerStartMessage) -> None:
         run_id = msg.run_id
@@ -2564,6 +2643,10 @@ class Stage:
         )
         if self.background_task_error is None:
             self.background_task_error = exc
+        else:
+            pass
+        if self.process_failure_callback is not None:
+            self.process_failure_callback()
         else:
             pass
         self.running = False

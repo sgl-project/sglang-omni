@@ -18,6 +18,7 @@ from sglang_omni.models.fishaudio_drama3.prompt import (
     with_speaker_tag,
 )
 from sglang_omni.models.fishaudio_drama3.request_builders import (
+    MAXIMUM_TOP_K,
     MINIMUM_PROMPT_ROWS,
     REQUEST_ERROR_PREFIX,
     Drama3GenerationInput,
@@ -32,7 +33,9 @@ from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
 
 DEFAULT_TEMPERATURE = 1.0
 DEFAULT_TOP_P = 0.9
-DEFAULT_TOP_K = 30
+# note (SunskyXH): no top-k cap on the main token by default; a cap of 30 there
+# lets a stream fall silent after its first phrase.
+DEFAULT_TOP_K = MAXIMUM_TOP_K
 # Lowered speech fields the model cannot honor; a value other than None was given.
 UNSUPPORTED_TTS_PARAMS = (
     "language",
@@ -202,6 +205,12 @@ class Drama3SpeechPreprocessor:
         top_p = given_number(request.params, "top_p", DEFAULT_TOP_P)
         top_k = given_integer(request.params, "top_k", DEFAULT_TOP_K)
         assert top_k is not None
+        # Unset stays None: its default depends on the engine's sampler.
+        epsilon_cutoff = (
+            given_number(request.params, "epsilon_cutoff", 0.0)
+            if "epsilon_cutoff" in request.params
+            else None
+        )
         max_new_tokens = given_integer(request.params, "max_new_tokens", None)
         repetition_penalty = given_number(request.params, "repetition_penalty", 1.0)
         if repetition_penalty != 1.0:
@@ -271,6 +280,7 @@ class Drama3SpeechPreprocessor:
                 temperature=temperature,
                 top_k=top_k,
                 top_p=top_p,
+                epsilon_cutoff=epsilon_cutoff,
             ),
         )
 

@@ -14,11 +14,12 @@ from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
 from sglang.srt.mem_cache.allocator.swa import PureSWATokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
-from sglang.srt.mem_cache.chunk_cache import ChunkCache
 from sglang.srt.mem_cache.common import release_kv_cache
 from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool, ReqToTokenPool
 from sglang.srt.mem_cache.radix_cache import RadixCache
 from sglang.srt.mem_cache.swa_memory_pool import SWAKVPool
+from sglang.srt.mem_cache.unified_cache.components import ComponentType
+from sglang.srt.mem_cache.unified_radix_cache import UnifiedRadixCache
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.runtime_context import get_context
 from sglang.srt.sampling.sampling_params import SamplingParams
@@ -84,21 +85,23 @@ def test_factory_refuses_radix_for_hybrid_state_pools(eviction_policy: str) -> N
             )
 
 
-def test_factory_keeps_chunk_cache_for_hybrid_state_pools() -> None:
+def test_factory_serves_hybrid_state_pools_from_the_unified_cache() -> None:
     hybrid_pool = object.__new__(HybridReqToTokenPool)
     with get_context().override_server_args(
         disable_radix_cache=True,
         chunked_prefill_size=100,
+        _mamba_cache_chunk_size=64,
     ):
         cache = create_tree_cache(
             hybrid_pool, Mock(spec=BaseTokenToKVPoolAllocator, device="cpu"), 1, None
         )
 
-    assert type(cache) is ChunkCache
+    assert type(cache) is UnifiedRadixCache
+    assert cache.tree_components == (ComponentType.FULL, ComponentType.MAMBA)
 
 
 def make_window_cache(
-    position_capacity: int, window_positions: int
+    position_capacity: int, window_positions: int, *, streaming: bool = False
 ) -> tuple[ReqToTokenPool, PureSWATokenToKVPoolAllocator, SWAKVPool, BasePrefixCache]:
     request_pool = ReqToTokenPool(
         1, position_capacity, "cpu", enable_memory_saver=False
@@ -125,7 +128,7 @@ def make_window_cache(
     with get_context().override_server_args(
         disable_radix_cache=True,
         chunked_prefill_size=None,
-        enable_streaming_session=False,
+        enable_streaming_session=streaming,
     ):
         cache = create_tree_cache(request_pool, allocator, 1, window_positions)
     return request_pool, allocator, kv_pool, cache
@@ -143,8 +146,16 @@ def test_factory_preserves_window_eviction_capability() -> None:
         ordinary_cache = create_tree_cache(
             None, Mock(spec=BaseTokenToKVPoolAllocator, device="cpu"), 1, None
         )
-    assert isinstance(ordinary_cache, ChunkCache)
+    assert type(ordinary_cache) is UnifiedRadixCache
     assert not ordinary_cache.supports_swa()
+
+
+def test_factory_keeps_streaming_sessions_on_the_unified_cache_over_a_window_pool():
+    _, _, _, cache = make_window_cache(32, 8, streaming=True)
+    assert type(cache) is UnifiedRadixCache
+    assert cache.tree_components == (ComponentType.FULL, ComponentType.SWA)
+    assert cache.supports_swa()
+    assert cache.sliding_window_size == 8
 
 
 @pytest.fixture
@@ -164,14 +175,15 @@ def window_cache_runtime() -> Iterator[None]:
 
 
 @pytest.mark.usefixtures("window_cache_runtime")
+@pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("cache_on_release", [False, True])
 def test_window_slots_survive_reuse_and_release(
-    monkeypatch: pytest.MonkeyPatch, cache_on_release: bool
+    monkeypatch: pytest.MonkeyPatch, cache_on_release: bool, streaming: bool
 ) -> None:
     monkeypatch.setenv("SGLANG_SWA_EVICTION_INTERVAL", "4")
     position_capacity, position_count, window_positions = 32, 24, 8
     request_pool, allocator, kv_pool, cache = make_window_cache(
-        position_capacity, window_positions
+        position_capacity, window_positions, streaming=streaming
     )
     request = Req(
         rid="window-request",
@@ -212,7 +224,7 @@ def test_window_slots_survive_reuse_and_release(
         kv_pool.get_key_buffer(0)[slots[-retained_positions:]],
         expected_keys[-retained_positions:],
     )
-    release_kv_cache(request, cache, is_insert=cache_on_release)
+    release_kv_cache(request, cache, checkpoint=cache_on_release)
     assert request_pool.available_size() == 1
     assert allocator.available_size() == retained_positions
     allocator.free(reused_slots)

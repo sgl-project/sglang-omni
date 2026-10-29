@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 import torch
 
+from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.placement import build_stage_placement_plan
 from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.models.moss_tts.config import (
@@ -62,8 +63,12 @@ def install_fake_sglang(monkeypatch: pytest.MonkeyPatch) -> None:
             self.vocab_size = vocab_size
             self.extra_key = extra_key
             self.output_ids = []
-            self.prefix_indices = []
-            self.extend_range = SimpleNamespace(length=len(origin_input_ids))
+            self.prefix_len = 0
+            self.extend_end = len(origin_input_ids)
+
+        @property
+        def extend_len(self) -> int:
+            return self.extend_end - self.prefix_len
 
     class FakeSamplingParams:
         def __init__(self, **kwargs) -> None:
@@ -137,6 +142,7 @@ def test_moss_tts_config_and_registry_contracts() -> None:
         "ref_audio_cache_max_bytes": 64 * 1024 * 1024,
     }
     assert vocoder.factory.model_dump(exclude_none=True) == {
+        "segment_graph_max_frames": 128,
         "dtype": "float32",
         "compute_dtype": "bfloat16",
     }
@@ -502,6 +508,7 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
         model_worker = SimpleNamespace(
             model_runner=model_runner,
             enable_prefill_input_embeds=False,
+            speculative_worker=None,
         )
         if before_memory_pool is not None:
             before_memory_pool(model_worker)
@@ -1466,9 +1473,7 @@ def test_moss_prefill_forward_uses_prompt_row_embeds() -> None:
     )
     sched_req = SimpleNamespace(
         data=SimpleNamespace(
-            req=SimpleNamespace(
-                extend_range=SimpleNamespace(length=2), prefix_indices=[0]
-            ),
+            req=SimpleNamespace(extend_len=2, prefix_len=1),
             prompt_rows=prompt_rows,
             output_rows=[],
         )
@@ -1515,8 +1520,8 @@ def retract_sched_req(*, prompt_rows, output_rows, extend_len, feedback_queue):
         data=SimpleNamespace(
             req=SimpleNamespace(
                 rid="a",
-                extend_range=SimpleNamespace(length=extend_len),
-                prefix_indices=[],
+                extend_len=extend_len,
+                prefix_len=0,
             ),
             prompt_rows=prompt_rows,
             output_rows=output_rows,
@@ -2169,10 +2174,10 @@ def test_default_topology_isolates_vocoder_process() -> None:
     assert stages["tts_engine"].process == "pipeline"
     assert stages["vocoder"].process == "vocoder"
     assert stages["preprocessing"].gpu_memory_fraction == pytest.approx(0.10)
-    assert stages["tts_engine"].gpu_memory_fraction == pytest.approx(0.72)
+    assert stages["tts_engine"].gpu_memory_fraction == pytest.approx(0.60)
     assert stages["vocoder"].gpu_memory_fraction == pytest.approx(0.18)
     placement = build_stage_placement_plan(config)
-    assert placement.gpus[0].total_gpu_memory_fraction == pytest.approx(1.0)
+    assert placement.gpus[0].total_gpu_memory_fraction == pytest.approx(0.88)
     assert placement.gpus[0].missing_fraction_stage_names == ()
     topology = build_compiled_process_topology(config)
     assert topology.stage_to_process == {
@@ -2182,7 +2187,8 @@ def test_default_topology_isolates_vocoder_process() -> None:
     }
     # A declared fraction only reserves the card on paper unless the engine is told.
     engine_args = resolve_stage_factory_args(stages["tts_engine"], config, gpu_id=0)
-    assert engine_args["total_gpu_memory_fraction"] == pytest.approx(0.72)
+    assert engine_args["total_gpu_memory_fraction"] == pytest.approx(0.60)
+    assert engine_args["async_decode_mode"] == "nonstream"
 
 
 def test_single_process_variant_keeps_legacy_topology() -> None:
@@ -2193,3 +2199,21 @@ def test_single_process_variant_keeps_legacy_topology() -> None:
     assert [(group.name, group.stage_names) for group in topology.groups] == [
         ("pipeline", ("preprocessing", "tts_engine", "vocoder"))
     ]
+    engine_stage = next(stage for stage in config.stages if stage.name == "tts_engine")
+    engine_arguments = resolve_stage_factory_args(engine_stage, config, gpu_id=0)
+    assert "async_decode_mode" not in engine_arguments
+
+
+def test_moss_tts_async_decode_mode_override_reaches_factory_arguments() -> None:
+    config = ConfigManager(MossTTSPipelineConfig(model_path="model")).merge_config(
+        [("tts_engine.factory.async_decode_mode", "all")]
+    )
+    engine_stage = next(stage for stage in config.stages if stage.name == "tts_engine")
+    assert (
+        resolve_stage_factory_args(engine_stage, config, gpu_id=0)["async_decode_mode"]
+        == "all"
+    )
+    with pytest.raises(ValueError, match="async_decode_mode"):
+        ConfigManager(config).merge_config(
+            [("tts_engine.factory.async_decode_mode", "unsupported")]
+        )

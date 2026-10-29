@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Iterator
 from types import SimpleNamespace
 
@@ -46,6 +47,7 @@ def test_create_sglang_infrastructure_runs_the_upstream_initialization_phases(
             events.append("init_cuda_graphs")
 
     class FakeWorker:
+        speculative_worker = None
         model_config = SimpleNamespace(is_multimodal=False)
         enable_prefill_input_embeds = False
 
@@ -88,6 +90,112 @@ def test_create_sglang_infrastructure_runs_the_upstream_initialization_phases(
     assert infrastructure[1][1] == ("req_pool", "kv_pool", 1, 8)
 
 
+def test_a_build_without_a_dspark_draft_never_imports_the_fa3_backend(
+    monkeypatch, published
+) -> None:
+    """SGLang's FA3 backend imports sgl_kernel, which an MPS or CPU install lacks, so
+    an engine without a DSpark draft must build without it."""
+    monkeypatch.setitem(sys.modules, "sgl_kernel", None)
+    for module_name in (
+        "sglang_omni.vendor.sglang.flashattention_backend",
+        "sglang.srt.layers.attention.flashattention_backend",
+    ):
+        monkeypatch.delitem(sys.modules, module_name, raising=False)
+    monkeypatch.setattr(
+        bootstrap,
+        "describe_sglang_runtime_configuration",
+        lambda *args: "runtime configuration",
+    )
+
+    class FakeRunner:
+        model = object()
+        sliding_window_size = None
+
+        def alloc_memory_pool(self) -> None:
+            pass
+
+        def init_attention_backends(self) -> None:
+            pass
+
+        def init_cuda_graphs(self) -> None:
+            pass
+
+    class FakeWorker:
+        speculative_worker = None
+        model_config = SimpleNamespace(is_multimodal=False)
+        enable_prefill_input_embeds = False
+
+        def __init__(self, **kwargs: object) -> None:
+            published.append(get_context().override_server_args(page_size=1))
+            published[-1].install()
+            self.model_runner = FakeRunner()
+
+        def get_memory_pool(self) -> tuple[str, str]:
+            return "req_pool", "kv_pool"
+
+    monkeypatch.setattr(model_worker_module, "ModelWorker", FakeWorker)
+    monkeypatch.setattr(sglang_backend, "create_tree_cache", lambda *args: "tree")
+    server_args = SimpleNamespace(
+        attention_backend=None,
+        decode_attention_backend=None,
+        prefill_attention_backend=None,
+        sampling_backend=None,
+        disable_overlap_schedule=False,
+    )
+
+    bootstrap.create_sglang_infrastructure(server_args, 0)
+
+    assert "sglang_omni.vendor.sglang.flashattention_backend" not in sys.modules
+
+
+def test_a_stage_that_does_not_opt_in_refuses_a_draft(monkeypatch, published) -> None:
+    """Speculative tokens skip the runner's decode hooks, so a stage must opt in."""
+    built_drafts: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        bootstrap,
+        "describe_sglang_runtime_configuration",
+        lambda *args: "runtime configuration",
+    )
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_spec",
+        lambda: SimpleNamespace(speculative_algorithm="DFLASH"),
+    )
+
+    class FakeRunner:
+        model = object()
+        sliding_window_size = None
+
+        def alloc_memory_pool(self) -> None:
+            pytest.fail("a stage without speculative support must not size its pool")
+
+    class FakeWorker:
+        speculative_worker = None
+        model_config = SimpleNamespace(is_multimodal=False)
+        enable_prefill_input_embeds = False
+
+        def __init__(self, **kwargs: object) -> None:
+            published.append(get_context().override_server_args(page_size=1))
+            published[-1].install()
+            self.model_runner = FakeRunner()
+
+    monkeypatch.setattr(model_worker_module, "ModelWorker", FakeWorker)
+    server_args = SimpleNamespace(
+        attention_backend=None,
+        decode_attention_backend=None,
+        prefill_attention_backend=None,
+        sampling_backend=None,
+        disable_overlap_schedule=False,
+    )
+
+    with pytest.raises(ValueError, match="does not support speculative decoding"):
+        bootstrap.create_sglang_infrastructure(
+            server_args,
+            0,
+            speculative_worker_class=lambda **kwargs: built_drafts.append(kwargs),
+        )
+    assert built_drafts == []
+
+
 def test_before_memory_pool_runs_after_the_weights_and_before_the_pool(
     monkeypatch, published
 ) -> None:
@@ -112,6 +220,7 @@ def test_before_memory_pool_runs_after_the_weights_and_before_the_pool(
             events.append("init_cuda_graphs")
 
     class FakeWorker:
+        speculative_worker = None
         model_config = SimpleNamespace(is_multimodal=False)
         enable_prefill_input_embeds = False
 
@@ -222,6 +331,7 @@ def test_cuda_graph_init_scopes_prefill_embedding_capture_flag() -> None:
     model_config = SimpleNamespace(is_multimodal=False)
     capture_values: list[bool] = []
     model_worker = SimpleNamespace(
+        speculative_worker=None,
         model_config=model_config,
         enable_prefill_input_embeds=True,
         model_runner=SimpleNamespace(
@@ -326,6 +436,7 @@ def test_create_sglang_infrastructure_consumes_scoped_kv_budget(
             pass
 
     class FakeWorker:
+        speculative_worker = None
         model_config = SimpleNamespace(is_multimodal=False)
         enable_prefill_input_embeds = False
 

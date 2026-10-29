@@ -10,6 +10,7 @@ import pytest
 from sglang_omni.admission import AdminDroppedRequestError, QueueFullError
 from sglang_omni.config.schema import replica_instance_name
 from sglang_omni.pipeline.coordinator import Coordinator
+from sglang_omni.pipeline.types import SessionIdleTimeoutError, SessionOutputBudgetError
 from sglang_omni.proto import OmniRequest
 from sglang_omni.proto.messages import CompleteMessage
 from sglang_omni.proto.session import SessionLimits, TimedChunk
@@ -140,9 +141,9 @@ async def test_aborted_append_closes_session_and_wakes_reader(
     waiting = asyncio.create_task(anext(output))
     await coordinator.append_session(session_identity, chunk(0))
     await wait_until(
-        lambda: any(rid.startswith("session-") for rid in coordinator.requests)
+        lambda: bool(coordinator.sessions[session_identity.id].submitted_appends)
     )
-    request_id = next(rid for rid in coordinator.requests if rid.startswith("session-"))
+    request_id = next(iter(coordinator.sessions[session_identity.id].submitted_appends))
     if drop == "stage_admin_drop":
         await coordinator.handle_completion(
             CompleteMessage(
@@ -206,7 +207,7 @@ async def test_output_overflow_closes_session(linear_pair):
     state = coordinator.sessions[session_identity.id]
     await coordinator.append_session(session_identity, chunk(0))
     await wait_until(lambda: session_identity.id not in coordinator.sessions)
-    assert isinstance(state.error, QueueFullError)
+    assert isinstance(state.error, SessionOutputBudgetError)
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -219,7 +220,7 @@ async def test_idle_timeout_closes_session_and_wakes_reader(linear_pair):
         session_id="reused",
     )
     output = coordinator.session_outputs(session_identity)
-    with pytest.raises(TimeoutError):
+    with pytest.raises(SessionIdleTimeoutError, match="no session input for 0.3 s"):
         await asyncio.wait_for(anext(output), 5)
     reopened = await coordinator.open_session(
         OmniRequest(None), stages=["source", "sink"], session_id="reused"

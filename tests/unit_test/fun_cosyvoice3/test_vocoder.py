@@ -14,10 +14,17 @@ import msgpack
 import numpy as np
 import pytest
 import torch
+import torch.nn.functional as F
 
 from sglang_omni.client.client import Client
 from sglang_omni.models.fun_cosyvoice3 import stages
+from sglang_omni.models.fun_cosyvoice3.engine_builder import FunCosyVoice3EngineBuilder
+from sglang_omni.models.fun_cosyvoice3.hift_channels_last import ChannelsLastHiftDecode
 from sglang_omni.models.fun_cosyvoice3.hift_cuda_graph import HiftDecodeCudaGraphRunner
+from sglang_omni.models.fun_cosyvoice3.hift_kernels import (
+    add_bias_and_residual,
+    leaky_relu_padded,
+)
 from sglang_omni.models.fun_cosyvoice3.packed_dit import PackedDiT
 from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
 from sglang_omni.models.fun_cosyvoice3.solve_graph_capture import SolveGraphCapture
@@ -31,6 +38,8 @@ from sglang_omni.platforms.xpu import XPUOmniPlatform
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
 from tests.unit_test.fun_cosyvoice3.test_flow_batch import FakeFlow as _PackedFlow
+
+HIFT_ROUNDING_ATOL = 1e-6
 
 
 class FakeF0Predictor(torch.nn.Module):
@@ -109,8 +118,12 @@ class GraphRunnableFakeFlow(RunnableFakeFlow):
 
 
 class RecordingPackedDiT(PackedDiT):
-    def __init__(self) -> None:
-        self.is_ragged = True
+    def __init__(self, *, is_ragged: bool = True) -> None:
+        self.is_ragged = is_ragged
+
+    def build_modulations(self, time_span: torch.Tensor, dtype: torch.dtype) -> None:
+        self.block_modulations = ()
+        self.final_modulations = ()
 
     def compile(self, dtype: torch.dtype | None) -> bool:
         del dtype
@@ -848,10 +861,10 @@ def test_admission_budget_below_the_first_tier_keeps_finals_eager(monkeypatch) -
     graph to capture: startup keeps every final, however long, on the eager solve
     instead of failing on the empty ladder."""
     fake_flow = RunnableFakeFlow()
-    fake_flow.packed_estimator.is_ragged = True
     flow = stages.FunCosyVoice3Flow(
         fake_flow, packed_estimator=fake_flow.packed_estimator
     )
+    monkeypatch.setattr(stages, "supports_ragged_attention", lambda device: True)
     monkeypatch.setattr(
         stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cuda")
     )
@@ -981,14 +994,34 @@ def test_create_vocoder_executor_threads_trt_flag(monkeypatch) -> None:
 FLOW_GRAPH_CAPTURE_SHAPES = ((2, 16),)
 
 
+def null_autocast(
+    device_type: str,
+    dtype: torch.dtype | None = None,
+    enabled: bool = True,
+) -> contextlib.AbstractContextManager[None]:
+    return contextlib.nullcontext()
+
+
 def prepare_vocoder_startup(
     monkeypatch: pytest.MonkeyPatch,
     startup_events: list[str],
     *,
     device_type: str,
     allow_native_compile: bool,
-) -> GraphRunnableFakeFlow:
-    fake_flow = GraphRunnableFakeFlow(startup_events)
+    packed_estimator: PackedDiT | None = None,
+) -> GraphRunnableFakeFlow | stages.FunCosyVoice3Flow:
+    loaded_flow: GraphRunnableFakeFlow | stages.FunCosyVoice3Flow = (
+        GraphRunnableFakeFlow(startup_events)
+    )
+    if packed_estimator is not None:
+        loaded_flow = stages.FunCosyVoice3Flow(
+            loaded_flow,
+            packed_estimator=packed_estimator,
+        )
+    else:
+        pass
+    is_ragged = packed_estimator is not None and packed_estimator.is_ragged
+    monkeypatch.setattr(stages, "supports_ragged_attention", lambda device: is_ragged)
     resolved_device = torch.device(device_type)
     monkeypatch.setattr(
         stages,
@@ -1001,14 +1034,14 @@ def prepare_vocoder_startup(
         stages,
         "load_cosyvoice3_flow_hift",
         lambda checkpoint_dir, device, fp16, autocast_dtype, enable_flow_estimator_trt=False: (
-            fake_flow,
+            loaded_flow,
             FakeHiFT(),
         ),
     )
 
     def record_native_compile(flow, autocast_dtype: torch.dtype | None) -> None:
         if allow_native_compile:
-            assert flow is fake_flow
+            assert flow is loaded_flow
             assert autocast_dtype == torch.bfloat16
             startup_events.append("native_compile")
         else:
@@ -1031,7 +1064,7 @@ def prepare_vocoder_startup(
 
         class RecordingFlowCudaGraphRunner:
             def __init__(self, flow, *, device, autocast_dtype) -> None:
-                assert flow is fake_flow
+                assert flow is loaded_flow
                 assert device.type == device_type
                 assert autocast_dtype == torch.bfloat16
                 startup_events.append("runner_create")
@@ -1043,7 +1076,7 @@ def prepare_vocoder_startup(
         monkeypatch.setattr(stages, "FlowCudaGraphRunner", RecordingFlowCudaGraphRunner)
     else:
         pass
-    return fake_flow
+    return loaded_flow
 
 
 @pytest.mark.parametrize("enable_dit_torch_compile", [False, True])
@@ -1081,6 +1114,43 @@ def test_create_vocoder_executor_compiles_before_flow_graph_capture(
     assert ("packed_warmup" in startup_events) is enable_dit_torch_compile
 
 
+def test_create_vocoder_executor_skips_the_padded_dit_startup_on_the_packed_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    startup_events: list[str] = []
+    prepare_vocoder_startup(
+        monkeypatch,
+        startup_events,
+        device_type="cuda",
+        allow_native_compile=False,
+        packed_estimator=RecordingPackedDiT(is_ragged=True),
+    )
+    monkeypatch.setattr(
+        stages,
+        "set_dit_compile_config",
+        lambda: startup_events.append("compile_config"),
+    )
+    monkeypatch.setattr(torch, "autocast", null_autocast)
+
+    stages.create_vocoder_executor(
+        "model",
+        device="cuda",
+        dtype="bfloat16",
+        flow_prefix_cache_gb=0.0,
+        enable_dit_torch_compile=True,
+        enable_flow_cuda_graph=True,
+        flow_cuda_graph_capture_shapes=FLOW_GRAPH_CAPTURE_SHAPES,
+        enable_flow_prefix_cuda_graph=False,
+        enable_flow_whole_history_cuda_graph=False,
+        enable_hift_cuda_graph=False,
+    )
+
+    assert "runner_create" not in startup_events
+    assert startup_events.index("compile_config") < startup_events.index(
+        "packed_warmup"
+    )
+
+
 @pytest.mark.parametrize("enable_dit_torch_compile", [False, True])
 def test_create_vocoder_executor_on_xpu_captures_flow_graphs_only_for_an_eager_dit(
     monkeypatch: pytest.MonkeyPatch,
@@ -1107,6 +1177,51 @@ def test_create_vocoder_executor_on_xpu_captures_flow_graphs_only_for_an_eager_d
     )
 
     assert ("graph_capture" in startup_events) is not enable_dit_torch_compile
+
+
+@pytest.mark.parametrize(
+    ("is_ragged", "dtype", "enable_flow_estimator_trt", "is_buffered_packed"),
+    [
+        (True, "bfloat16", False, True),
+        (False, "bfloat16", False, False),
+        (True, "float32", False, False),
+        (True, "bfloat16", True, False),
+    ],
+)
+def test_create_vocoder_executor_packs_buffered_flow_only_on_ragged_attention(
+    monkeypatch: pytest.MonkeyPatch,
+    is_ragged: bool,
+    dtype: str,
+    enable_flow_estimator_trt: bool,
+    is_buffered_packed: bool,
+) -> None:
+    loaded_flow = prepare_vocoder_startup(
+        monkeypatch,
+        [],
+        device_type="cuda",
+        allow_native_compile=False,
+        packed_estimator=RecordingPackedDiT(is_ragged=is_ragged),
+    )
+    if enable_flow_estimator_trt:
+        loaded_flow.packed_estimator = None
+    else:
+        pass
+    monkeypatch.setattr(torch, "autocast", null_autocast)
+
+    scheduler = stages.create_vocoder_executor(
+        "model",
+        device="cuda",
+        dtype=dtype,
+        flow_prefix_cache_gb=0.0,
+        enable_flow_cuda_graph=False,
+        enable_flow_prefix_cuda_graph=False,
+        enable_flow_whole_history_cuda_graph=False,
+        enable_hift_cuda_graph=False,
+        enable_dit_torch_compile=False,
+        enable_flow_estimator_trt=enable_flow_estimator_trt,
+    )
+
+    assert scheduler.vocoder.flow.is_buffered_packed is is_buffered_packed
 
 
 def test_create_vocoder_executor_rejects_trt_and_compile() -> None:
@@ -1207,7 +1322,7 @@ def test_onnx_intra_op_threads_reaches_both_encoders(monkeypatch) -> None:
 
     def fake_tokenizer(model_path, device="cpu", intra_op_threads=1):
         seen["speech_tokenizer"] = intra_op_threads
-        return object()
+        return SimpleNamespace(extract_speech_token=lambda audio: None)
 
     def fake_encoder(model_path, device="cpu", intra_op_threads=1):
         seen["speaker_encoder"] = intra_op_threads
@@ -1224,6 +1339,7 @@ def test_onnx_intra_op_threads_reaches_both_encoders(monkeypatch) -> None:
     monkeypatch.setattr(
         request_builders, "set_cosyvoice3_preprocessing_context", lambda **kwargs: None
     )
+    monkeypatch.setattr(engine_builder, "_ENGINE_HEADROOM_BYTES", 0)
 
     builder = engine_builder.FunCosyVoice3EngineBuilder(onnx_intra_op_threads=6)
     builder.checkpoint_root = "/tmp"
@@ -1232,6 +1348,10 @@ def test_onnx_intra_op_threads_reaches_both_encoders(monkeypatch) -> None:
             model_runner=SimpleNamespace(
                 model=StubModel(),
                 model_config=SimpleNamespace(vocab_size=0),
+                pre_model_load_memory=80.0,
+                mem_fraction_static=0.85,
+                total_gpu_memory_fraction=None,
+                kv_cache_bytes=None,
             )
         ),
         checkpoint_dir="/tmp",
@@ -1241,6 +1361,523 @@ def test_onnx_intra_op_threads_reaches_both_encoders(monkeypatch) -> None:
     )
 
     assert seen == {"speech_tokenizer": 6, "speaker_encoder": 6}
+
+
+def tiny_prefix_flow() -> SimpleNamespace:
+    attention = SimpleNamespace(heads=2, inner_dim=8)
+    return SimpleNamespace(
+        decoder=SimpleNamespace(
+            estimator=SimpleNamespace(
+                transformer_blocks=[SimpleNamespace(attn=attention)] * 2,
+                input_embed=SimpleNamespace(proj=SimpleNamespace(out_features=8)),
+            )
+        )
+    )
+
+
+def tiny_prefix_padding_bytes() -> int:
+    return stages.BLOCK_FRAMES * stages.PrefixKVPool.bytes_per_frame(
+        layer_num=2,
+        euler_steps=stages.FLOW_EULER_STEPS,
+        head_num=2,
+        head_dim=4,
+        dtype=torch.bfloat16,
+    )
+
+
+def tiny_prefix_block_bytes() -> int:
+    conv_context_bytes = (
+        stages.FLOW_EULER_STEPS * 2 * stages.CONV_CONTEXT_FRAMES * 8 * 2
+    )
+    return tiny_prefix_padding_bytes() + conv_context_bytes
+
+
+@pytest.mark.parametrize(
+    ("free_blocks", "capped_blocks", "share_blocks", "expected_blocks"),
+    [
+        (10.0, 100.0, None, 10),
+        (10.0, 4.5, None, 4),
+        (0.5, 100.0, None, None),
+        (10.0, 100.0, 3, 3),
+    ],
+)
+def test_derived_prefix_pool_takes_the_memory_left_after_its_reserve(
+    monkeypatch: pytest.MonkeyPatch,
+    free_blocks: float,
+    capped_blocks: float,
+    share_blocks: int | None,
+    expected_blocks: int | None,
+) -> None:
+    padding_bytes = tiny_prefix_padding_bytes()
+    block_bytes = tiny_prefix_block_bytes()
+    stage_reserve_bytes = 2**30
+    headroom_bytes = 2**29
+    total_bytes = 2**36
+    reserved_bytes = int(
+        total_bytes / 2
+        - stage_reserve_bytes
+        - headroom_bytes
+        - padding_bytes
+        - capped_blocks * block_bytes
+    )
+    monkeypatch.setattr(torch.accelerator, "empty_cache", lambda: None)
+    monkeypatch.setattr(
+        torch.accelerator,
+        "get_memory_info",
+        lambda device: (
+            int(
+                stage_reserve_bytes
+                + headroom_bytes
+                + padding_bytes
+                + free_blocks * block_bytes
+            ),
+            total_bytes,
+        ),
+    )
+    monkeypatch.setattr(
+        torch,
+        "get_device_module",
+        lambda device: SimpleNamespace(
+            get_per_process_memory_fraction=lambda device: 0.5
+        ),
+    )
+    monkeypatch.setattr(
+        torch.accelerator, "memory_reserved", lambda device: reserved_bytes
+    )
+
+    pool = stages.build_prefix_pool(
+        tiny_prefix_flow(),
+        torch.device("cpu"),
+        torch.bfloat16,
+        size_gb=None,
+        max_blocks=None,
+        stage_reserve_bytes=stage_reserve_bytes,
+        headroom_bytes=headroom_bytes,
+        share_ceiling_bytes=(
+            None
+            if share_blocks is None
+            else reserved_bytes
+            + stage_reserve_bytes
+            + padding_bytes
+            + share_blocks * block_bytes
+        ),
+    )
+
+    if expected_blocks is None:
+        assert pool is None
+    else:
+        assert pool is not None
+        assert pool.free_frames == expected_blocks * stages.BLOCK_FRAMES
+
+
+@pytest.mark.parametrize(
+    ("size_blocks", "max_blocks", "expected_blocks"),
+    [(3, None, 3), (30, None, 10), (None, 4, 4)],
+)
+def test_prefix_pool_caps_take_the_smaller_of_their_size_and_the_memory_left(
+    monkeypatch: pytest.MonkeyPatch,
+    size_blocks: int | None,
+    max_blocks: int | None,
+    expected_blocks: int,
+) -> None:
+    padding_bytes = tiny_prefix_padding_bytes()
+    block_bytes = tiny_prefix_block_bytes()
+    stage_reserve_bytes = 2**30
+    monkeypatch.setattr(torch.accelerator, "empty_cache", lambda: None)
+    monkeypatch.setattr(
+        torch.accelerator,
+        "get_memory_info",
+        lambda device: (stage_reserve_bytes + padding_bytes + 10 * block_bytes, 2**36),
+    )
+    monkeypatch.setattr(
+        torch,
+        "get_device_module",
+        lambda device: SimpleNamespace(
+            get_per_process_memory_fraction=lambda device: 1.0
+        ),
+    )
+    monkeypatch.setattr(torch.accelerator, "memory_reserved", lambda device: 0)
+
+    pool = stages.build_prefix_pool(
+        tiny_prefix_flow(),
+        torch.device("cpu"),
+        torch.bfloat16,
+        size_gb=(
+            None
+            if size_blocks is None
+            else (padding_bytes + size_blocks * block_bytes) / 2**30
+        ),
+        max_blocks=max_blocks,
+        stage_reserve_bytes=stage_reserve_bytes,
+        headroom_bytes=0,
+        share_ceiling_bytes=None,
+    )
+
+    assert pool is not None
+    assert pool.free_frames == expected_blocks * stages.BLOCK_FRAMES
+
+
+@pytest.mark.parametrize("token_hop_len", [25, 50])
+def test_a_pool_of_the_prefix_warmup_blocks_runs_both_warmup_hops(
+    token_hop_len: int,
+) -> None:
+    prefix_hop_row_counts: list[int] = []
+    vocoder = SimpleNamespace(
+        flow=SimpleNamespace(
+            token_mel_ratio=2,
+            output_size=80,
+            spk_embed_affine_layer=SimpleNamespace(in_features=192),
+            prefix_pool=None,
+        ),
+        hop_batch_prefix=lambda items, caches: prefix_hop_row_counts.append(len(items)),
+    )
+    vocoder.prefix_cache_rows = lambda frames: (
+        stages.CosyVoice3Vocoder.prefix_cache_rows(vocoder, frames)
+    )
+    vocoder.grow_prefix_cache = lambda pair, frames: (
+        stages.CosyVoice3Vocoder.grow_prefix_cache(vocoder, pair, frames)
+    )
+    vocoder.release_prefix_cache = lambda pair: (
+        stages.CosyVoice3Vocoder.release_prefix_cache(vocoder, pair)
+    )
+    scheduler = FunCosyVoice3StreamingVocoderScheduler(
+        vocoder, token_hop_len=token_hop_len
+    )
+    capacity_frames = scheduler.prefix_warmup_block_count() * stages.BLOCK_FRAMES
+    vocoder.flow.prefix_pool = stages.PrefixKVPool(
+        layer_num=1,
+        euler_steps=1,
+        head_num=1,
+        head_dim=4,
+        capacity_frames=capacity_frames,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+
+    scheduler.warmup_prefix_hops()
+
+    assert prefix_hop_row_counts == [1, 1]
+    assert vocoder.flow.prefix_pool.free_frames == capacity_frames
+
+
+@pytest.mark.parametrize(
+    (
+        "flow_prefix_cache_gb",
+        "vocoder_fraction",
+        "engine_headroom_bytes",
+        "expected_share_ceiling_bytes",
+        "expected_headroom_bytes",
+    ),
+    [
+        (None, None, 3 * 2**29, None, 3 * 2**29),
+        (2.0, None, 3 * 2**29, None, 3 * 2**29),
+        (None, 0.5, 3 * 2**29, 2**30 + 2**33, 3 * 2**29),
+        (
+            None,
+            None,
+            0,
+            None,
+            int(2**33 * (1 - FunCosyVoice3EngineBuilder.mem_fraction_static)),
+        ),
+    ],
+)
+def test_prefix_pool_leaves_the_runtime_headroom_and_the_largest_step(
+    monkeypatch: pytest.MonkeyPatch,
+    flow_prefix_cache_gb: float | None,
+    vocoder_fraction: float | None,
+    engine_headroom_bytes: int,
+    expected_share_ceiling_bytes: int | None,
+    expected_headroom_bytes: int,
+) -> None:
+    """A declared share's baseline counted memory an earlier stage had freed but the
+    allocator still cached, so the pool took that memory beyond the share."""
+    fake_flow = RunnableFakeFlow()
+    flow = stages.FunCosyVoice3Flow(
+        fake_flow, packed_estimator=fake_flow.packed_estimator
+    )
+    monkeypatch.setattr(stages, "supports_ragged_attention", lambda device: True)
+    monkeypatch.setattr(
+        stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cuda")
+    )
+    monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
+    monkeypatch.setattr(stages, "patch_chunk_mask", lambda: None)
+    monkeypatch.setattr(
+        stages,
+        "load_cosyvoice3_flow_hift",
+        lambda checkpoint_dir, device, fp16, **kwargs: (flow, FakeHiFT()),
+    )
+    cached_bytes = [2**28]
+    monkeypatch.setattr(torch.accelerator, "empty_cache", lambda: cached_bytes.clear())
+    monkeypatch.setattr(
+        torch.accelerator, "memory_reserved", lambda device: 2**30 + sum(cached_bytes)
+    )
+    monkeypatch.setattr(
+        torch.accelerator, "get_memory_info", lambda device: (2**33, 2**34)
+    )
+    events: list[tuple[str, object]] = []
+
+    def measure(
+        scheduler: FunCosyVoice3StreamingVocoderScheduler,
+        device: torch.device,
+        *,
+        row_count: int,
+        generated_tokens_per_row: int,
+    ) -> int:
+        events.append(("measure", (row_count, generated_tokens_per_row)))
+        return 3 * 2**30
+
+    def build(
+        flow: stages.FunCosyVoice3Flow,
+        device: torch.device,
+        dtype: torch.dtype,
+        *,
+        size_gb: float | None,
+        max_blocks: int | None,
+        stage_reserve_bytes: int,
+        headroom_bytes: int,
+        share_ceiling_bytes: int | None,
+    ) -> None:
+        events.append(
+            (
+                "pool",
+                (
+                    size_gb,
+                    max_blocks,
+                    stage_reserve_bytes,
+                    headroom_bytes,
+                    share_ceiling_bytes,
+                ),
+            )
+        )
+
+    monkeypatch.setattr(
+        FunCosyVoice3StreamingVocoderScheduler, "measure_peak_step_bytes", measure
+    )
+    monkeypatch.setattr(stages, "build_prefix_pool", build)
+    monkeypatch.setattr(stages, "engine_headroom_bytes", lambda: engine_headroom_bytes)
+
+    stages.create_vocoder_executor(
+        "model",
+        device="cuda",
+        dtype="float16",
+        max_batch_size=4,
+        flow_prefix_cache_gb=flow_prefix_cache_gb,
+        enable_flow_cuda_graph=False,
+        enable_flow_prefix_cuda_graph=False,
+        enable_flow_whole_history_cuda_graph=True,
+        enable_hift_cuda_graph=False,
+        flow_batch_admission_frames=3,
+        enable_dit_torch_compile=False,
+        total_gpu_memory_fraction=vocoder_fraction,
+    )
+
+    assert events == [
+        ("measure", (4, FunCosyVoice3EngineBuilder.context_length)),
+        (
+            "pool",
+            (
+                flow_prefix_cache_gb,
+                None,
+                3 * 2**30,
+                expected_headroom_bytes,
+                expected_share_ceiling_bytes,
+            ),
+        ),
+    ]
+
+
+def test_a_share_that_holds_no_block_serves_without_the_prefix_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the prefix graphs on, a declared share the vocoder's load filled failed
+    startup on the throwaway pool instead of serving without the prefix cache."""
+    fake_flow = RunnableFakeFlow()
+    fake_flow.decoder.estimator.transformer_blocks = [
+        SimpleNamespace(attn=SimpleNamespace(heads=2, inner_dim=8))
+    ] * 2
+    fake_flow.decoder.estimator.input_embed = SimpleNamespace(
+        proj=SimpleNamespace(out_features=8)
+    )
+    flow = stages.FunCosyVoice3Flow(
+        fake_flow, packed_estimator=fake_flow.packed_estimator
+    )
+    load_bytes = 2**30
+    loaded_bytes: list[int] = []
+
+    def load(
+        checkpoint_dir: str,
+        *,
+        device: str,
+        fp16: bool,
+        autocast_dtype: torch.dtype | None,
+        enable_flow_estimator_trt: bool,
+    ) -> tuple[stages.FunCosyVoice3Flow, FakeHiFT]:
+        loaded_bytes.append(load_bytes)
+        return flow, FakeHiFT()
+
+    monkeypatch.setattr(stages, "supports_ragged_attention", lambda device: True)
+    monkeypatch.setattr(
+        stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cuda")
+    )
+    monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
+    monkeypatch.setattr(stages, "patch_chunk_mask", lambda: None)
+    monkeypatch.setattr(stages, "load_cosyvoice3_flow_hift", load)
+    monkeypatch.setattr(stages, "engine_headroom_bytes", lambda: 2**29)
+    monkeypatch.setattr(torch.accelerator, "empty_cache", lambda: None)
+    monkeypatch.setattr(
+        torch.accelerator, "memory_reserved", lambda device: sum(loaded_bytes)
+    )
+    monkeypatch.setattr(
+        torch.accelerator, "get_memory_info", lambda device: (2**34, 2**35)
+    )
+    monkeypatch.setattr(
+        torch.cuda, "get_per_process_memory_fraction", lambda device: 1.0
+    )
+    monkeypatch.setattr(
+        FunCosyVoice3StreamingVocoderScheduler,
+        "measure_peak_step_bytes",
+        lambda scheduler, device, *, row_count, generated_tokens_per_row: 2**30,
+    )
+    monkeypatch.setattr(
+        current_platform, "get_device_graph_backend", lambda device: SimpleNamespace()
+    )
+    monkeypatch.setattr(
+        stages,
+        "SolveGraphCapture",
+        lambda backend, *, device, autocast_dtype: SimpleNamespace(),
+    )
+
+    scheduler = stages.create_vocoder_executor(
+        "model",
+        device="cuda",
+        dtype="float16",
+        max_batch_size=4,
+        flow_prefix_cache_gb=None,
+        enable_flow_cuda_graph=False,
+        enable_flow_prefix_cuda_graph=True,
+        enable_flow_whole_history_cuda_graph=False,
+        enable_hift_cuda_graph=False,
+        enable_dit_torch_compile=False,
+        total_gpu_memory_fraction=load_bytes / 2**35,
+    )
+
+    assert scheduler.vocoder.flow.prefix_pool is None
+    assert scheduler.vocoder.flow.prefix_cuda_graph_runner is None
+
+
+def test_a_cpu_vocoder_serves_without_the_default_prefix_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A CPU vocoder with the default prefix cache size read the accelerator's memory
+    before its model loaded, so startup failed on a CUDA host."""
+    monkeypatch.setattr(
+        stages, "resolve_concrete_device", lambda device, gpu_id: torch.device("cpu")
+    )
+    monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
+    monkeypatch.setattr(stages, "patch_chunk_mask", lambda: None)
+    monkeypatch.setattr(
+        stages,
+        "load_cosyvoice3_flow_hift",
+        lambda checkpoint_dir, device, fp16, **kwargs: (RunnableFakeFlow(), FakeHiFT()),
+    )
+
+    scheduler = stages.create_vocoder_executor(
+        "model",
+        device="cpu",
+        flow_prefix_cache_gb=None,
+        enable_flow_prefix_cuda_graph=True,
+        enable_flow_whole_history_cuda_graph=True,
+        enable_hift_cuda_graph=False,
+        enable_dit_torch_compile=False,
+    )
+
+    assert scheduler.vocoder.flow.prefix_pool is None
+
+
+def step_measurement_vocoder(
+    flow_rows: list[tuple[int, int]], hift_shapes: list[tuple[int, int]]
+) -> SimpleNamespace:
+    def decode(items: list[stages.FlowBatchInput]) -> list[torch.Tensor]:
+        flow_rows.extend(
+            (int(item.prompt_token.shape[1]), int(item.token.shape[1]))
+            for item in items
+        )
+        return [torch.zeros(1, 80, 2 * int(item.token.shape[1])) for item in items]
+
+    def mel2wav_batch(mels: list[torch.Tensor]) -> list[torch.Tensor]:
+        hift_shapes.append((len(mels), max(int(mel.shape[2]) for mel in mels)))
+        return []
+
+    return SimpleNamespace(
+        flow=SimpleNamespace(
+            token_mel_ratio=2,
+            output_size=80,
+            input_frame_rate=25,
+            spk_embed_affine_layer=SimpleNamespace(in_features=192),
+        ),
+        hift_samples_per_mel_frame=480,
+        hift_max_padding_waste=1.5,
+        flow_merge_pad_budget_percent=25.0,
+        stream_context=contextlib.nullcontext(),
+        hop_batch=decode,
+        leftover_batch=decode,
+        hift_step=lambda rows: SimpleNamespace(wait=lambda: None),
+        mel2wav_batch=mel2wav_batch,
+    )
+
+
+def patch_step_memory(monkeypatch: pytest.MonkeyPatch, window_peaks: list[int]) -> None:
+    peaks = iter(window_peaks)
+    monkeypatch.setattr(torch.accelerator, "synchronize", lambda device: None)
+    monkeypatch.setattr(torch.accelerator, "empty_cache", lambda: None)
+    monkeypatch.setattr(torch.accelerator, "memory_reserved", lambda device: 0)
+    monkeypatch.setattr(
+        torch.accelerator, "reset_peak_memory_stats", lambda device: None
+    )
+    monkeypatch.setattr(
+        torch.accelerator, "max_memory_reserved", lambda device: next(peaks)
+    )
+
+
+def test_largest_step_rows_hold_the_longest_reference_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The largest step was measured with a hop of prompt, so a request without
+    ref_text, whose whole reference reaches Flow and not the engine, outgrew it."""
+    flow_rows: list[tuple[int, int]] = []
+    vocoder = step_measurement_vocoder(flow_rows, [])
+    scheduler = FunCosyVoice3StreamingVocoderScheduler(vocoder, token_hop_len=40)
+    patch_step_memory(monkeypatch, [0, 0])
+
+    scheduler.measure_peak_step_bytes(
+        torch.device("cpu"), row_count=2, generated_tokens_per_row=4096
+    )
+
+    assert set(flow_rows) == {(760, 4096)}
+
+
+@pytest.mark.parametrize(("window_peaks", "expected_bytes"), [([7, 5], 7), ([3, 5], 5)])
+def test_largest_step_reserves_the_larger_of_streaming_and_non_streaming(
+    monkeypatch: pytest.MonkeyPatch,
+    window_peaks: list[int],
+    expected_bytes: int,
+) -> None:
+    """The reserve held only the largest streaming step, so with fewer rows a step a
+    non-streaming batch at the admission budget, decoded by HiFT in one pass, could
+    outgrow it."""
+    hift_shapes: list[tuple[int, int]] = []
+    vocoder = step_measurement_vocoder([], hift_shapes)
+    scheduler = FunCosyVoice3StreamingVocoderScheduler(
+        vocoder, max_batch_size=16, max_batch_cost=8000
+    )
+    patch_step_memory(monkeypatch, window_peaks)
+
+    reserve_bytes = scheduler.measure_peak_step_bytes(
+        torch.device("cpu"), row_count=16, generated_tokens_per_row=4096
+    )
+
+    assert reserve_bytes == expected_bytes
+    assert hift_shapes == [(1, 8192), (16, 625)]
 
 
 def test_create_vocoder_executor_rejects_non_positive_admission_budget(
@@ -1357,8 +1994,9 @@ def test_hift_step_matches_the_whole_history_chain(
                         is_final=is_final,
                     )
                 )
-            for (delta, emitted_after), (reference, reference_after) in zip(
-                vocoder.hift_step(rows), expected, strict=True
+            samples = vocoder.hift_step(rows)
+            for delta, emitted_after, (reference, reference_after) in zip(
+                samples.wait(), samples.emitted_samples, expected, strict=True
             ):
                 assert emitted_after == reference_after
                 torch.testing.assert_close(delta, reference, atol=1e-4, rtol=0)
@@ -1367,7 +2005,7 @@ def test_hift_step_matches_the_whole_history_chain(
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 @pytest.mark.parametrize("is_final", [False, True])
-def test_hift_step_window_is_bit_identical_to_the_whole_history_call(
+def test_hift_step_window_equals_the_whole_history_call(
     monkeypatch: pytest.MonkeyPatch, is_final: bool
 ) -> None:
     monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
@@ -1386,7 +2024,7 @@ def test_hift_step_window_is_bit_identical_to_the_whole_history_call(
             speech_offset=emitted_samples,
             finalize=is_final,
         )
-        ((delta, _),) = vocoder.hift_step(
+        (delta,) = vocoder.hift_step(
             [
                 stages.HiftStepRow(
                     history=mel[:, :, :end_frame],
@@ -1394,13 +2032,13 @@ def test_hift_step_window_is_bit_identical_to_the_whole_history_call(
                     is_final=is_final,
                 )
             ]
-        )
-    assert torch.equal(delta, reference)
+        ).wait()
+    torch.testing.assert_close(delta, reference, atol=HIFT_ROUNDING_ATOL, rtol=0)
 
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_hift_step_final_is_bit_identical_beside_finals_of_other_widths(
+def test_hift_step_final_equals_its_own_call_beside_finals_of_other_widths(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Each final's samples and cursor equal its own call, whatever it shares a step with and in which order."""
@@ -1425,36 +2063,74 @@ def test_hift_step_final_is_bit_identical_beside_finals_of_other_widths(
     ]
     with torch.inference_mode():
         batched = vocoder.hift_step(rows)
-        alone = [vocoder.hift_step([row])[0] for row in rows]
-    for (delta, emitted_after), (reference, reference_after) in zip(
-        batched, alone, strict=True
+        alone = [vocoder.hift_step([row]) for row in rows]
+    for delta, emitted_after, single in zip(
+        batched.wait(), batched.emitted_samples, alone, strict=True
     ):
-        assert emitted_after == reference_after
-        assert torch.equal(delta, reference)
+        assert single.emitted_samples == [emitted_after]
+        torch.testing.assert_close(
+            delta, single.wait()[0], atol=HIFT_ROUNDING_ATOL, rtol=0
+        )
 
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_vocoder_hift_snake_is_bit_identical_to_cosyvoice() -> None:
+def test_vocoder_hift_snake_epilogue_is_bit_identical_to_the_eager_chain() -> None:
     snake_class = pytest.importorskip("cosyvoice.transformer.activation").Snake
     hift = make_causal_hift(10.0)
     snakes = [module for module in hift.modules() if isinstance(module, snake_class)]
     with torch.no_grad():
         for snake in snakes:
             snake.alpha.copy_(torch.linspace(0.125, 4.0, snake.in_features))
-    reference_hift = copy.deepcopy(hift)
     stages.CosyVoice3Vocoder(HiftFlowStub(), hift)
+    decode = hift.decode
+    assert isinstance(decode, ChannelsLastHiftDecode)
     pairs = [
-        (module, reference)
-        for module, reference in zip(hift.modules(), reference_hift.modules())
-        if isinstance(reference, snake_class)
+        (activation, conv)
+        for block in (*hift.source_resblocks, *hift.resblocks)
+        for activation, conv in zip(
+            (*block.activations1, *block.activations2),
+            (*block.convs1, *block.convs2),
+            strict=True,
+        )
     ]
-    assert pairs
+    assert len(pairs) == len(snakes)
     torch.manual_seed(3)
     with torch.inference_mode():
-        for module, reference in pairs:
-            x = torch.randn(3, reference.in_features, 2049, device="cuda") * 30
-            assert torch.equal(module(x), reference(x))
+        for activation, conv in pairs:
+            channels = activation.in_features
+            x = torch.randn(3, 2049, channels, device="cuda") * 30
+            bias = torch.randn(channels, device="cuda")
+            residual = torch.randn(3, 2049, channels, device="cuda") * 30
+            sum_out = torch.empty_like(x)
+            padded = decode.snake(
+                activation, x, conv, bias=bias, residual=residual, sum_out=sum_out
+            )
+            summed = x + bias + residual
+            left = conv.causal_padding
+            right = padded.shape[1] - left - 2049
+            expected = F.pad(activation(summed.transpose(1, 2)), (left, right))
+            assert padded.shape[1] % conv.dilation[0] == 0
+            assert 0 <= right < conv.dilation[0]
+            assert torch.equal(sum_out, summed)
+            assert torch.equal(add_bias_and_residual(x, bias, residual), summed)
+            assert torch.equal(padded, expected.transpose(1, 2))
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("factor", [1, 5])
+def test_leaky_relu_padded_is_bit_identical_to_the_eager_chain(factor: int) -> None:
+    torch.manual_seed(factor)
+    x = torch.randn(3, 101, 128, device="cuda") * 3
+    bias = torch.randn(128, device="cuda")
+    expected = F.pad(
+        F.leaky_relu(x + bias, 0.1).repeat_interleave(factor, dim=1), (0, 0, 10, 0)
+    )
+
+    padded = leaky_relu_padded(x, 0.1, factor, 10, bias=bias)
+
+    assert torch.equal(padded, expected)
 
 
 @pytest.mark.accelerator
@@ -1466,8 +2142,8 @@ def test_vocoder_leaves_hift_unpatched_off_nvidia(
     hift = make_causal_hift(10.0)
     vocoder = stages.CosyVoice3Vocoder(HiftFlowStub(), hift)
     assert not vocoder.has_hift_kernels
+    assert "decode" not in vars(hift)
     assert all("forward" not in vars(module) for module in hift.modules())
-    assert "_stft" not in vars(hift) and "_istft" not in vars(hift)
 
 
 @pytest.mark.accelerator
@@ -1477,34 +2153,123 @@ def test_vocoder_spectra_match_cosyvoice_without_a_host_wait(
 ) -> None:
     monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
     hift = make_causal_hift(10.0)
-    reference_hift = copy.deepcopy(hift)
     stages.CosyVoice3Vocoder(HiftFlowStub(), hift)
+    decode = hift.decode
+    assert isinstance(decode, ChannelsLastHiftDecode)
     torch.manual_seed(2)
     waveforms = torch.randn(3, 4800, device="cuda") * 0.3
     magnitude = torch.rand(3, 9, 1201, device="cuda") * 2
     phase = (torch.rand(3, 9, 1201, device="cuda") * 2 - 1) * torch.pi
     with torch.inference_mode():
         references = (
-            *reference_hift._stft(
-                waveforms
-            ),  # noqa: leading-underscore  # upstream name
-            reference_hift._istft(  # noqa: leading-underscore  # upstream name
-                magnitude, phase
-            ),
+            *hift._stft(waveforms),  # noqa: leading-underscore  # upstream name
+            hift._istft(magnitude, phase),  # noqa: leading-underscore  # upstream name
         )
         sync_debug_mode = torch.cuda.get_sync_debug_mode()
         torch.cuda.set_sync_debug_mode("error")
         try:
+            spectrum = decode.spectrum(waveforms)
             outputs = (
-                *hift._stft(waveforms),  # noqa: leading-underscore  # upstream name
-                hift._istft(  # noqa: leading-underscore  # upstream name
-                    magnitude, phase
-                ),
+                spectrum[:, :9],
+                spectrum[:, 9:],
+                decode.inverse(magnitude, phase),
             )
         finally:
             torch.cuda.set_sync_debug_mode(sync_debug_mode)
     for output, reference in zip(outputs, references, strict=True):
         torch.testing.assert_close(output, reference)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_hift_step_queues_its_samples_without_a_host_wait() -> None:
+    hift = make_causal_hift(10.0)
+    stages.patch_sine_harmonics(hift, "cuda")
+    vocoder = stages.CosyVoice3Vocoder(HiftFlowStub(), hift)
+    samples_per_frame = vocoder.hift_samples_per_mel_frame
+    torch.manual_seed(6)
+    rows = [
+        stages.HiftStepRow(
+            history=torch.randn(1, 80, total_frames, device="cuda") * 3,
+            emitted_samples=emitted_frames * samples_per_frame,
+            is_final=is_final,
+        )
+        for total_frames, emitted_frames, is_final in (
+            (120, 50, False),
+            (200, 140, True),
+            (30, 0, True),
+        )
+    ]
+    with torch.inference_mode():
+        reference = vocoder.hift_step(rows)
+        torch.cuda.synchronize()
+        sync_debug_mode = torch.cuda.get_sync_debug_mode()
+        torch.cuda.set_sync_debug_mode("error")
+        try:
+            samples = vocoder.hift_step(rows)
+        finally:
+            torch.cuda.set_sync_debug_mode(sync_debug_mode)
+    assert samples.emitted_samples == reference.emitted_samples
+    for delta, expected in zip(samples.wait(), reference.wait(), strict=True):
+        assert torch.equal(delta, expected)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_hift_steps_record_their_copies_on_two_events_in_turn() -> None:
+    vocoder = stages.CosyVoice3Vocoder(HiftFlowStub(), make_causal_hift(10.0))
+    row = stages.HiftStepRow(
+        history=torch.randn(1, 80, 60, device="cuda"),
+        emitted_samples=0,
+        is_final=False,
+    )
+    with torch.inference_mode():
+        events = [vocoder.hift_step([row]).copy_done for _ in range(3)]
+    assert events[0] is not events[1]
+    assert events[2] is events[0]
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_patched_sine_source_matches_cosyvoice_without_a_host_wait() -> None:
+    hift = make_causal_hift(10.0)
+    reference_hift = copy.deepcopy(hift)
+    stages.patch_sine_harmonics(hift, "cuda")
+    torch.manual_seed(4)
+    f0 = torch.rand(3, 4800, 1, device="cuda") * 400
+    with torch.inference_mode():
+        references = reference_hift.m_source.l_sin_gen(f0)
+        sync_debug_mode = torch.cuda.get_sync_debug_mode()
+        torch.cuda.set_sync_debug_mode("error")
+        try:
+            outputs = hift.m_source.l_sin_gen(f0)
+        finally:
+            torch.cuda.set_sync_debug_mode(sync_debug_mode)
+    for output, reference in zip(outputs, references, strict=True):
+        assert torch.equal(output, reference)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize("finalize", [False, True])
+def test_channels_last_decode_matches_cosyvoice_decode(
+    monkeypatch: pytest.MonkeyPatch, finalize: bool
+) -> None:
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
+    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
+    hift = make_causal_hift(10.0)
+    reference_hift = copy.deepcopy(hift)
+    stages.CosyVoice3Vocoder(HiftFlowStub(), hift)
+    assert isinstance(hift.decode, ChannelsLastHiftDecode)
+    samples_per_frame = int(np.prod(hift.upsample_rates)) * hift.istft_params["hop_len"]
+    torch.manual_seed(5)
+    mel = torch.randn(2, 80, 100, device="cuda") * 3
+    source = torch.randn(2, 1, 100 * samples_per_frame, device="cuda") * 0.1
+    with torch.inference_mode():
+        decoded = hift.decode(x=mel, s=source, finalize=finalize)
+        reference = reference_hift.decode(x=mel, s=source, finalize=finalize)
+    assert decoded.shape == reference.shape
+    torch.testing.assert_close(decoded, reference, atol=HIFT_ROUNDING_ATOL, rtol=0)
 
 
 @pytest.mark.accelerator
@@ -1539,7 +2304,9 @@ def test_hift_decode_replay_equals_each_rows_own_decode(
             for row in range(3)
         ]
     for row, reference in enumerate(alone):
-        assert torch.equal(replayed[row : row + 1], reference)
+        torch.testing.assert_close(
+            replayed[row : row + 1], reference, atol=HIFT_ROUNDING_ATOL, rtol=0
+        )
 
 
 @pytest.mark.accelerator
@@ -1581,11 +2348,9 @@ def test_hift_step_through_the_decode_graphs_equals_the_eager_step(
         eager = vocoder.hift_step(rows)
         vocoder.hift_decode_cuda_graph_runner = runner
         replayed = vocoder.hift_step(rows)
-    for (delta, emitted_after), (reference, reference_after) in zip(
-        replayed, eager, strict=True
-    ):
-        assert emitted_after == reference_after
-        assert torch.equal(delta, reference)
+    assert replayed.emitted_samples == eager.emitted_samples
+    for delta, reference in zip(replayed.wait(), eager.wait(), strict=True):
+        torch.testing.assert_close(delta, reference, atol=HIFT_ROUNDING_ATOL, rtol=0)
 
 
 def prefix_pool_scheduler(

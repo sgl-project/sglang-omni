@@ -10,7 +10,7 @@ import queue as _queue_mod
 import threading
 from collections.abc import Coroutine
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Callable, Generic, TypeVar
+from typing import Callable, Generic, Protocol, TypeVar
 
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 
@@ -71,6 +71,12 @@ ComputeInput = TypeVar("ComputeInput")
 ComputeResult = TypeVar("ComputeResult")
 
 
+class ThreadInitializer(Protocol):
+    """Prepare a new pool thread before it runs any compute."""
+
+    def __call__(self) -> None: ...
+
+
 class ThreadedSimpleScheduler(Generic[ComputeInput, ComputeResult]):
     """Run per-request work concurrently while preserving scheduler IO shape.
 
@@ -100,6 +106,7 @@ class ThreadedSimpleScheduler(Generic[ComputeInput, ComputeResult]):
         max_concurrency: int | None = 8,
         abort_callback: Callable[[str], None] | None = None,
         dispatch_fn: Callable[[ComputeInput], Future[ComputeResult]] | None = None,
+        thread_initializer: ThreadInitializer | None = None,
     ):
         self.lock = threading.Lock()
         self.capacity_freed = threading.Condition(self.lock)
@@ -127,7 +134,9 @@ class ThreadedSimpleScheduler(Generic[ComputeInput, ComputeResult]):
         self.executor = (
             None
             if dispatch_fn is not None
-            else ThreadPoolExecutor(max_workers=self.max_concurrency)
+            else ThreadPoolExecutor(
+                max_workers=self.max_concurrency, initializer=thread_initializer
+            )
         )
         self.pending: dict[str, Future] = {}
         self.queued_aborts: set[str] = set()

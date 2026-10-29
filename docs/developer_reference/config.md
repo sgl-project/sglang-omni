@@ -256,13 +256,15 @@ rejected from the author channel.
 ### Device and GPU placement contract
 
 A stage's card is placement's decision, made in the parent process from
-`stage.gpu` (or `processes.<name>.replica_devices` for a replicated process)
+`stage.gpu` (or `processes.<name>.replica_devices` when configured, including a single replica)
 and handed to the factory as `gpu_id`. The factory's `device` argument is
 only ever a device type: `cpu` to keep a stage on the host, or a platform
 type such as `cuda`/`npu` that must match the host. It never carries an
 index. `cuda:1` in a config is refused, and so are `factory.gpu_id` and the
 two memory-fraction kwargs listed in `PLACEMENT_OWNED_FACTORY_KWARGS`
 (`sglang_omni/config/schema.py`), because those are injected by placement.
+
+Replica devices take precedence over stage GPU IDs regardless of YAML/CLI precedence. Expansion logs the overridden stage GPU and effective replica assignments; CPU stages are unchanged. No special GPU sentinel is needed.
 
 Inside a factory the two values meet in one helper:
 

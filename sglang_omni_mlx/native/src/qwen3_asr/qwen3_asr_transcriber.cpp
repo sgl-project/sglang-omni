@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "qwen3_asr/qwen3_asr_transcriber.h"
+#include "common/text.h"
 
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <map>
-#include <set>
 
 namespace qwen3_asr {
+
+using omni_common::IsTokenLoop;
+using omni_common::IsUnicodeSpace;
 
 namespace mx = mlx::core;
 
@@ -15,8 +18,6 @@ namespace {
 
 constexpr const char *kAsrTextMarker = "<asr_text>";
 constexpr const char *kAudioPad = "<|audio_pad|>";
-constexpr size_t kTokenLoopWindow = 24;
-constexpr size_t kTokenLoopMaxDistinct = 3;
 constexpr int kOutputTokensPerAudioSecond = 10;
 constexpr int kMinDefaultOutputTokens = 128;
 
@@ -94,77 +95,6 @@ SpeakerSegmentsJson(const std::vector<SpeakerSegment> &segments) {
     array.push_back(std::move(json));
   }
   return array;
-}
-
-bool IsUnicodeSpace(uint32_t code_point) {
-  return code_point == ' ' || (code_point >= 0x09 && code_point <= 0x0D) ||
-         (code_point >= 0x1C && code_point <= 0x1F) || code_point == 0x85 ||
-         code_point == 0xA0 || code_point == 0x1680 ||
-         (code_point >= 0x2000 && code_point <= 0x200A) ||
-         code_point == 0x2028 || code_point == 0x2029 || code_point == 0x202F ||
-         code_point == 0x205F || code_point == 0x3000;
-}
-
-// Note (Jiaxin Deng): assumes valid UTF-8, the only kind the tokenizer emits.
-std::vector<uint32_t> CodePoints(const std::string &text) {
-  std::vector<uint32_t> code_points;
-  size_t i = 0;
-  while (i < text.size()) {
-    const auto byte = [&](size_t k) { return static_cast<uint8_t>(text[k]); };
-    const uint8_t lead = byte(i);
-    uint32_t cp = lead;
-    size_t length = 1;
-    if (lead >= 0xF0 && i + 3 < text.size()) {
-      cp = ((lead & 0x07) << 18) | ((byte(i + 1) & 0x3F) << 12) |
-           ((byte(i + 2) & 0x3F) << 6) | (byte(i + 3) & 0x3F);
-      length = 4;
-    } else if (lead >= 0xE0 && i + 2 < text.size()) {
-      cp = ((lead & 0x0F) << 12) | ((byte(i + 1) & 0x3F) << 6) |
-           (byte(i + 2) & 0x3F);
-      length = 3;
-    } else if (lead >= 0xC0 && i + 1 < text.size()) {
-      cp = ((lead & 0x1F) << 6) | (byte(i + 1) & 0x3F);
-      length = 2;
-    } else {
-    }
-    code_points.push_back(cp);
-    i += length;
-  }
-  return code_points;
-}
-
-std::string StripUnicodeWhitespace(const std::string &text) {
-  const std::vector<uint32_t> code_points = CodePoints(text);
-  size_t begin_cp = 0;
-  size_t end_cp = code_points.size();
-  while (begin_cp < end_cp && IsUnicodeSpace(code_points[begin_cp]))
-    ++begin_cp;
-  while (end_cp > begin_cp && IsUnicodeSpace(code_points[end_cp - 1]))
-    --end_cp;
-  size_t byte = 0;
-  size_t begin_byte = 0;
-  size_t end_byte = 0;
-  for (size_t cp = 0; cp <= code_points.size(); ++cp) {
-    if (cp == begin_cp)
-      begin_byte = byte;
-    if (cp == end_cp)
-      end_byte = byte;
-    if (cp == code_points.size())
-      break;
-    const uint8_t lead = static_cast<uint8_t>(text[byte]);
-    byte += lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
-  }
-  return text.substr(begin_byte, end_byte - begin_byte);
-}
-
-bool IsTokenLoop(const std::vector<int> &output_ids) {
-  if (output_ids.size() < kTokenLoopWindow) {
-    return false;
-  } else {
-  }
-  const std::set<int> distinct(output_ids.end() - kTokenLoopWindow,
-                               output_ids.end());
-  return distinct.size() <= kTokenLoopMaxDistinct;
 }
 
 std::optional<std::string> NormalizeLanguage(const std::string &language) {
@@ -277,10 +207,11 @@ Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
   const int max_new_tokens =
       options.max_new_tokens.value_or(0) != 0
           ? *options.max_new_tokens
-          : std::max(kMinDefaultOutputTokens,
-                     static_cast<int>(
-                         std::ceil(static_cast<double>(samples.size()) /
-                                   kSampleRate * kOutputTokensPerAudioSecond)));
+          : std::max(
+                kMinDefaultOutputTokens,
+                static_cast<int>(std::ceil(static_cast<double>(samples.size()) /
+                                           omni_common::kSampleRate *
+                                           kOutputTokensPerAudioSecond)));
   const auto is_stop = [&](int token_id) {
     return token_id == im_end_id_ ||
            (options.stop_at_end_of_text && token_id == end_of_text_id_);
