@@ -220,6 +220,10 @@ class OmniPlatform(DeviceMixin):
         """Default backend for all attention in encoder-decoder models, if needed."""
         return None
 
+    def get_thinker_attention_backend(self, tp_size: int) -> str | None:
+        """Default attention backend for the Qwen3-Omni thinker; None lets SGLang pick."""
+        return None
+
     def supports_fp8_moe(self) -> bool:
         return True
 
