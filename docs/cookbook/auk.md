@@ -64,6 +64,8 @@ python sglang_omni_mlx/native/ci/benchmark_auk.py \
 
 `cases.json` is a list of objects with `id`, `language` (`en` or `zh`), `text`, `reference_file` (relative to the JSON file), `generation_seconds`, and `seed`. By default, each case is sent once at concurrency 1. Start a fresh server for each independent trial. Results include each WAV, HTTP latency, real-time factor, measured-window throughput, and macOS process-tree physical footprint. Startup and speech quality must be measured separately. The two backends use their own random generators, so equal seeds do not imply equal noise or waveforms.
 
+Native AuK model checks run locally, outside Mac CI. Use the shared [TTS evaluation tools](../developer_reference/tts_bench.md) for ASR scoring of generated audio.
+
 ## Speech Generation
 
 `/v1/audio/speech` takes the text in `input`. Without reference audio, `instructions` describes the voice and defaults to `A clear, natural voice.` An explicit target duration is required in this mode:

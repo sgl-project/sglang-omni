@@ -30,7 +30,6 @@ class TokenizerSource(FileSource):
 
 class ModelPin(FileSource):
     tokenizer: NotRequired[TokenizerSource]
-    file_sizes: NotRequired[dict[str, int]]
 
 
 def main() -> None:

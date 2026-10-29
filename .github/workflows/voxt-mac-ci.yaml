@@ -46,7 +46,6 @@ jobs:
     outputs:
       run_mac: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.plan.outputs.run_mac }}
       run_music3: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.pr.outputs.music3 }}
-      run_auk: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.pr.outputs.auk }}
     steps:
       - name: Fetch latest PR gate state
         if: ${{ github.event_name == 'pull_request' }}
@@ -72,11 +71,6 @@ jobs:
             const music3 = /^(\.github\/workflows\/voxt-mac-ci\.yaml$|sglang_omni_mlx\/native\/(CMakeLists\.txt$|scripts\/|src\/(music3\/|common\/|qwen3_asr\/)|tools\/music3_|ci\/(music3_|generate_music3_reference\.py$|model_golden\/minimax-music3\.json$|model_pins\.json$|provision.*\.py$|check_.*\.py$|test_check_golden\.py$|test_model_servers\.py$|requirements\.lock$)))/;
             core.setOutput("music3", files.some(file =>
               music3.test(file.filename) || music3.test(file.previous_filename || "")));
-            // Note (Jiaxin Deng): AuK's cold checkpoints need about 50 GB, so
-            // only PRs touching AuK or the code it shares provision them.
-            const auk = /^(\.github\/workflows\/voxt-mac-ci\.yaml$|sglang_omni_mlx\/native\/(CMakeLists\.txt$|scripts\/|src\/(auk\/|common\/(audio|audio_resample|tts_service|service|http)\.|qwen3_asr\/qwen3_audio\.)|tools\/(auk_|prepare_auk)|ci\/(auk_|test_auk|test_prepare_auk|model_golden\/auk|model_pins\.json$|provision.*\.py$|requirements\.lock$)))/;
-            core.setOutput("auk", files.some(file =>
-              auk.test(file.filename) || auk.test(file.previous_filename || "")));
             core.setOutput("is_selected", labels.includes("run-all-ci") || labels.includes("run-mac-ci"));
 
       - name: Block draft PR
@@ -119,40 +113,16 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      # Keep room for a replacement while the previous artifact remains usable.
       - name: Check free disk space
         id: native-disk
         env:
           RUN_MUSIC3: ${{ needs.preflight.outputs.run_music3 }}
-          RUN_AUK: ${{ needs.preflight.outputs.run_auk }}
         run: |
           echo "Unified memory bytes: $(sysctl -n hw.memsize)"
           mkdir -p "$VOXT_CI_ROOT"
-          required_gb=$(python3 - <<'PY'
-          import json
-          import math
-          import os
-          from pathlib import Path
-          data = Path(os.environ["VOXT_CI_ROOT"]) / "data"
-          pins = json.loads(Path("sglang_omni_mlx/native/ci/model_pins.json").read_text())
-          missing_source_bytes = 0
-          auk_repos = ("tencent/AuK", "tencent/AuK-Flash", "Qwen/Qwen2.5-Omni-3B")
-          for repo in auk_repos if os.environ["RUN_AUK"] == "true" else ():
-              directory = data / "models" / repo.replace("/", "_")
-              for name, size in pins[repo]["file_sizes"].items():
-                  path = directory / name
-                  if not path.is_file() or path.stat().st_size != size:
-                      missing_source_bytes += size
-          required = 20 + math.ceil(missing_source_bytes / 1024**3)
-          prepared = [data / "native_models" / model for model in ("tencent_AuK", "tencent_AuK-Flash")]
-          if os.environ["RUN_AUK"] == "true":
-              required += 14 * sum(not directory.exists() for directory in prepared)
-              required += 14 * any(directory.exists() for directory in prepared)
-          print(required)
-          PY
-          )
           free_gb=$(df -g "$VOXT_CI_ROOT" | awk 'NR == 2 {print $4}')
           echo "Free under $VOXT_CI_ROOT: ${free_gb} GB"
+          required_gb=20
           music3_cache="$VOXT_CI_ROOT/data/models/mlx-community_MiniMax-Music3-mxfp8"
           if [ "$RUN_MUSIC3" = true ]; then
             cached_gb=0
@@ -171,7 +141,7 @@ jobs:
             :
           fi
           if [ "$free_gb" -lt "$required_gb" ]; then
-            echo "::error::Only ${free_gb} GB free; this run needs ${required_gb} GB including missing AuK checkpoints."
+            echo "::error::Only ${free_gb} GB free on the runner; this run needs at least ${required_gb} GB."
             exit 1
           else
             echo "ready=true" >> "$GITHUB_OUTPUT"
@@ -195,10 +165,6 @@ jobs:
         run: |
           sglang_omni_mlx/native/scripts/build_runtime.sh "$RUNNER_TEMP/runtime" "$VOXT_CI_ROOT/runtime-build"
           "$VOXT_CI_ROOT/runtime-build/venv/bin/cmake" --build "$VOXT_CI_ROOT/runtime-build/cmake" --target asr_service_probe
-
-      - name: AuK checkpoint preparation tests
-        run: |
-          "$VOXT_CI_ROOT/runtime-build/venv/bin/python" -m unittest sglang_omni_mlx.native.ci.test_prepare_auk
 
       - name: Provision the Music3 checkpoint
         if: ${{ !cancelled() && needs.preflight.outputs.run_music3 == 'true' }}
@@ -260,39 +226,12 @@ jobs:
       - name: Provision the other models' checkpoints
         id: model-checkpoints
         if: ${{ !cancelled() && steps.native-disk.outputs.ready == 'true' && steps.ci-python.outcome == 'success' && steps.native-build.outcome == 'success' }}
-        env:
-          RUN_AUK: ${{ needs.preflight.outputs.run_auk }}
         run: |
-          auk_exclusions=()
-          if [ "$RUN_AUK" != true ]; then
-            auk_exclusions=(--exclude-model tencent/AuK --exclude-model tencent/AuK-Flash --exclude-model Qwen/Qwen2.5-Omni-3B)
-          else
-            :
-          fi
           "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision_models.py "$VOXT_CI_ROOT/data" \
-            --exclude-model mlx-community/MiniMax-Music3-mxfp8 "${auk_exclusions[@]}"
-
-      - name: Prepare AuK native checkpoints
-        id: auk-checkpoints
-        if: ${{ !cancelled() && needs.preflight.outputs.run_auk == 'true' && steps.native-build.outcome == 'success' && steps.model-checkpoints.outcome == 'success' }}
-        run: |
-          preparation_python="$VOXT_CI_ROOT/runtime-build/venv/bin/python"
-          pins=sglang_omni_mlx/native/ci/model_pins.json
-          conditioner_revision=$("$preparation_python" -c 'import json,sys; print(json.load(open(sys.argv[1]))["Qwen/Qwen2.5-Omni-3B"]["revision"])' "$pins")
-          for model in AuK AuK-Flash; do
-            auk_revision=$("$preparation_python" -c 'import json,sys; print(json.load(open(sys.argv[1]))["tencent/" + sys.argv[2]]["revision"])' "$pins" "$model")
-            "$preparation_python" sglang_omni_mlx/native/tools/prepare_auk.py \
-              --auk-directory "$VOXT_CI_ROOT/data/models/tencent_$model" \
-              --conditioner-directory "$VOXT_CI_ROOT/data/models/Qwen_Qwen2.5-Omni-3B" \
-              --output "$VOXT_CI_ROOT/data/native_models/tencent_$model" \
-              --auk-revision "$auk_revision" --conditioner-revision "$conditioner_revision" --reuse
-          done
+            --exclude-model mlx-community/MiniMax-Music3-mxfp8
 
       - name: Other models' golden outputs on the frozen corpus
         if: ${{ !cancelled() && steps.native-build.outcome == 'success' && steps.asr-checkpoints.outcome == 'success' && steps.model-checkpoints.outcome == 'success' }}
-        env:
-          AUK_CHECKPOINTS_READY: ${{ steps.auk-checkpoints.outcome == 'success' }}
-          RUN_AUK: ${{ needs.preflight.outputs.run_auk }}
         run: |
           result=0
           for golden in sglang_omni_mlx/native/ci/model_golden/*.json; do
@@ -301,19 +240,6 @@ jobs:
             else
               :
             fi
-            case "$golden" in
-              */auk.json|*/auk-flash.json)
-                if [ "$RUN_AUK" != true ]; then
-                  continue
-                elif [ "$AUK_CHECKPOINTS_READY" != true ]; then
-                  echo "::error::Skipping $golden because AuK checkpoint preparation did not succeed."
-                  result=1
-                  continue
-                else
-                  :
-                fi
-                ;;
-            esac
             "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/check_model_golden.py \
               --runtime-bin "$RUNNER_TEMP/runtime/bin" --data-root "$VOXT_CI_ROOT/data" --golden "$golden" \
               --outputs "$RUNNER_TEMP/golden-outputs" || result=1
@@ -350,21 +276,6 @@ jobs:
           name: voxt-native-runtime
           path: ${{ runner.temp }}/voxt-native-runtime.tar.gz
           if-no-files-found: error
-
-      - name: AuK server API tests
-        if: ${{ !cancelled() && needs.preflight.outputs.run_auk == 'true' && steps.native-build.outcome == 'success' && steps.auk-checkpoints.outcome == 'success' }}
-        env:
-          NATIVE_RUNTIME_BIN: ${{ runner.temp }}/runtime/bin
-          AUK_MODEL_DIRECTORY: ${{ env.VOXT_CI_ROOT }}/data/native_models/tencent_AuK-Flash
-          MLX_ENABLE_TF32: "0"
-        run: |
-          status=0
-          "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_auk_api.py || status=1
-          AUK_MODEL_DIRECTORY="$VOXT_CI_ROOT/data/native_models/tencent_AuK" \
-            "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q \
-            sglang_omni_mlx/native/ci/test_auk_api.py::test_health_models_and_speech_formats \
-            sglang_omni_mlx/native/ci/test_auk_api.py::test_reference_cloning_duration_and_raw_instruction || status=1
-          exit "$status"
 
   voxt-unit:
     name: Voxt Omni unit tests
