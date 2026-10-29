@@ -646,9 +646,11 @@ to zero. Optional <code class="docutils literal notranslate"><span class="pre">d
 accepts finite nonnegative values (default 1.7).</p>
 <p>Responses are complete stereo PCM16 <code class="docutils literal notranslate"><span class="pre">wav</span></code> or raw interleaved <code class="docutils literal notranslate"><span class="pre">pcm</span></code> at
 32 kHz. <code class="docutils literal notranslate"><span class="pre">stream=true</span></code>, other formats and speed changes return 400. Only one
-song is generated at a time; a concurrent request returns 429. A disconnected
-client’s generation releases the worker when computation finishes. Supervisor
-shutdown cancels between frames, acoustic windows and Euler steps. Voxt’s
+song is generated at a time; a concurrent request returns 503. A request not
+answered <code class="docutils literal notranslate"><span class="pre">--request-timeout-s</span></code> seconds (1800 by default) after it is admitted
+returns 504. That deadline, a client disconnect and supervisor shutdown each
+cancel generation at its next frame, acoustic window or Euler step, which frees
+the server for the next request. Voxt’s
 <code class="docutils literal notranslate"><span class="pre">--supervised</span></code> lifecycle, <code class="docutils literal notranslate"><span class="pre">/health</span></code> and <code class="docutils literal notranslate"><span class="pre">/v1/models</span></code> are supported; this does
 not add a Music3 interface to Voxt.</p>
 <section id="native-mlx-stage-offload">
@@ -662,7 +664,7 @@ not add a Music3 interface to Voxt.</p>
 </div>
 <p>Startup loads configuration and the tokenizer and validates checkpoint shapes and stage ownership without evaluating the weights. Every tensor must belong to exactly one stage: AR/RVQ uses language_model and rvq_depth_decoder; the acoustic stage uses condition_encoder, transformer and vocoder. Each accepted request loads AR/RVQ weights, evaluates the hidden-state handoff, synchronizes and releases AR, then loads the acoustic weights. Acoustic weights stay loaded across all windows and are released after completion, cancellation or failure.</p>
 <p>The checkpoint directory is resolved once at startup; keep its contents unchanged while the server runs. No second host weight copy is retained. Reloading weights adds disk I/O and latency; file-backed pages can remain in the operating system’s cache.</p>
-<p>The existing single-request worker owns both stages and returns 429 for concurrent submissions. Omitting the flag keeps both stages resident. Component names accept either order, surrounding whitespace and mixed case, matching the CUDA CLI. This option belongs to the native executable; CUDA continues to use the <code class="docutils literal notranslate"><span class="pre">sgl-omni</span> <span class="pre">serve</span></code> option described below.</p>
+<p>The existing single-request worker owns both stages and returns 503 for concurrent submissions. Omitting the flag keeps both stages resident. Component names accept either order, surrounding whitespace and mixed case, matching the CUDA CLI. This option belongs to the native executable; CUDA continues to use the <code class="docutils literal notranslate"><span class="pre">sgl-omni</span> <span class="pre">serve</span></code> option described below.</p>
 <p><code class="docutils literal notranslate"><span class="pre">music3_synthesize</span></code> accepts the same flag and reports per-request elapsed time, AR elapsed time and peak active MLX allocation in bytes. Its diagnostic <code class="docutils literal notranslate"><span class="pre">--check-cancellation</span></code> flag cancels at the fully evaluated AR handoff before synthesizing a retry, and reports active MLX allocation before and after cancellation. The Mac golden harness runs short and cross-window cases in separate resident and offload processes and requires identical waveform digests and metadata. HTTP seeded-repeat and busy cases run in both modes; the remaining HTTP cases run resident. CI uploads WAVs from both modes for review. The earlier resident validation record below does not establish offload memory or latency results.</p>
 </section>
 <section id="reference-parity-and-mac-ci">
@@ -712,7 +714,8 @@ macOS 26.6.2 and MLX 0.32.3. The native CMake build, 21 selected Music3 tests,
 seven golden-harness tests, six server model-kind checks and two existing
 Whisper supervisor lifecycle checks passed. The Music3 tests cover WAV/PCM
 responses, exact seeded repeats, invalid requests and a concurrent request
-returning 429.</p>
+refused as busy. They also cover the busy, deadline and disconnect paths
+above, each checking that the server returns to idle.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Reference case</p></th>
