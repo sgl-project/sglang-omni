@@ -919,15 +919,19 @@ by default) and logs:</p>
 <td><p>Samples each frame’s main token and codes with Triton kernels instead of the PyTorch sampler, under the same top-k, top-p and repetition-aware rules. Using the same seed does not guarantee the same tokens as the PyTorch sampler. Rounding can keep or drop a candidate whose cumulative probability lies at top_p.</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">--tts_engine.factory.triton_sampling</span> <span class="pre">false</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p>Fused codebook tower layers, up to 16 rows</p></td>
+<tr class="row-even"><td><p>Reference sampling, off</p></td>
+<td><p>Samples each frame with Fish Audio’s reference sampling for Drama 3, in PyTorch, instead of the samplers above. The main token’s first draw keeps only candidates whose probability reaches the request’s <code class="docutils literal notranslate"><span class="pre">epsilon_cutoff</span></code> (1e-3 when unset, 0 turns it off) and top-p drops the token that crosses it; a first draw that repeats one of the last 16 main tokens, end of speech included, becomes the most probable candidate. The codebook heads take the request’s <code class="docutils literal notranslate"><span class="pre">temperature</span></code>, <code class="docutils literal notranslate"><span class="pre">top_k</span></code> and <code class="docutils literal notranslate"><span class="pre">top_p</span></code> with no epsilon cutoff and never return a code the codec’s 1024-entry residual codebooks lack. Its recommended request parameters are <code class="docutils literal notranslate"><span class="pre">temperature</span></code> 1.0, <code class="docutils literal notranslate"><span class="pre">top_p</span></code> 1.0, no <code class="docutils literal notranslate"><span class="pre">top_k</span></code> and <code class="docutils literal notranslate"><span class="pre">epsilon_cutoff</span></code> 1e-3. With it off, a request that sets a non-zero <code class="docutils literal notranslate"><span class="pre">epsilon_cutoff</span></code> is refused.</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--tts_engine.factory.reference_sampling</span> <span class="pre">true</span></code>; <code class="docutils literal notranslate"><span class="pre">--tts_engine.factory.reference_sampling_fallback</span> <span class="pre">ras</span></code> replaces a repeated first draw with a second draw at temperature 1.0, top-p 0.95 and top-k 30 instead</p></td>
+</tr>
+<tr class="row-odd"><td><p>Fused codebook tower layers, up to 16 rows</p></td>
 <td><p>Runs the codebook tower layers of decode and first-frame steps of up to 16 rows as fused Triton kernels, eagerly or inside the CUDA graphs; larger steps and the tower’s prefill keep the module path. The kernels add in a different order, so the tower’s outputs can differ in the last bits and the sampled frames can differ.</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">--tts_engine.factory.tower_fused_layers</span> <span class="pre">false</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p>Vocoder window CUDA graphs</p></td>
+<tr class="row-even"><td><p>Vocoder window CUDA graphs</p></td>
 <td><p>Replays the decode of each streaming window length at batch 1 as a CUDA graph; batches and longer windows decode eagerly.</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">--vocoder.factory.window_cuda_graphs</span> <span class="pre">false</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p>Vocoder fp16 decoding</p></td>
+<tr class="row-odd"><td><p>Vocoder fp16 decoding</p></td>
 <td><p>Decodes frames into audio in fp16.</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">--vocoder.factory.decode_dtype</span> <span class="pre">float32</span></code></p></td>
 </tr>
