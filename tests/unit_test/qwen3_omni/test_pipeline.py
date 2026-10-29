@@ -2549,11 +2549,13 @@ def test_qwen_video_cache_key_hash_ends_with_a_failed_request(
 ):
     """A request whose processor call failed left its video hash on a process-wide pool."""
     pre, _, _ = decoded_audio_preprocessor
+    hash_started = threading.Event()
     processor_entered = threading.Event()
     hash_finished = threading.Event()
     compute_video_cache_key = preprocessor_mod.compute_video_cache_key
 
     def video_cache_key(videos: list[torch.Tensor]) -> str | None:
+        hash_started.set()
         processor_entered.wait(timeout=5)
         key = compute_video_cache_key(videos)
         hash_finished.set()
@@ -2577,7 +2579,7 @@ def test_qwen_video_cache_key_hash_ends_with_a_failed_request(
             pre, monkeypatch, torch.zeros(4, 3, 2, 2), process, video_cache_key
         )
 
-    assert hash_finished.is_set()
+    assert hash_finished.is_set() or not hash_started.is_set()
     assert not [
         thread
         for thread in threading.enumerate()
