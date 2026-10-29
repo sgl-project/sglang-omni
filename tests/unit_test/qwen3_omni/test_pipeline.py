@@ -7,6 +7,7 @@ import base64
 import inspect
 import threading
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from io import BytesIO
 from types import SimpleNamespace
@@ -2547,18 +2548,24 @@ def test_qwen_video_cache_key_is_hashed_while_the_processor_runs(
 def test_qwen_video_cache_key_hash_ends_with_a_failed_request(
     decoded_audio_preprocessor, monkeypatch
 ):
-    """A request whose processor call failed left its video hash on a process-wide pool."""
+    """A request whose processor call failed surfaced its error while its video hash still read the frames."""
     pre, _, _ = decoded_audio_preprocessor
+    trace: list[str] = []
     hash_started = threading.Event()
-    processor_entered = threading.Event()
-    hash_finished = threading.Event()
+    request_cleanup = threading.Event()
     compute_video_cache_key = preprocessor_mod.compute_video_cache_key
 
+    class RequestExecutor(ThreadPoolExecutor):
+        def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
+            request_cleanup.set()
+            super().shutdown(wait=wait, cancel_futures=cancel_futures)
+
     def video_cache_key(videos: list[torch.Tensor]) -> str | None:
+        trace.append("hash started")
         hash_started.set()
-        processor_entered.wait(timeout=5)
+        request_cleanup.wait(timeout=10)
         key = compute_video_cache_key(videos)
-        hash_finished.set()
+        trace.append("hash finished")
         return key
 
     def process(
@@ -2571,19 +2578,22 @@ def test_qwen_video_cache_key_hash_ends_with_a_failed_request(
         return_tensors: str,
         videos_kwargs: preprocessor_mod.VideoProcessorKwargs,
     ) -> dict[str, torch.Tensor]:
-        processor_entered.set()
+        hash_started.wait(timeout=10)
+        trace.append("processor failed")
         raise RuntimeError("processor failed")
 
+    monkeypatch.setattr(preprocessor_mod, "ThreadPoolExecutor", RequestExecutor)
     with pytest.raises(RuntimeError, match="processor failed"):
         run_video_request(
             pre, monkeypatch, torch.zeros(4, 3, 2, 2), process, video_cache_key
         )
+    trace.append("request failed")
 
-    assert hash_finished.is_set() or not hash_started.is_set()
-    assert not [
-        thread
-        for thread in threading.enumerate()
-        if thread.name.startswith("qwen3-omni-video-cache-key")
+    assert trace == [
+        "hash started",
+        "processor failed",
+        "hash finished",
+        "request failed",
     ]
 
 
