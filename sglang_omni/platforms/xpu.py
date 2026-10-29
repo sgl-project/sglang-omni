@@ -122,6 +122,11 @@ class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
         # the Mimi encoder's mask helper does.
         return False
 
+    def supports_async_device_to_host_copy(self) -> bool:
+        # Note (siju): on XPU a non_blocking copy into pinned memory holds the host until the
+        # stream's queued work drains, so a lookahead launch would wait for its own forward.
+        return False
+
     def graph_capture_records_collectives(self, group: GroupCoordinator) -> bool:
         if group.world_size == 1:
             return True
