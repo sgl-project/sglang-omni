@@ -366,10 +366,13 @@ async def test_local_video_audio_decode_concurrently_and_drain(
 def mpeg4_video(tmp_path: Path) -> Path:
     path = tmp_path / "video.mp4"
     with av.open(str(path), "w") as container:
-        stream = container.add_stream("mpeg4", rate=4)
+        stream = container.add_stream(
+            "mpeg4",
+            rate=4,
+            options={"g": str(MPEG4_KEYFRAME_INTERVAL), "sc_threshold": "1000000000"},
+        )
         stream.width = stream.height = 56
         stream.pix_fmt = "yuv420p"
-        stream.codec_context.gop_size = MPEG4_KEYFRAME_INTERVAL
         for index in range(8):
             pixels = np.full((56, 56, 3), index * 25, dtype=np.uint8)
             frame = av.VideoFrame.from_ndarray(pixels, format="rgb24")
