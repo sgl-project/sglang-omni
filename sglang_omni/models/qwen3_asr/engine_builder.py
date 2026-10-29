@@ -237,6 +237,8 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         if self.mm_attention_backend is not None:
             defaults["mm_attention_backend"] = self.mm_attention_backend
         else:
+            # Let SGLang VisionAttention choose from the current platform's
+            # supported backends, including FA3 or Triton on MUSA.
             pass
         return defaults
 
