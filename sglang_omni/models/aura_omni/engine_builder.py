@@ -8,6 +8,8 @@ multimodal processor; only the request and result adapters are AURA's.
 from __future__ import annotations
 
 import asyncio
+import copy
+import logging
 from array import array
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -52,6 +54,9 @@ from sglang_omni.scheduling.types import RequestOutput
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 from sglang_omni.utils.cpu import effective_cpu_count
 
+logger = logging.getLogger(__name__)
+
+SILENT_TOKEN = "<|silent|>"
 SAMPLING_FIELDS = ("temperature", "top_p", "top_k", "repetition_penalty")
 # About a minute of video: the 6.5 s, 30 fps test clip is 3,456 video tokens at
 # the processor defaults.
@@ -82,6 +87,20 @@ def generation_default(value: float | int | None, unset: float | int) -> float |
         return value
 
 
+def validate_silent_token(
+    tokenizer: PreTrainedTokenizerBase, checkpoint_dir: str
+) -> None:
+    """Refuse a checkpoint whose tokenizer cannot mark a silent turn the way AURA does."""
+    token_ids = tokenizer(SILENT_TOKEN, add_special_tokens=False).input_ids
+    if len(token_ids) != 1 or tokenizer.decode(token_ids, skip_special_tokens=True):
+        raise ValueError(
+            f"AURA Omni serves AURA checkpoints: {checkpoint_dir} has no special "
+            f"{SILENT_TOKEN} token, so a silent turn would reach Qwen3-TTS as text"
+        )
+    else:
+        pass
+
+
 def make_aura_scheduler_adapters(
     *,
     tokenizer: PreTrainedTokenizerBase,
@@ -105,8 +124,18 @@ def make_aura_scheduler_adapters(
         turn: AuraTurn = payload.data
         prompt = render_aura_prompt(turn)
         if turn["images"] or turn["videos"]:
+            if turn["video_sampling"]:
+                # A video request bypasses the processor's cache, so a per-request
+                # copy changes this request's frame budget and no other's.
+                request_processor = copy.copy(mm_processor)
+                request_processor.video_config = {
+                    **mm_processor.video_config,
+                    **turn["video_sampling"],
+                }
+            else:
+                request_processor = mm_processor
             processed = asyncio.run(
-                mm_processor.process_mm_data_async(
+                request_processor.process_mm_data_async(
                     image_data=list(turn["images"]),
                     input_text=prompt,
                     request_obj=SimpleNamespace(
@@ -166,6 +195,11 @@ def make_aura_scheduler_adapters(
             vocab_size=vocab_size,
         )
         req.multimodal_inputs = mm_inputs
+        logger.info(
+            f"AURA request {payload.request_id}: {len(turn['images'])} images, "
+            f"{len(turn['videos'])} videos, {len(turn['transcript'])} transcript "
+            f"chars, {len(input_ids)} prompt tokens"
+        )
         return AuraRequestData(
             input_ids=torch.tensor(input_ids.tolist(), dtype=torch.long),
             req=req,
@@ -239,6 +273,7 @@ class AuraEngineBuilder(SGLangGenerationEngineBuilder[AuraRequestData]):
         # processor modules, one of which it does not ship; the stock
         # Transformers Qwen3-VL classes load it as-is.
         self.processor = AutoProcessor.from_pretrained(checkpoint_dir)
+        validate_silent_token(self.processor.tokenizer, checkpoint_dir)
         self.generation_config = GenerationConfig.from_pretrained(checkpoint_dir)
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
