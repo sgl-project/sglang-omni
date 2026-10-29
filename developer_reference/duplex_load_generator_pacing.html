@@ -1,0 +1,1067 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Duplex Load Generator Pacing &#8212; SGLang</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=90905a2f556bf617f1a9" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../_static/styles/sphinx-book-theme.css?v=4418a689" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/css/custom_log.css?v=a64801f4" />
+    <link rel="stylesheet" type="text/css" href="../_static/css/custom_log.css?v=a64801f4" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../_static/scripts/fontawesome.js?digest=90905a2f556bf617f1a9"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9" />
+
+    <script src="../_static/documentation_options.js?v=7f7c277e"></script>
+    <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+    <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=ccdb6887"></script>
+    <script src="../_static/scripts/sphinx-book-theme.js?v=fab101a9"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'developer_reference/duplex_load_generator_pacing';</script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <script src="../_static/js/qwen3_omni_server_generator.js?v=d7738e8a"></script>
+    <script src="../_static/js/ming_omni_server_generator.js?v=7979a72f"></script>
+    <link rel="icon" href="../_static/logo.ico"/>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="0.2.0" />
+    <meta name="docbuild:last-update" content="Oct 29, 2026"/>
+  
+    
+    <script src="../_static/searchtools.js"></script>
+    <script src="../_static/language_data.js"></script>
+    <script src="../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search..."
+         aria-label="Search..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+        
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/sgl-omni-logo.svg" class="logo__image only-light" alt="SGLang - Home"/>
+    <img src="../_static/sgl-omni-logo.svg" class="logo__image only-dark pst-js-only" alt="SGLang - Home"/>
+  
+  
+</a></div>
+        <div class="sidebar-primary-item">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button></div>
+        <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
+    <div class="bd-toc-item navbar-nav active">
+        <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../get_started/installation.html">Installation — CUDA</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_apple_silicon.html">Installation — Apple Silicon</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_npu.html">Installation — NPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_xpu.html">Installation — Intel XPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_cpu.html">Installation — Intel CPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/installation_musa.html">Installation — MUSA</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../get_started/troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Cookbook</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/qwen3_tts.html">Qwen3-TTS</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/moss_tts.html">MOSS-TTS</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/moss_tts_local.html">MOSS-TTS-Local</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/whisper_asr.html">Whisper ASR</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/nemotron3_5_asr.html">Nemotron 3.5 ASR</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/nemotron_transcribe.html">Nemotron Transcribe</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/moss_transcribe_diarize.html">MOSS-Transcribe-Diarize</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/fishaudio_s2_pro.html">Fish Audio S2-Pro</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/fun_cosyvoice3.html">Fun-CosyVoice3</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/nemotron_voicechat.html">NemotronLabs VoiceChat</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/personaplex.html">PersonaPlex</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/cosmos3_nano.html">Cosmos3 Nano serving</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/qwen3_omni.html">Qwen3-Omni</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/qwen3_asr.html">Qwen3-ASR</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/minicpm_o.html">MiniCPM-o</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/fun_asr.html">Fun-ASR-Nano</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/higgs_tts.html">Higgs TTS</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/nemotron_diarization.html">Nemotron 3 Diarization</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/fishaudio_drama3.html">Fish Audio Drama 3</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/minimax_music3.html">MiniMax Music 3</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/ming_omni.html">Ming-Omni</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/auk.html">AuK</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/zonos2.html">ZONOS2</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/arkasr.html">ARK-ASR-3B</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/hy_simulmt.html">Hy-SimulMT</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/voxtral_tts.html">Voxtral TTS</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/dots_tts.html">dots.tts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/llada2_uni.html">LLaDA2.0-Uni</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/ming_tts.html">Ming-Omni-TTS</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/ming3_asr.html">Ming-3.0-asr-tiny</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/ming3_audio.html">Ming-3.0-audio-flash</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/ming3_tts.html">Ming-3.0-TTS</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">General Usage</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/qwen3_omni.html">Omni Model Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/native_chat_stage.html">Native Chat Stage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/audio_translations.html">Audio Translations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/tts.html">TTS Model Usage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/process_topology.html">Process Topology, Replicas, and GPU Sharing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/tts_process_topology.html">TTS Process Topology</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/process_topology_migration.html">Process Topology Migration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/omni_router.html">SGLang-Omni Router</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/mps_dp.html">Same-GPU Data Parallelism with CUDA MPS</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../basic_usage/native_media_routes.html">Native Media Routes</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">MLX</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../mlx/index.html">MLX Path</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="main.html">Architecture</a></li>
+<li class="toctree-l1"><a class="reference internal" href="apiserver_design.html">API Server Design</a></li>
+<li class="toctree-l1"><a class="reference internal" href="pipeline.html">Pipeline Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="config.html">Config</a></li>
+<li class="toctree-l1"><a class="reference internal" href="adding_parameters.html">Adding a Parameter</a></li>
+<li class="toctree-l1"><a class="reference internal" href="communication.html">Communication</a></li>
+<li class="toctree-l1"><a class="reference internal" href="reference_encode_service.html">Reference Encode Service</a></li>
+<li class="toctree-l1"><a class="reference internal" href="profiler.html">Request-level profiler</a></li>
+<li class="toctree-l1"><a class="reference internal" href="qwen3_asr_concurrency_profile.html">Qwen3-ASR High-Concurrency Benchmark and Bottleneck Profile</a></li>
+<li class="toctree-l1"><a class="reference internal" href="full_duplex_guide.html">Full-Duplex Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tts_bench.html">TTS benchmark runbook</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tts_model_integration.html">TTS Model Integration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="asr_bench.html">ASR benchmark runbook</a></li>
+<li class="toctree-l1"><a class="reference internal" href="omni_offline_bench.html">MiniCPM-o offline benchmark runbook</a></li>
+<li class="toctree-l1"><a class="reference internal" href="rl_admin_control.html">RL Admin Control</a></li>
+<li class="toctree-l1"><a class="reference internal" href="ci_labels.html">CI Workflows and Labels</a></li>
+<li class="toctree-l1"><a class="reference internal" href="bump_version.html">Bumping the SGLang Pin</a></li>
+</ul>
+
+    </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+
+<div class="sbt-scroll-pixel-helper"></div>
+
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item"><button class="sidebar-toggle primary-toggle btn btn-sm" title="Toggle primary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <span class="fa-solid fa-bars"></span>
+</button></div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+
+<div class="article-header-buttons">
+
+
+
+
+
+<div class="dropdown dropdown-source-buttons">
+  <button class="btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Source repositories">
+    <i class="fab fa-github"></i>
+  </button>
+  <ul class="dropdown-menu">
+      
+      
+      
+      <li><a href="https://github.com/sgl-project/sglang-omni" target="_blank"
+   class="btn btn-sm btn-source-repository-button dropdown-item"
+   title="Source repository"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fab fa-github"></i>
+  </span>
+<span class="btn__text-container">Repository</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li><a href="https://github.com/sgl-project/sglang-omni/blob/main/docs/developer_reference/duplex_load_generator_pacing.md?plain=1" target="_blank"
+   class="btn btn-sm btn-source-file-button dropdown-item"
+   title="Show source"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-code"></i>
+  </span>
+<span class="btn__text-container">Show source</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li><a href="https://github.com/sgl-project/sglang-omni/edit/main/docs/developer_reference/duplex_load_generator_pacing.md" target="_blank"
+   class="btn btn-sm btn-source-edit-button dropdown-item"
+   title="Suggest edit"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-pencil-alt"></i>
+  </span>
+<span class="btn__text-container">Suggest edit</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li><a href="https://github.com/sgl-project/sglang-omni/issues/new?title=Issue%20on%20page%20%2Fdeveloper_reference/duplex_load_generator_pacing.html&body=Your%20issue%20content%20here." target="_blank"
+   class="btn btn-sm btn-source-issues-button dropdown-item"
+   title="Open an issue"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-lightbulb"></i>
+  </span>
+<span class="btn__text-container">Open issue</span>
+</a>
+</li>
+      
+  </ul>
+</div>
+
+
+
+
+
+
+<div class="dropdown dropdown-download-buttons">
+  <button class="btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Download this page">
+    <i class="fas fa-download"></i>
+  </button>
+  <ul class="dropdown-menu">
+      
+      
+      
+      <li><a href="../_sources/developer_reference/duplex_load_generator_pacing.md" target="_blank"
+   class="btn btn-sm btn-download-source-button dropdown-item"
+   title="Download source file"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file"></i>
+  </span>
+<span class="btn__text-container">.md</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li>
+<button onclick="window.print()"
+  class="btn btn-sm btn-download-pdf-button dropdown-item"
+  title="Print to PDF"
+  data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file-pdf"></i>
+  </span>
+<span class="btn__text-container">.pdf</span>
+</button>
+</li>
+      
+  </ul>
+</div>
+
+
+
+
+<button onclick="toggleFullScreen()"
+  class="btn btn-sm btn-fullscreen-button pst-navbar-icon"
+  title="Fullscreen mode"
+  data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-expand"></i>
+  </span>
+
+</button>
+
+
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div>
+
+
+<button class="btn btn-sm pst-navbar-icon search-button search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="fa-solid fa-magnifying-glass fa-lg"></i>
+</button>
+<button class="sidebar-toggle secondary-toggle btn btn-sm pst-navbar-icon" title="Toggle secondary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <span class="fa-solid fa-list"></span>
+</button>
+</div></div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="jb-print-docs-body" class="onlyprint">
+    <h1>Duplex Load Generator Pacing</h1>
+    <!-- Table of contents -->
+    <div id="print-main-content">
+        <div id="jb-print-toc">
+            
+            <div>
+                <h2> Contents </h2>
+            </div>
+            <nav aria-label="Page">
+                <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#pacing-and-what-counts-as-late">Pacing and what counts as late</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#cause">Cause</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#change">Change</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#results">Results</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#s-sessions">90 s sessions</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id1">30 s sessions</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#guidance">Guidance</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#recording-path">Recording path</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#causes">Causes</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#changes">Changes</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id2">Results</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#tool">Tool</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#environment">Environment</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#limitations">Limitations</a></li>
+</ul>
+            </nav>
+        </div>
+    </div>
+</div>
+
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section class="tex2jax_ignore mathjax_ignore" id="duplex-load-generator-pacing">
+<h1>Duplex Load Generator Pacing<a class="headerlink" href="#duplex-load-generator-pacing" title="Link to this heading">#</a></h1>
+<p>This is the issue #2994 item 4.3 record: whether the duplex benchmark client keeps its 80 ms input pacing when many sessions stream at once, so that a recording measures the server and not the load generator. It is a CPU-only study against a mock server on one host. No model, GPU or real server was involved.</p>
+<p>The client did fall behind, and the cause was its own trace writes, not event-loop scheduling or WebSocket back-pressure. <code class="docutils literal notranslate"><span class="pre">run_session</span></code> wrote every sent and received event, base64 audio included, to the trace with a line-buffered write on the event loop. When the kernel wrote those pages back to disk, an append could wait for the page for hundreds of milliseconds, and every session on that loop missed its packet slots. One writer thread per client process now does these writes. With it, 30 s and 90 s sessions stay within the 80 ms tolerance up to 128 sessions in one process and up to 4 processes of 32 sessions, and 4 processes of 64 sessions fail far less often. 256 sessions of 90 s in one process are at the limit of its CPU: 1 of 4 such runs failed.</p>
+<section id="pacing-and-what-counts-as-late">
+<h2>Pacing and what counts as late<a class="headerlink" href="#pacing-and-what-counts-as-late" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">benchmarks/duplex/client.py</span></code> schedules packet N of a session at the session start plus N times 80 ms on an absolute clock. A packet is late when its send start differs from that schedule by more than one packet, 80 ms. A recording with a late packet is not a valid server capacity measurement, see the <code class="docutils literal notranslate"><span class="pre">pacing</span> <span class="pre">violations</span></code> row in <a class="reference internal" href="#full_duplex_bench.md"><span class="xref myst">full_duplex_bench.md</span></a>. A run is called pacing-unqualified here when any of its packets is late.</p>
+<p>The deviation of a packet is its <code class="docutils literal notranslate"><span class="pre">start_s</span></code> in <code class="docutils literal notranslate"><span class="pre">input-send-receipts.json</span></code> minus the <code class="docutils literal notranslate"><span class="pre">start_s</span></code> of packet 0 of the same session minus N times 80 ms, the same definition the repository checks use. <code class="docutils literal notranslate"><span class="pre">start_s</span></code> is taken when the client records the event, before serialization and before <code class="docutils literal notranslate"><span class="pre">websocket.send()</span></code>, so it is when the client was ready to send, not when bytes left the host. The probe therefore times <code class="docutils literal notranslate"><span class="pre">websocket.send()</span></code> on its own to look for back-pressure.</p>
+</section>
+<section id="cause">
+<h2>Cause<a class="headerlink" href="#cause" title="Link to this heading">#</a></h2>
+<p>Two kinds of evidence point at the trace writes.</p>
+<ul class="simple">
+<li><p>An external sampler read <code class="docutils literal notranslate"><span class="pre">/proc/&lt;pid&gt;/schedstat</span></code>, <code class="docutils literal notranslate"><span class="pre">stat</span></code> and <code class="docutils literal notranslate"><span class="pre">wchan</span></code> of every client process every 5 ms, without running inside the measured process. During event-loop stalls over 100 ms the process was mostly in uninterruptible sleep (state D) in the kernel function <code class="docutils literal notranslate"><span class="pre">folio_wait_bit_common</span></code>, with some <code class="docutils literal notranslate"><span class="pre">do_get_write_access</span></code> (ext4 journal), and spent no time waiting for a CPU. In the 90 s runs before the change, 52 of the stalls over 100 ms were of this kind.</p></li>
+<li><p>At 256 sessions the traces grow by about 28 MB/s, 110 kB/s per session, almost all of it base64 audio. The host keeps dirty pages for 30 s (<code class="docutils literal notranslate"><span class="pre">dirty_expire_centisecs</span></code> 3000) and then writes them back to a 7,200 rpm disk. Of 18 runs with a disk stall, the first stall came 27–36 s after the start in 10 and 63–69 s after it in 8.</p></li>
+</ul>
+<p>Ruled out, each with repeated runs: a CPU quota (none, <code class="docutils literal notranslate"><span class="pre">nr_throttled</span></code> stayed 0), CPU migration (pinning the mock and every client to its own CPU did not help), the Python garbage collector (no collection over 100 ms overlapped a stall), the volume of server replies (0, 1, 3 or 6 replies per packet all showed stalls), and WebSocket back-pressure (<code class="docutils literal notranslate"><span class="pre">websocket.send()</span></code> p99 stayed at or below 0.25 ms). Keeping the trace in memory until the session ended removed the disk stalls, which confirms the cause, but its growing in-memory buffers caused CPU stalls of their own, and all 8 such runs still failed, so it is not the fix.</p>
+</section>
+<section id="change">
+<h2>Change<a class="headerlink" href="#change" title="Link to this heading">#</a></h2>
+<p>A <code class="docutils literal notranslate"><span class="pre">TraceWriter</span></code> thread, one per client process, writes the trace and receipts of every session. The event loop only queues the serialized line. The thread writes each session’s queued lines in one batch every 0.5 s, and gathers the sessions that end within 50 ms of each other into one batch. The session closes its trace only after every line is on disk, as before, and a failed write still raises from <code class="docutils literal notranslate"><span class="pre">run_session</span></code>. It now raises when the session ends rather than at the failed event.</p>
+<p>Visible differences:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">input-send-receipts.json</span></code> is written without indentation. Readers parse it with <code class="docutils literal notranslate"><span class="pre">json.loads</span></code>, so only its bytes and hash change. The indented dump runs in pure Python and held the GIL from the pacing loop.</p></li>
+<li><p>While a session records, its trace on disk lags by up to 0.5 s.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">run_session</span></code> returns about 50 ms later, while its last batch is written.</p></li>
+<li><p>Pacing jitter at low load is larger: for 128 sessions in one process over 30 s, the pooled p99 deviation rose from 5.0 ms to 16.6 ms and the median run maximum from 14 ms to 37 ms. Each batch takes the GIL from the loop for a moment. This trades a bounded jitter well inside 80 ms for stalls of up to 1.3 s.</p></li>
+</ul>
+<p>The design was chosen by measurement. The disk load on the host changed over time: at 1 × 256 sessions and 30 s, the unchanged client passed 5 of 5 runs on one day and 1 of 3 on the next. The rows marked interleaved ran in one batch in random order; the others ran on their own and are weaker evidence.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Variant, 30 s unless noted</p></th>
+<th class="head"><p>4 × 64 unqualified</p></th>
+<th class="head"><p>1 × 256 unqualified</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Unchanged client (interleaved)</p></td>
+<td><p>3 of 3</p></td>
+<td><p>2 of 3</p></td>
+</tr>
+<tr class="row-odd"><td><p>One thread per session, a write per event, 90 s</p></td>
+<td><p>1 of 4</p></td>
+<td><p>4 of 4, deviations up to 71 s, every session incomplete</p></td>
+</tr>
+<tr class="row-even"><td><p>One thread per session, batches every 0.5 s (3 of the runs interleaved)</p></td>
+<td><p>1 of 11</p></td>
+<td><p>11 of 11</p></td>
+</tr>
+<tr class="row-odd"><td><p>One thread per session, batches every 2 s (interleaved)</p></td>
+<td><p>3 of 3</p></td>
+<td><p>3 of 3</p></td>
+</tr>
+<tr class="row-even"><td><p>One thread per process, prototype (interleaved)</p></td>
+<td><p>0 of 3</p></td>
+<td><p>0 of 3</p></td>
+</tr>
+<tr class="row-odd"><td><p>One thread per process, every session end wakes it, receipts in executor threads</p></td>
+<td><p>5 of 5</p></td>
+<td><p>0 of 5</p></td>
+</tr>
+<tr class="row-even"><td><p>One thread per process, 50 ms end batches, indented receipts (5 of the 4 × 64 runs interleaved)</p></td>
+<td><p>2 of 8</p></td>
+<td><p>0 of 3</p></td>
+</tr>
+<tr class="row-odd"><td><p>One thread per process, 50 ms end batches, compact receipts, this change (5 of the 4 × 64 runs interleaved)</p></td>
+<td><p>0 of 10</p></td>
+<td><p>0 of 5</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>With a thread per session, the loop waited for the GIL, which those threads took hundreds of times a second, and a 256 session process needed more than one core. With one thread, the remaining stalls came when many sessions ended together and the loop again waited for the GIL. Gathering the ends into batches and dumping the receipts compactly in the writer thread removed them in the runs measured.</p>
+</section>
+<section id="results">
+<h2>Results<a class="headerlink" href="#results" title="Link to this heading">#</a></h2>
+<p>P99 values pool the packet deviations across all runs of one layout: P processes of S sessions each, every session streaming silence of 16 kHz PCM16 in 80 ms packets to the mock server, which replies to each packet with one audio delta, one text delta and one <code class="docutils literal notranslate"><span class="pre">sglang.unit.done</span></code>. Every session of every run here completed. The maximum is the median over runs of each run’s largest deviation, with the range in brackets. The unchanged client’s 90 s runs and the changed client’s 90 s runs were recorded hours apart, not interleaved.</p>
+<section id="s-sessions">
+<h3>90 s sessions<a class="headerlink" href="#s-sessions" title="Link to this heading">#</a></h3>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Layout</p></th>
+<th class="head"><p>Unchanged: unqualified runs</p></th>
+<th class="head"><p>late packets</p></th>
+<th class="head"><p>p99 (ms)</p></th>
+<th class="head"><p>maximum (ms)</p></th>
+<th class="head"><p>Changed: unqualified runs</p></th>
+<th class="head"><p>late packets</p></th>
+<th class="head"><p>p99 (ms)</p></th>
+<th class="head"><p>maximum (ms)</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1 × 64</p></td>
+<td><p>1 of 3</p></td>
+<td><p>7</p></td>
+<td><p>11.7</p></td>
+<td><p>49 [33–102]</p></td>
+<td><p>0 of 4</p></td>
+<td><p>0</p></td>
+<td><p>14.8</p></td>
+<td><p>40 [38–48]</p></td>
+</tr>
+<tr class="row-odd"><td><p>1 × 128</p></td>
+<td><p>6 of 7</p></td>
+<td><p>3,571</p></td>
+<td><p>27.3</p></td>
+<td><p>158 [74–584]</p></td>
+<td><p>0 of 4</p></td>
+<td><p>0</p></td>
+<td><p>20.0</p></td>
+<td><p>51 [49–55]</p></td>
+</tr>
+<tr class="row-even"><td><p>1 × 256</p></td>
+<td><p>3 of 3</p></td>
+<td><p>53,835</p></td>
+<td><p>864.8</p></td>
+<td><p>700 [655–1,170]</p></td>
+<td><p>1 of 4</p></td>
+<td><p>618</p></td>
+<td><p>40.8</p></td>
+<td><p>79 [67–112]</p></td>
+</tr>
+<tr class="row-odd"><td><p>4 × 32</p></td>
+<td><p>2 of 3</p></td>
+<td><p>495</p></td>
+<td><p>8.0</p></td>
+<td><p>476 [45–598]</p></td>
+<td><p>0 of 4</p></td>
+<td><p>0</p></td>
+<td><p>8.8</p></td>
+<td><p>43 [34–53]</p></td>
+</tr>
+<tr class="row-even"><td><p>4 × 64</p></td>
+<td><p>7 of 7</p></td>
+<td><p>11,047</p></td>
+<td><p>27.4</p></td>
+<td><p>901 [407–1,296]</p></td>
+<td><p>1 of 4</p></td>
+<td><p>44</p></td>
+<td><p>17.6</p></td>
+<td><p>58 [49–138]</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Stalls over 100 ms in disk waits fell from 52 to 0. The remaining late packets have other causes. In 1 × 256 the process was running on its CPU through the stalls and used 0.92 cores, so one process has no headroom for 256 sessions. In 4 × 64 all 44 late packets fell at 90.2–90.3 s in one run, while the sessions of each process were ending, and the loop was waiting for the GIL.</p>
+</section>
+<section id="id1">
+<h3>30 s sessions<a class="headerlink" href="#id1" title="Link to this heading">#</a></h3>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Layout</p></th>
+<th class="head"><p>Unchanged: unqualified runs</p></th>
+<th class="head"><p>late packets</p></th>
+<th class="head"><p>p99 (ms)</p></th>
+<th class="head"><p>maximum (ms)</p></th>
+<th class="head"><p>Changed: unqualified runs</p></th>
+<th class="head"><p>late packets</p></th>
+<th class="head"><p>p99 (ms)</p></th>
+<th class="head"><p>maximum (ms)</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1 × 64</p></td>
+<td><p>0 of 5</p></td>
+<td><p>0</p></td>
+<td><p>12.3</p></td>
+<td><p>25 [15–28]</p></td>
+<td><p>0 of 5</p></td>
+<td><p>0</p></td>
+<td><p>14.2</p></td>
+<td><p>36 [35–37]</p></td>
+</tr>
+<tr class="row-odd"><td><p>1 × 128</p></td>
+<td><p>0 of 5</p></td>
+<td><p>0</p></td>
+<td><p>5.0</p></td>
+<td><p>14 [7–14]</p></td>
+<td><p>0 of 5</p></td>
+<td><p>0</p></td>
+<td><p>16.6</p></td>
+<td><p>37 [36–49]</p></td>
+</tr>
+<tr class="row-even"><td><p>1 × 256</p></td>
+<td><p>2 of 8</p></td>
+<td><p>18,389</p></td>
+<td><p>322.5</p></td>
+<td><p>40 [19–755]</p></td>
+<td><p>0 of 5</p></td>
+<td><p>0</p></td>
+<td><p>30.4</p></td>
+<td><p>54 [47–80]</p></td>
+</tr>
+<tr class="row-odd"><td><p>4 × 32</p></td>
+<td><p>0 of 5</p></td>
+<td><p>0</p></td>
+<td><p>8.0</p></td>
+<td><p>34 [33–36]</p></td>
+<td><p>0 of 5</p></td>
+<td><p>0</p></td>
+<td><p>6.9</p></td>
+<td><p>30 [12–31]</p></td>
+</tr>
+<tr class="row-even"><td><p>4 × 64</p></td>
+<td><p>12 of 23</p></td>
+<td><p>1,823</p></td>
+<td><p>16.2</p></td>
+<td><p>81 [26–750]</p></td>
+<td><p>0 of 5</p></td>
+<td><p>0</p></td>
+<td><p>17.4</p></td>
+<td><p>41 [41–58]</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>A 30 s session ends near the 30 s writeback age, so 30 s runs see fewer disk stalls than 90 s runs, which is why the 90 s table is the stronger test.</p>
+</section>
+<section id="guidance">
+<h3>Guidance<a class="headerlink" href="#guidance" title="Link to this heading">#</a></h3>
+<p>On a host like this one, keep a client process at or below 128 sessions and spread more sessions over several processes, for example 4 processes of 32. Above 128 sessions per process, or at 4 × 64, check the pacing of every run, as <code class="docutils literal notranslate"><span class="pre">benchmarks/duplex/serving.py</span></code> does for every level: runs in both layouts went past 80 ms here. These limits come from one host and the mock server, see the limitations.</p>
+</section>
+</section>
+<section id="recording-path">
+<h2>Recording path<a class="headerlink" href="#recording-path" title="Link to this heading">#</a></h2>
+<p>The study above drove <code class="docutils literal notranslate"><span class="pre">run_session</span></code> directly. The recorder that produces benchmark runs, <code class="docutils literal notranslate"><span class="pre">run_samples</span></code> in <code class="docutils literal notranslate"><span class="pre">benchmarks/duplex/v15_runner.py</span></code>, does more on the same process, and on a 2 CPU host it still missed the 80 ms tolerance at 24 and 32 sessions with the writer thread in place.</p>
+<section id="causes">
+<h3>Causes<a class="headerlink" href="#causes" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>Post-processing ran in threads of the recording process. When a session ended, <code class="docutils literal notranslate"><span class="pre">replay_run</span></code>, the <code class="docutils literal notranslate"><span class="pre">report.json</span></code> write and output reconstruction parsed the whole trace and validated it with pydantic. Long C calls and generation 2 garbage collections over the large heap held the GIL for 100 ms and more, the largest collection pause measured was 145 ms, and every open session missed a packet slot at the same moment. The recorder used only 0.15–0.36 cores, so it was not short of CPU.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">run.json</span></code> was dumped with indentation on the event loop at every session end, about 5 ms at 64 sessions and growing with the run.</p></li>
+<li><p>The client scheduled packets from a start time taken before its send loop, while the pacing check measures from the first append. A late first packet therefore made every later packet look early by the same amount.</p></li>
+<li><p>Every sent event was serialized twice, once for the socket and once for the trace, and every received audio event was decoded and encoded again for the trace.</p></li>
+</ul>
+<p>Checked and left unchanged: <code class="docutils literal notranslate"><span class="pre">websocket.send()</span></code> back-pressure, p99 at or below 0.25 ms as measured above; per-packet logging, there is none; the receive loop, whose run without yielding is bounded by the 16 frame queue; and the sleep, which was already on an absolute deadline.</p>
+</section>
+<section id="changes">
+<h3>Changes<a class="headerlink" href="#changes" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>Post-processing runs in a pool of spawned processes, at most 4 and a quarter of the CPUs the recorder may use, started before the first session and run at <code class="docutils literal notranslate"><span class="pre">nice</span></code> 10. Workers return small summaries. <code class="docutils literal notranslate"><span class="pre">run_samples</span></code> takes a <code class="docutils literal notranslate"><span class="pre">postprocess</span></code> executor for tests and closes the pool it owns.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">run.json</span></code> checkpoints while recording are coalesced and written by a thread from a snapshot taken on the loop. The final write is unchanged.</p></li>
+<li><p>The garbage collector freezes the objects that exist before recording starts, so collections do not walk them.</p></li>
+<li><p>Packet N is scheduled at the actual send of packet 0 plus N times 80 ms, the origin the pacing check uses.</p></li>
+<li><p>A sent event is encoded once and its trace line built from that frame. A received frame is written to the trace as it arrived unless it is not ASCII or contains a line break, in which case it is encoded again.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">run.json</span></code> gains <code class="docutils literal notranslate"><span class="pre">load.client_loop</span></code>: the largest event-loop lag seen by a 10 ms monitor and the number of lags over 80 ms, so a run can show whether the client stalled.</p></li>
+</ul>
+</section>
+<section id="id2">
+<h3>Results<a class="headerlink" href="#id2" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">pacing_probe.py</span> <span class="pre">native-mock</span></code> serves the native protocol and streams 22.05 kHz audio back for every input unit, in bursts of <code class="docutils literal notranslate"><span class="pre">--burst-units</span></code> units; <code class="docutils literal notranslate"><span class="pre">record</span></code> drives <code class="docutils literal notranslate"><span class="pre">run_samples</span></code> with a synthetic dataset of 4 subsets, 20–60 s inputs and both variants of each sample. Each run records 2 × concurrency sessions. Host: 2 CPUs and 7 GB of memory shared by the mock, the recorder and its workers. P99 is the largest of the per-run p99 values.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Tree</p></th>
+<th class="head"><p>Concurrency, burst</p></th>
+<th class="head"><p>Unqualified runs</p></th>
+<th class="head"><p>Sessions with a violation</p></th>
+<th class="head"><p>Late packets</p></th>
+<th class="head"><p>p99 (ms)</p></th>
+<th class="head"><p>Maximum (ms)</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Before</p></td>
+<td><p>24, 1</p></td>
+<td><p>3 of 3</p></td>
+<td><p>66 of 144</p></td>
+<td><p>81</p></td>
+<td><p>22.8</p></td>
+<td><p>125 [119–136]</p></td>
+</tr>
+<tr class="row-odd"><td><p>After</p></td>
+<td><p>24, 1</p></td>
+<td><p>0 of 3</p></td>
+<td><p>0 of 144</p></td>
+<td><p>0</p></td>
+<td><p>3.8</p></td>
+<td><p>33 [24–42]</p></td>
+</tr>
+<tr class="row-even"><td><p>After</p></td>
+<td><p>24, 25</p></td>
+<td><p>0 of 2</p></td>
+<td><p>0 of 96</p></td>
+<td><p>0</p></td>
+<td><p>8.0</p></td>
+<td><p>27 [25–28]</p></td>
+</tr>
+<tr class="row-odd"><td><p>Before</p></td>
+<td><p>32, 1</p></td>
+<td><p>3 of 3</p></td>
+<td><p>53 of 192</p></td>
+<td><p>74</p></td>
+<td><p>24.1</p></td>
+<td><p>100 [90–134]</p></td>
+</tr>
+<tr class="row-even"><td><p>After</p></td>
+<td><p>32, 1</p></td>
+<td><p>0 of 3</p></td>
+<td><p>0 of 192</p></td>
+<td><p>0</p></td>
+<td><p>5.2</p></td>
+<td><p>22 [16–33]</p></td>
+</tr>
+<tr class="row-odd"><td><p>Before</p></td>
+<td><p>32, 25</p></td>
+<td><p>1 of 1</p></td>
+<td><p>11 of 64</p></td>
+<td><p>16</p></td>
+<td><p>27.3</p></td>
+<td><p>109</p></td>
+</tr>
+<tr class="row-even"><td><p>After</p></td>
+<td><p>32, 25</p></td>
+<td><p>0 of 2</p></td>
+<td><p>0 of 128</p></td>
+<td><p>0</p></td>
+<td><p>10.2</p></td>
+<td><p>28 [26–30]</p></td>
+</tr>
+<tr class="row-odd"><td><p>Before</p></td>
+<td><p>64, 1</p></td>
+<td><p>3 of 3</p></td>
+<td><p>348 of 384</p></td>
+<td><p>3,200</p></td>
+<td><p>191.3</p></td>
+<td><p>169 [168–445]</p></td>
+</tr>
+<tr class="row-even"><td><p>After</p></td>
+<td><p>64, 1</p></td>
+<td><p>0 of 3</p></td>
+<td><p>0 of 384</p></td>
+<td><p>0</p></td>
+<td><p>11.0</p></td>
+<td><p>42 [27–52]</p></td>
+</tr>
+<tr class="row-odd"><td><p>After</p></td>
+<td><p>64, 25</p></td>
+<td><p>0 of 2</p></td>
+<td><p>0 of 256</p></td>
+<td><p>0</p></td>
+<td><p>18.5</p></td>
+<td><p>59 [39–80]</p></td>
+</tr>
+<tr class="row-even"><td><p>After</p></td>
+<td><p>128, 1</p></td>
+<td><p>0 of 1</p></td>
+<td><p>0 of 256</p></td>
+<td><p>0</p></td>
+<td><p>17.8</p></td>
+<td><p>53</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The recorder process used 0.07–0.24 cores after the change, not counting its post-processing workers. The 80 ms maximum at 64 sessions with bursts came while the mock’s own loop stalled for 180 ms on the shared CPUs, so on this host 64 sessions with bursty replies is near the limit. A unit test makes replay hold the GIL for 1.5 s if it runs in the recording process: post-processing in threads fails it with a late packet, and the default process pool passes it.</p>
+</section>
+</section>
+<section id="tool">
+<h2>Tool<a class="headerlink" href="#tool" title="Link to this heading">#</a></h2>
+<p><a class="reference download internal" download="" href="../_downloads/1fdf039bcabae23a70a83a13493cf514/pacing_probe.py"><span class="xref download myst">benchmarks/duplex/pacing_probe.py</span></a> has five subcommands.</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">mock</span></code> serves the native session protocol with no model. It replies to every input packet with <code class="docutils literal notranslate"><span class="pre">--replies-per-append</span></code> events, 3 by default: an audio delta, text deltas and a <code class="docutils literal notranslate"><span class="pre">sglang.unit.done</span></code>. It records when each packet arrives and its own event-loop lag, and writes these statistics on SIGINT.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">run</span></code> opens <code class="docutils literal notranslate"><span class="pre">--concurrency</span></code> sessions in one process through <code class="docutils literal notranslate"><span class="pre">run_session</span></code> and streams <code class="docutils literal notranslate"><span class="pre">--duration</span></code> seconds of silence. It writes raw samples to <code class="docutils literal notranslate"><span class="pre">samples.json</span></code> and a summary to <code class="docutils literal notranslate"><span class="pre">summary.json</span></code>, then deletes the session traces, which reach about 10 MB per 90 s session.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">native-mock</span></code> serves the native session protocol used by <code class="docutils literal notranslate"><span class="pre">run_samples</span></code> and streams audio back for every input unit at <code class="docutils literal notranslate"><span class="pre">--output-sample-rate</span></code>, 22.05 kHz by default, grouped in bursts of <code class="docutils literal notranslate"><span class="pre">--burst-units</span></code> units, with transcript deltas.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">record</span></code> runs <code class="docutils literal notranslate"><span class="pre">run_samples</span></code> against a server with a synthetic dataset and writes a summary of pacing violations, late packets, pacing and loop-lag percentiles, garbage collection pauses and CPU use.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">merge</span></code> pools the raw samples of <code class="docutils literal notranslate"><span class="pre">run</span></code> processes that streamed at the same time. Percentiles are over the pooled packets. <code class="docutils literal notranslate"><span class="pre">perf_counter</span></code> is shared by the processes of one host, so overlaps and late-packet times line up across processes.</p></li>
+</ul>
+<p>The summary reports pacing deviation percentiles, packets over 80 ms, sessions with a violation, incomplete sessions, <code class="docutils literal notranslate"><span class="pre">websocket_send_*</span></code> and <code class="docutils literal notranslate"><span class="pre">append_span_*</span></code> durations, event-loop lag, CPU per process in cores, peak resident memory and the peak number of overlapping input streams. <code class="docutils literal notranslate"><span class="pre">--inject-stall-ms</span></code> blocks the event loop once halfway through the run: with 8 sessions, a 60 ms stall raised no violation and a 150 ms stall raised one in every session.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>benchmarks.duplex.pacing_probe<span class="w"> </span>mock<span class="w"> </span>--stats-output<span class="w"> </span>mock.json<span class="w"> </span>&gt;<span class="w"> </span>mock.log<span class="w"> </span><span class="p">&amp;</span>
+<span class="nv">mock_pid</span><span class="o">=</span><span class="nv">$!</span>
+<span class="k">until</span><span class="w"> </span>grep<span class="w"> </span>-q<span class="w"> </span>listening<span class="w"> </span>mock.log<span class="p">;</span><span class="w"> </span><span class="k">do</span><span class="w"> </span>sleep<span class="w"> </span><span class="m">0</span>.2<span class="p">;</span><span class="w"> </span><span class="k">done</span>
+<span class="nv">run_pids</span><span class="o">=()</span>
+<span class="k">for</span><span class="w"> </span>process<span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="m">0</span><span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="m">2</span><span class="w"> </span><span class="m">3</span><span class="p">;</span><span class="w"> </span><span class="k">do</span>
+<span class="w">    </span>python<span class="w"> </span>-m<span class="w"> </span>benchmarks.duplex.pacing_probe<span class="w"> </span>run<span class="w"> </span>--concurrency<span class="w"> </span><span class="m">32</span><span class="w"> </span>--duration<span class="w"> </span><span class="m">90</span><span class="w"> </span>--output<span class="w"> </span>out/p<span class="nv">$process</span><span class="w"> </span>&gt;<span class="w"> </span>/dev/null<span class="w"> </span><span class="p">&amp;</span>
+<span class="w">    </span><span class="nv">run_pids</span><span class="o">+=(</span><span class="nv">$!</span><span class="o">)</span>
+<span class="k">done</span>
+<span class="nb">wait</span><span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">run_pids</span><span class="p">[@]</span><span class="si">}</span><span class="s2">"</span>
+<span class="nb">kill</span><span class="w"> </span>-INT<span class="w"> </span><span class="nv">$mock_pid</span>
+<span class="nb">wait</span><span class="w"> </span><span class="nv">$mock_pid</span>
+python<span class="w"> </span>-m<span class="w"> </span>benchmarks.duplex.pacing_probe<span class="w"> </span>merge<span class="w"> </span>out/p0<span class="w"> </span>out/p1<span class="w"> </span>out/p2<span class="w"> </span>out/p3<span class="w"> </span>--output<span class="w"> </span>out/merged
+</pre></div>
+</div>
+<p>The recording path is probed the same way:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>benchmarks.duplex.pacing_probe<span class="w"> </span>native-mock<span class="w"> </span>--port<span class="w"> </span><span class="m">8766</span><span class="w"> </span>--stats-output<span class="w"> </span>mock.json<span class="w"> </span>&gt;<span class="w"> </span>mock.log<span class="w"> </span><span class="p">&amp;</span>
+<span class="nv">mock_pid</span><span class="o">=</span><span class="nv">$!</span>
+<span class="k">until</span><span class="w"> </span>grep<span class="w"> </span>-q<span class="w"> </span>listening<span class="w"> </span>mock.log<span class="p">;</span><span class="w"> </span><span class="k">do</span><span class="w"> </span>sleep<span class="w"> </span><span class="m">0</span>.2<span class="p">;</span><span class="w"> </span><span class="k">done</span>
+python<span class="w"> </span>-m<span class="w"> </span>benchmarks.duplex.pacing_probe<span class="w"> </span>record<span class="w"> </span>--url<span class="w"> </span>ws://127.0.0.1:8766/v1/realtime<span class="w"> </span>--concurrency<span class="w"> </span><span class="m">32</span><span class="w"> </span>--per-subset<span class="w"> </span><span class="m">8</span><span class="w"> </span>--output<span class="w"> </span>out/record
+<span class="nb">kill</span><span class="w"> </span>-INT<span class="w"> </span><span class="nv">$mock_pid</span>
+<span class="nb">wait</span><span class="w"> </span><span class="nv">$mock_pid</span>
+</pre></div>
+</div>
+<p>The 5 ms process sampler and the run scripts used for this study are not in the repository.</p>
+</section>
+<section id="environment">
+<h2>Environment<a class="headerlink" href="#environment" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Intel Xeon Platinum 8331C at 2.5 GHz, 96 logical CPUs, in a container with no CPU quota.</p></li>
+<li><p>Traces on ext4 on a Seagate ST8000NM000A 7,200 rpm disk; <code class="docutils literal notranslate"><span class="pre">dirty_expire_centisecs</span></code> 3000, <code class="docutils literal notranslate"><span class="pre">dirty_ratio</span></code> 20, no memory limit on the cgroup.</p></li>
+<li><p>Repository commit <code class="docutils literal notranslate"><span class="pre">1d6d0be42</span></code> plus this change; Python 3.10.21, websockets 16.1.1, pydantic 2.14.1, numpy 2.2.6.</p></li>
+<li><p>Client and mock on the same host over loopback.</p></li>
+</ul>
+</section>
+<section id="limitations">
+<h2>Limitations<a class="headerlink" href="#limitations" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>One host. A host whose trace disk keeps up, such as one with an NVMe drive or a larger write cache, may never have shown the disk stalls; the change does not depend on the disk.</p></li>
+<li><p>The mock server is a single process and used up to 0.67 cores at 256 sessions. In the 45 runs of the changed client, the largest arrival deviation the mock saw was 7 ms above the client’s largest send deviation at the median and 52 ms above it at most, so the mock adds delay of its own on top of the client’s and cannot hide a client stall. A real server’s larger replies and host load are not covered. A run against a real server on a GPU host is still needed.</p></li>
+<li><p>Four runs per cell at 90 s show large differences, not rare events. The 1 of 4 failures at 1 × 256 and 4 × 64 say only that those layouts are near the limit.</p></li>
+<li><p>Sessions up to 90 s and 256 sessions per host were tested.</p></li>
+</ul>
+</section>
+</section>
+
+
+                </article>
+              
+
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item"><div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> Contents
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#pacing-and-what-counts-as-late">Pacing and what counts as late</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#cause">Cause</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#change">Change</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#results">Results</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#s-sessions">90 s sessions</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id1">30 s sessions</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#guidance">Guidance</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#recording-path">Recording path</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#causes">Causes</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#changes">Changes</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id2">Results</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#tool">Tool</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#environment">Environment</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#limitations">Limitations</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+<div class="bd-footer-content__inner container">
+  
+  <div class="footer-item">
+    
+<p class="component-author">
+By SGLang-Omni Team
+</p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+
+  <p class="copyright">
+    
+      © Copyright 2025-2026, SGLang-Omni.
+      <br/>
+    
+  </p>
+
+  </div>
+  
+  <div class="footer-item">
+    <p class="last-updated">
+  Last updated on Oct 29, 2026.
+  <br/>
+</p>
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+</div>
+          </footer>
+        
+
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=90905a2f556bf617f1a9"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=90905a2f556bf617f1a9"></script>
+
+  <footer class="bd-footer">
+  </footer>
+  </body>
+</html>
