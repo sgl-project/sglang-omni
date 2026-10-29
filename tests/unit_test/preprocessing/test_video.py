@@ -17,6 +17,8 @@ from sglang_omni.preprocessing import audio, image, video
 from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
 from sglang_omni.serve.openai_errors import is_bad_request_error
 
+MPEG4_KEYFRAME_INTERVAL = 2
+
 
 def write_video_with_audio(path: Path) -> None:
     with video.av.open(str(path), mode="w") as container:
@@ -367,6 +369,7 @@ def mpeg4_video(tmp_path: Path) -> Path:
         stream = container.add_stream("mpeg4", rate=4)
         stream.width = stream.height = 56
         stream.pix_fmt = "yuv420p"
+        stream.codec_context.gop_size = MPEG4_KEYFRAME_INTERVAL
         for index in range(8):
             pixels = np.full((56, 56, 3), index * 25, dtype=np.uint8)
             frame = av.VideoFrame.from_ndarray(pixels, format="rgb24")
@@ -404,12 +407,41 @@ def test_a_processed_video_before_a_file_keeps_every_video_in_place(
 @pytest.mark.skipif(
     video.VideoDecoder is None, reason="the torchcodec native decoder is unavailable"
 )
-@pytest.mark.parametrize("cpu_count", [1, 3])
-@pytest.mark.parametrize("frame_range", [{}, {"video_start": 0.5, "video_end": 1.75}])
+@pytest.mark.parametrize("cpu_count", [1, 3, 16])
+@pytest.mark.parametrize(
+    "frame_range",
+    [
+        {},
+        {"video_start": 0.5, "video_end": 1.75},
+        {"video_start": 0.5, "video_end": 0.75},
+    ],
+)
 def test_parallel_torchcodec_decode_returns_the_reader_frames(
     mpeg4_video: Path, monkeypatch, cpu_count: int, frame_range: dict[str, float]
 ) -> None:
+    """Frames of one keyframe group went to several decoders that each decoded the group from its keyframe, so dense sampling ran slower than the reader."""
+    native_decoder = video.VideoDecoder
+    opened_decoders: list[tuple[int, list[int]]] = []
+
+    class RecordingDecoder:
+        def __init__(self, source: str, *, num_ffmpeg_threads: int) -> None:
+            self.decoder = native_decoder(source, num_ffmpeg_threads=num_ffmpeg_threads)
+            self.metadata = self.decoder.metadata
+            self.requested_indices: list[int] = []
+            opened_decoders.append((num_ffmpeg_threads, self.requested_indices))
+
+        def _get_key_frame_indices(self) -> torch.Tensor:
+            return self.decoder._get_key_frame_indices()  # noqa: leading-underscore
+
+        def get_frames_at(self, indices: list[int]) -> SimpleNamespace:
+            self.requested_indices.extend(indices)
+            return SimpleNamespace(
+                data=self.decoder.get_frames_at(indices=indices).data
+            )
+
+    monkeypatch.delenv("TORCHCODEC_NUM_THREADS", raising=False)
     monkeypatch.setattr(video, "effective_cpu_count", lambda: cpu_count)
+    monkeypatch.setattr(video, "VideoDecoder", RecordingDecoder)
     video_options = {"video": str(mpeg4_video), "fps": 4.0, **frame_range}
 
     frames, sample_fps = video.read_video_torchcodec(dict(video_options))
@@ -419,6 +451,14 @@ def test_parallel_torchcodec_decode_returns_the_reader_frames(
 
     assert torch.equal(frames, expected_frames)
     assert sample_fps == expected_fps
+    decoder_groups = [
+        {frame_index // MPEG4_KEYFRAME_INTERVAL for frame_index in requested_indices}
+        for _, requested_indices in opened_decoders
+    ]
+    sampled_groups = set().union(*decoder_groups)
+    assert sum(len(groups) for groups in decoder_groups) == len(sampled_groups)
+    assert opened_decoders[0][0] == video.READER_FFMPEG_THREADS
+    assert len(opened_decoders) <= min(cpu_count, len(sampled_groups))
 
 
 def test_torchcodec_reader_of_record_runs_when_the_native_decoder_is_unavailable(

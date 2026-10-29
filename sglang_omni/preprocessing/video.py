@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import bisect
 import logging
+import os
 import tempfile
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -34,8 +36,10 @@ except (ImportError, OSError, RuntimeError):
     # note (ratish): images whose torchcodec wheel links CUDA-only libraries cannot load it.
     VideoDecoder = None
 
-# note (ratish): sampled frames sit far apart, so each decoder seeks to its own share of them, on at most this many decoder threads a video.
-MAX_VIDEO_DECODERS = 16
+# note (ratish): frames after a keyframe decode in order from it, so each keyframe group stays on one decoder; a video's decoders share at most this many ffmpeg threads.
+MAX_VIDEO_DECODE_THREADS = 16
+# The qwen-vl-utils torchcodec reader's ffmpeg threads when TORCHCODEC_NUM_THREADS is unset.
+READER_FFMPEG_THREADS = 8
 
 logger = logging.getLogger(__name__)
 
@@ -445,9 +449,12 @@ def is_invalid_video(path: Path, error: Exception) -> bool:
 def read_video_torchcodec(
     video_options: dict[str, str | float | int],
 ) -> tuple[torch.Tensor, float]:
-    """The qwen-vl-utils torchcodec reader's frames (T, C, H, W) and sample fps, decoded on up to MAX_VIDEO_DECODERS parallel decoders."""
+    """The qwen-vl-utils torchcodec reader's frames (T, C, H, W) and sample fps, with keyframe groups split across parallel decoders."""
     video_path = str(video_options["video"])
-    first_decoder = VideoDecoder(video_path, num_ffmpeg_threads=1)
+    reader_thread_count = int(
+        os.environ.get("TORCHCODEC_NUM_THREADS", READER_FFMPEG_THREADS)
+    )
+    first_decoder = VideoDecoder(video_path, num_ffmpeg_threads=reader_thread_count)
     video_fps = first_decoder.metadata.average_fps
     start_frame, end_frame, total_frames = qwen_vision.calculate_video_frame_range(
         video_options, first_decoder.metadata.num_frames, video_fps
@@ -459,24 +466,57 @@ def read_video_torchcodec(
         torch.linspace(start_frame, end_frame, frame_count).round().long().tolist()
     )
     sample_fps = frame_count / max(total_frames, 1e-6) * video_fps
-    decoder_count = min(MAX_VIDEO_DECODERS, effective_cpu_count(), len(frame_indices))
+    # note (ratish): torchcodec exposes a stream's keyframe indices only through this method.
+    keyframe_indices = (
+        first_decoder._get_key_frame_indices().tolist()
+    )  # noqa: leading-underscore
+    keyframe_groups: dict[int, list[int]] = {}
+    for frame_index in frame_indices:
+        keyframe_groups.setdefault(
+            bisect.bisect_right(keyframe_indices, frame_index), []
+        ).append(frame_index)
+    thread_budget = min(MAX_VIDEO_DECODE_THREADS, effective_cpu_count())
+    decoder_count = min(thread_budget, len(keyframe_groups))
     if decoder_count == 1:
         return first_decoder.get_frames_at(indices=frame_indices).data, sample_fps
     else:
         pass
-    index_shares = [
-        share.tolist() for share in np.array_split(frame_indices, decoder_count)
-    ]
+    share_thread_count = max(
+        1, (thread_budget - reader_thread_count) // (decoder_count - 1)
+    )
+    decoder_thread_counts = [reader_thread_count] + [share_thread_count] * (
+        decoder_count - 1
+    )
+    # note (ratish): a group costs the frames decoded from its keyframe to its last sampled frame, shared out in proportion to each decoder's threads.
+    group_decoded_frames = np.array(
+        [
+            group_frames[-1]
+            - (keyframe_indices[group_number - 1] if group_number else 0)
+            + 1
+            for group_number, group_frames in keyframe_groups.items()
+        ]
+    )
+    group_ends = np.cumsum(group_decoded_frames)
+    share_ends = np.cumsum(decoder_thread_counts) / sum(decoder_thread_counts)
+    share_numbers = np.searchsorted(
+        share_ends, (group_ends - group_decoded_frames / 2) / group_ends[-1], "right"
+    )
+    index_shares: list[list[int]] = [[] for _ in range(decoder_count)]
+    for share_number, group_frames in zip(share_numbers, keyframe_groups.values()):
+        index_shares[min(int(share_number), decoder_count - 1)].extend(group_frames)
 
     def decode_share(share_index: int) -> torch.Tensor:
         if share_index == 0:
             decoder = first_decoder
         else:
-            decoder = VideoDecoder(video_path, num_ffmpeg_threads=1)
+            decoder = VideoDecoder(video_path, num_ffmpeg_threads=share_thread_count)
         return decoder.get_frames_at(indices=index_shares[share_index]).data
 
-    with ThreadPoolExecutor(max_workers=decoder_count) as pool:
-        frames = torch.cat(list(pool.map(decode_share, range(decoder_count))))
+    busy_shares = [
+        share_index for share_index, share in enumerate(index_shares) if share
+    ]
+    with ThreadPoolExecutor(max_workers=len(busy_shares)) as pool:
+        frames = torch.cat(list(pool.map(decode_share, busy_shares)))
     return frames, sample_fps
 
 
