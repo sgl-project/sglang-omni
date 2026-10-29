@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 import torch
 
-from sglang_omni.audio.vad import StatelessVAD
+from sglang_omni.audio.vad import VAD_FRAME_SAMPLES, StatelessVAD
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 from sglang_omni.models.minicpm_o.components.streaming_perception import (
@@ -380,6 +380,35 @@ def open_duplex_adapter() -> tuple[ThinkerAdapter, OmniRequest]:
     )
     adapter.open(SESSION, request)
     return adapter, request
+
+
+def test_sessions_share_one_silero_load_with_recurrent_state_of_their_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import silero_vad
+
+    loads = Mock(side_effect=silero_vad.load_silero_vad)
+    monkeypatch.setattr(silero_vad, "load_silero_vad", loads)
+    adapter, request = open_duplex_adapter()
+    noisy, untouched, fresh = (
+        SessionIdentity(name) for name in ("noisy", "untouched", "fresh")
+    )
+    for session in (noisy, untouched, fresh):
+        adapter.open(session, request)
+    assert loads.call_count == 1
+
+    noise = np.random.default_rng(0).normal(0, 0.3, 10 * VAD_FRAME_SAMPLES)
+    noise_pcm = (noise.clip(-1, 1) * 32767).astype("<i2").tobytes()
+    silence_pcm = bytes(VAD_FRAME_SAMPLES * PCM16_BYTES_PER_SAMPLE)
+    detector_of = {
+        s: adapter.states[s].speech_detector for s in (noisy, untouched, fresh)
+    }
+    detector_of[noisy].score(noise_pcm, 0)
+    [untouched_frame] = detector_of[untouched].score(silence_pcm, 0)
+    [fresh_frame] = detector_of[fresh].score(silence_pcm, 0)
+    [noisy_frame] = detector_of[noisy].score(silence_pcm, len(noise))
+    assert untouched_frame.probability == fresh_frame.probability
+    assert noisy_frame.probability != fresh_frame.probability
 
 
 def listen_after_a_stop(
