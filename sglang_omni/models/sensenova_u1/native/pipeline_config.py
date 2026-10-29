@@ -97,6 +97,10 @@ def set_compatible_runtime_defaults(server_args: ServerArgs) -> None:
 @dataclass
 class SenseNovaU1PipelineConfig(PipelineConfig):
     task_type: ModelTaskType = ModelTaskType.T2I
+    supported_task_types: tuple[ModelTaskType, ...] = (
+        ModelTaskType.T2I,
+        ModelTaskType.TI2I,
+    )
     model_precision: str = "bf16"
     should_use_guidance: bool = True
     supports_cfg_parallel: bool = False
@@ -106,7 +110,9 @@ class SenseNovaU1PipelineConfig(PipelineConfig):
 
     def supports_dynamic_batching_for_request(self, batch: Req) -> bool:
         sampling_params = batch.sampling_params
-        return not bool(getattr(sampling_params, "think_mode", DEFAULT_THINK_MODE))
+        return sampling_params.image_path is None and not bool(
+            getattr(sampling_params, "think_mode", DEFAULT_THINK_MODE)
+        )
 
     def estimate_request_cost(self, batch: Req) -> float:
         image_token_count = (int(batch.width) // RESOLUTION_ALIGNMENT) * (

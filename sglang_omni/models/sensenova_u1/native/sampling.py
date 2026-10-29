@@ -4,7 +4,7 @@ from argparse import Namespace
 from dataclasses import dataclass, field
 from typing import TypedDict
 
-from pydantic import JsonValue
+from pydantic import BaseModel, Field, JsonValue
 from sglang.multimodal_gen.configs.sample.sampling_params import (
     DataType,
     SamplingParams,
@@ -17,6 +17,7 @@ from sglang_omni.models.sensenova_u1.native.options import (
     DEFAULT_T_EPS,
     DEFAULT_THINK_MODE,
     DEFAULT_TIMESTEP_SHIFT,
+    MIN_INPUT_MAX_PIXELS,
     RESOLUTION_ALIGNMENT,
     SENSENOVA_U1_CFG_NORM_CHOICES,
     SENSENOVA_U1_REQUEST_EXTRA_KEY,
@@ -26,6 +27,10 @@ from sglang_omni.models.sensenova_u1.native.options import (
 PUBLIC_OVERRIDE_FIELDS = {
     "prompt",
     "prompt_path",
+    "image_path",
+    "img_cfg_scale",
+    "input_max_pixels",
+    "do_resize",
     "height",
     "width",
     "num_inference_steps",
@@ -52,6 +57,15 @@ class SenseNovaGenerationExtra(TypedDict):
     cfg_interval: tuple[float, float]
     t_eps: float
     think_mode: bool
+    img_cfg_scale: float
+    input_max_pixels: int | None
+    do_resize: bool
+
+
+class SenseNovaEditParameters(BaseModel):
+    img_cfg_scale: float = Field(ge=0, allow_inf_nan=False)
+    input_max_pixels: int | None = Field(ge=MIN_INPUT_MAX_PIXELS)
+    do_resize: bool
 
 
 @dataclass
@@ -69,11 +83,18 @@ class SenseNovaU1SamplingParams(SamplingParams):
     cfg_interval: tuple[float, float] = DEFAULT_CFG_INTERVAL
     t_eps: float = DEFAULT_T_EPS
     think_mode: bool = DEFAULT_THINK_MODE
+    img_cfg_scale: float = 1.0
+    input_max_pixels: int | None = None
+    do_resize: bool = True
     negative_prompt: None = field(default=None, init=False)
 
     @classmethod
     def supported_override_fields(cls) -> set[str]:
         return set(PUBLIC_OVERRIDE_FIELDS)
+
+    @classmethod
+    def image_request_extra_fields(cls) -> frozenset[str]:
+        return frozenset({"img_cfg_scale", "input_max_pixels", "do_resize"})
 
     @classmethod
     def get_cli_args(
@@ -97,6 +118,38 @@ class SenseNovaU1SamplingParams(SamplingParams):
         self,
     ) -> None:  # noqa: leading-underscore -- SamplingParams validation hook.
         super()._validate()  # noqa: leading-underscore -- SamplingParams validation hook.
+        edit_parameters = SenseNovaEditParameters.model_validate(
+            {
+                "img_cfg_scale": self.img_cfg_scale,
+                "input_max_pixels": self.input_max_pixels,
+                "do_resize": self.do_resize,
+            }
+        )
+        self.img_cfg_scale = edit_parameters.img_cfg_scale
+        self.input_max_pixels = edit_parameters.input_max_pixels
+        self.do_resize = edit_parameters.do_resize
+        if self.image_path:
+            if not isinstance(self.prompt, str):
+                raise ValueError(
+                    "SenseNova editing requires one text prompt per request"
+                )
+            else:
+                pass
+            if (
+                self.think_mode
+                or self.cfg_norm != DEFAULT_CFG_NORM
+                or self.cfg_interval != DEFAULT_CFG_INTERVAL
+                or self.timestep_shift != DEFAULT_TIMESTEP_SHIFT
+                or not self.enable_timestep_shift
+                or self.t_eps != DEFAULT_T_EPS
+            ):
+                raise ValueError(
+                    "SenseNova editing requires the default generation controls"
+                )
+            else:
+                pass
+        else:
+            pass
         if (
             self.width % RESOLUTION_ALIGNMENT != 0
             or self.height % RESOLUTION_ALIGNMENT != 0
@@ -147,5 +200,8 @@ class SenseNovaU1SamplingParams(SamplingParams):
             "cfg_interval": tuple(self.cfg_interval),
             "t_eps": self.t_eps,
             "think_mode": self.think_mode,
+            "img_cfg_scale": self.img_cfg_scale,
+            "input_max_pixels": self.input_max_pixels,
+            "do_resize": self.do_resize,
         }
         return request_extra

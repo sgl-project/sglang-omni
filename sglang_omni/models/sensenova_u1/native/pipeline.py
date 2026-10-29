@@ -8,11 +8,13 @@ import torch
 from sglang.multimodal_gen.runtime.pipelines_core.composed_pipeline_base import (
     ComposedPipelineBase,
 )
-from sglang.multimodal_gen.runtime.pipelines_core.stages import InputValidationStage
 from sglang.multimodal_gen.runtime.server_args import ServerArgs
 from transformers import PreTrainedTokenizerBase
 
 from sglang_omni.models.sensenova_u1.native.generation import SenseNovaU1GenerationStage
+from sglang_omni.models.sensenova_u1.native.image_edit import (
+    SenseNovaInputValidationStage,
+)
 from sglang_omni.models.sensenova_u1.native.loader import load_model_and_tokenizer
 
 logger = logging.getLogger(__name__)
@@ -39,7 +41,7 @@ class SenseNovaU1Pipeline(ComposedPipelineBase):
         return modules
 
     def create_pipeline_stages(self, server_args: ServerArgs) -> None:
-        self.add_stage(InputValidationStage())
+        self.add_stage(SenseNovaInputValidationStage())
         self.add_stage(
             SenseNovaU1GenerationStage(
                 model=self.get_module("model"),

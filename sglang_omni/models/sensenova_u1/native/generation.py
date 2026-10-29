@@ -20,6 +20,7 @@ from sglang_omni.models.sensenova_u1.native.options import (
     SENSENOVA_U1_REQUEST_EXTRA_KEY,
     ClassifierFreeGuidanceNormalization,
 )
+from sglang_omni.vendor.sensenova_u1.image_edit import it2i_generate
 from sglang_omni.vendor.sensenova_u1.modeling_neo_chat import NEOChatModel
 
 
@@ -116,21 +117,37 @@ class SenseNovaU1GenerationStage(PipelineStage):
             pass
         seed = seeds[0] if prompt_count == 1 else seeds
 
-        generation_result = self.model.t2i_generate(
-            self.tokenizer,
-            batch.prompt,
-            image_size=(int(batch.width), int(batch.height)),
-            cfg_scale=float(batch.guidance_scale),
-            cfg_norm=generation_options.cfg_norm,
-            timestep_shift=generation_options.timestep_shift,
-            enable_timestep_shift=generation_options.enable_timestep_shift,
-            cfg_interval=generation_options.cfg_interval,
-            num_steps=int(batch.num_inference_steps),
-            batch_size=prompt_count,
-            t_eps=generation_options.t_eps,
-            think_mode=generation_options.think_mode,
-            seed=seed,
-        )
+        if batch.image_path:
+            edit_options = batch.extra[SENSENOVA_U1_REQUEST_EXTRA_KEY]
+            generation_result = it2i_generate(
+                self.model,
+                self.tokenizer,
+                batch.prompt,
+                batch.condition_image,
+                image_size=(int(batch.width), int(batch.height)),
+                num_steps=int(batch.num_inference_steps),
+                cfg_scale=float(batch.guidance_scale),
+                img_cfg_scale=edit_options["img_cfg_scale"],
+                seed=seeds[0],
+                timestep_shift=generation_options.timestep_shift,
+                t_eps=generation_options.t_eps,
+            )
+        else:
+            generation_result = self.model.t2i_generate(
+                self.tokenizer,
+                batch.prompt,
+                image_size=(int(batch.width), int(batch.height)),
+                cfg_scale=float(batch.guidance_scale),
+                cfg_norm=generation_options.cfg_norm,
+                timestep_shift=generation_options.timestep_shift,
+                enable_timestep_shift=generation_options.enable_timestep_shift,
+                cfg_interval=generation_options.cfg_interval,
+                num_steps=int(batch.num_inference_steps),
+                batch_size=prompt_count,
+                t_eps=generation_options.t_eps,
+                think_mode=generation_options.think_mode,
+                seed=seed,
+            )
         think_text = None
         if generation_options.think_mode:
             image_tensors, think_text = generation_result

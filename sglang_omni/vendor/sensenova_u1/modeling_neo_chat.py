@@ -330,8 +330,11 @@ class NEOChatModel(PreTrainedModel):
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         raise NotImplementedError("forward")
 
-    def extract_feature(self, pixel_values, grid_hw=None):
-        return self.fm_modules["vision_model_mot_gen"](
+    def extract_feature(self, pixel_values, grid_hw=None, *, gen_model=True):
+        vision_model = (
+            self.fm_modules["vision_model_mot_gen"] if gen_model else self.vision_model
+        )
+        return vision_model(
             pixel_values=pixel_values,
             output_hidden_states=False,
             return_dict=True,

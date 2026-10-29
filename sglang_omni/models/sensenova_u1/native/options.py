@@ -15,6 +15,7 @@ SENSENOVA_U1_CFG_NORM_CHOICES: tuple[ClassifierFreeGuidanceNormalization, ...] =
     get_args(ClassifierFreeGuidanceNormalization)
 )
 RESOLUTION_ALIGNMENT: int = 32
+MIN_INPUT_MAX_PIXELS: int = 512 * 512
 
 DEFAULT_CFG_NORM: ClassifierFreeGuidanceNormalization = "none"
 DEFAULT_TIMESTEP_SHIFT: float = 3.0
