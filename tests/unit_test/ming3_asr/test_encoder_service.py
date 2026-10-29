@@ -103,9 +103,7 @@ def separate_chunk_embeddings(
     embeddings: list[torch.Tensor] = []
     with torch.inference_mode():
         for mel in mels:
-            parts = [
-                encoder.embed_mels([part])[0] for part in mel.split(chunk_frames)
-            ]
+            parts = [encoder.embed_mels([part])[0] for part in mel.split(chunk_frames)]
             embeddings.append(torch.cat(parts))
     return embeddings
 
