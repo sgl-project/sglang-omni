@@ -21,6 +21,14 @@ from sglang_omni.models.ming3_audio.preprocessing import (
     separate_asr_language_prefix,
 )
 from sglang_omni.models.ming3_audio.talker import Ming3SpeechGenerator
+from sglang_omni.models.ming3_audio.text_processing import (
+    DEFAULT_ENABLE_TEXT_SEGMENTATION,
+    DEFAULT_MAX_FRAGMENT_CHARS,
+    DEFAULT_MAX_FRAGMENTS,
+    DEFAULT_MAX_INPUT_CHARS,
+    DEFAULT_MAX_SEMANTIC_LENGTH,
+    DEFAULT_MAX_TOTAL_DECODE_STEPS,
+)
 from sglang_omni.modules.ming_audio.audio_encoder import (
     AudioEncoderConfig,
     Ming3AudioEncoder,
@@ -59,6 +67,12 @@ def create_talker_executor(
     max_decode_steps: int,
     seed: int,
     enable_cuda_graph: bool,
+    enable_text_segmentation: bool = DEFAULT_ENABLE_TEXT_SEGMENTATION,
+    max_semantic_length: int = DEFAULT_MAX_SEMANTIC_LENGTH,
+    max_fragment_characters: int = DEFAULT_MAX_FRAGMENT_CHARS,
+    max_fragments: int = DEFAULT_MAX_FRAGMENTS,
+    max_input_characters: int = DEFAULT_MAX_INPUT_CHARS,
+    max_total_decode_steps: int = DEFAULT_MAX_TOTAL_DECODE_STEPS,
     device: str | None = None,
     gpu_id: int | None = None,
 ) -> SimpleScheduler:
@@ -67,6 +81,12 @@ def create_talker_executor(
         resolve_concrete_device(device, gpu_id),
         max_decode_steps,
         enable_cuda_graph,
+        enable_text_segmentation=enable_text_segmentation,
+        max_semantic_length=max_semantic_length,
+        max_fragment_characters=max_fragment_characters,
+        max_fragments=max_fragments,
+        max_input_characters=max_input_characters,
+        max_total_decode_steps=max_total_decode_steps,
     )
 
     def synthesize(payload: StagePayload) -> StagePayload:
