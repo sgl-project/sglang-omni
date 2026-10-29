@@ -3,13 +3,22 @@ from types import SimpleNamespace
 
 import pytest
 
-from sglang_omni.config import StageConfig
+from sglang_omni.config import FactoryArgs, StageConfig
+from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.placement import build_stage_placement_plan
-from sglang_omni.models.cosmos3.config import Cosmos3PipelineConfig, Variants
+from sglang_omni.config.runtime import resolve_stage_factory_args
+from sglang_omni.models.cosmos3.config import (
+    Cosmos3PipelineConfig,
+    Cosmos3ReasonerPipelineConfig,
+    Variants,
+)
+from sglang_omni.models.cosmos3.umm_config import Cosmos3UMMPipelineConfig
 from sglang_omni.native_generation.stage import native_server_kwargs
 from sglang_omni.pipeline import runtime_config
 from sglang_omni.pipeline.mp_runner import build_stage_groups
 from sglang_omni.pipeline.replicas import validate_device_assignment
+from sglang_omni.platforms import current_platform
+from sglang_omni.scheduling.native_chat_scheduler import native_chat_server_kwargs
 
 
 def config(devices=(1, 3)):
@@ -256,3 +265,65 @@ def test_text_variant_serves_the_reasoner_as_an_engine_stage():
     assert engine_stage_names(config) == ["reasoner"]
     # The Reasoner has no generation stage, so it serves no native media routes.
     assert not any(stage.http_routes for stage in config.stages)
+
+
+@pytest.mark.parametrize("is_xpu", [False, True])
+def test_generation_streams_the_dit_on_xpu_under_user_overrides(monkeypatch, is_xpu):
+    monkeypatch.setattr(current_platform, "is_xpu", lambda: is_xpu)
+    offload = {"layerwise_offload_components": ["dit"]} if is_xpu else {}
+    default = {"server_args_overrides": offload} if is_xpu else {}
+    direct = Cosmos3PipelineConfig(model_path="checkpoint")
+    interleaved = Cosmos3UMMPipelineConfig(model_path="checkpoint")
+    assert direct.stage_factory_kwargs("generation") == default
+    assert interleaved.stage_factory_kwargs("generation") == {
+        **default,
+        "inline_media": True,
+    }
+    stage = interleaved.stage_named("generation")
+    stage.factory = FactoryArgs(server_args_overrides={"warmup_mode": "server"})
+    generation_factory_keyword_arguments = resolve_stage_factory_args(
+        stage, interleaved
+    )
+    assert generation_factory_keyword_arguments["server_args_overrides"] == {
+        **offload,
+        "warmup_mode": "server",
+    }
+    assert generation_factory_keyword_arguments["inline_media"] is True
+
+
+@pytest.mark.parametrize("is_xpu", [False, True])
+@pytest.mark.parametrize(
+    "config_cls", [Cosmos3ReasonerPipelineConfig, Cosmos3UMMPipelineConfig]
+)
+@pytest.mark.parametrize(
+    "override, expected_without_xpu, expected_on_xpu",
+    [
+        (None, None, 0.8),
+        (("reasoner.gpu_memory_fraction", "0.74"), 0.74, 0.74),
+        (("reasoner.gpu_memory_fraction", "null"), None, None),
+        (("reasoner.engine.mem_fraction_static", "0.9"), 0.9, 0.9),
+    ],
+)
+def test_reasoner_memory_fraction_is_the_stage_budget(
+    monkeypatch, is_xpu, config_cls, override, expected_without_xpu, expected_on_xpu
+):
+    monkeypatch.setattr(current_platform, "is_xpu", lambda: is_xpu)
+    config = config_cls(model_path="checkpoint")
+    if override is not None:
+        config = ConfigManager(config).merge_config([override])
+    else:
+        pass
+    reasoner_factory_keyword_arguments = resolve_stage_factory_args(
+        config.stage_named("reasoner"), config
+    )
+    reasoner_server_keyword_arguments = native_chat_server_kwargs(
+        "checkpoint",
+        reasoner_factory_keyword_arguments["gpu_id"],
+        reasoner_factory_keyword_arguments.get("server_args_overrides"),
+        total_gpu_memory_fraction=reasoner_factory_keyword_arguments.get(
+            "total_gpu_memory_fraction"
+        ),
+    )
+    assert reasoner_server_keyword_arguments.get("mem_fraction_static") == (
+        expected_on_xpu if is_xpu else expected_without_xpu
+    )
