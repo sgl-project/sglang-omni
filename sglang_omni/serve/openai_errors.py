@@ -61,6 +61,7 @@ _BAD_REQUEST_MARKERS = (
     "Unsupported PersonaPlex audio input",
     "Drama 3 request:",
     "Ming 3 ASR request:",
+    "Parakeet TDT request:",
     "; packaged voices:",
     "Native generation request ",
     "Native chat request rejected: ",
