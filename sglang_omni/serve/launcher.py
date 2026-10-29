@@ -760,6 +760,11 @@ async def run_server(
                 speech_reference_text_excludes_instructions=(
                     pipeline_config.speech_reference_text_excludes_instructions
                 ),
+                speech_request_validator_cls=(
+                    import_string(pipeline_config.speech_request_validator_factory)
+                    if pipeline_config.speech_request_validator_factory is not None
+                    else None
+                ),
                 additional_speech_languages=pipeline_config.additional_speech_languages,
                 max_speech_input_chars=pipeline_config.max_speech_input_chars,
                 supported_speech_fields=pipeline_config.supported_speech_fields,

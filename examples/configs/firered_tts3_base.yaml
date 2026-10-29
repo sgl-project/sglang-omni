@@ -1,0 +1,57 @@
+config_cls: FireRedTTS3PipelineConfig
+model_path: FireRedTeam/FireRedTTS3
+
+# n_timesteps (ODE Euler steps per patch) and max_patches (patch budget, one
+# patch = 160 ms of audio) feed two consumers: the talker closes its AR/flow
+# loop with them, and preprocessing sizes its engine-token budget from them.
+# The selector writes one value into both stages.
+shared:
+  - select:
+      stages: [preprocessing, talker]
+    factory:
+      n_timesteps: 10
+      max_patches: 400
+
+stages:
+  # Every GPU stage warms its cold-start paths at factory time (CAM++ /
+  # RedAE encoder here, side path on the talker, decoder paths on the
+  # vocoder); pin factory.warmup_on_init: false on a stage to skip it.
+  talker:
+    # Talker factory kill switches, all default on: flow_cuda_graph
+    # (whole-Euler-loop graph) and flow_batching (one batched DiT
+    # replay per engine step across concurrent requests).
+    # factory.flow_mode selects the DiT execution stack inside the flow
+    # loop: fp32 (bit-exact reference) / compile_fp32 / bf16 /
+    # compile_bf16 (default; throughput stack — the bf16 modes lower only
+    # the DiT matmul body, the Euler state, noise, CFG blend, and t_span
+    # stay fp32). Measured on L20: c=1 RTF 0.353 -> 0.223 with the
+    # stop trajectory identical; pin fp32 for bit-exact deployments.
+    engine:
+      mem_fraction_static: 0.20
+      max_running_requests: 16
+      # The backbone decode CUDA graph (default on) reads the per-step latent
+      # feedback through the model-owned persistent buffer; pin
+      # disable_cuda_graph: true here only to force eager decode.
+  vocoder:
+    factory:
+      max_batch_size: 4
+      max_batch_wait_ms: 2
+      # Equal-progress stream coalescing (default on): lockstep streaming
+      # requests share one batched RedAE decoder forward per step; size-1
+      # groups keep the serial decode bit-exact. Pin stream_batching: false
+      # to force the serial path. Decodes run on a dedicated CUDA stream
+      # (default on): they wait only on each chunk's readiness event instead
+      # of queueing behind the talker's graph replays; pin
+      # separate_decode_stream: false to share the legacy default stream.
+      # Warm steady-state chunk decodes replay self-captured CUDA graphs
+      # (default on; B=1 bit-exact with eager; batch buckets cap at 8, larger
+      # groups stay eager). Pin incremental_cuda_graph: false to force eager.
+      # The fresh-cache joint prompt+first-chunk decode (the TTFP path)
+      # replays left-padded bucket graphs (default on; exact-width hits
+      # bit-exact, padded replays differ inside the trimmed prompt lead by
+      # ~1e-6 fp32 tiling noise; batch buckets cap at 2 — wider cold groups
+      # are compute-bound and stay eager). Pin cold_cuda_graph: false to
+      # force eager.
+
+  # reference_encode keeps a content-addressed artifact cache (default on);
+  # pin factory.reference_cache: false on that stage to disable it.

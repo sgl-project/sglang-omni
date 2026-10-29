@@ -733,6 +733,7 @@ class PipelineConfig(BaseModel):
     required_speech_reference_count: ClassVar[int | None] = None
     speech_reference_text_required: ClassVar[bool] = False
     speech_reference_text_excludes_instructions: ClassVar[bool] = False
+    speech_request_validator_factory: ClassVar[str | None] = None
     additional_speech_languages: ClassVar[frozenset[str]] = frozenset()
     realtime_transcription: ClassVar[RealtimeTranscriptionConfig | None] = None
     realtime_deployment_factory: ClassVar[str | None] = None

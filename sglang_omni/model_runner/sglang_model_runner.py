@@ -654,7 +654,7 @@ class SGLModelRunner(ModelRunner):
     def weight_update_blocked_reason(self) -> str | None:
         ws = self.weight_share_config
         if ws is None:
-            return None
+            return getattr(self.model, "weight_update_blocked_reason", None)
         else:
             pass
         return (

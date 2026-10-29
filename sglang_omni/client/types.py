@@ -389,6 +389,7 @@ class SpeechResult:
     sample_rate: int | None = None
     usage: UsageInfo | None = None
     finish_reason: str = UNKNOWN_FINISH_REASON
+    text: str | None = None
 
 
 class ClientError(Exception):
