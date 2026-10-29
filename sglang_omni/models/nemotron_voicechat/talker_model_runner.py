@@ -36,7 +36,11 @@ class NemotronVoiceChatTalkerModelRunner(ModelRunner):
         # is <SPECIAL_12>, the text channel's PAD, which means still speaking.
         self.text_pad_id = int(self.tokenizer.pad_token_id)
         self.text_eos_id = int(self.tokenizer.eos_token_id)
-        self.exponent = float(speech["tts_config"]["exponent"])
+        self.level_schedule = self.model.talker.build_level_schedule(
+            NUM_ITER,
+            float(speech["tts_config"]["exponent"]),
+            self.model.hidden_out.device,
+        )
         self.top_p = float(speech["inference_top_p_or_k"])
         self.noise_scale = float(speech["inference_noise_scale"])
         self.force_silence = bool(speech["inference_force_speech_silence_on_eos"])
@@ -185,8 +189,7 @@ class NemotronVoiceChatTalkerModelRunner(ModelRunner):
         return model.talker.generate_codes(
             model.hidden_out[index : index + 1].float(),
             model.mog_head,
-            num_iter=NUM_ITER,
-            exponent=self.exponent,
+            level_schedule=self.level_schedule,
             top_p=self.top_p,
             noise_scale=self.noise_scale,
         )

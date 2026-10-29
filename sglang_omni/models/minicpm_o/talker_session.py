@@ -26,8 +26,6 @@ from sglang_omni.scheduling.sglang_backend.request_data import (
 
 # note (Junnan Li): One 1 s unit of codec tokens plus one, as in the checkpoint's duplex TTS.
 TALKER_TOKENS_PER_UNIT = CODEC_CHUNK_SIZE + 1
-# note (luojiaxuan): The finish reason of a request that generated max_new_tokens without its stop token.
-FINISH_LENGTH = "length"
 
 
 @dataclass(kw_only=True)
@@ -153,9 +151,10 @@ class TalkerAdapter(ARSessionAdapter):
     ) -> StagePayload:
         payload = request_data.stage_payload
         payload.data["codec_tokens"] = list(request_data.output_ids)
-        # note (luojiaxuan): A turn's last unit may stop at the codec EOS; spending its whole budget instead leaves the rest of the turn's text unspoken.
+        # note (luojiaxuan): A turn's last unit may stop at the codec EOS inside its window; reaching the end of the window instead leaves the rest of the turn's text unspoken, whether its last slot then held the EOS or another codec token.
         payload.data["is_speech_cut"] = (
-            payload.data["end_of_turn"] and request_data.finish_reason == FINISH_LENGTH
+            payload.data["end_of_turn"]
+            and len(request_data.output_ids) >= CODEC_CHUNK_SIZE
         )
         state = self.states[session_identity]
         state.is_turn_start = False

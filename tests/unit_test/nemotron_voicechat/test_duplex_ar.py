@@ -22,6 +22,7 @@ from sglang_omni.models.nemotron_voicechat.duplex_stages import (
     ThinkerBuilder,
 )
 from sglang_omni.models.nemotron_voicechat.fusion import AddFusion
+from sglang_omni.models.nemotron_voicechat.talker import LevelScheduleEntry
 from sglang_omni.models.nemotron_voicechat.talker_model_runner import (
     NemotronVoiceChatTalkerModelRunner,
 )
@@ -344,11 +345,9 @@ def test_sampler_replay_uses_new_hidden_states_and_randomness(
         hidden: torch.Tensor,
         head: torch.nn.Module,
         *,
-        num_iter: int,
-        exponent: float,
+        level_schedule: list[LevelScheduleEntry],
         top_p: float,
         noise_scale: float,
-        assignment_counts: tuple[int, ...],
     ) -> torch.Tensor:
         return hidden + torch.rand_like(hidden)
 
@@ -362,7 +361,10 @@ def test_sampler_replay_uses_new_hidden_states_and_randomness(
             talker=Mock(num_quantizers=8, generate_codes=sample_codes),
             mog_head=Mock(),
         )
-        runner.exponent = 1.0
+        runner.level_schedule = [
+            LevelScheduleEntry(first_level=0, level_count=4),
+            LevelScheduleEntry(first_level=4, level_count=4),
+        ]
         runner.top_p = 0.9
         runner.noise_scale = 1.0
 

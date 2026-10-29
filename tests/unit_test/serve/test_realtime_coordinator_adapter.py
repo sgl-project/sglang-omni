@@ -11,13 +11,14 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from sglang_omni.client.client import Client
+from sglang_omni.pipeline.types import SessionIdleTimeoutError, SessionOutputBudgetError
 from sglang_omni.profiler.duplex_events import SessionUnitReadyObservation
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import OutputChunk, SessionLimits, TimedChunk
 from sglang_omni.serve.realtime.adapters import CoordinatorAdapter
 from sglang_omni.serve.realtime.output import OutputEvent, TextDelta, TurnFailure
 from sglang_omni.serve.realtime.schema import SessionConfiguration
-from sglang_omni.serve.realtime.types import RuntimeLimits, Unit
+from sglang_omni.serve.realtime.types import OutputBudgetError, RuntimeLimits, Unit
 from tests.unit_test.fixtures.session_client import FakeSessionClient
 
 SAMPLE_RATE = 16000
@@ -217,7 +218,7 @@ async def test_output_over_unit_budget_fails_the_unit() -> None:
     adapter = build_adapter(coordinator, limits=SessionLimits(max_output_chunks=1))
     await adapter.open("sess_1", SESSION_CONFIG, sink)
 
-    with pytest.raises(RuntimeError, match="output budget"):
+    with pytest.raises(OutputBudgetError, match="output budget"):
         await adapter.process(build_unit(0))
     await adapter.close()
 
@@ -291,4 +292,28 @@ async def test_context_exhaustion_with_pending_unit_fails_the_unit_without_loggi
         await adapter.close()
 
     assert sink.published == []
+    assert not any(record.name == ADAPTER_LOGGER_NAME for record in caplog.records)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "code"),
+    [
+        (SessionIdleTimeoutError(300), "session_idle_timeout"),
+        (SessionOutputBudgetError(), "output_budget_exhausted"),
+    ],
+)
+async def test_coordinator_failure_without_pending_unit_fails_the_session_without_logging(
+    error: Exception, code: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    coordinator = SessionCoordinator([])
+    sink = RecordingSink()
+    adapter = build_adapter(coordinator)
+    with caplog.at_level(logging.WARNING, logger=ADAPTER_LOGGER_NAME):
+        await adapter.open("sess_1", SESSION_CONFIG, sink)
+        coordinator.outputs.put_nowait(error)
+        await asyncio.wait_for(sink.has_published.wait(), PROCESS_TIMEOUT_S)
+        await adapter.close()
+
+    assert sink.published == [(TurnFailure("server_error", code, str(error)), None)]
     assert not any(record.name == ADAPTER_LOGGER_NAME for record in caplog.records)
