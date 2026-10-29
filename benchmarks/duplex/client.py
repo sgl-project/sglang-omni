@@ -80,7 +80,8 @@ END_OF_INPUT_RULE = (
     "open; a reply is finished only if its response.done arrived before the input end"
 )
 PLAYBACK_REPORT = (
-    "conversation.item.truncate on each response.done with status cancelled, with "
+    "conversation.item.truncate on each response.done with status cancelled before "
+    "session.close, with "
     "audio_end_ms the part of that reply a zero-buffer player had played at its "
     "receipt: each audio delta plays from the later of its arrival and the end of "
     "the previous delta, and the cut drops what is still unplayed"
@@ -427,6 +428,7 @@ async def run_session(
                 rejected = asyncio.Event()
                 fatal = False
                 open_response_ids: dict[str, None] = {}
+                is_close_sent = False
 
                 async def send(
                     event_type: Literal[
@@ -442,6 +444,7 @@ async def run_session(
                     sglang: InputAudioMetadata | None = None,
                     truncate: dict[str, JsonValue] | None = None,
                 ) -> None:
+                    nonlocal is_close_sent
                     event_id = uuid.uuid4().hex
                     event: dict[str, JsonValue] = {
                         "type": event_type,
@@ -466,6 +469,10 @@ async def run_session(
                     send_started_s = time.perf_counter()
                     frame = json.dumps(event, allow_nan=False)
                     record_frame("send", frame, event, send_started_s)
+                    if event_type == "session.close":
+                        is_close_sent = True
+                    else:
+                        pass
                     await websocket.send(frame)
                     if event_type == "input_audio_buffer.append":
                         assert sglang is not None
@@ -522,7 +529,9 @@ async def run_session(
                     ):
                         response_id = event["response"]["id"]
                         playout_cursor_s = min(playout_cursor_s, now_s)
-                        if response_id in reply_items:
+                        # Note (Jiaxin Deng): after session.close the server may close the socket at
+                        # once, so a truncate sent then fails the session before session.closed is read.
+                        if response_id in reply_items and not is_close_sent:
                             played_s = sum(
                                 min(seconds, max(0.0, now_s - start_s))
                                 for start_s, seconds in reply_audio[response_id]

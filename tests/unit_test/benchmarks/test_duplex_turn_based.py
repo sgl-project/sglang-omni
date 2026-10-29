@@ -509,6 +509,24 @@ def test_an_end_wait_expiry_closes_the_session_and_leaves_the_open_reply_unfinis
     assert close_cut["dropped_samples"] > 0
 
 
+def test_an_end_wait_close_with_playback_reports_reads_session_closed(
+    tmp_path: Path,
+) -> None:
+    """A truncate for the reply the close cancelled raced the server's socket close and failed the session before session.closed was read."""
+    records = asyncio.run(
+        capture(
+            TurnBasedPeer("unfinished"),
+            tmp_path / "continuous.jsonl",
+            report_playback=True,
+            end_wait_s=0.3,
+        )
+    )
+
+    assert evaluate_trace(records, profile=TURN_BASED)["status"] == "pass"
+    assert sent_types(records)[-1] == "session.close"
+    assert records[-1]["event"]["type"] == "session.closed"
+
+
 def test_a_drain_that_never_comes_still_fails_without_an_end_wait(
     tmp_path: Path,
 ) -> None:
