@@ -6,18 +6,25 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import torch
 from sglang.srt.server_args import ServerArgs
-from transformers import GenerationConfig, WhisperProcessor, WhisperTokenizer
+from transformers import (
+    AutoConfig,
+    AutoProcessor,
+    GenerationConfig,
+    WhisperProcessor,
+    WhisperTokenizer,
+)
+from transformers.utils.hub import cached_file, extract_commit_hash
 
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.sglang_model_runner import SGLModelRunner
 from sglang_omni.model_runner.whisper_prefill_cuda_graph_runner import (
     WhisperPrefillCudaGraphRunner,
 )
-from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.models.whisper_asr.dense_prefill import WhisperDensePrefillRunner
 from sglang_omni.models.whisper_asr.encoder_service import (
     WhisperPreLMEncoderService,
@@ -290,6 +297,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
         self.processor: WhisperProcessor | None = None
         self.tokenizer: WhisperTokenizer | None = None
         self.generation_config: GenerationConfig | None = None
+        self.model_revision: str | None = None
         self.encoder_token_count = 0
         self.context_length = 0
         self.decoder_context_len = 0
@@ -297,21 +305,40 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
         self.sglang_runner: SGLModelRunner | None = None
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
-        from transformers import AutoConfig, AutoProcessor, GenerationConfig
-
         load_path = checkpoint_dir
-        try:
-            cached_dir = resolve_model_path(checkpoint_dir, local_files_only=True)
-        except OSError:
-            pass
-        else:
-            if all((cached_dir / name).is_file() for name in WHISPER_METADATA_FILES):
-                load_path = str(cached_dir)
+        revision = self.server_args_overrides.get("revision")
+        if not Path(checkpoint_dir).is_dir():
+            try:
+                config_file = cached_file(
+                    checkpoint_dir,
+                    "config.json",
+                    revision=revision,
+                    local_files_only=True,
+                )
+            except OSError:
+                config_file = cached_file(
+                    checkpoint_dir, "config.json", revision=revision
+                )
             else:
-                pass
-        self.processor = AutoProcessor.from_pretrained(load_path)
+                cached_dir = Path(config_file).parent
+                if all(
+                    (cached_dir / name).is_file() for name in WHISPER_METADATA_FILES
+                ):
+                    load_path = str(cached_dir)
+                else:
+                    config_file = cached_file(
+                        checkpoint_dir, "config.json", revision=revision
+                    )
+            self.model_revision = extract_commit_hash(config_file, None) or revision
+        else:
+            self.model_revision = None
+        self.processor = AutoProcessor.from_pretrained(
+            load_path, revision=self.model_revision
+        )
         self.tokenizer = self.processor.tokenizer
-        self.generation_config = GenerationConfig.from_pretrained(load_path)
+        self.generation_config = GenerationConfig.from_pretrained(
+            load_path, revision=self.model_revision
+        )
         self.encoder_token_count = int(
             self.processor.feature_extractor.nb_max_frames // 2
         )
@@ -322,7 +349,10 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
             + _TASK_PREFIX_SLACK_TOKENS
         )
         self.decoder_context_len = int(
-            AutoConfig.from_pretrained(load_path).max_target_positions or 448
+            AutoConfig.from_pretrained(
+                load_path, revision=self.model_revision
+            ).max_target_positions
+            or 448
         )
 
     def setup_model(
@@ -464,6 +494,10 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
         )
 
     def adjust_overrides(self, overrides: dict[str, object]) -> None:
+        if self.model_revision is not None:
+            overrides["revision"] = self.model_revision
+        else:
+            pass
         model_overrides = json.loads(overrides.get("json_model_override_args") or "{}")
         model_overrides["encoder_attention_backend"] = self.encoder_attention_backend
         overrides["json_model_override_args"] = json.dumps(model_overrides)
