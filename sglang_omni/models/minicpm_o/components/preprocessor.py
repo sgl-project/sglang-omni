@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from collections.abc import Mapping
 
 import numpy as np
@@ -43,6 +44,12 @@ from sglang_omni.preprocessing.audio import (
 from sglang_omni.preprocessing.image import (
     compute_image_cache_key,
     ensure_image_list_async,
+)
+from sglang_omni.preprocessing.resource_connector import (
+    MultiModalResourceConnector,
+    ResourceHTTPConnection,
+    await_media_cleanup,
+    resource_connector_scope,
 )
 from sglang_omni.preprocessing.video import (
     compute_video_cache_key,
@@ -95,6 +102,9 @@ class MiniCPMOPreprocessor:
         # note (MayDomine): text-only requests do not need Whisper feature extraction.
         self.model_dir: str = local_model_directory
         self._processor: ProcessorMixin | None = None  # noqa: leading-underscore
+        self._processor_lock: threading.Lock = (  # noqa: leading-underscore
+            threading.Lock()
+        )
         self.speech_enabled: bool = speech_enabled
         self.device: torch.device = device
 
@@ -121,22 +131,35 @@ class MiniCPMOPreprocessor:
 
     @property
     def processor(self) -> ProcessorMixin:
-        if self._processor is None:  # noqa: leading-underscore
-            self._processor = AutoProcessor.from_pretrained(  # noqa: leading-underscore
-                self.model_dir, trust_remote_code=True
-            )
-            if self.device.type == "cuda":
-                processor = self._processor  # noqa: leading-underscore
-                processor.process_image = CUDAImageProcessor(
-                    processor.image_processor, self.device
-                )
-            else:
-                pass
+        if self._processor is not None:  # noqa: leading-underscore
+            return self._processor  # noqa: leading-underscore
         else:
-            pass
-        return self._processor  # noqa: leading-underscore
+            with self._processor_lock:  # noqa: leading-underscore
+                if self._processor is not None:  # noqa: leading-underscore
+                    return self._processor  # noqa: leading-underscore
+                else:
+                    processor = AutoProcessor.from_pretrained(
+                        self.model_dir, trust_remote_code=True
+                    )
+                    if self.device.type == "cuda":
+                        processor.process_image = CUDAImageProcessor(
+                            processor.image_processor, self.device
+                        )
+                    else:
+                        pass
+                    self._processor = processor  # noqa: leading-underscore
+                    return processor
 
     async def __call__(self, payload: StagePayload) -> StagePayload:
+        connection = ResourceHTTPConnection()
+        resource_connector = MultiModalResourceConnector(connection=connection)
+        with resource_connector_scope(resource_connector):
+            try:
+                return await self.preprocess_request(payload)
+            finally:
+                await await_media_cleanup(connection.close())
+
+    async def preprocess_request(self, payload: StagePayload) -> StagePayload:
         inputs = payload.request.inputs
         params = payload.request.params or {}
         metadata = payload.request.metadata or {}
