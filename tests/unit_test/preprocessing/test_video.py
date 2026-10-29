@@ -410,7 +410,7 @@ def test_a_processed_video_before_a_file_keeps_every_video_in_place(
 @pytest.mark.skipif(
     video.VideoDecoder is None, reason="the torchcodec native decoder is unavailable"
 )
-@pytest.mark.parametrize("cpu_count", [1, 3, 16])
+@pytest.mark.parametrize("cpu_count", [4, 16])
 @pytest.mark.parametrize(
     "frame_range",
     [
@@ -422,7 +422,7 @@ def test_a_processed_video_before_a_file_keeps_every_video_in_place(
 def test_parallel_torchcodec_decode_returns_the_reader_frames(
     mpeg4_video: Path, monkeypatch, cpu_count: int, frame_range: dict[str, float]
 ) -> None:
-    """Frames of one keyframe group went to several decoders that each decoded the group from its keyframe, so dense sampling ran slower than the reader."""
+    """Frames of one keyframe group went to several decoders that each decoded the group from its keyframe, and decoders beyond the reader's took threads the host lacked, so dense sampling ran slower than the reader."""
     native_decoder = video.VideoDecoder
     opened_decoders: list[tuple[int, list[int]]] = []
 
@@ -461,7 +461,10 @@ def test_parallel_torchcodec_decode_returns_the_reader_frames(
     sampled_groups = set().union(*decoder_groups)
     assert sum(len(groups) for groups in decoder_groups) == len(sampled_groups)
     assert opened_decoders[0][0] == video.READER_FFMPEG_THREADS
-    assert len(opened_decoders) <= min(cpu_count, len(sampled_groups))
+    assert sum(thread_count for thread_count, _ in opened_decoders) <= max(
+        min(video.MAX_VIDEO_DECODE_THREADS, cpu_count), video.READER_FFMPEG_THREADS
+    )
+    assert len(opened_decoders) <= len(sampled_groups)
 
 
 def test_torchcodec_reader_of_record_runs_when_the_native_decoder_is_unavailable(

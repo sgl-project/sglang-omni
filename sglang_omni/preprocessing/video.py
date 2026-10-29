@@ -36,7 +36,7 @@ except (ImportError, OSError, RuntimeError):
     # note (ratish): images whose torchcodec wheel links CUDA-only libraries cannot load it.
     VideoDecoder = None
 
-# note (ratish): frames after a keyframe decode in order from it, so each keyframe group stays on one decoder; a video's decoders share at most this many ffmpeg threads.
+# note (ratish): frames after a keyframe decode in order from it, so each keyframe group stays on one decoder; a video's decoders share at most this many ffmpeg threads, or the reader's own when it takes more.
 MAX_VIDEO_DECODE_THREADS = 16
 # The qwen-vl-utils torchcodec reader's ffmpeg threads when TORCHCODEC_NUM_THREADS is unset.
 READER_FFMPEG_THREADS = 8
@@ -475,15 +475,15 @@ def read_video_torchcodec(
         keyframe_groups.setdefault(
             bisect.bisect_right(keyframe_indices, frame_index), []
         ).append(frame_index)
-    thread_budget = min(MAX_VIDEO_DECODE_THREADS, effective_cpu_count())
-    decoder_count = min(thread_budget, len(keyframe_groups))
+    thread_budget = max(
+        min(MAX_VIDEO_DECODE_THREADS, effective_cpu_count()), reader_thread_count
+    )
+    decoder_count = min(1 + thread_budget - reader_thread_count, len(keyframe_groups))
     if decoder_count == 1:
         return first_decoder.get_frames_at(indices=frame_indices).data, sample_fps
     else:
         pass
-    share_thread_count = max(
-        1, (thread_budget - reader_thread_count) // (decoder_count - 1)
-    )
+    share_thread_count = (thread_budget - reader_thread_count) // (decoder_count - 1)
     decoder_thread_counts = [reader_thread_count] + [share_thread_count] * (
         decoder_count - 1
     )
@@ -515,6 +515,10 @@ def read_video_torchcodec(
     busy_shares = [
         share_index for share_index, share in enumerate(index_shares) if share
     ]
+    if len(busy_shares) == 1:
+        return first_decoder.get_frames_at(indices=frame_indices).data, sample_fps
+    else:
+        pass
     with ThreadPoolExecutor(max_workers=len(busy_shares)) as pool:
         frames = torch.cat(list(pool.map(decode_share, busy_shares)))
     return frames, sample_fps
