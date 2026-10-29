@@ -12,7 +12,8 @@ one left out), the language each clip language is sent with (a user with that
 main language), and optionally the flags Voxt adds for clips past some
 duration. A flag given as {"model": repo} is that provisioned model's
 directory. Every corpus clip (or, with clips_over_seconds, every clip longer
-than that) is transcribed, one tool run per language sent and length.
+than that) is transcribed, one tool run per language sent and length. A golden
+file of kind voxtral_tts instead names seeded speech requests (voxtral_golden.py).
 """
 
 from __future__ import annotations

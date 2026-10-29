@@ -6,6 +6,8 @@ import base64
 import io
 import json
 import re
+import threading
+import time
 import wave
 from dataclasses import replace
 from pathlib import Path
@@ -15,8 +17,10 @@ import numpy as np
 import pytest
 import yaml
 
+from sglang_omni.admission import QueueFullError
 from sglang_omni.audio.segmentation import UtteranceSegmenter
 from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.models.streaming_cascade.alignment import AlignmentConfig
 from sglang_omni.models.streaming_cascade.base import (
     ChatMessage,
@@ -24,6 +28,7 @@ from sglang_omni.models.streaming_cascade.base import (
     audio_chunk,
     messages_chunk,
     messages_of,
+    sentence_end,
     sentences,
     text_chunk,
     transcript_chunk,
@@ -33,7 +38,12 @@ from sglang_omni.models.streaming_cascade.config import (
     ComponentGraphConfig,
     StreamingCascadePipelineConfig,
 )
-from sglang_omni.models.streaming_cascade.dialog import heard_prefix
+from sglang_omni.models.streaming_cascade.dialog import (
+    CUT_REPLY_NOTE,
+    Dialog,
+    DialogConfig,
+    heard_prefix,
+)
 from sglang_omni.models.streaming_cascade.generators import ChatDelta
 from sglang_omni.models.streaming_cascade.numerals import spoken_text
 from sglang_omni.models.streaming_cascade.recognizers import probe_realtime_service
@@ -41,7 +51,10 @@ from sglang_omni.models.streaming_cascade.running_transcript import (
     RunningTranscript,
     RunningTranscriptConfig,
 )
-from sglang_omni.proto.session import TimedChunk
+from sglang_omni.models.streaming_cascade.session import ComponentHooks
+from sglang_omni.proto import StagePayload
+from sglang_omni.proto.request import OmniRequest
+from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.proto.streams import (
     AUDIO,
     COMMIT,
@@ -51,6 +64,7 @@ from sglang_omni.proto.streams import (
     PCM16,
     PCM_F32,
     REPLY_DELIVERED,
+    REPLY_HEARD,
     REPLY_PROGRESS,
     SESSION_CONTROL,
     SPEECH_STARTED,
@@ -66,16 +80,24 @@ from sglang_omni.proto.streams import (
     SessionPorts,
     control_type,
 )
+from sglang_omni.scheduling.message import IncomingMessage
+from sglang_omni.scheduling.session import SessionScheduler
+from sglang_omni.utils.imports import import_string
 from tests.unit_test.fixtures.cascade_backends import CHAT_MODEL
 from tests.unit_test.fixtures.cascade_fakes import QUIET, build, drain
 from tests.unit_test.fixtures.session_outputs import control_chunk
+from tests.unit_test.fixtures.session_pipeline import (
+    compute_registered,
+    operation_metadata,
+)
 
 PROFILES = Path("examples/streaming_cascade/profiles")
 PROFILE_NAMES = (
     "nemotron-qwen3-tts",
     "nemotron-stage-qwen3-tts",
-    "qwen3-asr-qwen3-tts-customvoice",
-    "qwen3-asr-qwen3.8-27b-customvoice",
+    "qwen3-asr-qwen3-tts-vivian",
+    "qwen3-asr-qwen3.8-27b-vivian",
+    "qwen3-asr-streaming-qwen3-tts-vivian",
 )
 HTTP_PROFILE = PROFILES / "nemotron-qwen3-tts" / "launch.yaml"
 CASCADE_PORTS = SessionPorts(
@@ -132,6 +154,7 @@ async def test_a_truncate_after_turn_done_cuts_the_reply_that_was_still_playing(
         ],
     )
     assert dialog.messages[-1].content == "Hello world."
+    assert dialog.messages[-1].is_cut
     await drain(dialog, [transcript_chunk("next", True)])
     await drain(dialog, [control_chunk(TRUNCATE, t_ms=0)])
     assert dialog.messages[-2].content == "Hello world."
@@ -220,6 +243,47 @@ async def test_sentences_split_after_an_abbreviation():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reply, spans",
+    [
+        (
+            "I apologize for the short answer earlier. ",
+            ["I apologize for the", " short answer earlier.", " "],
+        ),
+        (
+            "Dolphins recognize their friends, just like people recognize names. ",
+            [
+                "Dolphins recognize their friends,",
+                " just like people recognize names.",
+                " ",
+            ],
+        ),
+        (
+            "While a full history is too long to give here, the main points are clear. ",
+            [
+                "While a full history is too",
+                " long to give here,",
+                " the main points are clear.",
+                " ",
+            ],
+        ),
+    ],
+    ids=["two-halves", "clause-end", "long-sentence"],
+)
+async def test_a_long_sentence_is_cut_into_spans_of_at_least_half_the_cap(reply, spans):
+    """A sentence one word past the cap left its last word to be synthesized alone, which sometimes ran the speech model to its length limit."""
+    assert await spans_of(*(word + " " for word in reply.split()), max_words=6) == spans
+
+
+def test_a_long_sentence_is_cut_once_its_rest_cannot_be_shorter_than_half_the_cap():
+    assert sentence_end("one two three four five six ", 6) is None
+    assert sentence_end("one two three four five six seven ", 6) is None
+    assert sentence_end("one two three four five six seven eight ", 6) == len(
+        "one two three four five six"
+    )
+
+
+@pytest.mark.asyncio
 async def test_sentences_keep_the_word_cap():
     assert await spans_of("one two three four five", max_words=2) == [
         "one two",
@@ -252,9 +316,10 @@ async def test_a_truncate_after_speech_over_a_reply_keeps_the_heard_sentences_an
     assert dialog.messages[2].content == "One two.\nThree four."
     assert dialog.messages[2].uncertain
     prompt = [o for o in outputs if o.format == MESSAGES][-1]
+    assert prompt.payload["messages"][0]["content"].endswith(CUT_REPLY_NOTE)
     assert prompt.payload["messages"][2] == {
         "role": "assistant",
-        "content": "One two.\nThree four.",
+        "content": "One two.\nThree four.…",
     }
     assert messages_of(prompt)[-1].content == "what did you say"
 
@@ -295,6 +360,29 @@ async def test_progress_that_arrives_after_the_truncate_re_cuts_the_interrupted_
     )
     assert dialog.messages[2].content == "One two."
     assert not dialog.messages[2].uncertain
+
+
+@pytest.mark.asyncio
+async def test_each_cut_after_the_client_truncate_is_reported_as_reply_heard():
+    dialog = build({"kind": "dialog"})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("A question?", True),
+            text_chunk(REPLY, 1),
+            control_chunk(SPEECH_STARTED, t_ms=900),
+            control_chunk(REPLY_DELIVERED, turn=1, audio_ms=2300),
+            control_chunk(TRUNCATE, t_ms=1000),
+            lambda: dialog.control(
+                control_chunk(REPLY_PROGRESS, turn=1, text_end=8, audio_ms=1000)
+            ),
+        ],
+    )
+    assert [
+        (o.turn, o.payload["text_end"])
+        for o in outputs
+        if control_type(o) == REPLY_HEARD
+    ] == [(1, 0), (1, 8)]
 
 
 def interrupted_dialog(*after: object) -> tuple[object, list[object]]:
@@ -344,19 +432,342 @@ async def test_a_later_truncate_moves_the_cut_back_but_never_past_the_delivered_
     assert dialog.messages[2].content == "One two.\nThree four."
 
 
+def history(dialog) -> list[tuple[str, str]]:
+    return [(message.role, message.content) for message in dialog.messages]
+
+
+def prompts(outputs: list[TimedChunk]) -> list[list[tuple[str, str]]]:
+    """The history of each messages chunk the dialog sent to the language model."""
+    return [
+        [(message.role, message.content) for message in messages_of(o)]
+        for o in outputs
+        if o.format == MESSAGES
+    ]
+
+
+SECOND_REPLY = "Sure. Here it is."
+# note (luojiaxuan): What the history keeps of REPLY interrupted after its first two sentence ends with 2300 ms of its audio delivered.
+HEARD = "One two.\nThree four."
+
+
 @pytest.mark.asyncio
-async def test_a_reply_interrupted_in_its_first_sentence_leaves_an_empty_answer_between_the_questions():
+@pytest.mark.parametrize(
+    "during, after, first, second",
+    [
+        ([control_chunk(TRUNCATE, turn=1, t_ms=1200)], [], "One two.", SECOND_REPLY),
+        ([], [control_chunk(TRUNCATE, turn=1, t_ms=200)], HEARD, SECOND_REPLY),
+        ([], [control_chunk(TRUNCATE, turn=2, t_ms=1000)] * 2, HEARD, "Sure."),
+        ([], [control_chunk(TRUNCATE, turn=2, t_ms=60000)], HEARD, SECOND_REPLY),
+        ([], [control_chunk(TRUNCATE, t_ms=1000)], HEARD, "Sure."),
+        ([control_chunk(TRUNCATE, t_ms=1200)], [], HEARD, SECOND_REPLY),
+    ],
+    ids=["late", "stale", "repeated", "past-the-end", "unnamed", "unnamed-during"],
+)
+async def test_a_truncate_cuts_only_the_reply_of_its_turn(during, after, first, second):
+    """A truncate cut whichever ended reply the dialog still held, so one for an earlier reply cut the next one."""
+    dialog, inputs = interrupted_dialog(
+        control_chunk(REPLY_DELIVERED, turn=1, audio_ms=2300),
+        control_chunk(SPEECH_STOPPED),
+        transcript_chunk("next", True),
+        text_chunk(SECOND_REPLY, 2),
+        *during,
+        lambda: dialog.control(
+            control_chunk(REPLY_PROGRESS, turn=2, text_end=5, audio_ms=800)
+        ),
+        lambda: dialog.control(
+            control_chunk(REPLY_PROGRESS, turn=2, text_end=17, audio_ms=1600)
+        ),
+        control_chunk(TURN_DONE, turn=2),
+        *after,
+    )
+    await drain(dialog, inputs)
+    assert [message.content for message in dialog.messages[2::2]] == [first, second]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "interrupt, heard_ms, heard_end, is_cut_in_last_prompt, last_prompt",
+    [
+        (
+            INTERRUPT,
+            1500,
+            8,
+            True,
+            [
+                ("user", "question"),
+                ("assistant", "One two.…"),
+                ("user", "next"),
+                ("assistant", SECOND_REPLY),
+                ("user", "third"),
+            ],
+        ),
+        (
+            SPEECH_STARTED,
+            1500,
+            8,
+            True,
+            [("user", "question"), ("assistant", "One two.…"), ("user", "next third")],
+        ),
+        (
+            INTERRUPT,
+            500,
+            0,
+            False,
+            [("user", "question next"), ("assistant", SECOND_REPLY), ("user", "third")],
+        ),
+    ],
+    ids=["interrupt", "speech", "nothing-heard"],
+)
+async def test_an_utterance_waiting_when_its_reply_is_interrupted_hears_what_was_delivered(
+    interrupt, heard_ms, heard_end, is_cut_in_last_prompt, last_prompt
+):
+    """An utterance that arrived during a reply got its own reply the moment that reply was interrupted, so its prompt kept nothing of the interrupted reply and joined the two questions, and the delivered audio and the client's truncate that came next were ignored."""
+    dialog = build({"kind": "dialog"})
+    progress = [
+        lambda text_end=text_end, audio_ms=audio_ms: dialog.control(
+            control_chunk(REPLY_PROGRESS, turn=1, text_end=text_end, audio_ms=audio_ms)
+        )
+        for text_end, audio_ms in REPLY_PROGRESS_POINTS[:2]
+    ]
+    if interrupt == INTERRUPT:
+        stop = [lambda: dialog.control(control_chunk(INTERRUPT))]
+        second = [
+            text_chunk(SECOND_REPLY, 2),
+            lambda: dialog.control(
+                control_chunk(REPLY_PROGRESS, turn=2, text_end=17, audio_ms=1200)
+            ),
+        ]
+        rest = [control_chunk(TURN_DONE, turn=2)]
+    else:
+        # note (luojiaxuan): The user is still speaking when the second reply begins, so it ends before its first text.
+        stop = [control_chunk(SPEECH_STARTED)]
+        second = [control_chunk(REPLY_DELIVERED, turn=2, audio_ms=0)]
+        rest = [control_chunk(SPEECH_STOPPED)]
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("question", True),
+            text_chunk(REPLY, 1),
+            *progress,
+            transcript_chunk("next", True),
+            *stop,
+            control_chunk(REPLY_DELIVERED, turn=1, audio_ms=2300),
+            *second,
+            control_chunk(TRUNCATE, turn=1, t_ms=heard_ms),
+            *rest,
+            transcript_chunk("third", True),
+        ],
+    )
+    system = ("system", dialog.config.system_prompt)
+    cut_system = ("system", f"{dialog.config.system_prompt} {CUT_REPLY_NOTE}")
+    assert prompts(outputs) == [
+        [system, ("user", "question")],
+        [
+            cut_system,
+            ("user", "question"),
+            ("assistant", f"{HEARD}…"),
+            ("user", "next"),
+        ],
+        [cut_system if is_cut_in_last_prompt else system, *last_prompt],
+    ]
+    assert [
+        (o.turn, o.payload["text_end"])
+        for o in outputs
+        if control_type(o) == REPLY_HEARD
+    ] == [(1, heard_end)]
+
+
+@pytest.mark.asyncio
+async def test_a_late_truncate_of_a_reply_that_left_no_entry_changes_nothing():
     dialog, inputs = interrupted_dialog(
         control_chunk(REPLY_DELIVERED, turn=1, audio_ms=600),
+        control_chunk(SPEECH_STOPPED),
+        transcript_chunk("wait, what?", True),
+        control_chunk(TRUNCATE, turn=1, t_ms=1500),
+        text_chunk(SECOND_REPLY, 2),
+        control_chunk(TURN_DONE, turn=2),
+    )
+    await drain(dialog, inputs)
+    assert history(dialog)[1:] == [
+        ("user", "question wait, what?"),
+        ("assistant", SECOND_REPLY),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_reply_interrupted_in_its_first_sentence_leaves_no_answer_and_joins_the_questions():
+    dialog, inputs = interrupted_dialog(
+        control_chunk(REPLY_DELIVERED, turn=1, audio_ms=600),
+        control_chunk(SPEECH_STOPPED),
         transcript_chunk("wait, what?", True),
     )
     outputs = await drain(dialog, inputs)
-    prompt = messages_of([o for o in outputs if o.format == MESSAGES][-1])
-    assert [(m.role, m.content) for m in prompt] == [
+    assert prompts(outputs)[-1] == [
         ("system", dialog.config.system_prompt),
+        ("user", "question wait, what?"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_reply_interrupted_before_any_audio_leaves_no_answer():
+    dialog = build({"kind": "dialog"})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("I tried several times,", True),
+            control_chunk(SPEECH_STARTED),
+            control_chunk(REPLY_DELIVERED, turn=1, audio_ms=0),
+            control_chunk(SPEECH_STOPPED),
+            transcript_chunk("and this is my fourth attempt.", True),
+            text_chunk("Sorry to hear that.", 2),
+            control_chunk(TURN_DONE, turn=2),
+        ],
+    )
+    assert prompts(outputs)[-1] == [
+        ("system", dialog.config.system_prompt),
+        ("user", "I tried several times, and this is my fourth attempt."),
+    ]
+    assert history(dialog)[1:] == [
+        ("user", "I tried several times, and this is my fourth attempt."),
+        ("assistant", "Sorry to hear that."),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_reply_truncated_to_nothing_leaves_no_answer():
+    dialog = build({"kind": "dialog"})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("question", True),
+            text_chunk(REPLY, 1),
+            control_chunk(TURN_DONE, turn=1),
+            control_chunk(TRUNCATE, t_ms=0),
+            transcript_chunk("hello?", True),
+        ],
+    )
+    assert prompts(outputs)[-1] == [
+        ("system", dialog.config.system_prompt),
+        ("user", "question hello?"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_reply_that_finished_without_text_leaves_no_answer():
+    dialog = build({"kind": "dialog"})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("question", True),
+            control_chunk(TURN_DONE, turn=1),
+            transcript_chunk("are you there?", True),
+        ],
+    )
+    assert prompts(outputs)[-1] == [
+        ("system", dialog.config.system_prompt),
+        ("user", "question are you there?"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_partly_heard_reply_keeps_its_heard_prefix_between_the_questions():
+    dialog, inputs = interrupted_dialog(
+        control_chunk(REPLY_DELIVERED, turn=1, audio_ms=2300),
+        control_chunk(SPEECH_STOPPED),
+        transcript_chunk("wait, what?", True),
+    )
+    outputs = await drain(dialog, inputs)
+    assert prompts(outputs)[-1] == [
+        ("system", f"{dialog.config.system_prompt} {CUT_REPLY_NOTE}"),
         ("user", "question"),
-        ("assistant", ""),
+        ("assistant", "One two.\nThree four.…"),
         ("user", "wait, what?"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_utterances_over_unheard_replies_in_a_row_join_one_user_message():
+    dialog = build({"kind": "dialog"})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("first", True),
+            text_chunk("Reply one.", 1),
+            lambda: dialog.control(
+                control_chunk(REPLY_PROGRESS, turn=1, text_end=10, audio_ms=1000)
+            ),
+            control_chunk(TURN_DONE, turn=1),
+            transcript_chunk("second", True),
+            control_chunk(SPEECH_STARTED),
+            control_chunk(REPLY_DELIVERED, turn=2, audio_ms=0),
+            control_chunk(SPEECH_STOPPED),
+            transcript_chunk("third", True),
+            control_chunk(SPEECH_STARTED),
+            control_chunk(REPLY_DELIVERED, turn=3, audio_ms=0),
+            control_chunk(SPEECH_STOPPED),
+            transcript_chunk("fourth", True),
+            text_chunk("Reply four.", 4),
+            lambda: dialog.control(
+                control_chunk(REPLY_PROGRESS, turn=4, text_end=11, audio_ms=1000)
+            ),
+            control_chunk(SPEECH_STARTED),
+            control_chunk(REPLY_DELIVERED, turn=4, audio_ms=1000),
+            control_chunk(SPEECH_STOPPED),
+            transcript_chunk("fifth", True),
+        ],
+    )
+    system = ("system", dialog.config.system_prompt)
+    assert prompts(outputs) == [
+        [system, ("user", "first")],
+        [system, ("user", "first"), ("assistant", "Reply one."), ("user", "second")],
+        [
+            system,
+            ("user", "first"),
+            ("assistant", "Reply one."),
+            ("user", "second third"),
+        ],
+        [
+            system,
+            ("user", "first"),
+            ("assistant", "Reply one."),
+            ("user", "second third fourth"),
+        ],
+        [
+            ("system", f"{dialog.config.system_prompt} {CUT_REPLY_NOTE}"),
+            ("user", "first"),
+            ("assistant", "Reply one."),
+            ("user", "second third fourth"),
+            ("assistant", "Reply four.…"),
+            ("user", "fifth"),
+        ],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_next_request_to_the_language_model_has_no_empty_answer():
+    dialog, inputs = interrupted_dialog(
+        control_chunk(TRUNCATE, t_ms=0),
+        control_chunk(SPEECH_STOPPED),
+        transcript_chunk("wait, what?", True),
+    )
+    prompt = [o for o in await drain(dialog, inputs) if o.format == MESSAGES][-1]
+    bodies = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        events = [
+            {"choices": [{"delta": {"content": "Sure."}, "finish_reason": None}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+        ]
+        stream = "".join(f"data: {json.dumps(event)}\n\n" for event in events)
+        return httpx.Response(200, text=f"{stream}data: [DONE]\n\n")
+
+    generator = build({"kind": "openai_chat", **HTTP_SERVICE})
+    generator.client = httpx.AsyncClient(transport=httpx.MockTransport(answer))
+    await drain(generator, [prompt])
+    assert bodies[0]["messages"] == [
+        {"role": "system", "content": dialog.config.system_prompt},
+        {"role": "user", "content": "question wait, what?"},
     ]
 
 
@@ -367,6 +778,82 @@ async def test_delivered_audio_of_another_turn_does_not_cut_the_reply():
     )
     await drain(dialog, inputs)
     assert dialog.messages[2].content == ""
+
+
+@pytest.mark.asyncio
+async def test_a_truncate_past_the_reply_end_keeps_it_whole_and_unmarked():
+    dialog = build({"kind": "dialog"})
+    progress = [
+        lambda text_end=text_end, audio_ms=audio_ms: dialog.control(
+            control_chunk(REPLY_PROGRESS, turn=1, text_end=text_end, audio_ms=audio_ms)
+        )
+        for text_end, audio_ms in [*REPLY_PROGRESS_POINTS, (len(REPLY), 3000.0)]
+    ]
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("question", True),
+            text_chunk(REPLY, 1),
+            *progress,
+            control_chunk(TURN_DONE, turn=1),
+            control_chunk(TRUNCATE, t_ms=3600),
+            transcript_chunk("next", True),
+        ],
+    )
+    assert not dialog.messages[2].is_cut
+    assert prompts(outputs)[-1] == [
+        ("system", dialog.config.system_prompt),
+        ("user", "question"),
+        ("assistant", REPLY),
+        ("user", "next"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_reply_interrupted_after_all_its_text_was_heard_is_still_marked_cut():
+    dialog = build({"kind": "dialog"})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("question", True),
+            text_chunk("One two.", 1),
+            lambda: dialog.control(
+                control_chunk(REPLY_PROGRESS, turn=1, text_end=8, audio_ms=1000)
+            ),
+            control_chunk(SPEECH_STARTED),
+            control_chunk(TRUNCATE, t_ms=1500),
+            control_chunk(SPEECH_STOPPED),
+            transcript_chunk("wait, what?", True),
+        ],
+    )
+    assert dialog.messages[2].is_cut
+    assert prompts(outputs)[-1] == [
+        ("system", f"{dialog.config.system_prompt} {CUT_REPLY_NOTE}"),
+        ("user", "question"),
+        ("assistant", "One two.…"),
+        ("user", "wait, what?"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_finished_reply_the_model_ends_with_an_ellipsis_does_not_read_as_cut():
+    dialog = build({"kind": "dialog"})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("question", True),
+            text_chunk("Rome was an empire,…", 1),
+            control_chunk(TURN_DONE, turn=1),
+            transcript_chunk("and then?", True),
+        ],
+    )
+    assert dialog.messages[2].content == "Rome was an empire,…"
+    assert prompts(outputs)[-1] == [
+        ("system", dialog.config.system_prompt),
+        ("user", "question"),
+        ("assistant", "Rome was an empire,"),
+        ("user", "and then?"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -384,6 +871,101 @@ async def test_a_reply_that_finished_stays_whole_without_a_truncate():
         ],
     )
     assert dialog.messages[2].content == REPLY
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "resumed, note, history",
+    [
+        (
+            "before_the_reply_opens",
+            "",
+            [("user", "Ten companies. That let you teach English online.")],
+        ),
+        (
+            "before_its_audio",
+            "",
+            [("user", "Ten companies. That let you teach English online.")],
+        ),
+        (
+            "after_its_first_sentence",
+            f" {CUT_REPLY_NOTE}",
+            [
+                ("user", "Ten companies."),
+                ("assistant", "One two.…"),
+                ("user", "That let you teach English online."),
+            ],
+        ),
+    ],
+)
+async def test_speech_that_resumes_after_the_utterance_ended_interrupts_its_reply(
+    resumed, note, history
+):
+    dialog = build({"kind": "dialog"})
+    question = transcript_chunk("Ten companies.", True)
+    speech = control_chunk(SPEECH_STARTED, t_ms=1800)
+    reply = {
+        "before_the_reply_opens": [speech, question],
+        "before_its_audio": [
+            question,
+            text_chunk(REPLY, 1),
+            speech,
+            control_chunk(REPLY_DELIVERED, turn=1, audio_ms=0),
+        ],
+        "after_its_first_sentence": [
+            question,
+            text_chunk(REPLY, 1),
+            lambda: dialog.control(
+                control_chunk(REPLY_PROGRESS, turn=1, text_end=8, audio_ms=1000)
+            ),
+            speech,
+            control_chunk(REPLY_DELIVERED, turn=1, audio_ms=1000),
+        ],
+    }[resumed]
+    outputs = await drain(
+        dialog,
+        [
+            control_chunk(SPEECH_STARTED, t_ms=0),
+            control_chunk(SPEECH_STOPPED, t_ms=1000),
+            *reply,
+            control_chunk(SPEECH_STOPPED, t_ms=4000),
+            transcript_chunk("That let you teach English online.", True),
+        ],
+    )
+    assert [control_type(o) for o in outputs if o.turn == 1] == [
+        TURN_QUEUED,
+        TURN_STARTED,
+        None,
+        INTERRUPT,
+        TURN_INTERRUPTED,
+    ]
+    assert [control_type(o) for o in outputs if o.turn == 2] == [
+        TURN_QUEUED,
+        TURN_STARTED,
+        None,
+    ]
+    assert [(m.role, m.content) for m in messages_of(outputs[-1])] == [
+        ("system", dialog.config.system_prompt + note),
+        *history,
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("end", [SPEECH_STOPPED, COMMIT])
+async def test_a_reply_opens_once_the_speech_of_its_utterance_ended(end):
+    dialog = build({"kind": "dialog"})
+    outputs = await drain(
+        dialog,
+        [
+            control_chunk(SPEECH_STARTED, t_ms=0),
+            control_chunk(end, t_ms=1000),
+            transcript_chunk("question", True),
+            text_chunk("Hello world.", 1),
+            control_chunk(TURN_DONE, turn=1),
+        ],
+    )
+    assert [control_type(o) for o in outputs] == [TURN_QUEUED, TURN_STARTED, None]
+    assert dialog.messages[-1].content == "Hello world."
 
 
 @pytest.mark.asyncio
@@ -436,6 +1018,8 @@ DECLARATION_ERRORS = r"""
 - [{publish: {llm: [session]}}, turns end twice]
 - [{publish: {dialog: []}}, open turns]
 - [{nodes: {extra: {kind: tool, inputs: [llm], tools: {}}}}, unknown component kind]
+- [{nodes: {tts: {kind: openai_speech, base_url: "http://127.0.0.1:8000/v1", model: test-model, inputs: [llm, "input:session"]}}}, waits for reply.delivered]
+- [{nodes: {dialog: {kind: dialog, inputs: [asr, {source: "llm:text_delta", feedback: true, overflow: drop_oldest, capacity: 1024}, "vad:session", "input:session", {kind: control, source: input, event: interrupt}, {kind: control, source: aligner, event: reply.progress}]}}}, waits for reply.delivered]
 """
 
 
@@ -492,6 +1076,165 @@ publish: {dialog: [session], llm: [text_delta, session]}
 """
 
 
+TEXT_ONLY_STOPPABLE = TEXT_ONLY.replace(
+    "inputs: [asr, llm]}",
+    "inputs: [asr, llm, {kind: control, source: input, event: interrupt}]}",
+)
+
+
+@pytest.mark.asyncio
+async def test_a_dialog_without_audio_answers_the_next_utterance_after_a_cancelled_reply():
+    """A graph that sends no audio never reports reply.delivered, so the next reply must not wait for it."""
+    settings = ComponentGraphConfig.model_validate(yaml.safe_load(TEXT_ONLY_STOPPABLE))
+    assert settings.delivery_reporters("dialog") == []
+    dialog = build({"kind": "dialog"})
+    dialog.place(settings, "dialog")
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("question", True),
+            text_chunk(REPLY, 1),
+            lambda: dialog.control(control_chunk(INTERRUPT)),
+            transcript_chunk("next", True),
+        ],
+    )
+    assert prompts(outputs)[-1] == [
+        ("system", dialog.config.system_prompt),
+        ("user", "question next"),
+    ]
+
+
+def dialog_stage(identity):
+    """The text dialog under its session scheduler, a builder of the stage's operations, and a runner of one on its own thread."""
+    settings = ComponentGraphConfig.model_validate(yaml.safe_load(TEXT_ONLY_STOPPABLE))
+    scheduler = SessionScheduler(
+        ComponentHooks("dialog", settings, timeout_s=5), max_concurrency=2
+    )
+
+    def operation(request_id, kind, chunk=None, *, should_preempt=False):
+        metadata = operation_metadata(
+            kind, identity, chunk, should_preempt=should_preempt
+        )
+        return StagePayload(request_id, OmniRequest(None, metadata=metadata), {})
+
+    def start(payload):
+        scheduler.inbox.put(IncomingMessage(payload.request_id, "new_request", payload))
+        message = scheduler.inbox.get_nowait()
+        thread = threading.Thread(target=scheduler.compute, args=(message.data,))
+        thread.start()
+        return thread
+
+    return scheduler, operation, start
+
+
+def streamed(scheduler):
+    """The request id and chunk of each stream message the stage sent so far."""
+    messages = []
+    while not scheduler.outbox.empty():
+        message = scheduler.outbox.get_nowait()
+        if message.type == "stream":
+            messages.append((message.request_id, TimedChunk.from_dict(message.data)))
+        else:
+            pass
+    return messages
+
+
+def test_a_client_cancel_while_a_dialog_append_is_in_flight_keeps_the_session(
+    monkeypatch,
+):
+    """A client cancel preempts the dialog stage's in-flight appends; the dialog still takes the chunk and the session stays open."""
+    entered, release = threading.Event(), threading.Event()
+    handle = Dialog.handle
+
+    def held_handle(dialog, chunk):
+        if chunk.format == TRANSCRIPT_FORMAT and not release.is_set():
+            entered.set()
+            release.wait(5)
+        else:
+            pass
+        handle(dialog, chunk)
+
+    monkeypatch.setattr(Dialog, "handle", held_handle)
+    identity = SessionIdentity("session")
+    scheduler, operation, start = dialog_stage(identity)
+    compute_registered(scheduler, operation("open", "open"))
+    scheduler.inbox.put(
+        IncomingMessage("read", "new_request", operation("read", "read"))
+    )
+    question = start(operation("question", "append", transcript_chunk("hi", True)))
+    assert entered.wait(5)
+    cancel = start(
+        operation("cancel", "control", control_chunk(INTERRUPT), should_preempt=True)
+    )
+    assert scheduler.append_cancel_events["question"].wait(5)
+    # note (luojiaxuan): the dialog takes the chunk only after the preempt has cancelled its append.
+    time.sleep(0.1)
+    release.set()
+    for thread in (question, cancel):
+        thread.join(10)
+    assert not question.is_alive() and not cancel.is_alive()
+    assert identity in scheduler.open_sessions
+    assert prompts([chunk for _, chunk in streamed(scheduler)]) == [
+        [("system", DialogConfig().system_prompt), ("user", "hi")]
+    ]
+    later = compute_registered(
+        scheduler, operation("later", "append", transcript_chunk("again", True))
+    )
+    assert later.data == {"accepted": True}
+    compute_registered(scheduler, operation("close", "close"))
+
+
+def test_a_client_cancel_while_the_dialog_interrupts_its_reply_keeps_the_interrupt(
+    monkeypatch,
+):
+    """A client cancel that lands as the dialog cuts its reply for speech.started leaves the dialog's interrupt to reach the graph, since every dialog output goes out on the session's read."""
+    identity = SessionIdentity("session")
+    scheduler, operation, _ = dialog_stage(identity)
+    interrupt_reply = Dialog.interrupt_reply
+
+    def preempted_interrupt_reply(dialog):
+        scheduler.inbox.put(
+            IncomingMessage(
+                "cancel",
+                "new_request",
+                operation(
+                    "cancel", "control", control_chunk(INTERRUPT), should_preempt=True
+                ),
+            )
+        )
+        assert scheduler.append_cancel_events["speech"].is_set()
+        interrupt_reply(dialog)
+
+    monkeypatch.setattr(Dialog, "interrupt_reply", preempted_interrupt_reply)
+    compute_registered(scheduler, operation("open", "open"))
+    scheduler.inbox.put(
+        IncomingMessage("read", "new_request", operation("read", "read"))
+    )
+    compute_registered(
+        scheduler, operation("question", "append", transcript_chunk("hi", True))
+    )
+    speech = compute_registered(
+        scheduler, operation("speech", "append", control_chunk(SPEECH_STARTED))
+    )
+    assert speech.data == {"accepted": True}
+    scheduler.compute(scheduler.inbox.get_nowait().data)
+    assert identity in scheduler.open_sessions
+    outputs = streamed(scheduler)
+    assert [
+        (control_type(chunk), chunk.turn)
+        for _, chunk in outputs
+        if control_type(chunk) in (INTERRUPT, TURN_INTERRUPTED)
+    ] == [(INTERRUPT, 1), (TURN_INTERRUPTED, 1)]
+    assert {request_id for request_id, _ in outputs} == {"read"}
+    compute_registered(scheduler, operation("close", "close"))
+
+
+def test_the_profile_dialog_waits_for_the_audio_its_synthesizer_delivered():
+    assert profile_config(
+        "qwen3-asr-qwen3.8-27b-vivian"
+    ).component_graph().delivery_reporters("dialog") == ["tts"]
+
+
 def test_profile_graph_turns_formats_and_ports():
     settings = declared().component_graph()
     assert [n.name for n in settings.nodes if n.opens_turns] == ["dialog"]
@@ -510,6 +1253,15 @@ def test_profile_graph_turns_formats_and_ports():
     assert (chat.consumes, chat.required) == ({MESSAGES, SESSION_CONTROL}, {MESSAGES})
     dialog_formats = {TRANSCRIPT_FORMAT, TEXT_DELTA, SESSION_CONTROL}
     assert settings.node("dialog").required == dialog_formats
+
+
+def test_a_dialog_without_the_input_interrupt_edge_grants_no_client_stop():
+    """A client response.cancel travels the control edges from the input, and a graph without one fails the control, so its ports must not offer it."""
+    dialog = yaml.safe_load(HTTP_PROFILE.read_text())["session_nodes"]["dialog"]
+    input_interrupt = {"kind": "control", "source": "input", "event": "interrupt"}
+    inputs = [entry for entry in dialog["inputs"] if entry != input_interrupt]
+    deaf = declared(nodes={"dialog": {**dialog, "inputs": inputs}})
+    assert INTERRUPT not in deaf.component_graph().ports(200).controls
 
 
 def test_segmenter_gates_on_speech_controls():
@@ -559,6 +1311,40 @@ async def test_realtime_transcription_streams_partials_then_final_per_utterance(
         "sglang.input_audio.end",
         "session.close",
     ]
+
+
+@pytest.mark.asyncio
+async def test_streaming_transcription_streams_partials_then_the_final_with_its_language(
+    transcription_session_server,
+):
+    base_url, appended, client_events = transcription_session_server
+    frames = [bytes([index]) * 640 for index in range(4)]
+    audio = [
+        TimedChunk(AUDIO, index * 20, 20, index, frame, format=PCM16)
+        for index, frame in enumerate(frames)
+    ]
+    spec = {
+        "kind": "streaming_transcription",
+        "base_url": base_url,
+        "model": "Qwen/Qwen3-ASR-1.7B",
+        "decode_interval_ms": 600,
+    }
+    outputs = await drain(build(spec), [*audio, control_chunk(COMMIT)])
+    assert [chunk.payload for chunk in outputs] == [
+        {"text": "hello", "is_final": False},
+        {"text": "hello there", "is_final": False},
+        {"text": "hello there", "is_final": True, "language": "English"},
+    ]
+    assert appended == frames
+    assert [event["type"] for event in client_events] == [
+        "session.update",
+        *["input_audio_buffer.append"] * 4,
+        "transcription.done",
+    ]
+    assert client_events[0]["session"] == {
+        "turn_detection": None,
+        "decode_interval_ms": 600,
+    }
 
 
 @pytest.mark.asyncio
@@ -631,6 +1417,36 @@ async def test_openai_speech_reports_each_sentence_end_as_a_character_offset(bac
         ),
         pytest.param(
             "今天最高25℃，体感20°。", ["今天最高25℃，体感20°。"], id="unit_symbols_stay"
+        ),
+        pytest.param(
+            "## 睡眠小贴士\n- 保持规律的作息。\n> 睡前别看手机。",
+            ["睡眠小贴士", "保持规律的作息。", "睡前别看手机。"],
+            id="line_markers",
+        ),
+        pytest.param(
+            "| Feature | Python |\n|---|---|\n| Speed | Slow |",
+            ["Feature, Python", "Speed, Slow"],
+            id="table_rows",
+        ),
+        pytest.param(
+            "Visit `https://python.org` or https://www.python.org/downloads to get Python.",
+            ["Visit python.org or python.org to get Python."],
+            id="bare_url",
+        ),
+        pytest.param(
+            "Did you visit https://python.org? Try http://localhost:8000/v1.",
+            ["Did you visit python.org?", "Try localhost."],
+            id="bare_url_before_punctuation_and_with_port",
+        ),
+        pytest.param(
+            "访问https://www.python.org/downloads下载。",
+            ["访问python.org下载。"],
+            id="bare_url_between_chinese",
+        ),
+        pytest.param(
+            "两种都行 - 看需求。",
+            ["两种都行 - 看需求。"],
+            id="dash_inside_a_line_stays",
         ),
     ],
 )
@@ -1021,7 +1837,7 @@ def test_profiles_expand_components_into_independent_session_nodes(profile):
     assert graph.nodes["dialog"].bound("tts").feedback
 
 
-ALIGNED_PROFILE = PROFILES / "qwen3-asr-qwen3-tts-customvoice" / "launch.yaml"
+ALIGNED_PROFILE = PROFILES / "qwen3-asr-qwen3-tts-vivian" / "launch.yaml"
 CHUNK_MS = 500
 SPOKEN = "One two three four. Five six."
 
@@ -1064,6 +1880,12 @@ def test_every_profile_takes_reply_progress_from_a_forced_aligner(profile):
         for edge in settings.node("dialog").controls
         if edge.event == REPLY_PROGRESS
     ] == ["aligner"]
+
+
+@pytest.mark.parametrize("profile", PROFILE_NAMES)
+def test_every_profile_publishes_the_aligners_reply_progress(profile):
+    # note (luojiaxuan): the client's sglang.response.progress, which moves the caption with playback, comes only from a published node.
+    assert SESSION_CONTROL in profile_config(profile).session_publish["aligner"]
 
 
 def test_the_reference_profile_routes_reply_progress_through_the_aligner():
@@ -1266,10 +2088,12 @@ def transcribing(transcript: str, requests: list[httpx.Request]):
     return handler
 
 
-def interrupted_speech(*after: object, language: str | None = None) -> list[object]:
-    """SPOKEN with its first sentence ended at 2000 ms and 1000 ms of " Five six." spoken when the reply is interrupted, with `after` fed next."""
+def interrupted_speech(
+    *after: object, language: str | None = None, text: str = SPOKEN
+) -> list[object]:
+    """Reply audio interrupted after its first sentence and one second of its second."""
     return [
-        text_chunk(SPOKEN, 1, language),
+        text_chunk(text, 1, language),
         *(speech() for _ in range(4)),
         control_chunk(REPLY_PROGRESS, turn=1, text_end=19, audio_ms=2000),
         speech(),
@@ -1299,6 +2123,61 @@ async def test_the_asr_method_keeps_the_prefix_of_the_interrupted_sentence_its_d
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "sentence, transcript, prefix, language",
+    [
+        (
+            "Buy 350 long-term boxes.",
+            "buy three hundred fifty longterm",
+            "Buy 350 long-term",
+            "English",
+        ),
+        (
+            "Buy 350 long-term boxes.",
+            "Buy 350 long-term",
+            "Buy 350 long-term",
+            "English",
+        ),
+        ("Buy 21 apples.", "Buy twenty", "Buy", "English"),
+        ("Buy twenty apples.", "Buy 21", "Buy", "English"),
+        ("Buy 21 apples.", "Buy twenty-one", "Buy 21", "English"),
+        (
+            "Buy 350 apples.",
+            "Buy three hundred fifty apples",
+            "Buy 350 apples.",
+            "English",
+        ),
+        ("Wait 3.14 seconds.", "Wait three fourteen", "Wait", "English"),
+        ("Wait 3.14 seconds.", "Wait three point one four", "Wait 3.14", "English"),
+        ("Buy 1,000 apples.", "Buy 1,00", "Buy", "English"),
+        ("Wait 3-5 days.", "Wait three five", "Wait", "English"),
+        ("Wait 3-5 days.", "Wait three to five days", "Wait 3-5 days.", "English"),
+        ("预算21元。", "预算二十一", "预算21", "English"),
+        ("预算3.14元。", "预算三点一", "预算", "Chinese"),
+        ("预算3.14元。", "预算三点一四元", "预算3.14元。", "Chinese"),
+        ("Count 8 9 10.", "Count 八九十", "Count 8 9 10.", "English"),
+    ],
+)
+async def test_asr_normalization_preserves_complete_original_units(
+    sentence: str, transcript: str, prefix: str, language: str
+) -> None:
+    """Number expansion lost reply offsets or committed a number before its last word."""
+    earlier_text = "One two three four."
+    outputs = await drain(
+        await hearing_aligner("asr", transcribing(transcript, [])),
+        interrupted_speech(
+            control_chunk(REPLY_DELIVERED, turn=1, audio_ms=2600),
+            language=language,
+            text=f"{earlier_text} {sentence}",
+        ),
+    )
+    assert spoken_progress(outputs) == [
+        (len(earlier_text), 2000),
+        (len(earlier_text) + 1 + len(prefix), 2600),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_a_client_truncate_before_the_delivered_audio_moves_the_heard_cut_back():
     requests = []
     outputs = await drain(
@@ -1311,6 +2190,20 @@ async def test_a_client_truncate_before_the_delivered_audio_moves_the_heard_cut_
     )
     assert [heard_frames(request) for request in requests] == [800 * 24, 300 * 24]
     assert spoken_progress(outputs) == [(19, 2000), (24, 2800), (24, 2300)]
+
+
+@pytest.mark.asyncio
+async def test_a_client_truncate_of_another_turn_leaves_the_heard_cut():
+    requests = []
+    outputs = await drain(
+        await hearing_aligner("asr", transcribing("five", requests)),
+        interrupted_speech(
+            control_chunk(REPLY_DELIVERED, turn=1, audio_ms=2800),
+            control_chunk(TRUNCATE, turn=0, t_ms=2300),
+        ),
+    )
+    assert [heard_frames(request) for request in requests] == [800 * 24]
+    assert spoken_progress(outputs) == [(19, 2000), (24, 2800)]
 
 
 @pytest.mark.asyncio
@@ -1390,8 +2283,8 @@ async def test_the_dialog_keeps_the_heard_sentences_and_the_heard_prefix_of_the_
 @pytest.mark.parametrize(
     "profile",
     [
-        "qwen3-asr-qwen3-tts-customvoice",
-        "qwen3-asr-qwen3.8-27b-customvoice",
+        "qwen3-asr-qwen3-tts-vivian",
+        "qwen3-asr-qwen3.8-27b-vivian",
         "qwen3-asr-qwen3-tts-base-clone",
     ],
 )
@@ -1592,3 +2485,28 @@ def test_openai_speech_keeps_the_user_language_across_a_replacement():
 def test_profiles_speak_the_user_language(profile):
     config = profile_config(profile)
     assert config.component_graph().node("tts").component.language == "auto"
+
+
+@pytest.mark.parametrize(
+    ("flags", "admitted"), [([], 16), (["--max_sessions", "24"], 24)]
+)
+def test_node_stages_admit_max_sessions_and_refuse_the_next(flags, admitted):
+    manager = ConfigManager(profile_config("qwen3-asr-qwen3.8-27b-vivian"))
+    config = manager.merge_config(manager.parse_extra_args(flags))
+    stages = {}
+    for name in ("vad", "dialog"):
+        stage = config.stage_named(name)
+        stages[name] = import_string(stage.factory_path)(
+            **resolve_stage_factory_args(stage, config)
+        )
+    assert stages["vad"].max_open_sessions == admitted
+    dialog = stages["dialog"]
+    sessions = [SessionIdentity(f"session-{index}") for index in range(admitted)]
+    try:
+        for session in sessions:
+            dialog.open_session(session, OmniRequest(None))
+        with pytest.raises(QueueFullError):
+            dialog.open_session(SessionIdentity("one-more"), OmniRequest(None))
+    finally:
+        for session in sessions:
+            dialog.close_session(session, dialog.open_sessions[session])

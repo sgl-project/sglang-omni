@@ -10,7 +10,10 @@ import logging
 import os
 import socket
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, TypeVar
 from urllib.parse import ParseResult, urlparse
@@ -738,10 +741,30 @@ class MultiModalResourceConnector:
 
 
 _global_connector: MultiModalResourceConnector | None = None
+_request_connector: ContextVar[MultiModalResourceConnector | None] = ContextVar(
+    "resource_connector", default=None
+)
+
+
+@contextmanager
+def resource_connector_scope(
+    connector: MultiModalResourceConnector,
+) -> Iterator[None]:
+    """Use one media connector for the current async request."""
+    token = _request_connector.set(connector)
+    try:
+        yield
+    finally:
+        _request_connector.reset(token)
 
 
 def get_global_resource_connector() -> MultiModalResourceConnector:
     """Get or create the global resource connector."""
+    request_connector = _request_connector.get()
+    if request_connector is not None:
+        return request_connector
+    else:
+        pass
     global _global_connector
     if _global_connector is None:
         _global_connector = MultiModalResourceConnector()

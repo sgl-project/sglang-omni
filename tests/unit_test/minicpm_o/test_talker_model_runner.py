@@ -200,6 +200,36 @@ def test_a_failed_sampling_graph_capture_falls_back_to_eager(
     assert runner.slot_state is not None and runner.sample_graphs is None
 
 
+def test_npu_sampling_skips_capture_with_decode_graphs_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = build_device_sampling_runner(
+        SimpleNamespace(
+            req_to_token_pool=SimpleNamespace(req_to_token=torch.zeros(SLOT_COUNT, 1)),
+            decode_cuda_graph_runner=None,
+            sampler=None,
+        ),
+        torch.device("cpu"),
+    )
+    runner.device = SimpleNamespace(type="npu")
+    runner.tp_worker.model_runner.decode_cuda_graph_runner = SimpleNamespace(
+        capture_bs=[1, 2]
+    )
+    capture = Mock()
+    monkeypatch.setattr(talker_model_runner, "TalkerSampleGraphs", capture)
+    monkeypatch.setattr(
+        talker_model_runner.current_platform,
+        "get_device_graph_backend",
+        lambda device: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        talker_model_runner, "current_sglang_sampling_backend", lambda: "pytorch"
+    )
+
+    assert runner.capture_sample_graphs() is None
+    capture.assert_not_called()
+
+
 def test_reset_keeps_the_seeds_of_deterministic_inference() -> None:
     state = TalkerSlotState.allocate(
         SLOT_COUNT, VOCAB_SIZE, CODEC_EOS_ID, torch.device("cpu")

@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import random
 from dataclasses import replace
 from multiprocessing.queues import Queue
 
@@ -15,6 +17,7 @@ from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.pipeline.session_delivery import DeliveryPacer
 from sglang_omni.pipeline.session_graph import SessionGraphRunner
 from sglang_omni.pipeline.sessions import NodeInbox, Session, SessionGraphRuntime
+from sglang_omni.pipeline.types import SessionOutputBudgetError
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
     ControlEdge,
@@ -25,6 +28,7 @@ from sglang_omni.proto.session import (
     SessionLimits,
     SessionNode,
     TimedChunk,
+    join_fragments,
     wire_size,
 )
 from sglang_omni.proto.streams import (
@@ -257,7 +261,9 @@ def test_graph_outputs_count_against_max_output_bytes_until_the_client_takes_the
     sessions = SessionGraphRunner()
     assert sessions.reserve_graph_output(graph, "right", output) == size
     assert graph.output_bytes == size
-    with pytest.raises(RuntimeError, match="node 'right' exceeds max_output_bytes"):
+    with pytest.raises(
+        SessionOutputBudgetError, match="node 'right' exceeds max_output_bytes"
+    ):
         sessions.reserve_graph_output(graph, "right", output)
 
 
@@ -630,6 +636,69 @@ async def test_an_interrupted_node_publishes_only_the_end_of_the_interrupted_tur
     ]
 
 
+def bounded_reader_runtime(sessions: SessionGraphRunner) -> SessionGraphRuntime:
+    """A reply node whose text_delta a reader takes over an edge holding one chunk, and then an observer the interrupt does not reach; the client's interrupt reaches the reply and the reader, and no forwarder drains either reader."""
+    interrupt = ControlEdge("input", "interrupt")
+    nodes = {
+        "reply": SessionNode(("reply",), ("input",), controls=(interrupt,)),
+        "reader": SessionNode(
+            ("reader",),
+            (DataEdge("reply:text_delta", capacity=1),),
+            controls=(interrupt,),
+        ),
+        "observer": SessionNode(("observer",), ("reply:text_delta",)),
+    }
+    identities = {name: SessionIdentity(f"graph:{name}") for name in nodes}
+    for name, identity in identities.items():
+        sessions.sessions[identity.id] = Session(
+            session_identity=identity,
+            request=OmniRequest(None),
+            stages=(name,),
+            bindings={},
+            limits=SessionLimits(),
+            is_node=True,
+        )
+    return SessionGraphRuntime(
+        session_identity=SessionIdentity("graph"),
+        graph=SessionGraph(nodes=nodes, publish={"reply": ("text_delta", "session")}),
+        nodes=identities,
+        limits=SessionLimits(),
+        inboxes={name: NodeInbox() for name in nodes},
+        outputs=asyncio.Queue(),
+        client_sequences={name: {} for name in nodes},
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_producer_held_on_a_full_edge_drops_a_turn_interrupted_meanwhile():
+    """A chunk that passed the fence and then waited for room on a reader's edge must reach neither the client nor the readers after that one once its turn was interrupted during the wait."""
+    sessions = NodeOutputsRunner(
+        [
+            reply_output("text_delta", {"text": "first"}, 1),
+            reply_output("text_delta", {"text": "second"}, 1),
+            reply_output("session", {"type": "turn.interrupted"}, 1),
+            reply_output("text_delta", {"text": "next"}, 2),
+        ]
+    )
+    graph = bounded_reader_runtime(sessions)
+    routing = asyncio.create_task(sessions.route_graph_outputs(graph, "reply"))
+    await wait_until(lambda: graph.outputs.qsize() == 1)
+    interrupt = TimedChunk("control", 0, 0, 0, {"type": "interrupt"}, "session", turn=1)
+    await sessions.control_graph(graph, interrupt, None, False)
+    await asyncio.wait_for(routing, OUTPUT_TIMEOUT_S)
+    published = []
+    while not graph.outputs.empty():
+        published.append(graph.outputs.get_nowait()[0])
+    assert [(item.payload, item.turn) for item in published] == [
+        ({"text": "first"}, 1),
+        ({"type": "turn.interrupted"}, 1),
+        ({"text": "next"}, 2),
+    ]
+    assert [
+        (chunk.payload, chunk.turn) for _, chunk, _ in graph.inboxes["observer"].queued
+    ] == [({"text": "first"}, 1), ({"text": "next"}, 2)]
+
+
 def report_runtime(sessions: SessionGraphRunner) -> SessionGraphRuntime:
     """A `tts` node whose session output the `aligner` reads, and a `dialog` that takes the aligner's progress on a control edge; both publish `session`."""
     nodes = {
@@ -748,6 +817,18 @@ def test_a_drop_oldest_append_that_cannot_confirm_the_dropped_input_changes_noth
     assert graph.pending_input_done == {1: 2}
 
 
+def test_an_input_confirmation_that_finds_the_output_queue_full_exhausts_the_output_budget():
+    sessions = SessionGraphRunner()
+    graph = input_runtime(
+        {name: SessionNode((name,), ("input",)) for name in NODES},
+        SessionLimits(max_output_chunks=1),
+    )
+    graph.outputs.put_nowait(None)
+    with pytest.raises(SessionOutputBudgetError, match="confirmed input seq 0"):
+        sessions.emit_graph_input_done(graph, "left", chunk(0))
+    assert graph.next_output == 0
+
+
 def test_control_edge_does_not_address_internal_stages():
     with pytest.raises(ValueError, match="target_stages"):
         SessionControlEdgeConfig(
@@ -823,7 +904,7 @@ async def test_an_interrupt_drops_released_audio_still_waiting_for_the_client():
             )
 
     filler = reply(None, 0)
-    graph.outputs.put_nowait((filler, 0))
+    graph.outputs.put_nowait((filler, 0, "speaker"))
     pacer.offer(reply("turn.started", 1), 10)
     pacer.offer(reply(None, 1), 3300)
     graph.output_bytes = 3310
@@ -839,7 +920,7 @@ async def test_an_interrupt_drops_released_audio_still_waiting_for_the_client():
     assert graph.outputs.empty() and graph.output_bytes == 0
     graph.output_bytes += 10
     graph.output_bytes -= pacer.offer(reply("turn.interrupted", 1), 10)
-    delivered, _ = await asyncio.wait_for(graph.outputs.get(), OUTPUT_TIMEOUT_S)
+    delivered = (await asyncio.wait_for(graph.outputs.get(), OUTPUT_TIMEOUT_S))[0]
     await asyncio.sleep(0.05)
     delivery.cancel()
     await asyncio.gather(delivery, return_exceptions=True)
@@ -889,7 +970,8 @@ async def test_an_interrupt_tells_the_paced_node_readers_the_audio_it_delivered(
         )
     runner = SessionGraphRunner()
     delivery = asyncio.create_task(runner.deliver_paced_outputs(graph, "speaker"))
-    await wait_until(lambda: graph.outputs.qsize() == 2)
+    outputs = runner.graph_outputs(graph)
+    await collect(outputs, 2)
     delivery.cancel()
     await asyncio.gather(delivery, return_exceptions=True)
     # Note (Junnan Li): The pacer joins turn 2's two chunks into one; only the latest turn keeps its count.
@@ -899,6 +981,204 @@ async def test_an_interrupt_tells_the_paced_node_readers_the_audio_it_delivered(
     [(source, delivered, _)] = graph.inboxes["listener"].queued
     assert source == "speaker" and delivered.turn == 2
     assert delivered.payload == {"type": REPLY_DELIVERED, "audio_ms": 200}
+    await outputs.aclose()
+
+
+@pytest.mark.asyncio
+async def test_an_interrupt_naming_a_turn_keeps_the_reply_delivered_its_target_has_not_taken():
+    """A dialog interrupted a reply, and a client interrupt of the same turn then dropped the reply.delivered still queued for the dialog with the turn's other chunks, so a dialog waiting for it never answered again."""
+    runner = NodeOutputsRunner([])
+    nodes = {
+        "speaker": SessionNode(
+            ("speaker",), ("input",), controls=(ControlEdge("dialog", INTERRUPT),)
+        ),
+        "dialog": SessionNode(
+            ("dialog",),
+            ("input", "speaker:session"),
+            controls=(ControlEdge("input", INTERRUPT),),
+        ),
+    }
+    identities = {name: SessionIdentity(f"graph:{name}", 1) for name in nodes}
+    for name, identity in identities.items():
+        runner.sessions[identity.id] = Session(
+            session_identity=identity,
+            request=OmniRequest(None),
+            stages=(name,),
+            bindings={},
+            limits=SessionLimits(),
+            is_node=True,
+        )
+    graph = SessionGraphRuntime(
+        session_identity=SessionIdentity("graph", 1),
+        graph=SessionGraph(nodes=nodes, publish={"speaker": ("pcm16", "session")}),
+        nodes=identities,
+        limits=SessionLimits(),
+        inboxes={name: NodeInbox() for name in nodes},
+        outputs=asyncio.Queue(),
+        pacers={"speaker": DeliveryPacer(250, asyncio.Event())},
+        client_sequences={name: {} for name in nodes},
+    )
+    interrupt = control_chunk(INTERRUPT, turn=1)
+    await runner.put_graph_inbox(
+        graph, "dialog", "speaker", control_chunk("turn.done", turn=1)
+    )
+    [(_, edge)] = graph.graph.control_targets("dialog", INTERRUPT)
+    await runner.control_edge(graph, "speaker", edge, interrupt)
+    await runner.control_graph(graph, interrupt, None, False)
+    assert [
+        (source, chunk.payload) for source, chunk, _ in graph.inboxes["dialog"].queued
+    ] == [("speaker", {"type": REPLY_DELIVERED, "audio_ms": 0.0})]
+
+
+def speaker_audio(turn: int, t_start_ms: float) -> OutputChunk:
+    return OutputChunk(
+        SessionIdentity("graph:speaker", 1),
+        0,
+        0,
+        "audio",
+        t_start_ms,
+        100,
+        bytes(3200),
+        "pcm16",
+        turn=turn,
+    )
+
+
+def paced_speaker_runtime(runner: SessionGraphRunner) -> SessionGraphRuntime:
+    """A paced speaker the client interrupts and a listener reads controls from, beside a dialog; both the speaker and the dialog publish, and the speaker's node session is registered."""
+    nodes = {
+        "speaker": SessionNode(
+            ("speaker",), ("input",), controls=(ControlEdge("input", "interrupt"),)
+        ),
+        "dialog": SessionNode(("dialog",), ("input",)),
+        "listener": SessionNode(("listener",), ("speaker:session",)),
+    }
+    identities = {name: SessionIdentity(f"graph:{name}", 1) for name in nodes}
+    runner.sessions[identities["speaker"].id] = Session(
+        session_identity=identities["speaker"],
+        request=OmniRequest(None),
+        stages=("speaker",),
+        bindings={},
+        limits=SessionLimits(),
+        is_node=True,
+    )
+    return SessionGraphRuntime(
+        session_identity=SessionIdentity("graph", 1),
+        graph=SessionGraph(
+            nodes=nodes,
+            publish={
+                "speaker": ("pcm16", "session"),
+                "dialog": ("text_delta", "session"),
+            },
+        ),
+        nodes=identities,
+        limits=SessionLimits(),
+        inboxes={name: NodeInbox() for name in nodes},
+        outputs=asyncio.Queue(),
+        pacers={"speaker": DeliveryPacer(250, asyncio.Event())},
+        client_sequences={name: {} for name in nodes},
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_interrupt_drops_the_turn_output_the_client_has_not_taken():
+    """Output of an interrupted turn still queued for a slow client reached it after the interrupt, and reply.delivered came from the queued audio, not from what the client took. A turn.done already published stays for the client."""
+    runner = NodeOutputsRunner([])
+    graph = paced_speaker_runtime(runner)
+    pacer = graph.pacers["speaker"]
+
+    async def route(name: str, node_outputs: list[OutputChunk]) -> None:
+        runner.node_outputs = node_outputs
+        await runner.route_graph_outputs(graph, name)
+        await wait_until(lambda: not pacer.items and not pacer.unsent)
+
+    taken_audio = speaker_audio(1, 0)
+    untaken_audio = speaker_audio(1, 100)
+    dialog_text = reply_output("text_delta", {"text": "kept"}, 1)
+    speaker_done = reply_output("session", {"type": "turn.done"}, 1)
+    dialog_end = reply_output("session", {"type": "turn.interrupted"}, 1)
+    delivery = asyncio.create_task(runner.deliver_paced_outputs(graph, "speaker"))
+    outputs = runner.graph_outputs(graph)
+    await route("speaker", [taken_audio])
+    taken = await collect(outputs, 1)
+    await route("dialog", [dialog_text])
+    await route("speaker", [untaken_audio, speaker_done])
+    interrupt = TimedChunk("control", 0, 0, 0, {"type": "interrupt"}, "session", turn=1)
+    await runner.control_graph(graph, interrupt, None, False)
+    await route("dialog", [dialog_end])
+    taken += await collect(outputs, graph.outputs.qsize())
+    delivery.cancel()
+    await asyncio.gather(delivery, return_exceptions=True)
+    # Note (ruoyu): A seq is given when the output is published, so the dropped audio leaves seq 2 unseen.
+    assert taken == [
+        replace(output, session_identity=graph.session_identity, seq=seq)
+        for seq, output in (
+            (0, taken_audio),
+            (1, dialog_text),
+            (3, speaker_done),
+            (4, dialog_end),
+        )
+    ]
+    assert [
+        (source, chunk.payload) for source, chunk, _ in graph.inboxes["listener"].queued
+    ] == [
+        ("speaker", {"type": "turn.done"}),
+        ("speaker", {"type": REPLY_DELIVERED, "audio_ms": 100}),
+    ]
+    assert graph.output_bytes == 0
+    await outputs.aclose()
+
+
+QUEUED_AUDIO_OF_TURN_1 = (speaker_audio(1, 0), 0, "speaker")
+QUEUED_INPUT_DONE = (
+    OutputChunk(
+        SessionIdentity("graph", 1),
+        0,
+        0,
+        "audio",
+        0,
+        100,
+        None,
+        "pcm16",
+        kind="input_done",
+    ),
+    0,
+    "speaker",
+)
+QUEUED_AUDIO_OF_TURN_2 = (speaker_audio(2, 100), 0, "speaker")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("interrupt_turn", "kept_outputs"),
+    [
+        (
+            None,
+            [QUEUED_AUDIO_OF_TURN_1, QUEUED_INPUT_DONE, QUEUED_AUDIO_OF_TURN_2, None],
+        ),
+        (1, [QUEUED_INPUT_DONE, QUEUED_AUDIO_OF_TURN_2, None]),
+    ],
+)
+async def test_an_interrupt_keeps_the_close_sentinel_and_drops_data_only_of_a_named_turn(
+    interrupt_turn, kept_outputs
+):
+    """An interrupt that met the close sentinel in the client's queue raised, even one naming no turn, which leaves the queue as it was."""
+    runner = NodeOutputsRunner([])
+    graph = paced_speaker_runtime(runner)
+    for queued_output in (
+        QUEUED_AUDIO_OF_TURN_1,
+        QUEUED_INPUT_DONE,
+        QUEUED_AUDIO_OF_TURN_2,
+        None,
+    ):
+        graph.outputs.put_nowait(queued_output)
+    interrupt = TimedChunk(
+        "control", 0, 0, 0, {"type": "interrupt"}, "session", turn=interrupt_turn
+    )
+    await runner.control_graph(graph, interrupt, None, False)
+    assert [
+        graph.outputs.get_nowait() for _ in range(graph.outputs.qsize())
+    ] == kept_outputs
 
 
 class TurnFront(SessionHooks):
@@ -1018,5 +1298,217 @@ async def test_a_preempting_interrupt_drops_its_turn_at_every_owner_of_the_targe
             {"turn": 2}
         ]
         assert has_appended("sink", 2) and not has_appended("sink", 1)
+        await outputs.aclose()
+        await wait_until(lambda: not coordinator.sessions and not coordinator.graphs)
+
+
+def fragment_runtime(
+    sessions: SessionGraphRunner, limits: SessionLimits
+) -> tuple[SessionGraphRuntime, Session]:
+    """A graph whose `reader` node takes `writer` units, with the reader's node session registered and not pumped."""
+    node = SessionIdentity("graph:reader")
+    session = Session(
+        session_identity=node,
+        request=OmniRequest(None),
+        stages=("first", "last"),
+        bindings={},
+        limits=limits,
+        is_node=True,
+    )
+    sessions.sessions[node.id] = session
+    graph = SessionGraphRuntime(
+        session_identity=SessionIdentity("graph"),
+        graph=SessionGraph(
+            nodes={
+                "writer": SessionNode(("writer",), ("input",)),
+                "reader": SessionNode(("first", "last"), ("writer:unit",)),
+            },
+            publish={},
+        ),
+        nodes={"writer": SessionIdentity("graph:writer"), "reader": node},
+        limits=limits,
+        inboxes={"writer": NodeInbox(), "reader": NodeInbox()},
+        outputs=asyncio.Queue(),
+        client_sequences={"writer": {}, "reader": {}},
+    )
+    return graph, session
+
+
+def blob_unit(turn: int, size: int) -> TimedChunk:
+    blob = random.Random(turn).randbytes(size)
+    return TimedChunk(CONTROL, 0, 0, 0, {"blob": blob}, format="unit", turn=turn)
+
+
+@pytest.mark.asyncio
+async def test_a_node_chunk_over_max_chunk_bytes_enters_its_reader_as_fragments():
+    sessions = SessionGraphRunner()
+    graph, reader = fragment_runtime(sessions, SessionLimits(max_chunk_bytes=1024))
+    unit = blob_unit(1, 5000)
+    next_seq = await sessions.append_fragments(graph, "reader", unit, 0)
+    pending = list(reader.pending)
+    assert next_seq == len(pending) > 1
+    assert [entry.chunk.seq for entry in pending] == list(range(next_seq))
+    assert [entry.continues for entry in pending] == [True] * (next_seq - 1) + [False]
+    assert all(entry.encoded_bytes <= 1024 for entry in pending)
+    restored = join_fragments([entry.chunk for entry in pending])
+    assert restored == replace(unit, seq=next_seq - 1)
+
+
+@pytest.mark.asyncio
+async def test_a_turn_interrupted_at_the_reader_takes_no_more_fragments():
+    sessions = SessionGraphRunner()
+    graph, reader = fragment_runtime(
+        sessions, SessionLimits(max_chunk_bytes=1024, max_pending_chunks=2)
+    )
+    delivery = asyncio.create_task(
+        sessions.append_fragments(graph, "reader", blob_unit(1, 5000), 0)
+    )
+    await wait_until(lambda: reader.pending_count == 2)
+    graph.interrupted_turns["reader"] = {1}
+    assert await asyncio.wait_for(delivery, OUTPUT_TIMEOUT_S) == 2
+    assert [entry.continues for entry in reader.pending] == [True, True]
+
+
+@pytest.mark.asyncio
+async def test_an_interrupt_drops_the_turns_unsent_fragments(monkeypatch):
+    sessions = SessionGraphRunner()
+    graph, reader = fragment_runtime(
+        sessions, SessionLimits(max_chunk_bytes=1024, max_pending_chunks=2)
+    )
+    controlled = []
+
+    async def control_session(*args, **kwargs) -> None:
+        controlled.append(args[0])
+
+    # note (luojiaxuan): the reader's node session has no running stages, so the control it forwards is recorded instead.
+    monkeypatch.setattr(sessions, "control_session", control_session)
+    delivery = asyncio.create_task(
+        sessions.append_fragments(graph, "reader", blob_unit(1, 5000), 0)
+    )
+    await wait_until(lambda: reader.pending_count == 2)
+    await sessions.control_edge(
+        graph,
+        "reader",
+        ControlEdge("writer", INTERRUPT),
+        replace(control_chunk(INTERRUPT, turn=1), format="session"),
+    )
+    assert await asyncio.wait_for(delivery, OUTPUT_TIMEOUT_S) == 2
+    assert (reader.pending_count, reader.pending_bytes, list(reader.pending)) == (
+        0,
+        0,
+        [],
+    )
+    assert controlled == [graph.nodes["reader"]]
+
+
+class BlobWriter(SessionHooks):
+    """Makes each client chunk the unit of a new turn, a blob of the size the chunk names."""
+
+    def __init__(self) -> None:
+        self.turns: dict[SessionIdentity, int] = {}
+        self.emitters: dict[SessionIdentity, ChunkEmitter] = {}
+
+    def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
+        self.turns[session_identity] = 0
+
+    def attach_output_stream(
+        self, session_identity: SessionIdentity, emit: ChunkEmitter
+    ) -> None:
+        self.emitters[session_identity] = emit
+
+    def close(self, session_identity: SessionIdentity) -> None:
+        self.turns.pop(session_identity)
+        self.emitters.pop(session_identity)
+
+    def append(
+        self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
+    ) -> StagePayload:
+        self.turns[context.session_identity] += 1
+        turn = self.turns[context.session_identity]
+        unit = replace(blob_unit(turn, chunk.payload["size"]), seq=chunk.seq)
+        self.emitters[context.session_identity](unit)
+        return payload
+
+
+class BlobReader(SessionHooks):
+    """Each owner records the turn of every append it runs; the last answers with the digest of the blob it sees."""
+
+    def __init__(self, name: str, events: Queue[StageEvent]) -> None:
+        self.name = name
+        self.events = events
+
+    def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
+        pass
+
+    def close(self, session_identity: SessionIdentity) -> None:
+        pass
+
+    def append(
+        self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
+    ) -> StagePayload:
+        self.events.put(("append", self.name, context.session_identity.id, chunk.turn))
+        if self.name == "sink":
+            digest = hashlib.sha256(chunk.payload["blob"]).hexdigest()
+            context.emit(
+                TimedChunk("text", 0, 0, chunk.seq, {"digest": digest}, format="text")
+            )
+        else:
+            pass
+        payload.data = {}
+        return payload
+
+
+def create_blob_stage(name: str, events: Queue[StageEvent]) -> SessionScheduler:
+    if name == "front":
+        return SessionScheduler(BlobWriter())
+    else:
+        return SessionScheduler(BlobReader(name, events))
+
+
+@pytest.mark.asyncio
+async def test_a_node_chunk_over_max_chunk_bytes_reaches_every_owner_of_its_reader_whole(
+    tmp_path,
+):
+    factory = f"{__name__}.create_blob_stage"
+    async with pipeline(
+        tmp_path,
+        other_terminals=("front",),
+        factories={"source": factory, "sink": factory, "front": factory},
+    ) as (coordinator, events, _):
+        coordinator.session_graph = SessionGraph(
+            nodes={
+                "front": SessionNode(("front",), ("input",)),
+                "relay": SessionNode(("source", "sink"), ("front:unit",)),
+            },
+            publish={"relay": ("text",)},
+        )
+        identity = await coordinator.open_session(
+            OmniRequest(None), limits=SessionLimits(max_chunk_bytes=65536)
+        )
+        outputs = coordinator.session_outputs(identity)
+        sizes = (300_000, 1000)
+        for seq, size in enumerate(sizes):
+            await coordinator.append_session(
+                identity, TimedChunk(CONTROL, 0, 0, seq, {"size": size}, format="size")
+            )
+        received = []
+        while len(received) < len(sizes):
+            output = await asyncio.wait_for(anext(outputs), OUTPUT_TIMEOUT_S)
+            if output.format == "text":
+                received.append(output.payload["digest"])
+            else:
+                pass
+        assert received == [
+            hashlib.sha256(blob_unit(turn, size).payload["blob"]).hexdigest()
+            for turn, size in enumerate(sizes, start=1)
+        ]
+        log: list[StageEvent] = []
+
+        def appended_turns(stage: str) -> list[int]:
+            log.extend(event_log(events))
+            return [event[3] for event in log if event[0:2] == ("append", stage)]
+
+        await wait_until(lambda: appended_turns("sink") == [1, 2])
+        assert appended_turns("source") == [1, 2]
         await outputs.aclose()
         await wait_until(lambda: not coordinator.sessions and not coordinator.graphs)

@@ -8,9 +8,10 @@ import http.server
 import os
 import threading
 from fractions import Fraction
+from io import BytesIO
 from pathlib import Path
 from typing import Literal
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import audioread
 import av
@@ -21,7 +22,7 @@ import torch
 from PIL import Image
 from transformers import AutoProcessor, PreTrainedTokenizerBase, ProcessorMixin
 
-from sglang_omni.models.minicpm_o import video_frontend
+from sglang_omni.models.minicpm_o import stages, video_frontend
 from sglang_omni.models.minicpm_o.components import preprocessor as preprocessor_mod
 from sglang_omni.models.minicpm_o.components.audio_encoder import (
     feature_lens_after_pooling,
@@ -31,9 +32,14 @@ from sglang_omni.models.minicpm_o.components.preprocessor import MiniCPMOPreproc
 from sglang_omni.models.minicpm_o.prompt_frontend import video_to_images
 from sglang_omni.models.minicpm_o.request_builders import apply_mm_pad_values
 from sglang_omni.models.minicpm_o.video_frontend import MiniCPMVideoIO, TimedVideo
-from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
+from sglang_omni.preprocessing import resource_connector
+from sglang_omni.preprocessing.resource_connector import (
+    MultiModalResourceConnector,
+    ResourceHTTPConnection,
+)
 from sglang_omni.preprocessing.video import load_video_path
 from sglang_omni.proto.request import OmniRequest, StagePayload
+from sglang_omni.scheduling.message import IncomingMessage
 from tests.unit_test.minicpm_o.test_preprocessor_prompt import (
     CHAT_TEMPLATE,
     ProcessorOutput,
@@ -89,6 +95,81 @@ def video_preprocessor(
     preprocessor.speech_enabled = False
     preprocessor.tokenizer = PreTrainedTokenizerBase(chat_template=CHAT_TEMPLATE)
     return preprocessor
+
+
+def test_threaded_preprocessing_loads_repeated_remote_images(
+    video_preprocessor: MiniCPMOPreprocessor,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_bytes = BytesIO()
+    Image.new("RGB", (2, 2), color=(12, 34, 56)).save(image_bytes, format="PNG")
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self) -> None:
+            response_bytes = image_bytes.getvalue()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(response_bytes)))
+            self.end_headers()
+            self.wfile.write(response_bytes)
+
+        def log_message(self, format: str, *arguments: object) -> None:
+            pass
+
+    monkeypatch.setattr(
+        stages, "MiniCPMOPreprocessor", Mock(return_value=video_preprocessor)
+    )
+    # note (wirybeaver): isolate the global client so loop reuse stays observable.
+    monkeypatch.setattr(
+        resource_connector,
+        "_global_connector",
+        MultiModalResourceConnector(connection=ResourceHTTPConnection()),
+    )
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    http_worker = threading.Thread(target=server.serve_forever, daemon=True)
+    http_worker.start()
+    scheduler = stages.create_preprocessing_executor(
+        "model", device="cpu", max_concurrency=2
+    )
+    scheduler_worker = threading.Thread(target=scheduler.start, daemon=True)
+    scheduler_worker.start()
+    try:
+        for index in range(3):
+            request_id = f"remote-{index}"
+            payload = StagePayload(
+                request_id=request_id,
+                request=OmniRequest(
+                    inputs=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"http://127.0.0.1:{server.server_port}/image.png"
+                                    },
+                                },
+                                "Describe.",
+                            ],
+                        }
+                    ]
+                ),
+                data=None,
+            )
+            scheduler.inbox.put(
+                IncomingMessage(request_id=request_id, type="new_request", data=payload)
+            )
+            result = scheduler.outbox.get(timeout=10)
+            assert result.type == "result", repr(result.data)
+            assert result.request_id == request_id
+    finally:
+        scheduler.stop()
+        scheduler_worker.join(timeout=3)
+        server.shutdown()
+        server.server_close()
+        http_worker.join(timeout=3)
+    assert not scheduler_worker.is_alive()
 
 
 @pytest.fixture
@@ -987,6 +1068,9 @@ def test_real_processor_visual_packing(
     )
     preprocessor = object.__new__(MiniCPMOPreprocessor)
     preprocessor._processor = None  # noqa: leading-underscore  # production contract
+    preprocessor._processor_lock = (  # noqa: leading-underscore  # production contract
+        threading.Lock()
+    )
     preprocessor.model_dir = "checkpoint-fixture"
     preprocessor.device = torch.device("cuda", torch.cuda.device_count() - 1)
     monkeypatch.setattr(
@@ -1057,6 +1141,9 @@ def test_cpu_processor_preserves_reference(
 ) -> None:
     preprocessor = object.__new__(MiniCPMOPreprocessor)
     preprocessor._processor = None  # noqa: leading-underscore  # production contract
+    preprocessor._processor_lock = (  # noqa: leading-underscore  # production contract
+        threading.Lock()
+    )
     preprocessor.model_dir = "checkpoint-fixture"
     preprocessor.device = torch.device("cpu")
     monkeypatch.setattr(

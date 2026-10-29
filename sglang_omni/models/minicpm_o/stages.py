@@ -6,10 +6,10 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Mapping
+from contextlib import nullcontext
 
 import numpy as np
 import torch
-import torch.nn as nn
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from transformers import AutoTokenizer
 
@@ -28,6 +28,7 @@ from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.request_builders import build_encoder_request
 from sglang_omni.models.minicpm_o.routing import TALKER_STAGE, code2wav_reference_audio
 from sglang_omni.platforms import current_platform
+from sglang_omni.profiler.event_recorder import emit as emit_event
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
@@ -44,6 +45,7 @@ from sglang_omni.scheduling.sglang_backend.server_args_builder import (
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.scheduling.streaming_detokenizer import StreamingDetokenizeScheduler
+from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.device import resolve_concrete_device
 from sglang_omni.utils.misc import avail_gpu_mem
@@ -57,14 +59,38 @@ def create_preprocessing_executor(
     speech_enabled: bool = False,
     device: str | None = None,
     gpu_id: int | None = None,
-) -> SimpleScheduler[StagePayload, StagePayload]:
+    max_concurrency: int,
+) -> (
+    SimpleScheduler[StagePayload, StagePayload]
+    | ThreadedSimpleScheduler[StagePayload, StagePayload]
+):
     preprocessor = MiniCPMOPreprocessor(
         model_path,
         speech_enabled=speech_enabled,
         device=resolve_concrete_device(device, gpu_id),
     )
 
-    return SimpleScheduler[StagePayload, StagePayload](preprocessor)
+    async def preprocess_with_events(payload: StagePayload) -> StagePayload:
+        emit_event(
+            request_id=payload.request_id,
+            stage="preprocessing",
+            event_name="preprocess_start",
+        )
+        try:
+            return await preprocessor(payload)
+        finally:
+            emit_event(
+                request_id=payload.request_id,
+                stage="preprocessing",
+                event_name="preprocess_end",
+            )
+
+    if max_concurrency == 1:
+        return SimpleScheduler(preprocess_with_events)
+    else:
+        return ThreadedSimpleScheduler(
+            preprocess_with_events, max_concurrency=max_concurrency
+        )
 
 
 ENCODER_CACHE_MAX_ENTRIES = 64
@@ -72,8 +98,15 @@ ENCODER_CACHE_MAX_BYTES = 4 * 1024**3
 
 
 def create_encoder_executor(
-    encoder: nn.Module, *, stage_name: str
+    encoder: MiniCPMOImageEncoder | MiniCPMOAudioEncoder, *, stage_name: str
 ) -> SimpleScheduler[StagePayload, StagePayload]:
+    device_module = torch.get_device_module(encoder.device)
+    if encoder.device.type == "npu":
+        # note (guomangmang): encoder sync must not wait on AR graph updates.
+        encoder_stream = device_module.Stream(device=encoder.device)
+        encoder_stream.wait_stream(device_module.current_stream(encoder.device))
+    else:
+        encoder_stream = None
     cache = StageOutputCache(
         max_size=ENCODER_CACHE_MAX_ENTRIES,
         max_bytes=ENCODER_CACHE_MAX_BYTES,
@@ -91,9 +124,19 @@ def create_encoder_executor(
         elif cached is not None:
             encoder_out = cached
         else:
-            with torch.no_grad():
+            stream_context = (
+                device_module.stream(encoder_stream)
+                if encoder_stream is not None
+                else nullcontext()
+            )
+            with stream_context, torch.no_grad():
                 encoder_out = encoder(**request.model_inputs)
-            cache.put(request.cache_key, encoder_out)
+                cache.put(request.cache_key, encoder_out)
+                if encoder_stream is not None:
+                    # note (guomangmang): downstream stages read on other streams.
+                    encoder_stream.synchronize()
+                else:
+                    pass
         state.encoder_outs[stage_name] = encoder_out
         payload.data = state.to_dict()
         return payload

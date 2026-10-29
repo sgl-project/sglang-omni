@@ -3,7 +3,6 @@
 
 import asyncio
 import threading
-import time
 from collections.abc import AsyncIterator, Callable, Coroutine
 from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import replace
@@ -26,7 +25,6 @@ from sglang_omni.proto.streams import (
 )
 from sglang_omni.scheduling.session import (
     DEFAULT_MAX_CONCURRENCY,
-    NODE_STAGE_MAX_OPEN_SESSIONS,
     ChunkEmitter,
     SessionContext,
     SessionHooks,
@@ -43,6 +41,7 @@ class ComponentSession:
         self.name = name
         self.settings = settings
         self.component = COMPONENTS.build(settings.node(name).component)
+        self.component.place(settings, name)
         self.queue: asyncio.Queue[tuple[TimedChunk, asyncio.Future[None]] | None] = (
             asyncio.Queue(maxsize=1)
         )
@@ -50,7 +49,6 @@ class ComponentSession:
         self.emit: ChunkEmitter | None = None
         self.fail: Callable[[BaseException], None] | None = None
         self.failure: BaseException | None = None
-        self.append_emit: ChunkEmitter | None = None
         self.is_speaking = False
         self.pending_settings: ComponentGraphConfig | None = None
         self.is_closing = False
@@ -79,11 +77,11 @@ class ComponentSession:
             pass
 
     def output(self, chunk: TimedChunk) -> None:
-        emit = self.append_emit or self.emit
-        if emit is None:
+        # note (luojiaxuan): every output goes out on the session's read, also while an append is in flight: a preempt drops what a cancelled append streams back, and an append only hands its chunk to the component's task.
+        if self.emit is None:
             raise RuntimeError("component has no output reader")
         else:
-            emit(chunk)
+            self.emit(chunk)
 
     async def inputs(self) -> AsyncIterator[TimedChunk]:
         while (item := await self.queue.get()) is not None:
@@ -91,7 +89,7 @@ class ComponentSession:
             yield chunk
             consumed.set_result(None)
 
-    async def append(self, chunk: TimedChunk, emit: ChunkEmitter) -> None:
+    async def append(self, chunk: TimedChunk) -> None:
         assert self.task is not None
         if self.task.done():
             self.task.result()
@@ -106,36 +104,30 @@ class ComponentSession:
             raise ValueError("PCM16 byte length must match duration_ms")
         else:
             pass
-        self.append_emit = emit
-        try:
-            await self.apply_pending()
-            event = control_type(chunk)
-            if event == CONFIGURE:
-                await self.configure(chunk)
-                return
-            elif event == SPEECH_STARTED or (chunk.format == PCM16 and chunk.payload):
-                self.is_speaking = True
-            elif event in (SPEECH_STOPPED, COMMIT):
-                self.is_speaking = False
-            else:
-                pass
-            consumed = asyncio.get_running_loop().create_future()
-            await self.queue.put((replace(chunk, eos=False), consumed))
-            await asyncio.wait(
-                {consumed, self.task}, return_when=asyncio.FIRST_COMPLETED
-            )
-            if self.task.done():
-                self.task.result()
-                raise RuntimeError("component stopped while handling input")
-            elif chunk.eos:
-                self.is_input_ended = True
-                await self.queue.put(None)
-                await self.task
-            else:
-                pass
-            await self.apply_pending()
-        finally:
-            self.append_emit = None
+        await self.apply_pending()
+        event = control_type(chunk)
+        if event == CONFIGURE:
+            await self.configure(chunk)
+            return
+        elif event == SPEECH_STARTED or (chunk.format == PCM16 and chunk.payload):
+            self.is_speaking = True
+        elif event in (SPEECH_STOPPED, COMMIT):
+            self.is_speaking = False
+        else:
+            pass
+        consumed = asyncio.get_running_loop().create_future()
+        await self.queue.put((replace(chunk, eos=False), consumed))
+        await asyncio.wait({consumed, self.task}, return_when=asyncio.FIRST_COMPLETED)
+        if self.task.done():
+            self.task.result()
+            raise RuntimeError("component stopped while handling input")
+        elif chunk.eos:
+            self.is_input_ended = True
+            await self.queue.put(None)
+            await self.task
+        else:
+            pass
+        await self.apply_pending()
 
     async def configure(self, chunk: TimedChunk) -> None:
         settings = (self.pending_settings or self.settings).apply(
@@ -162,6 +154,7 @@ class ComponentSession:
             != self.settings.node(self.name).component
         ):
             replacement = COMPONENTS.build(settings.node(self.name).component)
+            replacement.place(settings, self.name)
             replacement.adopt(self.component)
             previous, self.component = self.component, replacement
             self.task.cancel()
@@ -239,26 +232,15 @@ class ComponentHooks(SessionHooks):
     def append(
         self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
     ) -> StagePayload:
-        session = self.sessions[context.session_identity]
+        # note (luojiaxuan): the component's own task takes an interrupt as a control, so a preempt leaves the handoff to finish rather than losing the chunk and closing the session.
         future = asyncio.run_coroutine_threadsafe(
-            session.append(chunk, context.emit), self.loop
+            self.sessions[context.session_identity].append(chunk), self.loop
         )
-        deadline = time.monotonic() + self.timeout_s
-        while True:
-            try:
-                future.result(0.02)
-                break
-            except FutureTimeout:
-                if future.done():
-                    raise
-                elif context.cancelled.is_set():
-                    future.cancel()
-                    raise RuntimeError("component append cancelled")
-                elif time.monotonic() >= deadline:
-                    future.cancel()
-                    raise TimeoutError(f"component {self.name!r} append timed out")
-                else:
-                    pass
+        try:
+            future.result(self.timeout_s)
+        except FutureTimeout:
+            future.cancel()
+            raise TimeoutError(f"component {self.name!r} append timed out")
         payload.data = {"accepted": True}
         return payload
 
@@ -279,10 +261,10 @@ class ComponentHooks(SessionHooks):
 
 
 def create_scheduler(
-    name: str, settings: dict[str, object], timeout_s: float
+    name: str, settings: dict[str, object], timeout_s: float, max_open_sessions: int
 ) -> SessionScheduler:
     return SessionScheduler(
         ComponentHooks(name, ComponentGraphConfig.model_validate(settings), timeout_s),
-        max_open_sessions=NODE_STAGE_MAX_OPEN_SESSIONS,
+        max_open_sessions=max_open_sessions,
         max_concurrency=DEFAULT_MAX_CONCURRENCY,
     )

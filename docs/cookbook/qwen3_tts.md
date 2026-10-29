@@ -1,4 +1,4 @@
-# Qwen3 TTS
+# Qwen3-TTS
 
 [Qwen3-TTS-12Hz-Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base) is a discrete
 multi-codebook text-to-speech model from the Qwen team. It performs fast voice cloning from a
@@ -416,6 +416,54 @@ sgl-omni serve \
   --port 8000
 ```
 
+### Precomputed Speaker Embedding
+
+A Base reference can be given as its speaker embedding, `references[0].speaker_embedding`, instead of its clip. The server then loads and encodes no audio, and every replica serves every voice without stored voice state.
+
+The embedding is the x-vector the checkpoint's speaker encoder computes from a reference clip: 1024 values for 0.6B Base and 2048 for 1.7B Base. An embedding from one checkpoint size does not fit the other. Sending the embedding the server computes for a clip produces the same audio as sending that clip with `x_vector_only_mode: true`, including the x-vector leading-silence mask above.
+
+The `qwen-tts` package computes it. Install it in its own Python environment (`pip install qwen-tts`), since it pins an older transformers release than the server. On SeedTTS EN references its embeddings match the server's to bfloat16 rounding (cosine above 0.99999 on 100 references for each size).
+
+```python
+import json
+
+import torch
+from qwen_tts import Qwen3TTSModel
+
+model = Qwen3TTSModel.from_pretrained(
+    "Qwen/Qwen3-TTS-12Hz-0.6B-Base", device_map="cuda:0", dtype=torch.bfloat16
+)
+(prompt,) = model.create_voice_clone_prompt(
+    ref_audio="reference.wav", x_vector_only_mode=True
+)
+with open("speaker_embedding.json", "w") as f:
+    json.dump(prompt.ref_spk_embedding.float().cpu().tolist(), f)
+```
+
+Then send the stored embedding with the text:
+
+```python
+import json
+
+import requests
+
+with open("speaker_embedding.json") as f:
+    speaker_embedding = json.load(f)
+resp = requests.post(
+    "http://localhost:8000/v1/audio/speech",
+    json={
+        "model": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+        "input": "Get the trust fund to the bank early.",
+        "references": [{"speaker_embedding": speaker_embedding}],
+    },
+)
+resp.raise_for_status()
+with open("output.wav", "wb") as f:
+    f.write(resp.content)
+```
+
+The request runs in x-vector mode. A transcript is not used, and `x_vector_only_mode` may be omitted or set to `true`. The embedding reference must be the only reference, with no audio, no `vq_codes` and no `ref_audio`, and every value must be finite in the model's dtype. CustomVoice and VoiceDesign checkpoints reject it.
+
 ### Language Hint
 
 `language` biases the model toward a target language. It defaults to `auto` (let the model
@@ -570,14 +618,14 @@ only the first chunk.
 | `model` | served model | Served model identifier |
 | `input` | (required) | Text to synthesize |
 | `voice` | `default` | Voice identifier. For Base reference cloning, the reference clip provides the speaker conditioning |
-| `references` | `null` | Reference clip for cloning. Each item has `audio_path` and `text` |
+| `references` | `null` | Reference clip for cloning. Each item has `audio_path` and `text`, or only `speaker_embedding`: the checkpoint's speaker-encoder x-vector of the clip, 1024 values for 0.6B Base and 2048 for 1.7B Base. See [Precomputed Speaker Embedding](#precomputed-speaker-embedding) |
 | `ref_audio` / `ref_text` | `null` | Shorthand for `references[0].audio_path` / `references[0].text` |
 | `language` | `auto` | Target-language hint (see list above) |
 | `temperature` | `0.9` | Sampling temperature |
 | `top_p` | `1.0` | Top-p sampling |
 | `top_k` | `50` | Top-k sampling |
 | `repetition_penalty` | `1.05` | Repetition penalty |
-| `max_new_tokens` | `2048` | Maximum number of generated codec tokens |
+| `max_new_tokens` | Twice the slowest natural stop for the target text, at most `2048` | Maximum number of generated codec tokens (80 ms each). The default is `ceil(2 × (1.38 s + 0.39 s × target-text tokens) × 12.5)`: about 5 s for a three-token word, 26 s for 30 tokens, 2048 for long text. Set it for speech deliberately slower than natural |
 | `seed` | `null` | Random seed for reproducibility |
 | `stream` | `false` | Stream raw PCM audio chunks |
 | `initial_codec_chunk_frames` | ramp `1 -> 2 -> 4` when omitted | First streaming vocoder chunk size in codec frames. An explicit value replaces the ramp's first chunk only. Smaller values lower TTFA but underrun more easily; `0` uses the steady stride from the start |
@@ -681,6 +729,38 @@ Corpus WER (EN) / CER (ZH) is total edit distance divided by total reference wor
 
 TTFA measures arrival of the first PCM payload, not the first audible speech; its mean payload duration was 80 ms in both languages. All 3,108 streaming requests were continuity-scored: 98.99% EN and 93.76% ZH had no playback underrun longer than 50 ms. Maximum underrun was 396.1 ms EN and 2072.0 ms ZH. The default ramp therefore does not guarantee uninterrupted playback at concurrency 16; see [First-audio chunk ramp](#first-audio-chunk-ramp) for the buffering tradeoff.
 
+### Runaway Regression
+
+`benchmarks.eval.benchmark_tts_generation_budget` sends each case twice with the same text, voice, and seed: once with the legacy 2048-frame limit and once with the server default. It saves the audio, finish reasons, codec frame counts, and chunk timings. The text request fails only when it stops on `length` before its paired baseline stopped naturally.
+
+Create a request template, for example `request.json`:
+
+```json
+{
+  "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+  "input": "replaced by each case",
+  "voice": "Ryan"
+}
+```
+
+For Base, use a fixed `references` entry instead of a built-in voice. The probe sends four built-in short lines in English and Chinese; `--cases` takes a JSON list of your own, and `--seedtts-samples` probes the SeedTTS prompts that missed codec EOS on 0.6B Base in #1179.
+
+```bash
+python -m benchmarks.eval.benchmark_tts_generation_budget \
+  --base-url http://127.0.0.1:8000/v1 --request request.json \
+  --server-revision <server-git-sha> --model-revision <checkpoint-sha> \
+  --repeats 8 --seed 0 --output-dir results/budget-nonstream
+
+python -m benchmarks.eval.benchmark_tts_generation_budget \
+  --base-url http://127.0.0.1:8000/v1 --request base-request.json --seedtts-samples \
+  --server-revision <server-git-sha> --model-revision <checkpoint-sha> \
+  --repeats 8 --seed 123 --output-dir results/budget-runaway
+```
+
+Add `--stream` to check raw PCM streams. Output directories must be new. A fixed seed does not make waveforms bitwise identical because prefix-cache state and batch composition can change between requests.
+
+The TTS CI non-streaming and streaming stages run this probe for Qwen3-TTS on four short cases with eight seeds, 64 requests per stage, and upload `results.jsonl` with the audio of the pairs that failed.
+
 ## Known Limitations
 
 - **Reference audio recommended.** As a cloning model, Qwen3-TTS Base produces robotic speech
@@ -689,7 +769,7 @@ TTFA measures arrival of the first PCM payload, not the first audible speech; it
   speaker similarity than speaker-embedding-only (x-vector) mode.
 - **Language detection.** `language: auto` may misdetect for short or code-switched inputs;
   set `language` explicitly when you know the target language.
-- **Rare runaway generation.** Roughly 0.2% of utterances (observed on the 0.6B checkpoint) can
-  fall into a repetition loop and keep generating up to `max_new_tokens`. Raising
-  `repetition_penalty` (default `1.05`) or lowering `max_new_tokens` mitigates it; the 1.7B
-  checkpoint is less prone.
+- **Rare runaway generation.** Roughly 0.2% of utterances (observed on the 0.6B checkpoint, and
+  on one- or two-word texts on 1.7B) can fall into a repetition loop and keep generating up to
+  `max_new_tokens`. The default text-length budget stops such a loop after a few seconds with
+  finish reason `length`; raising `repetition_penalty` (default `1.05`) also helps.

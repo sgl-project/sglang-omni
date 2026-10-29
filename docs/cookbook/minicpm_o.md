@@ -11,6 +11,8 @@
 
 Follow [Installation](../get_started/installation.md), then run from the repository root.
 
+For Intel GPUs, follow the [MiniCPM-o XPU recipe](../get_started/installation_xpu.md#minicpm-o-45-omni-chat-and-speech-single-xpu).
+
 Chat with speech output:
 
 ```bash
@@ -22,6 +24,11 @@ Chat with text output only:
 ```bash
 python -m sglang_omni.cli serve --model-path openbmb/MiniCPM-o-4_5 --text-only --port 8000
 ```
+
+## Ascend NPU
+
+See [Installation — NPU](../get_started/installation_npu.md#minicpm-o)
+for the NPU launch command, configuration, and validated versions.
 
 ## Normal Usage
 
@@ -68,7 +75,7 @@ Those pixel options do not bound the initial native-resolution allocation.
 
 ## Native Full-Duplex Ability
 
-MiniCPM-o 4.5 also serves live full-duplex voice and video calls on `/v1/realtime`. Launching, settings, the browser demo and the protocol are in [Full Duplex Interactive Model](../developer_reference/full_duplex_interactive_model.md#native-full-duplex-minicpm-o).
+MiniCPM-o 4.5 also serves live full-duplex voice and video calls on `/v1/realtime`. Launching, settings, the browser demo and the protocol are in [Full Duplex Interactive Model](../developer_reference/full_duplex_guide.md#native-full-duplex-minicpm-o).
 
 ## Text to speech
 

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import signal
+import weakref
 from collections.abc import Coroutine
 from pathlib import Path
 from traceback import format_exception
@@ -83,6 +85,9 @@ class StubCoordinator:
 
     async def stop(self) -> None:
         self.stopped = True
+
+    async def freeze_gc(self) -> None:
+        pass
 
 
 def make_config(base_path: Path) -> PipelineConfig:
@@ -459,6 +464,9 @@ async def test_mp_runner_stop_cleans_runtime_dir(
         async def wait_ready(self, timeout: float) -> None:
             del timeout
 
+        def failure_summary(self) -> str:
+            return ""
+
         def any_dead(self) -> bool:
             return False
 
@@ -649,15 +657,41 @@ def build_test_warmup_request(pipeline_config: PipelineConfig) -> ChatCompletion
     )
 
 
+def make_started_server() -> SimpleNamespace:
+    return SimpleNamespace(started=True, should_exit=False, freeze_api_gc=lambda: None)
+
+
 @pytest.mark.asyncio
-async def test_server_reports_up_after_its_warmup_requests_succeed(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("request_count", [0, 2])
+async def test_server_reports_up_after_warmup_then_freezes_every_process_heap(
+    monkeypatch: pytest.MonkeyPatch, request_count: int
 ) -> None:
-    posted: list[ChatCompletionRequest] = []
-    answer_warmup_with(monkeypatch, 200, posted)
-    server = SimpleNamespace(started=True, should_exit=False)
+    """A warmed-up server rescanned the heap its warmup built in every full collection."""
     app = FastAPI()
     app.state.server_status = ServerStatus.STARTING
+    posted: list[ChatCompletionRequest] = []
+    events: list[tuple[str, ServerStatus]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        posted.append(ChatCompletionRequest.model_validate_json(request.content))
+        events.append(("warmup request", app.state.server_status))
+        return httpx.Response(200)
+
+    class FreezeRecordingCoordinator:
+        async def freeze_gc(self) -> None:
+            events.append(("stage gc frozen", app.state.server_status))
+
+    route_warmup_to(monkeypatch, httpx.MockTransport(respond))
+    monkeypatch.setattr(
+        launcher.gc,
+        "collect",
+        lambda: events.append(("api gc collected", app.state.server_status)),
+    )
+    server = SimpleNamespace(
+        started=True,
+        should_exit=False,
+        freeze_api_gc=lambda: events.append(("api gc frozen", app.state.server_status)),
+    )
     request = ChatCompletionRequest(
         messages=[ChatMessage(role="user", content="Hi")], max_tokens=8
     )
@@ -665,14 +699,60 @@ async def test_server_reports_up_after_its_warmup_requests_succeed(
     await launcher.warm_up_server(
         server,
         app,
+        FreezeRecordingCoordinator(),
         base_url="http://127.0.0.1:8000",
-        requests=[request, request],
+        requests=[request] * request_count,
         timeout_s=5,
     )
 
+    assert posted == [request] * request_count
+    collected = [("api gc collected", ServerStatus.STARTING)] if request_count else []
+    assert events == (
+        [("warmup request", ServerStatus.STARTING)] * request_count
+        + collected
+        + [
+            ("stage gc frozen", ServerStatus.UP),
+            ("api gc frozen", ServerStatus.UP),
+        ]
+    )
     assert app.state.server_status is ServerStatus.UP
-    assert posted == [request, request]
     assert server.should_exit is False
+
+
+@pytest.mark.asyncio
+async def test_api_heap_freeze_keeps_no_warmup_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The API heap freeze kept every warmup response for the server's lifetime."""
+    response_references: list[weakref.ref[httpx.Response]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        response = httpx.Response(200)
+        response_references.append(weakref.ref(response))
+        return response
+
+    route_warmup_to(monkeypatch, httpx.MockTransport(respond))
+    server = launcher.PipelineUvicornServer(uvicorn.Config("unused:app"))
+    server.started = True
+    app = FastAPI()
+    app.state.server_status = ServerStatus.STARTING
+    request = ChatCompletionRequest(messages=[ChatMessage(role="user", content="Hi")])
+
+    try:
+        await launcher.warm_up_server(
+            server,
+            app,
+            StubCoordinator(),
+            base_url="http://127.0.0.1:8000",
+            requests=[request] * 2,
+            timeout_s=5,
+        )
+        gc.collect()
+
+        assert server.has_frozen_api_gc is True
+        assert [reference() for reference in response_references] == [None, None]
+    finally:
+        gc.unfreeze()
 
 
 @pytest.mark.asyncio
@@ -690,7 +770,7 @@ async def test_warmup_sends_its_requests_one_at_a_time(
         return httpx.Response(200)
 
     route_warmup_to(monkeypatch, httpx.MockTransport(respond))
-    server = SimpleNamespace(started=True, should_exit=False)
+    server = make_started_server()
     app = FastAPI()
     app.state.server_status = ServerStatus.STARTING
     request = ChatCompletionRequest(messages=[ChatMessage(role="user", content="Hi")])
@@ -698,6 +778,7 @@ async def test_warmup_sends_its_requests_one_at_a_time(
     await launcher.warm_up_server(
         server,
         app,
+        StubCoordinator(),
         base_url="http://127.0.0.1:8000",
         requests=[request] * 3,
         timeout_s=5,
@@ -724,7 +805,7 @@ async def test_warmup_drops_its_request_when_the_server_starts_shutting_down(
         return httpx.Response(200)
 
     route_warmup_to(monkeypatch, httpx.MockTransport(hold))
-    server = SimpleNamespace(started=True, should_exit=False)
+    server = make_started_server()
     app = FastAPI()
     app.state.server_status = ServerStatus.STARTING
     request = ChatCompletionRequest(messages=[ChatMessage(role="user", content="Hi")])
@@ -732,6 +813,7 @@ async def test_warmup_drops_its_request_when_the_server_starts_shutting_down(
         launcher.warm_up_server(
             server,
             app,
+            StubCoordinator(),
             base_url="http://127.0.0.1:8000",
             requests=[request],
             timeout_s=30,
@@ -763,7 +845,7 @@ async def test_transcription_warmup_uploads_a_form_the_transcription_route_parse
         return {"text": ""}
 
     route_warmup_to(monkeypatch, httpx.ASGITransport(app=route_app))
-    server = SimpleNamespace(started=True, should_exit=False)
+    server = make_started_server()
     app = FastAPI()
     app.state.server_status = ServerStatus.STARTING
     request = TranscriptionWarmupRequest(
@@ -773,6 +855,7 @@ async def test_transcription_warmup_uploads_a_form_the_transcription_route_parse
     await launcher.warm_up_server(
         server,
         app,
+        StubCoordinator(),
         base_url="http://127.0.0.1:8000",
         requests=[request],
         timeout_s=5,
@@ -803,7 +886,7 @@ async def test_speech_warmup_posts_its_request_to_the_speech_route(
         return httpx.Response(200)
 
     route_warmup_to(monkeypatch, httpx.MockTransport(respond))
-    server = SimpleNamespace(started=True, should_exit=False)
+    server = make_started_server()
     app = FastAPI()
     app.state.server_status = ServerStatus.STARTING
     request = CreateSpeechRequest(
@@ -813,6 +896,7 @@ async def test_speech_warmup_posts_its_request_to_the_speech_route(
     await launcher.warm_up_server(
         server,
         app,
+        StubCoordinator(),
         base_url="http://127.0.0.1:8000",
         requests=[request],
         timeout_s=5,
@@ -837,6 +921,7 @@ async def test_launcher_sends_one_warmup_request_per_replica_of_the_most_replica
     def record_warmup(
         server: uvicorn.Server,
         app: FastAPI,
+        coordinator: StubCoordinator,
         *,
         base_url: str,
         requests: list[ChatCompletionRequest],
@@ -878,6 +963,7 @@ async def test_launcher_warms_up_through_the_bind_host_or_loopback_for_a_wildcar
     def record_warmup(
         server: uvicorn.Server,
         app: FastAPI,
+        coordinator: StubCoordinator,
         *,
         base_url: str,
         requests: list[ChatCompletionRequest],
@@ -902,7 +988,7 @@ async def test_failed_warmup_stops_the_server_before_it_reports_up(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     answer_warmup_with(monkeypatch, 500, [])
-    server = SimpleNamespace(started=True, should_exit=False)
+    server = make_started_server()
     app = FastAPI()
     app.state.server_status = ServerStatus.STARTING
     request = ChatCompletionRequest(messages=[ChatMessage(role="user", content="Hi")])
@@ -911,6 +997,7 @@ async def test_failed_warmup_stops_the_server_before_it_reports_up(
         await launcher.warm_up_server(
             server,
             app,
+            StubCoordinator(),
             base_url="http://127.0.0.1:8000",
             requests=[request],
             timeout_s=5,

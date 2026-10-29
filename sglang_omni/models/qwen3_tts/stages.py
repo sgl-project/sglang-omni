@@ -26,6 +26,7 @@ from sglang_omni.models.qwen3_tts.reference_encoder_cuda_graph import (
 from sglang_omni.models.qwen3_tts.request_builders import (
     Qwen3TTSReferenceEncoderStats,
     Qwen3TTSSGLangRequestData,
+    bind_preprocessing_thread_device,
     cleanup_prepared_qwen3_tts_request,
     preprocess_qwen3_tts_payload,
     qwen3_tts_reference_encoder_stats,
@@ -302,6 +303,7 @@ def create_preprocessing_executor(
         ),
         max_concurrency=max_concurrency,
         abort_callback=cleanup_prepared_qwen3_tts_request,
+        thread_initializer=bind_preprocessing_thread_device,
     )
 
 

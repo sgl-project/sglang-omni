@@ -283,6 +283,7 @@ class OmniSchedulerArguments(TypedDict, Generic[RequestDataT], total=False):
     async_decode_resolve_before_prefill: bool
     async_prefill: bool
     should_run_top_priority_stream: bool
+    request_build_admission_wait_s: float
     prefill_coalesce_requests: int
     prefill_coalesce_wait_ms: float
     prefill_coalesce_when_idle: bool
@@ -291,6 +292,7 @@ class OmniSchedulerArguments(TypedDict, Generic[RequestDataT], total=False):
     request_build_max_workers: int
     request_build_max_pending: int | None
     shutdown_callback: Callable[[], None] | None
+    continuation_aware_admission: bool
 
 
 class OmniScheduler(Generic[RequestDataT]):
@@ -306,6 +308,13 @@ class OmniScheduler(Generic[RequestDataT]):
         instance as ``self``.  Methods we override (``recv_requests``,
         ``process_input_requests``, ``run_batch``, ``send_to_tokenizer``)
         are defined directly on this class and take precedence.
+
+    Session admission:
+        A queued session unit whose retained KV holds a request row reuses
+        that row, so a prefill batch admits it beyond the free rows.
+        ``continuation_aware_admission=False`` counts such units against the
+        free rows like any other request; the KV is still retained and the
+        row still reused.
     """
 
     session_bridge: ARSessionBridge | None = None
@@ -314,6 +323,7 @@ class OmniScheduler(Generic[RequestDataT]):
     async_decode_resolve_before_prefill: bool = False
     draft_worker: BaseSpecWorker | None = None
     async_prefill: bool = False
+    request_build_admission_wait_s: float = _REQUEST_BUILD_ADMISSION_WAIT_S
 
     def __init__(
         self,
@@ -346,6 +356,7 @@ class OmniScheduler(Generic[RequestDataT]):
         async_decode_resolve_before_prefill: bool = False,
         async_prefill: bool = False,
         should_run_top_priority_stream: bool = False,
+        request_build_admission_wait_s: float = _REQUEST_BUILD_ADMISSION_WAIT_S,
         prefill_coalesce_requests: int = 0,
         prefill_coalesce_wait_ms: float = 60.0,
         prefill_coalesce_when_idle: bool = False,
@@ -354,6 +365,7 @@ class OmniScheduler(Generic[RequestDataT]):
         request_build_max_workers: int = 1,
         request_build_max_pending: int | None = None,
         shutdown_callback: Callable[[], None] | None = None,
+        continuation_aware_admission: bool = True,
     ) -> None:
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
@@ -362,6 +374,7 @@ class OmniScheduler(Generic[RequestDataT]):
         # --- Request builder: StagePayload → SGLangARRequestData ----------
         self.session_adapter = session_adapter
         self.session_bridge: ARSessionBridge | None = None
+        self.continuation_aware_admission = continuation_aware_admission
         if session_adapter is not None and not server_args.enable_streaming_session:
             raise ValueError("session_adapter requires enable_streaming_session")
         else:
@@ -451,6 +464,11 @@ class OmniScheduler(Generic[RequestDataT]):
         # own (a vocoder) runs the loop on the device's top priority stream, so its
         # replays go first on the SMs. Only when the model asks.
         self.should_run_top_priority_stream = should_run_top_priority_stream
+        if request_build_admission_wait_s < 0:
+            raise ValueError("request_build_admission_wait_s must be nonnegative")
+        else:
+            pass
+        self.request_build_admission_wait_s = request_build_admission_wait_s
         if self.enable_overlap and self.enable_async_decode:
             raise ValueError(
                 "enable_overlap and enable_async_decode are mutually "
@@ -1329,14 +1347,18 @@ class OmniScheduler(Generic[RequestDataT]):
                 self.abort(req_id)
                 continue
             self.admit_or_defer_built_request(payload, pending_stream_done, req_data)
-        if submitted_build and not self.async_prefill:
+        if (
+            submitted_build
+            and not self.async_prefill
+            and self.request_build_admission_wait_s > 0
+        ):
             # note (luojiaxuan): the drain admits from the head of the pending
             # builds and stops at the first unfinished one, so only the head
             # decides whether waiting admits anything.
             with self.request_admission_lock:
                 head = next(iter(self.pending_request_builds.values()), None)
             if head is not None:
-                wait_futures([head[2]], timeout=_REQUEST_BUILD_ADMISSION_WAIT_S)
+                wait_futures([head[2]], timeout=self.request_build_admission_wait_s)
             else:
                 pass
         else:
@@ -2031,7 +2053,11 @@ class OmniScheduler(Generic[RequestDataT]):
             self, running_bs, beam_width=beam_width, running_batch=running_batch
         )
         bridge = self.session_bridge
-        if bridge is None or beam_width is not None:
+        if (
+            bridge is None
+            or beam_width is not None
+            or not self.continuation_aware_admission
+        ):
             return free_request_rows
         else:
             # note (Junnan Li): A unit whose session slot holds a request row reuses that row, so it does not count against the free rows.
@@ -2180,10 +2206,10 @@ class OmniScheduler(Generic[RequestDataT]):
                 for pending in self.pending_request_builds.values()
                 if not pending[2].done()
             ]
-        if build_futures:
+        if build_futures and self.request_build_admission_wait_s > 0:
             wait_futures(
                 build_futures,
-                timeout=_REQUEST_BUILD_ADMISSION_WAIT_S,
+                timeout=self.request_build_admission_wait_s,
                 return_when=FIRST_COMPLETED,
             )
         else:

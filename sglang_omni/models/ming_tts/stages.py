@@ -375,7 +375,6 @@ def create_audio_decode_executor(
         )
     else:
         pass
-
     device_info = get_gpu_device_info(logical_gpu_id)
     pre_process_bytes = process_memory_bytes(resolved_device)
 

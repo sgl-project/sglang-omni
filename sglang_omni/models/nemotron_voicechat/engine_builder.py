@@ -11,6 +11,7 @@ from sglang.kernels.ops.mamba.triton_ops import (
 )
 from transformers import AutoTokenizer
 
+from sglang_omni.models.nemotron_voicechat.duplex_config import CONTEXT_LENGTH
 from sglang_omni.models.nemotron_voicechat.hf_config import (
     VOICECHAT_MODEL_ARCH_OVERRIDE,
     NemotronVoiceChatConfig,
@@ -105,13 +106,18 @@ def talker_config(source: Path) -> dict:
 
 class VoiceChatEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
     scheduler_class: type
+    # note (Lushali): thinker decode graphs flip greedy text where bf16 logits
+    # tie, so only the talker captures by default, and only on CUDA where it was
+    # validated; engine.disable_cuda_graph overrides either way.
+    disable_cuda_graph = True
 
     def __init__(self, *, max_running_requests: int = 1) -> None:
         self.max_running_requests = max_running_requests
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         defaults: GenerationDefaults = {
-            "disable_cuda_graph": True,
+            "disable_cuda_graph": self.disable_cuda_graph
+            or not current_platform.is_cuda(),
             "disable_overlap_schedule": True,
             "disable_radix_cache": True,
             "enable_torch_compile": False,
@@ -140,7 +146,7 @@ class VoiceChatEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
 
 class NemotronVoiceChatEngineBuilder(VoiceChatEngineBuilder):
     model_name = "nemotron-voicechat"
-    context_length = 8192
+    context_length = CONTEXT_LENGTH
     scheduler_class = OmniScheduler
 
     def __init__(
@@ -220,8 +226,9 @@ class NemotronVoiceChatEngineBuilder(VoiceChatEngineBuilder):
 
 class NemotronVoiceChatTalkerEngineBuilder(VoiceChatEngineBuilder):
     model_name = "nemotron-voicechat-talker"
-    context_length = 4096
+    context_length = CONTEXT_LENGTH
     scheduler_class = NemotronTalkerScheduler
+    disable_cuda_graph = False
 
     def __init__(
         self, *, max_running_requests: int = 1, context_length: int | None = None
