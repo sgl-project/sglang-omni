@@ -117,7 +117,9 @@ def add_protocol_args(parser: argparse.ArgumentParser) -> None:
         "--end-wait",
         type=float,
         help="Most seconds to wait after the input end for the server to finish "
-        "before closing; without it only the session timeout bounds that wait",
+        "before closing; on expiry the session closes anyway and the replies still "
+        "open count as unfinished; without it only the session timeout bounds that "
+        "wait",
     )
 
 
@@ -258,9 +260,8 @@ def replay_run(run_dir: Path) -> dict[str, JsonValue]:
         input_errors.append(f"input artifact unavailable: {exc}")
 
     # Note (wenyao): A manifest recorded before --tail-silence has no end_of_input and sent no tail.
-    tail_silence_s = (manifest.config.get("end_of_input") or {}).get(
-        "tail_silence_s", 0.0
-    )
+    end_of_input = manifest.config.get("end_of_input") or {}
+    tail_silence_s = end_of_input.get("tail_silence_s", 0.0)
     expected_sent_sha256 = (
         hashlib.sha256(pcm + bytes(round(tail_silence_s * SAMPLE_RATE) * 2)).hexdigest()
         if tail_silence_s
@@ -331,6 +332,14 @@ def replay_run(run_dir: Path) -> dict[str, JsonValue]:
             profile=manifest.profile,
             max_admission_attempts=admission_retries,
         )
+        # Note (wenyao): A legacy-protocol verdict carries no end_wait.
+        end_wait = verdict.get("end_wait")
+        if end_wait is not None and end_wait["end_wait_s"] != end_of_input.get(
+            "end_wait_s"
+        ):
+            errors.append("end wait expiry does not match the declared end_wait_s")
+        else:
+            pass
         cases.append(
             {
                 "id": case_record.id,
@@ -339,6 +348,7 @@ def replay_run(run_dir: Path) -> dict[str, JsonValue]:
                 "violations": [*verdict["violations"], *errors],
                 "coverage": verdict["coverage"],
                 "metrics": verdict["metrics"],
+                "end_wait": end_wait,
                 "artifact_errors": errors,
             }
         )

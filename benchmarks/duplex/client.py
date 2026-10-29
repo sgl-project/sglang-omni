@@ -71,8 +71,9 @@ TURN_BASED_TRANSPORT: dict[str, JsonValue] = {
 END_OF_INPUT_RULE = (
     "tail_silence_s of zero PCM16 appended after the input, paced by media time; the "
     "input end (EOS) after the tail; then at most end_wait_s for the server to finish "
-    "(sglang.input_audio.drained) before session.close; a reply is finished only if its "
-    "response.done arrived before the input end"
+    "(sglang.input_audio.drained) before session.close; when end_wait_s expires first "
+    "the session closes all the same, with an end_wait record naming the replies still "
+    "open; a reply is finished only if its response.done arrived before the input end"
 )
 
 
@@ -291,7 +292,8 @@ async def run_session(
     turn_detection configures a legacy-protocol or turn-based session; tail_s is the
     delay after the input end before a legacy-protocol session's liveness probe;
     tail_silence_s and end_wait_s set the end of input as END_OF_INPUT_RULE
-    describes (end_wait_s None: only the session timeout bounds the drain).
+    describes (end_wait_s None: only the session timeout bounds the drain, and a
+    drain that never comes fails the session).
     """
     if not pcm or len(pcm) % 2:
         raise ValueError("Input must be nonempty PCM16")
@@ -326,7 +328,7 @@ async def run_session(
     async with open_trace(trace_path) as trace_file:
 
         def record(
-            direction: Literal["send", "receive", "error", "admission"],
+            direction: Literal["send", "receive", "error", "admission", "end_wait"],
             event: dict[str, JsonValue],
         ) -> float:
             observed_time_s = time.perf_counter()
@@ -404,6 +406,7 @@ async def run_session(
                 latest: dict[str, dict[str, JsonValue]] = {}
                 aborted = asyncio.Event()
                 fatal = False
+                open_response_ids: dict[str, None] = {}
 
                 async def send(
                     event_type: Literal[
@@ -490,6 +493,18 @@ async def run_session(
                             ) from exc
                         latest[event_type] = event
                         seen.setdefault(event_type, asyncio.Event()).set()
+                        response = event.get("response")
+                        response_id = (
+                            response.get("id") if isinstance(response, dict) else None
+                        )
+                        if not isinstance(response_id, str):
+                            pass
+                        elif event_type == "response.created":
+                            open_response_ids[response_id] = None
+                        elif event_type == "response.done":
+                            open_response_ids.pop(response_id, None)
+                        else:
+                            pass
                         if event_type == "error":
                             # note (wenyao): Close waits for adapter teardown.
                             extension = event.get("sglang")
@@ -598,10 +613,20 @@ async def run_session(
                                         end_wait_s,
                                     )
                                 except asyncio.TimeoutError:
-                                    raise RuntimeError(
-                                        f"input not drained within {end_wait_s}s "
-                                        "of the input end"
-                                    ) from None
+                                    # Note (wenyao): An expired end wait leaves the open replies unfinished instead of failing the session; a drain that lands with the timeout is no expiry.
+                                    if not seen["sglang.input_audio.drained"].is_set():
+                                        record(
+                                            "end_wait",
+                                            {
+                                                "type": "expired",
+                                                "end_wait_s": end_wait_s,
+                                                "open_response_ids": list(
+                                                    open_response_ids
+                                                ),
+                                            },
+                                        )
+                                    else:
+                                        pass
                     else:
                         pass
                     if legacy:

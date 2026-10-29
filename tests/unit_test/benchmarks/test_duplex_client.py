@@ -181,20 +181,6 @@ def test_reference_export_accepts_only_the_declared_tail_appends(
     assert any("extra input append" in r for r in undeclared["window"]["reasons"])
 
 
-def test_client_bounds_the_drain_wait_after_the_input_end(tmp_path: Path) -> None:
-    records = asyncio.run(
-        capture_session(
-            DuplexPeer("timeout"),
-            tmp_path / "trace.jsonl",
-            timeout_s=5.0,
-            end_wait_s=0.3,
-        )
-    )
-
-    assert records[-1]["direction"] == "error"
-    assert "input not drained within 0.3s" in records[-1]["event"]["message"]
-
-
 NON_ASCII_TRANSCRIPT = "fixturé 你好"
 
 

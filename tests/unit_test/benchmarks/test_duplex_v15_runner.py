@@ -23,6 +23,7 @@ from websockets.http11 import Request, Response
 
 from benchmarks.duplex import v15_runner
 from benchmarks.duplex.client import ADMISSION_RETRIES, PACKET_MS
+from benchmarks.duplex.serving import summarize_level
 from benchmarks.duplex.v15_audio import normalize_audio, reconstruct_output
 from benchmarks.duplex.v15_dataset import SUBSETS, discover_samples, inventory
 from benchmarks.duplex.v15_runner import run_samples
@@ -393,6 +394,32 @@ def test_run_samples_streams_and_declares_the_tail_silence(
     assert {v["status"] for v in sample["variants"].values()} == {"pass"}
     assert bytes(peers[-1].pcm) == input_pcm + bytes(round(0.25 * 16000) * 2)
     assert sample["variants"]["clean"]["input_timing"]["within_tolerance"] is True
+
+
+def test_an_end_wait_close_passes_the_variant_and_is_scored(tmp_path: Path) -> None:
+    """A session closed at its end wait with its reply still generating was a failed variant and a failed serving session; it now passes, names the unfinished reply and is scored."""
+    dataset, output = tmp_path / "data", tmp_path / "run"
+    write_dataset(dataset)
+
+    async def handler(websocket: ServerConnection) -> None:
+        await DuplexPeer("unfinished").handler(websocket)
+
+    result = asyncio.run(
+        serve_samples(
+            handler, dataset, output, sample_ids=["user_backchannel/1"], end_wait_s=0.3
+        )
+    )
+    (sample,) = result["samples"]
+    level = summarize_level(output, 0.08)
+
+    assert {v["status"] for v in sample["variants"].values()} == {"pass"}
+    assert [v["end_wait"] for v in sample["variants"].values()] == [
+        {"end_wait_s": 0.3, "open_response_ids": ["response_0"]}
+    ] * 2
+    assert level["sessions_failed"] == 0
+    assert level["sessions_closed_at_end_wait"] == 2
+    assert level["replies_open_at_end_wait"] == 2
+    assert level["replies"] == 2
 
 
 def test_run_samples_attempts_the_clean_variant_after_overlap_failures(

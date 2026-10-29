@@ -111,6 +111,7 @@ def postprocess_variant(
             "status": case_report["status"],
             "violations": case_report["violations"],
             "admission_denials": case_report["metrics"]["admission_denials"],
+            "end_wait": case_report["end_wait"],
         },
         "playout": {
             key: playout_report[key]
@@ -304,6 +305,7 @@ async def run_samples(
                 "qualified": False,
                 "errors": list(sample.errors),
                 "violations": [],
+                "end_wait": None,
                 "source": {
                     "file": sample.paths.get(source_key),
                     "sha256": sample.sha256.get(source_key),
@@ -566,6 +568,7 @@ async def run_samples(
                     case_report, playout_report = report["case"], report["playout"]
                     variant_state["protocol_verdict"] = case_report["status"]
                     variant_state["violations"] = case_report["violations"]
+                    variant_state["end_wait"] = case_report["end_wait"]
                     variant_state["errors"].extend(playout_report["errors"])
                     variant_state["status"] = (
                         "fail" if playout_report["errors"] else case_report["status"]

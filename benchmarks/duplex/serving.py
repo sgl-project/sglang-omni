@@ -245,6 +245,12 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
     sessions_failed = sum(
         variant_state["status"] in FAILED_STATUSES for variant_state in attempted
     )
+    # Note (wenyao): Runs recorded before --end-wait carry no end_wait state.
+    end_wait_closes = [
+        variant_state["end_wait"]
+        for variant_state in attempted
+        if variant_state.get("end_wait") is not None
+    ]
     # note (jeffro): a native reply comes out one unit per input unit, so its
     # real-time factor tracks the input pace.
     real_time_factor = (
@@ -290,6 +296,10 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
         ),
         "sessions": len(attempted),
         "sessions_failed": sessions_failed,
+        "sessions_closed_at_end_wait": len(end_wait_closes),
+        "replies_open_at_end_wait": sum(
+            len(end_wait["open_response_ids"]) for end_wait in end_wait_closes
+        ),
         "admission_denials": load["variants_with_admission_denials"],
         "input_pacing_violations": load["input_pacing_violations"],
         "units_expected": units_expected,
