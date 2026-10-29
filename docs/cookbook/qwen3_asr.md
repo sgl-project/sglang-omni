@@ -4,8 +4,6 @@
 
 Qwen3-ASR does not support `/v1/audio/translations`; that endpoint returns HTTP 400. Use `/v1/audio/transcriptions`.
 
-For Apple Silicon's native C++ MLX runtime, follow the [native Qwen3-ASR quick start](../mlx/native_asr.md#qwen3-asr), including checkpoint provisioning and 16 kHz mono input preparation. The Apple Silicon instructions below describe the separate Python Torch/MPS path.
-
 ## Prerequisites
 
 Install `sglang-omni` by following the [CUDA installation](../get_started/installation.md)

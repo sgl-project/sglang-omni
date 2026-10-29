@@ -2,8 +2,6 @@
 
 Whisper ASR checkpoints can be started through the OpenAI-compatible `/v1/audio/transcriptions` endpoint. This path remains experimental in the current SGLang-Omni tree; validate checkpoint-specific accuracy and operational behavior before production deployment.
 
-For Apple Silicon's native C++ MLX runtime, follow the [Whisper small quick start](../mlx/native_asr.md#whisper-small), including the separately pinned tokenizer files and 16 kHz mono input preparation.
-
 ## Prerequisites
 
 Install `sglang-omni` by following [Installation](../get_started/installation.md), then download a Whisper checkpoint:

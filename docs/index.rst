@@ -176,7 +176,6 @@ Supported Models
    :caption: MLX
 
    mlx/index.md
-   mlx/native_asr.md
 
 
 .. toctree::
