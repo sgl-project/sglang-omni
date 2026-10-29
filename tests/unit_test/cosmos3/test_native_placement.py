@@ -2,14 +2,42 @@
 from types import SimpleNamespace
 
 import pytest
+from sglang.multimodal_gen.configs.pipeline_configs.cosmos3 import (
+    COSMOS3_DEFAULT_KEEP_RESIDENT_MIN_AVAILABLE_GB,
+    COSMOS3_NANO_KEEP_RESIDENT_MIN_AVAILABLE_GB,
+)
 
-from sglang_omni.config import StageConfig
+from sglang_omni.config import FactoryArgs, StageConfig
+from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.placement import build_stage_placement_plan
-from sglang_omni.models.cosmos3.config import Cosmos3PipelineConfig, Variants
+from sglang_omni.config.runtime import resolve_stage_factory_args
+from sglang_omni.config.schema import ProcessConfig
+from sglang_omni.models.cosmos3 import config as cosmos3_config
+from sglang_omni.models.cosmos3.config import (
+    Cosmos3PipelineConfig,
+    Cosmos3ReasonerPipelineConfig,
+    Variants,
+)
+from sglang_omni.models.cosmos3.umm_config import Cosmos3UMMPipelineConfig
 from sglang_omni.native_generation.stage import native_server_kwargs
 from sglang_omni.pipeline import runtime_config
 from sglang_omni.pipeline.mp_runner import build_stage_groups
 from sglang_omni.pipeline.replicas import validate_device_assignment
+from sglang_omni.platforms import current_platform
+from sglang_omni.scheduling.native_chat_scheduler import native_chat_server_kwargs
+
+SMALL_CARD_BYTES = 24 * (1 << 30)
+BIG_CARD_BYTES = 160 * (1 << 30)
+
+
+def card_memory(sizes_by_device):
+    def get_device_total_memory(device_id: int) -> int:
+        if device_id not in sizes_by_device:
+            raise RuntimeError(f"card {device_id} is unreadable")
+        else:
+            return sizes_by_device[device_id]
+
+    return get_device_total_memory
 
 
 def config(devices=(1, 3)):
@@ -256,3 +284,120 @@ def test_text_variant_serves_the_reasoner_as_an_engine_stage():
     assert engine_stage_names(config) == ["reasoner"]
     # The Reasoner has no generation stage, so it serves no native media routes.
     assert not any(stage.http_routes for stage in config.stages)
+
+
+def test_resident_dit_threshold_covers_native_cosmos3_thresholds():
+    assert cosmos3_config.RESIDENT_DIT_MIN_DEVICE_MEMORY_GIB == max(
+        COSMOS3_NANO_KEEP_RESIDENT_MIN_AVAILABLE_GB,
+        COSMOS3_DEFAULT_KEEP_RESIDENT_MIN_AVAILABLE_GB,
+    )
+
+
+@pytest.mark.parametrize("is_xpu", [False, True])
+@pytest.mark.parametrize(
+    "card_memory_bytes, holds_resident_dit",
+    [(SMALL_CARD_BYTES, False), (BIG_CARD_BYTES, True), (None, False)],
+)
+def test_generation_streams_the_dit_on_a_small_xpu_card(
+    monkeypatch, is_xpu, card_memory_bytes, holds_resident_dit
+):
+    monkeypatch.setattr(current_platform, "is_xpu", lambda: is_xpu)
+    monkeypatch.setattr(
+        current_platform,
+        "get_device_total_memory",
+        card_memory({} if card_memory_bytes is None else {0: card_memory_bytes}),
+    )
+    offload = (
+        {"layerwise_offload_components": ["dit"]}
+        if is_xpu and not holds_resident_dit
+        else {}
+    )
+    default = {"server_args_overrides": offload} if offload else {}
+    direct = Cosmos3PipelineConfig(model_path="checkpoint")
+    interleaved = Cosmos3UMMPipelineConfig(model_path="checkpoint")
+    assert direct.stage_factory_kwargs("generation") == default
+    assert interleaved.stage_factory_kwargs("generation") == {
+        **default,
+        "inline_media": True,
+    }
+    stage = interleaved.stage_named("generation")
+    stage.factory = FactoryArgs(server_args_overrides={"warmup_mode": "server"})
+    generation_factory_keyword_arguments = resolve_stage_factory_args(
+        stage, interleaved
+    )
+    assert generation_factory_keyword_arguments["server_args_overrides"] == {
+        **offload,
+        "warmup_mode": "server",
+    }
+    assert generation_factory_keyword_arguments["inline_media"] is True
+
+
+@pytest.mark.parametrize("is_xpu", [False, True])
+@pytest.mark.parametrize(
+    "config_cls", [Cosmos3ReasonerPipelineConfig, Cosmos3UMMPipelineConfig]
+)
+@pytest.mark.parametrize(
+    "override, expected_without_xpu, expected_on_xpu",
+    [
+        (None, None, 0.8),
+        (("reasoner.gpu_memory_fraction", "0.74"), 0.74, 0.74),
+        (("reasoner.gpu_memory_fraction", "null"), None, None),
+        (("reasoner.engine.mem_fraction_static", "0.9"), 0.9, 0.9),
+    ],
+)
+def test_reasoner_memory_fraction_is_the_stage_budget(
+    monkeypatch, is_xpu, config_cls, override, expected_without_xpu, expected_on_xpu
+):
+    monkeypatch.setattr(current_platform, "is_xpu", lambda: is_xpu)
+    config = config_cls(model_path="checkpoint")
+    if override is not None:
+        config = ConfigManager(config).merge_config([override])
+    else:
+        pass
+    reasoner_factory_keyword_arguments = resolve_stage_factory_args(
+        config.stage_named("reasoner"), config
+    )
+    reasoner_server_keyword_arguments = native_chat_server_kwargs(
+        "checkpoint",
+        reasoner_factory_keyword_arguments["gpu_id"],
+        reasoner_factory_keyword_arguments.get("server_args_overrides"),
+        total_gpu_memory_fraction=reasoner_factory_keyword_arguments.get(
+            "total_gpu_memory_fraction"
+        ),
+    )
+    assert reasoner_server_keyword_arguments.get("mem_fraction_static") == (
+        expected_on_xpu if is_xpu else expected_without_xpu
+    )
+
+
+@pytest.mark.parametrize(
+    "gpu, replica_devices, runtime_gpu_ids, streams",
+    [
+        (0, None, None, False),
+        ([0], None, None, False),
+        (0, [1], None, True),
+        (1, [0], None, False),
+        ([0], [0, 1], None, True),
+        (0, [0], [0, 1], True),
+    ],
+)
+def test_generation_offload_follows_the_resolved_placement(
+    monkeypatch, gpu, replica_devices, runtime_gpu_ids, streams
+):
+    monkeypatch.setattr(current_platform, "is_xpu", lambda: True)
+    monkeypatch.setattr(
+        current_platform,
+        "get_device_total_memory",
+        card_memory({0: BIG_CARD_BYTES, 1: SMALL_CARD_BYTES}),
+    )
+    config = Cosmos3PipelineConfig(model_path="checkpoint")
+    config.stage_named("generation").gpu = gpu
+    config.stage_named("generation").runtime_gpu_ids = runtime_gpu_ids
+    if replica_devices is not None:
+        config.processes["generation"] = ProcessConfig(replica_devices=replica_devices)
+    else:
+        pass
+    offload = {"layerwise_offload_components": ["dit"]} if streams else {}
+    assert config.stage_factory_kwargs("generation") == (
+        {"server_args_overrides": offload} if offload else {}
+    )
