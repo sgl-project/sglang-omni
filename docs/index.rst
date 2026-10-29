@@ -76,6 +76,9 @@ Supported Models
    * - `nvidia/nemotron-3.5-asr-streaming-0.6b <https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b>`_
      - ASR
      - Multilingual RNN-T transcription; internal native PCM streaming runtime (see `cookbook <cookbook/nemotron3_5_asr.html>`_)
+   * - `ConwayResearch/Underdog-Bark-3.0-Pro <https://huggingface.co/ConwayResearch/Underdog-Bark-3.0-Pro>`_
+     - ASR
+     - English Parakeet TDT fine-tune; any ParakeetForTDT checkpoint, including nvidia/parakeet-tdt-0.6b-v3 (see `cookbook <cookbook/parakeet_tdt.html>`_)
    * - `nvidia/Nemotron-3.5-Transcribe-30B-A4B <https://huggingface.co/nvidia/Nemotron-3.5-Transcribe-30B-A4B>`_
      - ASR
      - Whole-file transcription with native speech and speaker-fusion encoders (see `cookbook <cookbook/nemotron_transcribe.html>`_)
@@ -152,6 +155,7 @@ Supported Models
    cookbook/llada2_uni.md
    cookbook/ming_tts.md
    cookbook/ming3_asr.md
+   cookbook/parakeet_tdt.md
    cookbook/ming3_audio.md
    cookbook/ming3_tts.md
 
