@@ -274,6 +274,7 @@ def test_qwen3_asr_default_mm_attention_backend_by_sm(
     sm_version: int,
     expected_backend: str | None,
 ) -> None:
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_musa", lambda: False)
     queried_gpu_ids: list[int] = []
     monkeypatch.setattr(
         qwen3_asr_builder,
@@ -308,6 +309,24 @@ def test_qwen3_asr_explicit_mm_attention_backend_overrides_sm_default(
     defaults = builder.generation_defaults(dtype="bfloat16")
 
     assert defaults["mm_attention_backend"] == "fa3"
+
+
+def test_qwen3_asr_default_mm_attention_backend_on_musa(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_musa", lambda: True)
+    monkeypatch.setattr(
+        qwen3_asr_builder,
+        "get_visible_gpu_sm_version",
+        lambda gpu_id: pytest.fail(f"unexpected SM lookup for GPU {gpu_id}"),
+        raising=False,
+    )
+    builder = make_engine_builder()
+    builder.gpu_id = 0
+
+    defaults = builder.generation_defaults(dtype="bfloat16")
+
+    assert defaults["mm_attention_backend"] == "triton_attn"
 
 
 @pytest.mark.parametrize(
@@ -591,6 +610,7 @@ def patch_engine_dependencies(
 
 
 def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_musa", lambda: False)
     recorded = patch_engine_dependencies(monkeypatch)
     build_kwargs = recorded.build_kwargs
 

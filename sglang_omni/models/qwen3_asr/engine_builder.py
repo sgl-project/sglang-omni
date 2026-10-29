@@ -237,6 +237,8 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             pass
         if self.mm_attention_backend is not None:
             defaults["mm_attention_backend"] = self.mm_attention_backend
+        elif current_platform.is_musa():
+            defaults["mm_attention_backend"] = "triton_attn"
         else:
             sm_version = get_visible_gpu_sm_version(self.gpu_id)
             if sm_version is not None and sm_version >= 100:
