@@ -211,6 +211,7 @@ class Drama3ForCausalLM(nn.Module):
                 decode_buffers.top_k[:row_count],
                 decode_buffers.top_p[:row_count],
                 PagedTowerAttention(self.tower_attention, forward_batch),
+                sampling_seeds=decode_buffers.sampling_seeds[:row_count],
             )
             decode_buffers.sampled_frames[:row_count].copy_(sampled_frames)
             return logits_output
@@ -255,6 +256,7 @@ class Drama3ForCausalLM(nn.Module):
                         temperature=step_inputs.temperature,
                         top_k=step_inputs.top_k,
                         top_p=step_inputs.top_p,
+                        sampling_seeds=step_inputs.sampling_seeds,
                         request_pool_indices=forward_batch.req_pool_indices,
                         sequence_lengths=forward_batch.seq_lens,
                         cache_slots=forward_batch.out_cache_loc[last_rows],
@@ -285,6 +287,7 @@ class Drama3ForCausalLM(nn.Module):
             step_inputs.top_k,
             step_inputs.top_p,
             step_batch,
+            step_inputs.sampling_seeds,
         )
         self.step_exchange.publish(sampled_frames)
         return logits_output
@@ -300,6 +303,7 @@ class Drama3ForCausalLM(nn.Module):
         top_k: torch.Tensor,
         top_p: torch.Tensor,
         forward_batch: ForwardBatch,
+        sampling_seeds: torch.Tensor,
     ) -> torch.Tensor:
         return self.audio_decoder.decode_step(
             semantic_logits,
@@ -311,6 +315,7 @@ class Drama3ForCausalLM(nn.Module):
             top_k,
             top_p,
             PagedTowerAttention(self.tower_attention, forward_batch),
+            sampling_seeds=sampling_seeds,
         )
 
     def backbone_logits(

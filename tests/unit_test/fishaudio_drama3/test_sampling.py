@@ -8,6 +8,7 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import torch
@@ -24,6 +25,7 @@ from sglang_omni.models.fishaudio_drama3.sampling_kernels import (
     FIRST_DRAW_STREAM,
     RAS_DRAW_STREAM,
 )
+from sglang_omni.models.fishaudio_drama3.sampling_noise import RequestSampling
 
 DRAW_COUNT = 2000
 TEXT_VOCAB_SIZE = 48
@@ -599,3 +601,193 @@ def test_sampling_imports_and_samples_on_pytorch_without_triton() -> None:
         timeout=120,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_seeded_draws_follow_requests_through_reordering_and_splitting() -> None:
+    rows = 16
+    logits = ras_logits(rows)
+    candidates = candidate_token_ids()
+    parameters = request_parameters(rows, 1.0, 30, 0.9)
+    request_sampling = RequestSampling(
+        seeds=torch.arange(rows, dtype=torch.int64) + (1 << 40),
+        positions=torch.arange(rows, dtype=torch.int64) + 127,
+    )
+    windows = torch.full((rows, 16), SEMANTIC_BEGIN_ID + 5)
+    baseline = sample_semantic_with_ras(
+        logits,
+        candidates,
+        windows,
+        *parameters,
+        SEMANTIC_BEGIN_ID,
+        CODEBOOK_SIZE,
+        None,
+        request_sampling=request_sampling,
+    )[0]
+    head_baseline = sample_top_k_top_p(
+        logits[:, candidates],
+        *parameters,
+        None,
+        FIRST_CODEBOOK_HEAD_STREAM,
+        request_sampling=request_sampling,
+    )
+    for changed_sampling in (
+        RequestSampling(
+            seeds=request_sampling.seeds ^ 12345, positions=request_sampling.positions
+        ),
+        RequestSampling(
+            seeds=request_sampling.seeds, positions=request_sampling.positions + 1
+        ),
+    ):
+        changed = sample_top_k_top_p(
+            logits[:, candidates],
+            *parameters,
+            None,
+            FIRST_CODEBOOK_HEAD_STREAM,
+            request_sampling=changed_sampling,
+        )
+        assert not torch.equal(changed, head_baseline)
+
+    order = torch.tensor([15, 2, 7, 0, 9, 3, 12, 5, 1, 14, 6, 10, 4, 13, 8, 11])
+    for selected_rows in order.split(5):
+        torch.rand(137)
+        selected_sampling = RequestSampling(
+            seeds=request_sampling.seeds[selected_rows],
+            positions=request_sampling.positions[selected_rows],
+        )
+        sampled = sample_semantic_with_ras(
+            logits[selected_rows],
+            candidates,
+            windows[selected_rows],
+            *(parameter[selected_rows] for parameter in parameters),
+            SEMANTIC_BEGIN_ID,
+            CODEBOOK_SIZE,
+            None,
+            request_sampling=selected_sampling,
+        )[0]
+        heads = sample_top_k_top_p(
+            logits[selected_rows][:, candidates],
+            *(parameter[selected_rows] for parameter in parameters),
+            None,
+            FIRST_CODEBOOK_HEAD_STREAM,
+            request_sampling=selected_sampling,
+        )
+        assert torch.equal(sampled, baseline[selected_rows])
+        assert torch.equal(heads, head_baseline[selected_rows])
+
+    torch.manual_seed(7)
+    legacy = sample_top_k_top_p(
+        logits[:, candidates],
+        *parameters,
+        None,
+        FIRST_CODEBOOK_HEAD_STREAM,
+    )
+    torch.manual_seed(7)
+    mixed_seeds = request_sampling.seeds.clone()
+    mixed_seeds[::2] = -1
+    mixed = sample_top_k_top_p(
+        logits[:, candidates],
+        *parameters,
+        None,
+        FIRST_CODEBOOK_HEAD_STREAM,
+        request_sampling=RequestSampling(
+            seeds=mixed_seeds, positions=request_sampling.positions
+        ),
+    )
+    assert torch.equal(mixed[::2], legacy[::2])
+    assert torch.equal(mixed[1::2], head_baseline[1::2])
+
+
+def test_unseeded_requests_skip_philox_and_preserve_legacy_rng() -> None:
+    """An all-unseeded production batch used to calculate discarded Philox noise."""
+    logits = torch.randn(16, 32)
+    parameters = request_parameters(16, 1.0, 30, 0.9)
+    sampling = RequestSampling(seeds=torch.full((16,), -1), positions=torch.arange(16))
+    streams = (FIRST_DRAW_STREAM, RAS_DRAW_STREAM, FIRST_CODEBOOK_HEAD_STREAM)
+    torch.manual_seed(7)
+    expected = torch.stack(
+        [
+            sample_top_k_top_p(logits, *parameters, None, stream_id)
+            for stream_id in streams
+        ]
+    )
+    expected_rng = torch.get_rng_state()
+    torch.manual_seed(7)
+    with (
+        patch.object(torch, "any", wraps=torch.any) as seed_decisions,
+        patch.object(
+            RequestSampling,
+            "exponential_noise",
+            autospec=True,
+            side_effect=RequestSampling.exponential_noise,
+        ) as philox,
+    ):
+        sampled = torch.stack(
+            [
+                sample_top_k_top_p(
+                    logits,
+                    *parameters,
+                    None,
+                    stream_id,
+                    request_sampling=sampling,
+                )
+                for stream_id in streams
+            ]
+        )
+    seed_decisions.assert_called_once()
+    philox.assert_not_called()
+    assert torch.equal(sampled, expected)
+    assert torch.equal(torch.get_rng_state(), expected_rng)
+
+
+@pytest.mark.accelerator
+def test_fallback_graph_replay_switches_between_seeded_and_unseeded_requests() -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    else:
+        pass
+    rows = 16
+    logits = torch.randn(rows, 32, device="cuda")
+    parameters = tuple(
+        tensor.cuda() for tensor in request_parameters(rows, 1.0, 30, 0.9)
+    )
+    sampling_seeds = torch.full((rows,), -1, device="cuda")
+    positions = torch.arange(rows, device="cuda") + 127
+
+    def draw() -> torch.Tensor:
+        sampling = RequestSampling(seeds=sampling_seeds, positions=positions)
+        return torch.stack(
+            [
+                sample_top_k_top_p(
+                    logits, *parameters, None, stream_id, request_sampling=sampling
+                )
+                for stream_id in (
+                    FIRST_DRAW_STREAM,
+                    RAS_DRAW_STREAM,
+                    FIRST_CODEBOOK_HEAD_STREAM,
+                )
+            ]
+        )
+
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        for _ in range(2):
+            draw()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            sampled = draw()
+    torch.cuda.current_stream().wait_stream(stream)
+    for seeds in (
+        [-1] * rows,
+        list(range(rows)),
+        [-1, 1234] * (rows // 2),
+        [-1] * rows,
+    ):
+        sampling_seeds.copy_(torch.tensor(seeds, device="cuda"))
+        torch.cuda.manual_seed(7)
+        expected = draw()
+        expected_rng = torch.cuda.get_rng_state()
+        torch.cuda.manual_seed(7)
+        graph.replay()
+        assert torch.equal(sampled, expected)
+        assert torch.equal(torch.cuda.get_rng_state(), expected_rng)

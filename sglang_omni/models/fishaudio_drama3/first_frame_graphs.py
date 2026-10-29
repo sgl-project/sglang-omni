@@ -18,6 +18,7 @@ from sglang_omni.models.fishaudio_drama3.sampling import (
     EMPTY_RAS_SLOT,
     RAS_WINDOW_FRAMES,
 )
+from sglang_omni.models.fishaudio_drama3.sampling_noise import UNSEEDED_REQUEST
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.device_graph import ReplayableGraph
 
@@ -36,6 +37,7 @@ class FirstFrameSampler(Protocol):
         top_k: torch.Tensor,
         top_p: torch.Tensor,
         forward_batch: ForwardBatch,
+        sampling_seeds: torch.Tensor,
     ) -> torch.Tensor: ...
 
 
@@ -49,6 +51,7 @@ class FirstFrameInputs:
     temperature: torch.Tensor
     top_k: torch.Tensor
     top_p: torch.Tensor
+    sampling_seeds: torch.Tensor
     request_pool_indices: torch.Tensor
     sequence_lengths: torch.Tensor
     cache_slots: torch.Tensor
@@ -139,6 +142,9 @@ class Drama3FirstFrameGraphs:
             ),
             top_k=torch.ones(max_request_count, dtype=torch.int64, device=device),
             top_p=torch.ones(max_request_count, dtype=torch.float32, device=device),
+            sampling_seeds=torch.full(
+                (max_request_count,), UNSEEDED_REQUEST, dtype=torch.int64, device=device
+            ),
             request_pool_indices=torch.zeros(
                 max_request_count, dtype=torch.int64, device=device
             ),
@@ -191,6 +197,7 @@ class Drama3FirstFrameGraphs:
                     rows.top_k,
                     rows.top_p,
                     forward_batch,
+                    rows.sampling_seeds,
                 )
                 try:
                     full_attention_backend.init_forward_metadata_out_graph(

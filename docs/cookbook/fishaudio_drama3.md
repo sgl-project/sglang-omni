@@ -70,6 +70,12 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
   --output output_streaming.pcm
 ```
 
+## Request sampling seed
+
+Pass `"seed": 1234` in a speech request to fix that request's sampling draws. Seeds are integers from `0` through `2**63 - 1`. Each draw uses the request seed, the logical token position, and a separate stream for the semantic token, RAS redraw, or codebook head. Batch row changes and other requests do not change these random inputs. Requests without a seed keep the existing random sampling behavior.
+
+This controls sampling randomness; it does not guarantee identical logits across different attention kernels, batch shapes, hardware, or sampling backends.
+
 ## Example Usage
 
 The reference clip the samples below clone, unmodified:

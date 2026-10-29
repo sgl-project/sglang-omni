@@ -118,6 +118,7 @@ class Drama3PipelineConfig(PipelineConfig):
             "ref_text",
             "task_type",
             "max_new_tokens",
+            "seed",
             "temperature",
             "top_p",
             "top_k",

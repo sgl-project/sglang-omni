@@ -15,6 +15,7 @@ from sglang_omni.models.fishaudio_drama3.sampling import (
     EMPTY_RAS_SLOT,
     RAS_WINDOW_FRAMES,
 )
+from sglang_omni.models.fishaudio_drama3.sampling_noise import UNSEEDED_REQUEST
 from sglang_omni.scheduling.types import SchedulerRequest
 
 
@@ -25,6 +26,7 @@ class Drama3DecodeStatePool:
     temperature: torch.Tensor
     top_k: torch.Tensor
     top_p: torch.Tensor
+    sampling_seeds: torch.Tensor
     row_indices: torch.Tensor
 
     @classmethod
@@ -45,6 +47,9 @@ class Drama3DecodeStatePool:
             temperature=torch.ones(row_count, dtype=torch.float32, device=device),
             top_k=torch.ones(row_count, dtype=torch.int64, device=device),
             top_p=torch.ones(row_count, dtype=torch.float32, device=device),
+            sampling_seeds=torch.full(
+                (row_count,), UNSEEDED_REQUEST, dtype=torch.int64, device=device
+            ),
             row_indices=torch.zeros(
                 request_slot_count, dtype=torch.int64, device=device
             ),

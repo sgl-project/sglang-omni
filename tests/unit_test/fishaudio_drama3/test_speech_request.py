@@ -17,6 +17,7 @@ from tokenizers import Tokenizer
 from sglang_omni.client.audio import DEFAULT_SAMPLE_RATE, encode_wav
 from sglang_omni.client.client import Client
 from sglang_omni.client.types import GenerateRequest, SamplingParams
+from sglang_omni.models.fishaudio_drama3.config import Drama3PipelineConfig
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
 from sglang_omni.models.fishaudio_drama3.request_builders import (
     MAXIMUM_TOP_K,
@@ -342,7 +343,7 @@ def test_base_requests_with_the_default_voice_are_accepted(
 
 TWO_FRAME_CODES = clip_codes(2, 0).tolist()
 REFUSED_REQUESTS = [
-    pytest.param({"seed": 0}, "seed not supported", id="zero-seed"),
+    pytest.param({"seed": 2**63}, "seed must be an integer", id="oversized-seed"),
     pytest.param(
         {"instructions": "whisper"}, "instructions not supported", id="instructions"
     ),
@@ -418,7 +419,6 @@ def test_requests_the_model_cannot_honor_are_bad_requests(
         pytest.param("tts_params", "language", "English", id="language"),
         pytest.param("tts_params", "x_vector_only_mode", False, id="false-x-vector"),
         pytest.param("tts_params", "token_count", 0, id="zero-token-count"),
-        pytest.param("params", "seed", 0, id="zero-seed"),
         pytest.param("params", "stage_params", {}, id="empty-stage-params"),
         pytest.param("params", "stage_sampling", {}, id="empty-stage-sampling"),
     ],
@@ -697,3 +697,24 @@ def test_a_direct_client_request_takes_the_fields_it_sets(
         generation_input.top_p,
         generation_input.top_k,
     ) == expected_sampling
+
+
+@pytest.mark.parametrize("seed", [0, 2**63 - 1])
+def test_request_seed_survives_preprocessing_and_admission(
+    tokenizer: Tokenizer,
+    seed: int,
+) -> None:
+    """The deployed speech field whitelist must admit seeds before sampling."""
+    service = SpeechRequestValidator(
+        default_model="drama3",
+        supported_speech_fields=Drama3PipelineConfig.supported_speech_fields,
+    )
+    request = service.build_generate_request(
+        service.parse_raw_request({"input": "hello", "seed": seed})
+    )
+    payload = speech_preprocessor(tokenizer)(
+        first_stage_payload(Client.build_omni_request(request))
+    )
+    assert generation_input_of(payload).seed == seed
+    request_data = engine_request_builder(tokenizer)(payload)
+    assert request_data.sampling_seed == seed

@@ -23,6 +23,7 @@ from sglang_omni.models.fishaudio_drama3.request_builders import (
     REQUEST_ERROR_PREFIX,
     Drama3GenerationInput,
 )
+from sglang_omni.models.fishaudio_drama3.sampling_noise import checked_sampling_seed
 from sglang_omni.models.fishaudio_drama3.text_config import checked_int
 from sglang_omni.models.fishaudio_s2_pro.stages import (
     FishReferenceInput,
@@ -46,9 +47,8 @@ UNSUPPORTED_TTS_PARAMS = (
     "token_count",
     "duration_tokens",
     "initial_codec_chunk_frames",
-    "seed",
 )
-UNSUPPORTED_PARAMS = ("seed", "stage_params", "stage_sampling")
+UNSUPPORTED_PARAMS = ("stage_params", "stage_sampling")
 INT64_LIMITS = torch.iinfo(torch.int64)
 
 
@@ -206,6 +206,12 @@ class Drama3SpeechPreprocessor:
         top_k = given_integer(request.params, "top_k", DEFAULT_TOP_K)
         assert top_k is not None
         max_new_tokens = given_integer(request.params, "max_new_tokens", None)
+        seed = given_integer(tts_params, "seed", None)
+        if seed is None:
+            seed = given_integer(request.params, "seed", None)
+        else:
+            pass
+        checked_sampling_seed(seed)
         repetition_penalty = given_number(request.params, "repetition_penalty", 1.0)
         if repetition_penalty != 1.0:
             raise ValueError(
@@ -274,6 +280,7 @@ class Drama3SpeechPreprocessor:
                 temperature=temperature,
                 top_k=top_k,
                 top_p=top_p,
+                seed=seed,
             ),
         )
 

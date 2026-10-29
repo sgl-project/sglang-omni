@@ -133,6 +133,7 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
             device=self.device,
         )
         self.row_launch_key: tuple[int, ...] | None = None
+        self.sampling_seed_rows: tuple[int, ...] | None = None
         self.row_upload_buffers: list[torch.Tensor] = []
         self.row_upload_slot = 0
         self.prefill_inputs: Drama3StepInputs | None = None
@@ -191,6 +192,16 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
         torch.index_select(
             state_pool.top_p, 0, row_indices, out=buffers.top_p[:row_count]
         )
+        if row_launch_key != self.sampling_seed_rows:
+            torch.index_select(
+                state_pool.sampling_seeds,
+                0,
+                row_indices,
+                out=buffers.sampling_seeds[:row_count],
+            )
+            self.sampling_seed_rows = row_launch_key
+        else:
+            pass
 
     def publish_decode_frames(self, row_count: int) -> torch.Tensor:
         state_pool = self.state_pool
@@ -233,6 +244,11 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
             state_pool.temperature.index_copy_(0, rows, prefill_inputs.temperature)
             state_pool.top_k.index_copy_(0, rows, prefill_inputs.top_k)
             state_pool.top_p.index_copy_(0, rows, prefill_inputs.top_p)
+            state_pool.sampling_seeds.index_copy_(
+                0, rows, prefill_inputs.sampling_seeds
+            )
+            # note (wirybeaver): a new prefill can reuse the same slots with different seeds.
+            self.sampling_seed_rows = None
 
     def prepare_and_forward(
         self,
@@ -261,6 +277,11 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
         request_data = [request_data_of(request) for request in requests]
         step_inputs = Drama3StepInputs(
             request_ids=request_ids_of(request_data),
+            sampling_seeds=torch.tensor(
+                [data.sampling_seed for data in request_data],
+                dtype=torch.int64,
+                device=self.device,
+            ),
             frames=torch.tensor(frame_rows, dtype=torch.int64, device=self.device),
             ras_windows=torch.tensor(
                 [ras_window(data.frame_rows) for data in request_data],
