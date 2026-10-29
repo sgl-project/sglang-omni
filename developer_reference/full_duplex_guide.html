@@ -1143,7 +1143,7 @@ hf<span class="w"> </span>download<span class="w"> </span>pipecat-ai/smart-turn-
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">unit_ms</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">200</span></code></p></td>
-<td><p>The length of the input audio units the server forwards into the session; reported as <code class="docutils literal notranslate"><span class="pre">native_unit_ms</span></code>.</p></td>
+<td><p>The length of the input audio units the server acknowledges with <code class="docutils literal notranslate"><span class="pre">sglang.unit.done</span></code>; reported as <code class="docutils literal notranslate"><span class="pre">native_unit_ms</span></code>. Audio reaches the session as each append arrives, so the VAD node ends a turn without waiting for a unit to fill.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">max_sessions</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">16</span></code></p></td>

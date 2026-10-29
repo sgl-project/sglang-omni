@@ -440,7 +440,7 @@ A setting comes from one of three places: the profile file, read at launch; comm
 | `session_publish` | required | Per node, the formats that reach the client. |
 | `stages` | none | Settings of stage routes by stage name, such as `asr: {gpu: 0}` or `vad: {factory: {silence_duration_ms: 800}}`. |
 | `timeout_s` | `120` | How long one input or control operation on a cascade node may take, including the wait for the last replies once the input has ended; past it the session fails with `component '<name>' append timed out`. |
-| `unit_ms` | `200` | The length of the input audio units the server forwards into the session; reported as `native_unit_ms`. |
+| `unit_ms` | `200` | The length of the input audio units the server acknowledges with `sglang.unit.done`; reported as `native_unit_ms`. Audio reaches the session as each append arrives, so the VAD node ends a turn without waiting for a unit to fill. |
 | `max_sessions` | `16` | Sessions that every component node, the VAD node and the turn detection node hold at once. A session beyond them is refused when it opens; raise it, for example with `--max_sessions 32`, when the services have room for more. |
 | `max_output_lead_ms` | `1000` | How far ahead of real time reply audio is delivered; audio already delivered cannot be taken back by an interruption. |
 | `max_pending_output_chunks` | `1024` | Reply chunks held for a client that has stopped reading before the session fails. |
