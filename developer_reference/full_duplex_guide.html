@@ -1665,12 +1665,17 @@ hf<span class="w"> </span>download<span class="w"> </span>pipecat-ai/smart-turn-
 <td><p><code class="docutils literal notranslate"><span class="pre">500</span></code></p></td>
 <td><p>Silence that ends an utterance.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">max_open_sessions</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">background_margin_db</span></code></p></td>
+<td><p>number ≥ 0 or <code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">6</span></code></p></td>
+<td><p>A voice this many dB quieter than the last utterance starts no speech, so it neither opens a turn nor interrupts the reply. <code class="docutils literal notranslate"><span class="pre">null</span></code> hears every voice. A session’s <code class="docutils literal notranslate"><span class="pre">turn_detection</span></code> does not change it.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">max_open_sessions</span></code></p></td>
 <td><p>integer ≥ 1</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">16</span></code></p></td>
 <td><p>Sessions the detector holds at once.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">max_concurrency</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">max_concurrency</span></code></p></td>
 <td><p>integer ≥ 1</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">4</span></code></p></td>
 <td><p>Sessions it processes at once.</p></td>

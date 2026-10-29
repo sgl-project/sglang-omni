@@ -676,6 +676,7 @@ Declared as `vad: {stages: [vad], inputs: [input]}`; reports `speech.started` an
 | `threshold` | number 0 to 1 | `0.5` | Speech probability above which a frame is speech. |
 | `prefix_padding_ms` | integer ≥ 0 | `300` | Audio before the first speech frame that belongs to the utterance. |
 | `silence_duration_ms` | integer ≥ 0 | `500` | Silence that ends an utterance. |
+| `background_margin_db` | number ≥ 0 or `null` | `6` | A voice this many dB quieter than the last utterance starts no speech, so it neither opens a turn nor interrupts the reply. `null` hears every voice. A session's `turn_detection` does not change it. |
 | `max_open_sessions` | integer ≥ 1 | `16` | Sessions the detector holds at once. |
 | `max_concurrency` | integer ≥ 1 | `4` | Sessions it processes at once. |
 
