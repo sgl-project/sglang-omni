@@ -33,6 +33,8 @@ from benchmarks.duplex.client import (
     run_session,
 )
 from benchmarks.duplex.oracle import evaluate_trace
+from benchmarks.duplex.reference_audio import analyze_variant, tail_appends
+from benchmarks.duplex.reference_capture import TraceFormat
 from tests.unit_test.fixtures.duplex_fakes import (
     FATAL_CLOSE_DELAY_S,
     FIXTURE_PACKETS,
@@ -45,16 +47,21 @@ from tests.unit_test.fixtures.duplex_fakes import (
 
 
 async def capture_session(
-    peer: DuplexPeer, trace_path: Path, timeout_s: float = 2.0
+    peer: DuplexPeer,
+    trace_path: Path,
+    timeout_s: float = 2.0,
+    pcm: bytes = FIXTURE_PCM,
+    **end_of_input: float,
 ) -> list[dict[str, JsonValue]]:
     existing_tasks = asyncio.all_tasks()
     async with websockets.serve(peer.handler, "127.0.0.1", 0) as server:
         port = server.sockets[0].getsockname()[1]
         await run_session(
             f"ws://127.0.0.1:{port}/v1/realtime",
-            FIXTURE_PCM,
+            pcm,
             trace_path=trace_path,
             timeout_s=timeout_s,
+            **end_of_input,
         )
         peer.release.set()
     assert asyncio.all_tasks() <= existing_tasks
@@ -112,6 +119,80 @@ def test_client_records_complete_native_session(tmp_path: Path) -> None:
     )
 
     assert "response.cancel" not in [event["type"] for event in peer.received]
+
+
+def test_client_streams_tail_silence_after_the_input_before_its_end(
+    tmp_path: Path,
+) -> None:
+    pcm = FIXTURE_PCM[:-1000]
+    tail_s = 0.25
+    records = asyncio.run(
+        capture_session(
+            DuplexPeer(), tmp_path / "trace.jsonl", pcm=pcm, tail_silence_s=tail_s
+        )
+    )
+    tail = bytes(round(tail_s * 16000) * 2)
+    appends = input_append_records(records)
+    payloads = [base64.b64decode(r["event"]["audio"]) for r in appends]
+    input_packets = -(-len(pcm) // 2560)
+
+    assert evaluate_trace(records)["status"] == "pass"
+    assert [r["event"]["sglang"]["seq"] for r in appends] == list(range(len(appends)))
+    assert b"".join(payloads[:input_packets]) == pcm
+    assert b"".join(payloads[input_packets:]) == tail
+    assert appends[input_packets]["event"]["sglang"]["t_start_ms"] == len(pcm) / 32
+    for append in appends:
+        assert (
+            append["time_s"] - appends[0]["time_s"]
+            >= append["event"]["sglang"]["t_start_ms"] / 1000 - 0.005
+        )
+    end = next(r for r in records if r["event"].get("type") == "sglang.input_audio.end")
+    assert end["time_s"] - appends[0]["time_s"] >= (len(pcm) + len(tail)) / 32000 - 0.02
+
+
+def test_reference_export_accepts_only_the_declared_tail_appends(
+    tmp_path: Path,
+) -> None:
+    pcm = FIXTURE_PCM[:-1000]
+    variant_dir = tmp_path / "variant"
+    variant_dir.mkdir()
+    asyncio.run(
+        capture_session(
+            DuplexPeer(), variant_dir / "continuous.jsonl", pcm=pcm, tail_silence_s=0.25
+        )
+    )
+    (variant_dir / "input.pcm").write_bytes(pcm)
+    input_sha256 = hashlib.sha256(pcm).hexdigest()
+    manifest = {"config": {"end_of_input": {"tail_silence_s": 0.25}}}
+
+    declared, _, _ = analyze_variant(
+        variant_dir,
+        TraceFormat.PCM16,
+        input_sha256,
+        tail_appends=tail_appends(manifest),
+    )
+    undeclared, _, _ = analyze_variant(variant_dir, TraceFormat.PCM16, input_sha256)
+
+    # Note (wenyao): Send deadlines depend on this machine's timing, so only the tail's reasons are checked.
+    assert tail_appends(manifest) == 4
+    assert tail_appends({"config": {}}) == 0
+    assert not [r for r in declared["window"]["reasons"] if "extra input append" in r]
+    assert declared["input"]["samples"] == len(pcm) // 2
+    assert any("extra input append" in r for r in undeclared["window"]["reasons"])
+
+
+def test_client_bounds_the_drain_wait_after_the_input_end(tmp_path: Path) -> None:
+    records = asyncio.run(
+        capture_session(
+            DuplexPeer("timeout"),
+            tmp_path / "trace.jsonl",
+            timeout_s=5.0,
+            end_wait_s=0.3,
+        )
+    )
+
+    assert records[-1]["direction"] == "error"
+    assert "input not drained within 0.3s" in records[-1]["event"]["message"]
 
 
 NON_ASCII_TRANSCRIPT = "fixturé 你好"

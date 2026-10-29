@@ -33,6 +33,7 @@ from benchmarks.duplex.reference_audio import (
     diagnostics,
     load_runs,
     sha_bytes,
+    tail_appends,
     write_wav,
 )
 from benchmarks.duplex.reference_capture import TraceFormat, resolve_trace_format
@@ -125,6 +126,7 @@ def export(
             None if state["input"] is None else state["input"]["sha256"],
             receipts_required=send_receipts_required(run),
             profile_rate=profile_rate,
+            tail_appends=tail_appends(read_json(run / "manifest.json")),
         )
         reasons = record["window"]["reasons"]
         # note (luojiaxuan): A legacy or turn-based session that failed its

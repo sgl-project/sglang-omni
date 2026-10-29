@@ -362,6 +362,39 @@ def test_run_samples_records_both_variants_over_a_real_websocket(
     assert clean["input_timing"]["max_abs_deviation_s"] <= PACKET_MS / 1000
 
 
+def test_run_samples_streams_and_declares_the_tail_silence(
+    tmp_path: Path,
+) -> None:
+    dataset, output = tmp_path / "data", tmp_path / "run"
+    write_dataset(dataset)
+    peers: list[DuplexPeer] = []
+
+    async def handler(websocket: ServerConnection) -> None:
+        peers.append(DuplexPeer())
+        await peers[-1].handler(websocket)
+
+    result = asyncio.run(
+        serve_samples(
+            handler,
+            dataset,
+            output,
+            sample_ids=["user_backchannel/1"],
+            tail_silence_s=0.25,
+            end_wait_s=3.0,
+        )
+    )
+    manifest = json.loads((output / "manifest.json").read_text())
+    (sample,) = result["samples"]
+    variant_dir = output / sample["variants"]["clean"]["directory"]
+    input_pcm = (variant_dir / "input.pcm").read_bytes()
+
+    assert manifest["config"]["end_of_input"]["tail_silence_s"] == 0.25
+    assert manifest["config"]["end_of_input"]["end_wait_s"] == 3.0
+    assert {v["status"] for v in sample["variants"].values()} == {"pass"}
+    assert bytes(peers[-1].pcm) == input_pcm + bytes(round(0.25 * 16000) * 2)
+    assert sample["variants"]["clean"]["input_timing"]["within_tolerance"] is True
+
+
 def test_run_samples_attempts_the_clean_variant_after_overlap_failures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

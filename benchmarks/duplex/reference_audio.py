@@ -135,16 +135,28 @@ def lateness(
     return len(late), max(late, default=0.0)
 
 
+def tail_appends(manifest: dict[str, JsonValue]) -> int:
+    """Appends of the tail silence a run streamed after each input (manifest
+    config.end_of_input; manifests without it, including other recorders', have none).
+    """
+    end_of_input = (manifest.get("config") or {}).get("end_of_input") or {}
+    tail_samples = round(end_of_input.get("tail_silence_s", 0.0) * RATE)
+    return -(-tail_samples // PACKET_SAMPLES)
+
+
 def analyze_variant(
     variant_dir: Path,
     trace_format: TraceFormat,
     expected_input_sha: str | None,
     receipts_required: bool = False,
     profile_rate: int | None = None,
+    tail_appends: int = 0,
 ) -> tuple[dict[str, JsonValue], bytes | None, NDArray[np.int16] | None]:
     """Stream one trace; return (record, input_pcm or None, output int16 at 16 kHz or None).
 
-    profile_rate is the recorded profile's output rate for the legacy format.
+    profile_rate is the recorded profile's output rate for the legacy format;
+    tail_appends counts the tail-silence appends after the input, which fall
+    after the scoring window and are not checked against input.pcm.
     """
     reasons, post_window_events, anomalies = [], [], []
     pcm_path, trace_path = variant_dir / "input.pcm", variant_dir / "continuous.jsonl"
@@ -247,8 +259,10 @@ def analyze_variant(
                 appends += 1
                 append_ids.append(event.get("event_id"))
                 append_times.append(time_s)
-                if index >= expected_appends:
+                if index >= expected_appends + tail_appends:
                     reasons.append(f"extra input append {index}")
+                    continue
+                elif index >= expected_appends:
                     continue
                 else:
                     pass
@@ -420,8 +434,19 @@ def analyze_variant(
         reasons.append("append event_ids are not unique")
     else:
         pass
+    # Note (wenyao): deadline caps at the input window, so a tail append is due one packet after its own start past it.
     deadlines = (
-        [deadline(first_append_s, i, window_s) for i in range(appends)]
+        [
+            (
+                deadline(first_append_s, i, window_s)
+                if i < expected_appends
+                else first_append_s
+                + window_s
+                + (i - expected_appends + 1) * PACKET_S
+                + COMPLETION_GRACE_S
+            )
+            for i in range(appends)
+        ]
         if first_append_s is not None
         else []
     )
