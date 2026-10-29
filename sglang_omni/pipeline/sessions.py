@@ -1003,6 +1003,16 @@ class CoordinatorSessions:
                 return
         else:
             pass
+        # Note (wenyao): A control already going out, such as a returned turn.done, reaches every owner before its close; a waiting ordered control sees is_closing and stops.
+        while session.control_barriers:
+            session.wake.clear()
+            try:
+                await asyncio.wait_for(
+                    session.wake.wait(),
+                    max(0, cleanup_deadline_s - asyncio.get_running_loop().time()),
+                )
+            except asyncio.TimeoutError:
+                break
         session.pending.clear()
         session.pending_count = session.pending_bytes = 0
         unconfirmed = list(session.opened)
