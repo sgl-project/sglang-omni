@@ -3,17 +3,21 @@
 
 from __future__ import annotations
 
+import secrets
 import socket
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from types import ModuleType, TracebackType
+from typing import Literal
 
 import torch
 import torch.distributed as dist
 
+from sglang_omni.scheduling.types import SynchronizedRequestError
+
 
 class DecoderRuntimeHandle:
-    """Own the single-rank SGLang diffusion state used by one decoder stage."""
+    """Own the SGLang diffusion state used by one decoder rank."""
 
     def __init__(
         self,
@@ -24,10 +28,21 @@ class DecoderRuntimeHandle:
         server_args_module: ModuleType,
         runtime_context: ModuleType,
         precision: ModuleType,
+        *,
+        sp_rank: int = 0,
+        sp_size: int = 1,
+        ulysses_degree: int = 1,
+        ring_degree: int = 1,
     ) -> None:
         self.device = device
         self.dtype = dtype
         self.attention_backend = attention_backend
+        self.sp_rank = sp_rank
+        self.sp_size = sp_size
+        self.ulysses_degree = ulysses_degree
+        self.ring_degree = ring_degree
+        self.group: dist.ProcessGroup | None = None
+        self.cpu_group: dist.ProcessGroup | None = None
         self.parallel_state = parallel_state
         self.server_args_module = server_args_module
         self.runtime_context = runtime_context
@@ -79,13 +94,30 @@ class DecoderRuntimeHandle:
             parallel_state.get_tp_world_size(),
             parallel_state.get_sp_world_size(),
             parallel_state.get_sp_parallel_rank(),
+            parallel_state.get_ulysses_parallel_world_size(),
+            parallel_state.get_ring_parallel_world_size(),
         )
-        if topology != (1, 1, 1, 0):
+        expected = (
+            self.sp_size,
+            1,
+            self.sp_size,
+            self.sp_rank,
+            self.ulysses_degree,
+            self.ring_degree,
+        )
+        if topology != expected:
             raise RuntimeError(
-                f"SGLang decoder requires a single-rank runtime, got {topology}"
+                f"SGLang decoder topology {topology} does not match {expected}"
             )
         else:
             pass
+        group = parallel_state.get_sp_group().device_group
+        if self.group is not None and self.group is not group:
+            raise RuntimeError("Decoder process group changed after initialization")
+        else:
+            pass
+        self.group = group
+        self.cpu_group = parallel_state.get_sp_group().cpu_group
         if self.precision.get_compute_dtype() != self.dtype:
             raise RuntimeError(
                 "Decoder runtime compute dtype does not match model dtype"
@@ -99,6 +131,75 @@ class DecoderRuntimeHandle:
             raise RuntimeError("Decoder CUDA device does not match the runtime device")
         else:
             pass
+
+    @property
+    def is_leader(self) -> bool:
+        return self.sp_rank == 0
+
+    @contextmanager
+    def preparation(self, phase: str) -> Iterator[None]:
+        if self.sp_size == 1:
+            yield
+            return
+        else:
+            pass
+        error = None
+        try:
+            yield
+        except Exception as exc:
+            error = exc
+        failures: list[str | None] = [None] * self.sp_size
+        dist.all_gather_object(
+            failures,
+            None if error is None else f"{type(error).__name__}: {error}",
+            group=self.cpu_group,
+        )
+        if any(failure is not None for failure in failures):
+            raise SynchronizedRequestError(
+                f"Decoder {phase} failed across ranks: {failures}"
+            ) from error
+        else:
+            pass
+
+    def request_seed(
+        self, metadata: tuple[int, int, str, int, int], seed: int | None
+    ) -> int | None:
+        self.validate()
+        if self.sp_size == 1:
+            return seed
+        else:
+            pass
+        request = (metadata, seed)
+        requests: list[tuple[tuple[int, int, str, int, int], int | None] | None] = [
+            None
+        ] * self.sp_size
+        dist.all_gather_object(requests, request, group=self.cpu_group)
+        if any(candidate != request for candidate in requests):
+            raise SynchronizedRequestError(
+                "Decoder ranks received inconsistent request settings"
+            )
+        else:
+            pass
+        shared = [
+            (
+                seed
+                if seed is not None
+                else (secrets.randbits(63) if self.is_leader else None)
+            )
+        ]
+        dist.broadcast_object_list(
+            shared, src=dist.get_global_rank(self.cpu_group, 0), group=self.cpu_group
+        )
+        return shared[0]
+
+    def broadcast_features(self, features: torch.Tensor) -> torch.Tensor:
+        if self.sp_size > 1:
+            dist.broadcast(
+                features, src=dist.get_global_rank(self.group, 0), group=self.group
+            )
+        else:
+            pass
+        return features
 
     def close(self) -> None:
         if self.closed:
@@ -156,6 +257,12 @@ def initialize_decoder_runtime(
     dtype: torch.dtype = torch.bfloat16,
     attention_backend: str = "torch_sdpa",
     dist_timeout: int = 180,
+    sp_rank: int = 0,
+    sp_size: int = 1,
+    stage_role: Literal["single", "leader", "follower"] = "single",
+    nccl_port: int | None = None,
+    ulysses_degree: int = 1,
+    ring_degree: int = 1,
 ) -> DecoderRuntimeHandle:
     """Initialize the upstream diffusion runtime for one decoder process."""
     if gpu_id is not None and (type(gpu_id) is not int or gpu_id < 0):
@@ -168,6 +275,41 @@ def initialize_decoder_runtime(
         pass
     if not attention_backend or attention_backend == "auto":
         raise ValueError("Decoder attention_backend must be explicit")
+    else:
+        pass
+    if any(type(n) is not int or n < 1 for n in (sp_size, ulysses_degree, ring_degree)):
+        raise ValueError("Decoder parallel degrees must be positive integers")
+    else:
+        pass
+    if type(sp_rank) is not int or not 0 <= sp_rank < sp_size:
+        raise ValueError("Decoder sp_rank must be in [0, sp_size)")
+    else:
+        pass
+    if sp_size != ulysses_degree * ring_degree:
+        raise ValueError("Decoder sp_size must equal ulysses_degree * ring_degree")
+    else:
+        pass
+    if ring_degree > 1 and attention_backend not in {"fa", "sage_attn"}:
+        raise ValueError("Decoder ring parallelism requires fa or sage_attn")
+    else:
+        pass
+    expected_role = (
+        "single" if sp_size == 1 else ("leader" if sp_rank == 0 else "follower")
+    )
+    if stage_role != expected_role:
+        raise ValueError(
+            f"Decoder rank {sp_rank}/{sp_size} requires role {expected_role}"
+        )
+    else:
+        pass
+    if nccl_port is not None and (
+        type(nccl_port) is not int or not 1 <= nccl_port <= 65535
+    ):
+        raise ValueError("Decoder nccl_port must be an integer in [1, 65535]")
+    else:
+        pass
+    if sp_size > 1 and nccl_port is None:
+        raise ValueError("SP workers require a shared nccl_port")
     else:
         pass
     precisions = {
@@ -186,9 +328,13 @@ def initialize_decoder_runtime(
     else:
         pass
 
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
+    if nccl_port is None:
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            nccl_port = sock.getsockname()[1]
+    else:
+        pass
+    port = nccl_port
     address = f"127.0.0.1:{port}"
 
     from sglang.multimodal_gen.configs.pipeline_configs.zimage import (
@@ -219,6 +365,10 @@ def initialize_decoder_runtime(
         args_module,
         runtime_context,
         precision,
+        sp_rank=sp_rank,
+        sp_size=sp_size,
+        ulysses_degree=ulysses_degree,
+        ring_degree=ring_degree,
     )
     try:
         if gpu_id is not None:
@@ -230,12 +380,12 @@ def initialize_decoder_runtime(
             backend=args_module.Backend.SGLANG,
             pipeline_config=ZImagePipelineConfig(dit_precision=precisions[dtype]),
             performance_mode="manual",
-            num_gpus=1,
+            num_gpus=sp_size,
             tp_size=1,
-            sp_degree=1,
+            sp_degree=sp_size,
             dp_size=1,
-            ulysses_degree=1,
-            ring_degree=1,
+            ulysses_degree=ulysses_degree,
+            ring_degree=ring_degree,
             kv_gather_degree=1,
             sp_split_auto=False,
             enable_cfg_parallel=False,
@@ -257,8 +407,8 @@ def initialize_decoder_runtime(
         runtime.published = True
         runtime.world_started = True
         ps.init_distributed_environment(
-            world_size=1,
-            rank=0,
+            world_size=sp_size,
+            rank=sp_rank,
             distributed_init_method=f"tcp://{address}",
             local_rank=gpu_id or 0,
             backend="gloo" if gpu_id is None else "nccl",
@@ -269,9 +419,9 @@ def initialize_decoder_runtime(
         ps.initialize_model_parallel(
             data_parallel_size=1,
             classifier_free_guidance_degree=1,
-            sequence_parallel_degree=1,
-            ulysses_degree=1,
-            ring_degree=1,
+            sequence_parallel_degree=sp_size,
+            ulysses_degree=ulysses_degree,
+            ring_degree=ring_degree,
             tensor_parallel_degree=1,
             pipeline_parallel_degree=1,
             vae_parallel_size=0,

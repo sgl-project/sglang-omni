@@ -6,7 +6,14 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Generic, Protocol, SupportsIndex, SupportsInt
+from typing import (
+    TYPE_CHECKING,
+    Generic,
+    Protocol,
+    SupportsIndex,
+    SupportsInt,
+    runtime_checkable,
+)
 
 from typing_extensions import TypeVar
 
@@ -24,6 +31,47 @@ class SchedulerStatus(Enum):
     RUNNING = auto()
     FINISHED = auto()
     ABORTED = auto()
+
+
+class SynchronizedRequestError(RuntimeError):
+    """All ranks agreed to fail a request at a completed synchronization boundary."""
+
+
+@dataclass(frozen=True)
+class ParallelSchedulerCapabilities:
+    """Ownership of parallel work delivery and cancellation.
+
+    Fanout schedulers must execute committed work through a result/error even
+    after mark_request_aborted_for_drain(rid, dispatch_id). Stage calls
+    acknowledge_request_terminal(rid, dispatch_id) after draining that terminal.
+    SP stop must drain committed work before running shutdown callbacks.
+    """
+
+    fanout_work: bool = False
+    drain_aborted_work: bool = False
+
+    def __post_init__(self) -> None:
+        if self.fanout_work and not self.drain_aborted_work:
+            raise ValueError("Work fanout requires aborted-work drain support")
+        else:
+            pass
+
+
+@runtime_checkable
+class SequenceParallelScheduler(Protocol):
+    parallel_capabilities: ParallelSchedulerCapabilities
+
+    def enable_parallel_failure_handling(self) -> None: ...
+
+    def validate_sequence_parallel(self) -> None: ...
+
+    def mark_request_aborted_for_drain(
+        self, request_id: str, dispatch_id: int
+    ) -> None: ...
+
+    def acknowledge_request_terminal(
+        self, request_id: str, dispatch_id: int
+    ) -> None: ...
 
 
 @dataclass

@@ -154,6 +154,20 @@ class StageLaunchConfig:
     internal_work_queue: Queue[TPWorkQueueMessage] | None = None
     internal_abort_queue: Queue[AbortMessage] | None = None
     internal_admin_result_queue: Queue[AdminResultMessage] | None = None
+    sp_rank: int = 0
+    sp_size: int = 1
+
+    @property
+    def parallel_size(self) -> int:
+        return max(self.tp_size, self.sp_size)
+
+    @property
+    def parallel_rank(self) -> int:
+        return self.sp_rank if self.sp_size > 1 else self.tp_rank
+
+    @property
+    def parallel_kind(self) -> str:
+        return "sp" if self.sp_size > 1 else "tp"
 
     @property
     def owns_external_io(self) -> bool:
@@ -202,7 +216,7 @@ class StageWorkerProcessSpec:
 def get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
     """Return the spawn-time env overrides for *spec*.
 
-    Hard invariant: a TP stage (``tp_size > 1``) must own its OS process
+    Hard invariant: a parallel stage must own its OS process
     exclusively. Its CUDA env remap and NCCL settings depend on being the sole
     tenant, so mixing a TP stage with any other stage in the same process group
     is a placement bug. A stage that owns native child processes also owns its
@@ -218,7 +232,7 @@ def get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
         return {**env, NATIVE_GPUS_NARROWED_ENV: "true"} if env else {}
     else:
         pass
-    tp_stages = [s for s in spec.stage_specs if s.tp_size > 1]
+    tp_stages = [s for s in spec.stage_specs if s.parallel_size > 1]
     if not tp_stages:
         return {}
     else:
@@ -231,7 +245,12 @@ def get_worker_process_env(spec: StageWorkerProcessSpec) -> dict[str, str]:
         )
     else:
         pass
-    return current_platform.get_stage_process_env(tp_stages[0])
+    stage = tp_stages[0]
+    if stage.sp_size > 1:
+        return current_platform.get_sp_stage_process_env(stage)
+    else:
+        pass
+    return current_platform.get_stage_process_env(stage)
 
 
 @contextmanager
@@ -734,6 +753,10 @@ def stage_process_main(
     # note (Richard Wang): tearing down every module and object of a stage that
     # held a model takes seconds after the stage stopped, and the server's stop
     # waits for it, while the operating system releases the process at exit.
+    if any(stage.sp_size > 1 for stage in spec.stage_specs):
+        destroy_torch_distributed_process_group(log)
+    else:
+        pass
     exit_without_teardown(0)
 
 
@@ -935,7 +958,7 @@ def destroy_torch_distributed_process_group(log: logging.Logger) -> None:
         import torch.distributed as dist
 
         if dist.is_available() and dist.is_initialized():
-            log.warning("Destroying torch.distributed process group after failure")
+            log.info("Destroying torch.distributed process group")
             dist.destroy_process_group()
         else:
             pass
@@ -1014,10 +1037,11 @@ def construct_stage(
 
     # --- Build scheduler via factory ---
     log.info(
-        "Building scheduler for %s (tp_rank=%d/%d) ...",
+        "Building scheduler for %s (%s_rank=%d/%d) ...",
         spec.stage_name,
-        spec.tp_rank,
-        spec.tp_size,
+        spec.parallel_kind,
+        spec.parallel_rank,
+        spec.parallel_size,
     )
 
     scheduler = construct_scheduler(spec, gpu_id, log)
@@ -1192,6 +1216,8 @@ def construct_stage(
         rank_endpoints=spec.rank_endpoints,
         tp_rank=spec.tp_rank,
         tp_size=spec.tp_size,
+        sp_rank=spec.sp_rank,
+        sp_size=spec.sp_size,
         control_plane=control_plane,
         input_handler=input_handler,
         comm_config=spec.comm_config,
@@ -1356,7 +1382,11 @@ def prepare_accelerator_environment(
     else:
         pass
 
-    env_updates = current_platform.get_stage_process_env(spec)
+    env_updates = (
+        current_platform.get_sp_stage_process_env(spec)
+        if spec.sp_size > 1
+        else current_platform.get_stage_process_env(spec)
+    )
     if not env_updates:
         return
     else:

@@ -17,6 +17,7 @@ class ResolvedStageLaunch:
     stage_name: str
     gpu_id: int | None
     tp_size: int = 1
+    sp_size: int = 1
     placement_gpu_id: int | None = None
     factory: str = FACTORY
     factory_kwargs: dict = field(default_factory=dict)

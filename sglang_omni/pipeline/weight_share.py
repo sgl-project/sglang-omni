@@ -195,9 +195,9 @@ def collect_candidate_groups(
             continue
         else:
             pass
-        if process.is_tensor_parallel:
+        if process.parallel_size > 1:
             logger.info(
-                "Weight sharing skips tensor-parallel process %r: CUDA IPC "
+                "Weight sharing skips parallel process %r: CUDA IPC "
                 "handles are not rank qualified",
                 process.name,
             )

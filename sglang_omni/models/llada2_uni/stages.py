@@ -9,6 +9,7 @@ import io
 import logging
 from collections.abc import Mapping
 from contextlib import nullcontext
+from typing import Literal
 
 import torch
 from typing_extensions import NotRequired, TypedDict
@@ -269,9 +270,25 @@ def create_image_decode_executor(
     resolution_multiplier: int = 2,
     backend: DecoderBackend = "diffusers",
     attention_backend: str = "torch_sdpa",
-) -> SimpleScheduler[StagePayload, StagePayload]:
+    sp_rank: int = 0,
+    sp_size: int = 1,
+    stage_role: Literal["single", "leader", "follower"] = "single",
+    nccl_port: int | None = None,
+    ulysses_degree: int = 1,
+    ring_degree: int = 1,
+) -> SimpleScheduler[StagePayload, StagePayload | None]:
     concrete_device = resolve_concrete_device(device, gpu_id)
     dtype = resolve_dtype(dtype)
+    if backend != "sglang" and (
+        sp_size != 1
+        or sp_rank != 0
+        or ulysses_degree != 1
+        or ring_degree != 1
+        or stage_role != "single"
+    ):
+        raise ValueError("Decoder SP requires backend='sglang'")
+    else:
+        pass
     runtime = None
     if backend == "sglang":
         from sglang_omni.models.llada2_uni.components.decoder_runtime import (
@@ -283,6 +300,12 @@ def create_image_decode_executor(
             gpu_id=concrete_device.index if concrete_device.type == "cuda" else None,
             dtype=dtype,
             attention_backend=attention_backend,
+            sp_rank=sp_rank,
+            sp_size=sp_size,
+            stage_role=stage_role,
+            nccl_port=nccl_port,
+            ulysses_degree=ulysses_degree,
+            ring_degree=ring_degree,
         )
     else:
         pass
@@ -305,7 +328,7 @@ def create_image_decode_executor(
             pass
         raise
 
-    def decode_image(payload: StagePayload) -> StagePayload:
+    def decode_image(payload: StagePayload) -> StagePayload | None:
         state = LLaDA2UniPipelineState.from_dict(payload.data)
         result = extract_image_vq_tokens(state)
         if result is None:
@@ -339,6 +362,11 @@ def create_image_decode_executor(
             pass
         with runtime.compute_context() if runtime else nullcontext():
             image = decoder.decode(vq_tokens, grid_height, grid_width, **call_kwargs)
+        if stage_role == "follower":
+            return None
+        else:
+            pass
+        assert image is not None
         image_buffer = io.BytesIO()
         image.save(image_buffer, format="PNG")
         image_b64 = base64.b64encode(image_buffer.getvalue()).decode("ascii")
@@ -373,7 +401,7 @@ def create_image_decode_executor(
     else:
         pass
 
-    class ImageDecoderScheduler(SimpleScheduler[StagePayload, StagePayload]):
+    class ImageDecoderScheduler(SimpleScheduler[StagePayload, StagePayload | None]):
         def start(self) -> None:
             try:
                 super().start()

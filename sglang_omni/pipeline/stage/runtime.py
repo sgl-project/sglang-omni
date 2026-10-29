@@ -35,6 +35,8 @@ from sglang_omni.pipeline.replicas import ReplicaTopology
 from sglang_omni.pipeline.stage.input import DirectInput, InputHandler
 from sglang_omni.pipeline.stage.stream_queue import StreamItem, StreamQueue
 from sglang_omni.pipeline.tp_control import (
+    ParallelAbortMessage,
+    RequestDispatchTracker,
     TPFollowerControlPlane,
     TPLeaderFanout,
     TPWorkMessage,
@@ -69,6 +71,10 @@ from sglang_omni.scheduling.message import (
     OutgoingMessage,
     ResultOwningScheduler,
     StageScheduler,
+)
+from sglang_omni.scheduling.types import (
+    SequenceParallelScheduler,
+    SynchronizedRequestError,
 )
 from sglang_omni.serve.stage_routes import StageHttpServer, StageRoutesError
 
@@ -121,6 +127,8 @@ class Stage:
         rank_endpoints: dict[str, tuple[str, ...]] | None = None,
         tp_rank: int = 0,
         tp_size: int = 1,
+        sp_rank: int = 0,
+        sp_size: int = 1,
         placement_gpu_id: int | None = None,
         input_handler: InputHandler | None = None,
         relay: Relay | None = None,
@@ -163,6 +171,53 @@ class Stage:
         self.result_owner = (
             scheduler if isinstance(scheduler, ResultOwningScheduler) else None
         )
+        self.tp_rank, self.tp_size = tp_rank, tp_size
+        self.sp_rank, self.sp_size = sp_rank, sp_size
+        self.dispatches = RequestDispatchTracker()
+        self.sp_scheduler = (
+            scheduler
+            if sp_size > 1 and isinstance(scheduler, SequenceParallelScheduler)
+            else None
+        )
+        capabilities = (
+            self.sp_scheduler.parallel_capabilities if self.sp_scheduler else None
+        )
+        self.fanout_work = (
+            capabilities.fanout_work
+            if capabilities is not None
+            else getattr(scheduler, "requires_tp_work_fanout", False)
+        )
+        self.drain_aborted_work = bool(capabilities and capabilities.drain_aborted_work)
+        if sp_size > 1:
+            if tp_size != 1 or tp_rank != 0:
+                raise ValueError("SP must not use TP rank metadata")
+            else:
+                pass
+            if not 0 <= sp_rank < sp_size or role != (
+                "leader" if sp_rank == 0 else "follower"
+            ):
+                raise ValueError("Invalid SP rank/role")
+            else:
+                pass
+            if sp_rank == 0 and tp_fanout is None:
+                raise ValueError("SP leader requires stage fanout")
+            else:
+                pass
+            if capabilities is None or not capabilities.fanout_work:
+                raise ValueError("SP requires typed work-fanout and drain capabilities")
+            else:
+                pass
+            self.sp_scheduler.validate_sequence_parallel()
+        else:
+            pass
+        if (
+            self.fanout_work
+            and max(tp_size, sp_size) > 1
+            and isinstance(scheduler, SequenceParallelScheduler)
+        ):
+            scheduler.enable_parallel_failure_handling()
+        else:
+            pass
         self.project_payload = project_payload or {}
         self.stream_targets = stream_targets or []
         self.get_stream_done_targets = get_stream_done_targets
@@ -193,7 +248,8 @@ class Stage:
             ),
             tp_rank=tp_rank,
             tp_size=tp_size,
-            rank_endpoints=rank_endpoints,
+            # SP followers receive stage payloads only; KV endpoints remain TP-owned.
+            rank_endpoints={} if sp_size > 1 and role == "follower" else rank_endpoints,
             task_done_callback=self.on_background_task_done,
         )
         for pool, receiver in getattr(scheduler, "kv_registrations", ()):
@@ -401,14 +457,14 @@ class Stage:
             # model-path events from its own finally, and the MPS validation
             # stage reads those files right after stop() returns, so wait for
             # the thread instead of letting a daemon thread be reclaimed at
-            # process exit. A slow thread is logged, not fatal: shutdown
-            # correctness must not start depending on this timeout.
+            # process exit. SP must drain committed collectives before closing;
+            # other stages retain the bounded wait for terminal events.
             scheduler_thread = self.scheduler_thread
             if scheduler_thread is not None:
                 try:
                     await asyncio.to_thread(
                         scheduler_thread.join,
-                        _SCHEDULER_THREAD_JOIN_TIMEOUT_S,
+                        None if self.sp_size > 1 else _SCHEDULER_THREAD_JOIN_TIMEOUT_S,
                     )
                 except Exception as exc:
                     _record_cleanup_error("scheduler thread", exc)
@@ -485,7 +541,11 @@ class Stage:
                 else:
                     pass
                 if isinstance(msg, TPWorkMessage):
-                    await self.execute(msg.data)
+                    if msg.request_id != msg.data.request_id:
+                        raise ValueError("Parallel work request id mismatch")
+                    else:
+                        pass
+                    await self.execute(msg.data, dispatch_id=msg.dispatch_id)
                     continue
                 else:
                     pass
@@ -1187,8 +1247,19 @@ class Stage:
             IncomingMessage(request_id=request_id, type="stream_chunk", data=item)
         )
 
-    async def execute(self, payload: StagePayload) -> None:
+    async def execute(
+        self, payload: StagePayload, *, dispatch_id: int | None = None
+    ) -> None:
         request_id = payload.request_id
+        if self.sp_size > 1 and self.role == "follower":
+            if dispatch_id is None:
+                raise ValueError("SP follower work requires a dispatch id")
+            elif not self.dispatches.register_work(request_id, dispatch_id):
+                return
+            else:
+                pass
+        else:
+            pass
         # note (Richard Wang): the leader drops aborted work before fanout, so a follower runs all work it receives.
         if request_id in self.aborted and self.role != "follower":
             return
@@ -1214,12 +1285,15 @@ class Stage:
             stage=self.name,
             event_name="stage_dispatch",
         )
-        if (
-            self.role == "leader"
-            and self.tp_fanout is not None
-            and getattr(self.scheduler, "requires_tp_work_fanout", False)
-        ):
-            self.tp_fanout.fanout_work(payload)
+        if self.role == "leader" and self.tp_fanout is not None and self.fanout_work:
+            if self.drain_aborted_work:
+                dispatch_id = self.tp_fanout.fanout_work(payload, track_dispatch=True)
+            else:
+                dispatch_id = self.tp_fanout.fanout_work(payload)
+            if dispatch_id is not None and self.drain_aborted_work:
+                self.dispatches.register_work(request_id, dispatch_id)
+            else:
+                pass
         else:
             pass
         msg = IncomingMessage(request_id=request_id, type="new_request", data=payload)
@@ -1274,7 +1348,7 @@ class Stage:
             success = all(item.success for item in rank_results)
             errors = [item.error for item in rank_results if item.error]
             data = dict(local.data)
-            data["tp_size"] = len(rank_results)
+            data["sp_size" if self.sp_size > 1 else "tp_size"] = len(rank_results)
             data["rank_results"] = [item.to_dict() for item in rank_results]
             result = AdminResult(
                 op_id=operation.op_id,
@@ -1376,9 +1450,20 @@ class Stage:
             action=operation.action,
             success=success,
             message=message,
-            data=dict(data or {}),
+            data={
+                **dict(data or {}),
+                **(
+                    {"parallel_kind": "sp", "sp_size": self.sp_size}
+                    if self.sp_size > 1
+                    else {}
+                ),
+            },
             error=error,
-            rank=getattr(self.scheduler, "tp_rank", None),
+            rank=(
+                self.sp_rank
+                if self.sp_size > 1
+                else getattr(self.scheduler, "tp_rank", None)
+            ),
             role=self.role,
         )
 
@@ -1452,6 +1537,10 @@ class Stage:
 
             stream_run: list[OutgoingMessage] = []
             for batch_index in range(_OUTBOX_DRAIN_BATCH_SIZE):
+                if out.type in {"result", "error"}:
+                    self.acknowledge_terminal(out.request_id)
+                else:
+                    pass
                 if out.type == "stream" and out.target is not None:
                     stream_run.append(out)
                 else:
@@ -1567,6 +1656,19 @@ class Stage:
         while True:
             out = await self.wait_outbox_message()
 
+            if out.type == "error" and not isinstance(
+                out.data, SynchronizedRequestError
+            ):
+                raise RuntimeError(
+                    f"Parallel follower stage {self.name} failed request "
+                    f"{out.request_id}: {out.data}"
+                )
+            else:
+                pass
+            if out.type in {"result", "error"}:
+                self.acknowledge_terminal(out.request_id)
+            else:
+                pass
             if out.type == "wakeup":
                 return
             elif out.type == "result":
@@ -1584,9 +1686,11 @@ class Stage:
                     f"TP follower stage {self.name} cannot publish a KV transfer"
                 )
             elif out.type == "error":
-                raise RuntimeError(
-                    f"TP follower stage {self.name} received scheduler error: {out.data}"
+                logger.warning(
+                    f"Parallel follower stage {self.name} failed request "
+                    f"{out.request_id}: {out.data}"
                 )
+                self.clear_request_state(out.request_id)
             else:
                 pass
 
@@ -2531,20 +2635,47 @@ class Stage:
                 self.comm.cleanup(request_id)
         self.control_plane.close()
 
+    def acknowledge_terminal(self, request_id: str) -> None:
+        dispatch_id = self.dispatches.finish_terminal(request_id)
+        if dispatch_id is not None and self.drain_aborted_work:
+            self.sp_scheduler.acknowledge_request_terminal(request_id, dispatch_id)
+        else:
+            pass
+
     async def abort_listener(self) -> None:
         try:
             while self.running:
                 abort_msg = await self.control_plane.recv_abort()
-                if self.role == "leader" and self.tp_fanout is not None:
-                    await self.tp_fanout.fanout_abort(abort_msg)
+                if isinstance(abort_msg, ParallelAbortMessage):
+                    self.on_abort(
+                        abort_msg.request_id, dispatch_id=abort_msg.dispatch_id
+                    )
+                    continue
                 else:
                     pass
-                self.on_abort(abort_msg.request_id)
+                dispatch_id = self.dispatches.current(abort_msg.request_id)
+                if self.role == "leader" and self.tp_fanout is not None:
+                    if self.drain_aborted_work:
+                        if dispatch_id is not None:
+                            await self.tp_fanout.fanout_abort(
+                                ParallelAbortMessage(abort_msg.request_id, dispatch_id)
+                            )
+                        else:
+                            pass
+                    else:
+                        await self.tp_fanout.fanout_abort(abort_msg)
+                else:
+                    pass
+                self.on_abort(abort_msg.request_id, dispatch_id=dispatch_id)
         except asyncio.CancelledError:
             pass
         except Exception:
             if self.scheduler_crash_error is None and self.running:
                 logger.exception("Stage %s abort listener crashed", self.name)
+                if self.sp_size > 1:
+                    raise
+                else:
+                    pass
             else:
                 pass
 
@@ -2562,14 +2693,27 @@ class Stage:
         else:
             pass
 
-    def on_abort(self, request_id: str) -> None:
+    def on_abort(self, request_id: str, *, dispatch_id: int | None = None) -> None:
+        if dispatch_id is None:
+            dispatch_id = self.dispatches.current(request_id)
+        else:
+            pass
+        if dispatch_id is not None and self.drain_aborted_work:
+            if not self.dispatches.record_abort(request_id, dispatch_id):
+                return
+            else:
+                pass
+            self.sp_scheduler.mark_request_aborted_for_drain(request_id, dispatch_id)
+        else:
+            pass
         self.record_aborted_request_id(request_id)
         self.comm.cleanup(request_id)
         self.clear_request_state(request_id)
-        # note (Richard Wang): TP ranks run fanned-out work to completion, since a skip on one rank pairs different requests in one collective.
-        if self.role == "single" or not getattr(
-            self.scheduler, "requires_tp_work_fanout", False
-        ):
+        if dispatch_id is not None and self.drain_aborted_work:
+            return
+        else:
+            pass
+        if self.role == "single" or not self.fanout_work:
             self.scheduler.abort(request_id)
         else:
             pass
@@ -2630,7 +2774,7 @@ class Stage:
         else:
             pass
         if isinstance(exc, KVTransferRejected):
-            # The ACK watcher also propagates this to _send_kv_transfer(), which
+            # The ACK watcher also propagates this to send_kv_transfer(), which
             # reports the request failure even if the local abort arrives later.
             return
         else:
