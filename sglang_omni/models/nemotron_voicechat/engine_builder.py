@@ -231,9 +231,14 @@ class NemotronVoiceChatTalkerEngineBuilder(VoiceChatEngineBuilder):
     disable_cuda_graph = False
 
     def __init__(
-        self, *, max_running_requests: int = 1, context_length: int | None = None
+        self,
+        *,
+        can_use_local_code_handoff: bool = False,
+        max_running_requests: int = 1,
+        context_length: int | None = None,
     ) -> None:
         super().__init__(max_running_requests=max_running_requests)
+        self.can_use_local_code_handoff: bool = can_use_local_code_handoff
         self.model_arch_override = TALKER_ARCH
         if context_length is not None:
             self.context_length = int(context_length)
@@ -255,7 +260,11 @@ class NemotronVoiceChatTalkerEngineBuilder(VoiceChatEngineBuilder):
         return str(shim)
 
     def make_model_runner(self, model_worker, output_proc):
-        return NemotronVoiceChatTalkerModelRunner(model_worker, output_proc)
+        return NemotronVoiceChatTalkerModelRunner(
+            model_worker,
+            output_proc,
+            can_use_local_code_handoff=self.can_use_local_code_handoff,
+        )
 
     def make_adapters(self, model):
         vocab_size = int(model.config.vocab_size)
