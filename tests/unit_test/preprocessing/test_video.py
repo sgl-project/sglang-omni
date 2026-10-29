@@ -401,18 +401,46 @@ def test_a_processed_video_before_a_file_keeps_every_video_in_place(
     assert audios == ([None, None, None] if extract_audio else None)
 
 
+@pytest.mark.skipif(
+    video.VideoDecoder is None, reason="the torchcodec native decoder is unavailable"
+)
+@pytest.mark.parametrize("cpu_count", [1, 3])
 @pytest.mark.parametrize("frame_range", [{}, {"video_start": 0.5, "video_end": 1.75}])
 def test_parallel_torchcodec_decode_returns_the_reader_frames(
-    mpeg4_video: Path, monkeypatch, frame_range: dict[str, float]
+    mpeg4_video: Path, monkeypatch, cpu_count: int, frame_range: dict[str, float]
 ) -> None:
-    pytest.importorskip("torchcodec.decoders")
-    monkeypatch.setattr(video, "effective_cpu_count", lambda: 3)
-    ele = {"video": str(mpeg4_video), "fps": 4.0, **frame_range}
+    monkeypatch.setattr(video, "effective_cpu_count", lambda: cpu_count)
+    video_options = {"video": str(mpeg4_video), "fps": 4.0, **frame_range}
 
-    frames, sample_fps = video.read_video_torchcodec(dict(ele))
+    frames, sample_fps = video.read_video_torchcodec(dict(video_options))
     expected_frames, expected_fps = video.qwen_vision.VIDEO_READER_BACKENDS[
         "torchcodec"
-    ](dict(ele))
+    ](dict(video_options))
 
     assert torch.equal(frames, expected_frames)
     assert sample_fps == expected_fps
+
+
+def test_torchcodec_reader_of_record_runs_when_the_native_decoder_is_unavailable(
+    mpeg4_video: Path, monkeypatch
+) -> None:
+    """A torchcodec package whose native decoder failed to load surfaced as a call of None, not the reader's error."""
+    reader_calls: list[str] = []
+
+    def reader(
+        video_options: dict[str, str | float | int],
+    ) -> tuple[torch.Tensor, float]:
+        reader_calls.append(str(video_options["video"]))
+        return torch.zeros(2, 3, 28, 28, dtype=torch.uint8), 2.0
+
+    monkeypatch.setattr(video, "VideoDecoder", None)
+    monkeypatch.setattr(
+        video.qwen_vision, "get_video_reader_backend", lambda: "torchcodec"
+    )
+    monkeypatch.setitem(video.qwen_vision.VIDEO_READER_BACKENDS, "torchcodec", reader)
+
+    frames, sample_fps = video.load_video_path(mpeg4_video, fps=4.0)
+
+    assert reader_calls == [str(mpeg4_video)]
+    assert frames.shape[0] == 2
+    assert sample_fps == 2.0

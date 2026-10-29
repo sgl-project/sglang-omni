@@ -443,22 +443,27 @@ def is_invalid_video(path: Path, error: Exception) -> bool:
 
 
 def read_video_torchcodec(
-    ele: dict[str, str | float | int],
+    video_options: dict[str, str | float | int],
 ) -> tuple[torch.Tensor, float]:
     """The qwen-vl-utils torchcodec reader's frames (T, C, H, W) and sample fps, decoded on up to MAX_VIDEO_DECODERS parallel decoders."""
-    video_path = str(ele["video"])
+    video_path = str(video_options["video"])
     first_decoder = VideoDecoder(video_path, num_ffmpeg_threads=1)
     video_fps = first_decoder.metadata.average_fps
     start_frame, end_frame, total_frames = qwen_vision.calculate_video_frame_range(
-        ele, first_decoder.metadata.num_frames, video_fps
+        video_options, first_decoder.metadata.num_frames, video_fps
     )
     frame_count = qwen_vision.smart_nframes(
-        ele, total_frames=total_frames, video_fps=video_fps
+        video_options, total_frames=total_frames, video_fps=video_fps
     )
     frame_indices = (
         torch.linspace(start_frame, end_frame, frame_count).round().long().tolist()
     )
+    sample_fps = frame_count / max(total_frames, 1e-6) * video_fps
     decoder_count = min(MAX_VIDEO_DECODERS, effective_cpu_count(), len(frame_indices))
+    if decoder_count == 1:
+        return first_decoder.get_frames_at(indices=frame_indices).data, sample_fps
+    else:
+        pass
     index_shares = [
         share.tolist() for share in np.array_split(frame_indices, decoder_count)
     ]
@@ -472,7 +477,7 @@ def read_video_torchcodec(
 
     with ThreadPoolExecutor(max_workers=decoder_count) as pool:
         frames = torch.cat(list(pool.map(decode_share, range(decoder_count))))
-    return frames, frame_count / max(total_frames, 1e-6) * video_fps
+    return frames, sample_fps
 
 
 def load_video_path(
@@ -508,7 +513,7 @@ def load_video_path(
         pass
     backend = qwen_vision.get_video_reader_backend()
     try:
-        if backend == "torchcodec":
+        if backend == "torchcodec" and VideoDecoder is not None:
             video, sample_fps = read_video_torchcodec(ele)
         else:
             video, sample_fps = qwen_vision.VIDEO_READER_BACKENDS[backend](ele)
