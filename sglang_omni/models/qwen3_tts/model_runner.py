@@ -237,6 +237,12 @@ class Qwen3TTSModelRunner(ModelRunner):
         # note(ratish): the layer 0 id is the step's only host read, staged ahead
         # of the predictor so the finalize wait covers the sample, not the predictor.
         self.stage_token_ids(result, result.next_token_ids)
+        if requests and all(
+            request.data.req.inflight_middle_chunks > 0 for request in requests
+        ):
+            return
+        else:
+            pass
 
         hidden = result.logits_output.hidden_states
         if isinstance(hidden, torch.Tensor) and hidden.ndim == 2:
