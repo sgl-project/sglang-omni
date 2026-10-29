@@ -14,6 +14,10 @@ model_path: aurateam/AURA
 stages:
   asr:
     gpu: 0
+    factory:
+      # With its encoder graph on, Qwen3-ASR's thread never returns from copying
+      # the audio embedding to the host on XPU; stock Qwen3-ASR hangs the same way.
+      enable_encoder_cuda_graph: false
 
   aura:
     gpu: 1

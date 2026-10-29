@@ -1,0 +1,7 @@
+{
+  "capital_of_france.wav": "What is the capital of France? Answer in one word.",
+  "ball_color.wav": "What color is the ball in the video?",
+  "secret_word_and_shape.wav": "The secret word is banana. What is the secret word, and what color is the shape in the video?",
+  "first_color.wav": "Which color appeared first in the video, red or blue?",
+  "red_ball_claim.wav": "I just put a red ball on the table. What color is the ball in the video?"
+}

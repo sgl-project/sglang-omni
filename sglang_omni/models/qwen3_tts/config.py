@@ -19,8 +19,8 @@ from sglang_omni.config import (
 from sglang_omni.config.runtime import (
     resolve_stage_factory_kwargs,
     resolve_stage_typed_kwargs,
+    stage_shares_engine_speech_tokenizer,
 )
-from sglang_omni.config.schema import stage_process_name
 from sglang_omni.config.topology import (
     compile_logical_processes,
     resolve_coordinator_max_in_flight,
@@ -132,18 +132,9 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             max_in_flight = resolve_coordinator_max_in_flight(
                 self, logical_process_plan=logical_process_plan
             )
-            engine_process = stage_process_name(engine_stage)
             vocoder_stage = self.stage_named(stage_name)
-            vocoder_process = stage_process_name(vocoder_stage)
-            vocoder_settings = resolve_stage_typed_kwargs(vocoder_stage)
-            engine_settings = resolve_stage_typed_kwargs(engine_stage)
-            # note (ratish): a process's stages share one GPU, and the tokenizer loader keeps one copy per checkpoint, device, dtype and attention implementation there; a separate frontend loads its own copy before a vocoder in its process, so only the engine's copy is one the vocoder loads first.
             kwargs["shares_engine_speech_tokenizer"] = (
-                vocoder_process == engine_process
-                and all(
-                    vocoder_settings.get(name) == engine_settings.get(name)
-                    for name in ("model_path", "device", "dtype", "attn_implementation")
-                )
+                stage_shares_engine_speech_tokenizer(vocoder_stage, engine_stage)
             )
             kwargs["max_in_flight"] = max_in_flight
             kwargs["codec_state_slots"] = max_in_flight

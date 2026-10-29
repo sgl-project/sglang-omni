@@ -22,6 +22,11 @@ import base64
 import time
 from pathlib import Path
 
+from sglang_omni.client.client import Client
+from sglang_omni.client.types import GenerateRequest, Message
+from sglang_omni.config.manager import ConfigManager
+from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -42,9 +47,6 @@ def parse_args() -> argparse.Namespace:
 
 
 async def run(args: argparse.Namespace) -> int:
-    from sglang_omni.client import Client, GenerateRequest, Message
-    from sglang_omni.config.manager import ConfigManager
-    from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
 
     if args.config is not None:
         config = ConfigManager.from_file(args.config).config
