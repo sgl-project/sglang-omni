@@ -23,9 +23,13 @@ from sglang.srt.mem_cache.allocator import TokenToKVPoolAllocator
 from sglang.srt.mem_cache.kv_index_translator import KVIndexTranslator
 from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool, ReqToTokenPool
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
+from sglang.srt.model_executor.runner.decode_cuda_graph_runner import (
+    DecodeCudaGraphRunner,
+)
 from sglang.srt.sampling.sampling_params import SamplingParams
 
 import sglang_omni.models.llada2_uni.cfg_attention_backend as cfg_attention_backend
+from sglang_omni.model_runner.sglang_model_runner import CFGCudaGraphRunner
 from sglang_omni.models.llada2_uni.low_confidence_cfg import LowConfidenceCFG
 from sglang_omni.models.llada2_uni.request_builders import LLaDA2UniRequest
 from sglang_omni.scheduling.dllm_scheduler import DllmScheduler
@@ -81,11 +85,11 @@ def test_cfg_graph_waits_for_padding_to_enter_cached_prefix(
     monkeypatch: pytest.MonkeyPatch, prefix: int, expected: bool
 ) -> None:
     monkeypatch.setattr(
-        cfg_attention_backend.DecodeCudaGraphRunner,
+        DecodeCudaGraphRunner,
         "can_run_graph",
         lambda self, batch: True,
     )
-    runner = object.__new__(cfg_attention_backend.CFGCudaGraphRunner)
+    runner = object.__new__(CFGCudaGraphRunner)
     batch = NS(
         dllm_left_pad_lens_cpu=[0, 6, 2],
         extend_prefix_lens_cpu=[prefix] * 3,
