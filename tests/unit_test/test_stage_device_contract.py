@@ -657,8 +657,8 @@ def config_with_one_replicated_process(config_cls, model):
         for stage in config.stages
         for gpu in ([stage.gpu] if isinstance(stage.gpu, int) else stage.gpu or [])
     }
-    first_free_gpu = max(used_gpus | {1}) + 1
-    replica_devices = [first_free_gpu, first_free_gpu + 1]
+    first_replica_device_index = max(used_gpus | {1}) + 1
+    replica_devices = [first_replica_device_index, first_replica_device_index + 1]
     processes = dict(config.processes)
     existing = processes.get(process_name)
     replica_fields = {"num_replicas": 2, "replica_devices": replica_devices}

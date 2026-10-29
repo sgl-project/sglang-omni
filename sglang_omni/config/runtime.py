@@ -61,6 +61,31 @@ def resolve_stage_factory_kwargs(
     return kwargs
 
 
+# The speech tokenizer loader keeps one copy per checkpoint, device, dtype and
+# attention implementation in a process.
+SPEECH_TOKENIZER_CACHE_FIELDS = ("model_path", "device", "dtype", "attn_implementation")
+
+
+def stage_shares_engine_speech_tokenizer(
+    stage: StageConfig, engine_stage: StageConfig
+) -> bool:
+    """Whether *stage* finds its speech tokenizer already loaded by *engine_stage*.
+
+    A process's stages share one GPU, and a separate frontend loads its own copy
+    before a vocoder in its process, so only the engine's copy is one the vocoder
+    loads first.
+    """
+    if stage_process_name(stage) != stage_process_name(engine_stage):
+        return False
+    else:
+        stage_settings = resolve_stage_typed_kwargs(stage)
+        engine_settings = resolve_stage_typed_kwargs(engine_stage)
+        return all(
+            stage_settings.get(name) == engine_settings.get(name)
+            for name in SPEECH_TOKENIZER_CACHE_FIELDS
+        )
+
+
 def resolve_stage_typed_kwargs(stage_cfg: StageConfig) -> dict[str, object]:
     """Return the stage's set group values, keyed by factory kwarg.
 

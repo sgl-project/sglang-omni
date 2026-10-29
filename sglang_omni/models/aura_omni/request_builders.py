@@ -8,9 +8,14 @@ voices a spoken answer.
 
 from __future__ import annotations
 
+import base64
+import math
 from collections.abc import Mapping
 from typing import TypedDict
 
+from sglang.srt.utils.common import get_video_bytes, load_video
+
+from sglang_omni.preprocessing.resource_connector import MediaPolicyError
 from sglang_omni.preprocessing.text import TemplateMessage, split_content_parts
 from sglang_omni.preprocessing.transcription import police_request_media
 from sglang_omni.proto import OmniRequest, StagePayload
@@ -19,6 +24,7 @@ PREPROCESSING_STAGE = "preprocessing"
 ASR_STAGE = "asr"
 AURA_STAGE = "aura"
 DECODE_STAGE = "decode"
+TTS_ENGINE_STAGE = "tts_engine"
 TTS_PREPROCESSING_STAGE = "tts_preprocessing"
 VOCODER_STAGE = "vocoder"
 
@@ -28,6 +34,18 @@ DEFAULT_AURA_SYSTEM_PROMPT = (
     "moment. Respond only when a response is needed based on the user's message "
     "or the visual context. Otherwise, output `<|silent|>` to signify silence."
 )
+# Qwen3-VL merges frames in temporal pairs, so a clip needs two of them.
+MIN_VIDEO_FRAMES = 2
+# An inline data URL runs to megabytes, so an error names only its start.
+MAX_SOURCE_LABEL_CHARS = 256
+# Chat API fields mapped to the keys the Qwen-VL video sampler reads.
+VIDEO_SAMPLING_FIELDS = {
+    "video_fps": "fps",
+    "video_max_frames": "max_frames",
+    "video_min_pixels": "min_pixels",
+    "video_max_pixels": "max_pixels",
+    "video_total_pixels": "total_pixels",
+}
 IMAGE_PLACEHOLDER = "<|vision_start|><|image_pad|><|vision_end|>"
 VIDEO_PLACEHOLDER = "<|vision_start|><|video_pad|><|vision_end|>"
 
@@ -39,6 +57,14 @@ class HistoryMessage(TypedDict):
     content: str
 
 
+class VideoSamplingConfig(TypedDict, total=False):
+    fps: float
+    max_frames: int
+    min_pixels: int
+    max_pixels: int
+    total_pixels: int
+
+
 class AuraTurn(TypedDict):
     """The user turn AURA answers, with the media its prompt places."""
 
@@ -47,6 +73,8 @@ class AuraTurn(TypedDict):
     user_text: str
     images: list[MediaSource]
     videos: list[MediaSource]
+    vision_order: list[str]
+    video_sampling: VideoSamplingConfig
     audio: MediaSource | None
     has_audio: bool
     transcript: str
@@ -93,23 +121,112 @@ def request_media(inputs: Mapping[str, object], key: str) -> list[str]:
         raise ValueError(f"AURA Omni expects {key} to be a URL or a list of URLs")
 
 
+def request_video_sampling(inputs: Mapping[str, object]) -> VideoSamplingConfig:
+    """The frame and pixel budget of one request, validated before any decode."""
+    sampling: VideoSamplingConfig = {}
+    fps = inputs.get("video_fps")
+    if fps is None:
+        pass
+    elif isinstance(fps, (int, float)) and math.isfinite(fps) and fps > 0:
+        sampling["fps"] = float(fps)
+    else:
+        raise ValueError("video_fps must be positive and finite")
+    max_frames = inputs.get("video_max_frames")
+    if max_frames is None:
+        pass
+    elif isinstance(max_frames, int) and max_frames >= MIN_VIDEO_FRAMES:
+        sampling["max_frames"] = max_frames
+    else:
+        raise ValueError(
+            f"video_max_frames must be positive and at least {MIN_VIDEO_FRAMES}"
+        )
+    for request_field in ("video_min_pixels", "video_max_pixels", "video_total_pixels"):
+        pixels = inputs.get(request_field)
+        if pixels is None:
+            pass
+        elif isinstance(pixels, int) and pixels > 0:
+            sampling[VIDEO_SAMPLING_FIELDS[request_field]] = pixels
+        else:
+            raise ValueError("Video pixel budgets must be positive")
+    if sampling.get("min_pixels", 0) > sampling.get("max_pixels", math.inf):
+        raise ValueError("Video minimum pixel budget exceeds maximum budget")
+    else:
+        pass
+    return sampling
+
+
+def policy_checked(source: object) -> object:
+    """Apply the server's media policy, as a caller error rather than a server fault."""
+    try:
+        return police_request_media(source)
+    except MediaPolicyError as error:
+        raise ValueError(
+            f"AURA Omni expects media the server's policy allows: {error}"
+        ) from error
+
+
 def policed_media(source: str) -> MediaSource:
-    policed = police_request_media(source)
+    policed = policy_checked(source)
     assert isinstance(policed, (str, bytes)), type(policed)
     return policed
+
+
+def policed_reference(source: object) -> object:
+    """Police reference audio, as a form Qwen3-TTS reads rather than raw bytes."""
+    policed = policy_checked(source)
+    if isinstance(policed, (bytes, bytearray, memoryview)):
+        encoded = base64.b64encode(bytes(policed)).decode("ascii")
+        return f"data:audio/wav;base64,{encoded}"
+    else:
+        return policed
+
+
+def probed_video(source: str) -> MediaSource:
+    """Police a clip and refuse one that does not decode to enough frames for Qwen3-VL."""
+    policed = policed_media(source)
+    source_label = (
+        source
+        if len(source) <= MAX_SOURCE_LABEL_CHARS
+        else f"{source[:MAX_SOURCE_LABEL_CHARS]}..."
+    )
+    try:
+        # Reading once and forwarding the bytes keeps the processor from
+        # fetching a remote clip again on the first-token path.
+        data = get_video_bytes(policed)
+        video = load_video(data, use_gpu=False)
+    except (ValueError, OSError) as error:
+        raise ValueError(
+            f"Invalid media data while decoding video path={source_label}: {error}"
+        ) from error
+    if len(video) < MIN_VIDEO_FRAMES or not video.avg_fps > 0:
+        raise ValueError(
+            f"Invalid media data while decoding video path={source_label}: "
+            f"{len(video)} frames at {video.avg_fps} fps, AURA needs at least "
+            f"{MIN_VIDEO_FRAMES} frames"
+        )
+    else:
+        return data
 
 
 def preprocess_aura_payload(payload: StagePayload) -> StagePayload:
     """Split a chat request into the AURA turn and the audio Qwen3-ASR hears."""
     inputs = payload.request.inputs
-    if isinstance(inputs, Mapping):
+    if isinstance(inputs, Mapping) and inputs.get("use_audio_in_video"):
+        raise ValueError(
+            "AURA Omni expects the spoken question as its own audio part, so "
+            "use_audio_in_video is not supported: AURA reads a clip's frames "
+            "and never its soundtrack"
+        )
+    elif isinstance(inputs, Mapping):
         messages = inputs.get("messages") or []
         extra_images = request_media(inputs, "images")
         extra_audios = request_media(inputs, "audios")
         extra_videos = request_media(inputs, "videos")
+        video_sampling = request_video_sampling(inputs)
     else:
         messages = inputs
         extra_images, extra_audios, extra_videos = [], [], []
+        video_sampling = {}
     template_messages, media = split_content_parts(messages)
 
     system_texts = [
@@ -130,6 +247,41 @@ def preprocess_aura_payload(payload: StagePayload) -> StagePayload:
     else:
         raise ValueError("AURA Omni expects the conversation to end with a user turn")
 
+    if any(
+        part["type"] != "text"
+        for message in template_messages
+        if not dialog or message is not dialog[-1]
+        if isinstance(message["content"], list)
+        for part in message["content"]
+    ):
+        raise ValueError(
+            "AURA Omni expects media only in the latest turn, because AURA reads a "
+            "clip whose last frame is the present moment; send earlier turns as text"
+        )
+    else:
+        pass
+
+    request_params = payload.request.params
+    stage_params = request_params.get("stage_params") or {}
+    tts_stage = stage_params.get(TTS_PREPROCESSING_STAGE) or {}
+    if tts_stage.get("ref_audio") is not None:
+        # Policing here keeps the fetch off the async routing path, and the chat
+        # route must not widen what the media policy allows.
+        request_params["stage_params"] = {
+            **stage_params,
+            TTS_PREPROCESSING_STAGE: {
+                **tts_stage,
+                "ref_audio": policed_reference(tts_stage["ref_audio"]),
+            },
+        }
+    else:
+        pass
+
+    current_content = (
+        dialog[-1]["content"]
+        if dialog and isinstance(dialog[-1]["content"], list)
+        else []
+    )
     audios = [*media.audios, *extra_audios]
     if len(audios) > 1:
         raise ValueError(
@@ -142,7 +294,17 @@ def preprocess_aura_payload(payload: StagePayload) -> StagePayload:
         "history": history,
         "user_text": user_text,
         "images": [policed_media(url) for url in (*media.images, *extra_images)],
-        "videos": [policed_media(url) for url in (*media.videos, *extra_videos)],
+        "videos": [probed_video(url) for url in (*media.videos, *extra_videos)],
+        "vision_order": [
+            *(
+                part["type"]
+                for part in current_content
+                if part["type"] in ("image", "video")
+            ),
+            *["image"] * len(extra_images),
+            *["video"] * len(extra_videos),
+        ],
+        "video_sampling": video_sampling,
         "audio": policed_media(audios[0]) if audios else None,
         "has_audio": bool(audios),
         "transcript": "",
@@ -163,12 +325,18 @@ def resolve_preprocessing_next_stages(
 
 def project_preprocessing_to_asr(payload: StagePayload) -> StagePayload:
     """Give Qwen3-ASR the audio alone; it is not terminal, so it must not stream."""
-    stage_params = payload.request.params.get("stage_params") or {}
-    asr_params = dict(stage_params.get(ASR_STAGE) or {})
+    params = payload.request.params
+    stage_params = params.get("stage_params") or {}
+    stage_sampling = params.get("stage_sampling") or {}
     return StagePayload(
         request_id=payload.request_id,
         request=OmniRequest(
-            inputs=payload.data["audio"], params={**asr_params, "stream": False}
+            inputs=payload.data["audio"],
+            params={
+                **(stage_params.get(ASR_STAGE) or {}),
+                **(stage_sampling.get(ASR_STAGE) or {}),
+                "stream": False,
+            },
         ),
         data=None,
     )
@@ -212,8 +380,9 @@ def render_aura_prompt(turn: AuraTurn) -> str:
     query = " ".join(
         text for text in (turn["transcript"].strip(), turn["user_text"].strip()) if text
     )
-    vision = IMAGE_PLACEHOLDER * len(turn["images"]) + VIDEO_PLACEHOLDER * len(
-        turn["videos"]
+    vision = "".join(
+        IMAGE_PLACEHOLDER if kind == "image" else VIDEO_PLACEHOLDER
+        for kind in turn["vision_order"]
     )
     history = "".join(
         f"<|im_start|>{message['role']}\n{message['content']}<|im_end|>\n"
@@ -262,6 +431,23 @@ def project_aura_to_tts(payload: StagePayload) -> StagePayload:
     request = payload.request
     stage_params = request.params.get("stage_params") or {}
     tts_params = dict(stage_params.get(TTS_PREPROCESSING_STAGE) or {})
+    engine_sampling = (request.params.get("stage_sampling") or {}).get(
+        TTS_ENGINE_STAGE
+    ) or {}
+    engine_params = {
+        **(stage_params.get(TTS_ENGINE_STAGE) or {}),
+        **engine_sampling,
+    }
+    if engine_sampling:
+        # The Qwen3-TTS builder reads engine controls from stage_params.
+        stage_params = {**stage_params, TTS_ENGINE_STAGE: engine_params}
+    else:
+        pass
+    if engine_params.get("seed") is not None and "seed" not in tts_params:
+        # Qwen3-TTS reads its seed from tts_params, not from the engine's own.
+        tts_params["seed"] = engine_params["seed"]
+    else:
+        pass
     audio_config = request.metadata.get("audio_config") or {}
     voice = audio_config.get("voice")
     if voice is not None and "voice" not in tts_params:
