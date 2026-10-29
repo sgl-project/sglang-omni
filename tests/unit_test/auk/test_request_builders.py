@@ -65,9 +65,30 @@ def test_generation_duration_and_state_round_trip(context, seconds, frames):
     assert state.ref_audio is None
 
 
-def test_sampling_recipe_cannot_be_overridden_per_request(context):
+@pytest.mark.parametrize(
+    "params",
+    [{"nfe": 1}, {"stage_params": {"auk_engine": {"cfg_strength": 3.0}}}],
+    ids=["request", "engine-stage"],
+)
+def test_sampling_recipe_cannot_be_overridden_per_request(context, params):
     with pytest.raises(ValueError, match="server-level"):
-        build_auk_state(make_payload("Hello", {"nfe": 1}), context)
+        build_auk_state(make_payload("Hello", params), context)
+
+
+@pytest.mark.parametrize(
+    "params, message",
+    [
+        ({"stage_params": {"auk_engine": {"gen_seconds": 0}}}, "must be positive"),
+        ({"stage_params": {"auk_engine": {"gen_seconds": "two"}}}, "expected a number"),
+        ({"stage_params": {"auk_engine": {"gen_seconds": "inf"}}}, "finite"),
+        ({"gen_seconds": 1, "seed": True}, "seed must be an integer"),
+        ({"gen_seconds": 1, "seed": "lucky"}, "seed must be an integer"),
+    ],
+    ids=["zero-seconds", "text-seconds", "infinite-seconds", "bool-seed", "text-seed"],
+)
+def test_malformed_duration_or_seed_is_rejected(context, params, message):
+    with pytest.raises(ValueError, match=message):
+        build_auk_state(make_payload("Hello", params), context)
 
 
 def test_multiple_references_are_rejected(context):

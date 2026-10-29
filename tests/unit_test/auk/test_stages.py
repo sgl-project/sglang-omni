@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from sglang_omni.models.auk import constants as C
+from sglang_omni.models.auk.config import ENGINE_STAGE, AuKPipelineConfig
 from sglang_omni.models.auk.hf_config import AuKRuntimeConfig
 from sglang_omni.models.auk.payload_types import AuKState
 from sglang_omni.models.auk.stages import (
@@ -225,6 +226,29 @@ def test_block_compilation_is_chosen_when_the_flow_is_loaded(stages, monkeypatch
     assert warmups == [flows[True]]
     assert flows[True].sample_batch.call_count == 1
     assert flows[False].sample_batch.call_count == 1
+
+
+def test_the_shipped_engine_defaults_run_the_released_auk_recipe(stages, monkeypatch):
+    """AuK ships 32 steps with guidance strength 2, as its cookbook documents."""
+    flow = stub_flow()
+    monkeypatch.setattr(
+        stages,
+        "load_flow",
+        lambda checkpoint, device, backbone_dtype, compile_blocks: flow,
+    )
+    monkeypatch.setattr(
+        stages,
+        "warmup_flow",
+        lambda flow, device, dtype, sampling, step_graph=None: None,
+    )
+    config = AuKPipelineConfig(model_path="stub")
+    engine = next(stage for stage in config.stages if stage.name == ENGINE_STAGE)
+    factory_kwargs = engine.factory.model_dump(exclude_none=True)
+    factory_kwargs["device"] = "cpu"
+    create_auk_engine_executor("stub", **factory_kwargs).fn(engine_payload())
+    assert flow.sample_batch.call_args.kwargs == dict(
+        steps=32, cfg_strength=2.0, sway_sampling_coef=-1.0, t_grid=None
+    )
 
 
 def test_the_step_graph_is_skipped_where_the_platform_records_none(stages, monkeypatch):
