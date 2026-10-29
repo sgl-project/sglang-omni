@@ -695,9 +695,7 @@ audio input, and voice cloning.
 
 ### AURA Omni (speech and video in, speech out, three XPUs)
 
-Qwen3-ASR, AURA (a Qwen3-VL-8B fine-tune) and Qwen3-TTS each get a card. AURA's 16.5 GiB of
-weights leave SGLang's automatic budget no room for a KV pool on a 24 GB card, so the
-checked-in config pins its fraction.
+Qwen3-ASR, AURA (a Qwen3-VL-8B fine-tune) and Qwen3-TTS each get a card. AURA's 16.5 GiB of weights leave SGLang's automatic budget no room for a KV pool on a 24 GB card, so the checked-in config pins its fraction.
 
 **Launch**
 
@@ -722,8 +720,7 @@ curl -X POST http://localhost:8000/v1/chat/completions \
 ```
 
 **Expected result:** `reply.json` carries the answer in `choices[0].message.content` and the
-spoken answer base64-encoded in `choices[0].message.audio.data`. See the
-[AURA Omni cookbook](../cookbook/aura_omni.md) for voices, silent turns and timings.
+spoken answer base64-encoded in `choices[0].message.audio.data`. See the [AURA Omni cookbook](../cookbook/aura_omni.md) for voices, silent turns and timings.
 
 ### MiniMax Music 3 (text-to-music, two XPUs)
 **Launch**

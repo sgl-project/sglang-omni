@@ -8,6 +8,8 @@ multimodal processor; only the request and result adapters are AURA's.
 from __future__ import annotations
 
 import asyncio
+import copy
+import logging
 from array import array
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -39,7 +41,7 @@ from sglang_omni.models.aura_omni.request_builders import (
     render_aura_prompt,
 )
 from sglang_omni.platforms import current_platform
-from sglang_omni.proto import EXPLICIT_GENERATION_PARAMS_KEY, StagePayload
+from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.engine_factory import (
     GenerationDefaults,
     SchedulerExtras,
@@ -52,7 +54,12 @@ from sglang_omni.scheduling.types import RequestOutput
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 from sglang_omni.utils.cpu import effective_cpu_count
 
-SAMPLING_FIELDS = ("temperature", "top_p", "top_k", "repetition_penalty")
+logger = logging.getLogger(__name__)
+
+AURA_STAGE = "aura"
+
+SILENT_TOKEN = "<|silent|>"
+SAMPLING_FIELDS = ("temperature", "top_p", "top_k", "min_p", "repetition_penalty")
 # About a minute of video: the 6.5 s, 30 fps test clip is 3,456 video tokens at
 # the processor defaults.
 AURA_CONTEXT_LENGTH = 32768
@@ -71,6 +78,7 @@ class SamplingDefaults(TypedDict):
     temperature: float
     top_p: float
     top_k: int
+    min_p: float
     repetition_penalty: float
 
 
@@ -82,13 +90,28 @@ def generation_default(value: float | int | None, unset: float | int) -> float |
         return value
 
 
-def explicit_sampling_fields(payload: StagePayload) -> set[str]:
-    """Fields the caller set; the rest take the checkpoint's generation config."""
-    explicit = payload.request.metadata.get(EXPLICIT_GENERATION_PARAMS_KEY)
-    if isinstance(explicit, (list, tuple)):
-        return {str(field) for field in explicit}
+def whole_number(name: str, value: object) -> int:
+    """A generation field that counts, so a fractional value is a caller error."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be an integer")
+    elif isinstance(value, float) and not value.is_integer():
+        raise ValueError(f"{name} must be an integer")
     else:
-        return set()
+        return int(value)
+
+
+def validate_silent_token(
+    tokenizer: PreTrainedTokenizerBase, checkpoint_dir: str
+) -> None:
+    """Refuse a checkpoint whose tokenizer cannot mark a silent turn the way AURA does."""
+    token_ids = tokenizer(SILENT_TOKEN, add_special_tokens=False).input_ids
+    if len(token_ids) != 1 or tokenizer.decode(token_ids, skip_special_tokens=True):
+        raise ValueError(
+            f"AURA Omni serves AURA checkpoints: {checkpoint_dir} has no special "
+            f"{SILENT_TOKEN} token, so a silent turn would reach Qwen3-TTS as text"
+        )
+    else:
+        pass
 
 
 def make_aura_scheduler_adapters(
@@ -113,9 +136,87 @@ def make_aura_scheduler_adapters(
         current_platform.set_device(device)
         turn: AuraTurn = payload.data
         prompt = render_aura_prompt(turn)
+        request_params = payload.request.params
+        stage_params = (request_params.get("stage_params") or {}).get(AURA_STAGE) or {}
+        stage_sampling = (request_params.get("stage_sampling") or {}).get(
+            AURA_STAGE
+        ) or {}
+        params = {**request_params, **stage_params, **stage_sampling}
+        # The client serializes stop fields even when unset, so an override that
+        # names neither must not erase the ones a wider source set.
+        stop_sources = (stage_sampling, stage_params, request_params)
+        caller_stop = next(
+            (source["stop"] for source in stop_sources if source.get("stop")), []
+        )
+        caller_stop_token_ids = next(
+            (
+                source["stop_token_ids"]
+                for source in stop_sources
+                if source.get("stop_token_ids")
+            ),
+            [],
+        )
+        try:
+            request_max_new_tokens = (
+                whole_number("max_new_tokens", params["max_new_tokens"])
+                if params.get("max_new_tokens") is not None
+                else max_new_tokens
+            )
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError(
+                f"AURA Omni expects valid sampling parameters: {error}"
+            ) from error
+        if caller_stop:
+            raise ValueError(
+                "AURA Omni expects stop sequences as "
+                "stage_sampling.aura.stop_token_ids: matching stop strings needs a "
+                "tokenizer the aura stage's scheduler does not hold"
+            )
+        else:
+            pass
+        sampling = {
+            field: params[field] if field in params else sampling_defaults[field]
+            for field in SAMPLING_FIELDS
+        }
+        try:
+            sampling_params = SamplingParams(
+                max_new_tokens=request_max_new_tokens,
+                temperature=float(sampling["temperature"]),
+                top_p=float(sampling["top_p"]),
+                top_k=whole_number("top_k", sampling["top_k"]),
+                min_p=float(sampling["min_p"]),
+                repetition_penalty=float(sampling["repetition_penalty"]),
+                stop_token_ids=[*stop_token_ids, *caller_stop_token_ids],
+                sampling_seed=params.get("seed"),
+            )
+            sampling_params.normalize(tokenizer=None)
+            sampling_params.verify(vocab_size)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError(
+                f"AURA Omni expects valid sampling parameters: {error}"
+            ) from error
+        if sampling_params.min_p > 0:
+            # SGLang's seeded sampling rejects min_p for a whole batch, so one
+            # min_p request would abort every seeded request batched with it.
+            raise ValueError(
+                "AURA Omni expects min_p=0 and narrows with top_p or top_k: "
+                "SGLang's seeded sampling does not support min_p"
+            )
+        else:
+            pass
         if turn["images"] or turn["videos"]:
+            if turn["video_sampling"]:
+                # A video request bypasses the processor's cache, so a per-request
+                # copy changes this request's frame budget and no other's.
+                request_processor = copy.copy(mm_processor)
+                request_processor.video_config = {
+                    **mm_processor.video_config,
+                    **turn["video_sampling"],
+                }
+            else:
+                request_processor = mm_processor
             processed = asyncio.run(
-                mm_processor.process_mm_data_async(
+                request_processor.process_mm_data_async(
                     image_data=list(turn["images"]),
                     input_text=prompt,
                     request_obj=SimpleNamespace(
@@ -139,13 +240,6 @@ def make_aura_scheduler_adapters(
                 "q", tokenizer(prompt, add_special_tokens=False).input_ids
             )
 
-        params = payload.request.params
-        explicit = explicit_sampling_fields(payload)
-        request_max_new_tokens = (
-            int(params["max_new_tokens"])
-            if params.get("max_new_tokens") is not None
-            else max_new_tokens
-        )
         if len(input_ids) + request_max_new_tokens > context_length - 1:
             raise ValueError(
                 f"AURA Omni request needs {len(input_ids)} prompt tokens + "
@@ -155,19 +249,6 @@ def make_aura_scheduler_adapters(
             )
         else:
             pass
-        sampling = {
-            field: params[field] if field in explicit else sampling_defaults[field]
-            for field in SAMPLING_FIELDS
-        }
-        sampling_params = SamplingParams(
-            max_new_tokens=request_max_new_tokens,
-            temperature=float(sampling["temperature"]),
-            top_p=float(sampling["top_p"]),
-            top_k=int(sampling["top_k"]),
-            repetition_penalty=float(sampling["repetition_penalty"]),
-            stop_token_ids=stop_token_ids,
-        )
-        sampling_params.normalize(tokenizer=None)
         req = Req(
             rid=payload.request_id,
             origin_input_text=prompt,
@@ -176,6 +257,11 @@ def make_aura_scheduler_adapters(
             vocab_size=vocab_size,
         )
         req.multimodal_inputs = mm_inputs
+        logger.info(
+            f"AURA request {payload.request_id}: {len(turn['images'])} images, "
+            f"{len(turn['videos'])} videos, {len(turn['transcript'])} transcript "
+            f"chars, {len(input_ids)} prompt tokens"
+        )
         return AuraRequestData(
             input_ids=torch.tensor(input_ids.tolist(), dtype=torch.long),
             req=req,
@@ -191,7 +277,14 @@ def make_aura_scheduler_adapters(
     def result_adapter(data: AuraRequestData) -> StagePayload:
         payload = data.stage_payload
         output_ids = list(data.output_ids)
-        text = tokenizer.decode(output_ids, skip_special_tokens=True).strip()
+        caller_stop_token_ids = data.req.sampling_params.stop_token_ids or ()
+        # A matched stop id is ordinary vocabulary, so decoding would speak it.
+        spoken_ids = (
+            output_ids[:-1]
+            if output_ids and output_ids[-1] in caller_stop_token_ids
+            else output_ids
+        )
+        text = tokenizer.decode(spoken_ids, skip_special_tokens=True).strip()
         answer: AuraAnswer = {
             "text": text,
             # note (siju): AURA answers silence with its own special token, so
@@ -215,6 +308,10 @@ def build_aura_stream_output(
     if request_data.req.inflight_middle_chunks > 0 or request_output.data is None:
         return []
     elif not request_data.stage_payload.request.params.get("stream", False):
+        return []
+    elif int(request_output.data) in (
+        request_data.req.sampling_params.stop_token_ids or ()
+    ):
         return []
     else:
         token_id = int(request_output.data)
@@ -249,6 +346,7 @@ class AuraEngineBuilder(SGLangGenerationEngineBuilder[AuraRequestData]):
         # processor modules, one of which it does not ship; the stock
         # Transformers Qwen3-VL classes load it as-is.
         self.processor = AutoProcessor.from_pretrained(checkpoint_dir)
+        validate_silent_token(self.processor.tokenizer, checkpoint_dir)
         self.generation_config = GenerationConfig.from_pretrained(checkpoint_dir)
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
@@ -311,6 +409,7 @@ class AuraEngineBuilder(SGLangGenerationEngineBuilder[AuraRequestData]):
                 ),
                 "top_p": float(generation_default(generation_config.top_p, 1.0)),
                 "top_k": int(generation_default(generation_config.top_k, -1)),
+                "min_p": float(generation_default(generation_config.min_p, 0.0)),
                 "repetition_penalty": float(
                     generation_default(generation_config.repetition_penalty, 1.0)
                 ),
