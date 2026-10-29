@@ -59,11 +59,6 @@ from sglang_omni.utils.audio import AudioDecodeError
 
 logger = logging.getLogger(__name__)
 
-# note (ratish): one thread per preprocessing worker hashes a request's video frames while its HF processor runs.
-video_cache_key_pool = ThreadPoolExecutor(
-    max_workers=2, thread_name_prefix="qwen3-omni-video-cache-key"
-)
-
 
 class VideoProcessorKwargs(TypedDict, total=False):
     fps: float | list[float]
@@ -900,12 +895,6 @@ class Qwen3OmniPreprocessor:
         audio_cache_key = compute_audio_cache_key(audios)
         # Image and video keys follow the same rule and hash the loaded media.
         image_cache_key = compute_image_cache_key(images)
-        # note (ratish): the video key only tags the encoder inputs, and the HF processor reads float32 frames without writing them, so the hash runs beside the processor.
-        video_cache_key_future = (
-            video_cache_key_pool.submit(compute_video_cache_key, videos)
-            if videos
-            else None
-        )
 
         videos_kwargs: VideoProcessorKwargs = {}
         if sampled_video_fps:
@@ -958,15 +947,24 @@ class Qwen3OmniPreprocessor:
         else:
             pass
 
-        hf_inputs: BatchFeature = self.processor(
-            text=prompt_text,
-            images=images or None,
-            videos=videos or None,
-            audio=audios or None,
-            add_special_tokens=False,
-            return_tensors="pt",
-            **processor_kwargs,
-        )
+        # note (ratish): the video key only tags the encoder inputs, and the HF processor reads float32 frames without writing them, so the request's own thread hashes them while the processor runs; leaving the block waits for the hash on every exit.
+        with ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="qwen3-omni-video-cache-key"
+        ) as video_cache_key_executor:
+            video_cache_key_future = (
+                video_cache_key_executor.submit(compute_video_cache_key, videos)
+                if videos
+                else None
+            )
+            hf_inputs: BatchFeature = self.processor(
+                text=prompt_text,
+                images=images or None,
+                videos=videos or None,
+                audio=audios or None,
+                add_special_tokens=False,
+                return_tensors="pt",
+                **processor_kwargs,
+            )
         video_cache_key = (
             video_cache_key_future.result()
             if video_cache_key_future is not None
