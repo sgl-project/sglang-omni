@@ -1,0 +1,104 @@
+diff --git a/srt/layers/attention/hybrid_linear_attn_backend.py b/srt/layers/attention/hybrid_linear_attn_backend.py
+index 0b0b6d412c..c07877566a 100644
+--- a/srt/layers/attention/hybrid_linear_attn_backend.py
++++ b/srt/layers/attention/hybrid_linear_attn_backend.py
+@@ -988,7 +988,10 @@ class MambaAttnBackendBase(AttentionBackend):
+         all-layers launch fired at the last mamba layer: the mask/src/dst
+         indices are shared across layers and every layer's state is final by
+         then, so the result is identical."""
+-        if forward_batch.mamba_track_mask is None:
++        if (
++            forward_batch.mamba_track_mask is None
++            or self.req_to_token_pool.mamba_cache_prompt_only
++        ):
+             return
+         if layer_id is not None:
+             pools = self._track_pools()
+diff --git a/srt/layers/attention/triton_backend.py b/srt/layers/attention/triton_backend.py
+index ef19c8cece..85d474045c 100644
+--- a/srt/layers/attention/triton_backend.py
++++ b/srt/layers/attention/triton_backend.py
+@@ -155,6 +155,8 @@ class TritonAttnBackend(AttentionBackend):
+     # kv_indptr/qo_indptr are preallocated at (req pool + 1); an extend batch
+     # can never carry more seqs than the pool.
+     extend_dummy_seqs_capped_by_req_pool: bool = True
++    # note (wirybeaver): unify prefill without changing decode splitting.
++    use_unified_prefill: bool = False
+ 
+     def __init__(
+         self,
+@@ -1795,7 +1797,7 @@ class TritonAttnBackend(AttentionBackend):
+             )
+ 
+         # Deterministic mode: use unified 1-stage kernel
+-        if self.enable_deterministic:
++        if self.enable_deterministic or self.use_unified_prefill:
+             return self._forward_extend_unified(
+                 q,
+                 o,
+diff --git a/srt/managers/schedule_batch.py b/srt/managers/schedule_batch.py
+index fcbb02cf5f..2d4c1b4e1e 100644
+--- a/srt/managers/schedule_batch.py
++++ b/srt/managers/schedule_batch.py
+@@ -3822,7 +3822,18 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
+                 self.req_pool_indices_cpu,
+             )
+ 
+-        if get_exec().mamba.enable_mamba_extra_buffer:
++        if (
++            get_exec().mamba.enable_mamba_extra_buffer
++            and self.req_to_token_pool.mamba_cache_prompt_only
++        ):
++            self.mamba_track_indices = None
++            self.mamba_track_buffer_indices = None
++            self.mamba_track_mask = None
++            self.mamba_track_seqlens = None
++            self.mamba_track_mask_cpu = None
++            self.mamba_track_mask_next_cpu = None
++            self.mamba_decode_batch_idx_cpu = None
++        elif get_exec().mamba.enable_mamba_extra_buffer:
+             mamba_track_interval = mamba_track_grid(self.tree_cache.page_size)
+ 
+             if len(self.reqs) == 0:
+diff --git a/srt/managers/scheduler_components/batch_result_processor.py b/srt/managers/scheduler_components/batch_result_processor.py
+index c1bc4a00e2..6fc6eb3403 100644
+--- a/srt/managers/scheduler_components/batch_result_processor.py
++++ b/srt/managers/scheduler_components/batch_result_processor.py
+@@ -1536,7 +1536,10 @@ class SchedulerBatchResultProcessor:
+         Lazy: keep the same index (prealloc handles the swap) and run
+         post-decode cleanup to free the temporary second slot.
+         """
+-        if req.kv.mamba_ping_pong_track_buffer is None:
++        if req.kv.mamba_ping_pong_track_buffer is None or (
++            batch.req_to_token_pool.mamba_cache_prompt_only
++            and batch.forward_mode.is_decode()
++        ):
+             return
+ 
+         lazy = get_exec().mamba.enable_mamba_extra_buffer_lazy
+diff --git a/srt/mem_cache/memory_pool.py b/srt/mem_cache/memory_pool.py
+index 2882dcf8e9..9f99fc031b 100644
+--- a/srt/mem_cache/memory_pool.py
++++ b/srt/mem_cache/memory_pool.py
+@@ -375,6 +375,9 @@ def _resolve_fused_scale(
+ class ReqToTokenPool:
+     """A memory pool that maps a request to its token locations."""
+ 
++    # note (wirybeaver): fixed before graph capture; the caller suppresses tail inserts.
++    mamba_cache_prompt_only: bool = False
++
+     enable_mamba_extra_buffer_lazy: bool = False
+     # Extra pre-allocation headroom (reserved for in-transfer decode requests).
+     # 0 for a plain pool; the decode-flavored pool (DecodeReqToTokenPool) sets a
+diff --git a/srt/model_executor/runner/decode_cuda_graph_runner.py b/srt/model_executor/runner/decode_cuda_graph_runner.py
+index bb073d478c..3f04c35e16 100644
+--- a/srt/model_executor/runner/decode_cuda_graph_runner.py
++++ b/srt/model_executor/runner/decode_cuda_graph_runner.py
+@@ -457,6 +457,7 @@ class DecodeCudaGraphRunner(BaseCudaGraphRunner):
+ 
+         enable_mamba_track = (
+             get_exec().mamba.enable_mamba_extra_buffer
++            and not self.model_runner.req_to_token_pool.mamba_cache_prompt_only
+             and self.model_runner.spec_algorithm.is_none()
+         )
+ 

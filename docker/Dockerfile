@@ -37,13 +37,11 @@ RUN git clone --filter=blob:none https://github.com/openucx/ucx.git /tmp/ucx \
 # so name the interpreter explicitly.
 # Reuse the project's protobuf override for DAC, and include model extras so
 # startup does not need to install packages into a different Python environment.
-# The base image's FlashInfer AOT packages (cubin, the jit-cache umbrella and its
-# per-architecture providers) carry the pinned version, so they stay: every kernel
-# they hold loads without a compile, and only shapes outside them compile into
-# FLASHINFER_WORKSPACE_BASE. Uninstalling the umbrella alone leaves the providers
-# behind as a package without a version and breaks the flashinfer import.
+# note (wirybeaver): Keep the source runtime on the Python cache implementation used in qualification.
+ENV SGLANG_BUILD_RUST_EXTS=none
 COPY pyproject.toml /tmp/pyproject.toml
 RUN python3 -c 'import tomllib; print("\n".join(tomllib.load(open("/tmp/pyproject.toml", "rb"))["tool"]["uv"]["override-dependencies"]))' > /tmp/omni-overrides.txt \
+    && uv pip install --python /opt/sglang/bin/python3 "setuptools-scm>=8.0" \
     && uv pip install --python /opt/sglang/bin/python3 --no-build-isolation \
         --overrides /tmp/omni-overrides.txt -r /tmp/pyproject.toml \
         descript-audiotools==0.7.2 descript-audio-codec==1.0.0 \
@@ -52,7 +50,11 @@ RUN python3 -c 'import tomllib; print("\n".join(tomllib.load(open("/tmp/pyprojec
         --overrides /tmp/omni-overrides.txt -r /tmp/pyproject.toml \
         --extra audar-tts --extra fun-cosyvoice3 --extra minicpm-o \
     && uv pip install --python /opt/sglang/bin/python3 --no-deps qwen-tts==0.1.1 \
-    && uv pip install --python /opt/sglang/bin/python3 --no-deps --reinstall flashinfer-python==0.7.1 \
+    && uv pip install --python /opt/sglang/bin/python3 --no-deps --reinstall flashinfer-python==0.7.2 \
+    && uv pip install --python /opt/sglang/bin/python3 --no-deps --reinstall \
+        --index-url https://flashinfer.ai/whl/cu130 flashinfer-jit-cache==0.7.2+cu130 \
+    && uv pip install --python /opt/sglang/bin/python3 --no-deps --reinstall \
+        --index-url https://flashinfer.ai/whl flashinfer-cubin==0.7.2 \
     && rm /tmp/pyproject.toml /tmp/omni-overrides.txt
 
 ENV FLASHINFER_WORKSPACE_BASE=/root \
@@ -79,6 +81,7 @@ if [ "${SGLANG_OMNI_AUTO_CLONE:-1}" = "1" ]; then
             https://github.com/sgl-project/sglang-omni.git "${repo_dir}"
     fi
     python3 -m pip install --no-deps --no-build-isolation -e "${repo_dir}"
+    sgl-omni-prepare-runtime
     cd "${repo_dir}"
 fi
 

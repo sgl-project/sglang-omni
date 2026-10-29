@@ -74,6 +74,7 @@ def test_each_factory_gets_the_defaults_written_once() -> None:
         "first_frame_cuda_graph_max_requests": 16,
         "triton_sampling": True,
         "tower_fused_layers": True,
+        "prefix_cache_prompt_only": True,
         "enable_async_decode": False,
         "async_decode_min_batch_size": 1,
         "stream_stride": 10,

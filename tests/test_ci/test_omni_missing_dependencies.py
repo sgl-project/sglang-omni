@@ -1,5 +1,9 @@
 import importlib.util
+import json
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 SCRIPT = Path(__file__).parents[2] / ".github/scripts/omni_missing_dependencies.py"
 SPEC = importlib.util.spec_from_file_location("omni_missing_dependencies", SCRIPT)
@@ -30,3 +34,29 @@ override-dependencies = ["protobuf>=6,<7"]
     ]
 
     assert MODULE.override_requirements(pyproject) == ["protobuf>=6,<7"]
+
+
+def test_source_pin_requires_the_actual_installed_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A matching package version cannot make an old wheel satisfy a VCS pin."""
+    requirement = (
+        "sglang @ git+https://github.com/sgl-project/sglang.git@abc123"
+        "#subdirectory=python"
+    )
+    origin = None
+    installed = SimpleNamespace(version="0.5.22", read_text=lambda name: origin)
+    monkeypatch.setattr(
+        MODULE.importlib.metadata, "distribution", lambda name: installed
+    )
+    assert MODULE.unsatisfied_requirements([requirement]) == [requirement]
+    origin = json.dumps(
+        {
+            "url": "https://github.com/sgl-project/sglang.git",
+            "subdirectory": "python",
+            "vcs_info": {"commit_id": "old"},
+        }
+    )
+    assert MODULE.unsatisfied_requirements([requirement]) == [requirement]
+    origin = origin.replace('"old"', '"abc123"')
+    assert MODULE.unsatisfied_requirements([requirement]) == []

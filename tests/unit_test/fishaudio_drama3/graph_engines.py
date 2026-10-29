@@ -46,10 +46,11 @@ from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 from sglang_omni.scheduling.engine_factory import GenerationDefaults
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.sglang_backend import cache as cache_module
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
+from sglang_omni.vendor.sglang.core import sglang_set_mamba_track_indices
 from tests.unit_test.fishaudio_drama3.graph_fixtures import (
     CUDA_GRAPH_BATCH_SIZES,
-    PREFILL_CUDA_GRAPH_TOKEN_COUNTS,
     ExpertPath,
     GraphEngineFacts,
     GraphEngineRun,
@@ -94,12 +95,17 @@ class GraphRecordingEngineBuilder(Drama3EngineBuilder):
             first_frame_cuda_graph_max_requests=spec.first_frame_cuda_graph_max_requests,
             triton_sampling=spec.triton_sampling,
             tower_fused_layers=spec.tower_fused_layers,
+            prefix_cache_prompt_only=spec.prefix_cache_prompt_only,
             enable_async_decode=spec.enable_async_decode,
             async_decode_min_batch_size=spec.async_decode_min_batch_size,
         )
         self.spec = spec
+        if spec.use_original_tracking_indices:
+            cache_module.set_mamba_track_indices = sglang_set_mamba_track_indices
+        else:
+            pass
         self.capture_break_recorder = CaptureBreakRecorder(
-            radix_attention.breakable_unified_attention_with_output
+            radix_attention.RadixAttention._eager_attention  # noqa: leading-underscore  # required backend hook
         )
         self.lean_choice_recorder = LeanChoiceRecorder(
             decode_attention.lean_capture_policy,
@@ -121,6 +127,7 @@ class GraphRecordingEngineBuilder(Drama3EngineBuilder):
         return {
             **super().generation_defaults(dtype=dtype),
             "disable_cuda_graph": self.spec.kind == "eager",
+            "disable_radix_cache": not self.spec.prefix_cache_enabled,
             "max_prefill_tokens": self.spec.max_prefill_tokens,
             "max_total_tokens": self.spec.max_total_tokens,
         }
@@ -151,8 +158,8 @@ class GraphRecordingEngineBuilder(Drama3EngineBuilder):
             model_worker.model_runner.req_to_token_pool.size, torch.device(device)
         )
         sampling.sample_top_k_top_p = DrawRecorder(model, sampling.sample_top_k_top_p)
-        radix_attention.breakable_unified_attention_with_output = (
-            self.capture_break_recorder
+        radix_attention.RadixAttention._eager_attention = (  # noqa: leading-underscore  # required backend hook
+            self.capture_break_recorder.attention_break
         )
         tower_prefill = model.model.tower_prefill
         assert tower_prefill is not None
@@ -367,10 +374,13 @@ class GraphSchedulerDriver:
     def free_pool_counts(self) -> FreePoolCounts:
         pool = self.scheduler.req_to_token_pool
         assert isinstance(pool, HybridReqToTokenPool)
+        cache = self.scheduler.tree_cache
         return FreePoolCounts(
             request_row_count=pool.available_size(),
-            mamba_slot_count=pool.mamba_allocator.available_size(),
-            kv_token_count=self.scheduler.token_to_kv_pool_allocator.available_size(),
+            mamba_slot_count=pool.mamba_allocator.available_size()
+            + (cache.mamba_evictable_size() if cache.supports_mamba() else 0),
+            kv_token_count=self.scheduler.token_to_kv_pool_allocator.available_size()
+            + cache.full_evictable_size(),
         )
 
     def is_pipeline_drained(self) -> bool:
@@ -534,8 +544,8 @@ def run_engine(spec: GraphEngineSpec) -> GraphEngineRun:
                 "cuda_graph_bs": CUDA_GRAPH_BATCH_SIZES,
                 "cuda_graph_max_bs": max(CUDA_GRAPH_BATCH_SIZES),
                 "cuda_graph_backend_prefill": "breakable",
-                "cuda_graph_bs_prefill": PREFILL_CUDA_GRAPH_TOKEN_COUNTS,
-                "cuda_graph_max_bs_prefill": max(PREFILL_CUDA_GRAPH_TOKEN_COUNTS),
+                "cuda_graph_bs_prefill": spec.prefill_cuda_graph_token_counts,
+                "cuda_graph_max_bs_prefill": max(spec.prefill_cuda_graph_token_counts),
             },
         )
     model = scheduler.tp_worker.model_runner.model

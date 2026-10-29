@@ -1,0 +1,680 @@
+diff --git a/kernels/ops/attention/fla/chunk.py b/kernels/ops/attention/fla/chunk.py
+index f4b892f68b..6fdf35c38f 100644
+--- a/kernels/ops/attention/fla/chunk.py
++++ b/kernels/ops/attention/fla/chunk.py
+@@ -45,6 +45,9 @@ def chunk_gated_delta_rule_fwd(
+     cu_seqlens: Optional[torch.LongTensor] = None,
+     chunk_indices: torch.LongTensor | None = None,
+     inplace_update: bool = True,
++    track_state: torch.Tensor | None = None,
++    track_chunk_idx: torch.Tensor | None = None,
++    chunk_offsets: torch.Tensor | None = None,
+ ):
+     g = chunk_local_cumsum(
+         g, chunk_size=CHUNK_SIZE, cu_seqlens=cu_seqlens, chunk_indices=chunk_indices
+@@ -70,6 +73,9 @@ def chunk_gated_delta_rule_fwd(
+         cu_seqlens=cu_seqlens,
+         chunk_indices=chunk_indices,
+         inplace_update=inplace_update,
++        track_state=track_state,
++        track_chunk_idx=track_chunk_idx,
++        chunk_offsets=chunk_offsets,
+     )
+     o = chunk_fwd_o(
+         q=q,
+@@ -79,6 +85,7 @@ def chunk_gated_delta_rule_fwd(
+         g=g,
+         scale=scale,
+         cu_seqlens=cu_seqlens,
++        chunk_indices=chunk_indices,
+     )
+     if SUPPRESS_LEVEL < 3:
+         return g, o, A, None, h, None
+@@ -103,6 +110,10 @@ class ChunkGatedDeltaRuleFunction(torch.autograd.Function):
+         cu_seqlens: Optional[torch.LongTensor] = None,
+         use_qk_l2norm_in_kernel: bool = False,
+         inplace_update: bool = True,
++        track_state: torch.Tensor | None = None,
++        track_chunk_idx: torch.Tensor | None = None,
++        chunk_indices: torch.Tensor | None = None,
++        chunk_offsets: torch.Tensor | None = None,
+     ):
+         q_orig = q
+         k_orig = k
+@@ -111,11 +122,8 @@ class ChunkGatedDeltaRuleFunction(torch.autograd.Function):
+             q = l2norm_fwd(q)
+             k = l2norm_fwd(k)
+ 
+-        chunk_indices = (
+-            prepare_chunk_indices(cu_seqlens, CHUNK_SIZE)
+-            if cu_seqlens is not None
+-            else None
+-        )
++        if chunk_indices is None and cu_seqlens is not None:
++            chunk_indices = prepare_chunk_indices(cu_seqlens, CHUNK_SIZE)
+         g, o, A, w, h, v_new = chunk_gated_delta_rule_fwd(
+             q=q,
+             k=k,
+@@ -128,6 +136,9 @@ class ChunkGatedDeltaRuleFunction(torch.autograd.Function):
+             cu_seqlens=cu_seqlens,
+             chunk_indices=chunk_indices,
+             inplace_update=inplace_update,
++            track_state=track_state,
++            track_chunk_idx=track_chunk_idx,
++            chunk_offsets=chunk_offsets,
+         )
+         return o.to(q.dtype), h
+ 
+@@ -146,6 +157,10 @@ def chunk_gated_delta_rule(
+     head_first: bool = False,
+     use_qk_l2norm_in_kernel: bool = False,
+     inplace_update: bool = True,
++    track_state: torch.Tensor | None = None,
++    track_chunk_idx: torch.Tensor | None = None,
++    chunk_indices: torch.Tensor | None = None,
++    chunk_offsets: torch.Tensor | None = None,
+ ):
+     r"""
+     Args:
+@@ -263,6 +278,10 @@ def chunk_gated_delta_rule(
+         cu_seqlens,
+         use_qk_l2norm_in_kernel,
+         inplace_update,
++        track_state,
++        track_chunk_idx,
++        chunk_indices,
++        chunk_offsets,
+     )
+     if head_first:
+         o = rearrange(o, "b t h ... -> b h t ...")
+diff --git a/kernels/ops/attention/fla/chunk_o.py b/kernels/ops/attention/fla/chunk_o.py
+index f644f15fc3..03579f0b28 100644
+--- a/kernels/ops/attention/fla/chunk_o.py
++++ b/kernels/ops/attention/fla/chunk_o.py
+@@ -62,6 +62,8 @@ def chunk_fwd_kernel_o(
+             tl.load(cu_seqlens + i_n + 1).to(tl.int32),
+         )
+         T = eos - bos
++        if i_t * BT >= T:
++            return
+         NT = tl.cdiv(T, BT)
+     else:
+         NT = tl.cdiv(T, BT)
+@@ -134,13 +136,13 @@ def chunk_fwd_o(
+     scale: Optional[float] = None,
+     cu_seqlens: Optional[torch.LongTensor] = None,
+     chunk_size: int = 64,
++    chunk_indices: Optional[torch.Tensor] = None,
+ ) -> torch.Tensor:
+     B, T, Hg, K, V = *q.shape, v.shape[-1]
+     H = v.shape[-2]
+     BT = min(chunk_size, max(16, triton.next_power_of_2(T)))
+-    chunk_indices = (
+-        prepare_chunk_indices(cu_seqlens, BT) if cu_seqlens is not None else None
+-    )
++    if chunk_indices is None and cu_seqlens is not None:
++        chunk_indices = prepare_chunk_indices(cu_seqlens, BT)
+     NT = triton.cdiv(T, BT) if cu_seqlens is None else len(chunk_indices)
+     if scale is None:
+         scale = k.shape[-1] ** -0.5
+diff --git a/kernels/ops/mamba/kda_prefill_track.py b/kernels/ops/mamba/kda_prefill_track.py
+index ce3b49eadb..e791e0c605 100644
+--- a/kernels/ops/mamba/kda_prefill_track.py
++++ b/kernels/ops/mamba/kda_prefill_track.py
+@@ -34,6 +34,7 @@ def _kda_track_conv_window_kernel(
+     num_tokens,  # [1] int32 logical tokens of the batch
+     stride_pool_slot,
+     stride_pool_row,
++    stride_pool_feature,
+     stride_x_token,
+     dim,
+     STATE_LEN: tl.constexpr,
+@@ -53,7 +54,10 @@ def _kda_track_conv_window_kernel(
+         t = tl.minimum(tl.maximum(start + j, 0), total - 1).to(tl.int64)
+         val = tl.load(x + t * stride_x_token + offs, mask=mask)
+         tl.store(
+-            conv_pool + dst * stride_pool_slot + j * stride_pool_row + offs,
++            conv_pool
++            + dst * stride_pool_slot
++            + j * stride_pool_row
++            + offs * stride_pool_feature,
+             val.to(conv_pool.dtype.element_ty),
+             mask=mask,
+         )
+@@ -104,7 +108,7 @@ def kda_track_conv_window(
+     every tracked row ``r``; the grid depends only on the row bound."""
+     rows = track_mode.shape[0]
+     state_len, dim = conv_pool.shape[-2], conv_pool.shape[-1]
+-    assert x.shape[-1] == dim and x.stride(-1) == 1 and conv_pool.stride(-1) == 1
++    assert x.shape[-1] == dim and x.stride(-1) == 1
+     block_d = 1024
+     _kda_track_conv_window_kernel[(rows, triton.cdiv(dim, block_d))](
+         conv_pool,
+@@ -115,6 +119,7 @@ def kda_track_conv_window(
+         num_tokens,
+         conv_pool.stride(0),
+         conv_pool.stride(1),
++        conv_pool.stride(2),
+         x.stride(0),
+         dim,
+         STATE_LEN=state_len,
+diff --git a/srt/environ.py b/srt/environ.py
+index daf71f2c18..91d7594ae8 100644
+--- a/srt/environ.py
++++ b/srt/environ.py
+@@ -1650,6 +1650,9 @@ class Envs:
+     # Sequences a captured KDA extend bucket accepts; a larger prefill batch on
+     # any dp rank runs the step eagerly. Bounds the padded grids and scratch.
+     SGLANG_KDA_PREFILL_GRAPH_MAX_SEQS = EnvInt(128)
++    # Bound GDN graph scratch; larger batches retain the eager extend path.
++    SGLANG_DISABLE_GDN_PREFILL_GRAPH_EXTEND = EnvBool(False)
++    SGLANG_GDN_PREFILL_GRAPH_MAX_SEQS = EnvInt(128)
+ 
+     # ===================================================================
+     # Tokenizer, request state, embeddings, and reasoning controls
+diff --git a/srt/layers/attention/hybrid_linear_attn_backend.py b/srt/layers/attention/hybrid_linear_attn_backend.py
+index 0b0b6d412c..0016f2fe29 100644
+--- a/srt/layers/attention/hybrid_linear_attn_backend.py
++++ b/srt/layers/attention/hybrid_linear_attn_backend.py
+@@ -21,6 +21,11 @@ from sglang.srt.layers.attention.base_attn_backend import (
+     AttentionBackend,
+     SharedReadEnds,
+ )
++from sglang.srt.layers.attention.linear.kda_prefill_graph import (
++    KDAPrefillGraphMetadata,
++    KDAPrefillTrackRows,
++    build_track_rows,
++)
+ from sglang.srt.layers.attention.linear.utils import pp_spec_stable_rows_enabled
+ from sglang.srt.layers.attention.mamba.mamba import MambaMixer2
+ from sglang.srt.layers.attention.mamba.mamba2_metadata import (
+@@ -42,7 +47,12 @@ from sglang.srt.model_executor.cuda_graph_config import (
+ )
+ from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
+ from sglang.srt.model_executor.model_runner import ModelRunner
+-from sglang.srt.runtime_context import get_exec, get_memory, get_spec
++from sglang.srt.runtime_context import (
++    get_exec,
++    get_memory,
++    get_spec,
++    mamba_cache_chunk_size,
++)
+ from sglang.srt.speculative.eagle_info import EagleDraftInput, EagleVerifyInput
+ from sglang.srt.speculative.spec_info import SpecInput
+ from sglang.srt.utils import is_pin_memory_available
+@@ -76,6 +86,7 @@ class MambaAttnBackendBase(AttentionBackend):
+     # Most sequences the prefill graph tables hold (larger batches replay no
+     # graph); set at init by backends whose supports_prefill_graph_extend holds.
+     prefill_graph_max_seqs: int
++    prefill_graph_metadata: Optional[KDAPrefillGraphMetadata] = None
+ 
+     def __init__(self, model_runner: ModelRunner):
+         self.validate_mis_support(model_runner.server_args)
+@@ -124,14 +135,100 @@ class MambaAttnBackendBase(AttentionBackend):
+         return False
+ 
+     def prefill_graph_extend_active(self) -> bool:
+-        """Whether the extend being captured or replayed runs on those tables."""
+-        return False
++        return self.prefill_graph_metadata is not None
++
++    def init_prefill_graph_metadata(
++        self, forward_batch: ForwardBatch
++    ) -> KDAPrefillGraphMetadata:
++        cache_indices = self._prefill_graph_cache_indices(forward_batch)
++        meta = KDAPrefillGraphMetadata.allocate(
++            # KDA sees global sequence order, even when CP positions are local.
++            num_tokens=forward_batch.extend_num_tokens,
++            max_seqs_cap=self.prefill_graph_max_seqs,
++            # Any replay of this bucket may carry prefix-cache snapshots (the
++            # extra buffer is only on with the radix cache).
++            track=get_exec().mamba.enable_mamba_extra_buffer,
++            cache_index_dtype=cache_indices.dtype,
++            device=self.device,
++            flashinfer_wrapper_cls=getattr(
++                self.kernel_dispatcher.extend_kernel, "prefill_graph_wrapper_cls", None
++            ),
++        )
++        self._fill_prefill_graph_metadata(
++            meta=meta, forward_batch=forward_batch, cache_indices=cache_indices
++        )
++        return meta
++
++    def refresh_prefill_graph_metadata(
++        self, meta: KDAPrefillGraphMetadata, forward_batch: ForwardBatch
++    ) -> None:
++        self._fill_prefill_graph_metadata(
++            meta=meta,
++            forward_batch=forward_batch,
++            cache_indices=self._prefill_graph_cache_indices(forward_batch),
++        )
++
++    def _prefill_graph_cache_indices(self, forward_batch: ForwardBatch):
++        # Same slot resolution as MambaAttnBackendBase._forward_metadata.
++        cache_indices = self._translate_mamba_indices(
++            self.req_to_token_pool.get_mamba_indices(forward_batch.req_pool_indices)
++        )
++        real_bs = forward_batch._original_batch_size
++        if real_bs is not None and real_bs < cache_indices.shape[0]:
++            cache_indices = cache_indices.clone()
++            cache_indices[real_bs:] = -1
++        return cache_indices
+ 
+-    def init_prefill_graph_metadata(self, forward_batch: ForwardBatch):
+-        raise NotImplementedError()
++    def _fill_prefill_graph_metadata(
++        self,
++        *,
++        meta: KDAPrefillGraphMetadata,
++        forward_batch: ForwardBatch,
++        cache_indices: torch.Tensor,
++    ) -> None:
++        if forward_batch.mamba_track_indices is not None:
++            # Same one-time in-place translation as the eager metadata path.
++            forward_batch.mamba_track_indices = self._translate_mamba_indices(
++                forward_batch.mamba_track_indices
++            )
++        track_rows = None
++        if forward_batch.mamba_track_mask is not None:
++            assert meta.track, (
++                "prefix-cache track batch replayed on a bucket captured without "
++                "track tables"
++            )
++            track_rows = self._prefill_graph_track_rows(forward_batch)
++        meta.fill(
++            extend_seq_lens=list(forward_batch.extend_seq_lens_cpu),
++            cache_indices=cache_indices,
++            extend_prefix_lens=forward_batch.extend_prefix_lens,
++            track_rows=track_rows,
++        )
++        self.prefill_graph_metadata = meta
+ 
+-    def refresh_prefill_graph_metadata(self, meta, forward_batch: ForwardBatch):
+-        raise NotImplementedError()
++    def _prefill_graph_track_rows(
++        self, forward_batch: ForwardBatch
++    ) -> Optional[KDAPrefillTrackRows]:
++        bs = forward_batch.batch_size
++        if self._has_cpu_prefill_track_metadata(forward_batch):
++            track_mask = list(forward_batch.mamba_prefill_track_mask_cpu)
++            track_seq_lens = list(forward_batch.mamba_track_seqlens_cpu)
++            extend_prefix_lens = list(forward_batch.extend_prefix_lens_cpu)
++        else:
++            # The same host copies the eager path takes without CPU metadata.
++            track_mask = forward_batch.mamba_track_mask[:bs].tolist()
++            track_seq_lens = forward_batch.mamba_track_seqlens[:bs].tolist()
++            extend_prefix_lens = forward_batch.extend_prefix_lens[:bs].tolist()
++        return build_track_rows(
++            track_mask=track_mask,
++            track_seq_lens=track_seq_lens,
++            extend_seq_lens=list(forward_batch.extend_seq_lens_cpu),
++            extend_prefix_lens=extend_prefix_lens,
++            state_chunk_size=self.mamba_chunk_size,
++            cache_chunk_size=mamba_cache_chunk_size(),
++            conv_len=self.conv_states_shape[-1],
++            dst=forward_batch.mamba_track_indices,
++        )
+ 
+     @property
+     def mamba_chunk_size(self) -> int:
+diff --git a/srt/layers/attention/linear/gdn_backend.py b/srt/layers/attention/linear/gdn_backend.py
+index 71d94aeab3..197d5b568f 100644
+--- a/srt/layers/attention/linear/gdn_backend.py
++++ b/srt/layers/attention/linear/gdn_backend.py
+@@ -12,6 +12,10 @@ from sglang.kernels.ops.mamba.causal_conv1d_triton import (
+ from sglang.srt.configs.hybrid_arch import hybrid_gdn_config
+ from sglang.srt.environ import envs
+ from sglang.srt.layers.attention.hybrid_linear_attn_backend import MambaAttnBackendBase
++from sglang.srt.layers.attention.linear.gdn_prefill_graph import (
++    MAX_FUSED_QKV_SPLIT_DIM,
++    gdn_extend_in_graph,
++)
+ from sglang.srt.layers.attention.linear.kernels.gdn_triton import TritonGDNKernel
+ from sglang.srt.layers.attention.linear.utils import (
+     LinearAttnBackends,
+@@ -43,7 +47,6 @@ if is_cuda() or is_hip() or is_xpu():
+         fused_qkvzba_split_reshape_cat_contiguous,
+     )
+ 
+-MAX_FUSED_QKV_SPLIT_DIM = 8192
+ _fused_decode_proj_conv_logged = False
+ _fused_decode_proj_conv_fallback_logged = False
+ _fused_decode_proj_conv_layers_logged: set[int] = set()
+@@ -523,6 +526,9 @@ class GDNAttnBackend(MambaAttnBackendBase):
+         _validate_gdn_linear_attn_backends(model_runner.linear_attn_backends)
+         super().__init__(model_runner)
+         self.enable_mis = get_exec().features.enable_mis
++        self.prefill_graph_max_seqs = min(
++            self.req_to_token_pool.size, envs.SGLANG_GDN_PREFILL_GRAPH_MAX_SEQS.get()
++        )
+         self.mis_metadata: Optional[GDNMISMetadata] = None
+         self.conv_states_shape = (
+             model_runner.req_to_token_pool.mamba_pool.mamba_cache.conv[0].shape
+@@ -547,6 +553,17 @@ class GDNAttnBackend(MambaAttnBackendBase):
+         )
+         self._use_strided_target_verify_qkv = False
+ 
++    def supports_prefill_graph_extend(self) -> bool:
++        state = self.req_to_token_pool.mamba_pool.mamba_cache
++        return (
++            is_cuda()
++            and not envs.SGLANG_DISABLE_GDN_PREFILL_GRAPH_EXTEND.get()
++            and isinstance(self.kernel_dispatcher.extend_kernel, TritonGDNKernel)
++            and not self.enable_mis
++            and state.temporal.is_contiguous()
++            and state.conv[0].is_contiguous()
++        )
++
+     def init_forward_metadata_out_graph(
+         self,
+         forward_batch: ForwardBatch,
+@@ -556,6 +573,7 @@ class GDNAttnBackend(MambaAttnBackendBase):
+         self._init_target_verify_qkv_routing(forward_batch)
+ 
+     def init_forward_metadata(self, forward_batch: ForwardBatch):
++        self.prefill_graph_metadata = None
+         super().init_forward_metadata(forward_batch)
+         self._init_target_verify_qkv_routing(forward_batch)
+         self.mis_metadata = None
+@@ -955,6 +973,17 @@ class GDNAttnBackend(MambaAttnBackendBase):
+         **kwargs,
+     ):
+         assert isinstance(mixed_qkv, torch.Tensor)
++        if self.prefill_graph_metadata is not None:
++            state = self.req_to_token_pool.mamba2_layer_cache(layer.layer_id)
++            return gdn_extend_in_graph(
++                layer=layer,
++                metadata=self.prefill_graph_metadata,
++                conv_states=state.conv[0],
++                ssm_states=state.temporal,
++                mixed_qkv=mixed_qkv,
++                a=a,
++                b=b,
++            )
+         seq_len = mixed_qkv.shape[0]
+ 
+         if _is_hip and seq_len == 0:
+diff --git a/srt/layers/attention/linear/gdn_prefill_graph.py b/srt/layers/attention/linear/gdn_prefill_graph.py
+new file mode 100644
+index 0000000000..7f4290fef1
+--- /dev/null
++++ b/srt/layers/attention/linear/gdn_prefill_graph.py
+@@ -0,0 +1,108 @@
++"""GDN prefill on static bucket tables, using the existing attention kernels."""
++
++from __future__ import annotations
++
++import torch
++
++from sglang.kernels.ops.attention.fla.chunk import chunk_gated_delta_rule
++from sglang.kernels.ops.attention.linear.fused_gdn_gating import fused_gdn_gating
++from sglang.kernels.ops.attention.triton_gdn_fused_proj import (
++    fused_qkv_split_gdn_prefill,
++)
++from sglang.kernels.ops.mamba.causal_conv1d_triton import causal_conv1d_fn
++from sglang.kernels.ops.mamba.kda_prefill_track import (
++    kda_track_conv_window,
++    kda_track_ssm_state,
++)
++from sglang.srt.layers.attention.linear.kda_prefill_graph import KDAPrefillGraphMetadata
++from sglang.srt.layers.radix_linear_attention import RadixLinearAttention
++
++MAX_FUSED_QKV_SPLIT_DIM = 8192
++
++
++def gdn_extend_in_graph(
++    *,
++    layer: RadixLinearAttention,
++    metadata: KDAPrefillGraphMetadata,
++    conv_states: torch.Tensor,
++    ssm_states: torch.Tensor,
++    mixed_qkv: torch.Tensor,
++    a: torch.Tensor,
++    b: torch.Tensor,
++) -> torch.Tensor:
++    if metadata.track:
++        kda_track_conv_window(
++            conv_pool=conv_states.transpose(-1, -2),
++            x=mixed_qkv,
++            track_mode=metadata.track_mode,
++            track_conv_start=metadata.track_conv_start,
++            track_dst=metadata.track_dst,
++            num_tokens=metadata.num_logical_tokens,
++        )
++    else:
++        pass
++    mixed_qkv = causal_conv1d_fn(
++        mixed_qkv.transpose(0, 1),
++        layer.conv_weights,
++        layer.bias,
++        activation=layer.activation,
++        conv_states=conv_states,
++        has_initial_state=metadata.has_initial_state,
++        cache_indices=metadata.cache_indices,
++        query_start_loc=metadata.cu_seqlens,
++        seq_lens_cpu=None,
++        block_table=metadata.conv_block_table,
++    ).transpose(0, 1)
++    if layer.q_dim + layer.k_dim + layer.v_dim <= MAX_FUSED_QKV_SPLIT_DIM:
++        query, key, value = fused_qkv_split_gdn_prefill(
++            mixed_qkv,
++            layer.num_q_heads,
++            layer.num_k_heads,
++            layer.num_v_heads,
++            layer.head_q_dim,
++            layer.head_k_dim,
++            layer.head_v_dim,
++        )
++    else:
++        query, key, value = mixed_qkv.split(
++            [layer.q_dim, layer.k_dim, layer.v_dim], dim=-1
++        )
++        query = query.view(1, metadata.num_tokens, layer.num_q_heads, layer.head_q_dim)
++        key = key.view(1, metadata.num_tokens, layer.num_k_heads, layer.head_k_dim)
++        value = value.view(1, metadata.num_tokens, layer.num_v_heads, layer.head_v_dim)
++    g, beta = fused_gdn_gating(layer.A_log, a, b, layer.dt_bias)
++    snapshot = (
++        torch.empty(
++            (metadata.max_seqs, *ssm_states.shape[1:]),
++            dtype=torch.float32,
++            device=ssm_states.device,
++        )
++        if metadata.track
++        else None
++    )
++    output, _, _ = chunk_gated_delta_rule(
++        q=query,
++        k=key,
++        v=value,
++        g=g,
++        beta=beta,
++        initial_state=ssm_states,
++        initial_state_indices=metadata.cache_indices,
++        cu_seqlens=metadata.cu_seqlens,
++        use_qk_l2norm_in_kernel=True,
++        track_state=snapshot,
++        track_chunk_idx=metadata.track_chunk_idx if metadata.track else None,
++        chunk_indices=metadata.chunk_indices,
++        chunk_offsets=metadata.chunk_offsets,
++    )
++    if metadata.track:
++        kda_track_ssm_state(
++            ssm_pool=ssm_states,
++            h_track=snapshot,
++            track_mode=metadata.track_mode,
++            track_dst=metadata.track_dst,
++            cache_indices=metadata.cache_indices,
++        )
++    else:
++        pass
++    return output
+diff --git a/srt/layers/attention/linear/kda_backend.py b/srt/layers/attention/linear/kda_backend.py
+index b023cdfeb2..676befec9e 100644
+--- a/srt/layers/attention/linear/kda_backend.py
++++ b/srt/layers/attention/linear/kda_backend.py
+@@ -11,9 +11,6 @@ from sglang.kernels.ops.mamba.causal_conv1d_triton import (
+ from sglang.srt.environ import envs
+ from sglang.srt.layers.attention.hybrid_linear_attn_backend import MambaAttnBackendBase
+ from sglang.srt.layers.attention.linear.kda_prefill_graph import (
+-    KDAPrefillGraphMetadata,
+-    KDAPrefillTrackRows,
+-    build_track_rows,
+     kda_extend_in_graph,
+ )
+ from sglang.srt.layers.attention.linear.kernels.kda_flashinfer import (
+@@ -49,7 +46,6 @@ from sglang.srt.runtime_context import (
+     get_memory,
+     get_platform,
+     get_spec,
+-    mamba_cache_chunk_size,
+ )
+ 
+ 
+@@ -480,10 +476,6 @@ class KDAAttnBackend(MambaAttnBackendBase):
+     # force-flush path.
+     needs_cpu_seq_lens: bool = False
+ 
+-    # Set while a breakable prefill CUDA graph captures or replays a bucket:
+-    # forward_extend then runs the graph-safe chain on these static tables.
+-    prefill_graph_metadata: Optional[KDAPrefillGraphMetadata] = None
+-
+     def __init__(self, model_runner: ModelRunner):
+         super().__init__(model_runner)
+         self.prefill_graph_max_seqs = envs.SGLANG_KDA_PREFILL_GRAPH_MAX_SEQS.get()
+@@ -637,102 +629,6 @@ class KDAAttnBackend(MambaAttnBackendBase):
+             and self.accept_lens_pool is None
+         )
+ 
+-    def prefill_graph_extend_active(self) -> bool:
+-        return self.prefill_graph_metadata is not None
+-
+-    def init_prefill_graph_metadata(
+-        self, forward_batch: ForwardBatch
+-    ) -> KDAPrefillGraphMetadata:
+-        cache_indices = self._prefill_graph_cache_indices(forward_batch)
+-        meta = KDAPrefillGraphMetadata.allocate(
+-            # KDA sees global sequence order, even when CP positions are local.
+-            num_tokens=forward_batch.extend_num_tokens,
+-            max_seqs_cap=self.prefill_graph_max_seqs,
+-            # Any replay of this bucket may carry prefix-cache snapshots (the
+-            # extra buffer is only on with the radix cache).
+-            track=get_exec().mamba.enable_mamba_extra_buffer,
+-            cache_index_dtype=cache_indices.dtype,
+-            device=self.device,
+-            flashinfer_wrapper_cls=getattr(
+-                self.kernel_dispatcher.extend_kernel, "prefill_graph_wrapper_cls", None
+-            ),
+-        )
+-        self._fill_prefill_graph_metadata(
+-            meta=meta, forward_batch=forward_batch, cache_indices=cache_indices
+-        )
+-        return meta
+-
+-    def refresh_prefill_graph_metadata(
+-        self, meta: KDAPrefillGraphMetadata, forward_batch: ForwardBatch
+-    ) -> None:
+-        self._fill_prefill_graph_metadata(
+-            meta=meta,
+-            forward_batch=forward_batch,
+-            cache_indices=self._prefill_graph_cache_indices(forward_batch),
+-        )
+-
+-    def _prefill_graph_cache_indices(self, forward_batch: ForwardBatch):
+-        # Same slot resolution as MambaAttnBackendBase._forward_metadata.
+-        cache_indices = self._translate_mamba_indices(
+-            self.req_to_token_pool.get_mamba_indices(forward_batch.req_pool_indices)
+-        )
+-        real_bs = forward_batch._original_batch_size
+-        if real_bs is not None and real_bs < cache_indices.shape[0]:
+-            cache_indices = cache_indices.clone()
+-            cache_indices[real_bs:] = -1
+-        return cache_indices
+-
+-    def _fill_prefill_graph_metadata(
+-        self,
+-        *,
+-        meta: KDAPrefillGraphMetadata,
+-        forward_batch: ForwardBatch,
+-        cache_indices: torch.Tensor,
+-    ) -> None:
+-        if forward_batch.mamba_track_indices is not None:
+-            # Same one-time in-place translation as the eager metadata path.
+-            forward_batch.mamba_track_indices = self._translate_mamba_indices(
+-                forward_batch.mamba_track_indices
+-            )
+-        track_rows = None
+-        if forward_batch.mamba_track_mask is not None:
+-            assert meta.track, (
+-                "prefix-cache track batch replayed on a bucket captured without "
+-                "track tables"
+-            )
+-            track_rows = self._prefill_graph_track_rows(forward_batch)
+-        meta.fill(
+-            extend_seq_lens=list(forward_batch.extend_seq_lens_cpu),
+-            cache_indices=cache_indices,
+-            extend_prefix_lens=forward_batch.extend_prefix_lens,
+-            track_rows=track_rows,
+-        )
+-        self.prefill_graph_metadata = meta
+-
+-    def _prefill_graph_track_rows(
+-        self, forward_batch: ForwardBatch
+-    ) -> Optional[KDAPrefillTrackRows]:
+-        bs = forward_batch.batch_size
+-        if self._has_cpu_prefill_track_metadata(forward_batch):
+-            track_mask = list(forward_batch.mamba_prefill_track_mask_cpu)
+-            track_seq_lens = list(forward_batch.mamba_track_seqlens_cpu)
+-            extend_prefix_lens = list(forward_batch.extend_prefix_lens_cpu)
+-        else:
+-            # The same host copies the eager path takes without CPU metadata.
+-            track_mask = forward_batch.mamba_track_mask[:bs].tolist()
+-            track_seq_lens = forward_batch.mamba_track_seqlens[:bs].tolist()
+-            extend_prefix_lens = forward_batch.extend_prefix_lens[:bs].tolist()
+-        return build_track_rows(
+-            track_mask=track_mask,
+-            track_seq_lens=track_seq_lens,
+-            extend_seq_lens=list(forward_batch.extend_seq_lens_cpu),
+-            extend_prefix_lens=extend_prefix_lens,
+-            state_chunk_size=self.mamba_chunk_size,
+-            cache_chunk_size=mamba_cache_chunk_size(),
+-            conv_len=self.conv_states_shape[-1],
+-            dst=forward_batch.mamba_track_indices,
+-        )
+-
+     def init_forward_metadata(self, forward_batch: ForwardBatch):
+         # An eager forward never runs on a graph bucket's tables.
+         self.prefill_graph_metadata = None
+diff --git a/srt/layers/attention/linear/kernels/gdn_triton.py b/srt/layers/attention/linear/kernels/gdn_triton.py
+index 1908031013..bfb20beca6 100644
+--- a/srt/layers/attention/linear/kernels/gdn_triton.py
++++ b/srt/layers/attention/linear/kernels/gdn_triton.py
+@@ -42,6 +42,7 @@ class TritonGDNKernel(LinearAttnKernelBase):
+ 
+     supports_packed_decode: bool = not is_cpu() and not is_npu()
+     supports_strided_target_verify_qkv: bool = True
++    supports_track_state_snapshot: bool = not (is_cpu() or is_npu() or is_xpu())
+ 
+     def packed_decode(
+         self,
+@@ -183,6 +184,13 @@ class TritonGDNKernel(LinearAttnKernelBase):
+         recurrent_state = ssm_states
+         recurrent_state_indices_args = {"initial_state_indices": cache_indices}
+         inplace_update_args = {"inplace_update": inplace_update}
++        if self.supports_track_state_snapshot:
++            snapshot_arguments = {
++                "track_state": kwargs.get("track_state"),
++                "track_chunk_idx": kwargs.get("track_chunk_idx"),
++            }
++        else:
++            snapshot_arguments = {}
+         if is_cpu():
+             if not inplace_update:
+                 raise NotImplementedError(
+@@ -212,6 +220,7 @@ class TritonGDNKernel(LinearAttnKernelBase):
+             use_qk_l2norm_in_kernel=True,
+             **recurrent_state_indices_args,
+             **inplace_update_args,
++            **snapshot_arguments,
+         )
+ 
+     def target_verify(
