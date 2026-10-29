@@ -60,6 +60,15 @@ class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
         # models; torch_native makes SGLang disable both graph phases.
         return "torch_native"
 
+    def get_thinker_attention_backend(self, tp_size: int) -> str | None:
+        # Note (siju): intel_xpu decodes the 30B-A3B thinker 1.19x faster than SGLang's
+        # Triton default on B60 at TP=4. At TP=8 it stalled under 16 concurrent requests
+        # in 3 of 4 runs (GPU work never completes, no error), so TP=8 keeps Triton.
+        if tp_size <= 4:
+            return "intel_xpu"
+        else:
+            return None
+
     def get_fused_qk_norm_rope_with_cos_sin_cache(self):
         try:
             from sgl_kernel import fused_inplace_qknorm_rope
