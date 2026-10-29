@@ -53,6 +53,10 @@ class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
 
         return apply_rope_inplace
 
+    def enable_ming3_tts_prefill_graph(self) -> bool:
+        # The triton attention backend rejects an extend forward mode at capture.
+        return False
+
     def enable_talker_graph(self) -> bool:
         return True
 
