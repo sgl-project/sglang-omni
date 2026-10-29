@@ -29,11 +29,14 @@ WeightMap LoadSafetensors(const std::filesystem::path &model_directory);
 class Checkpoint {
 public:
   // Evaluates the weights; layers stored with .scales are quantized with the
-  // config's top-level quantization, as the checkpoint was.
+  // config's quantization for their prefix, else its top-level quantization,
+  // as the checkpoint was.
   Checkpoint(WeightMap weights, const nlohmann::json &config);
 
   const mlx::core::array &Weight(const std::string &name) const;
   bool Has(const std::string &name) const;
+  const QuantizationConfig &Quantization(const std::string &prefix) const;
+  const WeightMap &weights() const { return weights_; }
   mlx::core::array Linear(const mlx::core::array &x,
                           const std::string &prefix) const;
   mlx::core::array LayerNorm(const mlx::core::array &x,
@@ -50,7 +53,13 @@ public:
 private:
   WeightMap weights_;
   QuantizationConfig quantization_;
+  std::unordered_map<std::string, QuantizationConfig> quantization_by_prefix_;
 };
+
+// A scalar operand as MLX's Python and Swift bindings make one: a constant
+// of the other operand's dtype, so a half-precision tensor is not promoted.
+mlx::core::array Scalar(float value, mlx::core::Dtype dtype);
+mlx::core::array Scalar(float value, const mlx::core::array &like);
 
 // Activations in x's dtype.
 mlx::core::array Gelu(const mlx::core::array &x);
