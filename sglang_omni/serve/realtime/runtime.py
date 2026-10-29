@@ -11,7 +11,7 @@ import uuid
 from collections.abc import AsyncIterator
 from contextvars import ContextVar
 
-from sglang_omni.admission import ContextExhaustedError
+from sglang_omni.admission import ContextExhaustedError, QueueFullError
 from sglang_omni.profiler.duplex_events import (
     SessionUnitReadyObservation,
     capture_session_unit_ready,
@@ -54,7 +54,9 @@ from sglang_omni.serve.realtime.types import (
     InteractionAdapter,
     ProtocolError,
     RuntimeLimits,
+    SessionOpenTimeoutError,
     Unit,
+    failure_code,
 )
 
 logger = logging.getLogger(__name__)
@@ -269,7 +271,7 @@ class SessionRuntime:
         candidate: SessionConfiguration,
         event_id: str,
     ) -> bool:
-        """Open the adapter; return False if failed admission expires after cleanup."""
+        """Open the adapter and clean up if admission fails."""
         try:
             await asyncio.wait_for(
                 adapter.open(self.session_id, candidate, self.emit),
@@ -277,16 +279,21 @@ class SessionRuntime:
             )
             return True
         except Exception as exc:
-            logger.exception(f"Realtime session {self.session_id} admission failed")
             try:
                 await asyncio.wait_for(adapter.close(), self.limits.cleanup_timeout_s)
-            except Exception:
+            except Exception as cleanup_error:
                 self.abandon_admission(adapter, "admission cleanup failed", event_id)
-                raise RuntimeError("admission cleanup failed") from exc
-            if self.expire_admission_if_due():
-                return False
+                raise RuntimeError("admission cleanup failed") from cleanup_error
+            if QueueFullError.matches(exc):
+                if self.expire_admission_if_due():
+                    return False
+                else:
+                    raise ProtocolError("admission_rejected", str(exc)) from exc
+            elif isinstance(exc, TimeoutError):
+                message = str(exc) or "session open timed out"
+                raise SessionOpenTimeoutError(message) from exc
             else:
-                raise ProtocolError("admission_rejected", str(exc)) from exc
+                raise
 
     def abandon_admission(
         self, adapter: InteractionAdapter, message: str, event_id: str
@@ -618,14 +625,14 @@ class SessionRuntime:
             self.fail(str(exc), exc.code)
         except Exception as exc:
             if ContextExhaustedError.matches(exc):
-                logger.error(f"Realtime session {self.session_id} closed: {exc}")
-                failure_code = ContextExhaustedError.CODE
+                code = ContextExhaustedError.CODE
             else:
-                logger.exception(
-                    f"Realtime session {self.session_id} input pump failed"
-                )
-                failure_code = CLOSE_REASON_INTERNAL
-            self.fail(str(exc), failure_code)
+                code = failure_code(exc)
+            logger.error(
+                f"Realtime session {self.session_id} input pump failed: {exc}",
+                exc_info=code == CLOSE_REASON_INTERNAL,
+            )
+            self.fail(str(exc), code)
 
     async def watch_activity(self) -> None:
         # note (Haiyang Luo): OPEN has no wake-up event; cap waits at the idle timeout.

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Reject emoji outside top-level fenced code in Markdown documentation."""
+"""Check emoji and code fence labels in Markdown documentation."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ class Violation:
 
 
 def check_source(path: Path, source: str) -> list[Violation]:
-    """Check emoji presentation while preserving complete sequence matches."""
+    """Check fence labels and emoji presentation with complete sequence matches."""
     violations: list[Violation] = []
     fence_marker = ""
     fence_start_line_number = 0
@@ -47,6 +47,17 @@ def check_source(path: Path, source: str) -> list[Violation]:
         elif fence:
             fence_marker = fence.group(1)
             fence_start_line_number = line_number
+            if not fence.group(2).strip():
+                violations.append(
+                    Violation(
+                        path=path,
+                        line_number=line_number,
+                        rule="fence-language",
+                        detail="opening fence needs a non-empty info string",
+                    )
+                )
+            else:
+                pass
         else:
             emoji_matches = emoji.emoji_list(line)
             sequences: list[str] = []

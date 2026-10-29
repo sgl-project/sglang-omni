@@ -17,6 +17,7 @@ from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.pipeline.session_delivery import DeliveryPacer
 from sglang_omni.pipeline.session_graph import SessionGraphRunner
 from sglang_omni.pipeline.sessions import NodeInbox, Session, SessionGraphRuntime
+from sglang_omni.pipeline.types import SessionOutputBudgetError
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
     ControlEdge,
@@ -260,7 +261,9 @@ def test_graph_outputs_count_against_max_output_bytes_until_the_client_takes_the
     sessions = SessionGraphRunner()
     assert sessions.reserve_graph_output(graph, "right", output) == size
     assert graph.output_bytes == size
-    with pytest.raises(RuntimeError, match="node 'right' exceeds max_output_bytes"):
+    with pytest.raises(
+        SessionOutputBudgetError, match="node 'right' exceeds max_output_bytes"
+    ):
         sessions.reserve_graph_output(graph, "right", output)
 
 
@@ -812,6 +815,18 @@ def test_a_drop_oldest_append_that_cannot_confirm_the_dropped_input_changes_noth
     confirmed = graph.outputs.get_nowait()[0]
     assert (confirmed.kind, confirmed.input_seq) == ("input_done", 0)
     assert graph.pending_input_done == {1: 2}
+
+
+def test_an_input_confirmation_that_finds_the_output_queue_full_exhausts_the_output_budget():
+    sessions = SessionGraphRunner()
+    graph = input_runtime(
+        {name: SessionNode((name,), ("input",)) for name in NODES},
+        SessionLimits(max_output_chunks=1),
+    )
+    graph.outputs.put_nowait(None)
+    with pytest.raises(SessionOutputBudgetError, match="confirmed input seq 0"):
+        sessions.emit_graph_input_done(graph, "left", chunk(0))
+    assert graph.next_output == 0
 
 
 def test_control_edge_does_not_address_internal_stages():

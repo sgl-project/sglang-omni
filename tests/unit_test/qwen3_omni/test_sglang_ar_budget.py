@@ -170,12 +170,14 @@ def test_post_capture_resize_preserving_byte_budget_passes(monkeypatch) -> None:
     runner.post_capture_resize_kv_pool()
 
 
-def patch_thinker_startup(monkeypatch) -> list[dict[str, object]]:
+def patch_thinker_startup(
+    monkeypatch, *, expected_context_length: int | None = None
+) -> list[dict[str, object]]:
     scheduler_calls: list[dict[str, object]] = []
 
     def fake_server_args_builder(model_path, context_length, **overrides):
         assert model_path == "dummy"
-        assert context_length is None
+        assert context_length == expected_context_length
         assert overrides["sampling_backend"] == thinker_sampling_backend()
         return SimpleNamespace(
             mem_fraction_static=overrides["mem_fraction_static"],
@@ -751,9 +753,15 @@ def test_qwen_talker_ar_threads_explicit_generation_batch_policy(monkeypatch) ->
     ]
 
 
-def thinker_overrides(monkeypatch, *, allows: bool, **kwargs) -> dict[str, object]:
+def thinker_overrides(
+    monkeypatch,
+    *,
+    allows: bool,
+    expected_context_length: int | None = None,
+    **kwargs,
+) -> dict[str, object]:
     captured: list[dict[str, object]] = []
-    patch_thinker_startup(monkeypatch)
+    patch_thinker_startup(monkeypatch, expected_context_length=expected_context_length)
     inner = qwen_stages.build_sglang_server_args
 
     def recording_builder(model_path, context_length, **overrides):
@@ -801,6 +809,31 @@ def test_thinker_prefill_graph_defaults_to_breakable_on_cuda(
     overrides = thinker_overrides(monkeypatch, allows=True)
 
     assert overrides["cuda_graph_backend_prefill"] == expected
+
+
+@pytest.mark.parametrize("speculative_algorithm", ["EAGLE3", "DFLASH"])
+def test_a_speculative_thinker_keeps_the_prefill_graph_on_cuda(
+    monkeypatch, speculative_algorithm: str
+) -> None:
+    """An EAGLE3 draft used to switch the prefill graph off for the whole stage,
+    so the target lost its graph along with the draft."""
+    monkeypatch.setattr(current_platform, "is_cuda", lambda: True)
+    monkeypatch.setattr(
+        qwen_stages.AutoConfig,
+        "from_pretrained",
+        lambda *args, **kwargs: SimpleNamespace(max_position_embeddings=8192),
+    )
+    overrides = thinker_overrides(
+        monkeypatch,
+        allows=True,
+        expected_context_length=8192,
+        server_args_overrides={
+            "speculative_algorithm": speculative_algorithm,
+            "speculative_draft_model_path": "draft",
+        },
+    )
+
+    assert overrides["cuda_graph_backend_prefill"] == "breakable"
 
 
 def test_importing_the_stages_module_does_not_load_the_platform_layer() -> None:

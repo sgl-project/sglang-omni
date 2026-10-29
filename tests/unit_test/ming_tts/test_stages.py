@@ -251,7 +251,7 @@ def test_ming_tts_audio_decode_factory_resolves_the_streaming_graph_to_eager(
     ("streaming_cuda_graph", "process_fraction"),
     [(False, None), (True, 1.0)],
 )
-def test_ming_tts_audio_decode_factory_forwards_backend_and_warms_up(
+def test_ming_tts_audio_decode_factory_warms_up(
     monkeypatch: pytest.MonkeyPatch,
     streaming_cuda_graph: bool,
     process_fraction: float | None,

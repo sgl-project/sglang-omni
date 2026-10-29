@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Exercise the documentation emoji checker with synthetic Markdown inputs."""
+"""Exercise documentation emoji and fence checks with synthetic Markdown inputs."""
 
 from __future__ import annotations
 
@@ -209,6 +209,40 @@ def test_check_source_reports_unclosed_fence_at_opening_line() -> None:
     ) == (3, "unclosed-fence", "unclosed code fence")
 
 
+@pytest.mark.parametrize(
+    "opening_fence, closing_fence",
+    [("```", "```"), ("~~~", "~~~"), ("   ``` \t", "   ```")],
+)
+def test_check_source_reports_empty_fence_info_at_opening_line(
+    opening_fence: str, closing_fence: str
+) -> None:
+    source = f"# Guide\n\n{opening_fence}\n😀 inside\n{closing_fence}\n"
+
+    violations = check_source(Path("guide.md"), source)
+
+    assert [
+        (violation.rule, violation.line_number, violation.detail)
+        for violation in violations
+    ] == [("fence-language", 3, "opening fence needs a non-empty info string")]
+
+
+@pytest.mark.parametrize(
+    "opening_fence, closing_fence",
+    [
+        ("```text", "```"),
+        ("~~~mermaid", "~~~"),
+        ("```{raw}", "```"),
+        ("   ````custom-format option=value", "   ````\t"),
+    ],
+)
+def test_check_source_accepts_any_nonempty_fence_info(
+    opening_fence: str, closing_fence: str
+) -> None:
+    source = f"{opening_fence}\n😀 inside\n{closing_fence}\n"
+
+    assert check_source(Path("guide.md"), source) == []
+
+
 def test_check_source_checks_inline_code_and_urls() -> None:
     source = (
         "Inline `😀` code.\nhttps://example.test/😀\n"
@@ -277,12 +311,18 @@ def test_cli_scans_the_copied_script_fixture(
     if expected_exit_code == 0:
         assert result.stderr == ""
     else:
-        expected_diagnostic = (
-            "unclosed-fence: unclosed code fence"
-            if "```" in document_text
-            else "no-emoji: remove emoji sequence '😀'"
-        )
-        assert result.stderr == f"docs/{document_path.name}:3: {expected_diagnostic}\n"
+        if "```" in document_text:
+            expected_stderr = (
+                f"docs/{document_path.name}:3: fence-language: "
+                "opening fence needs a non-empty info string\n"
+                f"docs/{document_path.name}:3: unclosed-fence: unclosed code fence\n"
+            )
+        else:
+            expected_stderr = (
+                f"docs/{document_path.name}:3: no-emoji: "
+                "remove emoji sequence '😀'\n"
+            )
+        assert result.stderr == expected_stderr
 
 
 def test_cli_rejects_arguments_with_exit_status_two(tmp_path: Path) -> None:

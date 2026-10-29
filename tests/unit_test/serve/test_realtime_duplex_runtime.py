@@ -18,6 +18,7 @@ from starlette.types import Message
 from starlette.websockets import WebSocket
 
 import sglang_omni.serve.realtime.runtime as runtime_module
+from sglang_omni.admission import QueueFullError
 from sglang_omni.client.client import Client
 from sglang_omni.profiler.duplex_events import SessionUnitReadyObservation
 from sglang_omni.profiler.event_recorder import get_recorder
@@ -49,14 +50,17 @@ from sglang_omni.serve.realtime.output_buffer import (
 from sglang_omni.serve.realtime.projection import ServerEvent
 from sglang_omni.serve.realtime.protocol import SharedRealtimeSession
 from sglang_omni.serve.realtime.runtime import SessionRuntime
-from sglang_omni.serve.realtime.schema import SessionConfiguration
+from sglang_omni.serve.realtime.schema import JsonObject, SessionConfiguration
 from sglang_omni.serve.realtime.types import (
     Capabilities,
+    ContextLimitError,
     Envelope,
     InteractionAdapter,
+    OutputBudgetError,
     OutputSink,
     ProtocolError,
     RuntimeLimits,
+    SessionOpenTimeoutError,
     Unit,
 )
 from tests.unit_test.fixtures.realtime_fakes import FakeClock, HealthCoordinator
@@ -66,6 +70,8 @@ SAMPLE_RATE = 16000
 NATIVE_UNIT_MS = 20
 UNIT_BYTES = SAMPLE_RATE * NATIVE_UNIT_MS // 1000 * 2
 RUNTIME_LOGGER_NAME = "sglang_omni.serve.realtime.runtime"
+PROTOCOL_LOGGER_NAME = "sglang_omni.serve.realtime.protocol"
+MAX_STALLED_FRAMES = 16
 CANCELLED_RESPONSE_ID = "resp_1"
 CANCELLED_ITEM_ID = "item_1"
 ACTIVITY_TIMEOUT_SECONDS = 0.5
@@ -160,8 +166,9 @@ class CommandAdapter(GatedAdapter):
 
 
 class RejectedOpenAdapter(GatedAdmissionAdapter):
-    def __init__(self) -> None:
+    def __init__(self, open_error: Exception | None = None) -> None:
         super().__init__([])
+        self.open_error = open_error if open_error is not None else QueueFullError()
         self.cleanup_started: asyncio.Event = asyncio.Event()
         self.cleanup_release: asyncio.Event = asyncio.Event()
 
@@ -169,11 +176,35 @@ class RejectedOpenAdapter(GatedAdmissionAdapter):
         self, session_id: str, config: SessionConfiguration, emit: OutputSink
     ) -> None:
         await super().open(session_id, config, emit)
-        raise RuntimeError("pipeline unavailable")
+        raise self.open_error
 
     async def close(self) -> None:
         self.cleanup_started.set()
         await self.cleanup_release.wait()
+
+
+class StalledClientWebSocket:
+    """Plays scripted frames, yielding between them like a socket read, and holds every server frame until it reads."""
+
+    def __init__(self, frames: list[str]) -> None:
+        self.frames = frames
+        self.sent_events: list[JsonObject] = []
+        self.is_reading = asyncio.Event()
+        self.close_frame: tuple[int, str | None] | None = None
+
+    async def receive(self) -> dict[str, str]:
+        await asyncio.sleep(0)
+        if self.frames:
+            return {"type": "websocket.receive", "text": self.frames.pop(0)}
+        else:
+            return {"type": "websocket.disconnect"}
+
+    async def send_text(self, text: str) -> None:
+        await self.is_reading.wait()
+        self.sent_events.append(json.loads(text))
+
+    async def close(self, code: int = 1000, reason: str | None = None) -> None:
+        self.close_frame = (code, reason)
 
 
 class GatedWebSocketTransport:
@@ -436,25 +467,29 @@ async def test_close_finishes_only_responses_the_client_has_seen() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("failure_message", "failure_code", "has_traceback"),
+    ("error", "code", "has_traceback"),
     [
         (
-            "context_exhausted: the session reached the thinker context length",
+            RuntimeError(
+                "context_exhausted: the session reached the thinker context length"
+            ),
             "context_exhausted",
             False,
         ),
-        ("talker step failed", "internal", True),
+        (RuntimeError("talker step failed"), "internal", True),
+        (OutputBudgetError(), "output_budget_exhausted", False),
+        (ContextLimitError(), "context_limit", False),
     ],
 )
 async def test_unit_failure_closes_session_and_logs_once(
-    failure_message: str,
-    failure_code: str,
+    error: Exception,
+    code: str,
     has_traceback: bool,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     class FailingAdapter(GatedAdapter):
         async def process(self, unit: Unit) -> int:
-            raise RuntimeError(failure_message)
+            raise error
 
     with caplog.at_level(logging.WARNING, logger=RUNTIME_LOGGER_NAME):
         async with open_runtime(FailingAdapter([])) as runtime:
@@ -462,15 +497,15 @@ async def test_unit_failure_closes_session_and_logs_once(
             envelopes = await asyncio.wait_for(receive_until(runtime, Closed), 5)
     failures = [entry.event for entry in envelopes if isinstance(entry.event, Failure)]
     assert len(failures) == 1
-    assert failures[0].code == failure_code
+    assert failures[0].code == code
     assert failures[0].is_fatal
-    assert failure_message in failures[0].message
+    assert failures[0].message == str(error)
     runtime_records = [
         record for record in caplog.records if record.name == RUNTIME_LOGGER_NAME
     ]
     assert len(runtime_records) == 1
     assert runtime_records[0].levelno == logging.ERROR
-    assert (runtime_records[0].exc_info is not None) == has_traceback
+    assert bool(runtime_records[0].exc_info) == has_traceback
 
 
 @pytest.mark.asyncio
@@ -538,16 +573,75 @@ def test_an_audio_delta_is_sized_by_its_base64_audio_and_the_envelope() -> None:
     assert envelope_size_bytes(envelope) == len(base64.b64encode(pcm)) + ENVELOPE_BYTES
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("event_type", "client_reads", "fatal_codes", "dispatch_errors"),
+    [
+        ("input_audio_buffer.append", False, ["output_budget_exhausted"], 1),
+        ("unsupported", False, ["output_budget_exhausted"], 0),
+        ("input_audio_buffer.append", True, [], 0),
+    ],
+)
+async def test_client_that_stops_reading_fails_with_the_output_budget_code(
+    event_type: str,
+    client_reads: bool,
+    fatal_codes: list[str],
+    dispatch_errors: int,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.ERROR, logger=PROTOCOL_LOGGER_NAME)
+    runtime = SessionRuntime(
+        MODEL_NAME,
+        Capabilities(),
+        lambda: GatedAdapter([]),
+        RuntimeLimits(max_output_bytes=3 * ENVELOPE_BYTES),
+    )
+    update = {"type": "session.update", "event_id": "update", "session": {}}
+    frames = [
+        {
+            "type": event_type,
+            "event_id": f"frame_{sequence}",
+            "audio": base64.b64encode(b"\1\0").decode("ascii"),
+            "sglang": {"seq": sequence},
+        }
+        for sequence in range(MAX_STALLED_FRAMES)
+    ]
+    websocket = StalledClientWebSocket(
+        [json.dumps(frame) for frame in [update, *frames]]
+    )
+    if client_reads:
+        websocket.is_reading.set()
+    else:
+        pass
+    run_task = asyncio.create_task(SharedRealtimeSession(websocket, runtime).run())
+    while runtime.close_task is None:
+        await asyncio.sleep(0)
+    websocket.is_reading.set()
+    await asyncio.wait_for(run_task, 5)
+
+    assert [
+        event["error"]["code"]
+        for event in websocket.sent_events
+        if event["type"] == "error" and event["sglang"]["fatal"]
+    ] == fatal_codes
+    protocol_records = [
+        record for record in caplog.records if record.name == PROTOCOL_LOGGER_NAME
+    ]
+    assert len(protocol_records) == dispatch_errors
+    assert all(record.levelno == logging.ERROR for record in protocol_records)
+    assert not any(record.exc_info for record in protocol_records)
+
+
 def test_output_budget_counts_outbound_events_only() -> None:
     buffer = OutputBuffer(RuntimeLimits(max_output_bytes=3 * ENVELOPE_BYTES))
     unit = Unit(0, 0, bytes(32000), 16000, images=(bytes(512 * 1024),) * 4)
     completed = Envelope(event=UnitCompleted(unit.unit_id), unit=unit)
     buffer.enqueue(completed)
-    with pytest.raises(RuntimeError, match="outbound event budget exhausted"):
+    with pytest.raises(OutputBudgetError, match="outbound event budget exhausted"):
         buffer.enqueue(Envelope(event=AudioDelta("response", "item", bytes(2048))))
     buffer.enqueue(completed)
     buffer.enqueue(completed)
-    with pytest.raises(RuntimeError, match="outbound event budget exhausted"):
+    with pytest.raises(OutputBudgetError, match="outbound event budget exhausted"):
         buffer.enqueue(completed)
     assert buffer.queued_bytes == 3 * ENVELOPE_BYTES
     assert [buffer.dequeue() for _ in range(4)] == [completed] * 3 + [None]
@@ -955,6 +1049,36 @@ async def test_failed_admission_after_deadline_closes_without_retry(
         )
 
 
+@pytest.mark.parametrize(
+    ("open_error", "expected_error"),
+    [
+        (RuntimeError("backend initialization failed"), RuntimeError),
+        (TimeoutError(), SessionOpenTimeoutError),
+    ],
+)
+@pytest.mark.asyncio
+async def test_backend_failure_after_admission_deadline_keeps_its_error(
+    fake_clock: FakeClock,
+    open_error: Exception,
+    expected_error: type[Exception],
+) -> None:
+    adapter = RejectedOpenAdapter(open_error)
+    adapter.cleanup_release.set()
+    runtime = SessionRuntime(
+        MODEL_NAME, Capabilities(), lambda: adapter, ACTIVITY_LIMITS
+    )
+    async with running_runtime(runtime):
+        update_task = asyncio.create_task(runtime.update({}, "client_update"))
+        await adapter.has_started.wait()
+        await fake_clock.advance(ACTIVITY_TIMEOUT_SECONDS * 2)
+        adapter.release.set()
+        with pytest.raises(expected_error) as failure:
+            await update_task
+        assert str(failure.value)
+        assert not isinstance(failure.value, ProtocolError)
+        assert runtime.close_task is None
+
+
 @pytest.mark.asyncio
 async def test_repeated_failed_admissions_keep_original_deadline(
     fake_clock: FakeClock,
@@ -965,7 +1089,7 @@ async def test_repeated_failed_admissions_keep_original_deadline(
         async def open(
             self, session_id: str, config: SessionConfiguration, emit: OutputSink
         ) -> None:
-            raise RuntimeError("pipeline unavailable")
+            raise QueueFullError()
 
     factory_call_count = 0
 

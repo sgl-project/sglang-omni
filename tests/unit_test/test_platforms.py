@@ -18,6 +18,7 @@ from sglang_omni.pipeline.stage_workers import StageLaunchConfig
 from sglang_omni.platforms.cpu import CPUOmniPlatform
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.npu import NPUOmniPlatform
 from sglang_omni.platforms.rocm import ROCMOmniPlatform
 from sglang_omni.platforms.xpu import XPUOmniPlatform
 
@@ -200,7 +201,6 @@ def test_each_platform_names_the_graph_backend_its_hardware_uses() -> None:
         XpuDeviceGraphBackend,
     )
     from sglang_omni.platforms.musa import MUSAOmniPlatform
-    from sglang_omni.platforms.npu import NPUOmniPlatform
 
     expected = {
         CUDAOmniPlatform: CudaDeviceGraphBackend,
@@ -220,6 +220,13 @@ def test_each_platform_names_the_graph_backend_its_hardware_uses() -> None:
             assert backend is None, platform_class.__name__
         else:
             assert isinstance(backend, backend_class), platform_class.__name__
+
+
+def test_npu_platform_opts_only_mimi_into_decode_graphs() -> None:
+    platform = NPUOmniPlatform()
+    assert platform.enable_mimi_decode_graph() is True
+    # #1721: the Higgs TTS codec keeps its eager NPU vocoder policy.
+    assert platform.enable_codec_decode_graph() is False
 
 
 def test_a_platform_declines_a_device_that_is_not_its_own() -> None:

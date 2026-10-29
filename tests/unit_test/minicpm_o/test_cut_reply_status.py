@@ -17,13 +17,18 @@ IDENTITY = SessionIdentity("session", 0)
 FINISH_LENGTH, FINISH_STOP = "length", "stop"
 
 
+# note (luojiaxuan): A talker unit's window is CODEC_CHUNK_SIZE (25) codec slots and one more for the EOS. On an H200, a turn's last unit that reached the end of its window returned 25 tokens and finished on its stop token, as a unit mid-reply returns 25 finishing on length; a last unit that ended its speech inside the window returned fewer.
+WINDOW_END = 25
+
+
 class Unit(NamedTuple):
-    """One thinker unit as the talker gets it, and the talker's finish reason when it generates."""
+    """One thinker unit as the talker gets it, and the talker's finish reason and output length when it generates."""
 
     is_speaking: bool
     is_input_end: bool
     finish_reason: str | None
     is_model_turn_end: bool = False
+    tokens: int = WINDOW_END
 
 
 @pytest.mark.parametrize(
@@ -45,20 +50,33 @@ class Unit(NamedTuple):
             [False, True],
         ),
         (
+            [Unit(True, False, FINISH_LENGTH), Unit(True, True, FINISH_STOP)],
+            [False, True],
+        ),
+        (
             [
                 Unit(True, False, FINISH_LENGTH),
-                Unit(True, False, FINISH_STOP, is_model_turn_end=True),
+                Unit(True, False, FINISH_STOP, is_model_turn_end=True, tokens=11),
                 Unit(False, False, None),
                 Unit(False, True, None),
             ],
             [False, False, False, False],
+        ),
+        (
+            [
+                Unit(True, False, FINISH_LENGTH),
+                Unit(True, True, FINISH_STOP, tokens=WINDOW_END - 1),
+            ],
+            [False, False],
         ),
     ],
     ids=[
         "input-end-on-the-talkers-budget",
         "model-turn-end-on-the-talkers-budget",
         "input-end-on-a-unit-boundary-mid-reply",
+        "input-end-with-the-eos-in-the-windows-last-slot",
         "reply-ends-at-the-codec-eos-before-the-input-end",
+        "input-end-after-speech-that-ended-inside-the-window",
     ],
 )
 def test_a_turn_that_ends_before_the_codec_eos_cuts_the_speech(
@@ -89,7 +107,7 @@ def test_a_turn_that_ends_before_the_codec_eos_cuts_the_speech(
         else:
             request_data = SimpleNamespace(
                 stage_payload=payload,
-                output_ids=[1, 2],
+                output_ids=list(range(unit.tokens)),
                 finish_reason=unit.finish_reason,
             )
             cuts.append(adapter.result(IDENTITY, request_data).data["is_speech_cut"])
