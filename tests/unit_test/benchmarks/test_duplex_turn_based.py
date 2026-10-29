@@ -22,18 +22,20 @@ import websockets
 from pydantic import JsonValue
 from websockets.asyncio.server import ServerConnection
 
-from benchmarks.duplex.client import TurnDetection, run_session
+from benchmarks.duplex.client import PLAYBACK_REPORT, TurnDetection, run_session
 from benchmarks.duplex.oracle import evaluate_trace
 from benchmarks.duplex.profiles import PROFILES, DuplexProfile
 from benchmarks.duplex.reference_capture import TraceFormat
 from benchmarks.duplex.reference_export import export_runs
 from benchmarks.duplex.v15_audio import TURN_BASED_BARGE_IN_CUT, reconstruct_output
+from benchmarks.duplex.v15_runner import run_samples
 from benchmarks.eval.benchmark_duplex_reference import main as reference_main
 from benchmarks.eval.benchmark_duplex_v10 import main as v10_main
 from benchmarks.eval.benchmark_duplex_v15 import main as v15_main
 from tests.unit_test.fixtures.duplex_fakes import (
     FIXTURE_PACKETS,
     FIXTURE_PCM,
+    SERVER,
     SERVER_REVISION,
     find_event,
     write_dataset,
@@ -357,6 +359,13 @@ class TurnBasedPeer:
                         "client_event_id": event["event_id"],
                     },
                 )
+            elif kind == "conversation.item.truncate":
+                await self.part(
+                    websocket,
+                    "sglang.response.heard",
+                    event["item_id"].removeprefix("item_"),
+                    text_end=1,
+                )
             elif kind == "session.close":
                 await self.send(
                     websocket,
@@ -372,7 +381,10 @@ class TurnBasedPeer:
 
 
 async def capture(
-    peer: TurnBasedPeer, trace_path: Path, timeout_s: float = 5.0
+    peer: TurnBasedPeer,
+    trace_path: Path,
+    timeout_s: float = 5.0,
+    report_playback: bool = False,
 ) -> list[dict[str, JsonValue]]:
     existing_tasks = asyncio.all_tasks()
     async with websockets.serve(peer.handler, "127.0.0.1", 0) as server:
@@ -384,6 +396,7 @@ async def capture(
             timeout_s=timeout_s,
             profile=TURN_BASED,
             turn_detection=SERVER_VAD,
+            report_playback=report_playback,
         )
     assert asyncio.all_tasks() <= existing_tasks
     return [json.loads(line) for line in trace_path.read_text().splitlines()]
@@ -451,6 +464,73 @@ def test_client_records_a_passing_turn_based_session(tmp_path: Path) -> None:
     transcript = json.loads((tmp_path / "transcript.json").read_text())
     assert transcript["provenance"].startswith("turn_based server transcript deltas")
     assert transcript["text"] == {"response.output_audio_transcript.delta": "hihi"}
+
+
+def test_client_reports_the_played_part_of_a_cancelled_reply(tmp_path: Path) -> None:
+    peer = TurnBasedPeer("interrupt")
+    records = asyncio.run(
+        capture(peer, tmp_path / "continuous.jsonl", report_playback=True)
+    )
+    delta = next(
+        r for r in records if r["event"]["type"] == "response.output_audio.delta"
+    )
+    (cancel,) = [
+        r
+        for r in records
+        if r["event"]["type"] == "response.done"
+        and r["event"]["response"]["status"] == "cancelled"
+    ]
+    (truncate,) = [
+        r for r in records if r["event"]["type"] == "conversation.item.truncate"
+    ]
+    played_s = min(0.5, cancel["time_s"] - delta["time_s"])
+
+    assert evaluate_trace(records, profile=TURN_BASED)["violations"] == []
+    assert records.index(truncate) > records.index(cancel)
+    assert truncate["direction"] == "send"
+    assert {k: v for k, v in truncate["event"].items() if k != "event_id"} == {
+        "type": "conversation.item.truncate",
+        "item_id": "item_resp_0",
+        "content_index": 0,
+        "audio_end_ms": int(played_s * 1000),
+    }
+    assert 0 < played_s < 0.5
+    reconstruct_output(tmp_path, profile=TURN_BASED)
+    (cut,) = json.loads((tmp_path / "playout.json").read_text())["cuts"]
+    reconstructed_ms = (round(0.5 * OUTPUT_RATE) - cut["dropped_samples"]) / 24
+    assert truncate["event"]["audio_end_ms"] == pytest.approx(reconstructed_ms, abs=1)
+
+
+@pytest.mark.parametrize(
+    ("item_id", "violations"),
+    [
+        ("item_resp_0", []),
+        ("item_resp_1", ["truncate of an item no cancelled response carried"]),
+    ],
+)
+def test_truncate_must_name_a_cancelled_reply(
+    item_id: str, violations: list[str]
+) -> None:
+    trace = turn_based_trace()
+    last_done = max(
+        index
+        for index, record in enumerate(trace)
+        if record["event"]["type"] == "response.done"
+    )
+    truncate = {
+        "direction": "send",
+        "time_s": trace[last_done]["time_s"] + 0.001,
+        "event": {
+            "type": "conversation.item.truncate",
+            "event_id": "truncate",
+            "item_id": item_id,
+            "content_index": 0,
+            "audio_end_ms": 40,
+        },
+    }
+    trace.insert(last_done + 1, truncate)
+
+    assert evaluate_trace(trace, profile=TURN_BASED)["violations"] == violations
 
 
 def test_client_records_an_empty_turn(tmp_path: Path) -> None:
@@ -1414,6 +1494,41 @@ def test_v15_recorder_records_a_turn_based_profile(tmp_path: Path) -> None:
     assert soundfile.info(directory / "output-media.wav").samplerate == OUTPUT_RATE
     report = json.loads((directory / "report.json").read_text())
     assert report["cases"][0]["metrics"]["responses_interrupted"] == 1
+
+
+def test_v15_recorder_reports_playback_and_declares_it(tmp_path: Path) -> None:
+    dataset, run = tmp_path / "data", tmp_path / "run"
+    write_dataset(dataset)
+    stdout = io.StringIO()
+    with turn_based_peer_server() as url, contextlib.redirect_stdout(stdout):
+        code = v15_main(
+            ["record", "--dataset-root", str(dataset), "--url", url]
+            + ["--output", str(run), "--sample-id", "user_interruption/1"]
+            + RECORD_ARGS
+            + ["--turn-detection", '{"type": "server_vad"}', "--report-playback"]
+        )
+    summary = json.loads(stdout.getvalue())
+    manifest = json.loads((run / "manifest.json").read_text())
+    variant = json.loads((run / "run.json").read_text())["samples"][0]["variants"]
+    trace = (run / variant["overlap"]["directory"] / "continuous.jsonl").read_text()
+
+    assert code == 0, summary
+    assert summary["variant_status"] == {"pass": 2}
+    assert manifest["config"]["turn_based"]["playback_report"] == PLAYBACK_REPORT
+    assert '"type": "conversation.item.truncate"' in trace
+    with pytest.raises(ValueError, match="turn-based profiles only"):
+        asyncio.run(
+            run_samples(
+                dataset,
+                url="ws://127.0.0.1:1/v1/realtime",
+                output=tmp_path / "never",
+                server=SERVER,
+                dataset_revision="fixture",
+                timeout_s=5.0,
+                report_playback=True,
+            )
+        )
+    assert not (tmp_path / "never").exists()
 
 
 def test_v15_recorder_requires_turn_detection_for_a_turn_based_profile(
