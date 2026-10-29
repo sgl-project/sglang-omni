@@ -4,10 +4,14 @@
 from __future__ import annotations
 
 import math
-from typing import Iterable, Optional, Tuple
+from collections.abc import Iterable
+from typing import Literal
 
 import torch
 import torch.nn.functional as F
+from sglang.srt.layers.logits_processor import LogitsProcessor, LogitsProcessorOutput
+from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
+from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
 from sglang.srt.runtime_context import get_parallel
 from torch import nn
 from transformers import PretrainedConfig
@@ -45,8 +49,8 @@ class LLaDA2MoeAttention(nn.Module):
         self,
         config: PretrainedConfig,
         layer_id: int,
-        quant_config: Optional[QuantizationConfig] = None,
-    ):
+        quant_config: QuantizationConfig | None = None,
+    ) -> None:
         super().__init__()
         self.config = config
         self.layer_id = layer_id
@@ -171,7 +175,7 @@ class LLaDA2MoeMLP(nn.Module):
         self,
         config: PretrainedConfig,
         intermediate_size: int,
-        quant_config: Optional[QuantizationConfig] = None,
+        quant_config: QuantizationConfig | None = None,
         reduce_results: bool = True,
     ) -> None:
         super().__init__()
@@ -200,9 +204,9 @@ class LLaDA2MoeMLP(nn.Module):
 class LLaDA2MoeGate(nn.Module):
     def __init__(
         self,
-        config,
-        params_dtype: Optional[torch.dtype] = None,
-    ):
+        config: PretrainedConfig,
+        params_dtype: torch.dtype | None = None,
+    ) -> None:
         super().__init__()
         if params_dtype is None:
             params_dtype = torch.get_default_dtype()
@@ -219,7 +223,7 @@ class LLaDA2MoeGate(nn.Module):
             "expert_bias", torch.zeros(config.num_experts, dtype=torch.float32)
         )
 
-    def forward(self, hidden_states):
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         return F.linear(hidden_states.float(), self.weight.float(), None)
 
 
@@ -230,8 +234,8 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
         self,
         config: PretrainedConfig,
         layer_id: int,
-        quant_config: Optional[QuantizationConfig] = None,
-    ):
+        quant_config: QuantizationConfig | None = None,
+    ) -> None:
         super().__init__()
         self.config = config
         self.layer_id = layer_id
@@ -254,7 +258,7 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
             config=config,
             params_dtype=self.router_dtype,
         )
-        topk_backend = getattr(config, "llada2_uni_topk_backend", "torch")
+        topk_backend: Literal["torch", "sglang"] = config.llada2_uni_topk_backend
         if topk_backend == "sglang":
             self.topk = TopK(
                 top_k=self.num_experts_per_tok,
@@ -369,8 +373,8 @@ class LLaDA2MoeBlock(nn.Module):
         self,
         config: PretrainedConfig,
         layer_id: int,
-        quant_config: Optional[QuantizationConfig] = None,
-    ):
+        quant_config: QuantizationConfig | None = None,
+    ) -> None:
         super().__init__()
         self.layer_id = layer_id
         self.hidden_size = config.hidden_size
@@ -393,8 +397,8 @@ class LLaDA2MoeBlock(nn.Module):
         self,
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
-        residual: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        residual: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         # Self attention with pre-norm
         if residual is None:
             residual = hidden_states
@@ -417,9 +421,12 @@ class LLaDA2MoeTextModel(nn.Module):
     def __init__(
         self,
         config: PretrainedConfig,
-        quant_config: Optional[QuantizationConfig] = None,
-    ):
+        quant_config: QuantizationConfig | None = None,
+    ) -> None:
         super().__init__()
+        config.llada2_uni_topk_backend = config.to_dict().get(
+            "llada2_uni_topk_backend", "torch"
+        )
         self.config = config
         self.word_embeddings = VocabParallelEmbedding(
             config.vocab_size, config.hidden_size
@@ -435,7 +442,7 @@ class LLaDA2MoeTextModel(nn.Module):
         input_ids: torch.Tensor,
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
-        input_embeds: Optional[torch.Tensor] = None,
+        input_embeds: torch.Tensor | None = None,
         **kwargs,
     ) -> torch.Tensor:
         if input_embeds is not None:
@@ -450,10 +457,8 @@ class LLaDA2MoeTextModel(nn.Module):
         hidden_states, _ = self.norm(hidden_states, residual)
         return hidden_states
 
-    def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
+    def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> None:
         """Load weights with prefix-based selection and MoE mapping."""
-
-        from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
 
         stacked_params_mapping = [
             # (param_name, shard_name, shard_id)
@@ -547,7 +552,7 @@ class LLaDA2MoeModelLM(nn.Module):
     def __init__(
         self,
         config: PretrainedConfig,
-        quant_config: Optional[QuantizationConfig] = None,
+        quant_config: QuantizationConfig | None = None,
     ) -> None:
         super().__init__()
         self.config = config
@@ -556,8 +561,6 @@ class LLaDA2MoeModelLM(nn.Module):
         self.model = LLaDA2MoeTextModel(config, quant_config)
 
         # Build LM head
-        from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
-
         self.lm_head = ParallelLMHead(
             config.vocab_size,
             config.hidden_size,
@@ -565,8 +568,6 @@ class LLaDA2MoeModelLM(nn.Module):
         )
 
         # Build logits processor
-        from sglang.srt.layers.logits_processor import LogitsProcessor
-
         self.logits_processor = LogitsProcessor(config, return_full_logits=True)
 
     def forward(
@@ -574,15 +575,15 @@ class LLaDA2MoeModelLM(nn.Module):
         input_ids: torch.Tensor,
         positions: torch.Tensor,
         forward_batch: ForwardBatch,
-        input_embeds: Optional[torch.Tensor] = None,
-    ):
+        input_embeds: torch.Tensor | None = None,
+    ) -> LogitsProcessorOutput:
         hidden_states = self.model(input_ids, positions, forward_batch, input_embeds)
 
         return self.logits_processor(
             input_ids, hidden_states, self.lm_head, forward_batch
         )
 
-    def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
+    def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> None:
         """Load weights from LLaDA2-Uni checkpoint.
 
         Routes lm_head weights to self.lm_head and text model weights

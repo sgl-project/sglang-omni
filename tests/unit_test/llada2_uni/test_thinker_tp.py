@@ -5,13 +5,10 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from sglang.srt.arg_groups import model_override_base
 
 from sglang_omni import platforms
-from sglang_omni.models.llada2_uni import bootstrap, stages
+from sglang_omni.models.llada2_uni import bootstrap
 from sglang_omni.models.llada2_uni.cfg_attention_backend import CFG_ATTENTION_BACKEND
-from sglang_omni.scheduling import sglang_backend
-from sglang_omni.vendor.sglang import server_args as server_args_module
 
 
 @pytest.mark.parametrize("tp_size,tp_rank", [(1, 0), (2, 0), (2, 1)])
@@ -22,17 +19,17 @@ def test_thinker_factory_preserves_tp_and_cfg_configuration(
     server_args = SimpleNamespace(dllm_algorithm=algorithm, mem_fraction_static=0.5)
     build_args = Mock(return_value=server_args)
     create_scheduler = Mock()
-    monkeypatch.setattr(sglang_backend, "build_sglang_server_args", build_args)
+    monkeypatch.setattr(bootstrap, "build_sglang_server_args", build_args)
     monkeypatch.setattr(bootstrap, "create_dllm_thinker_scheduler", create_scheduler)
     monkeypatch.setattr(bootstrap, "register_llada2_uni_cfg", Mock())
     override_args = Mock()
-    monkeypatch.setattr(server_args_module, "override_server_args", override_args)
-    monkeypatch.setattr(model_override_base, "resolved_view", lambda args: args)
+    monkeypatch.setattr(bootstrap, "override_server_args", override_args)
+    monkeypatch.setattr(bootstrap, "resolved_view", lambda args: args)
     monkeypatch.setattr(
         platforms, "current_platform", SimpleNamespace(device_type="cuda")
     )
 
-    scheduler = stages.create_sglang_dllm_thinker_executor_from_config(
+    scheduler = bootstrap.create_sglang_dllm_thinker_executor_from_config(
         "model",
         device="cuda",
         gpu_id=tp_rank + 2,

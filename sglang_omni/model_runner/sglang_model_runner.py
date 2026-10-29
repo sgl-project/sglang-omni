@@ -392,6 +392,37 @@ class OmniKVCacheConfigurator(KVCacheConfigurator):
         return available_bytes
 
 
+class CFGCudaGraphRunner(DecodeCudaGraphRunner):
+    """Replay DLLM blocks once CFG padding is entirely in the cached prefix."""
+
+    def can_run_graph(self, forward_batch: ForwardBatch) -> bool:
+        if any(
+            padding_length > prefix_length
+            for padding_length, prefix_length in zip(
+                forward_batch.dllm_left_pad_lens_cpu,
+                forward_batch.extend_prefix_lens_cpu,
+                strict=True,
+            )
+        ):
+            return False
+        else:
+            pass
+        return super().can_run_graph(forward_batch)
+
+    def load_batch(
+        self,
+        forward_batch: ForwardBatch,
+        pp_proxy_tensors: PPProxyTensors | None = None,
+    ) -> None:
+        backend = self.model_runner.attn_backend
+        # note (Anmuliar): The padded replay view omits model-specific CPU metadata.
+        backend.cfg_replay_batch = forward_batch
+        try:
+            super().load_batch(forward_batch, pp_proxy_tensors)
+        finally:
+            backend.cfg_replay_batch = None
+
+
 class SGLModelRunner(ModelRunner):
     """Thin wrapper to bootstrap SGLang ModelRunner from backend args."""
 
@@ -656,10 +687,6 @@ class SGLModelRunner(ModelRunner):
         self,
     ) -> type[DecodeCudaGraphRunner]:
         if self.server_args.dllm_algorithm == "LowConfidenceCFG":
-            from sglang_omni.models.llada2_uni.cfg_attention_backend import (
-                CFGCudaGraphRunner,
-            )
-
             return CFGCudaGraphRunner
         else:
             return (

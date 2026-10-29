@@ -14,44 +14,10 @@ from sglang.srt.layers.attention.flashinfer_backend import (
 )
 from sglang.srt.layers.radix_attention import RadixAttention
 from sglang.srt.mem_cache.memory_pool import KVWriteLoc
-from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.model_executor.model_runner import ModelRunner
-from sglang.srt.model_executor.runner.decode_cuda_graph_runner import (
-    DecodeCudaGraphRunner,
-)
 
 CFG_ATTENTION_BACKEND = "llada2_uni_cfg_flashinfer"
-
-
-class CFGCudaGraphRunner(DecodeCudaGraphRunner):
-    """Replay DLLM blocks once CFG padding is entirely in the cached prefix."""
-
-    def can_run_graph(self, forward_batch: ForwardBatch) -> bool:
-        if any(
-            pad > prefix
-            for pad, prefix in zip(
-                forward_batch.dllm_left_pad_lens_cpu,
-                forward_batch.extend_prefix_lens_cpu,
-                strict=True,
-            )
-        ):
-            return False
-        else:
-            pass
-        return super().can_run_graph(forward_batch)
-
-    def load_batch(
-        self,
-        forward_batch: ForwardBatch,
-        pp_proxy_tensors: PPProxyTensors | None = None,
-    ) -> None:
-        backend = self.model_runner.attn_backend
-        # note (Anmuliar): The padded replay view omits model-specific CPU metadata.
-        backend.cfg_replay_batch = forward_batch
-        try:
-            super().load_batch(forward_batch, pp_proxy_tensors)
-        finally:
-            backend.cfg_replay_batch = None
 
 
 class LLaDA2CFGFlashInferAttnBackend(FlashInferAttnBackend):
