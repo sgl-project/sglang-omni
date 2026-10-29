@@ -77,14 +77,14 @@ admit a larger prefill batch. The tuned defaults are 16 requests / 32 ms:
 ```bash
 sgl-omni serve \
   --model-path AutoArk-AI/ARK-ASR-3B \
-  --prefill-coalesce-requests 16 \
-  --prefill-coalesce-wait-ms 32 \
+  --asr.factory.prefill_coalesce_requests 16 \
+  --asr.factory.prefill_coalesce_wait_ms 32 \
   --port 8000
 ```
 
 Admission is released after either the request threshold or wait deadline is
 reached; it can release earlier when pending request-build work drains. Set
-`--prefill-coalesce-requests 0` to disable coalescing. Tune these values for the
+`--asr.factory.prefill_coalesce_requests 0` to disable coalescing. Tune these values for the
 target request distribution and latency requirements.
 
 ## Transcribe Audio
@@ -197,11 +197,9 @@ audio's duration cannot be probed, `duration` and the segment end time are `0.0`
 ## Apple Silicon
 
 On macOS arm64, ARK-ASR-3B runs through the existing Torch/MPS compatibility
-path without a converted checkpoint or model-specific code changes. Leave
-`SGLANG_USE_MLX` unset:
+path without a converted checkpoint or model-specific code changes:
 
 ```bash
-unset SGLANG_USE_MLX
 export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
 sgl-omni serve \
   --model-path AutoArk-AI/ARK-ASR-3B \
@@ -213,7 +211,6 @@ sgl-omni serve \
 This path was validated on a MacBook Air with an M4 and 16 GB of unified
 memory using the official checkpoint and `tests/data/query_to_cars.wav`. The
 server returned the expected transcript through `/v1/audio/transcriptions`.
-Set `SGLANG_USE_MLX=1` to select the native MLX path.
 
 ## Marker-Token Suppression
 

@@ -25,6 +25,7 @@ from sglang_omni.models.whisper_asr.timestamp_logit_processor import (
 )
 from sglang_omni.preprocessing.transcription import prepare_audio
 from sglang_omni.proto import StagePayload
+from sglang_omni.scheduling.exact_text_streaming import ExactTextStreamState
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 
 _WHISPER_SAMPLE_RATE = 16000
@@ -55,6 +56,7 @@ class WhisperASRRequestData(SGLangARRequestData):
     detect_language: bool = False
     segment_timestamps: bool = False
     engine_start_s: float = 0.0
+    exact_text_stream_state: ExactTextStreamState | None = None
 
 
 # Note (Akazaakane): Whisper timestamp token IDs advance in 20 ms steps from
@@ -370,6 +372,7 @@ def make_whisper_scheduler_adapters(
                 "language": data.language,
                 "duration_s": data.audio_duration_s,
                 "asr_latency_s": engine_time_s,
+                "finish_reason": data.finish_reason,
                 "usage": {"engine_time_s": engine_time_s},
                 "modality": "text",
             },

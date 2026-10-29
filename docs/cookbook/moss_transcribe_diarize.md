@@ -115,7 +115,7 @@ set the request target to `0` to disable coalescing.
 
 Serve the model:
 
-#### CUDA GPU
+**CUDA GPU**
 
 ```bash
 sgl-omni serve \
@@ -126,7 +126,7 @@ sgl-omni serve \
   --mem-fraction-static 0.80
 ```
 
-#### Intel GPU
+**Intel GPU**
 
 MOSS-TD with LLM and Whisper encoder XPUGraph capture has been validated in
 BF16 on one Intel Arc Pro B60 with 24 GB of memory:

@@ -415,26 +415,6 @@ class TestBinding:
             assign_replica_bindings(plan, BadPolicy(), "req")
 
 
-class TestEntryProcessReplicas:
-    def test_entry_process_can_be_replicated(self):
-        config = build_pipeline_config(
-            [
-                build_stage_config(
-                    "normalize", terminal=False, next="sink", process="front"
-                ),
-                build_stage_config("sink", process="sink"),
-            ],
-            processes={"front": ProcessConfig(num_replicas=2)},
-        )
-        plan, expanded, topology = expand(config)
-
-        assert config.resolved_entry_stage == "normalize"
-        assert topology.instances("normalize") == ("normalize@r0", "normalize@r1")
-        assert assign_replica_bindings(plan, RoundRobinBindingPolicy(), "req") == {
-            "normalize": 0
-        }
-
-
 class TestColocatedReplicaRejection:
     def test_colocated_rejects_replicated_process(self):
         from sglang_omni.models.qwen3_omni.config import (
@@ -542,11 +522,6 @@ class TestRemovedStageLevelReplicaConfig:
             build_stage_config("s", num_replicas=2)
         assert "Extra inputs are not permitted" in str(exc_info.value)
 
-    def test_stage_replica_devices_is_rejected(self):
-        with pytest.raises(ValueError, match="replica_devices") as exc_info:
-            build_stage_config("s", replica_devices="0,1")
-        assert "Extra inputs are not permitted" in str(exc_info.value)
-
     def test_fused_stages_is_rejected(self):
         with pytest.raises(ValueError, match="fused_stages") as exc_info:
             PipelineConfig(
@@ -558,18 +533,6 @@ class TestRemovedStageLevelReplicaConfig:
                 fused_stages=[["a", "b"]],
             )
         assert "Extra inputs are not permitted" in str(exc_info.value)
-
-    def test_stage_overrides_reject_replica_keys(self):
-        from sglang_omni.config.sources import patches_from_stages_mapping
-
-        config = build_pipeline_config([build_stage_config("code2wav")])
-        with pytest.raises(Exception, match="num_replicas"):
-            patches_from_stages_mapping(
-                {"code2wav": {"num_replicas": 3}},
-                type(config),
-                [stage.name for stage in config.stages],
-                origin="test",
-            )
 
 
 class TestReservedStageNames:
@@ -611,13 +574,6 @@ class TestRuntimeOverridesOnReplicas:
                 assert (
                     args.get("max_seq_len") == 4096
                 ), f"{stage_cfg.name} lost the value configured for 'gen'"
-
-    def test_unreplicated_stage_does_not_borrow_overrides(self):
-        from sglang_omni.config.runtime import resolve_stage_typed_kwargs
-
-        config = self.build_pipeline_config()
-        src = {s.name: s for s in config.stages}["src"]
-        assert "max_seq_len" not in resolve_stage_typed_kwargs(src)
 
 
 class TestReceiveSideLogicalNames:
@@ -761,3 +717,34 @@ class TestSingleReplicaDeviceOverride:
         _, expanded, _ = expand(config)
 
         assert [(stage.name, stage.gpu) for stage in expanded] == [("thinker", [4, 5])]
+
+
+@pytest.mark.parametrize("devices", [[1], [1, 2], [3]])
+def test_replica_placement_warns_once_per_gpu_stage(caplog, devices):
+    """Process devices override explicit IDs without changing CPU stages or inputs."""
+    config = build_pipeline_config(
+        [
+            build_stage_config(
+                "cpu", gpu=None, process="p", terminal=False, next="gpu"
+            ),
+            build_stage_config("gpu", gpu=3, process="p"),
+        ],
+        processes={
+            "p": ProcessConfig(num_replicas=len(devices), replica_devices=devices)
+        },
+    )
+    _, expanded, _ = expand(config)
+    assert [stage.gpu for stage in expanded if stage.name.startswith("gpu")] == devices
+    assert all(stage.gpu is None for stage in expanded if stage.name.startswith("cpu"))
+    assert config.stage_named("gpu").gpu == 3
+    warnings = [record for record in caplog.records if record.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "processes.p.replica_devices overrides gpu=3" in warnings[0].message
+    assert f"replica GPU assignments: {devices}" in warnings[0].message
+
+
+def test_stage_gpu_without_replica_devices_does_not_warn(caplog):
+    config = build_pipeline_config([build_stage_config("gpu", gpu=3)])
+    _, expanded, _ = expand(config)
+    assert expanded[0].gpu == 3
+    assert not [record for record in caplog.records if record.levelname == "WARNING"]

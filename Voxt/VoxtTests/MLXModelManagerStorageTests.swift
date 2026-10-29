@@ -2,7 +2,7 @@ import XCTest
 @testable import Voxt
 import HuggingFace
 import MLX
-import MLXAudioSTT
+import OmniModelArtifacts
 
 @MainActor
 final class MLXModelManagerStorageTests: MLXModelManagerTestCase {
@@ -133,6 +133,16 @@ final class MLXModelManagerStorageTests: MLXModelManagerTestCase {
         }
     }
 
+    func testSileroProvisionerKeepsCachedDirectoryPresenceBehavior() async throws {
+        try await withIsolatedModelStorageRoot { root in
+            try seedValidMLXModelDirectory(repo: SileroVADModelSupport.repo, root: root)
+            let cachedDirectory = try XCTUnwrap(MeetingVADModelStorage.writeModelDirectory())
+            let provisioner = SileroVADModelProvisioner()
+            let directory = try await provisioner.ensureModelDirectory()
+            XCTAssertEqual(directory, cachedDirectory)
+        }
+    }
+
     func testStateForUnknownRepoDefaultsToNotDownloaded() async {
         await withIsolatedModelStorageRoot { _ in
             let manager = MLXModelManager(modelRepo: MLXModelManager.defaultModelRepo)
@@ -185,6 +195,38 @@ final class MLXModelManagerStorageTests: MLXModelManagerTestCase {
         }
     }
 
+    func testCancelPartialDownloadPreservesExistingDestinationWeights() async throws {
+        try await withIsolatedModelStorageRoot { root in
+            let repo = "mlx-community/parakeet-tdt-0.6b-v3"
+            let destination = root.appendingPathComponent("mlx-audio/mlx-community_parakeet-tdt-0.6b-v3")
+            let staging = root.appendingPathComponent("mlx-audio/mlx-community_parakeet-tdt-0.6b-v3-download")
+            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+            let weights = Data("previous weights awaiting repair".utf8)
+            try weights.write(to: destination.appendingPathComponent("model.safetensors"))
+            try Data("partial".utf8).write(to: staging.appendingPathComponent("model.safetensors"))
+            let manager = MLXModelManager(modelRepo: MLXModelManager.defaultModelRepo)
+            await manager.cancelDownloadAndWait(repo: repo)
+            XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("model.safetensors")), weights)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path))
+        }
+    }
+
+    func testDeleteModelRejectsReaderLeaseWithoutRemovingWeights() async throws {
+        try await withIsolatedModelStorageRoot { root in
+            let repo = "mlx-community/parakeet-tdt-0.6b-v3"
+            try seedValidMLXModelDirectory(repo: repo, root: root)
+            let destination = root.appendingPathComponent("mlx-audio/mlx-community_parakeet-tdt-0.6b-v3")
+            let reader = try OmniModelDirectoryLease.acquire(for: destination, mode: .sharedRead)
+            let manager = MLXModelManager(modelRepo: MLXModelManager.defaultModelRepo)
+            let result = await manager.deleteModel(repo: repo)
+            guard case .failure(let error) = result else { return XCTFail("Deletion bypassed reader lease") }
+            XCTAssertEqual(error as? OmniModelStorageError, .busy(path: destination.path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: destination.appendingPathComponent("weights.safetensors").path))
+            withExtendedLifetime(reader) {}
+        }
+    }
+
     func testActiveDownloadReposIsEmptyWhenNothingIsRunning() async {
         await withIsolatedModelStorageRoot { _ in
             let manager = MLXModelManager(modelRepo: MLXModelManager.defaultModelRepo)
@@ -212,61 +254,49 @@ final class MLXModelManagerStorageTests: MLXModelManagerTestCase {
         }
     }
 
-    func testQwen3LoadPreparationCreatesWritableShadowDirectoryWhenTokenizerIsMissing() async throws {
-        try await withIsolatedModelStorageRoot { writableRoot in
-            let repo = "mlx-community/Qwen3-ASR-0.6B-4bit"
-            let sourceDirectory = FileManager.default.temporaryDirectory
-                .appendingPathComponent(UUID().uuidString, isDirectory: true)
-                .appendingPathComponent("legacy-qwen3", isDirectory: true)
-            try FileManager.default.createDirectory(at: sourceDirectory, withIntermediateDirectories: true)
-            try Data("{}".utf8).write(to: sourceDirectory.appendingPathComponent("config.json"))
-            try Data("weights".utf8).write(to: sourceDirectory.appendingPathComponent("model.safetensors"))
-            defer { try? FileManager.default.removeItem(at: sourceDirectory.deletingLastPathComponent()) }
+    func testDownloadAttemptReusesInstalledDirectoryWithoutPublishingProgress() async throws {
+        try await withIsolatedModelStorageRoot { root in
+            let repo = "mlx-community/parakeet-tdt-0.6b-v3"
+            try seedValidMLXModelDirectory(repo: repo, root: root)
+            let session = URLSession(configuration: .ephemeral)
+            defer { session.invalidateAndCancel() }
+            let directory = try await MLXModelDownloadAttempt.download(
+                repoID: try XCTUnwrap(Repo.ID(rawValue: repo)),
+                session: session, baseURL: root,
+                bearerToken: nil, writeRoot: root,
+                userAgent: MLXModelManager.hubUserAgent, downloadSizeTolerance: 0.9
+            ) { _ in
+                XCTFail("An already installed model must not start transfer progress.")
+            }
 
-            let manager = MLXModelManager(modelRepo: repo)
-            let loadDirectory = try await manager.writableLoadDirectoryIfNeeded(
-                for: repo,
-                sourceDirectory: sourceDirectory,
-                lowercasedRepo: repo.lowercased()
-            )
-
-            let expectedDirectory = writableRoot
-                .appendingPathComponent(".derived-model-artifacts", isDirectory: true)
-                .appendingPathComponent("mlx-audio-shadow", isDirectory: true)
-                .appendingPathComponent("mlx-community_Qwen3-ASR-0.6B-4bit", isDirectory: true)
-            XCTAssertEqual(loadDirectory.standardizedFileURL.path, expectedDirectory.standardizedFileURL.path)
-            XCTAssertFalse(FileManager.default.fileExists(atPath: sourceDirectory.appendingPathComponent("tokenizer.json").path))
-            XCTAssertTrue(FileManager.default.fileExists(atPath: loadDirectory.appendingPathComponent("config.json").path))
-            XCTAssertTrue(FileManager.default.fileExists(atPath: loadDirectory.appendingPathComponent("model.safetensors").path))
+            XCTAssertEqual(directory.path, root.appendingPathComponent("mlx-audio/mlx-community_parakeet-tdt-0.6b-v3").path)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(
+                "mlx-audio/mlx-community_parakeet-tdt-0.6b-v3-download"
+            ).path))
         }
     }
 
-    func testQwen3LoadPreparationPreservesWritablePartialDownloadDirectory() async throws {
-        try await withIsolatedModelStorageRoot { writableRoot in
-            let repo = "mlx-community/Qwen3-ASR-0.6B-4bit"
-            let sourceDirectory = FileManager.default.temporaryDirectory
-                .appendingPathComponent(UUID().uuidString, isDirectory: true)
-                .appendingPathComponent("legacy-qwen3", isDirectory: true)
-            try FileManager.default.createDirectory(at: sourceDirectory, withIntermediateDirectories: true)
-            try Data("{}".utf8).write(to: sourceDirectory.appendingPathComponent("config.json"))
-            try Data("weights".utf8).write(to: sourceDirectory.appendingPathComponent("model.safetensors"))
-            defer { try? FileManager.default.removeItem(at: sourceDirectory.deletingLastPathComponent()) }
+    func testArtifactShadowReplacementPreservesSourceAndPartialDownload() async throws {
+        try await withIsolatedModelStorageRoot { root in
+            let source = root.appendingPathComponent("legacy-model", isDirectory: true)
+            let shadow = root.appendingPathComponent(".derived-model-artifacts/mlx-audio-shadow/fixture", isDirectory: true)
+            let partial = root.appendingPathComponent("mlx-audio/fixture-download", isDirectory: true)
+            for directory in [source, shadow, partial] {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            }
+            try Data("weights".utf8).write(to: source.appendingPathComponent("model.safetensors"))
+            try Data("stale".utf8).write(to: shadow.appendingPathComponent("old.json"))
+            try Data("partial".utf8).write(to: partial.appendingPathComponent("download.state"))
 
-            let partialDirectory = writableRoot
-                .appendingPathComponent("mlx-audio", isDirectory: true)
-                .appendingPathComponent("mlx-community_Qwen3-ASR-0.6B-4bit", isDirectory: true)
-            try FileManager.default.createDirectory(at: partialDirectory, withIntermediateDirectories: true)
-            try Data("partial".utf8).write(to: partialDirectory.appendingPathComponent("download.state"))
+            _ = try MLXModelArtifactPreparation.prepareWritableShadowDirectory(from: source, to: shadow)
 
-            let manager = MLXModelManager(modelRepo: repo)
-            _ = try await manager.writableLoadDirectoryIfNeeded(
-                for: repo,
-                sourceDirectory: sourceDirectory,
-                lowercasedRepo: repo.lowercased()
+            XCTAssertFalse(FileManager.default.fileExists(atPath: shadow.appendingPathComponent("old.json").path))
+            XCTAssertEqual(
+                try FileManager.default.destinationOfSymbolicLink(atPath: shadow.appendingPathComponent("model.safetensors").path),
+                source.appendingPathComponent("model.safetensors").path
             )
-
-            XCTAssertTrue(FileManager.default.fileExists(atPath: partialDirectory.path))
-            XCTAssertTrue(FileManager.default.fileExists(atPath: partialDirectory.appendingPathComponent("download.state").path))
+            XCTAssertEqual(try Data(contentsOf: source.appendingPathComponent("model.safetensors")), Data("weights".utf8))
+            XCTAssertEqual(try Data(contentsOf: partial.appendingPathComponent("download.state")), Data("partial".utf8))
         }
     }
 
@@ -279,13 +309,14 @@ final class MLXModelManagerStorageTests: MLXModelManagerTestCase {
                 .appendingPathComponent("mlx-community_Qwen3-ASR-0.6B-4bit", isDirectory: true)
             try? FileManager.default.removeItem(at: sourceDirectory.appendingPathComponent("tokenizer.json"))
 
-            let manager = MLXModelManager(modelRepo: repo)
-            let loadDirectory = try await manager.writableLoadDirectoryIfNeeded(
-                for: repo,
-                sourceDirectory: sourceDirectory,
-                lowercasedRepo: repo.lowercased()
+            let shadowDirectory = writableRoot
+                .appendingPathComponent(".derived-model-artifacts/mlx-audio-shadow", isDirectory: true)
+                .appendingPathComponent("mlx-community_Qwen3-ASR-0.6B-4bit", isDirectory: true)
+            let loadDirectory = try MLXModelArtifactPreparation.prepareWritableShadowDirectory(
+                from: sourceDirectory, to: shadowDirectory
             )
             XCTAssertTrue(FileManager.default.fileExists(atPath: loadDirectory.path))
+            let manager = MLXModelManager(modelRepo: repo)
 
             await manager.deleteModel(repo: repo)
 

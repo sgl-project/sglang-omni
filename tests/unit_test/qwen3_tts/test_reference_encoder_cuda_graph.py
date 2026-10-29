@@ -10,7 +10,11 @@ import numpy as np
 import pytest
 import torch
 from transformers import MimiConfig, MimiModel
-from transformers.models.mimi.modeling_mimi import MimiConv1d, MimiEuclideanCodebook
+from transformers.models.mimi.modeling_mimi import (
+    MimiConv1d,
+    MimiEncoderOutput,
+    MimiEuclideanCodebook,
+)
 
 from sglang_omni.models.qwen3_tts import request_builders as qwen3_request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
@@ -156,11 +160,17 @@ def test_reference_encoder_graph_replays_match_eager_and_miss_above_the_largest_
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
-def test_reference_code_batcher_replays_captured_buckets_and_encodes_the_rest() -> None:
+def test_reference_code_batcher_replays_captured_buckets_and_encodes_the_rest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     torch.manual_seed(5)
     device = torch.device("cuda", torch.cuda.current_device())
     config = small_mimi_config()
-    model = MimiModel(config).to(device).eval()
+    model = MimiModel(config)
+    for module in model.modules():
+        if isinstance(module, MimiEuclideanCodebook):
+            module.embed_sum.normal_()
+    model = model.to(device).eval()
     move_conv_padding_to_host(model)
     tokenizer = SimpleNamespace(
         model=SimpleNamespace(
@@ -173,20 +183,41 @@ def test_reference_code_batcher_replays_captured_buckets_and_encodes_the_rest() 
     batcher = qwen3_request_builders.Qwen3TTSRefCodeBatcher(
         tokenizer, max_batch_wait_ms=0, graph_bucket_frames=(4,)
     )
+    beyond_waveforms = [torch.rand(frames * HOP).numpy() for frames in (5, 7)]
+    encode = model.encode
+    encoded_samples = []
+
+    def recording_encode(
+        values: torch.Tensor, *, num_quantizers: int, return_dict: bool
+    ) -> MimiEncoderOutput:
+        encoded_samples.append(int(values.shape[-1]))
+        return encode(values, num_quantizers=num_quantizers, return_dict=return_dict)
+
+    monkeypatch.setattr(model, "encode", recording_encode)
     try:
         assert batcher.graph_runner is not None
-        inside = batcher.encode(np.random.rand(3 * HOP + 1).astype(np.float32), 24000)
-        beyond = batcher.encode(np.random.rand(5 * HOP).astype(np.float32), 24000)
+        inside = batcher.encode(torch.rand(3 * HOP + 1).numpy(), 24000)
+        beyond = [batcher.encode(waveform, 24000) for waveform in beyond_waveforms]
     finally:
         batcher.close()
+    expected = []
+    with torch.inference_mode():
+        for waveform in beyond_waveforms:
+            values = torch.zeros((1, 1, 8 * HOP), device=device)
+            values[0, 0, : waveform.size].copy_(torch.from_numpy(waveform))
+            codes = encode(values, num_quantizers=2, return_dict=True).audio_codes
+            expected.append(codes[0, :, : waveform.size // HOP].transpose(0, 1))
 
+    assert all(int(codes.unique().numel()) > 1 for codes in expected)
     assert inside.shape == (4, 2) and inside.is_cuda
-    assert beyond.shape == (5, 2) and beyond.is_cuda
+    assert encoded_samples == [8 * HOP, 8 * HOP]
+    assert [tuple(codes.shape) for codes in beyond] == [(5, 2), (7, 2)]
+    assert all(torch.equal(codes, want) for codes, want in zip(beyond, expected))
     assert batcher.graph_runner.stats() == {
         "enabled": True,
         "disable_reason": None,
         "bucket_frames": [4],
         "captured": [4],
         "replays": 1,
-        "misses": 1,
+        "misses": 2,
     }

@@ -31,6 +31,7 @@ sglang_omni/
 |-- pipeline/       # Inter-stage orchestration, stages, coordinator, processes
 |-- scheduling/     # Scheduler loops and inbox/outbox message types
 |-- model_runner/   # Shared model runner abstractions for AR stages
+|-- speculative/    # Adapters that run SGLang's draft workers on AR stages
 |-- models/         # Model-specific configs, stages, request builders, modules
 |-- config/         # PipelineConfig, StageConfig, config manager, topology
 |-- relay/          # Data transfer backends
@@ -119,3 +120,17 @@ python scripts/check_if_else.py --fix
 ```
 
 Run `pre-commit run --all-files` before submitting a change.
+
+## Documentation checks
+
+The `doc-style` hook rejects emoji in `docs/**/*.md`, including inline code and URLs, while allowing text presentation. Only top-level fences indented by up to three spaces are exempt; fences nested in lists or blockquotes are not supported. Unclosed fences are reported at their opening line. The checker reports file/line diagnostics without modifying files (exit 0: clean, 1: violations).
+
+Opening code fences must have a non-empty info string, such as `python`, `bash`, `text`, or `mermaid`. Any non-empty value is accepted; there is no language whitelist. This check uses the same top-level fence parsing as the emoji rule and reports missing labels at the opening line.
+
+```bash
+python -m pip install -r scripts/requirements-doc-lint.txt
+python scripts/check_doc_style.py
+```
+
+When upgrading `emoji`, recheck the supplements for standalone regional indicators
+and `[0-9#*]` followed by VS16.

@@ -6,6 +6,78 @@ import XCTest
 
 @MainActor
 final class ModelCatalogBuilderTests: XCTestCase {
+    func testInstalledNativeASRCatalogUsesPlatformGateAndKeepsRemovalAndLocationActions() throws {
+        let repo = "mlx-community/parakeet-tdt-0.6b-v3"
+        var settings = makeFeatureSettings()
+        settings.meeting.asrSelectionID = .mlx(repo)
+        let builder = makeBuilder(featureSettings: settings)
+        let entry = try XCTUnwrap(builder.asrEntries().first { $0.id == "mlx:\(repo)" })
+
+        XCTAssertEqual(entry.statusText, OmniASRBackend.unavailabilityReason(for: repo) ?? "")
+        XCTAssertTrue(entry.filterTags.contains(AppLocalization.localizedString("Installed")))
+        XCTAssertTrue(entry.usageLocations.contains(AppLocalization.localizedString("Meeting")))
+        XCTAssertEqual(entry.primaryAction?.title, AppLocalization.localizedString("Uninstall"))
+        XCTAssertEqual(entry.primaryAction?.isEnabled, true)
+        XCTAssertTrue(entry.secondaryActions.contains { $0.title == AppLocalization.localizedString("Open Location") && $0.isEnabled })
+    }
+
+    func testUnavailableASRActionsBlockInstallResumeAndUseButAllowCleanup() throws {
+        let repo = "unknown/model"
+        for state in [LocalModelInstallState.installable(isEnabled: true), .paused, .installed] {
+            let snapshot = LocalModelInstallSnapshot(
+                target: .mlx(repo), state: state, isInstalled: state == .installed,
+                isCurrentSelection: false, statusText: "", badgeText: nil, downloadStatus: nil,
+                canOpenLocation: state == .installed, canConfigure: false, configureActionTitle: nil
+            )
+            var performed: [LocalModelInstallActionKind] = []
+            let perform: (LocalModelInstallTarget, LocalModelInstallActionKind) -> Void = { target, action in
+                XCTAssertEqual(target, .mlx(repo))
+                performed.append(action)
+            }
+            let tableActions = ModelSettingsInstallActionResolver.tableActions(for: snapshot, perform: perform)
+            let blockedAction = try XCTUnwrap(tableActions.first)
+            XCTAssertFalse(blockedAction.isEnabled)
+            blockedAction.handler()
+            XCTAssertTrue(performed.isEmpty)
+
+            let primary = try XCTUnwrap(ModelSettingsInstallActionResolver.catalogPrimaryAction(for: snapshot, perform: perform))
+            XCTAssertEqual(primary.isEnabled, state == .installed)
+            primary.handler()
+            let secondary = ModelSettingsInstallActionResolver.catalogSecondaryActions(for: snapshot, perform: perform)
+            secondary.forEach { $0.handler() }
+            switch state {
+            case .installed:
+                XCTAssertEqual(performed, [.uninstall, .openLocation])
+            case .paused:
+                XCTAssertEqual(performed, [.cancel])
+            default:
+                XCTAssertTrue(performed.isEmpty)
+            }
+        }
+    }
+
+    func testNativeASRInstallActionUsesPlatformGateNotRuntimePresence() throws {
+        let repo = "mlx-community/GLM-ASR-Nano-4bit"
+        let snapshot = LocalModelInstallSnapshot(
+            target: .mlx(repo), state: .installable(isEnabled: true), isInstalled: false,
+            isCurrentSelection: false, statusText: "", badgeText: nil, downloadStatus: nil,
+            canOpenLocation: false, canConfigure: false, configureActionTitle: nil
+        )
+        var didInstall = false
+        let action = try XCTUnwrap(ModelSettingsInstallActionResolver.catalogPrimaryAction(for: snapshot) { _, kind in
+            XCTAssertEqual(kind, .install)
+            didInstall = true
+        })
+        action.handler()
+#if arch(arm64)
+        XCTAssertTrue(action.isEnabled)
+        XCTAssertTrue(didInstall)
+#else
+        XCTAssertFalse(action.isEnabled)
+        XCTAssertFalse(didInstall)
+#endif
+    }
+
     func testLLMCatalogIncludesUnavailableAppleIntelligenceEntry() throws {
         let builder = makeBuilder(
             featureSettings: makeFeatureSettings(),
@@ -128,6 +200,38 @@ final class ModelCatalogBuilderTests: XCTestCase {
         XCTAssertTrue(entry.displayTags.contains(AppLocalization.localizedString("Supports Primary Language")))
         XCTAssertFalse(entry.displayTags.contains(AppLocalization.localizedString("Does Not Support Primary Language")))
         XCTAssertFalse(entry.displayTags.contains(AppLocalization.localizedString("Multilingual")))
+    }
+
+    func testOmniASRModelUsesSGLangOmniEngineBadge() throws {
+        let repo = "mlx-community/Qwen3-ASR-0.6B-4bit"
+        let builder = makeBuilder(
+            featureSettings: makeFeatureSettings(transcriptionASR: .mlx(repo))
+        )
+
+        let entry = try XCTUnwrap(builder.asrEntries().first(where: { $0.id == "mlx:\(repo)" }))
+
+#if arch(arm64)
+        XCTAssertEqual(entry.engine, AppLocalization.localizedString("SGLang Omni"))
+#else
+        XCTAssertEqual(entry.statusText, OmniASRBackend.unavailabilityReason(for: repo))
+#endif
+    }
+
+    func testNewNativeASRModelsUseOmniBadgeAndOnlyNemotronShowsRealtime() throws {
+        let repos: [String] = [
+            "mlx-community/parakeet-tdt-0.6b-v3",
+            "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit",
+            "mlx-community/SenseVoiceSmall",
+        ]
+        for repo in repos {
+            let builder = makeBuilder(featureSettings: makeFeatureSettings(transcriptionASR: .mlx(repo)))
+            let entry = try XCTUnwrap(builder.asrEntries().first { $0.id == "mlx:\(repo)" })
+            XCTAssertEqual(entry.engine, AppLocalization.localizedString(OmniASRBackend.isAppleSilicon ? "SGLang Omni" : "MLX Audio"))
+            XCTAssertEqual(
+                entry.displayTags.contains(AppLocalization.localizedString("Realtime")),
+                repo == "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit" && OmniASRBackend.isAppleSilicon
+            )
+        }
     }
 
     func testParakeetV3DoesNotClaimUnsupportedChinesePrimaryLanguage() throws {
@@ -344,7 +448,7 @@ final class ModelCatalogBuilderTests: XCTestCase {
         )
 
         XCTAssertEqual(entry.ratingText, "4.8")
-        XCTAssertTrue(entry.displayTags.contains(AppLocalization.localizedString("Realtime")))
+        XCTAssertFalse(entry.displayTags.contains(AppLocalization.localizedString("Realtime")))
         XCTAssertTrue(entry.displayTags.contains(AppLocalization.localizedString("Accurate")))
         XCTAssertFalse(entry.displayTags.contains(AppLocalization.localizedString("Fast")))
     }

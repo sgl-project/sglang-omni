@@ -68,7 +68,13 @@ def test_reconstruct_timelines_sorts_per_request(tmp_path: Path) -> None:
 def test_timeline_merges_multiple_files(tmp_path: Path) -> None:
     file_a = tmp_path / "events_coordinator_1.jsonl"
     file_b = tmp_path / "events_encoder_2.jsonl"
-    write_events(file_a, [make_ev("r1", "coordinator", "request_admission", 100)])
+    write_events(
+        file_a,
+        [
+            make_ev("r1", "coordinator", "request_admission", 100),
+            make_ev("r1", "coordinator", "request_complete", 300),
+        ],
+    )
     write_events(
         file_b,
         [
@@ -81,7 +87,11 @@ def test_timeline_merges_multiple_files(tmp_path: Path) -> None:
     tls = reconstruct_timelines(tmp_path)
     assert "r1" in tls
     names = [e["event_name"] for e in tls["r1"].events]
-    assert names == ["request_admission", "stage_input_received"]
+    assert names == [
+        "request_admission",
+        "stage_input_received",
+        "request_complete",
+    ]
 
 
 def test_iter_events_skips_malformed_lines(tmp_path: Path) -> None:
@@ -193,7 +203,7 @@ def test_hop_breakdown_pairs_stream_chunks_by_id(tmp_path: Path) -> None:
             "r1",
             "talker",
             "stage_stream_chunk_received",
-            1_000_000,
+            1_500_000,
             from_stage="thinker",
             chunk_id=0,
         ),
@@ -201,7 +211,7 @@ def test_hop_breakdown_pairs_stream_chunks_by_id(tmp_path: Path) -> None:
             "r1",
             "talker",
             "stage_stream_chunk_received",
-            1_500_000,
+            1_000_000,
             from_stage="thinker",
             chunk_id=1,
         ),
@@ -214,6 +224,7 @@ def test_hop_breakdown_pairs_stream_chunks_by_id(tmp_path: Path) -> None:
     assert r.dst_stage == "talker"
     assert r.kind == "stream_chunk"
     assert r.count == 2
+    assert abs(r.max_ms - 1.5) < 1e-9
 
 
 def test_hop_breakdown_pairs_terminal_stream_chunks_to_coordinator(

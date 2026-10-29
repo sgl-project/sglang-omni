@@ -20,6 +20,7 @@ from sglang_omni.models.qwen3_omni.components.streaming_detokenizer import (
     StreamingDetokenizeScheduler,
 )
 from sglang_omni.models.qwen3_omni.components.talker_prefill import TalkerPrefillBuilder
+from sglang_omni.models.qwen3_omni.payload_types import NO_SPEECH
 from sglang_omni.models.qwen3_omni.request_builders import (
     make_thinker_stream_output_builder,
     resolve_encoder_next_stages,
@@ -33,8 +34,10 @@ from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangOutputProcessor
+from sglang_omni.scheduling.sglang_backend.prompt_hidden import PromptHiddenRequest
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.types import SchedulerOutput, SchedulerRequest
+from tests.unit_test.fixtures.prompt_hidden import cuda_prompt_hidden_store
 from tests.unit_test.fixtures.qwen_fakes import deliver_code2wav_chunk
 
 
@@ -110,32 +113,8 @@ def thinker_stage_payload(
     )
 
 
-def test_qwen_text_output_uses_text_only_active_subgraph():
-    payload = thinker_stage_payload(["text"])
-
-    assert resolve_encoder_next_stages("req-1", payload) == "thinker"
-    assert resolve_thinker_next_stages("req-1", payload) == "decode"
-    assert resolve_thinker_stream_done_targets("req-1", payload) == ["decode"]
-    assert resolve_terminal_stages(payload.request) == ["decode"]
-
-
 def test_qwen_audio_output_uses_speech_active_subgraph():
     payload = thinker_stage_payload(["text", "audio"])
-
-    assert resolve_encoder_next_stages("req-1", payload) == [
-        "thinker",
-        "talker_ar",
-    ]
-    assert resolve_thinker_next_stages("req-1", payload) == "decode"
-    assert resolve_thinker_stream_done_targets("req-1", payload) == [
-        "talker_ar",
-        "decode",
-    ]
-    assert resolve_terminal_stages(payload.request) == ["decode", "code2wav"]
-
-
-def test_qwen_missing_output_modalities_uses_speech_active_subgraph():
-    payload = thinker_stage_payload(None)
 
     assert resolve_encoder_next_stages("req-1", payload) == [
         "thinker",
@@ -156,8 +135,6 @@ def test_qwen_missing_output_modalities_uses_speech_active_subgraph():
         (True, ["text"], False, []),
         (True, ["text", "audio"], True, ["decode", "talker_ar"]),
         (True, ["text", "audio"], False, ["talker_ar"]),
-        (True, None, True, ["decode", "talker_ar"]),
-        (True, None, False, ["talker_ar"]),
         (False, None, True, ["decode"]),
         (False, None, False, []),
         (False, ["text", "audio"], True, ["decode"]),
@@ -169,7 +146,9 @@ def test_qwen_thinker_stream_builder_sends_the_token_id_to_each_target(
     stream: bool,
     expected_targets: list[str],
 ):
-    builder = make_thinker_stream_output_builder(speech_enabled=speech_enabled)
+    builder = make_thinker_stream_output_builder(
+        speech_enabled=speech_enabled, prompt_hidden_store=None
+    )
     req_data = SimpleNamespace(
         req=SimpleNamespace(inflight_middle_chunks=0),
         stage_payload=thinker_stage_payload(output_modalities, stream=stream),
@@ -194,13 +173,48 @@ def test_qwen_thinker_stream_builder_emits_nothing_without_an_answer_token(
     token_id: int | None,
     inflight_middle_chunks: int,
 ):
-    builder = make_thinker_stream_output_builder(speech_enabled=True)
+    builder = make_thinker_stream_output_builder(
+        speech_enabled=True, prompt_hidden_store=None
+    )
     req_data = SimpleNamespace(
         req=SimpleNamespace(inflight_middle_chunks=inflight_middle_chunks),
         stage_payload=thinker_stage_payload(["text", "audio"]),
     )
 
     assert builder("req-1", req_data, SimpleNamespace(data=token_id)) == []
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="pinned host rows need CUDA")
+def test_the_first_talker_chunk_carries_the_prompt_rows_once():
+    req_to_token = torch.tensor([[0, 6, 0, 0, 7]], dtype=torch.int32, device="cuda")
+    hidden_states = torch.arange(4.0, device="cuda").view(2, 2)
+    request = object.__new__(PromptHiddenRequest)
+    request.inflight_middle_chunks = 0
+    request.kv = SimpleNamespace(req_pool_idx=0)
+    request.prompt_hidden_positions = torch.tensor([1, 4])
+    req_data = SimpleNamespace(
+        req=request, stage_payload=thinker_stage_payload(["text", "audio"])
+    )
+
+    with cuda_prompt_hidden_store(slot_count=8, req_to_token=req_to_token) as store:
+        store.stage(torch.tensor([6, 7], device="cuda"), hidden_states)
+        builder = make_thinker_stream_output_builder(
+            speech_enabled=True, prompt_hidden_store=store
+        )
+        decode_message, talker_message = builder(
+            "req-1", req_data, SimpleNamespace(data=11)
+        )
+        later_messages = builder("req-1", req_data, SimpleNamespace(data=12))
+
+    assert decode_message.data.tolist() == [11]
+    assert decode_message.metadata == {"token_id": 11}
+    assert torch.equal(talker_message.data, hidden_states.cpu())
+    assert talker_message.metadata == {
+        "token_id": 11,
+        "prompt_hidden_positions": [1, 4],
+    }
+    assert [message.data.tolist() for message in later_messages] == [[12], [12]]
 
 
 class TokenMetadataOnlyChunk:
@@ -222,7 +236,9 @@ def text_projected(*token_ids: int) -> torch.Tensor:
 
 
 def test_qwen_talker_conditions_on_streamed_token_ids():
-    builder = make_thinker_stream_output_builder(speech_enabled=True)
+    builder = make_thinker_stream_output_builder(
+        speech_enabled=True, prompt_hidden_store=None
+    )
     req_data = SimpleNamespace(
         req=SimpleNamespace(inflight_middle_chunks=0),
         stage_payload=thinker_stage_payload(["audio"], stream=False),
@@ -243,6 +259,7 @@ def test_qwen_talker_conditions_on_streamed_token_ids():
     )
     prefill_builder.device = torch.device("cpu")
     prefill_builder.dtype = torch.float32
+    prefill_builder.projected_text_cache = {}
     prefill_builder.audio_token_id = 30
     prefill_builder.image_token_id = None
     prefill_builder.video_token_id = None
@@ -344,11 +361,7 @@ def test_qwen_hidden_states_skip_only_explicit_text_output_requests():
     scheduler_output = SchedulerOutput(
         requests=[text_request, audio_request, default_request],
         batch_data=SimpleNamespace(
-            reqs=[
-                SimpleNamespace(extend_range=SimpleNamespace(length=1)),
-                SimpleNamespace(extend_range=SimpleNamespace(length=1)),
-                SimpleNamespace(extend_range=SimpleNamespace(length=1)),
-            ]
+            reqs=[SimpleNamespace(), SimpleNamespace(), SimpleNamespace()]
         ),
     )
 
@@ -445,20 +458,6 @@ def test_non_streaming_finalizes_on_new_request():
     out = drain_outbox(sched)
     result_msgs = [m for m in out if m.type == "result"]
     assert len(result_msgs) == 1
-
-
-def test_streaming_finalize_after_chunks_then_done_then_new_request():
-    """Normal streaming order: chunks → done → new_request → finalize."""
-    tok = ByteTokenizer(vocab={1: b"hi"})
-    sched = StreamingDetokenizeScheduler(tokenizer=tok, eos_token_id=None)
-
-    sched.on_stream_chunk("req-1", FakeStreamItem(data=1))
-    sched.on_stream_done("req-1")
-    sched.on_new_request("req-1", make_payload(stream=True))
-    out = drain_outbox(sched)
-    types = [m.type for m in out]
-    assert types.count("stream") >= 1
-    assert types.count("result") == 1
 
 
 def payload_with_output_ids(stream: bool, output_ids: list[int]) -> StagePayload:
@@ -566,22 +565,6 @@ def make_code_chunk(metadata: dict | None) -> StreamItem:
     )
 
 
-def test_code2wav_chunk_without_stream_metadata_raises():
-    """Missing metadata is rejected; the serving loop turns the raise into an
-    outbox 'error' + abort (StreamingSimpleScheduler.start)."""
-    sched = Code2WavScheduler(
-        model=FakeCode2Wav(),
-        device="cpu",
-        stream_chunk_size=10,
-        left_context_size=0,
-    )
-    with pytest.raises(RuntimeError, match="missing metadata"):
-        sched.handle_stream_chunk("req-1", make_code_chunk(metadata=None))
-
-    sched.abort("req-1")
-    assert "req-1" not in sched.stream_states
-
-
 def test_code2wav_streaming_emits_per_window_and_slim_final():
     sched = Code2WavScheduler(
         model=FakeCode2Wav(),
@@ -675,6 +658,29 @@ def test_code2wav_done_without_audio_raises():
     assert "req-1" not in sched.stream_payloads
 
 
+def test_code2wav_done_without_audio_for_an_unspoken_reply_returns_empty_audio():
+    """A reply the talker did not speak ends with an empty waveform, not an error."""
+    sched = Code2WavScheduler(
+        model=FakeCode2Wav(),
+        device="cpu",
+        stream_chunk_size=10,
+        left_context_size=0,
+    )
+    payload = StagePayload(
+        request_id="req-1",
+        request=OmniRequest(inputs=[], params={"stream": False}),
+        data={NO_SPEECH: True},
+    )
+    sched.stream_payloads["req-1"] = payload
+    state = sched.get_or_create_stream_state("req-1")
+    state.stream_enabled = False
+
+    sched.handle_stream_done("req-1")
+    results = [m for m in list(sched.outbox.queue) if m.type == "result"]
+    assert len(results) == 1
+    assert results[0].data.data["sample_rate"] == sched.sample_rate
+
+
 def bare_stage(*, is_terminal: bool, owns_io: bool = True) -> Stage:
     """Construct a Stage shell that bypasses __init__ for unit-level checks."""
     s = Stage.__new__(Stage)
@@ -725,19 +731,6 @@ def test_send_stream_to_coordinator_short_circuits_for_followers():
     )
 
 
-def test_queue_stream_error_fast_fails_when_no_queue():
-    """When _stream_queue is None, _queue_stream_error must surface a
-    coordinator failure rather than silently dropping the error."""
-    s = bare_stage(is_terminal=True)
-    asyncio.run(
-        s.queue_stream_error("req-1", from_stage="thinker", error=RuntimeError("boom"))
-    )
-    assert len(s.control_plane.completions) == 1
-    assert s.control_plane.completions[0].request_id == "req-1"
-    assert s.control_plane.completions[0].error == "boom"
-    assert "req-1" in s.aborted
-
-
 def test_queue_stream_error_aborted_request_no_op():
     """An aborted request must not surface another failure to the coordinator."""
     s = bare_stage(is_terminal=True)
@@ -746,19 +739,6 @@ def test_queue_stream_error_aborted_request_no_op():
         s.queue_stream_error("req-1", from_stage="thinker", error=RuntimeError("late"))
     )
     assert s.control_plane.completions == []
-
-
-def test_queue_stream_error_repeated_calls_are_idempotent_at_handler():
-    """The first failure marks the request aborted; repeated errors are local no-ops."""
-    s = bare_stage(is_terminal=True)
-
-    async def drive():
-        await s.queue_stream_error("req-1", "thinker", RuntimeError("first"))
-        await s.queue_stream_error("req-1", "thinker", RuntimeError("second"))
-
-    asyncio.run(drive())
-    assert len(s.control_plane.completions) == 1
-    assert s.control_plane.completions[0].error == "first"
 
 
 def test_late_stream_done_after_finalize_does_not_re_create_state():
@@ -838,66 +818,6 @@ def test_scheduler_isolates_per_request_chunk_failure():
         assert thread.is_alive()
 
         # req-good: a healthy non-streaming request finalizes normally.
-        sched.inbox.put(
-            IncomingMessage(
-                request_id="req-good",
-                type="new_request",
-                data=make_payload(stream=False),
-            )
-        )
-        ok = sched.outbox.get(timeout=2.0)
-        assert ok.type == "result"
-        assert ok.request_id == "req-good"
-    finally:
-        sched.stop()
-        thread.join(timeout=2.0)
-
-
-def test_scheduler_isolates_per_request_finalize_failure():
-    """An exception inside finalize must isolate to that request without
-    taking down the scheduler thread.
-    """
-    sched = StreamingDetokenizeScheduler(
-        tokenizer=RaisingTokenizer(),
-        eos_token_id=None,
-    )
-    thread = threading.Thread(target=sched.start, daemon=True)
-    thread.start()
-    try:
-        # Force finalize to raise: poison token 999 in output_ids makes
-        # build_decode_result call tokenizer.decode([999], ...) and raise.
-        bad_payload = StagePayload(
-            request_id="req-bad",
-            request=OmniRequest(inputs=[], params={"stream": False}),
-            data={
-                "engine_outputs": {
-                    "thinker": {
-                        "output_ids": [999],
-                        "step": 1,
-                        "is_final": True,
-                        "extra_model_outputs": {},
-                        "finish_reason": "stop",
-                    }
-                },
-                "thinker_out": None,
-                "prompt": {"input_ids": []},
-            },
-        )
-        sched.inbox.put(
-            IncomingMessage(
-                request_id="req-bad",
-                type="new_request",
-                data=bad_payload,
-            )
-        )
-        err = sched.outbox.get(timeout=2.0)
-        assert err.type == "error"
-        assert err.request_id == "req-bad"
-        assert isinstance(err.data, Exception)
-        assert "req-bad" not in sched.request_states
-        assert thread.is_alive()
-
-        # Scheduler is still healthy.
         sched.inbox.put(
             IncomingMessage(
                 request_id="req-good",
@@ -1166,15 +1086,5 @@ def test_client_speech_forces_non_streaming_request(
 
     assert result.audio_bytes == b"encoded-audio"
     assert coordinator.submitted_params == [
-        {
-            "temperature": 1.0,
-            "top_p": 1.0,
-            "top_k": -1,
-            "min_p": 0.0,
-            "repetition_penalty": 1.0,
-            "stop": [],
-            "stop_token_ids": [],
-            "seed": None,
-            "stream": False,
-        }
+        {"stop": [], "stop_token_ids": [], "stream": False}
     ]

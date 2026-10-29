@@ -11,7 +11,7 @@ The workloads are the ones in the ASR CI (`.github/workflows/test-asr-ci.yaml`).
 | 1 | MOSS-Transcribe-Diarize, multiple speakers | `movies800times` (800 samples, run once without and once with streaming), `aishell4_long` (20), `googletime` (25) | 16 |
 | 2 | Qwen3-ASR-1.7B, Whisper-large-v3 or Fun-ASR-Nano | SeedTTS EN (1088) and ZH (2020) | 32 |
 
-CI stage 1 also has `aishell4_long90`, one 90 minute sample stitched together from three `aishell4_long` clips. It only runs through pytest (see [Run the CI tests](#run-the-ci-tests)). CI stage 2 runs one of the three models per CI run, picked at random unless a `run-fun-asr`, `run-qwen3-asr` or `run-whisper-asr` label is set.
+CI stage 1 also has `aishell4_long90`, one 90 minute sample stitched together from three `aishell4_long` clips. It only runs through pytest (see [Run the CI tests](#run-the-ci-tests)). CI stage 2 runs one of the three models per CI run, picked at random unless a `run-fun-asr-nano-2512`, `run-qwen3-asr-1.7b` or `run-whisper-large-v3` label is set with `run-asr-ci` or `run-all-ci`.
 
 This page uses one server on one GPU, with the same datasets, concurrency and request settings as CI.
 
@@ -22,7 +22,7 @@ Run the host block on the host before Step 1, and again in every new host shell.
 ```bash
 export GPU=0
 export HF_TOKEN=hf_your_token_here
-export IMAGE=hongccc/sglang-omni@sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df
+export IMAGE=hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
 export CPUSET=$(cat /sys/bus/pci/devices/$(nvidia-smi -i $GPU --query-gpu=pci.bus_id --format=csv,noheader | tail -c 13 | tr A-F a-f)/local_cpulist)
 echo $CPUSET
 ```

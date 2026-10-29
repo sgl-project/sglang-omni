@@ -407,6 +407,30 @@ final class RemoteProviderConfigurationPolicyTests: XCTestCase {
         )
     }
 
+    func testCustomOpenAISheetOffersEffortForUnknownModelsAndPreservesMax() {
+        let sheet = makeSheet(
+            target: .llm(.openAI),
+            model: "custom-reasoning-model",
+            endpoint: "https://example.com/v1/chat/completions",
+            generationThinkingMode: LLMThinkingMode.effort.rawValue,
+            generationThinkingEffort: "max"
+        )
+
+        XCTAssertEqual(sheet.generationThinkingEffortMenuOptions.map(\.value), ["none", "minimal", "low", "medium", "high", "xhigh", "max"])
+        XCTAssertEqual(sheet.currentConfigurationSnapshot.generationSettings.thinking.effort, "max")
+        XCTAssertEqual(sheet.currentConfigurationSnapshot.openAIReasoningEffort, "max")
+    }
+
+    func testOfficialOpenAISheetKeepsModelSpecificEffortChoices() {
+        let sheet = makeSheet(
+            target: .llm(.openAI),
+            model: "gpt-5.2",
+            endpoint: "https://api.openai.com/v1/responses"
+        )
+
+        XCTAssertEqual(sheet.generationThinkingEffortMenuOptions.map(\.value), ["none", "low", "medium", "high", "xhigh"])
+    }
+
     func testStepFunSheetUsesDocumentedEffortControls() {
         let sheet = makeSheet(
             target: .llm(.stepFun),
@@ -532,7 +556,10 @@ final class RemoteProviderConfigurationPolicyTests: XCTestCase {
     private func makeSheet(
         target: RemoteProviderTestTarget,
         model: String,
-        generationMaxOutputTokensText: String = ""
+        generationMaxOutputTokensText: String = "",
+        endpoint: String = "",
+        generationThinkingMode: String = LLMThinkingMode.providerDefault.rawValue,
+        generationThinkingEffort: String = ""
     ) -> RemoteProviderConfigurationSheet {
         RemoteProviderConfigurationSheet(
             providerTitle: providerTitle(for: target),
@@ -542,11 +569,14 @@ final class RemoteProviderConfigurationPolicyTests: XCTestCase {
             configuration: RemoteProviderConfiguration(
                 providerID: providerID(for: target),
                 model: model,
-                endpoint: "",
+                endpoint: endpoint,
                 apiKey: ""
             ),
             onSave: { _ in .success(()) },
-            generationMaxOutputTokensText: generationMaxOutputTokensText
+            endpoint: endpoint,
+            generationMaxOutputTokensText: generationMaxOutputTokensText,
+            generationThinkingMode: generationThinkingMode,
+            generationThinkingEffort: generationThinkingEffort
         )
     }
 

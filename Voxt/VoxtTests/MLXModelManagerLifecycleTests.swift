@@ -1,8 +1,5 @@
 import XCTest
 @testable import Voxt
-import HuggingFace
-import MLX
-import MLXAudioSTT
 
 @MainActor
 final class MLXModelManagerLifecycleTests: MLXModelManagerTestCase {
@@ -262,28 +259,63 @@ final class MLXModelManagerLifecycleTests: MLXModelManagerTestCase {
         }
     }
 
+    func testModelUseFixtureSupportsCachingAndIdleRelease() async throws {
+        let loader = ControlledMLXModelLoader()
+        let manager = MLXModelManager(
+            modelRepo: MLXModelManager.defaultModelRepo,
+            modelLoadingOverride: { _ in await loader.load() }
+        )
+        manager.beginActiveUse()
+        let loading = Task { try await manager.loadModel() }
+        await loader.waitUntilStarted()
+        await loader.finish()
+        let loaded = try await loading.value
+        let reused = try await manager.loadModel()
+        if case .modelUseFixture(let original) = loaded,
+           case .modelUseFixture(let cached) = reused {
+            XCTAssertTrue(original === cached)
+        } else {
+            XCTFail("The loader override must retain its model-use fixture.")
+        }
+        XCTAssertNil(loaded.omniRuntime)
+        manager.releaseLoadedModelIfIdle(reason: "fixture-active")
+        XCTAssertTrue(manager.hasLoadedModel)
+        manager.endActiveUse()
+        manager.releaseLoadedModelIfIdle(reason: "fixture-idle")
+        XCTAssertFalse(manager.hasLoadedModel)
+        await manager.shutdownForApplicationTermination()
+    }
+
+    func testModelUseFixtureCannotTranscribeOrCreateMeetingStream() async {
+        let fixture = ASRModelUseFixture()
+        let manager = MLXModelManager(
+            modelRepo: MLXModelManager.defaultModelRepo,
+            modelLoadingOverride: { _ in MLXLoadedModelBox(loaded: .modelUseFixture(fixture)) }
+        )
+        let transcriber = MLXTranscriber(modelManager: manager)
+        do {
+            _ = try await transcriber.transcribeBufferedResult(samples: [0.1, -0.1], sampleRate: 16000)
+            XCTFail("A lifecycle fixture must not provide an inference fallback.")
+        } catch ASRModelUseFixture.InferenceError.unavailable {
+            XCTAssertFalse(manager.hasActiveUse)
+        } catch {
+            XCTFail("Expected the fixture's inference error, got \(error).")
+        }
+        do {
+            _ = try await transcriber.makeMeetingNativeStreamingConfiguration()
+            XCTFail("A lifecycle fixture must not create a streaming session.")
+        } catch ASRModelUseFixture.InferenceError.unavailable {
+            XCTAssertFalse(manager.hasActiveUse)
+        } catch {
+            XCTFail("Expected the fixture's inference error, got \(error).")
+        }
+        await manager.shutdownForApplicationTermination()
+    }
+
     private func waitUntilPendingModelLoadClears(_ manager: MLXModelManager) async {
         for _ in 0..<100 where manager.hasPendingModelLoad {
             try? await Task.sleep(for: .milliseconds(5))
         }
-    }
-}
-
-private final class MLXModelManagerTestModel: STTGenerationModel {
-    let defaultGenerationParameters = STTGenerateParameters()
-
-    func generate(
-        audio: MLXArray,
-        generationParameters: STTGenerateParameters
-    ) -> STTOutput {
-        fatalError("Inference is not used by model lifecycle tests.")
-    }
-
-    func generateStream(
-        audio: MLXArray,
-        generationParameters: STTGenerateParameters
-    ) -> AsyncThrowingStream<STTGeneration, Error> {
-        fatalError("Inference is not used by model lifecycle tests.")
     }
 }
 
@@ -312,7 +344,7 @@ private actor ControlledMLXModelLoader {
     }
 
     func finish() {
-        loadContinuation?.resume(returning: MLXLoadedModelBox(model: MLXModelManagerTestModel()))
+        loadContinuation?.resume(returning: MLXLoadedModelBox(loaded: .modelUseFixture(ASRModelUseFixture())))
         loadContinuation = nil
     }
 }

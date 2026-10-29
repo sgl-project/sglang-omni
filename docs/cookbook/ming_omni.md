@@ -12,6 +12,8 @@ Install `sglang-omni` by following [Installation](../get_started/installation.md
 hf download inclusionAI/Ming-flash-omni-2.0
 ```
 
+For Intel GPUs, follow the [Ming-Omni XPU recipe](../get_started/installation_xpu.md#ming-omni-omni-chat-and-speech-one-or-two-xpus).
+
 The speech path expects the checkpoint to include the `talker/` assets, including `talker/data/voice_name.json` and `talker/vae/`. The default voice in the current Ming speech pipeline is `DB30`. `campplus.onnx` and `talker_tn` are optional runtime helpers: missing `campplus.onnx` disables speaker embedding extraction, and missing `talker_tn` falls back to identity text normalization.
 
 `Ming-flash-omni-2.0` on HF does not ship top-level thinker tokenizer files. `load_ming_tokenizer` falls back to `inclusionAI/Ming-flash-omni-Preview` (~12 MB) to copy `tokenizer.json`, `tokenizer_config.json`, and `special_tokens_map.json`. In offline environments, download those files too:
@@ -419,7 +421,7 @@ The streamed WAV chunks carry the same 44.1 kHz speech as the non-streaming repl
 | `video_max_pixels` | `null` | Maximum per-frame pixel budget passed to video preprocessing. |
 | `video_total_pixels` | `null` | Total pixel budget across sampled frames. |
 | `max_tokens` | `2048` | Forwarded to Ming as `max_new_tokens`. |
-| `temperature` | `1.0` | Chat-completions default. Set 0.0 for greedy deterministic examples. |
+| `temperature` | `1.0` | Thinker sampling. Set 0.0 for greedy deterministic examples. |
 | `top_p` | `1.0` | Thinker sampling. |
 | `top_k` | `-1` | Thinker sampling. |
 | `min_p` | `0.0` | Thinker sampling. |

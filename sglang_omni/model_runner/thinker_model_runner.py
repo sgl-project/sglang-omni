@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 from numbers import Integral
-from typing import TYPE_CHECKING
 
 import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
@@ -21,13 +20,11 @@ from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.sglang_execution import attn_forward_context
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
+from sglang_omni.scheduling.sglang_backend.prompt_hidden import (
+    PromptHiddenRequest,
+    PromptHiddenStore,
+)
 from sglang_omni.scheduling.types import SchedulerRequest
-
-if TYPE_CHECKING:
-    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
-
-else:
-    pass
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +32,10 @@ logger = logging.getLogger(__name__)
 class ThinkerModelRunner(ModelRunner):
     def __init__(
         self,
-        tp_worker: ModelWorker | MlxTpModelWorker,
+        tp_worker: ModelWorker,
         output_processor: SGLangOutputProcessor,
+        *,
+        capture_prompt_hidden_states: bool,
     ) -> None:
         super().__init__(tp_worker, output_processor)
 
@@ -47,10 +46,24 @@ class ThinkerModelRunner(ModelRunner):
         self.th_host_bufs: list[torch.Tensor] | None = None
         self.th_slot = 0
 
-        thinker_cfg = tp_worker.model_runner.model_config.hf_config.thinker_config
+        sglang_model_runner = tp_worker.model_runner
+        thinker_cfg = sglang_model_runner.model_config.hf_config.thinker_config
         self.image_token_id = thinker_cfg.image_token_id
         self.video_token_id = thinker_cfg.video_token_id
         self.audio_token_id = thinker_cfg.audio_token_id
+        self.prompt_hidden_store: PromptHiddenStore | None = (
+            PromptHiddenStore(
+                slot_count=sglang_model_runner.kv_index_translator.capture_token_capacity(
+                    sglang_model_runner.max_token_pool_size
+                ),
+                hidden_size=thinker_cfg.text_config.hidden_size,
+                dtype=sglang_model_runner.model_config.dtype,
+                req_to_token_pool=sglang_model_runner.req_to_token_pool,
+                device=sglang_model_runner.device,
+            )
+            if capture_prompt_hidden_states
+            else None
+        )
 
     def custom_prefill_forward(
         self,
@@ -81,23 +94,70 @@ class ThinkerModelRunner(ModelRunner):
             pass
         return None
 
-    # note (ratish): the thinker reads no SGLang hidden states, and a request asking
-    # for them would raise the batch capture mode above the graph's and run eager
+    # note (ratish): a capturing thinker's graphs are captured at FULL, so a prefill chunk asking
+    # for hidden states still replays them.
     def requested_capture_hidden_mode_prefill(
         self, schedule_batch: ScheduleBatch, requests: list[SchedulerRequest]
     ) -> CaptureHiddenMode:
-        del schedule_batch, requests
-        from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode
-
-        return CaptureHiddenMode.NULL
+        del requests
+        computes_prompt_rows = any(
+            isinstance(request, PromptHiddenRequest)
+            and request.prompt_hidden_offsets(prefix_length, extend_length).numel() > 0
+            for request, prefix_length, extend_length in zip(
+                schedule_batch.reqs,
+                schedule_batch.prefix_lens,
+                schedule_batch.extend_lens,
+            )
+        )
+        return (
+            CaptureHiddenMode.FULL if computes_prompt_rows else CaptureHiddenMode.NULL
+        )
 
     def requested_capture_hidden_mode_decode(
         self, schedule_batch: ScheduleBatch, requests: list[SchedulerRequest]
     ) -> CaptureHiddenMode:
         del schedule_batch, requests
-        from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode
-
         return CaptureHiddenMode.NULL
+
+    def post_prefill(
+        self,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
+    ) -> None:
+        del requests
+        if not forward_batch.capture_hidden_mode.is_full():
+            return
+        else:
+            pass
+        request_rows: list[torch.Tensor] = []
+        row_start = 0
+        for request, prefix_length, extend_length in zip(
+            schedule_batch.reqs, schedule_batch.prefix_lens, schedule_batch.extend_lens
+        ):
+            if isinstance(request, PromptHiddenRequest):
+                request_rows.append(
+                    request.prompt_hidden_offsets(prefix_length, extend_length)
+                    + row_start
+                )
+            else:
+                pass
+            row_start += extend_length
+        if not request_rows:
+            return
+        else:
+            pass
+        batch_rows = torch.cat(request_rows).to(forward_batch.out_cache_loc.device)
+        # note (ratish): req_to_token holds the virtual slot ids when the KV index is translated.
+        slot_ids = (
+            forward_batch.out_cache_loc
+            if forward_batch.out_cache_loc_virtual is None
+            else forward_batch.out_cache_loc_virtual
+        )
+        self.prompt_hidden_store.stage(
+            slot_ids[batch_rows], result.logits_output.hidden_states[batch_rows]
+        )
 
     # ------------------------------------------------------------------
     # Multimodal embedding injection
@@ -472,6 +532,10 @@ class ThinkerModelRunner(ModelRunner):
         else:
             pass
 
+        if self.retain_prefill_input_embeds:
+            self.retained_prefill_input_embeds = input_embeds
+        else:
+            pass
         with attn_forward_context(model_runner.attn_backend):
             hidden_states = outer.model(
                 input_ids=None,
@@ -480,12 +544,18 @@ class ThinkerModelRunner(ModelRunner):
                 input_embeds=input_embeds,
                 input_deepstack_embeds=ds_input,
             )
+            aux_hidden_states = None
+            if isinstance(hidden_states, tuple):
+                hidden_states, aux_hidden_states = hidden_states
+            else:
+                pass
 
             logits_output = outer.logits_processor(
                 forward_batch.input_ids,
                 hidden_states,
                 outer.lm_head,
                 forward_batch,
+                aux_hidden_states=aux_hidden_states,
             )
 
         return GenerationBatchResult(

@@ -34,13 +34,15 @@ from benchmarks.duplex.v15_runner import run_samples
 from benchmarks.eval.benchmark_duplex_reference import main as reference_main
 from benchmarks.eval.benchmark_duplex_v10 import main as v10_main
 from benchmarks.eval.benchmark_duplex_v15 import main as v15_main
-from tests.unit_test.benchmarks.test_duplex_client import FIXTURE_PACKETS, FIXTURE_PCM
-from tests.unit_test.benchmarks.test_duplex_oracle import find_event, trace_fixture
-from tests.unit_test.benchmarks.test_duplex_v10 import write_dataset as write_v10
-from tests.unit_test.benchmarks.test_duplex_v15_runner import (
+from tests.unit_test.fixtures.duplex_fakes import (
+    FIXTURE_PACKETS,
+    FIXTURE_PCM,
     SERVER,
     SERVER_REVISION,
+    find_event,
+    trace_fixture,
     write_dataset,
+    write_v10_dataset,
 )
 
 LEGACY = "qwen3-omni-half-duplex"
@@ -65,7 +67,7 @@ def samples(count: int, amplitude: int) -> bytes:
 
 
 class LegacyPeer:
-    """Fake LegacyRealtimeFacade: beta session object, response.audio.delta at 24 kHz."""
+    """Fake legacy realtime server: beta session object, response.audio.delta at 24 kHz."""
 
     def __init__(self, mode: PeerMode = "healthy") -> None:
         self.mode = mode
@@ -1207,7 +1209,10 @@ RECORD_ARGS = [
 ]
 
 
-def test_v15_recorder_records_a_legacy_profile(tmp_path: Path) -> None:
+@pytest.mark.parametrize("concurrency", [1, 2])
+def test_v15_recorder_records_a_legacy_profile(
+    tmp_path: Path, concurrency: int
+) -> None:
     dataset, run = tmp_path / "data", tmp_path / "run"
     write_dataset(dataset)
     with legacy_peer_server() as url:
@@ -1216,6 +1221,7 @@ def test_v15_recorder_records_a_legacy_profile(tmp_path: Path) -> None:
             ["record", "--dataset-root", str(dataset), "--url", url]
             + ["--output", str(run), "--sample-id", "user_interruption/1"]
             + RECORD_ARGS
+            + ["--concurrency", str(concurrency)]
             + [
                 "--turn-detection",
                 '{"type": "server_vad", "silence_duration_ms": 500}',
@@ -1225,6 +1231,7 @@ def test_v15_recorder_records_a_legacy_profile(tmp_path: Path) -> None:
     assert summary["variant_status"] == {"pass": 2}
     manifest = json.loads((run / "manifest.json").read_text())
     assert manifest["profile"] == LEGACY
+    assert manifest["config"]["concurrency"] == concurrency
     assert manifest["config"]["protocol"] == "legacy"
     legacy_config = manifest["config"]["legacy"]
     assert legacy_config["turn_detection"] == {
@@ -1235,6 +1242,7 @@ def test_v15_recorder_records_a_legacy_profile(tmp_path: Path) -> None:
     assert legacy_config["barge_in_cut"] == LEGACY_BARGE_IN_CUT
     assert "session_end" in legacy_config
     result = json.loads((run / "run.json").read_text())
+    assert result["load"]["concurrency"] == concurrency
     variant = result["samples"][0]["variants"]["overlap"]
     directory = run / variant["directory"]
     variant_manifest = json.loads((directory / "manifest.json").read_text())
@@ -1292,7 +1300,7 @@ def test_run_samples_validates_the_protocol_before_creating_the_run(
 
 def test_v10_recorder_records_a_legacy_profile(tmp_path: Path) -> None:
     dataset, run = tmp_path / "data", tmp_path / "run"
-    write_v10(dataset)
+    write_v10_dataset(dataset)
     with legacy_peer_server("healthy") as url:
         code, summary = run_cli(
             v10_main,
@@ -1309,3 +1317,65 @@ def test_v10_recorder_records_a_legacy_profile(tmp_path: Path) -> None:
         "type": "semantic_vad",
         "eagerness": "low",
     }
+
+
+def record_v10_interruption(tmp_path: Path) -> tuple[Path, Path]:
+    dataset, run = tmp_path / "data", tmp_path / "run"
+    write_v10_dataset(dataset)
+    with legacy_peer_server("healthy") as url:
+        code, summary = run_cli(
+            v10_main,
+            ["record", "--dataset-root", str(dataset), "--url", url]
+            + ["--output", str(run), "--sample-id", "synthetic_user_interruption/1"]
+            + RECORD_ARGS
+            + ["--turn-detection", '{"type": "server_vad"}'],
+        )
+    assert code == 0, summary
+    return dataset, run
+
+
+def export_v10_legacy(dataset: Path, run: Path, output: Path) -> dict:
+    code, counts = run_cli(
+        v10_main,
+        ["reference-export", "--run", str(run), "--dataset-root", str(dataset)]
+        + ["--out", str(output), "--trace-format", TraceFormat.LEGACY_PCM16.value],
+    )
+    assert code == 0, counts
+    return json.loads((output / "manifest.json").read_text())
+
+
+def test_v10_export_reads_a_legacy_run_at_the_profile_rate(tmp_path: Path) -> None:
+    dataset, run = record_v10_interruption(tmp_path)
+
+    manifest = export_v10_legacy(dataset, run, tmp_path / "export")
+
+    assert manifest["trace_format"] == "realtime-legacy-pcm16-v1"
+    assert manifest["counts"]["synthetic_user_interruption"] == {
+        "selected": 1,
+        "eligible": 1,
+    }
+    [row] = manifest["samples"]
+    assert row["output"]["native_rate"] == OUTPUT_RATE
+    assert row["output"]["resample"] == {
+        "method": "scipy.signal.resample_poly",
+        "up": 2,
+        "down": 3,
+    }
+    _, rate = soundfile.read(
+        tmp_path / "export/synthetic_user_interruption/1/output.wav", dtype="int16"
+    )
+    assert rate == INPUT_RATE
+
+
+def test_v10_export_needs_a_passing_legacy_protocol_verdict(tmp_path: Path) -> None:
+    dataset, run = record_v10_interruption(tmp_path)
+    state = json.loads((run / "run.json").read_text())
+    state["samples"][0]["variants"]["input"]["protocol_verdict"] = "fail"
+    (run / "run.json").write_text(json.dumps(state))
+
+    manifest = export_v10_legacy(dataset, run, tmp_path / "export")
+
+    [row] = manifest["samples"]
+    assert row["eligible"] is False
+    assert row["reasons"] == ["recorder protocol verdict 'fail' is not pass"]
+    assert not (tmp_path / "export/synthetic_user_interruption").exists()

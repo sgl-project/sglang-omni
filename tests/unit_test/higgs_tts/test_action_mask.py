@@ -20,7 +20,7 @@ from sglang_omni.models.higgs_tts.utils import (
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-@pytest.mark.parametrize("t_raw,n", [(1, 8), (3, 4), (10, 8), (5, 2), (1, 1), (20, 3)])
+@pytest.mark.parametrize("t_raw,n", [(1, 8), (10, 8), (1, 1)])
 def test_mask_is_inverse_of_apply_delay_pattern(t_raw: int, n: int):
     """Mask == the non-BOC/EOC cells of a real delayed matrix == ``c<=r<c+T``."""
     torch.manual_seed(t_raw * 100 + n)

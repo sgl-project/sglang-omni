@@ -49,6 +49,194 @@ Default optimizations that are on without further flags: backbone decode device 
 
 Classifier-free guidance is on in both stages and has no flag. See [Guidance](#guidance) for what it costs you, because the AR half changes how much a request occupies.
 
+## Apple Silicon: native MLX
+
+The standalone `music3_server` runs entirely in C++ under
+`sglang_omni_mlx/native/`; it uses the same HTTP request fields as the examples
+below. Download the pinned converted checkpoint, then build with the native
+runtime's existing MLX 0.32.3 toolchain:
+
+```bash
+python sglang_omni_mlx/native/ci/provision_models.py "$MUSIC3_DATA" \
+  --model mlx-community/MiniMax-Music3-mxfp8
+sglang_omni_mlx/native/scripts/build_runtime.sh "$MUSIC3_RUNTIME" "$MUSIC3_BUILD"
+"$MUSIC3_RUNTIME/bin/music3_server" \
+  --model-path "$MUSIC3_DATA/models/mlx-community_MiniMax-Music3-mxfp8" \
+  --model-name MiniMaxAI/MiniMax-Music3 --port 8000
+```
+
+Set `MUSIC3_DATA`, `MUSIC3_RUNTIME` and `MUSIC3_BUILD` to separate local directories. Serving needs neither Python nor SGLang's CUDA package. Model provisioning uses the existing CI Python requirements. The converted weights occupy about 14 GB; allow additional unified memory for the KV cache and acoustic activations. Both stages stay resident by default, with MLX's free buffer cache limited to 1 GiB.
+
+This path includes Qwen3/RVQ decoding, condition fusion, Euler Flow/DiT,
+stereo DAV decoding, overlap crops, and Hann sinc conversion from 44.1 to
+32 kHz. AR guidance is fixed at 1.5 and top-k at 50. `max_new_tokens` defaults
+to 750 frames and accepts 1–9000, subject to the 10,240-token context and
+5000-token prompt limit. Before cleanup, `input` and `instructions` are each
+limited to 64 KiB of UTF-8. `seed` accepts integers in `[0, 2**63)` and defaults
+to zero. Optional `dit_steps` accepts 1–100 (default 30), and `dit_cfg_scale`
+accepts finite nonnegative values (default 1.7).
+
+Responses are complete stereo PCM16 `wav` or raw interleaved `pcm` at
+32 kHz. `stream=true`, other formats and speed changes return 400. Only one
+song is generated at a time; a concurrent request returns 429. A disconnected
+client's generation releases the worker when computation finishes. Supervisor
+shutdown cancels between frames, acoustic windows and Euler steps. Voxt's
+`--supervised` lifecycle, `/health` and `/v1/models` are supported; this does
+not add a Music3 interface to Voxt.
+
+### Native MLX stage offload
+
+Pass both components to the native server to load one stage at a time:
+
+```bash
+"$MUSIC3_RUNTIME/bin/music3_server" \
+  --model-path "$MUSIC3_DATA/models/mlx-community_MiniMax-Music3-mxfp8" \
+  --model-name MiniMaxAI/MiniMax-Music3 --port 8000 \
+  --stage-offload-components ar,dit
+```
+
+Startup loads configuration and the tokenizer and validates checkpoint shapes and stage ownership without evaluating the weights. Every tensor must belong to exactly one stage: AR/RVQ uses language_model and rvq_depth_decoder; the acoustic stage uses condition_encoder, transformer and vocoder. Each accepted request loads AR/RVQ weights, evaluates the hidden-state handoff, synchronizes and releases AR, then loads the acoustic weights. Acoustic weights stay loaded across all windows and are released after completion, cancellation or failure.
+
+The checkpoint directory is resolved once at startup; keep its contents unchanged while the server runs. No second host weight copy is retained. Reloading weights adds disk I/O and latency; file-backed pages can remain in the operating system's cache.
+
+The existing single-request worker owns both stages and returns 429 for concurrent submissions. Omitting the flag keeps both stages resident. Component names accept either order, surrounding whitespace and mixed case, matching the CUDA CLI. This option belongs to the native executable; CUDA continues to use the `sgl-omni serve` option described below.
+
+`music3_synthesize` accepts the same flag and reports per-request elapsed time, AR elapsed time and peak active MLX allocation in bytes. Its diagnostic `--check-cancellation` flag cancels at the fully evaluated AR handoff before synthesizing a retry, and reports active MLX allocation before and after cancellation. The Mac golden harness runs short and cross-window cases in separate resident and offload processes and requires identical waveform digests and metadata. HTTP seeded-repeat and busy cases run in both modes; the remaining HTTP cases run resident. CI uploads WAVs from both modes for review. The earlier resident validation record below does not establish offload memory or latency results.
+
+### Reference parity and Mac CI
+
+The numerical reference is [PR #1990](https://github.com/sgl-project/sglang-omni/pull/1990)
+at `195e4e9058e13af605f13f5c55a26efe651805a6`. Reference source hashes are in
+`native/ci/music3_reference.json`; checkpoint hashes and revision are in
+`native/ci/model_pins.json`. The first feedback frame and FP16 hidden-state
+handoff follow that reference. The server lifecycle extraction follows
+[PR #2870](https://github.com/sgl-project/sglang-omni/pull/2870).
+
+For an independent waveform comparison, use a separate Python reference
+environment with MLX 0.32.3, mlx-lm 0.31.3, Transformers 5.12.1, NumPy
+2.3.5 and SoundFile 0.13.1. The validated Mac environment used Torch 2.13.0
+and TorchAudio 2.11.0 for CPU resampling. Python is used only for this check:
+
+```bash
+python sglang_omni_mlx/native/ci/generate_music3_reference.py \
+  --model-path "$MUSIC3_DATA/models/mlx-community_MiniMax-Music3-mxfp8" \
+  --runtime-bin "$MUSIC3_RUNTIME/bin" --output-directory "$MUSIC3_PARITY"
+```
+
+It downloads only hash-verified reference source, generates both fixed cases
+with each implementation, and compares waveform length, peak error (at most
+0.001) and RMS error (at most 0.0001). Retain `parity.json`, the reference pin
+and both sets of WAVs for review; these tolerances are acceptance thresholds,
+not measured results.
+
+Add `--prompt-only` to the same command to compare native prompt text and token
+IDs with the frozen Python reference without loading model weights or generating
+audio. It covers nested Markdown bullets, Unicode whitespace and line separators,
+multilingual tag casing, malformed tags, and both waveform cases. The results
+are saved in `prompt-parity.json`.
+
+Mac CI runs the Music3 HTTP checks and includes
+`native/ci/model_golden/minimax-music3.json` in its existing golden loop. Its
+cases cover English and Chinese, including a 250-frame acoustic overlap.
+Music3 HTTP tests run in a separate pytest process so the module-scoped ASR
+servers release their weights first. The runner logs its unified memory size.
+Apple M5 outputs are recorded after comparison with the frozen reference.
+For another chip, review and import the runner's
+`golden-outputs/minimax-music3.json` artifact using the existing workflow:
+
+```bash
+python sglang_omni_mlx/native/ci/check_model_golden.py \
+  --golden sglang_omni_mlx/native/ci/model_golden/minimax-music3.json \
+  --import "$MUSIC3_GOLDEN_OUTPUT"
+```
+
+Exact PCM digests are checked per Apple chip; an unrecorded chip fails and
+uploads its WAVs and metadata for review.
+
+Local validation on 2026-10-18 used an Apple M5 with 24 GiB of unified memory,
+macOS 26.6.2 and MLX 0.32.3. The native CMake build, 21 selected Music3 tests,
+seven golden-harness tests, six server model-kind checks and two existing
+Whisper supervisor lifecycle checks passed. The Music3 tests cover WAV/PCM
+responses, exact seeded repeats, invalid requests and a concurrent request
+returning 429.
+
+| Reference case | Frames | Samples per channel | Peak PCM error | RMS PCM error |
+| --- | ---: | ---: | ---: | ---: |
+| English short | 50 | 63,902 | 3.052e-5 | 1.207e-7 |
+| Chinese acoustic overlap | 250 | 319,879 | 3.052e-5 | 2.443e-7 |
+
+Both outputs are finite, non-silent 32 kHz stereo. The errors above compare
+normalized PCM16 samples against the frozen Python reference; the maximum
+is one PCM16 level. The original acceptance thresholds were unchanged.
+A fresh native process reproduced both recorded golden hashes exactly.
+These checks cover fixed-input waveform parity.
+
+To rerun the real-checkpoint HTTP and per-chip golden checks:
+
+```bash
+NATIVE_RUNTIME_BIN="$MUSIC3_RUNTIME/bin" CI_DATA_ROOT="$MUSIC3_DATA" \
+  python -m pytest -q sglang_omni_mlx/native/ci/test_model_servers.py -k music3
+python sglang_omni_mlx/native/ci/check_model_golden.py \
+  --runtime-bin "$MUSIC3_RUNTIME/bin" --data-root "$MUSIC3_DATA" \
+  --golden sglang_omni_mlx/native/ci/model_golden/minimax-music3.json \
+  --outputs "$MUSIC3_GOLDEN_OUTPUTS"
+```
+### Serial weight offload
+
+To alternate AR and DIT/DAV weights on one GPU, enable both offload components:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --port 8000 \
+  --stage-offload-components ar,dit
+```
+
+This CUDA mode serves one request at a time (one CFG pair, two engine rows), even when a higher concurrency is requested. AR completes the request before handing the GPU to DIT/DAV. Both stages share one process and device. `torch_memory_saver==0.0.10` releases physical weight memory while retaining CUDA addresses; decode and RVQ graphs and acoustic compilation remain enabled. Acoustic breakable graphs remain opt-in. Explicit eager selections are respected.
+
+The default `--minimax_music3_ar.factory.serial_offload_source mmap` snapshots finalized weights to bounded safetensors shards, preserving shared storage and strided views. Two shared 256 MiB pinned buffers upload mapped shards. The AR KV cache and graph workspaces remain resident. Startup pauses AR before loading acoustic weights, folds DAV normalization on CUDA, initializes acceleration, caches and pauses acoustic weights, then restores AR.
+
+The cache directory defaults to `music3-runtime-weights` beside the Hugging Face Hub cache. Override it with `--minimax_music3_ar.factory.serial_offload_cache_dir /path/on/disk`. It must be writable, non-tmpfs storage with space for finalized AR and acoustic weights. Cache identity includes checkpoint content, runtime versions, dtype, layout and folding backend; caches publish atomically under a lock and invalid caches fail visibly. There is no automatic RAM fallback.
+
+Hosts with sufficient RAM can explicitly select `--minimax_music3_ar.factory.serial_offload_source ram`, retaining pageable runtime weights and using the same staging buffers. Give KV memory an explicit budget, for example `--minimax_music3_ar.engine.kv_cache_bytes 4294967296` for 4 GiB.
+
+Validate repeated requests, audio output, GPU residency and host RSS on the target hardware under its intended memory limit before relying on this mode.
+
+Music3 defaults to SGLang deterministic inference so attention reductions agree between eager and graph execution. The same seed is reproducible within one execution mode. Compare decoded waveforms numerically across eager, graph and compiled execution modes.
+
+Run the opt-in HTTP integration test with a local checkpoint:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 MINIMAX_MUSIC3_TEST_CHECKPOINT=/path/to/MiniMax-Music3 \
+  pytest -q tests/test_model/test_minimax_music3_serial_offload.py
+```
+
+The test covers resident/offload execution, RAM/file sources, eager/graph/compiled execution and requested acoustic breakable graphs. It checks 100-frame and 250-frame stereo audio, waveform parity (relative RMS difference below 0.5% and correlation above 0.9999), exact repeated output, two overlapping submissions, 20 short requests and a final 100-frame request. Set `MINIMAX_MUSIC3_TEST_REPEATED_REQUESTS` to change the repetition count or `MINIMAX_MUSIC3_TEST_MODES` to select comma-separated mode names from the test. It records anonymous RSS, cgroup memory, physical GPU usage and wake latency alongside audio artifacts.
+
+Set `MINIMAX_MUSIC3_TEST_REQUIRE_32G_LIMIT=1` to require a cgroup memory limit of at most 32 GiB for file-backed modes. Set `MINIMAX_MUSIC3_TEST_COLD_WAKE=1` to evict runtime shard pages before the first request. The memory context artifact records the limit and OOM event counters before and after each mode.
+
+### Validation Record
+
+Validated on one NVIDIA H200 on 2026-10-07 using the newest published `hongccc/sglang-omni:dev` image (published 2026-09-08), digest `sha256:ebe4239e29a764ee3a2806385c061c5fd438a26f01458e503d3822dcba5790df`. The container used repository pin `sglang==0.5.21`, `torch_memory_saver==0.0.10`, and PyTorch `2.13.0+cu130`. The checkpoint revision was `fbdf52fbaaca799592917417eb05f1899f1255ec`, with a 4 GiB AR KV budget.
+
+The six-mode file-backed run passed under a verified 32 GiB cgroup limit. Each offload mode completed 27 requests, including overlaps, 20 short repeats and the final reload. RAM eager and accelerated modes passed the same lifecycle under 64 GiB. Resident eager, graph-only, compilation-only, combined acceleration and requested breakable modes passed waveform validation. All modes repeated exactly within their execution mode. Graph-only and eager offload matched resident eager byte for byte. The largest cross-mode relative RMS difference was 0.3497%, with minimum correlation 0.99999399. Decode/RVQ capture and acoustic acceleration initialized once per server across repeated handoffs.
+
+| Mode | Peak Anonymous RSS (GiB) | Peak Cgroup Memory (GiB) | Peak Physical GPU (GiB) |
+| --- | ---: | ---: | ---: |
+| Resident eager | 14.63 | 29.53 | 36.04 |
+| Resident accelerated | 14.66 | 29.40 | 35.77 |
+| File-backed eager | 14.65 | 31.20 | 26.72 |
+| File-backed accelerated | 14.71 | 32.00 | 26.43 |
+| File-backed breakable | 14.74 | 31.75 | 27.21 |
+| RAM eager | 41.21 | 57.71 | 26.72 |
+| RAM accelerated | 41.28 | 57.83 | 26.43 |
+
+These sampled peaks include startup. Anonymous RSS sums server descendants; cgroup memory also includes reclaimable file cache. No OOM or OOM-kill events occurred. PyTorch allocator statistics retain virtual allocations during offload, so physical GPU usage is measured through NVML. Warm median AR/acoustic wakes were 4.83/2.66 seconds for file-backed acceleration and 3.05/1.71 seconds for RAM acceleration. The file-backed runtime cache occupied about 27 GiB on disk.
+
+A separate accelerated file-backed run evicted runtime shard pages before its first request under the 32 GiB limit. Cold AR/acoustic wakes took 6.38/4.09 seconds; subsequent warm medians were 3.93/2.42 seconds. Its parity, overlap, three short repeats and final reload checks passed without OOM events.
+
+Focused validation passed 103 tests, including physical release, unchanged addresses, exact restoration, aliases, bounded staging, cache failures/publication, cancellation and failed transitions. `pre-commit run --all-files` passed.
+
+H200 validation does not establish RTX 3090 compatibility. BF16 acoustic weights, quantization, layer streaming and request batching are outside this offload milestone.
+
 ## Generating Music
 
 Two fields carry the request. `input` is the lyrics; `instructions` is the caption that describes style, instrumentation, tempo and mood. Both are required, and both matter: the caption is what decides genre and arrangement, and the lyrics are what gets sung.
@@ -405,6 +593,17 @@ CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --
 ```
 
 That serves 32 concurrent requests as 64 rows. Do not pass `engine.cuda_graph_max_bs` here: this model computes the cap itself so the graphs always cover the doubled batch, and a value you supply is discarded rather than honoured.
+
+### FP32 flex attention
+
+On CUDA, the default FP32 acoustic DIT uses PyTorch flex attention while retaining FP32 inputs and TF32 matmuls. To restore the previous SDPA path:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --port 8000 \
+  --dit_dav.factory.fp32_flex_attention false
+```
+
+The option resolves to flex attention only on CUDA with `dtype=float32` and `attention_backend=torch_sdpa`; MUSA, XPU, and other dtype/backend combinations retain their existing attention path. Flex-attention output is not byte-identical to SDPA, so validate generated audio for your workload when comparing the two paths.
 
 Send clients in parallel rather than in sequence:
 

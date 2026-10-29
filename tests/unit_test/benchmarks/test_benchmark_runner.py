@@ -1,3 +1,5 @@
+"""Benchmark runner warmup, arrival schedules, client slots and dispatch lateness."""
+
 from __future__ import annotations
 
 import asyncio

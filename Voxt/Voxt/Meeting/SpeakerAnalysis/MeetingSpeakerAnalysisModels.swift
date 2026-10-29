@@ -3,7 +3,7 @@
 
 import Foundation
 
-struct MeetingAudioAsset: Sendable {
+nonisolated struct MeetingAudioAsset: Sendable {
     let source: TranscriptAudioSource
     let samples: [Float]
     let sampleRate: Double
@@ -15,7 +15,7 @@ struct MeetingAudioAsset: Sendable {
     }
 }
 
-struct MeetingAudioAssetDescriptor: Equatable, Sendable {
+nonisolated struct MeetingAudioAssetDescriptor: Equatable, Sendable {
     let source: TranscriptAudioSource
     let sampleRate: Double
     let startSample: Int
@@ -32,7 +32,7 @@ struct MeetingAudioAssetDescriptor: Equatable, Sendable {
     }
 }
 
-struct MeetingSpeakerTurn: Identifiable, Codable, Equatable, Sendable {
+nonisolated struct MeetingSpeakerTurn: Identifiable, Codable, Equatable, Sendable {
     let id: UUID
     let source: TranscriptAudioSource
     let speakerID: String

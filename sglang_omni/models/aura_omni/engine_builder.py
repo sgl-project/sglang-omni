@@ -39,7 +39,7 @@ from sglang_omni.models.aura_omni.request_builders import (
     render_aura_prompt,
 )
 from sglang_omni.platforms import current_platform
-from sglang_omni.proto import EXPLICIT_GENERATION_PARAMS_KEY, StagePayload
+from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.engine_factory import (
     GenerationDefaults,
     SchedulerExtras,
@@ -80,15 +80,6 @@ def generation_default(value: float | int | None, unset: float | int) -> float |
         return unset
     else:
         return value
-
-
-def explicit_sampling_fields(payload: StagePayload) -> set[str]:
-    """Fields the caller set; the rest take the checkpoint's generation config."""
-    explicit = payload.request.metadata.get(EXPLICIT_GENERATION_PARAMS_KEY)
-    if isinstance(explicit, (list, tuple)):
-        return {str(field) for field in explicit}
-    else:
-        return set()
 
 
 def make_aura_scheduler_adapters(
@@ -140,7 +131,6 @@ def make_aura_scheduler_adapters(
             )
 
         params = payload.request.params
-        explicit = explicit_sampling_fields(payload)
         request_max_new_tokens = (
             int(params["max_new_tokens"])
             if params.get("max_new_tokens") is not None
@@ -156,7 +146,7 @@ def make_aura_scheduler_adapters(
         else:
             pass
         sampling = {
-            field: params[field] if field in explicit else sampling_defaults[field]
+            field: params[field] if field in params else sampling_defaults[field]
             for field in SAMPLING_FIELDS
         }
         sampling_params = SamplingParams(

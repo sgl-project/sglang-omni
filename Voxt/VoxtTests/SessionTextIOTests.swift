@@ -20,45 +20,45 @@ final class SessionTextIOTests: XCTestCase {
 
     func testSelectedTextDictionaryHotkeyAcceptsUpToFiveWords() {
         let candidate = "one two three four five"
-        XCTAssertEqual(SelectedTextDictionaryHotkeySupport.candidateTerm(from: candidate), candidate)
+        XCTAssertEqual(SystemSelectionTextSupport.dictionaryCandidateTerm(from: candidate), candidate)
     }
 
     func testSelectedTextDictionaryHotkeyRejectsMoreThanFiveWords() {
-        XCTAssertNil(SelectedTextDictionaryHotkeySupport.candidateTerm(from: "one two three four five six"))
+        XCTAssertNil(SystemSelectionTextSupport.dictionaryCandidateTerm(from: "one two three four five six"))
     }
 
     func testSelectedTextDictionaryHotkeyAcceptsUpToTenCJKCharacters() {
         let chinese = String(repeating: "词", count: 10)
         let japanese = String(repeating: "あ", count: 10)
         let korean = String(repeating: "한", count: 10)
-        XCTAssertEqual(SelectedTextDictionaryHotkeySupport.candidateTerm(from: chinese), chinese)
-        XCTAssertEqual(SelectedTextDictionaryHotkeySupport.candidateTerm(from: japanese), japanese)
-        XCTAssertEqual(SelectedTextDictionaryHotkeySupport.candidateTerm(from: korean), korean)
+        XCTAssertEqual(SystemSelectionTextSupport.dictionaryCandidateTerm(from: chinese), chinese)
+        XCTAssertEqual(SystemSelectionTextSupport.dictionaryCandidateTerm(from: japanese), japanese)
+        XCTAssertEqual(SystemSelectionTextSupport.dictionaryCandidateTerm(from: korean), korean)
     }
 
     func testSelectedTextDictionaryHotkeyRejectsMoreThanTenCJKCharacters() {
-        XCTAssertNil(SelectedTextDictionaryHotkeySupport.candidateTerm(from: String(repeating: "词", count: 11)))
-        XCTAssertNil(SelectedTextDictionaryHotkeySupport.candidateTerm(from: String(repeating: "あ", count: 11)))
-        XCTAssertNil(SelectedTextDictionaryHotkeySupport.candidateTerm(from: String(repeating: "한", count: 11)))
+        XCTAssertNil(SystemSelectionTextSupport.dictionaryCandidateTerm(from: String(repeating: "词", count: 11)))
+        XCTAssertNil(SystemSelectionTextSupport.dictionaryCandidateTerm(from: String(repeating: "あ", count: 11)))
+        XCTAssertNil(SystemSelectionTextSupport.dictionaryCandidateTerm(from: String(repeating: "한", count: 11)))
     }
 
     func testSelectedTextDictionaryHotkeyTrimsWhitespace() {
         XCTAssertEqual(
-            SelectedTextDictionaryHotkeySupport.candidateTerm(from: "  OpenAI\n"),
+            SystemSelectionTextSupport.dictionaryCandidateTerm(from: "  OpenAI\n"),
             "OpenAI"
         )
     }
 
     func testSelectedTextDictionaryHotkeyRejectsEmptySelection() {
-        XCTAssertNil(SelectedTextDictionaryHotkeySupport.candidateTerm(from: " \n "))
-        XCTAssertNil(SelectedTextDictionaryHotkeySupport.candidateTerm(from: nil))
+        XCTAssertNil(SystemSelectionTextSupport.dictionaryCandidateTerm(from: " \n "))
+        XCTAssertNil(SystemSelectionTextSupport.dictionaryCandidateTerm(from: nil))
     }
 
     func testSelectedTextDictionaryHotkeyRejectsPunctuationOnlySelection() {
-        XCTAssertNil(SelectedTextDictionaryHotkeySupport.candidateTerm(from: "\"\""))
-        XCTAssertNil(SelectedTextDictionaryHotkeySupport.candidateTerm(from: "——"))
-        XCTAssertNil(SelectedTextDictionaryHotkeySupport.candidateTerm(from: "「」"))
-        XCTAssertNil(SelectedTextDictionaryHotkeySupport.candidateTerm(from: ".."))
+        XCTAssertNil(SystemSelectionTextSupport.dictionaryCandidateTerm(from: "\"\""))
+        XCTAssertNil(SystemSelectionTextSupport.dictionaryCandidateTerm(from: "——"))
+        XCTAssertNil(SystemSelectionTextSupport.dictionaryCandidateTerm(from: "「」"))
+        XCTAssertNil(SystemSelectionTextSupport.dictionaryCandidateTerm(from: ".."))
     }
 
     func testSharedContentSelectionRejectsPunctuationOnlyLikeDictionary() {

@@ -86,7 +86,14 @@ master_doc = "index"
 
 language = "en"
 
-exclude_patterns = ["build", "Thumbs.db", ".DS_Store"]
+exclude_patterns = ["build", "Thumbs.db", ".DS_Store", "developer_reference/mlx.md"]
+
+html_additional_pages = {
+    "developer_reference/mlx": "mlx_redirect.html",
+    "developer_reference/full_duplex_bench": "full_duplex_bench_redirect.html",
+    "developer_reference/full_duplex_metrics": "full_duplex_metrics_redirect.html",
+    "developer_reference/full_duplex_interactive_model": "full_duplex_interactive_model_redirect.html",
+}
 
 pygments_style = "sphinx"
 

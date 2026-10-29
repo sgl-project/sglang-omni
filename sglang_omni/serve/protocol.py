@@ -47,6 +47,38 @@ class ChatCompletionAudio(BaseModel):
     transcript: str | None = None
 
 
+class ImageGenerationParams(BaseModel):
+    """Per-request image generation and editing controls (sglang-omni extension).
+
+    Text-to-image defaults to 1024x1024; edits follow the input image grid.
+    """
+
+    model_config = ConfigDict(allow_inf_nan=False, extra="forbid")
+
+    mode: Literal["normal", "thinking"] = "normal"
+    decode_mode: Literal["normal", "decoder-turbo"] = "normal"
+    decoder_steps: int | None = Field(default=None, ge=1)
+    seed: int | None = None
+    cfg_scale: float = Field(default=1.0, ge=1.0)
+    cfg_text_scale: float | None = Field(default=None, ge=0.0)
+    cfg_image_scale: float = Field(default=0.0, ge=0.0)
+    cfg_rescale: float = Field(default=0.7, ge=0.0, le=1.0)
+    image_h: int | None = Field(default=None, ge=32, multiple_of=32)
+    image_w: int | None = Field(default=None, ge=32, multiple_of=32)
+    dllm_steps: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_decoder_steps(self) -> ImageGenerationParams:
+        if self.decode_mode == "normal" and self.decoder_steps == 1:
+            raise ValueError(
+                "normal decoding requires decoder_steps >= 2; use decoder-turbo "
+                "for a one-step request"
+            )
+        else:
+            pass
+        return self
+
+
 class ChatCompletionRequest(BaseModel):
     """OpenAI-compatible chat completion request."""
 
@@ -364,6 +396,7 @@ class SpeechReference(BaseModel):
     media_type: str | None = None
     text: str | None = None
     vq_codes: list[list[int]] | list[int] | None = None
+    speaker_embedding: list[float] | None = None
 
 
 class CreateSpeechRequest(BaseModel):
@@ -584,6 +617,7 @@ class TranscriptionResponse(BaseModel):
 
     text: str
     usage: TranscriptionUsage | None = None
+    finish_reason: str | None = None
 
 
 class TranscriptionSegment(BaseModel):
@@ -604,6 +638,7 @@ class TranscriptionVerboseResponse(BaseModel):
     text: str
     segments: list[TranscriptionSegment] = Field(default_factory=list)
     usage: TranscriptionUsage | None = None
+    finish_reason: str | None = None
 
 
 class TranscriptionTextDeltaEvent(BaseModel):
@@ -619,6 +654,7 @@ class TranscriptionTextDoneEvent(BaseModel):
     type: str = "transcript.text.done"
     text: str
     usage: TranscriptionUsage | None = None
+    finish_reason: str | None = None
 
 
 class ModelPermission(BaseModel):

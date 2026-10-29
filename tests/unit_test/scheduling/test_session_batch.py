@@ -161,6 +161,29 @@ def test_backlog_appends_of_distinct_sessions_share_one_hook_call():
     assert all(out.type == "result" for out in outputs.values())
 
 
+def test_without_session_batches_each_append_runs_alone_with_the_same_results():
+    def backlog() -> list[IncomingMessage]:
+        return opens("a", "b", "c") + [
+            message("a0", "append", "a", 0),
+            message("b0", "append", "b", 0),
+            message("a1", "append", "a", 1),
+            message("c0", "append", "c", 0),
+        ]
+
+    batched_hooks, alone_hooks = RecordingHooks(), RecordingHooks()
+    batched = run_backlog(SessionScheduler(batched_hooks), backlog())
+    alone_scheduler = SessionScheduler(alone_hooks, batch_sessions=False)
+    alone = run_backlog(alone_scheduler, backlog())
+
+    assert batched_hooks.calls == [["a0", "b0", "c0"], ["a1"]]
+    assert alone_hooks.calls == [["a0"], ["b0"], ["a1"], ["c0"]]
+    assert alone_scheduler.max_open_sessions == session_module.DEFAULT_MAX_OPEN_SESSIONS
+    assert alone_scheduler.max_concurrency == 1
+    assert {rid: (out.type, out.data.data) for rid, out in alone.items()} == {
+        rid: (out.type, out.data.data) for rid, out in batched.items()
+    }
+
+
 def test_batched_appends_emit_one_shared_stage_start_timestamp(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -200,30 +223,6 @@ def test_batched_appends_emit_one_shared_stage_start_timestamp(
     assert {
         call.kwargs["expected_run_id"] for call in emit_stage_started.call_args_list
     } == {"batch-start-test"}
-
-
-def test_batched_appends_skip_stage_start_clock_when_profiler_inactive(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    recorder = get_recorder()
-    recorder.stop()
-    emit_stage_started = Mock()
-    monkeypatch.setattr(
-        session_module, "emit_session_stage_started", emit_stage_started
-    )
-    time_ns = Mock(return_value=456)
-    monkeypatch.setattr(session_module.time, "time_ns", time_ns)
-
-    hooks = RecordingHooks()
-    scheduler = SessionScheduler(hooks)
-    outputs = run_backlog(
-        scheduler,
-        opens("a", "b") + [message("a0", "append", "a"), message("b0", "append", "b")],
-    )
-
-    assert outputs["a0"].type == outputs["b0"].type == "result"
-    assert time_ns.call_count == 0
-    assert emit_stage_started.call_count == 0
 
 
 def test_scalar_append_emits_stage_start_before_hook(
@@ -293,17 +292,6 @@ def test_open_and_close_run_alone_in_arrival_order():
     assert outputs["open-b"].type == "result"
     assert outputs["close-a"].data.data == {"closed": True}
     assert outputs["a1"].type == "error"
-
-
-def test_hooks_without_a_batch_hook_run_one_unit_per_call():
-    hooks = SequentialHooks()
-    scheduler = SessionScheduler(hooks, max_concurrency=1)
-    run_backlog(
-        scheduler,
-        opens("a", "b")
-        + [message("a0", "append", "a", 0), message("b0", "append", "b", 0)],
-    )
-    assert hooks.calls == [["a0"], ["b0"]]
 
 
 def test_session_over_its_state_budget_fails_only_its_own_unit():

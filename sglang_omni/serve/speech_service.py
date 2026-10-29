@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypeAlias, TypedDict
 from urllib.parse import urlparse
 
-from pydantic import ValidationError
+import torch
+from pydantic import AliasChoices, BaseModel, ValidationError
 
 from sglang_omni.client import ClientError, GenerateRequest, SamplingParams
 from sglang_omni.client.audio import audio_encoding_unavailable_reason
@@ -76,7 +77,6 @@ class RequiredTTSParams(TypedDict):
 
 
 class TTSParams(RequiredTTSParams, total=False):
-    explicit_generation_params: list[str]
     task_type: str
     language: str
     instructions: str
@@ -93,7 +93,9 @@ class TTSParams(RequiredTTSParams, total=False):
     seed: int
 
 
-SpeechReferenceDescriptor = dict[str, str | int | list[int] | list[list[int]]]
+SpeechReferenceDescriptor = dict[
+    str, str | int | list[int] | list[list[int]] | list[float]
+]
 
 
 class SpeechPrompt(TypedDict):
@@ -135,6 +137,7 @@ class SpeechRequestValidator:
         supports_uploaded_voice_references: bool = True,
         custom_voice_config: CustomVoiceConfig | None = None,
         required_speech_reference_count: int | None = None,
+        speaker_embedding_size: int | None = None,
         speech_reference_text_required: bool = False,
         speech_reference_text_excludes_instructions: bool = False,
         additional_speech_languages: frozenset[str] = frozenset(),
@@ -143,6 +146,7 @@ class SpeechRequestValidator:
         allowed_media_domains: list[str] | None = None,
         voice_store: "SpeakerSampleStore | None" = None,
         tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
+        supported_speech_fields: frozenset[str] | None = None,
     ) -> None:
         if tts_batch_max_items < 1:
             raise ValueError("tts_batch_max_items must be greater than 0")
@@ -153,6 +157,14 @@ class SpeechRequestValidator:
             and required_speech_reference_count < 1
         ):
             raise ValueError("required_speech_reference_count must be greater than 0")
+        else:
+            pass
+        if speaker_embedding_size is not None and (
+            isinstance(speaker_embedding_size, bool) or speaker_embedding_size < 1
+        ):
+            raise ValueError(
+                "speaker_embedding_size must be a positive integer or None"
+            )
         else:
             pass
         if max_speech_input_chars is not None and (
@@ -187,6 +199,7 @@ class SpeechRequestValidator:
             else frozenset()
         )
         self.required_speech_reference_count = required_speech_reference_count
+        self.speaker_embedding_size = speaker_embedding_size
         self.speech_reference_text_required = speech_reference_text_required
         self.max_speech_input_chars = max_speech_input_chars
         self.speech_reference_text_excludes_instructions = (
@@ -206,6 +219,7 @@ class SpeechRequestValidator:
             reject_unsafe_remote_addresses=True,
         )
         self.tts_batch_max_items = int(tts_batch_max_items)
+        self.supported_speech_fields = supported_speech_fields
 
     def parse_request(self, payload: object) -> CreateSpeechRequest:
         """Parse and validate a raw HTTP payload."""
@@ -223,6 +237,7 @@ class SpeechRequestValidator:
             key: value for key, value in payload.items() if key != "items"
         }
         self.validate_raw_payload(default_payload)
+        self.validate_supported_fields(default_payload, CreateSpeechBatchRequest)
         try:
             request = CreateSpeechBatchRequest.model_validate(payload)
         except ValidationError as exc:
@@ -270,6 +285,7 @@ class SpeechRequestValidator:
         else:
             pass
         self.validate_raw_payload(payload)
+        self.validate_supported_fields(payload, CreateSpeechRequest)
         try:
             request = CreateSpeechRequest.model_validate(payload)
         except ValidationError as exc:
@@ -345,6 +361,7 @@ class SpeechRequestValidator:
         else:
             pass
         self.validate_custom_voice_request(request, task_type=updates.get("task_type"))
+        self.validate_speaker_embedding(request, task_type=updates.get("task_type"))
         if request.language is not None:
             updates["language"] = self.normalize_language(request.language)
         else:
@@ -400,6 +417,78 @@ class SpeechRequestValidator:
             f"Unknown voice '{request.voice}'. Supported voices: {supported}",
             param="voice",
         )
+
+    def validate_speaker_embedding(
+        self,
+        request: CreateSpeechRequest | CreateSpeechBatchRequest,
+        *,
+        task_type: str | None,
+    ) -> None:
+        references = request.references or []
+        embedded_indexes = [
+            index
+            for index, reference in enumerate(references)
+            if reference.speaker_embedding is not None
+        ]
+        if not embedded_indexes:
+            return
+        else:
+            pass
+        index = embedded_indexes[0]
+        reference = references[index]
+        param = f"references.{index}.speaker_embedding"
+        if self.speaker_embedding_size is None:
+            raise bad_request(
+                "speaker_embedding is not supported by this model", param=param
+            )
+        elif len(references) != 1 or request.ref_audio is not None:
+            raise bad_request(
+                "a reference given as speaker_embedding must be the only reference",
+                param=param,
+            )
+        elif any(
+            value is not None
+            for value in (
+                reference.audio_path,
+                reference.ref_audio,
+                reference.audio,
+                reference.data,
+                reference.vq_codes,
+            )
+        ):
+            raise bad_request(
+                "a reference given as speaker_embedding cannot also carry audio or "
+                "vq_codes",
+                param=param,
+            )
+        elif len(reference.speaker_embedding) != self.speaker_embedding_size:
+            raise bad_request(
+                f"speaker_embedding must contain {self.speaker_embedding_size} "
+                f"values, got {len(reference.speaker_embedding)}",
+                param=param,
+            )
+        elif not bool(
+            torch.isfinite(
+                torch.tensor(reference.speaker_embedding, dtype=torch.float32)
+            ).all()
+        ):
+            raise bad_request(
+                "speaker_embedding values must be finite float32 numbers",
+                param=param,
+            )
+        elif request.x_vector_only_mode is False:
+            raise bad_request(
+                "speaker_embedding implies x-vector-only mode; omit "
+                "x_vector_only_mode or set it to true",
+                param="x_vector_only_mode",
+            )
+        elif task_type is not None and task_type != "Base":
+            raise bad_request(
+                "speaker_embedding is only supported for the Base task",
+                param="task_type",
+            )
+        else:
+            pass
 
     def normalize_language(self, value: str) -> str:
         normalized = self.tts_language_aliases.get(value.strip().lower())
@@ -715,6 +804,11 @@ class SpeechRequestValidator:
         *,
         index: int,
     ) -> CreateSpeechRequest:
+        self.validate_supported_fields(
+            item.model_dump(exclude_unset=True),
+            SpeechBatchItem,
+            prefix=f"items.{index}.",
+        )
         payload = batch.model_dump(exclude={"items"}, exclude_none=True)
         item_payload = item.model_dump(exclude_none=True)
         payload.update(item_payload)
@@ -757,6 +851,7 @@ class SpeechRequestValidator:
             else None
         )
         self.validate_custom_voice_request(batch, task_type=task_type)
+        self.validate_speaker_embedding(batch, task_type=task_type)
         if batch.language is not None:
             self.normalize_language(batch.language)
         else:
@@ -896,6 +991,28 @@ class SpeechRequestValidator:
                     pass
             else:
                 pass
+        references = payload.get("references")
+        for index, reference in enumerate(
+            references if isinstance(references, list) else []
+        ):
+            value = (
+                reference.get("speaker_embedding")
+                if isinstance(reference, Mapping)
+                else None
+            )
+            if value is not None and (
+                not isinstance(value, list)
+                or any(
+                    isinstance(item, bool) or not isinstance(item, (int, float))
+                    for item in value
+                )
+            ):
+                raise bad_request(
+                    "speaker_embedding must be a list of numbers",
+                    param=f"references.{index}.speaker_embedding",
+                )
+            else:
+                pass
         for field_name in (
             "stream",
             "x_vector_only_mode",
@@ -909,6 +1026,54 @@ class SpeechRequestValidator:
                     )
                 else:
                     pass
+            else:
+                pass
+
+    def validate_supported_fields(
+        self,
+        payload: Mapping[str, object],
+        protocol: type[BaseModel],
+        *,
+        prefix: str = "",
+    ) -> None:
+        """Refuse fields this entry would drop or the pipeline does not support,
+        when it declares supported_speech_fields; null leaves a protocol field
+        unset, while an unknown field is refused even when null."""
+        supported_fields = self.supported_speech_fields
+        if supported_fields is None:
+            return
+        else:
+            pass
+        field_names = accepted_field_names(protocol)
+        reference_field_names = accepted_field_names(SpeechReference)
+        for key, value in payload.items():
+            path = f"{prefix}{key}"
+            field_name = field_names.get(key)
+            if field_name is None:
+                raise bad_request(f"unknown speech request field: {path}", param=path)
+            elif value is None:
+                pass
+            elif field_name not in supported_fields:
+                raise bad_request(f"{path} is not supported by this model", param=path)
+            elif field_name == "references" and isinstance(value, list):
+                for index, reference in enumerate(value):
+                    unknown_keys = (
+                        [
+                            reference_key
+                            for reference_key in reference
+                            if reference_key not in reference_field_names
+                        ]
+                        if isinstance(reference, Mapping)
+                        else []
+                    )
+                    if unknown_keys:
+                        reference_path = f"{path}.{index}.{unknown_keys[0]}"
+                        raise bad_request(
+                            f"unknown speech reference field: {reference_path}",
+                            param=reference_path,
+                        )
+                    else:
+                        pass
             else:
                 pass
 
@@ -980,21 +1145,6 @@ class SpeechRequestValidator:
             pass
 
 
-def explicit_generation_params(request: CreateSpeechRequest) -> list[str]:
-    return sorted(
-        field
-        for field in (
-            "max_new_tokens",
-            "temperature",
-            "top_p",
-            "top_k",
-            "repetition_penalty",
-            "seed",
-        )
-        if field in request.model_fields_set
-    )
-
-
 def build_tts_params(
     request: CreateSpeechRequest,
     *,
@@ -1005,11 +1155,6 @@ def build_tts_params(
         "response_format": request.response_format,
         "speed": request.speed,
     }
-    generation_params = explicit_generation_params(request)
-    if generation_params:
-        tts_params["explicit_generation_params"] = generation_params
-    else:
-        pass
     if request.task_type is not None:
         tts_params["task_type"] = request.task_type
     else:
@@ -1075,34 +1220,14 @@ def build_tts_params(
 
 
 def build_sampling_params(request: CreateSpeechRequest) -> SamplingParams:
-    sampling = SamplingParams(
-        temperature=0.8, top_p=0.8, top_k=30, repetition_penalty=1.1
+    return SamplingParams(
+        temperature=request.temperature,
+        top_p=request.top_p,
+        top_k=request.top_k,
+        repetition_penalty=request.repetition_penalty,
+        seed=request.seed,
+        max_new_tokens=request.max_new_tokens,
     )
-    if request.max_new_tokens is not None:
-        sampling.max_new_tokens = request.max_new_tokens
-    else:
-        pass
-    if request.temperature is not None:
-        sampling.temperature = request.temperature
-    else:
-        pass
-    if request.top_p is not None:
-        sampling.top_p = request.top_p
-    else:
-        pass
-    if request.top_k is not None:
-        sampling.top_k = request.top_k
-    else:
-        pass
-    if request.repetition_penalty is not None:
-        sampling.repetition_penalty = request.repetition_penalty
-    else:
-        pass
-    if request.seed is not None:
-        sampling.seed = request.seed
-    else:
-        pass
-    return sampling
 
 
 def build_speech_prompt(
@@ -1377,6 +1502,25 @@ def validation_error_message(exc: ValidationError) -> str:
     location = ".".join(str(item) for item in first_error.get("loc", ()))
     message = first_error.get("msg") or "invalid speech request"
     return f"{location}: {message}" if location else str(message)
+
+
+def accepted_field_names(protocol: type[BaseModel]) -> dict[str, str]:
+    """Every key the protocol accepts, field names and aliases, mapped to its field."""
+    field_names: dict[str, str] = {}
+    for field_name, field_info in protocol.model_fields.items():
+        field_names[field_name] = field_name
+        alias = field_info.validation_alias
+        if isinstance(alias, AliasChoices):
+            for choice in alias.choices:
+                if isinstance(choice, str):
+                    field_names[choice] = field_name
+                else:
+                    pass
+        elif isinstance(alias, str):
+            field_names[alias] = field_name
+        else:
+            pass
+    return field_names
 
 
 def validation_error_param(

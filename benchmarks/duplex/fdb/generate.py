@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import json
+import math
+import os
 import shutil
 import subprocess
 import sys
@@ -23,6 +25,7 @@ from benchmarks.duplex.fdb.common import (
     log,
     log_tail,
     run_command,
+    visible_devices,
 )
 from benchmarks.duplex.fdb.selection import (
     SampleSelection,
@@ -37,6 +40,7 @@ from benchmarks.duplex.fdb.selection import (
 from benchmarks.duplex.fdb.servers import model_server
 from benchmarks.duplex.run_artifacts import accounting, load_run
 from benchmarks.duplex.v10_dataset import SUBSETS as V10_SUBSETS
+from sglang_omni.models.minicpm_o.native_config import DEFAULT_MAX_SESSIONS
 
 PROGRESS_INTERVAL_S = 60
 
@@ -97,13 +101,14 @@ def v10_record_command(settings: Settings) -> list[str]:
 
 
 def record_shards(
-    base_command: list[str],
+    base_commands: list[list[str]],
     root: Path,
     sample_ids: list[str],
     sessions_per_sample: int,
     num_shards: int,
 ) -> list[Path]:
-    """Run num_shards recorders in parallel under root/recording; returns the shard directories."""
+    """Run num_shards recorders in parallel under root/recording, shard i on model
+    server i mod the server count; returns the shard directories."""
     session_count = sessions_per_sample * len(sample_ids)
     shards = [
         (
@@ -115,7 +120,7 @@ def record_shards(
     shards = [(shard_dir, shard_ids) for shard_dir, shard_ids in shards if shard_ids]
     with ExitStack() as stack:
         processes = []
-        for shard_dir, shard_ids in shards:
+        for index, (shard_dir, shard_ids) in enumerate(shards):
             shard_log_path = root / "logs" / f"record-{shard_dir.name}.log"
             shard_log = stack.enter_context(shard_log_path.open("w"))
             stack.enter_context(follow_log(shard_log_path))
@@ -126,7 +131,12 @@ def record_shards(
             ]
             processes.append(
                 subprocess.Popen(
-                    [*base_command, "--output", str(shard_dir), *sample_arguments],
+                    [
+                        *base_commands[index % len(base_commands)],
+                        "--output",
+                        str(shard_dir),
+                        *sample_arguments,
+                    ],
                     cwd=REPO_ROOT,
                     stdout=shard_log,
                     stderr=subprocess.STDOUT,
@@ -219,7 +229,36 @@ def generate(
     selection: SampleSelection,
     v10_selection: SampleSelection,
     num_shards: int,
+    gpus: tuple[str, ...],
 ) -> None:
+    replicas = [settings.on_gpu(gpu) for gpu in gpus]
+    # note (wenyao): model_server_command uses the default session capacity.
+    if num_shards < len(gpus):
+        raise SystemExit(
+            f"ERROR: --num-shards {num_shards} leaves model servers idle; "
+            f"use at least one shard per GPU in --gpus ({len(gpus)})."
+        )
+    elif math.ceil(num_shards / len(gpus)) > DEFAULT_MAX_SESSIONS:
+        raise SystemExit(
+            f"ERROR: --num-shards {num_shards} over {len(gpus)} GPU(s) exceeds the "
+            f"model server's max_sessions {DEFAULT_MAX_SESSIONS}; it rejects extra "
+            "connections with HTTP 503."
+        )
+    elif "CUDA_VISIBLE_DEVICES" in os.environ and not set(gpus) <= set(
+        visible_devices()
+    ):
+        raise SystemExit(
+            f"ERROR: --gpus {','.join(gpus)} reaches outside "
+            f"CUDA_VISIBLE_DEVICES={os.environ['CUDA_VISIBLE_DEVICES']}; list only "
+            "visible GPUs."
+        )
+    elif len({replica.server_port for replica in replicas}) < len(replicas):
+        raise SystemExit(
+            "ERROR: SERVER_PORT gives every model server the same port; unset it "
+            "so each GPU in --gpus derives its own."
+        )
+    else:
+        pass
     repeat_dir = settings.repeat_dir(repeat)
     v10_dir = repeat_dir / V10_DIR
     if (repeat_dir / "recording").exists() or (v10_dir / "recording").exists():
@@ -251,8 +290,10 @@ def generate(
         pass
     # note (luojiaxuan): both recorder commands read pinned inputs; resolving
     # them here fails before a single session is recorded.
-    record = v15_record_command(settings) if sample_ids else []
-    v10_record = v10_record_command(settings) if v10_sample_ids else []
+    record = [v15_record_command(replica) for replica in replicas] if sample_ids else []
+    v10_record = (
+        [v10_record_command(replica) for replica in replicas] if v10_sample_ids else []
+    )
     (repeat_dir / "logs").mkdir(parents=True, exist_ok=True)
     (repeat_dir / "sample-ids.txt").write_text(ids_text(sample_ids))
     if sample_ids:
@@ -268,13 +309,22 @@ def generate(
         )
     else:
         pass
-    with model_server(settings, repeat_dir / "logs" / "model-server.log") as server:
+    with ExitStack() as stack:
+        servers = [
+            stack.enter_context(
+                model_server(
+                    replica, repeat_dir / "logs" / f"model-server-gpu{replica.gpu}.log"
+                )
+            )
+            for replica in replicas
+        ]
         shard_dirs = []
         if sample_ids:
             (repeat_dir / "recording").mkdir()
             log(
                 f"== Recording {len(sample_ids)} v1.5 pairs "
                 f"({2 * len(sample_ids)} sessions) in {num_shards} shard(s) "
+                f"on {len(gpus)} GPU(s) "
                 f"-> {repeat_dir}"
             )
             shard_dirs = record_shards(record, repeat_dir, sample_ids, 2, num_shards)
@@ -285,14 +335,15 @@ def generate(
             (v10_dir / "recording").mkdir()
             log(
                 f"== Recording {len(v10_sample_ids)} v1.0 samples (one session each) "
-                f"in {num_shards} shard(s) -> {v10_dir}"
+                f"in {num_shards} shard(s) on {len(gpus)} GPU(s) -> {v10_dir}"
             )
             v10_shard_dirs = record_shards(
                 v10_record, v10_dir, v10_sample_ids, 1, num_shards
             )
         else:
             pass
-        server.ensure_alive("during the recordings")
+        for server in servers:
+            server.ensure_alive("during the recordings")
     for shard_dir in shard_dirs:
         print_variant_status(repeat_dir, shard_dir)
     if shard_dirs:

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import signal
+import weakref
 from collections.abc import Coroutine
 from pathlib import Path
 from traceback import format_exception
 from types import FrameType, SimpleNamespace
+from typing import ClassVar
 from unittest.mock import AsyncMock, Mock
 
 import httpx
@@ -21,14 +24,21 @@ import sglang_omni.pipeline.runtime_config as runtime_config
 from sglang_omni.config.schema import (
     CustomVoiceConfig,
     EndpointsConfig,
+    EngineStageConfig,
     PipelineConfig,
+    ProcessConfig,
     StageConfig,
 )
+from sglang_omni.config.topology import compile_logical_processes
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, StageWorkerProcessSpec
 from sglang_omni.profiler.event_recorder import get_recorder
 from sglang_omni.serve import launcher
 from sglang_omni.serve.openai_api import ServerStatus
-from sglang_omni.serve.protocol import ChatCompletionRequest, ChatMessage
+from sglang_omni.serve.protocol import (
+    ChatCompletionRequest,
+    ChatMessage,
+    CreateSpeechRequest,
+)
 from sglang_omni.serve.server_warmup import (
     TranscriptionWarmupRequest,
     warmup_tone_wav_bytes,
@@ -75,6 +85,9 @@ class StubCoordinator:
 
     async def stop(self) -> None:
         self.stopped = True
+
+    async def freeze_gc(self) -> None:
+        pass
 
 
 def make_config(base_path: Path) -> PipelineConfig:
@@ -328,6 +341,51 @@ async def test_mp_runner_startup_failure_includes_child_factory_traceback(
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.parametrize(
+    ("entry_limit", "engine_admission_limits", "expected_max_in_flight"),
+    [(None, (), None), (3, (), 6), (3, ((8, 8), (1, 1)), 4)],
+)
+def test_coordinator_cap_follows_an_entry_stage_that_admits_requests(
+    tmp_path: Path,
+    entry_limit: int | None,
+    engine_admission_limits: tuple[tuple[int, int], ...],
+    expected_max_in_flight: int | None,
+) -> None:
+    class EntryAdmitsConfig(PipelineConfig):
+        stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
+            "engine0": EngineStageConfig,
+            "engine1": EngineStageConfig,
+        }
+
+        def entry_stage_admission_limit(self) -> int | None:
+            return entry_limit
+
+    base = make_config(tmp_path).model_dump()
+    engine_stages = [
+        {
+            "name": f"engine{index}",
+            "process": "pipeline",
+            "factory_path": f"{__name__}.noop_factory",
+            "terminal": True,
+            "engine": {"max_running_requests": running, "max_queued_requests": queued},
+        }
+        for index, (running, queued) in enumerate(engine_admission_limits)
+    ]
+    config = EntryAdmitsConfig(
+        **{
+            **base,
+            "stages": [*base["stages"], *engine_stages],
+            "processes": {"pipeline": ProcessConfig(num_replicas=2)},
+        }
+    )
+    plan, _ = compile_logical_processes(config)
+
+    assert (
+        mp_runner.resolve_coordinator_max_in_flight(config, logical_process_plan=plan)
+        == expected_max_in_flight
+    )
+
+
 @pytest.mark.asyncio
 async def test_mp_runner_stop_cleans_runtime_dir(
     tmp_path: Path,
@@ -346,6 +404,10 @@ async def test_mp_runner_stop_cleans_runtime_dir(
             replica_topology=None,
             logical_process_plan=None,
             max_in_flight=None,
+            max_total_backlog_bytes: int | None = None,
+            session_route=None,
+            session_graph=None,
+            max_output_lead_ms=None,
         ) -> None:
             del (
                 abort_endpoint,
@@ -355,7 +417,11 @@ async def test_mp_runner_stop_cleans_runtime_dir(
                 replica_topology,
                 logical_process_plan,
                 max_in_flight,
+                session_route,
+                session_graph,
+                max_output_lead_ms,
             )
+            self.max_total_backlog_bytes = max_total_backlog_bytes
             self.control_plane = SimpleNamespace(
                 completion_endpoint=completion_endpoint
             )
@@ -398,6 +464,9 @@ async def test_mp_runner_stop_cleans_runtime_dir(
         async def wait_ready(self, timeout: float) -> None:
             del timeout
 
+        def failure_summary(self) -> str:
+            return ""
+
         def any_dead(self) -> bool:
             return False
 
@@ -418,6 +487,7 @@ async def test_mp_runner_stop_cleans_runtime_dir(
     await runner.start()
     capacity.assert_called_once_with()
     assert len([path for path in tmp_path.iterdir() if path.is_dir()]) == 1
+    assert runner.coordinator.max_total_backlog_bytes == 1024**3
 
     await runner.stop()
 
@@ -432,9 +502,11 @@ async def run_launcher_with_fake_runner(
     monkeypatch: pytest.MonkeyPatch,
     replica_counts: tuple[int, ...] = (1,),
     host: str = "0.0.0.0",
+    created_runners: list[object] | None = None,
 ) -> tuple[object, FastAPI, SimpleNamespace]:
     app = FastAPI()
     profiler_calls = SimpleNamespace(starts=[], stops=[])
+    runners = [] if created_runners is None else created_runners
 
     from sglang_omni.serve import launcher
 
@@ -444,10 +516,12 @@ async def run_launcher_with_fake_runner(
         def __init__(self, pipeline_config: PipelineConfig) -> None:
             del pipeline_config
             nonlocal runner_ref
+            runners.append(self)
             self.coordinator = StubCoordinator()
             self.stage_control_endpoints = {
                 "preprocessing": "ipc://stage_preprocessing.sock"
             }
+            self.stage_http_routes = []
             self.started = False
             self.stopped = False
             # launcher._run_server reads .prep.placement_plan / .process_plan
@@ -583,15 +657,41 @@ def build_test_warmup_request(pipeline_config: PipelineConfig) -> ChatCompletion
     )
 
 
+def make_started_server() -> SimpleNamespace:
+    return SimpleNamespace(started=True, should_exit=False, freeze_api_gc=lambda: None)
+
+
 @pytest.mark.asyncio
-async def test_server_reports_up_after_its_warmup_requests_succeed(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("request_count", [0, 2])
+async def test_server_reports_up_after_warmup_then_freezes_every_process_heap(
+    monkeypatch: pytest.MonkeyPatch, request_count: int
 ) -> None:
-    posted: list[ChatCompletionRequest] = []
-    answer_warmup_with(monkeypatch, 200, posted)
-    server = SimpleNamespace(started=True, should_exit=False)
+    """A warmed-up server rescanned the heap its warmup built in every full collection."""
     app = FastAPI()
     app.state.server_status = ServerStatus.STARTING
+    posted: list[ChatCompletionRequest] = []
+    events: list[tuple[str, ServerStatus]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        posted.append(ChatCompletionRequest.model_validate_json(request.content))
+        events.append(("warmup request", app.state.server_status))
+        return httpx.Response(200)
+
+    class FreezeRecordingCoordinator:
+        async def freeze_gc(self) -> None:
+            events.append(("stage gc frozen", app.state.server_status))
+
+    route_warmup_to(monkeypatch, httpx.MockTransport(respond))
+    monkeypatch.setattr(
+        launcher.gc,
+        "collect",
+        lambda: events.append(("api gc collected", app.state.server_status)),
+    )
+    server = SimpleNamespace(
+        started=True,
+        should_exit=False,
+        freeze_api_gc=lambda: events.append(("api gc frozen", app.state.server_status)),
+    )
     request = ChatCompletionRequest(
         messages=[ChatMessage(role="user", content="Hi")], max_tokens=8
     )
@@ -599,14 +699,60 @@ async def test_server_reports_up_after_its_warmup_requests_succeed(
     await launcher.warm_up_server(
         server,
         app,
+        FreezeRecordingCoordinator(),
         base_url="http://127.0.0.1:8000",
-        requests=[request, request],
+        requests=[request] * request_count,
         timeout_s=5,
     )
 
+    assert posted == [request] * request_count
+    collected = [("api gc collected", ServerStatus.STARTING)] if request_count else []
+    assert events == (
+        [("warmup request", ServerStatus.STARTING)] * request_count
+        + collected
+        + [
+            ("stage gc frozen", ServerStatus.UP),
+            ("api gc frozen", ServerStatus.UP),
+        ]
+    )
     assert app.state.server_status is ServerStatus.UP
-    assert posted == [request, request]
     assert server.should_exit is False
+
+
+@pytest.mark.asyncio
+async def test_api_heap_freeze_keeps_no_warmup_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The API heap freeze kept every warmup response for the server's lifetime."""
+    response_references: list[weakref.ref[httpx.Response]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        response = httpx.Response(200)
+        response_references.append(weakref.ref(response))
+        return response
+
+    route_warmup_to(monkeypatch, httpx.MockTransport(respond))
+    server = launcher.PipelineUvicornServer(uvicorn.Config("unused:app"))
+    server.started = True
+    app = FastAPI()
+    app.state.server_status = ServerStatus.STARTING
+    request = ChatCompletionRequest(messages=[ChatMessage(role="user", content="Hi")])
+
+    try:
+        await launcher.warm_up_server(
+            server,
+            app,
+            StubCoordinator(),
+            base_url="http://127.0.0.1:8000",
+            requests=[request] * 2,
+            timeout_s=5,
+        )
+        gc.collect()
+
+        assert server.has_frozen_api_gc is True
+        assert [reference() for reference in response_references] == [None, None]
+    finally:
+        gc.unfreeze()
 
 
 @pytest.mark.asyncio
@@ -624,7 +770,7 @@ async def test_warmup_sends_its_requests_one_at_a_time(
         return httpx.Response(200)
 
     route_warmup_to(monkeypatch, httpx.MockTransport(respond))
-    server = SimpleNamespace(started=True, should_exit=False)
+    server = make_started_server()
     app = FastAPI()
     app.state.server_status = ServerStatus.STARTING
     request = ChatCompletionRequest(messages=[ChatMessage(role="user", content="Hi")])
@@ -632,6 +778,7 @@ async def test_warmup_sends_its_requests_one_at_a_time(
     await launcher.warm_up_server(
         server,
         app,
+        StubCoordinator(),
         base_url="http://127.0.0.1:8000",
         requests=[request] * 3,
         timeout_s=5,
@@ -658,7 +805,7 @@ async def test_warmup_drops_its_request_when_the_server_starts_shutting_down(
         return httpx.Response(200)
 
     route_warmup_to(monkeypatch, httpx.MockTransport(hold))
-    server = SimpleNamespace(started=True, should_exit=False)
+    server = make_started_server()
     app = FastAPI()
     app.state.server_status = ServerStatus.STARTING
     request = ChatCompletionRequest(messages=[ChatMessage(role="user", content="Hi")])
@@ -666,6 +813,7 @@ async def test_warmup_drops_its_request_when_the_server_starts_shutting_down(
         launcher.warm_up_server(
             server,
             app,
+            StubCoordinator(),
             base_url="http://127.0.0.1:8000",
             requests=[request],
             timeout_s=30,
@@ -697,7 +845,7 @@ async def test_transcription_warmup_uploads_a_form_the_transcription_route_parse
         return {"text": ""}
 
     route_warmup_to(monkeypatch, httpx.ASGITransport(app=route_app))
-    server = SimpleNamespace(started=True, should_exit=False)
+    server = make_started_server()
     app = FastAPI()
     app.state.server_status = ServerStatus.STARTING
     request = TranscriptionWarmupRequest(
@@ -707,6 +855,7 @@ async def test_transcription_warmup_uploads_a_form_the_transcription_route_parse
     await launcher.warm_up_server(
         server,
         app,
+        StubCoordinator(),
         base_url="http://127.0.0.1:8000",
         requests=[request],
         timeout_s=5,
@@ -719,6 +868,42 @@ async def test_transcription_warmup_uploads_a_form_the_transcription_route_parse
         "json",
         False,
     )
+
+
+@pytest.mark.asyncio
+async def test_speech_warmup_posts_its_request_to_the_speech_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    posted: list[tuple[str, CreateSpeechRequest]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        posted.append(
+            (
+                request.url.path,
+                CreateSpeechRequest.model_validate_json(request.content),
+            )
+        )
+        return httpx.Response(200)
+
+    route_warmup_to(monkeypatch, httpx.MockTransport(respond))
+    server = make_started_server()
+    app = FastAPI()
+    app.state.server_status = ServerStatus.STARTING
+    request = CreateSpeechRequest(
+        input="Hi", voice="Ryan", response_format="pcm", stream=True
+    )
+
+    await launcher.warm_up_server(
+        server,
+        app,
+        StubCoordinator(),
+        base_url="http://127.0.0.1:8000",
+        requests=[request],
+        timeout_s=5,
+    )
+
+    assert posted == [("/v1/audio/speech", request)]
+    assert app.state.server_status is ServerStatus.UP
 
 
 @pytest.mark.asyncio
@@ -736,6 +921,7 @@ async def test_launcher_sends_one_warmup_request_per_replica_of_the_most_replica
     def record_warmup(
         server: uvicorn.Server,
         app: FastAPI,
+        coordinator: StubCoordinator,
         *,
         base_url: str,
         requests: list[ChatCompletionRequest],
@@ -777,6 +963,7 @@ async def test_launcher_warms_up_through_the_bind_host_or_loopback_for_a_wildcar
     def record_warmup(
         server: uvicorn.Server,
         app: FastAPI,
+        coordinator: StubCoordinator,
         *,
         base_url: str,
         requests: list[ChatCompletionRequest],
@@ -801,7 +988,7 @@ async def test_failed_warmup_stops_the_server_before_it_reports_up(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     answer_warmup_with(monkeypatch, 500, [])
-    server = SimpleNamespace(started=True, should_exit=False)
+    server = make_started_server()
     app = FastAPI()
     app.state.server_status = ServerStatus.STARTING
     request = ChatCompletionRequest(messages=[ChatMessage(role="user", content="Hi")])
@@ -810,6 +997,7 @@ async def test_failed_warmup_stops_the_server_before_it_reports_up(
         await launcher.warm_up_server(
             server,
             app,
+            StubCoordinator(),
             base_url="http://127.0.0.1:8000",
             requests=[request],
             timeout_s=5,
@@ -955,15 +1143,20 @@ async def test_launcher_stops_runner_when_server_raises(
 ) -> None:
     config = make_config(tmp_path)
     server_serve = AsyncMock(side_effect=RuntimeError("server failed"))
+    runners: list[object] = []
 
     with pytest.raises(RuntimeError, match="server failed"):
         await run_launcher_with_fake_runner(
             config=config,
             serve_mock=server_serve,
             monkeypatch=monkeypatch,
+            created_runners=runners,
         )
 
     server_serve.assert_awaited_once()
+    assert len(runners) == 1
+    assert runners[0].started
+    assert runners[0].stopped
 
 
 @pytest.mark.asyncio
@@ -1075,6 +1268,7 @@ def test_launcher_cleans_up_before_passing_on_sigterm(
         def __init__(self, pipeline_config: PipelineConfig) -> None:
             self.coordinator = StubCoordinator()
             self.stage_control_endpoints = {}
+            self.stage_http_routes = []
             self.prep = SimpleNamespace(
                 placement_plan=SimpleNamespace(gpus={}),
                 process_plan=SimpleNamespace(groups=(), tp_stage_to_processes={}),

@@ -37,6 +37,7 @@ def record(args: argparse.Namespace) -> int:
             profile=args.profile,
             sample_ids=args.sample_id,
             max_per_subset=args.max_per_subset,
+            concurrency=args.concurrency,
             turn_detection=args.turn_detection,
             legacy_tail_s=args.legacy_tail,
         )
@@ -66,6 +67,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     record_parser.add_argument(
         "--timeout", type=float, default=60.0, help="Per-session deadline in seconds"
+    )
+    record_parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        help="Maximum concurrent variants; excess connections may receive "
+        "HTTP 503 and fail if admission retries are exhausted",
     )
     selection = record_parser.add_mutually_exclusive_group()
     selection.add_argument(
