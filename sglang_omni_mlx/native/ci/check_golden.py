@@ -17,17 +17,35 @@ import subprocess
 import sys
 import unicodedata
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Protocol
 
 # (runtime bin, data root, golden file, manifest of the clips to run) -> outputs
 TranscribeCorpus = Callable[[Path, Path, dict, dict[str, dict]], dict[str, dict]]
 
+import fishaudio_drama3_golden
 import music3_golden
 import sortformer_golden
+import speech_golden
 import vad_golden
 import voxtral_golden
+from speech_golden import SpeechCase, SpeechOutputs
 
 CI_DIRECTORY = Path(__file__).resolve().parent
+
+
+class SpeechSynthesizer(Protocol):
+    """A seeded speech case's outputs through a model's synthesis tool."""
+
+    def __call__(
+        self, runtime_bin: Path, model_directory: Path, case: SpeechCase
+    ) -> SpeechOutputs: ...
+
+
+# The speech golden kinds, checked by speech_golden.check.
+SPEECH_SYNTHESIZERS: dict[str, SpeechSynthesizer] = {
+    "voxtral_tts": voxtral_golden.synthesize,
+    "fishaudio_drama3": fishaudio_drama3_golden.synthesize,
+}
 COMPARED_FIELDS = ("text", "language", "generated_token_count", "finish_reason")
 QUALITY_GROUPS = {
     "wer_en": lambda clip: clip["lang"] == "en"
@@ -285,12 +303,16 @@ def run(transcribe_corpus: TranscribeCorpus) -> None:
         report(
             *sortformer_golden.check(golden, arguments.runtime_bin, arguments.data_root)
         )
-    elif golden.get("kind") == "voxtral_tts":
-        results = voxtral_golden.synthesize_cases(
-            arguments.runtime_bin,
-            model_directory(arguments.data_root, golden["model"]),
-            golden["cases"],
-        )
+    elif golden.get("kind") in SPEECH_SYNTHESIZERS:
+        synthesize = SPEECH_SYNTHESIZERS[golden["kind"]]
+        results = {
+            case_id: synthesize(
+                arguments.runtime_bin,
+                model_directory(arguments.data_root, golden["model"]),
+                case,
+            )
+            for case_id, case in golden["cases"].items()
+        }
         metrics = {}
     else:
         results = transcribe_corpus(
@@ -329,8 +351,8 @@ def run(transcribe_corpus: TranscribeCorpus) -> None:
         return
     else:
         pass
-    if golden.get("kind") == "voxtral_tts":
-        report(*voxtral_golden.check(golden, device, results))
+    if golden.get("kind") in SPEECH_SYNTHESIZERS:
+        report(*speech_golden.check(golden, device, results))
     else:
         report(*check(golden, device, results, metrics))
 

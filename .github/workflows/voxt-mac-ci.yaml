@@ -46,6 +46,7 @@ jobs:
     outputs:
       run_mac: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.plan.outputs.run_mac }}
       run_music3: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.pr.outputs.music3 }}
+      run_drama3: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.pr.outputs.drama3 }}
     steps:
       - name: Fetch latest PR gate state
         if: ${{ github.event_name == 'pull_request' }}
@@ -71,6 +72,11 @@ jobs:
             const music3 = /^(\.github\/workflows\/voxt-mac-ci\.yaml$|sglang_omni_mlx\/native\/(CMakeLists\.txt$|scripts\/|src\/(music3\/|common\/|qwen3_asr\/)|tools\/music3_|ci\/(music3_|generate_music3_reference\.py$|model_golden\/minimax-music3\.json$|model_pins\.json$|provision.*\.py$|check_.*\.py$|test_check_golden\.py$|test_model_servers\.py$|requirements\.lock$)))/;
             core.setOutput("music3", files.some(file =>
               music3.test(file.filename) || music3.test(file.previous_filename || "")));
+            // As Music3's: Drama 3's own files, the build and MLX pin, and the
+            // shared code it runs on.
+            const drama3 = /^(\.github\/workflows\/voxt-mac-ci\.yaml$|sglang_omni_mlx\/native\/(CMakeLists\.txt$|scripts\/|src\/(fishaudio_drama3\/|common\/|qwen3_asr\/)|tools\/fishaudio_drama3_|licenses\/fishaudio_drama3|ci\/(fishaudio_drama3_|test_fishaudio_drama3_api\.py$|speech_api\.py$|speech_golden\.py$|test_server_api\.py$|check_.*\.py$|test_check_golden\.py$|model_golden\/fish-audio-drama-3-[0-9]+bit\.json$|model_pins\.json$|provision.*\.py$|requirements\.lock$)))/;
+            core.setOutput("drama3", files.some(file =>
+              drama3.test(file.filename) || drama3.test(file.previous_filename || "")));
             core.setOutput("is_selected", labels.includes("run-all-ci") || labels.includes("run-mac-ci"));
 
       - name: Block draft PR
@@ -114,8 +120,10 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Check free disk space
+        id: capacity
         env:
           RUN_MUSIC3: ${{ needs.preflight.outputs.run_music3 }}
+          RUN_DRAMA3: ${{ needs.preflight.outputs.run_drama3 }}
         run: |
           echo "Unified memory bytes: $(sysctl -n hw.memsize)"
           mkdir -p "$VOXT_CI_ROOT"
@@ -139,6 +147,40 @@ jobs:
           else
             :
           fi
+          # A runner skips each Drama 3 checkpoint whose peak memory its GPU
+          # working set cannot hold, instead of swapping.
+          memory_gb=$(( $(sysctl -n hw.memsize) / 1073741824 ))
+          drama3_models=""
+          if [ "$RUN_DRAMA3" = true ]; then
+            # Bits, the unified memory it needs and its size on disk, in GB.
+            for checkpoint in "4bit 48 22" "8bit 64 39"; do
+              read -r bits needed_gb size_gb <<< "$checkpoint"
+              repo="mlx-community/fish-audio-drama-3-$bits"
+              if [ "$memory_gb" -lt "$needed_gb" ]; then
+                echo "::warning::$repo needs ${needed_gb} GB of unified memory; this runner has ${memory_gb} GB, so its steps are skipped."
+                continue
+              else
+                :
+              fi
+              drama3_models="$drama3_models $repo"
+              drama3_cache="$VOXT_CI_ROOT/data/models/mlx-community_fish-audio-drama-3-$bits"
+              cached_gb=0
+              if [ -d "$drama3_cache" ]; then
+                cached_gb=$(du -sk "$drama3_cache" | awk '{print int($1 / 1048576)}')
+              else
+                :
+              fi
+              missing_gb=$((size_gb - cached_gb))
+              if [ "$missing_gb" -gt 0 ]; then
+                required_gb=$((required_gb + missing_gb))
+              else
+                :
+              fi
+            done
+          else
+            :
+          fi
+          echo "drama3_models=${drama3_models# }" >> "$GITHUB_OUTPUT"
           if [ "$free_gb" -lt "$required_gb" ]; then
             echo "::error::Only ${free_gb} GB free on the runner; this run needs at least ${required_gb} GB."
             exit 1
@@ -194,6 +236,43 @@ jobs:
         run: |
           "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_model_servers.py -k music3
 
+      # Drama 3's checkpoints and their golden outputs, and the API tests on
+      # the 4-bit one (both run the same server); the tests load Qwen3-ASR
+      # beside it to transcribe its speech.
+      - name: Provision the Drama 3 checkpoints
+        if: ${{ !cancelled() && steps.capacity.outputs.drama3_models != '' }}
+        env:
+          DRAMA3_MODELS: ${{ steps.capacity.outputs.drama3_models }}
+        run: |
+          model_flags=()
+          for model in $DRAMA3_MODELS; do
+            model_flags+=(--model "$model")
+          done
+          "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision_models.py "$VOXT_CI_ROOT/data" \
+            "${model_flags[@]}"
+
+      - name: Drama 3 golden outputs
+        if: ${{ !cancelled() && steps.capacity.outputs.drama3_models != '' }}
+        env:
+          DRAMA3_MODELS: ${{ steps.capacity.outputs.drama3_models }}
+        run: |
+          status=0
+          for model in $DRAMA3_MODELS; do
+            "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/check_model_golden.py \
+              --runtime-bin "$RUNNER_TEMP/runtime/bin" --data-root "$VOXT_CI_ROOT/data" \
+              --golden "sglang_omni_mlx/native/ci/model_golden/$(basename "$model").json" \
+              --outputs "$RUNNER_TEMP/golden-outputs" || status=1
+          done
+          exit "$status"
+
+      - name: Drama 3 server API tests
+        if: ${{ !cancelled() && contains(steps.capacity.outputs.drama3_models, 'fish-audio-drama-3-4bit') }}
+        env:
+          NATIVE_RUNTIME_BIN: ${{ runner.temp }}/runtime/bin
+          CI_DATA_ROOT: ${{ env.VOXT_CI_ROOT }}/data
+        run: |
+          "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_fishaudio_drama3_api.py
+
       # Every golden file is checked, even after one fails, and this chip's
       # outputs are uploaded so they can be recorded as its golden outputs.
       - name: Golden outputs on the frozen corpus
@@ -220,14 +299,19 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision_models.py "$VOXT_CI_ROOT/data" \
-            --exclude-model mlx-community/MiniMax-Music3-mxfp8
+            --exclude-model mlx-community/MiniMax-Music3-mxfp8 \
+            --exclude-model mlx-community/fish-audio-drama-3-4bit \
+            --exclude-model mlx-community/fish-audio-drama-3-8bit
 
       - name: Other models' golden outputs on the frozen corpus
         if: ${{ !cancelled() }}
         run: |
           result=0
           for golden in sglang_omni_mlx/native/ci/model_golden/*.json; do
-            if [ "$(basename "$golden")" = minimax-music3.json ]; then
+            golden_name=$(basename "$golden")
+            if [ "$golden_name" = minimax-music3.json ] || \
+              [ "$golden_name" = fish-audio-drama-3-4bit.json ] || \
+              [ "$golden_name" = fish-audio-drama-3-8bit.json ]; then
               continue
             else
               :

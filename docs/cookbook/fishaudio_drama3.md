@@ -307,6 +307,88 @@ Drama 3 tower fused layers: off, untested GPU sm_120
 ```
 
 
+## Apple Silicon: native MLX
+
+The standalone `fishaudio_drama3_server` runs entirely in C++ on MLX under `sglang_omni_mlx/native/` and serves `/v1/audio/speech` with the CUDA server's request fields; reference audio is sent as base64 WAV (see the table below). It serves two community MLX conversions of `fishaudio/drama-3`, made by mlx-audio's `fish_drama3/convert.py` from the official FP8 checkpoint:
+
+| Checkpoint | Routed experts | Other projections | On disk | Peak MLX memory, mlx-audio | Unified memory |
+|---|---|---|---:|---:|---:|
+| `mlx-community/fish-audio-drama-3-4bit` | 4-bit | 8-bit | 24 GB | 28.7 GB | 48 GB or more |
+| `mlx-community/fish-audio-drama-3-8bit` | 8-bit | bf16 | 42 GB | 47.1 GB | 64 GB or more |
+
+Both quantize with MLX affine groups of 64 and keep the embeddings in bf16, the norm gains and the codec in fp32; the 8-bit checkpoint quantizes only the routed experts. The 4-bit checkpoint peaks above the GPU working set of a 32 or 36 GB Mac; the 8-bit one fits the 55.7 GB working set of a 64 GB Mac, with nothing else holding much memory. Both were measured on a 64 GB Mac. Download a pinned checkpoint, then build with the native runtime's MLX 0.32.3 toolchain:
+
+```bash
+python sglang_omni_mlx/native/ci/provision_models.py "$DRAMA3_DATA" \
+  --model mlx-community/fish-audio-drama-3-4bit
+sglang_omni_mlx/native/scripts/build_runtime.sh "$DRAMA3_RUNTIME" "$DRAMA3_BUILD"
+"$DRAMA3_RUNTIME/bin/fishaudio_drama3_server" \
+  --model-path "$DRAMA3_DATA/models/mlx-community_fish-audio-drama-3-4bit" \
+  --model-name fishaudio/drama-3 --port 8000
+```
+
+Set `DRAMA3_DATA`, `DRAMA3_RUNTIME` and `DRAMA3_BUILD` to separate local directories; for the 8-bit checkpoint, replace `4bit` with `8bit` in both commands. Serving needs neither Python nor SGLang's CUDA package. Voice cloning sends the reference clip, a mono 44.1 kHz WAV, as base64:
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d "{\"input\": \"Get the trust fund to the bank early.\",
+       \"references\": [{\"data\": \"$(base64 < reference_44k.wav | tr -d '\n')\",
+                       \"text\": \"We asked over twenty different people, and they all said it was his.\"}]}" \
+  --output output_voice_cloning.wav
+```
+
+The server reads the request fields the CUDA server reads and refuses the same unsupported ones (`seed` included). Where they differ:
+
+| | CUDA server | Native MLX server |
+|---|---|---|
+| Reference audio | A path, URL or base64 data in any format the server decodes, resampled to 44.1 kHz; up to 60 s each by default | Base64 mono 44.1 kHz PCM16 or float32 WAV, as `references[i].data`, a `data:` URL in `references[i].audio`, or `ref_audio` with `ref_text`; paths and remote URLs are refused |
+| References | Any number, within the prompt row limit (`max_prompt_rows`) | Up to 4, together at most 30 s (646 frames of `vq_codes`) and 1024 transcript characters |
+| Voices | `default` (or `speaker`) or an uploaded voice | `default` (or `speaker`) only |
+| Long input | One prompt; `max_new_tokens` defaults to the remaining context, up to 2048 frames | Split into chunks of about 300 bytes, each seeing the first and the previous chunk; `max_new_tokens` (default 1024, at most 4096) caps each chunk; `input` holds at most 4096 characters |
+| Requests | Batched | One at a time; `--max-queued-requests` more may wait (2 by default), the rest get 503; a request not done `--request-timeout-s` seconds after it arrives (600 by default) gets 504, and a disconnected client's request is cancelled |
+| Streaming | `"stream": true` with `"response_format": "pcm"` | The same, with audio every 7 frames (0.33 s) |
+
+`fishaudio_drama3_synthesize` runs one request from the command line and prints its timings; with `--codes-output` it also writes the first chunk's prompt ids and every frame's codes, for parity checks.
+
+### Reference parity and Mac CI
+
+The numerical reference is mlx-audio 0.6.2 (`f6d5da9`: `mlx_audio/tts/models/fish_drama3` and `mlx_audio/codec/models/fish_s1_dac`) on the same checkpoint and MLX 0.32.3; `native/licenses/fishaudio_drama3-MIT.txt` holds its license. With the same seed (given to `fishaudio_drama3_synthesize`), the native runtime samples the same codes and decodes the same PCM16 samples as the reference. `native/ci/fishaudio_drama3_reference.py` runs every golden case through both, on the checkpoint `--model-path` names, and compares them; it needs a separate Python environment with the reference:
+
+```bash
+pip install mlx==0.32.3 mlx-metal==0.32.3 soundfile
+pip install --no-deps mlx-audio==0.6.2
+cd sglang_omni_mlx/native/ci
+python fishaudio_drama3_reference.py --runtime-bin "$DRAMA3_RUNTIME/bin" \
+  --model-path "$DRAMA3_DATA/models/mlx-community_fish-audio-drama-3-4bit"
+```
+
+Mac CI checks the same seeded requests against `native/ci/model_golden/fish-audio-drama-3-4bit.json` and `fish-audio-drama-3-8bit.json` (codes and a hash of the decoded audio; English, Chinese, codes and audio references, two speakers, low-temperature sampling, a frame cap and a three-chunk passage), each checkpoint on a runner with the unified memory it needs, and runs the server API tests in `native/ci/test_fishaudio_drama3_api.py` on the 4-bit checkpoint. The voice clip `native/ci/fishaudio_drama3_voice.wav` is the Common Voice clip (CC0) the cloning example above uses, resampled from 24 kHz to 44.1 kHz with `scipy.signal.resample_poly`.
+
+Measured on an Apple M4 Max (64 GB), warm, in ABBA order (native, reference, reference, native). The server takes no seed, so each side ran each request three times; the table gives each round's median real-time factor (generation time over audio duration) and the median time to the first streamed audio. Native times include the HTTP request and PCM encoding. The 4-bit checkpoint:
+
+| Request | Real-time factor, native | Real-time factor, mlx-audio 0.6.2 | First streamed audio, native | First streamed audio, mlx-audio |
+|---|---:|---:|---:|---:|
+| English, no reference | 0.380 / 0.382 | 0.376 / 0.372 | 0.18 s | 0.18 s |
+| English, cloned voice | 0.380 / 0.377 | 0.372 / 0.372 | 0.18 s | 0.18 s |
+| Chinese, cloned voice | 0.373 / 0.371 | 0.367 / 0.362 | 0.18 s | 0.18 s |
+| Two speakers, cloned voice | 0.376 / 0.375 | 0.375 / 0.370 | 0.19 s | 0.19 s |
+| 26 s passage, two chunks | 0.378 / 0.375 | 0.377 / 0.368 | 0.23 s | 0.22 s |
+
+Loading takes 3.9 to 4.1 s native and 4.4 to 4.6 s for the reference, from a warm file cache. Peak MLX memory (`mx.get_peak_memory()`) is 28.5 GB native on the passage and 28.7 GB in the reference; the server's process footprint stays near 32 GB under mixed load, against 23 GB idle.
+
+The 8-bit checkpoint, measured the same way:
+
+| Request | Real-time factor, native | Real-time factor, mlx-audio 0.6.2 | First streamed audio, native | First streamed audio, mlx-audio |
+|---|---:|---:|---:|---:|
+| English, no reference | 0.524 / 0.512 | 0.523 / 0.521 | 0.25 s | 0.25 s |
+| English, cloned voice | 0.516 / 0.518 | 0.518 / 0.514 | 0.25 s | 0.25 s |
+| Chinese, cloned voice | 0.509 / 0.504 | 0.516 / 0.508 | 0.26 s | 0.26 s |
+| Two speakers, cloned voice | 0.517 / 0.519 | 0.516 / 0.516 | 0.26 s | 0.26 s |
+| 26 s passage, two chunks | 0.507 / 0.507 | 0.506 / 0.507 | 0.30 s | 0.30 s |
+
+Loading takes 6.2 to 6.8 s native and 6.5 to 7.1 s for the reference. Peak MLX memory is 47.1 GB in the reference, and the server's process footprint reaches 48 GB. Its routed experts are twice the size of the 4-bit ones and its other projections are bf16, and it runs about 1.4 times slower.
+
 ## Links
 
 - [Fish Audio Playground](https://fish.audio)

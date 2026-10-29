@@ -35,6 +35,8 @@ public:
   std::pair<mlx::core::array, mlx::core::array>
   UpdateAndFetch(const mlx::core::array &keys, const mlx::core::array &values);
   int offset() const { return offset_; }
+  // The cache's buffers, to evaluate; empty before the first update.
+  std::vector<mlx::core::array> Arrays() const;
 
 private:
   std::optional<mlx::core::array> keys_;
