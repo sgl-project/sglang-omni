@@ -14,6 +14,7 @@ from sglang_omni.config import (
     PipelineConfig,
     StageConfig,
 )
+from sglang_omni.config.runtime import resolve_stage_typed_kwargs
 from sglang_omni.platforms import current_platform
 
 _PKG = "sglang_omni.models.aura_omni"
@@ -120,12 +121,35 @@ class AuraOmniPipelineConfig(PipelineConfig):
     def stage_factory_kwargs(self, stage_name: str) -> dict[str, str | bool]:
         if stage_name == "asr":
             return {"model_path": self.asr_model_path}
-        elif stage_name == "vocoder" and (
-            not current_platform.enable_tts_vocoder_fast_path()
-        ):
-            # The vocoder captures its decode graphs during the asynchronous
-            # decode warmup, which a platform that has not measured it skips.
-            return {"model_path": self.tts_model_path, "async_decode": False}
+        elif stage_name == "vocoder":
+            vocoder = self.stage_named("vocoder")
+            engine = self.stage_named("tts_engine")
+            vocoder_settings = resolve_stage_typed_kwargs(vocoder)
+            engine_settings = resolve_stage_typed_kwargs(engine)
+            kwargs: dict[str, str | bool] = {
+                "model_path": self.tts_model_path,
+                # Only the engine's copy is one a vocoder in its process loads first.
+                "shares_engine_speech_tokenizer": vocoder.process == engine.process
+                and all(
+                    vocoder_settings.get(name) == engine_settings.get(name)
+                    for name in ("model_path", "device", "dtype", "attn_implementation")
+                ),
+            }
+            if not current_platform.enable_tts_vocoder_fast_path():
+                # The vocoder captures its decode graphs during the asynchronous
+                # decode warmup, which a platform that has not measured it skips.
+                kwargs["async_decode"] = False
+            else:
+                pass
+            return kwargs
+        elif stage_name == "tts_preprocessing":
+            return {
+                "model_path": self.tts_model_path,
+                "load_frontend": (
+                    self.stage_named("tts_preprocessing").process
+                    != self.stage_named("tts_engine").process
+                ),
+            }
         elif stage_name in TTS_STAGES:
             return {"model_path": self.tts_model_path}
         else:

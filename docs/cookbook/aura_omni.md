@@ -131,3 +131,10 @@ radix cache has already seen skips the vision encoder and most of the prefill.
 - One turn per request. The full-duplex `/v1/realtime` session mode, with its per-session
   history and sentence-by-sentence speech, is not supported.
 - Speech starts after AURA has finished its answer.
+- `min_p` must stay 0; narrow with `top_p` or `top_k`. SGLang's seeded sampling
+  rejects `min_p` for a whole batch, so one `min_p` request would fail every
+  seeded request batched with it.
+- Stop sequences are token ids through `stage_sampling.aura.stop_token_ids`.
+  Stop strings need a tokenizer the aura stage's scheduler does not hold.
+- Media rides on the latest turn only, and images and videos are read in the
+  order they were attached.
