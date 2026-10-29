@@ -47,7 +47,6 @@ from sglang_omni.scheduling.generation_batch_policy import (
 )
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.scheduling.types import DeferredAdmission
-from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 from sglang_omni.utils.gpu_memory import format_bytes_gib, get_process_gpu_memory_bytes
 
 if TYPE_CHECKING:
@@ -237,14 +236,8 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             pass
         if self.mm_attention_backend is not None:
             defaults["mm_attention_backend"] = self.mm_attention_backend
-        elif current_platform.is_musa():
-            defaults["mm_attention_backend"] = "triton_attn"
         else:
-            sm_version = get_visible_gpu_sm_version(self.gpu_id)
-            if sm_version is not None and sm_version >= 100:
-                defaults["mm_attention_backend"] = "triton_attn"
-            else:
-                pass
+            pass
         return defaults
 
     def make_model_runner(
