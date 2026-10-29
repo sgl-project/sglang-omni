@@ -447,3 +447,103 @@ def test_finalize_default_batch_generation_hook_calls_single_hook() -> None:
     )
 
     assert calls == [("req-1", 1), ("req-2", 5)]
+
+
+def test_launch_ids_go_straight_to_the_pinned_buffer_where_the_copy_is_async(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.platforms import current_platform
+
+    monkeypatch.setattr(
+        current_platform, "supports_async_device_to_host_copy", lambda: True
+    )
+    runner = make_runner([], custom_result=None)
+    ids = torch.tensor([7, 8])
+    host_buf = torch.zeros(4, dtype=ids.dtype)
+
+    launch_ids = runner.snapshot_launch_ids(ids, host_buf)
+    ids.fill_(0)  # the next launch reuses the sampler's output buffer
+
+    assert launch_ids is host_buf
+    assert runner.host_launch_ids(launch_ids)[:2].tolist() == [7, 8]
+
+
+def test_launch_ids_stay_on_device_where_the_host_copy_would_wait_for_the_forward(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.platforms import current_platform
+
+    monkeypatch.setattr(
+        current_platform, "supports_async_device_to_host_copy", lambda: False
+    )
+    runner = make_runner([], custom_result=None)
+    ids = torch.tensor([7, 8])
+    host_buf = torch.zeros(4, dtype=ids.dtype)
+
+    launch_ids = runner.snapshot_launch_ids(ids, host_buf)
+    ids.fill_(0)  # the next launch reuses the sampler's output buffer
+
+    assert launch_ids is not host_buf
+    assert host_buf.tolist() == [0, 0, 0, 0]
+    assert runner.host_launch_ids(launch_ids).tolist() == [7, 8]
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(
+    not torch.xpu.is_available(),
+    reason="the device snapshot path needs an accelerator whose pinned copy blocks the host",
+)
+def test_resolve_hands_back_the_launched_step_after_waiting_for_its_copy(
+    monkeypatch,
+) -> None:
+    """One async-decode step on real hardware. Two things must hold: the snapshot survives the
+    sampler buffer being reused for the next step, and because the host copy runs on a stream of
+    its own that nothing else orders, resolve records a completion event on that stream and waits
+    on it before handing the buffer back."""
+    from sglang_omni.platforms import current_platform
+
+    assert current_platform.supports_async_device_to_host_copy() is False
+    device = torch.device("xpu", torch.xpu.current_device())
+    device_module = torch.get_device_module(device)
+    waits: list[str] = []
+
+    class SpyEvent:
+        def __init__(self):
+            self.event = device_module.Event()
+
+        def record(self, stream=None):
+            waits.append("record")
+            self.event.record(stream)
+
+        def synchronize(self):
+            waits.append("synchronize")
+            self.event.synchronize()
+
+    spied_module = SimpleNamespace(
+        Event=SpyEvent, Stream=device_module.Stream, stream=device_module.stream
+    )
+    runner = make_runner([], custom_result=None)
+    runner.device = device
+    runner.host_staging_buffers = []
+    runner.staging_slot = 0
+    runner.host_copy_stream = None
+    runner.host_copy_done = None
+
+    rows = 2_000_000
+    sampled = torch.arange(1, rows + 1, device=device)
+    launch_ids = runner.snapshot_launch_ids(
+        sampled, runner.next_host_staging((rows,), sampled.dtype)
+    )
+    launched = device_module.Event()
+    launched.record()
+    sampled.fill_(-1)  # the next launch samples into the same buffer
+    filler = torch.randn(2048, 2048, device=device, dtype=torch.bfloat16)
+    for _ in range(10):  # the next step's forward, queued ahead of resolve
+        filler.matmul(filler)
+    launched.synchronize()  # what execute_resolve waits on before it reads the snapshot
+
+    monkeypatch.setattr(torch, "get_device_module", lambda requested: spied_module)
+    host_ids = runner.host_launch_ids(launch_ids)
+
+    assert waits == ["record", "synchronize"]
+    assert torch.equal(host_ids, torch.arange(1, rows + 1))

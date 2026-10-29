@@ -238,6 +238,10 @@ class OmniPlatform(DeviceMixin):
         """Whether collectives issued on group during a graph capture run on replay."""
         return True
 
+    def supports_async_device_to_host_copy(self) -> bool:
+        """Whether a non_blocking copy into pinned host memory returns before queued work."""
+        return True
+
     def get_graph_capture_sdpa_backends(self) -> tuple["SDPBackend", ...]:
         """Empty leaves dispatch alone."""
         return ()
