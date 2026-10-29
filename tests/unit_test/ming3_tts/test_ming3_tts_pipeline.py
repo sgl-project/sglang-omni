@@ -10,6 +10,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
+from sglang.srt.arg_groups.model_override_base import resolved_view
+from sglang.srt.server_args import ServerArgs
 from torch import nn
 
 from sglang_omni.models.ming3_tts import stages
@@ -24,7 +26,9 @@ from sglang_omni.models.ming3_tts.vocoder import create_vocoder_executor
 from sglang_omni.models.model_capabilities import get_model_capabilities
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.proto.request import OmniRequest, StagePayload
+from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
+from tests.unit_test.fixtures.mini_checkpoint import write_mini_llama_checkpoint
 
 CHECKPOINT_ARCHITECTURE = "LingV3TTSForConditionalGeneration"
 HIDDEN_SIZE = 64
@@ -183,6 +187,67 @@ def test_engine_factory_honors_operator_prefill_and_mixed_chunk_overrides(
         assert "cuda_graph_bs_prefill" not in captured
     else:
         assert captured["cuda_graph_config"]["prefill"]["backend"] == "breakable"
+
+
+@pytest.mark.parametrize(
+    "attention_backend,expected_backend",
+    [
+        ("triton", CudaGraphBackend.BREAKABLE),
+        ("fa3", CudaGraphBackend.FULL),
+    ],
+)
+def test_engine_factory_picks_the_prefill_backend_the_attention_backend_can_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    attention_backend: str,
+    expected_backend: str,
+) -> None:
+    """A prefill attention backend that cannot capture full keeps the breakable ladder."""
+    checkpoint = write_mini_llama_checkpoint(tmp_path)
+    monkeypatch.setattr(stages, "resolve_checkpoint", lambda path: path)
+    monkeypatch.setattr(
+        stages,
+        "load_checkpoint_config",
+        lambda path: {
+            "model_type": "dense",
+            "audio_tokenizer_config": {"enc_kwargs": {"latent_dim": LATENT_DIM}},
+        },
+    )
+    captured: list[ServerArgs] = []
+
+    class StopBeforeInfrastructure(Exception):
+        pass
+
+    def create_infrastructure(
+        server_args: ServerArgs,
+        gpu_id: int,
+        *,
+        tp_rank: int = 0,
+        nccl_port: int | None = None,
+        total_gpu_memory_fraction: float | None = None,
+    ) -> None:
+        captured.append(server_args)
+        raise StopBeforeInfrastructure
+
+    monkeypatch.setattr(stages, "create_sglang_infrastructure", create_infrastructure)
+    with pytest.raises(StopBeforeInfrastructure):
+        stages.create_tts_engine_executor(
+            checkpoint,
+            max_seq_len=4096,
+            enable_acoustic_graph=True,
+            prefill_graph_token_counts=[64, 128],
+            prefill_graph_max_requests=32,
+            enable_async_decode=True,
+            enable_fused_flow_head=True,
+            device="cpu",
+            server_args_overrides={
+                "attention_backend": attention_backend,
+                "device": "cuda",
+            },
+        )
+    prefill = resolved_view(captured[0]).cuda_graph_config.prefill
+    assert prefill.backend == expected_backend
+    assert prefill.bs == [64, 128]
 
 
 @pytest.mark.parametrize("cache_entries", [0, 16])
