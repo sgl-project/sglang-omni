@@ -122,7 +122,13 @@
       ul.style.transition =
         "max-height " + EXPAND_MS + "ms ease-in-out, visibility " + EXPAND_MS + "ms";
       var self = this;
-      this.onExpandEnd = function () {
+      // Only the max-height transition marks the animation as finished: the
+      // same element also transitions `visibility`, whose transitionend (or
+      // transitioncancel) must not run the cleanup early.
+      this.onExpandEnd = function (evt) {
+        if (evt.target !== ul || evt.propertyName !== "max-height") {
+          return;
+        }
         self.finishExpand();
       };
       ul.addEventListener("transitionend", this.onExpandEnd);
@@ -171,7 +177,13 @@
       ul.style.transition =
         "max-height " + COLLAPSE_MS + "ms ease-in-out, visibility " + COLLAPSE_MS + "ms";
       var self = this;
-      this.onCollapseEnd = function () {
+      // Only the max-height transition marks the animation as finished: the
+      // same element also transitions `visibility`, whose transitionend (or
+      // transitioncancel) must not run the cleanup early.
+      this.onCollapseEnd = function (evt) {
+        if (evt.target !== ul || evt.propertyName !== "max-height") {
+          return;
+        }
         self.finishCollapse();
       };
       ul.addEventListener("transitionend", this.onCollapseEnd);
