@@ -23,7 +23,7 @@ from websockets.asyncio.server import ServerConnection
 
 import benchmarks.duplex.openai_client as openai_client
 from benchmarks.duplex.artifacts import server_identity
-from benchmarks.duplex.client import TurnDetection, run_session
+from benchmarks.duplex.client import TurnDetection, ZeroBufferPlayer, run_session
 from benchmarks.duplex.openai_client import (
     DEFAULT_MODELS,
     DIALECTS,
@@ -32,6 +32,7 @@ from benchmarks.duplex.openai_client import (
     provider_manifest,
 )
 from benchmarks.duplex.oracle import evaluate_trace
+from benchmarks.duplex.profiles import PROFILES
 from benchmarks.duplex.serving import score_session
 from benchmarks.duplex.v15_audio import reconstruct_output
 from benchmarks.eval import benchmark_duplex_v10, benchmark_duplex_v15
@@ -426,6 +427,35 @@ def test_realtime_cancel_truncates_at_the_played_audio(tmp_path: Path) -> None:
     assert truncate["audio_end_ms"] == int(played_s * 1000)
     assert 150 <= truncate["audio_end_ms"] < REPLY_SECONDS * 1000
     assert evaluate_trace(records, profile="openai-realtime")["status"] == "pass"
+
+
+def test_a_cut_truncates_each_audio_item_of_a_reply_at_its_own_played_audio() -> None:
+    # note (wenyao): gpt-realtime-2.1 speaks a commentary item, then its final answer,
+    # in one response.
+    player = ZeroBufferPlayer(
+        output_rate=24000, cuts=PROFILES["openai-realtime"].playout_cuts
+    )
+
+    def delta(item_id: str, seconds: float) -> dict[str, JsonValue]:
+        return {
+            "type": "response.output_audio.delta",
+            "response_id": "r1",
+            "item_id": item_id,
+            "delta": encode(bytes(int(2 * 24000 * seconds))),
+        }
+
+    assert player.played(delta("commentary", 3.0), 10.0) == []
+    assert player.played(delta("final_answer", 1.0), 12.25) == []
+    speech = {"type": "input_audio_buffer.speech_started", "item_id": "u2"}
+    assert player.played(speech, 12.5) == [
+        {"item_id": "commentary", "content_index": 0, "audio_end_ms": 2500},
+        {"item_id": "final_answer", "content_index": 0, "audio_end_ms": 0},
+    ]
+    cancelled = {
+        "type": "response.done",
+        "response": {"id": "r1", "status": "cancelled"},
+    }
+    assert player.played(cancelled, 12.6) == []
 
 
 def test_realtime_closes_only_after_the_open_reply_finishes(tmp_path: Path) -> None:

@@ -138,46 +138,49 @@ def stops_playout(event: dict[str, JsonValue], cuts: frozenset[PlayoutCut]) -> b
 
 @dataclass
 class ZeroBufferPlayer:
-    """The player PLAYBACK_REPORTS describe: when its cursor frees, each reply's
-    (start, seconds) deltas, and the items already truncated."""
+    """The player PLAYBACK_REPORTS describe: when its cursor frees, each audio
+    item's reply and (start, seconds) deltas, and the items already truncated.
+
+    One reply can carry several audio items (gpt-realtime-2.1 speaks a commentary
+    item before its final answer), so played audio is counted per item."""
 
     output_rate: int
     cuts: frozenset[PlayoutCut]
     cursor_s: float = 0.0
-    reply_audio: dict[str, list[tuple[float, float]]] = field(default_factory=dict)
-    reply_items: dict[str, str] = field(default_factory=dict)
+    item_audio: dict[str, list[tuple[float, float]]] = field(default_factory=dict)
+    item_replies: dict[str, str] = field(default_factory=dict)
     truncated_items: set[str] = field(default_factory=set)
 
     def played(
         self, event: dict[str, JsonValue], now_s: float
     ) -> list[dict[str, JsonValue]]:
         """Play an audio delta, or stop at a playout cut and return the
-        conversation.item.truncate fields of each reply it cuts: the reply a cancelled
-        response.done names, or at any other cut every reply with audio unplayed."""
+        conversation.item.truncate fields of each item it cuts: the items of the reply
+        a cancelled response.done names, or at any other cut every item with audio
+        unplayed."""
         event_type = event["type"]
         if event_type == "response.output_audio.delta":
             seconds = len(base64.b64decode(event["delta"])) / 2 / self.output_rate
             start_s = max(self.cursor_s, now_s)
             self.cursor_s = start_s + seconds
-            self.reply_audio.setdefault(event["response_id"], []).append(
+            self.item_audio.setdefault(event["item_id"], []).append(
                 (start_s, seconds)
             )
-            self.reply_items[event["response_id"]] = event["item_id"]
+            self.item_replies[event["item_id"]] = event["response_id"]
             return []
         elif stops_playout(event, self.cuts):
             self.cursor_s = min(self.cursor_s, now_s)
-            cut_replies = (
-                [event["response"]["id"]]
-                if event_type == "response.done"
-                else [
-                    response_id
-                    for response_id, deltas in self.reply_audio.items()
-                    if any(start_s + seconds > now_s for start_s, seconds in deltas)
-                ]
-            )
+            cut_items = [
+                item_id
+                for item_id, deltas in self.item_audio.items()
+                if (
+                    self.item_replies[item_id] == event["response"]["id"]
+                    if event_type == "response.done"
+                    else any(start_s + seconds > now_s for start_s, seconds in deltas)
+                )
+            ]
             truncates: list[dict[str, JsonValue]] = []
-            for response_id in cut_replies:
-                item_id = self.reply_items.get(response_id)
+            for item_id in cut_items:
                 if item_id is None or item_id in self.truncated_items:
                     continue
                 else:
@@ -185,7 +188,7 @@ class ZeroBufferPlayer:
                 self.truncated_items.add(item_id)
                 played_s = sum(
                     min(seconds, max(0.0, now_s - start_s))
-                    for start_s, seconds in self.reply_audio[response_id]
+                    for start_s, seconds in self.item_audio[item_id]
                 )
                 truncates.append(
                     {
