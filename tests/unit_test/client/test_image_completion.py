@@ -4,13 +4,22 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from collections.abc import AsyncIterator
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 import pytest
 
 from sglang_omni.client import Client
-from sglang_omni.client.types import GenerateChunk, GenerateRequest
+from sglang_omni.client.client import umm_segment_chunk
+from sglang_omni.client.image_media import InlineImage
+from sglang_omni.client.types import (
+    GenerateChunk,
+    GenerateRequest,
+    ImageUsageDict,
+    UMMGenerateChunk,
+    UMMSegment,
+)
 from sglang_omni.proto import CompleteMessage, StreamMessage
 
 
@@ -156,3 +165,133 @@ def test_merged_audio_keeps_usage_fallback(
     assert chunk.modality == "audio"
     assert chunk.image is None
     assert chunk.usage.total_tokens == (5 if with_decode_usage else 10)
+
+
+IMAGE_USAGE: ImageUsageDict = {
+    "input_tokens": 3,
+    "total_tokens": 3,
+    "input_tokens_details": {"text_tokens": 3, "image_tokens": 4},
+}
+
+
+def result_with_image_usage(usage_data: object, streamed: bool) -> dict[str, object]:
+    segments = [
+        UMMSegment("execution", 0, "text", "hello").to_dict(),
+        UMMSegment("execution", 1, "usage", usage_data).to_dict(),
+    ]
+    if streamed:
+        for segment in segments:
+            segment.pop("data", None)
+    else:
+        pass
+    return {
+        "type": "umm_result",
+        "execution_id": "execution",
+        "segments": segments,
+    }
+
+
+@pytest.mark.parametrize("streamed", [False, True])
+def test_final_result_reads_image_usage_from_its_usage_segment(streamed: bool) -> None:
+    usage_data = {"image_usage": IMAGE_USAGE, "stage_name": "generate"}
+    chunk = Client.default_result_builder(
+        "request", result_with_image_usage(usage_data, streamed)
+    )
+    assert isinstance(chunk, UMMGenerateChunk)
+    if streamed:
+        assert chunk.image_usage is None and chunk.stage_name is None
+    else:
+        assert chunk.image_usage == IMAGE_USAGE and chunk.stage_name == "generate"
+    streamed_chunk = umm_segment_chunk(
+        GenerateChunk("request", stage_name="output"),
+        UMMSegment("execution", 1, "usage", usage_data).to_dict(),
+    )
+    assert streamed_chunk.stage_name == "generate"
+    assert isinstance(streamed_chunk, UMMGenerateChunk)
+    assert streamed_chunk.segment is not None
+    assert streamed_chunk.segment.data == usage_data
+
+
+@pytest.mark.parametrize("result_format", ["ordinary", "umm"])
+@pytest.mark.parametrize(
+    "usage_data",
+    [
+        "not a mapping",
+        {"image_usage": {"input_tokens": -1, "total_tokens": 0}},
+        {"image_usage": {"input_tokens": True}},
+        {"image_usage": {"input_tokens": "3"}},
+        {
+            "image_usage": {
+                "input_tokens_details": {"text_tokens": 3, "image_tokens": -1}
+            }
+        },
+    ],
+)
+def test_invalid_image_usage_is_rejected(
+    usage_data: object, result_format: Literal["ordinary", "umm"]
+) -> None:
+    """Invalid producer counts must not become successful ordinary results."""
+    if result_format == "umm":
+        result = result_with_image_usage(usage_data, False)
+    elif isinstance(usage_data, dict):
+        result = usage_data
+    else:
+        result = {"image_usage": usage_data}
+    with pytest.raises(ValueError):
+        Client.default_result_builder("request", result)
+
+
+@pytest.mark.parametrize(
+    "image_usage",
+    [
+        None,
+        {},
+        IMAGE_USAGE,
+        {"input_tokens_details": {"text_tokens": None, "image_tokens": 4}},
+    ],
+)
+def test_ordinary_result_preserves_image_usage(
+    image_usage: ImageUsageDict | None,
+) -> None:
+    chunk = Client.default_result_builder("request", {"image_usage": image_usage})
+    assert chunk.image_usage == image_usage
+    assert chunk.to_dict()["image_usage"] == image_usage
+
+
+def test_usage_without_token_statistics_remains_unavailable() -> None:
+    chunk = Client.default_result_builder(
+        "request", result_with_image_usage({"stage_name": "generate"}, False)
+    )
+    assert chunk.image_usage is None
+    assert chunk.stage_name == "generate"
+
+
+def test_result_builder_keeps_only_string_image_lists() -> None:
+    chunk = Client.default_result_builder(
+        "request", {"image_b64": "a", "images_b64": ["a", "b"]}
+    )
+    assert chunk.image_b64 == "a" and chunk.images_b64 == ["a", "b"]
+    serialized = chunk.to_dict()
+    assert serialized["image_b64"] == "a"
+    assert serialized["images_b64"] == ["a", "b"]
+    invalid_chunk = Client.default_result_builder(
+        "request", {"image_b64": 1, "images_b64": ["a", 1]}
+    )
+    assert invalid_chunk.image_b64 is None
+    assert invalid_chunk.images_b64 is None
+
+
+@pytest.mark.parametrize("field", ["sha256", "size_bytes", "url"])
+def test_inline_image_rejects_tampered_content(
+    field: Literal["sha256", "size_bytes", "url"],
+) -> None:
+    encoded_image = base64.b64encode(b"png bytes").decode("ascii")
+    media = InlineImage.from_png(encoded_image)
+    assert media.encoded_image() == encoded_image
+    changes = {
+        "sha256": "0" * 64,
+        "size_bytes": media.size_bytes + 1,
+        "url": "https://example.invalid/image.png",
+    }
+    with pytest.raises(ValueError):
+        media.model_copy(update={field: changes[field]}).encoded_image()
