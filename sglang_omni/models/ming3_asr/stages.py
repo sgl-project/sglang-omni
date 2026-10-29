@@ -87,6 +87,22 @@ def create_thinker_executor(
     server_args_overrides: dict[str, JsonValue] | None = None,
     total_gpu_memory_fraction: float | None = None,
 ) -> OmniScheduler:
+    if tp_size != 1:
+        raise ValueError(f"Ming ASR thinker supports tp_size 1, got {tp_size}")
+    else:
+        pass
+    if pre_lm_max_batch_size < 1:
+        raise ValueError(
+            f"pre_lm_max_batch_size must be >= 1, got {pre_lm_max_batch_size}"
+        )
+    else:
+        pass
+    if pre_lm_max_batch_wait_ms < 0:
+        raise ValueError(
+            f"pre_lm_max_batch_wait_ms must be >= 0, got {pre_lm_max_batch_wait_ms}"
+        )
+    else:
+        pass
     resolved_device = resolve_concrete_device(device, gpu_id)
     configuration = load_checkpoint_config(model_path)
     encoder = Ming3AudioEncoder(

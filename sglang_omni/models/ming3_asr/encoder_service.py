@@ -56,6 +56,7 @@ class Ming3ASRPreLMEncoderService(
         super().__init__(worker_name="ming3-asr-audio-encode")
 
     def close(self) -> None:
+        """Join the worker so a batch still inside CUDA cannot outlive the encoder stream."""
         with self.lifecycle_lock:
             if self.closed:
                 return
@@ -63,7 +64,7 @@ class Ming3ASRPreLMEncoderService(
                 pass
             self.closed = True
             self.queue.put(QueueSignal.SHUTDOWN)
-        self.thread.join(timeout=5)
+        self.thread.join()
 
     def enqueue(
         self,
@@ -138,6 +139,13 @@ class Ming3ASRPreLMEncoderService(
             embeddings=self.encoder.embed_mels(mel_chunks),
             chunk_counts=chunk_counts,
         )
+
+    def retry_batch(
+        self,
+        batch: list[QueueEntry[MelBatch, torch.Tensor]],
+        _exc: Exception,
+    ) -> bool:
+        return len(batch) > 1
 
     def split_embeddings(
         self,

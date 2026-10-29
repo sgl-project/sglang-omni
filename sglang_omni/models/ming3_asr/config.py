@@ -19,6 +19,17 @@ from sglang_omni.config.schema import (
 PACKAGE = "sglang_omni.models.ming3_asr"
 
 
+class Ming3ASRFactoryArgs(FactoryArgs):
+    """Thinker knobs checked when the pipeline configuration loads."""
+
+    pre_lm_max_batch_size: int | None = Field(default=None, ge=1)
+    pre_lm_max_batch_wait_ms: int | None = Field(default=None, ge=0)
+
+
+class Ming3ASRThinkerStageConfig(EngineStageConfig):
+    factory: Ming3ASRFactoryArgs = Field(default_factory=Ming3ASRFactoryArgs)
+
+
 def default_stages() -> list[StageConfig]:
     return [
         StageConfig(
@@ -27,12 +38,12 @@ def default_stages() -> list[StageConfig]:
             factory_path=f"{PACKAGE}.stages.create_preprocessing_executor",
             next="thinker",
         ),
-        EngineStageConfig(
+        Ming3ASRThinkerStageConfig(
             name="thinker",
             process="thinker",
             gpu=0,
             factory_path=f"{PACKAGE}.stages.create_thinker_executor",
-            factory=FactoryArgs(
+            factory=Ming3ASRFactoryArgs(
                 max_seq_len=8192,
                 max_new_tokens=256,
                 pre_lm_max_batch_size=8,
@@ -57,7 +68,7 @@ class Ming3ASRPipelineConfig(PipelineConfig):
     allow_audio_chunking: ClassVar[bool] = True
     max_native_clip_s: ClassVar[float] = 30.0
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
-        "thinker": EngineStageConfig,
+        "thinker": Ming3ASRThinkerStageConfig,
     }
     model_path: str
     entry_stage: str = "preprocessing"
