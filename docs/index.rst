@@ -131,6 +131,7 @@ Supported Models
    cookbook/moss_transcribe_diarize.md
    cookbook/fishaudio_s2_pro.md
    cookbook/fun_cosyvoice3.md
+   cookbook/aura_omni.md
    cookbook/nemotron_voicechat.md
    cookbook/personaplex.md
    cookbook/cosmos3_nano.md

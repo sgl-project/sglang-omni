@@ -755,7 +755,7 @@ class Client:
             audio_result = None
             image_result = None
             if "decode" in result:
-                for audio_stage in ("code2wav", "talker", "talker_stream"):
+                for audio_stage in ("code2wav", "talker", "talker_stream", "vocoder"):
                     if audio_stage in result:
                         audio_result = result[audio_stage] or {}
                         break

@@ -65,6 +65,9 @@ _BAD_REQUEST_MARKERS = (
     "Native generation request ",
     "Native chat request rejected: ",
     "Invalid UMM request: ",
+    "AURA Omni expects",
+    "AURA Omni transcribes one audio input",
+    "AURA Omni request needs",
 )
 _BAD_REQUEST_PATTERNS = (
     re.compile(
