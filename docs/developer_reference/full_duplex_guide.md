@@ -57,6 +57,8 @@ Speech settings also accept dotted CLI flags, such as `--speech.dtype float16 --
 
 A session holds at most 8192 tokens of history, which is the model's trained context length. When that fills, the server sends `context_exhausted` and closes the session.
 
+The voice of one spoken turn keeps up to 4096 tokens of talker history, about two minutes of speech. A longer turn restarts that history from its newest speech, up to half of it, instead of failing the session.
+
 The realtime activity timeout closes an inactive session with `idle_timeout`; the pipeline's separate idle fallback reports `session_idle_timeout`. A session whose pending server events outgrow the server's output buffers is closed with `output_budget_exhausted`; this happens when the client stops reading events. A single response whose transcript outgrows `max_history_chars` is closed with `context_limit`.
 
 The full-duplex server is ready when this returns JSON containing `"native_full_duplex":true`:

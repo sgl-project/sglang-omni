@@ -15,6 +15,8 @@ from sglang_omni.serve.realtime.output import ResponseFinished
 IDENTITY = SessionIdentity("session", 0)
 # note (luojiaxuan): SGLang's finish reason types for a request that used up max_new_tokens and one that hit a stop token.
 FINISH_LENGTH, FINISH_STOP = "length", "stop"
+# note (0xtoward): The checkpoint's talker request limit; these few units never roll the history over.
+TALKER_MAX_REQUEST_LENGTH = 4095
 
 
 # note (luojiaxuan): A talker unit's window is CODEC_CHUNK_SIZE (25) codec slots and one more for the EOS. On an H200, a turn's last unit that reached the end of its window returned 25 tokens and finished on its stop token, as a unit mid-reply returns 25 finishing on length; a last unit that ended its speech inside the window returned fewer.
@@ -83,7 +85,10 @@ def test_a_turn_that_ends_before_the_codec_eos_cuts_the_speech(
     units: list[Unit], expected_cuts: list[bool]
 ) -> None:
     """A reply whose turn ended before the talker reached its codec EOS, on the input end or on the model's own turn end, was reported as finished."""
-    adapter = TalkerAdapter(SimpleNamespace(codec_eos_id=0))
+    adapter = TalkerAdapter(
+        SimpleNamespace(codec_eos_id=0, audio_bos_token_id=1),
+        max_request_length=TALKER_MAX_REQUEST_LENGTH,
+    )
     adapter.open(IDENTITY, None)
     cuts = []
     for unit in units:
@@ -107,6 +112,8 @@ def test_a_turn_that_ends_before_the_codec_eos_cuts_the_speech(
         else:
             request_data = SimpleNamespace(
                 stage_payload=payload,
+                req=SimpleNamespace(origin_input_ids=[0]),
+                unit_embedding_spans=[SimpleNamespace(input_embeds=torch.zeros(1))],
                 output_ids=list(range(unit.tokens)),
                 finish_reason=unit.finish_reason,
             )

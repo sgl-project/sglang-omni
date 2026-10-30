@@ -124,7 +124,19 @@ def create_talker_scheduler(
         model_runner=model_runner,
         request_builder=request_builder,
         result_adapter=result_adapter,
-        session_adapter=TalkerAdapter(model) if session_mode else None,
+        # note (0xtoward): The same request limit OmniScheduler enforces from the context and the KV pool.
+        session_adapter=(
+            TalkerAdapter(
+                model,
+                max_request_length=min(
+                    model_config.context_len,
+                    model_worker.model_runner.effective_max_total_num_tokens,
+                )
+                - 1,
+            )
+            if session_mode
+            else None
+        ),
         # note (0xtoward): the penalty and length floor read device state, never an unresolved token, so lookahead starts at one request.
         enable_async_decode=not session_mode,
         async_decode_min_batch_size=1,

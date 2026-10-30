@@ -1026,6 +1026,30 @@ def test_enqueue_built_request_rejects_a_prompt_without_tokens(monkeypatch) -> N
     assert "scheduler_queue_enter" not in events
 
 
+@pytest.mark.usefixtures("published_config")
+@pytest.mark.parametrize("stage", ["thinker", "talker"])
+def test_kv_capacity_error_names_its_stage_and_stays_a_bad_request(
+    stage: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(omni_scheduler_module, "_get_active_stage", lambda: stage)
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.max_req_len = 4095
+    scheduler.tp_worker = SimpleNamespace(kv_cache_bytes=None)
+    request = admission_req("req-long", [1] * 4080)
+    request.sampling_params = SimpleNamespace(max_new_tokens=26)
+
+    message = OmniScheduler.request_kv_capacity_error(scheduler, request)
+
+    assert message.startswith(
+        f"Request requires more tokens than the {stage} KV cache can hold "
+        "(input_tokens=4080, max_new_tokens=26, required_tokens=4106, "
+        "kv_capacity=4095)."
+    ), "the message names the stage whose KV ran out"
+    assert is_bad_request_error(
+        RuntimeError(message)
+    ), "the rejection stays a bad request"
+
+
 def test_enqueue_built_request_admits_an_empty_session_append_with_history(
     monkeypatch,
 ) -> None:
