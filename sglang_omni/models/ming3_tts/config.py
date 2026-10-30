@@ -16,6 +16,7 @@ from sglang_omni.config.schema import (
     PlacementConfig,
     StageConfig,
 )
+from sglang_omni.utils.device import resolve_device_spec
 from sglang_omni.utils.hf import try_resolve_ming3_dense_tts
 
 PACKAGE = "sglang_omni.models.ming3_tts"
@@ -74,13 +75,17 @@ def default_stages(dense: bool = False) -> list[StageConfig]:
                 enable_torch_compile=False,
             ),
             next="vocoder",
+            stream_to=["vocoder"],
         ),
         StageConfig(
             name="vocoder",
             process="vocoder",
             gpu=0,
             factory_path=f"{PACKAGE}.vocoder.create_vocoder_executor",
-            factory=FactoryArgs(graph_latent_steps=384 if dense else 0),
+            factory=FactoryArgs(
+                graph_latent_steps=384 if dense else 0, stream_chunk_steps=8
+            ),
+            can_accept_stream_before_payload=True,
             terminal=True,
         ),
     ]
@@ -130,6 +135,22 @@ class Ming3TTSPipelineConfig(PipelineConfig):
             "mps": "auto" if dense else "off",
             **data,
         }
+
+    def stage_factory_kwargs(self, stage_name: str) -> dict[str, bool]:
+        if stage_name == "tts_engine":
+            vocoder = self.stage_named("vocoder")
+            return {
+                "use_streaming_vocoder": (
+                    vocoder.factory_path
+                    not in {
+                        f"{PACKAGE}.stages.create_vocoder_executor",
+                        f"{PACKAGE}.vocoder.create_vocoder_executor",
+                    }
+                    or resolve_device_spec(vocoder.factory.device) != "cpu"
+                )
+            }
+        else:
+            return {}
 
 
 EntryClass = Ming3TTSPipelineConfig
