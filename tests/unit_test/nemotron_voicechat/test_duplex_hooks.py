@@ -165,6 +165,7 @@ def test_perception_rejects_invalid_audio_before_model_execution(
 
 class ConstantFrameDecoder:
     samples_per_frame = 1764
+    num_quantizers = 1
 
     def __call__(self, code_frames: torch.Tensor) -> torch.Tensor:
         return code_frames[:, 0].float().repeat_interleave(self.samples_per_frame) / 100

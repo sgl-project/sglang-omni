@@ -10,9 +10,9 @@ import torch
 from sglang.srt.models.llama_eagle3 import LlamaForCausalLMEagle3
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
-from sglang_omni.model_runner import speculative_target_worker
-from sglang_omni.model_runner.eagle3_draft import OmniLlamaForCausalLMEagle3
-from sglang_omni.model_runner.speculative_target_worker import SpeculativeTargetWorker
+from sglang_omni.speculative import target_worker
+from sglang_omni.speculative.eagle3_draft import OmniLlamaForCausalLMEagle3
+from sglang_omni.speculative.target_worker import SpeculativeTargetWorker
 
 
 @pytest.mark.parametrize(
@@ -23,7 +23,7 @@ def test_target_prefill_hands_an_eagle_draft_the_composed_embeds(
     monkeypatch, speculative_algorithm: str, is_published: bool
 ) -> None:
     monkeypatch.setattr(
-        speculative_target_worker.ForwardBatch,
+        target_worker.ForwardBatch,
         "init_new",
         lambda batch, model_runner, **kwargs: SimpleNamespace(
             seq_lens=torch.tensor([3]), input_ids=torch.tensor([1, 2, 3])

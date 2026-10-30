@@ -12,6 +12,7 @@ from sglang.srt.mem_cache.memory_pool import HybridLinearKVPool
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from torch import nn
 
+from sglang_omni.models.fishaudio_drama3.config import ReferenceSamplingFallback
 from sglang_omni.models.fishaudio_drama3.decoder_layers import (
     DecoderAttention,
     DecoderLayer,
@@ -22,6 +23,10 @@ from sglang_omni.models.fishaudio_drama3.decoder_layers import (
     norm_weights,
 )
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
+from sglang_omni.models.fishaudio_drama3.reference_sampling import (
+    sample_main_tokens,
+    sample_residual_codes,
+)
 from sglang_omni.models.fishaudio_drama3.sampling import (
     sample_semantic_with_ras,
     sample_top_k_top_p,
@@ -106,6 +111,8 @@ class AudioDecoder(nn.Module):
             "sampling_step", torch.zeros((), dtype=torch.int64), persistent=False
         )
         self.sampler: CodebookSampler | None = None
+        # Set by the engine for reference sampling; None keeps the samplers above.
+        self.reference_sampling_fallback: ReferenceSamplingFallback | None = None
         self.fused_layers: FusedTowerLayers | None = None
 
     def fused_layers_unsupported_reason(
@@ -314,30 +321,47 @@ class AudioDecoder(nn.Module):
         top_k: torch.Tensor,
         top_p: torch.Tensor,
         attention: DecoderAttention,
+        epsilon_cutoff: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Sample the next int64 frame [rows, 1 + num_codebooks] per backbone row,
         filling the tower cache at its position.
 
         semantic_logits are the raw lm_head logits (no bias or temperature) of
         hidden_states, the backbone's final-norm output; an end-of-speech frame still
-        runs every layer.
+        runs every layer. Only reference sampling reads epsilon_cutoff.
         """
         sampler = self.sampler
+        reference_sampling_fallback = self.reference_sampling_fallback
         if sampler is not None:
             sampler.step.add_(1)
         else:
             pass
-        main_tokens, codebook_zero = sample_semantic_with_ras(
-            semantic_logits,
-            self.main_token_candidate_ids,
-            previous_main_tokens,
-            temperature,
-            top_k,
-            top_p,
-            self.semantic_begin_id,
-            self.codebook_size,
-            sampler,
-        )
+        if reference_sampling_fallback is not None:
+            assert epsilon_cutoff is not None
+            main_tokens, codebook_zero = sample_main_tokens(
+                semantic_logits,
+                self.main_token_candidate_ids,
+                previous_main_tokens,
+                temperature,
+                top_k,
+                top_p,
+                epsilon_cutoff,
+                self.semantic_begin_id,
+                self.codebook_size,
+                reference_sampling_fallback,
+            )
+        else:
+            main_tokens, codebook_zero = sample_semantic_with_ras(
+                semantic_logits,
+                self.main_token_candidate_ids,
+                previous_main_tokens,
+                temperature,
+                top_k,
+                top_p,
+                self.semantic_begin_id,
+                self.codebook_size,
+                sampler,
+            )
         label_is_semantic = self.is_semantic(main_tokens)
         hidden_states = self.run_shared_layers(
             hidden_states,
@@ -348,7 +372,10 @@ class AudioDecoder(nn.Module):
             attention,
             True,
         )
-        codebook_top_k = top_k.clamp(max=CODEBOOK_TOP_K)
+        if reference_sampling_fallback is not None:
+            codebook_top_k = top_k
+        else:
+            codebook_top_k = top_k.clamp(max=CODEBOOK_TOP_K)
         codes = [codebook_zero]
         for residual_index, (layer, head) in enumerate(
             zip(self.residual_layers, self.codebook_heads)
@@ -364,14 +391,21 @@ class AudioDecoder(nn.Module):
                 attention,
                 True,
             )
-            codes.append(
-                sample_top_k_top_p(
-                    head(hidden_states),
-                    temperature,
-                    codebook_top_k,
-                    top_p,
-                    sampler,
-                    FIRST_CODEBOOK_HEAD_STREAM + residual_index,
+            if reference_sampling_fallback is not None:
+                codes.append(
+                    sample_residual_codes(
+                        head(hidden_states), temperature, codebook_top_k, top_p
+                    )
                 )
-            )
+            else:
+                codes.append(
+                    sample_top_k_top_p(
+                        head(hidden_states),
+                        temperature,
+                        codebook_top_k,
+                        top_p,
+                        sampler,
+                        FIRST_CODEBOOK_HEAD_STREAM + residual_index,
+                    )
+                )
         return torch.stack([main_tokens, *codes], dim=-1)

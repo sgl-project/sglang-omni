@@ -3,16 +3,22 @@
 
 import threading
 
+import numpy as np
 import pytest
 
 from sglang_omni.audio.vad import VADConfig
+from sglang_omni.config.runtime import resolve_stage_typed_kwargs
 from sglang_omni.models.vad.node import (
     SESSION_PORTS,
     VAD_STAGE,
     VADStageConfig,
     vad_stage,
 )
-from sglang_omni.models.vad.session import VADHooks, create_scheduler
+from sglang_omni.models.vad.session import (
+    SileroSpeechDetector,
+    VADHooks,
+    create_scheduler,
+)
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.proto.streams import (
@@ -196,3 +202,69 @@ def test_a_null_turn_detection_turns_the_detector_off_until_a_later_configure():
     node.audio(2100, eos=True)
     assert node.boundaries() == [(SPEECH_STARTED, 2100, 2100)]
     assert detectors[0].script == [[(False, 0)]] and detectors[0].resets == 1
+
+
+class AnySoundIsSpeech(SileroSpeechDetector):
+    """The production detector with Silero's score replaced: any non-zero frame is speech."""
+
+    def infer(self, frame: np.ndarray) -> float:
+        return 0.9 if np.abs(frame).max() > 0 else 0.0
+
+
+def tone(amplitude: int) -> bytes:
+    return np.full(1600, amplitude, dtype="<i2").tobytes()
+
+
+@pytest.mark.parametrize(
+    "margin_db, boundaries",
+    [
+        (
+            None,
+            [
+                (SPEECH_STARTED, 0),
+                (SPEECH_STOPPED, 608),
+                (SPEECH_STARTED, 1300),
+                (SPEECH_STOPPED, 2624),
+                (SPEECH_STARTED, 3700),
+                (SPEECH_STOPPED, 4608),
+            ],
+        ),
+        (
+            6.0,
+            [
+                (SPEECH_STARTED, 0),
+                (SPEECH_STOPPED, 608),
+                (SPEECH_STARTED, 3700),
+                (SPEECH_STOPPED, 4608),
+            ],
+        ),
+    ],
+)
+def test_a_voice_much_quieter_than_the_last_utterance_starts_no_speech(
+    margin_db, boundaries
+):
+    """The user asks at 8000, a background voice talks at 2000 (-12 dB), then the user interrupts, starting at 2000 and going on at 5000 (-4 dB)."""
+    hooks = VADHooks(
+        VADConfig(silence_duration_ms=800, background_margin_db=margin_db),
+        AnySoundIsSpeech,
+    )
+    node = Node(hooks, "a")
+    script = [8000] * 6 + [0] * 10 + [2000] * 10 + [0] * 14 + [2000] * 2 + [5000] * 4
+    for unit, amplitude in enumerate(script):
+        node.append(
+            TimedChunk(AUDIO, unit * 100, 100, unit, tone(amplitude), format=PCM16)
+        )
+    node.append(
+        TimedChunk(
+            AUDIO, len(script) * 100, 100, len(script), tone(0), format=PCM16, eos=True
+        )
+    )
+    assert [(kind, t_ms) for kind, t_ms, _ in node.boundaries()] == boundaries
+
+
+def test_the_vad_stage_ignores_background_voices_unless_its_factory_sets_null():
+    declared = vad_stage().model_dump()
+    for factory, margin_db in (({}, 6.0), ({"background_margin_db": None}, None)):
+        stage = VADStageConfig.model_validate({**declared, "factory": factory})
+        hooks = create_scheduler(**resolve_stage_typed_kwargs(stage)).session_hooks
+        assert hooks.config.background_margin_db == margin_db

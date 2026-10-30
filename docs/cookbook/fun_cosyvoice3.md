@@ -308,6 +308,40 @@ Full SeedTTS EN set (1088 samples) on buffered `/v1/audio/speech`, one H200:
 
 This result is only demonstrative, since we have further optimization after the evluation of TensorRT is done.
 
+### Speculative Decoding
+
+SpeechSpec's DSpark draft [`yuekai/cosyvoice3_llm_dspark`](https://huggingface.co/yuekai/cosyvoice3_llm_dspark) proposes 7 speech tokens per step from three of the LLM's hidden layers, and the LLM verifies them in one forward pass.
+
+```bash
+sgl-omni serve \
+  --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+  --tts_engine.engine.speculative_draft_model_path yuekai/cosyvoice3_llm_dspark \
+  --port 8000
+```
+
+Verification reproduces CosyVoice3's sampler exactly: temperature, top-k/top-p, the repetition penalty, the minimum-length stop mask and the repetition-aware redraw. The speech tokens therefore follow the same distribution as without the draft. A request's `seed` fixes only its first token, because the draft and verify draws come from the process's random generator, so seeded output is not reproducible while the draft is on.
+
+LLM speech-token throughput without the vocoder (Seed-TTS zh, 2,020 utterances, one H200 141GB with SGLang 0.5.22, target and draft on FA3, each batch run to completion), with the default sampling and about 3.0 tokens accepted per verify:
+
+| Batch | Baseline | DSpark | Speedup |
+|---|---|---|---|
+| 1 | 434 tok/s | 711 tok/s | 1.64x |
+| 8 | 2,421 tok/s | 3,794 tok/s | 1.57x |
+| 16 | 4,260 tok/s | 6,388 tok/s | 1.50x |
+| 64 | 11,030 tok/s | 15,027 tok/s | 1.36x |
+
+With SpeechSpec's benchmark sampling (`temperature 0.8`, `top_p 0.95`, `top_k 15`, `repetition_penalty 1.1`), the speedups are 1.64x, 1.61x, 1.57x and 1.42x.
+
+End-to-end streaming on the same GPU (`benchmark_tts_seedtts --stream`, all 2,020 Seed-TTS zh utterances, default sampling), baseline → DSpark:
+
+| Concurrency | Throughput | RTF mean | TTFC mean | WER (Qwen3-ASR) |
+|---|---|---|---|---|
+| 1 | 2.68 → 3.77 req/s | 0.071 → 0.051 | 0.140 → 0.122 s | 0.77% → 0.71% |
+| 8 | 12.37 → 15.59 req/s | 0.123 → 0.098 | 0.230 → 0.227 s | 0.75% → 0.79% |
+| 16 | 18.02 → 21.08 req/s | 0.169 → 0.146 | 0.306 → 0.333 s | 0.76% → 0.73% |
+
+The vocoder takes a growing share of each request as concurrency rises, so the end-to-end gain is largest at low concurrency.
+
 ### Zero-shot Voice Cloning
 
 CosyVoice3 clones a voice from a short reference audio clip. `ref_audio` can be a local
@@ -489,4 +523,5 @@ Use `--lang zh --no-ref-text` for the Chinese cross-lingual split. See
 - **Voice conversion.** Voice conversion is outside the current zero-shot TTS scope.
 - **Streaming decode.** Causal Flow + HiFT emit PCM after each hop (hop grows 25 → 50 → 100 by default). Quality can differ slightly from the buffered whole-utterance path. Opt-in TensorRT (`enable_flow_estimator_trt`) also accelerates streaming hops; it turns the `enable_dit_torch_compile` default off. TRT freezes DiT attention, so streaming+TRT is not bit-exact with PyTorch streaming. Keep the Module TRT wrapper when streaming: CosyVoice's raw TRT enqueue is incompatible with packed hop-batch CFG shapes.
 - **Flow batch scope.** Flow batching supports the CosyVoice PyTorch estimator and the opt-in TensorRT estimator. Buffered HiFT grouping is independent and uses `hift_max_padding_waste`. Streaming coalesces first/follow-up hops across requests (`_can_batch_stream_chunks`, short peer wait) so TTFP stays low under load.
+- **Speculative decoding.** The DSpark draft runs on CUDA with TP 1, the TTS engine's scheduler steps synchronously while it is on, weight updates are refused while it is loaded, and `seed` does not make output reproducible.
 - **cosyvoice dependency.** The `cosyvoice` package has no PyPI release and must be installed from GitHub. Matcha-TTS is a required submodule and must also be importable; only the CosyVoice Flow and HiFT paths are used by the vocoder.

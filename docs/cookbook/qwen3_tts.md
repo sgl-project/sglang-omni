@@ -416,6 +416,54 @@ sgl-omni serve \
   --port 8000
 ```
 
+### Precomputed Speaker Embedding
+
+A Base reference can be given as its speaker embedding, `references[0].speaker_embedding`, instead of its clip. The server then loads and encodes no audio, and every replica serves every voice without stored voice state.
+
+The embedding is the x-vector the checkpoint's speaker encoder computes from a reference clip: 1024 values for 0.6B Base and 2048 for 1.7B Base. An embedding from one checkpoint size does not fit the other. Sending the embedding the server computes for a clip produces the same audio as sending that clip with `x_vector_only_mode: true`, including the x-vector leading-silence mask above.
+
+The `qwen-tts` package computes it. Install it in its own Python environment (`pip install qwen-tts`), since it pins an older transformers release than the server. On SeedTTS EN references its embeddings match the server's to bfloat16 rounding (cosine above 0.99999 on 100 references for each size).
+
+```python
+import json
+
+import torch
+from qwen_tts import Qwen3TTSModel
+
+model = Qwen3TTSModel.from_pretrained(
+    "Qwen/Qwen3-TTS-12Hz-0.6B-Base", device_map="cuda:0", dtype=torch.bfloat16
+)
+(prompt,) = model.create_voice_clone_prompt(
+    ref_audio="reference.wav", x_vector_only_mode=True
+)
+with open("speaker_embedding.json", "w") as f:
+    json.dump(prompt.ref_spk_embedding.float().cpu().tolist(), f)
+```
+
+Then send the stored embedding with the text:
+
+```python
+import json
+
+import requests
+
+with open("speaker_embedding.json") as f:
+    speaker_embedding = json.load(f)
+resp = requests.post(
+    "http://localhost:8000/v1/audio/speech",
+    json={
+        "model": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+        "input": "Get the trust fund to the bank early.",
+        "references": [{"speaker_embedding": speaker_embedding}],
+    },
+)
+resp.raise_for_status()
+with open("output.wav", "wb") as f:
+    f.write(resp.content)
+```
+
+The request runs in x-vector mode. A transcript is not used, and `x_vector_only_mode` may be omitted or set to `true`. The embedding reference must be the only reference, with no audio, no `vq_codes` and no `ref_audio`, and every value must be finite in the model's dtype. CustomVoice and VoiceDesign checkpoints reject it.
+
 ### Language Hint
 
 `language` biases the model toward a target language. It defaults to `auto` (let the model
@@ -570,14 +618,14 @@ only the first chunk.
 | `model` | served model | Served model identifier |
 | `input` | (required) | Text to synthesize |
 | `voice` | `default` | Voice identifier. For Base reference cloning, the reference clip provides the speaker conditioning |
-| `references` | `null` | Reference clip for cloning. Each item has `audio_path` and `text` |
+| `references` | `null` | Reference clip for cloning. Each item has `audio_path` and `text`, or only `speaker_embedding`: the checkpoint's speaker-encoder x-vector of the clip, 1024 values for 0.6B Base and 2048 for 1.7B Base. See [Precomputed Speaker Embedding](#precomputed-speaker-embedding) |
 | `ref_audio` / `ref_text` | `null` | Shorthand for `references[0].audio_path` / `references[0].text` |
 | `language` | `auto` | Target-language hint (see list above) |
 | `temperature` | `0.9` | Sampling temperature |
 | `top_p` | `1.0` | Top-p sampling |
 | `top_k` | `50` | Top-k sampling |
 | `repetition_penalty` | `1.05` | Repetition penalty |
-| `max_new_tokens` | Twice the slowest natural stop for the target text, at most `2048` | Maximum number of generated codec tokens (80 ms each). The default is `ceil(2 × (1.38 s + 0.39 s × target-text tokens) × 12.5)`: about 5 s for a three-token word, 26 s for 30 tokens, 2048 for long text. Set it for speech deliberately slower than natural |
+| `max_new_tokens` | Base: twice the slowest natural stop for the target text, at most `2048`. CustomVoice and VoiceDesign: the checkpoint's `generation_config.json` value, `8192` | Maximum number of generated codec tokens (80 ms each). The Base default is `ceil(2 × (1.38 s + 0.39 s × target-text tokens) × 12.5)`: about 5 s for a three-token word, 26 s for 30 tokens, 2048 for long text. Set it for speech deliberately slower than natural. The server lowers any limit to what the context and the KV pool can hold |
 | `seed` | `null` | Random seed for reproducibility |
 | `stream` | `false` | Stream raw PCM audio chunks |
 | `initial_codec_chunk_frames` | ramp `1 -> 2 -> 4` when omitted | First streaming vocoder chunk size in codec frames. An explicit value replaces the ramp's first chunk only. Smaller values lower TTFA but underrun more easily; `0` uses the steady stride from the start |
@@ -723,5 +771,7 @@ The TTS CI non-streaming and streaming stages run this probe for Qwen3-TTS on fo
   set `language` explicitly when you know the target language.
 - **Rare runaway generation.** Roughly 0.2% of utterances (observed on the 0.6B checkpoint, and
   on one- or two-word texts on 1.7B) can fall into a repetition loop and keep generating up to
-  `max_new_tokens`. The default text-length budget stops such a loop after a few seconds with
+  `max_new_tokens`. On Base checkpoints the default text-length budget stops such a loop after a few seconds with
   finish reason `length`; raising `repetition_penalty` (default `1.05`) also helps.
+  CustomVoice and VoiceDesign loop far less often (2 runaways in about 121,000 Chinese requests and none in
+  9,792 English ones) and run to the checkpoint's limit unless the request sets `max_new_tokens`.

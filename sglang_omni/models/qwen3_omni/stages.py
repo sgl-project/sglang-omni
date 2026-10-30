@@ -54,6 +54,7 @@ from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestDa
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
+from sglang_omni.utils.cpu import automatic_video_decode_threads
 from sglang_omni.utils.gpu_memory import format_bytes_gib, get_process_gpu_memory_bytes
 from sglang_omni.utils.misc import avail_gpu_mem
 
@@ -1009,10 +1010,15 @@ def create_preprocessing_executor(
     video_min_pixels: int | None = None,
     video_max_pixels: int | None = None,
     video_total_pixels: int | None = None,
+    video_decode_threads: int | None = None,
 ) -> (
     SimpleScheduler[StagePayload, StagePayload]
     | ThreadedSimpleScheduler[StagePayload, StagePayload]
 ):
+    if video_decode_threads is None:
+        video_decode_threads = automatic_video_decode_threads(max(max_concurrency, 1))
+    else:
+        pass
     preprocessor = Qwen3OmniPreprocessor(
         model_path=model_path,
         max_seq_len=max_seq_len,
@@ -1021,6 +1027,7 @@ def create_preprocessing_executor(
         video_min_pixels=video_min_pixels,
         video_max_pixels=video_max_pixels,
         video_total_pixels=video_total_pixels,
+        video_decode_threads=video_decode_threads,
     )
 
     async def _preprocess(payload: StagePayload) -> StagePayload:
@@ -1325,12 +1332,6 @@ def create_sglang_thinker_executor_from_config(
             pass
         overrides["enable_mixed_chunk"] = False
         enable_async_decode = False
-        # note (wilsonzheng0327): an EAGLE draft extends on the composed multimodal
-        # prefill embeddings, which a captured draft prefill graph would ignore.
-        if speculative_algorithm.is_eagle():
-            overrides["cuda_graph_backend_prefill"] = CudaGraphBackend.DISABLED
-        else:
-            pass
         # The draft has its own positional capacity; the target serves within it.
         draft_context_length = int(
             AutoConfig.from_pretrained(

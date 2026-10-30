@@ -11,6 +11,8 @@
 
 Follow [Installation](../get_started/installation.md), then run from the repository root.
 
+For Intel GPUs, follow the [MiniCPM-o XPU recipe](../get_started/installation_xpu.md#minicpm-o-45-omni-chat-and-speech-single-xpu).
+
 Chat with speech output:
 
 ```bash
@@ -25,7 +27,7 @@ python -m sglang_omni.cli serve --model-path openbmb/MiniCPM-o-4_5 --text-only -
 
 ## Ascend NPU
 
-See [Installation — Ascend NPU](../get_started/installation_npu.md#minicpm-o)
+See [Installation — NPU](../get_started/installation_npu.md#minicpm-o)
 for the NPU launch command, configuration, and validated versions.
 
 ## Normal Usage
@@ -60,6 +62,8 @@ Top-level requests without use_audio_in_video retain the existing shared video
 sampling and resizing policy. They place explicit images, video frames, and
 independent audio before the final user message's text, in that order.
 Predecoded video tensors remain supported, including mixed file/tensor inputs.
+
+Top-level videos without use_audio_in_video decode on parallel decoders. Each of the four preprocessing workers gets min(16, the stage's CPUs divided by four) FFmpeg threads, split evenly among a request's videos. Set `--preprocessing.factory.video_decode_threads N` to choose that count. A value at or below the video reader's own threads (`TORCHCODEC_NUM_THREADS`, 8 by default) decodes each video on the reader alone.
 
 Inline videos and top-level requests with use_audio_in_video use MiniCPM timed
 video sampling. Set use_audio on an inline video, or use_audio_in_video on a
