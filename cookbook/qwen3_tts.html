@@ -1212,8 +1212,8 @@ only the first chunk.</p>
 <td><p>Repetition penalty</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code></p></td>
-<td><p>Twice the slowest natural stop for the target text, at most <code class="docutils literal notranslate"><span class="pre">2048</span></code></p></td>
-<td><p>Maximum number of generated codec tokens (80 ms each). The default is <code class="docutils literal notranslate"><span class="pre">ceil(2</span> <span class="pre">×</span> <span class="pre">(1.38</span> <span class="pre">s</span> <span class="pre">+</span> <span class="pre">0.39</span> <span class="pre">s</span> <span class="pre">×</span> <span class="pre">target-text</span> <span class="pre">tokens)</span> <span class="pre">×</span> <span class="pre">12.5)</span></code>: about 5 s for a three-token word, 26 s for 30 tokens, 2048 for long text. Set it for speech deliberately slower than natural</p></td>
+<td><p>Base: twice the slowest natural stop for the target text, at most <code class="docutils literal notranslate"><span class="pre">2048</span></code>. CustomVoice and VoiceDesign: the checkpoint’s <code class="docutils literal notranslate"><span class="pre">generation_config.json</span></code> value, <code class="docutils literal notranslate"><span class="pre">8192</span></code></p></td>
+<td><p>Maximum number of generated codec tokens (80 ms each). The Base default is <code class="docutils literal notranslate"><span class="pre">ceil(2</span> <span class="pre">×</span> <span class="pre">(1.38</span> <span class="pre">s</span> <span class="pre">+</span> <span class="pre">0.39</span> <span class="pre">s</span> <span class="pre">×</span> <span class="pre">target-text</span> <span class="pre">tokens)</span> <span class="pre">×</span> <span class="pre">12.5)</span></code>: about 5 s for a three-token word, 26 s for 30 tokens, 2048 for long text. Set it for speech deliberately slower than natural. The server lowers any limit to what the context and the KV pool can hold</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">seed</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
@@ -1468,8 +1468,10 @@ speaker similarity than speaker-embedding-only (x-vector) mode.</p></li>
 set <code class="docutils literal notranslate"><span class="pre">language</span></code> explicitly when you know the target language.</p></li>
 <li><p><strong>Rare runaway generation.</strong> Roughly 0.2% of utterances (observed on the 0.6B checkpoint, and
 on one- or two-word texts on 1.7B) can fall into a repetition loop and keep generating up to
-<code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code>. The default text-length budget stops such a loop after a few seconds with
-finish reason <code class="docutils literal notranslate"><span class="pre">length</span></code>; raising <code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code> (default <code class="docutils literal notranslate"><span class="pre">1.05</span></code>) also helps.</p></li>
+<code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code>. On Base checkpoints the default text-length budget stops such a loop after a few seconds with
+finish reason <code class="docutils literal notranslate"><span class="pre">length</span></code>; raising <code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code> (default <code class="docutils literal notranslate"><span class="pre">1.05</span></code>) also helps.
+CustomVoice and VoiceDesign loop far less often (2 runaways in about 121,000 Chinese requests and none in
+9,792 English ones) and run to the checkpoint’s limit unless the request sets <code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code>.</p></li>
 </ul>
 </section>
 </section>
