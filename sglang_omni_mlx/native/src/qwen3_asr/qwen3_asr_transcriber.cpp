@@ -4,7 +4,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
+#include <deque>
 #include <map>
 
 namespace qwen3_asr {
@@ -17,6 +19,7 @@ namespace mx = mlx::core;
 namespace {
 
 constexpr const char *kAsrTextMarker = "<asr_text>";
+constexpr const char *kLanguageMarker = "language";
 constexpr const char *kAudioPad = "<|audio_pad|>";
 constexpr int kOutputTokensPerAudioSecond = 10;
 constexpr int kMinDefaultOutputTokens = 128;
@@ -127,7 +130,8 @@ Qwen3ASRTranscriber::Qwen3ASRTranscriber(
       audio_pad_id_(tokenizer_.AddedTokenId(kAudioPad)),
       end_of_text_id_(tokenizer_.AddedTokenId("<|endoftext|>")),
       im_end_id_(tokenizer_.AddedTokenId("<|im_end|>")),
-      asr_text_ids_(tokenizer_.Encode(kAsrTextMarker)) {}
+      asr_text_ids_(tokenizer_.Encode(kAsrTextMarker)),
+      language_ids_(tokenizer_.Encode(kLanguageMarker)) {}
 
 std::vector<int>
 Qwen3ASRTranscriber::PromptIds(int audio_token_count,
@@ -173,18 +177,31 @@ Qwen3ASRTranscriber::RetainedPrefix(const std::string &text,
   return {{}, ""};
 }
 
-TranscriptionResult
-Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
-                                const TranscriptionOptions &options,
-                                const std::atomic<bool> &cancel) const {
+TranscriptionResult Qwen3ASRTranscriber::Transcribe(
+    const std::vector<float> &samples, const TranscriptionOptions &options,
+    const std::atomic<bool> &cancel, TranscriptionProfile *profile) const {
   if (cancel.load()) {
     throw TranscriptionCancelled();
   } else {
   }
+  auto stage_started = std::chrono::steady_clock::now();
+  const auto record_stage = [&](const mx::array &output,
+                                double TranscriptionProfile::*seconds) {
+    if (profile != nullptr) {
+      mx::eval(output);
+      const auto finished = std::chrono::steady_clock::now();
+      profile->*seconds =
+          std::chrono::duration<double>(finished - stage_started).count();
+      stage_started = finished;
+    } else {
+    }
+  };
   const mx::array mel = LogMel(samples, options.layout);
+  record_stage(mel, &TranscriptionProfile::mel_seconds);
   const int audio_token_count = TokenCount(mel.shape(-1), options.layout);
-  const std::vector<int> prompt_ids = PromptIds(audio_token_count, options);
   const mx::array audio_features = model_.EncodeAudio(mel, options.layout);
+  record_stage(audio_features, &TranscriptionProfile::encoder_seconds);
+  const std::vector<int> prompt_ids = PromptIds(audio_token_count, options);
   const mx::array input_ids(
       prompt_ids.data(), {1, static_cast<int>(prompt_ids.size())}, mx::int32);
   mx::array embeddings = model_.EmbedTokens(input_ids);
@@ -216,32 +233,112 @@ Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
     return token_id == im_end_id_ ||
            (options.stop_at_end_of_text && token_id == end_of_text_id_);
   };
-  std::vector<KVCache> caches = model_.NewCaches();
-  mx::array next_token = mx::argmax(model_.Decode(embeddings, caches));
-  mx::async_eval({next_token});
+  // Note (XXXXRT666): with no language the reply opens with "language", the
+  // language name and <asr_text>. The two template tokens ride along as extra
+  // rows of the forward before them and count only where greedy decoding
+  // picks them; a miss rewinds the caches past every row fed after it.
+  std::deque<int> guesses;
+  if (!NormalizeLanguage(options.language.value_or("")).has_value() &&
+      options.prefix_token_ids.empty() && language_ids_.size() == 1 &&
+      asr_text_ids_.size() == 1) {
+    guesses = {language_ids_[0], asr_text_ids_[0]};
+  } else {
+  }
+  std::vector<Qwen3ASRKVCache> caches = model_.NewCaches();
+  // One forward: the greedy token after each of its last fed.size() + 1 rows,
+  // fed holding the guesses that filled the rows after the first.
+  struct Step {
+    mx::array tokens;
+    std::vector<int> fed;
+  };
+  const auto forward = [&](const mx::array &inputs, std::vector<int> fed) {
+    mx::array tokens = GreedyTokens(
+        model_.Decode(inputs, caches, static_cast<int>(fed.size()) + 1));
+    mx::async_eval({tokens});
+    return Step{tokens, std::move(fed)};
+  };
+  // The forward after this step's, assuming every guess in it holds.
+  const auto queue_after = [&](const Step &step) {
+    const int rows = static_cast<int>(step.fed.size()) + 1;
+    mx::array ids =
+        mx::reshape(mx::slice(step.tokens, {rows - 1}, {rows}), {1, 1});
+    std::vector<int> fed;
+    if (!guesses.empty()) {
+      const uint32_t guess = guesses.front();
+      guesses.pop_front();
+      ids = mx::concatenate({ids, mx::array(&guess, {1, 1}, mx::uint32)}, 1);
+      fed.push_back(static_cast<int>(guess));
+    } else {
+    }
+    return forward(model_.EmbedTokens(ids), std::move(fed));
+  };
+  std::vector<int> prefill_fed;
+  if (!guesses.empty()) {
+    const int guess = guesses.front();
+    guesses.pop_front();
+    embeddings = mx::concatenate(
+        {embeddings, model_.EmbedTokens(mx::array(&guess, {1, 1}, mx::int32))},
+        1);
+    prefill_fed.push_back(guess);
+  } else {
+  }
+  Step step = forward(embeddings, std::move(prefill_fed));
+  record_stage(step.tokens, &TranscriptionProfile::prefill_seconds);
   std::vector<int> output_ids;
   FinishReason finish_reason = FinishReason::kLength;
-  while (static_cast<int>(output_ids.size()) < max_new_tokens) {
+  // Whether decoding ends at this token, which is kept unless over budget.
+  const auto emit = [&](int token_id) {
+    if (static_cast<int>(output_ids.size()) >= max_new_tokens) {
+      return true;
+    } else {
+    }
+    output_ids.push_back(token_id);
+    if (is_stop(token_id) ||
+        (options.stop_on_token_loop && IsTokenLoop(output_ids))) {
+      finish_reason = FinishReason::kStop;
+      return true;
+    } else {
+      return false;
+    }
+  };
+  bool finished = false;
+  while (!finished) {
     if (cancel.load()) {
       throw TranscriptionCancelled();
     } else {
     }
-    const mx::array token = next_token;
     // Note (Jiaxin Deng): queue the next step before reading this token, so
     // the GPU decodes while the stop rules are checked.
-    next_token = mx::argmax(
-        model_.Decode(model_.EmbedTokens(mx::reshape(token, {1, 1})), caches));
-    mx::async_eval({next_token});
-    const int token_id = static_cast<int>(token.item<uint32_t>());
-    output_ids.push_back(token_id);
-    if (is_stop(token_id)) {
-      finish_reason = FinishReason::kStop;
-      break;
-    } else if (options.stop_on_token_loop && IsTokenLoop(output_ids)) {
-      finish_reason = FinishReason::kStop;
-      break;
+    Step next = queue_after(step);
+    mx::eval(step.tokens);
+    const uint32_t *tokens = step.tokens.data<uint32_t>();
+    const int fed_count = static_cast<int>(step.fed.size());
+    int row = 0;
+    while (true) {
+      finished = emit(static_cast<int>(tokens[row]));
+      if (finished || row == fed_count ||
+          static_cast<int>(tokens[row]) != step.fed[row]) {
+        break;
+      } else {
+        ++row;
+      }
+    }
+    if (!finished && row < fed_count) {
+      for (Qwen3ASRKVCache &cache : caches) {
+        cache.Rewind(fed_count - row + static_cast<int>(next.fed.size()) + 1);
+      }
+      guesses.clear();
+      const uint32_t token = tokens[row];
+      next = forward(model_.EmbedTokens(mx::array(&token, {1, 1}, mx::uint32)),
+                     {});
     } else {
     }
+    step = std::move(next);
+  }
+  record_stage(step.tokens, &TranscriptionProfile::decode_seconds);
+  if (profile != nullptr) {
+    profile->prompt_tokens = static_cast<int>(prompt_ids.size());
+  } else {
   }
   auto [text, language] = SplitOutput(output_ids, options);
   const bool ended_on_stop = !output_ids.empty() && is_stop(output_ids.back());

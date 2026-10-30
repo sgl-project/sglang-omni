@@ -33,6 +33,7 @@ public:
   Checkpoint(WeightMap weights, const nlohmann::json &config);
 
   const mlx::core::array &Weight(const std::string &name) const;
+  const QuantizationConfig &Quantization() const { return quantization_; }
   bool Has(const std::string &name) const;
   mlx::core::array Linear(const mlx::core::array &x,
                           const std::string &prefix) const;
