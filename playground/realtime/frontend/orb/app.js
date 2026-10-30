@@ -1,8 +1,9 @@
 // Voice page for a /v1/realtime session (native full duplex or turn based), proxied by playground/realtime/app.py.
-import { DuplexSession } from "./session.js";
+import { DuplexSession, registerPluginRenderer } from "./session.js";
 import { Camera } from "./camera.js";
 import { Orb } from "./orb.js";
 import { Settings } from "./settings.js";
+import { SMPLX_MOTION, SkeletonView } from "./smplx_motion.js";
 
 const JITTER_MS = 300;
 const STATUS_POLL_MS = 5000;
@@ -21,8 +22,10 @@ const STOPPED_HOLD_MS = 2000;
 const MODEL_HOLD_MS = 700;
 const MIC_HOLD_MS = 400;
 
-const ids = ["brandName", "statusPill", "statusText", "transcriptBtn", "traceBtn", "themeBtn", "warning", "selfView", "cameraPreview", "frameCount", "orb", "orbCanvas", "statusLine", "caption", "note", "startBtn", "dock", "cameraBtn", "cameraOn", "cameraOff", "muteBtn", "micOn", "micOff", "interruptBtn", "endBtn", "hint", "sheet", "sheetClose", "transcript", "settingsBtn", "settingsPanel", "settingsClose", "settingsForm", "settingsLocked", "presetRow", "setPreset", "setPrompt", "voiceRow", "setVoice", "voicePreview", "voiceInfo", "voiceFile", "voiceNameRow", "setVoiceName", "outputRow", "setOutput", "setMic", "turnRow", "setTurnType", "silenceRow", "setSilence", "eagernessRow", "setEagerness", "advanced", "greedyRow", "setGreedy", "samplingFields", "sliceRow", "setSlices", "settingsReset"];
+const ids = ["brandName", "statusPill", "statusText", "transcriptBtn", "traceBtn", "themeBtn", "warning", "selfView", "cameraPreview", "frameCount", "orb", "orbCanvas", "statusLine", "caption", "note", "startBtn", "dock", "cameraBtn", "cameraOn", "cameraOff", "muteBtn", "micOn", "micOff", "interruptBtn", "endBtn", "hint", "sheet", "sheetClose", "transcript", "settingsBtn", "settingsPanel", "settingsClose", "settingsForm", "settingsLocked", "presetRow", "setPreset", "setPrompt", "voiceRow", "setVoice", "voicePreview", "voiceInfo", "voiceFile", "voiceNameRow", "setVoiceName", "outputRow", "setOutput", "setMic", "turnRow", "setTurnType", "silenceRow", "setSilence", "eagernessRow", "setEagerness", "advanced", "greedyRow", "setGreedy", "samplingFields", "sliceRow", "setSlices", "settingsReset", "skeletonView"];
 const ui = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
+const skeleton = new SkeletonView(ui.skeletonView);
+registerPluginRenderer(SMPLX_MOTION, (event) => skeleton.push(event));
 
 function wsUrl() {
   const base = window.DEMO_WS_URL || "";
@@ -203,6 +206,7 @@ function render(now) {
   const state = mood(micLevel, modelLevel, now);
   if (state.mood === "speaking") lastSpokeAt = now;
   orb.frame(now, state.level, state.mood);
+  skeleton.draw();
   if (ui.statusLine.textContent !== state.line) ui.statusLine.textContent = state.line;
   ui.caption.dataset.fade = String(!(session && session.responseOpen) && now - lastSpokeAt > CAPTION_FADE_MS);
   requestAnimationFrame(render);

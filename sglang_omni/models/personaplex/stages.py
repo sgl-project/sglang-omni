@@ -380,12 +380,14 @@ def create_session_code2wav_executor(
     *,
     max_open_sessions: int,
     max_graph_frames: int = max(FRAMES_PER_UNIT),
+    relays_agent_frames: bool = False,
     device: str | None = None,
     gpu_id: int | None = None,
 ) -> SessionScheduler:
     """Every open session holds a decode slot, and one step decodes every ready
     session whose unit has as many frames, with device graphs for units of up to
-    max_graph_frames frames (0 turns the graphs off)."""
+    max_graph_frames frames (0 turns the graphs off); relays_agent_frames also
+    emits each unit's agent frames for a node that reads them."""
     codec, _ = load_codec(model_path, device=device, gpu_id=gpu_id, mode="decode")
     decode_slots = MimiDecodeSlots(
         codec,
@@ -395,7 +397,8 @@ def create_session_code2wav_executor(
         max_chunk_frames=max(FRAMES_PER_UNIT),
     )
     return SessionScheduler(
-        Code2WavHooks(decode_slots), max_open_sessions=max_open_sessions
+        Code2WavHooks(decode_slots, relays_agent_frames=relays_agent_frames),
+        max_open_sessions=max_open_sessions,
     )
 
 

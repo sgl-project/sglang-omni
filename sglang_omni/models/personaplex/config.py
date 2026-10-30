@@ -24,6 +24,7 @@ from sglang_omni.models.personaplex.architecture import (
     DEFAULT_AUDIO_TOP_K,
 )
 from sglang_omni.models.personaplex.hf_config import PERSONAPLEX_ARCH
+from sglang_omni.proto.streams import PluginPort
 
 MODEL_STAGES_PREFIX = "sglang_omni.models.personaplex.stages"
 PREPROCESSING_STAGE = "preprocessing"
@@ -273,6 +274,10 @@ class PersonaPlexSessionPipelineConfig(PersonaPlexPipelineConfig):
 
     def lm_request_slots(self) -> int:
         return self.max_sessions + REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
+
+    def plugin_output_ports(self) -> tuple[PluginPort, ...]:
+        """Published ports besides the reply, projected to /v1/realtime as sglang.output_chunk."""
+        return ()
 
     def lm_max_running_requests(self) -> int:
         """The LM's concurrency: its engine setting, else the session slots."""

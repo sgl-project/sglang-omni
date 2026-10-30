@@ -176,7 +176,7 @@ class PersonaPlexSessionAdapter(ARSessionAdapter):
         history.model_inputs["frames"].clear()
         payload = request_data.stage_payload
         payload.data = PersonaPlexState(
-            codes=codes, text=self.spoken_words(history, text_ids)
+            codes=codes, text_ids=text_ids, text=self.spoken_words(history, text_ids)
         ).to_dict()
         return payload
 

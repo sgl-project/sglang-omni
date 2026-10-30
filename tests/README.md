@@ -144,6 +144,11 @@ tests/
     │   └── test_vocoder_streaming.py
     ├── llada2_uni/
     │   └── test_request_builders.py
+    ├── miburi/
+    │   ├── test_gesture_stage.py
+    │   ├── test_miburi_config.py
+    │   ├── test_miburi_loading.py
+    │   └── test_miburi_motion.py
     ├── minimax_music3/
     │   ├── test_core.py
     │   └── test_request_builders.py
@@ -944,6 +949,14 @@ that happened to contain an older version of the test.
   session voice, role prompt and sampling; the `/v1/realtime` events, and a
   session over the WebSocket against a scripted pipeline). CPU only, no
   weights; runner and request tests need SGLang but start no engine.
+
+- `unit_test/miburi/`: MIBURI on tiny random native models: release-layout
+  checkpoint keys mapped onto the gesture LM and motion codecs (every tensor
+  loaded or named unused, weight norms folded), codec features to
+  `smplx_motion` rows, the gesture stage's session contract (one 80 ms motion
+  chunk per agent frame, idle slices in silence, batched sessions keeping the
+  codes and, up to batched rounding, the motion they have alone), and the
+  speech and gesture Session graph config. CPU only, no weights.
 
 - `unit_test/llada2_uni/`: LLaDA2-Uni request lowering to the upstream
   diffusion-language-model token-array contract.

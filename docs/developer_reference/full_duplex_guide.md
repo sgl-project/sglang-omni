@@ -13,6 +13,7 @@ SGLang-Omni serves a live voice conversation on `/v1/realtime` in two ways. A na
 | --- | --- | --- |
 | MiniCPM-o 4.5 | Native full duplex, audio and camera input | [Native Full Duplex: MiniCPM-o](#native-full-duplex-minicpm-o) |
 | PersonaPlex | Native full duplex, audio input | [Native Full Duplex: PersonaPlex](#native-full-duplex-personaplex) |
+| MIBURI | Native full duplex, audio input, body and face motion output | [Native Full Duplex with Motion: MIBURI](#native-full-duplex-with-motion-miburi) |
 | Streaming cascade | Turn-based, with interruption | [Streaming Cascade](#streaming-cascade) |
 
 ### Native Full Duplex: MiniCPM-o
@@ -175,6 +176,42 @@ The protocol follows the [MiniCPM-o steps](#full-duplex-protocol), with these di
 | Sampling | `sglang.sampling` | The fields listed under `sampling` above; unset fields keep the deployment defaults |
 
 The whole session is one response: `response.created` arrives with the first output, each unit brings 80 ms of agent audio (160 ms for the first), and `response.done` follows the end of the input. The transcript is the words the model speaks, streamed word piece by word piece. `response.cancel` and `conversation.item.truncate` are answered with `not_supported`, and the capabilities grant neither `supports_cancel` nor `supports_truncate`: a client can only mute its own playback, and the model keeps talking. The session variant only accepts `/v1/realtime` requests; use the default pipeline for `/generate` and chat completions.
+
+### Native Full Duplex with Motion: MIBURI
+
+[MIBURI](https://github.com/m-hamza-mughal/miburi) is served from its checkpoint and holds a full-duplex conversation with body and face motion: a Moshi-family speech LM runs the conversation as [PersonaPlex](#native-full-duplex-personaplex) does, and a gesture LM reads each 80 ms agent frame's text token and Mimi codes and publishes SMPL-X motion on the reply's clock. Serving needs only the checkpoint: the gesture LM and its motion codecs are implemented in SGLang-Omni.
+
+```bash
+python -m sglang_omni.cli serve \
+  --model-path m-hamza-mughal/miburi-release-checkpoints \
+  --enable-realtime --port 8000
+```
+
+The speech backbone is `kyutai/moshiko-pytorch-bf16`, the speech LM the gesture LM was trained on; it ships no voices and takes no role prompt. `--variant personaplex` runs `nvidia/personaplex-7b-v1` instead, with its voices and role prompt. That pairing is not quality-verified: the gesture LM was trained on moshiko's tokens.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `--speech-model-path` | `kyutai/moshiko-pytorch-bf16`, or `nvidia/personaplex-7b-v1` with `--variant personaplex` | Hub repo or local copy of the speech backbone |
+| `max_sessions`, `voice`, `instructions`, `sampling`, `--lm.*`, `--code2wav.*`, `--mimi_encode.*`, `--preprocessing.*` | As for [PersonaPlex](#native-full-duplex-personaplex), except no voice and no role prompt on moshiko | The speech node |
+| `--gesture.factory.experiment` | `demoexp_release_gtdm3_goodspk` | Gesture LM experiment under the checkpoint's `experiments/` |
+| `--gesture.factory.speaker_id` | 3 | Speaker style, one of the experiment's `speaker_id_to_index.json` values |
+| `--gesture.factory.cfg_coef`, `temporal_temperature`, `temporal_top_p`, `depth_temperature`, `depth_top_p` | 1.3, 0.9, 0.8, 0.9, 0.95 | Gesture sampling; temperature 0 picks the most likely code |
+| `--gesture.gpu` | 0 | GPU of the gesture node |
+
+A `smplx_motion` chunk has modality `motion`, `duration_ms` 80 and a little-endian float32 payload of 2 frames × 271 values at 25 fps: the 55-joint SMPL-X axis-angle pose in SMPL-X joint order (165), 100 expression coefficients, root translation in meters (3) and root velocity in meters per second (3). While the agent's last 240 ms of audio are quiet, upper body and face play the checkpoint's idle motion. Over `/v1/realtime` the session advertises the port under `session.sglang.plugin_output_ports` and each chunk arrives as an `sglang.output_chunk` event with `payload_b64`; the rest of the protocol is PersonaPlex's. Over `/v1/session` the reply arrives as `personaplex_reply` chunks from node `speech` and motion as `smplx_motion` chunks from node `gesture`; with the moshiko backbone a session opens there with `params` `{"voice": "", "instructions": ""}`.
+
+The server is ready when `curl --fail http://localhost:8000/v1/realtime/capabilities` returns `"plugin_output_ports":[{"modality":"motion","format":"smplx_motion","params":{"fps":25}}]`. `python benchmarks/eval/miburi_gesture_session.py --audio <caller.wav> --voice "" --instructions "" --out <dir>` streams a recording over `/v1/session` and exits non-zero unless every 80 ms reply frame has one motion chunk with the same `t_start_ms`.
+
+The MIBURI checkpoint `m-hamza-mughal/miburi-release-checkpoints` is licensed under CC BY-NC 4.0 and may be used for non-commercial purposes only; serving it through SGLang-Omni does not change its license. The gesture LM and motion codecs in `sglang_omni/models/miburi/` are an independent implementation written for SGLang-Omni, adapted with the MIBURI authors' permission. If you use MIBURI, please cite:
+
+```bibtex
+@InProceedings{mughal2026miburi,
+  title = {MIBURI: Towards Expressive Interactive Gesture Synthesis},
+  author = {M. Hamza Mughal and Rishabh Dabral and Vera Demberg and Christian Theobalt},
+  booktitle = {Computer Vision and Pattern Recognition (CVPR)},
+  year = {2026}
+}
+```
 
 ### Streaming Cascade
 
