@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Check emoji and code fence labels in Markdown documentation."""
+"""Check Markdown documentation filenames, emoji, and code fence labels."""
 
 from __future__ import annotations
 
@@ -125,6 +125,19 @@ def check_docs(docs_root: Path = DOCS_ROOT) -> list[Violation]:
     """Scan all Markdown documentation without rewriting files."""
     violations: list[Violation] = []
     for path in sorted(docs_root.rglob("*.md")):
+        if path != docs_root / "README.md" and not re.fullmatch(
+            r"[a-z0-9_]+\.md", path.name
+        ):
+            violations.append(
+                Violation(
+                    path=path,
+                    line_number=1,
+                    rule="filename-conventions",
+                    detail=r"Markdown basename must match [a-z0-9_]+\.md",
+                )
+            )
+        else:
+            pass
         violations.extend(check_source(path, path.read_text(encoding="utf-8")))
     return violations
 

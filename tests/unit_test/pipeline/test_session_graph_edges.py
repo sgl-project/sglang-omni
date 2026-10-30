@@ -38,6 +38,7 @@ from sglang_omni.proto.streams import (
     control_type,
 )
 from sglang_omni.scheduling.session import (
+    DEFAULT_MAX_OPEN_SESSIONS,
     ChunkEmitter,
     SessionContext,
     SessionHooks,
@@ -46,6 +47,7 @@ from sglang_omni.scheduling.session import (
 from tests.unit_test.fixtures.session_outputs import control_chunk
 from tests.unit_test.fixtures.session_pipeline import (
     StageEvent,
+    block_session_cleanup,
     event_log,
     pipeline,
     wait_until,
@@ -202,14 +204,18 @@ class ToolHooks(SessionHooks):
 
 
 def create_edge_stage(
-    name: str, events: Queue[StageEvent], gates: dict[str, Event]
+    name: str,
+    events: Queue[StageEvent],
+    gates: dict[str, Event],
+    max_open_sessions: int,
 ) -> SessionScheduler:
     if name == "front":
-        return SessionScheduler(FrontHooks())
+        hooks = FrontHooks()
     elif name == "tool":
-        return SessionScheduler(ToolHooks())
+        hooks = ToolHooks()
     else:
-        return SessionScheduler(EdgeHooks(name, events, gates))
+        hooks = EdgeHooks(name, events, gates)
+    return SessionScheduler(hooks, max_open_sessions=max_open_sessions)
 
 
 def text_chunk(text: str, seq: int, turn: int | None = None) -> TimedChunk:
@@ -301,13 +307,14 @@ async def open_graph(
     names: tuple[str, ...],
     params: dict[str, object] | None = None,
     limits: SessionLimits = LIMITS,
+    max_open_sessions: int = DEFAULT_MAX_OPEN_SESSIONS,
 ) -> AsyncIterator[tuple[Coordinator, SessionIdentity, Gates, Log]]:
     gates = Gates(names)
     async with pipeline(
         tmp_path,
         names=list(names),
         factories={name: FACTORY for name in names},
-        factory_kwargs={"gates": gates.events},
+        factory_kwargs={"gates": gates.events, "max_open_sessions": max_open_sessions},
     ) as (coordinator, events, _):
         coordinator.session_graph = graph
         identity = await coordinator.open_session(
@@ -639,3 +646,43 @@ async def test_node_failure_fails_outputs_and_closes_the_rest(tmp_path):
         assert sorted(log.names("close")) == ["llm", "tts"]
         with pytest.raises(ValueError, match="unknown or stale session"):
             await coordinator.append_session(identity, text_chunk("late", 1, turn=1))
+
+
+@pytest.mark.asyncio
+async def test_an_open_waits_for_a_closing_session_to_free_its_stage(
+    tmp_path, monkeypatch
+):
+    """A client that closed its session and opened the next one at once was refused with QueueFullError: the close had not reached the full stage yet.
+
+    The open now waits for that close. With no session closing, it still fails with QueueFullError at once.
+    """
+    graph = SessionGraph(
+        {"rt": SessionNode(("rt",), ("input:text",))}, {"rt": ("text",)}
+    )
+    async with open_graph(tmp_path, graph, ("rt",), max_open_sessions=1) as (
+        coordinator,
+        first,
+        _,
+        _,
+    ):
+        with pytest.raises(QueueFullError):
+            await asyncio.wait_for(
+                coordinator.open_session(OmniRequest(None), limits=LIMITS),
+                OUTPUT_TIMEOUT_S,
+            )
+        entered, release = block_session_cleanup(monkeypatch, coordinator)
+        closing = asyncio.create_task(coordinator.close_session(first))
+        await entered.wait()
+        opening = asyncio.create_task(
+            coordinator.open_session(
+                OmniRequest(None), limits=LIMITS, session_id="next"
+            )
+        )
+        await wait_until(
+            lambda: "next:rt" in coordinator.sessions
+            and coordinator.sessions["next:rt"].is_closing
+        )
+        release.set()
+        await closing
+        second = await asyncio.wait_for(opening, OUTPUT_TIMEOUT_S)
+        await coordinator.close_session(second)

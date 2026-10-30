@@ -2402,3 +2402,87 @@ def test_engine_rejects_settings_outside_the_supported_runtime(
 
     with pytest.raises(ValueError, match=error):
         builder.validate_before_infrastructure(server_args)
+
+
+def test_reference_sampling_replaces_both_samplers_and_defaults_the_cutoff(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    builder, server_args = engine_server_args(tmp_path, {})
+    builder.reference_sampling = True
+    builder.reference_sampling_fallback = "ras"
+
+    with caplog.at_level(logging.INFO, logger=engine_builder.logger.name):
+        model = set_up_mocked_model(builder, server_args, tmp_path)
+
+    assert (
+        "Drama 3 codebook sampling: reference sampling in PyTorch, ras fallback"
+        in caplog.text
+    )
+    assert model.audio_decoder.reference_sampling_fallback == "ras"
+    assert model.audio_decoder.sampler is None
+    request_builder, _ = builder.make_adapters(
+        ConfigOnlyModel(FishOmniConfig(**fish_config_dict()))
+    )
+    prompt_rows = torch.tensor(frame_rows_of([3], seed=6)[0], dtype=torch.int64)
+    request_data = request_builder(
+        StagePayload(
+            request_id="request-a",
+            request=OmniRequest(inputs="prompt"),
+            data=generation_input(prompt_rows),
+        )
+    )
+    assert request_data.epsilon_cutoff == 1e-3
+
+
+def test_epsilon_cutoffs_follow_their_requests_from_prefill_to_decode() -> None:
+    """A prefill stages each request's cutoff for its first frame and keeps it in the
+    request's slot; decode gathers the cutoffs in batch order as the batch changes."""
+    decode = decode_runner(row_count=4)
+    buffers = decode.runner.decode_buffers
+    requests = prompted_requests([3, 4, 2])
+    cutoffs = [0.002, 0.0, 0.03]
+    for request, cutoff in zip(requests, cutoffs, strict=True):
+        request_data_of(request).epsilon_cutoff = cutoff
+    as_float32 = torch.tensor(cutoffs, dtype=torch.float32).tolist()
+
+    prefill_step(
+        decode,
+        requests,
+        [3, 1, 2],
+        [[81 + index, index, 1, 2, 3] for index in range(3)],
+    )
+
+    assert buffers.epsilon_cutoff[:3].tolist() == as_float32
+    pool_cutoffs = decode.runner.state_pool.epsilon_cutoff
+    assert pool_cutoffs[torch.tensor([3, 1, 2])].tolist() == as_float32
+    decode.forward.next_frames = [[90, 1, 1, 1, 1], [91, 2, 2, 2, 2]]
+    decode_step(decode.runner, [requests[2], requests[0]])
+    assert buffers.epsilon_cutoff[:2].tolist() == [as_float32[2], as_float32[0]]
+
+
+def test_the_first_frame_step_reads_cutoffs_at_the_decode_buffers_address() -> None:
+    """The first-frame CUDA graphs replay the addresses they captured, so the cutoffs
+    come from the decode buffers, not from a per-call tensor."""
+    model = ConfigOnlyModel(FishOmniConfig(**fish_config_dict()))
+    model.decode_buffers = Drama3DecodeBuffers.allocate(
+        row_count=4, frame_width=FRAME_WIDTH, device=torch.device("cpu")
+    )
+    model.audio_decoder = Mock(spec=AudioDecoder)
+    model.tower_attention = torch.nn.ModuleList()
+    request_count = 3
+
+    model.sample_first_frames(
+        torch.zeros(request_count, 9),
+        torch.zeros(request_count, DIM),
+        torch.zeros(request_count, dtype=torch.int64),
+        torch.zeros((request_count, FRAME_WIDTH), dtype=torch.int64),
+        torch.full((request_count, RAS_WINDOW_FRAMES), EMPTY_RAS_SLOT),
+        torch.ones(request_count),
+        torch.ones(request_count, dtype=torch.int64),
+        torch.ones(request_count),
+        Mock(spec=ForwardBatch),
+    )
+
+    epsilon_cutoff = model.audio_decoder.decode_step.call_args.args[9]
+    assert epsilon_cutoff.shape == (request_count,)
+    assert epsilon_cutoff.data_ptr() == model.decode_buffers.epsilon_cutoff.data_ptr()
