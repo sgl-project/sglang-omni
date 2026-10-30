@@ -10,7 +10,7 @@ The 0.5B checkpoint uses a dense Qwen2.5-0.5B backbone. Leaving out `ref_audio` 
 
 Install SGLang-Omni by following [Installation](../get_started/installation.md).
 
-Startup uses one GPU. Preprocessing runs on the CPU. The backbone and the VAE decoder share that GPU. The two checkpoints differ only by the model path.
+Startup uses one GPU shared by the backbone and the VAE decoder. Preprocessing placement and concurrency depend on the checkpoint; see [Deployment defaults](#deployment-defaults).
 
 ```bash
 sgl-omni serve --model-path inclusionAI/Ming-3.0-tts-tiny
@@ -129,3 +129,8 @@ response = requests.post(
 response.raise_for_status()
 open("cloned.wav", "wb").write(response.content)
 ```
+
+
+## Deployment defaults
+
+The dense 0.5B checkpoint uses GPU preprocessing with four workers and native MPS in `auto` mode. Tiny keeps CPU preprocessing, one worker and MPS disabled. Set `mps: off` in the pipeline YAML to opt out of native MPS management. The native `auto`/`on` modes reject an inherited `CUDA_MPS_PIPE_DIRECTORY`; use `mps: off` with an externally managed daemon. Startup verifies the owned daemon and fails if it cannot be started or verified. Normal shutdown cleans it up; after a hard kill, an operator may need to remove the stale owner lease before restarting.
