@@ -415,7 +415,7 @@ def test_a_processed_video_before_a_file_keeps_every_video_in_place(
     "frame_range",
     [
         {},
-        {"video_start": 0.5, "video_end": 1.75},
+        {"video_start": 0.25, "video_end": 1.5},
         {"video_start": 0.5, "video_end": 0.75},
     ],
 )
