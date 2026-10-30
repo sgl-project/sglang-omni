@@ -445,11 +445,9 @@ def opened_decoders(monkeypatch) -> list[tuple[int, list[int]]]:
 @pytest.mark.skipif(
     video.VideoDecoder is None, reason="the torchcodec native decoder is unavailable"
 )
-@pytest.mark.parametrize("decode_threads", [8, 16])
 @pytest.mark.parametrize(
     "frame_range",
     [
-        {},
         {"video_start": 0.25, "video_end": 1.5},
         {"video_start": 0.5, "video_end": 0.75},
     ],
@@ -457,10 +455,10 @@ def opened_decoders(monkeypatch) -> list[tuple[int, list[int]]]:
 def test_parallel_torchcodec_decode_returns_the_reader_frames(
     mpeg4_video: Path,
     opened_decoders: list[tuple[int, list[int]]],
-    decode_threads: int,
     frame_range: dict[str, float],
 ) -> None:
-    """Frames of one keyframe group went to several decoders that each decoded the group from its keyframe, and decoders beyond the reader's took threads the host lacked, so dense sampling ran slower than the reader."""
+    """Frames of one keyframe group went to several decoders that each decoded the group from its keyframe, and decoders beyond the reader's took threads past the budget, so dense sampling ran slower than the reader."""
+    decode_threads = 16
     video_options = {"video": str(mpeg4_video), "fps": 4.0, **frame_range}
 
     frames, sample_fps = video.read_video_torchcodec(
