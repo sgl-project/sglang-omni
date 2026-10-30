@@ -37,6 +37,10 @@ _AUK_MODEL_NAMES = frozenset({"auk", "auk-flash"})
 _AUK_WEIGHT_MARKERS = ("auk_base.safetensors", "auk_flash.safetensors")
 _PERSONAPLEX_ARCHITECTURE = "PersonaPlexForCausalLM"
 _PERSONAPLEX_LAYOUT_MARKER = "tokenizer_spm_32k_3.model"
+_MIBURI_ARCHITECTURE = "MiburiForGestureGeneration"
+_MIBURI_LAYOUT_MARKER = (
+    "experiments/demoexp_release_gtdm3_goodspk/speaker_id_to_index.json"
+)
 _MING3_DENSE_TTS_ARCHITECTURE = "Ming3DenseTTSForConditionalGeneration"
 _MING_OMNI_TTS_ARCHITECTURE = "BailingMMNativeForConditionalGeneration"
 
@@ -291,6 +295,33 @@ def try_resolve_arch_from_personaplex_layout(
     except (OSError, ValueError):
         return None
     return _PERSONAPLEX_ARCHITECTURE
+
+
+def try_resolve_arch_from_miburi_layout(
+    model_path: str, revision: str | None = None
+) -> str | None:
+    """Resolve the MIBURI release checkpoints from their layout.
+
+    The repository carries no config.json; what identifies it is the speaker
+    map of its default gesture LM experiment.
+    """
+    if os.path.isfile(os.path.join(model_path, _MIBURI_LAYOUT_MARKER)):
+        return _MIBURI_ARCHITECTURE
+    else:
+        pass
+    if os.path.isdir(model_path):
+        return None
+    else:
+        pass
+    try:
+        hf_hub_download(
+            repo_id=model_path,
+            filename=_MIBURI_LAYOUT_MARKER,
+            revision=revision,
+        )
+    except (OSError, ValueError):
+        return None
+    return _MIBURI_ARCHITECTURE
 
 
 def auk_architecture_from_config(path: str) -> str | None:
