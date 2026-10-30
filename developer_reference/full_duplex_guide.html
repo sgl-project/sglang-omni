@@ -567,6 +567,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#full-duplex-interactive-model">Full Duplex Interactive Model</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#native-full-duplex-minicpm-o">Native Full Duplex: MiniCPM-o</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#native-full-duplex-personaplex">Native Full Duplex: PersonaPlex</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#native-full-duplex-nemotron-voicechat">Native Full Duplex: Nemotron VoiceChat</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming-cascade">Streaming Cascade</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#session-graph">Session Graph</a></li>
 </ul>
@@ -627,7 +628,11 @@
 <td><p>Native full duplex, audio input</p></td>
 <td><p><a class="reference internal" href="#native-full-duplex-personaplex"><span class="std std-ref">Native Full Duplex: PersonaPlex</span></a></p></td>
 </tr>
-<tr class="row-even"><td><p>Streaming cascade</p></td>
+<tr class="row-even"><td><p>Nemotron VoiceChat</p></td>
+<td><p>Native full duplex, audio input</p></td>
+<td><p><a class="reference internal" href="#native-full-duplex-nemotron-voicechat"><span class="std std-ref">Native Full Duplex: Nemotron VoiceChat</span></a></p></td>
+</tr>
+<tr class="row-odd"><td><p>Streaming cascade</p></td>
 <td><p>Turn-based, with interruption</p></td>
 <td><p><a class="reference internal" href="#streaming-cascade"><span class="std std-ref">Streaming Cascade</span></a></p></td>
 </tr>
@@ -913,6 +918,57 @@
 </table>
 </div>
 <p>The whole session is one response: <code class="docutils literal notranslate"><span class="pre">response.created</span></code> arrives with the first output, each unit brings 80 ms of agent audio (160 ms for the first), and <code class="docutils literal notranslate"><span class="pre">response.done</span></code> follows the end of the input. The transcript is the words the model speaks, streamed word piece by word piece. <code class="docutils literal notranslate"><span class="pre">response.cancel</span></code> and <code class="docutils literal notranslate"><span class="pre">conversation.item.truncate</span></code> are answered with <code class="docutils literal notranslate"><span class="pre">not_supported</span></code>, and the capabilities grant neither <code class="docutils literal notranslate"><span class="pre">supports_cancel</span></code> nor <code class="docutils literal notranslate"><span class="pre">supports_truncate</span></code>: a client can only mute its own playback, and the model keeps talking. The session variant only accepts <code class="docutils literal notranslate"><span class="pre">/v1/realtime</span></code> requests; use the default pipeline for <code class="docutils literal notranslate"><span class="pre">/generate</span></code> and chat completions.</p>
+</section>
+<section id="native-full-duplex-nemotron-voicechat">
+<h3>Native Full Duplex: Nemotron VoiceChat<a class="headerlink" href="#native-full-duplex-nemotron-voicechat" title="Link to this heading">#</a></h3>
+<p><a class="reference external" href="https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-11B">NemotronLabs VoiceChat 11B</a> is served for full duplex with its <code class="docutils literal notranslate"><span class="pre">session</span></code> variant; <a class="reference internal" href="../cookbook/nemotron_voicechat.html"><span class="std std-doc">Nemotron VoiceChat</span></a> covers its installation and offline usage.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>sglang_omni.cli<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>nvidia/NVIDIA-NemotronLabs-VoiceChat-11B<span class="w"> </span>--variant<span class="w"> </span>session<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--enable-realtime<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>Before it reports ready, the server runs one silent conversation, so the first real conversation compiles no kernels. A failed warmup stops the server, <code class="docutils literal notranslate"><span class="pre">SGLANG_OMNI_WARMUP_TIMEOUT</span></code> (seconds, default 600) bounds it, and <code class="docutils literal notranslate"><span class="pre">--skip-server-warmup</span></code> skips it.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Setting</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Meaning</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">max_sessions</span></code></p></td>
+<td><p>1</p></td>
+<td><p>Conversations at the same time. Further connections get HTTP 503. Each conversation keeps its own perception, thinker, talker and codec state, and the thinker and talker reserve KV for <code class="docutils literal notranslate"><span class="pre">max_sessions</span> <span class="pre">+</span> <span class="pre">1</span></code> conversations</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Every 80 ms of input has to pass perception, the thinker, the talker and the codec within 80 ms, or the conversation falls behind; concurrent conversations share that budget, and perception and the codec handle one conversation at a time. A conversation holds at most 6144 positions in the thinker and in the talker, about eight minutes; the unit that would pass it ends the session with <code class="docutils literal notranslate"><span class="pre">context_exhausted</span></code>.</p>
+<p>The full-duplex server is ready when this returns JSON containing <code class="docutils literal notranslate"><span class="pre">&quot;native_full_duplex&quot;:true</span></code> and <code class="docutils literal notranslate"><span class="pre">&quot;native_unit_ms&quot;:80</span></code>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>--fail<span class="w"> </span>http://localhost:8000/v1/realtime/capabilities
+</pre></div>
+</div>
+<p>The protocol follows the MiniCPM-o steps, with these differences:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Setting</p></th>
+<th class="head"><p>Field</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Audio</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">input_audio_buffer.append</span></code></p></td>
+<td><p>16 kHz mono PCM16 in, 22.05 kHz out; the server pads a trailing partial 80 ms unit</p></td>
+</tr>
+<tr class="row-odd"><td><p>Prompt</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">instructions</span></code></p></td>
+<td><p>Not accepted: the model uses its checkpoint’s system prompt, and a session that sends <code class="docutils literal notranslate"><span class="pre">instructions</span></code> is refused</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The whole session is one response, and every unit brings 80 ms of agent audio, silent while the model listens. The session variant only accepts <code class="docutils literal notranslate"><span class="pre">/v1/realtime</span></code> requests; use the default pipeline for offline recordings.</p>
 </section>
 <section id="streaming-cascade">
 <h3>Streaming Cascade<a class="headerlink" href="#streaming-cascade" title="Link to this heading">#</a></h3>
@@ -3246,6 +3302,7 @@ python<span class="w"> </span>-m<span class="w"> </span>benchmarks.eval.benchmar
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#full-duplex-interactive-model">Full Duplex Interactive Model</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#native-full-duplex-minicpm-o">Native Full Duplex: MiniCPM-o</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#native-full-duplex-personaplex">Native Full Duplex: PersonaPlex</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#native-full-duplex-nemotron-voicechat">Native Full Duplex: Nemotron VoiceChat</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming-cascade">Streaming Cascade</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#session-graph">Session Graph</a></li>
 </ul>
