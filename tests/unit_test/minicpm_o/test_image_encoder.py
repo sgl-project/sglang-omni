@@ -13,11 +13,21 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from unittest import mock
 
 import pytest
 import torch
+from sglang.srt import runtime_context
+from sglang.srt.distributed import parallel_state
+from sglang.srt.runtime_context import ParallelContext, RuntimeContext, SpawnRanks
+from sglang.srt.server_args import ServerArgs
 
+from sglang_omni.models.minicpm_o.components import image_encoder
 from sglang_omni.models.minicpm_o.components.image_encoder import MiniCPMOImageEncoder
+from sglang_omni.platforms.cuda import CUDAOmniPlatform
+from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.xpu import XPUOmniPlatform
+from sglang_omni.utils.port_claim import release_tcp_port
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -66,6 +76,146 @@ def test_padding_does_not_change_image_embeddings() -> None:
 
     torch.testing.assert_close(batched, individual)
     torch.testing.assert_close(batched[:, 0], torch.tensor([1.0, 2.0, 3.0]))
+
+
+class DistributedRecorder:
+    """Stands in for SGLang's process-group setup and records what it was asked to build."""
+
+    def __init__(self) -> None:
+        self.called_functions: list[str] = []
+        self.distributed_arguments: dict[str, int | str] = {}
+        self.server_args_at_init: ServerArgs | None = None
+
+    def init_distributed_environment(
+        self,
+        world_size: int = -1,
+        rank: int = -1,
+        distributed_init_method: str = "env://",
+        local_rank: int = -1,
+        backend: str = "nccl",
+        timeout: int | None = None,
+        moe_a2a_backend: str | None = None,
+        recovered_rank: bool = False,
+        max_world_size: int | None = None,
+    ) -> None:
+        self.called_functions.append("init_distributed_environment")
+        self.distributed_arguments = {
+            "world_size": world_size,
+            "rank": rank,
+            "local_rank": local_rank,
+            "backend": backend,
+        }
+        self.server_args_at_init = runtime_context.get_server_args()
+
+    def initialize_model_parallel(
+        self,
+        backend: str | None = None,
+        duplicate_tp_group: bool = False,
+        enable_symm_mem: bool = False,
+        recovered_rank: bool = False,
+        rank_offset: int = 0,
+        max_world_size: int | None = None,
+    ) -> None:
+        self.called_functions.append("initialize_model_parallel")
+
+
+@pytest.fixture
+def distributed_recorder(monkeypatch: pytest.MonkeyPatch) -> DistributedRecorder:
+    recorder = DistributedRecorder()
+    monkeypatch.setattr(
+        parallel_state,
+        "init_distributed_environment",
+        recorder.init_distributed_environment,
+    )
+    monkeypatch.setattr(
+        parallel_state, "initialize_model_parallel", recorder.initialize_model_parallel
+    )
+    return recorder
+
+
+def thinker_runtime_context(tensor_parallel_size: int) -> RuntimeContext:
+    return runtime_context.create_context(
+        ServerArgs(model_path="dummy", tp_size=tensor_parallel_size),
+        role="scheduler",
+        ranks=SpawnRanks(world_rank=0),
+    )
+
+
+@pytest.mark.parametrize(
+    ("platform", "distributed_backend"),
+    [(XPUOmniPlatform(), "xccl"), (CUDAOmniPlatform(), "nccl")],
+    ids=["xpu", "cuda"],
+)
+@pytest.mark.parametrize("is_runtime_context_published", [False, True])
+def test_standalone_tensor_parallel_init_builds_one_rank_on_the_platform_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    distributed_recorder: DistributedRecorder,
+    platform: OmniPlatform,
+    distributed_backend: str,
+    is_runtime_context_published: bool,
+) -> None:
+    """The encoder hardcoded nccl, which XPU cannot initialize; it must also keep a runtime context it did not publish."""
+    monkeypatch.setattr(image_encoder, "current_platform", platform)
+    monkeypatch.setattr(parallel_state, "model_parallel_is_initialized", lambda: False)
+    monkeypatch.setenv("SGLANG_OMNI_PORT_CLAIM_DIR", str(tmp_path))
+    scoped_runtime_context = (
+        thinker_runtime_context(tensor_parallel_size=1)
+        if is_runtime_context_published
+        else RuntimeContext(parallel=ParallelContext())
+    )
+    published_server_args = (
+        scoped_runtime_context.server_args if is_runtime_context_published else None
+    )
+
+    with (
+        mock.patch.dict(os.environ),
+        runtime_context.use_context(scoped_runtime_context),
+    ):
+        os.environ.pop("MASTER_ADDR", None)
+        os.environ.pop("MASTER_PORT", None)
+        image_encoder.init_sglang_tp()
+        master_address = os.environ["MASTER_ADDR"]
+        master_port = int(os.environ["MASTER_PORT"])
+
+    assert distributed_recorder.called_functions == [
+        "init_distributed_environment",
+        "initialize_model_parallel",
+    ]
+    assert distributed_recorder.distributed_arguments == {
+        "world_size": 1,
+        "rank": 0,
+        "local_rank": 0,
+        "backend": distributed_backend,
+    }
+    if is_runtime_context_published:
+        assert distributed_recorder.server_args_at_init is published_server_args
+    else:
+        assert distributed_recorder.server_args_at_init.tp_size == 1
+    assert master_address == "127.0.0.1"
+    assert (tmp_path / str(master_port)).exists()
+    release_tcp_port(master_port)
+
+
+@pytest.mark.parametrize("tensor_parallel_size", [1, 2])
+def test_an_initialized_tensor_parallel_group_is_reused_only_at_size_one(
+    monkeypatch: pytest.MonkeyPatch,
+    distributed_recorder: DistributedRecorder,
+    tensor_parallel_size: int,
+) -> None:
+    """The encoder shares the thinker's process group, so it must not rebuild it, and its replicated weights cannot join a wider one."""
+    monkeypatch.setattr(parallel_state, "model_parallel_is_initialized", lambda: True)
+
+    with runtime_context.use_context(
+        thinker_runtime_context(tensor_parallel_size=tensor_parallel_size)
+    ):
+        if tensor_parallel_size == 1:
+            image_encoder.init_sglang_tp()
+        else:
+            with pytest.raises(RuntimeError, match="requires tp_size=1.*tp_size=2"):
+                image_encoder.init_sglang_tp()
+
+    assert distributed_recorder.called_functions == []
 
 
 def build_remote_encoder(checkpoint: Path, device: torch.device, dtype: torch.dtype):

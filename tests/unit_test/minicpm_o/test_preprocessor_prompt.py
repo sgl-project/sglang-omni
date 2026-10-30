@@ -40,6 +40,7 @@ from sglang_omni.models.minicpm_o.talker_request import (
 from sglang_omni.models.minicpm_o.thinker_model_runner import MiniCPMOThinkerModelRunner
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+from sglang_omni.serve.openai_errors import generation_error_status_code
 
 # The generation suffix from MiniCPM-o-4_5's tokenizer template.
 GENERATION_TEMPLATE = """
@@ -617,18 +618,37 @@ def test_inline_and_top_level_media_are_rejected(
         asyncio.run(media_preprocessor(payload))
 
 
-def test_unknown_inline_content_is_rejected(
-    media_preprocessor: MiniCPMOPreprocessor,
-) -> None:
-    payload = StagePayload(
-        request_id="unknown-part",
-        request=OmniRequest(
-            inputs=[{"role": "user", "content": [{"type": "unknown"}]}]
+@pytest.mark.parametrize(
+    ("content_parts", "error_message"),
+    [
+        ([{"type": "unknown"}], "Unsupported MiniCPM-o content type"),
+        ([{"type": "text", "text": 5}], "Unsupported MiniCPM-o text content part"),
+        ([{"type": "image_url", "image_url": {}}], "image_url requires a media URL"),
+        ([{"type": "audio_url", "audio_url": {}}], "audio_url requires a media URL"),
+        (
+            [{"type": "input_audio", "input_audio": {"format": "wav"}}],
+            "input_audio requires base64 data and format",
         ),
+        (
+            [{"type": "text", "text": 5}, {"type": "image_url", "image_url": {}}],
+            "Text content parts require a string text",
+        ),
+    ],
+)
+def test_malformed_inline_content_is_a_bad_request(
+    media_preprocessor: MiniCPMOPreprocessor,
+    content_parts: list[dict[str, object]],
+    error_message: str,
+) -> None:
+    """Malformed content parts answered HTTP 500, blaming the server for a client error."""
+    payload = StagePayload(
+        request_id="malformed-part",
+        request=OmniRequest(inputs=[{"role": "user", "content": content_parts}]),
         data=None,
     )
-    with pytest.raises(ValueError, match="Unsupported MiniCPM-o content type"):
+    with pytest.raises(ValueError, match=error_message) as raised:
         asyncio.run(media_preprocessor(payload))
+    assert generation_error_status_code(raised.value) == 400
 
 
 @pytest.mark.parametrize("audio_part_type", ["audio_url", "input_audio"])
