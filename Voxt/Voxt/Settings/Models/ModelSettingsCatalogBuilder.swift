@@ -35,6 +35,7 @@ struct ModelCatalogBuilder {
     let configureASRProvider: (RemoteASRProvider) -> Void
     let configureLLMProvider: (RemoteLLMProvider) -> Void
     let showASRHintTarget: (ASRHintTarget) -> Void
+    var assignmentActions: (FeatureModelSelectionID) -> [ModelTableAction] = { _ in [] }
 
     func asrEntries() -> [ModelCatalogEntry] {
         var entries = [ModelCatalogEntry]()
@@ -74,7 +75,7 @@ struct ModelCatalogBuilder {
                 primaryAction: ModelTableAction(title: localizedModelCatalog("Configure")) {
                     configureASRProvider(provider)
                 },
-                secondaryActions: []
+                secondaryActions: assignmentActions(selectionID)
             )
         })
 
@@ -111,7 +112,7 @@ struct ModelCatalogBuilder {
                     usageLocations: decoration.usageLocations,
                     badgeText: nil,
                     primaryAction: nil,
-                    secondaryActions: []
+                    secondaryActions: assignmentActions(selectionID)
                 )
             )
         }
@@ -140,7 +141,7 @@ struct ModelCatalogBuilder {
                 usageLocations: decoration.usageLocations,
                 badgeText: snapshot.badgeText,
                 primaryAction: catalogPrimaryAction(snapshot),
-                secondaryActions: catalogSecondaryActions(snapshot)
+                secondaryActions: assignmentActions(selectionID) + catalogSecondaryActions(snapshot)
             )
         })
 
@@ -168,7 +169,7 @@ struct ModelCatalogBuilder {
                 usageLocations: decoration.usageLocations,
                 badgeText: snapshot.badgeText,
                 primaryAction: catalogPrimaryAction(snapshot),
-                secondaryActions: catalogSecondaryActions(snapshot)
+                secondaryActions: assignmentActions(selectionID) + catalogSecondaryActions(snapshot)
             )
         })
 
@@ -206,7 +207,7 @@ struct ModelCatalogBuilder {
                 primaryAction: ModelTableAction(title: localizedModelCatalog("Configure")) {
                     configureLLMProvider(provider)
                 },
-                secondaryActions: []
+                secondaryActions: assignmentActions(selectionID)
             )
         })
 

@@ -59,7 +59,12 @@ struct ModelSettingsView: View {
     @State private var modelStorageSelectionError: String?
     @State private var showIdleUnloadDelayInfo = false
     @State var editingASRProvider: RemoteASRProvider?
+    @State private var assigningASRSelection: FeatureModelSelectionID?
+    @State private var pendingASRAssignment: RemoteASRProvider?
     @State var editingLLMProvider: RemoteLLMProvider?
+    @State private var assigningLLMSelection: FeatureModelSelectionID?
+    @State private var assignableSelectionIDs = Set<FeatureModelSelectionID>()
+    @State private var pendingLLMAssignment: FeatureModelSelectionID?
     @State private var activeASRHintTarget: ASRHintTarget?
     @State var activeLocalASRConfigurationTarget: LocalASRConfigurationTarget?
     @State var isCustomLLMConfigurationPresented = false
@@ -147,8 +152,45 @@ struct ModelSettingsView: View {
             },
             configureASRProvider: { editingASRProvider = $0 },
             configureLLMProvider: { editingLLMProvider = $0 },
-            showASRHintTarget: { activeASRHintTarget = $0 }
+            showASRHintTarget: { activeASRHintTarget = $0 },
+            assignmentActions: assignmentActions(for:)
         )
+    }
+
+    private func assignmentCatalog(settings: FeatureSettings) -> FeatureModelCatalogBuilder {
+        FeatureModelCatalogBuilder(
+            mlxModelManager: mlxModelManager,
+            customLLMManager: customLLMManager,
+            ggufTranslationModelManager: ggufTranslationModelManager,
+            featureSettings: settings,
+            remoteASRProviderConfigurationsRaw: remoteASRProviderConfigurationsRaw,
+            remoteLLMProviderConfigurationsRaw: remoteLLMProviderConfigurationsRaw,
+            appleIntelligenceAvailability: appleIntelligenceAvailability,
+            primaryUserLanguageCode: selectedUserLanguageCodes.first
+        )
+    }
+
+    private func assignmentActions(for selection: FeatureModelSelectionID) -> [ModelTableAction] {
+        guard assignableSelectionIDs.contains(selection) else { return [] }
+        let selectionIsASR = selection.asrSelection != nil
+        return [ModelTableAction(title: localized("Apply to Scenes")) {
+            if selectionIsASR {
+                assigningASRSelection = selection
+            } else {
+                assigningLLMSelection = selection
+            }
+        }]
+    }
+
+    @MainActor
+    private static func assignableSelectionIDs(catalog: FeatureModelCatalogBuilder) -> Set<FeatureModelSelectionID> {
+        var ids = Set<FeatureModelSelectionID>()
+        for row in ASRAssignmentScene.rows + LLMAssignmentScene.rows {
+            for entry in catalog.entries(for: row.selector) where entry.isSelectable {
+                ids.insert(entry.selectionID)
+            }
+        }
+        return ids
     }
 
     private var hiddenModelVisibilityIDs: Set<String> {
@@ -294,7 +336,12 @@ struct ModelSettingsView: View {
 
     private var contentWithSheets: some View {
         contentWithLifecycle
-        .sheet(item: $editingASRProvider) { provider in
+        .sheet(item: $editingASRProvider, onDismiss: {
+            if let provider = pendingASRAssignment {
+                pendingASRAssignment = nil
+                assigningASRSelection = .remoteASR(provider)
+            }
+        }) { provider in
             RemoteProviderConfigurationSheet(
                 providerTitle: provider.title,
                 credentialHint: asrCredentialHint(for: provider),
@@ -305,8 +352,15 @@ struct ModelSettingsView: View {
                     from: remoteASRProviderConfigurationsRaw
                 )
             ) { updated in
+                let wasConfigured = RemoteModelConfigurationStore.resolvedASRConfiguration(
+                    provider: provider,
+                    from: remoteASRProviderConfigurationsRaw
+                ).isConfigured
                 let result = saveRemoteASRConfiguration(updated)
                 if case .success = result {
+                    if updated.isConfigured && !wasConfigured {
+                        pendingASRAssignment = provider
+                    }
                     showModelOperationToast(
                         AppLocalization.format("Configuration saved for %@.", provider.title)
                     )
@@ -314,7 +368,54 @@ struct ModelSettingsView: View {
                 return result
             }
         }
-        .sheet(item: $editingLLMProvider) { provider in
+        .sheet(item: $assigningASRSelection) { selection in
+            let catalog = assignmentCatalog(settings: FeatureSettingsStore.load())
+            ModelSceneAssignmentSheet(
+                selection: selection,
+                catalog: catalog,
+                rows: ASRAssignmentScene.rows,
+                summary: catalog.asrSelectionSummary(selection),
+                explanationKey: "Only selected scenes will change their ASR model. Other models and feature switches remain unchanged."
+            ) { sceneIDs in
+                FeatureSettingsStore.update { settings in
+                    ASRAssignmentScene.apply(
+                        selection: selection,
+                        scenes: Set(ASRAssignmentScene.allCases.filter { sceneIDs.contains($0.rawValue) }),
+                        catalog: assignmentCatalog(settings: settings),
+                        to: &settings
+                    )
+                }
+                reloadCachedConfigurationState()
+            }
+        }
+        .sheet(item: $assigningLLMSelection) { selection in
+            let catalog = assignmentCatalog(settings: FeatureSettingsStore.load())
+            ModelSceneAssignmentSheet(
+                selection: selection,
+                catalog: catalog,
+                rows: LLMAssignmentScene.rows,
+                summary: selection.textSelection != nil
+                    ? catalog.llmSelectionSummary(selection)
+                    : catalog.translationSelectionSummary(selection),
+                explanationKey: "Only selected scenes will change their text model. Other models and feature switches remain unchanged."
+            ) { sceneIDs in
+                FeatureSettingsStore.update { settings in
+                    LLMAssignmentScene.apply(
+                        selection: selection,
+                        scenes: Set(LLMAssignmentScene.allCases.filter { sceneIDs.contains($0.rawValue) }),
+                        catalog: assignmentCatalog(settings: settings),
+                        to: &settings
+                    )
+                }
+                reloadCachedConfigurationState()
+            }
+        }
+        .sheet(item: $editingLLMProvider, onDismiss: {
+            if let selection = pendingLLMAssignment {
+                pendingLLMAssignment = nil
+                assigningLLMSelection = selection
+            }
+        }) { provider in
             RemoteProviderConfigurationSheet(
                 providerTitle: provider.title,
                 credentialHint: nil,
@@ -325,8 +426,19 @@ struct ModelSettingsView: View {
                     from: remoteLLMProviderConfigurationsRaw
                 )
             ) { updated in
+                let wasConfigured = RemoteModelConfigurationStore.resolvedLLMConfiguration(
+                    provider: provider,
+                    from: remoteLLMProviderConfigurationsRaw
+                ).isConfigured
                 let result = saveRemoteLLMConfiguration(updated)
                 if case .success = result {
+                    if !wasConfigured && RemoteModelConfigurationStore.isStoredLLMConfigurationConfigured(
+                        provider: provider, stored: RemoteModelConfigurationStore.loadConfigurations(
+                            from: remoteLLMProviderConfigurationsRaw, sensitiveValueLoading: .metadataOnly
+                        )
+                    ) {
+                        pendingLLMAssignment = .remoteLLM(provider)
+                    }
                     showModelOperationToast(
                         AppLocalization.format("Configuration saved for %@.", provider.title)
                     )
@@ -395,6 +507,11 @@ struct ModelSettingsView: View {
         .onChange(of: isActive) { _, isActive in
             guard isActive else { return }
             handleStorageAuthorizationNavigationRequest()
+        }
+        .onReceive(modelStateRefreshTimer) { _ in
+            if assigningASRSelection != nil || assigningLLMSelection != nil {
+                appleIntelligenceRefreshRevision += 1
+            }
         }
         .onReceive(ggufTranslationModelManager.$stateByID) { states in
             presentGGUFErrors(states)
@@ -561,6 +678,9 @@ struct ModelSettingsView: View {
         }
 
         reconcileCancellingInstallTargets()
+
+        let assignableCatalog = assignmentCatalog(settings: featureSettings)
+        assignableSelectionIDs = Self.assignableSelectionIDs(catalog: assignableCatalog)
 
         let entries = switch catalogTab {
         case .asr:

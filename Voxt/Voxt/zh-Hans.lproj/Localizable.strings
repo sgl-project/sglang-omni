@@ -655,7 +655,7 @@
 "Enable LLM debug logs" = "开启 LLM 调试日志";
 "When enabled, Voxt writes detailed local and remote LLM request logs. Disabled by default." = "开启后，Voxt 会输出详细的本地与远程 LLM 请求日志。默认关闭。";
 "Records local and remote LLM request details to help inspect model calls and responses." = "记录本地和远程 LLM 请求细节，便于检查模型调用和响应。";
-"Rewrite" = "转写";
+"Rewrite" = "改写";
 
 "Version metadata missing" = "版本元数据缺失";
 "Supported variables" = "支持变量";
@@ -2382,3 +2382,12 @@
 "API Format" = "API 格式";
 
 "Automatic keeps OpenAI on Responses and respects explicit Chat Completions URLs for custom endpoints." = "自动模式下，官方 OpenAI 使用 Responses；自定义端点按明确填写的 Chat Completions 地址调用。";
+
+"Apply to Scenes" = "应用到场景";
+"Only selected scenes will change their ASR model. Other models and feature switches remain unchanged." = "仅更改勾选场景的语音识别模型。其他模型和功能开关保持不变。";
+"This provider does not support meeting transcription." = "此服务不支持会议转录。";
+"Select All" = "全选";
+
+"Only selected scenes will change their text model. Other models and feature switches remain unchanged." = "仅更改所选场景的文本模型，其他模型和功能开关保持不变。";
+"This model is not supported for this scene." = "此模型不支持该场景。";
+"Current model: %@" = "当前模型：%@";

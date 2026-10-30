@@ -536,6 +536,120 @@ final class FeatureModelCatalogBuilderTests: MLXModelManagerTestCase {
         XCTAssertEqual(qwenLLMGroup.badgeText, recommended)
     }
 
+    func testSceneAssignmentPreselectsCompatibleScenesWhenNoneUseModel() {
+        let provider = RemoteASRProvider.openAIWhisper
+        let raw = RemoteModelConfigurationStore.saveConfigurations([
+            provider.rawValue: TestFactories.makeRemoteConfiguration(
+                providerID: provider.rawValue,
+                model: "whisper-1",
+                endpoint: "https://api.openai.com/v1/audio/transcriptions",
+                apiKey: "test"
+            )
+        ])
+        var settings = FeatureSettings.placeholder
+        let selection = FeatureModelSelectionID.remoteASR(provider)
+        XCTAssertEqual(
+            ModelSceneAssignment.defaultSelection(
+                selection: selection,
+                rows: ASRAssignmentScene.rows,
+                catalog: makeBuilder(featureSettings: settings, remoteASRConfigurationsRaw: raw)
+            ),
+            ["Transcription", "Translation", "Rewrite", "Meeting"]
+        )
+
+        settings.transcription.asrSelectionID = selection
+        XCTAssertEqual(
+            ModelSceneAssignment.defaultSelection(
+                selection: selection,
+                rows: ASRAssignmentScene.rows,
+                catalog: makeBuilder(featureSettings: settings, remoteASRConfigurationsRaw: raw)
+            ),
+            ["Transcription"]
+        )
+    }
+
+    func testBatchTextAssignmentPreservesUnselectedFieldsAndSwitches() {
+        var settings = FeatureSettings.placeholder
+        settings.transcription.llmEnabled = false
+        settings.meeting.summaryAutoGenerate = false
+        settings.transcription.notes.enabled = false
+        let original = settings
+        let catalog = makeBuilder(featureSettings: settings)
+        LLMAssignmentScene.apply(selection: .appleIntelligence, scenes: [.transcription, .meeting, .noteTitle, .translation], catalog: catalog, to: &settings)
+        var expected = original
+        expected.transcription.llmSelectionID = .appleIntelligence
+        expected.meeting.summaryModelSelectionID = .appleIntelligence
+        expected.transcription.notes.titleModelSelectionID = .appleIntelligence
+        XCTAssertEqual(settings, expected)
+    }
+
+    func testBatchAssignmentRejectsUnavailableModelsAndEmptySelection() {
+        var settings = FeatureSettings.placeholder
+        let original = settings
+        let catalog = makeBuilder(featureSettings: settings, appleIntelligenceAvailability: .unavailable(.modelNotReady))
+        for selection in [FeatureModelSelectionID.appleIntelligence, .remoteLLM(.openAI), .localLLM("missing/model"), .localGGUFTranslation(.hyMT2Q4KM)] {
+            LLMAssignmentScene.apply(selection: selection, scenes: Set(LLMAssignmentScene.allCases), catalog: catalog, to: &settings)
+        }
+        ASRAssignmentScene.apply(selection: .remoteASR(.doubaoASR), scenes: Set(ASRAssignmentScene.allCases), catalog: catalog, to: &settings)
+        ASRAssignmentScene.apply(selection: .mlx("missing/model"), scenes: Set(ASRAssignmentScene.allCases), catalog: catalog, to: &settings)
+        LLMAssignmentScene.apply(selection: .appleIntelligence, scenes: [], catalog: makeBuilder(featureSettings: settings), to: &settings)
+        XCTAssertEqual(settings, original)
+    }
+
+    func testBatchDictationRejectsMeetingAndChangesOnlySelectedASRFields() {
+        var settings = makeFeatureSettings(transcriptionASR: .mlx(MLXModelManager.defaultModelRepo))
+        let original = settings
+        let catalog = makeBuilder(featureSettings: settings)
+        ASRAssignmentScene.apply(selection: .dictation, scenes: [.transcription, .meeting], catalog: catalog, to: &settings)
+        var expected = original
+        expected.transcription.asrSelectionID = .dictation
+        XCTAssertEqual(settings, expected)
+    }
+
+    func testInstalledGGUFBatchAssignmentIsLimitedToTranslation() async throws {
+        try await withIsolatedModelStorageRoot { root in
+            let modelFile = GGUFTranslationModelCatalog.modelFileURL(for: .hyMT2Q4KM, root: root)
+            try FileManager.default.createDirectory(at: modelFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("GGUFfixture".utf8).write(to: modelFile)
+            let manager = GGUFTranslationModelManager(modelID: .hyMT2Q4KM)
+            let installation = try await manager.refreshInstallation(id: .hyMT2Q4KM)
+            XCTAssertTrue(installation.isInstalled)
+            var settings = FeatureSettings.placeholder
+            let original = settings
+            let catalog = FeatureModelCatalogBuilder(
+                mlxModelManager: TestModelManagers.mlx,
+                customLLMManager: TestModelManagers.customLLM,
+                ggufTranslationModelManager: manager,
+                featureSettings: settings,
+                remoteASRProviderConfigurationsRaw: "",
+                remoteLLMProviderConfigurationsRaw: "",
+                appleIntelligenceAvailability: .available,
+                primaryUserLanguageCode: "en"
+            )
+            LLMAssignmentScene.apply(selection: .localGGUFTranslation(.hyMT2Q4KM), scenes: Set(LLMAssignmentScene.allCases), catalog: catalog, to: &settings)
+            var expected = original
+            expected.translation.modelSelectionID = .localGGUFTranslation(.hyMT2Q4KM)
+            XCTAssertEqual(settings, expected)
+        }
+    }
+
+    func testBatchRemoteTextAssignmentRevalidatesConfigurationAtApplyTime() {
+        let provider = RemoteLLMProvider.ollama
+        let raw = RemoteModelConfigurationStore.saveConfigurations([
+            provider.rawValue: TestFactories.makeRemoteConfiguration(providerID: provider.rawValue, model: "qwen3", endpoint: "http://localhost:11434", apiKey: "")
+        ])
+        var settings = FeatureSettings.placeholder
+        let original = settings
+        let catalog = makeBuilder(featureSettings: settings, remoteLLMConfigurationsRaw: raw)
+        LLMAssignmentScene.apply(selection: .remoteLLM(provider), scenes: Set(LLMAssignmentScene.allCases), catalog: catalog, to: &settings)
+        for scene in LLMAssignmentScene.allCases {
+            XCTAssertEqual(settings[keyPath: scene.selectionKeyPath], .remoteLLM(provider))
+        }
+        var unchanged = original
+        LLMAssignmentScene.apply(selection: .remoteLLM(provider), scenes: Set(LLMAssignmentScene.allCases), catalog: makeBuilder(featureSettings: original), to: &unchanged)
+        XCTAssertEqual(unchanged, original)
+    }
+
     private func makeBuilder(
         mlxModelManager: MLXModelManager? = nil,
         featureSettings: FeatureSettings,

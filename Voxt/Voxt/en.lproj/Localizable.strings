@@ -2382,3 +2382,12 @@
 "API Format" = "API Format";
 
 "Automatic keeps OpenAI on Responses and respects explicit Chat Completions URLs for custom endpoints." = "Automatic keeps OpenAI on Responses and respects explicit Chat Completions URLs for custom endpoints.";
+
+"Apply to Scenes" = "Apply to Scenes";
+"Only selected scenes will change their ASR model. Other models and feature switches remain unchanged." = "Only selected scenes will change their ASR model. Other models and feature switches remain unchanged.";
+"This provider does not support meeting transcription." = "This provider does not support meeting transcription.";
+"Select All" = "Select All";
+
+"Only selected scenes will change their text model. Other models and feature switches remain unchanged." = "Only selected scenes will change their text model. Other models and feature switches remain unchanged.";
+"This model is not supported for this scene." = "This model is not supported for this scene.";
+"Current model: %@" = "Current model: %@";
