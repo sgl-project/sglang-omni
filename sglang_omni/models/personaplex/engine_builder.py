@@ -8,15 +8,18 @@ import json
 import logging
 import shutil
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Protocol
 
 import torch
 from sentencepiece import SentencePieceProcessor
 from sglang.srt.arg_groups.model_override_base import resolved_view
+from sglang.srt.model_executor.cuda_graph_config import CudaGraphConfig
 from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.model_runner.model_worker import ModelWorker
+from sglang_omni.models.personaplex import CAPABILITIES
 from sglang_omni.models.personaplex.architecture import MOSHI_WEIGHTS_NAME, TEXT_CARD
 from sglang_omni.models.personaplex.components.depformer_cuda_graph import (
     DepformerCudaGraphRunner,
@@ -43,6 +46,10 @@ from sglang_omni.scheduling.engine_factory import (
     GenerationDefaults,
     SchedulerExtras,
     TtsEngineBuilder,
+)
+from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
+    nested_prefill_overrides,
 )
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
@@ -84,6 +91,10 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
     model_name = "personaplex"
     context_length = DEFAULT_CONTEXT_LENGTH
     supports_context_length_override = True
+    supports_breakable_prefill_cuda_graph = (
+        CAPABILITIES.supports_breakable_prefill_cuda_graph
+    )
+    supports_full_prefill_cuda_graph = CAPABILITIES.supports_full_prefill_cuda_graph
 
     def __init__(
         self,
@@ -231,10 +242,64 @@ class PersonaPlexSessionEngineBuilder(PersonaPlexEngineBuilder):
         self.tokenizer = tokenizer
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
-        return {
+        defaults = {
             **super().generation_defaults(dtype=dtype),
             "enable_streaming_session": True,
         }
+        if current_platform.is_cuda():
+            defaults["cuda_graph_backend_prefill"] = CudaGraphBackend.FULL
+        else:
+            pass
+        return defaults
+
+    def adjust_overrides(self, overrides: dict[str, object]) -> None:
+        backend = overrides.get("cuda_graph_backend_prefill")
+        if (
+            not current_platform.is_cuda()
+            or bool(overrides.get("disable_cuda_graph"))
+            or backend not in (CudaGraphBackend.BREAKABLE, CudaGraphBackend.FULL)
+        ):
+            return
+        else:
+            pass
+
+        max_running_requests = int(overrides["max_running_requests"])
+        graph_config = overrides.get("cuda_graph_config", {})
+        if isinstance(graph_config, CudaGraphConfig):
+            graph_config = graph_config.to_dict()
+        elif not isinstance(graph_config, Mapping):
+            raise ValueError("PersonaPlex cuda_graph_config must be a mapping")
+        else:
+            pass
+        prefill_config = graph_config.get("prefill", {})
+        if not isinstance(prefill_config, Mapping):
+            raise ValueError("PersonaPlex cuda_graph_config.prefill must be a mapping")
+        else:
+            pass
+        overrides["cuda_graph_config"] = {
+            **graph_config,
+            "prefill": {
+                "full_prefill_max_req": max_running_requests,
+                **prefill_config,
+            },
+        }
+
+        operator_prefill = nested_prefill_overrides(self.server_args_overrides)
+        if (
+            "cuda_graph_bs_prefill" in self.server_args_overrides
+            or "bs" in operator_prefill
+        ):
+            return
+        else:
+            pass
+        declared_max_tokens = overrides.get("cuda_graph_max_bs_prefill")
+        max_tokens = (
+            max_running_requests
+            if declared_max_tokens is None
+            else int(declared_max_tokens)
+        )
+        overrides["cuda_graph_bs_prefill"] = list(range(1, max_tokens + 1))
+        overrides["cuda_graph_max_bs_prefill"] = max_tokens
 
     def extra_scheduler_kwargs(self) -> dict[str, PersonaPlexSessionAdapter]:
         # Note (wilsonzheng0327): The shim config's vocabulary is TEXT_CARD.
