@@ -37,6 +37,8 @@ except (ImportError, OSError, RuntimeError):
 
 # The qwen-vl-utils torchcodec reader's ffmpeg threads when TORCHCODEC_NUM_THREADS is unset.
 READER_FFMPEG_THREADS = 8
+# FFmpeg's MAX_AUTO_THREADS: libavcodec warns that one decoder above this many threads is not recommended.
+FFMPEG_MAX_DECODER_THREADS = 16
 
 logger = logging.getLogger(__name__)
 
@@ -493,7 +495,10 @@ def read_video_torchcodec(
         return first_decoder.get_frames_at(indices=frame_indices).data, sample_fps
     else:
         pass
-    share_thread_count = (decode_threads - reader_thread_count) // (decoder_count - 1)
+    share_thread_count = min(
+        (decode_threads - reader_thread_count) // (decoder_count - 1),
+        FFMPEG_MAX_DECODER_THREADS,
+    )
     decoder_thread_counts = [reader_thread_count] + [share_thread_count] * (
         decoder_count - 1
     )
