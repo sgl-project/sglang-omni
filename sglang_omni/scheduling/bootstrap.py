@@ -66,6 +66,63 @@ def describe_sglang_runtime_configuration(
     )
 
 
+# note (supermario_leo): fa3 and trtllm_mha are deliberately absent from this
+# map. fa3 already asserts its own SM range at backend construction upstream
+# (attention_registry.create_flashattention_v3_backend: SM80-90, non-MLA on
+# SM80) and supports SM80-90 by design, so an entry here would duplicate
+# upstream's check and false-positive on SM89 (RTX 4090, #1120's first
+# target). trtllm_mha is rejected off its SM set during upstream ServerArgs
+# resolution; gating it here too would make this map a second source of truth
+# for that rule. fa4 is the one backend upstream constructs unconditionally,
+# so the set follows the Hopper/Blackwell family this repo already knows
+# (gpu_compat._GPU_ARCHITECTURES: 90 hopper, 100/103/120 blackwell) plus
+# SM110, which upstream also treats as fa4-capable
+# (sglang.srt.utils.common.is_sm100_or_sm110_supported), matching #1120's
+# "targets Hopper and Blackwell rather than Ada"; upstream ships a dedicated
+# fa4_sm120 dispatch for SM120.
+_ARCH_RESTRICTED_ATTENTION_BACKENDS: dict[str, set[int]] = {
+    "fa4": {90, 100, 103, 110, 120},
+}
+
+
+def validate_sglang_runtime_configuration(
+    server_args: SGLangServerArgsForDiagnostics,
+    gpu_id: int,
+) -> None:
+    from sglang.srt.arg_groups.model_override_base import (
+        attention_backends_of,
+        resolved_view,
+    )
+
+    sm_version = get_visible_gpu_sm_version(gpu_id)
+    if sm_version is None:
+        # An undetectable SM stays unblocked: this gate fails fast only on
+        # evidence, exactly what the description line above reports.
+        return
+    else:
+        pass
+
+    cfg = resolved_view(server_args)
+    prefill_attention_backend, decode_attention_backend = attention_backends_of(cfg)
+    selected_backends = [
+        ("attention_backend", cfg.attention_backend),
+        ("prefill_attention_backend", prefill_attention_backend),
+        ("decode_attention_backend", decode_attention_backend),
+    ]
+    for phase, backend in selected_backends:
+        supported_sms = _ARCH_RESTRICTED_ATTENTION_BACKENDS.get(backend or "")
+        if supported_sms is not None and sm_version not in supported_sms:
+            raise RuntimeError(
+                f"{phase}={backend!r} does not support the detected "
+                f"SM{sm_version} architecture; it requires one of "
+                f"{', '.join(f'SM{sm}' for sm in sorted(supported_sms))}. "
+                "Select a portable backend for this GPU (for example "
+                "'flashinfer' or 'torch_native')."
+            )
+        else:
+            pass
+
+
 def init_sglang_cuda_graphs(
     model_worker: "ModelWorker",
 ) -> None:
@@ -139,6 +196,7 @@ def create_sglang_infrastructure(
         pass
 
     logger.info(describe_sglang_runtime_configuration(server_args, gpu_id))
+    validate_sglang_runtime_configuration(server_args, gpu_id)
 
     kv_cache_bytes = consume_stage_kv_cache_bytes()
     worker_config = ModelWorkerConfig(
