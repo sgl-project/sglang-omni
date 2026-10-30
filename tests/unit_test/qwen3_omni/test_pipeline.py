@@ -2492,6 +2492,7 @@ def run_video_request(
         extract_audio: bool,
         audio_target_sr: int,
         resource_connector: MultiModalResourceConnector,
+        video_decode_threads: int,
     ) -> tuple[list[torch.Tensor], list[float], None]:
         return [frames], [2.0], None
 
