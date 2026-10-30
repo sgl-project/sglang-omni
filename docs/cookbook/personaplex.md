@@ -87,6 +87,16 @@ request values. Stage sampling also takes precedence for `seed`.
 `audio_temperature` and `audio_top_k` continue to control the audio sampler.
 The fixed caller-frame budget still determines the number of generated frames.
 
+## FP8 backbone and KV cache
+
+The following engine flags select FP8 precision for the temporal transformer on CUDA. Both are off by default.
+
+| Flag | Effect |
+|---|---|
+| `--lm.engine.quantization fp8` | Quantizes the temporal transformer's linear-layer weights to FP8 at load time. |
+| `--lm.engine.kv_cache_dtype fp8_e4m3` | Stores the temporal transformer's keys and values in FP8 E4M3. |
+
+Reduced precision changes the numerics, so replies can differ from BF16, including with greedy decoding. Check audio quality on your own inputs before enabling either flag.
 
 ## Known limitations
 
