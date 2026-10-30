@@ -19,6 +19,7 @@ from benchmarks.duplex.reference_audio import (
     diagnostics,
     load_runs,
     sha_bytes,
+    tail_appends,
     write_wav,
 )
 from benchmarks.duplex.reference_capture import TraceFormat, resolve_trace_format
@@ -113,6 +114,7 @@ def export_runs(
                 (state.get("input") or {}).get("sha256"),
                 receipts_required=sidecar,
                 profile_rate=profile_rate,
+                tail_appends=tail_appends(source_manifest),
             )
             reasons = record["window"]["reasons"]
             # note (luojiaxuan): A legacy or turn-based session that failed its

@@ -14,7 +14,7 @@ Nonnegative = Annotated[float, Field(ge=0)]
 
 class TraceRecord(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", allow_inf_nan=False)
-    direction: Literal["send", "receive", "error", "admission"]
+    direction: Literal["send", "receive", "error", "admission", "end_wait"]
     time_s: Nonnegative
     event: dict[str, JsonValue]
 
@@ -26,6 +26,16 @@ class AdmissionEvent(BaseModel):
     type: Literal["connection_denied"]
     http_status: Literal[503]
     attempt: Annotated[int, Field(ge=1)]
+
+
+class EndWaitEvent(BaseModel):
+    """The client's end wait expired before the drain receipt, so it closed the
+    session; open_response_ids are the replies still open then, left unfinished."""
+
+    model_config = ConfigDict(strict=True, extra="forbid")
+    type: Literal["expired"]
+    end_wait_s: Annotated[float, Field(gt=0)]
+    open_response_ids: list[Identifier]
 
 
 class MediaTime(BaseModel):

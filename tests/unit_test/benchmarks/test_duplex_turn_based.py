@@ -81,7 +81,7 @@ GRANTED = {
     },
     "rejections": [],
 }
-PeerMode = Literal["interrupt", "empty_turn", "degraded"]
+PeerMode = Literal["interrupt", "empty_turn", "degraded", "unfinished"]
 
 
 def encode(pcm: bytes) -> str:
@@ -105,7 +105,8 @@ class TurnBasedPeer:
     The user starts speaking on the first append and stops on the third, which
     the server answers; in interrupt mode the user speaks again on the fifth,
     cancelling that reply, and the server answers the second utterance after
-    the input ends.
+    the input ends. In unfinished mode the answer after the input end is still
+    generating, so no drain follows and session.close cancels it.
     """
 
     def __init__(self, mode: PeerMode = "interrupt") -> None:
@@ -339,7 +340,10 @@ class TurnBasedPeer:
                         "client_event_id": event["event_id"],
                     },
                 )
-                if self.mode == "interrupt":
+                if self.mode == "unfinished":
+                    await self.reply(websocket, "resp_1", OUTPUT_RATE)
+                    continue
+                elif self.mode == "interrupt":
                     await self.reply(websocket, "resp_1", round(0.2 * OUTPUT_RATE))
                     await self.finish(websocket, "resp_1", "completed", "stop")
                 else:
@@ -358,6 +362,10 @@ class TurnBasedPeer:
                     },
                 )
             elif kind == "session.close":
+                if self.mode == "unfinished":
+                    await self.finish(websocket, "resp_1", "cancelled", "client_closed")
+                else:
+                    pass
                 await self.send(
                     websocket,
                     {
@@ -372,7 +380,10 @@ class TurnBasedPeer:
 
 
 async def capture(
-    peer: TurnBasedPeer, trace_path: Path, timeout_s: float = 5.0
+    peer: TurnBasedPeer,
+    trace_path: Path,
+    timeout_s: float = 5.0,
+    end_wait_s: float | None = None,
 ) -> list[dict[str, JsonValue]]:
     existing_tasks = asyncio.all_tasks()
     async with websockets.serve(peer.handler, "127.0.0.1", 0) as server:
@@ -384,6 +395,7 @@ async def capture(
             timeout_s=timeout_s,
             profile=TURN_BASED,
             turn_detection=SERVER_VAD,
+            end_wait_s=end_wait_s,
         )
     assert asyncio.all_tasks() <= existing_tasks
     return [json.loads(line) for line in trace_path.read_text().splitlines()]
@@ -451,6 +463,54 @@ def test_client_records_a_passing_turn_based_session(tmp_path: Path) -> None:
     transcript = json.loads((tmp_path / "transcript.json").read_text())
     assert transcript["provenance"].startswith("turn_based server transcript deltas")
     assert transcript["text"] == {"response.output_audio_transcript.delta": "hihi"}
+
+
+def test_an_end_wait_expiry_closes_the_session_and_leaves_the_open_reply_unfinished(
+    tmp_path: Path,
+) -> None:
+    """A reply still generating when --end-wait expired failed the whole session; the session now closes, names that reply unfinished and keeps its audio up to the close."""
+    records = asyncio.run(
+        capture(
+            TurnBasedPeer("unfinished"), tmp_path / "continuous.jsonl", end_wait_s=0.3
+        )
+    )
+    result = evaluate_trace(records, profile=TURN_BASED)
+    end = next(r for r in records if r["event"]["type"] == "sglang.input_audio.end")
+    (expiry,) = [r for r in records if r["direction"] == "end_wait"]
+    unfinished_line = 1 + next(
+        index
+        for index, r in enumerate(records)
+        if r["event"]["type"] == "response.done"
+        and r["event"]["response"]["id"] == "resp_1"
+    )
+
+    assert result["status"] == "pass", result
+    assert result["end_wait"] == {"end_wait_s": 0.3, "open_response_ids": ["resp_1"]}
+    assert expiry["time_s"] - end["time_s"] >= 0.3
+    assert sent_types(records)[-2:] == ["sglang.input_audio.end", "session.close"]
+    assert records[unfinished_line - 1]["event"]["response"]["status"] == "cancelled"
+    assert records[-1]["event"]["type"] == "session.closed"
+    summary = reconstruct_output(tmp_path, profile=TURN_BASED)
+    assert summary["errors"] == []
+    assert summary["media_samples"] == round(0.5 * OUTPUT_RATE) + OUTPUT_RATE
+    close_cut = json.loads((tmp_path / "playout.json").read_text())["cuts"][-1]
+    assert close_cut["trace_line"] == unfinished_line
+    assert close_cut["dropped_samples"] > 0
+
+
+def test_a_drain_that_never_comes_still_fails_without_an_end_wait(
+    tmp_path: Path,
+) -> None:
+    """Without --end-wait only the session timeout bounds the drain, so a drain that never comes must fail the session, not close it as an end-wait expiry."""
+    records = asyncio.run(
+        capture(TurnBasedPeer("unfinished"), tmp_path / "continuous.jsonl", 1.5)
+    )
+    result = evaluate_trace(records, profile=TURN_BASED)
+
+    assert result["status"] == "fail"
+    assert result["end_wait"] is None
+    assert "client error: Session timeout after 1.5s" in result["violations"]
+    assert "session.close" not in sent_types(records)
 
 
 def test_client_records_an_empty_turn(tmp_path: Path) -> None:
@@ -947,6 +1007,106 @@ def test_a_reply_cut_at_the_talker_budget_is_accepted() -> None:
     trace = turn_based_trace()
     finish_last_response("incomplete", "max_output_tokens")(trace)
     assert evaluate_trace(trace, profile=TURN_BASED)["violations"] == []
+
+
+def end_wait_trace() -> list[dict[str, JsonValue]]:
+    """The turn-based trace with the answer after the input end still generating
+    when a 0.3 s end wait expires: the client closes and the server cancels it."""
+    trace = turn_based_trace()
+    finish_start = next(
+        index
+        for index, r in enumerate(trace)
+        if r["event"]["type"] == "response.output_audio_transcript.done"
+        and r["event"]["response_id"] == "resp_1"
+    )
+    finish = trace[finish_start : finish_start + 3]
+    for record in finish:
+        record["time_s"] += 0.32
+    finish[-1]["event"]["response"]["status"] = "cancelled"
+    finish[-1]["event"]["response"]["status_details"] = {"reason": "client_closed"}
+    close, closed = trace[-2:]
+    close["time_s"], closed["time_s"] = 100.66, 100.75
+    expiry = {
+        "direction": "end_wait",
+        "time_s": 100.65,
+        "event": {
+            "type": "expired",
+            "end_wait_s": 0.3,
+            "open_response_ids": ["resp_1"],
+        },
+    }
+    return [*trace[:finish_start], expiry, close, *finish, closed]
+
+
+def drop_end_wait(trace: list[dict[str, JsonValue]]) -> None:
+    trace.remove(next(r for r in trace if r["direction"] == "end_wait"))
+
+
+def set_end_wait(key: str, value: JsonValue) -> Callable[[list], None]:
+    def mutate(trace: list[dict[str, JsonValue]]) -> None:
+        record = next(r for r in trace if r["direction"] == "end_wait")
+        if key == "time_s":
+            record["time_s"] = value
+        else:
+            record["event"][key] = value
+
+    return mutate
+
+
+def receive_before_end_wait(kind: str, **fields: JsonValue) -> Callable[[list], None]:
+    def mutate(trace: list[dict[str, JsonValue]]) -> None:
+        index = next(i for i, r in enumerate(trace) if r["direction"] == "end_wait")
+        trace.insert(
+            index,
+            {
+                "direction": "receive",
+                "time_s": 100.6,
+                "event": {"type": kind, "event_id": "event_late", **fields},
+            },
+        )
+
+    return mutate
+
+
+@pytest.mark.parametrize(
+    ("mutate", "violation"),
+    [
+        (drop_end_wait, "session.close before input drained"),
+        (set_end_wait("time_s", 100.5), "end wait expired before end_wait_s after EOS"),
+        (
+            set_end_wait("open_response_ids", []),
+            "end wait open responses differ from the trace",
+        ),
+        (
+            receive_before_end_wait(
+                "sglang.input_audio.drained",
+                accepted_end_ms=240,
+                consumed_ms=200,
+                discarded_ms=0,
+                padding_ms=0,
+                client_event_id="end",
+            ),
+            "end wait expired after input drained",
+        ),
+        (
+            receive_before_end_wait(
+                "error",
+                sglang={"fatal": True},
+                error={"code": "fixture_failure", "message": "deliberate"},
+            ),
+            "server error: code=fixture_failure",
+        ),
+    ],
+)
+def test_an_end_wait_close_excuses_only_the_missing_drain(
+    mutate: Callable[[list], None], violation: str
+) -> None:
+    trace = end_wait_trace()
+    assert evaluate_trace(trace, profile=TURN_BASED)["violations"] == []
+    mutate(trace)
+    result = evaluate_trace(trace, profile=TURN_BASED)
+    assert result["status"] == "fail"
+    assert any(violation in item for item in result["violations"]), result
 
 
 def test_responses_must_end_before_the_session_closes() -> None:
