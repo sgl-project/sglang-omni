@@ -6,6 +6,7 @@ from __future__ import annotations
 import base64
 import binascii
 import math
+from collections.abc import Mapping
 from typing import Literal
 
 from pydantic import (
@@ -13,6 +14,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    JsonValue,
     field_validator,
     model_validator,
 )
@@ -399,6 +401,45 @@ class SpeechReference(BaseModel):
     speaker_embedding: list[float] | None = None
 
 
+SPEECH_SAMPLING_FIELDS: frozenset[str] = frozenset(
+    {
+        "max_new_tokens",
+        "temperature",
+        "top_p",
+        "top_k",
+        "epsilon_cutoff",
+        "repetition_penalty",
+        "seed",
+    }
+)
+
+
+def normalize_speech_extra_parameters(
+    payload: Mapping[str, object]
+) -> dict[str, object]:
+    """Lower nested sampling settings without replacing explicit top-level values."""
+    normalized = dict(payload)
+    extra_parameters = payload.get("extra_params")
+    if isinstance(extra_parameters, dict):
+        for field_name in SPEECH_SAMPLING_FIELDS:
+            if field_name in extra_parameters and normalized.get(field_name) is None:
+                normalized[field_name] = extra_parameters[field_name]
+            else:
+                pass
+        remaining_parameters = {
+            name: value
+            for name, value in extra_parameters.items()
+            if name not in SPEECH_SAMPLING_FIELDS
+        }
+        if remaining_parameters:
+            normalized["extra_params"] = remaining_parameters
+        else:
+            normalized.pop("extra_params")
+    else:
+        pass
+    return normalized
+
+
 class CreateSpeechRequest(BaseModel):
     """OpenAI-compatible text-to-speech request.
 
@@ -444,9 +485,18 @@ class CreateSpeechRequest(BaseModel):
     epsilon_cutoff: float | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
+    extra_params: dict[str, JsonValue] | None = None
 
     # Per-stage overrides (sglang-omni specific)
     stage_params: dict[str, dict[str, object]] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_extra_parameters(cls, payload: object) -> object:
+        if isinstance(payload, dict):
+            return normalize_speech_extra_parameters(payload)
+        else:
+            return payload
 
 
 class SpeechBatchItem(BaseModel):
