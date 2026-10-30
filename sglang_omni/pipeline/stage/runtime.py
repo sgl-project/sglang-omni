@@ -2323,7 +2323,9 @@ class Stage:
             return
         else:
             pass
-        transport_kind, relay = self.comm.router.relay_for_stream(target, data)
+        transport_kind, relay = self.comm.router.relay_for_stream(
+            target, data, metadata
+        )
         _emit_event(
             request_id=request_id,
             stage=self.name,

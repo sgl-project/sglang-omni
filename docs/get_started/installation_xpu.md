@@ -127,6 +127,18 @@ build reports `fatal error: sycl/sycl.hpp: No such file or directory`, point the
 export CPATH="$(python -c 'import sys; print(sys.prefix)')/include"
 ```
 
+Stage-to-stage transfers between XPU cards go through shared memory by default. Setting
+`SGLANG_OMNI_XPU_LEVEL_ZERO_IPC=1` moves GPU payloads of 1 MiB or more over Level-Zero IPC
+instead, card to card without the host copy. These still stay on shared memory:
+
+- transfers below `comm.level_zero_ipc_min_transfer_kb` (1 MiB by default);
+- payloads larger than the sender's staging pool, `comm.level_zero_ipc_pool_size_mb`
+  (64 MB by default);
+- stream chunks whose metadata carries tensors;
+- paged KV transfers, which require CUDA IPC and are not supported on XPU.
+
+It is off by default because no shipped XPU pipeline sends payloads that large yet.
+
 ### Qwen3-ASR (speech-to-text, single XPU)
 
 ```bash
