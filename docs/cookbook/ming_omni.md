@@ -232,6 +232,8 @@ The audio clip features a woman's voice, while the image depicts a woman and a d
 
 ### Video Input
 
+Video files decode on parallel decoders that share min(16, the preprocessing stage's CPUs) FFmpeg threads, split evenly among a request's videos. Set `--preprocessing.factory.video_decode_threads N` to choose that count. A value at or below the video reader's own threads (`TORCHCODEC_NUM_THREADS`, 8 by default) decodes each video on the reader alone.
+
 Video files use the same top-level request style. Limit frame count or pixel budget for predictable latency:
 
 ```bash
