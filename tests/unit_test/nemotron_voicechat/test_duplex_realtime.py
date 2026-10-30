@@ -114,6 +114,17 @@ def test_warmup_sends_three_silent_units_and_closes_its_session() -> None:
     assert client.closed_sessions == 1
 
 
+class FailingCloseClient(RecordingSessionClient):
+    async def close_session(self, identity: SessionIdentity) -> None:
+        await super().close_session(identity)
+        raise RuntimeError("session cleanup failed")
+
+
+def test_warmup_fails_when_its_session_cleanup_fails() -> None:
+    with pytest.raises(RuntimeError, match="session cleanup failed"):
+        asyncio.run(single_session_deployment(FailingCloseClient()).warmup(30))
+
+
 def send_event(
     websocket: WebSocketTestSession, event_type: str, **fields: JsonValue
 ) -> None:

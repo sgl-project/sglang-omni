@@ -16,7 +16,7 @@ from sglang_omni.models.nemotron_voicechat.payload_types import (
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import OutputChunk, SessionIdentity, SessionLimits
 from sglang_omni.serve.realtime.adapters import CoordinatorAdapter
-from sglang_omni.serve.realtime.control import Drained, Failure
+from sglang_omni.serve.realtime.control import Closed, Drained, Failure
 from sglang_omni.serve.realtime.manager import (
     RealtimeDeployment,
     runtime_limits_for_pipeline,
@@ -152,16 +152,16 @@ async def warm_up(
         warmup_deployment.limits,
     )
 
-    async def drain() -> None:
+    async def drain(until: type[Drained] | type[Closed]) -> None:
         async for envelope in runtime.outputs():
             if isinstance(envelope.event, Failure):
                 raise RuntimeError(envelope.event.message)
-            elif isinstance(envelope.event, Drained):
+            elif isinstance(envelope.event, until):
                 return
             else:
                 pass
 
-    drain_task = asyncio.create_task(drain())
+    drain_task = asyncio.create_task(drain(Drained))
     try:
         await runtime.update({"output_modalities": ["audio"]}, "warmup-configure")
         # note (Junnan Li): consecutive one-position units start their KV slots at an even and an odd pool offset, and SGLang compiles its Triton KV-slot writer once per pointer alignment.
@@ -173,6 +173,9 @@ async def warm_up(
         )
         await runtime.end("warmup-end")
         await drain_task
+        await runtime.close("warmup_finished")
+        # note (Junnan Li): close reports a failed session cleanup as a Failure event, not by raising.
+        await drain(Closed)
     finally:
         await runtime.close("warmup_finished")
         drain_task.cancel()
