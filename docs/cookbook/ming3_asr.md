@@ -5,6 +5,7 @@
 ## Installation and Startup
 
 Install SGLang-Omni by following [Installation](../get_started/installation.md).
+For Intel GPUs, follow the [Ming-3.0-ASR-Tiny XPU recipe](../get_started/installation_xpu.md#ming-30-asr-tiny-speech-to-text-single-xpu).
 
 Startup uses one GPU. Preprocessing runs on the CPU. The audio encoder and the language model share that GPU.
 

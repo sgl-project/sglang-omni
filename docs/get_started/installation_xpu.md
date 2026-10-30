@@ -12,7 +12,7 @@ XPU wheel index.
 family and CUDA-only wheels would replace the `+xpu` stack.
 [`pyproject_xpu.toml`](../../pyproject_xpu.toml) encodes the XPU replacements.
 
-Core deps cover the supported models (Qwen3-ASR / TTS / Omni / MiniMax Music 3, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, MiniCPM-o, Ming-Omni, Ming-Omni-TTS, Nemotron VoiceChat, PersonaPlex, AuK/AuK-Flash and dots.tts) plus the API server;
+Core deps cover the supported models (Qwen3-ASR / TTS / Omni / MiniMax Music 3, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, MiniCPM-o, Ming-Omni, Ming-Omni-TTS, Ming-3.0-ASR-Tiny, Nemotron VoiceChat, PersonaPlex, AuK/AuK-Flash and dots.tts) plus the API server;
 `[eval]` adds SeedTTS/WER tooling and `[all]` aliases it. `[fun-cosyvoice3]` adds
 that model's CosyVoice dependencies — see
 [Fun-CosyVoice3](#fun-cosyvoice3-text-to-speech-single-xpu). ZONOS2 also serves here,
@@ -184,6 +184,38 @@ curl -s -X POST http://localhost:8000/v1/audio/transcriptions \
 ```
 
 See the [Nemotron cookbook](../cookbook/nemotron3_5_asr.md) for request parameters.
+
+### Ming-3.0-ASR-Tiny (speech-to-text, single XPU)
+
+Serves on the stock defaults. The Whisper audio encoder and the Ling V3 mixture-of-experts
+language model share one card, and together with the KV pool they hold about 22 GB of a 24 GB
+card, so give the model an otherwise-idle GPU.
+
+```bash
+ZE_AFFINITY_MASK=0 sgl-omni serve \
+  --model-path inclusionAI/Ming-3.0-asr-tiny \
+  --host 0.0.0.0 --port 8000
+```
+
+In another terminal, upload the cookbook's reference recording:
+
+```bash
+curl -s -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F "file=@tests/data/query_to_cars.wav" \
+  -F "model=inclusionAI/Ming-3.0-asr-tiny" \
+  -F "response_format=json"
+```
+
+Keep the default `triton` attention backend. `intel_xpu` cannot capture this model's decode
+graph, and on a clip near the 30-second limit it answers with a few unrelated characters
+instead of the transcript unless `language` is set.
+
+The backbone mixes linear-attention and full-attention layers, and their Triton kernels are
+compiled and tuned on first use, so the very first request on a host with a cold Triton cache
+takes minutes. The cache is on disk, so later server starts reuse it and their first request
+costs tens of seconds.
+
+See the [Ming-3.0-ASR cookbook](../cookbook/ming3_asr.md) for request parameters.
 
 ### Qwen3-TTS (text-to-speech, single XPU)
 
