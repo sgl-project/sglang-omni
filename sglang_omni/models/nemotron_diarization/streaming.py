@@ -18,6 +18,7 @@ from sglang_omni.models.nemotron_diarization.backend import (
 )
 from sglang_omni.models.nemotron_diarization.model import NemotronDiarizationModel
 from sglang_omni.models.nemotron_diarization.speaker_cache import SpeakerCache
+from sglang_omni.utils.device import supports_device_streams
 
 # note (Ryan Stewart): At most one second of PCM16 per message.
 MAX_AUDIO_BYTES = SAMPLE_RATE * 2
@@ -75,9 +76,11 @@ class LiveDiarization:
             window_frames = self.chunk_frames + self.right_frames
             if not final and self.samples < (self.frame + window_frames) * 160 + 256:
                 break
-            elif self.state.cache.is_cuda:
+            elif supports_device_streams(self.device):
                 # note (Ryan Stewart): Keep old cache storage alive until this stream has read it.
-                stream = torch.cuda.current_stream(self.device)
+                stream = torch.get_device_module(self.device).current_stream(
+                    self.device
+                )
                 for tensor in (
                     self.state.cache,
                     self.state.fifo,

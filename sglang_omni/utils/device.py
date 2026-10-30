@@ -8,6 +8,7 @@ accelerator runtime; everything else is string work.
 from __future__ import annotations
 
 from contextlib import AbstractContextManager, nullcontext
+from types import ModuleType
 
 import torch
 
@@ -30,6 +31,13 @@ def device_guard(device: torch.device) -> AbstractContextManager[None]:
         return torch.get_device_module(device).device(device)
     else:
         return nullcontext()
+
+
+def stage_stream_module() -> ModuleType:
+    """The stream and event API of the accelerator this host's stages run on."""
+    from sglang_omni.platforms import current_platform
+
+    return torch.get_device_module(current_platform.device_type)
 
 
 def with_index(dev_type: str, raw_index: str, index: int | None) -> str:
@@ -104,5 +112,6 @@ __all__ = [
     "has_device_streams",
     "resolve_concrete_device",
     "resolve_device_spec",
+    "stage_stream_module",
     "supports_device_streams",
 ]
