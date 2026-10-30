@@ -12,13 +12,11 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import functools
-import io
 import json
 import logging
 import os
 import string
 import time
-import wave
 
 import aiohttp
 import requests
@@ -42,11 +40,6 @@ logger = logging.getLogger(__name__)
 
 OMNI_WHISPER_MODEL_PATH = "openai/whisper-large-v3"
 OMNI_WHISPER_REQUEST_TIMEOUT_S = 300
-# note (aaron): the Whisper encoder accepts at most ~30 s per request
-# (nb_max_frames=3000). The transformers pipeline uses chunk_length_s=30 and
-# long talker audio mirrors that.
-OMNI_WHISPER_CHUNK_LENGTH_S = 30
-OMNI_WHISPER_CHUNK_STRIDE_S = 25
 OMNI_WHISPER_SAMPLE_RATE = 16000
 
 QWEN3_ASR_MODEL_PATH = "Qwen/Qwen3-ASR-1.7B"
@@ -108,17 +101,6 @@ def _load_wav_mono_16k(wav_path: str) -> torch.Tensor:
     return audio
 
 
-def _wav_bytes_from_mono_16k(audio: torch.Tensor) -> bytes:
-    pcm16 = (audio.clamp(-1.0, 1.0) * 32767.0).to(torch.int16).cpu()
-    buffer = io.BytesIO()
-    with wave.open(buffer, "wb") as wav_file:
-        wav_file.setnchannels(1)
-        wav_file.setsampwidth(2)
-        wav_file.setframerate(OMNI_WHISPER_SAMPLE_RATE)
-        wav_file.writeframes(pcm16.numpy().tobytes())
-    return buffer.getvalue()
-
-
 def _post_omni_whisper_transcription(
     asr: dict,
     audio_bytes: bytes,
@@ -147,36 +129,15 @@ def _post_omni_whisper_transcription(
 
 
 def _transcribe_omni_whisper(asr: dict, wav_path: str, lang: str) -> str:
-    audio = _load_wav_mono_16k(wav_path)
-    duration_s = float(audio.shape[0]) / OMNI_WHISPER_SAMPLE_RATE
-    if duration_s <= OMNI_WHISPER_CHUNK_LENGTH_S:
-        with open(wav_path, "rb") as audio_file:
-            return _post_omni_whisper_transcription(
-                asr,
-                audio_file.read(),
-                os.path.basename(wav_path),
-                lang,
-            )
-
-    chunk_samples = OMNI_WHISPER_CHUNK_LENGTH_S * OMNI_WHISPER_SAMPLE_RATE
-    stride_samples = OMNI_WHISPER_CHUNK_STRIDE_S * OMNI_WHISPER_SAMPLE_RATE
-    chunk_texts: list[str] = []
-    for start in range(0, int(audio.shape[0]), stride_samples):
-        chunk = audio[start : start + chunk_samples]
-        if chunk.numel() == 0:
-            break
-        chunk_bytes = _wav_bytes_from_mono_16k(chunk)
-        chunk_texts.append(
-            _post_omni_whisper_transcription(
-                asr,
-                chunk_bytes,
-                f"{os.path.basename(wav_path)}.chunk{start // stride_samples}.wav",
-                lang,
-            ).strip()
+    # note (WenJing95): the server splits audio longer than 30 s into
+    # non-overlapping chunks, so the whole file goes in one request.
+    with open(wav_path, "rb") as audio_file:
+        return _post_omni_whisper_transcription(
+            asr,
+            audio_file.read(),
+            os.path.basename(wav_path),
+            lang,
         )
-        if start + chunk_samples >= audio.shape[0]:
-            break
-    return " ".join(text for text in chunk_texts if text)
 
 
 def load_omni_whisper_asr(
