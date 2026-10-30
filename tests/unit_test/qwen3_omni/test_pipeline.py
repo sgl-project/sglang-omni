@@ -438,6 +438,7 @@ def test_qwen_preprocessor_two_videos_and_audio_with_real_processor(
     pre.default_video_min_pixels = 28 * 28
     pre.default_video_max_pixels = 28 * 28
     pre.default_video_total_pixels = total_pixels
+    pre.video_decode_threads = 16
     pre.processor = processor
     payload = StagePayload(
         request_id="two-videos-and-audio",
@@ -533,6 +534,7 @@ def test_qwen_preprocessor_passes_embedded_video_audio_to_processor(
     pre.default_video_min_pixels = None
     pre.default_video_max_pixels = None
     pre.default_video_total_pixels = None
+    pre.video_decode_threads = 16
     pre.processor = FakeProcessor()
     payload = StagePayload(
         request_id="embedded-audio",
@@ -767,6 +769,7 @@ def test_qwen_preprocessor_rejects_text_too_long_to_fit_before_tokenizing(
     pre.normalizer = NFC()
     for name in ("fps", "max_frames", "min_pixels", "max_pixels", "total_pixels"):
         setattr(pre, "default_video_" + name, None)
+    pre.video_decode_threads = 16
     pre.processor = FakeProcessor()
     payload = StagePayload(
         request_id="long-text",
@@ -2284,6 +2287,7 @@ def decoded_audio_preprocessor(monkeypatch):
     pre.processor = Processor()
     for name in ("fps", "max_frames", "min_pixels", "max_pixels", "total_pixels"):
         setattr(pre, "default_video_" + name, None)
+    pre.video_decode_threads = 16
     loaded = {"audio": [np.zeros(10000, dtype=np.float32)], "video": [], "loads": 0}
 
     async def audio_loader(raw, **kwargs):
@@ -2713,6 +2717,7 @@ def test_threaded_preprocessing_loads_repeated_remote_images(monkeypatch):
     pre.processor = Processor()
     for name in ("fps", "max_frames", "min_pixels", "max_pixels", "total_pixels"):
         setattr(pre, "default_video_" + name, None)
+    pre.video_decode_threads = 16
     monkeypatch.setattr(qwen_stages, "Qwen3OmniPreprocessor", lambda **_: pre)
     # Isolate the old global client so this catches cross-request loop reuse.
     monkeypatch.setattr(
@@ -2865,6 +2870,7 @@ def bare_preprocessor(processor: Mock) -> preprocessor_mod.Qwen3OmniPreprocessor
         "default_video_total_pixels",
     ):
         setattr(pre, name, None)
+    pre.video_decode_threads = 16
     return pre
 
 

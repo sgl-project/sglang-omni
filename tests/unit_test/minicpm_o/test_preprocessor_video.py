@@ -94,6 +94,7 @@ def video_preprocessor(
     preprocessor._processor = video_processor  # noqa: leading-underscore  # Existing processor injection contract.
     preprocessor.speech_enabled = False
     preprocessor.tokenizer = PreTrainedTokenizerBase(chat_template=CHAT_TEMPLATE)
+    preprocessor.video_decode_threads = 16
     return preprocessor
 
 

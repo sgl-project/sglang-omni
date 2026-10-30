@@ -45,6 +45,7 @@ def audio_preprocessor() -> Qwen3OmniPreprocessor:
     preprocessor.default_video_min_pixels = None
     preprocessor.default_video_max_pixels = None
     preprocessor.default_video_total_pixels = None
+    preprocessor.video_decode_threads = 16
     preprocessor.processor = Mock(
         spec=Qwen3OmniMoeProcessor,
         return_value={
