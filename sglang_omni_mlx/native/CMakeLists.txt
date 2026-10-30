@@ -251,3 +251,24 @@ set_target_properties(music3_server music3_synthesize PROPERTIES
 install(TARGETS music3_server music3_synthesize RUNTIME DESTINATION bin)
 
 install(FILES licenses/music3-MIT.txt DESTINATION licenses)
+
+# Note (Jiaxin Deng): Chatterbox-Turbo: chatterbox_server, with the CUDA
+# server's /v1/audio/speech API and reference-audio voice cloning, and its
+# parity tool.
+add_library(chatterbox STATIC src/chatterbox/chatterbox_audio.cpp
+  src/chatterbox/chatterbox_speaker.cpp src/chatterbox/chatterbox_voice_encoder.cpp
+  src/chatterbox/chatterbox_speech_tokenizer.cpp
+  src/chatterbox/chatterbox_flow.cpp src/chatterbox/chatterbox_vocoder.cpp
+  src/chatterbox/chatterbox_t3.cpp src/chatterbox/chatterbox_model.cpp)
+target_link_libraries(chatterbox PUBLIC qwen3_asr)
+target_compile_options(chatterbox PRIVATE -Wall -Wextra -ffp-contract=off)
+add_executable(chatterbox_server src/chatterbox/chatterbox_server.cpp)
+# Note (Jiaxin Deng): both binaries reuse Voxtral's PCM16 and WAV encoders.
+target_link_libraries(chatterbox_server PRIVATE chatterbox voxtral_tts asr_service)
+target_compile_options(chatterbox_server PRIVATE -Wall -Wextra)
+add_executable(chatterbox_synthesize tools/chatterbox_synthesize.cpp)
+target_link_libraries(chatterbox_synthesize PRIVATE chatterbox voxtral_tts)
+set_target_properties(chatterbox_server chatterbox_synthesize PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS chatterbox_server chatterbox_synthesize RUNTIME DESTINATION bin)

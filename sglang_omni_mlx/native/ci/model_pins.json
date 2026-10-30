@@ -139,5 +139,25 @@
       "tokenizer/tokenizer.json": "b1537fa9e59a537276ecbc2e12d0438edff635a1f4a4948e679774b5feb3e610",
       "tokenizer/tokenizer_config.json": "1689852cc9c45010de040c8302a8acdc0d2c4c6c740dd7e9dd0a8c704e16eada"
     }
+  },
+  "mlx-community/chatterbox-turbo-fp16": {
+    "revision": "b2d0a13aa7cfff0a06d9acb247ae91c8f19a6d75",
+    "files": {
+      "conds.safetensors": "df9ad2c54848027d94cf01f9fc0ed22bc5d3165df6e6a85c903c1124b8a78a4a",
+      "config.json": "aacce8af47c9c930636e47da981339fe0d30e08623d19226aa9a43bd3425b736",
+      "merges.txt": "1ce1664773c50f3e0cc8842619a93edc4624525b728b188a9e0be33b7726adc5",
+      "model.safetensors": "9f70328a3f6c5257257aea76e9b14c34d8225745d133e4c1e83aa31f3f72a80b",
+      "tokenizer_config.json": "bca16a2ac1ddbd78b8d6228f0031884cc74b6ea54b967d6f6d2ebae9ccde23e6",
+      "vocab.json": "f6bd25a65e4e63ca31360e9fb11c7e4f9a391a78385d640acd814092dd6eee4f"
+    },
+    "tokenizer": {
+      "repo": "mlx-community/S3TokenizerV2",
+      "revision": "e0c9886f0e1c35ae85b1f27277416fb19fc72bec",
+      "subdirectory": "speech_tokenizer",
+      "files": {
+        "config.json": "8591fcc0eaae8c2bbfc69cf9d439933ecdf2d58cb9be63d00ce88736c4f2aa9d",
+        "model.safetensors": "928726bc1f206a613d36b8f49e297eae9c5593a21bf9b92ddfe2c23f85eb92cc"
+      }
+    }
   }
 }
