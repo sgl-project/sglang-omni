@@ -62,31 +62,29 @@ def heard_prefix(
     return text_end, heard_ms > audio_ms and bool(text[text_end:].strip())
 
 
-# note (Haoling Pu): a cut reply shown as is reads to the model as how it answers, and after a few interruptions it replies with fragments (#3063).
-CUT_REPLY_NOTE = "A reply of yours that ends with … was cut off when the user interrupted it; answer the latest message in full."
+# note (Jeffro): a cut reply kept as an assistant turn reads to the model as how it answers, and after several interruptions in a row it replies with fragments even under a system note saying such replies were cut (#3063).
+CUT_REPLY_NOTE = '(You started to answer "{heard}" and I interrupted you.)'
 
 
 def prompt_messages(messages: list[ChatMessage]) -> list[ChatMessage]:
-    """The history as the model reads it: a reply the listener cut ends with … under a system note, and only such a reply ends with …."""
+    """The history as the model reads it: a reply the listener cut is a note after the question it answered, the user's next words join that message, and a finished reply loses a trailing …."""
     prompt: list[ChatMessage] = []
-    has_cut = False
     for message in messages:
         if message.is_cut:
-            content = message.content.removesuffix("…")
-            prompt.append(ChatMessage(role="assistant", content=f"{content}…"))
-            has_cut = True
+            note = CUT_REPLY_NOTE.format(heard=message.content)
+            prompt[-1] = ChatMessage(
+                role="user", content=f"{prompt[-1].content} {note}"
+            )
         elif message.role == "assistant":
             # note (Haoling Pu): the model sometimes ends a finished reply with …, which would read as cut and was followed by an empty reply in a live run.
             content = message.content.rstrip().removesuffix("…")
             prompt.append(ChatMessage(role="assistant", content=content))
+        elif message.role == "user" and prompt[-1].role == "user":
+            prompt[-1] = ChatMessage(
+                role="user", content=f"{prompt[-1].content} {message.content}"
+            )
         else:
             prompt.append(message)
-    if has_cut:
-        prompt[0] = ChatMessage(
-            role="system", content=f"{prompt[0].content} {CUT_REPLY_NOTE}"
-        )
-    else:
-        pass
     return prompt
 
 
