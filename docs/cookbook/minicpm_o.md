@@ -93,3 +93,5 @@ audio = client.audio.speech.create(
 ```
 
 The speech output is non-streaming. The sampling fields you set, such as `temperature`, `top_p` and `max_new_tokens`, apply to the Talker, which generates the speech; the rest keep the Talker's defaults.
+
+Code2Wav decodes each request with 5 flow-matching steps, as the full-duplex path does. `--code2wav.factory.n_timesteps 10` restores the 10 steps of the checkpoint's reference non-streaming decode.
