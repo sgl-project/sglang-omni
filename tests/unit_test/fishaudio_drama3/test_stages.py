@@ -159,6 +159,8 @@ def test_preprocessing_reads_the_checkpoint_and_loads_the_codec_on_cpu(
         codec_path=str(tmp_path / "codec.pth"),
         reference_encode_dtype="float32",
         max_reference_audio_seconds=30.0,
+        reference_encode_max_batch_size=8,
+        reference_encode_max_batch_wait_ms=2,
     )
 
     preprocessor = scheduler.fn
@@ -172,6 +174,9 @@ def test_preprocessing_reads_the_checkpoint_and_loads_the_codec_on_cpu(
         None,
         30.0,
     )
+    assert preprocessor.reference_encoder.batching_enabled
+    assert preprocessor.reference_encoder.max_batch_size == 8
+    assert preprocessor.reference_encoder.max_batch_wait_ms == 0.002
     assert torch.equal(
         generation_input_of(preprocessor(lowered({"input": "hello"}))).prompt_rows,
         rows,
@@ -195,6 +200,8 @@ def test_a_bfloat16_reference_encode_on_the_cpu_is_refused(
             codec_path=str(tmp_path / "codec.pth"),
             reference_encode_dtype="bfloat16",
             max_reference_audio_seconds=60.0,
+            reference_encode_max_batch_size=8,
+            reference_encode_max_batch_wait_ms=2,
         )
 
     assert codec_loads.calls == []
@@ -249,6 +256,8 @@ def test_preprocessing_warms_the_encoder_up_once_on_an_accelerator(
         codec_path=str(tmp_path / "codec.pth"),
         reference_encode_dtype=reference_encode_dtype,
         max_reference_audio_seconds=60.0,
+        reference_encode_max_batch_size=8,
+        reference_encode_max_batch_wait_ms=2,
     )
 
     assert codec.encoded_shapes == expected_encoded_shapes

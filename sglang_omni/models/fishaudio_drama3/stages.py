@@ -99,6 +99,8 @@ def create_preprocessing_executor(
     codec_path: str,
     reference_encode_dtype: Literal["float32", "bfloat16"],
     max_reference_audio_seconds: float,
+    reference_encode_max_batch_size: int,
+    reference_encode_max_batch_wait_ms: int,
 ) -> ThreadedSimpleScheduler:
     """Speech requests to prompt rows; reference audio encodes with the vocoder's codec."""
     resolved_device = str(resolve_concrete_device(device, gpu_id))
@@ -136,7 +138,10 @@ def create_preprocessing_executor(
         config=FishOmniConfig.from_pretrained(checkpoint_dir),
         max_prompt_rows=max_prompt_rows,
         reference_encoder=ReferenceEncodeService(
-            reference_encode_hook, log_prefix="Fish Audio Drama 3"
+            reference_encode_hook,
+            log_prefix="Fish Audio Drama 3",
+            max_batch_size=reference_encode_max_batch_size,
+            max_batch_wait_ms=reference_encode_max_batch_wait_ms,
         ),
     )
     return ThreadedSimpleScheduler(preprocessor, max_concurrency=max_concurrency)
