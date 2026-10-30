@@ -23,9 +23,13 @@ from sglang.srt.mem_cache.allocator import TokenToKVPoolAllocator
 from sglang.srt.mem_cache.kv_index_translator import KVIndexTranslator
 from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool, ReqToTokenPool
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
+from sglang.srt.model_executor.runner.decode_cuda_graph_runner import (
+    DecodeCudaGraphRunner,
+)
 from sglang.srt.sampling.sampling_params import SamplingParams
 
 import sglang_omni.models.llada2_uni.cfg_attention_backend as cfg_attention_backend
+from sglang_omni.model_runner.sglang_model_runner import CFGCudaGraphRunner
 from sglang_omni.models.llada2_uni.low_confidence_cfg import LowConfidenceCFG
 from sglang_omni.models.llada2_uni.request_builders import LLaDA2UniRequest
 from sglang_omni.scheduling.dllm_scheduler import DllmScheduler
@@ -75,9 +79,29 @@ def make_cfg_group(size: int) -> list[LLaDA2UniRequest]:
 
 
 @pytest.mark.parametrize(
-    ("size", "rescale"), [(1, 0.0), (2, 0.0), (3, 0.0), (2, 1.0), (3, 1.0)]
+    "prefix,expected", [(0, False), (4, False), (6, True), (8, True)]
 )
-def test_guidance_updates_all_cfg_branches(size: int, rescale: float) -> None:
+def test_cfg_graph_waits_for_padding_to_enter_cached_prefix(
+    monkeypatch: pytest.MonkeyPatch, prefix: int, expected: bool
+) -> None:
+    monkeypatch.setattr(
+        DecodeCudaGraphRunner,
+        "can_run_graph",
+        lambda self, batch: True,
+    )
+    runner = object.__new__(CFGCudaGraphRunner)
+    batch = NS(
+        dllm_left_pad_lens_cpu=[0, 6, 2],
+        extend_prefix_lens_cpu=[prefix] * 3,
+    )
+    assert runner.can_run_graph(batch) is expected
+
+
+@pytest.mark.parametrize("size", [1, 2, 3])
+@pytest.mark.parametrize("rescale", [0.0, 0.7])
+def test_guidance_updates_all_cfg_branches(
+    size: int, rescale: float
+) -> None:
     algorithm = LowConfidenceCFG(make_config())
     algorithm.threshold = 0.94 if size == 3 else 0.8
     requests = make_cfg_group(size)
@@ -92,6 +116,8 @@ def test_guidance_updates_all_cfg_branches(size: int, rescale: float) -> None:
     input_ids = torch.tensor([1, 9, 9, 9] * size)
     if size > 1:
         input_ids[4] = 9
+    else:
+        pass
     initial_ids = input_ids.view(size, 4).clone()
     observed_inputs: list[torch.Tensor] = []
 
@@ -102,6 +128,8 @@ def test_guidance_updates_all_cfg_branches(size: int, rescale: float) -> None:
         if batch.input_ids[3] != 9:
             conditional_logits[1, 3] = 0.0
             conditional_logits[1, 4] = 1.5
+        else:
+            pass
         branch_scales = torch.tensor([1.0, 0.25, -0.25])[:size]
         return NS(
             logits_output=NS(
@@ -243,6 +271,17 @@ def test_attention_masks_local_and_cached_padding() -> None:
     backend.init_forward_metadata(batch)
     assert not backend.cfg_local_left_pad_active
     assert begin_forward.call_args.args[3].tolist() == [8, 2]
+
+    batch.batch_size = 2
+    backend.cfg_replay_batch = batch
+    backend.dllm_config = NS(block_size=4)
+    backend.prefill_cuda_graph_metadata = {2: backend.prefill_wrappers_paged}
+    backend.use_paged = False
+    begin_forward.reset_mock()
+    backend.init_forward_metadata_out_graph(batch)
+    begin_forward.assert_called_once()
+    assert begin_forward.call_args.args[3].tolist() == [8, 2]
+    assert begin_forward.call_args.kwargs["plan"] is batch.kv_loc_plan
 
 
 @pytest.mark.accelerator
