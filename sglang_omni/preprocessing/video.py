@@ -35,9 +35,8 @@ except (ImportError, OSError, RuntimeError):
     # note (ratish): images whose torchcodec wheel links CUDA-only libraries cannot load it.
     VideoDecoder = None
 
-# The qwen-vl-utils torchcodec reader's ffmpeg threads when TORCHCODEC_NUM_THREADS is unset.
+# note (ratish): qwen-vl-utils' torchcodec reader decodes with 8 ffmpeg threads when TORCHCODEC_NUM_THREADS is unset.
 READER_FFMPEG_THREADS = 8
-# FFmpeg's MAX_AUTO_THREADS: libavcodec warns that one decoder above this many threads is not recommended.
 FFMPEG_MAX_DECODER_THREADS = 16
 
 logger = logging.getLogger(__name__)
