@@ -3,11 +3,18 @@
 #include "common/text.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <deque>
 #include <map>
+#include <mutex>
+#include <thread>
+#include <unordered_set>
+
+#include "mlx/backend/metal/device.h"
 
 namespace qwen3_asr {
 
@@ -23,6 +30,160 @@ constexpr const char *kLanguageMarker = "language";
 constexpr const char *kAudioPad = "<|audio_pad|>";
 constexpr int kOutputTokensPerAudioSecond = 10;
 constexpr int kMinDefaultOutputTokens = 128;
+
+// Note (XXXXRT666): after even 0.1 s idle the CPU cluster's clock stays low
+// until about 50 ms of load, and a transcription, which mostly waits on the
+// GPU, never loads it enough: graph building and kernel encoding then lag the
+// GPU throughout, up to a fifth slower end to end on the M4 Pro and M4 Max.
+// A thread spinning beside the transcription keeps the cluster's clock up.
+class ClockKeeper {
+public:
+  ClockKeeper()
+      : thread_([this] {
+          while (!stopped_.load(std::memory_order_relaxed)) {
+          }
+        }) {}
+  ~ClockKeeper() {
+    stopped_.store(true, std::memory_order_relaxed);
+    thread_.join();
+  }
+  ClockKeeper(const ClockKeeper &) = delete;
+  ClockKeeper &operator=(const ClockKeeper &) = delete;
+
+private:
+  std::atomic<bool> stopped_{false};
+  std::thread thread_;
+};
+
+// Note (XXXXRT666): the GPU also clocks down in the gaps between a
+// transcription's command buffers, the more after seconds idle. A
+// one-simdgroup kernel kept in flight on a queue of its own keeps it busy
+// beside the transcription; with the residency heartbeat, a 0.6B transcription
+// after 5-30 s idle is 13-16% faster on the M4 Pro and M5 Max.
+class GpuKeeper {
+public:
+  GpuKeeper()
+      : buffers_in_flight_(std::make_shared<std::atomic<int>>(0)),
+        thread_([this] {
+          while (!stopped_.load(std::memory_order_relaxed)) {
+            if (buffers_in_flight_->load() < kBuffersInFlight) {
+              Commit(Shared(), Shared().iterations_per_buffer,
+                     buffers_in_flight_)
+                  ->release();
+            } else {
+              std::this_thread::sleep_for(kPollInterval);
+            }
+          }
+        }) {}
+  // Buffers still in flight finish on their own.
+  ~GpuKeeper() {
+    stopped_.store(true, std::memory_order_relaxed);
+    thread_.join();
+  }
+  GpuKeeper(const GpuKeeper &) = delete;
+  GpuKeeper &operator=(const GpuKeeper &) = delete;
+
+  // Compiles and times the kernel, once per process.
+  static void Prepare() { Shared(); }
+
+private:
+  static constexpr int kBuffersInFlight = 2;
+  static constexpr double kBufferSeconds = 5e-4;
+  static constexpr uint32_t kProbeIterations = 200000;
+  static constexpr int kProbeCount = 3;
+  static constexpr std::chrono::microseconds kPollInterval{50};
+  static constexpr const char *kSource = R"(
+#include <metal_stdlib>
+using namespace metal;
+kernel void keep_warm(device uint *sink [[buffer(0)]],
+                      constant uint &iterations [[buffer(1)]],
+                      uint thread_index [[thread_position_in_grid]]) {
+  uint x = thread_index;
+  for (uint i = 0; i < iterations; ++i) {
+    x = x * 1664525u + 1013904223u;
+  }
+  if (x == 0xffffffffu) {
+    sink[0] = x;
+  } else {
+  }
+}
+)";
+
+  struct Pipeline {
+    MTL::ComputePipelineState *state = nullptr;
+    MTL::CommandQueue *queue = nullptr;
+    MTL::Buffer *sink = nullptr;
+    uint32_t iterations_per_buffer = 0;
+  };
+
+  // The process's one pipeline and queue, never released.
+  static const Pipeline &Shared() {
+    static const Pipeline shared = [] {
+      MTL::Device *device = mx::metal::device(mx::Device::gpu).mtl_device();
+      NS::AutoreleasePool *pool = NS::AutoreleasePool::alloc()->init();
+      NS::Error *error = nullptr;
+      MTL::Library *library = device->newLibrary(
+          NS::String::string(kSource, NS::UTF8StringEncoding), nullptr, &error);
+      if (library == nullptr) {
+        throw std::runtime_error("the GPU keeper's kernel failed to compile");
+      } else {
+      }
+      MTL::Function *function = library->newFunction(
+          NS::String::string("keep_warm", NS::UTF8StringEncoding));
+      Pipeline pipeline;
+      pipeline.state = device->newComputePipelineState(function, &error);
+      function->release();
+      library->release();
+      pipeline.queue = device->newCommandQueue();
+      pipeline.sink =
+          device->newBuffer(sizeof(uint32_t), MTL::ResourceStorageModeShared);
+      pool->release();
+      std::vector<double> iterations_per_second;
+      for (int i = 0; i < kProbeCount; ++i) {
+        MTL::CommandBuffer *probe = Commit(pipeline, kProbeIterations, nullptr);
+        probe->waitUntilCompleted();
+        iterations_per_second.push_back(
+            kProbeIterations / (probe->GPUEndTime() - probe->GPUStartTime()));
+        probe->release();
+      }
+      std::sort(iterations_per_second.begin(), iterations_per_second.end());
+      pipeline.iterations_per_buffer = static_cast<uint32_t>(
+          iterations_per_second[kProbeCount / 2] * kBufferSeconds);
+      return pipeline;
+    }();
+    return shared;
+  }
+
+  // One retained command buffer of the kernel, committed; with a counter, it
+  // counts itself in flight until it completes.
+  static MTL::CommandBuffer *
+  Commit(const Pipeline &pipeline, uint32_t iterations,
+         const std::shared_ptr<std::atomic<int>> &buffers_in_flight) {
+    NS::AutoreleasePool *pool = NS::AutoreleasePool::alloc()->init();
+    MTL::CommandBuffer *buffer = pipeline.queue->commandBuffer();
+    MTL::ComputeCommandEncoder *encoder = buffer->computeCommandEncoder();
+    encoder->setComputePipelineState(pipeline.state);
+    encoder->setBuffer(pipeline.sink, 0, 0);
+    encoder->setBytes(&iterations, sizeof(iterations), 1);
+    encoder->dispatchThreadgroups(MTL::Size(1, 1, 1), MTL::Size(32, 1, 1));
+    encoder->endEncoding();
+    if (buffers_in_flight != nullptr) {
+      buffers_in_flight->fetch_add(1);
+      buffer->addCompletedHandler([buffers_in_flight](MTL::CommandBuffer *) {
+        buffers_in_flight->fetch_sub(1);
+      });
+    } else {
+    }
+    buffer->retain();
+    buffer->commit();
+    pool->release();
+    return buffer;
+  }
+
+  const std::shared_ptr<std::atomic<int>> buffers_in_flight_;
+  std::atomic<bool> stopped_{false};
+  std::thread thread_;
+};
 
 const std::map<std::string, std::string> &LanguageCodeToName() {
   static const std::map<std::string, std::string> table = {
@@ -124,6 +285,67 @@ std::optional<std::string> NormalizeLanguage(const std::string &language) {
   return stripped;
 }
 
+// Note (XXXXRT666): macOS lets the weights' residency lapse after seconds of
+// GPU idle despite a standing request, and the first transcription after idle
+// pays 3-9% to restore it on the M4 Pro and M5 Max. Requesting residency again
+// every 500 ms keeps them resident.
+class ResidencyHeartbeat {
+public:
+  explicit ResidencyHeartbeat(const omni_common::WeightMap &weights) {
+    MTL::Device *device = mx::metal::device(mx::Device::gpu).mtl_device();
+    NS::AutoreleasePool *pool = NS::AutoreleasePool::alloc()->init();
+    MTL::ResidencySetDescriptor *descriptor =
+        MTL::ResidencySetDescriptor::alloc()->init();
+    descriptor->setInitialCapacity(weights.size());
+    NS::Error *error = nullptr;
+    residency_set_ = device->newResidencySet(descriptor, &error);
+    descriptor->release();
+    if (residency_set_ == nullptr) {
+      throw std::runtime_error("cannot create the weights' residency set");
+    } else {
+    }
+    std::unordered_set<const void *> buffers;
+    for (const auto &[name, weight] : weights) {
+      const void *buffer = weight.buffer().ptr();
+      if (buffers.insert(buffer).second) {
+        residency_set_->addAllocation(
+            static_cast<const MTL::Allocation *>(buffer));
+      } else {
+      }
+    }
+    residency_set_->commit();
+    pool->release();
+    thread_ = std::thread([this] {
+      std::unique_lock<std::mutex> lock(mutex_);
+      do {
+        residency_set_->requestResidency();
+      } while (!stop_requested_.wait_for(lock, kRequestInterval,
+                                         [this] { return stopped_; }));
+    });
+  }
+  ~ResidencyHeartbeat() {
+    {
+      const std::lock_guard<std::mutex> lock(mutex_);
+      stopped_ = true;
+    }
+    stop_requested_.notify_one();
+    thread_.join();
+    residency_set_->endResidency();
+    residency_set_->release();
+  }
+  ResidencyHeartbeat(const ResidencyHeartbeat &) = delete;
+  ResidencyHeartbeat &operator=(const ResidencyHeartbeat &) = delete;
+
+private:
+  static constexpr std::chrono::milliseconds kRequestInterval{500};
+
+  MTL::ResidencySet *residency_set_ = nullptr;
+  std::mutex mutex_;
+  std::condition_variable stop_requested_;
+  bool stopped_ = false;
+  std::thread thread_;
+};
+
 Qwen3ASRTranscriber::Qwen3ASRTranscriber(
     const std::filesystem::path &model_directory)
     : model_(model_directory), tokenizer_(model_directory),
@@ -131,7 +353,13 @@ Qwen3ASRTranscriber::Qwen3ASRTranscriber(
       end_of_text_id_(tokenizer_.AddedTokenId("<|endoftext|>")),
       im_end_id_(tokenizer_.AddedTokenId("<|im_end|>")),
       asr_text_ids_(tokenizer_.Encode(kAsrTextMarker)),
-      language_ids_(tokenizer_.Encode(kLanguageMarker)) {}
+      language_ids_(tokenizer_.Encode(kLanguageMarker)),
+      residency_heartbeat_(
+          std::make_unique<ResidencyHeartbeat>(model_.Weights())) {
+  GpuKeeper::Prepare();
+}
+
+Qwen3ASRTranscriber::~Qwen3ASRTranscriber() = default;
 
 std::vector<int>
 Qwen3ASRTranscriber::PromptIds(int audio_token_count,
@@ -184,6 +412,8 @@ TranscriptionResult Qwen3ASRTranscriber::Transcribe(
     throw TranscriptionCancelled();
   } else {
   }
+  const ClockKeeper clock_keeper;
+  const GpuKeeper gpu_keeper;
   auto stage_started = std::chrono::steady_clock::now();
   const auto record_stage = [&](const mx::array &output,
                                 double TranscriptionProfile::*seconds) {

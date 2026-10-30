@@ -45,6 +45,9 @@ public:
   mlx::core::array Decode(const mlx::core::array &embeddings,
                           std::vector<Qwen3ASRKVCache> &caches, int rows) const;
   std::vector<Qwen3ASRKVCache> NewCaches() const;
+  const omni_common::WeightMap &Weights() const {
+    return checkpoint_.Weights();
+  }
 
 private:
   Qwen3ASR(const nlohmann::json &config,
