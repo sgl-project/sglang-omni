@@ -486,7 +486,7 @@ def test_parallel_torchcodec_decode_returns_the_reader_frames(
 @pytest.mark.skipif(
     video.VideoDecoder is None, reason="the torchcodec native decoder is unavailable"
 )
-def test_a_request_s_videos_share_its_decode_threads(
+def test_videos_of_one_request_share_its_decode_threads(
     mpeg4_video: Path, opened_decoders: list[tuple[int, list[int]]]
 ) -> None:
     """Each video a request loaded at once took the whole decode thread count, so videos loading together multiplied the FFmpeg threads."""
