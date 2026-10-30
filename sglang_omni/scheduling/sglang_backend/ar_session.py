@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 from array import array
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -217,6 +218,36 @@ class BridgeSession:
     output_read: StagePayload | None = None
 
 
+@dataclass(kw_only=True)
+class SessionAdmission:
+    """Capacity derived from live requests for one host-only admission pass."""
+
+    records: Mapping[str, SessionKV] | None = None
+    demands: dict[str, tuple[int, int]] = field(default_factory=dict)
+    request_rows: int = 0
+    kv_tokens: int = 0
+
+    def include(self, unit: SessionUnit) -> None:
+        request = unit.session_request
+        if request is None:
+            return
+        else:
+            assert self.records is not None
+        rows = int(
+            not request.kv.holds_kv and unit.session_identity.id not in self.records
+        )
+        tokens = max(
+            0,
+            len(request.origin_input_ids)
+            + int(request.sampling_params.max_new_tokens or 0)
+            - request.kv.kv_allocated_len,
+        )
+        previous_rows, previous_tokens = self.demands.get(unit.request_id, (0, 0))
+        self.request_rows += rows - previous_rows
+        self.kv_tokens += tokens - previous_tokens
+        self.demands[unit.request_id] = rows, tokens
+
+
 class ARSessionBridge:
     """Map pipeline open, append, and close onto one SGLang streaming session."""
 
@@ -228,8 +259,37 @@ class ARSessionBridge:
         self.sessions: dict[str, BridgeSession] = {}
         self.units_by_request_id: dict[str, SessionUnit] = {}
         self.cancelling_request_id: str | None = None
+        self.admission: SessionAdmission | None = None
+
+    @contextmanager
+    def admission_batch(self) -> Iterator[None]:
+        self.admission = SessionAdmission()
+        try:
+            yield
+        finally:
+            self.admission = None
+
+    def admission_snapshot(self) -> SessionAdmission:
+        admission = self.admission
+        if admission is None:
+            admission = SessionAdmission()
+        else:
+            admission.demands.clear()
+            admission.request_rows = 0
+            admission.kv_tokens = 0
+        admission.records = self.bridge_scheduler.tree_cache.session_records()
+        for unit in self.units_by_request_id.values():
+            admission.include(unit)
+        return admission
+
+    def invalidate_admission(self) -> None:
+        if self.admission is not None:
+            self.admission.records = None
+        else:
+            pass
 
     def drain(self) -> None:
+        self.invalidate_admission()
         self.bridge_scheduler.synchronize_launched_decode()
         self.bridge_scheduler.resolve_pending_async()
 
@@ -391,7 +451,13 @@ class ARSessionBridge:
     def create_session_request(
         self, payload: StagePayload, request_data: SGLangARRequestData
     ) -> None:
-        self.drain()
+        if self.admission is None:
+            self.drain()
+        elif self.admission.records is None:
+            self.drain()
+            self.admission = self.admission_snapshot()
+        else:
+            pass
         unit = self.units_by_request_id[payload.request_id]
         adapter_request = request_data.req
         assert (
@@ -500,6 +566,7 @@ class ARSessionBridge:
         self.adapter.bind_request(unit.session_identity, request_data, unit)
 
     def release_append_unit(self, request_id: str) -> None:
+        self.invalidate_admission()
         unit = self.units_by_request_id.pop(request_id, None)
         if unit is not None:
             self.adapter.on_abort(unit.session_identity, unit)
@@ -564,17 +631,27 @@ class ARSessionBridge:
             session_request is not None
         ), f"session capacity check {request_id} requires a session request"
         cache = self.bridge_scheduler.tree_cache
-        records = cache.session_records()
+        admission = self.admission
+        if admission is None and len(self.units_by_request_id) == 1:
+            records = cache.session_records()
+            unallocated_request_count = 0
+            reserved_kv_tokens = 0
+        else:
+            if admission is None:
+                admission = self.admission_snapshot()
+            elif admission.records is None:
+                admission = self.admission_snapshot()
+                self.admission = admission
+            else:
+                admission.include(unit)
+            records = admission.records
+            assert records is not None
+            own_rows, own_tokens = admission.demands[request_id]
+            unallocated_request_count = admission.request_rows - own_rows
+            reserved_kv_tokens = admission.kv_tokens - own_tokens
         record = records.get(unit.session_identity.id)
         retained_kv_tokens = record.kv_allocated_len if record is not None else 0
         free_request_slots = self.bridge_scheduler.req_to_token_pool.free_slots
-        unallocated_request_count = sum(
-            active_append_unit is not unit
-            and active_append_unit.session_request is not None
-            and not active_append_unit.session_request.kv.holds_kv
-            and active_append_unit.session_identity.id not in records
-            for active_append_unit in self.units_by_request_id.values()
-        )
         if (
             not retained_kv_tokens
             and len(free_request_slots)
@@ -589,24 +666,6 @@ class ARSessionBridge:
             required_kv_tokens = len(session_request.origin_input_ids) + int(
                 session_request.sampling_params.max_new_tokens or 0
             )
-            reserved_kv_tokens = 0
-            for active_append_unit in self.units_by_request_id.values():
-                if (
-                    active_append_unit is unit
-                    or active_append_unit.session_request is None
-                ):
-                    continue
-                else:
-                    active_session_request = active_append_unit.session_request
-                    allocated_kv_tokens = active_session_request.kv.kv_allocated_len
-                    reserved_kv_tokens += max(
-                        0,
-                        len(active_session_request.origin_input_ids)
-                        + int(
-                            active_session_request.sampling_params.max_new_tokens or 0
-                        )
-                        - allocated_kv_tokens,
-                    )
             available_kv_tokens = (
                 self.bridge_scheduler.token_to_kv_pool_allocator.available_size()
                 + cache.evictable_size()
@@ -673,6 +732,7 @@ class ARSessionBridge:
     def complete(
         self, request_id: str, request_data: SGLangARRequestData | None = None
     ) -> None:
+        self.invalidate_admission()
         unit = self.units_by_request_id.pop(request_id, None)
         if unit is not None:
             session = self.sessions[unit.session_identity.id]
