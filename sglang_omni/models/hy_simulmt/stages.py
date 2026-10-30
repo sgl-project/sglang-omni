@@ -13,6 +13,7 @@ from sglang_omni.models.hy_simulmt.request_builders import (
     HySimulMTResultAdapter,
 )
 from sglang_omni.models.hy_simulmt.sglang_model import HYV3SpeechForCausalLM
+from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 from sglang_omni.scheduling.engine_factory import (
     AsrEngineBuilder,
     GenerationDefaults,
@@ -32,12 +33,19 @@ class HySimulMTEngineBuilder(AsrEngineBuilder[HySimulMTRequestData]):
         max_new_tokens: int,
         mem_fraction_static: float | None,
         mm_embedding_cache_size_bytes: int,
+        tp_rank: int,
+        nccl_port: int | None,
     ) -> None:
         self.max_running_requests = max_running_requests
         self.max_new_tokens = max_new_tokens
         self.mem_fraction_static = mem_fraction_static
         self.mm_embedding_cache_size_bytes = mm_embedding_cache_size_bytes
+        self.tp_rank = tp_rank
+        self.nccl_port = nccl_port
         self.context_length = 8192
+
+    def infra_kwargs(self) -> InfrastructureOptions:
+        return {"tp_rank": self.tp_rank, "nccl_port": self.nccl_port}
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir)
@@ -89,17 +97,23 @@ def create_hy_simulmt_executor(
     max_new_tokens: int = 256,
     mem_fraction_static: float | None = None,
     mm_embedding_cache_size_bytes: int = 0,
+    tp_rank: int = 0,
+    tp_size: int = 1,
+    nccl_port: int | None = None,
     server_args_overrides: Mapping[str, object] | None = None,
 ) -> OmniScheduler[HySimulMTRequestData]:
+    # A 57 GiB checkpoint needs sharding on any card too small to hold it whole.
     return HySimulMTEngineBuilder(
         max_running_requests=max_running_requests,
         max_new_tokens=max_new_tokens,
         mem_fraction_static=mem_fraction_static,
         mm_embedding_cache_size_bytes=mm_embedding_cache_size_bytes,
+        tp_rank=tp_rank,
+        nccl_port=nccl_port,
     ).build(
         model_path,
         device=device,
         gpu_id=gpu_id,
         dtype=dtype,
-        server_args_overrides=server_args_overrides,
+        server_args_overrides={**(server_args_overrides or {}), "tp_size": tp_size},
     )

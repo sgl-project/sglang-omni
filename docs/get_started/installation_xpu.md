@@ -185,6 +185,27 @@ curl -s -X POST http://localhost:8000/v1/audio/transcriptions \
 
 See the [Nemotron cookbook](../cookbook/nemotron3_5_asr.md) for request parameters.
 
+### Hy-SimulMT (speech translation, multi-XPU tensor parallel)
+
+The 57 GiB of bf16 weights do not fit one 24 GB card, so the single-card configuration in the [cookbook](../cookbook/hy_simulmt.md) needs tensor parallelism here. Four cards are the minimum: each rank then holds 14.37 GiB of weights and `--mem-fraction-static 0.75` leaves room for a 3.56 GiB KV cache (155321 tokens), measured on Arc Pro B60.
+
+```bash
+sgl-omni serve \
+  --model-path /path/to/Hy-SimulMT-30B-A3B \
+  --asr.tp_size 4 --asr.gpu "[0, 1, 2, 3]" \
+  --mem-fraction-static 0.75 \
+  --enable-realtime \
+  --host 0.0.0.0 --port 8000
+# Chinese speech to English text:
+curl -s -X POST http://localhost:8000/v1/audio/translations \
+  -F "file=@chinese.wav" -F "language=zh" -F "response_format=json"
+# English speech to Chinese text, over the shared transcription route:
+curl -s -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F "file=@english.wav" -F "language=en" -F "response_format=json"
+```
+
+Decode graphs capture on XPU for this model and stay on by default, as on CUDA.
+
 ### Qwen3-TTS (text-to-speech, single XPU)
 
 Qwen3-TTS automatically selects the `intel_xpu` attention backend when the platform and the engine stage device are both XPU. Setting any of `attention_backend`, `prefill_attention_backend`, or `decode_attention_backend` in `server_args_overrides` takes precedence over this default. CPU stages on an XPU host are unaffected.

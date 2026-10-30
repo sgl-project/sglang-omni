@@ -16,6 +16,8 @@ sgl-omni serve \
 
 The BF16 weights occupy approximately 57 GiB before KV cache and runtime allocations. A single H200 can host this configuration. Decode CUDA graphs are enabled and Torch compilation is disabled by default.
 
+For Intel GPUs, follow the [Hy-SimulMT XPU recipe](../get_started/installation_xpu.md#hy-simulmt-speech-translation-multi-xpu-tensor-parallel): 24 GB cards need the stage sharded across four of them.
+
 ## Translate an audio file
 
 For Chinese speech to English text, use the audio translation endpoint:
