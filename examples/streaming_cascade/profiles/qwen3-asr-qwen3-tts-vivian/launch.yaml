@@ -58,6 +58,7 @@ session_nodes:
     model: Qwen/Qwen3-TTS-12Hz-1.7B-Base
     reference_audio_path: examples/streaming_cascade/voices/vivian.wav
     language: auto
+    sentence_pause_ms: 200
   aligner:
     kind: alignment
     method: forced

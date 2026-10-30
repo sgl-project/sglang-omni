@@ -1372,6 +1372,24 @@ async def test_openai_speech_flushes_each_reply_before_turn_done(backends):
 
 
 @pytest.mark.asyncio
+async def test_openai_speech_pauses_between_sentences_and_counts_the_pause(backends):
+    """One pause goes between two sentences, none before the first or after the last, and reply.progress counts it."""
+    settings, _, spoken, _ = backends
+    tts = settings.component_graph().node("tts").component.model_dump()
+    outputs = await drain(
+        build({**tts, "max_sentence_words": 24, "sentence_pause_ms": 0.125}),
+        [text_chunk("Hello world. Second one.", 1), control_chunk(TURN_DONE, turn=1)],
+    )
+    played = np.concatenate(
+        [np.frombuffer(o.payload, dtype="<f4") for o in outputs if o.modality == AUDIO]
+    )
+    progress = [o.payload for o in outputs if control_type(o) == REPLY_PROGRESS]
+    assert spoken == ["Hello world.", "Second one."]
+    assert played.tolist() == [0.0, 0.5, -0.5, 0.0, 0.0, 0.0, 0.0, 0.5, -0.5]
+    assert [point["audio_ms"] for point in progress] == [0.125, 0.375]
+
+
+@pytest.mark.asyncio
 async def test_openai_speech_reports_each_sentence_end_as_a_character_offset(backends):
     settings, _, spoken, _ = backends
     tts = settings.component_graph().node("tts").component.model_dump()

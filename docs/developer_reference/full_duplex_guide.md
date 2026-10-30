@@ -629,6 +629,8 @@ Cuts the reply text into sentences and sends one streaming request per sentence 
 
 Every sentence is its own request, and Qwen3-TTS samples each request with a fresh seed. A CustomVoice speaker given by `voice` is held only by its speaker token, so its timbre moves from sentence to sentence and from turn to turn; a Base model cloning one `reference_audio_path` for every request keeps one voice, which is why the English profiles clone `examples/streaming_cascade/voices/vivian.wav`, a recording of the CustomVoice speaker Vivian. They leave `reference_text` empty, so Base clones from the recording's speaker embedding alone: with the transcript it continues the recording itself and opens each sentence with a pause of about half a second, which a listener hears as a later reply.
 
+Each request ends at its last word, so the sentences of a reply play with about 0.12 s between them, where Base reading the whole reply in one request leaves about 0.35 s. `sentence_pause_ms` adds silence before every request after the first, including between the parts of a sentence cut by `max_sentence_words`, and the vivian profiles set it to 200, which brings the pause between sentences closer to the whole-reply one than anything else measured. Sending each sentence with the first words of the next one, and cutting its audio where the forced aligner put the sentence's end, also lengthens the pause but changes nothing else measured (sentence-final pitch and lengthening, error rate, UTMOS), costs 13 to 37% more synthesis for the audio it drops, and makes the sentence's end wait for the aligner. A lookahead inside the model would need the speech service to take more text for a running request, which `/v1/audio/speech` and the speech WebSocket do not.
+
 `openai_speech` sends each sentence without its emoji, asterisks and backticks, a markdown link as its text alone, a bare URL as its host alone, and a markdown line without its heading, list or quote marker and with its table cells separated by commas, because a speech service reads them as stray sounds or a spelled-out URL, and can run on for 40 s or more after a marker or a table row. A sentence with no word left, such as one of only emoji or punctuation or a table's separator row, is not sent because the speech service answers it with an error, and its end still counts in `reply.progress`. A sentence tagged `English` without Chinese characters is sent with its numbers written out as words, the way the forced-alignment worker reads them: a year as two pairs, spaced digit groups such as a phone number digit by digit, a decimal with `point`, and an ordinal such as `21st` as `twenty first`. The reply text and the `reply.progress` offsets keep everything the model wrote. The profiles' system prompts also tell the language model to use neither markdown nor emoji.
 
 | Option | Type | Default | Effect |
@@ -640,6 +642,7 @@ Every sentence is its own request, and Qwen3-TTS samples each request with a fre
 | `reference_text` | string | `""` | The transcript of the reference, sent with it when set. |
 | `language` | string | `""` | The language tag: empty sends none; `auto` tags every sentence with the language the recognizer last heard in an answered turn; any other name tags every sentence with that name. With a fixed name, and with `auto` before the recognizer has named a language, a sentence containing Chinese characters is tagged `Chinese`; `auto` tags the others `English` until then. |
 | `max_sentence_words` | integer > 0 | `24` | The most words sent in one request. A longer sentence is cut into requests of at most this many words and at least half as many, at a comma, colon or dash when one falls in that range; the first request of such a sentence waits for up to half as many words more, so its rest is never a word or two on its own. |
+| `sentence_pause_ms` | number ≥ 0 | `0` | Silence sent before each request after the reply's first audio, including between the parts of a sentence cut by `max_sentence_words`, and counted in `reply.progress`. |
 | `api_key_env` | string | `OPENAI_API_KEY` | As above. |
 | `timeout_s` | number > 0 | `120` | The request timeout. |
 
@@ -744,7 +747,7 @@ Each rule is followed by the error it raises.
 - `method: asr` without them — `the asr method needs heard_asr_url and heard_asr_model`.
 - `heard_asr_url` with `method: sentence` — `heard_asr_url belongs to the asr and forced methods`.
 - `extra_body` sets `model`, `messages`, `stream`, `max_tokens` or `temperature` — `extra_body cannot set [...]`.
-- `temperature` outside 0 to 2, a non-positive `max_tokens`, `max_sentence_words`, `max_history_chars`, `max_text_chars` or `timeout_s`, or a negative `tail_ms` — a pydantic range error naming the field.
+- `temperature` outside 0 to 2, a non-positive `max_tokens`, `max_sentence_words`, `max_history_chars`, `max_text_chars` or `timeout_s`, or a negative `tail_ms` or `sentence_pause_ms` — a pydantic range error naming the field.
 - Two `services` with one name or one port — `services must have distinct names and ports`.
 - An empty `model_path` — `Model path is required`.
 
