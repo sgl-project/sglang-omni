@@ -146,6 +146,19 @@
     .sheet .transcript { overflow-y: auto; padding: 0 22px max(22px, env(safe-area-inset-bottom)); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
     .transcript .empty { color: var(--faint); }
     .transcript p { margin: 0 0 12px; }
+
+    /* Background tasks */
+    .tasks { position: fixed; top: 64px; left: 16px; width: min(300px, calc(100% - 32px)); max-height: calc(100dvh - 160px); overflow-y: auto; display: flex; flex-direction: column; gap: 10px; z-index: 4; }
+    .task-card { padding: 10px 12px; border-radius: 14px; background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow); font-size: .8rem; line-height: 1.45; }
+    .task-card header { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); }
+    .task-card .task-status[data-status="succeeded"] { color: var(--accent); }
+    .task-card .task-status[data-status="failed"] { color: var(--danger); }
+    .task-card .task-status[data-status="cancelled"] { color: var(--faint); }
+    .task-card .task-prompt { margin: 6px 0 0; color: var(--text); overflow-wrap: anywhere; }
+    .task-card .task-origin { margin: 4px 0 0; color: var(--faint); overflow-wrap: anywhere; }
+    .task-card .task-error { margin: 4px 0 0; color: var(--danger); overflow-wrap: anywhere; }
+    .task-card img { display: block; width: 100%; margin-top: 8px; border-radius: 10px; cursor: zoom-in; }
+    @media (max-width: 720px) { .tasks { position: static; width: 100%; max-height: none; padding: 0 16px; } }
     @media (max-width: 480px) {
       .topbar { padding-left: 16px; padding-right: 12px; }
       .brand span:not(.brand-name) { display: none; }
@@ -175,6 +188,7 @@
 
   <main class="stage">
     <div id="warning" class="warning" role="alert" hidden></div>
+    <section id="tasks" class="tasks" aria-label="Background tasks" aria-live="polite" hidden></section>
     <button id="orb" class="orb" type="button" aria-label="Start conversation">
       <canvas id="orbCanvas" aria-hidden="true"></canvas>
     </button>

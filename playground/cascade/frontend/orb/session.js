@@ -103,10 +103,18 @@ export class DuplexSession {
     // Per response: its text, item, the server's sglang.response.progress points and how much of its audio has played.
     this.replies = new Map();
     this.lastReplyId = null;
+    // Background tasks by id, from sglang.task.updated: status, arguments, the reply item that started them and their image.
+    this.tasks = new Map();
   }
 
   reply(responseId) {
     return this.replies.get(responseId) || null;
+  }
+
+  // The reply whose message item a task came from, while this page still keeps it.
+  replyOfItem(itemId) {
+    for (const reply of this.replies.values()) if (itemId && reply.itemId === itemId) return reply;
+    return null;
   }
 
   // Characters of a reply's text the listener has heard; fixed once the reply stops playing.
@@ -330,7 +338,10 @@ export class DuplexSession {
       case "response.output_text.delta":
       case "response.output_audio_transcript.delta":
         this.transcript += event.delta || "";
-        if (this.reply(event.response_id)) this.reply(event.response_id).text += event.delta || "";
+        if (this.reply(event.response_id)) {
+          this.reply(event.response_id).text += event.delta || "";
+          this.reply(event.response_id).itemId = event.item_id || this.reply(event.response_id).itemId;
+        }
         this.emit("text", event.delta || "");
         break;
       case "sglang.response.progress": {
@@ -365,6 +376,14 @@ export class DuplexSession {
         this.emit("drained", event);
         this.close();
         break;
+      case "sglang.task.updated": {
+        const task = event.task || {};
+        const previous = this.tasks.get(task.id) || {};
+        // A task's image arrives once, with its end; later updates of the task keep it.
+        this.tasks.set(task.id, { ...previous, ...task, artifact: task.artifact || previous.artifact || null });
+        this.emit("task", this.tasks.get(task.id));
+        break;
+      }
       case "error":
         this.handleError(event);
         break;

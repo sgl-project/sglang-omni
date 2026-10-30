@@ -125,6 +125,8 @@ class Capabilities:
     supports_truncate: bool = False
     supports_cancel: bool = False
     supports_client_commit: bool = False
+    is_proactive: bool = False
+    tasks: tuple[str, ...] = ()
     # note (Junnan Li): Frame cap per unit, indexed by the session's max_slice_nums minus one.
     image_frames_per_unit: tuple[int, ...] = (1,)
     default_max_slice_nums: int = 1
@@ -170,7 +172,7 @@ class Capabilities:
         granted: GrantedCapabilities = dict(
             interaction=self.interaction,
             native_full_duplex=self.interaction == "native",
-            proactive_output=False,
+            proactive_output=self.is_proactive,
             turn_control=list(self.turn_control),
             client_commit=self.supports_client_commit,
             input_modalities=list(self.input_modalities),
@@ -196,6 +198,10 @@ class Capabilities:
 
         if self.voices:
             granted["voices"] = list(self.voices)
+        else:
+            pass
+        if self.tasks:
+            granted["tasks"] = list(self.tasks)
         else:
             pass
         if "image" in self.input_modalities:

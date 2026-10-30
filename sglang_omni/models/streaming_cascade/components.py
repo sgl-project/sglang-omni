@@ -37,6 +37,7 @@ from sglang_omni.models.streaming_cascade.synthesizers import (
     OpenAISpeechSynthesizer,
     OpenAISpeechSynthesizerConfig,
 )
+from sglang_omni.models.streaming_cascade.tasks import AsyncTools, AsyncToolsConfig
 from sglang_omni.proto.streams import (
     MESSAGES,
     PCM16,
@@ -45,7 +46,12 @@ from sglang_omni.proto.streams import (
     REPLY_PROGRESS,
     RUNNING_TEXT,
     SESSION_CONTROL,
+    TASK_RESULT,
+    TASK_UPDATE,
     TEXT_DELTA,
+    TOOL_CALL,
+    TOOL_EXCHANGE,
+    TOOL_RESPONSE,
     TRANSCRIPT_FORMAT,
     TRUNCATE,
 )
@@ -182,17 +188,24 @@ COMPONENTS.register(
 COMPONENTS.register(
     DialogConfig,
     Dialog,
-    consumes=frozenset({TRANSCRIPT_FORMAT, TEXT_DELTA, SESSION_CONTROL}),
+    consumes=frozenset({TRANSCRIPT_FORMAT, TEXT_DELTA, SESSION_CONTROL, TOOL_EXCHANGE}),
     produces=frozenset({MESSAGES, SESSION_CONTROL}),
     opens_turns=True,
+    optional=frozenset({TOOL_EXCHANGE}),
 )
 COMPONENTS.register(
     OpenAIChatGeneratorConfig,
     OpenAIChatGenerator,
     consumes=frozenset({MESSAGES}),
-    produces=frozenset({TEXT_DELTA, SESSION_CONTROL}),
+    produces=frozenset({TEXT_DELTA, SESSION_CONTROL, TOOL_CALL, TOOL_EXCHANGE}),
     ends_turns=True,
     probe=probe_chat_service,
+)
+COMPONENTS.register(
+    AsyncToolsConfig,
+    AsyncTools,
+    consumes=frozenset({TOOL_CALL}),
+    produces=frozenset({TOOL_RESPONSE, TASK_UPDATE, TASK_RESULT}),
 )
 COMPONENTS.register(
     OpenAISpeechSynthesizerConfig,

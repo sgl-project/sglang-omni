@@ -16,6 +16,7 @@ from sglang_omni.serve.realtime.output import (
     ResponseProgress,
     ResponseStarted,
     ResponseStatus,
+    TaskUpdated,
     TextDelta,
     TextFinished,
 )
@@ -41,6 +42,8 @@ def envelope_size_bytes(envelope: Envelope) -> int:
         event, (TextDelta, TextFinished, ResponseFinished, InputTranscription)
     ):
         return len(event.text.encode()) + ENVELOPE_BYTES
+    elif isinstance(event, TaskUpdated) and event.artifact is not None:
+        return len(event.artifact.data) + ENVELOPE_BYTES
     else:
         return ENVELOPE_BYTES
 

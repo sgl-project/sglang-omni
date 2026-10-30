@@ -21,7 +21,7 @@ const INTERRUPT_WINDOW_MS = 1500;
 const MODEL_HOLD_MS = 700;
 const MIC_HOLD_MS = 400;
 
-const ids = ["brandName", "statusPill", "statusText", "transcriptBtn", "traceBtn", "themeBtn", "warning", "orb", "orbCanvas", "statusLine", "caption", "note", "startBtn", "dock", "muteBtn", "micOn", "micOff", "interruptBtn", "endBtn", "hint", "sheet", "sheetClose", "transcript", "settingsBtn", "settingsPanel", "settingsClose", "settingsForm", "settingsLocked", "presetRow", "setPreset", "setPrompt", "voiceRow", "setVoice", "voicePreview", "voiceInfo", "voiceFile", "voiceNameRow", "setVoiceName", "outputRow", "setOutput", "setMic", "turnRow", "setTurnType", "silenceRow", "setSilence", "eagernessRow", "setEagerness", "advanced", "greedyRow", "setGreedy", "samplingFields", "sliceRow", "setSlices", "settingsReset"];
+const ids = ["brandName", "statusPill", "statusText", "transcriptBtn", "traceBtn", "themeBtn", "warning", "tasks", "orb", "orbCanvas", "statusLine", "caption", "note", "startBtn", "dock", "muteBtn", "micOn", "micOff", "interruptBtn", "endBtn", "hint", "sheet", "sheetClose", "transcript", "settingsBtn", "settingsPanel", "settingsClose", "settingsForm", "settingsLocked", "presetRow", "setPreset", "setPrompt", "voiceRow", "setVoice", "voicePreview", "voiceInfo", "voiceFile", "voiceNameRow", "setVoiceName", "outputRow", "setOutput", "setMic", "turnRow", "setTurnType", "silenceRow", "setSilence", "eagernessRow", "setEagerness", "advanced", "greedyRow", "setGreedy", "samplingFields", "sliceRow", "setSlices", "settingsReset"];
 const ui = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 
 function wsUrl() {
@@ -282,6 +282,54 @@ function renderHeard() {
   ui.caption.dataset.below = String(lookahead > 0 && top < maxTop - 1);
 }
 
+const TASK_STATUS_LABELS = { created: "Queued", running: "Working…", succeeded: "Done", failed: "Failed", cancelled: "Cancelled" };
+
+// One card per background task, newest first: what was asked, which reply asked for it, and its image once it is done.
+function renderTask(task) {
+  ui.tasks.hidden = false;
+  let card = ui.tasks.querySelector(`[data-task-id="${CSS.escape(task.id)}"]`);
+  if (!card) {
+    card = document.createElement("article");
+    card.className = "task-card";
+    card.dataset.taskId = task.id;
+    ui.tasks.prepend(card);
+  }
+  const header = document.createElement("header");
+  const name = document.createElement("span");
+  name.textContent = `${task.name} · ${task.id}`;
+  const status = document.createElement("span");
+  status.className = "task-status";
+  status.dataset.status = task.status;
+  status.textContent = TASK_STATUS_LABELS[task.status] || task.status;
+  header.replaceChildren(name, status);
+  const parts = [header];
+  const prompt = task.arguments && typeof task.arguments.prompt === "string" ? task.arguments.prompt : JSON.stringify(task.arguments);
+  const promptLine = document.createElement("p");
+  promptLine.className = "task-prompt";
+  promptLine.textContent = prompt;
+  parts.push(promptLine);
+  const origin = session && session.replyOfItem(task.origin_item_id);
+  const originLine = document.createElement("p");
+  originLine.className = "task-origin";
+  originLine.textContent = `from ${task.origin_item_id || "an earlier reply"}${origin && origin.text ? `: “${origin.text.trim()}”` : ""}`;
+  parts.push(originLine);
+  if (task.error) {
+    const error = document.createElement("p");
+    error.className = "task-error";
+    error.textContent = task.error;
+    parts.push(error);
+  }
+  if (task.artifact && task.artifact.type === "image") {
+    const image = document.createElement("img");
+    image.alt = prompt;
+    image.src = `data:${task.artifact.media_type};base64,${task.artifact.data}`;
+    // Browsers refuse to open data: URLs in a new tab, so the full-size view goes through a blob URL.
+    image.addEventListener("click", async () => window.open(URL.createObjectURL(await (await fetch(image.src)).blob()), "_blank"));
+    parts.push(image);
+  }
+  card.replaceChildren(...parts);
+}
+
 function setSheet(open) {
   ui.sheet.dataset.open = String(open);
   ui.transcriptBtn.setAttribute("aria-expanded", String(open));
@@ -373,6 +421,7 @@ function sessionListeners() {
     text: renderTranscript,
     progress: renderHeard,
     played: renderHeard,
+    task: renderTask,
     drained: () => {},
     warning: (message) => warn(message),
   };

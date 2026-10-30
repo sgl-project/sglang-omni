@@ -96,6 +96,26 @@ class InputTranscription:
     is_final: bool
 
 
+@dataclass(frozen=True)
+class TaskArtifactOutput:
+    type: str
+    media_type: str
+    data: str  # base64
+
+
+@dataclass(frozen=True)
+class TaskUpdated:
+    """A background task's state; origin_item_id is the reply item whose tool call started it, when the client was sent that item."""
+
+    task_id: str
+    name: str
+    status: str
+    arguments: object
+    origin_item_id: str | None
+    error: str | None
+    artifact: TaskArtifactOutput | None
+
+
 OutputEvent = (
     ResponseStarted
     | TextDelta
@@ -109,4 +129,5 @@ OutputEvent = (
     | SpeechStarted
     | SpeechStopped
     | InputTranscription
+    | TaskUpdated
 )

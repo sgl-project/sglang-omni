@@ -1,0 +1,111 @@
+# Qwen3-ASR transcribes each utterance, Qwen3.8-27B answers with thinking on and calls tools through the qwen3_coder parser, and Qwen3-TTS Base speaks in the voice of one Vivian recording; the tool node generates images through ModelScope API-Inference in the background while the conversation goes on, and the dialog speaks about each image once it is ready. Set MODELSCOPE_API_KEY to a ModelScope access token before starting.
+config_cls: StreamingCascadePipelineConfig
+model_path: examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-image-tool
+
+services:
+  - name: chat
+    command: [python, -m, sglang.launch_server, --model-path, Qwen/Qwen3.8-27B, --reasoning-parser, qwen3, --tool-call-parser, qwen3_coder, --port, "8003", --mem-fraction-static, "0.85"]
+    port: 8003
+    env: {CUDA_VISIBLE_DEVICES: "0"}
+  - name: asr
+    command: [sgl-omni, serve, --model-path, Qwen/Qwen3-ASR-1.7B, --port, "8002", --mem-fraction-static, "0.08"]
+    port: 8002
+    env: {CUDA_VISIBLE_DEVICES: "1"}
+  - name: tts
+    command: [sgl-omni, serve, --model-path, Qwen/Qwen3-TTS-12Hz-1.7B-Base, --config, examples/configs/qwen3_tts_1_7b.yaml, --port, "8005", --mem-fraction-static, "0.12"]
+    port: 8005
+    env: {CUDA_VISIBLE_DEVICES: "1"}
+
+session_nodes:
+  vad:
+    stages: [vad]
+    inputs: [input]
+  asr:
+    kind: openai_transcription
+    inputs: [input, "vad:session"]
+    base_url: "http://127.0.0.1:8002/v1"
+    model: Qwen/Qwen3-ASR-1.7B
+  dialog:
+    kind: dialog
+    inputs:
+      - asr
+      - {source: "llm:text_delta", feedback: true, overflow: drop_oldest, capacity: 1024}
+      - {source: "llm:tool_exchange", feedback: true, overflow: drop_oldest, capacity: 1024}
+      - {source: "tts:session", feedback: true, overflow: drop_oldest, capacity: 1024}
+      - "vad:session"
+      - "input:session"
+      - {kind: control, source: input, event: interrupt}
+      - {kind: control, source: aligner, event: reply.progress}
+      - {kind: control, source: tool, event: task_result}
+    # note (zengjiahua): with thinking off, Qwen3.8-27B said it was drawing instead of calling generate_image in 2 of 16 picture requests on an H100; with thinking on it called the tool in 16 of 16 and answered 4 of 4 plain questions without it.
+    system_prompt: "You are a helpful voice assistant. Your replies are spoken aloud: answer in one short spoken sentence of at most 25 words, in the language the user speaks, without markdown or emoji. You can create pictures only by calling the generate_image tool; saying that you are drawing does not draw anything. Whenever the user asks for any picture, image, drawing, photo or illustration, call generate_image before you say anything, and never say you cannot draw. After the tool answers, tell the user in one short sentence that the picture is on its way."
+  llm:
+    kind: openai_chat
+    inputs:
+      - dialog
+      - "input:session"
+      - {kind: control, source: dialog, event: interrupt}
+      - {kind: control, source: tool, event: tool_response}
+    base_url: "http://127.0.0.1:8003/v1"
+    model: Qwen/Qwen3.8-27B
+    # Thinking tokens count against max_tokens; the reasoning parser keeps them out of the spoken text.
+    max_tokens: 2048
+    tools:
+      - type: function
+        function:
+          name: generate_image
+          description: Start generating a picture from a description. It takes several seconds and appears on the user's screen by itself when ready; you will be told when it is done.
+          parameters:
+            type: object
+            properties:
+              prompt: {type: string, description: A detailed English description of the picture}
+            required: [prompt]
+      - type: function
+        function:
+          name: cancel_task
+          description: Cancel a background task you started earlier, by the task_id its tool returned, when the user no longer wants it.
+          parameters:
+            type: object
+            properties:
+              task_id: {type: string}
+            required: [task_id]
+  tool:
+    kind: async_tools
+    inputs:
+      - "llm:tool_call"
+      - {kind: control, source: dialog, event: interrupt}
+    tools:
+      generate_image:
+        implementation: examples.streaming_cascade.tools.image_generation.generate_image
+        timeout_s: 180
+        options:
+          provider: modelscope
+          base_url: "https://api-inference.modelscope.cn"
+          model: Tongyi-MAI/Z-Image-Turbo
+          api_key_env: MODELSCOPE_API_KEY
+  tts:
+    kind: openai_speech
+    inputs:
+      - llm
+      - "input:session"
+      - {kind: control, source: dialog, event: interrupt}
+    base_url: "http://127.0.0.1:8005/v1"
+    model: Qwen/Qwen3-TTS-12Hz-1.7B-Base
+    reference_audio_path: examples/streaming_cascade/voices/vivian.wav
+    language: auto
+  aligner:
+    kind: alignment
+    method: forced
+    alignment_url: "http://127.0.0.1:8010"
+    heard_asr_url: "http://127.0.0.1:8002/v1"
+    heard_asr_model: Qwen/Qwen3-ASR-1.7B
+    inputs: ["llm:text_delta", "tts:pcm_f32le", "tts:session", "dialog:session", "input:session"]
+
+session_publish:
+  vad: [session]
+  asr: [transcript]
+  dialog: [session]
+  llm: [text_delta]
+  tts: [pcm_f32le, session]
+  aligner: [session]
+  tool: [task_update]

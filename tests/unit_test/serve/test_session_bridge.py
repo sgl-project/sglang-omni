@@ -29,6 +29,8 @@ from sglang_omni.proto.streams import (
     SESSION_CONTROL,
     SPEECH_STARTED,
     SPEECH_STOPPED,
+    TASK,
+    TASK_UPDATE,
     TEXT,
     TEXT_DELTA,
     TRANSCRIPT,
@@ -53,10 +55,12 @@ from sglang_omni.serve.realtime.output import (
     ResponseStarted,
     SpeechStarted,
     SpeechStopped,
+    TaskUpdated,
     TextDelta,
     TextFinished,
     TurnFailure,
 )
+from sglang_omni.serve.realtime.projection import project_output
 from sglang_omni.serve.realtime.runtime import SessionRuntime
 from sglang_omni.serve.realtime.session_bridge import SessionBridge, capabilities_of
 from sglang_omni.serve.realtime.session_deployment import build_realtime_deployment
@@ -605,3 +609,62 @@ async def test_qwen3_omni_node_outputs_project_without_a_model_adapter():
         ResponseFinished("resp_1", "item_1", "Well", False, "cancelled", "interrupted"),
     ]
     await h.bridge.close()
+
+
+@pytest.mark.asyncio
+async def test_a_task_update_names_the_reply_item_that_started_it_and_projects_its_image():
+    h = Harness()
+    await h.open()
+    h.client.control(TURN_STARTED, turn=3)
+    h.client.control(TURN_DONE, turn=3)
+    for status, artifact in (
+        ("running", None),
+        ("succeeded", {"type": "image", "media_type": "image/jpeg", "data": "AAAA"}),
+    ):
+        h.client.emit(
+            TASK,
+            TASK_UPDATE,
+            {
+                "task_id": "task_1",
+                "call_id": "c",
+                "name": "draw",
+                "arguments": {"prompt": "a cat"},
+                "origin_turn": 3,
+                "status": status,
+                **({"artifact": artifact} if artifact else {}),
+            },
+        )
+    h.client.emit(
+        TASK,
+        TASK_UPDATE,
+        {
+            "task_id": "task_2",
+            "call_id": "d",
+            "name": "draw",
+            "arguments": {},
+            "origin_turn": 9,
+            "status": "failed",
+            "error": "down",
+        },
+    )
+    await settle()
+    tasks = [event for event in h.published if isinstance(event, TaskUpdated)]
+    assert [(t.task_id, t.status, t.origin_item_id, t.error) for t in tasks] == [
+        ("task_1", "running", "item_0", None),
+        ("task_1", "succeeded", "item_0", None),
+        ("task_2", "failed", None, "down"),
+    ]
+    assert project_output(tasks[1])["task"]["artifact"] == {
+        "type": "image",
+        "media_type": "image/jpeg",
+        "data": "AAAA",
+    }
+    await h.bridge.close()
+
+
+def test_capabilities_grant_proactive_output_and_tasks_from_the_ports():
+    granted = capabilities_of(
+        replace(PORTS, tasks=("draw",), is_proactive=True)
+    ).to_granted_capabilities()
+    assert (granted["proactive_output"], granted["tasks"]) == (True, ["draw"])
+    assert "tasks" not in capabilities_of(PORTS).to_granted_capabilities()

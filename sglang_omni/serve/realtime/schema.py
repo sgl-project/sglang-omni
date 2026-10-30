@@ -182,6 +182,7 @@ class GrantedCapabilities(TypedDict, total=False):
     supports_instruction_updates: bool
     supports_sampling_updates: bool
     voices: list[str]
+    tasks: list[str]
     limits: dict[str, int | float]
     rejections: list[Rejection]
 

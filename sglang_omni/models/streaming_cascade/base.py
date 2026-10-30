@@ -2,6 +2,7 @@
 """Building blocks shared by the component kinds: the component contract, chunk helpers and service probes."""
 
 import asyncio
+import json
 import math
 import os
 import re
@@ -28,6 +29,7 @@ from sglang_omni.proto.streams import (
     TRANSCRIPT_FORMAT,
     control_type,
 )
+from sglang_omni.proto.tools import ToolExchange
 from sglang_omni.scheduling.session import ChunkEmitter
 
 if TYPE_CHECKING:
@@ -76,13 +78,28 @@ class StreamComponent:
         return 0
 
 
-class ChatMessage(BaseModel):
-    """One history entry; uncertain marks an assistant reply cut where the listener may have heard part of the next sentence, and is_cut an assistant reply the listener cut before its end. Neither field goes into the request; is_cut changes how the prompt shows the reply."""
+class ChatFunctionCall(BaseModel):
+    name: str
+    arguments: str  # JSON text, as the chat completions API carries it
 
-    role: Literal["system", "user", "assistant"]
+
+class ChatToolCall(BaseModel):
+    id: str
+    type: Literal["function"] = "function"
+    function: ChatFunctionCall
+
+
+class ChatMessage(BaseModel):
+    """One history entry; uncertain marks an assistant reply cut where the listener may have heard part of the next sentence, is_cut an assistant reply the listener cut before its end, is_notice a message the server wrote for the model rather than the user's words, and tool_exchanges the reply's tool rounds the prompt expands. None of these four fields goes into the request."""
+
+    role: Literal["system", "user", "assistant", "tool"]
     content: str = ""
     uncertain: bool = False
     is_cut: bool = False
+    is_notice: bool = False
+    tool_exchanges: list[ToolExchange] = Field(default_factory=list)
+    tool_calls: list[ChatToolCall] | None = None
+    tool_call_id: str | None = None
 
 
 def control_chunk(
@@ -151,7 +168,38 @@ def messages_chunk(
 
 
 def message_dict(message: ChatMessage) -> dict[str, object]:
-    return message.model_dump(exclude_none=True, exclude={"uncertain", "is_cut"})
+    return message.model_dump(
+        exclude_none=True,
+        exclude={"uncertain", "is_cut", "is_notice", "tool_exchanges"},
+    )
+
+
+def tool_round_messages(content: str, exchange: ToolExchange) -> list[ChatMessage]:
+    """One tool round in chat-completions form: the assistant text spoken before the calls with the calls, then one tool message per response."""
+    return [
+        ChatMessage(
+            role="assistant",
+            content=content,
+            tool_calls=[
+                ChatToolCall(
+                    id=call.id,
+                    function=ChatFunctionCall(
+                        name=call.name,
+                        arguments=json.dumps(call.arguments, ensure_ascii=False),
+                    ),
+                )
+                for call in exchange.calls
+            ],
+        ),
+        *(
+            ChatMessage(
+                role="tool",
+                content=json.dumps(response.response, ensure_ascii=False),
+                tool_call_id=response.id,
+            )
+            for response in exchange.responses
+        ),
+    ]
 
 
 def audio_chunk(samples: np.ndarray, sample_rate_hz: int, turn: int) -> TimedChunk:

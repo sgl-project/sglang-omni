@@ -30,6 +30,7 @@ from sglang_omni.serve.realtime.output import (
     ResponseStatus,
     SpeechStarted,
     SpeechStopped,
+    TaskUpdated,
     TextDelta,
     TextFinished,
     TurnFailure,
@@ -106,6 +107,22 @@ class EventMetadata(TypedDict, total=False):
     media_time: MediaTime
 
 
+class WireTaskArtifact(TypedDict):
+    type: str
+    media_type: str
+    data: str
+
+
+class WireTask(TypedDict, total=False):
+    id: str
+    name: str
+    status: str
+    arguments: object
+    origin_item_id: str | None
+    error: str
+    artifact: WireTaskArtifact
+
+
 class ServerEvent(TypedDict, total=False):
     type: str
     event_id: str
@@ -133,6 +150,7 @@ class ServerEvent(TypedDict, total=False):
     tail_policy: TailPolicy
     text_end: int
     audio_ms: float
+    task: WireTask
 
 
 def project_output(
@@ -257,6 +275,27 @@ def project_output(
             content_index=0,
             delta=event.text,
         )
+    elif isinstance(event, TaskUpdated):
+        task: WireTask = dict(
+            id=event.task_id,
+            name=event.name,
+            status=event.status,
+            arguments=event.arguments,
+            origin_item_id=event.origin_item_id,
+        )
+        if event.error is not None:
+            task["error"] = event.error
+        else:
+            pass
+        if event.artifact is not None:
+            task["artifact"] = dict(
+                type=event.artifact.type,
+                media_type=event.artifact.media_type,
+                data=event.artifact.data,
+            )
+        else:
+            pass
+        return dict(type="sglang.task.updated", task=task)
     else:
         raise TypeError(f"Unsupported typed output: {type(event)}")
 
