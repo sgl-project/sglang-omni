@@ -6,14 +6,17 @@
 
 Architecturally, MOSS-TTS-v1.5 is the `delay-pattern` counterpart to [MOSS-TTS-Local-Transformer-v1.5](moss_tts_local.md). The Qwen3-8B backbone predicts one text stream plus 32 residual-vector-quantization (RVQ) audio codebooks with delay-pattern scheduling; the generated codes are de-delayed and reconstructed into waveform by the vocoder. In SGLang-Omni it runs as a `preprocessing → tts_engine → vocoder` pipeline served through the OpenAI-compatible `/v1/audio/speech` endpoint.
 
-| Component | Spec |
-|---|---|
-| Architecture | `MossTTSDelayModel` (`moss_tts_delay`) |
-| Backbone | Qwen3-8B autoregressive decoder (36 L, hidden=4096, GQA 32/8) |
-| Audio tokens | 32-codebook RVQ depth with delay-pattern scheduling |
-| Output audio | 24 kHz |
-| Languages | 31 languages with optional language tags |
-| Controls | Voice reference, target duration tokens, Pinyin/IPA, pause markers, style instructions |
+## Model at a glance
+
+This table summarizes the model's main user-facing capabilities.
+
+| Capability               | How to use it                                                                  |
+| ------------------------ | ------------------------------------------------------------------------------ |
+| Text-to-speech           | Send text in `input`; generated speech is 24 kHz.                              |
+| Voice cloning            | Provide a reference clip and its transcript.                                   |
+| Languages                | Supports 31 languages; use `language` to provide a hint.                      |
+| Pronunciation and pauses | Include Pinyin/IPA or a marker such as `[pause 0.5s]` in `input`.               |
+| Length and style         | Use duration tokens to guide length or `instructions` to guide speaking style. |
 
 ## Prerequisites
 
@@ -29,12 +32,9 @@ The processor ships with the checkpoint, so no extra TTS package is needed. Deco
 
 ## Server Configuration
 
-The pipeline is `preprocessing → tts_engine → vocoder`. By default the vocoder
-runs in its own process (GPU memory fractions 0.10 / 0.72 / 0.18 for the three
-stages): its Python decode loop no longer shares the interpreter with the AR
-scheduler, which on H200 lifts single-replica throughput by about 70% at every
-concurrency cap. `config_cls: MossTTSSingleProcessPipelineConfig` restores the
-single-process layout; the bounded 24 GB and 32 GB configurations keep it.
+### Default layout
+
+MOSS-TTS runs three stages: `preprocessing`, `tts_engine`, and `vocoder`. By default, the vocoder runs in a separate process. In H200 measurements, this layout delivered about 70% higher single-replica throughput than the single-process layout at every tested concurrency cap. See [TTS Process Topology](../basic_usage/tts_process_topology.md) for process placement and GPU memory fraction details.
 
 ```bash
 sgl-omni serve \
@@ -43,20 +43,15 @@ sgl-omni serve \
   --port 8000
 ```
 
-The default model-specific layout places the repository-local encoder and
-vocoder components on the configured pipeline GPU. The encoder and decoder
-weights materialize in BF16 according to `compute_dtype`; the quantizers and
-explicit FP32 norms remain in FP32. Each stage constructs only the codec
-components it uses instead of loading a complete codec copy.
+To run all stages in one process, set `config_cls: MossTTSSingleProcessPipelineConfig` in the YAML configuration. The 24 GB and 32 GB profiles below already select this layout.
 
-The bounded 24 GB and 32 GB configurations explicitly move preprocessing to
-CPU. They retain BF16 compute unless `compute_dtype` is overridden.
+The encoder and decoder use BF16 according to `compute_dtype`; quantizers and norms explicitly kept in FP32 remain in FP32.
 
-Speech input admission follows the text backbone's context metadata rather than
-the generic 4,096-character precheck. Requests that exceed the effective model
-context are rejected with an OpenAI-compatible HTTP 400 error.
+### Lower-memory profiles
 
-For the bounded 32 GB qualification layout, use:
+Both profiles move preprocessing to the CPU and keep BF16 compute by default. To change placement or precision, set `stages.preprocessing.factory.device` or `stages.preprocessing.factory.compute_dtype`, or set `stages.vocoder.factory.device` or `stages.vocoder.factory.dtype` in the YAML configuration. See [TTS Process Topology](../basic_usage/tts_process_topology.md) for how explicit `device` values interact with stage placement.
+
+For a measured 32 GB setup, start the server with:
 
 ```bash
 sgl-omni serve \
@@ -65,12 +60,9 @@ sgl-omni serve \
   --port 8000
 ```
 
-This configuration limits request concurrency and CUDA Graph capture to batch
-size 1. It completed startup and reference-less non-streaming synthesis on one
-RTX 5090 with 32,607 MiB, peaking at 26,939 MiB. Treat this as a measured
-qualification point rather than a general claim for every 32 GB card.
+This profile limits request concurrency to 1 and CUDA Graph capture batch size to 1. On one RTX 5090 with 32,607 MiB of memory, it completed startup and reference-less, non-streaming synthesis with peak usage of 26,939 MiB. This result applies to the measured setup and is not a guarantee for every 32 GB GPU.
 
-For the directly measured 24 GB layout, use:
+For the measured 24 GB setup, use:
 
 ```bash
 sgl-omni serve \
@@ -79,16 +71,11 @@ sgl-omni serve \
   --port 8000
 ```
 
-This profile completed startup, CUDA Graph capture, reference and
-reference-less synthesis, streaming, cancellation, and recovery on one RTX
-4090 with 24,564 MiB. Peak sampled VRAM was 23,251 MiB, leaving a minimum of
-960 MiB free. SGLang profiled an effective 6,708-token KV capacity below the
-requested `max_total_tokens: 8192`. Treat this as a concurrency-1,
-CUDA-Graph-cap-1 qualification point, not a broader 24 GB capacity claim.
+On one RTX 4090 with 24,564 MiB, this profile completed startup, CUDA Graph capture, reference and reference-less synthesis, streaming, cancellation, and recovery. Peak sampled VRAM use was 23,251 MiB, with at least 960 MiB free. Although the config requests `max_total_tokens: 8192`, SGLang profiled an effective KV capacity of 6,708 tokens. This result applies to the measured setup, which uses concurrency 1 and CUDA Graph batch size 1.
 
-Both policies can be changed explicitly through the preprocessing/vocoder
-stages' `factory.*` entries when profiling another layout. Explicit `device`
-values take precedence over the GPU selected by stage placement.
+### Input length
+
+The server checks speech requests against the text backbone's actual token context instead of rejecting text at the generic 4,096-character precheck. Requests that exceed the model's context receive an OpenAI-compatible HTTP 400 error.
 
 ## Synthesizing Speech
 
@@ -218,23 +205,23 @@ to let the model infer from the text):
 
 ## Generation Parameters
 
-| Parameter | Default | Notes |
-|---|---|---|
-| `model` | served model | Served model identifier |
-| `input` | (required) | Text to synthesize. It may carry a `${token:N}` duration prefix and inline markup |
-| `voice` | `default` | Voice identifier |
-| `references` | `null` | Reference clip for cloning. Each item has `audio_path` and `text` |
-| `ref_audio` / `ref_text` | `null` | Shorthand for `references[0].audio_path` / `references[0].text` |
-| `stream` | `false` | Stream raw PCM audio chunks |
-| `language` | `null` | Optional target-language hint. Omit to let the model infer |
-| `instructions` / `instruct` | `null` | Optional free-text style directive |
-| `token_count` / `duration_tokens` / `tokens` | `null` | Target duration in codec frames. It must be `> 0` |
-| `max_new_tokens` | `4096` | Maximum generated frames. An explicit value must be `> 0` |
-| `temperature` | `1.5` text / `1.7` audio | Sampling temperature. A single `temperature` overrides both channels |
-| `top_p` | `1.0` text / `0.8` audio | Top-p sampling. A single `top_p` overrides both channels |
-| `top_k` | `50` text / `25` audio | Top-k sampling. A single `top_k` overrides both channels |
-| `repetition_penalty` | `1.0` | Audio repetition penalty |
-| `seed` | `null` | Non-negative integer. See [Seed Reproducibility](#seed-reproducibility) |
+| Parameter                                          | Default                      | Notes                                                                               |
+| -------------------------------------------------- | ---------------------------- | ----------------------------------------------------------------------------------- |
+| `model`                                          | served model                 | Served model identifier                                                             |
+| `input`                                          | (required)                   | Text to synthesize. It may carry a `${token:N}` duration prefix and inline markup |
+| `voice`                                          | `default`                  | Voice identifier                                                                    |
+| `references`                                     | `null`                     | Reference clip for cloning. Each item has `audio_path` and `text`               |
+| `ref_audio` / `ref_text`                       | `null`                     | Shorthand for `references[0].audio_path` / `references[0].text`                 |
+| `stream`                                         | `false`                    | Stream raw PCM audio chunks                                                         |
+| `language`                                       | `null`                     | Optional target-language hint. Omit to let the model infer                          |
+| `instructions` / `instruct`                    | `null`                     | Optional free-text style directive                                                  |
+| `token_count` / `duration_tokens` / `tokens` | `null`                     | Target duration in codec frames. It must be `> 0`                                 |
+| `max_new_tokens`                                 | `4096`                     | Maximum generated frames. An explicit value must be `> 0`                         |
+| `temperature`                                    | `1.5` text / `1.7` audio | Sampling temperature. A single `temperature` overrides both channels              |
+| `top_p`                                          | `1.0` text / `0.8` audio | Top-p sampling. A single `top_p` overrides both channels                          |
+| `top_k`                                          | `50` text / `25` audio   | Top-k sampling. A single `top_k` overrides both channels                          |
+| `repetition_penalty`                             | `1.0`                      | Audio repetition penalty                                                            |
+| `seed`                                           | `null`                     | Non-negative integer. See [Seed Reproducibility](#seed-reproducibility)              |
 
 The per-channel fields (`text_temperature`, `audio_temperature`, `text_top_p`, `audio_top_p`,
 `text_top_k`, `audio_top_k`, `audio_repetition_penalty`) are also accepted and take precedence
@@ -277,10 +264,10 @@ WER is scored with HF Whisper-large-v3 (EN) / FunASR paraformer-zh (ZH). These a
 numbers tabulated in `benchmarks/eval/benchmark_tts_seedtts.py` (source: PR #609) — reproducible
 references, not CI thresholds.
 
-| Lang | WER (corpus) | WER (excl. >50%) | Latency mean / p95 (s) | RTF mean | Throughput (qps) |
-|---|---|---|---|---|---|
-| EN | 1.68% | 1.32% (4 outliers) | 3.449 / 4.141 | 0.811 | 2.312 |
-| ZH | 1.36% | 1.27% (2 outliers) | 3.608 / 4.153 | 0.635 | 2.213 |
+| Lang | WER (corpus) | WER (excl. >50%)   | Latency mean / p95 (s) | RTF mean | Throughput (qps) |
+| ---- | ------------ | ------------------ | ---------------------- | -------- | ---------------- |
+| EN   | 1.68%        | 1.32% (4 outliers) | 3.449 / 4.141          | 0.811    | 2.312            |
+| ZH   | 1.36%        | 1.27% (2 outliers) | 3.608 / 4.153          | 0.635    | 2.213            |
 
 A handful of utterances run away into a repetition loop (> 50% WER) and dominate the raw
 micro-average; excluding them, corpus WER is ~1.3% in both languages, and per-sample median WER
