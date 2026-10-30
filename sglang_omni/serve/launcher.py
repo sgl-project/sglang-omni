@@ -615,15 +615,21 @@ async def warm_up_server(
             warmup_task = asyncio.create_task(
                 asyncio.wait_for(realtime_warmup(timeout_s), timeout_s)
             )
-            while not warmup_task.done() and not server.should_exit:
-                await asyncio.wait({warmup_task}, timeout=SERVER_START_POLL_S)
-            if warmup_task.done():
-                warmup_task.result()
-            else:
-                warmup_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await warmup_task
-                is_warmed_up = False
+            try:
+                while not warmup_task.done() and not server.should_exit:
+                    await asyncio.wait({warmup_task}, timeout=SERVER_START_POLL_S)
+                if warmup_task.done():
+                    warmup_task.result()
+                else:
+                    is_warmed_up = False
+            finally:
+                # note (Junnan Li): run_server cancels this coroutine on shutdown, and the warmup session must not outlive the pipeline.
+                if not warmup_task.done():
+                    warmup_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await warmup_task
+                else:
+                    pass
         else:
             pass
     except (httpx.HTTPError, ProtocolError, RuntimeError, TimeoutError) as exc:

@@ -1035,6 +1035,43 @@ async def test_realtime_warmup_runs_before_the_server_reports_up() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cancelled_server_warmup_cancels_the_realtime_warmup() -> None:
+    server = make_started_server()
+    app = FastAPI()
+    app.state.server_status = ServerStatus.STARTING
+    started = asyncio.Event()
+    cancelled: list[bool] = []
+
+    async def warm_up_realtime(timeout_s: float) -> None:
+        started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+
+    warmup = asyncio.create_task(
+        launcher.warm_up_server(
+            server,
+            app,
+            StubCoordinator(),
+            base_url="http://127.0.0.1:8000",
+            requests=[],
+            timeout_s=30,
+            realtime_warmup=warm_up_realtime,
+        )
+    )
+    await started.wait()
+
+    warmup.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await warmup
+
+    assert cancelled == [True]
+    assert app.state.server_status is ServerStatus.STARTING
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "error",
     [
