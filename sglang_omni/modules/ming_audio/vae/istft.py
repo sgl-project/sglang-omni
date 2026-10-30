@@ -164,7 +164,12 @@ class ISTFT(nn.Module):
         window_envelope = window_envelope.squeeze()
 
         # Normalize
-        assert (window_envelope > 1e-11).all()
+        if not streaming and window_envelope.device.type == "cuda":
+            torch._assert_async(  # noqa: leading-underscore - PyTorch CUDA assertion API.
+                (window_envelope > 1e-11).all()
+            )
+        else:
+            assert (window_envelope > 1e-11).all()
         y = y / window_envelope
 
         return y, audio_buffer, window_buffer

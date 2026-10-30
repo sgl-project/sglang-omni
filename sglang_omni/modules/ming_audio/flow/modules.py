@@ -2,8 +2,21 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .execution import NormLayerFactory, QKVProjectionConstructor
-from .rotary import RotaryInputs, apply_rotary_embedding
+from sglang_omni.modules.ming_audio.flow.execution import (
+    NormLayerFactory,
+    QKVProjectionConstructor,
+)
+from sglang_omni.modules.ming_audio.flow.normalization import (
+    NATIVE_RMS_CHANNEL_COUNT,
+    NormalizationDispatch,
+)
+from sglang_omni.modules.ming_audio.flow.rotary import (
+    RotaryInputs,
+    SharedRotaryInputs,
+    SharedRotaryTransform,
+    apply_rotary_embedding,
+    apply_shared_rotary,
+)
 
 _FLASH_ATTN_IMPORT_ERROR: Exception | None = None
 flash_attn_func = None
@@ -43,6 +56,7 @@ class RMSNorm(nn.Module):
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim))
         self.native_rms_norm = float(torch.__version__[:3]) >= 2.4
+        self.normalization_dispatch: NormalizationDispatch | None = None
 
     def forward(self, x):
         if self.native_rms_norm:
@@ -53,13 +67,53 @@ class RMSNorm(nn.Module):
             x = F.rms_norm(
                 x, normalized_shape=(x.shape[-1],), weight=self.weight, eps=self.eps
             )
+        elif (
+            self.normalization_dispatch is not None
+            and not torch.is_grad_enabled()
+            and x.dtype in [torch.float16, torch.bfloat16]
+            and self.weight.dtype in [torch.float16, torch.bfloat16]
+        ):
+            if (
+                self.normalization_dispatch.normalize_contiguous is not None
+                and x.is_cuda
+                and x.numel() > 0
+                and x.shape[-1] == NATIVE_RMS_CHANNEL_COUNT
+                and x.dtype == self.weight.dtype
+                and x.is_contiguous()
+                and self.weight.is_contiguous()
+            ):
+                x = self.normalization_dispatch.normalize_contiguous(
+                    x, self.weight, self.eps
+                )
+            else:
+                variance = self.normalization_dispatch.square_float32(x).mean(
+                    -1, keepdim=True
+                )
+                x = self.normalization_dispatch.affine(
+                    x, variance, self.weight, self.eps
+                )
         else:
             variance = x.to(torch.float32).pow(2).mean(-1, keepdim=True)
-            x = x * torch.rsqrt(variance + self.eps)
-            if self.weight.dtype in [torch.float16, torch.bfloat16]:
-                x = x.to(self.weight.dtype)
+            inverse_root_mean_square = torch.rsqrt(variance + self.eps)
+            if (
+                self.weight.dtype
+                in [
+                    torch.float16,
+                    torch.bfloat16,
+                ]
+                and not torch.is_grad_enabled()
+            ):
+                x = torch.mul(
+                    x,
+                    inverse_root_mean_square,
+                    out=torch.empty_like(x, dtype=self.weight.dtype),
+                )
             else:
-                pass
+                x = x * inverse_root_mean_square
+                if self.weight.dtype in [torch.float16, torch.bfloat16]:
+                    x = x.to(self.weight.dtype)
+                else:
+                    pass
             x = x * self.weight
 
         return x
@@ -143,46 +197,120 @@ class Attention(nn.Module):
         self.pe_attn_head = pe_attn_head
         self.attn_backend = attn_backend
         self.attn_mask_enabled = attn_mask_enabled
+        self.projection_stream: torch.cuda.Stream | None = None
+        self.packed_projection: tuple[torch.Tensor, torch.Tensor | None] | None = None
+        self.rotary_dispatch: SharedRotaryTransform | None = None
+
+    def normalize_rotary(
+        self,
+        projected: torch.Tensor,
+        normalization: nn.Module | None,
+        rope: SharedRotaryInputs,
+        scale: float | torch.Tensor,
+    ) -> torch.Tensor:
+        projected = projected.view(
+            projected.shape[0], -1, self.heads, self.inner_dim // self.heads
+        ).transpose(1, 2)
+        if normalization is not None:
+            projected = normalization(projected)
+        else:
+            pass
+        return apply_shared_rotary(
+            projected, rope.cosine, rope.sine, scale, materialize_output=False
+        )
 
     def forward(
         self,
         x: torch.Tensor,  # noised input x
         mask: torch.Tensor | None = None,
         rope: (
-            RotaryInputs | tuple[torch.Tensor, float | torch.Tensor | None] | None
+            RotaryInputs
+            | SharedRotaryInputs
+            | tuple[torch.Tensor, float | torch.Tensor | None]
+            | None
         ) = None,  # rotary position embedding for x
     ) -> torch.Tensor:
 
         batch_size = x.shape[0]
 
-        # `sample` projections
-        if self.to_qkv is None:
-            query = self.to_q(x)
-            key = self.to_k(x)
-            value = self.to_v(x)
+        if (
+            self.projection_stream is not None
+            and self.to_qkv is None
+            and isinstance(rope, SharedRotaryInputs)
+            and self.pe_attn_head is None
+        ):
+            head_dim = self.inner_dim // self.heads
+            if self.packed_projection is None:
+                projections = None
+            else:
+                projection_values = F.linear(x, *self.packed_projection)
+                projections = projection_values.chunk(3, dim=-1)
+            if (
+                projections is not None
+                and self.q_norm is None
+                and self.k_norm is None
+                and isinstance(rope.query_scale, float)
+                and isinstance(rope.key_scale, float)
+                and rope.query_scale == rope.key_scale
+            ):
+                query_key = projection_values[..., : self.inner_dim * 2]
+                query_key = query_key.view(
+                    batch_size, -1, self.heads * 2, head_dim
+                ).transpose(1, 2)
+                if self.rotary_dispatch is None:
+                    rotary_transform = apply_shared_rotary
+                else:
+                    rotary_transform = self.rotary_dispatch
+                query_key = rotary_transform(
+                    query_key,
+                    rope.cosine,
+                    rope.sine,
+                    rope.query_scale,
+                    materialize_output=False,
+                )
+                query, key = query_key.chunk(2, dim=1)
+                value = projections[2].view(batch_size, -1, self.heads, head_dim)
+                value = value.transpose(1, 2)
+            else:
+                current_stream = torch.cuda.current_stream(x.device)
+                self.projection_stream.wait_stream(current_stream)
+                with torch.cuda.stream(self.projection_stream):
+                    key = self.to_k(x) if projections is None else projections[1]
+                    key = self.normalize_rotary(key, self.k_norm, rope, rope.key_scale)
+                value = self.to_v(x) if projections is None else projections[2]
+                value = value.view(batch_size, -1, self.heads, head_dim)
+                value = value.transpose(1, 2)
+                query = self.to_q(x) if projections is None else projections[0]
+                query = self.normalize_rotary(
+                    query, self.q_norm, rope, rope.query_scale
+                )
+                current_stream.wait_stream(self.projection_stream)
         else:
-            query, key, value = self.to_qkv(x).chunk(3, dim=-1)
+            if self.to_qkv is None:
+                query = self.to_q(x)
+                key = self.to_k(x)
+                value = self.to_v(x)
+            else:
+                query, key, value = self.to_qkv(x).chunk(3, dim=-1)
 
-        # attention
-        inner_dim = key.shape[-1]
-        head_dim = inner_dim // self.heads
-        query = query.view(batch_size, -1, self.heads, head_dim).transpose(1, 2)
-        key = key.view(batch_size, -1, self.heads, head_dim).transpose(1, 2)
-        value = value.view(batch_size, -1, self.heads, head_dim).transpose(1, 2)
+            inner_dim = key.shape[-1]
+            head_dim = inner_dim // self.heads
+            query = query.view(batch_size, -1, self.heads, head_dim).transpose(1, 2)
+            key = key.view(batch_size, -1, self.heads, head_dim).transpose(1, 2)
+            value = value.view(batch_size, -1, self.heads, head_dim).transpose(1, 2)
 
-        # qk norm
-        if self.q_norm is not None:
-            query = self.q_norm(query)
-        else:
-            pass
-        if self.k_norm is not None:
-            key = self.k_norm(key)
-        else:
-            pass
+            if self.q_norm is not None:
+                query = self.q_norm(query)
+            else:
+                pass
+            if self.k_norm is not None:
+                key = self.k_norm(key)
+            else:
+                pass
 
-        query, key = apply_rotary_embedding(
-            query, key, rope, pe_attn_head=self.pe_attn_head
-        )
+            query, key = apply_rotary_embedding(
+                query, key, rope, pe_attn_head=self.pe_attn_head
+            )
 
         if self.attn_backend == "torch":
             # mask. e.g. inference got a batch with different target durations, mask out the padding

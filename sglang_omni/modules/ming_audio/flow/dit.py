@@ -10,14 +10,29 @@
 # --------------------------------------------------------
 
 import math
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
-from .execution import TalkerExecutionConfig
-from .modules import DiTBlock, FinalLayer, RMSNorm
-from .rotary import build_rotary_embedding, get_rotary_inputs, validate_rotary_config
+from sglang_omni.modules.ming_audio.flow.execution import TalkerExecutionConfig
+from sglang_omni.modules.ming_audio.flow.modules import DiTBlock, FinalLayer, RMSNorm
+from sglang_omni.modules.ming_audio.flow.rotary import (
+    RotaryInputs,
+    SharedRotaryInputs,
+    build_rotary_embedding,
+    get_rotary_inputs,
+    validate_rotary_config,
+)
+
+
+@dataclass(frozen=True)
+class PreparedConditioning:
+    latent_history: torch.Tensor
+    embedding: torch.Tensor
+    rotary: RotaryInputs | SharedRotaryInputs
+
 
 #################################################################################
 #               Embedding Layers for Timesteps and Class Labels                 #
@@ -200,7 +215,32 @@ class DiT(nn.Module):
         nn.init.constant_(self.final_layer.linear.weight, 0)
         nn.init.constant_(self.final_layer.linear.bias, 0)
 
-    def forward(self, x, t, c, latent_history, spk_emb=None):
+    def prepare_conditioning(
+        self, c: torch.Tensor, latent_history: torch.Tensor, patch_size: int
+    ) -> PreparedConditioning:
+        conditioning = torch.cat([c, torch.zeros_like(c)], dim=0)
+        history = torch.cat([latent_history, latent_history], dim=0)
+        return PreparedConditioning(
+            latent_history=history,
+            embedding=self.c_embedder(conditioning, self.training),
+            rotary=get_rotary_inputs(
+                self.rotary_embed,
+                conditioning.shape[0],
+                conditioning.shape[1] + history.shape[1] + patch_size,
+            ),
+        )
+
+    def forward(
+        self,
+        x,
+        t,
+        c,
+        latent_history,
+        spk_emb=None,
+        *,
+        prepared: PreparedConditioning | None = None,
+        timestep_embedding: torch.Tensor | None = None,
+    ):
         """
         Forward pass of DiT.
         x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
@@ -209,15 +249,24 @@ class DiT(nn.Module):
         """
         x = torch.cat([latent_history, x], dim=1)
         x = self.x_embedder(x)
-        t = self.t_embedder(t).unsqueeze(1)  # (N, D)
-        c = self.c_embedder(c, self.training)  # (N, 1, 896) -> (N, 1, D)
+        if timestep_embedding is None:
+            t = self.t_embedder(t).unsqueeze(1)  # (N, D)
+        else:
+            t = timestep_embedding
+        if prepared is None:
+            c = self.c_embedder(c, self.training)  # (N, 1, 896) -> (N, 1, D)
+        else:
+            c = prepared.embedding
         y = t + c
         if spk_emb is None:
             assert self.spk_embedder is None
             x = torch.cat([y, x], dim=1)  # # (N, 1 + patch_size *2, D)
         else:
             x = torch.cat([self.spk_embedder(spk_emb), y, x], dim=1)
-        rope = get_rotary_inputs(self.rotary_embed, x.shape[0], x.shape[1])
+        if prepared is None:
+            rope = get_rotary_inputs(self.rotary_embed, x.shape[0], x.shape[1])
+        else:
+            rope = prepared.rotary
 
         if self.grad_checkpointing:
             for block in self.blocks:
@@ -230,15 +279,28 @@ class DiT(nn.Module):
         # x = self.unpatchify(x)                   # (N, out_channels, H, W)
         return x
 
-    def forward_with_cfg(self, x, t, c, latent_history, spk_emb=None):
+    def forward_with_cfg(
+        self,
+        x,
+        t,
+        c,
+        latent_history,
+        spk_emb=None,
+        *,
+        prepared: PreparedConditioning | None = None,
+        timestep_embedding: torch.Tensor | None = None,
+    ):
         """
         Forward pass of DiT, but also batches the unconditional forward pass for classifier-free guidance.
         """
         x = torch.cat([x, x], dim=0)
-        latent_history = torch.cat([latent_history, latent_history], dim=0)
-        fake_latent = torch.zeros_like(c)
-        c = torch.cat([c, fake_latent], dim=0)
-        if t.ndim == 0:
+        if prepared is None:
+            latent_history = torch.cat([latent_history, latent_history], dim=0)
+            fake_latent = torch.zeros_like(c)
+            c = torch.cat([c, fake_latent], dim=0)
+        else:
+            latent_history = prepared.latent_history
+        if t.ndim == 0 and timestep_embedding is None:
             t = t.repeat(x.shape[0])
         else:
             pass
@@ -246,5 +308,16 @@ class DiT(nn.Module):
             spk_emb = torch.cat([spk_emb, spk_emb], dim=0)
         else:
             pass
-        model_out = self.forward(x, t, c, latent_history, spk_emb)
+        if prepared is None and timestep_embedding is None:
+            model_out = self.forward(x, t, c, latent_history, spk_emb)
+        else:
+            model_out = self.forward(
+                x,
+                t,
+                c,
+                latent_history,
+                spk_emb,
+                prepared=prepared,
+                timestep_embedding=timestep_embedding,
+            )
         return model_out[:, -x.shape[1] :, :]

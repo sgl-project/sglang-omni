@@ -61,6 +61,8 @@ class Ming3TTSRequestData(SGLangARRequestData):
     zero_speaker: bool = False
     prompt_rows: torch.Tensor | None = None
     latent_position: int = -1
+    initial_noise_buffer: torch.Tensor | None = None
+    solver_noise_buffer: torch.Tensor | None = None
 
 
 def build_stream_output(
@@ -320,6 +322,7 @@ class Ming3TTSModelRunner(ModelRunner):
                         (1, latent_dim, 1),
                         generator=request_state.noise_generator,
                         device=self.device,
+                        out=request_state.initial_noise_buffer,
                     )
                 )
                 for request_state, middle_chunk in zip(
@@ -336,6 +339,7 @@ class Ming3TTSModelRunner(ModelRunner):
                         (FLOW_STEPS - 1, 1, 1, latent_dim),
                         generator=request_state.noise_generator,
                         device=self.device,
+                        out=request_state.solver_noise_buffer,
                     )
                 )
                 for request_state, middle_chunk in zip(

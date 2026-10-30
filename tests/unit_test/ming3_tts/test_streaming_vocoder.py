@@ -301,12 +301,13 @@ def test_first_packet_waits_for_lookahead(vocoder: Ming3StreamingVocoder) -> Non
 
 
 @pytest.mark.accelerator
+@pytest.mark.parametrize("dense", [False, True], ids=["tiny", "dense"])
 @pytest.mark.skipif(
     not torch.cuda.is_available(), reason="CUDA graph routing requires CUDA"
 )
 @torch.inference_mode()
 def test_nonstream_keeps_graph_dispatch_and_stream_uses_cache(
-    vocoder: Ming3StreamingVocoder, monkeypatch: pytest.MonkeyPatch
+    vocoder: Ming3StreamingVocoder, monkeypatch: pytest.MonkeyPatch, dense: bool
 ) -> None:
     """Streaming integration must not replace the non-streaming graph dispatcher."""
 
@@ -314,15 +315,40 @@ def test_nonstream_keeps_graph_dispatch_and_stream_uses_cache(
     monkeypatch.setattr(
         factory_module,
         "load_checkpoint_config",
-        lambda checkpoint: {"model_type": "dense"},
+        lambda checkpoint: {
+            "model_type": "dense" if dense else "tiny",
+            "tts_config": {
+                "prompt_format": "legacy_antmmf",
+                "with_rml": True,
+                "conditioning_mode": "speaker_only",
+                "decode_alignment": "old_shift",
+                "patch_size": 1,
+                "history_size": 1,
+                "latent_dim": 4,
+                "speaker_embedding_dim": 4,
+                "sampling_temperature": 1.5,
+                "stop_threshold": 0.5,
+                "minimum_decode_steps": 1,
+                "maximum_decode_steps": 32,
+                "audio_patch_token_id": 1,
+                "audio_start_token_id": 2,
+                "audio_end_token_id": 3,
+                "speaker_start_token_id": 4,
+                "speaker_end_token_id": 5,
+            },
+        },
     )
     monkeypatch.setattr(
         factory_module, "load_audio_vae", lambda *args, **kwargs: (vocoder.vae, 44100)
     )
     vocoder.vae.to(device="cuda", dtype=torch.bfloat16)
-    original = factory_module.DecoderGraphs.run
+    graph_class = (
+        factory_module.DecoderGraphs if dense else factory_module.VocoderGraphRunner
+    )
+    graph_method = "run" if dense else "decode"
+    original = getattr(graph_class, graph_method)
     with patch.object(
-        factory_module.DecoderGraphs, "run", autospec=True, side_effect=original
+        graph_class, graph_method, autospec=True, side_effect=original
     ) as full_decode:
         scheduler = factory_module.create_vocoder_executor(
             "model", graph_latent_steps=8, device="cuda"
@@ -331,7 +357,7 @@ def test_nonstream_keeps_graph_dispatch_and_stream_uses_cache(
         payload = StagePayload(
             "full",
             OmniRequest("text", params={"stream": False}),
-            {"latents": latents, "usage": {}, "finish_reason": "length"},
+            {"latents": latents[:5], "usage": {}, "finish_reason": "length"},
         )
         scheduler.handle_new_request_batch(
             [IncomingMessage(request_id="full", type="new_request", data=payload)]
@@ -343,6 +369,9 @@ def test_nonstream_keeps_graph_dispatch_and_stream_uses_cache(
         )
         assert result.data["finish_reason"] == "length"
         assert full_decode.call_count == 1
+        graph_owner = full_decode.call_args.args[0]
+        capture_key = 5 * vocoder.vae.decoder.upsampling.scale_factor if dense else 5
+        assert capture_key in graph_owner.graphs
         for index, latent in enumerate(latents):
             scheduler.handle_stream_chunk(
                 "stream", StreamItem(index, latent, "tts_engine", {"stream": True})
@@ -479,6 +508,7 @@ def test_gpu_generation_retains_full_latents_for_cpu_vocoder(
             engine_module, "get_tokenizer", lambda *args, **kwargs: None
         )
         engine_patches.setattr(engine_module, "Ming3TTSModelRunner", Mock())
+        engine_patches.setattr(engine_module, "TinyTTSModelRunner", Mock())
         engine_patches.setattr(engine_module, "OmniScheduler", scheduler_factory)
         engine_patches.setattr(
             torch,

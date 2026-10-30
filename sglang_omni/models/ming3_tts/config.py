@@ -27,10 +27,10 @@ def default_stages(dense: bool = False) -> list[StageConfig]:
         StageConfig(
             name="preprocessing",
             process="preprocessing",
-            gpu=0 if dense else None,
+            gpu=0,
             factory_path=f"{PACKAGE}.stages.create_preprocessing_executor",
             factory=FactoryArgs(
-                max_concurrency=4 if dense else 1,
+                max_concurrency=4,
                 reference_cache_entries=256,
                 reference_cache_bytes=64 * 1024 * 1024,
                 max_reference_seconds=120.0 if dense else None,
@@ -61,11 +61,9 @@ def default_stages(dense: bool = False) -> list[StageConfig]:
                         448,
                         512,
                     ]
-                    if dense
-                    else []
                 ),
                 prefill_graph_max_requests=32,
-                enable_async_decode=dense,
+                enable_async_decode=True,
             ),
             engine=EngineArgs(
                 mem_fraction_static=0.75,
@@ -82,9 +80,7 @@ def default_stages(dense: bool = False) -> list[StageConfig]:
             process="vocoder",
             gpu=0,
             factory_path=f"{PACKAGE}.vocoder.create_vocoder_executor",
-            factory=FactoryArgs(
-                graph_latent_steps=384 if dense else 0, stream_chunk_steps=8
-            ),
+            factory=FactoryArgs(graph_latent_steps=384, stream_chunk_steps=8),
             can_accept_stream_before_payload=True,
             terminal=True,
         ),
@@ -102,7 +98,7 @@ class Ming3TTSPipelineConfig(PipelineConfig):
     }
     model_path: str
     entry_stage: str = "preprocessing"
-    mps: Literal["off", "on", "auto"] = "off"
+    mps: Literal["off", "on", "auto"] = "auto"
     placement: PlacementConfig = Field(
         default_factory=lambda: PlacementConfig(
             require_memory_fraction_for_colocation=False
@@ -113,7 +109,7 @@ class Ming3TTSPipelineConfig(PipelineConfig):
     @model_validator(mode="before")
     @classmethod
     def select_checkpoint_defaults(cls, data: object) -> object:
-        """Keep unqualified MoE checkpoints on their original execution defaults."""
+        """Select checkpoint defaults while preserving explicit overrides."""
         if not isinstance(data, dict) or not isinstance(data.get("model_path"), str):
             return data
         elif "stages" in data and "mps" in data:
@@ -132,7 +128,7 @@ class Ming3TTSPipelineConfig(PipelineConfig):
         )
         return {
             "stages": default_stages(dense),
-            "mps": "auto" if dense else "off",
+            "mps": "auto",
             **data,
         }
 

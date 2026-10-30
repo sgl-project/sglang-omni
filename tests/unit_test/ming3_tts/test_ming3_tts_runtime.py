@@ -16,6 +16,7 @@ from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.models.ming3_tts import stages
 from sglang_omni.models.ming3_tts.acoustic import FLOW_STEPS, AcousticInputs
 from sglang_omni.models.ming3_tts.kernels import cfg_solver_step
+from sglang_omni.models.ming3_tts.model_config import build_audio_aggregator
 from sglang_omni.models.ming3_tts.model_runner import (
     LaunchedAcousticStep,
     Ming3TTSModelRunner,
@@ -25,7 +26,7 @@ from sglang_omni.models.ming3_tts.sglang_model import (
     Ming3DenseTTSConfig,
     Ming3TTSConfig,
     SpeechHeadModel,
-    build_audio_aggregator,
+    TinySpeechHeadModel,
 )
 from sglang_omni.models.ming3_tts.stages import read_reference_audio
 from sglang_omni.models.ming3_tts.vocoder import DecoderGraphs
@@ -107,12 +108,21 @@ def make_inputs(batch_size: int, device: torch.device) -> AcousticInputs:
     )
 
 
+class NativeTinySpeechHeads(TinySpeechHeadModel, TinySpeechHeads):
+    """Exercise Tiny's native arithmetic with the same randomized speech heads."""
+
+
 @pytest.mark.accelerator
-def test_acoustic_graph_replays_the_declared_guidance_after_allocator_reuse() -> None:
+@pytest.mark.parametrize("native_precision", [False, True])
+def test_acoustic_graph_replays_the_declared_guidance_after_allocator_reuse(
+    native_precision: bool,
+) -> None:
     """A captured step once read its guidance scales from freed memory."""
     require_cuda()
     device = torch.device("cuda", torch.cuda.current_device())
-    heads = TinySpeechHeads(device)
+    heads = (
+        NativeTinySpeechHeads(device) if native_precision else TinySpeechHeads(device)
+    )
     with torch.no_grad():
         heads.capture_acoustic_graphs(4)
         # Small allocations take any block the capture left free.

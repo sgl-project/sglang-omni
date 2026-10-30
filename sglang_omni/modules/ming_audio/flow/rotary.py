@@ -7,13 +7,31 @@ from typing import Protocol
 
 import torch
 from typing_extensions import Self
-from x_transformers.x_transformers import RotaryEmbedding, apply_rotary_pos_emb
+from x_transformers.x_transformers import (
+    RotaryEmbedding,
+    apply_rotary_pos_emb,
+    rotate_half,
+)
 
 from sglang_omni.platforms.interface import JointRopeInplaceKernel
 
 
 class TensorTransform(Protocol):
-    def __call__(self, tensor: torch.Tensor, /) -> torch.Tensor: ...
+    def __call__(self, tensor: torch.Tensor, /) -> torch.Tensor:
+        raise NotImplementedError
+
+
+class SharedRotaryTransform(Protocol):
+    def __call__(
+        self,
+        tensor: torch.Tensor,
+        cosine: torch.Tensor,
+        sine: torch.Tensor,
+        scale: float | torch.Tensor,
+        *,
+        materialize_output: bool = True,
+    ) -> torch.Tensor:
+        raise NotImplementedError
 
 
 @dataclass(frozen=True)
@@ -21,6 +39,14 @@ class RotaryInputs:
     cos_sin_cache: torch.Tensor
     positions: torch.Tensor
     kernel: JointRopeInplaceKernel
+
+
+@dataclass(frozen=True)
+class SharedRotaryInputs:
+    cosine: torch.Tensor
+    sine: torch.Tensor
+    query_scale: float | torch.Tensor
+    key_scale: float | torch.Tensor
 
 
 def validate_rotary_config(
@@ -113,23 +139,87 @@ def build_rotary_embedding(
 
 def get_rotary_inputs(
     rotary: RotaryEmbedding, batch_size: int, seq_len: int
-) -> RotaryInputs | tuple[torch.Tensor, float | torch.Tensor]:
+) -> RotaryInputs | SharedRotaryInputs:
     if isinstance(rotary, CachedRotaryEmbedding):
         return rotary.for_batch(batch_size)
     else:
         pass
-    return rotary.forward_from_seq_len(seq_len)
+    frequencies, scale = rotary.forward_from_seq_len(seq_len)
+    key_scale = scale**-1.0
+    with torch.autocast(device_type=frequencies.device.type, enabled=False):
+        return SharedRotaryInputs(
+            cosine=frequencies.cos(),
+            sine=frequencies.sin(),
+            query_scale=scale,
+            key_scale=key_scale,
+        )
+
+
+def apply_shared_rotary(
+    tensor: torch.Tensor,
+    cosine: torch.Tensor,
+    sine: torch.Tensor,
+    scale: float | torch.Tensor,
+    *,
+    materialize_output: bool = True,
+) -> torch.Tensor:
+    """Reuse trigonometry while preserving native operation order and dtype."""
+    with torch.autocast(device_type=tensor.device.type, enabled=False):
+        rotation_dimensions = cosine.shape[-1]
+        sequence_length = tensor.shape[-2]
+        cosine = cosine[:, -sequence_length:, :]
+        sine = sine[:, -sequence_length:, :]
+        if isinstance(scale, torch.Tensor):
+            scale = scale[:, -sequence_length:, :]
+        else:
+            pass
+        if tensor.ndim == 4 and cosine.ndim == 3:
+            cosine = cosine.unsqueeze(1)
+            sine = sine.unsqueeze(1)
+            if isinstance(scale, torch.Tensor):
+                scale = scale.unsqueeze(1)
+            else:
+                pass
+        else:
+            pass
+        rotated = tensor[..., :rotation_dimensions]
+        unchanged = tensor[..., rotation_dimensions:]
+        if isinstance(scale, float) and scale == 1.0:
+            rotated = (rotated * cosine) + (rotate_half(rotated) * sine)
+        else:
+            rotated = (rotated * cosine * scale) + (rotate_half(rotated) * sine * scale)
+        if materialize_output or rotation_dimensions != tensor.shape[-1]:
+            rotated = torch.cat((rotated, unchanged), dim=-1)
+        else:
+            pass
+        return rotated.to(tensor.dtype)
 
 
 def apply_rotary_embedding(
     query: torch.Tensor,
     key: torch.Tensor,
-    rope: RotaryInputs | tuple[torch.Tensor, float | torch.Tensor | None] | None,
+    rope: (
+        RotaryInputs
+        | SharedRotaryInputs
+        | tuple[torch.Tensor, float | torch.Tensor | None]
+        | None
+    ),
     *,
     pe_attn_head: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     if isinstance(rope, RotaryInputs):
         apply_rotary_inplace(query, key, rope)
+    elif isinstance(rope, SharedRotaryInputs):
+        if pe_attn_head is None:
+            query = apply_shared_rotary(query, rope.cosine, rope.sine, rope.query_scale)
+            key = apply_shared_rotary(key, rope.cosine, rope.sine, rope.key_scale)
+        else:
+            query[:, :pe_attn_head, :, :] = apply_shared_rotary(
+                query[:, :pe_attn_head, :, :], rope.cosine, rope.sine, rope.query_scale
+            )
+            key[:, :pe_attn_head, :, :] = apply_shared_rotary(
+                key[:, :pe_attn_head, :, :], rope.cosine, rope.sine, rope.key_scale
+            )
     elif rope is not None:
         freqs, xpos_scale = rope
         q_xpos_scale, k_xpos_scale = (

@@ -11,6 +11,19 @@ from torch import nn
 from sglang_omni.modules.ming_audio.flow.cfm import get_epss_timesteps
 from sglang_omni.modules.ming_audio.flow.dit import DiT
 
+SWAY_SAMPLING_COEFFICIENT = -1.0
+
+
+def transform_sampling_timesteps(
+    timesteps: torch.Tensor, coefficient: float | None
+) -> torch.Tensor:
+    if coefficient is not None:
+        return timesteps + coefficient * (
+            torch.cos(torch.pi / 2 * timesteps) - 1 + timesteps
+        )
+    else:
+        return timesteps
+
 
 def build_cfm_timesteps(
     *,
@@ -68,11 +81,13 @@ class Solver:
         y0: torch.Tensor,
         sigma: float | torch.Tensor = 0.25,
         temperature: float | torch.Tensor = 1.5,
+        timestep_embeddings: tuple[torch.Tensor, ...] | None = None,
     ) -> None:
         self.func = func
         self.y0 = y0
         self.sigma = sigma
         self.temperature = temperature
+        self.timestep_embeddings = timestep_embeddings
 
     def integrate(
         self,
@@ -86,7 +101,12 @@ class Solver:
         sampled = y0
         for step, (t0, t1) in enumerate(zip(t[:-1], t[1:])):
             dt = t1 - t0
-            f0 = self.func(t0, y0)
+            if self.timestep_embeddings is None:
+                f0 = self.func(t0, y0)
+            else:
+                f0 = self.func(
+                    t0, y0, timestep_embedding=self.timestep_embeddings[step]
+                )
             y1 = y0 + dt * f0
             sampled = y1
 
@@ -104,6 +124,20 @@ class CFM(nn.Module):
     def __init__(self, model: nn.Module) -> None:
         super().__init__()
         self.model = model
+        self.timestep_embeddings: tuple[torch.Tensor, ...] | None = None
+
+    def build_timestep_embeddings(
+        self,
+        timesteps: torch.Tensor,
+        batch_size: int,
+        sway_sampling_coef: float | None = SWAY_SAMPLING_COEFFICIENT,
+    ) -> tuple[torch.Tensor, ...]:
+        assert isinstance(self.model, DiT)
+        transformed = transform_sampling_timesteps(timesteps, sway_sampling_coef)
+        return tuple(
+            self.model.t_embedder(timestep.repeat(batch_size * 2)).unsqueeze(1)
+            for timestep in transformed[:-1]
+        )
 
     @property
     def device(self):
@@ -146,7 +180,7 @@ class CFM(nn.Module):
         timesteps: torch.Tensor,
         sde_random: torch.Tensor,
         cfg_scale: float = 1.0,
-        sway_sampling_coef: float | None = -1.0,
+        sway_sampling_coef: float | None = SWAY_SAMPLING_COEFFICIENT,
         sigma: float | torch.Tensor = 0.25,
         temperature: float | torch.Tensor = 1.5,
     ) -> torch.Tensor:
@@ -160,7 +194,13 @@ class CFM(nn.Module):
             sigma=sigma,
             temperature=temperature,
         )
-        solver = Solver(fn, y0, sigma=sigma_tensor, temperature=temperature_tensor)
+        solver = Solver(
+            fn,
+            y0,
+            sigma=sigma_tensor,
+            temperature=temperature_tensor,
+            timestep_embeddings=self.timestep_embeddings,
+        )
         return solver.integrate(t, sde_random=sde_random)
 
     def prepare_sampling(
@@ -194,23 +234,44 @@ class CFM(nn.Module):
             device=noise.device,
             dtype=noise.dtype,
         )
-
-        def fn(t, x):
-            pred_cfg = self.model.forward_with_cfg(
-                x=x,
-                t=t,
-                c=c,
-                latent_history=latent_history,
+        if (
+            isinstance(self.model, DiT)
+            and not self.model.training
+            and not torch.is_grad_enabled()
+        ):
+            prepared = self.model.prepare_conditioning(
+                c, latent_history, noise.shape[-1]
             )
+        else:
+            prepared = None
+
+        def fn(
+            t: torch.Tensor,
+            x: torch.Tensor,
+            *,
+            timestep_embedding: torch.Tensor | None = None,
+        ) -> torch.Tensor:
+            if prepared is None and timestep_embedding is None:
+                pred_cfg = self.model.forward_with_cfg(
+                    x=x,
+                    t=t,
+                    c=c,
+                    latent_history=latent_history,
+                )
+            else:
+                pred_cfg = self.model.forward_with_cfg(
+                    x=x,
+                    t=t,
+                    c=c,
+                    latent_history=latent_history,
+                    prepared=prepared,
+                    timestep_embedding=timestep_embedding,
+                )
             pred, null_pred = torch.chunk(pred_cfg, 2, dim=0)
             return pred + (pred - null_pred) * cfg_tensor
 
         y0 = noise.transpose(1, 2)
-        t = timesteps
-        if sway_sampling_coef is not None:
-            t = t + sway_sampling_coef * (torch.cos(torch.pi / 2 * t) - 1 + t)
-        else:
-            pass
+        t = transform_sampling_timesteps(timesteps, sway_sampling_coef)
 
         return fn, y0, t, sigma_tensor, temperature_tensor
 

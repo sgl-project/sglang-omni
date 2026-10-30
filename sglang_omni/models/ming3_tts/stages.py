@@ -43,6 +43,7 @@ from sglang_omni.models.ming3_tts.dense_prompt import (
     build_dense_speech_prompt,
     validate_dense_tokenizer,
 )
+from sglang_omni.models.ming3_tts.model_config import build_audio_aggregator
 from sglang_omni.models.ming3_tts.model_runner import (
     Ming3TTSModelRunner,
     Ming3TTSRequestData,
@@ -55,8 +56,8 @@ from sglang_omni.models.ming3_tts.sglang_model import (
     Ming3DenseTTSModel,
     Ming3TTSConfig,
     Ming3TTSModel,
-    build_audio_aggregator,
 )
+from sglang_omni.models.ming3_tts.tiny_model_runner import TinyTTSModelRunner
 from sglang_omni.models.ming3_tts.vocoder import create_vocoder_executor
 from sglang_omni.modules.ming_audio.flow.aggregator import Aggregator
 from sglang_omni.modules.ming_audio.vae.modeling_audio_vae import AudioVAE
@@ -738,13 +739,18 @@ def create_tts_engine_executor(
         acoustic_graph_max_batch_size = server_args.max_running_requests
     else:
         acoustic_graph_max_batch_size = None
-    model_runner = Ming3TTSModelRunner(
-        worker,
-        SGLangOutputProcessor(),
-        stop_policy,
-        acoustic_graph_max_batch_size,
-        enable_fused_flow_head=enable_fused_flow_head and dense,
-    )
+    if dense:
+        model_runner = Ming3TTSModelRunner(
+            worker,
+            SGLangOutputProcessor(),
+            stop_policy,
+            acoustic_graph_max_batch_size,
+            enable_fused_flow_head=enable_fused_flow_head,
+        )
+    else:
+        model_runner = TinyTTSModelRunner(
+            worker, SGLangOutputProcessor(), stop_policy, acoustic_graph_max_batch_size
+        )
     return OmniScheduler(
         tp_worker=worker,
         tree_cache=tree_cache,

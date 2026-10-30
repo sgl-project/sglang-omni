@@ -21,6 +21,7 @@ from sglang_omni.models.ming3_tts.kernels import (
     cfg_solver_step,
     rotary_attention,
 )
+from sglang_omni.models.ming3_tts.native_acoustic import NativeAcousticCapture
 from sglang_omni.modules.ming_audio.flow.aggregator import Aggregator
 from sglang_omni.modules.ming_audio.flow.dit import DiT
 from sglang_omni.modules.ming_audio.flow.flow_loss import FlowLoss, expand_batch_param
@@ -345,3 +346,16 @@ def sample_flow(
             add_noise=step + 1 < FLOW_STEPS,
         )
     return sample
+
+
+@dataclass(kw_only=True)
+class AcousticGraph:
+    """A captured step; the graph reads sampling_scales and constants, so they must outlive capture."""
+
+    graph: torch.cuda.CUDAGraph
+    inputs: AcousticInputs
+    sampling_scales: torch.Tensor
+    constants: FlowConstants | None
+    outputs: AcousticStep
+
+    native_state: NativeAcousticCapture | None = None
