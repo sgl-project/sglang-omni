@@ -111,6 +111,20 @@ def test_ramp_preserves_all_samples(
     assert all(frames <= DECODE_WINDOW_FRAMES for frames in decoder.calls)
 
 
+def test_two_frame_push_crosses_chunk_boundary() -> None:
+    """A push crossing the target must emit a chunk before the final flush."""
+    codec = StreamingCodec(FrameLocalDecoder(), "cpu", chunk_frames=(4,))
+    codes = make_codes(5)
+    assert codec.push(codes[:3]) == []
+    (audio,) = codec.push(codes[3:])
+    assert audio.numel() == 4 * SAMPLES_PER_FRAME - TAIL_HOLDBACK_SAMPLES
+    tail = codec.flush()
+    assert tail.numel() == SAMPLES_PER_FRAME + TAIL_HOLDBACK_SAMPLES
+    torch.testing.assert_close(
+        torch.cat((audio, tail)), FrameLocalDecoder()(codes), rtol=0, atol=0
+    )
+
+
 def test_ramp_chunk_boundaries_and_partial_flush() -> None:
     codec = StreamingCodec(
         FrameLocalDecoder(), "cpu", chunk_frames=(1, 1, 1, 1, 2, 2, 4)
@@ -136,9 +150,8 @@ def test_reject_unsafe_chunks(chunk_frames: tuple[int, ...]) -> None:
         )
 
 
-@pytest.mark.parametrize("chunk_frames", [(1, 2, 4), (1, 1, 1, 1, 2, 2, 4), (1, 13)])
 @torch.inference_mode()
-def test_ramp_preserves_causal_decoder_waveform(chunk_frames: tuple[int, ...]) -> None:
+def make_causal_decoder(samples_per_frame: int) -> RVQVAEDecoder:
     torch.manual_seed(2459)
     decoder = RVQVAEDecoder(
         {
@@ -153,13 +166,29 @@ def test_ramp_preserves_causal_decoder_waveform(chunk_frames: tuple[int, ...]) -
             "num_blocks": 3,
             "num_quantizers": 4,
             "rates": [7, 7, 9],
-            "wav_to_token_ratio": 1764,
+            "wav_to_token_ratio": samples_per_frame,
         }
     ).eval()
     for codebook in decoder.prvq.mus_list:
         codebook.normal_(std=0.1)
     decoder.control_codes.fill_(1000)
     decoder.silence_codes.zero_()
+    return decoder
+
+
+def test_invalid_codec_ratio_reports_config_values() -> None:
+    """A checkpoint with inconsistent frame sizes must report its config values."""
+    decoder = make_causal_decoder(1765)
+    with pytest.raises(ValueError) as error:
+        decoder.required_context_frames(TAIL_HOLDBACK_SAMPLES)
+    for field in ("wav_to_token_ratio=1765", "rates product=441", "hop_length=4"):
+        assert field in str(error.value)
+
+
+@pytest.mark.parametrize("chunk_frames", [(1, 2, 4), (1, 1, 1, 1, 2, 2, 4), (1, 13)])
+@torch.inference_mode()
+def test_ramp_preserves_causal_decoder_waveform(chunk_frames: tuple[int, ...]) -> None:
+    decoder = make_causal_decoder(1764)
     codes = torch.randint(32, (37, 4))
     baseline = StreamingCodec(decoder, "cpu", chunk_frames=(1,))
     candidate = StreamingCodec(decoder, "cpu", chunk_frames=chunk_frames)
@@ -212,23 +241,46 @@ def test_scheduler_preserves_chunks_and_request_isolation() -> None:
     assert "second" in scheduler.states
 
 
-@pytest.mark.parametrize("frame_count", [0, 2])
-def test_end_of_stream_before_payload(frame_count: int) -> None:
+@pytest.mark.parametrize(
+    ("frame_count", "cancel_after_eos"), [(0, False), (2, False), (5, False), (2, True)]
+)
+def test_end_of_stream_before_payload(frame_count: int, cancel_after_eos: bool) -> None:
+    """EOS must deliver the complete waveform before a delayed terminal payload."""
+    decoder = FrameLocalDecoder()
     scheduler = NemotronCode2WavScheduler(
-        FrameLocalDecoder(), "cpu", chunk_frames=(1, 2, 4), compute_fn=None
+        decoder, "cpu", chunk_frames=(1, 2, 4), compute_fn=None
     )
-    scheduler.handle_stream_chunk(
-        "request", StreamItem(0, make_codes(frame_count), "talker")
-    )
+    codes = make_codes(frame_count)
+    scheduler.handle_stream_chunk("request", StreamItem(0, codes, "talker"))
     scheduler.handle_stream_done("request")
-    scheduler.handle_streaming_new_request(
-        "request", StagePayload("request", OmniRequest(None), {})
-    )
-    messages = []
+    audio_parts: list[torch.Tensor] = []
     while not scheduler.outbox.empty():
-        messages.append(scheduler.outbox.get_nowait())
-    assert messages[-1].type == "result"
-    assert messages[-1].data.data["audio_waveform_shape"] == [
-        frame_count * SAMPLES_PER_FRAME
-    ]
+        message = scheduler.outbox.get_nowait()
+        assert message.type == "stream"
+        audio_parts.append(
+            torch.frombuffer(
+                bytearray(message.data["audio_waveform"]), dtype=torch.float32
+            )
+        )
+    waveform = torch.cat(audio_parts) if audio_parts else torch.zeros(0)
+    torch.testing.assert_close(waveform, FrameLocalDecoder()(codes), rtol=0, atol=0)
+    decode_calls = len(decoder.calls)
+    if cancel_after_eos:
+        scheduler.abort("request")
+        assert "request" not in scheduler.pending_done
+        assert scheduler.outbox.empty()
+    else:
+        scheduler.handle_streaming_new_request(
+            "request", StagePayload("request", OmniRequest(None), {})
+        )
+        result = scheduler.outbox.get_nowait()
+        assert result.type == "result"
+        assert result.data.data["audio_waveform"] == waveform.numpy().tobytes()
+        assert result.data.data["audio_waveform_shape"] == [
+            frame_count * SAMPLES_PER_FRAME
+        ]
+        assert len(decoder.calls) == decode_calls
+        assert scheduler.outbox.empty()
+        assert "request" not in scheduler.stream_payloads
+        assert "request" not in scheduler.pending_done
     assert "request" not in scheduler.states

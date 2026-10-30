@@ -165,10 +165,18 @@ class RVQVAEDecoder(nn.Module):
     def required_context_frames(self, holdback_samples: int) -> int:
         """Include causal convolutions and iSTFT overlap for held-back samples."""
         decoder = self.decoder
-        assert (
+        if (
             self.samples_per_frame
-            == decoder.spectrogram_frames_per_code * decoder.hop_length
-        )
+            != decoder.spectrogram_frames_per_code * decoder.hop_length
+        ):
+            raise ValueError(
+                f"Invalid codec config: wav_to_token_ratio={self.samples_per_frame}, "
+                f"rates product={decoder.spectrogram_frames_per_code}, "
+                f"hop_length={decoder.hop_length}; "
+                "wav_to_token_ratio must equal rates product * hop_length"
+            )
+        else:
+            pass
         padding_samples = (decoder.n_fft - decoder.hop_length) // 2
         first_spectrogram_frame = (
             -holdback_samples + padding_samples - decoder.n_fft

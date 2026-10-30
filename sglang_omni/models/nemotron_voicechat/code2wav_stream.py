@@ -70,7 +70,7 @@ class StreamingCodec:
 
     @torch.inference_mode()
     def flush(self) -> torch.Tensor:
-        if not self.pushed_frames:
+        if self.emitted_samples == self.pushed_frames * self.decoder.samples_per_frame:
             return torch.zeros(0)
         else:
             pass
@@ -162,7 +162,7 @@ class NemotronCode2WavScheduler(StreamingSimpleScheduler):
         ]
 
     @torch.inference_mode()
-    def on_stream_done(self, request_id: str) -> list[OutgoingMessage]:
+    def on_stream_done_before_payload(self, request_id: str) -> list[OutgoingMessage]:
         state = self.states.get(request_id)
         if state is None:
             return []
@@ -188,6 +188,16 @@ class NemotronCode2WavScheduler(StreamingSimpleScheduler):
                 )
             else:
                 pass
+        else:
+            pass
+        return messages
+
+    @torch.inference_mode()
+    def on_stream_done(self, request_id: str) -> list[OutgoingMessage]:
+        messages = self.on_stream_done_before_payload(request_id)
+        state = self.states.get(request_id)
+        if state is None:
+            return messages
         else:
             pass
         waveform = torch.cat(state.audio_parts) if state.audio_parts else torch.zeros(0)
