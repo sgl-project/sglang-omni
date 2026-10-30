@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 GPU_LOCAL_CPUS_ENV = "SGLANG_OMNI_BIND_GPU_LOCAL_CPUS"
 _CGROUP_ROOT = Path("/sys/fs/cgroup")
 _PROC_SELF_CGROUP = Path("/proc/self/cgroup")
+# note (ratish): 16 beat the reader's own 8 threads on Video-MME CI videos; larger values are unmeasured.
+MAX_VIDEO_DECODE_THREADS = 16
 
 
 def read_self_cgroup_paths(proc_self_cgroup: Path) -> tuple[str | None, str | None]:
@@ -178,10 +180,6 @@ def bounded_intraop_threads(*, worker_count: int, max_threads: int) -> int:
     else:
         pass
     return min(max(effective_cpu_count() // worker_count, 1), max_threads)
-
-
-# note (ratish): one request worker's videos share at most this many FFmpeg decode threads unless its stage sets its own.
-MAX_VIDEO_DECODE_THREADS = 16
 
 
 def automatic_video_decode_threads(worker_count: int) -> int:
