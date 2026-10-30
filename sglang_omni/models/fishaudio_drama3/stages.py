@@ -26,11 +26,14 @@ from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_MAX_NEW_TOKENS_CAP,
     DEFAULT_MAX_PROMPT_ROWS,
     DEFAULT_MAX_RUNNING_REQUESTS,
+    DEFAULT_REFERENCE_SAMPLING,
+    DEFAULT_REFERENCE_SAMPLING_FALLBACK,
     DEFAULT_STREAM_FOLLOWUP_STRIDE,
     DEFAULT_STREAM_FOLLOWUP_STRIDE_RAMP,
     DEFAULT_STREAM_STRIDE,
     DEFAULT_TOWER_FUSED_LAYERS,
     DEFAULT_TRITON_SAMPLING,
+    ReferenceSamplingFallback,
 )
 from sglang_omni.models.fishaudio_drama3.engine_builder import Drama3EngineBuilder
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
@@ -159,6 +162,10 @@ def create_tts_engine_executor(
         DEFAULT_FIRST_FRAME_CUDA_GRAPH_MAX_REQUESTS
     ),
     triton_sampling: bool = DEFAULT_TRITON_SAMPLING,
+    reference_sampling: bool = DEFAULT_REFERENCE_SAMPLING,
+    reference_sampling_fallback: ReferenceSamplingFallback = (
+        DEFAULT_REFERENCE_SAMPLING_FALLBACK
+    ),
     tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS,
     enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE,
     async_decode_min_batch_size: int = DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
@@ -189,6 +196,8 @@ def create_tts_engine_executor(
         first_frame_cuda_graphs=first_frame_cuda_graphs,
         first_frame_cuda_graph_max_requests=first_frame_cuda_graph_max_requests,
         triton_sampling=triton_sampling,
+        reference_sampling=reference_sampling,
+        reference_sampling_fallback=reference_sampling_fallback,
         tower_fused_layers=tower_fused_layers,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,

@@ -10,6 +10,7 @@ Dispatches all compute to scheduler (OmniScheduler or SimpleScheduler).
 from __future__ import annotations
 
 import asyncio
+import gc
 import inspect
 import logging
 import os
@@ -19,7 +20,7 @@ from collections.abc import Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import replace
-from typing import Awaitable, Callable, Literal
+from typing import Awaitable, Callable, Literal, Protocol
 
 import torch
 
@@ -51,6 +52,7 @@ from sglang_omni.proto import (
     CompleteMessage,
     DataAckMessage,
     DataReadyMessage,
+    FreezeGCMessage,
     ProfilerStartMessage,
     ProfilerStopMessage,
     ShutdownMessage,
@@ -84,6 +86,11 @@ GetStreamDoneTargetsFn = Callable[[str, object], str | list[str] | None]
 
 def error_text(exc: BaseException) -> str:
     return str(exc) or type(exc).__name__
+
+
+class ProcessFailureCallback(Protocol):
+    def __call__(self) -> None:
+        """Notify the owner before process cleanup can block."""
 
 
 class Stage:
@@ -136,7 +143,11 @@ class Stage:
         replica_topology: dict[str, list[str]] | None = None,
         allow_child_processes: bool = False,
         http_socket_path: str | None = None,
+        process_failure_callback: ProcessFailureCallback | None = None,
     ) -> None:
+        self.process_failure_callback: ProcessFailureCallback | None = (
+            process_failure_callback
+        )
         self.name = name
         self.role = role
         self.get_next = get_next
@@ -295,6 +306,10 @@ class Stage:
                     self.scheduler.start()
                 except Exception as exc:
                     logger.exception("Scheduler thread for stage %s crashed", self.name)
+                    if self.process_failure_callback is not None:
+                        self.process_failure_callback()
+                    else:
+                        pass
                     self.running = False
                     loop = self.loop
                     if loop is not None and not loop.is_closed():
@@ -455,6 +470,7 @@ class Stage:
                         msg,
                         (
                             ShutdownMessage,
+                            FreezeGCMessage,
                             ProfilerStartMessage,
                             ProfilerStopMessage,
                             AdminMessage,
@@ -478,6 +494,10 @@ class Stage:
             pass
         except Exception:
             if self.scheduler_crash_error is None:
+                if self.process_failure_callback is not None:
+                    self.process_failure_callback()
+                else:
+                    pass
                 raise
             else:
                 pass
@@ -506,6 +526,7 @@ class Stage:
             SubmitMessage
             | DataAckMessage
             | DataReadyMessage
+            | FreezeGCMessage
             | ProfilerStartMessage
             | ProfilerStopMessage
             | AdminMessage
@@ -517,6 +538,8 @@ class Stage:
             self.comm.ack_transfer(msg)
         elif isinstance(msg, DataReadyMessage):
             self.schedule_receive_task(msg)
+        elif isinstance(msg, FreezeGCMessage):
+            gc.freeze()
         elif isinstance(msg, ProfilerStartMessage):
             self.on_profiler_start(msg)
         elif isinstance(msg, ProfilerStopMessage):
@@ -1166,7 +1189,8 @@ class Stage:
 
     async def execute(self, payload: StagePayload) -> None:
         request_id = payload.request_id
-        if request_id in self.aborted:
+        # note (Richard Wang): the leader drops aborted work before fanout, so a follower runs all work it receives.
+        if request_id in self.aborted and self.role != "follower":
             return
         else:
             pass
@@ -2542,7 +2566,13 @@ class Stage:
         self.record_aborted_request_id(request_id)
         self.comm.cleanup(request_id)
         self.clear_request_state(request_id)
-        self.scheduler.abort(request_id)
+        # note (Richard Wang): TP ranks run fanned-out work to completion, since a skip on one rank pairs different requests in one collective.
+        if self.role == "single" or not getattr(
+            self.scheduler, "requires_tp_work_fanout", False
+        ):
+            self.scheduler.abort(request_id)
+        else:
+            pass
 
     def on_profiler_start(self, msg: ProfilerStartMessage) -> None:
         run_id = msg.run_id
@@ -2613,6 +2643,10 @@ class Stage:
         )
         if self.background_task_error is None:
             self.background_task_error = exc
+        else:
+            pass
+        if self.process_failure_callback is not None:
+            self.process_failure_callback()
         else:
             pass
         self.running = False

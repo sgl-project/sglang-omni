@@ -272,15 +272,18 @@ def test_stage_process_accepts_iterable_dynamic_wait_sources() -> None:
 def test_stage_run_raises_when_scheduler_thread_crashes() -> None:
     async def run() -> None:
         scheduler = FakeScheduler(fail_start=RuntimeError("boom"))
+        reported = threading.Event()
         stage_obj = make_stage(
             scheduler=scheduler,
             control_plane=CloseAwareControlPlane(),
+            process_failure_callback=reported.set,
         )
 
         with pytest.raises(RuntimeError, match="Scheduler thread"):
             await asyncio.wait_for(stage_obj.run(), timeout=2.0)
 
         assert scheduler.stopped is True
+        assert reported.is_set()
 
     asyncio.run(run())
 
@@ -1445,6 +1448,57 @@ def test_direct_cuda_ipc_payload_preserves_inline_cpu_tensors() -> None:
     assert [entry["path"] for entry in ref["tensors"]] == ["gpu"]
 
 
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_direct_cuda_ipc_payload_header_sends_a_cpu_views_own_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transfer_buffer = torch.arange(1 << 20, dtype=torch.int64)
+    grid = transfer_buffer[3:6].view(1, 3)
+    positions = transfer_buffer[8:20].view(3, 4).t()
+    payload = make_stage_payload(
+        data={
+            "gpu": torch.arange(2, device="cuda:0"),
+            "grid": grid,
+            "positions": positions,
+        }
+    )
+    monkeypatch.setattr(stage_io, "ipc_pickle", lambda value: b"cuda-handle")
+
+    payload_reference = stage_io.serialize_direct_cuda_ipc_payload(payload)
+    header = pickle.loads(payload_reference["header"])
+
+    assert len(payload_reference["header"]) < transfer_buffer.untyped_storage().nbytes()
+    assert torch.equal(header.data["grid"], grid)
+    assert torch.equal(header.data["positions"], positions)
+    assert header.data["positions"].stride() == positions.stride()
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_direct_cuda_ipc_payload_header_copies_only_views_of_a_larger_storage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transfer_buffer = torch.arange(1 << 20, dtype=torch.int64)
+    features = transfer_buffer[: 3 << 18]
+    mask = torch.ones(1, dtype=torch.int64).expand(1 << 20)
+    payload = make_stage_payload(
+        data={
+            "gpu": torch.arange(2, device="cuda:0"),
+            "features": features,
+            "mask": mask,
+        }
+    )
+    monkeypatch.setattr(stage_io, "ipc_pickle", lambda value: b"cuda-handle")
+
+    payload_reference = stage_io.serialize_direct_cuda_ipc_payload(payload)
+    header = pickle.loads(payload_reference["header"])
+
+    assert len(payload_reference["header"]) < transfer_buffer.untyped_storage().nbytes()
+    assert torch.equal(header.data["features"], features)
+    assert torch.equal(header.data["mask"], mask)
+
+
 def test_direct_cuda_ipc_payload_allows_large_ordinary_header(monkeypatch) -> None:
     payload = make_stage_payload(
         data={"gpu": "placeholder"},
@@ -1736,6 +1790,27 @@ def test_aborted_request_id_resubmit_fails_without_new_state() -> None:
         assert "req-1" not in stage.active_requests
         assert "req-1" not in stage.replica_bindings
         assert "req-1" in stage.aborted
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("role", ["leader", "follower"])
+def test_tp_rank_runs_fanned_out_work_after_abort(role: str) -> None:
+    async def run() -> None:
+        scheduler = SimpleScheduler(lambda payload: payload)
+        stage = make_stage(role=role, scheduler=scheduler, tp_fanout=Mock())
+        payload = make_stage_payload(request_id="req-1")
+        if role == "leader":
+            await stage.execute(payload)
+            stage.on_abort("req-1")
+        else:
+            stage.on_abort("req-1")
+            await stage.execute(payload)
+        threading.Thread(target=scheduler.start, daemon=True).start()
+        try:
+            assert scheduler.outbox.get(timeout=5).request_id == "req-1"
+        finally:
+            scheduler.stop()
 
     asyncio.run(run())
 

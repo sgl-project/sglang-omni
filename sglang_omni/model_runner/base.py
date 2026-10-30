@@ -17,7 +17,10 @@ import torch
 from sglang.srt.utils.common import is_pin_memory_available
 
 from sglang_omni.model_runner.model_worker import ModelWorker
-from sglang_omni.model_runner.prefill_inputs import clear_omni_prefill_inputs
+from sglang_omni.model_runner.prefill_inputs import (
+    clear_omni_prefill_inputs,
+    get_omni_prefill_inputs,
+)
 from sglang_omni.model_runner.sglang_execution import SGLangExecutionBridge
 from sglang_omni.platforms import current_platform
 from sglang_omni.sampling.seed import (
@@ -157,6 +160,10 @@ class ModelRunner(Generic[RequestDataInput]):
 
     # True when the model's own speculative verify applies repetition_penalty exactly.
     speculative_verifies_repetition_penalty: bool = False
+    # An EAGLE draft extends on the embeddings the target prefilled with, which a
+    # runner composing multimodal inputs keeps here for one prefill.
+    retain_prefill_input_embeds: bool = False
+    retained_prefill_input_embeds: torch.Tensor | None = None
 
     def __init__(
         self,
@@ -635,6 +642,7 @@ class ModelRunner(Generic[RequestDataInput]):
         block. Returns ``batch_result``."""
         try:
             if is_prefill:
+                self.retained_prefill_input_embeds = None
                 self.before_prefill(forward_batch, schedule_batch, requests)
                 batch_result = self.custom_prefill_forward(
                     forward_batch, schedule_batch, requests
@@ -675,7 +683,26 @@ class ModelRunner(Generic[RequestDataInput]):
                 )
             else:
                 pass
+            # The sidecar stays attached until cleanup, so a prefill that got this far
+            # can still hand its composed embeddings to the draft.
+            if is_prefill and self.retain_prefill_input_embeds:
+                prefill_inputs = get_omni_prefill_inputs(forward_batch)
+                if prefill_inputs is not None:
+                    self.retained_prefill_input_embeds = prefill_inputs.input_embeds
+                elif forward_batch.input_embeds is not None:
+                    self.retained_prefill_input_embeds = forward_batch.input_embeds
+                else:
+                    # A runner forwarding composed embeddings itself retains them.
+                    pass
+            else:
+                pass
             return batch_result
+        except BaseException:
+            # note (wilsonzheng0327): the target adapter releases the retained
+            # embeddings only from a returned result, so a failed forward, an OOM
+            # among them, must not keep its GPU tensor alive until the next prefill.
+            self.retained_prefill_input_embeds = None
+            raise
         finally:
             if is_prefill:
                 clear_omni_prefill_inputs(forward_batch)

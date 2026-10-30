@@ -15,16 +15,10 @@
 // (1 only). One request runs at a time and N more (2 by default) may wait; the
 // rest get 503. A request not done S seconds (600 by default) after it
 // arrives is cancelled, with 504 or an early end to its stream, and so is a
-// request whose client disconnects.
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-
+// request whose client disconnects. A request body over 1 MiB gets 413.
 #include <algorithm>
 #include <array>
 #include <cctype>
-#include <cerrno>
-#include <charconv>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
@@ -37,12 +31,12 @@
 #include <random>
 #include <stdexcept>
 #include <string>
-#include <system_error>
 #include <typeinfo>
 #include <vector>
 
 #include "civetweb.h"
 #include "common/http.h"
+#include "common/text.h"
 #include "qwen3_asr/asr_service.h"
 #include "qwen3_asr/qwen3_asr_transcriber.h"
 #include "voxtral_tts/voxtral_tts_model.h"
@@ -54,16 +48,12 @@ using qwen3_asr::TranscriptionResult;
 
 constexpr const char *kDefaultVoice = "cheerful_female";
 constexpr size_t kMaxInputCharacters = 4096;
+// Far above the largest valid request: kMaxInputCharacters characters, each
+// JSON-escaped as a 12-byte surrogate pair, take 48 KiB.
+constexpr size_t kMaxRequestBodyBytes = 1024 * 1024;
 constexpr int kMaxAudioFrames = 4096;
 constexpr int kRequestIdHexDigits = 32;
 constexpr int kMaxRequestTimeoutSeconds = 24 * 60 * 60;
-// As often as the CUDA server checks whether a speech client disconnected.
-constexpr auto kClientPollInterval = std::chrono::milliseconds(50);
-// The status civetweb logs for a request whose client left before its answer.
-constexpr int kClientLeftStatus = 499;
-// The most one disconnect check reads of what a client sent after its request,
-// so a client that keeps sending cannot hold the check.
-constexpr size_t kMaxUnreadBytesPerCheck = 64 * 1024;
 // A collection field of CUDA's CreateSpeechRequest and the JSON type it takes.
 struct CollectionField {
   const char *name;
@@ -174,7 +164,7 @@ SpeechRequest ParseRequest(const Json &body,
   RejectUnsupportedFields(body);
   const Json input = FieldOr(body, "input", Json());
   if (!input.is_string() ||
-      qwen3_asr::StripUnicodeWhitespace(input.get<std::string>()).empty()) {
+      omni_common::StripUnicodeWhitespace(input.get<std::string>()).empty()) {
     throw std::invalid_argument("input must be a non-empty string");
   } else {
   }
@@ -226,8 +216,8 @@ SpeechRequest ParseRequest(const Json &body,
   } else {
   }
   // Note (Minyi Tang): as CUDA's response_format.strip().lower().
-  for (const char character :
-       qwen3_asr::StripUnicodeWhitespace(response_format.get<std::string>())) {
+  for (const char character : omni_common::StripUnicodeWhitespace(
+           response_format.get<std::string>())) {
     request.response_format.push_back(
         static_cast<char>(std::tolower(static_cast<unsigned char>(character))));
   }
@@ -282,79 +272,23 @@ std::string NewRequestId() {
   return id;
 }
 
-// The socket civetweb accepted for connection's client, found by the client's
-// address and port since civetweb does not expose it, or -1.
-int ClientSocket(const mg_connection *connection) {
-  const mg_request_info *request_info = mg_get_request_info(connection);
-  // Note (Minyi Tang): a listing that fails, as it does in a process out of
-  // descriptors, ends the search, and the request is then served without
-  // watching its client. Nothing here throws, since an exception would unwind
-  // through civetweb's C callback and terminate the server.
-  std::error_code listing_error;
-  for (std::filesystem::directory_iterator listing("/dev/fd", listing_error);
-       !listing_error && listing != std::filesystem::directory_iterator();
-       listing.increment(listing_error)) {
-    const std::string name = listing->path().filename().string();
-    int file_descriptor = -1;
-    const auto [parse_end, parse_error] = std::from_chars(
-        name.data(), name.data() + name.size(), file_descriptor);
-    if (parse_error != std::errc() || parse_end != name.data() + name.size()) {
-      continue;
-    } else {
-    }
-    sockaddr_storage peer{};
-    socklen_t peer_size = sizeof(peer);
-    char address[INET6_ADDRSTRLEN] = "";
-    int port = -1;
-    if (getpeername(file_descriptor, reinterpret_cast<sockaddr *>(&peer),
-                    &peer_size) != 0) {
-      continue;
-    } else if (peer.ss_family == AF_INET) {
-      const auto *ipv4 = reinterpret_cast<const sockaddr_in *>(&peer);
-      inet_ntop(AF_INET, &ipv4->sin_addr, address, sizeof(address));
-      port = ntohs(ipv4->sin_port);
-    } else if (peer.ss_family == AF_INET6) {
-      const auto *ipv6 = reinterpret_cast<const sockaddr_in6 *>(&peer);
-      inet_ntop(AF_INET6, &ipv6->sin6_addr, address, sizeof(address));
-      port = ntohs(ipv6->sin6_port);
-    } else {
-    }
-    if (port == request_info->remote_port &&
-        request_info->remote_addr == std::string(address)) {
-      return file_descriptor;
-    } else {
-    }
-  }
-  return -1;
-}
+// Thrown by a generation that reaches its request's deadline; a cancellation,
+// so it is never logged as a failure.
+class DeadlineReached : public qwen3_asr::TranscriptionCancelled {};
 
-// Whether the client of client_socket closed it, which its socket shows by
-// reading as ended or failing.
-// Note (Minyi Tang): civetweb keeps no connection alive, so it never serves
-// what a client sends after its request; that is read and dropped here, since
-// bytes left unread would hide the end of the socket from every later check.
-// Note (Minyi Tang): a client that only shuts down its sending side also reads
-// as ended and is treated as gone, as uvicorn treats it for the CUDA server.
-// TCP tells the two apart only once something is written to the socket.
-bool ClientLeft(int client_socket) {
-  if (client_socket < 0) {
+// Whether error is a generation stopping at its request's deadline.
+bool ReachedDeadline(std::exception_ptr error) {
+  if (!error) {
     return false;
   } else {
   }
-  std::array<char, 4096> unread{};
-  size_t dropped_bytes = 0;
-  while (dropped_bytes < kMaxUnreadBytesPerCheck) {
-    const ssize_t received =
-        recv(client_socket, unread.data(), unread.size(), MSG_DONTWAIT);
-    if (received == 0) {
-      return true;
-    } else if (received < 0) {
-      return errno != EAGAIN && errno != EINTR;
-    } else {
-      dropped_bytes += static_cast<size_t>(received);
-    }
+  try {
+    std::rethrow_exception(error);
+  } catch (const DeadlineReached &) {
+    return true;
+  } catch (...) {
+    return false;
   }
-  return false;
 }
 
 void LogFailure(std::exception_ptr error) {
@@ -415,8 +349,13 @@ private:
                                     {{"detail", "Method Not Allowed"}});
     } else {
     }
-    const Json body =
-        Json::parse(omni_server::ReadBody(connection), nullptr, false);
+    const std::optional<std::string> raw_body =
+        omni_server::ReadBody(connection, kMaxRequestBodyBytes);
+    if (!raw_body.has_value()) {
+      return 413;
+    } else {
+    }
+    const Json body = Json::parse(*raw_body, nullptr, false);
     if (body.is_discarded()) {
       return omni_server::BadRequest(connection,
                                      "speech request body must be valid JSON");
@@ -485,7 +424,7 @@ private:
     } else {
     }
 
-    const int client_socket = ClientSocket(connection);
+    const int client_socket = omni_server::ClientSocket(connection);
     std::vector<float> samples;
     bool timed_out = false;
     bool client_left = false;
@@ -493,8 +432,8 @@ private:
     while (true) {
       const bool has_audio_or_end = channel->ready.wait_until(
           lock,
-          std::min(deadline,
-                   std::chrono::steady_clock::now() + kClientPollInterval),
+          std::min(deadline, std::chrono::steady_clock::now() +
+                                 omni_server::kClientPollInterval),
           [&] { return !channel->chunks.empty() || channel->done; });
       if (has_audio_or_end && channel->chunks.empty()) {
         break;
@@ -506,7 +445,7 @@ private:
       } else if (!has_audio_or_end) {
         // Note (Minyi Tang): the client is watched while its request waits in
         // the queue too, and a request cancelled there never starts.
-        client_left = ClientLeft(client_socket);
+        client_left = omni_server::ClientLeft(client_socket);
         if (client_left) {
           break;
         } else {
@@ -535,13 +474,13 @@ private:
       // Note (Minyi Tang): nothing is read from the channel, which the
       // generation may still be writing.
       cancel->store(true);
-      return kClientLeftStatus;
+      return omni_server::kClientLeftStatus;
     } else {
     }
     // Note (Minyi Tang): the generation stops at the deadline itself, and may
-    // report that before this thread's wait reaches the deadline.
-    if (!timed_out && channel->error &&
-        std::chrono::steady_clock::now() >= deadline) {
+    // report that before this thread's wait reaches the deadline. Any other
+    // error is a failure, even one that arrives after the deadline.
+    if (!timed_out && ReachedDeadline(channel->error)) {
       timed_out = true;
     } else {
     }
@@ -610,7 +549,7 @@ private:
                           // deadline, since the request's thread may be blocked
                           // writing to a slow client.
                           if (std::chrono::steady_clock::now() >= deadline) {
-                            throw qwen3_asr::TranscriptionCancelled();
+                            throw DeadlineReached();
                           } else {
                           }
                           ++result.generated_token_count;

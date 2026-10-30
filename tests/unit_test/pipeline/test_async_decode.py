@@ -16,6 +16,7 @@ import queue
 import threading
 import time
 import types
+from concurrent.futures import Future
 from unittest import mock
 
 import pytest
@@ -1760,3 +1761,37 @@ def test_async_prefill_runs_prefill_hook_before_publishing_tokens():
         assert events == ["prefill", "publish"]
         runner.execute_resolve(step)
     assert events == ["prefill", "publish"]
+
+
+def test_zero_admission_wait_does_not_block_prefill_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A model's zero wait must release its ready prefill without waiting on unfinished builds."""
+    scheduler = new_scheduler_for_async_loop()
+    scheduler.async_prefill = True
+    scheduler.aborted_request_ids = set()
+    scheduler.admit_or_defer_built_request = mock.Mock()
+    completed = Future()
+    completed.set_result("built-request")
+    unfinished = Future()
+    ready_admission = Future()
+    ready_admission.set_result(None)
+    deferred = types.SimpleNamespace(ready=ready_admission)
+    scheduler.pending_request_builds = {
+        "unfinished": ("unfinished-payload", False, unfinished),
+        "completed": ("completed-payload", False, completed),
+    }
+    scheduler.pending_request_admissions = {"ready": ("ready-payload", False, deferred)}
+    scheduler.request_build_admission_wait_s = 0.0
+    scheduler.waiting_queue = [mock.Mock()]
+    wait = mock.Mock(side_effect=AssertionError("prefill release waited on a build"))
+    monkeypatch.setattr(omni_scheduler, "wait_futures", wait)
+    scheduler.admit_imminent_request_builds()
+    wait.assert_not_called()
+    assert len(scheduler.waiting_queue) == 1
+
+    assert [
+        call.args[0] for call in scheduler.admit_or_defer_built_request.call_args_list
+    ] == ["completed-payload", "ready-payload"]
+    assert list(scheduler.pending_request_builds) == ["unfinished"]
+    assert not scheduler.pending_request_admissions

@@ -243,6 +243,35 @@ def test_a_barge_in_cut_keeps_only_what_the_playout_played(tmp_path: Path) -> No
     assert len(cancelled["samples"]) == 12000
 
 
+def test_a_reply_cut_shorter_than_one_asr_window_has_no_wav(tmp_path: Path) -> None:
+    # note (luojiaxuan): 300 samples at 24 kHz is 200 at 16 kHz, under Parakeet's
+    # 25 ms analysis window, which cannot be transcribed.
+    session = write_session(
+        tmp_path / "recording" / "v10",
+        cuts=[{"trace_line": 6, "cut_sample": 84000 + 300}],
+    )
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "kind": V10_MANIFEST_KIND,
+                "samples": [
+                    {
+                        "sample_id": "candor_turn_taking/1",
+                        "subset": "candor_turn_taking",
+                        "eligible": True,
+                        "source": source(session),
+                    }
+                ],
+            }
+        )
+    )
+    first, cut, _ = extract_replies([manifest], tmp_path / "listening")
+    assert first["wav"] is not None
+    assert cut["wav"] is None
+    assert cut["duration_s"] == pytest.approx(200 / 16000)
+
+
 def test_transcribe_writes_each_spoken_reply_its_parakeet_text(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -41,7 +41,8 @@ tests/
     │   └── qwen_fakes.py
     ├── utils/
     │   ├── test_audio.py
-    │   └── test_g711.py
+    │   ├── test_g711.py
+    │   └── test_managed_workers.py
     ├── preprocessing/
     │   ├── test_cache_key.py
     │   ├── test_resample_cache.py
@@ -216,9 +217,6 @@ tests/
     │   ├── test_s0_gate.py
     │   ├── test_state_pool.py
     │   └── test_streaming_vocoder.py
-    ├── router/
-    │   ├── test_app.py
-    │   └── test_core.py
     ├── profiler/
     │   ├── test_event_recorder.py
     │   ├── test_stop_run_id.py
@@ -847,12 +845,8 @@ that happened to contain an older version of the test.
   - scheduler terminal/abort cleanup, complete row reset and reuse, mixed-batch
     ownership, and async resolve contracts.
 
-- `unit_test/router/`: SGLang-Omni Router unit tests:
-  - router CLI/config behavior
-  - worker metadata and health-state contracts
-  - request routing, proxying, and streaming relay
-  - worker selection policy behavior
-  - managed launcher command construction and cleanup.
+- `unit_test/utils/test_managed_workers.py`: CI worker command construction, GPU placement, parallel readiness, and process-group cleanup for `tests/utils/managed_workers.py`.
+- `sglang_omni_router/tests/` (from the repository root): Rust router process, HTTP, media, WebSocket, and voice integration tests. Unit tests live next to the Rust implementation.
 
 - `unit_test/serve/`: In-process serving API unit tests:
   - generation-stage SGLang server-args role mapping and CLI override capability boundaries
@@ -1025,7 +1019,7 @@ that happened to contain an older version of the test.
 
 ### Streaming cascade
 
-`unit_test/models/test_streaming_cascade.py`, `unit_test/pipeline/test_streaming_cascade.py`, `unit_test/serve/test_session_bridge.py`, `unit_test/serve/test_session_wire.py`, `unit_test/serve/test_realtime_turn_based.py`, `unit_test/pipeline/test_session_graph.py` and `unit_test/scheduling/test_streaming_vocoder_session.py` cover the cascade and the turn-based realtime interaction on CPU with loopback services; `test_model/test_streaming_cascade_realtime.py` runs against live services as described in the [Full Duplex Interactive Model](../docs/developer_reference/full_duplex_interactive_model.md#streaming-cascade).
+`unit_test/models/test_streaming_cascade.py`, `unit_test/pipeline/test_streaming_cascade.py`, `unit_test/serve/test_session_bridge.py`, `unit_test/serve/test_session_wire.py`, `unit_test/serve/test_realtime_turn_based.py`, `unit_test/pipeline/test_session_graph.py` and `unit_test/scheduling/test_streaming_vocoder_session.py` cover the cascade and the turn-based realtime interaction on CPU with loopback services; `test_model/test_streaming_cascade_realtime.py` runs against live services as described in the [Full Duplex Interactive Model](../docs/developer_reference/full_duplex_guide.md#streaming-cascade).
 
 ```bash
 python -m pytest tests/unit_test/models/test_streaming_cascade.py tests/unit_test/pipeline/test_streaming_cascade.py tests/unit_test/serve/test_session_bridge.py tests/unit_test/serve/test_session_wire.py tests/unit_test/serve/test_realtime_turn_based.py tests/unit_test/pipeline/test_session_graph.py -q

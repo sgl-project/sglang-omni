@@ -133,7 +133,7 @@ The stage label is `run-omni-ci`. A model label does not name the stage. Combine
 
 ## Hardware workflows
 
-Each hardware stage is its own workflow, with a gate job that waits for lint and resolves the labels. None of them has model labels. Each keeps a path filter, so a stage label alone does not force a run: a pull request that changes none of the stage's paths skips its tests.
+Each hardware stage is its own workflow. Its gate checks live labels and skips draft blocking, label resolution and lint checks unless its stage label or `run-all-ci` selects it. None of them has model labels. Each keeps a path filter, so a stage label alone does not force a run: a pull request that changes none of the stage's paths skips its tests.
 
 ### CPU CI
 
@@ -156,7 +156,7 @@ The stage label is `run-mac-ci`.
 ## Label rules
 
 1. A stage runs only when its stage label or `run-all-ci` is on the pull request. `run-all-ci` selects every stage.
-2. Self-hosted CI needs `run-all-ci`, a stage label, or `run-lint-only`. Without one, the gates of Omni CI and the hardware workflows fail with `No CI label found`. The checks on GitHub-hosted runners do not depend on labels. `run-lint-only` runs no self-hosted job, so a green lint check leaves no self-hosted failure. It does not turn off a stage label that is also present.
+2. Self-hosted CI needs `run-all-ci`, a stage label, or `run-lint-only`. Without one, the Omni CI gate fails with `No CI label found`; unselected hardware workflows skip their tests without failing. The checks on GitHub-hosted runners do not depend on labels. `run-lint-only` runs no self-hosted job, so a green lint check leaves no self-hosted failure. It does not turn off a stage label that is also present.
 3. Any stage label also runs PR Test. A pull request labeled only `run-mac-ci` still runs PR Test on H100.
 4. A model label names a model, not a stage. It picks that model for every selected stage that accepts it, and never selects a stage by itself. Higgs and MOSS labels are accepted by TTS and MPS. If no selected stage accepts the label, the gate prints a warning.
 5. A selected stage without a model label draws its model at random from that stage's pool. The draw is seeded by the workflow run ID, so re-running jobs in the same run keeps the same model, while a new push or a newly added label starts a new run and draws again.
@@ -182,7 +182,7 @@ The checks on GitHub-hosted runners run in every case below, so the table lists 
 
 | Labels | What runs |
 | --- | --- |
-| none | Nothing. The self-hosted gates fail with `No CI label found`. |
+| none | Nothing. The Omni CI gate fails with `No CI label found`; hardware tests are skipped. |
 | `run-lint-only` | Nothing self-hosted. The gates succeed. |
 | `run-unit-test-ci-only` | PR Test only, after shared setup. |
 | `run-tts-ci` | PR Test, then TTS on a random model from its pool. |

@@ -6,9 +6,12 @@ import asyncio
 import base64
 import inspect
 import threading
+from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from io import BytesIO
 from types import SimpleNamespace
+from typing import Protocol
 from unittest.mock import AsyncMock, Mock
 
 import numpy as np
@@ -69,6 +72,7 @@ from sglang_omni.models.qwen3_omni.request_builders import (
     resolve_preprocessing_next_stages_speech,
 )
 from sglang_omni.preprocessing.audio import decode_audio_bytes
+from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
 from sglang_omni.preprocessing.text import split_content_parts
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
@@ -1211,6 +1215,7 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     speech_enabled: bool,
     execution_mode: str,
 ) -> None:
+    from sglang.srt.arg_groups import model_override_base
     from sglang.srt.utils import hf_transformers_utils
 
     from sglang_omni.model_runner import thinker_model_runner
@@ -1221,11 +1226,13 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     from sglang_omni.scheduling import bootstrap as scheduling_bootstrap
     from sglang_omni.scheduling import omni_scheduler, sglang_backend
     from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
+    from sglang_omni.vendor.sglang import server_args as server_args_module
 
     server_args = SimpleNamespace(
         enable_streaming_session=True,
         disable_cuda_graph=False,
         enable_return_hidden_states=False,
+        return_hidden_states_mode=None,
         cuda_graph_config=SimpleNamespace(
             prefill=SimpleNamespace(backend=CudaGraphBackend.DISABLED)
         ),
@@ -1233,16 +1240,31 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     infrastructure_saw_graph_disabled: list[bool] = []
     infrastructure_saw_return_hidden: list[bool] = []
     infrastructure_kwargs: list[dict] = []
-    graph_init_workers: list[object] = []
+    graph_init_workers: list[tuple[object, bool, str | None]] = []
     generic_runner_calls: list[tuple[object, object]] = []
     qwen_runner_calls: list[tuple[object, object]] = []
     output_proc = object()
+    prompt_hidden_store = SimpleNamespace(destroy=lambda: None)
+    events: list[str] = []
+
+    class FakeThinker:
+        def set_talker_layers_to_capture(self) -> None:
+            events.append("layers")
 
     class FakeModelRunner:
-        model = object()
+        model = FakeThinker()
 
         def init_cuda_graphs(self) -> None:
             raise AssertionError("Qwen bootstrap must use the shared graph helper")
+
+    monkeypatch.setattr(model_override_base, "resolved_view", lambda args: args)
+    monkeypatch.setattr(
+        server_args_module,
+        "override_server_args",
+        lambda args, source, **fields: [
+            setattr(args, name, value) for name, value in fields.items()
+        ],
+    )
 
     model_config = SimpleNamespace(
         model_path="model",
@@ -1280,8 +1302,14 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
 
     def fake_init_sglang_cuda_graphs(worker: object) -> None:
         assert server_args.disable_cuda_graph is False
-        assert server_args.enable_return_hidden_states is False
-        graph_init_workers.append(worker)
+        events.append("graphs")
+        graph_init_workers.append(
+            (
+                worker,
+                server_args.enable_return_hidden_states,
+                server_args.return_hidden_states_mode,
+            )
+        )
 
     monkeypatch.setattr(
         scheduling_bootstrap,
@@ -1312,21 +1340,27 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     monkeypatch.setattr(
         thinker_model_runner,
         "ThinkerModelRunner",
-        lambda model_worker, output_proc: (
-            generic_runner_calls.append((model_worker, output_proc)) or object()
+        lambda model_worker, output_proc, *, capture_prompt_hidden_states: (
+            generic_runner_calls.append(
+                (model_worker, output_proc, capture_prompt_hidden_states)
+            )
+            or SimpleNamespace(prompt_hidden_store=prompt_hidden_store)
         ),
     )
     monkeypatch.setattr(
         qwen_thinker_runner,
         "Qwen3OmniThinkerModelRunner",
-        lambda model_worker, output_proc: (
-            qwen_runner_calls.append((model_worker, output_proc)) or object()
+        lambda model_worker, output_proc, *, capture_prompt_hidden_states: (
+            qwen_runner_calls.append(
+                (model_worker, output_proc, capture_prompt_hidden_states)
+            )
+            or SimpleNamespace(prompt_hidden_store=prompt_hidden_store)
         ),
     )
     monkeypatch.setattr(
         omni_scheduler,
         "OmniScheduler",
-        SimpleNamespace,
+        lambda **kwargs: SimpleNamespace(outbox=Mock(), **kwargs),
     )
 
     session_runner = Mock()
@@ -1339,36 +1373,56 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
         server_args, speech_enabled=speech_enabled, execution_mode=execution_mode
     )
 
+    is_capturing = speech_enabled and execution_mode == "request"
     assert infrastructure_saw_graph_disabled == [False]
-    assert "defer_cuda_graph_capture" not in infrastructure_kwargs[0]
-    assert graph_init_workers == []
-    assert infrastructure_saw_return_hidden == [False]
+    assert infrastructure_kwargs[0]["defer_cuda_graph_capture"] is is_capturing
+    assert infrastructure_saw_return_hidden == [is_capturing]
+    assert graph_init_workers == (
+        [(model_worker, True, "full")] if is_capturing else []
+    )
+    assert events == (["layers", "graphs"] if is_capturing else [])
     assert server_args.enable_return_hidden_states is False
+    assert server_args.return_hidden_states_mode is None
     assert server_args.disable_cuda_graph is False
     assert scheduler.server_args is server_args
     assert scheduler.request_builder is ordinary_request_builder
     assert scheduler.result_adapter is ordinary_result_adapter
     assert scheduler.stream_output_builder is ordinary_stream_builder
     make_adapters.assert_called_once()
-    make_stream_builder.assert_called_once_with(speech_enabled=speech_enabled)
+    assert make_adapters.call_args.kwargs["capture_prompt_hidden_states"] is (
+        speech_enabled and execution_mode == "request"
+    )
+    make_stream_builder.assert_called_once_with(
+        speech_enabled=speech_enabled,
+        prompt_hidden_store=scheduler.model_runner.prompt_hidden_store,
+    )
+    assert (
+        scheduler.shutdown_callback
+        is scheduler.model_runner.prompt_hidden_store.destroy
+    )
     if execution_mode == "request":
         assert generic_runner_calls == (
-            [(model_worker, output_proc)] if speech_enabled else []
+            [(model_worker, output_proc, True)] if speech_enabled else []
         )
         assert qwen_runner_calls == (
-            [] if speech_enabled else [(model_worker, output_proc)]
+            [] if speech_enabled else [(model_worker, output_proc, False)]
         )
         assert getattr(scheduler, "session_adapter", None) is None
         assert scheduler.enable_async_decode is True
     else:
         assert generic_runner_calls == qwen_runner_calls == []
+        session_runner.assert_called_once_with(
+            model_worker, output_proc, capture_prompt_hidden_states=False
+        )
         assert scheduler.model_runner is session_runner.return_value
         assert scheduler.session_adapter is session_adapter.return_value
+        assert session_adapter.return_value.outbox is scheduler.outbox
 
 
 def test_qwen_thinker_enables_and_attests_breakable_prefill_graphs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from sglang.srt.arg_groups import model_override_base
     from sglang.srt.utils import hf_transformers_utils
 
     from sglang_omni.models.qwen3_omni import bootstrap, request_builders
@@ -1379,10 +1433,12 @@ def test_qwen_thinker_enables_and_attests_breakable_prefill_graphs(
     from sglang_omni.scheduling import omni_scheduler, sglang_backend
     from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
     from sglang_omni.utils import cuda_graph_batch_validator
+    from sglang_omni.vendor.sglang import server_args as server_args_module
 
     server_args = SimpleNamespace(
         disable_cuda_graph=False,
         enable_return_hidden_states=False,
+        return_hidden_states_mode=None,
         cuda_graph_config=SimpleNamespace(
             prefill=SimpleNamespace(backend=CudaGraphBackend.BREAKABLE)
         ),
@@ -1392,8 +1448,19 @@ def test_qwen_thinker_enables_and_attests_breakable_prefill_graphs(
     graph_init_workers: list[object] = []
     output_proc_kwargs: list[dict[str, object]] = []
     qwen_runner_calls: list[tuple[object, object]] = []
-    model = object()
+    events: list[str] = []
+    model = SimpleNamespace(
+        set_talker_layers_to_capture=lambda: events.append("layers")
+    )
     output_proc = object()
+    monkeypatch.setattr(model_override_base, "resolved_view", lambda args: args)
+    monkeypatch.setattr(
+        server_args_module,
+        "override_server_args",
+        lambda args, source, **fields: [
+            setattr(args, name, value) for name, value in fields.items()
+        ],
+    )
     model_config = SimpleNamespace(
         model_path="model",
         vocab_size=10,
@@ -1424,14 +1491,13 @@ def test_qwen_thinker_enables_and_attests_breakable_prefill_graphs(
     monkeypatch.setattr(
         scheduling_bootstrap,
         "init_sglang_cuda_graphs",
-        lambda worker: graph_init_workers.append(worker),
+        lambda worker: events.append("graphs") or graph_init_workers.append(worker),
     )
     monkeypatch.setattr(
         cuda_graph_batch_validator,
         "attest_prefill_cuda_graphs",
-        lambda runner, *, operator_selected: attest_calls.append(
-            (runner, operator_selected)
-        ),
+        lambda runner, *, operator_selected: events.append("attest")
+        or attest_calls.append((runner, operator_selected)),
     )
     monkeypatch.setattr(
         hf_transformers_utils, "get_tokenizer", lambda *a, **k: object()
@@ -1444,7 +1510,7 @@ def test_qwen_thinker_enables_and_attests_breakable_prefill_graphs(
     monkeypatch.setattr(
         request_builders,
         "make_thinker_stream_output_builder",
-        lambda *, speech_enabled: object(),
+        lambda *, speech_enabled, prompt_hidden_store: object(),
     )
     monkeypatch.setattr(
         sglang_backend,
@@ -1454,8 +1520,11 @@ def test_qwen_thinker_enables_and_attests_breakable_prefill_graphs(
     monkeypatch.setattr(
         qwen_thinker_runner,
         "Qwen3OmniThinkerModelRunner",
-        lambda model_worker, output_proc: (
-            qwen_runner_calls.append((model_worker, output_proc)) or object()
+        lambda model_worker, output_proc, *, capture_prompt_hidden_states: (
+            qwen_runner_calls.append(
+                (model_worker, output_proc, capture_prompt_hidden_states)
+            )
+            or SimpleNamespace(prompt_hidden_store=None)
         ),
     )
     monkeypatch.setattr(omni_scheduler, "OmniScheduler", SimpleNamespace)
@@ -1463,11 +1532,12 @@ def test_qwen_thinker_enables_and_attests_breakable_prefill_graphs(
     scheduler = bootstrap.create_thinker_scheduler(server_args, speech_enabled=True)
 
     assert captured["enable_prefill_input_embeds"] is True
-    assert "defer_cuda_graph_capture" not in captured
-    assert graph_init_workers == []
+    assert captured["defer_cuda_graph_capture"] is True
+    assert graph_init_workers == [model_worker]
+    assert events == ["layers", "graphs", "attest"]
     assert attest_calls == [(model_worker.model_runner, False)]
     assert output_proc_kwargs == [{}]
-    assert qwen_runner_calls == [(model_worker, output_proc)]
+    assert qwen_runner_calls == [(model_worker, output_proc, True)]
     assert scheduler.server_args is server_args
 
 
@@ -1881,7 +1951,7 @@ def test_qwen_talker_merge_carries_mrope_metadata_without_features() -> None:
     assert talker_state.mm_inputs == {}
 
 
-def test_qwen_talker_merge_of_audio_in_video_gives_the_reference_positions() -> None:
+def test_qwen_talker_merge_of_audio_in_video_serves_the_reference_positions() -> None:
     grid, audio_feature_length, seconds_per_grid = [4, 4, 4], 300, 0.37
     input_ids = torch.tensor(
         [7, 8] + audio_in_video_span(grid, audio_feature_length) + [9], dtype=torch.long
@@ -1962,9 +2032,10 @@ def test_qwen_talker_merge_of_audio_in_video_gives_the_reference_positions() -> 
         use_audio_in_video=True,
         audio_seqlens=torch.tensor([audio_feature_length]),
     )
+    served = reference_positions.squeeze(1).float().floor()
     assert not any(key.endswith("embeds") for key in model_inputs)
-    assert torch.equal(positions.float(), reference_positions.squeeze(1).float())
-    assert torch.equal(delta.float(), reference_delta.float())
+    assert torch.equal(positions.float(), served)
+    assert torch.equal(delta.float(), reference_delta.float().floor())
 
 
 def test_qwen_thinker_request_and_decode_contracts() -> None:
@@ -2048,6 +2119,7 @@ def test_qwen_sglang_request_hashes_media_tokens_without_changing_mrope_ids(
             video_token_id=66,
             audio_token_id=audio_token_id,
         ),
+        capture_prompt_hidden_states=False,
     )
 
     pad_values = req_data.req.omni_model_inputs["pad_values"]
@@ -2103,6 +2175,7 @@ def test_qwen_sglang_request_records_mm_token_positions(
             video_token_id=66,
             audio_token_id=audio_token_id,
         ),
+        capture_prompt_hidden_states=False,
     )
 
     positions = (
@@ -2358,6 +2431,170 @@ def test_qwen_visual_cache_key_tracks_decoded_content(
     assert after != before
     # Identical content at another address shares the entry.
     assert run("other") == after
+
+
+class VideoProcessorProtocol(Protocol):
+    def __call__(
+        self,
+        *,
+        text: str,
+        images: list[Image.Image] | None,
+        videos: list[torch.Tensor] | None,
+        audio: list[np.ndarray] | None,
+        add_special_tokens: bool,
+        return_tensors: str,
+        videos_kwargs: preprocessor_mod.VideoProcessorKwargs,
+    ) -> dict[str, torch.Tensor]: ...
+
+
+class VideoCacheKeyProtocol(Protocol):
+    def __call__(self, videos: list[torch.Tensor]) -> str | None: ...
+
+
+def run_video_request(
+    pre: preprocessor_mod.Qwen3OmniPreprocessor,
+    monkeypatch: pytest.MonkeyPatch,
+    frames: torch.Tensor,
+    process: VideoProcessorProtocol,
+    video_cache_key: VideoCacheKeyProtocol,
+) -> StagePayload:
+    class Processor:
+        def apply_chat_template(
+            self,
+            messages: Sequence[Mapping[str, object]],
+            *,
+            add_generation_prompt: bool,
+            tokenize: bool,
+        ) -> str:
+            return "video prompt"
+
+        __call__ = staticmethod(process)
+
+    async def video_loader(
+        videos: list[str],
+        *,
+        fps: float | None,
+        max_frames: int | None,
+        min_pixels: int | None,
+        max_pixels: int | None,
+        total_pixels: int | None,
+        extract_audio: bool,
+        audio_target_sr: int,
+        resource_connector: MultiModalResourceConnector,
+    ) -> tuple[list[torch.Tensor], list[float], None]:
+        return [frames], [2.0], None
+
+    pre.processor = Processor()
+    monkeypatch.setattr(preprocessor_mod, "ensure_video_list_async", video_loader)
+    monkeypatch.setattr(preprocessor_mod, "compute_video_cache_key", video_cache_key)
+    payload = StagePayload(
+        request_id="video-cache",
+        request=OmniRequest(
+            inputs={
+                "messages": [{"role": "user", "content": "hello"}],
+                "videos": ["https://media.invalid/clip.mp4"],
+            }
+        ),
+        data={},
+    )
+    return asyncio.run(pre.call_impl(payload))
+
+
+def test_qwen_video_cache_key_is_hashed_while_the_processor_runs(
+    decoded_audio_preprocessor, monkeypatch
+):
+    pre, _, _ = decoded_audio_preprocessor
+    frames = torch.zeros(4, 3, 2, 2)
+    processor_entered = threading.Event()
+    hash_finished = threading.Event()
+    hash_saw_processor: list[bool] = []
+    processor_saw_hash: list[bool] = []
+    compute_video_cache_key = preprocessor_mod.compute_video_cache_key
+
+    def video_cache_key(videos: list[torch.Tensor]) -> str | None:
+        hash_saw_processor.append(processor_entered.wait(timeout=5))
+        key = compute_video_cache_key(videos)
+        hash_finished.set()
+        return key
+
+    def process(
+        *,
+        text: str,
+        images: list[Image.Image] | None,
+        videos: list[torch.Tensor] | None,
+        audio: list[np.ndarray] | None,
+        add_special_tokens: bool,
+        return_tensors: str,
+        videos_kwargs: preprocessor_mod.VideoProcessorKwargs,
+    ) -> dict[str, torch.Tensor]:
+        processor_entered.set()
+        processor_saw_hash.append(hash_finished.wait(timeout=5))
+        return {
+            "input_ids": torch.tensor([[1, 2]]),
+            "pixel_values_videos": torch.ones(1, 3),
+        }
+
+    state = Qwen3OmniPipelineState.from_dict(
+        run_video_request(pre, monkeypatch, frames, process, video_cache_key).data
+    )
+
+    assert hash_saw_processor == [True]
+    assert processor_saw_hash == [True]
+    assert state.encoder_inputs["image_encoder"]["cache_key"].startswith(
+        compute_video_cache_key([frames])
+    )
+
+
+def test_qwen_video_cache_key_hash_ends_with_a_failed_request(
+    decoded_audio_preprocessor, monkeypatch
+):
+    """A request whose processor call failed surfaced its error while its video hash still read the frames."""
+    pre, _, _ = decoded_audio_preprocessor
+    trace: list[str] = []
+    hash_started = threading.Event()
+    request_cleanup = threading.Event()
+    compute_video_cache_key = preprocessor_mod.compute_video_cache_key
+
+    class RequestExecutor(ThreadPoolExecutor):
+        def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
+            request_cleanup.set()
+            super().shutdown(wait=wait, cancel_futures=cancel_futures)
+
+    def video_cache_key(videos: list[torch.Tensor]) -> str | None:
+        trace.append("hash started")
+        hash_started.set()
+        request_cleanup.wait(timeout=10)
+        key = compute_video_cache_key(videos)
+        trace.append("hash finished")
+        return key
+
+    def process(
+        *,
+        text: str,
+        images: list[Image.Image] | None,
+        videos: list[torch.Tensor] | None,
+        audio: list[np.ndarray] | None,
+        add_special_tokens: bool,
+        return_tensors: str,
+        videos_kwargs: preprocessor_mod.VideoProcessorKwargs,
+    ) -> dict[str, torch.Tensor]:
+        hash_started.wait(timeout=10)
+        trace.append("processor failed")
+        raise RuntimeError("processor failed")
+
+    monkeypatch.setattr(preprocessor_mod, "ThreadPoolExecutor", RequestExecutor)
+    with pytest.raises(RuntimeError, match="processor failed"):
+        run_video_request(
+            pre, monkeypatch, torch.zeros(4, 3, 2, 2), process, video_cache_key
+        )
+    trace.append("request failed")
+
+    assert trace == [
+        "hash started",
+        "processor failed",
+        "hash finished",
+        "request failed",
+    ]
 
 
 def test_preprocessing_executor_defaults_to_serial_dispatch(monkeypatch):

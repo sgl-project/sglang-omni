@@ -21,6 +21,7 @@ def test_qwen3_omni_thinker_explicit_penalty_is_preserved():
         params={"repetition_penalty": 1.7},
         tokenizer=FakeQwenTokenizer(),
         vocab_size=32000,
+        capture_prompt_hidden_states=False,
     )
     assert isinstance(data.req.sampling_params, SamplingParams)
     assert data.req.sampling_params.repetition_penalty == 1.7

@@ -62,13 +62,22 @@ def adapter(monkeypatch: pytest.MonkeyPatch) -> QwenThinkerSessionAdapter:
         [NEWLINE] if text == "\n" else SYSTEM_PREFIX
     )
 
-    def build_request(pipeline_state, *, params, tokenizer, vocab_size, request_id):
+    def build_request(
+        pipeline_state,
+        *,
+        params,
+        tokenizer,
+        vocab_size,
+        request_id,
+        capture_prompt_hidden_states,
+    ):
         return SimpleNamespace(
             req=SimpleNamespace(
                 origin_input_ids=pipeline_state.prompt["input_ids"].tolist()
             ),
             output_ids=[],
             stage_payload=None,
+            finish_reason=None,
         )
 
     monkeypatch.setattr(thinker_session, "build_sglang_thinker_request", build_request)

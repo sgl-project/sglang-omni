@@ -126,16 +126,16 @@ float SileroVAD::Feed(const float *chunk, StreamState &state) const {
   // Note (Jiaxin Deng): MLXNN's LSTM formulation, to match Swift (one timestep
   // per 512-sample chunk).
   x = mx::addmm(Weight("lstm.bias"), x, mx::transpose(Weight("lstm.Wx")));
-  std::optional<qwen3_asr::LstmCell> lstm =
+  std::optional<omni_common::LstmCell> lstm =
       state.hidden.has_value()
-          ? std::optional<qwen3_asr::LstmCell>({*state.hidden, *state.cell})
+          ? std::optional<omni_common::LstmCell>({*state.hidden, *state.cell})
           : std::nullopt;
   std::vector<mx::array> hidden_steps;
   for (int step = 0; step < x.shape(1); ++step) {
     const mx::array gates =
         mx::reshape(mx::slice(x, {0, step, 0}, {1, step + 1, 4 * kLstmHidden}),
                     {1, 4 * kLstmHidden});
-    lstm = qwen3_asr::LstmStep(gates, lstm, Weight("lstm.Wh"));
+    lstm = omni_common::LstmStep(gates, lstm, Weight("lstm.Wh"));
     hidden_steps.push_back(lstm->hidden);
   }
   mx::array out = Relu(mx::stack(hidden_steps, -2));

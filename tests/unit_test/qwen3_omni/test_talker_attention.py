@@ -258,6 +258,7 @@ def rope_store_talker(device: torch.device, *, stores: bool) -> Qwen3OmniTalker:
         + positions[:, None]
     ).contiguous()
     talker.predictor_rope_stores_kv = stores
+    talker.predictor_triton_attention = False
     return talker
 
 

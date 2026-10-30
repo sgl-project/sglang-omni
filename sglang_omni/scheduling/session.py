@@ -17,17 +17,21 @@ the KV cache and token history, and encoder or codec state. When a unit
 finishes, that unit's own resources are released. The session state stays.
 Closing the session releases that state and returns the session's capacity.
 
-An operation is one action sent for a session: open, append, close,
-control or read. append is the unit above, and it follows the stages from
-one to the next. open, close, control and read each target one stage. open
-visits the stages from upstream to downstream and creates that stage's
-session state. close visits them from downstream to upstream and releases
-the state. control delivers an event such as an interrupt to the stage's
-hooks; a preempting control cancels the session's in-flight appends as soon
-as it arrives, and the appends queued behind it still run. read attaches to
-the session on arrival and stays open until the close answers it: the chunks
-the hooks emit outside an append stream on it. On one stage, all other
-operations share one arrival order.
+An operation is one action sent for a session: open, append, fragment,
+close, control or read. append is the unit above, and it follows the stages
+from one to the next. open, fragment, close, control and read each target
+one stage. open visits the stages from upstream to downstream and creates
+that stage's session state. close visits them from downstream to upstream
+and releases the state. control delivers an event such as an interrupt to
+the stage's hooks; a preempting control cancels the session's in-flight
+appends as soon as it arrives, and the appends queued behind it still run.
+read attaches to the session on arrival and stays open until the close
+answers it: the chunks the hooks emit outside an append stream on it. A
+chunk over the session's max_chunk_bytes reaches the first stage as
+fragments followed by the append of the last one: the stage holds the
+fragments, restores the chunk for that append and hands the restored chunk
+to the stages after it. On one stage, all other operations share one
+arrival order.
 
 A cursor is one stage's record of the operations that have arrived for one
 session. It keeps them in arrival order, and it keeps the place that may
@@ -45,7 +49,7 @@ import threading
 import time
 from collections.abc import Callable
 from contextlib import ExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import Protocol
 
@@ -63,6 +67,7 @@ from sglang_omni.proto.session import (
     SessionOperationKind,
     TimedChunk,
     find_session_operation,
+    join_fragments,
 )
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
@@ -158,7 +163,23 @@ class BatchedSessionHooks(SessionHooks):
 class StageSession:
     is_open: bool = False
     output_read: StagePayload | None = None
+    # note (luojiaxuan): the fragments held for the chunk the next append restores; all of one turn.
+    fragments: list[TimedChunk] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def take_fragments(self, chunk: TimedChunk) -> list[TimedChunk]:
+        """Release the held fragments, returning the ones `chunk` continues.
+
+        The coordinator sends a chunk's fragments in a row and stops them
+        once their turn is interrupted, and an interrupted turn sends no more
+        input. So held fragments of another turn than `chunk`'s are what an
+        interrupt left of a chunk, and are dropped.
+        """
+        fragments = [
+            fragment for fragment in self.fragments if fragment.turn == chunk.turn
+        ]
+        self.fragments = []
+        return fragments
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -197,7 +218,11 @@ class SessionInbox(queue.Queue[IncomingMessage]):
 
 
 class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
-    """Opt-in scheduler for persistent hooks, with bounded stage admission."""
+    """Opt-in scheduler for persistent hooks, with bounded stage admission.
+
+    batch_sessions=False hands batched hooks one session's append per call,
+    still one call at a time and without a gather window.
+    """
 
     def __init__(
         self,
@@ -207,6 +232,7 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
         max_open_sessions: int = DEFAULT_MAX_OPEN_SESSIONS,
         max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
         max_state_bytes_per_session: int = DEFAULT_MAX_STATE_BYTES_PER_SESSION,
+        batch_sessions: bool = True,
     ) -> None:
         self.session_hooks = session_hooks
         self.request_compute = compute_fn
@@ -221,12 +247,18 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
         self.operation_finished: threading.Condition = threading.Condition(
             self.session_table_lock
         )
-        if isinstance(session_hooks, BatchedSessionHooks):
+        if isinstance(session_hooks, BatchedSessionHooks) and batch_sessions:
             # Note (Junnan Li): One hook call runs every session whose append is ready, so the batch replaces the concurrent workers.
             batch_compute_fn = self.compute_batch
             max_batch_size = max_open_sessions
             max_concurrency = 1
             gather_window_seconds = session_hooks.gather_window_ms / 1000
+        elif isinstance(session_hooks, BatchedSessionHooks):
+            # note (luojiaxuan): Batched hooks implement only append_batch, and their state assumes one call at a time.
+            batch_compute_fn = self.compute_batch
+            max_batch_size = 1
+            max_concurrency = 1
+            gather_window_seconds = 0.0
         else:
             batch_compute_fn = None
             max_batch_size = 1
@@ -693,6 +725,17 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
                         raise RuntimeError("session scheduler is stopping")
                     elif operation == "read":
                         raise ValueError("session already has an output reader")
+                    elif operation == "fragment":
+                        fragment = session_operation.chunk
+                        assert (
+                            fragment is not None
+                        ), "fragment operation carries no chunk"
+                        session.fragments = [
+                            *session.take_fragments(fragment),
+                            fragment,
+                        ]
+                        payload.data = {"held": True}
+                        return payload
                     elif operation == "control":
                         assert (
                             session_operation.chunk is not None
@@ -703,7 +746,7 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
                         payload.data = {"controlled": True}
                         return payload
                     else:
-                        append = self.start_append(payload, session_operation)
+                        append = self.start_append(payload, session_operation, session)
                         try:
                             emit_session_stage_started(
                                 request_id=payload.request_id,
@@ -724,10 +767,28 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
                                 self.append_cancel_events.pop(payload.request_id, None)
 
     def start_append(
-        self, payload: StagePayload, session_operation: SessionOperation
+        self,
+        payload: StagePayload,
+        session_operation: SessionOperation,
+        session: StageSession,
     ) -> SessionAppend:
         input_chunk = session_operation.chunk
         assert input_chunk is not None, "append operation carries no chunk"
+        fragments = session.take_fragments(input_chunk)
+        if fragments:
+            input_chunk = join_fragments([*fragments, input_chunk])
+            # note (luojiaxuan): the stages after this one read the append's chunk from the operation it carries.
+            payload.request = replace(
+                payload.request,
+                metadata={
+                    **payload.request.metadata,
+                    SESSION_METADATA_KEY: replace(
+                        session_operation, chunk=input_chunk
+                    ).to_dict(),
+                },
+            )
+        else:
+            pass
         cancel_event = threading.Event()
         with self.session_table_lock:
             self.append_cancel_events[payload.request_id] = cancel_event
@@ -791,7 +852,7 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
                             )
                         else:
                             started.append(
-                                self.start_append(payload, session_operation)
+                                self.start_append(payload, session_operation, session)
                             )
                             started_sessions.append(session)
                 if started:

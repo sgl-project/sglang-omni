@@ -125,11 +125,9 @@ def create_sglang_infrastructure(
     from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
     from sglang_omni.model_runner.model_worker import ModelWorker, ModelWorkerConfig
-    from sglang_omni.model_runner.speculative_target_worker import (
-        SpeculativeTargetWorker,
-    )
     from sglang_omni.scheduling.sglang_backend import create_tree_cache
     from sglang_omni.scheduling.stage_kv_budget import consume_stage_kv_cache_bytes
+    from sglang_omni.speculative.target_worker import SpeculativeTargetWorker
 
     if get_context().is_config_namespace_published("model"):
         raise RuntimeError(
@@ -181,9 +179,19 @@ def create_sglang_infrastructure(
             "stage does not support speculative decoding"
         )
     else:
+        if speculative_algorithm.is_dspark():
+            # note (wilsonzheng0327): SGLang's FA3 backend imports sgl_kernel, which
+            # an MPS or CPU install lacks, so only a DSpark build loads the shim.
+            from sglang_omni.vendor.sglang.flashattention_backend import (
+                install_fa3_draft_width,
+            )
+
+            install_fa3_draft_width()
+        else:
+            pass
         # note (wilsonzheng0327): the draft loads before the pool is sized, so its
         # weights are counted, and its KV pool shares the target's slot ids.
-        target_worker = SpeculativeTargetWorker(model_worker)
+        target_worker = SpeculativeTargetWorker(model_worker, speculative_algorithm)
         if speculative_worker_class is None:
             speculative_worker_class = speculative_algorithm.create_worker(server_args)
         else:

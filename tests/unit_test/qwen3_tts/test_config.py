@@ -100,6 +100,26 @@ def test_custom_voice_config_rejects_missing_or_invalid_speakers(
 
 
 @pytest.mark.parametrize(
+    ("checkpoint_config", "speaker_embedding_size"),
+    [
+        ({"tts_model_type": "base", "speaker_encoder_config": {"enc_dim": 2048}}, 2048),
+        (
+            {"tts_model_type": "custom_voice", "talker_config": {"spk_id": {"a": 1}}},
+            None,
+        ),
+        ({"tts_model_type": "voice_design"}, None),
+    ],
+)
+def test_speaker_embedding_size_is_the_base_speaker_encoder_width(
+    tmp_path, checkpoint_config, speaker_embedding_size
+) -> None:
+    (tmp_path / "config.json").write_text(json.dumps(checkpoint_config))
+    config = Qwen3TTSPipelineConfig(model_path=str(tmp_path))
+
+    assert config.resolve_speaker_embedding_size() == speaker_embedding_size
+
+
+@pytest.mark.parametrize(
     ("model_type", "directory", "uploaded_voices"),
     [
         ("base", "Qwen3-TTS-12Hz-0.6B-Base", True),

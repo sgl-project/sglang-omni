@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from queue import Queue
 
 import torch
 from sglang.srt.managers.schedule_batch import MultimodalInputs
@@ -14,18 +15,24 @@ from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
 
 from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
 from sglang_omni.models.qwen3_omni.request_builders import (
+    TALKER_STAGE,
     build_sglang_thinker_request,
     compute_mrope_positions,
     extract_thinker_model_inputs,
 )
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
+from sglang_omni.proto.streams import REPLY_TRUNCATED
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend.ar_session import (
     ARSessionAdapter,
     ARSessionPreparation,
     SessionUnit,
 )
-from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+from sglang_omni.scheduling.sglang_backend.request_data import (
+    FINISH_LENGTH_KIND,
+    SGLangARRequestData,
+)
 
 TRUNCATE_FORMAT = "qwen.truncate"
 # One codec frame is 1920 samples at 24 kHz: the code2wav upsample ratios 8·5·4·3 and 2·2 of the checkpoint.
@@ -45,6 +52,9 @@ class ThinkerUnit:
     model_inputs: ModelInputs
     prompt_start: int
     prefix_model_inputs: ModelInputs
+    # Note (ruoyu): A cut that lands while the unit generates cannot reach the native KV it was prefilled on, so the unit records the aborted turn it refilled and whether such a cut made that KV stale.
+    refilled_turn: int | None = None
+    has_stale_kv: bool = False
 
 
 @dataclass(kw_only=True)
@@ -67,8 +77,10 @@ class ThinkerHistory:
     model_inputs_before_last_prompt: ModelInputs = field(default_factory=dict)
     unit: ThinkerUnit | None = None
     pending: PendingTurn | None = None
-    # Note (Junnan Li): A truncate of a committed reply cuts KV the native session cannot cut, so units re-prefill the whole history until one commits.
+    # Note (Junnan Li): A truncate of a committed reply cuts KV the native session cannot cut, so units re-prefill the whole history until one commits with no cut landed while it ran.
     rebuild: bool = False
+    # note (luojiaxuan): Whether the native session of the unit prepared but not yet built is reset; None when no unit waits for its build.
+    prepared_reset: bool | None = None
 
 
 def heard_tokens(audio_end_ms: float) -> int:
@@ -126,6 +138,7 @@ class QwenThinkerSessionAdapter(ARSessionAdapter):
         self.end_token_id: int = tokenizer.convert_tokens_to_ids("<|im_end|>")
         self.newline_ids: list[int] = tokenizer.encode("\n", add_special_tokens=False)
         self.states: dict[SessionIdentity, ThinkerHistory] = {}
+        self.outbox: Queue[OutgoingMessage] | None = None
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
         self.states[session_identity] = ThinkerHistory()
@@ -147,31 +160,61 @@ class QwenThinkerSessionAdapter(ARSessionAdapter):
 
     def truncate(self, history: ThinkerHistory, turn: int | None, heard: int) -> None:
         pending = history.pending
+        inflight = history.unit
         if pending is not None and pending.unit.turn == turn:
-            pending.heard = min(
-                heard,
-                len(pending.generated) if pending.heard is None else pending.heard,
+            heard_so_far = (
+                len(pending.generated) if pending.heard is None else pending.heard
             )
+            pending.heard = min(heard, heard_so_far)
+            if (
+                inflight is not None
+                and inflight.refilled_turn == turn
+                and pending.heard < heard_so_far
+            ):
+                # Note (ruoyu): The unit in flight already refilled this reply in front of its prompt, so the cut lands there too.
+                refilled_prefix = self.refilled_ids(pending)
+                inflight.ids = [
+                    *refilled_prefix,
+                    *inflight.ids[inflight.prompt_start :],
+                ]
+                inflight.prompt_start = len(refilled_prefix)
+                inflight.has_stale_kv = True
+            else:
+                pass
         elif history.last_turn == turn:
             reply = history.ids[history.last_reply_start :]
-            # Note (Junnan Li): A reply already cut ends at its first <|im_end|>, so a later truncate only cuts further.
+            # Note (Junnan Li): A cut reply still ends at its first <|im_end|> when it had one, so a later truncate only cuts further.
             generated = (
                 reply[: reply.index(self.end_token_id)]
                 if self.end_token_id in reply
                 else reply
             )
             if heard < len(generated):
+                # Note (ruoyu): The cut reply keeps the ending it had, so the separator a unit built after it chose still fits.
                 history.ids = [
                     *history.ids[: history.last_reply_start],
                     *generated[:heard],
-                    self.end_token_id,
-                    *self.newline_ids,
+                    *reply[len(generated) :],
                 ]
                 history.rebuild = True
+                if inflight is not None:
+                    inflight.has_stale_kv = True
+                else:
+                    pass
             else:
                 pass
         else:
             pass
+
+    def refilled_ids(self, pending: PendingTurn) -> list[int]:
+        """The aborted unit with its reply cut to what was heard, as the next unit refills it in front of its prompt."""
+        heard = len(pending.generated) if pending.heard is None else pending.heard
+        return [
+            *pending.unit.ids,
+            *pending.generated[:heard],
+            self.end_token_id,
+            *self.newline_ids,
+        ]
 
     def prepare_unit(
         self,
@@ -188,6 +231,7 @@ class QwenThinkerSessionAdapter(ARSessionAdapter):
             history.rebuild = True
         else:
             pass
+        history.prepared_reset = history.rebuild
         return ARSessionPreparation(reset_history=history.rebuild)
 
     def build(
@@ -203,18 +247,15 @@ class QwenThinkerSessionAdapter(ARSessionAdapter):
             # Note (Junnan Li): The dialog asks the interrupted utterance again in this unit, so only what preceded its prompt is refilled.
             unit_ids = pending.unit.ids[: pending.unit.prompt_start]
             unit_model_inputs = dict(pending.unit.prefix_model_inputs)
+            refilled_turn = None
         elif pending is not None:
-            heard = len(pending.generated) if pending.heard is None else pending.heard
-            unit_ids = [
-                *pending.unit.ids,
-                *pending.generated[:heard],
-                self.end_token_id,
-                *self.newline_ids,
-            ]
+            unit_ids = self.refilled_ids(pending)
             unit_model_inputs = dict(pending.unit.model_inputs)
+            refilled_turn = pending.unit.turn
         else:
             unit_ids = []
             unit_model_inputs = {}
+            refilled_turn = None
         prompt = dict(pipeline_state.prompt)
         prompt_ids: list[int] = prompt["input_ids"].tolist()
         if history.ids or unit_ids:
@@ -243,7 +284,14 @@ class QwenThinkerSessionAdapter(ARSessionAdapter):
         prefix_model_inputs = unit_model_inputs
         unit_ids = [*unit_ids, *prompt_ids]
         unit_model_inputs = merge_model_inputs(unit_model_inputs, model_inputs)
-        native_ids = [*history.ids, *unit_ids] if history.rebuild else unit_ids
+        # note (luojiaxuan): A truncate between the unit's preparation and its build cannot reset the KV the preparation kept, so the unit appends to it and leaves the rebuild to the next unit.
+        is_reset = (
+            history.rebuild
+            if history.prepared_reset is None
+            else history.prepared_reset
+        )
+        history.prepared_reset = None
+        native_ids = [*history.ids, *unit_ids] if is_reset else unit_ids
         pipeline_state.prompt = {
             "input_ids": torch.tensor(native_ids, dtype=torch.long),
             "attention_mask": torch.ones(len(native_ids), dtype=torch.long),
@@ -256,6 +304,7 @@ class QwenThinkerSessionAdapter(ARSessionAdapter):
             tokenizer=self.tokenizer,
             vocab_size=self.vocab_size,
             request_id=payload.request_id,
+            capture_prompt_hidden_states=False,
         )
         request_data.stage_payload = payload
         # Note (Junnan Li): The preprocessor sees one turn; the scheduler checks the context once the retained turns precede it.
@@ -266,6 +315,8 @@ class QwenThinkerSessionAdapter(ARSessionAdapter):
             model_inputs=unit_model_inputs,
             prompt_start=prompt_start,
             prefix_model_inputs=prefix_model_inputs,
+            refilled_turn=refilled_turn,
+            has_stale_kv=history.rebuild and not is_reset,
         )
         return request_data
 
@@ -346,7 +397,7 @@ class QwenThinkerSessionAdapter(ARSessionAdapter):
         inflight = history.unit
         assert inflight is not None
         output_ids = [int(token_id) for token_id in request_data.output_ids]
-        history.rebuild = False
+        history.rebuild = inflight.has_stale_kv
         history.last_prompt_start = len(history.ids) + inflight.prompt_start
         history.model_inputs_before_last_prompt = merge_model_inputs(
             history.model_inputs, inflight.prefix_model_inputs
@@ -361,4 +412,21 @@ class QwenThinkerSessionAdapter(ARSessionAdapter):
         history.pending = None
         payload = request_data.stage_payload
         payload.data["thinker_out"] = {"output_ids": output_ids, "is_final": True}
+        if request_data.finish_reason == FINISH_LENGTH_KIND:
+            self.relay_truncation(payload.request_id)
+        else:
+            pass
         return payload
+
+    def relay_truncation(self, request_id: str) -> None:
+        """Tell the talker, ahead of the end of the reply's text, that the reply stopped at the thinker's token budget."""
+        assert self.outbox is not None
+        self.outbox.put(
+            OutgoingMessage(
+                request_id=request_id,
+                type="stream",
+                data=torch.empty(0, dtype=torch.long),
+                target=TALKER_STAGE,
+                metadata={REPLY_TRUNCATED: True},
+            )
+        )

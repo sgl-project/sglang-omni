@@ -41,6 +41,7 @@ class DitDavFactoryArgs(FactoryArgs):
     compile_acoustic: bool | None = None
     breakable_cuda_graph: bool | None = None
     enable_serial_offload: bool | None = None
+    fp32_flex_attention: bool | None = None
 
 
 class ArFactoryArgs(FactoryArgs):

@@ -22,6 +22,7 @@ from typing import Callable
 # (runtime bin, data root, golden file, manifest of the clips to run) -> outputs
 TranscribeCorpus = Callable[[Path, Path, dict, dict[str, dict]], dict[str, dict]]
 
+import music3_golden
 import sortformer_golden
 import vad_golden
 import voxtral_golden
@@ -232,6 +233,14 @@ def run(transcribe_corpus: TranscribeCorpus) -> None:
             raise SystemExit(f"{arguments.import_path} is not {golden['model']}")
         else:
             pass
+        if golden.get("kind") == "minimax_music3":
+            failures = music3_golden.validate_outputs(golden, outputs["clips"])
+            if failures:
+                raise SystemExit("; ".join(failures))
+            else:
+                pass
+        else:
+            pass
         golden["devices"][outputs["device"]] = {
             "metrics": outputs["metrics"],
             "clips": outputs["clips"],
@@ -241,6 +250,20 @@ def run(transcribe_corpus: TranscribeCorpus) -> None:
         return
     elif arguments.runtime_bin is None or arguments.data_root is None:
         raise SystemExit("--runtime-bin and --data-root are required")
+    else:
+        pass
+
+    if golden.get("kind") == "minimax_music3":
+        report(
+            *music3_golden.check(
+                golden,
+                arguments.runtime_bin,
+                arguments.data_root,
+                chip(),
+                arguments.outputs,
+                arguments.golden if arguments.write else None,
+            )
+        )
     else:
         pass
 
