@@ -517,9 +517,9 @@ time.
 
 A case that is healthy but did not exercise its scenario grades
 `not_exercised`, never `pass`: continuous duplex requires input sent between
-observed output audio packets. A second concurrent connection is refused with HTTP 503 and
-retried up to three times before any input is sent; that is admission behavior,
-not concurrency support.
+observed output audio packets.
+
+HTTP 503 and a nonfatal `admission_rejected` during initial `session.update` share one budget of `ADMISSION_RETRIES` retries after the initial attempt. The recorder backs off on the same socket for in-session rejection, and stops that wait if the session aborts. The session deadline covers retries and recording. The oracle checks the combined budget and update correlation before accepting recovery or classifying clean exhaustion.
 
 Declared limits, also written into `manifest.config`: explicit response
 cancellation, automatic speech interruption, concurrent native sessions, session
@@ -585,14 +585,21 @@ python -m benchmarks.eval.benchmark_duplex_v15 record \
 ```
 
 `--concurrency N` processes up to N variants at once, including post-processing.
-Connections above the server's `max_sessions` may receive HTTP 503; a session
-fails if admission retries are exhausted. Latencies recorded under load are not
-comparable to N=1, and `run.json` gains a `load`
-block (p50/p90/max initial delay, pacing violations, admission diagnostics).
+Connections above the server's `max_sessions` may receive HTTP 503, and a
+pipeline whose stages cap their sessions answers `session.update` with a
+non-fatal `admission_rejected` instead; a session fails if admission retries
+are exhausted. Latencies recorded under load are not comparable to N=1, and
+`run.json` gains a `load` block (p50/p90/max initial delay, pacing violations,
+admission diagnostics).
 `load.input_pacing_violations` counts variants with measured out-of-tolerance
 appends; a session that sends no appends is excluded. The
 `load.variants_with_admission_denials` count includes each variant with recorded
 HTTP 503 admission denials once, even if a retry succeeds and the variant passes.
+Each case retains `admission_denials` for HTTP 503 events and `admission_rejections` for in-session events, including the final exhausted attempt. `load.variants_with_admission_rejections` counts sessions affected by in-session rejection, and `load.variants_with_admission_events` counts the union across both transports. `load.admission_denial_events` totals all rejection events, with `http_admission_denial_events` and `session_admission_rejection_events` preserving the breakdown.
+
+Clean exhaustion retains status `fail` with `failure_kind: admission_rejected`, separately from `failure_kind: runtime` for runtime, protocol or cleanup failures. `load.variants_rejected` and `load.variants_failed` count these outcomes separately. Audio that was never sent after clean rejection is not an artifact-integrity failure. Recovered sessions retain their rejection counts.
+
+Each variant saves replayed admission counts under `admission` before reconstructing audio, so an output reconstruction failure remains a runtime failure without erasing earlier rejection events. Serving reports count affected sessions and rejection events from the retained traces.
 Final outcomes remain in `summary.variants` and `load.variants_passed`.
 
 Pin the server and model revisions separately. Sending 80 ms transport packets
@@ -637,8 +644,9 @@ python -m benchmarks.eval.benchmark_duplex_v10 record \
 
 `record --concurrency N` processes up to N variants at once, including
 post-processing. Connections above the server's capacity are retried on HTTP
-503. Latencies recorded under load are not comparable to N=1, and `run.json` gains a
-`load` block with the same metric definitions as the v1.5 recorder above.
+503 or a rejected `session.update`. Latencies recorded under load are not
+comparable to N=1, and `run.json` gains a `load` block with the same metric
+definitions as the v1.5 recorder above.
 
 Scoring runs on a reference tree: `reference-export`, `reference-asr` with the
 pinned Parakeet checkpoint, then `reference-evaluate` for the official numbers

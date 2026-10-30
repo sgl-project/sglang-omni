@@ -7,6 +7,7 @@ import pytest
 from pydantic import JsonValue
 
 from benchmarks.duplex.oracle import evaluate_trace
+from benchmarks.duplex.profiles import ProfileName
 from tests.unit_test.fixtures.duplex_fakes import find_event, trace_fixture
 
 
@@ -514,6 +515,93 @@ def test_exhausted_admission_without_a_session_fails() -> None:
     assert result["status"] == "fail"
     assert any("admission denied after 3 attempts" in i for i in result["violations"])
     assert "missing audio input" in result["violations"]
+
+
+def rejection(**error: JsonValue) -> dict[str, JsonValue]:
+    return {
+        "direction": "receive",
+        "time_s": 100.008,
+        "event": {
+            "type": "error",
+            "event_id": "rejection",
+            "sglang": {"fatal": False},
+            "error": {
+                "type": "invalid_request_error",
+                "code": "admission_rejected",
+                "message": "The request queue is full.",
+                "event_id": "rejected",
+                "param": None,
+                **error,
+            },
+        },
+    }
+
+
+def rejected_update() -> dict[str, JsonValue]:
+    return {
+        "direction": "send",
+        "time_s": 100.004,
+        "event": {
+            "type": "session.update",
+            "event_id": "rejected",
+            "session": {"output_modalities": ["audio"]},
+        },
+    }
+
+
+@pytest.mark.parametrize("retry_limit", [2, 3])
+def test_oracle_checks_the_combined_admission_budget(retry_limit: int) -> None:
+    """A recorder cannot spend a fresh retry budget after HTTP admission."""
+    records = trace_fixture()
+    records[1:1] = [rejected_update(), rejection()]
+    result = evaluate_trace(
+        [admission(1), admission(2), *records], max_admission_attempts=retry_limit
+    )
+    assert result["metrics"]["admission_denials"] == 2
+    assert result["metrics"]["admission_rejections"] == 1
+    if retry_limit == 3:
+        assert result["status"] == "pass", result
+    else:
+        assert result["failure_kind"] == "runtime"
+        assert any("limit" in violation for violation in result["violations"])
+
+
+@pytest.mark.parametrize(
+    "profile", ["nemotron-voicechat-pr2188", "qwen3-omni-half-duplex"]
+)
+def test_partial_http_rejection_trace_is_not_clean_exhaustion(
+    profile: ProfileName,
+) -> None:
+    """Interrupted HTTP retries must not look like final admission rejection."""
+    result = evaluate_trace([admission(1)], profile=profile, max_admission_attempts=3)
+    assert result["failure_kind"] == "runtime"
+    exhausted = evaluate_trace(
+        [admission(i) for i in range(1, 5)], profile=profile, max_admission_attempts=3
+    )
+    assert exhausted["failure_kind"] == "admission_rejected"
+    assert exhausted["metrics"]["admission_denials"] == 4
+
+
+@pytest.mark.parametrize(
+    ("record", "violation"),
+    [
+        (rejection(), None),
+        (rejection(code="invalid_request"), "code=invalid_request"),
+    ],
+)
+def test_only_an_admission_rejection_of_a_sent_update_is_a_retry(
+    record: dict[str, JsonValue], violation: str | None
+) -> None:
+    trace = trace_fixture()
+    trace[1:1] = [rejected_update(), record]
+    result = evaluate_trace(trace)
+    if violation is None:
+        assert result["status"] == "pass", result
+        assert result["metrics"]["admission_rejections"] == 1
+    else:
+        assert result["status"] == "fail"
+        assert any(violation in item for item in result["violations"])
+        assert result["metrics"]["admission_rejections"] == 0
 
 
 @pytest.mark.parametrize(

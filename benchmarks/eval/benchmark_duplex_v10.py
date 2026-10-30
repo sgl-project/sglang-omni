@@ -167,8 +167,9 @@ def main(argv: list[str] | None = None) -> int:
         "--concurrency",
         type=int,
         default=1,
-        help="Maximum concurrent variants; excess connections may receive "
-        "HTTP 503 and fail if admission retries are exhausted",
+        help="Maximum concurrent variants; excess sessions may be denied with "
+        "HTTP 503 or rejected at session.update, and fail if admission retries "
+        "are exhausted",
     )
     selection = record_parser.add_mutually_exclusive_group()
     selection.add_argument(
