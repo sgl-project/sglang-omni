@@ -124,6 +124,6 @@ class Cosmos3UMMPipelineConfig(UMMPipelineConfig, Cosmos3PipelineConfig):
         if stage_name == "generation":
             # The orchestrator keeps generated media after the stage releases
             # its request directory, so the stage returns the bytes inline.
-            return {"inline_media": True}
+            return {**super().stage_factory_kwargs(stage_name), "inline_media": True}
         else:
             return super().stage_factory_kwargs(stage_name)

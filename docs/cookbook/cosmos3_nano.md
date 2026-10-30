@@ -50,6 +50,24 @@ For native generation without interleaving, change `config_cls` to `Cosmos3Pipel
 
 The Policy-DROID checkpoint uses `raw_action_dim=8` in the joint position action space, as NVIDIA's reference policy server does. Match observation layout, units and normalization to the checkpoint.
 
+## Intel XPU
+
+On Intel GPUs, first follow the [Intel XPU installation instructions](../get_started/installation_xpu.md), then select the devices with `ZE_AFFINITY_MASK` (for example, `ZE_AFFINITY_MASK=0,1` for the interleaved placement and `ZE_AFFINITY_MASK=0` for direct generation). The configurations above need no other change: both stages carry an XPU memory default, because the resident placement this checkpoint asks for needs far more device memory than an Intel GPU has. The generation stage streams the DiT layer by layer, which native SGLang's automatic memory policy selects on CUDA only, and the Reasoner takes `mem_fraction_static` 0.80, because native's own automatic fraction of 0.591 leaves no room for the KV cache once the 16.33 GiB understanding tower has loaded. A `stages.generation.factory.server_args_overrides` or `stages.reasoner.engine` entry in the config still wins over either default.
+
+Measured on one Intel Arc Pro B60 per stage (23.91 GiB each), at the default 35 denoising steps, with the checkpoint on a local disk:
+
+| Workflow | Request | Time |
+| --- | --- | --- |
+| Interleaved | image generation and its understanding turn, 640x640 | 45.5 s |
+| Interleaved | video generation and its understanding turn, 480x480, 17 frames | 47.0 s |
+| Interleaved | two generations and three understanding turns, 640x640 | 75.3 s |
+| Interleaved | two requests at once, 640x640 each | 72.9 s for both |
+| Direct | `/v1/images/generations`, 640x640 | 31.9 s, 5.56 GiB peak |
+| Direct | `/v1/videos`, 480x480, 17 frames | 39 s |
+| Direct | `/v1/actions/generations`, inverse dynamics, 16 steps of 9 channels | 18.2 s |
+
+The generation stage holds about 26 GiB of pinned host memory for the streamed DiT, so leave that much host memory per generation stage. Seeded image generation repeats byte for byte across requests on one server. Audiovisual generation is untested on Intel GPUs, as are the action routes of the Policy-DROID checkpoint; `action_mode` `forward_dynamics` interleaving works with a `domain_name` the checkpoint knows.
+
 ## Reusing the serving pipeline
 
 The interleaving controller is model agnostic. Another unified model implements `UMMAdapter` from `sglang_omni.pipeline.umm` with `start`, `advance`, `usage` and `close`, and subclasses `UMMPipelineConfig`, as `Cosmos3UMMAdapter` and `Cosmos3UMMPipelineConfig` do. Keep prompts, decision formats, media conversion and modality rules in the adapter. The developer reference describes the controller contract.
