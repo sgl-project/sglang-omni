@@ -1,0 +1,51 @@
+config_cls: DotsTTSPipelineConfig
+# The checkpoint is pinned to the snapshot this config was validated
+# against, the same <repo-id>@<revision> spec ensure_hf_models.sh uses.
+# Bump the revision deliberately after revalidating the pipeline.
+model_path: dots-studio/dots.tts-mf@c28105adc8228143392b4e346994ff613ee48a06
+
+# The solver settings feed two consumers: the latent AR engine solves with
+# them, and preprocessing sizes its generation schedule from them. The
+# selector writes one value into both stages; an explicit per-stage entry
+# under stages: would override it.
+shared:
+  - select:
+      stages: [preprocessing, latent_engine]
+    factory:
+      num_steps: 4
+      max_generate_length: 500
+
+stages:
+  preprocessing:
+    process: reference
+  reference_encode:
+    # Reference convolution precision is process-wide.
+    process: reference
+    total_reserve_bytes: 3GiB
+    factory:
+      max_concurrency: 8
+      max_batch_size: 1
+      max_batch_wait_ms: 4
+      reference_convolution_allow_reduced_precision: false
+  latent_engine:
+    process: latent
+    total_reserve_bytes: 40GiB
+    factory:
+      optimize: false
+    engine:
+      # Leave device memory for the separate acoustic state pools.
+      kv_cache_bytes: 2147483648
+      max_running_requests: 16
+      attention_backend: ascend
+      sampling_backend: pytorch
+      disable_cuda_graph: false
+      cuda_graph_max_bs: 16
+  vocoder:
+    process: codec
+    total_reserve_bytes: 12GiB
+    factory:
+      optimize: true
+      enable_streaming_audio_vae_cuda_graph: false
+      npu_decoder_precision: float16
+      max_batch_size: 4
+      max_batch_wait_ms: 2

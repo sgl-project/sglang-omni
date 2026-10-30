@@ -84,6 +84,24 @@ On a full GPU the default `16 × 500` layout is intended. On tighter cards, lowe
 
 Incremental / bucketed tail-KV allocation is not implemented yet; capacity is still the eager full-length pool.
 
+## Ascend NPU (MeanFlow)
+
+Use `examples/configs/dots_tts_npu.yaml` with the pinned MeanFlow checkpoint and dots_tts 0.2.1. Follow the [NPU installation guide](../get_started/installation_npu.md) for runtime requirements. SOAR and base checkpoints have not been validated on NPU.
+
+```bash
+export ASCEND_RT_VISIBLE_DEVICES=0
+sgl-omni serve \
+  --config examples/configs/dots_tts_npu.yaml \
+  --allowed-local-media-path docs/_static/audio \
+  --port 8000
+```
+
+Select an available device before starting the service. The recipe retains 16 concurrent requests, four solver steps, and a maximum of 500 generated patches. Reference encoding, latent generation, and waveform decoding run in separate processes. Reference convolution precision is process-wide, so keep the reference worker separate from the vocoder.
+
+The optional reference-encoder factory setting `reference_convolution_allow_reduced_precision` controls convolution HF32 on NPU and cuDNN convolution TF32 on CUDA. The NPU recipe sets it to `false`; leaving it unset preserves the process settings. It does not change matrix-multiplication precision.
+
+The backbone uses the framework's NPU decode graph. Acoustic-tail and streaming-vocoder computation use the existing eager paths without convolution caching. The NPU recipe sets `npu_decoder_precision: float16` for the AudioVAE decoder; reference encoding, the projection, and the LSTM remain FP32. Set this option to `float32` to keep the original decoder precision. The vocoder retains the original four-patch merge behavior. The 55 GiB stage reservations are placement accounting, not enforced allocator limits; the backbone KV cache has a separate 2 GiB budget.
+
 ## Synthesizing Speech
 
 dots.tts needs a reference clip and its transcript. The speaker comes entirely from the reference (x-vector plus prompt latents), so there is no zero-shot `voice` preset. Under the default continuous-batching deployment, a request without `references` is rejected.

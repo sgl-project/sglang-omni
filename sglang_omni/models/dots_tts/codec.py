@@ -9,8 +9,10 @@ import math
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import MethodType
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from safetensors.torch import load_file
 
@@ -19,6 +21,7 @@ from sglang_omni.models.dots_tts.payload_types import (
     load_dots_tts_state,
     store_dots_tts_state,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.preprocessing.cache_key import (
     hash_media_item,
     reference_path_cache_key,
@@ -31,7 +34,44 @@ from sglang_omni.scheduling.reference_encoder import (
 from sglang_omni.utils.audio import load_audio
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 
+import_dots_tts()
+
+from dots_tts.modules.vocoder.alias_free_resample import UpSample1d
+
 logger = logging.getLogger(__name__)
+
+
+def decoder_forward(module: nn.Module, latents: torch.Tensor) -> torch.Tensor:
+    """Keep decoder precision separate from the FP32 projection and LSTM."""
+    decoder_dtype = next(module.parameters()).dtype
+    return type(module).forward(module, latents.to(dtype=decoder_dtype)).float()
+
+
+def upsample_forward(module: UpSample1d, waveform: torch.Tensor) -> torch.Tensor:
+    channels = waveform.shape[1]
+    if module.pad:
+        waveform = F.pad(waveform, (module.pad, module.pad), mode="replicate")
+    else:
+        pass
+    weight = (
+        module.filter.expand(channels, -1, -1) if module.fixed_filter else module.filter
+    )
+    waveform = module.ratio * F.conv_transpose1d(
+        waveform, weight, stride=module.stride, groups=channels
+    )
+    if module.causal:
+        return waveform[..., : -(module.kernel_size - module.stride)]
+    else:
+        return waveform[..., module.pad_left : -module.pad_right]
+
+
+def adapt_audio_vae_upsampling(audio_vae: torch.nn.Module) -> None:
+    """Keep the original filters and crop while skipping no-op padding."""
+    for module in audio_vae.modules():
+        if isinstance(module, UpSample1d):
+            module.forward = MethodType(upsample_forward, module)
+        else:
+            pass
 
 
 def load_module(module: torch.nn.Module, path: Path) -> None:
@@ -66,6 +106,14 @@ class DotsAudioCodec:
         load_module(vocoder, root / "vocoder.safetensors")
         load_module(speaker, root / "speaker_encoder.safetensors")
         self.vocoder = vocoder.to(device=torch.device(device)).eval()
+        if (
+            current_platform.is_npu()
+            and self.vocoder.post_proj.weight.device.type
+            == current_platform.device_type
+        ):
+            adapt_audio_vae_upsampling(self.vocoder.decoder)
+        else:
+            pass
         self.speaker = speaker.to(device=torch.device(device)).eval()
         self.inference = VocoderInference(self.vocoder)
         self.patch_size = int(config.patch_size)
@@ -223,17 +271,26 @@ class DotsAudioCodec:
         return sampled[:, : -self.patch_size].contiguous()
 
 
-_CODEC_CACHE: dict[tuple[str, str], DotsAudioCodec] = {}
+_CODEC_CACHE: dict[tuple[str, str, torch.dtype | None], DotsAudioCodec] = {}
 _CODEC_CACHE_LOCK = threading.Lock()
 
 
-def load_dots_audio_codec(model_path: str, *, device: str) -> DotsAudioCodec:
+def load_dots_audio_codec(
+    model_path: str, *, device: str, decoder_dtype: torch.dtype | None = None
+) -> DotsAudioCodec:
     checkpoint = str(Path(resolve_checkpoint(model_path)).resolve())
-    key = (checkpoint, str(device))
+    key = (checkpoint, str(device), decoder_dtype)
     with _CODEC_CACHE_LOCK:
         codec = _CODEC_CACHE.get(key)
         if codec is None:
             codec = DotsAudioCodec(checkpoint, device=device)
+            if decoder_dtype is not None:
+                codec.vocoder.decoder.to(dtype=decoder_dtype)
+                codec.vocoder.decoder.forward = MethodType(
+                    decoder_forward, codec.vocoder.decoder
+                )
+            else:
+                pass
             _CODEC_CACHE[key] = codec
         else:
             pass

@@ -9,7 +9,7 @@ import math
 import os
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, overload
+from typing import TYPE_CHECKING, Literal, overload
 
 import torch
 from transformers import PreTrainedTokenizerBase
@@ -22,6 +22,7 @@ from sglang_omni.models.dots_tts.compat import import_dots_tts
 from sglang_omni.models.dots_tts.payload_types import DotsTTSState
 from sglang_omni.models.dots_tts.request_builders import DotsTTSSGLangRequestData
 from sglang_omni.models.dots_tts.vocoder import DotsTTSStreamingVocoder
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
@@ -459,12 +460,35 @@ def create_reference_encode_executor(
     max_concurrency: int = 8,
     max_batch_size: int = 1,
     max_batch_wait_ms: float = 4.0,
+    reference_convolution_allow_reduced_precision: bool | None = None,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     concrete_device = resolve_concrete_device(device, gpu_id)
     if concrete_device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("dots.tts requires CUDA")
     else:
         pass
+    if reference_convolution_allow_reduced_precision is None:
+        pass
+    elif concrete_device.type != current_platform.device_type or not (
+        current_platform.is_npu() or current_platform.is_cuda()
+    ):
+        raise ValueError(
+            "reference_convolution_allow_reduced_precision requires a CUDA or NPU reference worker"
+        )
+    else:
+        if current_platform.is_npu():
+            device_module = torch.get_device_module(concrete_device)
+            device_module.conv.allow_hf32 = (
+                reference_convolution_allow_reduced_precision
+            )
+        else:
+            torch.backends.cudnn.allow_tf32 = (
+                reference_convolution_allow_reduced_precision
+            )
+        logging.getLogger(__name__).info(
+            f"dots.tts reference convolution allow_reduced_precision="
+            f"{reference_convolution_allow_reduced_precision} (device={concrete_device})"
+        )
     codec = load_dots_audio_codec(model_path, device=str(concrete_device))
     encoder = DotsReferenceEncoder(
         codec,
@@ -521,13 +545,27 @@ def create_vocoder_executor(
     max_batch_size: int = 4,
     max_batch_wait_ms: int = 2,
     stream_slots: int = 16,
+    npu_decoder_precision: Literal["float32", "float16"] = "float32",
 ) -> DotsTTSStreamingVocoder:
     concrete_device = resolve_concrete_device(device, gpu_id)
     if concrete_device.type == "cpu":
         raise RuntimeError("dots.tts requires an accelerator")
     else:
         pass
-    codec = load_dots_audio_codec(model_path, device=str(concrete_device))
+    if npu_decoder_precision not in {"float32", "float16"}:
+        raise ValueError(f"Unsupported NPU decoder precision: {npu_decoder_precision}")
+    elif npu_decoder_precision == "float16" and (
+        not current_platform.is_npu()
+        or concrete_device.type != current_platform.device_type
+    ):
+        raise ValueError("NPU decoder precision requires an NPU vocoder worker")
+    else:
+        pass
+    codec = load_dots_audio_codec(
+        model_path,
+        device=str(concrete_device),
+        decoder_dtype=torch.float16 if npu_decoder_precision == "float16" else None,
+    )
     vocoder = DotsTTSStreamingVocoder(
         codec,
         optimize=optimize,
