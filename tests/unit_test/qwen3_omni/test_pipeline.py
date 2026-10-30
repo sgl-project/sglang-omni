@@ -442,6 +442,7 @@ def test_qwen_preprocessor_two_videos_and_audio_with_real_processor(
     pre.default_video_min_pixels = 28 * 28
     pre.default_video_max_pixels = 28 * 28
     pre.default_video_total_pixels = total_pixels
+    pre.video_decode_threads = 16
     pre.processor = processor
     payload = StagePayload(
         request_id="two-videos-and-audio",
@@ -537,6 +538,7 @@ def test_qwen_preprocessor_passes_embedded_video_audio_to_processor(
     pre.default_video_min_pixels = None
     pre.default_video_max_pixels = None
     pre.default_video_total_pixels = None
+    pre.video_decode_threads = 16
     pre.processor = FakeProcessor()
     payload = StagePayload(
         request_id="embedded-audio",
@@ -672,10 +674,15 @@ def test_qwen_preprocessor_limit_is_the_checkpoint_thinker_context(
     )
     monkeypatch.setattr(preprocessor_mod, "ensure_chat_template", lambda *_, **__: None)
 
-    assert preprocessor_mod.Qwen3OmniPreprocessor(str(tmp_path)).max_seq_len == 65536
     assert (
         preprocessor_mod.Qwen3OmniPreprocessor(
-            str(tmp_path), max_seq_len=4096
+            str(tmp_path), video_decode_threads=16
+        ).max_seq_len
+        == 65536
+    )
+    assert (
+        preprocessor_mod.Qwen3OmniPreprocessor(
+            str(tmp_path), max_seq_len=4096, video_decode_threads=16
         ).max_seq_len
         == 4096
     )
@@ -713,7 +720,9 @@ def test_qwen_preprocessor_retries_without_special_token_compat(
     )
     monkeypatch.setattr(preprocessor_mod, "ensure_chat_template", lambda *_, **__: None)
 
-    preprocessor_mod.Qwen3OmniPreprocessor(str(tmp_path), max_seq_len=8192)
+    preprocessor_mod.Qwen3OmniPreprocessor(
+        str(tmp_path), max_seq_len=8192, video_decode_threads=16
+    )
 
     assert calls[0]["extra_special_tokens"] == {
         "image_token": "<|image_pad|>",
@@ -764,6 +773,7 @@ def test_qwen_preprocessor_rejects_text_too_long_to_fit_before_tokenizing(
     pre.normalizer = NFC()
     for name in ("fps", "max_frames", "min_pixels", "max_pixels", "total_pixels"):
         setattr(pre, "default_video_" + name, None)
+    pre.video_decode_threads = 16
     pre.processor = FakeProcessor()
     payload = StagePayload(
         request_id="long-text",
@@ -2281,6 +2291,7 @@ def decoded_audio_preprocessor(monkeypatch):
     pre.processor = Processor()
     for name in ("fps", "max_frames", "min_pixels", "max_pixels", "total_pixels"):
         setattr(pre, "default_video_" + name, None)
+    pre.video_decode_threads = 16
     loaded = {"audio": [np.zeros(10000, dtype=np.float32)], "video": [], "loads": 0}
 
     async def audio_loader(raw, **kwargs):
@@ -2481,6 +2492,7 @@ def run_video_request(
         extract_audio: bool,
         audio_target_sr: int,
         resource_connector: MultiModalResourceConnector,
+        video_decode_threads: int,
     ) -> tuple[list[torch.Tensor], list[float], None]:
         return [frames], [2.0], None
 
@@ -2874,6 +2886,7 @@ def test_threaded_preprocessing_loads_repeated_remote_images(monkeypatch):
     pre.processor = Processor()
     for name in ("fps", "max_frames", "min_pixels", "max_pixels", "total_pixels"):
         setattr(pre, "default_video_" + name, None)
+    pre.video_decode_threads = 16
     monkeypatch.setattr(qwen_stages, "Qwen3OmniPreprocessor", lambda **_: pre)
     # Isolate the old global client so this catches cross-request loop reuse.
     monkeypatch.setattr(
@@ -3026,6 +3039,7 @@ def bare_preprocessor(processor: Mock) -> preprocessor_mod.Qwen3OmniPreprocessor
         "default_video_total_pixels",
     ):
         setattr(pre, name, None)
+    pre.video_decode_threads = 16
     return pre
 
 

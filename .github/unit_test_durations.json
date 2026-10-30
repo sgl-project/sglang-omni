@@ -282,7 +282,6 @@
   "tests/unit_test/nemotron_diarization/test_streaming.py": 0.023,
   "tests/unit_test/nemotron_voicechat/test_checkpoint_shim.py": 0.01,
   "tests/unit_test/nemotron_voicechat/test_duplex_ar.py": 0.031,
-  "tests/unit_test/nemotron_voicechat/test_duplex_example.py": 0.034,
   "tests/unit_test/nemotron_voicechat/test_duplex_hooks.py": 0.029,
   "tests/unit_test/nemotron_voicechat/test_duplex_realtime.py": 0.075,
   "tests/unit_test/nemotron_voicechat/test_paged_rollback.py": 0.016,

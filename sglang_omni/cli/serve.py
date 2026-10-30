@@ -473,7 +473,7 @@ def serve(
         typer.Option(
             "--skip-server-warmup",
             "--skip_server_warmup",
-            help="Report ready without sending the pipeline's warmup requests first.",
+            help="Report ready without running the pipeline's warmup first.",
         ),
     ] = False,
     realtime_session_update_timeout_s: Annotated[

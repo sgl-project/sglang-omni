@@ -307,6 +307,7 @@ def speech_append(
                 end_of_turn=end_of_turn,
                 speech_turn_start=True,
                 is_speech_cut=False,
+                ends_previous_turn=False,
             )
         ),
         context=SessionContext(
@@ -401,6 +402,7 @@ def run_speech_stage(
                 end_of_turn=end_of_turn,
                 speech_turn_start=seq == 0,
                 is_speech_cut=False,
+                ends_previous_turn=False,
             )
             appends.append(append)
     chunks: dict[str, list[dict]] = {append.request_id: [] for append in appends}
@@ -484,3 +486,53 @@ def test_speech_hooks_stamp_voice_chunks_with_the_reply_turn(
         )
 
     assert [chunk.turn for chunk in chunks] == expected_turns
+
+
+def test_speech_after_the_model_ends_its_turn_stays_in_that_turn_until_a_new_reply_closes_it() -> (
+    None
+):
+    """The talker's speech in units after the model ended its turn was never vocoded, and a new reply that cut it left the old reply open with the old turn's audio state."""
+    hooks = speech_hooks(open_runtime([]))
+    session_identity = SessionIdentity("s")
+    hooks.open(session_identity, SimpleNamespace(params={}))
+    chunks: list[TimedChunk] = []
+    new_reply_tokens = list(range(100, 100 + CODEC_CHUNK_SIZE))
+    units = [
+        (SPEAKING_TOKENS, False, True, False),
+        (SPEAKING_TOKENS, False, False, False),
+        (SPEAKING_TOKENS, True, False, False),
+        (new_reply_tokens, False, True, True),
+    ]
+    for codec_tokens, is_listen, speech_turn_start, ends_previous_turn in units:
+        append = speech_append(
+            session_identity, chunks, codec_tokens=codec_tokens, is_listen=is_listen
+        )
+        append.payload.data["speech_turn_start"] = speech_turn_start
+        append.payload.data["ends_previous_turn"] = ends_previous_turn
+        hooks.append_batch([append])
+    fresh_hooks = speech_hooks(open_runtime([]))
+    fresh_hooks.open(session_identity, SimpleNamespace(params={}))
+    fresh_chunks: list[TimedChunk] = []
+    fresh_hooks.append_batch(
+        [
+            speech_append(
+                session_identity,
+                fresh_chunks,
+                codec_tokens=new_reply_tokens,
+                is_listen=False,
+            )
+        ]
+    )
+
+    assert [
+        (chunk.turn, chunk.payload["end_of_turn"], bool(chunk.payload["pcm"]))
+        for chunk in chunks
+    ] == [
+        (0, False, True),
+        (0, False, True),
+        (0, False, True),
+        (0, True, True),
+        (1, False, True),
+    ]
+    assert chunks[3].payload["is_speech_cut"] is True
+    assert chunks[4].payload["pcm"] == fresh_chunks[0].payload["pcm"]

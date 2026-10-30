@@ -1512,6 +1512,58 @@ def test_qwen3_tts_budgets_generation_by_the_target_text(
 
 
 @pytest.mark.parametrize(
+    ("model_type", "tts_params"),
+    [
+        ("custom_voice", {"task_type": "CustomVoice", "voice": "Ryan"}),
+        (
+            "voice_design",
+            {"task_type": "VoiceDesign", "instructions": "A slow, calm voice."},
+        ),
+    ],
+)
+def test_qwen3_tts_custom_voice_and_voice_design_take_the_checkpoint_limit(
+    model_type: str, tts_params: dict[str, object]
+) -> None:
+    class FakeWrapper:
+        def _build_assistant_text(self, text):
+            return text
+
+        def _build_instruct_text(self, text):
+            return text
+
+        def _tokenize_texts(self, texts):
+            return [torch.arange(8, dtype=torch.long).unsqueeze(0) for _ in texts]
+
+        def _merge_generate_kwargs(self, **kwargs):
+            return {"max_new_tokens": 8192, **kwargs}
+
+    class FakeModel:
+        tts_model_type = model_type
+        model = SimpleNamespace(codec_embedding=torch.nn.Embedding(4, 4))
+
+        def build_custom_voice_inputs(self, **kwargs):
+            return (
+                torch.ones(1, 3, 4),
+                torch.ones(1, 3, dtype=torch.long),
+                torch.ones(1, 1, 4),
+                None,
+            )
+
+        def build_voice_design_inputs(self, **kwargs):
+            return self.build_custom_voice_inputs(**kwargs)
+
+    prepared = qwen3_request_builders.prepare_qwen3_tts_request(
+        make_payload(inputs="target", tts_params=tts_params),
+        model=FakeModel(),
+        wrapper=FakeWrapper(),
+        prompt_constants=placeholder_prompt_constants(),
+        prompt_row_cache_keys=placeholder_prompt_row_cache_keys(),
+    )
+
+    assert prepared.gen_kwargs["max_new_tokens"] == 8192
+
+
+@pytest.mark.parametrize(
     ("text_tokens", "frames"),
     [(1, 45), (3, 64), (30, 328), (200, 1985), (300, 2048)],
 )
