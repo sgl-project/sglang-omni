@@ -152,7 +152,12 @@ def test_moe_combines_rank_partials_before_cast(
             rtol=0,
             atol=0,
         )
-    expected = int(with_shared_expert) if tp_size > 1 else 256
+    else:
+        pass
+    if tp_size > 1:
+        expected = int(with_shared_expert)
+    else:
+        expected = 256 + int(with_shared_expert)
     torch.testing.assert_close(
         output, torch.full((3, 2), expected, dtype=torch.bfloat16), rtol=0, atol=0
     )

@@ -317,19 +317,26 @@ class LLaDA2MoeSparseMoeBlock(nn.Module):
             topk_output = self.topk(hidden_states, router_logits)
         y = self.experts(hidden_states, topk_output)
         output_dtype = y.dtype
+        tp_size = get_parallel().tp_size
 
         if self.shared_experts is not None:
-            y = y.float() + self.shared_experts(identity).float()
+            if tp_size > 1:
+                # note (Anmuliar): Reduce both expert partials before the BF16 cast.
+                y = y.float() + self.shared_experts(identity).float()
+            else:
+                y = y + self.shared_experts(identity)
         else:
             pass
 
-        # note (Anmuliar): Reduce both expert partials together before the BF16 cast.
-        if get_parallel().tp_size > 1:
+        if tp_size > 1:
             y = tensor_model_parallel_all_reduce(y)
         else:
             pass
 
-        return y.to(output_dtype)
+        if tp_size > 1:
+            return y.to(output_dtype)
+        else:
+            return y
 
     def reference_topk(self, router_logits: torch.Tensor) -> StandardTopKOutput:
         """Keep group selection and expert weighting in FP32 Torch arithmetic."""
