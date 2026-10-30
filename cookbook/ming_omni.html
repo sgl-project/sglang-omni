@@ -1147,6 +1147,7 @@ window.runMermaid = runMermaid;</script>
 </section>
 <section id="video-input">
 <h3>Video Input<a class="headerlink" href="#video-input" title="Link to this heading">#</a></h3>
+<p>Video files decode on parallel decoders that share min(16, the preprocessing stage’s CPUs) FFmpeg threads, split evenly among a request’s videos. Set <code class="docutils literal notranslate"><span class="pre">--preprocessing.factory.video_decode_threads</span> <span class="pre">N</span></code> to choose that count. A value at or below the video reader’s own threads (<code class="docutils literal notranslate"><span class="pre">TORCHCODEC_NUM_THREADS</span></code>, 8 by default) decodes each video on the reader alone.</p>
 <p>Video files use the same top-level request style. Limit frame count or pixel budget for predictable latency:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
