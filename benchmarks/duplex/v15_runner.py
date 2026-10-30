@@ -28,6 +28,7 @@ from benchmarks.duplex.client import (
     LEGACY_TRANSPORT,
     MAX_TIMEOUT_S,
     PACKET_MS,
+    PLAYBACK_REPORT,
     SAMPLE_RATE,
     TRANSPORT,
     TURN_BASED_TRANSPORT,
@@ -221,6 +222,7 @@ async def run_samples(
     concurrency: int = 1,
     turn_detection: TurnDetection | None = None,
     legacy_tail_s: float = LEGACY_TAIL_S,
+    report_playback: bool = False,
     postprocess: Executor | None = None,
 ) -> dict[str, JsonValue]:
     """Run selected sample variants, retaining failures in the selected denominator.
@@ -254,10 +256,15 @@ async def run_samples(
         if legacy
         else None
     )
+    if report_playback and protocol != "turn_based":
+        raise ValueError("report_playback applies to turn-based profiles only")
+    else:
+        pass
     turn_based_config = (
         {
             "turn_detection": turn_detection.model_dump(mode="json"),
             "barge_in_cut": TURN_BASED_BARGE_IN_CUT,
+            "playback_report": PLAYBACK_REPORT if report_playback else None,
             **TURN_BASED_TRANSPORT,
         }
         if protocol == "turn_based"
@@ -529,6 +536,7 @@ async def run_samples(
                         profile=profile,
                         turn_detection=turn_detection,
                         tail_s=legacy_tail_s,
+                        report_playback=report_playback,
                     )
                     report = await loop.run_in_executor(
                         postprocess, postprocess_variant, variant_dir, profile
