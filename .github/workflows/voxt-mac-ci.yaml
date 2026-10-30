@@ -46,6 +46,7 @@ jobs:
     outputs:
       run_mac: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.plan.outputs.run_mac }}
       run_music3: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.pr.outputs.music3 }}
+      run_ming3_audio: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.pr.outputs.ming3_audio }}
     steps:
       - name: Fetch latest PR gate state
         if: ${{ github.event_name == 'pull_request' }}
@@ -71,6 +72,9 @@ jobs:
             const music3 = /^(\.github\/workflows\/voxt-mac-ci\.yaml$|sglang_omni_mlx\/native\/(CMakeLists\.txt$|scripts\/|src\/(music3\/|common\/|qwen3_asr\/)|tools\/music3_|ci\/(music3_|generate_music3_reference\.py$|model_golden\/minimax-music3\.json$|model_pins\.json$|provision.*\.py$|check_.*\.py$|test_check_golden\.py$|test_model_servers\.py$|requirements\.lock$)))/;
             core.setOutput("music3", files.some(file =>
               music3.test(file.filename) || music3.test(file.previous_filename || "")));
+            const ming3_audio = /^(\.github\/workflows\/voxt-mac-ci\.yaml$|sglang_omni_mlx\/native\/(CMakeLists\.txt$|scripts\/|src\/(ming3_audio\/|common\/|qwen3_asr\/)|tools\/ming3_audio_|ci\/(test_ming3_audio_api\.py$|check_golden\.py$|model_pins\.json$|provision.*\.py$|corpus\/|requirements\.lock$)))/;
+            core.setOutput("ming3_audio", files.some(file =>
+              ming3_audio.test(file.filename) || ming3_audio.test(file.previous_filename || "")));
             core.setOutput("is_selected", labels.includes("run-all-ci") || labels.includes("run-mac-ci"));
 
       - name: Block draft PR
@@ -116,6 +120,7 @@ jobs:
       - name: Check free disk space
         env:
           RUN_MUSIC3: ${{ needs.preflight.outputs.run_music3 }}
+          RUN_MING3_AUDIO: ${{ needs.preflight.outputs.run_ming3_audio }}
         run: |
           echo "Unified memory bytes: $(sysctl -n hw.memsize)"
           mkdir -p "$VOXT_CI_ROOT"
@@ -131,6 +136,23 @@ jobs:
               :
             fi
             missing_gb=$((14 - cached_gb))
+            if [ "$missing_gb" -gt 0 ]; then
+              required_gb=$((required_gb + missing_gb))
+            else
+              :
+            fi
+          else
+            :
+          fi
+          ming3_audio_cache="$VOXT_CI_ROOT/data/models/inclusionAI_Ming-3.0-audio-tiny"
+          if [ "$RUN_MING3_AUDIO" = true ]; then
+            cached_gb=0
+            if [ -d "$ming3_audio_cache" ]; then
+              cached_gb=$(du -sk "$ming3_audio_cache" | awk '{print int($1 / 1048576)}')
+            else
+              :
+            fi
+            missing_gb=$((18 - cached_gb))
             if [ "$missing_gb" -gt 0 ]; then
               required_gb=$((required_gb + missing_gb))
             else
@@ -194,6 +216,29 @@ jobs:
         run: |
           "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_model_servers.py -k music3
 
+      - name: Provision the Ming3 Audio checkpoint
+        if: ${{ !cancelled() && needs.preflight.outputs.run_ming3_audio == 'true' }}
+        run: |
+          "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision_models.py "$VOXT_CI_ROOT/data" \
+            --model inclusionAI/Ming-3.0-audio-tiny
+
+      - name: Ming3 Audio server API and corpus accuracy tests
+        if: ${{ !cancelled() && needs.preflight.outputs.run_ming3_audio == 'true' }}
+        env:
+          NATIVE_RUNTIME_BIN: ${{ runner.temp }}/runtime/bin
+          CI_DATA_ROOT: ${{ env.VOXT_CI_ROOT }}/data
+        run: |
+          caffeinate -i "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_ming3_audio_api.py \
+            --basetemp "$RUNNER_TEMP/ming3-audio-tests"
+
+      - name: Upload Ming3 Audio corpus results
+        if: ${{ always() && needs.preflight.outputs.run_ming3_audio == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ming3-audio-corpus-results
+          path: ${{ runner.temp }}/ming3-audio-tests
+          if-no-files-found: ignore
+
       # Every golden file is checked, even after one fails, and this chip's
       # outputs are uploaded so they can be recorded as its golden outputs.
       - name: Golden outputs on the frozen corpus
@@ -220,7 +265,8 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision_models.py "$VOXT_CI_ROOT/data" \
-            --exclude-model mlx-community/MiniMax-Music3-mxfp8
+            --exclude-model mlx-community/MiniMax-Music3-mxfp8 \
+            --exclude-model inclusionAI/Ming-3.0-audio-tiny
 
       - name: Other models' golden outputs on the frozen corpus
         if: ${{ !cancelled() }}

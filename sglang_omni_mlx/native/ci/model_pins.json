@@ -139,5 +139,18 @@
       "tokenizer/tokenizer.json": "b1537fa9e59a537276ecbc2e12d0438edff635a1f4a4948e679774b5feb3e610",
       "tokenizer/tokenizer_config.json": "1689852cc9c45010de040c8302a8acdc0d2c4c6c740dd7e9dd0a8c704e16eada"
     }
+  },
+  "inclusionAI/Ming-3.0-audio-tiny": {
+    "revision": "3c9578f641b6745abf2d1239dc8419726f37c0e2",
+    "files": {
+      "config.json": "8f4f45090b7d74eebad38d0dd2767b46df178b82efb4bcdfc02f8b871f500f13",
+      "generation_config.json": "1da133d04c4f99a72e09b1565d0bb4fc0a2edc5c373a46b7076a3494edc7eb43",
+      "tokenizer.json": "2207eca933084436c15bb85ee648e28b2957934bc1da9506e10ea6c243bad869",
+      "tokenizer_config.json": "29c99ad0d76b663b5acd6cffcade4c1bc7897b2b44a64c8224b1222143002e7a",
+      "special_tokens_map.json": "2ac79f0a2ab99a3e6ffb7709b77246f5595584f8dcd006694cb940a6fec8cb8d",
+      "model.safetensors.index.json": "f61c0cc9a162c23afafaf9f2107a2b5a5a838bcf6e69daa61c4178ca327b0adc",
+      "model-00001-of-00002.safetensors": "53b7663c7c52aa36e487977d6e9bb2f5666b7aaa543bd5d5dd4e96ec88cfd957",
+      "model-00002-of-00002.safetensors": "08d9e7bd9d885a0d6608953c6bbe40dbfb67f673a0cce9382414b55a9380053a"
+    }
   }
 }
