@@ -53,6 +53,7 @@ from sglang_omni.preprocessing.text import (
     split_content_parts,
 )
 from sglang_omni.preprocessing.transcription import prepare_audio
+from sglang_omni.preprocessing.video import check_caller_video_budget
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import StagePayload
 from sglang_omni.utils.audio import AudioDecodeError
@@ -810,6 +811,19 @@ class Qwen3OmniPreprocessor:
             request_images = with_content_media(content_media.images, raw_images)
             request_videos = with_content_media(content_media.videos, raw_videos)
             request_audios = with_content_media(content_media.audios, raw_audios)
+
+            if request_videos is not None:
+                check_caller_video_budget(
+                    max_frames=inputs.get("video_max_frames"),
+                    min_pixels=inputs.get("video_min_pixels"),
+                    total_pixels=inputs.get("video_total_pixels"),
+                    max_pixels=inputs.get("video_max_pixels"),
+                    server_max_frames=self.default_video_max_frames,
+                    server_max_pixels=self.default_video_max_pixels,
+                    server_total_pixels=self.default_video_total_pixels,
+                )
+            else:
+                pass
 
             # Use async versions for concurrent loading
             # If we need audio from video, extract it during video loading to avoid duplicate downloads
