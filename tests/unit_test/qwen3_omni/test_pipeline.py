@@ -668,10 +668,15 @@ def test_qwen_preprocessor_limit_is_the_checkpoint_thinker_context(
     )
     monkeypatch.setattr(preprocessor_mod, "ensure_chat_template", lambda *_, **__: None)
 
-    assert preprocessor_mod.Qwen3OmniPreprocessor(str(tmp_path)).max_seq_len == 65536
     assert (
         preprocessor_mod.Qwen3OmniPreprocessor(
-            str(tmp_path), max_seq_len=4096
+            str(tmp_path), video_decode_threads=16
+        ).max_seq_len
+        == 65536
+    )
+    assert (
+        preprocessor_mod.Qwen3OmniPreprocessor(
+            str(tmp_path), max_seq_len=4096, video_decode_threads=16
         ).max_seq_len
         == 4096
     )
@@ -709,7 +714,9 @@ def test_qwen_preprocessor_retries_without_special_token_compat(
     )
     monkeypatch.setattr(preprocessor_mod, "ensure_chat_template", lambda *_, **__: None)
 
-    preprocessor_mod.Qwen3OmniPreprocessor(str(tmp_path), max_seq_len=8192)
+    preprocessor_mod.Qwen3OmniPreprocessor(
+        str(tmp_path), max_seq_len=8192, video_decode_threads=16
+    )
 
     assert calls[0]["extra_special_tokens"] == {
         "image_token": "<|image_pad|>",

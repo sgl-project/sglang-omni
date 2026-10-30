@@ -24,7 +24,6 @@ from torchvision.transforms import InterpolationMode
 from torchvision.transforms import functional as tv_f
 
 from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
-from sglang_omni.utils.cpu import effective_cpu_count
 
 from .base import MediaIO, is_url
 from .cache_key import compute_media_cache_key
@@ -36,8 +35,6 @@ except (ImportError, OSError, RuntimeError):
     # note (ratish): images whose torchcodec wheel links CUDA-only libraries cannot load it.
     VideoDecoder = None
 
-# note (ratish): frames after a keyframe decode in order from it, so each keyframe group stays on one decoder; a video's decoders share at most this many ffmpeg threads, or the reader's own when it takes more.
-MAX_VIDEO_DECODE_THREADS = 16
 # The qwen-vl-utils torchcodec reader's ffmpeg threads when TORCHCODEC_NUM_THREADS is unset.
 READER_FFMPEG_THREADS = 8
 
@@ -62,6 +59,7 @@ class VideoMediaIO(MediaIO[tuple[torch.Tensor, float, npt.NDArray[np.float32] | 
         image_mode: str = "RGB",
         extract_audio: bool = False,
         audio_target_sr: int = 16000,
+        decode_threads: int,
         **kwargs: object,
     ) -> None:
         """Initialize VideoMediaIO.
@@ -75,6 +73,7 @@ class VideoMediaIO(MediaIO[tuple[torch.Tensor, float, npt.NDArray[np.float32] | 
             image_mode: Target image mode (default: "RGB").
             extract_audio: If True, extract audio from video and return as third element.
             audio_target_sr: Target sample rate for audio extraction (default: 16000).
+            decode_threads: FFmpeg threads this video's torchcodec decoders may use together.
             **kwargs: Additional arguments (for compatibility with MultiModalResourceConnector).
         """
         super().__init__()
@@ -86,6 +85,7 @@ class VideoMediaIO(MediaIO[tuple[torch.Tensor, float, npt.NDArray[np.float32] | 
         self.image_mode = image_mode
         self.extract_audio = extract_audio
         self.audio_target_sr = audio_target_sr
+        self.decode_threads = decode_threads
         self.kwargs = kwargs
 
     def load_path(self, filepath: Path) -> tuple[torch.Tensor, float]:
@@ -96,6 +96,7 @@ class VideoMediaIO(MediaIO[tuple[torch.Tensor, float, npt.NDArray[np.float32] | 
             min_pixels=self.min_pixels,
             max_pixels=self.max_pixels,
             total_pixels=self.total_pixels,
+            decode_threads=self.decode_threads,
         )
 
     def load_bytes(
@@ -160,6 +161,7 @@ async def ensure_video_list_async(
     resource_connector: MultiModalResourceConnector | None = None,
     extract_audio: bool = False,
     audio_target_sr: int = 16000,
+    video_decode_threads: int,
 ) -> tuple[
     list[object], list[float] | None, list[npt.NDArray[np.float32] | None] | None
 ]:
@@ -177,6 +179,7 @@ async def ensure_video_list_async(
                         the global connector.
         extract_audio: If True, extract audio from videos and return as third element.
         audio_target_sr: Target sample rate for audio extraction (default: 16000).
+        video_decode_threads: FFmpeg threads the request's videos share while they load together.
 
     Returns:
         Tuple of (normalized video list, sample_fps_list or None, extracted_audio_list or None).
@@ -190,6 +193,9 @@ async def ensure_video_list_async(
         items = videos
     else:
         items = [videos]
+    decode_threads = video_decode_threads // max(
+        sum(1 for item in items if isinstance(item, (str, Path))), 1
+    )
     normalized: list[object] = []
     sample_fps_list: list[float] = [0.0] * len(items)
     extracted_audios: list[npt.NDArray[np.float32] | None] = []
@@ -220,6 +226,7 @@ async def ensure_video_list_async(
                 image_mode=image_mode,
                 extract_audio=extract_audio,
                 audio_target_sr=audio_target_sr,
+                decode_threads=decode_threads,
             )
         else:
             media_io = VideoMediaIO(
@@ -230,6 +237,7 @@ async def ensure_video_list_async(
                 total_pixels=total_pixels,
                 extract_audio=extract_audio,
                 audio_target_sr=audio_target_sr,
+                decode_threads=decode_threads,
             )
             video_path = Path(video_item)
             loop = asyncio.get_running_loop()
@@ -447,9 +455,9 @@ def is_invalid_video(path: Path, error: Exception) -> bool:
 
 
 def read_video_torchcodec(
-    video_options: dict[str, str | float | int],
+    video_options: dict[str, str | float | int], decode_threads: int
 ) -> tuple[torch.Tensor, float]:
-    """The qwen-vl-utils torchcodec reader's frames (T, C, H, W) and sample fps, with keyframe groups split across parallel decoders."""
+    """The qwen-vl-utils torchcodec reader's frames (T, C, H, W) and sample fps, keyframe groups split across decoders sharing decode_threads FFmpeg threads."""
     video_path = str(video_options["video"])
     reader_thread_count = int(
         os.environ.get("TORCHCODEC_NUM_THREADS", READER_FFMPEG_THREADS)
@@ -466,24 +474,26 @@ def read_video_torchcodec(
         torch.linspace(start_frame, end_frame, frame_count).round().long().tolist()
     )
     sample_fps = frame_count / max(total_frames, 1e-6) * video_fps
-    # note (ratish): torchcodec exposes a stream's keyframe indices only through this method.
-    keyframe_indices = (
-        first_decoder._get_key_frame_indices().tolist()
-    )  # noqa: leading-underscore
-    keyframe_groups: dict[int, list[int]] = {}
-    for frame_index in frame_indices:
-        keyframe_groups.setdefault(
-            bisect.bisect_right(keyframe_indices, frame_index), []
-        ).append(frame_index)
-    thread_budget = max(
-        min(MAX_VIDEO_DECODE_THREADS, effective_cpu_count()), reader_thread_count
-    )
-    decoder_count = min(1 + thread_budget - reader_thread_count, len(keyframe_groups))
+    if decode_threads > reader_thread_count:
+        # note (ratish): frames after a keyframe decode in order from it, so each keyframe group stays on one decoder; torchcodec exposes the keyframe indices only through this method.
+        keyframe_indices = (
+            first_decoder._get_key_frame_indices().tolist()
+        )  # noqa: leading-underscore
+        keyframe_groups: dict[int, list[int]] = {}
+        for frame_index in frame_indices:
+            keyframe_groups.setdefault(
+                bisect.bisect_right(keyframe_indices, frame_index), []
+            ).append(frame_index)
+        decoder_count = min(
+            1 + decode_threads - reader_thread_count, len(keyframe_groups)
+        )
+    else:
+        decoder_count = 1
     if decoder_count == 1:
         return first_decoder.get_frames_at(indices=frame_indices).data, sample_fps
     else:
         pass
-    share_thread_count = (thread_budget - reader_thread_count) // (decoder_count - 1)
+    share_thread_count = (decode_threads - reader_thread_count) // (decoder_count - 1)
     decoder_thread_counts = [reader_thread_count] + [share_thread_count] * (
         decoder_count - 1
     )
@@ -531,6 +541,8 @@ def load_video_path(
     min_pixels: int | None = None,
     max_pixels: int | None = None,
     total_pixels: int | None = None,
+    *,
+    decode_threads: int,
 ) -> tuple[torch.Tensor, float]:
     """Load a local video into a torch tensor (T, C, H, W) on CPU."""
     path = Path(path)
@@ -558,7 +570,7 @@ def load_video_path(
     backend = qwen_vision.get_video_reader_backend()
     try:
         if backend == "torchcodec" and VideoDecoder is not None:
-            video, sample_fps = read_video_torchcodec(ele)
+            video, sample_fps = read_video_torchcodec(ele, decode_threads)
         else:
             video, sample_fps = qwen_vision.VIDEO_READER_BACKENDS[backend](ele)
     except Exception as backend_exc:

@@ -180,6 +180,17 @@ def bounded_intraop_threads(*, worker_count: int, max_threads: int) -> int:
     return min(max(effective_cpu_count() // worker_count, 1), max_threads)
 
 
+# note (ratish): one request worker's videos share at most this many FFmpeg decode threads unless its stage sets its own.
+MAX_VIDEO_DECODE_THREADS = 16
+
+
+def automatic_video_decode_threads(worker_count: int) -> int:
+    """FFmpeg threads each of a preprocessing stage's request workers decodes its videos with when the stage sets none."""
+    return bounded_intraop_threads(
+        worker_count=worker_count, max_threads=MAX_VIDEO_DECODE_THREADS
+    )
+
+
 # Native multimodal_gen gives each of num_gpus colocated GPU workers
 # min(16, cpu_count // num_gpus) intra-op threads when OMP_NUM_THREADS is
 # unset (gpu_worker._worker_cpu_intra_op_threads in SGLang).
