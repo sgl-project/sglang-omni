@@ -10,6 +10,7 @@ import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -36,7 +37,10 @@ from sglang_omni.serve.openai_api import (
 from sglang_omni.serve.protocol import ChatCompletionRequest, CreateSpeechRequest
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.serve.speech_stream_outcomes import SpeechStreamOutcomes
-from sglang_omni.serve.speech_to_text import complete_speech_to_text_request
+from sglang_omni.serve.speech_to_text import (
+    complete_speech_to_text_request,
+    read_and_validate_speech_to_text_audio,
+)
 from sglang_omni.serve.transcriptions import (
     _first_transcription_chunk,
     _transcription_stream,
@@ -3853,6 +3857,45 @@ def test_transcription_endpoint_maps_server_and_overload_errors(
 
     assert response.status_code == expected_status
     assert not any(record.exc_info for record in caplog.records)
+
+
+@pytest.mark.parametrize(
+    ("stream", "allow_audio_chunking"),
+    [(False, False), (False, True), (True, False)],
+)
+def test_transcription_rejects_invalid_format_before_audio_processing(
+    stream: bool,
+    allow_audio_chunking: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Invalid formats must fail before reading audio or starting inference."""
+    transcription_client = SuccessfulTranscriptionClient()
+    app = (
+        chunking_app(transcription_client)
+        if allow_audio_chunking
+        else create_app(transcription_client, model_name="asr")
+    )
+    read_audio = AsyncMock(wraps=read_and_validate_speech_to_text_audio)
+    monkeypatch.setattr(
+        "sglang_omni.serve.speech_to_text.read_and_validate_speech_to_text_audio",
+        read_audio,
+    )
+
+    response = TestClient(app).post(
+        "/v1/audio/transcriptions",
+        data={"response_format": "xml", "stream": str(stream).lower()},
+        files={"file": ("sample.wav", wav_upload(2.0), "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    expected_detail = (
+        "stream=true supports only response_format 'json' or 'text', got 'xml'"
+        if stream
+        else "Unsupported response_format for /v1/audio/transcriptions: 'xml'"
+    )
+    assert response.json()["detail"] == expected_detail
+    read_audio.assert_not_called()
+    assert transcription_client.requests == []
 
 
 def test_transcription_stream_emits_delta_done_and_sentinel() -> None:
