@@ -20,7 +20,7 @@ def char_vocab_from_tokenizer(tokenizer) -> dict[str, int]:
     return {char: index for index, char in enumerate(chars)}
 
 
-class NemotronVoiceChatTalkerModelRunner(ModelRunner):
+class VoiceChatTalkerModelRunner(ModelRunner):
     def __init__(self, tp_worker, output_processor):
         super().__init__(tp_worker, output_processor)
         speech = self.model.config.nemotron_speech
@@ -118,6 +118,18 @@ class NemotronVoiceChatTalkerModelRunner(ModelRunner):
         text_1D = talker.embed_subword(ids, chars, lengths)
         return talker.gated_fusion_audio_text(audio_1D, text_1D)
 
+    def generate_codes(self, index: int) -> torch.Tensor:
+        model = self.model
+        return model.talker.generate_codes(
+            model.hidden_out[index : index + 1].float(),
+            model.mog_head,
+            level_schedule=self.level_schedule,
+            top_p=self.top_p,
+            noise_scale=self.noise_scale,
+        )
+
+
+class NemotronVoiceChatTalkerModelRunner(VoiceChatTalkerModelRunner):
     def before_prefill(self, forward_batch, schedule_batch, requests) -> None:
         del schedule_batch
         rows = [self.warmup() for _ in requests]
@@ -183,16 +195,6 @@ class NemotronVoiceChatTalkerModelRunner(ModelRunner):
         batch = len(rows)
         model.fusion_buffer[:batch] = torch.cat(rows, dim=0)
         model.fusion_mask[:batch] = True
-
-    def generate_codes(self, index: int) -> torch.Tensor:
-        model = self.model
-        return model.talker.generate_codes(
-            model.hidden_out[index : index + 1].float(),
-            model.mog_head,
-            level_schedule=self.level_schedule,
-            top_p=self.top_p,
-            noise_scale=self.noise_scale,
-        )
 
     def post_decode(self, result, forward_batch, schedule_batch, requests) -> None:
         del result, forward_batch, schedule_batch
