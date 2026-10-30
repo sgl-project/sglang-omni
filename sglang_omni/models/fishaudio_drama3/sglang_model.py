@@ -211,6 +211,7 @@ class Drama3ForCausalLM(nn.Module):
                 decode_buffers.top_k[:row_count],
                 decode_buffers.top_p[:row_count],
                 PagedTowerAttention(self.tower_attention, forward_batch),
+                decode_buffers.epsilon_cutoff[:row_count],
             )
             decode_buffers.sampled_frames[:row_count].copy_(sampled_frames)
             return logits_output
@@ -301,17 +302,24 @@ class Drama3ForCausalLM(nn.Module):
         top_p: torch.Tensor,
         forward_batch: ForwardBatch,
     ) -> torch.Tensor:
-        return self.audio_decoder.decode_step(
-            semantic_logits,
-            hidden_states,
-            positions,
-            input_frames,
-            previous_main_tokens,
-            temperature,
-            top_k,
-            top_p,
-            PagedTowerAttention(self.tower_attention, forward_batch),
-        )
+        """The first frame of every request; its epsilon_cutoff rows are the ones the
+        model runner staged in the decode buffers, at addresses a CUDA graph keeps."""
+        decode_buffers = self.decode_buffers
+        if decode_buffers is None:
+            raise RuntimeError("the engine allocated no Drama 3 decode buffers")
+        else:
+            return self.audio_decoder.decode_step(
+                semantic_logits,
+                hidden_states,
+                positions,
+                input_frames,
+                previous_main_tokens,
+                temperature,
+                top_k,
+                top_p,
+                PagedTowerAttention(self.tower_attention, forward_batch),
+                decode_buffers.epsilon_cutoff[: semantic_logits.shape[0]],
+            )
 
     def backbone_logits(
         self,

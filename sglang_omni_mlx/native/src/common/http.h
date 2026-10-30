@@ -2,6 +2,7 @@
 // HTTP helpers shared by the native server's services (civetweb).
 #pragma once
 
+#include <chrono>
 #include <map>
 #include <optional>
 #include <string>
@@ -26,6 +27,16 @@ std::string ReadBody(mg_connection *connection);
 std::optional<std::string> ReadBody(mg_connection *connection,
                                     size_t max_bytes);
 bool IsPost(mg_connection *connection);
+
+// As often as the CUDA server checks whether a speech client disconnected.
+constexpr auto kClientPollInterval = std::chrono::milliseconds(50);
+// The status civetweb logs for a request whose client left before its answer.
+constexpr int kClientLeftStatus = 499;
+// The socket civetweb accepted for connection's client, found by the client's
+// address and port since civetweb does not expose it, or -1. Never throws.
+int ClientSocket(const mg_connection *connection);
+// Whether the client of client_socket, which may be -1, closed it.
+bool ClientLeft(int client_socket);
 std::optional<std::string>
 Field(const std::map<std::string, omni_common::FormField> &form,
       const std::string &name);

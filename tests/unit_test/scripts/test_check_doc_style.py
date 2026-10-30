@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Exercise documentation emoji and fence checks with synthetic Markdown inputs."""
+"""Exercise documentation filename, emoji, and fence checks with synthetic inputs."""
 
 from __future__ import annotations
 
@@ -274,6 +274,54 @@ def test_check_docs_scans_all_markdown_files_recursively(tmp_path: Path) -> None
     assert violations[0].line_number == 3
     assert violations[0].rule == "no-emoji"
     assert violations[0].detail == "remove emoji sequence '😀'"
+
+
+@pytest.mark.parametrize(
+    "relative_path, is_valid",
+    [
+        ("guide.md", True),
+        ("model_v2.md", True),
+        ("123.md", True),
+        ("README.md", True),
+        ("nested/guide.md", True),
+        ("Upper-Case 目录/model_v2.md", True),
+        ("Guide.md", False),
+        ("model-v2.md", False),
+        ("nested/README.md", False),
+        ("model v2.md", False),
+        ("指南.md", False),
+        ("model@v2.md", False),
+        ("model.v2.md", False),
+    ],
+)
+def test_check_docs_validates_only_markdown_basenames(
+    tmp_path: Path, relative_path: str, is_valid: bool
+) -> None:
+    docs_root = tmp_path / "docs"
+    path = docs_root / relative_path
+    path.parent.mkdir(parents=True)
+    source = "# Guide\n"
+    path.write_text(source, encoding="utf-8")
+
+    violations = check_docs(docs_root)
+
+    expected = (
+        []
+        if is_valid
+        else [
+            (
+                path,
+                1,
+                "filename-conventions",
+                r"Markdown basename must match [a-z0-9_]+\.md",
+            )
+        ]
+    )
+    assert [
+        (violation.path, violation.line_number, violation.rule, violation.detail)
+        for violation in violations
+    ] == expected
+    assert path.read_text(encoding="utf-8") == source
 
 
 def copy_script_fixture(tmp_path: Path, document_text: str) -> tuple[Path, Path]:
