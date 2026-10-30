@@ -184,6 +184,46 @@ const std::vector<float> &PeriodicHannWindow() {
   return window;
 }
 
+mx::array LogMel(const std::vector<float> &samples, const mx::array &window,
+                 const mx::array &filters, LogMelOptions options) {
+  if (!options.pad_short_audio && samples.size() <= kFftSize / 2) {
+    throw std::invalid_argument(
+        "audio is too short for reflected STFT padding");
+  } else {
+  }
+  std::vector<float> padded_samples = samples;
+  if (options.pad_short_audio &&
+      padded_samples.size() < static_cast<size_t>(kFftSize)) {
+    // Note (Jiaxin Deng): reflect padding needs more than half a window, so a
+    // tail this short (a realtime cut) is zero-filled to one window.
+    padded_samples.resize(kFftSize, 0.0f);
+  } else {
+  }
+  const int sample_count = static_cast<int>(padded_samples.size());
+  const mx::array audio(padded_samples.data(), {sample_count}, mx::float32);
+  constexpr int padding = kFftSize / 2;
+  const mx::array head = mx::slice(audio, {padding}, {0}, {-1});
+  const mx::array tail = mx::flip(
+      mx::slice(audio, {sample_count - padding - 1}, {sample_count - 1}), 0);
+  const mx::array padded = mx::concatenate({head, audio, tail});
+  const int frame_count = 1 + (padded.shape(0) - kFftSize) / kHopLength;
+  const mx::array frames =
+      mx::as_strided(padded, {frame_count, kFftSize}, {kHopLength, 1}, 0);
+  mx::array power =
+      mx::square(mx::abs(mx::fft::rfft(mx::multiply(frames, window), 1)));
+  if (options.drop_final_frame) {
+    power = mx::slice(power, {0, 0}, {power.shape(0) - 1, power.shape(1)});
+  } else {
+  }
+  mx::array log_spectrum = mx::log10(
+      mx::maximum(mx::matmul(power, filters), mx::array(kLogMelFloor)));
+  log_spectrum =
+      mx::maximum(log_spectrum, mx::subtract(mx::max(log_spectrum),
+                                             mx::array(kLogMelDynamicRange)));
+  return mx::transpose(
+      mx::divide(mx::add(log_spectrum, mx::array(4.0f)), mx::array(4.0f)));
+}
+
 mx::array WhisperWindowFeatures(const float *samples, int sample_count,
                                 int mel_bin_count) {
   // Note (Dayuxiaoshui): the reference pads before the floor, so the floor

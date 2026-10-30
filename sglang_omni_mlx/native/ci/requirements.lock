@@ -1,5 +1,10 @@
+mlx==0.32.3
+mlx-metal==0.32.3
+mlx-audio @ git+https://github.com/Blaizzy/mlx-audio.git@402e3b9e4bd9bbecedc917b290896e5588c76f58
 numpy==2.3.5
 pyarrow==25.0.1
 pytest==9.1.1
+safetensors==0.8.0
 soundfile==0.13.1
+tokenizers==0.23.3
 websockets==17.2

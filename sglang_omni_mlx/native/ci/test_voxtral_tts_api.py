@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from test_server_api import DATA_ROOT, RUNTIME_BIN, Server
+from server_test_utils import DATA_ROOT, RUNTIME_BIN, Server
 
 pytestmark = pytest.mark.skipif(
     not RUNTIME_BIN or not DATA_ROOT, reason="set NATIVE_RUNTIME_BIN and CI_DATA_ROOT"

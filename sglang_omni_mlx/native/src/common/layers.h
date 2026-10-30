@@ -36,6 +36,15 @@ public:
   bool Has(const std::string &name) const;
   mlx::core::array Linear(const mlx::core::array &x,
                           const std::string &prefix) const;
+  // Applies down_proj(silu(gate_proj(hidden_states)) * up_proj(hidden_states)).
+  mlx::core::array SwiGlu(const mlx::core::array &hidden_states,
+                          const std::string &weight_prefix) const;
+  // Selects bias-free expert matrices by expert_indices; sorted_expert_indices
+  // promises nondecreasing flattened indices.
+  mlx::core::array GatherLinear(const mlx::core::array &input,
+                                const std::string &prefix,
+                                const mlx::core::array &expert_indices,
+                                bool sorted_expert_indices = false) const;
   mlx::core::array LayerNorm(const mlx::core::array &x,
                              const std::string &prefix, float eps) const;
   mlx::core::array RmsNorm(const mlx::core::array &x, const std::string &prefix,

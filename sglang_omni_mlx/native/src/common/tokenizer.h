@@ -25,6 +25,7 @@ public:
   // Lossy UTF-8 decoding: invalid bytes become U+FFFD, as Hugging Face does.
   std::string Decode(const std::vector<int> &ids,
                      bool skip_special_tokens) const;
+  int TokenId(const std::string &content) const;
   // -1 when the token is not an added token.
   int AddedTokenId(const std::string &content) const;
 

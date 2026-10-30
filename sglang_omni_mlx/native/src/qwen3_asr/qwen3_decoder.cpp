@@ -109,13 +109,7 @@ mx::array Qwen3Decoder::Layer(const mx::array &x, int layer,
                             prefix + ".self_attn.o_proj"));
   const mx::array mlp_input =
       checkpoint_.RmsNorm(hidden, prefix + ".post_attention_layernorm", eps);
-  return mx::add(
-      hidden,
-      checkpoint_.Linear(
-          mx::multiply(omni_common::Silu(checkpoint_.Linear(
-                           mlp_input, prefix + ".mlp.gate_proj")),
-                       checkpoint_.Linear(mlp_input, prefix + ".mlp.up_proj")),
-          prefix + ".mlp.down_proj"));
+  return mx::add(hidden, checkpoint_.SwiGlu(mlp_input, prefix + ".mlp"));
 }
 
 mx::array Qwen3Decoder::Forward(const mx::array &embeddings,

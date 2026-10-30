@@ -365,6 +365,16 @@ int Tokenizer::AddedTokenId(const std::string &content) const {
   return -1;
 }
 
+int Tokenizer::TokenId(const std::string &content) const {
+  const int added_token_id = AddedTokenId(content);
+  if (added_token_id >= 0) {
+    return added_token_id;
+  } else {
+    const auto found = vocabulary_.find(content);
+    return found == vocabulary_.end() ? -1 : found->second;
+  }
+}
+
 std::vector<int> Tokenizer::Encode(const std::string &text) const {
   // Note (Jiaxin Deng): added tokens match on the raw text first (leftmost,
   // longest); only the text between them is normalized and BPE-encoded.

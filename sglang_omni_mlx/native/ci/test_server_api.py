@@ -8,105 +8,28 @@ from __future__ import annotations
 
 import base64
 import http.client
-import io
 import json
-import os
 import subprocess
 import time
 import uuid
-import wave
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from server_test_utils import (
+    DATA_ROOT,
+    RUNTIME_BIN,
+    Server,
+    clip,
+    long_wav,
+    pcm16,
+    sse_events,
+)
 from websockets.sync.client import connect
 
-RUNTIME_BIN = os.environ.get("NATIVE_RUNTIME_BIN")
-DATA_ROOT = os.environ.get("CI_DATA_ROOT")
 pytestmark = pytest.mark.skipif(
     not RUNTIME_BIN or not DATA_ROOT, reason="set NATIVE_RUNTIME_BIN and CI_DATA_ROOT"
 )
-MODEL_REPO = "mlx-community/Qwen3-ASR-0.6B-4bit"
-
-
-def model_directory() -> Path:
-    return Path(DATA_ROOT) / "models" / MODEL_REPO.replace("/", "_")
-
-
-def clip(clip_id: str) -> bytes:
-    return (Path(DATA_ROOT) / "corpus" / "v1" / "clips" / f"{clip_id}.wav").read_bytes()
-
-
-def pcm16(clip_id: str) -> bytes:
-    with wave.open(io.BytesIO(clip(clip_id))) as reader:
-        return reader.readframes(reader.getnframes())
-
-
-class Server:
-    def __init__(
-        self,
-        binary: str = "qwen3_asr_server",
-        model_kind: str = "qwen3_asr",
-        directory: Path | None = None,
-        flags: tuple[str, ...] = (),
-    ) -> None:
-        self.process = subprocess.Popen(
-            [
-                str(Path(RUNTIME_BIN) / binary),
-                "--supervised",
-                "--model-kind",
-                model_kind,
-                "--model-directory",
-                str(directory or model_directory()),
-                *flags,
-            ],  # fmt: skip
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-        )
-        self.ready = json.loads(self.process.stdout.readline())
-        self.port = self.ready.get("port")
-
-    def request(
-        self, method: str, path: str, body: bytes = b"", headers: dict | None = None
-    ):
-        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=120)
-        connection.request(method, path, body=body, headers=headers or {})
-        response = connection.getresponse()
-        return response.status, response.read()
-
-    def post_form(self, fields: dict[str, str], wav: bytes | None):
-        boundary = uuid.uuid4().hex
-        body = b""
-        for name, value in fields.items():
-            body += f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode()
-        if wav is not None:
-            body += (
-                (
-                    f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="a.wav"\r\n'
-                    "Content-Type: audio/wav\r\n\r\n"
-                ).encode()
-                + wav
-                + b"\r\n"
-            )
-        else:
-            pass
-        body += f"--{boundary}--\r\n".encode()
-        return self.request(
-            "POST",
-            "/v1/audio/transcriptions",
-            body,
-            {"Content-Type": f"multipart/form-data; boundary={boundary}"},
-        )
-
-    def stop(self) -> None:
-        if self.process.poll() is None:
-            self.process.stdin.write('{"command": "shutdown"}\n')
-            self.process.stdin.flush()
-            self.process.wait(timeout=10)
-        else:
-            pass
 
 
 @pytest.fixture(scope="module")
@@ -114,18 +37,6 @@ def server() -> Iterator[Server]:
     running = Server()
     yield running
     running.stop()
-
-
-def sse_events(body: bytes) -> list:
-    return [
-        (
-            line[len("data: ") :]
-            if line == "data: [DONE]"
-            else json.loads(line[len("data: ") :])
-        )
-        for line in body.decode().splitlines()
-        if line.startswith("data: ")
-    ]
 
 
 def test_ready_event_names_a_loopback_endpoint(server: Server) -> None:
@@ -200,19 +111,6 @@ def test_invalid_requests_are_rejected(server: Server, fields: dict, wav) -> Non
     assert status == 400
     detail = json.loads(body)["detail"]
     assert all(name in detail for name in fields)
-
-
-def long_wav(seconds: int) -> bytes:
-    """A clip repeated to about seconds long, so a full decode takes several seconds."""
-    pcm = pcm16("0344_en_long")
-    repeated = pcm * (seconds * 32000 // len(pcm) + 1)
-    out = io.BytesIO()
-    with wave.open(out, "wb") as writer:
-        writer.setnchannels(1)
-        writer.setsampwidth(2)
-        writer.setframerate(16000)
-        writer.writeframes(repeated[: seconds * 32000])
-    return out.getvalue()
 
 
 def test_a_disconnected_stream_stops_its_decode(server: Server) -> None:
