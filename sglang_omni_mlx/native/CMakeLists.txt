@@ -7,9 +7,8 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Note (Jiaxin Deng): exactly the MLX build the Python reference server runs
-# on, so both produce bit-identical outputs.
-set(SGLANG_OMNI_MLX_VERSION 0.32.3)
+# Pin the runtime and its regression tools to the same MLX build.
+set(SGLANG_OMNI_MLX_VERSION 0.32.4)
 if(NOT MLX_DIR OR NOT EXISTS "${MLX_DIR}/MLXConfig.cmake")
   message(FATAL_ERROR "Set MLX_DIR to <mlx ${SGLANG_OMNI_MLX_VERSION} wheel>/share/cmake/MLX")
 endif()

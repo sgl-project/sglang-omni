@@ -1,4 +1,4 @@
 cmake==4.4.4
-mlx==0.32.3
-mlx-metal==0.32.3
+mlx==0.32.4
+mlx-metal==0.32.4
 ninja==1.13.2
