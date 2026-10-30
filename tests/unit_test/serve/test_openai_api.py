@@ -1685,6 +1685,19 @@ def test_chat_request_keeps_every_set_sampling_value() -> None:
     }
 
 
+def test_chat_stage_sampling_matches_generate_fields() -> None:
+    req = ChatCompletionRequest(
+        model="qwen3-omni",
+        messages=[{"role": "user", "content": "hello"}],
+        stage_sampling={"thinker": {"stop": "END", "max_tokens": 5}},
+    )
+
+    thinker = build_chat_generate_request(req).stage_sampling["thinker"]
+
+    assert thinker.stop == ["END"]
+    assert thinker.max_new_tokens == 5
+
+
 def test_chat_request_ignores_undeclared_fields() -> None:
     req = ChatCompletionRequest(
         model="qwen3-omni",
