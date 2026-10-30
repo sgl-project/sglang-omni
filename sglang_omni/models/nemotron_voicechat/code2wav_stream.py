@@ -170,6 +170,8 @@ class NemotronCode2WavScheduler(StreamingSimpleScheduler):
             pass
         messages: list[OutgoingMessage] = []
         if state.codec.pushed_frames:
+            # Flush the remaining audio on EOS without waiting for the terminal payload.
+            # Once all samples are emitted, flush returns empty when finalization calls this hook again.
             tail = state.codec.flush()
             if tail.numel():
                 state.audio_parts.append(tail)
