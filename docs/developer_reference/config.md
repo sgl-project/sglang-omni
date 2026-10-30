@@ -1,67 +1,18 @@
 # Config
 
-SGLang-Omni uses declarative config as the contract between model-specific
-pipeline definitions and the model-agnostic runtime. `PipelineConfig` describes
-the whole pipeline: model path, stage list, endpoints, and relay backend.
-`StageConfig` describes one logical stage: how to construct it, where it runs,
-where its normal results go, and whether it participates in fan-in or streaming
-edges.
+SGLang-Omni uses declarative config as the contract between model-specific pipeline definitions and the model-agnostic runtime. `PipelineConfig` describes the whole pipeline: model path, stage list, endpoints, and process policies. `StageConfig` describes one logical stage: how to construct it, where it runs, where its normal results go, and whether it participates in fan-in or streaming edges.
 
-The config layer is intentionally static. It should make topology, placement,
-and stage construction visible before the runtime starts; request-time behavior
-belongs in stages, schedulers, model runners, and model-local payload logic.
+The config layer is intentionally static. It should make topology, placement, and stage construction visible before the runtime starts; request-time behavior belongs in stages, schedulers, model runners, and model-local payload logic.
+
+## Prerequisites
+
+Read [Architecture](./main.md) for runtime layers.
 
 ## Declarative Config
 
-Pipelines are declared with `PipelineConfig` and `StageConfig` in the model's
-`config.py`. Stage topology — which stages exist, how they route, where
-requests enter — lives here and only here; config files and CLI flags override
-settings on these stages but never add or remove them.
+Pipelines are declared with `PipelineConfig` and `StageConfig` in the model's `config.py`. Stage topology — which stages exist, how they route, where requests enter — lives here and only here; config files and CLI flags override settings on these stages but never add or remove them.
 
-Example:
-
-```python
-# Every non-TP stage must declare `process` explicitly — there is no implicit
-# default. Each stage below runs in its own OS process; multiple stages can
-# share an OS process by giving them the same `process` value (see
-# `Qwen3OmniSpeechColocatedPipelineConfig` for that pattern).
-stages = [
-    StageConfig(
-        name="preprocessing",
-        process="preprocessing",
-        factory_path="...create_preprocessing_executor",
-        next=["image_encoder", "audio_encoder", "mm_aggregate"],
-        project_payload={
-            "image_encoder": "...project_preprocessing_to_image_encoder",
-            "audio_encoder": "...project_preprocessing_to_audio_encoder",
-            "mm_aggregate": "...project_preprocessing_to_mm_aggregate",
-        },
-    ),
-    StageConfig(
-        name="mm_aggregate",
-        process="mm_aggregate",
-        factory_path="...create_aggregate_executor",
-        wait_for=["preprocessing", "image_encoder", "audio_encoder"],
-        merge_fn="...merge_for_thinker",
-        next="thinker",
-    ),
-    EngineStageConfig(               # drives an SGLang engine, so engine.* exists
-        name="thinker",
-        process="thinker",
-        factory_path="...create_sglang_thinker_executor_from_config",
-        factory=FactoryArgs(max_seq_len=8192),
-        gpu=0,
-        next=["decode", "talker_ar"],
-        stream_to=["talker_ar"],
-    ),
-    StageConfig(
-        name="decode",
-        process="decode",
-        factory_path="...create_decode_executor",
-        terminal=True,
-    ),
-]
-```
+See the [Qwen3-Omni pipeline definitions](../../sglang_omni/models/qwen3_omni/config.py) for the complete stage graph and the [checked-in colocated launch configuration](../../examples/configs/qwen3_omni_colocated_h200.yaml) for deployment settings.
 
 ## Consumer Groups
 
@@ -73,13 +24,7 @@ Stage settings are grouped by the module that consumes them:
 | `engine.*` | SGLang `ServerArgs` (only on `EngineStageConfig` stages) | `mem_fraction_static`, `max_running_requests`, `disable_cuda_graph` |
 | `factory.*` | the stage factory's signature | `dtype`, `max_seq_len`, `max_concurrency`, `enable_async_decode` |
 
-Each group declares its commonly tuned fields, which validate eagerly. **Any
-other key passes through untouched**: the group vocabularies belong to their
-consumers, so the entry side never format-checks unknown keys. A free-form
-`factory.*` key reaches the stage factory under its own name; a free-form
-`engine.*` key travels in the `server_args_overrides` mapping to SGLang,
-which rules on it. This is how factory-specific knobs are passed — what used
-to be a `factory_args` entry is now written under `factory.*`:
+Each group declares its commonly tuned fields, which validate eagerly. **Any other key passes through untouched**: the group vocabularies belong to their consumers, so the entry side never format-checks unknown keys. A free-form `factory.*` key reaches the stage factory under its own name; a free-form `engine.*` key travels in the `server_args_overrides` mapping to SGLang, which rules on it. This is how factory-specific knobs are passed — what used to be a `factory_args` entry is now written under `factory.*`:
 
 ```yaml
 stages:
@@ -89,52 +34,42 @@ stages:
                             # factory as num_steps=4, validated by its signature
 ```
 
-A value the factory does not accept is an error at stage construction, not a
-silent no-op.
+A value the factory does not accept is an error at stage construction, not a silent no-op.
 
 ## Setting Values: YAML and CLI
 
 There are exactly two user-facing spellings of one path language.
 
-**YAML** — the `stages:` mapping, keyed by stage name:
+**YAML** — the `stages:` mapping, keyed by stage name. The checked-in [MOSS-TTS configuration](../../examples/configs/moss_tts.yaml) supplies `config_cls` and `model_path`; this fragment illustrates per-stage override paths, including TP settings that additionally require a matching GPU list and compatible model topology:
 
 ```yaml
-config_cls: MossTTSPipelineConfig
-model_path: OpenMOSS-Team/MOSS-TTS
-
 stages:
   tts_engine:
     tp_size: 2
     engine:
       mem_fraction_static: 0.7
-  vocoder:
     factory:
       dtype: bfloat16
+  vocoder:
+    factory:
+      compute_dtype: bfloat16
 ```
 
-Entries merge by name: a field the file does not write keeps the model's
-default. Naming a stage the config class does not define is an error that
-lists the real stage names.
+Entries merge by name: a field the file does not write keeps the model's default. Naming a stage the config class does not define is an error that lists the real stage names.
 
-**CLI** — dotted flags with the `stages.` prefix implied; the flag starts
-from the stage name exactly as the mapping does:
+**CLI** — dotted flags with the `stages.` prefix implied; the flag starts from the stage name exactly as the mapping does. The equivalent CLI spellings below illustrate the same overrides; they are not a complete MOSS-TTS deployment command:
 
 ```bash
-sgl-omni serve --config omni.yaml \
+sgl-omni serve --config examples/configs/moss_tts.yaml \
     --tts_engine.tp_size 2 \
     --tts_engine.engine.mem_fraction_static 0.7 \
-    --vocoder.factory.dtype bfloat16 \
-    --vocoder.process vocoder
+    --tts_engine.factory.dtype bfloat16 \
+    --vocoder.factory.compute_dtype bfloat16
 ```
 
-CLI text is coerced by the declared field type; free-form group keys fall
-back to YAML scalar parsing (`true` → bool, `7` → int). Writing one path
-twice at the same precedence is refused, never silently last-one-wins.
-The command line outranks the config file; an explicit dotted path outranks
-the broadcast flag below.
+CLI text is coerced by the declared field type; free-form group keys fall back to YAML scalar parsing (`true` → bool, `7` → int). Writing one path twice at the same precedence is refused, never silently last-one-wins. The command line outranks the config file; an explicit dotted path outranks the broadcast flag below.
 
-**Shared values** — the `shared:` selector list writes one value into several
-stages at once:
+**Shared values** — the `shared:` selector list writes one value into several stages at once:
 
 ```yaml
 shared:
@@ -144,18 +79,11 @@ shared:
       num_steps: 4
 ```
 
-The entry expands to one patch per matched stage before resolution. An
-explicit per-stage entry (under `stages:` or as a dotted flag) overrides the
-expansion; two `shared` entries writing one leaf conflict.
+The entry expands to one patch per matched stage before resolution. An explicit per-stage entry (under `stages:` or as a dotted flag) overrides the expansion; two `shared` entries writing one leaf conflict.
 
-**Broadcast flag** — `--mem-fraction-static 0.7` fans one value out to every
-SGLang engine stage's `engine.mem_fraction_static`. It is the one convenience
-flag left; a dotted per-stage spelling overrides it without being a conflict.
+**Broadcast flag** — `--mem-fraction-static 0.7` fans one value out to every SGLang engine stage's `engine.mem_fraction_static`. It is the one convenience flag left; a dotted per-stage spelling overrides it without being a conflict.
 
-**Inspection** — `sgl-omni config resolve` prints the configuration a launch
-with the same arguments would use (`--show config|diff|provenance`), and
-`sgl-omni config explain PATH` names the source that set a value and what it
-overrode. Both run the same merge as `serve`.
+**Inspection** — `sgl-omni config resolve` prints the configuration a launch with the same arguments would use (`--show config|diff|provenance`), and `sgl-omni config explain PATH` names the source that set a value and what it overrode. Both run the same merge as `serve`.
 
 ## `StageConfig` Reference
 
@@ -182,12 +110,7 @@ overrode. Both run the same merge as `serve`.
 | `comm` | `CommConfig` or `None` | `None` | Per-stage communication pool and Mooncake options. |
 | `http_routes` | `list[str]` | `[]` | Path prefixes of HTTP routes this stage serves from its own process. The Omni server relays every request under them to the stage, so the routes start with the stage and the HTTP process never imports the runtime behind them. The stage's scheduler provides the ASGI app through `http_app()`, and the stage must run as one instance. |
 
-Routing rule: set exactly one of `next` or `terminal=True`. `route_fn` is an
-optional request-aware override for stages that already declare `next`.
-Fan-in follows the same static-superset pattern: keep `wait_for` as the full
-set of possible upstream stages, and use `wait_for_fn` only to select the
-active per-request subset. When using `stream_done_to_fn`, keep `stream_to`
-as the static superset because runtime prep derives stream receivers from it.
+Routing rule: set exactly one of `next` or `terminal=True`. `route_fn` is an optional request-aware override for stages that already declare `next`. Fan-in follows the same static-superset pattern: keep `wait_for` as the full set of possible upstream stages, and use `wait_for_fn` only to select the active per-request subset. When using `stream_done_to_fn`, keep `stream_to` as the static superset because runtime prep derives stream receivers from it.
 
 ## `PipelineConfig` Reference
 
@@ -197,7 +120,7 @@ as the static superset because runtime prep derives stream receivers from it.
 | `stages` | `list[StageConfig]` | required | Stage definitions. Config files override fields on them by name and cannot add or remove stages. |
 | `name` | `str` or `None` | `model_path` | Pipeline name. Used for reporting and runtime identification. |
 | `entry_stage` | `str` or `None` | first stage | Declared by the config class when the first stage is not the entry. Not settable from a config file or the CLI. |
-| `fused_stages` | `list[list[str]]` | `[]` | Adjacent linear stage groups to colocate in one runtime process. |
+| `processes` | `dict[str, ProcessConfig]` | `{}` | Per-process policy, including `num_replicas` and `replica_devices`. Stage membership comes from `StageConfig.process`. |
 | `env_defaults` | `dict[str, str]` | `{}` | Environment defaults applied before stage factory imports. Existing process values take precedence. |
 | `mps` | `off`, `on`, or `auto` | `off` | Native CUDA MPS policy for eligible same-GPU worker processes. |
 | `endpoints` | `EndpointsConfig` | IPC defaults | Endpoint allocation settings. |
@@ -208,37 +131,16 @@ as the static superset because runtime prep derives stream receivers from it.
 
 Class-level hooks a model config may declare:
 
-- `stage_config_types: ClassVar[dict[str, type[StageConfig]]]` — the
-  `StageConfig` subclass a named stage compiles paths against; mapping a
-  stage to `EngineStageConfig` is what makes `engine.*` exist on it.
-- `stage_factory_kwargs(stage_name)` — constructor kwargs the pipeline author
-  passes to the factory in code (wiring, not configuration). A user-set
-  `factory.*` value with the same name overrides the hook's value.
-- `tensor_parallel_server_args_overrides(stage_name, tp_size)` /
-  `topology_gated_custom_all_reduce_stages()` — engine overrides derived from
-  the resolved TP topology at launch.
-- `entry_stage_admission_limit()` returns how many requests one entry stage
-  replica admits at once when that stage owns admission, such as a UMM
-  controller. The coordinator caps in-flight requests at this value times the
-  entry process replicas, or at the running+queued capacity of an engine stage
-  when that is lower, since the entry stage may send any request to any engine
-  stage. `None` (the default) derives the cap from the generation engine.
+- `stage_config_types: ClassVar[dict[str, type[StageConfig]]]` — the `StageConfig` subclass a named stage compiles paths against; mapping a stage to `EngineStageConfig` is what makes `engine.*` exist on it.
+- `stage_factory_kwargs(stage_name)` — constructor kwargs the pipeline author passes to the factory in code (wiring, not configuration). A user-set `factory.*` value with the same name overrides the hook's value.
+- `tensor_parallel_server_args_overrides(stage_name, tp_size)` / `topology_gated_custom_all_reduce_stages()` — engine overrides derived from the resolved TP topology at launch.
+- `entry_stage_admission_limit()` returns how many requests one entry stage replica admits at once when that stage owns admission, such as a UMM controller. The coordinator caps in-flight requests at this value times the entry process replicas, or at the running+queued capacity of an engine stage when that is lower, since the entry stage may send any request to any engine stage. `None` (the default) derives the cap from the generation engine.
 
-Derived values are computed from stages, not manually maintained:
-`resolved_entry_stage`, `terminal_stages`, `gpu_placement`.
-
-### Stage Fusion
-
-`fused_stages` is a framework-level colocation hint. It keeps every listed
-logical stage as a normal `Stage`; it does not create a synthetic scheduler.
-At runtime prep, each fused group adds a process-colocation constraint, and
-ordinary Stage routing can then use process-local dispatch for eligible hops.
-A group must be adjacent, linear, non-TP, and fit on at most one GPU.
+Derived values are computed from stages, not manually maintained: `resolved_entry_stage`, `terminal_stages`, `gpu_placement`.
 
 ## How Values Reach a Factory
 
-Two channels feed a stage factory, resolved in the parent process and applied
-against the factory signature in the worker:
+Two channels feed a stage factory, resolved in the parent process and applied against the factory signature in the worker:
 
 ```text
 PipelineConfig.stage_factory_kwargs(name)      # author channel: code wiring
@@ -246,47 +148,21 @@ stage.factory.*                                # config channel: by field name
 stage.engine.*  ->  server_args_overrides      # config channel: one dict to SGLang
 ```
 
-Per key, the config channel wins over the author channel;
-`server_args_overrides` merges per key the same way. A configured key the
-factory does not accept raises at construction. Standard kwargs
-(`model_path`, `gpu_id`, `total_gpu_memory_fraction`) are injected only when
-the factory signature declares them; `gpu_id` is owned by placement and is
-rejected from the author channel.
+Per key, the config channel wins over the author channel; `server_args_overrides` merges per key the same way. A configured key the factory does not accept raises at construction. Standard kwargs (`model_path`, `gpu_id`, `total_gpu_memory_fraction`) are injected only when the factory signature declares them; `gpu_id` is owned by placement and is rejected from the author channel.
 
 ### Device and GPU placement contract
 
-A stage's card is placement's decision, made in the parent process from
-`stage.gpu` (or `processes.<name>.replica_devices` when configured, including a single replica)
-and handed to the factory as `gpu_id`. The factory's `device` argument is
-only ever a device type: `cpu` to keep a stage on the host, or a platform
-type such as `cuda`/`npu` that must match the host. It never carries an
-index. `cuda:1` in a config is refused, and so are `factory.gpu_id` and the
-two memory-fraction kwargs listed in `PLACEMENT_OWNED_FACTORY_KWARGS`
-(`sglang_omni/config/schema.py`), because those are injected by placement.
+A stage's card is placement's decision, made in the parent process from `stage.gpu` (or `processes.<name>.replica_devices` when configured, including a single replica) and handed to the factory as `gpu_id`. The factory's `device` argument is only ever a device type: `cpu` to keep a stage on the host, or a platform type such as `cuda`/`npu` that must match the host. It never carries an index. `cuda:1` in a config is refused, and so are `factory.gpu_id` and the two memory-fraction kwargs listed in `PLACEMENT_OWNED_FACTORY_KWARGS` (`sglang_omni/config/schema.py`), because those are injected by placement.
 
 Replica devices take precedence over stage GPU IDs regardless of YAML/CLI precedence. Expansion logs the overridden stage GPU and effective replica assignments; CPU stages are unchanged. No special GPU sentinel is needed.
 
 Inside a factory the two values meet in one helper:
 
-1. Declare both parameters, `device: str | None = None` and
-   `gpu_id: int | None = None`. A GPU-placed stage whose factory has no
-   `gpu_id` parameter is refused by name before any weight is loaded.
-2. Call `sglang_omni.utils.device.resolve_concrete_device(device, gpu_id)`.
-   It checks the requested type against the host platform, takes the index
-   from `gpu_id`, and only when neither side supplied one asks the host
-   which card the process already sits on. Do not call `resolve_device_spec`
-   from a factory and do not combine the two values by hand.
-3. A factory that builds SGLang `ServerArgs` itself writes the resolved
-   type into `server_args_overrides["device"]` through
-   `sglang_omni.scheduling.sglang_backend.pin_resolved_device_type`, which
-   also rejects an operator override that names a different device. The
-   shared `SGLangGenerationEngineBuilder` already does this.
+1. Declare both parameters, `device: str | None = None` and `gpu_id: int | None = None`. A GPU-placed stage whose factory has no `gpu_id` parameter is refused by name before any weight is loaded.
+2. Call `sglang_omni.utils.device.resolve_concrete_device(device, gpu_id)`. It checks the requested type against the host platform, takes the index from `gpu_id`, and only when neither side supplied one asks the host which card the process already sits on. Do not call `resolve_device_spec` from a factory and do not combine the two values by hand.
+3. A factory that builds SGLang `ServerArgs` itself writes the resolved type into `server_args_overrides["device"]` through `sglang_omni.scheduling.sglang_backend.pin_resolved_device_type`, which also rejects an operator override that names a different device. The shared `SGLangGenerationEngineBuilder` already does this.
 
-`tests/unit_test/test_stage_device_contract.py` sweeps every model, topology
-and stage in the repository against these rules; a new model is covered
-without registering anything. Because every GPU factory follows them, any
-GPU process can be given `num_replicas`/`replica_devices`
-(`basic_usage/process_topology.md`).
+`tests/unit_test/test_stage_device_contract.py` sweeps every model, topology and stage in the repository against these rules; a new model is covered without registering anything. Because every GPU factory follows them, any GPU process can be given `num_replicas`/`replica_devices` (`basic_usage/process_topology.md`).
 
 ## Runtime Prep and Runner
 
@@ -297,16 +173,10 @@ Runtime prep builds the resolved state used by the runner:
 - allocate ZMQ endpoints
 - carry dotted factory, merge, route, and projection paths into worker specs
 - resolve both kwargs channels without importing stage factories
-- build relay config from stage placement and relay backend
+- derive communication settings from stage placement and locality
 - wire stream targets and same-GPU stream fast paths
 
-Serving uses `MultiProcessPipelineRunner` for both single-process and
-multi-process topologies. Runtime prep first resolves GPU placement, then
-process topology: every non-TP stage must declare `process` explicitly, and
-explicit `stage.process` groups non-TP stages declaratively. A process group
-may contain CPU stages and stages on at most one GPU. Multiple process groups
-may share the same GPU only when per-stage `gpu_memory_fraction` budgets are
-explicit and fit the configured placement limit.
+Serving uses `MultiProcessPipelineRunner` for both single-process and multi-process topologies. Runtime prep first resolves GPU placement, then process topology: every non-TP stage must declare `process` explicitly, and explicit `stage.process` groups non-TP stages declaratively. A process group may contain CPU stages and stages on at most one GPU. Multiple process groups may share the same GPU only when per-stage `gpu_memory_fraction` budgets are explicit and fit the configured placement limit.
 
 ```text
 pipeline/
@@ -315,33 +185,31 @@ pipeline/
 `-- mp_runner.py        # Cross-stage orchestration and coordinator ownership
 ```
 
-The child process does not recompile the pipeline. The main process builds
-fully resolved, picklable stage/process specs; the child imports stage
-factories, builds schedulers, constructs `Stage` objects, signals ready, and
-runs one or more non-TP stages in the same event loop.
+The child process does not recompile the pipeline. The main process builds fully resolved, picklable stage/process specs; the child imports stage factories, builds schedulers, constructs `Stage` objects, signals ready, and runs one or more non-TP stages in the same event loop.
 
 ## Tensor Parallelism
 
-Tensor parallelism inside a stage is orthogonal to pipeline parallelism between
-stages.
+Tensor parallelism inside a stage is orthogonal to pipeline parallelism between stages.
 
 ```bash
 sgl-omni serve --model-path ... --thinker.tp_size 4 --thinker.gpu "[0, 1, 2, 3]"
 ```
 
-For `tp_size > 1`, the runner derives one process per TP rank. Each process runs
-the stage scheduler and model worker with a different `tp_rank` and GPU. NCCL
-collectives inside model forward keep TP ranks in lockstep. `StageConfig.process`
-is optional for TP stages; if set, it acts as the prefix for the derived
-per-rank process names (`{process}_tp{rank}`). TP ranks always own their OS
-process exclusively.
+For `tp_size > 1`, the runner derives one process per TP rank. Each process runs the stage scheduler and model worker with a different `tp_rank` and GPU. NCCL collectives inside model forward keep TP ranks in lockstep. `StageConfig.process` is optional for TP stages; if set, it acts as the prefix for the derived per-rank process names (`{process}_tp{rank}`). TP ranks always own their OS process exclusively.
 
 Only rank 0 owns external stage IO:
 
-- rank 0 receives ZMQ messages from the coordinator or previous stage
-- rank 0 fans work and aborts out to follower ranks
-- all ranks make the same scheduling decisions
-- only rank 0 sends downstream results or terminal completions
+- rank 0 receives ZMQ messages from the coordinator or previous stage.
+- rank 0 fans work and aborts out to follower ranks.
+- all ranks make the same scheduling decisions.
+- only rank 0 sends downstream results or terminal completions.
 
-Each TP stage gets its own NCCL port allocation so multiple TP groups can exist
-inside one pipeline.
+Each TP stage gets its own NCCL port allocation so multiple TP groups can exist inside one pipeline.
+
+## Further Reading
+
+See [Process Topology](../basic_usage/process_topology.md) for process replicas and GPU placement.
+
+## Resources
+
+[Config schema](https://github.com/sgl-project/sglang-omni/blob/main/sglang_omni/config/schema.py).
