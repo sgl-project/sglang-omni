@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "music3/music3_service.h"
 
+#include <algorithm>
 #include <iostream>
 
 #include "common/http.h"
@@ -8,7 +9,11 @@
 namespace music3 {
 
 SpeechService::SpeechService(const std::filesystem::path &directory,
-                             bool is_serial_offload_enabled) {
+                             double request_timeout_seconds,
+                             bool is_serial_offload_enabled)
+    : request_timeout_(
+          std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+              std::chrono::duration<double>(request_timeout_seconds))) {
   std::promise<void> loaded;
   auto ready = loaded.get_future();
   thread_ = std::thread(&SpeechService::Run, this, directory,
@@ -121,18 +126,48 @@ int SpeechService::Handle(mg_connection *connection) {
   }
   job->body = std::move(*body);
   auto future = job->completion.get_future();
+  // Note (Jiaxin Deng): found before the job is admitted, so a client that
+  // leaves as soon as /health shows it running is still watched.
+  const int client_socket = omni_server::ClientSocket(connection);
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (job_ != nullptr || stopping_) {
-      omni_server::WriteResponse(
-          connection, 429, "Too Many Requests", "application/json",
-          omni_server::Json({{"detail", "Music3 is busy"}}).dump());
-      return 429;
+      return omni_server::WriteJson(connection, 503,
+                                    {{"detail", "Music3 is busy"}});
     } else {
       job_ = job;
     }
   }
   wake_.notify_one();
+  const auto deadline = std::chrono::steady_clock::now() + request_timeout_;
+  bool timed_out = false;
+  bool client_left = false;
+  // Note (Jiaxin Deng): the client is watched before the worker takes the job
+  // too, and a job cancelled then never starts. Either way the worker frees
+  // the slot once it stops at its next frame, acoustic window or Euler step.
+  while (future.wait_until(
+             std::min(deadline, std::chrono::steady_clock::now() +
+                                    omni_server::kClientPollInterval)) !=
+         std::future_status::ready) {
+    if (std::chrono::steady_clock::now() >= deadline) {
+      timed_out = true;
+      break;
+    } else if (omni_server::ClientLeft(client_socket)) {
+      client_left = true;
+      break;
+    } else {
+    }
+  }
+  if (client_left) {
+    job->cancelled.store(true);
+    return omni_server::kClientLeftStatus;
+  } else if (timed_out) {
+    job->cancelled.store(true);
+    std::cerr << "Music3 generation timed out\n";
+    return omni_server::WriteJson(connection, 504,
+                                  {{"detail", "Music3 generation timed out"}});
+  } else {
+  }
   try {
     const Result result = future.get();
     omni_server::WriteResponse(connection, 200, "OK",
