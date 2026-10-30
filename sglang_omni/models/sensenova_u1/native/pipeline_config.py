@@ -10,6 +10,7 @@ from sglang.multimodal_gen.configs.pipeline_configs.model_deployment_config impo
     ModelDeploymentConfig,
 )
 from sglang.multimodal_gen.runtime.pipelines_core.schedule_batch import Req
+from sglang.multimodal_gen.runtime.platforms import current_platform
 from sglang.multimodal_gen.runtime.server_args import ServerArgs
 
 from sglang_omni.models.sensenova_u1.native.options import (
@@ -127,6 +128,10 @@ class SenseNovaU1PipelineConfig(PipelineConfig):
         return True
 
     def validate_server_args(self, server_args: ServerArgs) -> None:
+        if current_platform.is_npu():
+            raise ValueError("SenseNovaU1Pipeline does not support NPU devices.")
+        else:
+            pass
         if server_args.num_gpus != 1:
             raise ValueError(
                 "SenseNovaU1Pipeline currently supports num_gpus=1. "

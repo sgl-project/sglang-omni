@@ -17,6 +17,7 @@ import torch
 from sglang.multimodal_gen.registry import get_model_info
 from sglang.multimodal_gen.runtime.pipelines_core.schedule_batch import Req
 from sglang.multimodal_gen.runtime.pipelines_core.stages import base as stage_base
+from sglang.multimodal_gen.runtime.platforms import current_platform
 
 from sglang_omni.models.sensenova_u1.native.generation import SenseNovaU1GenerationStage
 from sglang_omni.models.sensenova_u1.native.sampling import SenseNovaU1SamplingParams
@@ -115,6 +116,15 @@ def test_native_generation_preserves_request_and_output(
     assert generation_arguments["t_eps"] == 0.05
     torch.testing.assert_close(output.output[0], torch.tensor([[[0.0, 0.5, 1.0]]]))
     assert output.usage == {"think_text": "reasoning"}
+
+
+def test_npu_startup_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = get_model_info(
+        "sensenova/SenseNova-U1.5-8B-MoT", backend="sglang"
+    ).pipeline_config_cls()
+    monkeypatch.setattr(current_platform, "is_npu", lambda: True)
+    with pytest.raises(ValueError, match="does not support NPU devices"):
+        config.validate_server_args(SimpleNamespace(num_gpus=1))
 
 
 def test_parallel_request_fails_before_loading_weights() -> None:
