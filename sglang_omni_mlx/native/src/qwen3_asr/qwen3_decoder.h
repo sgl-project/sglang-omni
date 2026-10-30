@@ -4,11 +4,10 @@
 // without the query/key norms and with traditional rotary embeddings.
 #pragma once
 
-#include <optional>
 #include <string>
-#include <utility>
 #include <vector>
 
+#include "common/kv_cache.h"
 #include "common/layers.h"
 #include "mlx/mlx.h"
 #include "nlohmann/json.hpp"
@@ -29,19 +28,6 @@ struct Qwen3DecoderConfig {
   static Qwen3DecoderConfig FromJson(const nlohmann::json &text_config);
 };
 
-// Per-layer key/value cache that grows in fixed steps.
-class KVCache {
-public:
-  std::pair<mlx::core::array, mlx::core::array>
-  UpdateAndFetch(const mlx::core::array &keys, const mlx::core::array &values);
-  int offset() const { return offset_; }
-
-private:
-  std::optional<mlx::core::array> keys_;
-  std::optional<mlx::core::array> values_;
-  int offset_ = 0;
-};
-
 class Qwen3Decoder {
 public:
   // Weights under prefix (layers, norm, embed_tokens); the output projection
@@ -54,14 +40,14 @@ public:
   // Runs every layer over the embeddings, appending to the caches; returns
   // the last layer's hidden states.
   mlx::core::array Forward(const mlx::core::array &embeddings,
-                           std::vector<KVCache> &caches) const;
+                           std::vector<omni_common::KVCache> &caches) const;
   // Logits of the last position of the hidden states, [vocab].
   mlx::core::array LastLogits(const mlx::core::array &hidden_states) const;
-  std::vector<KVCache> NewCaches() const;
+  std::vector<omni_common::KVCache> NewCaches() const;
 
 private:
   mlx::core::array Layer(const mlx::core::array &x, int layer,
-                         KVCache &cache) const;
+                         omni_common::KVCache &cache) const;
 
   const omni_common::Checkpoint &checkpoint_;
   std::string prefix_;

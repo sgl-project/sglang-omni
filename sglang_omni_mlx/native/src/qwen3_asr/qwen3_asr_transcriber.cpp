@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "qwen3_asr/qwen3_asr_transcriber.h"
+#include "common/kv_cache.h"
 #include "common/text.h"
 
 #include <algorithm>
@@ -216,7 +217,7 @@ Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
     return token_id == im_end_id_ ||
            (options.stop_at_end_of_text && token_id == end_of_text_id_);
   };
-  std::vector<KVCache> caches = model_.NewCaches();
+  std::vector<omni_common::KVCache> caches = model_.NewCaches();
   mx::array next_token = mx::argmax(model_.Decode(embeddings, caches));
   mx::async_eval({next_token});
   std::vector<int> output_ids;

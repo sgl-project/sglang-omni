@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "common/kv_cache.h"
 #include "common/layers.h"
 #include "mlx/mlx.h"
 #include "qwen3_asr/qwen3_audio.h"
@@ -35,8 +36,8 @@ public:
   mlx::core::array EmbedTokens(const mlx::core::array &ids) const;
   // Logits for the last position only, [vocab].
   mlx::core::array Decode(const mlx::core::array &embeddings,
-                          std::vector<KVCache> &caches) const;
-  std::vector<KVCache> NewCaches() const;
+                          std::vector<omni_common::KVCache> &caches) const;
+  std::vector<omni_common::KVCache> NewCaches() const;
 
 private:
   Qwen3ASR(const nlohmann::json &config,

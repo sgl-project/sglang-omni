@@ -50,6 +50,7 @@ FetchContent_MakeAvailable(nlohmann_json pcre2 civetweb)
 add_library(common STATIC
   src/common/audio.cpp
   src/common/form.cpp
+  src/common/kv_cache.cpp
   src/common/layers.cpp
   src/common/npz.cpp
   src/common/text.cpp

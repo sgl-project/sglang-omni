@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "common/kv_cache.h"
 #include "common/layers.h"
 #include "mlx/mlx.h"
 #include "qwen3_asr/qwen3_asr_transcriber.h"
@@ -48,7 +49,7 @@ private:
 
   // The final-normed hidden state [1, dim] after the embeddings.
   mlx::core::array LastHidden(const mlx::core::array &embeddings,
-                              std::vector<qwen3_asr::KVCache> &caches) const;
+                              std::vector<omni_common::KVCache> &caches) const;
   // A frame's codes [1 + acoustic codebooks]: the semantic code, then the
   // acoustic codes the flow reaches from noise.
   mlx::core::array PredictFrame(const mlx::core::array &hidden) const;

@@ -211,11 +211,11 @@ mx::array Qwen3ASR::EmbedTokens(const mx::array &ids) const {
 }
 
 mx::array Qwen3ASR::Decode(const mx::array &embeddings,
-                           std::vector<KVCache> &caches) const {
+                           std::vector<omni_common::KVCache> &caches) const {
   return decoder_.LastLogits(decoder_.Forward(embeddings, caches));
 }
 
-std::vector<KVCache> Qwen3ASR::NewCaches() const {
+std::vector<omni_common::KVCache> Qwen3ASR::NewCaches() const {
   return decoder_.NewCaches();
 }
 

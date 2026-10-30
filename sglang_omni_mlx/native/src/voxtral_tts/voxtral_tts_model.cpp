@@ -145,7 +145,7 @@ qwen3_asr::FinishReason VoxtralTtsModel::Generate(
                                 0),
                 embeddings);
 
-  std::vector<qwen3_asr::KVCache> caches = decoder_.NewCaches();
+  std::vector<omni_common::KVCache> caches = decoder_.NewCaches();
   mx::array hidden = LastHidden(prompt_embeddings, caches);
   for (int frame = 0; frame < max_frames; ++frame) {
     if (cancel.load()) {
@@ -172,7 +172,7 @@ qwen3_asr::FinishReason VoxtralTtsModel::Generate(
 
 mx::array
 VoxtralTtsModel::LastHidden(const mx::array &embeddings,
-                            std::vector<qwen3_asr::KVCache> &caches) const {
+                            std::vector<omni_common::KVCache> &caches) const {
   const mx::array hidden = decoder_.Forward(embeddings, caches);
   const int length = hidden.shape(1);
   const int dimension = hidden.shape(2);

@@ -2,16 +2,11 @@
 #include "qwen3_asr/qwen3_decoder.h"
 
 #include <cmath>
+#include <utility>
 
 namespace qwen3_asr {
 
 namespace mx = mlx::core;
-
-namespace {
-
-constexpr int kKvCacheStepTokens = 256;
-
-} // namespace
 
 Qwen3DecoderConfig
 Qwen3DecoderConfig::FromJson(const nlohmann::json &text_config) {
@@ -23,41 +18,6 @@ Qwen3DecoderConfig::FromJson(const nlohmann::json &text_config) {
           text_config.at("rope_theta").get<float>()};
 }
 
-std::pair<mx::array, mx::array>
-KVCache::UpdateAndFetch(const mx::array &keys, const mx::array &values) {
-  const int new_token_count = keys.shape(2);
-  if (!keys_.has_value() || offset_ + new_token_count > keys_->shape(2)) {
-    const int step_count =
-        (new_token_count + kKvCacheStepTokens - 1) / kKvCacheStepTokens;
-    const mx::Shape grown = {keys.shape(0), keys.shape(1),
-                             step_count * kKvCacheStepTokens, keys.shape(3)};
-    const mx::array extra_keys = mx::zeros(grown, keys.dtype());
-    const mx::array extra_values = mx::zeros(grown, values.dtype());
-    if (!keys_.has_value()) {
-      keys_ = extra_keys;
-      values_ = extra_values;
-    } else {
-      const mx::Shape kept = {keys_->shape(0), keys_->shape(1), offset_,
-                              keys_->shape(3)};
-      keys_ = mx::concatenate(
-          {mx::slice(*keys_, {0, 0, 0, 0}, kept), extra_keys}, 2);
-      values_ = mx::concatenate(
-          {mx::slice(*values_, {0, 0, 0, 0}, kept), extra_values}, 2);
-    }
-  } else {
-  }
-  const mx::Shape start = {0, 0, offset_, 0};
-  const mx::Shape stop = {keys.shape(0), keys.shape(1),
-                          offset_ + new_token_count, keys.shape(3)};
-  keys_ = mx::slice_update(*keys_, keys, start, stop);
-  values_ = mx::slice_update(*values_, values, start, stop);
-  offset_ += new_token_count;
-  const mx::Shape fetched = {keys_->shape(0), keys_->shape(1), offset_,
-                             keys_->shape(3)};
-  return {mx::slice(*keys_, {0, 0, 0, 0}, fetched),
-          mx::slice(*values_, {0, 0, 0, 0}, fetched)};
-}
-
 Qwen3Decoder::Qwen3Decoder(const omni_common::Checkpoint &checkpoint,
                            std::string prefix, Qwen3DecoderConfig config)
     : checkpoint_(checkpoint), prefix_(std::move(prefix)), config_(config) {}
@@ -67,7 +27,7 @@ mx::array Qwen3Decoder::EmbedTokens(const mx::array &ids) const {
 }
 
 mx::array Qwen3Decoder::Layer(const mx::array &x, int layer,
-                              KVCache &cache) const {
+                              omni_common::KVCache &cache) const {
   const std::string prefix = prefix_ + ".layers." + std::to_string(layer);
   const float eps = config_.rms_norm_eps;
   const int batch = x.shape(0);
@@ -118,8 +78,9 @@ mx::array Qwen3Decoder::Layer(const mx::array &x, int layer,
           prefix + ".mlp.down_proj"));
 }
 
-mx::array Qwen3Decoder::Forward(const mx::array &embeddings,
-                                std::vector<KVCache> &caches) const {
+mx::array
+Qwen3Decoder::Forward(const mx::array &embeddings,
+                      std::vector<omni_common::KVCache> &caches) const {
   mx::array hidden = embeddings;
   for (int layer = 0; layer < config_.num_hidden_layers; ++layer) {
     hidden = Layer(hidden, layer, caches[layer]);
@@ -138,8 +99,8 @@ mx::array Qwen3Decoder::LastLogits(const mx::array &hidden_states) const {
   return mx::reshape(logits, {logits.shape(-1)});
 }
 
-std::vector<KVCache> Qwen3Decoder::NewCaches() const {
-  return std::vector<KVCache>(config_.num_hidden_layers);
+std::vector<omni_common::KVCache> Qwen3Decoder::NewCaches() const {
+  return std::vector<omni_common::KVCache>(config_.num_hidden_layers);
 }
 
 } // namespace qwen3_asr
