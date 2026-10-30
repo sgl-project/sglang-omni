@@ -98,9 +98,9 @@ def test_cfg_graph_waits_for_padding_to_enter_cached_prefix(
 
 
 @pytest.mark.parametrize("size", [1, 2, 3])
-@pytest.mark.parametrize("threshold,rescale", [(1.0, 0.0), (0.2, 0.7)])
+@pytest.mark.parametrize("rescale", [0.0, 0.7])
 def test_guidance_updates_all_cfg_branches(
-    size: int, threshold: float, rescale: float
+    size: int, rescale: float
 ) -> None:
     algorithm = LowConfidenceCFG(make_config())
     algorithm.threshold = 0.94 if size == 3 else 0.8
@@ -116,6 +116,8 @@ def test_guidance_updates_all_cfg_branches(
     input_ids = torch.tensor([1, 9, 9, 9] * size)
     if size > 1:
         input_ids[4] = 9
+    else:
+        pass
     initial_ids = input_ids.view(size, 4).clone()
     observed_inputs: list[torch.Tensor] = []
 
@@ -126,6 +128,8 @@ def test_guidance_updates_all_cfg_branches(
         if batch.input_ids[3] != 9:
             conditional_logits[1, 3] = 0.0
             conditional_logits[1, 4] = 1.5
+        else:
+            pass
         branch_scales = torch.tensor([1.0, 0.25, -0.25])[:size]
         return NS(
             logits_output=NS(
@@ -273,7 +277,9 @@ def test_attention_masks_local_and_cached_padding() -> None:
     backend.dllm_config = NS(block_size=4)
     backend.prefill_cuda_graph_metadata = {2: backend.prefill_wrappers_paged}
     backend.use_paged = False
+    begin_forward.reset_mock()
     backend.init_forward_metadata_out_graph(batch)
+    begin_forward.assert_called_once()
     assert begin_forward.call_args.args[3].tolist() == [8, 2]
     assert begin_forward.call_args.kwargs["plan"] is batch.kv_loc_plan
 
