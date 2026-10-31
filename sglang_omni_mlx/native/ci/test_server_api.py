@@ -183,6 +183,77 @@ def test_plain_request_returns_json_text(server: Server) -> None:
 
 
 @pytest.mark.parametrize(
+    ("layout", "language", "max_new_tokens"),
+    [("voxt_swift", "Chinese", 1), ("reference", "English", 48)],
+)
+def test_profile_uses_real_audio_and_transcription_options(
+    layout: str, language: str, max_new_tokens: int
+) -> None:
+    """Profiling used text-only decoding and ignored the requested stop rules."""
+    command = [
+        str(Path(RUNTIME_BIN) / "qwen3_asr_transcribe"),
+        "--model-path", str(model_directory()),
+        "--layout", layout,
+        "--language", language,
+        "--max-new-tokens", str(max_new_tokens),
+        "--stop-at-end-of-text",
+        "--stop-on-token-loop",
+        str(Path(DATA_ROOT) / "corpus/v1/clips/0006_en_short.wav"),
+        str(Path(DATA_ROOT) / "corpus/v1/clips/0000_en_short.wav"),
+    ]  # fmt: skip
+    ordinary = subprocess.run(command, check=True, capture_output=True, text=True)
+    profiled = subprocess.run(
+        command + ["--profile"], check=True, capture_output=True, text=True
+    )
+    ordinary_rows = [json.loads(line) for line in ordinary.stdout.splitlines()]
+    profiled_rows = [json.loads(line) for line in profiled.stdout.splitlines()]
+    assert len(profiled_rows) == len(ordinary_rows) == 2
+    for expected, actual in zip(ordinary_rows, profiled_rows, strict=True):
+        for field in ("text", "language", "generated_token_count", "finish_reason"):
+            assert actual[field] == expected[field]
+        timings = actual["profile"]
+        stage_seconds = sum(
+            timings[field]
+            for field in (
+                "mel_seconds",
+                "encoder_seconds",
+                "prefill_seconds",
+                "decode_seconds",
+            )
+        )
+        assert 0 < stage_seconds <= actual["seconds"]
+        assert timings["peak_memory_bytes"] > 0
+        assert timings["prompt_tokens"] > 0
+        assert actual["generated_token_count"] <= max_new_tokens
+
+
+def test_tuned_kernels_run_a_request() -> None:
+    """The tuned kernels must load from the runtime's Metal library and decode."""
+    completed = subprocess.run(
+        [
+            str(Path(RUNTIME_BIN) / "qwen3_asr_transcribe"),
+            "--model-path",
+            str(model_directory()),
+            "--kernels",
+            "tuned",
+            "--layout",
+            "voxt_swift",
+            "--max-new-tokens",
+            "64",
+            "--stop-at-end-of-text",
+            "--stop-on-token-loop",
+            str(Path(DATA_ROOT) / "corpus/v1/clips/0006_en_short.wav"),
+        ],  # fmt: skip
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    result = json.loads(completed.stdout)
+    assert result["finish_reason"] == "stop"
+    assert result["generated_token_count"] > 0
+
+
+@pytest.mark.parametrize(
     ("fields", "wav"),
     [
         ({}, None),

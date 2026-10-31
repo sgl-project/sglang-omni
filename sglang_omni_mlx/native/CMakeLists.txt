@@ -7,9 +7,8 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Note (Jiaxin Deng): exactly the MLX build the Python reference server runs
-# on, so both produce bit-identical outputs.
-set(SGLANG_OMNI_MLX_VERSION 0.32.3)
+# Pin the runtime and its regression tools to the same MLX build.
+set(SGLANG_OMNI_MLX_VERSION 0.32.4)
 if(NOT MLX_DIR OR NOT EXISTS "${MLX_DIR}/MLXConfig.cmake")
   message(FATAL_ERROR "Set MLX_DIR to <mlx ${SGLANG_OMNI_MLX_VERSION} wheel>/share/cmake/MLX")
 endif()
@@ -52,6 +51,7 @@ add_library(common STATIC
   src/common/form.cpp
   src/common/layers.cpp
   src/common/npz.cpp
+  src/common/qwen3_decoder.cpp
   src/common/text.cpp
   src/common/tokenizer.cpp)
 target_include_directories(common PUBLIC src)
@@ -64,13 +64,36 @@ set_source_files_properties(src/common/npz.cpp PROPERTIES COMPILE_OPTIONS -ffp-c
 
 add_library(qwen3_asr STATIC
   src/qwen3_asr/qwen3_audio.cpp
+  src/qwen3_asr/kernels/fused_ops.cpp
+  src/qwen3_asr/kernels/quantized_matmul.cpp
+  src/qwen3_asr/qwen3_asr_decoder.cpp
   src/qwen3_asr/qwen3_asr_model.cpp
-  src/qwen3_asr/qwen3_decoder.cpp
   src/qwen3_asr/qwen3_asr_transcriber.cpp
   src/qwen3_asr/worker.cpp
   src/qwen3_asr/realtime.cpp)
-target_link_libraries(qwen3_asr PUBLIC common)
+target_link_libraries(qwen3_asr PUBLIC common "-framework IOKit")
 target_compile_options(qwen3_asr PRIVATE -Wall -Wextra)
+# Note (XXXXRT666): the qwen3_asr primitives load their kernels from these
+# libraries beside the binaries, compiled ahead of time rather than on the first
+# request. The neural accelerator kernels need Metal 4, so they build for macOS
+# 26.2 on into a library of their own, which older systems never load.
+set(QWEN3_ASR_KERNELS ${CMAKE_CURRENT_SOURCE_DIR}/src/qwen3_asr/kernels)
+mlx_build_metallib(
+  TARGET qwen3_asr_metallib TITLE sglang_qwen3_asr
+  SOURCES ${QWEN3_ASR_KERNELS}/kernels.metal
+  INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src ${MLX_INCLUDE_DIRS}
+  DEPS ${QWEN3_ASR_KERNELS}/quantized_matmul.h ${QWEN3_ASR_KERNELS}/fused_ops.h
+  OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+mlx_build_metallib(
+  TARGET qwen3_asr_nax_metallib TITLE sglang_qwen3_asr_nax
+  SOURCES ${QWEN3_ASR_KERNELS}/kernels_nax.metal
+  INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src ${MLX_INCLUDE_DIRS}
+  DEPS ${QWEN3_ASR_KERNELS}/quantized_matmul.h ${QWEN3_ASR_KERNELS}/nax.h
+  DEPLOYMENT_TARGET 26.2
+  OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+add_dependencies(qwen3_asr qwen3_asr_metallib qwen3_asr_nax_metallib)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/sglang_qwen3_asr.metallib
+  ${CMAKE_CURRENT_BINARY_DIR}/sglang_qwen3_asr_nax.metallib DESTINATION bin)
 
 add_library(silero_vad STATIC src/silero_vad/silero_vad.cpp src/silero_vad/speech_segments.cpp)
 # Note (Jiaxin Deng): speech_segments keeps the no-fused-multiply-add rounding

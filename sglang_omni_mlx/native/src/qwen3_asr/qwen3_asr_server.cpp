@@ -9,6 +9,7 @@
 #include <string>
 
 #include "qwen3_asr/asr_service.h"
+#include "qwen3_asr/kernels/kernels.h"
 #include "qwen3_asr/realtime.h"
 #include "silero_vad/vad_service.h"
 #include "sortformer/sortformer_service.h"
@@ -176,6 +177,9 @@ int main(int argc, char **argv) {
   sortformer.model_kind = "sortformer";
   sortformer.load = [](const std::filesystem::path &model_directory) {
     return std::make_unique<SortformerModel>(model_directory);
+  };
+  qwen3_asr.flags["--kernels"] = [](const std::string &value) {
+    qwen3_asr::SetKernelSet(qwen3_asr::ParseKernelSet(value));
   };
   return asr_service::Serve(argc, argv, {qwen3_asr, silero_vad, sortformer});
 }

@@ -12,6 +12,7 @@
 #include "common/audio.h"
 #include "common/tokenizer.h"
 #include "nlohmann/json.hpp"
+#include "qwen3_asr/kernels/kernels.h"
 #include "qwen3_asr/qwen3_asr_model.h"
 #include "qwen3_asr/qwen3_asr_transcriber.h"
 
@@ -39,6 +40,8 @@ int main(int argc, char **argv) {
                                                : AudioLayout::kReference;
     } else if (argument == "--language") {
       options.language = qwen3_asr::NormalizeLanguage(value());
+    } else if (argument == "--kernels") {
+      qwen3_asr::SetKernelSet(qwen3_asr::ParseKernelSet(value()));
     } else if (argument == "--stop-at-end-of-text") {
       options.stop_at_end_of_text = true;
     } else if (argument == "--stop-on-token-loop") {
@@ -82,56 +85,6 @@ int main(int argc, char **argv) {
                 << "\n";
     }
     return 0;
-  } else if (profile) {
-    namespace mx = mlx::core;
-    using Clock = std::chrono::steady_clock;
-    const auto ms = [](Clock::time_point a, Clock::time_point b) {
-      return std::chrono::duration<double, std::milli>(b - a).count();
-    };
-    const qwen3_asr::Qwen3ASR model(model_path);
-    const omni_common::Tokenizer tokenizer(model_path);
-    std::ifstream stream(files.at(0), std::ios::binary);
-    std::ostringstream bytes;
-    bytes << stream.rdbuf();
-    const std::vector<float> samples = omni_common::DecodeWav(bytes.str());
-    for (int round = 0; round < 3; ++round) {
-      const auto t0 = Clock::now();
-      mx::array mel = qwen3_asr::LogMel(samples, AudioLayout::kVoxtSwift);
-      mx::eval(mel);
-      const auto t1 = Clock::now();
-      mx::array encoded = model.EncodeAudio(mel, AudioLayout::kVoxtSwift);
-      mx::eval(encoded);
-      const auto t2 = Clock::now();
-      std::string prompt =
-          "<|im_start|>system\n<|im_end|>\n<|im_start|>user\n<|audio_start|>";
-      for (int i = 0;
-           i < qwen3_asr::TokenCount(mel.shape(-1), AudioLayout::kVoxtSwift);
-           ++i)
-        prompt += "<|audio_pad|>";
-      prompt += "<|audio_end|><|im_end|>\n<|im_start|>assistant\nlanguage "
-                "English<asr_text>";
-      const std::vector<int> ids = tokenizer.Encode(prompt);
-      const mx::array input(ids.data(), {1, static_cast<int>(ids.size())},
-                            mx::int32);
-      std::vector<qwen3_asr::KVCache> caches = model.NewCaches();
-      mx::array token =
-          mx::argmax(model.Decode(model.EmbedTokens(input), caches));
-      mx::eval(token);
-      const auto t3 = Clock::now();
-      constexpr int steps = 100;
-      for (int i = 0; i < steps; ++i) {
-        token = mx::argmax(model.Decode(
-            model.EmbedTokens(mx::reshape(token, {1, 1})), caches));
-        mx::async_eval({token});
-      }
-      mx::eval(token);
-      const auto t4 = Clock::now();
-      std::cout << "samples " << samples.size() / 16000.0 << "s mel "
-                << ms(t0, t1) << "ms enc " << ms(t1, t2) << "ms prefill("
-                << ids.size() << ") " << ms(t2, t3) << "ms decode "
-                << ms(t3, t4) / steps << "ms/token\n";
-    }
-    return 0;
   } else if (encode) {
     const omni_common::Tokenizer tokenizer(model_path);
     std::cout << nlohmann::json(tokenizer.Encode(encode_text)).dump() << "\n";
@@ -140,19 +93,24 @@ int main(int argc, char **argv) {
   }
   const auto load_started = std::chrono::steady_clock::now();
   const qwen3_asr::Qwen3ASRTranscriber transcriber(model_path);
-  std::cerr << "loaded in "
-            << std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                             load_started)
-                   .count()
-            << " s\n";
+  const double load_seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                    load_started)
+          .count();
+  const size_t model_memory_bytes = mlx::core::get_active_memory();
+  std::cerr << "loaded in " << load_seconds << " s\n";
   const std::atomic<bool> cancel(false);
   for (const auto &file : files) {
     std::ifstream stream(file, std::ios::binary);
     std::ostringstream bytes;
     bytes << stream.rdbuf();
+    qwen3_asr::TranscriptionProfile timings;
+    mlx::core::synchronize();
+    mlx::core::reset_peak_memory();
     const auto started = std::chrono::steady_clock::now();
-    const auto result = transcriber.Transcribe(
-        omni_common::DecodeWav(bytes.str()), options, cancel);
+    const auto result =
+        transcriber.Transcribe(omni_common::DecodeWav(bytes.str()), options,
+                               cancel, profile ? &timings : nullptr);
     nlohmann::json line = {
         {"file", file},
         {"text", result.text},
@@ -165,6 +123,19 @@ int main(int argc, char **argv) {
                         std::chrono::steady_clock::now() - started)
                         .count()},
     };
+    if (profile) {
+      line["profile"] = {
+          {"load_seconds", load_seconds},
+          {"model_memory_bytes", model_memory_bytes},
+          {"mel_seconds", timings.mel_seconds},
+          {"encoder_seconds", timings.encoder_seconds},
+          {"prefill_seconds", timings.prefill_seconds},
+          {"decode_seconds", timings.decode_seconds},
+          {"prompt_tokens", timings.prompt_tokens},
+          {"peak_memory_bytes", mlx::core::get_peak_memory()},
+      };
+    } else {
+    }
     std::cout << line.dump() << std::endl;
     // Note (Jiaxin Deng): as the server does between requests; buffers of one
     // clip's sizes rarely fit the next, so the cache would grow without end.

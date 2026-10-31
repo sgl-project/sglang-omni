@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -31,6 +32,14 @@ struct TranscriptionOptions {
   // Realtime refreshes continue from text already shown, as ids and text.
   std::vector<int> prefix_token_ids;
   std::string prefix_text;
+};
+
+struct TranscriptionProfile {
+  double mel_seconds = 0.0;
+  double encoder_seconds = 0.0;
+  double prefill_seconds = 0.0;
+  double decode_seconds = 0.0;
+  int prompt_tokens = 0;
 };
 
 struct SpeakerSegment {
@@ -69,9 +78,12 @@ SpeakerSegmentsJson(const std::vector<SpeakerSegment> &segments);
 // Voxt's Swift port, a name outside the table is used as given; blank is none.
 std::optional<std::string> NormalizeLanguage(const std::string &language);
 
+class ResidencyHeartbeat;
+
 class Qwen3ASRTranscriber {
 public:
   explicit Qwen3ASRTranscriber(const std::filesystem::path &model_directory);
+  ~Qwen3ASRTranscriber();
 
   std::vector<int> PromptIds(int audio_token_count,
                              const TranscriptionOptions &options) const;
@@ -80,7 +92,8 @@ public:
   RetainedPrefix(const std::string &text, int rollback_token_count) const;
   TranscriptionResult Transcribe(const std::vector<float> &samples,
                                  const TranscriptionOptions &options,
-                                 const std::atomic<bool> &cancel) const;
+                                 const std::atomic<bool> &cancel,
+                                 TranscriptionProfile *profile = nullptr) const;
 
 private:
   std::pair<std::string, std::optional<std::string>>
@@ -93,6 +106,8 @@ private:
   int end_of_text_id_;
   int im_end_id_;
   std::vector<int> asr_text_ids_;
+  std::vector<int> language_ids_;
+  std::unique_ptr<ResidencyHeartbeat> residency_heartbeat_;
 };
 
 } // namespace qwen3_asr
