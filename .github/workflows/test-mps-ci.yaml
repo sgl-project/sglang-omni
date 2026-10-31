@@ -26,7 +26,7 @@ env:
         && inputs.omni_ci_home
         || format('/data/omni-ci/run-{0}', github.run_id) }}
 
-# Invoked by omni-ci.yaml after TTS CI. Restores omni only.
+# Invoked by omni-ci.yaml once setup completes. Restores omni only.
 
 jobs:
   stage-1-mps-nonstream:

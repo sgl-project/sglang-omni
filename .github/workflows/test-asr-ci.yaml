@@ -26,9 +26,13 @@ env:
         || format('/data/omni-ci/run-{0}', github.run_id) }}
   MOSS_TRANSCRIBE_DIARIZE_MODEL_PATH: OpenMOSS-Team/MOSS-Transcribe-Diarize
 
-# Invoked by omni-ci.yaml after unit tests. Restores omni only.
+# Invoked by omni-ci.yaml once setup completes. Restores omni only.
 # DAG:
-#   stage-1-multi-speaker -> stage-2-seedtts
+#   stage-1-multi-speaker
+#   stage-2-seedtts
+# The two stages share no output: each restores the prepared venv, runs its own
+# pytest target and uploads its own artifact. They used to be chained, which on a
+# four-lane H100 host just idled a lane. Add an edge here only for a real input.
 
 jobs:
   stage-1-multi-speaker:
@@ -89,8 +93,7 @@ jobs:
 
   stage-2-seedtts:
     name: stage 2 - SeedTTS ASR
-    needs: stage-1-multi-speaker
-    if: always() && !cancelled()
+    if: ${{ !cancelled() }}
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:

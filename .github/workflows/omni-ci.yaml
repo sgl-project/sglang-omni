@@ -1,15 +1,23 @@
 name: Omni CI
 
 # DAG:
-#   preflight -> setup -> pr-test -> asr-ci -> tts-ci -> mps-ci -> qwen3-omni-ci
+#   preflight -> setup -> {pr-test, asr-ci, tts-ci, mps-ci, qwen3-omni-ci}
 #   setup + unit/model suites -> cleanup (dispatch only)
 #
 # preflight resolves the CI labels with .github/scripts/resolve_ci_labels.py:
 # any stage label, including run-unit-test-ci-only, runs pr-test, and each model
 # suite runs only when its stage is selected. run-lint-only passes the gate and
-# skips setup. Model suites wait for the previous suite to finish but use always()
-# so a failed or skipped suite does not skip later suites. Only setup blocks all
-# downstream model CI.
+# skips setup. Only setup blocks downstream CI: it is the one job that writes
+# OMNI_CI_HOME, so every suite waits for it and nothing else.
+#
+# The suites used to form a chain (pr-test -> asr -> tts -> mps -> omni) that
+# carried no data: every suite re-checks out the repo, restores the same prepared
+# venv and uploads its own artifacts, and the edges were guarded by always() so a
+# failed or skipped predecessor never gated a successor. The chain only ordered
+# the suites, and on a four-lane H100 host that ordering left three lanes idle for
+# the whole model-CI tail. Suites now fan out from setup and the pool schedules
+# them. Keep it that way: an edge here must represent an output one suite reads
+# from another, not an execution order somebody wants.
 #
 # PR-scoped homes (/data/omni-ci/pr-<N>) persist on the runner for reuse across
 # pushes (runner TTL, e.g. 3 days). reconcile_omni_ci_env.sh validates fingerprint,
@@ -222,7 +230,7 @@ jobs:
 
   asr-ci:
     name: ASR CI
-    needs: [preflight, setup, pr-test]
+    needs: [preflight, setup]
     if: >-
       always() && !cancelled() &&
       needs.setup.result == 'success' &&
@@ -238,7 +246,7 @@ jobs:
 
   tts-ci:
     name: TTS CI
-    needs: [preflight, setup, pr-test, asr-ci]
+    needs: [preflight, setup]
     if: >-
       always() && !cancelled() &&
       needs.setup.result == 'success' &&
@@ -254,7 +262,7 @@ jobs:
 
   mps-ci:
     name: MPS CI
-    needs: [preflight, setup, pr-test, asr-ci, tts-ci]
+    needs: [preflight, setup]
     if: >-
       always() && !cancelled() &&
       needs.setup.result == 'success' &&
@@ -272,7 +280,7 @@ jobs:
 
   qwen3-omni-ci:
     name: Omni model CI (${{ needs.preflight.outputs.omni_ci_model }})
-    needs: [preflight, setup, pr-test, asr-ci, tts-ci, mps-ci]
+    needs: [preflight, setup]
     if: >-
       always() && !cancelled() &&
       needs.setup.result == 'success' &&

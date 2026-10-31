@@ -30,13 +30,18 @@ env:
   # (NVIDIA/nccl#2077); the TP=2 stages hit it, and two-GPU TP gains nothing from NVLS.
   NCCL_NVLS_ENABLE: "0"
 
-# Invoked by omni-ci.yaml after MPS CI. Restores omni only.
-# DAG:
-#   stage-1-thinker -> stage-2-tts -> stage-3-mmmu -> stage-4-mmmu-talker
-#     -> stage-5-mmsu -> stage-6-mmsu-talker -> stage-7-videomme
-#     -> stage-8-videomme-talker -> stage-9-videoamme
-#     -> stage-10-videoamme-talker-tp2 -> stage-11-process-replicas (qwen3-omni)
-#     -> stage-12-fdb-smoke (minicpmo)
+# Invoked by omni-ci.yaml once setup completes. Restores omni only.
+# DAG: none. Every stage is independent.
+#
+# Each stage checks out the repo, restores the prepared venv, runs one pytest
+# target against its own model server and uploads its own result artifact. No
+# stage reads another stage's output, and the edges that used to chain stages 1
+# through 12 were guarded by always(), so they never gated on success either --
+# they only forced an order. On a four-lane H100 host that order ran the suite
+# one stage at a time and idled three lanes for its entire length.
+#
+# Do not reintroduce an edge to sequence stages. If a stage ever consumes another
+# stage's artifact, add the edge for that input and say which artifact it reads.
 
 jobs:
   stage-1-thinker:
@@ -81,8 +86,7 @@ jobs:
 
   stage-2-tts:
     name: stage 2 - TTS speed + WER + SIM
-    needs: stage-1-thinker
-    if: always() && !cancelled()
+    if: ${{ !cancelled() }}
     runs-on: [self-hosted, h100]
     timeout-minutes: 25
     container:
@@ -140,8 +144,7 @@ jobs:
 
   stage-3-mmmu:
     name: stage 3 - MMMU accuracy + speed
-    needs: stage-2-tts
-    if: always() && !cancelled()
+    if: ${{ !cancelled() }}
     runs-on: [self-hosted, h100]
     timeout-minutes: 20
     container:
@@ -186,8 +189,7 @@ jobs:
 
   stage-4-mmmu-talker:
     name: stage 4 - MMMU Talker
-    needs: stage-3-mmmu
-    if: always() && !cancelled()
+    if: ${{ !cancelled() }}
     runs-on: [self-hosted, h100]
     timeout-minutes: 15
     container:
@@ -232,8 +234,7 @@ jobs:
 
   stage-5-mmsu:
     name: stage 5 - MMSU accuracy + speed
-    needs: stage-4-mmmu-talker
-    if: always() && !cancelled()
+    if: ${{ !cancelled() }}
     runs-on: [self-hosted, h100]
     timeout-minutes: 20
     container:
@@ -279,8 +280,7 @@ jobs:
 
   stage-6-mmsu-talker:
     name: stage 6 - MMSU Talker
-    needs: stage-5-mmsu
-    if: always() && !cancelled()
+    if: ${{ !cancelled() }}
     runs-on: [self-hosted, h100]
     timeout-minutes: 15
     container:
@@ -325,8 +325,7 @@ jobs:
 
   stage-7-videomme:
     name: stage 7 - Video-MME accuracy + speed
-    needs: stage-6-mmsu-talker
-    if: always() && !cancelled()
+    if: ${{ !cancelled() }}
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
@@ -371,8 +370,7 @@ jobs:
 
   stage-8-videomme-talker:
     name: stage 8 - Video-MME Talker
-    needs: stage-7-videomme
-    if: always() && !cancelled()
+    if: ${{ !cancelled() }}
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
@@ -417,8 +415,7 @@ jobs:
 
   stage-9-videoamme:
     name: stage 9 - Video-AMME accuracy + speed
-    needs: stage-8-videomme-talker
-    if: always() && !cancelled()
+    if: ${{ !cancelled() }}
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
@@ -463,8 +460,7 @@ jobs:
 
   stage-10-videoamme-talker-tp2:
     name: stage 10 - Video-AMME Talker
-    needs: stage-9-videoamme
-    if: always() && !cancelled()
+    if: ${{ !cancelled() }}
     runs-on: [self-hosted, h100]
     timeout-minutes: 35
     container:
@@ -511,8 +507,7 @@ jobs:
 
   stage-11-process-replicas:
     name: stage 11 - process replicas
-    needs: stage-10-videoamme-talker-tp2
-    if: always() && !cancelled() && inputs.omni_ci_model == 'qwen3-omni'
+    if: ${{ !cancelled() && inputs.omni_ci_model == 'qwen3-omni' }}
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
@@ -553,8 +548,7 @@ jobs:
 
   stage-12-fdb-smoke:
     name: stage 12 - Full-Duplex-Bench smoke
-    needs: stage-11-process-replicas
-    if: always() && !cancelled() && inputs.omni_ci_model == 'minicpmo'
+    if: ${{ !cancelled() && inputs.omni_ci_model == 'minicpmo' }}
     runs-on: [self-hosted, h100]
     timeout-minutes: 45
     container:

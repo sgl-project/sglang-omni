@@ -19,10 +19,15 @@ env:
         && inputs.omni_ci_home
         || format('/data/omni-ci/run-{0}', github.run_id) }}
 
-# Invoked by omni-ci.yaml after ASR CI. Restores omni only.
+# Invoked by omni-ci.yaml once setup completes. Restores omni only.
 # DAG:
-#   stage-1-non-streaming -> stage-2-streaming -> stage-3-consistency
-#     -> stage-4-serving
+#   {stage-1-non-streaming, stage-2-streaming} -> stage-3-consistency
+#   stage-latency
+#   stage-4-serving
+# stage-3 is the only stage with real inputs: it downloads the speed artifacts
+# that stages 1 and 2 upload and diffs them. Nothing reads the latency or serving
+# output, so those stages carry no edge. The old single chain ordered all five and
+# left three of the four H100 lanes idle for the length of the suite.
 # The MPS validation runs separately in test-mps-ci.yaml.
 
 jobs:
@@ -98,8 +103,7 @@ jobs:
 
   stage-2-streaming:
     name: stage 2 - streaming
-    needs: stage-1-non-streaming
-    if: always() && !cancelled()
+    if: ${{ !cancelled() }}
     runs-on: [self-hosted, h100]
     timeout-minutes: 25
     container:
@@ -159,8 +163,7 @@ jobs:
 
   stage-latency:
     name: stage latency - streaming first audio
-    needs: stage-2-streaming
-    if: always() && !cancelled() && startsWith(inputs.tts_ci_model, 'qwen3-tts')
+    if: ${{ !cancelled() && startsWith(inputs.tts_ci_model, 'qwen3-tts') }}
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
@@ -224,7 +227,8 @@ jobs:
 
   stage-3-consistency:
     name: stage 3 - consistency
-    needs: stage-2-streaming
+    # Real inputs: the speed artifacts uploaded by stages 1 and 2.
+    needs: [stage-1-non-streaming, stage-2-streaming]
     if: always() && !cancelled()
     runs-on: [self-hosted, h100]
     timeout-minutes: 5
@@ -279,8 +283,7 @@ jobs:
 
   stage-4-serving:
     name: stage 4 - serving stress
-    needs: stage-3-consistency
-    if: always() && !cancelled()
+    if: ${{ !cancelled() }}
     runs-on: [self-hosted, h100]
     timeout-minutes: 75
     container:
