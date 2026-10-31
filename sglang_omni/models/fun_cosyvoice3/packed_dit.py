@@ -490,10 +490,6 @@ class PackedDiT:
 
     def enable_fp8_feed_forward(self) -> None:
         device = next(self.dit.parameters()).device
-        if not uses_fa4(device):
-            raise ValueError("enable_flow_fp8_feed_forward requires SM120")
-        else:
-            pass
         # note (emre): CUTLASS is absent on Apple Silicon, where this module also loads.
         from sglang_omni.models.fun_cosyvoice3 import fp8_feed_forward
 
@@ -580,6 +576,7 @@ class PackedDiT:
                     ff_norm.to(torch.bfloat16),
                     ff_in.weight,
                     ff_in.bias,
+                    block.ff.ff[2].weight,
                     self.fp8_out_weights[block_index],
                     block.ff.ff[2].bias,
                     self.fp8_out_scales[block_index],

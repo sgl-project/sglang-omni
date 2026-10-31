@@ -118,6 +118,9 @@ class GraphRunnableFakeFlow(RunnableFakeFlow):
 
 
 class RecordingPackedDiT(PackedDiT):
+    def enable_fp8_feed_forward(self) -> None:
+        pass
+
     def __init__(self, *, is_ragged: bool = True) -> None:
         self.is_ragged = is_ragged
 

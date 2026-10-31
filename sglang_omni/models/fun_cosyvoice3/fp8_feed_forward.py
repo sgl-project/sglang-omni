@@ -10,6 +10,7 @@ import cuda.bindings.driver as cuda
 import cutlass
 import cutlass.cute as cute
 import torch
+import torch.nn.functional as F
 from cutlass.cute.runtime import from_dlpack, make_fake_stream
 from sglang.srt.utils.custom_op import register_custom_op
 
@@ -352,6 +353,8 @@ def gemm3_host(
 
 GELU_SCALE = 1.0 / 8.0
 FP8_MAX = 448.0
+# note (emre): measured crossover against the compiled BF16 path, M 1000 0.90x, M 1300 1.08x.
+FP8_MIN_ROWS = 1200
 compiled_kernels: dict[tuple[int, int], object] = {}
 
 
@@ -366,6 +369,7 @@ def fake_fp8_feed_forward(
     x: torch.Tensor,
     in_weight: torch.Tensor,
     in_bias: torch.Tensor,
+    out_weight: torch.Tensor,
     out_weight_fp8: torch.Tensor,
     out_bias: torch.Tensor,
     out_weight_scale: torch.Tensor,
@@ -383,12 +387,18 @@ def fp8_feed_forward(
     x: torch.Tensor,
     in_weight: torch.Tensor,
     in_bias: torch.Tensor,
+    out_weight: torch.Tensor,
     out_weight_fp8: torch.Tensor,
     out_bias: torch.Tensor,
     out_weight_scale: torch.Tensor,
     gelu_scale: torch.Tensor,
 ) -> torch.Tensor:
     """x: (1, M, K) BF16, in_weight: (N, K), out_weight_fp8: (K, N) FP8."""
+    if x.shape[1] < FP8_MIN_ROWS:
+        hidden = F.gelu(F.linear(x, in_weight, in_bias), approximate="tanh")
+        return F.linear(hidden, out_weight, out_bias)
+    else:
+        pass
     assert x.is_contiguous()
     hidden = torch.empty(
         (1, x.shape[1], in_weight.shape[0]), device=x.device, dtype=torch.float8_e4m3fn

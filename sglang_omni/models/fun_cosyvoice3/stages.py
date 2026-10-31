@@ -2467,7 +2467,7 @@ def create_vocoder_executor(
     enable_hift_cuda_graph: bool,
     flow_cuda_graph_capture_shapes: tuple[tuple[int, int], ...] | None = None,
     enable_flow_estimator_trt: bool = False,
-    enable_flow_fp8_feed_forward: bool = False,
+    enable_flow_fp8_feed_forward: bool = True,
     hift_dtype: str = "float32",
     hift_max_padding_waste: float = 1.5,
     token_hop_len: int = TOKEN_HOP_LEN,
@@ -2559,7 +2559,12 @@ def create_vocoder_executor(
         enable_flow_estimator_trt=enable_flow_estimator_trt,
     )
 
-    if enable_flow_fp8_feed_forward:
+    if (
+        enable_flow_fp8_feed_forward
+        and has_ragged_attention
+        and uses_fa4(device_obj)
+        and autocast_dtype == torch.bfloat16
+    ):
         flow.packed_estimator.enable_fp8_feed_forward()
     else:
         pass
