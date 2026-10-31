@@ -100,6 +100,7 @@ def create_thinker_scheduler(
             enable_prefill_input_embeds=enable_prefill_input_embeds,
             defer_cuda_graph_capture=defer_cuda_graph_capture,
             supports_speculative_decoding=True,
+            enable_async_decode=enable_async_decode,
         )
         if capture_prompt_hidden_states:
             infrastructure[0].model_runner.model.set_talker_layers_to_capture()
