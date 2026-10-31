@@ -92,7 +92,7 @@ def test_checkpoint_defaults_preserve_unqualified_tiny_execution(
     assert engine.factory.enable_fused_flow_head is dense
     assert bool(engine.factory.prefill_graph_token_counts) is dense
     assert bool(vocoder.factory.graph_latent_steps) is dense
-    assert config.mps == ("auto" if dense else "off")
+    assert config.mps == "off"
     rebuilt = Ming3TTSPipelineConfig.model_validate(config.model_dump())
     assert rebuilt.model_dump() == config.model_dump()
 

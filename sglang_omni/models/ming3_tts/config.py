@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import ClassVar, Literal
+from typing import ClassVar
 
 from pydantic import Field, model_validator
 
@@ -97,7 +97,6 @@ class Ming3TTSPipelineConfig(PipelineConfig):
     }
     model_path: str
     entry_stage: str = "preprocessing"
-    mps: Literal["off", "on", "auto"] = "off"
     placement: PlacementConfig = Field(
         default_factory=lambda: PlacementConfig(
             require_memory_fraction_for_colocation=False
@@ -111,7 +110,7 @@ class Ming3TTSPipelineConfig(PipelineConfig):
         """Keep unqualified MoE checkpoints on their original execution defaults."""
         if not isinstance(data, dict) or not isinstance(data.get("model_path"), str):
             return data
-        elif "stages" in data and "mps" in data:
+        elif "stages" in data:
             return data
         else:
             pass
@@ -127,7 +126,6 @@ class Ming3TTSPipelineConfig(PipelineConfig):
         )
         return {
             "stages": default_stages(dense),
-            "mps": "auto" if dense else "off",
             **data,
         }
 
