@@ -642,7 +642,7 @@ Keeps the conversation history, opens a turn for each final transcript and sends
 **`openai_chat`**
 
 
-Streams one chat completion from `<base_url>/chat/completions` per turn.
+Streams one chat completion from `<base_url>/chat/completions` per turn; a `[WAIT]` reply holds speech until the user finishes speaking.
 
 | Option | Type | Default | Effect |
 | --- | --- | --- | --- |
