@@ -171,6 +171,7 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
         prefix: str = "",
         dual_chunk_attention_config: Optional[Mapping[str, object]] = None,
         alt_stream: Optional[torch.Stream] = None,
+        norm_cls: type[RMSNorm] = RMSNorm,
     ) -> None:
         super().__init__()
         self.hidden_size = hidden_size
@@ -252,8 +253,8 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
             prefix=add_prefix("attn", prefix),
         )
 
-        self.q_norm = RMSNorm(self.head_dim, eps=rms_norm_eps)
-        self.k_norm = RMSNorm(self.head_dim, eps=rms_norm_eps)
+        self.q_norm = norm_cls(self.head_dim, eps=rms_norm_eps)
+        self.k_norm = norm_cls(self.head_dim, eps=rms_norm_eps)
         self.alt_stream = alt_stream
 
     def forward_prepare_native(
@@ -480,6 +481,7 @@ class Qwen3OmniMoeThinkerTextDecoderLayer(nn.Module):
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
         alt_stream: Optional[torch.Stream] = None,
+        norm_cls: type[RMSNorm] = RMSNorm,
     ) -> None:
         super().__init__()
         self.config = config
@@ -507,6 +509,7 @@ class Qwen3OmniMoeThinkerTextDecoderLayer(nn.Module):
             prefix=add_prefix("self_attn", prefix),
             dual_chunk_attention_config=dual_chunk_attention_config,
             alt_stream=alt_stream,
+            norm_cls=norm_cls,
         )
 
         self.layer_id = layer_id
@@ -529,8 +532,8 @@ class Qwen3OmniMoeThinkerTextDecoderLayer(nn.Module):
                 "Dense MLP is not implemented in Qwen3OmniMoeThinkerTextDecoderLayer yet."
             )
 
-        self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = RMSNorm(
+        self.input_layernorm = norm_cls(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = norm_cls(
             config.hidden_size, eps=config.rms_norm_eps
         )
 
