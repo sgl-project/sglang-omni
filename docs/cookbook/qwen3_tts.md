@@ -79,6 +79,24 @@ sgl-omni serve \
   --port 8000
 ```
 
+### Optional CuTeDSL decode
+
+Install the optional dependency with `pip install -e '.[qwen3-tts-cutedsl]'`, then set `SGLANG_OMNI_QTTS_BACKEND=cutedsl` before launching the server. Leave it unset, or set it to `default`, for the existing implementation. Both talker and code predictor use the same selector.
+
+The kernels fuse input RMSNorm, QKV projection, Q/K normalization, RoPE and cache stores before attention, and output projection, residual addition, RMSNorm and the MLP after attention. Weights are packed once after loading; these copies add GPU memory because the originals remain for prefill and fallback. Online weight updates are rejected while this backend is active. K/V writes use the existing cache directly.
+
+Compiled attention kernels are shared within each 16/32-row tile bucket; live batch size, K/V capacity and RoPE table length are symbolic. Sampling and embedding kernels also reuse binaries across batch sizes. Model dimensions, dtypes, layouts, tail masking, fusion flags and scheduling choices remain specialization keys. CUDA graphs and per-batch workspaces are separate from this compilation cache.
+
+Warm each batch size before CUDA graph capture so workspace initialization stays outside replay. Norm weights are borrowed immutable tensors, and input/Q/K norms use the model's common RMSNorm epsilon. Gumbel draws deliberately remain FP64, including endpoint handling, to preserve the default CUDA sampler's behavior even on Blackwell; the faster FP32 variant changes seeded draws.
+
+On Hopper and datacenter Blackwell, the same selector also enables predictor sampling/embedding fusion and BF16 SnakeBeta in the vocoder. Greedy and top-k buckets 50/64/128 fuse token selection, code-buffer writes, embedding accumulation and optional projected lookup; other sampling settings retain their filtering/tie order and use separate embedding lookup. Prefiltered sampling supports up to 2048 candidates. SnakeBeta prepares immutable coefficients after weight loading and preserves eager BF16 rounding, including an exact BF16 sine table for large tensors. Unsupported layouts, dtypes and devices retain the existing implementations. Attention, preprocessing and scheduling are unchanged.
+
+With fused vocoder activation enabled, BF16 full/window decoding also uses causal Conv1D + bias + SnakeBeta and Conv1D + bias + residual kernels. Supported convolutions have stride/groups one and channel counts divisible by 32; transposed convolutions and the final one-channel convolution use channels-last cuDNN. Weights are packed after loading and remain immutable. Batch size and audio length are runtime parameters, so graph buckets reuse compiled kernels. Stateful incremental decoding uses CuTeDSL pointwise Conv1D and retains the default fused bias/residual/SnakeBeta activation. Convolution history and KV rings stay in place; remaining BF16 state gathers/scatters are batched into one kernel each. BF16 convolution reduction order can change waveform values; this is not bitwise-equivalent decoding.
+
+The transformer blocks support BF16, TP1, 0.6B/1.7B Qwen3-TTS, decode batches of 1–32 on full SM90/SM100/SM103 GPUs with at least 96 SMs. Devices below this minimum, including H20, keep the default transformer blocks; eligible auxiliary and vocoder kernels can still use CuTeDSL. The predictor's two-token prefix also uses these blocks for batches up to 16, with causal attention. The post-attention kernels require a cooperative grid of 24 resident four-CTA clusters; MIG and SM-partitioned contexts are not supported. Talker prefill, larger batches, unsupported weight layouts and other GPU architectures keep the default transformer blocks. Deterministic and batch-invariant modes also keep the default transformer blocks. The custom kernels are imported only when this backend is selected.
+
+The fused blocks round residuals and normalized activations to BF16 between operations. This differs from the default deferred-residual implementation and GEMM reduction order, so generated tokens need not match exactly. Validate speech quality for your workload before deployment.
+
 ### Ascend NPU baseline
 
 All four NPU examples enable Talker graphs, asynchronous vocoder decoding, and

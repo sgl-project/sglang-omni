@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 import torch
 import torch.nn.functional as F
@@ -53,6 +53,18 @@ if TYPE_CHECKING:
     )
 else:
     pass
+
+
+class PointwiseConv(Protocol):
+    """Pointwise convolution on contiguous BTC activations, with optional bias and residual."""
+
+    def __call__(
+        self,
+        hidden_states: torch.Tensor,
+        weight: torch.Tensor,
+        bias: torch.Tensor | None,
+        residual: torch.Tensor | None,
+    ) -> torch.Tensor: ...
 
 
 @dataclass(frozen=True)
@@ -1005,7 +1017,12 @@ def incremental_residual_unit(
 
 
 class Qwen3TTSIncrementalDecoder:
-    def __init__(self, decoder: "Qwen3TTSTokenizerV2Decoder") -> None:
+    def __init__(
+        self,
+        decoder: "Qwen3TTSTokenizerV2Decoder",
+        *,
+        pointwise_conv: PointwiseConv | None = None,
+    ) -> None:
         self.require_attrs(
             decoder,
             "decoder",
@@ -1096,7 +1113,17 @@ class Qwen3TTSIncrementalDecoder:
                     "act2",
                     "conv2",
                 )
+                if pointwise_conv is not None:
+                    assert residual.conv2.conv.kernel_size == (1,)
+                    assert residual.conv2.padding == 0
+                    assert (
+                        residual.conv2.conv.in_channels
+                        == residual.conv2.conv.out_channels
+                    )
+                else:
+                    pass
         self.decoder = decoder
+        self.pointwise_conv = pointwise_conv
         self.total_upsample = int(decoder.total_upsample)
         # note (ratish): on CUDA the convs run channels last on weights kept here in
         # that layout; the shared modules keep theirs for the whole-utterance decode.
@@ -1731,15 +1758,24 @@ class Qwen3TTSIncrementalDecoder:
                 padded_frames,
                 should_round_like_eager=False,
             )
-            conv2_output = slot_causal_conv(
-                unit.conv2,
-                weights[f"{unit_key}.conv2"],
-                padded,
-                histories[f"{unit_key}.conv2"],
-                slot_index,
-                state.pad_slot,
-                length,
-            )
+            if self.pointwise_conv is not None:
+                # note (Hao Wang): The following fused activation owns bias and residual addition.
+                conv2_output = self.pointwise_conv(
+                    padded,
+                    weights[f"{unit_key}.conv2"].transpose(1, 2),
+                    None,
+                    None,
+                )
+            else:
+                conv2_output = slot_causal_conv(
+                    unit.conv2,
+                    weights[f"{unit_key}.conv2"],
+                    padded,
+                    histories[f"{unit_key}.conv2"],
+                    slot_index,
+                    state.pad_slot,
+                    length,
+                )
             if residual_index + 1 < len(residual_units):
                 next_unit = residual_units[residual_index + 1]
                 padded, padded_frames = padded_input(next_unit.conv1, frames)

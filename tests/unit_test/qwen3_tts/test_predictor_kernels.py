@@ -3,8 +3,21 @@
 
 from __future__ import annotations
 
+from importlib.util import find_spec
+from types import SimpleNamespace
+
 import pytest
 import torch
+from sglang.srt.layers.attention.torch_native_backend import TorchNativeAttnBackend
+from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool, ReqToTokenPool
+from sglang.srt.model_executor.cuda_graph_config import (
+    Backend,
+    CudaGraphConfig,
+    PhaseConfig,
+)
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
+from sglang.srt.model_executor.forward_context import ForwardContext, forward_context
+from sglang.srt.runtime_context import get_context, get_parallel
 from torch.nn import functional as F
 
 from sglang_omni.models.qwen3_tts import predictor_kernels
@@ -12,8 +25,362 @@ from sglang_omni.models.qwen3_tts.predictor_kernels import (
     gather_codec_embedding_and_add,
     short_cache_gqa_npu,
 )
-from sglang_omni.models.qwen3_tts.sglang_model import predictor_gqa_attention
+from sglang_omni.models.qwen3_tts.sglang_model import (
+    Qwen3TTSTalkerTextModel,
+    predictor_gqa_attention,
+)
 from sglang_omni.platforms import current_platform
+
+if find_spec("cutlass") is not None:
+    from sglang_omni.models.qwen3_tts.cutedsl.api import (
+        PackedPostAttention,
+        SlotPreAttention,
+        compile_post_attention,
+        compile_pre_attention,
+    )
+    from sglang_omni.models.qwen3_tts.cutedsl_backend import (
+        MIN_DECODE_SM_COUNT,
+        build_cutedsl_layers,
+    )
+else:
+    PackedPostAttention = SlotPreAttention = None
+
+
+def rounded_rmsnorm(values: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    normalized = values.float() * torch.rsqrt(
+        values.float().square().mean(-1, keepdim=True) + 1e-6
+    )
+    return normalized.to(values.dtype) * weight
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or SlotPreAttention is None,
+    reason="requires CUDA and CUTLASS DSL",
+)
+@pytest.mark.parametrize("hidden_size,batch_size", [(1024, 1), (1024, 16), (2048, 17)])
+@torch.inference_mode()
+def test_cutedsl_talker_decode_cache(
+    hidden_size: int, batch_size: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fused talker decode must read and update engine-owned cache slots like the default loop."""
+    if (
+        torch.cuda.get_device_capability() not in ((9, 0), (10, 0), (10, 3))
+        or torch.cuda.get_device_properties("cuda").multi_processor_count
+        < MIN_DECODE_SM_COUNT
+    ):
+        pytest.skip("requires Hopper or datacenter Blackwell with at least 96 SMs")
+    else:
+        pass
+    torch.manual_seed(42)
+    configuration = SimpleNamespace(
+        hidden_size=hidden_size,
+        intermediate_size=3 * hidden_size,
+        vocab_size=32,
+        text_vocab_size=32,
+        text_hidden_size=hidden_size,
+        num_hidden_layers=2,
+        num_attention_heads=16,
+        num_key_value_heads=8,
+        head_dim=128,
+        rms_norm_eps=1e-6,
+        attention_bias=False,
+        rope_theta=1_000_000,
+        rope_scaling={
+            "rope_type": "default",
+            "mrope_section": [24, 20, 20],
+            "interleaved": True,
+        },
+        max_position_embeddings=64,
+    )
+    with (
+        get_context().override_server_args(
+            max_running_requests=32,
+            cuda_graph_config=CudaGraphConfig(
+                prefill=PhaseConfig(backend=Backend.DISABLED)
+            ),
+        ),
+        get_parallel().override(
+            tp_rank=0,
+            tp_size=1,
+            tp_group=None,
+            attn_tp_rank=0,
+            attn_tp_size=1,
+            attn_tp_group=None,
+        ),
+    ):
+        model = Qwen3TTSTalkerTextModel(configuration).to("cuda", torch.bfloat16)
+        for parameter in model.parameters():
+            if parameter.ndim == 1:
+                parameter.fill_(1)
+            else:
+                parameter.normal_(std=parameter.shape[-1] ** -0.5)
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                torch.cuda,
+                "get_device_properties",
+                lambda device: SimpleNamespace(
+                    major=9, minor=0, multi_processor_count=78
+                ),
+            )
+            assert build_cutedsl_layers(model.layers) is None
+        fused_layers = build_cutedsl_layers(model.layers)
+        assert fused_layers is not None
+        model.cutedsl_layers = None
+        cache = MHATokenToKVPool(
+            size=batch_size * 8,
+            page_size=1,
+            dtype=torch.bfloat16,
+            head_num=8,
+            head_dim=128,
+            layer_num=2,
+            device="cuda",
+            enable_memory_saver=False,
+        )
+        request_pool = ReqToTokenPool(batch_size, 8, "cuda", enable_memory_saver=False)
+        request_pool.req_to_token[1:].copy_(
+            torch.randperm(batch_size * 8, device="cuda").reshape(batch_size, 8) + 1
+        )
+        attention_backend = TorchNativeAttnBackend(
+            SimpleNamespace(
+                device="cuda",
+                req_to_token_pool=request_pool,
+                token_to_kv_pool=cache,
+            )
+        )
+        sequence_lengths = torch.arange(batch_size, device="cuda") % 3 + 3
+        request_rows = torch.arange(1, batch_size + 1, device="cuda")
+        batch = ForwardBatch(
+            forward_mode=ForwardMode.DECODE,
+            batch_size=batch_size,
+            input_ids=torch.arange(batch_size, device="cuda"),
+            req_pool_indices=request_rows,
+            seq_lens=sequence_lengths,
+            seq_lens_cpu=sequence_lengths.cpu(),
+            out_cache_loc=request_pool.req_to_token[
+                request_rows, sequence_lengths - 1
+            ].long(),
+            seq_lens_sum=int(sequence_lengths.sum()),
+        )
+        batch._compute_mrope_positions_decode(  # noqa: leading-underscore - exercise SGLang's decode position builder.
+            SimpleNamespace(device="cuda"),
+            SimpleNamespace(multimodal_inputs=[None] * batch_size),
+        )
+        positions = batch.mrope_positions
+        assert torch.equal(positions[0], positions[1])
+        assert torch.equal(positions[0], positions[2])
+        initial_cache = []
+        for layer_index in range(2):
+            for buffer in (
+                cache.get_key_buffer(layer_index),
+                cache.get_value_buffer(layer_index),
+            ):
+                buffer.normal_()
+                initial_cache.append(buffer.clone())
+        with forward_context(ForwardContext(attention_backend)):
+            expected = model(batch.input_ids, positions, batch)
+            expected_cache = [
+                buffer.clone()
+                for layer_index in range(2)
+                for buffer in (
+                    cache.get_key_buffer(layer_index),
+                    cache.get_value_buffer(layer_index),
+                )
+            ]
+            for layer_index in range(2):
+                cache.get_key_buffer(layer_index).copy_(initial_cache[2 * layer_index])
+                cache.get_value_buffer(layer_index).copy_(
+                    initial_cache[2 * layer_index + 1]
+                )
+            model.cutedsl_layers = fused_layers
+            actual = model(batch.input_ids, positions, batch)
+        torch.testing.assert_close(actual, expected, atol=0.04, rtol=0.02)
+        untouched = torch.ones(cache.size + 1, device="cuda", dtype=torch.bool)
+        untouched[batch.out_cache_loc] = False
+        for layer_index in range(2):
+            for offset, buffer in enumerate(
+                (cache.get_key_buffer(layer_index), cache.get_value_buffer(layer_index))
+            ):
+                torch.testing.assert_close(
+                    buffer,
+                    expected_cache[2 * layer_index + offset],
+                    atol=0.04,
+                    rtol=0.02,
+                )
+                torch.testing.assert_close(
+                    buffer[untouched],
+                    initial_cache[2 * layer_index + offset][untouched],
+                    atol=0,
+                    rtol=0,
+                )
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or SlotPreAttention is None,
+    reason="requires CUDA and CUTLASS DSL",
+)
+@pytest.mark.parametrize(
+    "hidden_size,batch_size", [(1024, 1), (1024, 7), (1024, 32), (2048, 16), (2048, 32)]
+)
+@torch.inference_mode()
+def test_cutedsl_cache_slots_and_workspace_replay(
+    hidden_size: int, batch_size: int
+) -> None:
+    """Changed positions and slots must survive graph replay without overwriting other rows."""
+    check_cutedsl_cache_slots_and_workspace_replay(hidden_size, batch_size, 128)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or SlotPreAttention is None,
+    reason="requires CUDA and CUTLASS DSL",
+)
+@pytest.mark.parametrize("hidden_size", [1024, 2048])
+@torch.inference_mode()
+def test_cutedsl_dynamic_sizes_reuse_compilation(hidden_size: int) -> None:
+    """Batch, RoPE and cache capacity changes reuse one binary per batch tile."""
+    compile_pre_attention.cache_clear()
+    compile_post_attention.cache_clear()
+    for batch_size, rope_positions in (
+        (1, 33),
+        (5, 65),
+        (16, 129),
+        (17, 65),
+        (32, 257),
+    ):
+        check_cutedsl_cache_slots_and_workspace_replay(
+            hidden_size, batch_size, rope_positions
+        )
+    assert compile_pre_attention.cache_info().misses == 2
+    assert compile_post_attention.cache_info().misses == 2
+
+
+def check_cutedsl_cache_slots_and_workspace_replay(
+    hidden_size: int, batch_size: int, rope_positions: int
+) -> None:
+    """Check cache writes and post-attention outputs against rounded BF16 operations."""
+    if (
+        torch.cuda.get_device_capability() not in ((9, 0), (10, 0), (10, 3))
+        or torch.cuda.get_device_properties("cuda").multi_processor_count
+        < MIN_DECODE_SM_COUNT
+    ):
+        pytest.skip("requires Hopper or datacenter Blackwell with at least 96 SMs")
+    else:
+        pass
+    torch.manual_seed(42)
+    norm_weight = torch.empty(
+        hidden_size, device="cuda", dtype=torch.bfloat16
+    ).uniform_(0.5, 1.5)
+    head_weight = torch.empty(128, device="cuda", dtype=torch.bfloat16).uniform_(
+        0.5, 1.5
+    )
+    qkv_weight = (
+        torch.randn(4096, hidden_size, device="cuda", dtype=torch.bfloat16)
+        / hidden_size**0.5
+    )
+    pre_attention = SlotPreAttention(
+        norm_weight, qkv_weight, head_weight, head_weight, 1e-6
+    )
+    hidden_states = torch.randn(
+        batch_size, hidden_size, device="cuda", dtype=torch.bfloat16
+    )
+    positions = torch.arange(batch_size, device="cuda", dtype=torch.long)
+    slots = positions.to(torch.int32 if batch_size == 7 else torch.int64) * 2 + 1
+    key_cache = torch.randn(
+        4 * batch_size + 8, 8, 128, device="cuda", dtype=torch.bfloat16
+    )
+    value_cache = torch.randn_like(key_cache)
+    angles = (
+        torch.arange(rope_positions, device="cuda")[:, None]
+        * (1_000_000.0 ** (-torch.arange(0, 128, 2, device="cuda").float() / 128))[
+            None, :
+        ]
+    )
+    rope = torch.cat((angles.cos(), angles.sin()), dim=-1)
+    if batch_size == 7:
+        rope = rope.bfloat16()
+    else:
+        pass
+    pre_attention(hidden_states, positions, rope, slots, key_cache, value_cache)
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        actual_queries = pre_attention(
+            hidden_states, positions, rope, slots, key_cache, value_cache
+        )
+    for step in range(3):
+        hidden_states.normal_()
+        positions.copy_(
+            (torch.arange(batch_size, device="cuda") * 3 + step) % rope_positions
+        )
+        slots.copy_(torch.arange(batch_size, device="cuda") * 2 + step)
+        previous_keys, previous_values = key_cache.clone(), value_cache.clone()
+        graph.replay()
+        normalized = rounded_rmsnorm(hidden_states, norm_weight)
+        queries, keys, values = F.linear(normalized, qkv_weight).split(
+            (2048, 1024, 1024), dim=-1
+        )
+        queries = rounded_rmsnorm(queries.reshape(batch_size, 16, 128), head_weight)
+        keys = rounded_rmsnorm(keys.reshape(batch_size, 8, 128), head_weight)
+        cosine, sine = rope[positions].bfloat16().chunk(2, dim=-1)
+        cosine = cosine.repeat(1, 2)[:, None, :]
+        sine = sine.repeat(1, 2)[:, None, :]
+        queries = (
+            queries * cosine
+            + torch.cat((-queries[..., 64:], queries[..., :64]), dim=-1) * sine
+        )
+        keys = (
+            keys * cosine + torch.cat((-keys[..., 64:], keys[..., :64]), dim=-1) * sine
+        )
+        torch.testing.assert_close(
+            actual_queries, queries.flatten(1), atol=0.02, rtol=0.02
+        )
+        torch.testing.assert_close(key_cache[slots], keys, atol=0.02, rtol=0.02)
+        torch.testing.assert_close(
+            value_cache[slots], values.reshape(batch_size, 8, 128), atol=0.02, rtol=0.02
+        )
+        untouched = torch.ones(key_cache.shape[0], device="cuda", dtype=torch.bool)
+        untouched[slots] = False
+        torch.testing.assert_close(
+            key_cache[untouched], previous_keys[untouched], atol=0, rtol=0
+        )
+        torch.testing.assert_close(
+            value_cache[untouched], previous_values[untouched], atol=0, rtol=0
+        )
+
+    output_weight = (
+        torch.randn(hidden_size, 2048, device="cuda", dtype=torch.bfloat16) / 2048**0.5
+    )
+    gate_weight = (
+        torch.randn(3 * hidden_size, hidden_size, device="cuda", dtype=torch.bfloat16)
+        / hidden_size**0.5
+    )
+    up_weight = torch.randn_like(gate_weight) / hidden_size**0.5
+    down_weight = (
+        torch.randn(hidden_size, 3 * hidden_size, device="cuda", dtype=torch.bfloat16)
+        / (3 * hidden_size) ** 0.5
+    )
+    post_attention = PackedPostAttention(
+        output_weight, gate_weight, up_weight, down_weight, norm_weight, 1e-6
+    )
+    attention = torch.randn(batch_size, 2048, device="cuda", dtype=torch.bfloat16)
+    post_attention(attention, hidden_states)
+    torch.cuda.synchronize()
+    post_graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(post_graph):
+        actual_output = post_attention(attention, hidden_states)
+    for _ in range(3):
+        hidden_states.normal_()
+        attention.normal_()
+        post_graph.replay()
+        residual = F.linear(attention, output_weight) + hidden_states
+        normalized = rounded_rmsnorm(residual, norm_weight)
+        activated = F.silu(F.linear(normalized, gate_weight)) * F.linear(
+            normalized, up_weight
+        )
+        expected = F.linear(activated, down_weight) + residual
+        torch.testing.assert_close(actual_output, expected, atol=0.02, rtol=0.02)
 
 
 def test_predictor_triton_kernel_is_disabled_on_npu(

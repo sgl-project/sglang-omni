@@ -29,6 +29,7 @@ from sglang.srt.layers.linear import RowParallelLinear
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.layers.quantization.unquant import get_bf16_gemm_backend
 from sglang.srt.layers.sampler import multinomial_with_seed
+from sglang.srt.model_executor.forward_context import get_token_to_kv_pool
 from sglang.srt.runtime_context import get_context, get_exec, get_parallel, get_schedule
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import add_prefix
@@ -45,6 +46,14 @@ from sglang_omni.models.qwen3_omni.components.thinker_model import (
 )
 from sglang_omni.models.qwen3_tts.compat import (
     apply_qwen_tts_transformers_compatibility_patches,
+)
+from sglang_omni.models.qwen3_tts.cutedsl.runtime import (
+    HEAD_DIM,
+    KV_HEADS,
+    MAX_DECODE_ROWS,
+    QTTS_BACKEND,
+    QUERY_HEADS,
+    QUERY_WIDTH,
 )
 from sglang_omni.models.qwen3_tts.predictor_kernels import (
     gather_codec_embedding_and_add,
@@ -71,7 +80,11 @@ from sglang_omni.utils.predictor_layers import resolve_fused_predictor_layers
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.distributed import get_group_rank_size
 from sglang_omni.vendor.sglang.layers import ReplicatedLinear, RMSNorm
-from sglang_omni.vendor.sglang.models import FusedSetKVBufferArg, apply_qk_norm
+from sglang_omni.vendor.sglang.models import (
+    FusedSetKVBufferArg,
+    apply_qk_norm,
+    enable_fused_set_kv_buffer,
+)
 
 if TYPE_CHECKING:
     from qwen_tts import Qwen3TTSTokenizer
@@ -86,6 +99,18 @@ else:
     pass
 
 logger = logging.getLogger(__name__)
+
+if QTTS_BACKEND == "cutedsl":
+    from sglang_omni.models.qwen3_tts.cutedsl.argmax_embedding import argmax_embedding
+    from sglang_omni.models.qwen3_tts.cutedsl.embedding_update import embedding_update
+    from sglang_omni.models.qwen3_tts.cutedsl.runtime import supports_auxiliary
+    from sglang_omni.models.qwen3_tts.cutedsl.sampling import (
+        sample_logits,
+        sample_sorted,
+    )
+    from sglang_omni.models.qwen3_tts.cutedsl_backend import build_cutedsl_layers
+else:
+    pass
 
 PredictorGraphSignature: TypeAlias = tuple[
     Literal["argmax", "sampled"], int, bool, bool, bool
@@ -368,6 +393,7 @@ class Qwen3TTSTalkerTextModel(nn.Module):
         self.start_layer = 0
         self.end_layer = config.num_hidden_layers
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.cutedsl_layers: nn.ModuleList | None = None
 
         max_batch_size = get_schedule().max_running_requests
         self.decode_feedback_embedding = nn.Embedding(
@@ -395,6 +421,43 @@ class Qwen3TTSTalkerTextModel(nn.Module):
             hidden_states = self.decode_feedback_embedding(input_ids)
         else:
             hidden_states = input_embeds
+
+        if (
+            self.cutedsl_layers is not None
+            and forward_batch.forward_mode.is_decode()
+            and 1 <= hidden_states.shape[0] <= MAX_DECODE_ROWS
+            and enable_fused_set_kv_buffer(forward_batch)
+        ):
+            cache_pool = get_token_to_kv_pool()
+            first_cache = cache_pool.get_key_buffer(self.start_layer)
+            if (
+                first_cache.dtype == torch.bfloat16
+                and first_cache.is_contiguous()
+                and first_cache.shape[1:] == (KV_HEADS, HEAD_DIM)
+            ):
+                token_positions = positions[0] if positions.ndim == 2 else positions
+                for idx in range(self.start_layer, self.end_layer):
+                    attention = self.layers[idx].self_attn
+                    fused_layer = self.cutedsl_layers[idx]
+                    q = fused_layer.pre_attention(
+                        hidden_states,
+                        token_positions,
+                        attention.rotary_emb.cos_sin_cache,
+                        forward_batch.out_cache_loc,
+                        cache_pool.get_key_buffer(attention.layer_id),
+                        cache_pool.get_value_buffer(attention.layer_id),
+                    )
+                    attention_output = attention.attn(
+                        q, None, None, forward_batch, save_kv_cache=False
+                    )
+                    hidden_states = fused_layer.post_attention(
+                        attention_output, hidden_states
+                    )
+                return self.norm(hidden_states)
+            else:
+                pass
+        else:
+            pass
 
         residual = None
         layers = self.layers
@@ -1084,6 +1147,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         self.predictor_fused_layers = resolve_fused_predictor_layers(
             self.code_predictor, predictor_len, max_batch_size, device, dtype
         )
+        self.predictor_cutedsl_layers: nn.ModuleList | None = None
         self.sampled_token_ids = torch.zeros(
             max_batch_size, dtype=torch.long, device=device
         )
@@ -1780,7 +1844,6 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             embedding_buffer = embedding_buffer[:batch_size]
         else:
             pass
-        use_fused_embedding = embedding_buffer is not None and layer0_codes.is_cuda
         projected_tables = self.predictor_projected_embeddings
         if projected_tables is None:
             projected_buffer = None
@@ -1834,59 +1897,23 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                 should_gather_projection = (
                     projected_tables is not None and has_next_step
                 )
-                projected_weight = (
-                    projected_tables[layer_idx] if should_gather_projection else None
-                )
-                projected = projected_buffer if should_gather_projection else None
-                fused_embedding = (
-                    use_fused_embedding and embedding_buffer.dtype == predictor_dtype
-                )
-                fused_step = fused_embedding and self.sample_subtalker_token_and_gather(
+                new_embed, projected_embed = self.sample_subtalker_embedding(
                     logits[:, -1, :],
-                    sub_positions=layer_sub_positions,
-                    codes=pos_codes[:, layer_idx + 1],
-                    codec_table=codec_table,
-                    gathered=embedding_buffer,
-                    summed=pos_summed,
-                    projected_weight=projected_weight,
-                    projected=projected,
+                    codec_table,
+                    pos_summed,
+                    pos_codes[:, layer_idx + 1],
+                    projected_tables[layer_idx] if should_gather_projection else None,
+                    embedding_buffer,
+                    projected_buffer if should_gather_projection else None,
+                    layer_sub_positions,
                 )
-                if not fused_step:
-                    next_code = self.sample_subtalker_token(
-                        logits[:, -1, :], sub_positions=layer_sub_positions
-                    )
-                    pos_codes[:, layer_idx + 1].copy_(next_code)
-                    fused_embedding = (
-                        fused_embedding
-                        and gather_codec_embedding_and_add(
-                            next_code,
-                            codec_table,
-                            embedding_buffer,
-                            pos_summed,
-                            projected_weight=projected_weight,
-                            projected=projected,
-                        )
-                    )
-                else:
-                    pass
-                if fused_embedding:
-                    new_embed = embedding_buffer.unsqueeze(1)
-                else:
-                    new_embed = torch.nn.functional.embedding(
-                        next_code.unsqueeze(1), codec_table
-                    ).to(dtype=predictor_dtype)
-                    pos_summed.add_(new_embed[:, 0, :])
                 if has_next_step:
                     if projected_tables is None:
                         new_predictor_embed = self.code_predictor.project_input(
-                            new_embed
+                            new_embed.unsqueeze(1)
                         )
-                    elif fused_embedding:
-                        new_predictor_embed = projected_buffer.unsqueeze(1)
                     else:
-                        new_predictor_embed = torch.nn.functional.embedding(
-                            next_code.unsqueeze(1), projected_tables[layer_idx]
-                        )
+                        new_predictor_embed = projected_embed.unsqueeze(1)
                     last_hidden = self.predictor_forward_tokens(
                         token_embeds=new_predictor_embed,
                         batch_size=batch_size,
@@ -1896,6 +1923,108 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                 else:
                     pass
         return result_codes, summed_embeddings
+
+    def sample_subtalker_embedding(
+        self,
+        logits: torch.Tensor,
+        codec_table: torch.Tensor,
+        accumulated: torch.Tensor,
+        output_codes: torch.Tensor,
+        projected_table: torch.Tensor | None,
+        embedding_buffer: torch.Tensor | None,
+        projected_buffer: torch.Tensor | None,
+        sub_positions: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Select a codec token, write its code, and gather and accumulate its embeddings."""
+        use_cutedsl = (
+            QTTS_BACKEND == "cutedsl"
+            and supports_auxiliary(logits)
+            and logits.shape[1] == 2048
+            and logits.is_contiguous()
+            and codec_table.dtype == torch.bfloat16
+            and codec_table.shape[1] in (1024, 2048)
+            and codec_table.is_contiguous()
+            and accumulated.dtype == torch.bfloat16
+            and accumulated.is_contiguous()
+        )
+        if use_cutedsl and not self.sub_has_sampled_rows:
+            _, embedding, projected = argmax_embedding(
+                logits,
+                codec_table,
+                projected_table,
+                accumulated=accumulated,
+                out_codes=output_codes,
+            )
+            return embedding, projected
+        elif (
+            use_cutedsl
+            and not self.sub_has_argmax_rows
+            and not self.sub_sampled_has_unbounded_top_k
+            and self.sub_sampled_max_top_k in (50, 64, 128)
+        ):
+            # note (Hao Wang): smaller top-k buckets retain PyTorch's distinct tie ordering.
+            batch_size = logits.shape[0]
+            _, embedding, projected = sample_logits(
+                logits,
+                self.sub_temperature_tensor[:batch_size],
+                self.sub_top_k_tensor[:batch_size],
+                self.sub_top_p_tensor[:batch_size],
+                self.sub_sampling_seed_tensor[:batch_size],
+                sub_positions,
+                max_top_k=self.sub_sampled_max_top_k,
+                table=codec_table,
+                accumulated=accumulated,
+                projected_table=projected_table,
+                out_codes=output_codes,
+            )
+            return embedding, projected
+        elif (
+            not use_cutedsl
+            and embedding_buffer is not None
+            and embedding_buffer.dtype == accumulated.dtype
+            and self.sample_subtalker_token_and_gather(
+                logits,
+                sub_positions=sub_positions,
+                codes=output_codes,
+                codec_table=codec_table,
+                gathered=embedding_buffer,
+                summed=accumulated,
+                projected_weight=projected_table,
+                projected=projected_buffer,
+            )
+        ):
+            return embedding_buffer, projected_buffer
+        else:
+            next_code = self.sample_subtalker_token(logits, sub_positions=sub_positions)
+            output_codes.copy_(next_code)
+        if use_cutedsl:
+            return embedding_update(
+                next_code, codec_table, accumulated, projected_table
+            )
+        elif (
+            embedding_buffer is not None
+            and embedding_buffer.dtype == accumulated.dtype
+            and gather_codec_embedding_and_add(
+                next_code,
+                codec_table,
+                embedding_buffer,
+                accumulated,
+                projected_table,
+                projected_buffer,
+            )
+        ):
+            return embedding_buffer, projected_buffer
+        else:
+            embedding = torch.nn.functional.embedding(next_code, codec_table).to(
+                accumulated.dtype
+            )
+            accumulated.add_(embedding)
+            projected = (
+                torch.nn.functional.embedding(next_code, projected_table)
+                if projected_table is not None
+                else None
+            )
+            return embedding, projected
 
     def normalize_semantic_positions(
         self,
@@ -2085,6 +2214,14 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             torch.full_like(sorted_probs, -float("inf")),
         )
 
+        if (
+            QTTS_BACKEND == "cutedsl"
+            and supports_auxiliary(logits)
+            and sorted_logprobs.shape[1] <= 2048
+        ):
+            return sample_sorted(sorted_logprobs, sorted_idx, seeds, sub_positions)
+        else:
+            pass
         sampled = sample_from_sorted_logprobs_with_seed_small_k(
             sorted_logprobs,
             sorted_idx,
@@ -2121,6 +2258,45 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             positions = self.predictor_pair_positions[: 2 * batch_size]
             cache_slots = self.predictor_pair_cache_slots[: 2 * batch_size]
         num_rows = batch_size * num_tokens
+        if (
+            self.predictor_cutedsl_layers is not None
+            and 1 <= num_rows <= MAX_DECODE_ROWS
+        ):
+            hidden_states = token_embeds.reshape(num_rows, hidden_size)
+            end = cache_len + num_tokens
+            for layer_idx, fused_layer in enumerate(self.predictor_cutedsl_layers):
+                attention = self.code_predictor.model.layers[layer_idx].self_attn
+                q = fused_layer.pre_attention(
+                    hidden_states,
+                    positions,
+                    attention.rotary_emb.cos_sin_cache,
+                    cache_slots,
+                    self.predictor_k_rows[layer_idx].view(-1, KV_HEADS, HEAD_DIM),
+                    self.predictor_v_rows[layer_idx].view(-1, KV_HEADS, HEAD_DIM),
+                )
+                attention_output = predictor_gqa_attention(
+                    q.view(batch_size, num_tokens, QUERY_HEADS, HEAD_DIM).transpose(
+                        1, 2
+                    ),
+                    self.predictor_k_cache[layer_idx, :batch_size, :end].transpose(
+                        1, 2
+                    ),
+                    self.predictor_v_cache[layer_idx, :batch_size, :end].transpose(
+                        1, 2
+                    ),
+                    num_heads=QUERY_HEADS,
+                    num_key_value_heads=KV_HEADS,
+                    is_causal=num_tokens > 1,
+                )
+                hidden_states = fused_layer.post_attention(
+                    attention_output.transpose(1, 2).reshape(num_rows, QUERY_WIDTH),
+                    hidden_states,
+                )
+            return self.code_predictor.model.norm(hidden_states).view(
+                batch_size, num_tokens, hidden_size
+            )
+        else:
+            pass
         fused = self.predictor_fused_layers
         if fused is not None and fused.covers(num_rows):
             return fused.forward(
@@ -2379,6 +2555,26 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                 self.code_predictor.model.codec_embedding.weight,
             ):
                 table.copy_(self.code_predictor.project_input(codec_table))
+
+        if QTTS_BACKEND == "cutedsl":
+            if get_parallel().tp_size != 1:
+                logger.warning("CuTeDSL decode disabled for tensor parallelism")
+            elif (
+                get_exec().deterministic.enable_deterministic_inference
+                or is_batch_invariant_mode_enabled()
+            ):
+                logger.warning("CuTeDSL decode disabled for deterministic inference")
+            else:
+                self.model.cutedsl_layers = build_cutedsl_layers(self.model.layers)
+                self.predictor_cutedsl_layers = build_cutedsl_layers(
+                    self.code_predictor.model.layers
+                )
+                logger.info(
+                    f"Qwen3-TTS CuTeDSL decode: talker={self.model.cutedsl_layers is not None}, "
+                    f"predictor={self.predictor_cutedsl_layers is not None}; token rows <=32"
+                )
+        else:
+            pass
 
 
 EntryClass = Qwen3TTSTalker

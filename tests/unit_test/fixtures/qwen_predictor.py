@@ -110,6 +110,7 @@ def build_real_step_predictor_graph_talker(
     talker.predictor_exact_add_norm = False
     talker.predictor_triton_attention = False
     talker.predictor_fused_layers = None
+    talker.predictor_cutedsl_layers = None
     talker.predictor_decode_graph_batch_sizes = (1, 2, 4)
     talker.predictor_decode_graphs = {}
     talker.predictor_decode_graph_disabled = set()
