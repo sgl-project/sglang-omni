@@ -12,13 +12,12 @@ from pathlib import Path
 import numpy as np
 from pydantic import JsonValue
 
-from benchmarks.duplex.client import PACKET_MS, SAMPLE_RATE, SEND_RECEIPTS_FILE
+from benchmarks.duplex.client import PACKET_MS, SEND_RECEIPTS_FILE
 from benchmarks.duplex.oracle_models import MediaTime, TraceRecord, WireEvent
 from benchmarks.duplex.profiles import PROFILES, ProfileName
 from benchmarks.duplex.run_artifacts import load_run
 from benchmarks.duplex.v15_audio import AUDIO_DELTA, LEGACY_AUDIO_DELTA
 
-INPUT_BYTES_PER_MS = SAMPLE_RATE * 2 / 1000
 # note (jeffro): a not_exercised session kept the protocol; its model output just
 # never overlapped the input, so its timing is complete and it is scored.
 SCORED_STATUSES = ("pass", "not_exercised")
@@ -29,9 +28,11 @@ MAX_UNIT_MISS_RATE = 0.01
 MAX_REPLY_REAL_TIME_FACTOR = 1.0
 
 
-def input_units(variant_dir: Path, unit_ms: int) -> int:
+def input_units(variant_dir: Path, unit_ms: int, input_sample_rate: int) -> int:
     """Units the session's input fills, counting the padded last one."""
-    input_ms = (variant_dir / "input.pcm").stat().st_size / INPUT_BYTES_PER_MS
+    input_ms = (variant_dir / "input.pcm").stat().st_size / (
+        input_sample_rate * 2 / 1000
+    )
     return math.ceil(input_ms / unit_ms)
 
 
@@ -180,7 +181,11 @@ def score_session(
             }
         )
 
-    units_expected = input_units(variant_dir, unit_ms) if is_native else None
+    units_expected = (
+        input_units(variant_dir, unit_ms, PROFILES[profile].input_sample_rate)
+        if is_native
+        else None
+    )
     return {
         "unit_ms": unit_ms,
         "units_expected": units_expected,
@@ -221,7 +226,11 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
     # note (jeffro): every unit of a session that broke off is missed, so a failure
     # cannot lower the miss rate.
     failed_units = sum(
-        input_units(run_dir / variant_state["directory"], unit_ms)
+        input_units(
+            run_dir / variant_state["directory"],
+            unit_ms,
+            PROFILES[profile].input_sample_rate,
+        )
         for variant_state in attempted
         if variant_state["status"] in FAILED_STATUSES
     )

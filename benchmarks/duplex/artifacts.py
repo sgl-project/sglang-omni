@@ -33,7 +33,7 @@ class InputArtifact(BaseModel):
 
     file: str
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    sample_rate: Literal[16000]
+    sample_rate: int = Field(gt=0)
 
 
 class CaseArtifact(BaseModel):
@@ -56,7 +56,7 @@ class RunManifest(BaseModel):
     cases: list[CaseArtifact] = Field(min_length=1)
 
 
-HARNESS_PACKAGES = ("websockets", "numpy", "pydantic", "soundfile")
+HARNESS_PACKAGES = ("websockets", "numpy", "pydantic", "soundfile", "scipy")
 SHA_PATTERN = r"[0-9a-f]{40}"
 
 
@@ -162,6 +162,7 @@ def source_fingerprint() -> dict[str, JsonValue]:
         "benchmarks/duplex/oracle.py",
         "benchmarks/duplex/oracle_models.py",
         "benchmarks/duplex/profiles.py",
+        "benchmarks/duplex/v15_audio.py",
         "benchmarks/duplex/artifacts.py",
         "benchmarks/eval/benchmark_duplex.py",
     )
@@ -226,6 +227,10 @@ def replay_run(run_dir: Path) -> dict[str, JsonValue]:
         (run_dir / "manifest.json").read_text(encoding="utf-8")
     )
     input_errors: list[str] = []
+    if manifest.input.sample_rate != PROFILES[manifest.profile].input_sample_rate:
+        input_errors.append("input sample rate does not match profile")
+    else:
+        pass
     try:
         pcm = artifact_path(run_dir, manifest.input.file).read_bytes()
         if hashlib.sha256(pcm).hexdigest() != manifest.input.sha256:

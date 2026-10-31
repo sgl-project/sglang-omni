@@ -62,6 +62,33 @@ curl -s localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -
 
 PersonaPlex also serves live full-duplex voice sessions on `/v1/realtime` with its `session` variant. Launching, settings and the protocol are in [Full Duplex Interactive Model](../developer_reference/full_duplex_guide.md#native-full-duplex-personaplex).
 
+### Duplex serving benchmark
+
+The shared recorder supports `--profile personaplex`: 80 ms input units, mono 24 kHz PCM16 input and output, and continuous output. Dataset audio is resampled before sessions start; `input.pcm`, `input.wav` and the input manifest describe the actual transmitted audio. Replay checks one extra 80 ms output frame at the start of each nonempty call, including calls whose final input unit needs padding. The empty end-of-input unit contributes no audio.
+
+For a single-call protocol check, start the session server above and record a mono 16 kHz PCM16 WAV with trailing silence:
+
+```bash
+python -m benchmarks.eval.benchmark_duplex \
+  --url ws://localhost:8000/v1/realtime \
+  --profile personaplex --audio caller.wav --output personaplex-smoke \
+  --server-revision "$SERVER_REVISION" --model nvidia/personaplex-7b-v1
+python -m benchmarks.duplex.artifacts personaplex-smoke
+```
+
+Set `SERVER_REVISION` to the server checkout's full commit SHA. For an FDB v1.5 serving run, set `FDB_ROOT` to the dataset directory, set `FDB_REVISION` to its release or archive digest, and keep the requested concurrency within the server's `--max_sessions`:
+
+```bash
+python -m benchmarks.eval.benchmark_duplex_serving sweep \
+  --dataset v1.5 --concurrency 1 --output personaplex-serving -- \
+  --url ws://localhost:8000/v1/realtime --profile personaplex \
+  --dataset-root "$FDB_ROOT" --dataset-revision "$FDB_REVISION" \
+  --server-revision "$SERVER_REVISION" \
+  --model nvidia/personaplex-7b-v1
+```
+
+The serving report counts input units at 24 kHz, measures lag from input-send completion, and excludes empty end-of-input units. Inspect `serving.json` and `SERVING.md` for the 80 ms serving deadline verdict. FDB `reference-export` requires 16 kHz recorded input and rejects this profile.
+
 ## Request parameters
 
 | Parameter | Effect |

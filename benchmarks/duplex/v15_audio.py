@@ -63,8 +63,10 @@ def write_json(path: Path, value: JsonValue) -> None:
     os.replace(partial_path, path)
 
 
-def normalize_audio(path: Path) -> tuple[bytes, dict[str, JsonValue]]:
-    """Convert to mono 16 kHz PCM16 without trimming, padding or channel picking."""
+def normalize_audio(
+    path: Path, *, sample_rate: int = SAMPLE_RATE
+) -> tuple[bytes, dict[str, JsonValue]]:
+    """Convert to mono PCM16 at sample_rate without trimming, padding or channel picking."""
     source_audio = soundfile.info(str(path))
     record: dict[str, JsonValue] = {
         "source_sample_rate": source_audio.samplerate,
@@ -77,7 +79,7 @@ def normalize_audio(path: Path) -> tuple[bytes, dict[str, JsonValue]]:
         "clipped_samples": 0,
     }
     if (source_audio.samplerate, source_audio.channels, source_audio.subtype) == (
-        SAMPLE_RATE,
+        sample_rate,
         1,
         "PCM_16",
     ):
@@ -95,10 +97,10 @@ def normalize_audio(path: Path) -> tuple[bytes, dict[str, JsonValue]]:
         else:
             pass
         samples = audio[:, 0]
-        if source_audio.samplerate != SAMPLE_RATE:
-            divisor = math.gcd(SAMPLE_RATE, source_audio.samplerate)
+        if source_audio.samplerate != sample_rate:
+            divisor = math.gcd(sample_rate, source_audio.samplerate)
             upsample_factor, downsample_factor = (
-                SAMPLE_RATE // divisor,
+                sample_rate // divisor,
                 source_audio.samplerate // divisor,
             )
             samples = resample_poly(samples, upsample_factor, downsample_factor)
@@ -207,7 +209,7 @@ def reconstruct_output(
             if legacy:
                 input_end_s = source_start_ms / 1000 + len(
                     base64.b64decode(event["audio"], validate=True)
-                ) / (2 * SAMPLE_RATE)
+                ) / (2 * profile_contract.input_sample_rate)
             else:
                 pass
         elif (
