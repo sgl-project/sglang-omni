@@ -228,14 +228,17 @@ def test_auk_serial_offload_accelerated_recovery(
     else:
         pass
     log_path = tmp_path / f"{source}-recovery.log"
+    recovery_script = (
+        "import sys; from tests.test_model.auk_offload_helpers import "
+        "run_recovery_and_long_requests; "
+        "run_recovery_and_long_requests(sys.argv[1], sys.argv[2])"
+    )
     with log_path.open("w") as log:
         process = subprocess.run(
             [
                 sys.executable,
                 "-c",
-                "import sys; from tests.test_model.auk_offload_helpers import "
-                "run_recovery_and_long_requests; "
-                "run_recovery_and_long_requests(sys.argv[1], sys.argv[2])",
+                recovery_script,
                 source,
                 str(tmp_path),
             ],

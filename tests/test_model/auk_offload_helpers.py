@@ -102,10 +102,10 @@ def measured_server(
                             anonymous_rss_bytes += int(match[1]) * 1024 if match else 0
                         except (
                             psutil.NoSuchProcess,
-                            psutil.AccessDenied,
                             FileNotFoundError,
                             ProcessLookupError,
                         ):
+                            # note (guozhihao-224): Children may exit between process enumeration and sampling.
                             pass
                     measurements.samples.append(
                         (
