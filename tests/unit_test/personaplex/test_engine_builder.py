@@ -181,7 +181,7 @@ def test_backbone_config_selects_only_windowed_layers() -> None:
         (False, "cpu", 1),
     ],
 )
-def test_window_kv_uses_resolved_device_and_cache_settings(
+def test_window_kv_uses_resolved_device_and_page_size(
     monkeypatch: pytest.MonkeyPatch,
     is_cuda_host: bool,
     device: Literal["cuda", "cpu"],

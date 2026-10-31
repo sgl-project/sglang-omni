@@ -149,11 +149,11 @@ class PersonaPlexEngineBuilder(TtsEngineBuilder[SGLangARRequestData]):
             )
 
     def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
-        # note (Jinjie Guo): A radix hit would reuse another voice's prompt KV.
         if not resolved_view(server_args).disable_radix_cache:
             raise ValueError(
                 "PersonaPlex needs disable_radix_cache=True: its prompt ids do not "
-                "identify the voice"
+                "identify the voice, so a radix hit would reuse another voice's "
+                "prompt KV"
             )
         else:
             pass
