@@ -666,7 +666,8 @@ differing clips diverge.</p></li>
 <li><p>Pin every checkpoint file by revision and SHA-256 in <code class="docutils literal notranslate"><span class="pre">ci/model_pins.json</span></code>.</p></li>
 <li><p>Add a golden under <code class="docutils literal notranslate"><span class="pre">ci/model_golden/</span></code>. Import the Mac CI runner’s outputs
 (<code class="docutils literal notranslate"><span class="pre">golden-outputs</span></code> artifact, <code class="docutils literal notranslate"><span class="pre">--import</span></code>) so the runner checks exactly. A
-speech model’s golden holds seeded requests’ codes (<code class="docutils literal notranslate"><span class="pre">ci/voxtral_golden.py</span></code>).</p></li>
+speech model’s golden holds seeded requests’ codes (<code class="docutils literal notranslate"><span class="pre">ci/voxtral_golden.py</span></code>,
+<code class="docutils literal notranslate"><span class="pre">ci/qwen3_tts_golden.py</span></code>).</p></li>
 <li><p>Add a second golden for paths the corpus misses (long-audio chunking, VAD).</p></li>
 </ul>
 <p><strong>Tests</strong></p>
