@@ -15,6 +15,8 @@ permissions:
 
 env:
   HF_FILE: mlx-community/Qwen3-ASR-1.7B-8bit/resolve/a8379a2e2f9e313c9292cdf1af4055ab56d50d55/model.safetensors
+  # The same file: ModelScope mirrors mlx-community with matching SHA-256.
+  MODELSCOPE_FILE: mlx-community/Qwen3-ASR-1.7B-8bit/resolve/master/model.safetensors
 
 jobs:
   network:
@@ -68,16 +70,29 @@ jobs:
           edge "https://huggingface.co/$HF_FILE"
           probe "huggingface.co, IPv4 only" -4 "${range[@]}" "https://huggingface.co/$HF_FILE"
           probe "hf-mirror.com" "${range[@]}" "https://hf-mirror.com/$HF_FILE"
+          probe "modelscope.cn" "${range[@]}" "https://www.modelscope.cn/models/$MODELSCOPE_FILE"
+          edge "https://www.modelscope.cn/models/$MODELSCOPE_FILE"
           probe "openslr.org" "${range[@]}" "https://www.openslr.org/resources/12/test-clean.tar.gz"
           probe "github.com release asset" "${range[@]}" "https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-macOS-ARM64.tar.xz"
-          probe "speed.cloudflare.com" "https://speed.cloudflare.com/__down?bytes=200000000"
+          # Note (XXXXRT666): the endpoint answers 403 from 100 MB up.
+          probe "speed.cloudflare.com" "https://speed.cloudflare.com/__down?bytes=50000000"
           edge "https://speed.cloudflare.com/__down?bytes=1000"
+
+      - name: Link capacity (networkQuality)
+        run: |
+          networkQuality -c -M 40 > "$RUNNER_TEMP/network-quality.json"
+          python3 - "$RUNNER_TEMP/network-quality.json" <<'EOF'
+          import json, sys
+
+          result = json.load(open(sys.argv[1]))
+          print(f"interface {result.get('interface_name')}: download {result['dl_throughput'] / 1e6:.0f} Mbps ({result['dl_throughput'] / 8e6:.1f} MB/s), upload {result['ul_throughput'] / 1e6:.0f} Mbps, base RTT {result.get('base_rtt', 0):.0f} ms, responsiveness {result.get('responsiveness', 0):.0f} RPM")
+          EOF
 
       - name: One connection against four
         run: |
           # The same 200 MB of the Hugging Face file, as one range or as four ranges at once.
           url="https://huggingface.co/$HF_FILE"
-          start=$(python3 -c 'import time; print(time.monotonic())')
+          start=$(python3 -c 'import time; print(time.time())')
           for part in 0 1 2 3; do
             curl -sS -L -r "$((part * 50000000))-$((part * 50000000 + 49999999))" --max-time 20 -o /dev/null -w "%{size_download}\n" "$url" > "$RUNNER_TEMP/part-$part" 2>/dev/null &
           done
@@ -86,7 +101,7 @@ jobs:
           import sys, time
           from pathlib import Path
 
-          elapsed_seconds = time.monotonic() - float(sys.argv[1])
+          elapsed_seconds = time.time() - float(sys.argv[1])
           total_bytes = sum(int(Path(sys.argv[2], f"part-{part}").read_text() or 0) for part in range(4))
           print(f"four connections: {total_bytes / 1e6:.0f} MB in {elapsed_seconds:.1f} s = {total_bytes / 1e6 / elapsed_seconds:.1f} MB/s")
           EOF
