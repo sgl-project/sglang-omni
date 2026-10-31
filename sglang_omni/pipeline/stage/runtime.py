@@ -393,6 +393,7 @@ class Stage:
         self.receive_tasks.clear()
         self.receive_lane_tails.clear()
         if self.scheduler is not None:
+            is_speculative_overlap = getattr(self.scheduler, "enable_overlap", False)
             try:
                 self.scheduler.stop()
             except Exception as exc:
@@ -401,23 +402,26 @@ class Stage:
             # model-path events from its own finally, and the MPS validation
             # stage reads those files right after stop() returns, so wait for
             # the thread instead of letting a daemon thread be reclaimed at
-            # process exit. A slow thread is logged, not fatal: shutdown
-            # correctness must not start depending on this timeout.
+            # process exit.
             scheduler_thread = self.scheduler_thread
             if scheduler_thread is not None:
                 try:
+                    # note (YzXiao): the parent process enforces the shutdown deadline while speculative work drains.
                     await asyncio.to_thread(
                         scheduler_thread.join,
-                        _SCHEDULER_THREAD_JOIN_TIMEOUT_S,
+                        (
+                            None
+                            if is_speculative_overlap
+                            else _SCHEDULER_THREAD_JOIN_TIMEOUT_S
+                        ),
                     )
                 except Exception as exc:
                     _record_cleanup_error("scheduler thread", exc)
                 else:
                     if scheduler_thread.is_alive():
                         logger.warning(
-                            "Stage %s scheduler thread did not stop within %gs",
-                            self.name,
-                            _SCHEDULER_THREAD_JOIN_TIMEOUT_S,
+                            f"Stage {self.name} scheduler thread did not stop within "
+                            f"{_SCHEDULER_THREAD_JOIN_TIMEOUT_S:g}s"
                         )
                     else:
                         self.scheduler_thread = None
