@@ -6,14 +6,17 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import io
 import itertools
 import json
 import shutil
 import sys
+import threading
 import time
 import wave
 from http import HTTPStatus
-from pathlib import Path
+from pathlib import Path, PosixPath
+from typing import Literal
 
 import pytest
 import websockets
@@ -21,10 +24,12 @@ from pydantic import JsonValue
 from websockets.asyncio.server import ServerConnection
 from websockets.http11 import Request, Response
 
+import benchmarks.duplex.client as client
 from benchmarks.duplex.client import (
     ADMISSION_RETRIES,
     PACKET_MS,
     POST_CLOSE_SECONDS,
+    SEND_RECEIPTS_FILE,
     run_session,
 )
 from benchmarks.duplex.oracle import evaluate_trace
@@ -107,6 +112,95 @@ def test_client_records_complete_native_session(tmp_path: Path) -> None:
     )
 
     assert "response.cancel" not in [event["type"] for event in peer.received]
+
+
+NON_ASCII_TRANSCRIPT = "fixturé 你好"
+
+
+class FrameStylePeer(DuplexPeer):
+    async def send(self, websocket: ServerConnection, event: dict) -> None:
+        event["event_id"] = f"server_{len(self.sent)}"
+        event = json.loads(
+            json.dumps(event).replace('"fixture"', json.dumps(NON_ASCII_TRANSCRIPT))
+        )
+        self.sent.append(event)
+        style = len(self.sent) % 3
+        if style == 0:
+            frame = json.dumps(event, indent=1)
+        elif style == 1:
+            frame = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+        else:
+            frame = json.dumps(event)
+        await websocket.send(frame)
+
+
+def test_trace_lines_embed_frames_and_reencode_the_ones_they_cannot(
+    tmp_path: Path,
+) -> None:
+    peer = FrameStylePeer()
+    trace_path = tmp_path / "trace.jsonl"
+    records = asyncio.run(capture_session(peer, trace_path))
+
+    assert evaluate_trace(records)["status"] == "pass"
+    assert [r["event"] for r in records if r["direction"] == "receive"] == peer.sent
+    assert [r["event"] for r in records if r["direction"] == "send"] == peer.received
+    trace = trace_path.read_bytes()
+    assert trace.isascii()
+    assert any(
+        NON_ASCII_TRANSCRIPT in json.dumps(event, ensure_ascii=False)
+        for event in peer.sent
+    )
+    lines = trace.decode("ascii").splitlines()
+    assert len(lines) == len(peer.sent) + len(peer.received)
+    for line, record in zip(lines, records):
+        if record["direction"] == "send":
+            assert line == json.dumps(record)
+        else:
+            pass
+
+
+class StallingBase64:
+    def __init__(self, clock: StalledClock) -> None:
+        self.clock = clock
+
+    def b64encode(self, data: bytes) -> bytes:
+        if not self.clock.offset_s:
+            self.clock.offset_s = FIRST_APPEND_STALL_S
+        else:
+            pass
+        return base64.b64encode(data)
+
+
+class StalledClock:
+    sleep = staticmethod(time.sleep)
+
+    def __init__(self) -> None:
+        self.offset_s = 0.0
+
+    def perf_counter(self) -> float:
+        return time.perf_counter() + self.offset_s
+
+
+FIRST_APPEND_STALL_S = 0.15
+
+
+def test_a_late_first_append_shifts_the_whole_schedule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Replay measures from the first append, so the deadlines must start there too."""
+    clock = StalledClock()
+    monkeypatch.setattr(client, "time", clock)
+    monkeypatch.setattr(client, "base64", StallingBase64(clock))
+    asyncio.run(capture_session(DuplexPeer(), tmp_path / "trace.jsonl"))
+
+    assert clock.offset_s == FIRST_APPEND_STALL_S
+    appends = json.loads((tmp_path / SEND_RECEIPTS_FILE).read_text())["appends"]
+    assert len(appends) == FIXTURE_PACKETS
+    deviations_s = [
+        append["start_s"] - appends[0]["start_s"] - append["seq"] * PACKET_MS / 1000
+        for append in appends
+    ]
+    assert max(abs(value) for value in deviations_s) < PACKET_MS / 1000 / 2
 
 
 @pytest.mark.parametrize(
@@ -321,6 +415,131 @@ def test_client_abandons_a_driver_the_receive_loop_can_no_longer_serve(
     ]
     assert records[-1]["event"]["message"] == "driver stalled after the receive loop"
     assert evaluate_trace(records)["status"] == "fail"
+
+
+# Bounds a write that a blocked event loop could never release.
+BLOCKED_WRITE_FALLBACK_S = 10.0
+
+
+class InputEndPeer(DuplexPeer):
+    """Signals, across threads, that every input packet of its session has arrived."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.input_ended = threading.Event()
+
+    async def send(
+        self, websocket: ServerConnection, event: dict[str, JsonValue]
+    ) -> None:
+        if event["type"] == "sglang.input_audio.ended":
+            self.input_ended.set()
+        else:
+            pass
+        await super().send(websocket, event)
+
+
+class BlockedWritePath(PosixPath):
+    """Session path whose trace or receipts write waits until the other session streamed."""
+
+    blocked_file: Literal["trace", "receipts"] = "trace"
+    other_input_ended = threading.Event()
+    streamed_while_blocked: list[bool] = []
+
+    def wait_for_other_session(self) -> None:
+        """Only the first write waits, so a stalled loop fails after one fallback."""
+        if BlockedWritePath.streamed_while_blocked:
+            pass
+        else:
+            BlockedWritePath.streamed_while_blocked.append(
+                BlockedWritePath.other_input_ended.wait(BLOCKED_WRITE_FALLBACK_S)
+            )
+
+    def open(
+        self,
+        mode: str = "r",
+        buffering: int = -1,
+        encoding: str | None = None,
+        errors: str | None = None,
+        newline: str | None = None,
+    ) -> io.TextIOWrapper:
+        opened_file = super().open(mode, buffering, encoding, errors, newline)
+        if mode == "x" and BlockedWritePath.blocked_file == "trace":
+            write = opened_file.write
+
+            def blocked_write(text: str) -> int:
+                self.wait_for_other_session()
+                return write(text)
+
+            opened_file.write = blocked_write
+        else:
+            pass
+        return opened_file
+
+    def write_text(
+        self,
+        data: str,
+        encoding: str | None = None,
+        errors: str | None = None,
+        newline: str | None = None,
+    ) -> int:
+        if (
+            self.name == SEND_RECEIPTS_FILE
+            and BlockedWritePath.blocked_file == "receipts"
+        ):
+            self.wait_for_other_session()
+        else:
+            pass
+        return super().write_text(data, encoding, errors, newline)
+
+
+@pytest.mark.parametrize("blocked_file", ["trace", "receipts"])
+def test_a_blocked_disk_write_does_not_stall_the_other_sessions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    blocked_file: Literal["trace", "receipts"],
+) -> None:
+    """A write stuck in the kernel stalled the event loop that paces every session."""
+    streaming_peer = InputEndPeer()
+    monkeypatch.setattr(BlockedWritePath, "blocked_file", blocked_file)
+    monkeypatch.setattr(
+        BlockedWritePath, "other_input_ended", streaming_peer.input_ended
+    )
+    monkeypatch.setattr(BlockedWritePath, "streamed_while_blocked", [])
+    blocked_dir, streaming_dir = tmp_path / "blocked", tmp_path / "streaming"
+    blocked_dir.mkdir()
+    streaming_dir.mkdir()
+
+    async def record_both() -> None:
+        async with (
+            websockets.serve(DuplexPeer().handler, "127.0.0.1", 0) as blocked_server,
+            websockets.serve(
+                streaming_peer.handler, "127.0.0.1", 0
+            ) as streaming_server,
+        ):
+            await asyncio.gather(
+                run_session(
+                    f"ws://127.0.0.1:{blocked_server.sockets[0].getsockname()[1]}",
+                    FIXTURE_PCM[: 2 * UNIT_BYTES],
+                    trace_path=BlockedWritePath(blocked_dir / "trace.jsonl"),
+                ),
+                run_session(
+                    f"ws://127.0.0.1:{streaming_server.sockets[0].getsockname()[1]}",
+                    FIXTURE_PCM * 3,
+                    trace_path=streaming_dir / "trace.jsonl",
+                ),
+            )
+
+    asyncio.run(record_both())
+
+    assert BlockedWritePath.streamed_while_blocked[0]
+    for session_dir in (blocked_dir, streaming_dir):
+        records = [
+            json.loads(line)
+            for line in (session_dir / "trace.jsonl").read_text().splitlines()
+        ]
+        assert evaluate_trace(records)["status"] == "pass"
+        receipts = json.loads((session_dir / SEND_RECEIPTS_FILE).read_text())
+        assert len(receipts["appends"]) == len(input_append_records(records))
 
 
 async def run_cli(module: str, *arguments: str) -> tuple[int, str, str]:

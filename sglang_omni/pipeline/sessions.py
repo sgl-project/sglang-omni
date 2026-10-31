@@ -224,6 +224,7 @@ class CoordinatorSessions:
         self.session_graph: SessionGraph | None = None
         self.session_stream_handlers: dict[str, SessionStreamHandler] = {}
         self.session_cleanup_tasks: set[asyncio.Task[None]] = set()
+        self.session_close_wake: asyncio.Event = asyncio.Event()
 
     def owned_session_task(
         self, coroutine: Coroutine[None, None, None]
@@ -251,6 +252,20 @@ class CoordinatorSessions:
         else:
             pass
 
+    def notify_session_closed(self) -> None:
+        """An opened session finished closing: wake the opens a full owner refused, each waiting on the event current when it tried."""
+        self.session_close_wake.set()
+        self.session_close_wake = asyncio.Event()
+
+    def has_closing_sessions(self) -> bool:
+        """A session or graph is releasing its owners; a refused open at full capacity fails at once otherwise."""
+        return any(
+            graph.close_task is not None for graph in self.graphs.values()
+        ) or any(
+            session.is_closing and not session.is_node
+            for session in self.sessions.values()
+        )
+
     def get_session(self, session_identity: SessionIdentity) -> Session:
         session = self.sessions.get(session_identity.id)
         if session is None or session.session_identity != session_identity:
@@ -267,24 +282,48 @@ class CoordinatorSessions:
         limits: SessionLimits | None = None,
         session_id: str | None = None,
     ) -> SessionIdentity:
-        """Open an explicit route, or else the pipeline's declared Session, before accepting input."""
-        if stages is not None:
-            return await self.open_route(
-                request, stages=stages, limits=limits, session_id=session_id
-            )
-        elif self.session_graph is not None:
-            return await self.open_graph(
-                request, graph=self.session_graph, limits=limits, session_id=session_id
-            )
-        elif self.session_route is not None:
-            return await self.open_route(
-                request,
-                stages=self.session_route(),
-                limits=limits,
-                session_id=session_id,
-            )
-        else:
-            raise ValueError("this pipeline declares no Session; pass stages")
+        """Open an explicit route, or else the pipeline's declared Session, before accepting input.
+
+        An open a full owner refuses while another session is closing is retried when that close finishes, until the operation timeout.
+        """
+        limits = limits or SessionLimits()
+        loop = asyncio.get_running_loop()
+        deadline_s = loop.time() + limits.operation_timeout_s
+        while True:
+            # Note (wenyao): Taken before the attempt, so a close that finishes while the refused attempt cleans up still wakes the retry.
+            session_close_wake = self.session_close_wake
+            try:
+                if stages is not None:
+                    return await self.open_route(
+                        request, stages=stages, limits=limits, session_id=session_id
+                    )
+                elif self.session_graph is not None:
+                    return await self.open_graph(
+                        request,
+                        graph=self.session_graph,
+                        limits=limits,
+                        session_id=session_id,
+                    )
+                elif self.session_route is not None:
+                    return await self.open_route(
+                        request,
+                        stages=self.session_route(),
+                        limits=limits,
+                        session_id=session_id,
+                    )
+                else:
+                    raise ValueError("this pipeline declares no Session; pass stages")
+            except QueueFullError as rejection:
+                if not session_close_wake.is_set() and not self.has_closing_sessions():
+                    raise
+                else:
+                    pass
+                try:
+                    await asyncio.wait_for(
+                        session_close_wake.wait(), deadline_s - loop.time()
+                    )
+                except asyncio.TimeoutError:
+                    raise rejection from None
 
     async def open_route(
         self,
@@ -982,6 +1021,11 @@ class CoordinatorSessions:
         # Note (Junnan Li): An unacknowledged owner may still hold buffers; keep its capacity reserved.
         if session.cleanup_error is None:
             del self.sessions[session.session_identity.id]
+        else:
+            pass
+        # Note (wenyao): A refused open closes its own partial sessions; waking on those would retry it in a loop.
+        if session.pump is not None and not session.is_node:
+            self.notify_session_closed()
         else:
             pass
 

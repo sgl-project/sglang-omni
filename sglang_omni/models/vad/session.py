@@ -176,6 +176,7 @@ def create_scheduler(
     threshold: float = VADConfig.threshold,
     prefix_padding_ms: int = VADConfig.prefix_padding_ms,
     silence_duration_ms: int = VADConfig.silence_duration_ms,
+    background_margin_db: float | None = VADConfig.background_margin_db,
     max_open_sessions: int = NODE_STAGE_MAX_OPEN_SESSIONS,
     max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
 ) -> SessionScheduler:
@@ -183,6 +184,7 @@ def create_scheduler(
         threshold=threshold,
         prefix_padding_ms=prefix_padding_ms,
         silence_duration_ms=silence_duration_ms,
+        background_margin_db=background_margin_db,
     )
     return SessionScheduler(
         VADHooks(config, SileroSpeechDetector),
