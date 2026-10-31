@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
+from functools import cache
 from itertools import accumulate, pairwise
 
 import torch
@@ -17,6 +18,15 @@ from sglang.kernels.ops.attention.flash_attention import (
     flash_attn_with_kvcache,
 )
 from sglang.kernels.ops.attention.flash_attention_v3 import _is_fa3_supported
+from sglang.kernels.ops.attention.flash_attention_v4 import (
+    is_flash_attention_v4_available,
+)
+from sglang.kernels.ops.attention.flash_attention_v4_sm120 import (
+    flash_attn_varlen_func as fa4_flash_attn_varlen_func,
+)
+from sglang.kernels.ops.attention.flash_attention_v4_sm120 import (
+    flash_attn_with_kvcache as fa4_flash_attn_with_kvcache,
+)
 from sglang.srt.utils.common import is_pin_memory_available
 from sglang.srt.utils.custom_op import register_custom_op
 
@@ -39,8 +49,18 @@ PACKED_INDUCTOR_OPTIONS: dict[str, bool] = {
 }
 
 
+@cache
+def uses_fa4(device: torch.device) -> bool:
+    return (
+        device.type == "cuda"
+        and torch.cuda.is_available()
+        and torch.cuda.get_device_capability(device)[0] == 12
+        and is_flash_attention_v4_available()
+    )
+
+
 def supports_ragged_attention(device: torch.device) -> bool:
-    return device.type == "cuda" and _is_fa3_supported()
+    return device.type == "cuda" and (_is_fa3_supported() or uses_fa4(device))
 
 
 def ragged_fa3(
@@ -53,7 +73,13 @@ def ragged_fa3(
     max_seqlen_q: int,
     num_splits: int = 0,
 ) -> torch.Tensor:
-    return flash_attn_with_kvcache(
+    if uses_fa4(q.device):
+        attention_kernel = fa4_flash_attn_with_kvcache
+        # note (emre): automatic splits make the bits depend on the row's page count.
+        num_splits = 1
+    else:
+        attention_kernel = flash_attn_with_kvcache
+    return attention_kernel(
         q=q,
         k_cache=k_cache,
         v_cache=v_cache,
@@ -80,7 +106,10 @@ def whole_row_fa3(
     cu_seqlens: torch.Tensor,
     max_seqlen: int,
 ) -> torch.Tensor:
-    return flash_attn_varlen_func(
+    attention_kernel = (
+        fa4_flash_attn_varlen_func if uses_fa4(q.device) else flash_attn_varlen_func
+    )
+    return attention_kernel(
         q=q,
         k=k,
         v=v,
@@ -339,6 +368,9 @@ class PackedDiT:
         self.dit = dit
         device = torch.device(device)
         self.is_ragged = supports_ragged_attention(device)
+        self.use_fp8_feed_forward = False
+        self.fp8_out_weights: list[torch.nn.Parameter] = []
+        self.fp8_out_scales: list[torch.nn.Parameter] = []
         self.is_compiled = False
         # note (ratish): Parameters, whose shapes Dynamo keeps static under the dynamic
         # prefix compile. to_q, to_k and to_v become row views of them, so the DiT
@@ -371,10 +403,16 @@ class PackedDiT:
                 qkv_biases.append(qkv_bias)
         self.qkv_weights = tuple(qkv_weights)
         self.qkv_biases = tuple(qkv_biases)
+        if uses_fa4(device):
+            attention_name = "ragged FA4"
+        elif self.is_ragged:
+            attention_name = "ragged FA3"
+        else:
+            attention_name = "padded SDPA"
         logger.info(
             "Fun-CosyVoice3 Flow row attention on %s: %s",
             device,
-            "ragged FA3" if self.is_ragged else "padded SDPA",
+            attention_name,
         )
 
     @property
@@ -450,6 +488,37 @@ class PackedDiT:
             pass
         return row_attention
 
+    def enable_fp8_feed_forward(self) -> None:
+        device = next(self.dit.parameters()).device
+        if not uses_fa4(device):
+            raise ValueError("enable_flow_fp8_feed_forward requires SM120")
+        else:
+            pass
+        # note (emre): CUTLASS is absent on Apple Silicon, where this module also loads.
+        from sglang_omni.models.fun_cosyvoice3 import fp8_feed_forward
+
+        self.fp8_feed_forward = fp8_feed_forward.fp8_feed_forward
+        # note (emre): made once, a host copy in the op blocks until the GPU is idle.
+        self.fp8_gelu_scale = torch.nn.Parameter(
+            torch.tensor(
+                fp8_feed_forward.GELU_SCALE, device=device, dtype=torch.float32
+            ),
+            requires_grad=False,
+        )
+        with torch.no_grad():
+            for block in self.dit.transformer_blocks:
+                out_weight = block.ff.ff[2].weight.float()
+                out_scale = out_weight.abs().max() / fp8_feed_forward.FP8_MAX
+                fp8_weight = (out_weight / out_scale).to(torch.float8_e4m3fn)
+                self.fp8_out_weights.append(
+                    torch.nn.Parameter(fp8_weight.t().contiguous(), requires_grad=False)
+                )
+                self.fp8_out_scales.append(
+                    torch.nn.Parameter(out_scale, requires_grad=False)
+                )
+        self.use_fp8_feed_forward = True
+        logger.info("Fun-CosyVoice3 DiT feed forward runs in FP8")
+
     def compile(self, dtype: torch.dtype | None) -> bool:
         if not self.is_ragged or dtype not in FA3_DTYPES:
             logger.debug(
@@ -505,7 +574,20 @@ class PackedDiT:
                 self.qkv_biases[block_index],
             )
             ff_norm = block.ff_norm(h) * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
-            h = h + gate_mlp.unsqueeze(1) * block.ff(ff_norm)
+            if self.use_fp8_feed_forward:
+                ff_in = block.ff.ff[0][0]
+                ff_out = self.fp8_feed_forward(
+                    ff_norm.to(torch.bfloat16),
+                    ff_in.weight,
+                    ff_in.bias,
+                    self.fp8_out_weights[block_index],
+                    block.ff.ff[2].bias,
+                    self.fp8_out_scales[block_index],
+                    self.fp8_gelu_scale,
+                )
+            else:
+                ff_out = block.ff(ff_norm)
+            h = h + gate_mlp.unsqueeze(1) * ff_out
         if dit.long_skip_connection is not None:
             h = dit.long_skip_connection(torch.cat((h, residual), dim=-1))
         else:

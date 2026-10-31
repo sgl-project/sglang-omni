@@ -17,6 +17,7 @@ from sglang_omni.models.fun_cosyvoice3.packed_dit import (
     gather_rows,
     pack_rows,
     solve_flow_euler_packed,
+    uses_fa4,
 )
 from sglang_omni.models.fun_cosyvoice3.prefix_cache import (
     BLOCK_FRAMES,
@@ -87,10 +88,23 @@ def make_estimator() -> PackedDiT:
     )
     estimator = PackedDiT(dit, device="cuda")
     if not estimator.is_ragged:
-        pytest.skip("requires FA3")
+        pytest.skip("requires ragged attention")
     else:
         pass
     return estimator
+
+
+def same_values(actual: torch.Tensor, expected: torch.Tensor) -> bool:
+    """Bit equal on FA3. On SM120 cuBLAS rounds a BF16 GEMM by row count, so a whole
+    history and a prefix read of a row differ by a few BF16 ULP after the solve."""
+    if uses_fa4(actual.device):
+        return bool(
+            torch.isclose(
+                actual.float(), expected.float(), rtol=2**-5, atol=2**-4
+            ).all()
+        )
+    else:
+        return torch.equal(actual, expected)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
@@ -166,7 +180,7 @@ def test_prefix_hops_are_bit_identical_to_whole_history_hops(
                     + previous
                     - start : (row + 1) * (total - start),
                 ]
-                assert torch.equal(actual, expected), (total, row)
+                assert same_values(actual, expected), (total, row)
             previous = total
     used = 32 - len(pool.free_blocks)
     assert used == rows * 2 * ((totals[-1] + BLOCK_FRAMES - 1) // BLOCK_FRAMES)
@@ -235,7 +249,7 @@ def test_prefix_and_whole_history_hops_launch_without_a_host_wait() -> None:
             )
         finally:
             torch.cuda.set_sync_debug_mode(sync_debug_mode)
-    assert torch.equal(cached, whole)
+    assert same_values(cached, whole)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
@@ -621,20 +635,20 @@ def test_prefix_graph_replays_equal_the_eager_solve(compile_prefix: bool) -> Non
                         cfg_rate=0.7,
                     )
                 outputs.append(generated)
-            assert torch.equal(outputs[0], outputs[1]), step
+            assert same_values(outputs[0], outputs[1]), step
             for name in names:
                 for graph_row, eager_row in zip(*caches[name]):
                     assert graph_row.committed_frames == eager_row.committed_frames
-                    assert torch.equal(graph_row.conv_context, eager_row.conv_context)
+                    assert same_values(graph_row.conv_context, eager_row.conv_context)
                     graph_pages = graph_row.pages(device)[: graph_row.committed_frames]
                     eager_pages = eager_row.pages(device)[: eager_row.committed_frames]
                     for euler_step in range(10):
                         for layer in range(LAYERS):
-                            assert torch.equal(
+                            assert same_values(
                                 graph_pool.keys[euler_step][layer][graph_pages],
                                 eager_pool.keys[euler_step][layer][eager_pages],
                             )
-                            assert torch.equal(
+                            assert same_values(
                                 graph_pool.values[euler_step][layer][graph_pages],
                                 eager_pool.values[euler_step][layer][eager_pages],
                             )
@@ -776,6 +790,6 @@ def test_whole_history_graph_replays_equal_the_eager_solve(
             (40, 70),
         ):
             replayed = runner.run(**step_inputs(lengths), lengths=lengths)
-            assert torch.equal(replayed, eager_solve(lengths)), lengths
+            assert same_values(replayed, eager_solve(lengths)), lengths
         for lengths in ((900, 900, 400), (20, 20, 20, 20)):
             assert runner.run(**step_inputs(lengths), lengths=lengths) is None

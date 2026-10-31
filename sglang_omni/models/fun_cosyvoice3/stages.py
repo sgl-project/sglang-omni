@@ -69,6 +69,7 @@ from sglang_omni.models.fun_cosyvoice3.packed_dit import (
     scatter_rows,
     solve_flow_euler_packed,
     supports_ragged_attention,
+    uses_fa4,
 )
 from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
 from sglang_omni.models.fun_cosyvoice3.prefix_cache import (
@@ -2466,6 +2467,7 @@ def create_vocoder_executor(
     enable_hift_cuda_graph: bool,
     flow_cuda_graph_capture_shapes: tuple[tuple[int, int], ...] | None = None,
     enable_flow_estimator_trt: bool = False,
+    enable_flow_fp8_feed_forward: bool = False,
     hift_dtype: str = "float32",
     hift_max_padding_waste: float = 1.5,
     token_hop_len: int = TOKEN_HOP_LEN,
@@ -2557,6 +2559,10 @@ def create_vocoder_executor(
         enable_flow_estimator_trt=enable_flow_estimator_trt,
     )
 
+    if enable_flow_fp8_feed_forward:
+        flow.packed_estimator.enable_fp8_feed_forward()
+    else:
+        pass
     flow.is_buffered_packed = has_ragged_attention
     if enable_flow_cuda_graph and (
         not supports_device_streams(device_obj)
@@ -2656,9 +2662,11 @@ def create_vocoder_executor(
     whole_history_tier_frames = generate_prefill_cuda_graph_batch_sizes(
         flow_batch_admission_frames
     )
+    # note (emre): on FA4 these graphs serve 1 to 5% slower than the compiled forward.
     has_whole_history_graphs = (
         enable_flow_whole_history_cuda_graph
         and has_ragged_attention
+        and not uses_fa4(device_obj)
         and len(whole_history_tier_frames) > 0
     )
     token_mel_ratio = flow.token_mel_ratio
@@ -2755,80 +2763,94 @@ def create_vocoder_executor(
             prefix_forward = forward_prefix
         # note (ratish): the pool takes what is free, so it leaves the largest step
         # the scheduler admits: max_batch_size rows of at most the AR's context each.
-        step_bytes = scheduler.measure_peak_step_bytes(
-            device_obj,
-            row_count=max_batch_size,
-            generated_tokens_per_row=FunCosyVoice3EngineBuilder.context_length,
-        )
-        if has_prefix_graphs:
-            # note (ratish): the prefix graphs capture after the pool they read, so
-            # their memory is measured first on a throwaway pool and graph pool, the
-            # pool holding the prefix warmup's hops under the real pool's reserve.
+        step_bytes: int | None
+        try:
+            step_bytes = scheduler.measure_peak_step_bytes(
+                device_obj,
+                row_count=max_batch_size,
+                generated_tokens_per_row=FunCosyVoice3EngineBuilder.context_length,
+            )
+        except torch.OutOfMemoryError:
+            # note (emre): the pool sits under this step's reserve, so no block fits.
+            logger.warning(
+                "Fun-CosyVoice3 largest admitted step does not fit on this device, "
+                "so serving runs without the Flow prefix cache"
+            )
+            step_bytes = None
+        if step_bytes is None:
+            has_prefix_graphs = False
+            gc.collect()
+            torch.accelerator.empty_cache()
+        else:
+            if has_prefix_graphs:
+                # note (ratish): the prefix graphs capture after the pool they read, so
+                # their memory is measured first on a throwaway pool and graph pool, the
+                # pool holding the prefix warmup's hops under the real pool's reserve.
+                flow.prefix_pool = build_prefix_pool(
+                    flow,
+                    device_obj,
+                    autocast_dtype,
+                    size_gb=None,
+                    max_blocks=scheduler.prefix_warmup_block_count(),
+                    stage_reserve_bytes=step_bytes,
+                    headroom_bytes=headroom_bytes,
+                    share_ceiling_bytes=share_ceiling_bytes,
+                )
+                # note (ratish): the real pool is sized from no more, so it holds no block
+                # either and serving keeps the whole-history hops.
+                has_prefix_graphs = flow.prefix_pool is not None
+            else:
+                pass
+            if has_prefix_graphs:
+                assert flow.prefix_pool is not None
+                flow.prefix_pool.forward = prefix_forward
+                if is_prefix_compiled:
+                    scheduler.warmup_prefix_compile()
+                else:
+                    pass
+                torch.accelerator.empty_cache()
+                free_bytes = torch.accelerator.get_memory_info(device_obj)[0]
+                dry_prefix_runner = make_prefix_runner(
+                    flow.prefix_pool,
+                    SolveGraphCapture(
+                        graph_backend, device=device_obj, autocast_dtype=autocast_dtype
+                    ),
+                )
+                dry_prefix_runner.capture()
+                torch.accelerator.empty_cache()
+                prefix_graph_bytes = (
+                    free_bytes - torch.accelerator.get_memory_info(device_obj)[0]
+                )
+                del dry_prefix_runner
+                flow.prefix_pool = None
+            else:
+                prefix_graph_bytes = 0
+            # note (ratish): the step runs on the vocoder's stream while the engine runs on
+            # its own, and the allocator never shares a block across streams, so the
+            # runtime headroom and the step add up.
+            logger.info(
+                f"Fun-CosyVoice3 Flow prefix cache reserve: prefix graphs "
+                f"{prefix_graph_bytes / 2**30:.2f} GB, runtime headroom "
+                f"{headroom_bytes / 2**30:.2f} GB, step {step_bytes / 2**30:.2f} GB"
+            )
             flow.prefix_pool = build_prefix_pool(
                 flow,
                 device_obj,
                 autocast_dtype,
-                size_gb=None,
-                max_blocks=scheduler.prefix_warmup_block_count(),
-                stage_reserve_bytes=step_bytes,
+                size_gb=flow_prefix_cache_gb,
+                max_blocks=None,
+                stage_reserve_bytes=prefix_graph_bytes + step_bytes,
                 headroom_bytes=headroom_bytes,
                 share_ceiling_bytes=share_ceiling_bytes,
             )
-            # note (ratish): the real pool is sized from no more, so it holds no block
-            # either and serving keeps the whole-history hops.
-            has_prefix_graphs = flow.prefix_pool is not None
-        else:
-            pass
-        if has_prefix_graphs:
-            assert flow.prefix_pool is not None
-            flow.prefix_pool.forward = prefix_forward
-            if is_prefix_compiled:
-                scheduler.warmup_prefix_compile()
+            if flow.prefix_pool is not None:
+                flow.prefix_pool.forward = prefix_forward
+                if is_prefix_compiled:
+                    scheduler.warmup_prefix_compile()
+                else:
+                    pass
             else:
                 pass
-            torch.accelerator.empty_cache()
-            free_bytes = torch.accelerator.get_memory_info(device_obj)[0]
-            dry_prefix_runner = make_prefix_runner(
-                flow.prefix_pool,
-                SolveGraphCapture(
-                    graph_backend, device=device_obj, autocast_dtype=autocast_dtype
-                ),
-            )
-            dry_prefix_runner.capture()
-            torch.accelerator.empty_cache()
-            prefix_graph_bytes = (
-                free_bytes - torch.accelerator.get_memory_info(device_obj)[0]
-            )
-            del dry_prefix_runner
-            flow.prefix_pool = None
-        else:
-            prefix_graph_bytes = 0
-        # note (ratish): the step runs on the vocoder's stream while the engine runs on
-        # its own, and the allocator never shares a block across streams, so the
-        # runtime headroom and the step add up.
-        logger.info(
-            f"Fun-CosyVoice3 Flow prefix cache reserve: prefix graphs "
-            f"{prefix_graph_bytes / 2**30:.2f} GB, runtime headroom "
-            f"{headroom_bytes / 2**30:.2f} GB, step {step_bytes / 2**30:.2f} GB"
-        )
-        flow.prefix_pool = build_prefix_pool(
-            flow,
-            device_obj,
-            autocast_dtype,
-            size_gb=flow_prefix_cache_gb,
-            max_blocks=None,
-            stage_reserve_bytes=prefix_graph_bytes + step_bytes,
-            headroom_bytes=headroom_bytes,
-            share_ceiling_bytes=share_ceiling_bytes,
-        )
-        if flow.prefix_pool is not None:
-            flow.prefix_pool.forward = prefix_forward
-            if is_prefix_compiled:
-                scheduler.warmup_prefix_compile()
-            else:
-                pass
-        else:
-            pass
     else:
         pass
     if has_prefix_graphs and flow.prefix_pool is not None:
