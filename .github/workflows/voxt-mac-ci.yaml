@@ -428,9 +428,11 @@ jobs:
             -only-testing:VoxtTests/MeetingSortformerModelStorageTests \
             -only-testing:VoxtTests/MeetingLocalInferenceCoordinatorTests \
             -only-testing:VoxtTests/MeetingSpeakerFeedPolicyTests \
+            -only-testing:VoxtTests/MeetingStartPlannerTests \
             -only-testing:VoxtTests/OmniModelManagerRecoveryTests \
             -only-testing:VoxtTests/OmniFailurePathTests \
             -only-testing:VoxtTests/MLXModelManagerLifecycleTests \
+            -only-testing:VoxtTests/MLXModelManagerStorageTests \
             -only-testing:VoxtTests/MLXNativeLiveRuntimeTests \
             -only-testing:VoxtTests/HotkeyEventTapInstallationTests \
             -only-testing:VoxtTests/HotkeyManagerTests \

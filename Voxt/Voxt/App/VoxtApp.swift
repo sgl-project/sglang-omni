@@ -528,6 +528,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        let previousModelStorageRootURL = ModelStorageDirectoryManager.resolvedWriteRootURL()
+        ModelStorageDirectoryManager.migrateRootOutOfDownloadsIfNeeded()
+        if ModelStorageDirectoryManager.resolvedWriteRootURL() != previousModelStorageRootURL {
+            mlxModelManager.refreshStorageRoot()
+            customLLMManager.refreshStorageRoot()
+            ggufTranslationModelManager.refreshStorageRoot()
+        }
+
         if maybeRunLLMSmokeAndTerminate() {
             VoxtLog.info("Voxt launch entering LLM smoke mode.")
             return
