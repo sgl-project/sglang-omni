@@ -566,6 +566,83 @@ def test_generation_field_given_a_value_reaches_the_params(
     assert lowered_speech_params({field_name: value})[field_name] == value
 
 
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    sorted({**GENERATION_FIELD_VALUES, "epsilon_cutoff": 0.01}.items()),
+)
+def test_nested_generation_fields_reach_the_pipeline(
+    field_name: str, value: int | float
+) -> None:
+    """Speech requests must not silently discard nested sampling settings."""
+    assert (
+        lowered_speech_params({"extra_params": {field_name: value}})[field_name]
+        == value
+    )
+
+
+def test_speech_extra_params_preserve_overrides_and_model_parameters() -> None:
+    params = lowered_speech_params(
+        {
+            "temperature": 0.0,
+            "top_k": None,
+            "initial_codec_chunk_frames": 0,
+            "extra_params": {
+                "temperature": 0.7,
+                "top_k": 17,
+                "initial_codec_chunk_frames": 8,
+                "custom_option": {"enabled": True, "values": [1, 2]},
+            },
+        }
+    )
+
+    assert params["temperature"] == 0.0
+    assert params["top_k"] == 17
+    assert params["initial_codec_chunk_frames"] == 0
+    assert params["custom_option"] == {"enabled": True, "values": [1, 2]}
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [("temperature", True), ("top_k", "17"), ("seed", False), ("max_new_tokens", 0)],
+)
+def test_nested_generation_fields_use_existing_validation(
+    field_name: str, value: object
+) -> None:
+    service = SpeechRequestValidator(default_model="tts")
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request({"input": "hello", "extra_params": {field_name: value}})
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.param == field_name
+
+
+@pytest.mark.parametrize("extra_params", [[], "invalid", 1])
+def test_speech_extra_params_reject_non_object_payloads(extra_params: object) -> None:
+    service = SpeechRequestValidator(default_model="tts")
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_request({"input": "hello", "extra_params": extra_params})
+
+    assert exc_info.value.status_code == 400
+    assert "extra_params" in exc_info.value.message
+
+
+def test_nested_sampling_respects_model_supported_fields() -> None:
+    service = SpeechRequestValidator(
+        default_model="tts", supported_speech_fields=frozenset({"input", "temperature"})
+    )
+    request = service.parse_raw_request(
+        {"input": "hello", "extra_params": {"temperature": 0.3}}
+    )
+    assert request.temperature == 0.3
+
+    with pytest.raises(SpeechAPIError) as exc_info:
+        service.parse_raw_request({"input": "hello", "extra_params": {"top_k": 17}})
+
+    assert exc_info.value.param == "top_k"
+
+
 SUPPORTED_SPEECH_FIELDS = frozenset(
     {"input", "voice", "response_format", "references", "temperature"}
 )

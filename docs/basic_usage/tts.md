@@ -680,6 +680,7 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `top_k` | int | `null` | Top-k sampling |
 | `repetition_penalty` | float | `null` | Repetition penalty |
 | `seed` | int | `null` | Model-specific. Qwen3-TTS Base accepts request-scoped seed, Voxtral TTS currently rejects seed |
+| `extra_params` | object | `null` | Nested sampling settings and model-specific generation parameters |
 
 Invalid speech requests return an OpenAI-style error envelope:
 
@@ -693,6 +694,26 @@ Invalid speech requests return an OpenAI-style error envelope:
   }
 }
 ```
+
+### Nested Generation Parameters
+
+For `POST /v1/audio/speech`, sampling settings can also be supplied inside `extra_params`:
+
+```json
+{
+  "input": "Hello, how are you?",
+  "extra_params": {
+    "temperature": 0.3,
+    "top_p": 0.8,
+    "top_k": 17,
+    "repetition_penalty": 1.2
+  }
+}
+```
+
+Nested `temperature`, `top_p`, `top_k`, `epsilon_cutoff`, `repetition_penalty`, `seed`, and `max_new_tokens` use the same validation and sampling behavior as their top-level forms. A non-null top-level value takes precedence, including zero; a null top-level value leaves the nested value in effect. Omitting both forms preserves the served model's defaults.
+
+Other keys are passed as model-specific generation parameters. Use only parameters supported by the served model; models that restrict their speech fields can reject unsupported options. An explicit top-level `initial_codec_chunk_frames` also takes precedence over the nested value.
 
 ## H200 SeedTTS Benchmark Commands
 

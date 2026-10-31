@@ -999,6 +999,35 @@ def test_speech_endpoint_returns_binary_audio() -> None:
     assert speech_client.speech_requests[0].metadata["tts_params"]["voice"] == "default"
 
 
+def test_speech_endpoint_forwards_extra_params_to_generation() -> None:
+    """A successful speech response must retain the caller's nested settings."""
+    speech_client = SuccessfulSpeechClient()
+    client = TestClient(create_app(speech_client, model_name="tts"))
+
+    response = client.post(
+        "/v1/audio/speech",
+        json={
+            "input": "hello",
+            "extra_params": {
+                "temperature": 0.3,
+                "top_p": 0.8,
+                "top_k": 17,
+                "repetition_penalty": 1.2,
+                "custom_option": {"enabled": True},
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.content == b"RIFF"
+    pipeline_request = Client.build_omni_request(speech_client.speech_requests[0])
+    assert pipeline_request.params["temperature"] == 0.3
+    assert pipeline_request.params["top_p"] == 0.8
+    assert pipeline_request.params["top_k"] == 17
+    assert pipeline_request.params["repetition_penalty"] == 1.2
+    assert pipeline_request.params["custom_option"] == {"enabled": True}
+
+
 def test_create_app_passes_model_specific_speech_input_limit() -> None:
     app = create_app(
         SuccessfulSpeechClient(),
