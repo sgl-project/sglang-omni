@@ -73,6 +73,7 @@ jobs:
               pull_number: context.issue.number,
               per_page: 100,
             });
+            core.setOutput("base_sha", pr.data.base.sha);
             core.setOutput("changed_files", JSON.stringify(files.flatMap(file =>
               [file.filename, file.previous_filename].filter(Boolean))));
             core.setOutput("is_selected", labels.includes("run-all-ci") || labels.includes("run-mac-ci"));
@@ -97,11 +98,21 @@ jobs:
         env:
           CHANGED_FILES: ${{ steps.pr.outputs.changed_files || '[]' }}
           REQUESTED_MODELS: ${{ inputs.models }}
+          BASE_SHA: ${{ steps.pr.outputs.base_sha }}
         run: |
           printf '%s' "$CHANGED_FILES" > "$RUNNER_TEMP/changed_files.json"
+          pin_arguments=()
+          if [ -n "$BASE_SHA" ]; then
+            git fetch -q --depth=1 origin "$BASE_SHA"
+            git show "$BASE_SHA:sglang_omni_mlx/native/ci/model_pins.json" > "$RUNNER_TEMP/base_pins.json"
+            pin_arguments=(--base-pins "$RUNNER_TEMP/base_pins.json")
+          else
+            :
+          fi
           python .github/scripts/select_voxt_models.py \
             --changed-files "$RUNNER_TEMP/changed_files.json" \
             ${REQUESTED_MODELS:+--requested "$REQUESTED_MODELS"} \
+            "${pin_arguments[@]}" \
             --github-output "$GITHUB_OUTPUT"
 
       - name: Resolve CI stages
