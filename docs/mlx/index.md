@@ -69,12 +69,15 @@ agree on it with a maintainer first.
 
 **Golden and pins**
 
-- Pin every checkpoint file by revision and SHA-256 in `ci/model_pins.json`.
+- Pin every checkpoint file by revision and SHA-256 in `ci/model_pins.json`,
+  except a checkpoint `ci/models.json` already pins (Qwen3-ASR, Silero VAD,
+  Sortformer): a repo is pinned in one of the two files only.
 - Add a golden under `ci/model_golden/`. Import the Mac CI runner's outputs
   (the `golden-outputs-<model>` artifact of the model's job, `--import`) so the
   runner checks exactly.
-- Register the model in `ci/model_jobs.json` (its paths, pins, goldens and
-  pytest selection). Mac CI runs one job per model a PR touches, and every
+- Register the model in `ci/model_jobs.json` (its paths, its `model_pins.json`
+  pins, the `models.json` checkpoints its tests load as `qwen3_asr_pins`,
+  goldens and pytest selection). Mac CI runs one job per model a PR touches, and every
   model when shared code changes; `workflow_dispatch` takes a `models` list. A
   speech model's golden holds seeded requests' codes (`ci/speech_golden.py`).
 - Add a second golden for paths the corpus misses (long-audio chunking, VAD).

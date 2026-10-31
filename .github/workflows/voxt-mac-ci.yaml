@@ -107,7 +107,8 @@ jobs:
           if [ -n "$BASE_SHA" ]; then
             git fetch -q --depth=1 origin "$BASE_SHA"
             git show "$BASE_SHA:sglang_omni_mlx/native/ci/model_pins.json" > "$RUNNER_TEMP/base_pins.json"
-            pin_arguments=(--base-pins "$RUNNER_TEMP/base_pins.json")
+            git show "$BASE_SHA:sglang_omni_mlx/native/ci/models.json" > "$RUNNER_TEMP/base_qwen3_asr_pins.json"
+            pin_arguments=(--base-pins "$RUNNER_TEMP/base_pins.json" --base-qwen3-asr-pins "$RUNNER_TEMP/base_qwen3_asr_pins.json")
           else
             :
           fi
@@ -415,10 +416,11 @@ jobs:
             -only-testing:VoxtTests/RemoteLLMRuntimeClientGenerationSettingsTests \
             -only-testing:VoxtTests/RemoteLLMRuntimeClientResponsesRequestTests
 
+  # The package ships only a runtime whose model jobs passed; native-model is skipped when no model is selected.
   package:
     name: Voxt native runtime package
-    if: ${{ vars.VOXT_ENABLE_CI_PACKAGE == 'true' }}
-    needs: [native-runtime, voxt-unit]
+    if: ${{ !cancelled() && vars.VOXT_ENABLE_CI_PACKAGE == 'true' && needs.native-runtime.result == 'success' && needs.voxt-unit.result == 'success' && contains(fromJSON('["success", "skipped"]'), needs.native-model.result) }}
+    needs: [native-runtime, native-model, voxt-unit]
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 60
     steps:

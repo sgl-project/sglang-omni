@@ -72,9 +72,11 @@ def test_unknown_requested_model_fails() -> None:
 
 def test_every_model_job_names_existing_pins_and_goldens() -> None:
     pins = json.loads((ROOT / "sglang_omni_mlx/native/ci/model_pins.json").read_text())
+    qwen3_asr_pins = json.loads((ROOT / MODULE.QWEN3_ASR_PINS_PATH).read_text())
     golden_directory = ROOT / "sglang_omni_mlx/native/ci/model_golden"
     for model in MODEL_JOBS["models"]:
         assert set(model["pins"]) <= set(pins), model["name"]
+        assert set(model["qwen3_asr_pins"]) <= set(qwen3_asr_pins), model["name"]
         for golden in model["goldens"]:
             assert (golden_directory / golden).is_file(), golden
         for pattern in model["paths"]:
@@ -83,6 +85,13 @@ def test_every_model_job_names_existing_pins_and_goldens() -> None:
     disabled = set(MODEL_JOBS["disabled_goldens"]["goldens"])
     assert not listed & disabled
     assert listed | disabled == {path.name for path in golden_directory.glob("*.json")}
+
+
+def test_no_checkpoint_is_pinned_in_both_pin_files() -> None:
+    """Both provisioning scripts write a repo to one directory, so a repo pinned twice can be overwritten by the other pin."""
+    pins = json.loads((ROOT / MODULE.PINS_PATH).read_text())
+    qwen3_asr_pins = json.loads((ROOT / MODULE.QWEN3_ASR_PINS_PATH).read_text())
+    assert not pins.keys() & qwen3_asr_pins.keys()
 
 
 @pytest.mark.parametrize(
@@ -109,6 +118,7 @@ def test_shared_model_libraries_select_their_dependents(
     [
         (frozenset({"mlx-community/silero-vad-v6"}), ["cohere", "sensevoice"]),
         (frozenset({"mlx-community/whisper-small-mlx"}), ["whisper"]),
+        (frozenset({"mlx-community/Qwen3-ASR-0.6B-4bit"}), ["voxtral-tts"]),
         (frozenset({"some/unused-model"}), []),
     ],
 )
@@ -123,14 +133,35 @@ def test_changed_pins_select_the_models_that_use_them(
     )
 
 
-def test_base_pins_diff_selects_changed_checkpoints(tmp_path, monkeypatch) -> None:
-    pins = json.loads((ROOT / MODULE.PINS_PATH).read_text())
-    base_pins = dict(pins)
-    base_pins["mlx-community/parakeet-tdt-0.6b-v3"] = {"revision": "old", "files": {}}
+@pytest.mark.parametrize(
+    ("relative_pins_path", "base_pins_flag", "changed_repo", "expected"),
+    [
+        (
+            MODULE.PINS_PATH,
+            "--base-pins",
+            "mlx-community/parakeet-tdt-0.6b-v3",
+            ["parakeet"],
+        ),
+        (
+            MODULE.QWEN3_ASR_PINS_PATH,
+            "--base-qwen3-asr-pins",
+            "mlx-community/Qwen3-ASR-0.6B-4bit",
+            ["voxtral-tts"],
+        ),
+    ],
+)
+def test_base_pins_diff_selects_changed_checkpoints(
+    tmp_path,
+    monkeypatch,
+    relative_pins_path: Path,
+    base_pins_flag: str,
+    changed_repo: str,
+    expected: list[str],
+) -> None:
+    base_pins = json.loads((ROOT / relative_pins_path).read_text())
+    base_pins[changed_repo] = {"revision": "old", "files": {}}
     (tmp_path / "base_pins.json").write_text(json.dumps(base_pins))
-    (tmp_path / "changed_files.json").write_text(
-        json.dumps(["sglang_omni_mlx/native/ci/model_pins.json"])
-    )
+    (tmp_path / "changed_files.json").write_text(json.dumps([str(relative_pins_path)]))
     output = tmp_path / "github_output"
     monkeypatch.chdir(ROOT)
     monkeypatch.setattr(
@@ -139,7 +170,7 @@ def test_base_pins_diff_selects_changed_checkpoints(tmp_path, monkeypatch) -> No
             "select_voxt_models.py",
             "--changed-files",
             str(tmp_path / "changed_files.json"),
-            "--base-pins",
+            base_pins_flag,
             str(tmp_path / "base_pins.json"),
             "--github-output",
             str(output),
@@ -147,4 +178,4 @@ def test_base_pins_diff_selects_changed_checkpoints(tmp_path, monkeypatch) -> No
     )
     MODULE.main()
     matrix = json.loads(output.read_text().splitlines()[0].split("=", 1)[1])
-    assert [model["name"] for model in matrix["model"]] == ["parakeet"]
+    assert [model["name"] for model in matrix["model"]] == expected

@@ -9,6 +9,18 @@ from pathlib import Path
 
 MODEL_JOBS_PATH = Path("sglang_omni_mlx/native/ci/model_jobs.json")
 PINS_PATH = Path("sglang_omni_mlx/native/ci/model_pins.json")
+QWEN3_ASR_PINS_PATH = Path("sglang_omni_mlx/native/ci/models.json")
+
+
+def changed_repos(base_pins_path: Path, head_pins_path: Path) -> set[str]:
+    """Returns the repos whose pin differs between two versions of a pin file."""
+    base_pins = json.loads(base_pins_path.read_text())
+    head_pins = json.loads(head_pins_path.read_text())
+    return {
+        repo
+        for repo in base_pins.keys() | head_pins.keys()
+        if base_pins.get(repo) != head_pins.get(repo)
+    }
 
 
 def select_models(
@@ -19,7 +31,7 @@ def select_models(
 ) -> list[dict]:
     """Returns the model jobs to run; shared paths or a request for all select every model.
 
-    A model is also selected when one of its pinned checkpoints changed.
+    A model is also selected when one of its pinned checkpoints changed, in model_pins.json or in models.json.
     """
     models = model_jobs["models"]
     if requested:
@@ -42,7 +54,7 @@ def select_models(
         return [
             model
             for model in models
-            if changed_pins & set(model["pins"])
+            if changed_pins & set(model["pins"] + model["qwen3_asr_pins"])
             or any(
                 re.search(pattern, path)
                 for pattern in model["paths"]
@@ -56,19 +68,22 @@ def main() -> None:
     parser.add_argument("--changed-files", type=Path, required=True)
     parser.add_argument("--requested")
     parser.add_argument("--base-pins", type=Path, help="model_pins.json at the PR base")
+    parser.add_argument(
+        "--base-qwen3-asr-pins", type=Path, help="models.json at the PR base"
+    )
     parser.add_argument("--github-output", type=Path, required=True)
     arguments = parser.parse_args()
     model_jobs = json.loads(MODEL_JOBS_PATH.read_text())
     changed_files = json.loads(arguments.changed_files.read_text())
     changed_pins: set[str] = set()
     if arguments.base_pins is not None:
-        base_pins = json.loads(arguments.base_pins.read_text())
-        head_pins = json.loads(PINS_PATH.read_text())
-        changed_pins = {
-            repo
-            for repo in base_pins.keys() | head_pins.keys()
-            if base_pins.get(repo) != head_pins.get(repo)
-        }
+        changed_pins |= changed_repos(arguments.base_pins, PINS_PATH)
+    else:
+        pass
+    if arguments.base_qwen3_asr_pins is not None:
+        changed_pins |= changed_repos(
+            arguments.base_qwen3_asr_pins, QWEN3_ASR_PINS_PATH
+        )
     else:
         pass
     selected = select_models(

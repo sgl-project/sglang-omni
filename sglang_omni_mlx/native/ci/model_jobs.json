@@ -19,6 +19,7 @@
         "mlx-community/whisper-large-v3-mlx",
         "mlx-community/whisper-small-mlx"
       ],
+      "qwen3_asr_pins": [],
       "goldens": [
         "whisper-large-v3-turbo.json",
         "whisper-large-v3.json",
@@ -37,7 +38,9 @@
         "^sglang_omni_mlx/native/src/silero_vad/"
       ],
       "pins": [
-        "beshkenadze/cohere-transcribe-03-2026-mlx-fp16",
+        "beshkenadze/cohere-transcribe-03-2026-mlx-fp16"
+      ],
+      "qwen3_asr_pins": [
         "mlx-community/silero-vad-v6"
       ],
       "goldens": [
@@ -58,6 +61,7 @@
       "pins": [
         "OpenMOSS-Team/MOSS-Transcribe-Diarize"
       ],
+      "qwen3_asr_pins": [],
       "goldens": [
         "moss-transcribe-diarize.json"
       ],
@@ -76,6 +80,7 @@
       "pins": [
         "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
       ],
+      "qwen3_asr_pins": [],
       "goldens": [
         "nemotron-asr-streaming.json"
       ],
@@ -94,6 +99,7 @@
       "pins": [
         "mlx-community/parakeet-tdt-0.6b-v3"
       ],
+      "qwen3_asr_pins": [],
       "goldens": [
         "parakeet-tdt-0.6b-v3.json"
       ],
@@ -110,7 +116,9 @@
         "^sglang_omni_mlx/native/src/silero_vad/"
       ],
       "pins": [
-        "mlx-community/SenseVoiceSmall",
+        "mlx-community/SenseVoiceSmall"
+      ],
+      "qwen3_asr_pins": [
         "mlx-community/silero-vad-v6"
       ],
       "goldens": [
@@ -129,6 +137,9 @@
       ],
       "pins": [
         "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit"
+      ],
+      "qwen3_asr_pins": [
+        "mlx-community/Qwen3-ASR-0.6B-4bit"
       ],
       "goldens": [
         "voxtral-4b-tts-2603.json"
@@ -160,6 +171,7 @@
       "pins": [
         "mlx-community/MiniMax-Music3-mxfp8"
       ],
+      "qwen3_asr_pins": [],
       "goldens": [
         "minimax-music3.json"
       ],
