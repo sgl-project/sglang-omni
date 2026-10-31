@@ -7,7 +7,7 @@ Rules for Apple Silicon work. They write down what the native runtime PRs under
 
 | Path | Contents |
 | --- | --- |
-| `sglang_omni_mlx/native/` | C++ runtime on MLX: one server binary per model, a parity CLI per model in `tools/`. Each model's code is in `src/<model>/`; code shared across models (`audio`, `form`, `layers`, `npz`, `tokenizer`, built as the `common` library, plus `swift_port` and `http`) is in `src/common/`. The shared ASR server code (`asr_service`, `worker`, `realtime`) is still in `src/qwen3_asr/`, and so is the `/v1/audio/speech` API that `voxtral_tts_server` and `fishaudio_drama3_server` share (`speech_service`), built on `asr_service`. |
+| `sglang_omni_mlx/native/` | C++ runtime on MLX: one server binary per model, a parity CLI per model in `tools/`. Each model's code is in `src/<model>/`; code shared across models (`audio`, `form`, `layers`, `npz`, `tokenizer`, built as the `common` library, plus `swift_port` and `http`) is in `src/common/`. The shared ASR server code (`asr_service`, `worker`, `realtime`) is still in `src/qwen3_asr/`. |
 | `sglang_omni_mlx/native/ci/` | Model pins, the 392-clip corpus, golden outputs, server API tests. |
 | `sglang_omni_mlx/<model>/` | Python MLX servers, e.g. the Qwen3-ASR reference server. |
 | `Voxt/` | The macOS app that runs the native servers. See [`Voxt/backend/README.md`](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/backend/README.md). |
@@ -45,8 +45,7 @@ agree on it with a maintainer first.
 **Placement and reuse**
 
 - A native model adds `src/<model>/` with `<model>_model`, `<model>_transcriber`
-  and a server on the shared `asr_service` (a speech model's on
-  `speech_service`), a CLI in `tools/`, and CMake
+  and a server on the shared `asr_service`, a CLI in `tools/`, and CMake
   targets: a library for the model's own sources that links what it reuses
   (`common`, `swift_port`, `silero_vad`, `sortformer`). Shared code goes in
   `src/common/`, not in another model's directory or library. Include project
@@ -71,8 +70,13 @@ agree on it with a maintainer first.
 
 - Pin every checkpoint file by revision and SHA-256 in `ci/model_pins.json`.
 - Add a golden under `ci/model_golden/`. Import the Mac CI runner's outputs
-  (`golden-outputs` artifact, `--import`) so the runner checks exactly. A
-  speech model's golden holds seeded requests' codes (`ci/speech_golden.py`).
+  (the `golden-outputs-<model>` artifact of the model's job, `--import`) so the
+  runner checks exactly.
+- Register the model in `ci/model_jobs.json` (its paths, pins, goldens and
+  pytest selection). Mac CI runs one job per model a PR touches, and every
+  model when shared code changes; `workflow_dispatch` takes a `models` list. A
+  speech model's golden holds seeded requests' codes (`ci/voxtral_golden.py`,
+  `ci/qwen3_tts_golden.py`).
 - Add a second golden for paths the corpus misses (long-audio chunking, VAD).
 
 **Tests**
