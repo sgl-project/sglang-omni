@@ -9,7 +9,6 @@ import pytest
 
 from sglang_omni.config.runtime import resolve_stage_typed_kwargs
 from sglang_omni.models.nemotron_transcribe.config import (
-    ARCHITECTURE,
     NemotronTranscribeFactoryArgs,
     NemotronTranscribePipelineConfig,
 )
@@ -28,9 +27,17 @@ def test_pipeline_is_one_whole_file_asr_stage() -> None:
     assert config.stages[0].terminal is True
 
 
-def test_architecture_registers_with_the_model_registry() -> None:
+@pytest.mark.parametrize(
+    "architecture",
+    [
+        "Nemotron3_5TranscribeForConditionalGeneration",
+        "NeMoSpeechLMForConditionalGeneration",
+    ],
+)
+def test_architecture_registers_with_the_model_registry(architecture: str) -> None:
+    """Renamed Transcribe checkpoints must resolve to the transcription pipeline."""
     configs = import_pipeline_configs("sglang_omni.models", "config")
-    assert configs[ARCHITECTURE] is NemotronTranscribePipelineConfig
+    assert configs[architecture] is NemotronTranscribePipelineConfig
 
 
 def test_audio_placeholder_counts_cover_one_hour_uploads() -> None:
