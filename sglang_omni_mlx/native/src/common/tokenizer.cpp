@@ -227,15 +227,31 @@ Tokenizer::Tokenizer(const std::filesystem::path &model_directory)
   for (const auto &[token, id] : vocabulary.items()) {
     vocabulary_.emplace(token, id.get<int>());
   }
-  std::istringstream merges(ReadFile(model_directory / "merges.txt"));
-  std::string line;
   int rank = 0;
-  while (std::getline(merges, line)) {
-    if (line.rfind("#version", 0) == 0 || line.empty()) {
-      continue;
-    } else {
+  if (std::filesystem::exists(model_directory / "merges.txt")) {
+    std::istringstream merges(ReadFile(model_directory / "merges.txt"));
+    std::string line;
+    while (std::getline(merges, line)) {
+      if (line.rfind("#version", 0) == 0 || line.empty()) {
+        continue;
+      } else {
+        merge_ranks_.emplace(line, rank++);
+      }
     }
-    merge_ranks_.emplace(line, rank++);
+  } else {
+    const auto tokenizer =
+        nlohmann::json::parse(ReadFile(model_directory / "tokenizer.json"));
+    for (const auto &merge : tokenizer.at("model").at("merges")) {
+      if (merge.is_array() && merge.size() == 2) {
+        merge_ranks_.emplace(merge.at(0).get<std::string>() + " " +
+                                 merge.at(1).get<std::string>(),
+                             rank++);
+      } else if (merge.is_string()) {
+        merge_ranks_.emplace(merge.get<std::string>(), rank++);
+      } else {
+        throw std::invalid_argument("invalid tokenizer merge");
+      }
+    }
   }
   const nlohmann::json config = nlohmann::json::parse(
       ReadFile(model_directory / "tokenizer_config.json"));
