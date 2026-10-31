@@ -100,6 +100,19 @@ Padded rows are computed and discarded, not blended in: the attention bias sends
 
 Conditioning and DiT sampling use dynamic batching, with default maximum batch sizes of 8 and 16. VAE decoding groups equal-length latents (up to 4 requests) to preserve boundary behavior. The stages can overlap on separate CUDA streams and share VAE weights within the same process/device. Conditioning loads the Qwen encoder, the VAE and the two hidden-state fusion parameters; only the sampling stage loads the DiT. Set `--conditioning.factory.max_batch_size`, `--auk_engine.factory.max_batch_size`, or `--decode.factory.max_batch_size` to tune them. Audio is returned after decoding completes; incremental audio streaming is not implemented.
 
+## Stage Offload
+
+AuK and AuK-Flash support serial weight offload on one CUDA GPU in a single process:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 sgl-omni serve --model-path tencent/AuK \
+  --stage-offload-components conditioning,dit,vae
+```
+
+Requests run one at a time with batch size 1, one process replica and `tp_size=1`. Compilation and CUDA Graph settings are retained; custom capture shapes must use batch size 1. The VAE stays resident after decoding.
+
+Weights use `mmap` by default. Set `--conditioning.factory.serial_offload_cache_dir` to a writable, non-tmpfs directory, or use `--conditioning.factory.serial_offload_source ram` to keep weights in host memory.
+
 ## DiT Q/K fusion
 
 On CUDA, the DiT uses a Triton kernel that fuses per-head RMSNorm with

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""--stage-offload-components ar,dit CLI wiring."""
+"""Stage offload CLI wiring and worker allocator setup."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import typer
 
 from sglang_omni.cli.serve import apply_stage_offload_cli_overrides
 from sglang_omni.config import PipelineConfig, StageConfig
+from sglang_omni.models.auk.config import AuKPipelineConfig
 from sglang_omni.models.higgs_tts.config import HiggsTtsPipelineConfig
 from sglang_omni.models.minimax_music3.config import (
     MiniMaxMusic3DualGPUPipelineConfig,
@@ -38,6 +39,26 @@ def test_absent_flag_is_a_no_op() -> None:
     assert (
         stage_named(result, "minimax_music3_ar").factory.enable_serial_offload is None
     )
+
+
+def test_auk_cli_enables_all_stages_and_preserves_default_config() -> None:
+    config = AuKPipelineConfig(model_path="/models/auk")
+    for stage in config.stages[1:]:
+        stage.factory.device = "cuda"
+    result = apply_stage_offload_cli_overrides(
+        config, stage_offload_components="conditioning,dit,vae"
+    )
+    assert all(stage.factory.enable_serial_offload for stage in result.stages[1:])
+    assert all(stage.factory.max_batch_size == 1 for stage in result.stages[1:])
+    assert result.stage_named("auk_engine").factory.enable_dit_cuda_graph
+    assert result.stage_named("auk_engine").factory.enable_dit_torch_compile
+    assert AuKPipelineConfig(**result.model_dump()).model_dump() == result.model_dump()
+    assert not any(stage.factory.enable_serial_offload for stage in config.stages[1:])
+    assert config.stage_named("auk_engine").factory.max_batch_size == 16
+    with pytest.raises(typer.BadParameter, match="requires exactly"):
+        apply_stage_offload_cli_overrides(
+            config, stage_offload_components="conditioning,dit"
+        )
 
 
 @pytest.mark.parametrize("components", ["ar,dit", " AR , Dit "])
@@ -103,7 +124,7 @@ def test_offload_allocator_reaches_workers_with_existing_preload(
         "torch_memory_saver", loader=None, origin=str(tmp_path / "__init__.py")
     )
     monkeypatch.setattr(
-        "sglang_omni.models.minimax_music3.config.find_spec", lambda name: package
+        "sglang_omni.scheduling.stage_residency.find_spec", lambda name: package
     )
     monkeypatch.setattr(torch.version, "cuda", "13.0")
     monkeypatch.setenv("LD_PRELOAD", "/lib/profiler.so")

@@ -8,15 +8,15 @@ import pytest
 import torch
 
 from sglang_omni.models.auk import constants as C
-from sglang_omni.models.auk.hf_config import AuKRuntimeConfig
-from sglang_omni.models.auk.payload_types import AuKState
-from sglang_omni.models.auk.stages import (
+from sglang_omni.models.auk.batch_compute import (
     condition_batch,
-    create_auk_engine_executor,
     decode_batch,
     sample_batch,
-    warmup_flow,
 )
+from sglang_omni.models.auk.hf_config import AuKRuntimeConfig
+from sglang_omni.models.auk.payload_types import AuKState
+from sglang_omni.models.auk.runtime import warmup_flow
+from sglang_omni.models.auk.stages import create_auk_engine_executor
 from sglang_omni.models.auk.vae import BigVGANFlowVAE
 from sglang_omni.pipeline.control_plane import deserialize_message, serialize_message
 from sglang_omni.proto import CompleteMessage, OmniRequest, StagePayload
