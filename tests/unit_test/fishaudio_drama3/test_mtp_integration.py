@@ -41,6 +41,7 @@ from sglang_omni.models.fishaudio_drama3.audio_decoder import AudioDecoder
 from sglang_omni.models.fishaudio_drama3.config import Drama3VocoderFactoryArgs
 from sglang_omni.models.fishaudio_drama3.engine_builder import (
     DECODE_STEPS_BETWEEN_PREFILLS,
+    GDN_STATE_DTYPE,
     PREFILL_CUDA_GRAPH_MAX_TOKENS,
     Drama3EngineBuilder,
 )
@@ -2302,6 +2303,7 @@ def test_engine_defaults_pass_its_own_validation(tmp_path: Path) -> None:
     assert graph_config.prefill.backend == CudaGraphBackend.BREAKABLE
     assert max(graph_config.prefill.bs) == PREFILL_CUDA_GRAPH_MAX_TOKENS
     assert server_args.prefill_decode_interval == DECODE_STEPS_BETWEEN_PREFILLS
+    assert server_args.mamba_ssm_dtype == GDN_STATE_DTYPE
 
 
 def test_engine_context_must_fit_the_tower_rope_table(

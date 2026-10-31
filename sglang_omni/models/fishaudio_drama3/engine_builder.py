@@ -81,6 +81,9 @@ FISH_OMNI_ARCHITECTURE = "FishOmniModel"
 ATTENTION_BACKEND = "triton"
 PREFILL_CUDA_GRAPH_MAX_TOKENS = 2048
 DECODE_STEPS_BETWEEN_PREFILLS = 4
+# The checkpoint keeps the Gated DeltaNet state in float32; bfloat16 halves the state
+# every decode step reads and writes, and frees that memory for the KV cache.
+GDN_STATE_DTYPE = "bfloat16"
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +165,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
             "enable_torch_compile": False,
             "trust_remote_code": False,
             "dtype": dtype,
+            "mamba_ssm_dtype": GDN_STATE_DTYPE,
         }
 
     def adjust_overrides(self, overrides: dict[str, object]) -> None:
