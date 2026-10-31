@@ -1128,6 +1128,7 @@ def test_a_declared_disable_also_drops_the_reference_encoder_buckets(
 
     class FakeTalker:
         device = torch.device("cpu")
+        tts_model_type = "base"
 
         def load_speech_tokenizer(self, tokenizer) -> None:
             del tokenizer

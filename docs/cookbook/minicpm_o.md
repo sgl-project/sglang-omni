@@ -63,6 +63,8 @@ sampling and resizing policy. They place explicit images, video frames, and
 independent audio before the final user message's text, in that order.
 Predecoded video tensors remain supported, including mixed file/tensor inputs.
 
+Top-level videos without use_audio_in_video decode on parallel decoders. Each of the four preprocessing workers gets min(16, the stage's CPUs divided by four) FFmpeg threads, split evenly among a request's videos. Set `--preprocessing.factory.video_decode_threads N` to choose that count. A value at or below the video reader's own threads (`TORCHCODEC_NUM_THREADS`, 8 by default) decodes each video on the reader alone.
+
 Inline videos and top-level requests with use_audio_in_video use MiniCPM timed
 video sampling. Set use_audio on an inline video, or use_audio_in_video on a
 top-level request, to include interleaved audio from file or URL sources.

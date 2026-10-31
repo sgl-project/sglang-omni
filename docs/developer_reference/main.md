@@ -127,6 +127,8 @@ The `doc-style` hook rejects emoji in `docs/**/*.md`, including inline code and 
 
 Opening code fences must have a non-empty info string, such as `python`, `bash`, `text`, or `mermaid`. Any non-empty value is accepted; there is no language whitelist. This check uses the same top-level fence parsing as the emoji rule and reports missing labels at the opening line.
 
+Markdown basenames in `docs/**/*.md` must match `[a-z0-9_]+\.md`, using lowercase ASCII letters, digits, and underscores. Only `docs/README.md` is exempt; `docs/nested/README.md` is rejected. Directory names are unrestricted. For example, `guide.md`, `model_v2.md`, and `123.md` are valid, while `Guide.md`, `model-v2.md`, and names containing spaces or non-ASCII characters are rejected. The checker reports the file path and line 1 without renaming or rewriting files.
+
 ```bash
 python -m pip install -r scripts/requirements-doc-lint.txt
 python scripts/check_doc_style.py
