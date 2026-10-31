@@ -255,6 +255,9 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
         self.stream_output_builder: (
             StreamOutputBuilder[Qwen3TTSSGLangRequestData] | None
         ) = None
+        # note (ratish): the factory assigns this before generation_defaults runs; a builder
+        # that never builds reads the defaults of an unknown checkpoint.
+        self.checkpoint_dir: str = ""
 
     def resolve_checkpoint(self, model_path: str) -> str:
         qwen3_stages.apply_qwen_tts_transformers_compatibility_patches()
