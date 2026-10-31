@@ -280,7 +280,7 @@ def test_the_engine_factory_hands_its_knobs_to_the_builder(
             builder.max_new_tokens_cap,
             builder.enable_async_decode,
             builder.async_decode_min_batch_size,
-        ) == (4096, 4, 1024, 512, True, 3)
+        ) == (4096, 4, 1024, 512, False, 3)
         return "engine"
 
     monkeypatch.setattr(Drama3EngineBuilder, "build", build)
@@ -293,7 +293,7 @@ def test_the_engine_factory_hands_its_knobs_to_the_builder(
         max_new_tokens=512,
         max_prompt_rows=1024,
         server_args_overrides={"mem_fraction_static": 0.5},
-        enable_async_decode=True,
+        enable_async_decode=False,
         async_decode_min_batch_size=3,
     )
 
