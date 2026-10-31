@@ -10,6 +10,9 @@ from torch.nn import functional
 from transformers import T5GemmaConfig, T5GemmaEncoderModel, T5GemmaModuleConfig
 
 from sglang_omni.models.nemotron_voicechat.mog_head import MoGHead, RMSNorm
+from sglang_omni.platforms.device_graph import DeviceGraphBackend, ReplayableGraph
+
+GRAPH_WARMUP_STEPS = 3
 
 
 class SubwordFlagEmbedding(nn.Module):
@@ -226,6 +229,55 @@ class EarTtsTalker(nn.Module):
         return torch.stack([padded_QCD[q][codes_TQ[:, q]] for q in range(levels)]).sum(
             0
         )
+
+
+class GraphCodeGenerator:
+    """generate_codes for one frame, captured once and replayed per decode step."""
+
+    def __init__(
+        self,
+        talker: EarTtsTalker,
+        mog_head: MoGHead,
+        *,
+        backend: DeviceGraphBackend,
+        level_schedule: list[LevelScheduleEntry],
+        top_p: float,
+        noise_scale: float,
+    ) -> None:
+        device = talker.rvq_embs.device
+        device_module = torch.get_device_module(device)
+        self.hidden_input = torch.zeros(
+            1, talker.embed_code.out_features, dtype=torch.float32, device=device
+        )
+
+        def generate() -> torch.Tensor:
+            return talker.generate_codes(
+                self.hidden_input,
+                mog_head,
+                level_schedule=level_schedule,
+                top_p=top_p,
+                noise_scale=noise_scale,
+            )
+
+        capture_stream = device_module.Stream(device=device)
+        current_stream = device_module.current_stream(device)
+        capture_stream.wait_stream(current_stream)
+        with torch.inference_mode():
+            with device_module.stream(capture_stream):
+                for iteration in range(GRAPH_WARMUP_STEPS):
+                    generate()
+            current_stream.wait_stream(capture_stream)
+            with backend.capture(
+                stream=capture_stream, thread_local_errors=True
+            ) as graph:
+                self.codes_output = generate()
+        self.graph: ReplayableGraph = graph
+
+    def __call__(self, hidden_TD: torch.Tensor) -> torch.Tensor:
+        with torch.inference_mode():
+            self.hidden_input.copy_(hidden_TD)
+            self.graph.replay()
+        return self.codes_output.clone()
 
 
 TALKER_ARCH = "NemotronVoiceChatTalker"
