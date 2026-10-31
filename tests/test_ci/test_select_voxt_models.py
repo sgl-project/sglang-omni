@@ -35,6 +35,7 @@ def selected_names(
         ("sglang_omni_mlx/native/ci/model_golden/whisper-small.json", ["whisper"]),
         ("sglang_omni_mlx/native/ci/test_voxtral_tts_api.py", ["voxtral-tts"]),
         ("sglang_omni_mlx/native/src/qwen3_tts/qwen3_tts_server.cpp", ["qwen3-tts"]),
+        ("sglang_omni_mlx/native/ci/test_qwen3_tts_api.py", ["qwen3-tts"]),
         ("sglang_omni_mlx/native/ci/test_cosyvoice3_api.py", ["cosyvoice3"]),
         ("Voxt/backend/README.md", []),
     ],
@@ -116,7 +117,10 @@ def test_shared_model_libraries_select_their_dependents(
     [
         (frozenset({"mlx-community/silero-vad-v6"}), ["cohere", "sensevoice"]),
         (frozenset({"mlx-community/whisper-small-mlx"}), ["whisper"]),
-        (frozenset({"mlx-community/Qwen3-ASR-0.6B-4bit"}), ["voxtral-tts"]),
+        (
+            frozenset({"mlx-community/Qwen3-ASR-0.6B-4bit"}),
+            ["voxtral-tts", "qwen3-tts", "cosyvoice3"],
+        ),
         (frozenset({"some/unused-model"}), []),
     ],
 )

@@ -151,7 +151,8 @@
         "^sglang_omni_mlx/native/(src/qwen3_tts/|tools/qwen3_tts_|ci/(qwen3_tts_golden\\.py|test_qwen3_tts_api\\.py|model_golden/qwen3-tts-))"
       ],
       "pins": [
-        "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16"
+        "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16",
+        "mlx-community/Qwen3-ASR-0.6B-4bit"
       ],
       "goldens": [
         "qwen3-tts-12hz-0.6b-customvoice.json"
