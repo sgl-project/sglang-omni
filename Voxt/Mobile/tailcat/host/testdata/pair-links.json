@@ -1,0 +1,14 @@
+[
+ {
+  "link": "voxtmobile://pair?client=nodekey%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0026name=Sam%27s%20Mac%20mini\u0026port=48931\u0026tailcat=tc-owned\u0026token=owned%2Btoken",
+  "name": "Sam's Mac mini"
+ },
+ {
+  "link": "voxtmobile://pair?client=nodekey%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0026name=C%2B%2B%20Mac\u0026port=48931\u0026tailcat=tc-owned\u0026token=owned%2Btoken",
+  "name": "C++ Mac"
+ },
+ {
+  "link": "voxtmobile://pair?client=nodekey%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u0026name=%E6%9D%8E%E7%9A%84%20Mac\u0026port=48931\u0026tailcat=tc-owned\u0026token=owned%2Btoken",
+  "name": "李的 Mac"
+ }
+]

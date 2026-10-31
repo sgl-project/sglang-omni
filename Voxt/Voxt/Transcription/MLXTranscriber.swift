@@ -19,7 +19,7 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
     var onPartialTranscription: ((String) -> Void)?
     var dictionaryEntryProvider: (() -> [DictionaryEntry])?
 
-    private let audioEngine = AVAudioEngine()
+    private let audioEngine: AVAudioEngine
     private let inferenceTaskPriority: TaskPriority
     private let audioLevelDelivery = MLXAudioLevelDelivery()
     private let sampleStore = AudioSampleStore()
@@ -67,6 +67,9 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
     private var didRetryCaptureStartup = false
     private var activeCaptureUsesPreferredInputDevice = false
     private var loggedSampleExtractionFailure = false
+    /// Reading `inputNode` creates the input unit and opens the default input device, which can
+    /// block for minutes; only a transcriber that configured capture has one to tear down.
+    private var hasConfiguredCaptureGraph = false
     private var activeSessionBehavior = MLXModelManager.transcriptionBehavior(
         for: MLXModelManager.defaultModelRepo
     )
@@ -82,8 +85,10 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
     init(
         modelManager: MLXModelManager,
         transcriptionPurpose: MLXTranscriptionPurpose = .dictation,
-        inferenceTaskPriority: TaskPriority = .userInitiated
+        inferenceTaskPriority: TaskPriority = .userInitiated,
+        audioEngine: AVAudioEngine = AVAudioEngine()
     ) {
+        self.audioEngine = audioEngine
         self.modelManager = modelManager
         self.transcriptionPurpose = transcriptionPurpose
         self.inferenceTaskPriority = inferenceTaskPriority
@@ -280,8 +285,10 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
         let correctionPassTask = correctionPasses.currentTask
 
         sessionRevision += 1
-        stopAudioEngine()
-        audioEngine.inputNode.removeTap(onBus: 0)
+        if hasConfiguredCaptureGraph {
+            stopAudioEngine()
+            audioEngine.inputNode.removeTap(onBus: 0)
+        }
         isRecording = false
         isFinalizingTranscription = false
         cancelActiveTasks()
@@ -321,9 +328,12 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
               !nativeLiveRuntime.hasPendingWork else { return false }
 
         sessionRevision += 1
-        stopAudioEngine()
-        audioEngine.inputNode.removeTap(onBus: 0)
-        audioEngine.reset()
+        if hasConfiguredCaptureGraph {
+            stopAudioEngine()
+            audioEngine.inputNode.removeTap(onBus: 0)
+            audioEngine.reset()
+            hasConfiguredCaptureGraph = false
+        }
         cancelActiveTasks()
         earlyPrewarmTask?.cancel()
         earlyPrewarmTask = nil
@@ -761,6 +771,8 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
     private func configureAudioCaptureGraph(usePreferredInputDevice: Bool? = nil) -> (format: AVAudioFormat, usedPreferredDevice: Bool) {
         let shouldUsePreferredInputDevice = usePreferredInputDevice ?? activeCaptureUsesPreferredInputDevice
         activeCaptureUsesPreferredInputDevice = shouldUsePreferredInputDevice
+        // MLXAudioCaptureGraph.configure reads `inputNode` first, so from here on there is a graph to tear down.
+        hasConfiguredCaptureGraph = true
         let context = MLXAudioCaptureGraph.configure(
             engine: audioEngine,
             preferredInputDeviceID: preferredInputDeviceID,
@@ -1409,12 +1421,13 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
 
     private func resolvedInferenceConfiguration(
         for stage: MLXCorrectionPassKind,
-        audioDurationSeconds: Double? = nil
+        audioDurationSeconds: Double? = nil,
+        languageSelection: ASRLanguageSelection = .userSettings
     ) -> ResolvedInferenceConfiguration {
         MLXInferenceConfiguration.resolve(
             for: stage,
             audioDurationSeconds: audioDurationSeconds,
-            hintPayload: resolvedHintPayload(),
+            hintPayload: resolvedHintPayload().selectingLanguage(languageSelection),
             tuningSettings: resolvedLocalTuningSettings(),
             transcriptionPurpose: transcriptionPurpose,
             userLanguageCodes: UserMainLanguageOption.storedSelection(
@@ -1484,7 +1497,8 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
 
     func transcribeBufferedResult(
         samples: [Float],
-        sampleRate: Double
+        sampleRate: Double,
+        languageSelection: ASRLanguageSelection = .userSettings
     ) async throws -> MLXBufferedTranscriptionResult? {
         guard !samples.isEmpty else { return nil }
 
@@ -1497,7 +1511,8 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
         let audioDurationSeconds = Double(samples.count) / safeSampleRate(sampleRate)
         let inferenceConfiguration = resolvedInferenceConfiguration(
             for: .postStopFinal,
-            audioDurationSeconds: audioDurationSeconds
+            audioDurationSeconds: audioDurationSeconds,
+            languageSelection: languageSelection
         )
         let inferenceResult = try await Self.runFinalInference(
             model: model,
@@ -1524,12 +1539,16 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
         )
     }
 
-    func transcribeAudioFile(_ fileURL: URL) async throws -> String {
+    func transcribeAudioFile(
+        _ fileURL: URL,
+        languageSelection: ASRLanguageSelection = .userSettings
+    ) async throws -> String {
         let loaded = try DebugAudioClipIO.loadMonoSamples(from: fileURL)
-        return try await transcribeBufferedChunk(
+        return try await transcribeBufferedResult(
             samples: loaded.samples,
-            sampleRate: loaded.sampleRate
-        ) ?? ""
+            sampleRate: loaded.sampleRate,
+            languageSelection: languageSelection
+        )?.text ?? ""
     }
 
     func debugReplayAudioFileWithTrace(

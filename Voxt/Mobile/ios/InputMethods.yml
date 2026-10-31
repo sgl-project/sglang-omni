@@ -1,0 +1,19 @@
+# Japanese flick, Zhuyin and pinyin. Their packages carry dictionaries (about 42 MB together) and
+# third-party licenses, so a build can leave them out: remove the include in project.yml.
+# VOXT_INPUT_METHODS tells the app and the keyboard which of these layouts the build carries.
+settings:
+  base:
+    VOXT_INPUT_METHODS: ja-flick zh-Hant-zhuyin zh-Hans-pinyin
+packages:
+  JapaneseInput:
+    path: InputMethods/JapaneseInput
+  ZhuyinInput:
+    path: InputMethods/ZhuyinInput
+  PinyinInput:
+    path: InputMethods/PinyinInput
+targets:
+  VoxtKeyboard:
+    dependencies:
+      - package: JapaneseInput
+      - package: ZhuyinInput
+      - package: PinyinInput

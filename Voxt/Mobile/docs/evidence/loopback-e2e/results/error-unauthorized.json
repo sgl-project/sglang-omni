@@ -1,0 +1,6 @@
+{
+  "body": {
+    "error": "Missing or wrong access token."
+  },
+  "status": 401
+}

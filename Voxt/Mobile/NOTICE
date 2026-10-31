@@ -1,0 +1,16 @@
+Voxt Mobile (Voxt/Mobile/)
+
+Licensed under Apache-2.0, as the rest of this repository.
+
+The Tailcat tailnet nodes in tailcat/native and tailcat/host build against Go modules
+downloaded at build time, among them github.com/tailscale/tailcat (BSD-3-Clause). Each
+module keeps the license it ships with.
+
+The Japanese flick, pinyin and Zhuyin packages in ios/InputMethods keep their upstream
+licenses and notices beside their code and data:
+- McBopomofo (MIT): ios/InputMethods/McBopomofoEngine.
+- The Zhuyin data, from libtabe (BSD), and McBopomofo: ZhuyinInput/Sources/ZhuyinInput/Resources/Notices.
+- The pinyin dictionary, derived from rime-wanxiang (https://github.com/amzxyz/rime-wanxiang,
+  CC-BY-4.0) and modified: PinyinInput/Sources/PinyinInput/Resources/Notices.
+- The Japanese dictionary from azooKey (Apache-2.0), AzooKeyKanaKanjiConverter and Jinja (MIT)
+  and the Swift packages they use (Apache-2.0): JapaneseInput/Sources/JapaneseInput/Resources/Notices.

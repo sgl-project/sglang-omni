@@ -1,0 +1,3 @@
+"NSMicrophoneUsageDescription" = "Voxt は音声を録音して Mac に送り、テキストに変換します。";
+"NSCameraUsageDescription" = "Voxt は Mac に表示されたペアリングコードを読み取ります。";
+"NSLocalNetworkUsageDescription" = "Voxt はこの Wi-Fi 上で Mac の Voxt Connector を探し、QR を使わずにペアリングできるようにします。";

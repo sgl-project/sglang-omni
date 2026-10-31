@@ -1,0 +1,44 @@
+{
+  "badRequest" : {
+    "body" : {
+      "error" : "The request has no audio."
+    },
+    "status" : 400
+  },
+  "cloudModel" : {
+    "body" : {
+      "error" : "Your Mac is set to a cloud model."
+    },
+    "status" : 403
+  },
+  "noSpeech" : {
+    "body" : {
+      "error" : "No speech detected."
+    },
+    "status" : 422
+  },
+  "notFound" : {
+    "body" : {
+      "error" : "Unknown path."
+    },
+    "status" : 404
+  },
+  "unauthorized" : {
+    "body" : {
+      "error" : "Missing or wrong access token."
+    },
+    "status" : 401
+  },
+  "unsupportedAudio" : {
+    "body" : {
+      "error" : "Send audio/wav or audio/mp4."
+    },
+    "status" : 415
+  },
+  "wrongMethod" : {
+    "body" : {
+      "error" : "Use POST."
+    },
+    "status" : 405
+  }
+}

@@ -1892,6 +1892,31 @@
 "Compiling model..." = "Compiling model...";
 "Compiling %@" = "Compiling %@";
 
+/* Local API */
+"Local API" = "Local API";
+"Allow other apps to dictate through Voxt" = "Allow other apps to dictate through Voxt";
+"Scripts, shortcuts and tools on this Mac send audio over HTTP. Voxt transcribes it with your current model, enhancement and dictionary, and returns the text." = "Scripts, shortcuts and tools on this Mac send audio over HTTP. Voxt transcribes it with your current model, enhancement and dictionary, and returns the text.";
+"Voxt listens on 127.0.0.1 only." = "Voxt listens on 127.0.0.1 only.";
+"Access token" = "Access token";
+"Send it as a Bearer token with every request. Regenerating it disconnects existing clients." = "Send it as a Bearer token with every request. Regenerating it disconnects existing clients.";
+"Stopped" = "Stopped";
+"Starting…" = "Starting…";
+"Listening on 127.0.0.1:%d" = "Listening on 127.0.0.1:%d";
+"Couldn't start: %@" = "Couldn't start: %@";
+"Voxt is recording on the Mac. Try again in a moment." = "Voxt is recording on the Mac. Try again in a moment.";
+"Voxt is recording a meeting on the Mac." = "Voxt is recording a meeting on the Mac.";
+"Apple Speech can't transcribe recorded audio. Choose a local or remote model in Voxt Settings > Transcription." = "Apple Speech can't transcribe recorded audio. Choose a local or remote model in Voxt Settings > Transcription.";
+"No text model is available. Choose one in Voxt Settings > Transcription." = "No text model is available. Choose one in Voxt Settings > Transcription.";
+"The selected text model is configured to skip enhancement." = "The selected text model is configured to skip enhancement.";
+"The selected text model cannot run this operation." = "The selected text model cannot run this operation.";
+"Allow Voxt Connector to use Voxt?" = "Allow Voxt Connector to use Voxt?";
+"It will forward dictations from your paired iPhone to Voxt on this Mac." = "It will forward dictations from your paired iPhone to Voxt on this Mac.";
+"Always Allow" = "Always Allow";
+"Allow Once" = "Allow Once";
+"Don't Allow" = "Don't Allow";
+"Sync history with Voxt Mobile" = "Sync history with Voxt Mobile";
+"Paired phones exchange text history when this and History are both on. Audio and meeting transcripts stay on this Mac." = "Paired phones exchange text history when this and History are both on. Audio and meeting transcripts stay on this Mac.";
+
 /* Onboarding guide window */
 "Add punctuation and paragraph flow. Example: spoken pauses become readable sentences." = "Add punctuation and paragraph flow. Example: spoken pauses become readable sentences.";
 "Allow" = "Allow";

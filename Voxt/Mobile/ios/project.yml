@@ -1,0 +1,140 @@
+name: VoxtMobile
+# Japanese, pinyin and Zhuyin layouts with their dictionaries; drop this line to build without them.
+include:
+  - InputMethods.yml
+options:
+  bundleIdPrefix: com.voxt.VoxtMobile
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+configFiles:
+  Debug: Config/Signing.shared.xcconfig
+  Release: Config/Signing.shared.xcconfig
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.1.2"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGN_STYLE: Automatic
+packages:
+  VoxtTailcat:
+    path: VoxtTailcat
+  VoxtMobileKit:
+    path: VoxtMobileKit
+  TypingInput:
+    path: TypingInput
+  KoreanInput:
+    path: KoreanInput
+  SpanishInput:
+    path: SpanishInput
+targets:
+  VoxtMobile:
+    type: application
+    platform: iOS
+    sources: [App]
+    dependencies:
+      - package: VoxtMobileKit
+      - package: VoxtTailcat
+      - target: VoxtKeyboard
+        embed: true
+    entitlements:
+      path: App/VoxtMobile.entitlements
+      properties:
+        com.apple.security.application-groups: [$(VOXT_APP_GROUP)]
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Voxt
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        VoxtAppGroup: $(VOXT_APP_GROUP)
+        VoxtInputMethods: $(VOXT_INPUT_METHODS)
+        VoxtKeychainServicePrefix: $(VOXT_KEYCHAIN_SERVICE_PREFIX)
+        VoxtSourceURL: $(VOXT_SOURCE_URL)
+        VoxtSourceRevision: $(VOXT_SOURCE_REVISION)
+        UILaunchScreen: {}
+        UIApplicationSupportsIndirectInputEvents: true
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UIBackgroundModes: [audio]
+        NSCameraUsageDescription: Voxt scans the pairing code shown on your Mac.
+        NSMicrophoneUsageDescription: Voxt records your voice and sends it to your Mac to turn it into text.
+        NSLocalNetworkUsageDescription: Voxt looks for Voxt Connector on your Mac over this Wi-Fi so you can pair without the QR.
+        NSBonjourServices: [_voxtconnect._tcp]
+        CFBundleURLTypes:
+          - CFBundleURLName: $(PRODUCT_BUNDLE_IDENTIFIER)
+            CFBundleURLSchemes: [voxtmobile]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(VOXT_MOBILE_ID_PREFIX)
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1"
+  VoxtKeyboard:
+    type: app-extension
+    platform: iOS
+    sources:
+      - Keyboard
+      - path: App/CompositionSession.swift
+    dependencies:
+      - package: VoxtMobileKit
+      - package: TypingInput
+        product: TypingInput
+      - package: TypingInput
+        product: TypingHost
+      - package: KoreanInput
+      - package: SpanishInput
+    entitlements:
+      path: Keyboard/VoxtKeyboard.entitlements
+      properties:
+        com.apple.security.application-groups: [$(VOXT_APP_GROUP)]
+    info:
+      path: Keyboard/Info.plist
+      properties:
+        CFBundleDisplayName: Voxt
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        VoxtAppGroup: $(VOXT_APP_GROUP)
+        VoxtInputMethods: $(VOXT_INPUT_METHODS)
+        VoxtSourceRevision: $(VOXT_SOURCE_REVISION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.keyboard-service
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).KeyboardViewController
+          NSExtensionAttributes:
+            IsASCIICapable: false
+            PrefersRightToLeft: false
+            PrimaryLanguage: mul
+            RequestsOpenAccess: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(VOXT_MOBILE_ID_PREFIX).keyboard
+        TARGETED_DEVICE_FAMILY: "1"
+  VoxtMobileTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [AppTests]
+    dependencies:
+      - target: VoxtMobile
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(VOXT_MOBILE_ID_PREFIX).tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/VoxtMobile.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/VoxtMobile
+        BUNDLE_LOADER: $(TEST_HOST)
+  VoxtMobileUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: VoxtMobile
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(VOXT_MOBILE_ID_PREFIX).uitests
+        TEST_TARGET_NAME: VoxtMobile
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  VoxtMobile:
+    build:
+      targets:
+        VoxtMobile: all
+        VoxtKeyboard: all
+    test:
+      targets: [VoxtMobileTests, VoxtMobileUITests]

@@ -1845,6 +1845,31 @@
 "Compiling model..." = "モデルをコンパイル中...";
 "Compiling %@" = "%@ をコンパイル中";
 
+/* Local API */
+"Local API" = "ローカル API";
+"Allow other apps to dictate through Voxt" = "他のアプリから Voxt で音声入力を許可";
+"Scripts, shortcuts and tools on this Mac send audio over HTTP. Voxt transcribes it with your current model, enhancement and dictionary, and returns the text." = "この Mac のスクリプト、ショートカット、ツールが HTTP で音声を送ります。Voxt は現在のモデル、補正、辞書で文字起こしし、テキストを返します。";
+"Voxt listens on 127.0.0.1 only." = "Voxt は 127.0.0.1 でのみ待ち受けます。";
+"Access token" = "アクセストークン";
+"Send it as a Bearer token with every request. Regenerating it disconnects existing clients." = "すべてのリクエストに Bearer トークンとして付けてください。再生成すると既存のクライアントは使えなくなります。";
+"Stopped" = "停止中";
+"Starting…" = "起動中…";
+"Listening on 127.0.0.1:%d" = "127.0.0.1:%d で待ち受け中";
+"Couldn't start: %@" = "起動できませんでした：%@";
+"Voxt is recording on the Mac. Try again in a moment." = "Mac で Voxt が録音中です。少し待ってから再試行してください。";
+"Voxt is recording a meeting on the Mac." = "Mac で Voxt が会議を録音中です。";
+"Apple Speech can't transcribe recorded audio. Choose a local or remote model in Voxt Settings > Transcription." = "Apple 音声認識は録音済みの音声を文字起こしできません。Voxt 設定 > 文字起こし でローカルまたはリモートのモデルを選んでください。";
+"No text model is available. Choose one in Voxt Settings > Transcription." = "使えるテキストモデルがありません。Voxt 設定 > 文字起こし で選んでください。";
+"The selected text model is configured to skip enhancement." = "選択中のテキストモデルは補正をスキップする設定です。";
+"The selected text model cannot run this operation." = "選択中のテキストモデルではこの操作を実行できません。";
+"Allow Voxt Connector to use Voxt?" = "Voxt Connector に Voxt の使用を許可しますか？";
+"It will forward dictations from your paired iPhone to Voxt on this Mac." = "ペアリングした iPhone の音声入力を、この Mac の Voxt に転送します。";
+"Always Allow" = "常に許可";
+"Allow Once" = "今回のみ許可";
+"Don't Allow" = "許可しない";
+"Sync history with Voxt Mobile" = "Voxt Mobile と履歴を同期";
+"Paired phones exchange text history when this and History are both on. Audio and meeting transcripts stay on this Mac." = "これと履歴の両方がオンのとき、ペアリングしたスマートフォンとテキスト履歴を交換します。音声と会議の文字起こしはこの Mac に残ります。";
+
 /* Onboarding guide window */
 "Add punctuation and paragraph flow. Example: spoken pauses become readable sentences." = "句読点と段落の流れを整えます。例：話し言葉の間を読みやすい文にします。";
 "Allow" = "許可";

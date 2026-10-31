@@ -111,6 +111,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let speechTranscriber = SpeechTranscriber()
     var mlxTranscriber: MLXTranscriber?
     let remoteASRTranscriber = RemoteASRTranscriber()
+    var localAPIServer: LocalAPIServer?
+    var localAPIServerPort: Int?
+    var localAPIServerStatus: LocalAPIServerStatus = .off {
+        didSet {
+            guard localAPIServerStatus != oldValue else { return }
+            NotificationCenter.default.post(name: .voxtLocalAPIStatusDidChange, object: nil)
+        }
+    }
+    var localAPISettingsObserver: NSObjectProtocol?
+    var localAPIActivity: NSObjectProtocol?
+    var localAPIConnectorLink: LocalAPIConnectorLink?
     let mlxModelManager: MLXModelManager
     let customLLMManager: CustomLLMModelManager
     let ggufTranslationModelManager: GGUFTranslationModelManager
@@ -321,6 +332,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
         ggufTranslationModelManager = GGUFTranslationModelManager(modelID: ggufModelID)
         UserDefaults.standard.register(defaults: [
+            AppPreferenceKey.localAPIServerEnabled: false,
+            AppPreferenceKey.historySyncEnabled: false,
+            AppPreferenceKey.localAPIServerPort: LocalAPISettings.defaultPort,
             AppPreferenceKey.interactionSoundsEnabled: true,
             AppPreferenceKey.interactionSoundPreset: InteractionSoundPreset.soft.rawValue,
             AppPreferenceKey.muteSystemAudioWhileRecording: false,
@@ -547,6 +561,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         meetingFileTaskQueue.startIfNeeded()
+        applyLocalAPIServerLifecycle()
+        localAPISettingsObserver = NotificationCenter.default.addObserver(
+            forName: .voxtLocalAPISettingsDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.applyLocalAPIServerLifecycle()
+            }
+        }
 
         SileroVADModelProvisioner.prefetchIfNeeded(for: LocalVADMode.stored())
         RemoteModelConfigurationStore.migrateLegacyStoredSecrets()
@@ -787,6 +811,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         VoxtLog.info("Application termination cleanup started.")
 
         hotkeyManager.stop()
+        stopLocalAPIServer()
         let activeLLMTasks = cancelActiveLLMRequest()
         let recordingCaptureStartTasks = cancelRecordingCaptureStartTask()
         let pendingTranscriptionStart = pendingTranscriptionStartTask

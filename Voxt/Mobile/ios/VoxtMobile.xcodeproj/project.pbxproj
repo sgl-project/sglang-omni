@@ -1,0 +1,1032 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		00F25ACC95E6D1DB6937CB41 /* DeveloperPromptsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4E209B42908CF1AD1B5D6D1 /* DeveloperPromptsView.swift */; };
+		07EC7BA0999E637E13E2737C /* FloatingDictationWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1EC693F60630A118C5F3E66 /* FloatingDictationWindow.swift */; };
+		087AF5B55DDDC0DF49E8D856 /* TypingLayouts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 450C5C692B4576DAF677A745 /* TypingLayouts.swift */; };
+		0B3796DE802CEFE7B90FB09A /* KeyboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A8E26A9D1E22FB8ACE79B9B /* KeyboardView.swift */; };
+		120CCB5C1AEC215E73D6C92C /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 133857CED2DBF199B6A945C5 /* PairingView.swift */; };
+		2091C7F18DBE149D4A802975 /* CompositionSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = D05CBE63042DE9E0D6D1C0D6 /* CompositionSession.swift */; };
+		21CE2791730CF8BB9E136CE9 /* TryItEndToEndUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EA43C56D3CAF394C0AF736D /* TryItEndToEndUITests.swift */; };
+		2243C342B0BACB919F1B26C2 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 231B705625CB297381F9868A /* AppModel.swift */; };
+		23AEB22597A8D17C567C4FAE /* VoxtMobileApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 154842DF0CD4940E84EF530D /* VoxtMobileApp.swift */; };
+		2720ECBDFCBD19FBA7CEA8FF /* AppModelRecordingRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FCE58D31F4E8CE88A109118 /* AppModelRecordingRecoveryTests.swift */; };
+		278867520C648F8D6FE0A2B3 /* PreferencesUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9ADF6565A7080BCF13E7CB4F /* PreferencesUITests.swift */; };
+		291F7BA0879DE558151E7BCD /* UndoInsertionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02FFDEF4F8077CAB35EE5031 /* UndoInsertionTests.swift */; };
+		2A8362EAA80C8C77C342173E /* AppModelTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A5F58D7999D9A321BC6364C /* AppModelTransportTests.swift */; };
+		2F1185551834762FF80F068E /* LocalPairingFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0D805C687FAA48CAFC647B7 /* LocalPairingFlowTests.swift */; };
+		2FE55E61F1C3E0987A783A92 /* FileAudioCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = B33FDF758831B853DD6DEFFB /* FileAudioCapture.swift */; };
+		322BA6BCEAF34CFBF8F65ECD /* Onboarding.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9453B0F6D1D8F3942885AE4 /* Onboarding.swift */; };
+		32E31407FF35F7A6564C9E8D /* MicrophoneCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 821D0408E0F30AD674B6A6CF /* MicrophoneCapture.swift */; };
+		3319EBE65F31ADC54FEDE3A3 /* JapaneseKeyboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C60EF0E45F02800A6C97A730 /* JapaneseKeyboardView.swift */; };
+		39C4AF32A13E999888D442C9 /* TypingHost in Frameworks */ = {isa = PBXBuildFile; productRef = D79EF57517A086319AD10BF3 /* TypingHost */; };
+		3E838227409BD75212065D28 /* DictationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46911ABF4195A36473ED5677 /* DictationView.swift */; };
+		43D9A47D6521AF8C28B5A08F /* AppModelDeveloperPromptsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC74F22282F23393852658CA /* AppModelDeveloperPromptsTests.swift */; };
+		4744C9DB27750C2F7C4EE658 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA43C695E03BA48A0590FFCA /* OnboardingView.swift */; };
+		4F783B66C0BC0F59EDEE9E54 /* AppModelMacFeaturesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B997E344019B39D5CBBE0E8 /* AppModelMacFeaturesTests.swift */; };
+		5355BEB2B285916920684B16 /* SpanishInput in Frameworks */ = {isa = PBXBuildFile; productRef = 06281447DE9A9C5D26391D57 /* SpanishInput */; };
+		54177F6E38A929336C1DA091 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = D8FD64C41F424EFFDD074DB0 /* Assets.xcassets */; };
+		57D44D92312AE12BBFF2C69A /* AppScreensUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8C1DCF01C41838761968D05 /* AppScreensUITests.swift */; };
+		5A8CEC952556A7DDB045ECEC /* TestLanguageLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 764D7BD1E8D0EE67913FEC97 /* TestLanguageLaunchTests.swift */; };
+		5ADED34C9D8C49B93FE94FCD /* LocalizedScreensUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE336E7A39473C3A25A00556 /* LocalizedScreensUITests.swift */; };
+		618D8B35424D369797BEBCA2 /* DictationFlowUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AE3338982E983C9E26BB19D /* DictationFlowUITests.swift */; };
+		62B366EBBF9FE0B5C68CEAE3 /* KeyboardHandoffView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E25545ED0745C63198BCB2FE /* KeyboardHandoffView.swift */; };
+		65AF14A56B67649C251860DF /* DictionaryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F62BFFA777FA78BAC8EB96DB /* DictionaryView.swift */; };
+		6FF0B82F3B1D3BBA518ACE7D /* AppModelConnectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CEE62A5600E01CBD6B465A1 /* AppModelConnectionTests.swift */; };
+		70116FCA5C50E99536F85390 /* PinyinInput in Frameworks */ = {isa = PBXBuildFile; productRef = 22C29D367B54E2137315D6DB /* PinyinInput */; };
+		7537C2CF67E109C273F4BDD3 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D26B0BC60F97AE9AB4FBF7F /* SettingsView.swift */; };
+		7790B78487AB4C1CF167CA49 /* ZhuyinInput in Frameworks */ = {isa = PBXBuildFile; productRef = 999389AFB1A5193A765F257F /* ZhuyinInput */; };
+		83B5532B2EFC98DAEACD9B13 /* AppModelResultAttributionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BBB654FD3BD613DFC7FCBAD /* AppModelResultAttributionTests.swift */; };
+		85865862F2F7E60B3C8BE29A /* WeekSummary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AD40D8C2C58D028E2F6E71C /* WeekSummary.swift */; };
+		8BD1ABC7071C3CB3FD90D5D0 /* ZhuyinKeyboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A548A45F81DAA4D188B88B9 /* ZhuyinKeyboardView.swift */; };
+		8CC2DDA6AE103907B50869BB /* TypingInput in Frameworks */ = {isa = PBXBuildFile; productRef = FF96FC0325B0EA333728E08B /* TypingInput */; };
+		8D2B0036E414BFA90DCEFB72 /* AppModelCorrectionLifetimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34B5A414BC5A0E4462E44001 /* AppModelCorrectionLifetimeTests.swift */; };
+		94C3675EB629CED9240E9A6E /* KeyboardViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26FE854EE2833D9ABC8DEFD7 /* KeyboardViewController.swift */; };
+		94DABD5FF4BD7CBADA07CE11 /* PenIntentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E3153CE755D3F9B659ECDCB /* PenIntentTests.swift */; };
+		95C67BFE96150121C199B5E4 /* CompositionSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6089320C6FAF8C1FAB0BF4AC /* CompositionSessionTests.swift */; };
+		9B6ED701C556F9DF7A234AD2 /* AppModelNativeTailcatTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DF704FD6CD243E43317F820 /* AppModelNativeTailcatTests.swift */; };
+		9C8CB8CCC60A7F82B727215F /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = C573316AF3AAB69A2F226856 /* InfoPlist.strings */; };
+		9CB15EE50AA74DDF9AF5F415 /* AppModelTailcatInvitationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A35F25709DE34FB4BC8E4276 /* AppModelTailcatInvitationTests.swift */; };
+		9DC63C35E06A1C259C647710 /* AppModelPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C47B0131E57911A6EFEE24B /* AppModelPersistenceTests.swift */; };
+		AF2CD11490D33BD8C15515A4 /* JapaneseInput in Frameworks */ = {isa = PBXBuildFile; productRef = 8D6DDB3769CB7201466BD420 /* JapaneseInput */; };
+		AF7325E9DAFA1110D313180F /* CompositionSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = D05CBE63042DE9E0D6D1C0D6 /* CompositionSession.swift */; };
+		B17C8CB4DE227AAE57F92EDA /* DesignTourUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C53149FD2F88F732673E9CAF /* DesignTourUITests.swift */; };
+		B98073B447CC175B6BDC8219 /* TranslationLanguagesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 058BD9792DB779D8BA580706 /* TranslationLanguagesView.swift */; };
+		BBF8BD4F5A726CDDF7D77F8B /* DeviceAppScreensUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B258E00BBCEC5924F37BFCD1 /* DeviceAppScreensUITests.swift */; };
+		C0D27AE0B69C43D39073A6E9 /* OnboardingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56D431E0A60F34D24AA70C5D /* OnboardingTests.swift */; };
+		C44EDE699C04AA5601ED49FC /* VoxtMobileKit in Frameworks */ = {isa = PBXBuildFile; productRef = 569402215B01799888694C48 /* VoxtMobileKit */; };
+		C8F3FD9C9F2B5BFFF321E741 /* PersonalStyleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 435D46623B9D8E9DBDB3A300 /* PersonalStyleView.swift */; };
+		CF3388E8B321CB5BBB6089C1 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D874FBB937928ED6E546E2D /* HistoryView.swift */; };
+		D4D4D6E3DB103665609A264F /* AppModelHistorySyncTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F305E780A5580EAEDA008494 /* AppModelHistorySyncTests.swift */; };
+		DC2191C4CDCC10364B293521 /* VoxtTailcat in Frameworks */ = {isa = PBXBuildFile; productRef = 9C58FE21B9EBFA0AFF2208DD /* VoxtTailcat */; };
+		E2D79D739AA611F535602B1C /* AppModelKeyboardSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D9D5AC00A615DB3B88FD2C3 /* AppModelKeyboardSettingsTests.swift */; };
+		E5571A38B617400859818A44 /* TextKeyboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 962A7F5FF725C5915C2DF572 /* TextKeyboardView.swift */; };
+		E744F7EC3A1DD9C48A0169B3 /* VoxtMobileKit in Frameworks */ = {isa = PBXBuildFile; productRef = AA456DD9AE9A091CD6391D36 /* VoxtMobileKit */; };
+		EC0BFA7C39D33EF1DB255CE0 /* VoxtKeyboard.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = F9B88B06EA39A3E16E257B76 /* VoxtKeyboard.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		F70FCB2F67A0803E1C9DCC61 /* KoreanInput in Frameworks */ = {isa = PBXBuildFile; productRef = A5AA652A41F938B54EF54689 /* KoreanInput */; };
+		FCAB19FBE3E8398A8A370C06 /* TestResetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A940BEBF7D6C3619BCA5C73 /* TestResetTests.swift */; };
+		FEFA2789D1E7ABBBFAC775DE /* HomeSummaryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE244A93F561B9CF9C243FD7 /* HomeSummaryTests.swift */; };
+		FF0DF8723FAE682EEC46822D /* LocalizationBundleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0718882140522D65DFC9DFE9 /* LocalizationBundleTests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		5889B7D52F843800E25AA97A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = C3819C32E870E04DD1A8587B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 9621E88D619F72D9D46776C7;
+			remoteInfo = VoxtMobile;
+		};
+		612C84451C0806F1F1578EF4 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = C3819C32E870E04DD1A8587B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 9621E88D619F72D9D46776C7;
+			remoteInfo = VoxtMobile;
+		};
+		86393AADC1B009F627621426 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = C3819C32E870E04DD1A8587B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = EB1322FED8DC2AD4A03B37BC;
+			remoteInfo = VoxtKeyboard;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		1DD5AA7B791ABE258F9D91EF /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				EC0BFA7C39D33EF1DB255CE0 /* VoxtKeyboard.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		02CC9FAA3FF73FF4E9F525D0 /* SpanishInput */ = {isa = PBXFileReference; lastKnownFileType = folder; name = SpanishInput; path = SpanishInput; sourceTree = SOURCE_ROOT; };
+		02FFDEF4F8077CAB35EE5031 /* UndoInsertionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UndoInsertionTests.swift; sourceTree = "<group>"; };
+		058BD9792DB779D8BA580706 /* TranslationLanguagesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranslationLanguagesView.swift; sourceTree = "<group>"; };
+		0718882140522D65DFC9DFE9 /* LocalizationBundleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalizationBundleTests.swift; sourceTree = "<group>"; };
+		0A548A45F81DAA4D188B88B9 /* ZhuyinKeyboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZhuyinKeyboardView.swift; sourceTree = "<group>"; };
+		0E3153CE755D3F9B659ECDCB /* PenIntentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PenIntentTests.swift; sourceTree = "<group>"; };
+		133857CED2DBF199B6A945C5 /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
+		1499677E74178CBDA136A7D7 /* ja */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ja; path = ja.lproj/InfoPlist.strings; sourceTree = "<group>"; };
+		154842DF0CD4940E84EF530D /* VoxtMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoxtMobileApp.swift; sourceTree = "<group>"; };
+		1AE3338982E983C9E26BB19D /* DictationFlowUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationFlowUITests.swift; sourceTree = "<group>"; };
+		231B705625CB297381F9868A /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		26FE854EE2833D9ABC8DEFD7 /* KeyboardViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardViewController.swift; sourceTree = "<group>"; };
+		34B5A414BC5A0E4462E44001 /* AppModelCorrectionLifetimeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelCorrectionLifetimeTests.swift; sourceTree = "<group>"; };
+		3815AD8586D74DFD73A4A823 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/InfoPlist.strings; sourceTree = "<group>"; };
+		39DA949BEB741CD4904C28E0 /* VoxtTailcat */ = {isa = PBXFileReference; lastKnownFileType = folder; name = VoxtTailcat; path = VoxtTailcat; sourceTree = SOURCE_ROOT; };
+		3D9D5AC00A615DB3B88FD2C3 /* AppModelKeyboardSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelKeyboardSettingsTests.swift; sourceTree = "<group>"; };
+		3DF704FD6CD243E43317F820 /* AppModelNativeTailcatTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelNativeTailcatTests.swift; sourceTree = "<group>"; };
+		413F94ACD3025D1AE5BB8CB9 /* zh-Hant */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hant"; path = "zh-Hant.lproj/InfoPlist.strings"; sourceTree = "<group>"; };
+		41A8CC2B5DC6114A82CEF3DB /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		435D46623B9D8E9DBDB3A300 /* PersonalStyleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalStyleView.swift; sourceTree = "<group>"; };
+		450C5C692B4576DAF677A745 /* TypingLayouts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypingLayouts.swift; sourceTree = "<group>"; };
+		46911ABF4195A36473ED5677 /* DictationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationView.swift; sourceTree = "<group>"; };
+		4D26B0BC60F97AE9AB4FBF7F /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		55C131E3E7B71CF01DA3E6BF /* ko */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ko; path = ko.lproj/InfoPlist.strings; sourceTree = "<group>"; };
+		56D431E0A60F34D24AA70C5D /* OnboardingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingTests.swift; sourceTree = "<group>"; };
+		5AD40D8C2C58D028E2F6E71C /* WeekSummary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeekSummary.swift; sourceTree = "<group>"; };
+		5C47B0131E57911A6EFEE24B /* AppModelPersistenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelPersistenceTests.swift; sourceTree = "<group>"; };
+		5EA43C56D3CAF394C0AF736D /* TryItEndToEndUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TryItEndToEndUITests.swift; sourceTree = "<group>"; };
+		6089320C6FAF8C1FAB0BF4AC /* CompositionSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompositionSessionTests.swift; sourceTree = "<group>"; };
+		61E5AB68BC3991B880E32A40 /* VoxtMobileTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = VoxtMobileTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		6CEE62A5600E01CBD6B465A1 /* AppModelConnectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelConnectionTests.swift; sourceTree = "<group>"; };
+		6D874FBB937928ED6E546E2D /* HistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryView.swift; sourceTree = "<group>"; };
+		71C95C42560F9E2BF2F3A19D /* Signing.shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.shared.xcconfig; sourceTree = "<group>"; };
+		764D7BD1E8D0EE67913FEC97 /* TestLanguageLaunchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestLanguageLaunchTests.swift; sourceTree = "<group>"; };
+		7B997E344019B39D5CBBE0E8 /* AppModelMacFeaturesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelMacFeaturesTests.swift; sourceTree = "<group>"; };
+		7BBB654FD3BD613DFC7FCBAD /* AppModelResultAttributionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelResultAttributionTests.swift; sourceTree = "<group>"; };
+		7C2D956FC0F1BCC29B87BC82 /* VoxtMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = VoxtMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		7FCE58D31F4E8CE88A109118 /* AppModelRecordingRecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelRecordingRecoveryTests.swift; sourceTree = "<group>"; };
+		821D0408E0F30AD674B6A6CF /* MicrophoneCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MicrophoneCapture.swift; sourceTree = "<group>"; };
+		893282F9DF4A68121857B5D4 /* VoxtMobile.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = VoxtMobile.entitlements; sourceTree = "<group>"; };
+		8A8E26A9D1E22FB8ACE79B9B /* KeyboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardView.swift; sourceTree = "<group>"; };
+		8CB989233890E2719D48FAE0 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		918DE773E095ED2265A42F19 /* VoxtMobileKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = VoxtMobileKit; path = VoxtMobileKit; sourceTree = SOURCE_ROOT; };
+		9341D70128AEA66D5255C418 /* VoxtMobileUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = VoxtMobileUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		962A7F5FF725C5915C2DF572 /* TextKeyboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextKeyboardView.swift; sourceTree = "<group>"; };
+		9A5F58D7999D9A321BC6364C /* AppModelTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelTransportTests.swift; sourceTree = "<group>"; };
+		9A940BEBF7D6C3619BCA5C73 /* TestResetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestResetTests.swift; sourceTree = "<group>"; };
+		9ADF6565A7080BCF13E7CB4F /* PreferencesUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreferencesUITests.swift; sourceTree = "<group>"; };
+		A0D805C687FAA48CAFC647B7 /* LocalPairingFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalPairingFlowTests.swift; sourceTree = "<group>"; };
+		A1EC693F60630A118C5F3E66 /* FloatingDictationWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingDictationWindow.swift; sourceTree = "<group>"; };
+		A35F25709DE34FB4BC8E4276 /* AppModelTailcatInvitationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelTailcatInvitationTests.swift; sourceTree = "<group>"; };
+		A4E209B42908CF1AD1B5D6D1 /* DeveloperPromptsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeveloperPromptsView.swift; sourceTree = "<group>"; };
+		AF4EC09D8DEC125C4C879937 /* es */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = es; path = es.lproj/InfoPlist.strings; sourceTree = "<group>"; };
+		B258E00BBCEC5924F37BFCD1 /* DeviceAppScreensUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceAppScreensUITests.swift; sourceTree = "<group>"; };
+		B33FDF758831B853DD6DEFFB /* FileAudioCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileAudioCapture.swift; sourceTree = "<group>"; };
+		B564054FBF046B43C431995A /* ZhuyinInput */ = {isa = PBXFileReference; lastKnownFileType = folder; name = ZhuyinInput; path = InputMethods/ZhuyinInput; sourceTree = SOURCE_ROOT; };
+		B9453B0F6D1D8F3942885AE4 /* Onboarding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Onboarding.swift; sourceTree = "<group>"; };
+		C53149FD2F88F732673E9CAF /* DesignTourUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTourUITests.swift; sourceTree = "<group>"; };
+		C60EF0E45F02800A6C97A730 /* JapaneseKeyboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JapaneseKeyboardView.swift; sourceTree = "<group>"; };
+		C8C1DCF01C41838761968D05 /* AppScreensUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppScreensUITests.swift; sourceTree = "<group>"; };
+		C994871478A5E77BC1C775E1 /* PinyinInput */ = {isa = PBXFileReference; lastKnownFileType = folder; name = PinyinInput; path = InputMethods/PinyinInput; sourceTree = SOURCE_ROOT; };
+		CA43C695E03BA48A0590FFCA /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
+		D05CBE63042DE9E0D6D1C0D6 /* CompositionSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompositionSession.swift; sourceTree = "<group>"; };
+		D8FD64C41F424EFFDD074DB0 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		DE336E7A39473C3A25A00556 /* LocalizedScreensUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalizedScreensUITests.swift; sourceTree = "<group>"; };
+		E25545ED0745C63198BCB2FE /* KeyboardHandoffView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardHandoffView.swift; sourceTree = "<group>"; };
+		E44ED83EB1187264964918DA /* KoreanInput */ = {isa = PBXFileReference; lastKnownFileType = folder; name = KoreanInput; path = KoreanInput; sourceTree = SOURCE_ROOT; };
+		EC74F22282F23393852658CA /* AppModelDeveloperPromptsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelDeveloperPromptsTests.swift; sourceTree = "<group>"; };
+		EDC15D90B107C693D2E5664F /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/InfoPlist.strings"; sourceTree = "<group>"; };
+		EE244A93F561B9CF9C243FD7 /* HomeSummaryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeSummaryTests.swift; sourceTree = "<group>"; };
+		F305E780A5580EAEDA008494 /* AppModelHistorySyncTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelHistorySyncTests.swift; sourceTree = "<group>"; };
+		F3646B845D62EC9DEA97E0D6 /* VoxtKeyboard.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = VoxtKeyboard.entitlements; sourceTree = "<group>"; };
+		F45845D10B39B4B116D3CDCE /* TypingInput */ = {isa = PBXFileReference; lastKnownFileType = folder; name = TypingInput; path = TypingInput; sourceTree = SOURCE_ROOT; };
+		F62BFFA777FA78BAC8EB96DB /* DictionaryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictionaryView.swift; sourceTree = "<group>"; };
+		F755E81E724012E95B4F1ABD /* JapaneseInput */ = {isa = PBXFileReference; lastKnownFileType = folder; name = JapaneseInput; path = InputMethods/JapaneseInput; sourceTree = SOURCE_ROOT; };
+		F9B88B06EA39A3E16E257B76 /* VoxtKeyboard.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = VoxtKeyboard.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		741CB04F64C362877D155901 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AF2CD11490D33BD8C15515A4 /* JapaneseInput in Frameworks */,
+				7790B78487AB4C1CF167CA49 /* ZhuyinInput in Frameworks */,
+				70116FCA5C50E99536F85390 /* PinyinInput in Frameworks */,
+				C44EDE699C04AA5601ED49FC /* VoxtMobileKit in Frameworks */,
+				8CC2DDA6AE103907B50869BB /* TypingInput in Frameworks */,
+				39C4AF32A13E999888D442C9 /* TypingHost in Frameworks */,
+				F70FCB2F67A0803E1C9DCC61 /* KoreanInput in Frameworks */,
+				5355BEB2B285916920684B16 /* SpanishInput in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FAECFD2EF6551E8FBA9DEAE9 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E744F7EC3A1DD9C48A0169B3 /* VoxtMobileKit in Frameworks */,
+				DC2191C4CDCC10364B293521 /* VoxtTailcat in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		29EF02FE24DD6F1E02CBDF1D /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				71C95C42560F9E2BF2F3A19D /* Signing.shared.xcconfig */,
+			);
+			path = Config;
+			sourceTree = "<group>";
+		};
+		3D11646CD620D9A89158CD10 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				231B705625CB297381F9868A /* AppModel.swift */,
+				D8FD64C41F424EFFDD074DB0 /* Assets.xcassets */,
+				D05CBE63042DE9E0D6D1C0D6 /* CompositionSession.swift */,
+				A4E209B42908CF1AD1B5D6D1 /* DeveloperPromptsView.swift */,
+				46911ABF4195A36473ED5677 /* DictationView.swift */,
+				F62BFFA777FA78BAC8EB96DB /* DictionaryView.swift */,
+				B33FDF758831B853DD6DEFFB /* FileAudioCapture.swift */,
+				A1EC693F60630A118C5F3E66 /* FloatingDictationWindow.swift */,
+				6D874FBB937928ED6E546E2D /* HistoryView.swift */,
+				8CB989233890E2719D48FAE0 /* Info.plist */,
+				E25545ED0745C63198BCB2FE /* KeyboardHandoffView.swift */,
+				821D0408E0F30AD674B6A6CF /* MicrophoneCapture.swift */,
+				B9453B0F6D1D8F3942885AE4 /* Onboarding.swift */,
+				CA43C695E03BA48A0590FFCA /* OnboardingView.swift */,
+				133857CED2DBF199B6A945C5 /* PairingView.swift */,
+				435D46623B9D8E9DBDB3A300 /* PersonalStyleView.swift */,
+				4D26B0BC60F97AE9AB4FBF7F /* SettingsView.swift */,
+				058BD9792DB779D8BA580706 /* TranslationLanguagesView.swift */,
+				893282F9DF4A68121857B5D4 /* VoxtMobile.entitlements */,
+				154842DF0CD4940E84EF530D /* VoxtMobileApp.swift */,
+				5AD40D8C2C58D028E2F6E71C /* WeekSummary.swift */,
+				C573316AF3AAB69A2F226856 /* InfoPlist.strings */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		52A0E757543541F60516E34F /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				F755E81E724012E95B4F1ABD /* JapaneseInput */,
+				E44ED83EB1187264964918DA /* KoreanInput */,
+				C994871478A5E77BC1C775E1 /* PinyinInput */,
+				02CC9FAA3FF73FF4E9F525D0 /* SpanishInput */,
+				F45845D10B39B4B116D3CDCE /* TypingInput */,
+				918DE773E095ED2265A42F19 /* VoxtMobileKit */,
+				39DA949BEB741CD4904C28E0 /* VoxtTailcat */,
+				B564054FBF046B43C431995A /* ZhuyinInput */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		68C82804A9C8661550A839A2 /* UITests */ = {
+			isa = PBXGroup;
+			children = (
+				C8C1DCF01C41838761968D05 /* AppScreensUITests.swift */,
+				C53149FD2F88F732673E9CAF /* DesignTourUITests.swift */,
+				B258E00BBCEC5924F37BFCD1 /* DeviceAppScreensUITests.swift */,
+				1AE3338982E983C9E26BB19D /* DictationFlowUITests.swift */,
+				DE336E7A39473C3A25A00556 /* LocalizedScreensUITests.swift */,
+				9ADF6565A7080BCF13E7CB4F /* PreferencesUITests.swift */,
+				5EA43C56D3CAF394C0AF736D /* TryItEndToEndUITests.swift */,
+			);
+			path = UITests;
+			sourceTree = "<group>";
+		};
+		6EB3017C3853BC03BF42F759 /* AppTests */ = {
+			isa = PBXGroup;
+			children = (
+				6CEE62A5600E01CBD6B465A1 /* AppModelConnectionTests.swift */,
+				34B5A414BC5A0E4462E44001 /* AppModelCorrectionLifetimeTests.swift */,
+				EC74F22282F23393852658CA /* AppModelDeveloperPromptsTests.swift */,
+				F305E780A5580EAEDA008494 /* AppModelHistorySyncTests.swift */,
+				3D9D5AC00A615DB3B88FD2C3 /* AppModelKeyboardSettingsTests.swift */,
+				7B997E344019B39D5CBBE0E8 /* AppModelMacFeaturesTests.swift */,
+				3DF704FD6CD243E43317F820 /* AppModelNativeTailcatTests.swift */,
+				5C47B0131E57911A6EFEE24B /* AppModelPersistenceTests.swift */,
+				7FCE58D31F4E8CE88A109118 /* AppModelRecordingRecoveryTests.swift */,
+				7BBB654FD3BD613DFC7FCBAD /* AppModelResultAttributionTests.swift */,
+				A35F25709DE34FB4BC8E4276 /* AppModelTailcatInvitationTests.swift */,
+				9A5F58D7999D9A321BC6364C /* AppModelTransportTests.swift */,
+				6089320C6FAF8C1FAB0BF4AC /* CompositionSessionTests.swift */,
+				EE244A93F561B9CF9C243FD7 /* HomeSummaryTests.swift */,
+				0718882140522D65DFC9DFE9 /* LocalizationBundleTests.swift */,
+				A0D805C687FAA48CAFC647B7 /* LocalPairingFlowTests.swift */,
+				56D431E0A60F34D24AA70C5D /* OnboardingTests.swift */,
+				0E3153CE755D3F9B659ECDCB /* PenIntentTests.swift */,
+				764D7BD1E8D0EE67913FEC97 /* TestLanguageLaunchTests.swift */,
+				9A940BEBF7D6C3619BCA5C73 /* TestResetTests.swift */,
+				02FFDEF4F8077CAB35EE5031 /* UndoInsertionTests.swift */,
+			);
+			path = AppTests;
+			sourceTree = "<group>";
+		};
+		825B2A04712E58B76935C845 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				F9B88B06EA39A3E16E257B76 /* VoxtKeyboard.appex */,
+				7C2D956FC0F1BCC29B87BC82 /* VoxtMobile.app */,
+				61E5AB68BC3991B880E32A40 /* VoxtMobileTests.xctest */,
+				9341D70128AEA66D5255C418 /* VoxtMobileUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		919D9B2798F25A9362E563DD /* Keyboard */ = {
+			isa = PBXGroup;
+			children = (
+				41A8CC2B5DC6114A82CEF3DB /* Info.plist */,
+				C60EF0E45F02800A6C97A730 /* JapaneseKeyboardView.swift */,
+				8A8E26A9D1E22FB8ACE79B9B /* KeyboardView.swift */,
+				26FE854EE2833D9ABC8DEFD7 /* KeyboardViewController.swift */,
+				962A7F5FF725C5915C2DF572 /* TextKeyboardView.swift */,
+				450C5C692B4576DAF677A745 /* TypingLayouts.swift */,
+				F3646B845D62EC9DEA97E0D6 /* VoxtKeyboard.entitlements */,
+				0A548A45F81DAA4D188B88B9 /* ZhuyinKeyboardView.swift */,
+			);
+			path = Keyboard;
+			sourceTree = "<group>";
+		};
+		B8E7040D56EBAB21E409A371 = {
+			isa = PBXGroup;
+			children = (
+				3D11646CD620D9A89158CD10 /* App */,
+				6EB3017C3853BC03BF42F759 /* AppTests */,
+				29EF02FE24DD6F1E02CBDF1D /* Config */,
+				919D9B2798F25A9362E563DD /* Keyboard */,
+				52A0E757543541F60516E34F /* Packages */,
+				68C82804A9C8661550A839A2 /* UITests */,
+				825B2A04712E58B76935C845 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		75BCF130757B92F2FBDE74B3 /* VoxtMobileUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 579C30C9A17E22753355B68A /* Build configuration list for PBXNativeTarget "VoxtMobileUITests" */;
+			buildPhases = (
+				6A0645E94919590681FDFAC5 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				28C5899FBCFC7CD1091362C1 /* PBXTargetDependency */,
+			);
+			name = VoxtMobileUITests;
+			packageProductDependencies = (
+			);
+			productName = VoxtMobileUITests;
+			productReference = 9341D70128AEA66D5255C418 /* VoxtMobileUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		9621E88D619F72D9D46776C7 /* VoxtMobile */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D8E0B1DEE9928A42E7F419B0 /* Build configuration list for PBXNativeTarget "VoxtMobile" */;
+			buildPhases = (
+				FCE4BE30FC85758C82015FB4 /* Sources */,
+				F024DA11CD29D30F6264C68E /* Resources */,
+				FAECFD2EF6551E8FBA9DEAE9 /* Frameworks */,
+				1DD5AA7B791ABE258F9D91EF /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				24170AF611FAB407355FB3F5 /* PBXTargetDependency */,
+			);
+			name = VoxtMobile;
+			packageProductDependencies = (
+				AA456DD9AE9A091CD6391D36 /* VoxtMobileKit */,
+				9C58FE21B9EBFA0AFF2208DD /* VoxtTailcat */,
+			);
+			productName = VoxtMobile;
+			productReference = 7C2D956FC0F1BCC29B87BC82 /* VoxtMobile.app */;
+			productType = "com.apple.product-type.application";
+		};
+		BDDCD2F39A41839E23178923 /* VoxtMobileTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 7801000D06F13941DD42EAD2 /* Build configuration list for PBXNativeTarget "VoxtMobileTests" */;
+			buildPhases = (
+				6274363D388D3FA71A4E69F2 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				EB7961AE96F1B78D67A03611 /* PBXTargetDependency */,
+			);
+			name = VoxtMobileTests;
+			packageProductDependencies = (
+			);
+			productName = VoxtMobileTests;
+			productReference = 61E5AB68BC3991B880E32A40 /* VoxtMobileTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		EB1322FED8DC2AD4A03B37BC /* VoxtKeyboard */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 911AE3DED9E55FB50BB0FC7A /* Build configuration list for PBXNativeTarget "VoxtKeyboard" */;
+			buildPhases = (
+				6796DBB26F762C4CA413C66A /* Sources */,
+				741CB04F64C362877D155901 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = VoxtKeyboard;
+			packageProductDependencies = (
+				8D6DDB3769CB7201466BD420 /* JapaneseInput */,
+				999389AFB1A5193A765F257F /* ZhuyinInput */,
+				22C29D367B54E2137315D6DB /* PinyinInput */,
+				569402215B01799888694C48 /* VoxtMobileKit */,
+				FF96FC0325B0EA333728E08B /* TypingInput */,
+				D79EF57517A086319AD10BF3 /* TypingHost */,
+				A5AA652A41F938B54EF54689 /* KoreanInput */,
+				06281447DE9A9C5D26391D57 /* SpanishInput */,
+			);
+			productName = VoxtKeyboard;
+			productReference = F9B88B06EA39A3E16E257B76 /* VoxtKeyboard.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		C3819C32E870E04DD1A8587B /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					75BCF130757B92F2FBDE74B3 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+						TestTargetID = 9621E88D619F72D9D46776C7;
+					};
+					9621E88D619F72D9D46776C7 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+					BDDCD2F39A41839E23178923 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+					EB1322FED8DC2AD4A03B37BC = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 324A59D45A96F0E9A26DE0D6 /* Build configuration list for PBXProject "VoxtMobile" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+				es,
+				ja,
+				ko,
+				"zh-Hans",
+				"zh-Hant",
+			);
+			mainGroup = B8E7040D56EBAB21E409A371;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				91DB5EF1DCA81EDC2646DEE1 /* XCLocalSwiftPackageReference "InputMethods/JapaneseInput" */,
+				F8BCB7E6578B38627128B08A /* XCLocalSwiftPackageReference "KoreanInput" */,
+				5950F6D790FCF85E4C7A74E6 /* XCLocalSwiftPackageReference "InputMethods/PinyinInput" */,
+				405DD79DE3DCFAD65B4CBFF3 /* XCLocalSwiftPackageReference "SpanishInput" */,
+				3ED42451ED42590F7A817B72 /* XCLocalSwiftPackageReference "TypingInput" */,
+				FE755DD33BA5B9926DBDB18E /* XCLocalSwiftPackageReference "VoxtMobileKit" */,
+				AB998A5A13B4BFE7AF7EF795 /* XCLocalSwiftPackageReference "VoxtTailcat" */,
+				1F89811BA9D3D582BC7F317B /* XCLocalSwiftPackageReference "InputMethods/ZhuyinInput" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 825B2A04712E58B76935C845 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				EB1322FED8DC2AD4A03B37BC /* VoxtKeyboard */,
+				9621E88D619F72D9D46776C7 /* VoxtMobile */,
+				BDDCD2F39A41839E23178923 /* VoxtMobileTests */,
+				75BCF130757B92F2FBDE74B3 /* VoxtMobileUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		F024DA11CD29D30F6264C68E /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				54177F6E38A929336C1DA091 /* Assets.xcassets in Resources */,
+				9C8CB8CCC60A7F82B727215F /* InfoPlist.strings in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		6274363D388D3FA71A4E69F2 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				6FF0B82F3B1D3BBA518ACE7D /* AppModelConnectionTests.swift in Sources */,
+				8D2B0036E414BFA90DCEFB72 /* AppModelCorrectionLifetimeTests.swift in Sources */,
+				43D9A47D6521AF8C28B5A08F /* AppModelDeveloperPromptsTests.swift in Sources */,
+				D4D4D6E3DB103665609A264F /* AppModelHistorySyncTests.swift in Sources */,
+				E2D79D739AA611F535602B1C /* AppModelKeyboardSettingsTests.swift in Sources */,
+				4F783B66C0BC0F59EDEE9E54 /* AppModelMacFeaturesTests.swift in Sources */,
+				9B6ED701C556F9DF7A234AD2 /* AppModelNativeTailcatTests.swift in Sources */,
+				9DC63C35E06A1C259C647710 /* AppModelPersistenceTests.swift in Sources */,
+				2720ECBDFCBD19FBA7CEA8FF /* AppModelRecordingRecoveryTests.swift in Sources */,
+				83B5532B2EFC98DAEACD9B13 /* AppModelResultAttributionTests.swift in Sources */,
+				9CB15EE50AA74DDF9AF5F415 /* AppModelTailcatInvitationTests.swift in Sources */,
+				2A8362EAA80C8C77C342173E /* AppModelTransportTests.swift in Sources */,
+				95C67BFE96150121C199B5E4 /* CompositionSessionTests.swift in Sources */,
+				FEFA2789D1E7ABBBFAC775DE /* HomeSummaryTests.swift in Sources */,
+				2F1185551834762FF80F068E /* LocalPairingFlowTests.swift in Sources */,
+				FF0DF8723FAE682EEC46822D /* LocalizationBundleTests.swift in Sources */,
+				C0D27AE0B69C43D39073A6E9 /* OnboardingTests.swift in Sources */,
+				94DABD5FF4BD7CBADA07CE11 /* PenIntentTests.swift in Sources */,
+				5A8CEC952556A7DDB045ECEC /* TestLanguageLaunchTests.swift in Sources */,
+				FCAB19FBE3E8398A8A370C06 /* TestResetTests.swift in Sources */,
+				291F7BA0879DE558151E7BCD /* UndoInsertionTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6796DBB26F762C4CA413C66A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AF7325E9DAFA1110D313180F /* CompositionSession.swift in Sources */,
+				3319EBE65F31ADC54FEDE3A3 /* JapaneseKeyboardView.swift in Sources */,
+				0B3796DE802CEFE7B90FB09A /* KeyboardView.swift in Sources */,
+				94C3675EB629CED9240E9A6E /* KeyboardViewController.swift in Sources */,
+				E5571A38B617400859818A44 /* TextKeyboardView.swift in Sources */,
+				087AF5B55DDDC0DF49E8D856 /* TypingLayouts.swift in Sources */,
+				8BD1ABC7071C3CB3FD90D5D0 /* ZhuyinKeyboardView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6A0645E94919590681FDFAC5 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				57D44D92312AE12BBFF2C69A /* AppScreensUITests.swift in Sources */,
+				B17C8CB4DE227AAE57F92EDA /* DesignTourUITests.swift in Sources */,
+				BBF8BD4F5A726CDDF7D77F8B /* DeviceAppScreensUITests.swift in Sources */,
+				618D8B35424D369797BEBCA2 /* DictationFlowUITests.swift in Sources */,
+				5ADED34C9D8C49B93FE94FCD /* LocalizedScreensUITests.swift in Sources */,
+				278867520C648F8D6FE0A2B3 /* PreferencesUITests.swift in Sources */,
+				21CE2791730CF8BB9E136CE9 /* TryItEndToEndUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FCE4BE30FC85758C82015FB4 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2243C342B0BACB919F1B26C2 /* AppModel.swift in Sources */,
+				2091C7F18DBE149D4A802975 /* CompositionSession.swift in Sources */,
+				00F25ACC95E6D1DB6937CB41 /* DeveloperPromptsView.swift in Sources */,
+				3E838227409BD75212065D28 /* DictationView.swift in Sources */,
+				65AF14A56B67649C251860DF /* DictionaryView.swift in Sources */,
+				2FE55E61F1C3E0987A783A92 /* FileAudioCapture.swift in Sources */,
+				07EC7BA0999E637E13E2737C /* FloatingDictationWindow.swift in Sources */,
+				CF3388E8B321CB5BBB6089C1 /* HistoryView.swift in Sources */,
+				62B366EBBF9FE0B5C68CEAE3 /* KeyboardHandoffView.swift in Sources */,
+				32E31407FF35F7A6564C9E8D /* MicrophoneCapture.swift in Sources */,
+				322BA6BCEAF34CFBF8F65ECD /* Onboarding.swift in Sources */,
+				4744C9DB27750C2F7C4EE658 /* OnboardingView.swift in Sources */,
+				120CCB5C1AEC215E73D6C92C /* PairingView.swift in Sources */,
+				C8F3FD9C9F2B5BFFF321E741 /* PersonalStyleView.swift in Sources */,
+				7537C2CF67E109C273F4BDD3 /* SettingsView.swift in Sources */,
+				B98073B447CC175B6BDC8219 /* TranslationLanguagesView.swift in Sources */,
+				23AEB22597A8D17C567C4FAE /* VoxtMobileApp.swift in Sources */,
+				85865862F2F7E60B3C8BE29A /* WeekSummary.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		24170AF611FAB407355FB3F5 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = EB1322FED8DC2AD4A03B37BC /* VoxtKeyboard */;
+			targetProxy = 86393AADC1B009F627621426 /* PBXContainerItemProxy */;
+		};
+		28C5899FBCFC7CD1091362C1 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 9621E88D619F72D9D46776C7 /* VoxtMobile */;
+			targetProxy = 612C84451C0806F1F1578EF4 /* PBXContainerItemProxy */;
+		};
+		EB7961AE96F1B78D67A03611 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 9621E88D619F72D9D46776C7 /* VoxtMobile */;
+			targetProxy = 5889B7D52F843800E25AA97A /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin PBXVariantGroup section */
+		C573316AF3AAB69A2F226856 /* InfoPlist.strings */ = {
+			isa = PBXVariantGroup;
+			children = (
+				3815AD8586D74DFD73A4A823 /* en */,
+				AF4EC09D8DEC125C4C879937 /* es */,
+				1499677E74178CBDA136A7D7 /* ja */,
+				55C131E3E7B71CF01DA3E6BF /* ko */,
+				EDC15D90B107C693D2E5664F /* zh-Hans */,
+				413F94ACD3025D1AE5BB8CB9 /* zh-Hant */,
+			);
+			name = InfoPlist.strings;
+			sourceTree = "<group>";
+		};
+/* End PBXVariantGroup section */
+
+/* Begin XCBuildConfiguration section */
+		162EAADE55C4B49134EA358D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 71C95C42560F9E2BF2F3A19D /* Signing.shared.xcconfig */;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.1.2;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+				VOXT_INPUT_METHODS = "ja-flick zh-Hant-zhuyin zh-Hans-pinyin";
+			};
+			name = Debug;
+		};
+		3052C0B15FA4B072A73C417D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Keyboard/VoxtKeyboard.entitlements;
+				INFOPLIST_FILE = Keyboard/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(VOXT_MOBILE_ID_PREFIX).keyboard";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		3F3B787D3882B6AB940B8508 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Keyboard/VoxtKeyboard.entitlements;
+				INFOPLIST_FILE = Keyboard/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(VOXT_MOBILE_ID_PREFIX).keyboard";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		461BCE39554E8902AFD51369 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 71C95C42560F9E2BF2F3A19D /* Signing.shared.xcconfig */;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.1.2;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+				VOXT_INPUT_METHODS = "ja-flick zh-Hant-zhuyin zh-Hans-pinyin";
+			};
+			name = Release;
+		};
+		5A99EDF17423FC1959B4D6A5 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(VOXT_MOBILE_ID_PREFIX).tests";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/VoxtMobile.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/VoxtMobile";
+			};
+			name = Release;
+		};
+		88FA44591D158B46A1925070 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(VOXT_MOBILE_ID_PREFIX).uitests";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = VoxtMobile;
+			};
+			name = Debug;
+		};
+		8DB083978ACD36B436CE7288 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(VOXT_MOBILE_ID_PREFIX).tests";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/VoxtMobile.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/VoxtMobile";
+			};
+			name = Debug;
+		};
+		9877FFA971FCBFA3714598C0 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(VOXT_MOBILE_ID_PREFIX).uitests";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = VoxtMobile;
+			};
+			name = Release;
+		};
+		BC4C3F99DD707AD6462D5E6D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = App/VoxtMobile.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = App/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(VOXT_MOBILE_ID_PREFIX)";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		C6A978697899B1C51889F61F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = App/VoxtMobile.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = App/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(VOXT_MOBILE_ID_PREFIX)";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		324A59D45A96F0E9A26DE0D6 /* Build configuration list for PBXProject "VoxtMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				162EAADE55C4B49134EA358D /* Debug */,
+				461BCE39554E8902AFD51369 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		579C30C9A17E22753355B68A /* Build configuration list for PBXNativeTarget "VoxtMobileUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				88FA44591D158B46A1925070 /* Debug */,
+				9877FFA971FCBFA3714598C0 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		7801000D06F13941DD42EAD2 /* Build configuration list for PBXNativeTarget "VoxtMobileTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				8DB083978ACD36B436CE7288 /* Debug */,
+				5A99EDF17423FC1959B4D6A5 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		911AE3DED9E55FB50BB0FC7A /* Build configuration list for PBXNativeTarget "VoxtKeyboard" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3052C0B15FA4B072A73C417D /* Debug */,
+				3F3B787D3882B6AB940B8508 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		D8E0B1DEE9928A42E7F419B0 /* Build configuration list for PBXNativeTarget "VoxtMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C6A978697899B1C51889F61F /* Debug */,
+				BC4C3F99DD707AD6462D5E6D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		1F89811BA9D3D582BC7F317B /* XCLocalSwiftPackageReference "InputMethods/ZhuyinInput" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = InputMethods/ZhuyinInput;
+		};
+		3ED42451ED42590F7A817B72 /* XCLocalSwiftPackageReference "TypingInput" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = TypingInput;
+		};
+		405DD79DE3DCFAD65B4CBFF3 /* XCLocalSwiftPackageReference "SpanishInput" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = SpanishInput;
+		};
+		5950F6D790FCF85E4C7A74E6 /* XCLocalSwiftPackageReference "InputMethods/PinyinInput" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = InputMethods/PinyinInput;
+		};
+		91DB5EF1DCA81EDC2646DEE1 /* XCLocalSwiftPackageReference "InputMethods/JapaneseInput" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = InputMethods/JapaneseInput;
+		};
+		AB998A5A13B4BFE7AF7EF795 /* XCLocalSwiftPackageReference "VoxtTailcat" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = VoxtTailcat;
+		};
+		F8BCB7E6578B38627128B08A /* XCLocalSwiftPackageReference "KoreanInput" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = KoreanInput;
+		};
+		FE755DD33BA5B9926DBDB18E /* XCLocalSwiftPackageReference "VoxtMobileKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = VoxtMobileKit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		06281447DE9A9C5D26391D57 /* SpanishInput */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SpanishInput;
+		};
+		22C29D367B54E2137315D6DB /* PinyinInput */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = PinyinInput;
+		};
+		569402215B01799888694C48 /* VoxtMobileKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = VoxtMobileKit;
+		};
+		8D6DDB3769CB7201466BD420 /* JapaneseInput */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = JapaneseInput;
+		};
+		999389AFB1A5193A765F257F /* ZhuyinInput */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ZhuyinInput;
+		};
+		9C58FE21B9EBFA0AFF2208DD /* VoxtTailcat */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = VoxtTailcat;
+		};
+		A5AA652A41F938B54EF54689 /* KoreanInput */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = KoreanInput;
+		};
+		AA456DD9AE9A091CD6391D36 /* VoxtMobileKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = VoxtMobileKit;
+		};
+		D79EF57517A086319AD10BF3 /* TypingHost */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = TypingHost;
+		};
+		FF96FC0325B0EA333728E08B /* TypingInput */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = TypingInput;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = C3819C32E870E04DD1A8587B /* Project object */;
+}

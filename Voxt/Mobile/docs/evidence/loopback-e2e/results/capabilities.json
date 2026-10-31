@@ -1,0 +1,42 @@
+{
+  "body": {
+    "api": {
+      "major": 1,
+      "minor": 0
+    },
+    "app": "Voxt",
+    "audio": {
+      "contentTypes": [
+        "audio/aac",
+        "audio/m4a",
+        "audio/mp4",
+        "audio/mpeg",
+        "audio/wav",
+        "audio/wave",
+        "audio/x-caf",
+        "audio/x-m4a",
+        "audio/x-wav"
+      ],
+      "maxBodyBytes": 26214400
+    },
+    "endpoints": [
+      "health",
+      "capabilities",
+      "dictations",
+      "history/sync",
+      "compose",
+      "compose/prompts",
+      "corrections"
+    ],
+    "locations": {
+      "text": "local",
+      "transcription": "local"
+    },
+    "models": {
+      "text": "ready",
+      "transcription": "ready"
+    },
+    "version": "1.16.2"
+  },
+  "status": 200
+}

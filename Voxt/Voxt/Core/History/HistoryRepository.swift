@@ -442,23 +442,36 @@ final class HistoryRepository: HistoryRepositoryProtocol, @unchecked Sendable {
 
     @discardableResult
     func delete(id: UUID) throws -> TranscriptionHistoryEntry? {
-        let removed = try entry(id: id)
         try database.dbQueue.write { db in
-            try db.execute(sql: "DELETE FROM history_search WHERE historyID = ?", arguments: [id.uuidString])
-            try db.execute(sql: "DELETE FROM history_entries WHERE id = ?", arguments: [id.uuidString])
+            guard let removed = try historyEntry(id: id.uuidString, db: db) else { return nil }
+            if Self.exportsHistorySync(removed.kind) {
+                try tombstoneHistorySync(id: id.uuidString, db: db)
+            }
+            try deleteHistoryBody(id: id.uuidString, db: db)
+            return removed
         }
-        return removed
     }
 
     func clearAll() throws {
-        try replaceAll([])
+        try database.dbQueue.write { db in
+            let rows = try Row.fetchAll(db, sql: "SELECT id, kind FROM history_entries")
+            for row in rows {
+                let id: String = row["id"]
+                let kindRaw: String = row["kind"]
+                if let kind = TranscriptionHistoryKind(rawValue: kindRaw), Self.exportsHistorySync(kind) {
+                    try tombstoneHistorySync(id: id, db: db)
+                }
+                try deleteHistoryBody(id: id, db: db)
+            }
+        }
     }
 
     @discardableResult
     func deleteEntries(kind: TranscriptionHistoryKind) throws -> [TranscriptionHistoryEntry] {
         try deleteEntries(
             whereSQL: "kind = ?",
-            arguments: [kind.rawValue]
+            arguments: [kind.rawValue],
+            propagateDeletion: true
         )
     }
 
@@ -475,7 +488,8 @@ final class HistoryRepository: HistoryRepositoryProtocol, @unchecked Sendable {
         arguments += StatementArguments(rawKinds)
         return try deleteEntries(
             whereSQL: "createdAt < ? AND kind IN (\(placeholders))",
-            arguments: arguments
+            arguments: arguments,
+            propagateDeletion: false
         )
     }
 
@@ -494,13 +508,15 @@ final class HistoryRepository: HistoryRepositoryProtocol, @unchecked Sendable {
                     LIMIT -1 OFFSET ?
                 )
                 """,
-            arguments: [kind.rawValue, count]
+            arguments: [kind.rawValue, count],
+            propagateDeletion: false
         )
     }
 
     private func deleteEntries(
         whereSQL: String,
-        arguments: StatementArguments
+        arguments: StatementArguments,
+        propagateDeletion: Bool
     ) throws -> [TranscriptionHistoryEntry] {
         let removed = try database.dbQueue.read { db in
             let jsonEntries = try String.fetchAll(
@@ -516,14 +532,23 @@ final class HistoryRepository: HistoryRepositoryProtocol, @unchecked Sendable {
         guard !removed.isEmpty else { return [] }
         try database.dbQueue.write { db in
             for entry in removed {
-                try db.execute(sql: "DELETE FROM history_search WHERE historyID = ?", arguments: [entry.id.uuidString])
-                try db.execute(sql: "DELETE FROM history_entries WHERE id = ?", arguments: [entry.id.uuidString])
+                if Self.exportsHistorySync(entry.kind) {
+                    if propagateDeletion {
+                        try tombstoneHistorySync(id: entry.id.uuidString, db: db)
+                    } else {
+                        try noteHistorySyncRetention(id: entry.id.uuidString, db: db)
+                    }
+                }
+                try deleteHistoryBody(id: entry.id.uuidString, db: db)
             }
         }
         return removed
     }
 
     private func upsert(_ entry: TranscriptionHistoryEntry, db: Database) throws {
+        if try historySyncIsTombstoned(entry.id.uuidString, db: db) {
+            return
+        }
         let entryJSON = try VoxtPersistenceCoding.encodeJSONString(entry)
         let dictionaryTermsText = dictionaryTerms(for: entry).joined(separator: " ")
 
@@ -626,6 +651,9 @@ final class HistoryRepository: HistoryRepositoryProtocol, @unchecked Sendable {
                 dictionaryTermsText
             ])
         )
+        if Self.exportsHistorySync(entry.kind) {
+            try recordHistorySyncChange(id: entry.id.uuidString, deleted: false, db: db)
+        }
     }
 
     private func dictionaryTerms(for entry: TranscriptionHistoryEntry) -> [String] {
@@ -683,6 +711,276 @@ final class HistoryRepository: HistoryRepositoryProtocol, @unchecked Sendable {
             try fileManager.removeItem(at: backupURL)
         }
         try fileManager.moveItem(at: url, to: backupURL)
+    }
+
+    func historySyncState() throws -> HistorySyncState {
+        try database.dbQueue.read { db in
+            try requireHistorySyncState(db: db)
+        }
+    }
+
+    func historySyncChange(id: UUID) throws -> HistorySyncChange? {
+        try database.dbQueue.read { db in
+            guard let row = try Row.fetchOne(
+                db,
+                sql: "SELECT revision, deleted FROM history_sync_changes WHERE id = ?",
+                arguments: [id.uuidString]
+            ) else {
+                return nil
+            }
+            let revision: Int = row["revision"]
+            let deleted: Int = row["deleted"]
+            return HistorySyncChange(revision: revision, deleted: deleted == 1)
+        }
+    }
+
+    func applyHistorySync(_ request: HistorySyncRequest) throws -> HistorySyncResponse {
+        try database.dbQueue.write { db in
+            let state = try requireHistorySyncState(db: db)
+            if let requested = request.storeID, requested != state.storeID {
+                throw HistorySyncStoreMismatch()
+            }
+            for item in request.items {
+                try importHistorySyncItem(item, db: db)
+            }
+            for id in request.deletedIDs {
+                try importHistorySyncDeletion(id, db: db)
+            }
+            return try historySyncPage(after: request.cursor, limit: request.limit, storeID: state.storeID, db: db)
+        }
+    }
+
+    private static func exportsHistorySync(_ kind: TranscriptionHistoryKind) -> Bool {
+        switch kind {
+        case .normal, .translation, .rewrite:
+            return true
+        case .transcript:
+            return false
+        }
+    }
+
+    private func requireHistorySyncState(db: Database) throws -> HistorySyncState {
+        guard let row = try Row.fetchOne(db, sql: "SELECT storeID, revision FROM history_sync_state WHERE singleton = 1") else {
+            throw HistorySyncStoreMismatch()
+        }
+        let storeRaw: String = row["storeID"]
+        guard let storeID = UUID(uuidString: storeRaw) else { throw HistorySyncStoreMismatch() }
+        let revision: Int = row["revision"]
+        return HistorySyncState(storeID: storeID, revision: revision)
+    }
+
+    private func historyEntry(id: String, db: Database) throws -> TranscriptionHistoryEntry? {
+        guard let json = try String.fetchOne(
+            db,
+            sql: "SELECT entryJSON FROM history_entries WHERE id = ?",
+            arguments: [id]
+        ) else {
+            return nil
+        }
+        return try VoxtPersistenceCoding.decodeJSON(TranscriptionHistoryEntry.self, from: json)
+    }
+
+    private func deleteHistoryBody(id: String, db: Database) throws {
+        try db.execute(sql: "DELETE FROM history_search WHERE historyID = ?", arguments: [id])
+        try db.execute(sql: "DELETE FROM history_entries WHERE id = ?", arguments: [id])
+    }
+
+    private func historySyncIsTombstoned(_ id: String, db: Database) throws -> Bool {
+        try Int.fetchOne(db, sql: "SELECT deleted FROM history_sync_changes WHERE id = ?", arguments: [id]) == 1
+    }
+
+    private func bumpHistorySyncRevision(db: Database) throws -> Int {
+        try db.execute(sql: "UPDATE history_sync_state SET revision = revision + 1 WHERE singleton = 1")
+        guard let revision = try Int.fetchOne(db, sql: "SELECT revision FROM history_sync_state WHERE singleton = 1") else {
+            throw HistorySyncStoreMismatch()
+        }
+        return revision
+    }
+
+    private func recordHistorySyncChange(id: String, deleted: Bool, db: Database) throws {
+        let revision = try bumpHistorySyncRevision(db: db)
+        try db.execute(
+            sql: """
+                INSERT INTO history_sync_changes (id, revision, deleted)
+                VALUES (?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    revision = excluded.revision,
+                    deleted = excluded.deleted
+                """,
+            arguments: [id, revision, deleted ? 1 : 0]
+        )
+    }
+
+    private func tombstoneHistorySync(id: String, db: Database) throws {
+        if try historySyncIsTombstoned(id, db: db) { return }
+        try recordHistorySyncChange(id: id, deleted: true, db: db)
+    }
+
+    private func noteHistorySyncRetention(id: String, db: Database) throws {
+        if try historySyncIsTombstoned(id, db: db) { return }
+        try recordHistorySyncChange(id: id, deleted: false, db: db)
+    }
+
+    private func importHistorySyncItem(_ item: HistorySyncItem, db: Database) throws {
+        let key = item.id.uuidString
+        if try historySyncIsTombstoned(key, db: db) { return }
+        if try historyEntry(id: key, db: db) != nil {
+            if try fillHistorySyncMetadataIfMissing(item, db: db) {
+                try recordHistorySyncChange(id: key, deleted: false, db: db)
+            }
+            return
+        }
+        try upsert(phoneHistoryEntry(item), db: db)
+        _ = try fillHistorySyncMetadataIfMissing(item, db: db)
+    }
+
+    private func importHistorySyncDeletion(_ id: UUID, db: Database) throws {
+        let key = id.uuidString
+        if let existing = try historyEntry(id: key, db: db) {
+            guard Self.exportsHistorySync(existing.kind) else { return }
+            try tombstoneHistorySync(id: key, db: db)
+            try deleteHistoryBody(id: key, db: db)
+            return
+        }
+        try tombstoneHistorySync(id: key, db: db)
+    }
+
+    private func fillHistorySyncMetadataIfMissing(_ item: HistorySyncItem, db: Database) throws -> Bool {
+        guard item.mode != nil || item.elapsedSeconds != nil else { return false }
+        if let existing = try historySyncMetadata(id: item.id.uuidString, db: db) {
+            let nextMode = existing.mode ?? item.mode
+            let nextElapsed = existing.elapsed ?? item.elapsedSeconds
+            guard nextMode != existing.mode || nextElapsed != existing.elapsed else { return false }
+            try db.execute(
+                sql: "UPDATE history_sync_metadata SET mode = ?, elapsedSeconds = ? WHERE id = ?",
+                arguments: VoxtDatabaseArguments.make([nextMode, nextElapsed, item.id.uuidString])
+            )
+            return true
+        }
+        try insertHistorySyncMetadata(item, db: db)
+        return true
+    }
+
+    private func insertHistorySyncMetadata(_ item: HistorySyncItem, db: Database) throws {
+        guard item.mode != nil || item.elapsedSeconds != nil else { return }
+        try db.execute(
+            sql: "INSERT INTO history_sync_metadata (id, mode, elapsedSeconds) VALUES (?, ?, ?)",
+            arguments: VoxtDatabaseArguments.make([item.id.uuidString, item.mode, item.elapsedSeconds])
+        )
+    }
+
+    private func historySyncMetadata(id: String, db: Database) throws -> (mode: String?, elapsed: Double?)? {
+        guard let row = try Row.fetchOne(
+            db,
+            sql: "SELECT mode, elapsedSeconds FROM history_sync_metadata WHERE id = ?",
+            arguments: [id]
+        ) else {
+            return nil
+        }
+        let mode: String? = row["mode"]
+        let elapsed: Double? = row["elapsedSeconds"]
+        return (mode, elapsed)
+    }
+
+    private func historySyncPage(after cursor: Int, limit: Int, storeID: UUID, db: Database) throws -> HistorySyncResponse {
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+                SELECT id, revision, deleted
+                FROM history_sync_changes
+                WHERE revision > ?
+                ORDER BY revision ASC
+                LIMIT ?
+                """,
+            arguments: [cursor, limit]
+        )
+        guard let last = rows.last else {
+            return HistorySyncResponse(storeID: storeID, cursor: cursor, hasMore: false, items: [], deletedIDs: [])
+        }
+        let maxRevision: Int = last["revision"]
+        let hasMore = try Int.fetchOne(
+            db,
+            sql: "SELECT 1 FROM history_sync_changes WHERE revision > ? LIMIT 1",
+            arguments: [maxRevision]
+        ) != nil
+        var items: [HistorySyncItem] = []
+        var deletedIDs: [UUID] = []
+        for row in rows {
+            let idString: String = row["id"]
+            guard let id = UUID(uuidString: idString) else { continue }
+            let deleted: Int = row["deleted"]
+            if deleted == 1 {
+                deletedIDs.append(id)
+            } else if let item = try historySyncExportItem(id: idString, db: db) {
+                items.append(item)
+            }
+        }
+        return HistorySyncResponse(storeID: storeID, cursor: maxRevision, hasMore: hasMore, items: items, deletedIDs: deletedIDs)
+    }
+
+    private func historySyncExportItem(id: String, db: Database) throws -> HistorySyncItem? {
+        guard let entry = try historyEntry(id: id, db: db),
+              Self.exportsHistorySync(entry.kind),
+              entry.text.count <= 100_000,
+              !entry.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              entry.createdAt.timeIntervalSince1970.isFinite,
+              let uuid = UUID(uuidString: id) else {
+            return nil
+        }
+        let metadata = try historySyncMetadata(id: id, db: db)
+        return HistorySyncItem(
+            id: uuid,
+            text: entry.text,
+            createdAt: entry.createdAt.timeIntervalSince1970,
+            mode: metadata?.mode,
+            elapsedSeconds: metadata?.elapsed
+        )
+    }
+
+    private func phoneHistoryEntry(_ item: HistorySyncItem) -> TranscriptionHistoryEntry {
+        let kind: TranscriptionHistoryKind
+        let isTranslation: Bool
+        switch item.mode {
+        case "translate":
+            kind = .translation
+            isTranslation = true
+        case "edit":
+            kind = .rewrite
+            isTranslation = false
+        default:
+            kind = .normal
+            isTranslation = false
+        }
+        return TranscriptionHistoryEntry(
+            id: item.id,
+            text: item.text,
+            createdAt: Date(timeIntervalSince1970: item.createdAt),
+            transcriptionEngine: "",
+            transcriptionModel: "",
+            enhancementMode: "",
+            enhancementModel: "",
+            kind: kind,
+            isTranslation: isTranslation,
+            audioDurationSeconds: nil,
+            transcriptionProcessingDurationSeconds: nil,
+            llmDurationSeconds: nil,
+            focusedAppName: "Voxt Mobile",
+            focusedAppBundleID: nil,
+            matchedGroupID: nil,
+            matchedGroupName: nil,
+            matchedAppGroupName: nil,
+            matchedURLGroupName: nil,
+            remoteASRProvider: nil,
+            remoteASRModel: nil,
+            remoteASREndpoint: nil,
+            remoteLLMProvider: nil,
+            remoteLLMModel: nil,
+            remoteLLMEndpoint: nil,
+            whisperWordTimings: nil,
+            dictionaryHitTerms: [],
+            dictionaryCorrectedTerms: [],
+            dictionarySuggestedTerms: []
+        )
     }
 
     private static func defaultLegacyJSONURL(fileManager: FileManager) -> URL? {

@@ -1,0 +1,4 @@
+module CVoxtTailcat {
+    header "VoxtTailcat.h"
+    export *
+}

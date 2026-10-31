@@ -1,0 +1,48 @@
+From an acceptance run on an earlier build of this change, before the run in steps.txt. The missing-xcodegen check for the Connector build is from the run in steps.txt, which also repeated the unknown-simulator check; their output is under neg-no-xcodegen and neg-no-simulator in results.txt.
+
+== missing Go (phone library)
+$ env PATH=/usr/bin:/bin:/usr/sbin:/sbin tools/build-tailcat-native.sh
+system go was not found on PATH
+exit=1
+
+== missing Go (Mac node)
+$ env PATH=/usr/bin:/bin:/usr/sbin:/sbin tools/build-tailcat-host.sh
+system go was not found on PATH
+exit=1
+
+== missing xcodegen (Connector build), from the run in steps.txt
+$ env PATH=/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin python3 -I tools/build-connector.py
+xcodegen is needed to build Voxt Connector: brew install xcodegen
+exit=1
+
+== missing xcodegen (build without input methods)
+$ env PATH=/usr/bin:/bin:/usr/sbin:/sbin ios/tools/test-input-methods-optional.sh <run-temp>/no-xcodegen
+ios/tools/test-input-methods-optional.sh: line 17: xcodegen: command not found
+FAIL xcodegen
+exit=1
+
+== no iPhone simulator (CI step)
+$ env PATH=<run>/stubs:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin bash -c simulator="$(xcrun simctl list devices available -j | python3 -c 'import json, sys
+devices = json.load(sys.stdin)["devices"].values()
+print(next((d["udid"] for group in devices for d in group if d["name"].startswith("iPhone")), ""))')"
+if [ -z "$simulator" ]; then
+  echo "::error::No iPhone simulator on the runner; install one with: xcodebuild -downloadPlatform iOS"
+  exit 1
+else
+  :
+fi
+::error::No iPhone simulator on the runner; install one with: xcodebuild -downloadPlatform iOS
+exit=1
+
+== ad-hoc Connector signature
+$ python3 -I -c
+import importlib.util, pathlib, sys
+spec = importlib.util.spec_from_file_location('b', 'tools/build-connector.py'); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.sign(pathlib.Path(sys.argv[1]), '-'); print('signed ad hoc') <run-temp>/adhoc/Voxt Connector.app
+<run-temp>/adhoc/Voxt Connector.app/Contents/Helpers/voxt-tailcat-host: replacing existing signature
+<run-temp>/adhoc/Voxt Connector.app: replacing existing signature
+signed ad hoc
+exit=0
+
+$ codesign -dv (flags)
+flags=0x10002(adhoc,runtime)

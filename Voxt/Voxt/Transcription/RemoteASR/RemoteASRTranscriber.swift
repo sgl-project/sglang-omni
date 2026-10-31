@@ -655,7 +655,8 @@ class RemoteASRTranscriber: NSObject, ObservableObject, TranscriberProtocol {
     func transcribeDebugAudioFile(
         _ fileURL: URL,
         provider: RemoteASRProvider,
-        configuration: RemoteProviderConfiguration
+        configuration: RemoteProviderConfiguration,
+        languageSelection: ASRLanguageSelection = .userSettings
     ) async throws -> String {
         guard configuration.isConfigured else {
             throw NSError(
@@ -665,6 +666,7 @@ class RemoteASRTranscriber: NSObject, ObservableObject, TranscriberProtocol {
             )
         }
         let hintPayload = resolvedHintPayload(for: provider, configuration: configuration)
+            .selectingLanguage(languageSelection)
         do {
             return try await transcribeAudioFile(
                 fileURL: fileURL,

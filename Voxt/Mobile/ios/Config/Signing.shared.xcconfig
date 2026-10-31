@@ -1,0 +1,14 @@
+// Signing for a device build. Simulator builds need none of this.
+// Don't edit here: copy Signing.local.xcconfig.example to Signing.local.xcconfig (not committed)
+// and set your team and your own ID prefix there.
+DEVELOPMENT_TEAM =
+// The app's bundle ID; the keyboard is PREFIX.keyboard and the App Group group.PREFIX.shared.
+// Bundle and App Group IDs are unique across all Apple teams, so every signer needs their own prefix.
+VOXT_MOBILE_ID_PREFIX = com.voxt.VoxtMobile
+// Keychain items are PREFIX.pairing and PREFIX.tailcat-identity. A build that already has installs
+// keeps the names they used, or every upgraded phone loses its pairing.
+VOXT_KEYCHAIN_SERVICE_PREFIX = $(VOXT_MOBILE_ID_PREFIX)
+// Where Settings › Source code and the pairing screen link to. No scheme: xcconfig reads // as a comment.
+VOXT_SOURCE_URL = github.com/sgl-project/sglang-omni
+#include? "Signing.local.xcconfig"
+VOXT_APP_GROUP = group.$(VOXT_MOBILE_ID_PREFIX).shared
