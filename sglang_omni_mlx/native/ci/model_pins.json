@@ -129,6 +129,24 @@
       "voice_embedding/pt_male.safetensors": "4ccd63a39d35f483c89485112d35a8a2121cbb0e6d5d124e403e40d03e0c0e82"
     }
   },
+  "mlx-community/Fun-CosyVoice3-0.5B-2512-fp16": {
+    "revision": "18ccb7fbd7246e8cd3420d02f5dd28595cc0fcd9",
+    "files": {
+      "config.json": "9cc01133150556729617139abb8da29515badce819930e35c7da11a88b595a03",
+      "model.safetensors": "d7dc16402d2086e8b0996fe52462d9616e3eecd64f7cdb62f5c1acc898701374",
+      "tokenizer.json": "5e3855f008ece7e02f09bad5c0aa492cd1594529a796b80193f4ef640200e58b",
+      "tokenizer_config.json": "46a369aa40642d4be780e4842ea299e08764ff8edc64c2ad7738e04d94a51637"
+    },
+    "tokenizer": {
+      "repo": "mlx-community/S3TokenizerV3",
+      "revision": "b143914b3e912278104824da706edc9c2d317c4e",
+      "subdirectory": "speech_tokenizer",
+      "files": {
+        "config.json": "355c1cc1337107c89c786d7c2675d7a30322b204456f1a273acc037e291111cc",
+        "model.safetensors": "ee05a65d4472f089d55b5dfcd9e19f42e3245f4f19d612b90c04cb051a80105e"
+      }
+    }
+  },
   "mlx-community/MiniMax-Music3-mxfp8": {
     "revision": "d00a12c3c7f80eb66379dd02dd0f30ed0ce2d96e",
     "files": {
