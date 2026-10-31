@@ -101,6 +101,7 @@ class DialogConfig(ComponentConfig):
 
     kind: Literal["dialog"] = "dialog"
     system_prompt: str = "You are a helpful voice assistant. Answer concisely."
+    language: str = ""
     max_history_chars: int = Field(default=MAX_HISTORY_CHARS, gt=0)
     max_text_chars: int = Field(default=16000, gt=0)
 
@@ -400,19 +401,20 @@ class Dialog(StreamComponent):
                 len(CJK_CHAR.findall(text)) >= MIN_LANGUAGE_CJK_CHARS
                 or len(text.split()) >= MIN_LANGUAGE_WORDS
             )
-            is_short_switch = (
-                not is_clear
-                and language is not None
-                and self.language is not None
-                and language != self.language
-            )
             if language is not None and is_clear:
                 self.language = language
             else:
                 pass
+            session_language = self.config.language or self.language
+            is_short_switch = (
+                not is_clear
+                and language is not None
+                and session_language is not None
+                and language != session_language
+            )
             prompt = prompt_messages(self.messages)
             if is_short_switch:
-                note = SHORT_UTTERANCE_NOTE.format(language=self.language)
+                note = SHORT_UTTERANCE_NOTE.format(language=session_language)
                 prompt[-1] = ChatMessage(
                     role="user", content=f"{prompt[-1].content}\n\n[{note}]"
                 )
@@ -423,5 +425,5 @@ class Dialog(StreamComponent):
             self.progress = []
             return [
                 control_chunk(TURN_STARTED, turn=turn),
-                messages_chunk(prompt, turn, self.language),
+                messages_chunk(prompt, turn, session_language),
             ]
