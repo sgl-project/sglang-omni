@@ -18,11 +18,18 @@ namespace {
 using qwen3_asr::AudioLayout;
 using qwen3_asr::TranscriptionOptions;
 
+constexpr size_t kCacheLimitBytes = 2ULL << 30;
+
 class Qwen3ASRModel : public asr_service::ServedModel {
 public:
   Qwen3ASRModel(const std::filesystem::path &model_directory,
                 qwen3_asr::RealtimeSettings realtime)
-      : transcriber_(model_directory), realtime_(realtime) {}
+      : transcriber_(model_directory), realtime_(realtime) {
+    // Note (XXXXRT666): a long request's KV caches grow in steps, and no later
+    // step fits a buffer an earlier one freed; unlimited, MLX keeps them until
+    // active and cached memory reach 95% of the recommended working set.
+    mlx::core::set_cache_limit(kCacheLimitBytes);
+  }
 
   asr_service::Transcription
   Prepare(std::vector<float> samples,
