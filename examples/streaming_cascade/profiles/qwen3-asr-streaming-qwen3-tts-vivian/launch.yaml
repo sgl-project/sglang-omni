@@ -58,6 +58,7 @@ session_nodes:
     base_url: "http://127.0.0.1:8005/v1"
     model: Qwen/Qwen3-TTS-12Hz-1.7B-Base
     reference_audio_path: examples/streaming_cascade/voices/vivian.wav
+    reference_text: Hi there, it is nice to meet you, and I am happy to help with whatever you need today.
     language: auto
   aligner:
     kind: alignment

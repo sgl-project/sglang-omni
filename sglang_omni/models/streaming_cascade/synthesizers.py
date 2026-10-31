@@ -41,6 +41,9 @@ MARKDOWN_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 UNSPOKEN_SYMBOLS = re.compile(
     "[\U0001f000-\U0001faff\u2600-\u27bf\u2b50\u2b55\ufe0e\ufe0f\u200d\u20e3*`]"
 )
+# Note (Haoling Pu): Qwen3-TTS Base cloning with a reference transcript opens each sentence with about 0.4 s of room tone, so a sentence's audio starts this pre-roll before its first sample above SPEECH_ONSET_LEVEL.
+SPEECH_ONSET_LEVEL = 0.01
+SPEECH_PREROLL_S = 0.05
 # Note (Haoling Pu): Qwen3-TTS reads a heading, list or quote marker as a word, garbles a table row and can run on for 40 s or more after either, and reads a bare URL out symbol by symbol.
 LINE_MARKER = re.compile(r"(?m)^[ \t]*(?:#{1,6}|[-+\u2022>])[ \t]+")
 TABLE_EDGE_PIPE = re.compile(r"(?m)^[ \t]*\||\|[ \t]*$")
@@ -263,17 +266,29 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
                 )
             else:
                 pass
+            preroll_samples = round(SPEECH_PREROLL_S * self.sample_rate_hz)
             carry = b""
+            held_preroll = np.zeros(0, dtype="<f4")
+            has_spoken = False
             async for data in response.aiter_bytes():
                 data = carry + data
                 usable = len(data) - len(data) % 2
                 carry = data[usable:]
-                if usable:
-                    yield np.frombuffer(data[:usable], dtype="<i2").astype(
-                        "<f4"
-                    ) / 32768
-                else:
+                samples = (
+                    np.frombuffer(data[:usable], dtype="<i2").astype("<f4") / 32768
+                )
+                if not usable:
                     pass
+                elif has_spoken:
+                    yield samples
+                else:
+                    audio = np.concatenate([held_preroll, samples])
+                    loud_indices = np.flatnonzero(np.abs(audio) > SPEECH_ONSET_LEVEL)
+                    if loud_indices.size:
+                        has_spoken = True
+                        yield audio[max(0, int(loud_indices[0]) - preroll_samples) :]
+                    else:
+                        held_preroll = audio[-preroll_samples:]
 
     async def speak_reply(
         self, deltas: AsyncIterator[TimedChunk], turn: int, emit: ChunkEmitter
