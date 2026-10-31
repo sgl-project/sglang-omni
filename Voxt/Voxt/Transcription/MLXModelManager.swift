@@ -451,7 +451,7 @@ class MLXModelManager: ObservableObject {
     }
 
     private func checkDownloadAvailability(for repo: String) throws {
-        if repo == SileroVADModelSupport.repo {
+        if repo == SileroVADModelSupport.repo || OmniASRBackend.isDraftModelRepo(repo) {
             return
         } else if let unavailable = OmniASRBackend.unavailability(for: repo) {
             throw unavailable
@@ -847,10 +847,17 @@ class MLXModelManager: ObservableObject {
             )
         }
         try Task.checkCancellation()
+        let draftDirectory = try await speculativeDraftDirectory(for: repo)
+        try Task.checkCancellation()
         // One server at a time: earlier runtimes stop before this one starts.
         await omniLedger.waitForRetirements()
         try Task.checkCancellation()
-        let runtime = OmniASRRuntime(kind: kind, modelDirectory: sourceModelDir, configuration: configuration)
+        let runtime = OmniASRRuntime(
+            kind: kind,
+            modelDirectory: sourceModelDir,
+            draftDirectory: draftDirectory,
+            configuration: configuration
+        )
         omniLedger.track(runtime)
         do {
             let ledger = omniLedger
@@ -867,6 +874,28 @@ class MLXModelManager: ObservableObject {
         }
         VoxtLog.modelInfo("Omni ASR server ready. repo=\(repo), kind=\(kind.rawValue)")
         return .omni(runtime)
+    }
+
+    /// The installed draft for repo when its speculative decoding setting is
+    /// on; a draft that is still downloading leaves the model decoding without
+    /// one rather than failing the load.
+    private func speculativeDraftDirectory(for repo: String) async throws -> URL? {
+        guard let draftRepo = OmniASRBackend.draftModelRepo(for: repo) else { return nil }
+        let tuning = MLXLocalTuningSettingsStore.resolvedSettings(
+            for: repo,
+            rawValue: UserDefaults.standard.string(forKey: AppPreferenceKey.mlxLocalASRTuningSettings)
+        )
+        guard tuning.speculativeDecoding else { return nil }
+        let installation = try await refreshInstallation(repo: draftRepo)
+        if installation.directory == nil {
+            VoxtLog.modelWarning("Speculative draft is not installed; decoding without it. repo=\(repo), draft=\(draftRepo)")
+        }
+        return installation.directory
+    }
+
+    /// Drops an idle loaded model whose server must restart with new settings.
+    func releaseLoadedModelForConfigurationChange(repo: String) {
+        unloadLoadedModelIfIdle(expectedRepo: Self.canonicalModelRepo(repo), reason: "configuration-changed")
     }
 
     private func downloadTempDirectory(for repo: String) -> URL? {

@@ -468,6 +468,8 @@ struct MLXModelCatalog {
         "mlx-community/parakeet-tdt-0.6b-v3": 2_509_044_141,
         "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit": 760_000_000,
         "mlx-community/SenseVoiceSmall": 936_491_235,
+        "mattymchen/Qwen3-ASR-1.7B-speculator.dflash": 660_022_194,
+        "wilsonzheng0327/Qwen3-ASR-0.6B-dflash": 262_453_106,
     ]
 
     nonisolated static func canonicalModelRepo(_ repo: String) -> String {

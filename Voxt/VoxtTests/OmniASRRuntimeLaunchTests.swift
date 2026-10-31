@@ -157,8 +157,16 @@ final class OmniASRRuntimeLaunchTests: XCTestCase {
         ])
     }
 
-    /// The runtime binary is started directly in supervised mode, not through Python.
-    func testLaunchRunsTheRuntimeInSupervisedMode() async throws {
+    private struct RecordedLaunch {
+        let runtimeExecutable: URL
+        let modelDirectory: URL
+        let draftDirectory: URL?
+        let commandLine: [String]
+        let environmentVariables: [String]
+    }
+
+    /// Launches a server script that records its command line and environment.
+    private func recordedLaunch(withDraft: Bool) async throws -> RecordedLaunch {
         let scratch = try TestDoubles.canonicalTemporaryDirectory()
             .appendingPathComponent("voxt-omni-launch-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
@@ -175,11 +183,17 @@ final class OmniASRRuntimeLaunchTests: XCTestCase {
         try script.write(to: runtimeExecutable, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: runtimeExecutable.path)
         let modelDirectory = scratch.appendingPathComponent("model", isDirectory: true)
+        let draftDirectory = withDraft ? scratch.appendingPathComponent("draft", isDirectory: true) : nil
         let configuration = OmniBackendConfiguration(
             runtimeExecutable: runtimeExecutable,
             startupTimeoutSeconds: 42
         )
-        let runtime = OmniASRRuntime(kind: .qwen3ASR, modelDirectory: modelDirectory, configuration: configuration)
+        let runtime = OmniASRRuntime(
+            kind: .qwen3ASR,
+            modelDirectory: modelDirectory,
+            draftDirectory: draftDirectory,
+            configuration: configuration
+        )
 
         do {
             _ = try await runtime.prepare()
@@ -189,23 +203,78 @@ final class OmniASRRuntimeLaunchTests: XCTestCase {
         }
         await runtime.retire()
 
-        let commandLine = try String(contentsOf: arguments, encoding: .utf8)
+        let recordedArguments = try String(contentsOf: arguments, encoding: .utf8)
             .split(separator: "\n", omittingEmptySubsequences: false)
             .dropLast()
             .map(String.init)
-        XCTAssertEqual(commandLine, [
-            runtimeExecutable.resolvingSymlinksInPath().path,
-            "--supervised",
-            "--model-kind", "qwen3_asr",
-            "--model-directory", modelDirectory.path,
-            "--startup-timeout-s", "42.0",
-        ])
-        let variables = try String(contentsOf: environment, encoding: .utf8)
+        // note (wilsonzheng0327): Process hands the script its own path with or without the
+        // "/private" prefix depending on the Foundation release, so the executable is compared through realpath.
+        let recordedExecutable = try TestDoubles.canonicalFileURL(for: URL(fileURLWithPath: recordedArguments[0])).path
+        let commandLine = [recordedExecutable] + recordedArguments.dropFirst()
+        let environmentVariables = try String(contentsOf: environment, encoding: .utf8)
             .split(separator: "\n")
             .compactMap { $0.split(separator: "=", maxSplits: 1).first.map(String.init) }
+        return RecordedLaunch(
+            runtimeExecutable: runtimeExecutable,
+            modelDirectory: modelDirectory,
+            draftDirectory: draftDirectory,
+            commandLine: commandLine,
+            environmentVariables: environmentVariables
+        )
+    }
+
+    /// The runtime binary is started directly in supervised mode, not through Python.
+    func testLaunchRunsTheRuntimeInSupervisedMode() async throws {
+        let launch = try await recordedLaunch(withDraft: false)
+        XCTAssertEqual(launch.commandLine, [
+            launch.runtimeExecutable.resolvingSymlinksInPath().path,
+            "--supervised",
+            "--model-kind", "qwen3_asr",
+            "--model-directory", launch.modelDirectory.path,
+            "--startup-timeout-s", "42.0",
+        ])
+        let variables = launch.environmentVariables
         XCTAssertFalse(variables.contains("PYTHONPATH"))
         XCTAssertFalse(variables.contains("PYTHONUNBUFFERED"))
         XCTAssertEqual(variables.filter { $0.hasPrefix("DYLD_") || $0.hasPrefix("__XPC_DYLD_") }, [])
+    }
+
+    /// A draft directory reaches the server as --draft-model-path after the model's flags.
+    func testLaunchPassesTheDraftDirectoryToTheServer() async throws {
+        let launch = try await recordedLaunch(withDraft: true)
+        let draftDirectory = try XCTUnwrap(launch.draftDirectory)
+        XCTAssertEqual(launch.commandLine, [
+            launch.runtimeExecutable.resolvingSymlinksInPath().path,
+            "--supervised",
+            "--model-kind", "qwen3_asr",
+            "--model-directory", launch.modelDirectory.path,
+            "--startup-timeout-s", "42.0",
+            "--draft-model-path", draftDirectory.path,
+        ])
+    }
+
+    /// Each Qwen3-ASR size has one draft, reached through the canonical repo
+    /// and managed like a checkpoint.
+    func testDraftModelsBelongToTheQwen3ASRCheckpoints() {
+        let smallDraft = "wilsonzheng0327/Qwen3-ASR-0.6B-dflash"
+        let largeDraft = "mattymchen/Qwen3-ASR-1.7B-speculator.dflash"
+        XCTAssertEqual(
+            OmniASRBackend.draftModelReposByRepo,
+            [
+                "mlx-community/Qwen3-ASR-0.6B-4bit": smallDraft,
+                "mlx-community/Qwen3-ASR-1.7B-6bit": largeDraft,
+                "mlx-community/Qwen3-ASR-1.7B-8bit": largeDraft,
+            ]
+        )
+        XCTAssertEqual(OmniASRBackend.draftModelRepo(for: "mlx-community/Qwen3-ASR-0.6B-8bit"), smallDraft)
+        XCTAssertEqual(OmniASRBackend.draftModelRepo(for: "mlx-community/Qwen3-ASR-1.7B-bf16"), largeDraft)
+        XCTAssertNil(OmniASRBackend.draftModelRepo(for: "mlx-community/parakeet-tdt-0.6b-v3"))
+        for draft in [smallDraft, largeDraft] {
+            XCTAssertTrue(OmniASRBackend.isDraftModelRepo(draft))
+            XCTAssertTrue(MLXModelManager.isManagedArtifactRepo(draft))
+            XCTAssertNotNil(MLXModelCatalog.fallbackRemoteSizeText(repo: draft))
+        }
+        XCTAssertFalse(OmniASRBackend.isDraftModelRepo("mlx-community/Qwen3-ASR-1.7B-8bit"))
     }
 
     func testAServerThatNeverReportsFailsAtTheStartupDeadline() async throws {

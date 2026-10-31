@@ -6,6 +6,16 @@ The format is based on Keep a Changelog.
 
 ## [Unreleased]
 
+### English
+
+#### Added
+- Added a Speculative Decoding option for the Qwen3-ASR models that downloads a draft model and decodes several tokens per step with the same transcript.
+
+### 简体中文
+
+#### 新增
+- 为 Qwen3-ASR 模型新增推测解码选项：下载草稿模型后每步解码多个词元，转写结果保持不变。
+
 ## [1.15.0] - 2026-09-26
 
 ### English

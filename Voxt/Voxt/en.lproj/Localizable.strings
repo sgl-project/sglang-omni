@@ -2382,3 +2382,11 @@
 "API Format" = "API Format";
 
 "Automatic keeps OpenAI on Responses and respects explicit Chat Completions URLs for custom endpoints." = "Automatic keeps OpenAI on Responses and respects explicit Chat Completions URLs for custom endpoints.";
+
+"Speculative Decoding" = "Speculative Decoding";
+"A small draft model proposes several tokens per step and the model verifies them: the same transcript, decoded faster." = "A small draft model proposes several tokens per step and the model verifies them: the same transcript, decoded faster.";
+"Draft model installed (%@)" = "Draft model installed (%@)";
+"Draft model not downloaded (%@)" = "Draft model not downloaded (%@)";
+"Checking draft model…" = "Checking draft model…";
+"Download Draft" = "Download Draft";
+"Remove Draft" = "Remove Draft";

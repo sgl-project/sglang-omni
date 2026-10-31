@@ -16,6 +16,7 @@ extension ModelSettingsView {
                 modelRepo: repo,
                 modelTitle: mlxModelManager.displayTitle(for: repo),
                 capability: MLXModelCatalog.capability(for: repo),
+                modelManager: mlxModelManager,
                 hintSettings: asrHintSettingsBinding(for: .mlxAudio),
                 tuningSettings: mlxLocalTuningSettingsBinding(for: repo),
                 userLanguageCodes: selectedUserLanguageCodes
@@ -37,6 +38,7 @@ private struct MLXASRConfigurationSheetView: View {
     let modelRepo: String
     let modelTitle: String
     let capability: MLXASRModelCapability
+    @ObservedObject var modelManager: MLXModelManager
     @Binding var hintSettings: ASRHintSettings
     @Binding var tuningSettings: MLXLocalTuningSettings
     @State private var mossUsageScope: MossASRUsageScope = .dictation
@@ -371,6 +373,10 @@ private struct MLXASRConfigurationSheetView: View {
                             .foregroundStyle(.secondary)
                     }
 
+                    if let draftRepo = OmniASRBackend.draftModelRepo(for: modelRepo) {
+                        speculativeDecodingSection(draftRepo: draftRepo)
+                    }
+
 
                     if configurationCapabilities.contains(.senseVoiceITN) {
                         Toggle(localized("Enable ITN"), isOn: $tuningSettings.senseVoiceUseITN)
@@ -418,6 +424,67 @@ private struct MLXASRConfigurationSheetView: View {
             maxHeight: SettingsUIStyle.modelConfigurationDialogMaxHeight,
             onClose: onDone
         )
+    }
+
+    /// The draft model's toggle and its download; a change restarts an idle
+    /// server so the setting applies at once.
+    private func speculativeDecodingSection(draftRepo: String) -> some View {
+        let sizeText = MLXModelCatalog.fallbackRemoteSizeText(repo: draftRepo) ?? ""
+        let isInstalled = modelManager.isModelDownloaded(repo: draftRepo)
+        let isChecking = modelManager.isCheckingInstallation(repo: draftRepo)
+        let downloadStatus = ModelDownloadStatusSnapshot.fromMLXState(
+            modelManager.state(for: draftRepo),
+            pauseMessage: modelManager.pausedStatusMessage(for: draftRepo)
+        )
+        return VStack(alignment: .leading, spacing: 8) {
+            Toggle(localized("Speculative Decoding"), isOn: $tuningSettings.speculativeDecoding)
+                .toggleStyle(.switch)
+                .onChange(of: tuningSettings.speculativeDecoding) { _, isEnabled in
+                    modelManager.releaseLoadedModelForConfigurationChange(repo: modelRepo)
+                    if isEnabled, !isInstalled, downloadStatus == nil {
+                        Task { await downloadDraft(draftRepo) }
+                    }
+                }
+            Text(localized("A small draft model proposes several tokens per step and the model verifies them: the same transcript, decoded faster."))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if let downloadStatus {
+                ModelDownloadStatusView(status: downloadStatus)
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(
+                        isChecking
+                            ? localized("Checking draft model…")
+                            : isInstalled
+                                ? AppLocalization.format("Draft model installed (%@)", sizeText)
+                                : AppLocalization.format("Draft model not downloaded (%@)", sizeText)
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    Spacer()
+                    if isInstalled {
+                        Button(localized("Remove Draft")) {
+                            tuningSettings.speculativeDecoding = false
+                            modelManager.releaseLoadedModelForConfigurationChange(repo: modelRepo)
+                            Task { await modelManager.deleteModel(repo: draftRepo) }
+                        }
+                        .buttonStyle(SettingsPillButtonStyle())
+                    } else if !isChecking {
+                        Button(localized("Download Draft")) {
+                            Task { await downloadDraft(draftRepo) }
+                        }
+                        .buttonStyle(SettingsPillButtonStyle())
+                    }
+                }
+            }
+        }
+    }
+
+    /// A server that loaded while the draft was still downloading restarts
+    /// with it once the download is done.
+    private func downloadDraft(_ draftRepo: String) async {
+        await modelManager.downloadModel(repo: draftRepo)
+        modelManager.releaseLoadedModelForConfigurationChange(repo: modelRepo)
     }
 
     private func localInfoRow(label: String, value: String) -> some View {

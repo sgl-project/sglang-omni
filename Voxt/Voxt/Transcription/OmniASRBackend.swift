@@ -54,6 +54,15 @@ nonisolated enum OmniASRBackend {
         "mlx-community/SenseVoiceSmall": .senseVoice,
     ]
 
+    /// DFlash drafts the native runtime verifies: the target decodes several
+    /// tokens per step and keeps its own greedy transcript. One draft serves
+    /// every quantization of its target; a new target gets a row here.
+    static let draftModelReposByRepo: [String: String] = [
+        "mlx-community/Qwen3-ASR-0.6B-4bit": "wilsonzheng0327/Qwen3-ASR-0.6B-dflash",
+        "mlx-community/Qwen3-ASR-1.7B-6bit": "mattymchen/Qwen3-ASR-1.7B-speculator.dflash",
+        "mlx-community/Qwen3-ASR-1.7B-8bit": "mattymchen/Qwen3-ASR-1.7B-speculator.dflash",
+    ]
+
     static var isAppleSilicon: Bool {
 #if arch(arm64)
         true
@@ -81,6 +90,14 @@ nonisolated enum OmniASRBackend {
 
     static func nativeModelKind(for repo: String) -> OmniASRModelKind? {
         modelKindsByRepo[MLXModelCatalog.canonicalModelRepo(repo)]
+    }
+
+    static func draftModelRepo(for repo: String) -> String? {
+        draftModelReposByRepo[MLXModelCatalog.canonicalModelRepo(repo)]
+    }
+
+    static func isDraftModelRepo(_ repo: String) -> Bool {
+        draftModelReposByRepo.values.contains(repo)
     }
 
     static func unavailability(

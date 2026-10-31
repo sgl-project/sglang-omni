@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "qwen3_asr/qwen3_decoder.h"
 
+#include <algorithm>
+#include <cassert>
 #include <cmath>
 
 namespace qwen3_asr {
@@ -15,12 +17,20 @@ constexpr int kKvCacheStepTokens = 256;
 
 Qwen3DecoderConfig
 Qwen3DecoderConfig::FromJson(const nlohmann::json &text_config) {
-  return {text_config.at("num_hidden_layers").get<int>(),
-          text_config.at("num_attention_heads").get<int>(),
-          text_config.at("num_key_value_heads").get<int>(),
-          text_config.at("head_dim").get<int>(),
-          text_config.at("rms_norm_eps").get<float>(),
-          text_config.at("rope_theta").get<float>()};
+  // note (wilsonzheng0327): newer configs keep rope_theta under
+  // rope_parameters.
+  const nlohmann::json &rope = text_config.contains("rope_parameters")
+                                   ? text_config.at("rope_parameters")
+                                   : text_config;
+  Qwen3DecoderConfig config{text_config.at("num_hidden_layers").get<int>(),
+                            text_config.at("num_attention_heads").get<int>(),
+                            text_config.at("num_key_value_heads").get<int>(),
+                            text_config.at("head_dim").get<int>(),
+                            text_config.at("rms_norm_eps").get<float>(),
+                            rope.at("rope_theta").get<float>()};
+  config.hidden_size = text_config.at("hidden_size").get<int>();
+  config.vocab_size = text_config.at("vocab_size").get<int>();
+  return config;
 }
 
 std::pair<mx::array, mx::array>
@@ -58,47 +68,45 @@ KVCache::UpdateAndFetch(const mx::array &keys, const mx::array &values) {
           mx::slice(*values_, {0, 0, 0, 0}, fetched)};
 }
 
+void KVCache::Trim(int token_count) {
+  assert(token_count <= offset_);
+  offset_ -= token_count;
+}
+
 Qwen3Decoder::Qwen3Decoder(const omni_common::Checkpoint &checkpoint,
                            std::string prefix, Qwen3DecoderConfig config)
     : checkpoint_(checkpoint), prefix_(std::move(prefix)), config_(config) {}
 
+std::string Qwen3Decoder::Name(const std::string &suffix) const {
+  return prefix_.empty() ? suffix : prefix_ + "." + suffix;
+}
+
 mx::array Qwen3Decoder::EmbedTokens(const mx::array &ids) const {
-  return checkpoint_.Embed(ids, prefix_ + ".embed_tokens");
+  return checkpoint_.Embed(ids, Name("embed_tokens"));
 }
 
 mx::array Qwen3Decoder::Layer(const mx::array &x, int layer,
                               KVCache &cache) const {
-  const std::string prefix = prefix_ + ".layers." + std::to_string(layer);
+  const std::string prefix = Name("layers." + std::to_string(layer));
   const float eps = config_.rms_norm_eps;
   const int batch = x.shape(0);
   const int length = x.shape(1);
   const int head_count = config_.num_attention_heads;
-  const int kv_head_count = config_.num_key_value_heads;
   const int head_dim = config_.head_dim;
   const mx::array normed =
       checkpoint_.RmsNorm(x, prefix + ".input_layernorm", eps);
   mx::array queries =
       mx::reshape(checkpoint_.Linear(normed, prefix + ".self_attn.q_proj"),
                   {batch, length, head_count, head_dim});
-  mx::array keys =
-      mx::reshape(checkpoint_.Linear(normed, prefix + ".self_attn.k_proj"),
-                  {batch, length, kv_head_count, head_dim});
   if (config_.has_query_key_norm) {
     queries = checkpoint_.RmsNorm(queries, prefix + ".self_attn.q_norm", eps);
-    keys = checkpoint_.RmsNorm(keys, prefix + ".self_attn.k_norm", eps);
   } else {
   }
-  const mx::array values =
-      mx::reshape(checkpoint_.Linear(normed, prefix + ".self_attn.v_proj"),
-                  {batch, length, kv_head_count, head_dim});
   queries = mx::fast::rope(mx::transpose(queries, {0, 2, 1, 3}), head_dim,
                            config_.traditional_rope, config_.rope_theta, 1.0f,
                            cache.offset());
-  keys = mx::fast::rope(mx::transpose(keys, {0, 2, 1, 3}), head_dim,
-                        config_.traditional_rope, config_.rope_theta, 1.0f,
-                        cache.offset());
-  auto [cached_keys, cached_values] =
-      cache.UpdateAndFetch(keys, mx::transpose(values, {0, 2, 1, 3}));
+  const auto [keys, values] = KeysValues(normed, prefix, cache);
+  auto [cached_keys, cached_values] = cache.UpdateAndFetch(keys, values);
   const mx::array attended = mx::fast::scaled_dot_product_attention(
       queries, cached_keys, cached_values,
       static_cast<float>(std::pow(static_cast<double>(head_dim), -0.5)),
@@ -119,12 +127,51 @@ mx::array Qwen3Decoder::Layer(const mx::array &x, int layer,
 }
 
 mx::array Qwen3Decoder::Forward(const mx::array &embeddings,
-                                std::vector<KVCache> &caches) const {
+                                std::vector<KVCache> &caches,
+                                const std::vector<int> &capture_layers,
+                                std::vector<mx::array> *captured) const {
   mx::array hidden = embeddings;
   for (int layer = 0; layer < config_.num_hidden_layers; ++layer) {
+    if (std::count(capture_layers.begin(), capture_layers.end(), layer) > 0) {
+      captured->push_back(hidden);
+    } else {
+    }
     hidden = Layer(hidden, layer, caches[layer]);
   }
   return hidden;
+}
+
+std::pair<mx::array, mx::array>
+Qwen3Decoder::KeysValues(const mx::array &x, const std::string &prefix,
+                         const KVCache &cache) const {
+  const int batch = x.shape(0);
+  const int length = x.shape(1);
+  const int kv_head_count = config_.num_key_value_heads;
+  const int head_dim = config_.head_dim;
+  mx::array keys =
+      mx::reshape(checkpoint_.Linear(x, prefix + ".self_attn.k_proj"),
+                  {batch, length, kv_head_count, head_dim});
+  if (config_.has_query_key_norm) {
+    keys = checkpoint_.RmsNorm(keys, prefix + ".self_attn.k_norm",
+                               config_.rms_norm_eps);
+  } else {
+  }
+  keys = mx::fast::rope(mx::transpose(keys, {0, 2, 1, 3}), head_dim,
+                        config_.traditional_rope, config_.rope_theta, 1.0f,
+                        cache.offset());
+  const mx::array values =
+      mx::reshape(checkpoint_.Linear(x, prefix + ".self_attn.v_proj"),
+                  {batch, length, kv_head_count, head_dim});
+  return {keys, mx::transpose(values, {0, 2, 1, 3})};
+}
+
+void Qwen3Decoder::AppendKeysValues(const mx::array &hidden_states,
+                                    std::vector<KVCache> &caches) const {
+  for (int layer = 0; layer < config_.num_hidden_layers; ++layer) {
+    const auto [keys, values] = KeysValues(
+        hidden_states, Name("layers." + std::to_string(layer)), caches[layer]);
+    caches[layer].UpdateAndFetch(keys, values);
+  }
 }
 
 mx::array Qwen3Decoder::LastLogits(const mx::array &hidden_states) const {
@@ -132,10 +179,17 @@ mx::array Qwen3Decoder::LastLogits(const mx::array &hidden_states) const {
   const mx::array last = checkpoint_.RmsNorm(
       mx::slice(hidden_states, {0, length - 1, 0},
                 {hidden_states.shape(0), length, hidden_states.shape(2)}),
-      prefix_ + ".norm", config_.rms_norm_eps);
+      Name("norm"), config_.rms_norm_eps);
   const mx::array logits =
-      checkpoint_.TiedProjection(last, prefix_ + ".embed_tokens");
+      checkpoint_.TiedProjection(last, Name("embed_tokens"));
   return mx::reshape(logits, {logits.shape(-1)});
+}
+
+mx::array Qwen3Decoder::Logits(const mx::array &hidden_states) const {
+  const mx::array logits = checkpoint_.TiedProjection(
+      checkpoint_.RmsNorm(hidden_states, Name("norm"), config_.rms_norm_eps),
+      Name("embed_tokens"));
+  return mx::reshape(logits, {hidden_states.shape(1), logits.shape(-1)});
 }
 
 std::vector<KVCache> Qwen3Decoder::NewCaches() const {

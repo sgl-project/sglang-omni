@@ -106,7 +106,8 @@ extension MLXModelManager {
     /// Auxiliary VAD artifacts share download/storage handling, not the ASR
     /// catalog or STT loader. Never reopen arbitrary retired repo loading.
     nonisolated static func isManagedArtifactRepo(_ repo: String) -> Bool {
-        repo == SileroVADModelSupport.repo || availableModels.contains { $0.id == repo }
+        repo == SileroVADModelSupport.repo || OmniASRBackend.isDraftModelRepo(repo)
+            || availableModels.contains { $0.id == repo }
     }
 
     nonisolated static func isAvailableModelRepo(_ repo: String) -> Bool {

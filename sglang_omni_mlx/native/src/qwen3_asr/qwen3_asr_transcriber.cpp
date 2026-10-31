@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <map>
 
 namespace qwen3_asr {
@@ -122,12 +123,19 @@ std::optional<std::string> NormalizeLanguage(const std::string &language) {
 }
 
 Qwen3ASRTranscriber::Qwen3ASRTranscriber(
-    const std::filesystem::path &model_directory)
+    const std::filesystem::path &model_directory,
+    const std::filesystem::path &draft_directory, int draft_quantization_bits)
     : model_(model_directory), tokenizer_(model_directory),
       audio_pad_id_(tokenizer_.AddedTokenId(kAudioPad)),
       end_of_text_id_(tokenizer_.AddedTokenId("<|endoftext|>")),
       im_end_id_(tokenizer_.AddedTokenId("<|im_end|>")),
-      asr_text_ids_(tokenizer_.Encode(kAsrTextMarker)) {}
+      asr_text_ids_(tokenizer_.Encode(kAsrTextMarker)) {
+  if (!draft_directory.empty()) {
+    draft_.emplace(draft_directory, draft_quantization_bits,
+                   model_.decoder().config());
+  } else {
+  }
+}
 
 std::vector<int>
 Qwen3ASRTranscriber::PromptIds(int audio_token_count,
@@ -216,31 +224,41 @@ Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
     return token_id == im_end_id_ ||
            (options.stop_at_end_of_text && token_id == end_of_text_id_);
   };
-  std::vector<KVCache> caches = model_.NewCaches();
-  mx::array next_token = mx::argmax(model_.Decode(embeddings, caches));
-  mx::async_eval({next_token});
   std::vector<int> output_ids;
   FinishReason finish_reason = FinishReason::kLength;
-  while (static_cast<int>(output_ids.size()) < max_new_tokens) {
-    if (cancel.load()) {
-      throw TranscriptionCancelled();
-    } else {
-    }
-    const mx::array token = next_token;
-    // Note (Jiaxin Deng): queue the next step before reading this token, so
-    // the GPU decodes while the stop rules are checked.
-    next_token = mx::argmax(
-        model_.Decode(model_.EmbedTokens(mx::reshape(token, {1, 1})), caches));
-    mx::async_eval({next_token});
-    const int token_id = static_cast<int>(token.item<uint32_t>());
+  // Adds a token to the output; true once the output is complete.
+  const auto commit = [&](int token_id) {
     output_ids.push_back(token_id);
     if (is_stop(token_id)) {
       finish_reason = FinishReason::kStop;
-      break;
+      return true;
     } else if (options.stop_on_token_loop && IsTokenLoop(output_ids)) {
       finish_reason = FinishReason::kStop;
-      break;
+      return true;
     } else {
+      return static_cast<int>(output_ids.size()) >= max_new_tokens;
+    }
+  };
+  int verify_round_count = 0;
+  if (draft_.has_value()) {
+    verify_round_count = DecodeWithDraft(embeddings, commit, cancel);
+  } else {
+    std::vector<KVCache> caches = model_.NewCaches();
+    mx::array next_token = mx::argmax(model_.Decode(embeddings, caches));
+    mx::async_eval({next_token});
+    bool finished = false;
+    while (!finished) {
+      if (cancel.load()) {
+        throw TranscriptionCancelled();
+      } else {
+      }
+      const mx::array token = next_token;
+      // Note (Jiaxin Deng): queue the next step before reading this token, so
+      // the GPU decodes while the stop rules are checked.
+      next_token = mx::argmax(model_.Decode(
+          model_.EmbedTokens(mx::reshape(token, {1, 1})), caches));
+      mx::async_eval({next_token});
+      finished = commit(static_cast<int>(token.item<uint32_t>()));
     }
   }
   auto [text, language] = SplitOutput(output_ids, options);
@@ -249,7 +267,71 @@ Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
           language,
           static_cast<int>(output_ids.size()) - (ended_on_stop ? 1 : 0),
           finish_reason,
-          {}};
+          {},
+          verify_round_count};
+}
+
+int Qwen3ASRTranscriber::DecodeWithDraft(
+    const mx::array &embeddings, const std::function<bool(int)> &commit,
+    const std::atomic<bool> &cancel) const {
+  const Qwen3Decoder &decoder = model_.decoder();
+  const int block_size = draft_->block_size();
+  std::vector<KVCache> caches = model_.NewCaches();
+  std::vector<KVCache> draft_caches = draft_->NewCaches();
+  std::vector<mx::array> aux_hidden_states;
+  const mx::array prompt_hidden = decoder.Forward(
+      embeddings, caches, draft_->aux_layers(), &aux_hidden_states);
+  draft_->AppendContext(aux_hidden_states, embeddings.shape(1), draft_caches);
+  int anchor_id = static_cast<int>(
+      mx::argmax(decoder.LastLogits(prompt_hidden)).item<uint32_t>());
+  bool finished = commit(anchor_id);
+  int round_count = 0;
+  while (!finished) {
+    if (cancel.load()) {
+      throw TranscriptionCancelled();
+    } else {
+    }
+    std::vector<int> block_ids(block_size, draft_->mask_token_id());
+    block_ids[0] = anchor_id;
+    const mx::array proposed_ids =
+        draft_->ProposeBlock(model_.EmbedTokens(mx::array(
+                                 block_ids.data(), {1, block_size}, mx::int32)),
+                             draft_caches);
+    const mx::array verify_ids = mx::concatenate(
+        {mx::array(&anchor_id, {1}, mx::int32), proposed_ids}, 0);
+    aux_hidden_states.clear();
+    const mx::array hidden = decoder.Forward(
+        model_.EmbedTokens(mx::reshape(verify_ids, {1, block_size})), caches,
+        draft_->aux_layers(), &aux_hidden_states);
+    const mx::array predictions = mx::argmax(decoder.Logits(hidden), -1);
+    mx::eval({proposed_ids, predictions});
+    ++round_count;
+    // note (wilsonzheng0327): prediction i follows block token i, so proposal
+    // i is accepted while every earlier one was and it matches prediction i;
+    // the prediction after the last accepted token is committed as well.
+    const int32_t *proposed = proposed_ids.data<int32_t>();
+    const uint32_t *predicted = predictions.data<uint32_t>();
+    int accepted_count = 0;
+    while (!finished && accepted_count < block_size - 1 &&
+           proposed[accepted_count] ==
+               static_cast<int>(predicted[accepted_count])) {
+      finished = commit(proposed[accepted_count]);
+      ++accepted_count;
+    }
+    if (!finished) {
+      anchor_id = static_cast<int>(predicted[accepted_count]);
+      finished = commit(anchor_id);
+    } else {
+    }
+    // note (wilsonzheng0327): the caches keep the anchor and the accepted
+    // proposals; the committed positions' hidden states become the draft's
+    // context.
+    for (KVCache &cache : caches) {
+      cache.Trim(block_size - 1 - accepted_count);
+    }
+    draft_->AppendContext(aux_hidden_states, accepted_count + 1, draft_caches);
+  }
+  return round_count;
 }
 
 std::pair<std::string, std::optional<std::string>>
