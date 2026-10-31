@@ -89,6 +89,10 @@ from sglang_omni.scheduling.generation_batch_policy import (
 )
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
+from sglang_omni.scheduling.stage_kv_budget import (
+    consume_stage_kv_cache_bytes,
+    stage_kv_cache_budget,
+)
 from sglang_omni.scheduling.types import (
     ModelRunnerOutput,
     RequestOutput,
@@ -2302,6 +2306,45 @@ def test_engine_defaults_pass_its_own_validation(tmp_path: Path) -> None:
     assert graph_config.prefill.backend == CudaGraphBackend.BREAKABLE
     assert max(graph_config.prefill.bs) == PREFILL_CUDA_GRAPH_MAX_TOKENS
     assert server_args.prefill_decode_interval == DECODE_STEPS_BETWEEN_PREFILLS
+
+
+@pytest.mark.parametrize(
+    ("overrides", "context_length", "expected_max_total_tokens"),
+    [
+        ({}, 128, 256),
+        ({"max_running_requests": 4}, 128, 512),
+        ({"max_total_tokens": 64}, 128, 64),
+        ({"max_total_tokens": 1024}, 128, 1024),
+        ({"max_total_tokens": None}, 64, 128),
+    ],
+)
+def test_engine_bounds_default_kv_capacity_and_honors_explicit_limits(
+    tmp_path: Path,
+    overrides: dict[str, int | None],
+    context_length: int,
+    expected_max_total_tokens: int,
+) -> None:
+    builder, server_args = engine_server_args(tmp_path, overrides, context_length)
+
+    builder.validate_before_infrastructure(server_args)
+
+    assert server_args.max_total_tokens == expected_max_total_tokens
+    assert server_args.context_length == context_length
+
+
+@pytest.mark.parametrize("overrides", [{}, {"max_total_tokens": None}])
+def test_engine_leaves_kv_capacity_to_explicit_byte_budget(
+    tmp_path: Path, overrides: dict[str, int | None]
+) -> None:
+    """An explicit byte budget must not acquire an automatic token cap."""
+    kv_cache_bytes = 2 * 1024**3
+    with stage_kv_cache_budget("tts_engine", kv_cache_bytes):
+        builder, server_args = engine_server_args(tmp_path, overrides)
+
+        builder.validate_before_infrastructure(server_args)
+
+        assert server_args.max_total_tokens is None
+        assert consume_stage_kv_cache_bytes() == kv_cache_bytes
 
 
 def test_engine_context_must_fit_the_tower_rope_table(
