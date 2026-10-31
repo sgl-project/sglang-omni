@@ -336,6 +336,21 @@ def test_utilization_sampler_summarizes_cpu_and_gpu(
     assert summary.to_dict()["samples"] == summary.samples
 
 
+def test_utilization_sampler_runs_without_load_average(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delattr(asr_profiling.os, "getloadavg", raising=False)
+    monkeypatch.setattr(asr_profiling, "_read_proc_stat", lambda: None)
+    monkeypatch.setattr(asr_profiling, "_query_gpu_utilization", lambda gpu_ids: {})
+
+    sampler = UtilizationSampler(interval_s=0.01)
+    sampler.start()
+    time.sleep(0.05)
+    summary = sampler.stop()
+
+    assert summary.samples >= 1
+
+
 def test_environment_fingerprint_is_best_effort(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
