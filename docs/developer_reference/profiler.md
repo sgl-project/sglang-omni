@@ -62,7 +62,7 @@ first executable prefill / extend batch is selected.
 | Talker request build execution start / end | `scheduler_request_build_start` / `_end` (stage = talker) | `OmniScheduler._run_request_builder` |
 | Talker prefill start | `scheduler_prefill_start` (stage = talker) | same |
 | First code chunk | `stage_first_stream_chunk_sent` (stage = talker) | `Stage._send_stream_to_target` |
-| Code2Wav first audio | `code2wav_first_audio` | `Code2WavScheduler.keep_audio` (every decoded or flushed window) |
+| Code2Wav first audio | `code2wav_first_audio` | `Code2WavScheduler.keep_audio` (once per request, on the first nonempty decoded or flushed audio window) |
 | Terminal response | `terminal_response` | `Coordinator._handle_completion` |
 
 Supporting events used for finer-grained breakdown:
@@ -172,13 +172,7 @@ plumb the stage name down (preprocessor `__call__`, encoder callables,
 and the recorder fills it in from the **per-thread / per-task active
 stage**.
 
-`Stage._run_scheduler` binds `set_active_stage(self.name)` on the scheduler
-thread before invoking the scheduler. The binding uses both a
-`threading.local` slot (for plain `threading.Thread` workers) and a
-`contextvars.ContextVar` (so it propagates through `asyncio.to_thread` /
-`loop.run_in_executor`, which copy contextvars but not thread-local).
-Explicit `stage=...` on emit always wins; the active-stage binding is only
-consulted when the caller passes `stage=None`.
+The scheduler-thread function inside `Stage.start()` binds `set_active_stage(self.name)` before scheduler warmup and execution. The binding uses both a `threading.local` slot and a `contextvars.ContextVar`. `asyncio.to_thread()` propagates the current ContextVar context automatically. Calls to `loop.run_in_executor()` and manually created threads require explicit context propagation or an active-stage binding in the worker. An explicit non-`None` `stage` passed to `emit()` always wins. With `stage=None`, the recorder checks the active-stage binding, then falls back to the process recorder's default stage or `unknown`.
 
 To bind / unbind manually from your own thread:
 
