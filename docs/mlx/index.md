@@ -1,108 +1,106 @@
-# MLX Path
+# Native MLX Runtime
 
-Rules for Apple Silicon work. They write down what the native runtime PRs under
-[#2537](https://github.com/sgl-project/sglang-omni/issues/2537) already do.
+SGLang-Omni's native MLX runtime serves selected models on Apple Silicon. It builds C++ server binaries that use MLX and expose model-specific HTTP APIs. This is a separate runtime from the CUDA pipeline and from the Python Torch/MPS path described in the [Apple Silicon installation guide](../get_started/installation_apple_silicon.md).
 
-## Layout
+## Supported models and tasks
 
-| Path | Contents |
-| --- | --- |
-| `sglang_omni_mlx/native/` | C++ runtime on MLX: one server binary per model, a parity CLI per model in `tools/`. Each model's code is in `src/<model>/`; code shared across models (`audio`, `form`, `layers`, `npz`, `tokenizer`, built as the `common` library, plus `swift_port` and `http`) is in `src/common/`. The shared ASR server code (`asr_service`, `worker`, `realtime`) is still in `src/qwen3_asr/`. |
-| `sglang_omni_mlx/native/ci/` | Model pins, the 392-clip corpus, golden outputs, server API tests. |
-| `sglang_omni_mlx/<model>/` | Python MLX servers, e.g. the Qwen3-ASR reference server. |
-| `Voxt/` | The macOS app that runs the native servers. See [`Voxt/backend/README.md`](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/backend/README.md). |
+The following models are wired into the native runtime. The listed checkpoints and serving behavior reflect the current native integration; they do not imply that every model supports every API or streaming mode.
 
-## Rule 1: MLX is a separate path
+| Model or checkpoint | Task | Native serving path |
+| --- | --- | --- |
+| `mlx-community/Qwen3-ASR-0.6B-4bit`, `mlx-community/Qwen3-ASR-1.7B-6bit`, `mlx-community/Qwen3-ASR-1.7B-8bit` | Speech recognition | Transcription and realtime WebSocket sessions. |
+| `mlx-community/whisper-small-mlx`, `mlx-community/whisper-large-v3-mlx`, `mlx-community/whisper-large-v3-turbo` | Speech recognition | Transcription with batch preview; no realtime socket. |
+| `beshkenadze/cohere-transcribe-03-2026-mlx-fp16` | Speech recognition | Transcription with batch preview; long audio can use Silero VAD. |
+| `OpenMOSS-Team/MOSS-Transcribe-Diarize` | Speech recognition and speaker diarization | Timestamped speaker segments and live updates. |
+| `mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit` | Speech recognition | Transcription and realtime streaming. |
+| `mlx-community/parakeet-tdt-0.6b-v3` | Speech recognition | Transcription with batch preview and sentence timestamps. |
+| `mlx-community/SenseVoiceSmall` | Speech recognition | Transcription with language, emotion, and event metadata. Long audio can use Silero VAD. |
+| `mlx-community/silero-vad-v6` | Voice activity detection | Streaming speech probabilities and offline speech ranges. |
+| `mlx-community/diar_streaming_sortformer_4spk-v2.1-fp16` | Speaker diarization | Meeting speaker analysis. |
+| Voxtral 4B TTS | Text-to-speech | Native speech generation server. |
+| MiniMax Music3 | Music generation | Text-to-music server and synthesis CLI. |
 
-MLX code is not abstracted together with the CUDA path in `sglang_omni`.
+For model-specific behavior in Voxt, see the [Voxt native runtime guide](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/backend/README.md). For MiniMax Music3 checkpoint setup and requests, see the [Music3 cookbook](../cookbook/minimax_music3.md#apple-silicon-native-mlx).
 
-- New MLX models, kernels and servers go under `sglang_omni_mlx/`.
-- Do not add MLX branches, workers or platform hooks to `sglang_omni/`.
-- No shared backend interface, base class or registry across the two paths.
-  Share code freely inside the MLX path, not across paths.
-- The paths meet only at the OpenAI-style HTTP API (`/v1/audio/transcriptions`,
-  `/v1/audio/speech`, `/v1/realtime`, `/health`).
+## Requirements
 
-Why:
+- An Apple Silicon Mac running macOS 15 or newer. The native build defaults its deployment target to macOS 15.0.
+- `uv` and the Xcode Command Line Tools, including a C++ compiler.
+- An internet connection for the pinned MLX build dependencies, native C++ dependencies, and model checkpoint.
+- Disk space for the checkpoint and build artifacts. The repository does not currently publish a minimum disk or memory requirement.
 
-- **Runtimes differ.** `sglang_omni` is a multi-process CUDA pipeline on
-  PyTorch; the MLX path is one process per model on unified memory, shipped as
-  C++ binaries. An interface over both hides what makes each fast.
-- **Dependencies differ.** SGLang's wheel pulls CUDA. Keeping MLX out lets Voxt
-  run without CUDA, PyTorch or Python.
-- **CI differs.** Mac CI only runs on `Voxt/**` and `sglang_omni_mlx/**`, and
-  GPU CI never runs on a Mac. A shared layer would break one side without CI
-  noticing.
+The build script creates a Python 3.12 build environment and installs the pinned MLX 0.32.3, CMake, and Ninja versions. Python is used to build the runtime; the resulting server is a native executable with its MLX runtime libraries beside it.
 
-The legacy MLX code in `sglang_omni` (`mlx_model_worker.py`,
-`MlxTpModelWorker`, the per-model `mlx/` packages) is removed in
-[#2725](https://github.com/sgl-project/sglang-omni/pull/2725); do not add it
-back. If a change really needs a cross-path abstraction, open an issue and
-agree on it with a maintainer first.
+## Quickstart: Qwen3-ASR 0.6B
 
-## Rule 2: Contribution requirements
+This quickstart builds the native Qwen3-ASR server and sends one WAV file for transcription. It uses the 4-bit checkpoint from the native runtime's pinned model list.
 
-**Placement and reuse**
+From the repository root, download the pinned checkpoint:
 
-- A native model adds `src/<model>/` with `<model>_model`, `<model>_transcriber`
-  and a server on the shared `asr_service`, a CLI in `tools/`, and CMake
-  targets: a library for the model's own sources that links what it reuses
-  (`common`, `swift_port`, `silero_vad`, `sortformer`). Shared code goes in
-  `src/common/`, not in another model's directory or library. Include project
-  headers by their path under `src/`, e.g. `#include "common/layers.h"`.
-- Shared audio, checkpoint/layer, tokenizer and multipart APIs use the `omni_common` namespace and the `common` library. HTTP helpers use `omni_server` and the `common_http` library; neither library depends on a model. Qwen3-ASR audio layouts, log-mel extraction and encoder token counts belong to `qwen3_asr/qwen3_audio.h`. Shared decoder and ASR serving types still live under `qwen3_asr/`; their extraction is separate from the common primitive APIs.
-- Reuse `layers`, `swift_port`, the Sortformer front end and the Silero VAD
-  port. If your code duplicates something on `main`, move it into the shared
-  file in the same PR.
-- Voxt changes stay in `Omni*.swift`, `VoxtTests/Omni*` and `Voxt/backend/`,
-  plus minimal routing edits.
+```bash
+MODEL_DIR="$PWD/.build/models/qwen3-asr-0.6b-4bit"
+mkdir -p "$MODEL_DIR"
+uvx --from huggingface-hub hf download \
+  mlx-community/Qwen3-ASR-0.6B-4bit \
+  --revision 313d850181767edf09f00a9c289becca70e58cd0 \
+  --local-dir "$MODEL_DIR"
+```
 
-**Parity**
+Build the native runtime:
 
-- Name the reference (Voxt's Swift backend at a pinned mlx-audio-swift commit,
-  or a Python MLX reference) and use the same weights and MLX version.
-- Keep the reference's behavior. Behavior changes go in a separate PR.
-- Report English WER, Chinese CER and mixed MER on the 392-clip corpus,
-  reference vs native, plus the count of identical clips. Explain where
-  differing clips diverge.
+```bash
+RUNTIME_DIR="$PWD/.build/native-mlx"
+sglang_omni_mlx/native/scripts/build_runtime.sh "$RUNTIME_DIR"
+```
 
-**Golden and pins**
+Start the server in one terminal:
 
-- Pin every checkpoint file by revision and SHA-256 in `ci/model_pins.json`.
-- Add a golden under `ci/model_golden/`. Import the Mac CI runner's outputs
-  (`golden-outputs` artifact, `--import`) so the runner checks exactly. A
-  speech model's golden holds seeded requests' codes (`ci/voxtral_golden.py`).
-- Add a second golden for paths the corpus misses (long-audio chunking, VAD).
+```bash
+"$RUNTIME_DIR/bin/qwen3_asr_server" \
+  --model-path "$MODEL_DIR" \
+  --host 127.0.0.1 \
+  --port 8000
+```
 
-**Tests**
+In another terminal, check that the server is healthy:
 
-- Server tests in `ci/test_model_servers.py`, or in the model's own
-  `ci/test_<model>_api.py` added to the Mac CI job once that file would pass
-  ~400 lines: JSON, SSE and realtime success paths; every invalid input
-  returns 400; session-state errors, cancel on disconnect, and wrong model
-  kind.
-- Assert structure, not one chip's exact text; exact text lives in the golden.
-- New Voxt Omni tests go into the `voxt-unit` job in `voxt-mac-ci.yaml`.
+```bash
+curl --fail http://127.0.0.1:8000/health
+```
 
-**Robustness**
+Send a local WAV file for transcription:
 
-- Check the checkpoint config at load, so bad checkpoints fail at load, not
-  mid-request.
-- Validate requests before they reach the worker.
-- Streaming sessions use bounded memory: trim consumed audio, cap session
-  length, clear the MLX cache.
+```bash
+curl --fail http://127.0.0.1:8000/v1/audio/transcriptions \
+  -F file=@/path/to/audio.wav
+```
 
-**Performance**
+The response is JSON with a `text` field. Stop the server with Ctrl-C.
 
-- Mac CI checks correctness only. Report total time, realtime factor, peak
-  memory and load time against the reference, with the device stated.
+## Further reading
 
-**CI and style**
+- [Native MLX runtime source layout](https://github.com/sgl-project/sglang-omni/tree/main/sglang_omni_mlx/native).
+- [Apple Silicon Torch/MPS installation](../get_started/installation_apple_silicon.md).
+- [Voxt backend guide](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/backend/README.md).
 
-- Target `main` (stacked PRs get no Mac CI), non-draft, with the `run-mac-ci`
-  or `run-all-ci` label. Both Mac CI jobs must pass on a real run.
-- Run pre-commit and follow
-  [coding-style.md](https://github.com/sgl-project/sglang-omni/blob/main/.claude/skills/code-review/coding-style.md).
-- Update `Voxt/backend/README.md`. Follow the PR format of
-  [#2676](https://github.com/sgl-project/sglang-omni/pull/2676) or
-  [#2689](https://github.com/sgl-project/sglang-omni/pull/2689).
+## Contribution guidance
+
+### Keep the MLX path independent
+
+Place native MLX models, kernels, and servers under `sglang_omni_mlx/`. Do not add MLX-specific workers or platform branches to `sglang_omni/`, or create a shared backend interface between the MLX and CUDA paths. Share implementation within the MLX path where appropriate.
+
+### Reuse shared native components
+
+Keep model-specific code under `sglang_omni_mlx/native/src/<model>/`. Put reusable audio, checkpoint, tokenizer, layer, and HTTP primitives in the shared native libraries rather than in another model's directory. Reuse existing front ends and shared components when they fit.
+
+### Preserve and measure reference behavior
+
+Name the reference implementation and pin its source revision. Compare the same weights and MLX version, and keep behavior changes in a separate PR. For ASR changes, report English WER, Chinese CER, and mixed MER on the 392-clip corpus, the number of identical clips, and where differing outputs diverge.
+
+### Pin models and test runtime behavior
+
+Pin checkpoint revisions and file SHA-256 values in `sglang_omni_mlx/native/ci/model_pins.json`. Add model goldens and server API coverage for success and invalid requests, streaming or session behavior where applicable, and shutdown or cancellation paths. Validate checkpoint configuration during load and bound memory for long-running sessions.
+
+### Report performance and checks
+
+Report total time, realtime factor, peak memory, and model load time against the reference, with the device and software versions stated. The [CI Workflows and Labels guide](../developer_reference/ci_labels.md) explains CI workflows, labels, and path filters. Also run applicable local checks and follow the repository's [coding style](https://github.com/sgl-project/sglang-omni/blob/main/.claude/skills/code-review/coding-style.md).
