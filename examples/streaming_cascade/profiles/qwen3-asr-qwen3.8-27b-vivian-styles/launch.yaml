@@ -1,0 +1,94 @@
+# The qwen3-asr-qwen3.8-27b-vivian cascade with speaking styles: Qwen3.8-27B starts every reply with a style tag such as [calm], held to the five styles by a regex, and Qwen3-TTS Base speaks it by cloning the Vivian recording of that style with its transcript; [neutral] clones vivian.wav.
+config_cls: StreamingCascadePipelineConfig
+model_path: examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian-styles
+
+services:
+  - name: chat
+    command: [python, -m, sglang.launch_server, --model-path, Qwen/Qwen3.8-27B, --reasoning-parser, qwen3, --port, "8003", --mem-fraction-static, "0.85"]
+    port: 8003
+    env: {CUDA_VISIBLE_DEVICES: "0"}
+  - name: asr
+    command: [sgl-omni, serve, --model-path, Qwen/Qwen3-ASR-1.7B, --port, "8002", --mem-fraction-static, "0.08"]
+    port: 8002
+    env: {CUDA_VISIBLE_DEVICES: "1"}
+  - name: tts
+    command: [sgl-omni, serve, --model-path, Qwen/Qwen3-TTS-12Hz-1.7B-Base, --config, examples/configs/qwen3_tts_1_7b.yaml, --port, "8005", --mem-fraction-static, "0.12"]
+    port: 8005
+    env: {CUDA_VISIBLE_DEVICES: "1"}
+
+session_nodes:
+  vad:
+    stages: [vad]
+    inputs: [input]
+  asr:
+    kind: openai_transcription
+    inputs: [input, "vad:session"]
+    base_url: "http://127.0.0.1:8002/v1"
+    model: Qwen/Qwen3-ASR-1.7B
+  dialog:
+    kind: dialog
+    inputs:
+      - asr
+      - {source: "llm:text_delta", feedback: true, overflow: drop_oldest, capacity: 1024}
+      - {source: "tts:session", feedback: true, overflow: drop_oldest, capacity: 1024}
+      - "vad:session"
+      - "input:session"
+      - {kind: control, source: input, event: interrupt}
+      - {kind: control, source: aligner, event: reply.progress}
+    system_prompt: "You are a helpful voice assistant. Answer in one spoken sentence of at most 25 words, in the language the user speaks. Do not use markdown or emoji. Start every reply with one tag: [sympathetic] when the user shares a loss, illness, breakup, failure or rejection, even if you then encourage them; [calm] when the user is stressed, rushed, nervous or panicking; [excited] for a big success or a surprise; [cheerful] for good news, thanks or friendly chat; [neutral] for a plain question or request."
+  llm:
+    kind: openai_chat
+    inputs:
+      - dialog
+      - "input:session"
+      - {kind: control, source: dialog, event: interrupt}
+    base_url: "http://127.0.0.1:8003/v1"
+    model: Qwen/Qwen3.8-27B
+    max_tokens: 512
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
+      # Qwen3.8-27B left the brackets off or named another style in 6 to 8 percent of replies, which the speech service then read out.
+      regex: '\[(neutral|cheerful|sympathetic|excited|calm)\] [^\[\]]*'
+  tts:
+    kind: openai_speech
+    inputs:
+      - llm
+      - "input:session"
+      - {kind: control, source: dialog, event: interrupt}
+    base_url: "http://127.0.0.1:8005/v1"
+    model: Qwen/Qwen3-TTS-12Hz-1.7B-Base
+    reference_audio_path: examples/streaming_cascade/voices/vivian.wav
+    reference_text: Hi there, it is nice to meet you, and I am happy to help with whatever you need today.
+    styles:
+      neutral:
+        audio_path: examples/streaming_cascade/voices/vivian.wav
+        text: Hi there, it is nice to meet you, and I am happy to help with whatever you need today.
+      cheerful:
+        audio_path: examples/streaming_cascade/voices/vivian_cheerful.wav
+        text: That is wonderful news, congratulations! I am so glad it all worked out for you.
+      sympathetic:
+        audio_path: examples/streaming_cascade/voices/vivian_sympathetic.wav
+        text: I am so sorry you are going through this. It is completely okay to feel sad right now.
+      excited:
+        audio_path: examples/streaming_cascade/voices/vivian_excited.wav
+        text: Wow, I can't believe it, you actually did it! This is absolutely amazing!
+      calm:
+        audio_path: examples/streaming_cascade/voices/vivian_calm.wav
+        text: Let's take a slow, deep breath together. There is no rush, and everything is going to be fine.
+    language: auto
+  aligner:
+    kind: alignment
+    method: forced
+    alignment_url: "http://127.0.0.1:8010"
+    heard_asr_url: "http://127.0.0.1:8002/v1"
+    heard_asr_model: Qwen/Qwen3-ASR-1.7B
+    inputs: ["llm:text_delta", "tts:pcm_f32le", "tts:session", "dialog:session", "input:session"]
+
+session_publish:
+  vad: [session]
+  asr: [transcript]
+  dialog: [session]
+  llm: [text_delta]
+  tts: [pcm_f32le, session]
+  aligner: [session]
