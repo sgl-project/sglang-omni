@@ -1,0 +1,12 @@
+{"to":"llm","msg":{"id":"c1","method":"llm.hello","params":{"protocol":2,"app":"9.0.0"}}}
+{"to":"app","msg":{"id":"c1","error":{"code":"protocol_mismatch","message":"This process speaks protocol 1","data":{"supported":[1]}}}}
+{"to":"llm","msg":{"id":"c2","method":"llm.hello","params":{"protocol":1,"app":"0.1.0-beta.1"}}}
+{"to":"app","msg":{"id":"c2","result":{"protocol":1,"version":"0.1.0-beta.1","pid":4242,"methods":["llm.hello","llm.shutdown","job.cancel","model.load","model.unload","model.status","chat"],"device":{"name":"Mac16,13","os":"macOS 26.7","memoryBytes":25769803776}}}}
+{"to":"llm","msg":{"id":"c3","method":"model.load","params":{"model":{"id":"llm.fast","format":"mlx","path":"/nowhere"}}}}
+{"to":"app","msg":{"id":"c3","error":{"code":"load_failed","message":"No config.json in /nowhere"}}}
+{"to":"llm","msg":{"id":"c4","method":"model.load","params":{"model":{"id":"x","format":"onnx","path":"/x"}}}}
+{"to":"app","msg":{"id":"c4","error":{"code":"bad_request","message":"Unknown model format onnx"}}}
+{"to":"llm","msg":{"id":"c5","method":"chat","params":{"model":{"id":"llm.translate","format":"gguf","path":"/models/hy.gguf"},"messages":[{"role":"user","content":"…"}],"maxTokens":64,"sampling":{"temperature":0.7}}}}
+{"to":"app","msg":{"id":"c5","error":{"code":"context_length","message":"The prompt (300000 tokens) does not fit the model's context (262144)"}}}
+{"to":"llm","msg":{"id":"c6","method":"model.reload"}}
+{"to":"app","msg":{"id":"c6","error":{"code":"method_not_found","message":"Unknown method model.reload"}}}

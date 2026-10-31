@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Linked into voxtnew-llm (__TEXT,__info_plist; Package.swift): the
+     process's identity and version (llm.hello) when it runs on its own.
+     scripts/build-llm.sh keeps the version in step with mygo.json. -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>dev.hehehai.voxtnew.llm</string>
+	<key>CFBundleName</key>
+	<string>voxtnew-llm</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0-beta.1</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2026 the SGLang-Omni and VoxtNew contributors. Licensed under the Apache License 2.0.</string>
+</dict>
+</plist>

@@ -1,0 +1,1 @@
+Output: only the new text that replaces the selection, without quotes, labels, explanations or tags.

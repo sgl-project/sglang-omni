@@ -1,0 +1,1 @@
+Strict: an earlier answer came back in the source language. Write the whole answer in {{TARGET_LANGUAGE}} and do not copy the source's sentences; only names, code, URLs and numbers stay as written.

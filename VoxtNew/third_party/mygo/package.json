@@ -1,0 +1,21 @@
+{
+  "name": "mygo-dev",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "packages/cli/npm/*",
+    "plugins/*",
+    "examples/*",
+    "website"
+  ],
+  "scripts": {
+    "build": "bun run --filter './packages/*' --filter './plugins/*' build",
+    "test": "bun test packages plugins scripts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^7"
+  }
+}

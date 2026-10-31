@@ -1,0 +1,653 @@
+# code	iso639_3	name	native	zh	script	rtl	region	macro	models	whisper
+aae	aae	Arbëreshë Albanian			Latn	0	IT		o	
+aal	aal	Afade			Latn	0	CM		o	
+aao	aao	Algerian Saharan Arabic			Arab	1	DZ		o	
+ab	abk	Abkhazian	Аԥсшәа	阿布哈西亚语	Cyrl	0	GE		o	
+abb	abb	Bankon			Latn	0	CM		o	
+abn	abn	Abua			Latn	0	NG		o	
+abr	abr	Abron			Latn	0	GH		o	
+abs	abs	Ambonese Malay			Latn	0	ID		o	
+abv	abv	Baharna Arabic			Arab	1	BH		o	
+acm	acm	Mesopotamian Arabic			Arab	1	IQ		o	
+acw	acw	Hijazi Arabic			Arab	1	SA		o	
+acx	acx	Omani Arabic			Arab	1	OM		o	
+adf	adf	Dhofari Arabic			Arab	1	OM		o	
+adx	adx	Amdo Tibetan			Tibt	0	CN		o	
+ady	ady	Adyghe		阿迪格语	Cyrl	0	RU		o	
+aeb	aeb	Tunisian Arabic			Arab	1	TN		o	
+aec	aec	Saidi Arabic			Arab	1	EG		o	
+af	afr	Afrikaans	Afrikaans	南非荷兰语	Latn	0	ZA		ow	
+afb	afb	Gulf Arabic			Arab	1	KW		o	
+afo	afo	Eloyi			Latn	0	NG		o	
+ahl	ahl	Igo			Latn	0	TG		o	
+ahs	ahs	Ashe			Latn	0	NG		o	
+ajg	ajg	Aja (Benin)			Latn	0	BJ		o	
+aju	aju	Judeo-Moroccan Arabic			Hebr	1	IL	jrb	o	
+ala	ala	Alago			Latn	0	NG		o	
+aln	aln	Gheg Albanian			Latn	0	XK		o	
+alo	alo	Larike-Wakasihu			Latn	0	ID		o	
+am	amh	Amharic	አማርኛ	阿姆哈拉语	Ethi	0	ET		ow	
+amu	amu	Guerrero Amuzgo			Latn	0	MX		o	
+an	arg	Aragonese	Aragonés	阿拉贡语	Latn	0	ES		o	
+anc	anc	Ngas			Latn	0	NG		o	
+ank	ank	Goemai			Latn	0	NG		o	
+anp	anp	Angika		昂加语	Deva	0	IN		o	
+anw	anw	Anaang			Latn	0	NG		o	
+aom	aom	Ömie			Latn	0	PG		o	
+apc	apc	Levantine Arabic	العامية		Arab	1	SY		o	
+apd	apd	Sudanese Arabic			Arab	1	SD		o	
+ar	ara	Arabic	العربية	阿拉伯语	Arab	1	EG		w	
+arb	arb	Standard Arabic	العربية		Arab	1	EG	ar	o	
+arq	arq	Algerian Arabic			Arab	1	DZ		o	
+ars	ars	Najdi Arabic		纳吉迪阿拉伯语	Arab	1	SA		o	
+ary	ary	Moroccan Arabic			Arab	1	MA		o	
+arz	arz	Egyptian Arabic			Arab	1	EG		o	
+as	asm	Assamese	অসমীয়া	阿萨姆语	Beng	0	IN		ow	
+ast	ast	Asturian	Asturianu	阿斯图里亚斯语	Latn	0	ES		o	
+avl	avl	Eastern Egyptian Bedawi Arabic			Arab	1	EG		o	
+awo	awo	Awak			Latn	0	NG		o	
+ayl	ayl	Libyan Arabic			Arab	1	LY		o	
+ayp	ayp	North Mesopotamian Arabic			Arab	1	IQ		o	
+az	aze	Azerbaijani	Azərbaycan	阿塞拜疆语	Latn	0	AZ		ow	
+ba	bak	Bashkir	Башҡорт	巴什基尔语	Cyrl	0	RU		ow	
+bag	bag	Tuki			Latn	0	CM		o	
+bas	bas	Basa (Cameroon)	Ɓàsàa	巴萨语	Latn	0	CM		o	
+bax	bax	Bamun		巴姆穆语	Bamu	0	CM		o	
+bba	bba	Baatonum			Latn	0	BJ		o	
+bbj	bbj	Ghomálá'		戈马拉语	Latn	0	CM		o	
+bbl	bbl	Bats			Geor	0	GE		o	
+bbu	bbu	Kulung (Nigeria)			Latn	0	NG		o	
+bce	bce	Bamenyam			Latn	0	CM		o	
+bci	bci	Baoulé			Latn	0	CI		o	
+bcs	bcs	Kohumono			Latn	0	NG		o	
+bcy	bcy	Bacama			Latn	0	NG		o	
+bda	bda	Bayot			Latn	0	SN		o	
+bde	bde	Bade			Latn	0	NG		o	
+bdm	bdm	Buduma			Latn	0	TD		o	
+be	bel	Belarusian	Беларуская	白俄罗斯语	Cyrl	0	BY		ow	
+beb	beb	Bebele			Latn	0	CM		o	
+bew	bew	Betawi			Latn	0	ID		o	
+bfd	bfd	Bafut		巴非特语	Latn	0	CM		o	
+bft	bft	Balti			Arab	1	PK		o	
+bg	bul	Bulgarian	Български	保加利亚语	Cyrl	0	BG		ow	
+bgp	bgp	Eastern Balochi			Arab	1	PK		o	
+bhb	bhb	Bhili			Deva	0	IN		o	
+bhh	bhh	Bukharic			Cyrl	0	IL		o	
+bho	bho	Bhojpuri	भोजपुरी	博杰普尔语	Deva	0	IN		o	
+bhp	bhp	Bima			Latn	0	ID		o	
+bhr	bhr	Bara Malagasy			Latn	0	MG		o	
+bjj	bjj	Kanauji			Deva	0	IN		o	
+bjk	bjk	Barok			Latn	0	PG		o	
+bjn	bjn	Banjar			Latn	0	ID		o	
+bjt	bjt	Balanta-Ganja			Latn	0	SN		o	
+bkh	bkh	Bakoko			Latn	0	CM		o	
+bkm	bkm	Kom (Cameroon)		科姆语	Latn	0	CM		o	
+bky	bky	Bokyi			Latn	0	NG		o	
+bmm	bmm	Northern Betsimisaraka Malagasy			Latn	0	MG		o	
+bmq	bmq	Bomu			Latn	0	ML		o	
+bn	ben	Bengali	বাংলা	孟加拉语	Beng	0	BD		ow	
+bnm	bnm	Batanga			Latn	0	GQ		o	
+bnn	bnn	Bunun			Latn	0	TW		o	
+bns	bns	Bundeli			Deva	0	IN		o	
+bo	bod	Tibetan	བོད་སྐད་	藏语	Tibt	0	CN		ow	
+bou	bou	Bondei			Latn	0	TZ		o	
+bqg	bqg	Bago-Kusuntu			Latn	0	TG		o	
+br	bre	Breton	Brezhoneg	布列塔尼语	Latn	0	FR		ow	
+bra	bra	Braj		布拉杰语	Deva	0	IN		o	
+brh	brh	Brahui			Arab	1	PK		o	
+bri	bri	Mokpwe			Latn	0	CM		o	
+brx	brx	Bodo	बर’	博多语	Deva	0	IN		o	
+bs	bos	Bosnian	Bosanski	波斯尼亚语	Latn	0	BA		ow	
+bsh	bsh	Kati			Arab	1	AF		o	
+bsj	bsj	Bangwinji			Latn	0	NG		o	
+bsk	bsk	Burushaski			Arab	1	PK		o	
+btm	btm	Batak Mandailing			Batk	0	ID		o	
+btv	btv	Bateri			Deva	0	PK		o	
+bug	bug	Buginese		布吉语	Latn	0	ID		o	
+bum	bum	Bulu (Cameroon)		布鲁语	Latn	0	CM		o	
+buo	buo	Terei			Latn	0	PG		o	
+bux	bux	Boghom			Latn	0	NG		o	
+bwr	bwr	Bura-Pabir			Latn	0	NG		o	
+bxf	bxf	Bilur			Latn	0	PG		o	
+byc	byc	Ubaghara			Latn	0	NG		o	
+bys	bys	Burak			Latn	0	NG		o	
+byv	byv	Medumba		梅敦巴语	Latn	0	CM		o	
+byx	byx	Qaqet			Latn	0	PG		o	
+bzc	bzc	Southern Betsimisaraka Malagasy			Latn	0	MG		o	
+bzw	bzw	Basa (Nigeria)			Latn	0	NG		o	
+ca	cat	Catalan	Català	加泰罗尼亚语	Latn	0	ES		ow	
+ccg	ccg	Samba Daka			Latn	0	NG		o	
+ceb	ceb	Cebuano	Cebuano	宿务语	Latn	0	PH		o	
+cen	cen	Cen			Latn	0	NG		o	
+cfa	cfa	Dijim-Bwilim			Latn	0	NG		o	
+cgg	cgg	Chiga	Rukiga	奇加语	Latn	0	UG		o	
+chq	chq	Quiotepec Chinantec			Latn	0	MX		o	
+cjk	cjk	Chokwe			Latn	0	AO		o	
+ckb	ckb	Central Kurdish	کوردیی ناوەندی	中库尔德语	Arab	1	IQ		o	
+ckl	ckl	Cibak			Latn	0	NG		o	
+ckr	ckr	Kairak			Latn	0	PG		o	
+cky	cky	Cakfem-Mushere			Latn	0	NG		o	
+cnh	cnh	Hakha Chin			Latn	0	MM		o	
+cpy	cpy	South Ucayali Ashéninka			Latn	0	PE		o	
+cs	ces	Czech	Čeština	捷克语	Latn	0	CZ		ow	
+cte	cte	Tepinapa Chinantec			Latn	0	MX		o	
+ctl	ctl	Tlacoatzintepec Chinantec			Latn	0	MX		o	
+cut	cut	Teutila Cuicatec			Latn	0	MX		o	
+cux	cux	Tepeuxila Cuicatec			Latn	0	MX		o	
+cv	chv	Chuvash	Чӑваш чӗлхи	楚瓦什语	Cyrl	0	RU		o	
+cy	cym	Welsh	Cymraeg	威尔士语	Latn	0	GB		ow	
+da	dan	Danish	Dansk	丹麦语	Latn	0	DK		ow	
+dag	dag	Dagbani			Latn	0	GH		o	
+dar	dar	Dargwa		达尔格瓦语	Cyrl	0	RU		o	
+dav	dav	Taita	Kitaita	台塔语	Latn	0	KE		o	
+dbd	dbd	Dadiya			Latn	0	NG		o	
+dcc	dcc	Deccan			Arab	1	IN		o	
+de	deu	German	Deutsch	德语	Latn	0	DE		ow	
+deg	deg	Degema			Latn	0	NG		o	
+dgh	dgh	Dghwede			Latn	0	NG		o	
+dgo	dgo	Dogri	डोगरी		Deva	0	IN	doi	o	
+dje	dje	Zarma	Zarmaciine	哲尔马语	Latn	0	NE		o	
+dmk	dmk	Domaaki			Arab	1	PK		o	
+dml	dml	Dameli			Arab	1	PK		o	
+dru	dru	Rukai			Latn	0	TW		o	
+dty	dty	Dotyali			Deva	0	NP		o	
+dua	dua	Duala	Duálá	杜阿拉语	Latn	0	CM		o	
+dv	div	Dhivehi		迪维希语	Thaa	1	MV		o	
+dyu	dyu	Dyula		迪尤拉语	Latn	0	BF		o	
+dzg	dzg	Dazaga		达扎葛语	Latn	0	TD		o	
+ebr	ebr	Ebrié			Latn	0	CI		o	
+ebu	ebu	Embu	Kĩembu	恩布语	Latn	0	KE		o	
+ego	ego	Eggon			Latn	0	NG		o	
+eiv	eiv	Askopan			Latn	0	PG		o	
+eko	eko	Koti			Latn	0	MZ		o	
+ekr	ekr	Yace			Latn	0	NG		o	
+el	ell	Greek	Ελληνικά	希腊语	Grek	0	GR		ow	
+elm	elm	Eleme			Latn	0	NG		o	
+en	eng	English	English	英语	Latn	0	US		ow	
+eo	epo	Esperanto	Esperanto	世界语	Latn	0	001		o	
+es	spa	Spanish	Español	西班牙语	Latn	0	ES		ow	
+esu	esu	Central Yupik			Latn	0	US		o	
+et	est	Estonian	Eesti	爱沙尼亚语	Latn	0	EE		ow	
+eto	eto	Eton (Cameroon)			Latn	0	CM		o	
+ets	ets	Yekhee			Latn	0	NG		o	
+etu	etu	Ejagham			Latn	0	NG		o	
+eu	eus	Basque	Euskara	巴斯克语	Latn	0	ES		ow	
+ewo	ewo	Ewondo	Ewondo	埃翁多语	Latn	0	CM		o	
+ext	ext	Extremaduran			Latn	0	ES		o	
+eyo	eyo	Keiyo			Latn	0	KE		o	
+fa	fas	Persian	فارسی	波斯语	Arab	1	IR		ow	
+fan	fan	Fang (Equatorial Guinea)		芳格语	Latn	0	GQ		o	
+fat	fat	Fanti	Akan	芳蒂语	Latn	0	GH	ak	o	
+ff	ful	Fulah	Pulaar	富拉语	Latn	0	SN		o	
+ffm	ffm	Maasina Fulfulde			Latn	0	ML		o	
+fi	fin	Finnish	Suomi	芬兰语	Latn	0	FI		ow	
+fia	fia	Nobiin			Arab	1	SD		o	
+fil	fil	Filipino	Filipino	菲律宾语	Latn	0	PH		ow	tl
+fip	fip	Fipa			Latn	0	TZ		o	
+fkk	fkk	Kirya-Konzəl			Latn	0	NG		o	
+fmp	fmp	Fe'fe'			Latn	0	CM		o	
+fo	fao	Faroese	Føroyskt	法罗语	Latn	0	FO		w	
+fr	fra	French	Français	法语	Latn	0	FR		ow	
+fub	fub	Adamawa Fulfulde			Arab	1	CM		o	
+fuc	fuc	Pulaar	Pulaar		Latn	0	SN	ff	o	
+fue	fue	Borgu Fulfulde			Latn	0	BJ		o	
+fuf	fuf	Pular			Latn	0	GN		o	
+fuh	fuh	Western Niger Fulfulde			Latn	0	NE		o	
+fui	fui	Bagirmi Fulfulde			Latn	0	TD		o	
+fuq	fuq	Central-Eastern Niger Fulfulde			Latn	0	NE		o	
+fuv	fuv	Nigerian Fulfulde			Latn	0	NG		o	
+fy	fry	Western Frisian	Frysk	西弗里西亚语	Latn	0	NL		o	
+ga	gle	Irish	Gaeilge	爱尔兰语	Latn	0	IE		o	
+gbm	gbm	Garhwali			Deva	0	IN		o	
+gbr	gbr	Gbagyi			Latn	0	NG		o	
+gby	gby	Gbari			Latn	0	NG		o	
+gcc	gcc	Mali			Latn	0	PG		o	
+gdf	gdf	Guduf-Gava			Latn	0	NG		o	
+gej	gej	Gen			Latn	0	TG		o	
+ges	ges	Geser-Gorom			Latn	0	ID		o	
+ggg	ggg	Gurgula			Arab	1	PK		o	
+gid	gid	Gidar			Latn	0	CM		o	
+gig	gig	Goaria			Arab	1	PK		o	
+giz	giz	South Giziga			Latn	0	CM		o	
+gjk	gjk	Kachi Koli			Arab	1	PK		o	
+gju	gju	Gujari			Arab	1	PK		o	
+gl	glg	Galician	Galego	加利西亚语	Latn	0	ES		ow	
+glw	glw	Glavda			Latn	0	NG		o	
+gn	grn	Guarani	Avañe’ẽ	瓜拉尼语	Latn	0	PY		o	
+gol	gol	Gola			Latn	0	LR		o	
+gom	gom	Goan Konkani	कोंकणी		Deva	0	IN	kok	o	
+gsl	gsl	Gusilay			Latn	0	SN		o	
+gu	guj	Gujarati	ગુજરાતી	古吉拉特语	Gujr	0	IN		ow	
+gui	gui	Eastern Bolivian Guaraní			Latn	0	BO		o	
+gur	gur	Farefare			Latn	0	GH		o	
+guz	guz	Gusii	Ekegusii	古西语	Latn	0	KE		o	
+gv	glv	Manx	Gaelg	马恩语	Latn	0	IM		o	
+gwc	gwc	Gawri			Arab	1	PK		o	
+gwe	gwe	Gweno			Latn	0	TZ		o	
+gwt	gwt	Gawar-Bati			Arab	1	AF		o	
+gya	gya	Northwest Gbaya			Latn	0	CF	gba	o	
+gyz	gyz	Geji			Latn	0	NG		o	
+ha	hau	Hausa	Hausa	豪萨语	Latn	0	NG		ow	
+hah	hah	Hahon			Latn	0	PG		o	
+hao	hao	Hakö			Latn	0	PG		o	
+haw	haw	Hawaiian	ʻŌlelo Hawaiʻi	夏威夷语	Latn	0	US		ow	
+haz	haz	Hazaragi			Arab	1	AF		o	
+hbb	hbb	Huba			Latn	0	NG		o	
+he	heb	Hebrew	עברית	希伯来语	Hebr	1	IL		ow	
+hem	hem	Hemba			Latn	0	CD		o	
+hi	hin	Hindi	हिन्दी	印地语	Deva	0	IN		ow	
+hia	hia	Lamang			Latn	0	NG		o	
+hkk	hkk	Hunjara-Kaina Ke			Latn	0	PG		o	
+hla	hla	Halia			Latn	0	PG		o	
+hno	hno	Northern Hindko			Arab	1	PK		o	
+hoj	hoj	Hadothi			Deva	0	IN		o	
+hr	hrv	Croatian	Hrvatski	克罗地亚语	Latn	0	HR		ow	
+hsb	hsb	Upper Sorbian	Hornjoserbšćina	上索布语	Latn	0	DE		o	
+ht	hat	Haitian	Kreyòl Ayisyen	海地克里奥尔语	Latn	0	HT		ow	
+hu	hun	Hungarian	Magyar	匈牙利语	Latn	0	HU		ow	
+hue	hue	San Francisco Del Mar Huave			Latn	0	MX		o	
+hul	hul	Hula			Latn	0	PG		o	
+hux	hux	Nüpode Huitoto			Latn	0	PE		o	
+hwo	hwo	Hwana			Latn	0	NG		o	
+hy	hye	Armenian	Հայերեն	亚美尼亚语	Armn	0	AM		ow	
+hz	her	Herero		赫雷罗语	Latn	0	NA		o	
+ia	ina	Interlingua (International Auxiliary Language Association)	Interlingua	国际语	Latn	0	001		o	
+ibb	ibb	Ibibio		伊比比奥语	Latn	0	NG		o	
+id	ind	Indonesian	Indonesia	印度尼西亚语	Latn	0	ID		ow	
+ida	ida	Idakho-Isukha-Tiriki			Latn	0	KE		o	
+idu	idu	Idoma			Latn	0	NG		o	
+ig	ibo	Igbo	Igbo	伊博语	Latn	0	NG		o	
+ijc	ijc	Izon			Latn	0	NG		o	
+ijn	ijn	Kalabari			Latn	0	NG		o	
+ik	ipk	Inupiaq		伊努皮克语	Latn	0	US		o	
+ikw	ikw	Ikwere			Latn	0	NG		o	
+is	isl	Icelandic	Íslenska	冰岛语	Latn	0	IS		ow	
+ish	ish	Esan			Latn	0	NG		o	
+iso	iso	Isoko			Latn	0	NG		o	
+it	ita	Italian	Italiano	意大利语	Latn	0	IT		ow	
+its	its	Isekiri			Latn	0	NG		o	
+itw	itw	Ito			Latn	0	NG		o	
+itz	itz	Itzá			Latn	0	GT		o	
+ja	jpn	Japanese	日本語	日语	Jpan	0	JP		ow	
+jal	jal	Yalahatan			Latn	0	ID		o	
+jax	jax	Jambi Malay			Latn	0	ID		o	
+jgo	jgo	Ngomba	Ndaꞌa	恩艮巴语	Latn	0	CM		o	
+jmx	jmx	Western Juxtlahuaca Mixtec			Latn	0	MX		o	
+jns	jns	Jaunsari			Deva	0	IN		o	
+jqr	jqr	Jaqaru			Latn	0	PE		o	
+juk	juk	Wapan			Latn	0	NG		o	
+juo	juo	Jiba			Latn	0	NG		o	
+jv	jav	Javanese	Jawa	爪哇语	Latn	0	ID		ow	jw
+ka	kat	Georgian	ქართული	格鲁吉亚语	Geor	0	GE		ow	
+kab	kab	Kabyle	Taqbaylit	卡拜尔语	Latn	0	DZ		o	
+kai	kai	Karekare			Latn	0	NG		o	
+kaj	kaj	Jju	Kaje	卡捷语	Latn	0	NG		o	
+kam	kam	Kamba	Kikamba	卡姆巴语	Latn	0	KE		o	
+kbd	kbd	Kabardian		卡巴尔德语	Cyrl	0	RU		o	
+kbl	kbl	Kanembu		加涅姆布语	Latn	0	TD		o	
+kbt	kbt	Abadi			Latn	0	PG		o	
+kcq	kcq	Kamo			Latn	0	NG		o	
+kdh	kdh	Tem			Latn	0	TG		o	
+kea	kea	Kabuverdianu	Kabuverdianu	卡布佛得鲁语	Latn	0	CV		o	
+keu	keu	Akebu			Latn	0	TG		o	
+kfe	kfe	Kota (India)			Taml	0	IN		o	
+kfk	kfk	Kinnauri			Deva	0	IN		o	
+kfp	kfp	Korwa			Deva	0	IN		o	
+khg	khg	Khams Tibetan			Tibt	0	CN		o	
+khw	khw	Khowar			Arab	1	PK		o	
+kj	kua	Kuanyama		宽亚玛语	Latn	0	NA		o	
+kjc	kjc	Coastal Konjo			Latn	0	ID		o	
+kjk	kjk	Highland Konjo			Latn	0	ID		o	
+kk	kaz	Kazakh	Қазақ тілі	哈萨克语	Cyrl	0	KZ		ow	
+kln	kln	Kalenjin	Kalenjin	卡伦金语	Latn	0	KE		o	
+kls	kls	Kalasha			Latn	0	PK		o	
+km	khm	Khmer	ខ្មែរ	高棉语	Khmr	0	KH		ow	
+kmr	kmr	Northern Kurdish	Kurdî (kurmancî)		Latn	0	TR	ku	o	
+kmy	kmy	Koma			Latn	0	NG		o	
+kn	kan	Kannada	ಕನ್ನಡ	卡纳达语	Knda	0	IN		ow	
+kna	kna	Dera (Nigeria)			Latn	0	NG		o	
+knn	knn	Konkani			Deva	0	IN		o	
+ko	kor	Korean	한국어	韩语	Kore	0	KR		ow	
+kol	kol	Kol (Papua New Guinea)			Latn	0	PG		o	
+koo	koo	Konzo			Latn	0	UG		o	
+kpo	kpo	Ikposo			Latn	0	TG		o	
+kqo	kqo	Eastern Krahn			Latn	0	LR		o	
+ks	kas	Kashmiri	کٲشُر	克什米尔语	Arab	1	IN		o	
+ksd	ksd	Kuanua			Latn	0	PG		o	
+ksf	ksf	Bafia	Rikpa	巴菲亚语	Latn	0	CM		o	
+kto	kto	Kuot			Latn	0	PG		o	
+kuh	kuh	Kushi			Latn	0	NG		o	
+kvx	kvx	Parkari Koli			Arab	1	PK		o	
+kw	cor	Cornish	Kernewek	康沃尔语	Latn	0	GB		o	
+kwm	kwm	Kwambi			Latn	0	NA		o	
+kxp	kxp	Wadiyara Koli			Arab	1	PK		o	
+ky	kir	Kirghiz	Кыргызча	吉尔吉斯语	Cyrl	0	KG		o	
+kyx	kyx	Rapoisi			Latn	0	PG		o	
+la	lat	Latin		拉丁语	Latn	0	VA		w	
+lag	lag	Rangi	Kɨlaangi	朗吉语	Latn	0	TZ		o	
+lb	ltz	Luxembourgish	Lëtzebuergesch	卢森堡语	Latn	0	LU		ow	
+lcm	lcm	Tungag			Latn	0	PG		o	
+ldb	ldb	Dũya			Latn	0	NG		o	
+lg	lug	Ganda	Luganda	卢干达语	Latn	0	UG		o	
+lij	lij	Ligurian	Ligure	利古里亚语	Latn	0	IT		o	
+lir	lir	Liberian English			Latn	0	LR		o	
+lkb	lkb	Kabras			Latn	0	KE		o	
+lla	lla	Lala-Roba			Latn	0	NG		o	
+ln	lin	Lingala	Lingála	林加拉语	Latn	0	CD		ow	
+lnu	lnu	Longuda			Latn	0	NG		o	
+lo	lao	Lao	ລາວ	老挝语	Laoo	0	LA		ow	
+loa	loa	Loloda			Latn	0	ID		o	
+lrk	lrk	Loarki			Arab	1	PK		o	
+lss	lss	Lasi			Arab	1	PK		o	
+lt	lit	Lithuanian	Lietuvių	立陶宛语	Latn	0	LT		ow	
+ltg	ltg	Latgalian			Latn	0	LV		o	
+lto	lto	Tsotso			Latn	0	KE		o	
+lua	lua	Luba-Lulua		卢巴-卢拉语	Latn	0	CD		o	
+luo	luo	Luo	Dholuo	卢奥语	Latn	0	KE		o	
+lus	lus	Lushai		米佐语	Latn	0	IN		o	
+lv	lav	Latvian	Latviešu	拉脱维亚语	Latn	0	LV		ow	
+lwg	lwg	Wanga			Latn	0	KE		o	
+mab	mab	Yutanduchi Mixtec			Latn	0	MX		o	
+maf	maf	Mafa		马法语	Latn	0	CM		o	
+mai	mai	Maithili	मैथिली	迈蒂利语	Deva	0	IN		o	
+mau	mau	Huautla Mazatec			Latn	0	MX		o	
+max	max	North Moluccan Malay			Latn	0	ID		o	
+mbo	mbo	Mbo (Cameroon)			Latn	0	CM		o	
+mcf	mcf	Matsés			Latn	0	PE		o	
+mcn	mcn	Masana			Latn	0	TD		o	
+mcx	mcx	Mpiemo			Latn	0	CF		o	
+mdd	mdd	Mbum			Latn	0	CM		o	
+mde	mde	Maba (Chad)		马坝语	Arab	1	TD		o	
+mdf	mdf	Moksha	Мокшень кяль	莫克沙语	Cyrl	0	RU		o	
+mek	mek	Mekeo			Latn	0	PG		o	
+mer	mer	Meru	Kĩmĩrũ	梅鲁语	Latn	0	KE		o	
+meu	meu	Motu			Latn	0	PG		o	
+mfm	mfm	Marghi South			Latn	0	NG		o	
+mfn	mfn	Cross River Mbembe			Latn	0	NG		o	
+mfo	mfo	Mbe			Latn	0	NG		o	
+mfv	mfv	Mandjak			Latn	0	SN		o	
+mg	mlg	Malagasy	Malagasy	马拉加斯语	Latn	0	MG		w	
+mgg	mgg	Mpumpong			Latn	0	CM		o	
+mgi	mgi	Lijili			Latn	0	NG		o	
+mhk	mhk	Mungaka			Latn	0	CM		o	
+mhr	mhr	Eastern Mari			Cyrl	0	RU	chm	o	
+mi	mri	Maori	Māori	毛利语	Latn	0	NZ		ow	
+mig	mig	San Miguel El Grande Mixtec			Latn	0	MX		o	
+miu	miu	Cacaloxtepec Mixtec			Latn	0	MX		o	
+mk	mkd	Macedonian	Македонски	马其顿语	Cyrl	0	MK		ow	
+mkf	mkf	Miya			Latn	0	NG		o	
+mki	mki	Dhatki			Arab	1	PK		o	
+ml	mal	Malayalam	മലയാളം	马拉雅拉姆语	Mlym	0	IN		ow	
+mlq	mlq	Western Maninkakan			Latn	0	SN		o	
+mn	mon	Mongolian	Монгол	蒙古语	Cyrl	0	MN		ow	
+mne	mne	Naba			Latn	0	TD		o	
+mni	mni	Manipuri	মৈতৈলোন্	曼尼普尔语	Beng	0	IN		o	
+mqy	mqy	Manggarai			Latn	0	ID		o	
+mr	mar	Marathi	मराठी	马拉地语	Deva	0	IN		ow	
+mrj	mrj	Western Mari			Cyrl	0	RU		o	
+mrr	mrr	Maria (India)			Deva	0	IN		o	
+mrt	mrt	Marghi Central			Latn	0	NG		o	
+ms	msa	Malay	Melayu	马来语	Latn	0	MY		ow	
+mse	mse	Musey			Latn	0	TD		o	
+msh	msh	Masikoro Malagasy			Latn	0	MG		o	
+msw	msw	Mansoanka			Latn	0	GW		o	
+mt	mlt	Maltese	Malti	马耳他语	Latn	0	MT		ow	
+mtr	mtr	Mewari			Deva	0	IN		o	
+mtu	mtu	Tututepec Mixtec			Latn	0	MX		o	
+mtx	mtx	Tidaá Mixtec			Latn	0	MX		o	
+mua	mua	Mundang	MUNDAŊ	蒙当语	Latn	0	CM		o	
+mug	mug	Musgu			Latn	0	CM		o	
+mui	mui	Musi			Latn	0	ID		o	
+mve	mve	Marwari (Pakistan)			Arab	1	PK		o	
+mvy	mvy	Indus Kohistani			Arab	1	PK		o	
+mxs	mxs	Huitepec Mixtec			Latn	0	MX		o	
+mxu	mxu	Mada (Cameroon)			Latn	0	CM		o	
+mxy	mxy	Southeastern Nochixtlán Mixtec			Latn	0	MX		o	
+my	mya	Burmese	မြန်မာ	缅甸语	Mymr	0	MM		ow	
+myv	myv	Erzya	Эрзянь кель	厄尔兹亚语	Cyrl	0	RU		o	
+mzl	mzl	Mazatlán Mixe			Latn	0	MX		o	
+nal	nal	Nalik			Latn	0	PG		o	
+nan	nan	Min Nan Chinese		闽南语	Hans	0	CN		o	
+nap	nap	Neapolitan		那不勒斯语	Latn	0	IT		o	
+nb	nob	Norwegian Bokmål	Norsk bokmål	书面挪威语	Latn	0	NO		o	
+nbh	nbh	Ngamo			Latn	0	NG		o	
+ncf	ncf	Notsi			Latn	0	PG		o	
+nco	nco	Sibe			Latn	0	PG		o	
+ncx	ncx	Central Puebla Nahuatl			Latn	0	MX		o	
+ndi	ndi	Samba Leko			Latn	0	NG		o	
+ne	nep	Nepali	नेपाली	尼泊尔语	Deva	0	NP		w	
+ng	ndo	Ndonga		恩东加语	Latn	0	NA		o	
+ngi	ngi	Ngizim			Latn	0	NG		o	
+nhg	nhg	Tetelcingo Nahuatl			Latn	0	MX		o	
+nhi	nhi	Zacatlán-Ahuacatlán-Tepetzintla Nahuatl			Latn	0	MX		o	
+nhn	nhn	Central Nahuatl			Latn	0	MX		o	
+nhq	nhq	Huaxcaleca Nahuatl			Latn	0	MX		o	
+nja	nja	Nzanyi			Latn	0	NG		o	
+nl	nld	Dutch	Nederlands	荷兰语	Latn	0	NL		ow	
+nla	nla	Ngombale			Latn	0	CM		o	
+nlv	nlv	Orizaba Nahuatl			Latn	0	MX		o	
+nmg	nmg	Kwasio		夸西奥语	Latn	0	CM		o	
+nmz	nmz	Nawdm			Latn	0	TG		o	
+nn	nno	Norwegian Nynorsk	Norsk nynorsk	挪威尼诺斯克语	Latn	0	NO		ow	
+nnh	nnh	Ngiemboon	Shwóŋò ngiembɔɔn	恩甘澎语	Latn	0	CM		o	
+no	nor	Norwegian	Norsk	挪威语	Latn	0	NO		ow	
+noe	noe	Nimadi			Deva	0	IN		o	
+npi	npi	Nepali	नेपाली		Deva	0	NP	ne	o	
+nso	nso	Pedi	Sesotho sa Leboa	北索托语	Latn	0	ZA		o	
+ny	nya	Chichewa	Nyanja	齐切瓦语	Latn	0	MW		o	
+nyu	nyu	Nyungwe			Latn	0	MZ		o	
+oc	oci	Occitan	Occitan	奥克语	Latn	0	FR		ow	
+odk	odk	Od			Arab	1	PK		o	
+odu	odu	Odual			Latn	0	NG		o	
+ogo	ogo	Khana			Latn	0	NG		o	
+om	orm	Oromo	Oromoo	奥罗莫语	Latn	0	ET		o	
+orc	orc	Orma			Latn	0	KE		o	
+oru	oru	Ormuri			Arab	1	PK		o	
+ory	ory	Odia	ଓଡ଼ିଆ		Orya	0	IN	or	o	
+os	oss	Iron Ossetic	Ирон	奥塞梯语	Cyrl	0	GE		o	
+pa	pan	Panjabi	ਪੰਜਾਬੀ	旁遮普语	Guru	0	IN		ow	
+pbs	pbs	Central Pame			Latn	0	MX		o	
+pbt	pbt	Southern Pashto			Arab	1	AF		o	
+pbu	pbu	Northern Pashto	پښتو		Arab	1	AF	ps	o	
+pcm	pcm	Nigerian Pidgin	Naijíriá Píjin	尼日利亚皮钦语	Latn	0	NG		o	
+pex	pex	Petats			Latn	0	PG		o	
+phl	phl	Phalura			Arab	1	PK		o	
+phr	phr	Pahari-Potwari			Arab	1	PK		o	
+pip	pip	Pero			Latn	0	NG		o	
+piy	piy	Piya-Kwonci			Latn	0	NG		o	
+pko	pko	Pökoot			Latn	0	KE		o	
+pl	pol	Polish	Polski	波兰语	Latn	0	PL		ow	
+plk	plk	Kohistani Shina			Arab	1	PK		o	
+plt	plt	Plateau Malagasy	Malagasy		Latn	0	MG	mg	o	
+pmq	pmq	Northern Pame			Latn	0	MX		o	
+pms	pms	Piemontese	Piemontèis		Latn	0	IT		o	
+pmy	pmy	Papuan Malay			Latn	0	ID		o	
+pnb	pnb	Western Panjabi			Arab	1	PK	lah	o	
+poc	poc	Poqomam			Latn	0	GT		o	
+poe	poe	San Juan Atzingo Popoloca			Latn	0	MX		o	
+pow	pow	San Felipe Otlaltepec Popoloca			Latn	0	MX		o	
+prq	prq	Ashéninka Perené			Latn	0	PE		o	
+ps	pus	Pushto	پښتو	普什图语	Arab	1	AF		ow	
+pst	pst	Central Pashto			Arab	1	PK		o	
+pt	por	Portuguese	Português	葡萄牙语	Latn	0	BR		ow	
+pua	pua	Western Highland Purepecha			Latn	0	MX		o	
+pwn	pwn	Paiwan			Latn	0	TW		o	
+qug	qug	Chimborazo Highland Quichua			Latn	0	EC		o	
+qum	qum	Sipacapense			Latn	0	GT		o	
+qup	qup	Southern Pastaza Quechua			Latn	0	PE		o	
+qur	qur	Yanahuanca Pasco Quechua			Latn	0	PE		o	
+qus	qus	Santiago del Estero Quichua			Latn	0	AR		o	
+quv	quv	Sacapulteco			Latn	0	GT		o	
+qux	qux	Yauyos Quechua			Latn	0	PE		o	
+quy	quy	Ayacucho Quechua			Latn	0	PE		o	
+qva	qva	Ambo-Pasco Quechua			Latn	0	PE		o	
+qvi	qvi	Imbabura Highland Quichua			Latn	0	EC		o	
+qvj	qvj	Loja Highland Quichua			Latn	0	EC		o	
+qvl	qvl	Cajatambo North Lima Quechua			Latn	0	PE		o	
+qwa	qwa	Corongo Ancash Quechua			Latn	0	PE		o	
+qws	qws	Sihuas Ancash Quechua			Latn	0	PE		o	
+qxa	qxa	Chiquián Ancash Quechua			Latn	0	PE		o	
+qxp	qxp	Puno Quechua			Latn	0	PE		o	
+qxt	qxt	Santa Ana de Tusi Pasco Quechua			Latn	0	PE		o	
+qxu	qxu	Arequipa-La Unión Quechua			Latn	0	PE		o	
+qxw	qxw	Jauja Wanca Quechua			Latn	0	PE		o	
+rag	rag	Logooli			Latn	0	KE		o	
+rm	roh	Romansh	Rumantsch	罗曼什语	Latn	0	CH		o	
+ro	ron	Romanian	Română	罗马尼亚语	Latn	0	RO		ow	
+rob	rob	Tae'			Latn	0	ID		o	
+rof	rof	Rombo	Kihorombo	兰博语	Latn	0	TZ		o	
+roo	roo	Rotokas			Latn	0	PG		o	
+rth	rth	Ratahan			Latn	0	ID		o	
+ru	rus	Russian	Русский	俄语	Cyrl	0	RU		ow	
+rup	rup	Macedo-Romanian		阿罗马尼亚语	Latn	0	RO		o	
+rw	kin	Kinyarwanda	Ikinyarwanda	卢旺达语	Latn	0	RW		o	
+sa	san	Sanskrit	संस्कृत भाषा	梵语	Deva	0	IN		ow	
+sah	sah	Yakut	Саха тыла	萨哈语	Cyrl	0	RU		o	
+sat	sat	Santali	ᱥᱟᱱᱛᱟᱲᱤ	桑塔利语	Olck	0	IN		o	
+sau	sau	Saleman			Latn	0	ID		o	
+say	say	Saya			Latn	0	NG		o	
+sbn	sbn	Sindhi Bhil			Arab	1	PK		o	
+sc	srd	Sardinian	Sardu	萨丁语	Latn	0	IT		o	
+scl	scl	Shina			Arab	1	PK		o	
+scn	scn	Sicilian	Sicilianu	西西里语	Latn	0	IT		o	
+sd	snd	Sindhi	سنڌي	信德语	Arab	1	PK		ow	
+sei	sei	Seri			Latn	0	MX		o	
+shu	shu	Chadian Arabic		乍得阿拉伯语	Arab	1	TD		o	
+si	sin	Sinhala	සිංහල	僧伽罗语	Sinh	0	LK		ow	
+sip	sip	Sikkimese			Tibt	0	IN		o	
+siw	siw	Siwai			Latn	0	PG		o	
+sjr	sjr	Siar-Lak			Latn	0	PG		o	
+sk	slk	Slovak	Slovenčina	斯洛伐克语	Latn	0	SK		ow	
+skg	skg	Sakalava Malagasy			Latn	0	MG		o	
+skr	skr	Saraiki	سرائیکی	色莱基语	Arab	1	PK		o	
+sl	slv	Slovenian	Slovenščina	斯洛文尼亚语	Latn	0	SI		ow	
+sn	sna	Shona	ChiShona	绍纳语	Latn	0	ZW		ow	
+snc	snc	Sinaugoro			Latn	0	PG		o	
+snk	snk	Soninke		索宁克语	Latn	0	ML		o	
+so	som	Somali	Soomaali	索马里语	Latn	0	SO		ow	
+sol	sol	Solos			Latn	0	PG		o	
+sps	sps	Saposa			Latn	0	PG		o	
+sq	sqi	Albanian	Shqip	阿尔巴尼亚语	Latn	0	AL		ow	
+sr	srp	Serbian	Српски	塞尔维亚语	Cyrl	0	RS		ow	
+src	src	Logudorese Sardinian	Sardu		Latn	0	IT	sc	o	
+sro	sro	Campidanese Sardinian			Latn	0	IT		o	
+ssi	ssi	Sansi			Deva	0	IN		o	
+ste	ste	Liana-Seti			Latn	0	ID		o	
+su	sun	Sundanese	Basa Sunda	巽他语	Latn	0	ID		w	
+sua	sua	Sulka			Latn	0	PG		o	
+sv	swe	Swedish	Svenska	瑞典语	Latn	0	SE		ow	
+sva	sva	Svan			Geor	0	GE		o	
+sw	swa	Swahili	Kiswahili	斯瓦希里语	Latn	0	TZ		ow	
+szy	szy	Sakizaya			Latn	0	TW		o	
+ta	tam	Tamil	தமிழ்	泰米尔语	Taml	0	IN		ow	
+tan	tan	Tangale			Latn	0	NG		o	
+tar	tar	Central Tarahumara			Latn	0	MX		o	
+tay	tay	Atayal			Latn	0	TW		o	
+tbf	tbf	Mandara			Latn	0	PG		o	
+tcf	tcf	Malinaltepec Me'phaa			Latn	0	MX		o	
+tcy	tcy	Tulu			Knda	0	IN		o	
+tdn	tdn	Tondano			Latn	0	ID		o	
+tdx	tdx	Tandroy-Mahafaly Malagasy			Latn	0	MG		o	
+te	tel	Telugu	తెలుగు	泰卢固语	Telu	0	IN		ow	
+tg	tgk	Tajik	Тоҷикӣ	塔吉克语	Cyrl	0	TJ		ow	
+tgc	tgc	Tigak			Latn	0	PG		o	
+th	tha	Thai	ไทย	泰语	Thai	0	TH		ow	
+the	the	Chitwania Tharu			Deva	0	NP		o	
+thq	thq	Kochila Tharu			Deva	0	NP		o	
+thr	thr	Rana Tharu			Deva	0	NP		o	
+thv	thv	Tahaggart Tamahaq			Latn	0	DZ		o	
+ti	tir	Tigrinya	ትግርኛ	提格利尼亚语	Ethi	0	ET		o	
+tig	tig	Tigre		提格雷语	Ethi	0	ER		o	
+tio	tio	Teop			Latn	0	PG		o	
+tk	tuk	Turkmen	Türkmen dili	土库曼语	Latn	0	TM		ow	
+tkg	tkg	Tesaka Malagasy			Latn	0	MG		o	
+tkt	tkt	Kathoriya Tharu			Deva	0	NP		o	
+tli	tli	Tlingit		特林吉特语	Latn	0	US		o	
+tlp	tlp	Filomena Mata-Coahuitlán Totonac			Latn	0	MX		o	
+tn	tsn	Tswana	Setswana	茨瓦纳语	Latn	0	ZA		o	
+tok	tok	Toki Pona	Toki pona	道本语	Latn	0	001		o	
+tpl	tpl	Tlacoapa Me'phaa			Latn	0	MX		o	
+tpz	tpz	Tinputz			Latn	0	PG		o	
+tqp	tqp	Tomoip			Latn	0	PG		o	
+tr	tur	Turkish	Türkçe	土耳其语	Latn	0	TR		ow	
+trp	trp	Kok Borok			Latn	0	IN		o	
+trq	trq	San Martín Itunyoso Triqui			Latn	0	MX		o	
+trv	trv	Sediq	Patas Taroko	赛德克语	Latn	0	TW		o	
+trw	trw	Torwali	توروالی	托尔瓦利语	Arab	1	PK		o	
+tt	tat	Tatar	Татар	鞑靼语	Cyrl	0	RU		ow	
+ttj	ttj	Tooro			Latn	0	UG		o	
+ttr	ttr	Tera			Latn	0	NG		o	
+ttu	ttu	Torau			Latn	0	PG		o	
+tui	tui	Tupuri			Latn	0	CM		o	
+tul	tul	Tula			Latn	0	NG		o	
+tuq	tuq	Tedaga			Latn	0	TD		o	
+tuv	tuv	Turkana			Latn	0	KE		o	
+tuy	tuy	Tugen			Latn	0	KE		o	
+tvo	tvo	Tidore			Latn	0	ID		o	
+tvu	tvu	Tunen			Latn	0	CM		o	
+tw	twi	Twi	Akan	契维语	Latn	0	GH	ak	o	
+twu	twu	Termanu			Latn	0	ID		o	
+txs	txs	Tonsea			Latn	0	ID		o	
+txy	txy	Tanosy Malagasy			Latn	0	MG		o	
+udl	udl	Wuzlam			Latn	0	CM		o	
+ug	uig	Uighur	ئۇيغۇرچە	维吾尔语	Arab	1	CN		o	
+uk	ukr	Ukrainian	Українська	乌克兰语	Cyrl	0	UA		ow	
+uki	uki	Kui (India)			Orya	0	IN		o	
+umb	umb	Umbundu		翁本杜语	Latn	0	AO		o	
+ur	urd	Urdu	اردو	乌尔都语	Arab	1	PK		ow	
+ush	ush	Ushojo			Arab	1	PK		o	
+uz	uzb	Uzbek	O‘zbek	乌兹别克语	Latn	0	UZ		ow	
+uzn	uzn	Northern Uzbek	O‘zbek		Latn	0	UZ	uz	o	
+vai	vai	Vai	ꕙꔤ	瓦伊语	Vaii	0	LR		o	
+var	var	Huarijio			Latn	0	MX		o	
+ver	ver	Mom Jango			Latn	0	NG		o	
+vi	vie	Vietnamese	Tiếng Việt	越南语	Latn	0	VN		ow	
+vmc	vmc	Juxtlahuaca Mixtec			Latn	0	MX		o	
+vmj	vmj	Ixtayutla Mixtec			Latn	0	MX		o	
+vmm	vmm	Mitlatongo Mixtec			Latn	0	MX		o	
+vmp	vmp	Soyaltepec Mazatec			Latn	0	MX		o	
+vmz	vmz	Mazatlán Mazatec			Latn	0	MX		o	
+vot	vot	Votic		沃提克语	Latn	0	RU		o	
+vro	vro	Võro			Latn	0	EE		o	
+wbl	wbl	Wakhi			Latn	0	PK		o	
+wci	wci	Waci Gbe			Latn	0	TG		o	
+weo	weo	Wemale			Latn	0	ID		o	
+wes	wes	Cameroon Pidgin			Latn	0	CM		o	
+wja	wja	Waja			Latn	0	NG		o	
+wji	wji	Warji			Latn	0	NG		o	
+wo	wol	Wolof	Wolof	沃洛夫语	Latn	0	SN		o	
+wof	wof	Gambian Wolof			Latn	0	GM		o	
+xh	xho	Xhosa	IsiXhosa	科萨语	Latn	0	ZA		o	
+xhe	xhe	Khetrani			Arab	1	PK		o	
+xka	xka	Kalkoti			Arab	1	PK		o	
+xmf	xmf	Mingrelian			Geor	0	GE		o	
+xmv	xmv	Antankarana Malagasy			Latn	0	MG		o	
+xmw	xmw	Tsimihety Malagasy			Latn	0	MG		o	
+xpe	xpe	Liberia Kpelle	Kpɛlɛɛ		Latn	0	LR	kpe	o	
+xti	xti	Sinicahua Mixtec			Latn	0	MX		o	
+xtu	xtu	Cuyamecalco Mixtec			Latn	0	MX		o	
+yaq	yaq	Yaqui			Latn	0	MX		o	
+yav	yav	Yangben	Nuasue	洋卞语	Latn	0	CM		o	
+yay	yay	Agwagwune			Latn	0	NG		o	
+ydd	ydd	Eastern Yiddish	ייִדיש		Hebr	1	UA	yi	o	
+ydg	ydg	Yidgha			Arab	1	PK		o	
+yer	yer	Tarok			Latn	0	NG		o	
+yes	yes	Nyankpa			Latn	0	NG		o	
+yi	yid	Yiddish	ייִדיש	意第绪语	Hebr	1	UA		ow	
+yo	yor	Yoruba	Èdè Yorùbá	约鲁巴语	Latn	0	NG		ow	
+yue	yue	Cantonese	粵語	粤语	Hant	0	HK		ow	
+zga	zga	Kinga			Latn	0	TZ		o	
+zgh	zgh	Standard Moroccan Tamazight	ⵜⴰⵎⴰⵣⵉⵖⵜ	标准摩洛哥塔马塞特语	Tfng	0	MA		o	
+zh	cmn	Chinese	中文	中文	Hans	0	CN		ow	
+zoc	zoc	Copainalá Zoque			Latn	0	MX		o	
+zoh	zoh	Chimalapa Zoque			Latn	0	MX		o	
+zor	zor	Rayón Zoque			Latn	0	MX		o	
+zpv	zpv	Chichicapan Zapotec			Latn	0	MX		o	
+zpy	zpy	Mazaltepec Zapotec			Latn	0	MX		o	
+ztg	ztg	Xanaguía Zapotec			Latn	0	MX		o	
+ztn	ztn	Santa Catarina Albarradas Zapotec			Latn	0	MX		o	
+ztp	ztp	Loxicha Zapotec			Latn	0	MX		o	
+zts	zts	Tilquiapan Zapotec			Latn	0	MX		o	
+ztu	ztu	Güilá Zapotec			Latn	0	MX		o	
+zu	zul	Zulu	IsiZulu	祖鲁语	Latn	0	ZA		o	
+zza	zza	Zaza		扎扎语	Latn	0	TR		o	

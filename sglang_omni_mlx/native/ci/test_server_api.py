@@ -346,6 +346,7 @@ def test_unknown_model_kinds_are_rejected() -> None:
         ("--max-segment-seconds", "0.00001"),
         ("--decode-interval-ms", "0"),
         ("--first-decode-ms", "-1"),
+        ("--cache-limit-mb", "-2"),
     ],
 )
 def test_invalid_realtime_settings_fail_at_startup(flag: str, value: str) -> None:

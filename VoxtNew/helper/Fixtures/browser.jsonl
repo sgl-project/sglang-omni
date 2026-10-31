@@ -1,0 +1,14 @@
+{"to":"helper","msg":{"id":"c10","method":"browser.url","params":{"bundleId":"com.google.Chrome"}}}
+{"to":"app","msg":{"id":"c10","result":{"bundleId":"com.google.Chrome","url":"https://mail.google.com/mail/u/0/#inbox","via":"ax-document","ms":31.4}}}
+{"to":"helper","msg":{"id":"c11","method":"browser.url","params":{"pid":903}}}
+{"to":"app","msg":{"id":"c11","result":{"bundleId":"company.thebrowser.Browser","url":"https://linear.app/team/issue/AUR-12","via":"ax-focus","ms":12.6}}}
+{"to":"helper","msg":{"id":"c12","method":"browser.url"}}
+{"to":"app","msg":{"id":"c12","result":{"bundleId":"com.apple.Safari","url":"https://developer.apple.com/documentation/","via":"ax-weburl","ms":44.9}}}
+{"to":"helper","msg":{"id":"c13","method":"browser.url","params":{"bundleId":"com.apple.Safari"}}}
+{"to":"app","msg":{"id":"c13","result":{"bundleId":"com.apple.Safari","via":"none","ms":42.7,"error":"no AXDocument or web area URL (visited 27)"}}}
+{"to":"helper","msg":{"id":"c14","method":"browser.url","params":{"bundleId":"org.mozilla.firefox"}}}
+{"to":"app","msg":{"id":"c14","result":{"bundleId":"org.mozilla.firefox","via":"none","ms":0.2,"error":"org.mozilla.firefox is not running"}}}
+{"to":"helper","msg":{"id":"c15","method":"browser.url","params":{"pid":905}}}
+{"to":"app","msg":{"id":"c15","result":{"bundleId":"company.thebrowser.Browser","url":"https://github.com/sgl-project/sglang-omni","via":"ax-focus","ms":418.3,"retried":true}}}
+{"to":"helper","msg":{"id":"c16","method":"browser.url","params":{"pid":907}}}
+{"to":"app","msg":{"id":"c16","result":{"bundleId":"company.thebrowser.Browser","via":"none","ms":1290.4,"error":"no AXDocument or web area URL (visited 400)","retried":true}}}

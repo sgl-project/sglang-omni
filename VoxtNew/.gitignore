@@ -1,0 +1,30 @@
+/build/
+/.mygo/
+mygo_windows_*.syso
+.DS_Store
+
+# The family's cue sounds (scripts/sync-sounds.sh): React Bits Sound Lab's audio, never in
+# this public repository
+/resources/sounds/
+
+# Swift helper: build output, and the staged copy mygo ships
+/helper/.build/
+/helper/.swiftpm/
+/resources/darwin-arm64/helper/
+
+# The Omni runtime: its build tree is under build/; the staged copy mygo
+# ships, and the sources scripts/mac.sh syncs on the Mac
+/resources/darwin-arm64/omni/
+/.omni-native/
+
+# voxtnew-llm: build output, and the staged copy mygo ships
+/llm/.build/
+/llm/.swiftpm/
+/resources/darwin-arm64/llm/
+/VoxtNew
+
+# The repository's root .gitignore drops *.txt, *.wav and *.log for the
+# Python tree; here they are sources (templates, fixtures, allowlists).
+!*.txt
+!*.wav
+!*.log
