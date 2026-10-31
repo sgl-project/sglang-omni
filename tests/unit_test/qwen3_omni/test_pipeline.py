@@ -1220,10 +1220,12 @@ def test_qwen_encoder_mem_reserve_routes_as_scheduler_group_value() -> None:
 
 @pytest.mark.parametrize("speech_enabled", [False, True])
 @pytest.mark.parametrize("execution_mode", ["request", "session"])
+@pytest.mark.parametrize("enable_async_decode", [False, True])
 def test_qwen_thinker_cuda_graph_capture_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
     speech_enabled: bool,
     execution_mode: str,
+    enable_async_decode: bool,
 ) -> None:
     from sglang.srt.arg_groups import model_override_base
     from sglang.srt.utils import hf_transformers_utils
@@ -1380,11 +1382,16 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     )
     monkeypatch.setattr(bootstrap, "QwenThinkerSessionAdapter", session_adapter)
     scheduler = bootstrap.create_thinker_scheduler(
-        server_args, speech_enabled=speech_enabled, execution_mode=execution_mode
+        server_args,
+        speech_enabled=speech_enabled,
+        execution_mode=execution_mode,
+        enable_async_decode=enable_async_decode,
     )
 
     is_capturing = speech_enabled and execution_mode == "request"
     assert infrastructure_saw_graph_disabled == [False]
+    assert infrastructure_kwargs[0]["enable_async_decode"] is enable_async_decode
+    assert scheduler.enable_async_decode is enable_async_decode
     assert infrastructure_kwargs[0]["defer_cuda_graph_capture"] is is_capturing
     assert infrastructure_saw_return_hidden == [is_capturing]
     assert graph_init_workers == (
@@ -1418,7 +1425,6 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
             [] if speech_enabled else [(model_worker, output_proc, False)]
         )
         assert getattr(scheduler, "session_adapter", None) is None
-        assert scheduler.enable_async_decode is True
     else:
         assert generic_runner_calls == qwen_runner_calls == []
         session_runner.assert_called_once_with(
