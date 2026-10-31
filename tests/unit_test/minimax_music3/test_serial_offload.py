@@ -41,17 +41,17 @@ from sglang_omni.models.minimax_music3.scheduler import MiniMaxMusic3Scheduler
 from sglang_omni.models.minimax_music3.serial_offload import (
     STALL_REPORT_SECONDS,
     SerialOffloadCoordinator,
-    StageResidency,
     get_coordinator,
 )
-from sglang_omni.models.minimax_music3.weight_cache import (
+from sglang_omni.scheduling.generation_batch_policy import (
+    build_generation_batch_overrides,
+)
+from sglang_omni.scheduling.stage_residency import StageResidency
+from sglang_omni.scheduling.weight_cache import (
     CHUNK_BYTES,
     SHARD_BYTES,
     RuntimeWeights,
     StagingRing,
-)
-from sglang_omni.scheduling.generation_batch_policy import (
-    build_generation_batch_overrides,
 )
 
 
@@ -625,7 +625,7 @@ def test_insufficient_cache_disk_space_has_no_ram_fallback(
 ) -> None:
     disk_usage = shutil.disk_usage(tmp_path)
     monkeypatch.setattr(
-        "sglang_omni.models.minimax_music3.weight_cache.shutil.disk_usage",
+        "sglang_omni.scheduling.weight_cache.shutil.disk_usage",
         lambda directory: type(disk_usage)(disk_usage.total, disk_usage.used, 0),
     )
     with pytest.raises(OSError, match="Insufficient disk space"):
@@ -669,12 +669,8 @@ def test_stale_cache_publication_is_cleaned_under_lock(tmp_path: Path) -> None:
 def test_staging_ring_waits_before_reusing_buffers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        "sglang_omni.models.minimax_music3.weight_cache.SHARD_BYTES", 1024
-    )
-    monkeypatch.setattr(
-        "sglang_omni.models.minimax_music3.weight_cache.CHUNK_BYTES", 1024
-    )
+    monkeypatch.setattr("sglang_omni.scheduling.weight_cache.SHARD_BYTES", 1024)
+    monkeypatch.setattr("sglang_omni.scheduling.weight_cache.CHUNK_BYTES", 1024)
     device = torch.device("cuda:0")
     module = torch.nn.Linear(64, 64).to(device)
     expected = module.weight.detach().clone()
@@ -722,9 +718,7 @@ def test_cache_publication_serializes_concurrent_creators(tmp_path: Path) -> Non
 def test_large_storage_uses_bounded_shards_and_restores_every_byte(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(
-        "sglang_omni.models.minimax_music3.weight_cache.CHUNK_BYTES", 1024
-    )
+    monkeypatch.setattr("sglang_omni.scheduling.weight_cache.CHUNK_BYTES", 1024)
     module = torch.nn.Linear(64, 64)
     expected = module.weight.detach().clone()
     weights = RuntimeWeights(

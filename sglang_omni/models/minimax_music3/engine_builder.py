@@ -18,7 +18,6 @@ from sglang_omni.models.minimax_music3.serial_offload import (
     get_coordinator,
     torch_memory_saver,
 )
-from sglang_omni.models.minimax_music3.weight_cache import checkpoint_identity
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.engine_factory import (
     GenerationDefaults,
@@ -27,6 +26,7 @@ from sglang_omni.scheduling.engine_factory import (
 )
 from sglang_omni.scheduling.generation_batch_policy import build_default_cuda_graph_bs
 from sglang_omni.scheduling.types import DeferredAdmission
+from sglang_omni.scheduling.weight_cache import checkpoint_identity
 
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
