@@ -139,6 +139,21 @@ jobs:
           else
             :
           fi
+          # MOSS-TTS-Local's two checkpoints take 18 GB once fetched.
+          moss_cached_gb=0
+          for moss_cache in "$VOXT_CI_ROOT/data/models/OpenMOSS-Team_MOSS-TTS-Local-Transformer-v1.5" \
+            "$VOXT_CI_ROOT/data/models/OpenMOSS-Team_MOSS-Audio-Tokenizer-v2"; do
+            if [ -d "$moss_cache" ]; then
+              moss_cached_gb=$((moss_cached_gb + $(du -sk "$moss_cache" | awk '{print int($1 / 1048576)}')))
+            else
+              :
+            fi
+          done
+          if [ "$moss_cached_gb" -lt 18 ]; then
+            required_gb=$((required_gb + 18 - moss_cached_gb))
+          else
+            :
+          fi
           if [ "$free_gb" -lt "$required_gb" ]; then
             echo "::error::Only ${free_gb} GB free on the runner; this run needs at least ${required_gb} GB."
             exit 1
@@ -253,7 +268,7 @@ jobs:
           CI_DATA_ROOT: ${{ env.VOXT_CI_ROOT }}/data
         run: |
           "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_model_servers.py \
-            sglang_omni_mlx/native/ci/test_voxtral_tts_api.py -k 'not music3'
+            sglang_omni_mlx/native/ci/test_voxtral_tts_api.py sglang_omni_mlx/native/ci/test_moss_tts_local_api.py -k 'not music3'
 
       - name: Archive tested native runtime
         if: success()

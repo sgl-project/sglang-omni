@@ -129,6 +129,25 @@
       "voice_embedding/pt_male.safetensors": "4ccd63a39d35f483c89485112d35a8a2121cbb0e6d5d124e403e40d03e0c0e82"
     }
   },
+  "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5": {
+    "revision": "be7766a6735b98bd793f7c79fb720b4d0f5d13b8",
+    "files": {
+      "config.json": "826f81f163b1b557ad13f83c4f35008f4fee5a6cb6311b4316ff3dbb25149411",
+      "merges.txt": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+      "model.safetensors": "608f1ff64bc6caa9be836060fc7c78a15c4658c4a07b8d73c78d6f70d1b39c23",
+      "tokenizer_config.json": "ec2869dd4c9c7155b3460c291a6fb2b955e5068013ba7efbcaafd1c61e02abce",
+      "vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+    }
+  },
+  "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2": {
+    "revision": "f6e20e543b33d2c252a7ef71bdf8aa71e5ff9169",
+    "files": {
+      "config.json": "aeb9a0e9d88c74bf9fbaa81ee54443d463e09b5f335b3306bb798e282a10e564",
+      "model-00001-of-00003.safetensors": "2d9f9182f17b143a23937feb87c63c08221bd28e685e4bc2fa55dcdce17fcde7",
+      "model-00002-of-00003.safetensors": "d4e48106d0254fe3b00ea0707e88fc6aee076993825e108dd9cef847f9db236e",
+      "model-00003-of-00003.safetensors": "d0449fe1b0ef1f6045946867148d8166b9a91a58d0feca4a18b641494d0b22da"
+    }
+  },
   "mlx-community/MiniMax-Music3-mxfp8": {
     "revision": "d00a12c3c7f80eb66379dd02dd0f30ed0ce2d96e",
     "files": {
