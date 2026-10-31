@@ -307,6 +307,50 @@ def test_realtime_manual_session(server: Server) -> None:
     assert indexes == sorted(indexes)
 
 
+@pytest.mark.parametrize("end_seconds", [32, 40])
+def test_realtime_loop_does_not_grow(server: Server, end_seconds: int) -> None:
+    """A preview decode that falls into a token loop no longer seeds every later decode of its segment."""
+    # Note (Mei Li): the model repeats 我覺得 on the first 1.1 s of this audio;
+    # the short turn ends one decode after the loop starts.
+    pcm = pcm16("0366_zh_long")[30 * 32000 : end_seconds * 32000]
+    with connect(f"ws://127.0.0.1:{server.port}/v1/realtime") as socket:
+        socket.send(
+            json.dumps(
+                {
+                    "type": "session.update",
+                    "session": {"turn_detection": None, "language": "zh"},
+                }
+            )
+        )
+        assert json.loads(socket.recv())["type"] == "transcription_session.updated"
+        # Note (Mei Li): real-time pacing gives the preview decodes a live stream gets.
+        start = time.monotonic()
+        for index, offset in enumerate(range(0, len(pcm), 3200)):
+            time.sleep(max(0.0, start + index * 0.1 - time.monotonic()))
+            socket.send(
+                json.dumps(
+                    {
+                        "type": "input_audio_buffer.append",
+                        "audio": base64.b64encode(pcm[offset : offset + 3200]).decode(),
+                    }
+                )
+            )
+        socket.send(json.dumps({"type": "input_audio_buffer.commit"}))
+        socket.send(json.dumps({"type": "transcription.done"}))
+        events = []
+        while not events or events[-1]["type"] != "transcription.completed":
+            events.append(json.loads(socket.recv()))
+    previews = [
+        event
+        for event in events
+        if event["type"] == "transcription.segment" and not event["is_final"]
+    ]
+    assert len(previews) >= 2, "the preview decodes before the loop did not run"
+    final_text = events[-1]["text"]
+    assert final_text
+    assert "我覺得" * 3 not in final_text
+
+
 def test_end_of_stdin_stops_the_server() -> None:
     running = Server()
     running.process.stdin.close()
