@@ -510,11 +510,11 @@ class OmniScheduler(Generic[RequestDataT]):
         self.max_running_requests = mr.max_running_requests
         self.max_queued_requests = server_args.max_queued_requests
         effective_max_total_num_tokens = mr.effective_max_total_num_tokens
-        self.max_req_len = min(
-            model_config.context_len - 1,
-            effective_max_total_num_tokens - 1,
+        self.max_req_len, self.max_req_input_len = ModelWorker.request_length_limits(
+            model_config.context_len,
+            effective_max_total_num_tokens,
+            self.page_size,
         )
-        self.max_req_input_len = self.max_req_len - 1
         self.random_seed = tp_worker.random_seed
         self.device = tp_worker.device
         self.is_hybrid_swa = mr.is_hybrid_swa

@@ -282,18 +282,27 @@ class ModelWorker:
             self.model_runner.token_to_kv_pool_allocator,
         )
 
+    @staticmethod
+    def request_length_limits(
+        context_length: int, kv_capacity_tokens: int, page_size: int
+    ) -> tuple[int, int]:
+        """Return (max_req_len, max_req_input_len) for the request intake checks."""
+        # note (apex-mochen): admission rounds a prompt up to whole pages and keeps one more page free, so a one-token KV margin queues prompts that no prefill can schedule.
+        max_req_len = min(context_length - 1, kv_capacity_tokens - page_size)
+        return max_req_len, max_req_len - 1
+
     def get_worker_info(self):
         max_total_num_tokens = self.model_runner.max_total_num_tokens
         effective_max_total_num_tokens = (
             self.model_runner.effective_max_total_num_tokens
         )
-        max_req_len = min(
-            self.model_config.context_len - 1,
-            effective_max_total_num_tokens - 1,
-        )
-        max_req_input_len = max_req_len - 1
         req_pool = self.model_runner.req_to_token_pool
         kv_pool = self.model_runner.token_to_kv_pool_allocator
+        max_req_len, max_req_input_len = self.request_length_limits(
+            self.model_config.context_len,
+            effective_max_total_num_tokens,
+            kv_pool.page_size,
+        )
         max_running_requests = self.model_runner.max_running_requests
         return (
             max_total_num_tokens,
