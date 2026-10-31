@@ -49,7 +49,7 @@ class ConvForward(Protocol):
 
 
 def integer_padding_forward(conv: MimiConv1d) -> ConvForward:
-    """The causal conv's forward with its padding as Python integers."""
+    """The causal conv's forward with Mimi's padding arithmetic on Python integers."""
     stride = int(conv.conv.stride[0])
     kernel_size = (int(conv.conv.kernel_size[0]) - 1) * int(conv.conv.dilation[0]) + 1
     padding_left = kernel_size - stride
@@ -57,8 +57,10 @@ def integer_padding_forward(conv: MimiConv1d) -> ConvForward:
     def forward(
         hidden_states: torch.Tensor, padding_cache: None = None
     ) -> torch.Tensor:
-        # note (ratish): Mimi pads the right edge up to whole strides, and torch copies the input even for zero widths.
-        padding_right = -hidden_states.shape[-1] % stride
+        # note (ratish): Mimi's ceil division, not -length % stride, which on a symbolic length took Inductor 82 s instead of 8 s to build the encode; torch copies the input even for zero widths.
+        length = hidden_states.shape[-1]
+        frames = -(-(length - kernel_size + padding_left) // stride)
+        padding_right = frames * stride + kernel_size - padding_left - length
         if padding_left or padding_right:
             hidden_states = F.pad(
                 hidden_states, (padding_left, padding_right), mode=conv.pad_mode
