@@ -141,6 +141,10 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 60
     steps:
+      - name: Show the runner and its chip
+        run: |
+          echo "${RUNNER_NAME}: $(sysctl -n machdep.cpu.brand_string)" | tee -a "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -229,6 +233,10 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJson(needs.preflight.outputs.model_matrix) }}
     steps:
+      - name: Show the runner and its chip
+        run: |
+          echo "${RUNNER_NAME}: $(sysctl -n machdep.cpu.brand_string)" | tee -a "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -306,6 +314,10 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 60
     steps:
+      - name: Show the runner and its chip
+        run: |
+          echo "${RUNNER_NAME}: $(sysctl -n machdep.cpu.brand_string)" | tee -a "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -408,6 +420,10 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 60
     steps:
+      - name: Show the runner and its chip
+        run: |
+          echo "${RUNNER_NAME}: $(sysctl -n machdep.cpu.brand_string)" | tee -a "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
