@@ -173,13 +173,12 @@ def test_backbone_config_selects_only_windowed_layers() -> None:
 
 
 @pytest.mark.parametrize(
-    "is_cuda_host,device,page_size,disable_radix_cache",
+    "is_cuda_host,device,page_size",
     [
-        (True, "cuda", 1, True),
-        (True, "cpu", 1, True),
-        (True, "cuda", 64, True),
-        (False, "cpu", 1, True),
-        (True, "cuda", 1, False),
+        (True, "cuda", 1),
+        (True, "cpu", 1),
+        (True, "cuda", 64),
+        (False, "cpu", 1),
     ],
 )
 def test_window_kv_uses_resolved_device_and_cache_settings(
@@ -187,7 +186,6 @@ def test_window_kv_uses_resolved_device_and_cache_settings(
     is_cuda_host: bool,
     device: Literal["cuda", "cpu"],
     page_size: int,
-    disable_radix_cache: bool,
 ) -> None:
     raw_server_args = SimpleNamespace(device="cuda", page_size=128)
     declarations: list[tuple[str, bool]] = []
@@ -200,9 +198,7 @@ def test_window_kv_uses_resolved_device_and_cache_settings(
 
     def resolved_configuration(server_args: SimpleNamespace) -> SimpleNamespace:
         assert server_args is raw_server_args
-        return SimpleNamespace(
-            device=device, page_size=page_size, disable_radix_cache=disable_radix_cache
-        )
+        return SimpleNamespace(device=device, page_size=page_size)
 
     platform = CUDAOmniPlatform() if is_cuda_host else CPUOmniPlatform()
     module = "sglang_omni.models.personaplex.engine_builder"
@@ -217,7 +213,7 @@ def test_window_kv_uses_resolved_device_and_cache_settings(
         depformer_cuda_graph_batch_sizes=[],
         depformer_cuda_graph_sampling=DEFAULT_DEPFORMER_SAMPLING,
     ).customize_server_args(raw_server_args)
-    if is_cuda_host and device == "cuda" and page_size == 1 and disable_radix_cache:
+    if is_cuda_host and device == "cuda" and page_size == 1:
         assert declarations == []
     else:
         assert declarations == [("sglang_omni.personaplex.window_kv", True)]
@@ -254,3 +250,17 @@ def test_depformer_cuda_graph_buckets_accept_dotted_cli(batch_sizes: list[int]) 
         ]
         == batch_sizes
     )
+
+
+def test_radix_caching_is_refused_at_startup() -> None:
+    """With radix caching on, a request could reuse another voice's prompt KV."""
+    builder = PersonaPlexEngineBuilder(
+        enable_async_decode=False,
+        depformer_cuda_graph_batch_sizes=[],
+        depformer_cuda_graph_sampling=DEFAULT_DEPFORMER_SAMPLING,
+    )
+    with pytest.raises(ValueError, match="disable_radix_cache=True"):
+        builder.validate_before_infrastructure(
+            SimpleNamespace(disable_radix_cache=False)
+        )
+    builder.validate_before_infrastructure(SimpleNamespace(disable_radix_cache=True))
