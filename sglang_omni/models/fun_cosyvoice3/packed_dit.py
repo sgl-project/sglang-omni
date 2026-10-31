@@ -512,6 +512,24 @@ class PackedDiT:
                 self.fp8_out_scales.append(
                     torch.nn.Parameter(out_scale, requires_grad=False)
                 )
+        # note (emre): the kernel compiles on its first call, so it must not be a request.
+        block = self.dit.transformer_blocks[0]
+        ff_in = block.ff.ff[0][0]
+        with torch.no_grad():
+            self.fp8_feed_forward(
+                torch.zeros(
+                    (1, fp8_feed_forward.FP8_MIN_ROWS, ff_in.weight.shape[1]),
+                    device=device,
+                    dtype=torch.bfloat16,
+                ),
+                ff_in.weight,
+                ff_in.bias,
+                block.ff.ff[2].weight,
+                self.fp8_out_weights[0],
+                block.ff.ff[2].bias,
+                self.fp8_out_scales[0],
+                self.fp8_gelu_scale,
+            )
         self.use_fp8_feed_forward = True
         logger.info("Fun-CosyVoice3 DiT feed forward runs in FP8")
 
