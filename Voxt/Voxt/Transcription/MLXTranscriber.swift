@@ -17,6 +17,7 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
 
     var onTranscriptionFinished: ((String) -> Void)?
     var onPartialTranscription: ((String) -> Void)?
+    var onRuntimeFailure: ((String) -> Void)?
     var dictionaryEntryProvider: (() -> [DictionaryEntry])?
 
     private let audioEngine = AVAudioEngine()
@@ -34,6 +35,10 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
 
     /// Requests stop if off-main AVAudioEngine.start() stalls; completion still waits for native return.
     private static let captureStartTimeoutSeconds: Double = 6
+    private static let nativeLiveRetryDelay: Duration = .milliseconds(250)
+    /// Audio fed to a live session per poll, so a session installed late (after a retry or a slow
+    /// load) catches up on the whole recording without exceeding the session's 30 s queue.
+    static let nativeLiveFeedBatchSeconds: Double = 2
 
     private let correctionPollInterval: Duration = .milliseconds(600)
     private let quickPassMinimumDurationSeconds: Double = 14.0
@@ -62,9 +67,14 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
     private var latestNativeLivePreviewText = ""
     private var latestNativeLiveEndedText = ""
     private var latestNativeLiveEndedSegments: [MLXStructuredTranscriptSegment] = []
+    /// The preview a retried session replaced; it stays the fallback until the new preview is longer.
+    private var nativeLivePreviewBeforeReplay = ""
+    /// Set when Stop is pressed, before the voice activity flush lets capture actually stop.
+    private var isStopRequested = false
     private var nativeQwenLiveUsesAutomaticLanguageProtocol = false
     var sessionAllowsRealtimeTextDisplay = true
     private var didRetryCaptureStartup = false
+    private var didRetryNativeLiveSession = false
     private var activeCaptureUsesPreferredInputDevice = false
     private var loggedSampleExtractionFailure = false
     private var activeSessionBehavior = MLXModelManager.transcriptionBehavior(
@@ -105,6 +115,11 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
 
     func discardCompletedAudioArchive() {
         removeCompletedAudioArchiveIfNeeded()
+    }
+
+    /// Stops live retries and failure reports as soon as Stop is pressed; capture keeps running until stopRecording().
+    func noteStopRequested() {
+        isStopRequested = true
     }
 
     func consumePendingRuntimeFailureMessage() -> String? {
@@ -309,6 +324,7 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
         isFinalizingTranscription = false
         onTranscriptionFinished = nil
         onPartialTranscription = nil
+        onRuntimeFailure = nil
     }
 
     /// Releases the reusable capture runtime after the model-level idle timeout has elapsed.
@@ -338,6 +354,7 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
         isEnhancing = false
         onTranscriptionFinished = nil
         onPartialTranscription = nil
+        onRuntimeFailure = nil
         dictionaryEntryProvider = nil
         return true
     }
@@ -516,20 +533,13 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
             // Fallback keeps history available if the overlapped export failed.
             stageCompletedAudioArchive(samples: fullSnapshot, sampleRate: sampleRate)
         }
-        let fallbackText: String
-        if !latestNativeLiveEndedSegments.isEmpty {
-            // Prefer reliable timed segments captured at live `.ended` when post-stop
-            // correction is empty or unavailable (for example Nemotron sentence timing).
-            fallbackText = latestNativeLiveEndedSegments
-                .map(\.text)
-                .joined(separator: " ")
-        } else if !latestNativeLiveEndedText.isEmpty {
-            fallbackText = latestNativeLiveEndedText
-        } else if !latestNativeLivePreviewText.isEmpty {
-            fallbackText = latestNativeLivePreviewText
-        } else {
-            fallbackText = transcribedText
-        }
+        let fallbackText = MLXTranscriptionPlanning.nativeLiveFallbackText(
+            endedSegmentTexts: latestNativeLiveEndedSegments.map(\.text),
+            endedText: latestNativeLiveEndedText,
+            previewText: latestNativeLivePreviewText,
+            previewBeforeReplay: nativeLivePreviewBeforeReplay,
+            transcribedText: transcribedText
+        )
         let resolved = normalizeText(finalResult.text ?? quickResult.text ?? fallbackText)
         if resolved.isEmpty, let error = finalResult.error ?? quickResult.error {
             let failureMessage = runtimeFailureMessage(for: error)
@@ -571,6 +581,7 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
         isModelInitializing = false
         onTranscriptionFinished = nil
         onPartialTranscription = nil
+        onRuntimeFailure = nil
         dictionaryEntryProvider = nil
         unpinModelForSessionIfNeeded()
     }
@@ -711,6 +722,7 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
         isModelInitializing = false
         isFinalizingTranscription = false
         didRetryCaptureStartup = false
+        didRetryNativeLiveSession = false
         activeCaptureUsesPreferredInputDevice = preferredInputDeviceID != nil
         stableCommittedText = ""
         lastCandidateText = ""
@@ -724,6 +736,8 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
         latestNativeLivePreviewText = ""
         latestNativeLiveEndedText = ""
         latestNativeLiveEndedSegments = []
+        nativeLivePreviewBeforeReplay = ""
+        isStopRequested = false
         nativeQwenLiveUsesAutomaticLanguageProtocol = false
     }
 
@@ -958,24 +972,47 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
             manager.beginActiveUse()
             var transferredModelUse = false
             defer { if !transferredModelUse { manager.endActiveUse() } }
-            do {
-                let loaded = try await manager.loadModel()
-                guard !Task.isCancelled, revision == self.sessionRevision,
-                      self.isRecording, self.activeLiveMode == expectedMode else { return }
-                let releaseModel: @MainActor () -> Void = { manager.endActiveUse() }
-                guard try await self.installOmniLiveSession(
-                    runtime: loaded.requireOmniRuntime(),
-                    mode: expectedMode,
-                    revision: revision,
-                    releaseModel: releaseModel
-                ) else { return }
-                transferredModelUse = true
-                self.isModelInitializing = false
-                VoxtLog.asr("Omni live session ready. repo=\(manager.currentModelRepo), mode=\(String(describing: expectedMode)), elapsedMs=\(Int(Date().timeIntervalSince(startedAt) * 1000))", verbose: true)
-            } catch {
+            while true {
                 guard !Task.isCancelled, revision == self.sessionRevision else { return }
-                self.isModelInitializing = false
-                VoxtLog.asrWarning("MLX native live setup failed. repo=\(manager.currentModelRepo), mode=\(String(describing: expectedMode)), error=\(error.localizedDescription)")
+                // Also stops a retry whose delay or queued start outlived a Stop press.
+                guard self.isRecording, !self.isStopRequested, self.activeLiveMode == expectedMode else {
+                    self.isModelInitializing = false
+                    return
+                }
+                do {
+                    let loaded = try await manager.loadModel()
+                    guard !Task.isCancelled, revision == self.sessionRevision else { return }
+                    guard self.isRecording, !self.isStopRequested, self.activeLiveMode == expectedMode else {
+                        self.isModelInitializing = false
+                        return
+                    }
+                    let releaseModel: @MainActor () -> Void = { manager.endActiveUse() }
+                    guard try await self.installOmniLiveSession(
+                        runtime: loaded.requireOmniRuntime(),
+                        mode: expectedMode,
+                        revision: revision,
+                        releaseModel: releaseModel
+                    ) else { return }
+                    transferredModelUse = true
+                    self.isModelInitializing = false
+                    VoxtLog.asr("Omni live session ready. repo=\(manager.currentModelRepo), mode=\(String(describing: expectedMode)), elapsedMs=\(Int(Date().timeIntervalSince(startedAt) * 1000))", verbose: true)
+                    return
+                } catch {
+                    guard !Task.isCancelled, revision == self.sessionRevision else { return }
+                    guard self.isRecording, !self.isStopRequested, self.activeLiveMode == expectedMode else {
+                        self.isModelInitializing = false
+                        return
+                    }
+                    if self.didRetryNativeLiveSession {
+                        VoxtLog.asrWarning("MLX native live setup failed. repo=\(manager.currentModelRepo), mode=\(String(describing: expectedMode)), error=\(error.localizedDescription)")
+                        self.reportNativeLiveFailure(error.localizedDescription)
+                        return
+                    } else {
+                        self.didRetryNativeLiveSession = true
+                        VoxtLog.asrWarning("MLX native live setup failed; retrying once. repo=\(manager.currentModelRepo), error=\(error.localizedDescription)")
+                        do { try await Task.sleep(for: Self.nativeLiveRetryDelay) } catch { return }
+                    }
+                }
             }
         }
     }
@@ -992,7 +1029,7 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
         case .nativeQwenLive:
             let language = resolvedNativeQwenLiveLanguage()
             session = try await OmniNativeStreamingSession.qwen(runtime: runtime, language: language)
-            guard revision == sessionRevision, isRecording, activeLiveMode == mode else {
+            guard revision == sessionRevision, isRecording, !isStopRequested, activeLiveMode == mode else {
                 session.cancel()
                 return false
             }
@@ -1000,7 +1037,7 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
             nativeQwenLiveUsesAutomaticLanguageProtocol = language == nil
         case .nativeNemotronLive where runtime.kind == .nemotronASR:
             session = try await makeOmniNemotronLiveSession(runtime: runtime)
-            guard revision == sessionRevision, isRecording, activeLiveMode == mode else {
+            guard revision == sessionRevision, isRecording, !isStopRequested, activeLiveMode == mode else {
                 session.cancel()
                 return false
             }
@@ -1008,7 +1045,7 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
         case .nativeStreamingLive where runtime.kind == .mossTranscribeDiarize:
             let prompt = resolvedInferenceConfiguration(for: .intermediate).mossPrompt
             session = try await OmniNativeStreamingSession.moss(runtime: runtime, prompt: prompt)
-            guard revision == sessionRevision, isRecording, activeLiveMode == mode else {
+            guard revision == sessionRevision, isRecording, !isStopRequested, activeLiveMode == mode else {
                 session.cancel()
                 return false
             }
@@ -1041,6 +1078,9 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
     ) {
         qwenFeedCursor = 0
         qwenVoiceActivityFeedCursor = 0
+        if !latestNativeLivePreviewText.isEmpty {
+            nativeLivePreviewBeforeReplay = latestNativeLivePreviewText
+        }
         latestNativeLiveConfirmedText = ""
         latestNativeLivePreviewText = ""
         latestNativeLiveEndedText = ""
@@ -1051,7 +1091,9 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
         nativeLiveRuntime.install(
             session,
             pollInterval: qwenLiveFeedPollInterval,
-            nextSamples: { [weak self] in self?.drainPendingSamplesForQwenLiveFeed(revision: revision) ?? [] },
+            nextSamples: { [weak self] queueCapacitySamples in
+                self?.drainPendingSamplesForQwenLiveFeed(revision: revision, queueCapacitySamples: queueCapacitySamples) ?? []
+            },
             shouldContinue: { [weak self] in self?.shouldContinueQwenLiveFeed(revision: revision) ?? false },
             onEvent: { [weak self] in self?.handleNativeLiveEvent($0, revision: revision) },
             releaseModel: releaseModel
@@ -1075,12 +1117,12 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
         return "auto"
     }
 
-    private func drainPendingSamplesForQwenLiveFeed(revision: Int) -> [Float] {
+    private func drainPendingSamplesForQwenLiveFeed(revision: Int, queueCapacitySamples: Int) -> [Float] {
         guard revision == sessionRevision,
               isRecording,
               MLXTranscriptionPlanning.isNativeLiveMode(activeLiveMode)
         else { return [] }
-        let pendingSamples = pendingSamplesForNativeLiveFeed()
+        let pendingSamples = pendingSamplesForNativeLiveFeed(queueCapacitySamples: queueCapacitySamples)
         guard !pendingSamples.isEmpty else { return [] }
 
         do {
@@ -1100,7 +1142,7 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
 
     private func drainPendingSamplesIntoQwenLiveSession() {
         guard let session = nativeLiveRuntime.session else { return }
-        let pendingSamples = pendingSamplesForNativeLiveFeed()
+        let pendingSamples = pendingSamplesForNativeLiveFeed(queueCapacitySamples: session.queueCapacitySamples)
         guard !pendingSamples.isEmpty else { return }
 
         do {
@@ -1113,19 +1155,25 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
         }
     }
 
-    private func pendingSamplesForNativeLiveFeed() -> [Float] {
+    /// The cursor advances only past audio the session can queue now; the rest waits for the next poll.
+    private func pendingSamplesForNativeLiveFeed(queueCapacitySamples: Int) -> [Float] {
+        let capacityInputSamples = Double(queueCapacitySamples) * inputSampleRate / Double(targetSampleRate)
+        let maximumSampleCount = Int(min(Self.nativeLiveFeedBatchSeconds * inputSampleRate, capacityInputSamples.rounded(.down)))
         let voiceActivityState = voiceActivityFilteredSampleStore.voiceActivityState()
         if voiceActivityState.enabled {
             guard voiceActivityState.observedFrames,
                   voiceActivityState.observedSpeech
             else { return [] }
 
-            let pending = voiceActivityFilteredSampleStore.samples(from: qwenVoiceActivityFeedCursor)
+            let pending = voiceActivityFilteredSampleStore.samples(
+                from: qwenVoiceActivityFeedCursor,
+                maximumCount: maximumSampleCount
+            )
             qwenVoiceActivityFeedCursor = pending.nextIndex
             return pending.samples
         }
 
-        let pending = sampleStore.samples(from: qwenFeedCursor)
+        let pending = sampleStore.samples(from: qwenFeedCursor, maximumCount: maximumSampleCount)
         qwenFeedCursor = pending.nextIndex
         return pending.samples
     }
@@ -1189,12 +1237,30 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
                 publishPartial(normalized)
             }
         case .failed(let failure):
-            pendingRuntimeFailureMessage = failure.localizedDescription
-            VoxtLog.asrError(
-                "MLX native streaming session failed. repo=\(modelManager.currentModelRepo), error=\(failure.localizedDescription)"
-            )
-            releaseNativeLiveSession(cancelSession: false)
+            releaseNativeLiveSession(cancelSession: true)
+            if !isRecording || isStopRequested {
+                // The stop-time Final pass is authoritative once recording ends; a late stream error is not the user's concern.
+                VoxtLog.asrWarning("MLX native streaming session failed after recording stopped. repo=\(modelManager.currentModelRepo), error=\(failure.localizedDescription)")
+            } else if !didRetryNativeLiveSession {
+                didRetryNativeLiveSession = true
+                isModelInitializing = true
+                VoxtLog.asrWarning("MLX native streaming session failed; retrying once. repo=\(modelManager.currentModelRepo), error=\(failure.localizedDescription)")
+                startNativeLiveSession(revision: revision)
+            } else {
+                VoxtLog.asrError(
+                    "MLX native streaming session failed. repo=\(modelManager.currentModelRepo), error=\(failure.localizedDescription)"
+                )
+                reportNativeLiveFailure(failure.localizedDescription)
+            }
         }
+    }
+
+    /// Keeps the failure for finalization and tells the recording overlay; capture keeps
+    /// running so the stop-time Final pass still sees the whole recording.
+    private func reportNativeLiveFailure(_ message: String) {
+        isModelInitializing = false
+        pendingRuntimeFailureMessage = message
+        onRuntimeFailure?(AppLocalization.localizedString("Live transcription failed. Stop recording and try again."))
     }
 
     private func startEarlyModelPrewarmIfNeeded() {

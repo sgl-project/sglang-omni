@@ -26,6 +26,29 @@ enum MLXTranscriptionPlanning {
         return vadPolicy.allowsExternalFinalSpeechTrim
     }
 
+    /// Text delivered when neither offline pass produced a transcript.
+    nonisolated static func nativeLiveFallbackText(
+        endedSegmentTexts: [String],
+        endedText: String,
+        previewText: String,
+        previewBeforeReplay: String,
+        transcribedText: String
+    ) -> String {
+        let liveText: String
+        if !endedSegmentTexts.isEmpty {
+            // Timed segments from the live end are the most reliable, for example Nemotron sentence timing.
+            liveText = endedSegmentTexts.joined(separator: " ")
+        } else if !endedText.isEmpty {
+            liveText = endedText
+        } else if !previewText.isEmpty {
+            liveText = previewText
+        } else {
+            liveText = transcribedText
+        }
+        // A retried session restarts from the beginning; until it passes the old preview it knows only the start.
+        return previewBeforeReplay.count > liveText.count ? previewBeforeReplay : liveText
+    }
+
     nonisolated static func finalizationSamples(
         fullSamples: [Float],
         voiceActivityFilteredSamples: [Float],

@@ -432,9 +432,11 @@ jobs:
             -only-testing:VoxtTests/OmniFailurePathTests \
             -only-testing:VoxtTests/MLXModelManagerLifecycleTests \
             -only-testing:VoxtTests/MLXNativeLiveRuntimeTests \
+            -only-testing:VoxtTests/MLXTranscriptionPlanningTests \
             -only-testing:VoxtTests/HotkeyEventTapInstallationTests \
             -only-testing:VoxtTests/HotkeyManagerTests \
             -only-testing:VoxtTests/RecordingSessionLifecycleTests \
+            -only-testing:VoxtTests/RecordingStartPlannerTests \
             -only-testing:VoxtTests/RemoteLLMRuntimeClientGenerationSettingsTests \
             -only-testing:VoxtTests/RemoteLLMRuntimeClientResponsesRequestTests
 

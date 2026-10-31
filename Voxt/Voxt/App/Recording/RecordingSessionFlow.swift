@@ -320,6 +320,7 @@ extension AppDelegate {
         overlayState.presentProcessing(iconMode: currentRecordingOverlayIconMode)
         voiceEndCommandState.lastDetectedCommand = false
         enhancementContextSnapshot = captureEnhancementContextSnapshot()
+        mlxTranscriber?.noteStopRequested()
         stopActiveRecordingTranscriberAfterPendingVADFlush(sessionID: stoppingSessionID)
     }
 

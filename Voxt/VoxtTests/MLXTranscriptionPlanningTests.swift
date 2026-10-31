@@ -121,6 +121,33 @@ final class MLXTranscriptionPlanningTests: XCTestCase {
         XCTAssertEqual(buffer.finish(), [])
     }
 
+    /// A retried live session restarts from the beginning, so stopping before it passes the old preview
+    /// must not replace that longer preview with the start of the recording, whatever live result it has.
+    func testNativeLiveFallbackKeepsThePreviewFromBeforeARetryUntilTheNewResultIsLonger() {
+        func fallback(
+            endedSegmentTexts: [String] = [],
+            endedText: String = "",
+            previewText: String = "",
+            previewBeforeReplay: String
+        ) -> String {
+            MLXTranscriptionPlanning.nativeLiveFallbackText(
+                endedSegmentTexts: endedSegmentTexts,
+                endedText: endedText,
+                previewText: previewText,
+                previewBeforeReplay: previewBeforeReplay,
+                transcribedText: ""
+            )
+        }
+        let saved = "first half second"
+
+        XCTAssertEqual(fallback(previewText: "first", previewBeforeReplay: saved), saved)
+        XCTAssertEqual(fallback(endedText: "first", previewBeforeReplay: saved), saved)
+        XCTAssertEqual(fallback(endedSegmentTexts: ["first"], previewBeforeReplay: saved), saved)
+        XCTAssertEqual(fallback(previewText: "first half second half", previewBeforeReplay: saved), "first half second half")
+        XCTAssertEqual(fallback(endedSegmentTexts: ["first half", "second half"], previewBeforeReplay: saved), "first half second half")
+        XCTAssertEqual(fallback(previewText: "first", previewBeforeReplay: ""), "first")
+    }
+
     func testFinalizationSamplesPreferFilteredOnlyWhenStrictlyShorter() {
         let selection = MLXTranscriptionPlanning.finalizationSamples(
             fullSamples: [1, 2, 3, 4],

@@ -60,6 +60,12 @@ extension AppDelegate {
         mlx.onPartialTranscription = { [weak self] text in
             self?.handleLiveASRPartialTranscription(text, sessionID: sessionID)
         }
+        mlx.onRuntimeFailure = { [weak self] message in
+            // Note (Minyi Tang): once stopping has begun, the Final pass decides the outcome.
+            guard let self, self.shouldHandleCallbacks(for: sessionID), self.isSessionActive,
+                  self.recordingStoppedAt == nil else { return }
+            self.showOverlayStatus(message, clearAfter: 4.8)
+        }
         mlx.onTranscriptionFinished = { [weak self] text in
             self?.stashPendingCompletedHistoryAudioArchive(self?.mlxTranscriber?.consumeCompletedAudioArchiveURL())
             self?.processTranscription(text, sessionID: sessionID)

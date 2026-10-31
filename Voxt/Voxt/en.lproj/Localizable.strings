@@ -2382,3 +2382,5 @@
 "API Format" = "API Format";
 
 "Automatic keeps OpenAI on Responses and respects explicit Chat Completions URLs for custom endpoints." = "Automatic keeps OpenAI on Responses and respects explicit Chat Completions URLs for custom endpoints.";
+
+"Live transcription failed. Stop recording and try again." = "Live transcription failed. Stop recording and try again.";

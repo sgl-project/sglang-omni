@@ -6,17 +6,21 @@ import Network
 import XCTest
 @testable import Voxt
 
-/// A loopback WebSocket server that answers the first client message with one
-/// realtime `error` event and then keeps the connection open.
-private final class ErrorEventServer: @unchecked Sendable {
+/// A loopback WebSocket server that answers each connection with one scripted
+/// realtime event once that connection has sent enough messages, then keeps it open.
+private final class LiveEventServer: @unchecked Sendable {
     private let listener: NWListener
-    private let queue = DispatchQueue(label: "omni-error-event-server")
+    private let queue = DispatchQueue(label: "omni-live-event-server")
     private var connections: [NWConnection] = []
     let ready = DispatchSemaphore(value: 0)
 
-    init(errorEvent: String) throws {
+    /// The last event and message count repeat for every connection after the scripted ones.
+    init(events: [String], messagesBeforeReply: [Int] = [1]) throws {
+        precondition(!events.isEmpty && !messagesBeforeReply.isEmpty)
         let parameters = NWParameters.tcp
-        parameters.defaultProtocolStack.applicationProtocols.insert(NWProtocolWebSocket.Options(), at: 0)
+        let webSocketOptions = NWProtocolWebSocket.Options()
+        webSocketOptions.maximumMessageSize = 16 * 1024 * 1024
+        parameters.defaultProtocolStack.applicationProtocols.insert(webSocketOptions, at: 0)
         listener = try NWListener(using: parameters, on: .any)
         listener.stateUpdateHandler = { [ready] state in
             if case .ready = state { ready.signal() }
@@ -24,22 +28,35 @@ private final class ErrorEventServer: @unchecked Sendable {
         listener.newConnectionHandler = { [weak self] connection in
             guard let self else { return }
             self.connections.append(connection)
+            let index = self.connections.count - 1
+            let event = events[min(index, events.count - 1)]
+            let replyAfter = messagesBeforeReply[min(index, messagesBeforeReply.count - 1)]
             connection.start(queue: self.queue)
-            connection.receiveMessage { _, _, _, _ in
+            Self.receive(on: connection, received: 0, replyAfter: replyAfter, event: event)
+        }
+        listener.start(queue: queue)
+    }
+
+    private static func receive(on connection: NWConnection, received: Int, replyAfter: Int, event: String) {
+        connection.receiveMessage { _, _, _, error in
+            guard error == nil else { return }
+            let count = received + 1
+            if count == replyAfter {
                 let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
                 let context = NWConnection.ContentContext(identifier: "event", metadata: [metadata])
                 connection.send(
-                    content: Data(errorEvent.utf8),
+                    content: Data(event.utf8),
                     contentContext: context,
                     isComplete: true,
                     completion: .contentProcessed { _ in }
                 )
             }
+            receive(on: connection, received: count, replyAfter: replyAfter, event: event)
         }
-        listener.start(queue: queue)
     }
 
     var port: Int { Int(listener.port?.rawValue ?? 0) }
+    var connectionCount: Int { queue.sync { connections.count } }
 
     func stop() {
         connections.forEach { $0.cancel() }
@@ -47,14 +64,318 @@ private final class ErrorEventServer: @unchecked Sendable {
     }
 }
 
+private actor StartupAttemptCounter {
+    private(set) var value = 0
+
+    func increment() {
+        value += 1
+    }
+}
+
 final class OmniFailurePathTests: XCTestCase {
+    /// A failed live ASR setup used to only log: the recording showed a waveform
+    /// and never any text, with no retry and nothing shown to the user.
+    @MainActor
+    func testLiveSetupFailureIsRetriedOnceAndThenReported() async {
+        let attempts = StartupAttemptCounter()
+        let manager = MLXModelManager(modelRepo: MLXModelManager.defaultModelRepo) { _ in
+            await attempts.increment()
+            throw OmniASRRuntimeError.launchFailed("injected startup failure")
+        }
+        let transcriber = MLXTranscriber(modelManager: manager)
+        var failures: [String] = []
+        transcriber.onRuntimeFailure = { failures.append($0) }
+        transcriber.isRecording = true
+        transcriber.isModelInitializing = true
+
+        await transcriber.startNativeLiveSession(revision: 0).value
+
+        let attemptCount = await attempts.value
+        XCTAssertEqual(attemptCount, 2)
+        XCTAssertNotNil(transcriber.consumePendingRuntimeFailureMessage())
+        XCTAssertEqual(failures.count, 1)
+        XCTAssertFalse(transcriber.isModelInitializing)
+        XCTAssertFalse(manager.hasActiveUse)
+        transcriber.isRecording = false
+        await manager.shutdownForApplicationTermination()
+    }
+
+    @MainActor
+    func testTransientLoadFailureRecoversLivePreviewWithoutRestarting() async throws {
+        try await verifyLiveRecovery(failFirstLoad: true, recoverySucceeds: true)
+    }
+
+    @MainActor
+    func testTransientConnectionFailureRecoversLivePreviewWithoutRestarting() async throws {
+        try await verifyLiveRecovery(failFirstLoad: false, recoverySucceeds: true)
+    }
+
+    @MainActor
+    func testRepeatedConnectionFailureIsReportedAndStopsRetrying() async throws {
+        try await verifyLiveRecovery(failFirstLoad: false, recoverySucceeds: false)
+    }
+
+    /// Load and connection failures share one retry per recording.
+    @MainActor
+    func testConnectionFailureAfterLoadRetryDoesNotRetryAgain() async throws {
+        try await verifyLiveRecovery(failFirstLoad: true, recoverySucceeds: false)
+    }
+
+    /// A retry late in a long recording must replay the whole recording, in batches the live
+    /// queue accepts: one 40 s batch overflows it, and replaying only the tail truncates the preview.
+    @MainActor
+    func testConnectionFailureLateInALongRecordingRecoversLivePreview() async throws {
+        try await verifyLiveRecovery(failFirstLoad: false, recoverySucceeds: true, bufferedSpeechSeconds: 40)
+    }
+
+    /// With buffered speech, the recovered connection answers only after it has received all of it.
+    @MainActor
+    private func verifyLiveRecovery(
+        failFirstLoad: Bool,
+        recoverySucceeds: Bool,
+        bufferedSpeechSeconds: Double = 0
+    ) async throws {
+        let previewEvent = """
+        {"type":"transcription.segment","segment_id":0,"text":"recovered preview","is_final":false,"event_index":1}
+        """
+        let failureEvent = """
+        {"type":"error","error":{"code":"injected_connection_failure"}}
+        """
+        let lastEvent = recoverySucceeds ? previewEvent : failureEvent
+        let server = try LiveEventServer(
+            events: failFirstLoad ? [lastEvent] : [failureEvent, lastEvent],
+            messagesBeforeReply: [1, 1 + Int((bufferedSpeechSeconds / MLXTranscriber.nativeLiveFeedBatchSeconds).rounded(.up))]
+        )
+        defer { server.stop() }
+        XCTAssertEqual(server.ready.wait(timeout: .now() + 5), .success)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("voxt-live-recovery-\(UUID().uuidString)")
+        let modelDirectory = root.appendingPathComponent("model")
+        try FileManager.default.createDirectory(at: modelDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let executable = root.appendingPathComponent("server")
+        try """
+        #!/bin/sh
+        printf '{"event":"ready","host":"127.0.0.1","port":\(server.port),"model_name":"m","server_pid":%s}\\n' "$$"
+        read -r command
+        """.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        let runtime = OmniASRRuntime(
+            kind: .qwen3ASR,
+            modelDirectory: modelDirectory,
+            configuration: OmniBackendConfiguration(runtimeExecutable: executable)
+        )
+        let attempts = StartupAttemptCounter()
+        let manager = MLXModelManager(modelRepo: MLXModelManager.defaultModelRepo) { _ in
+            await attempts.increment()
+            if failFirstLoad, await attempts.value == 1 {
+                throw OmniASRRuntimeError.launchFailed("injected transient failure")
+            } else {
+                _ = try await runtime.prepare()
+                return MLXLoadedModelBox(loaded: .omni(runtime))
+            }
+        }
+        let transcriber = MLXTranscriber(modelManager: manager)
+        let result = expectation(description: "live startup settled")
+        var failures: [String] = []
+        transcriber.onPartialTranscription = { _ in result.fulfill() }
+        transcriber.onRuntimeFailure = { message in
+            failures.append(message)
+            result.fulfill()
+        }
+        if bufferedSpeechSeconds > 0 {
+            let sampleRate = 16_000.0
+            transcriber.configureVoiceActivityFinalizationFiltering(enabled: true)
+            transcriber.appendVoiceActivityFinalizationFrame(
+                ASRVoiceActivityAudioFrame(
+                    samples: [Float](repeating: 0.1, count: Int(bufferedSpeechSeconds * sampleRate)),
+                    sampleRate: sampleRate,
+                    startSeconds: 0,
+                    endSeconds: bufferedSpeechSeconds,
+                    level: 0.5
+                ),
+                isSpeech: true
+            )
+        }
+        transcriber.isRecording = true
+
+        await transcriber.startNativeLiveSession(revision: 0).value
+        await fulfillment(of: [result], timeout: 10)
+
+        let attemptCount = await attempts.value
+        XCTAssertEqual(attemptCount, failFirstLoad ? 2 : 1)
+        XCTAssertEqual(server.connectionCount, failFirstLoad ? 1 : 2)
+        if recoverySucceeds {
+            XCTAssertEqual(transcriber.transcribedText, "recovered preview")
+            XCTAssertTrue(failures.isEmpty)
+            XCTAssertNil(transcriber.consumePendingRuntimeFailureMessage())
+        } else {
+            XCTAssertTrue(transcriber.transcribedText.isEmpty)
+            XCTAssertEqual(failures.count, 1)
+            XCTAssertNotNil(transcriber.consumePendingRuntimeFailureMessage())
+        }
+        transcriber.isRecording = false
+        transcriber.releaseNativeLiveSession(cancelSession: true)
+        await manager.shutdownForApplicationTermination()
+        await runtime.retire()
+    }
+
+    @MainActor
+    func testStoppingDuringLiveSetupNeitherRetriesNorReportsAStaleFailure() async {
+        let barrier = ManualTaskBarrier()
+        let attempts = StartupAttemptCounter()
+        let manager = MLXModelManager(modelRepo: MLXModelManager.defaultModelRepo) { _ in
+            await attempts.increment()
+            await barrier.wait()
+            throw OmniASRRuntimeError.launchFailed("injected stale failure")
+        }
+        let transcriber = MLXTranscriber(modelManager: manager)
+        transcriber.onRuntimeFailure = { _ in XCTFail("Stopped setup reported a stale failure") }
+        transcriber.isRecording = true
+        let setup = transcriber.startNativeLiveSession(revision: 0)
+        await barrier.waitUntilEntered()
+        transcriber.isRecording = false
+        barrier.release()
+        await setup.value
+
+        let attemptCount = await attempts.value
+        XCTAssertEqual(attemptCount, 1)
+        XCTAssertNil(transcriber.consumePendingRuntimeFailureMessage())
+        XCTAssertFalse(manager.hasActiveUse)
+        await manager.shutdownForApplicationTermination()
+    }
+
+    /// After Stop, capture keeps running while voice activity is flushed; a failure in that
+    /// window used to start another live session and could report a failure.
+    @MainActor
+    func testFailureAfterStopIsPressedNeitherRetriesNorReports() async {
+        let barrier = ManualTaskBarrier()
+        let attempts = StartupAttemptCounter()
+        let manager = MLXModelManager(modelRepo: MLXModelManager.defaultModelRepo) { _ in
+            await attempts.increment()
+            await barrier.wait()
+            throw OmniASRRuntimeError.launchFailed("injected failure after stop")
+        }
+        let transcriber = MLXTranscriber(modelManager: manager)
+        transcriber.onRuntimeFailure = { _ in XCTFail("A failure after Stop was reported") }
+        transcriber.isRecording = true
+        let setup = transcriber.startNativeLiveSession(revision: 0)
+        await barrier.waitUntilEntered()
+        transcriber.noteStopRequested()
+        barrier.release()
+        await setup.value
+
+        let attemptCount = await attempts.value
+        XCTAssertEqual(attemptCount, 1)
+        XCTAssertNil(transcriber.consumePendingRuntimeFailureMessage())
+        XCTAssertFalse(manager.hasActiveUse)
+        transcriber.isRecording = false
+        await manager.shutdownForApplicationTermination()
+    }
+
+    /// A retry queued by a connection failure, or one whose delay ended, starts a live session
+    /// again; after Stop it used to start a second model load while capture was still finishing.
+    @MainActor
+    func testLiveSessionStartQueuedAfterStopDoesNothing() async {
+        let attempts = StartupAttemptCounter()
+        let manager = MLXModelManager(modelRepo: MLXModelManager.defaultModelRepo) { _ in
+            await attempts.increment()
+            throw OmniASRRuntimeError.launchFailed("a retry ran after stop")
+        }
+        let transcriber = MLXTranscriber(modelManager: manager)
+        transcriber.onRuntimeFailure = { _ in XCTFail("A failure after Stop was reported") }
+        transcriber.isRecording = true
+        transcriber.isModelInitializing = true
+        transcriber.noteStopRequested()
+
+        await transcriber.startNativeLiveSession(revision: 0).value
+
+        let attemptCount = await attempts.value
+        XCTAssertEqual(attemptCount, 0)
+        XCTAssertFalse(transcriber.isModelInitializing)
+        XCTAssertFalse(manager.hasActiveUse)
+        transcriber.isRecording = false
+        await manager.shutdownForApplicationTermination()
+    }
+
+    /// A load that finished after Stop used to open a live session during the stop-time flush.
+    @MainActor
+    func testLoadFinishingAfterStopOpensNoLiveSession() async throws {
+        let server = try LiveEventServer(events: ["""
+        {"type":"transcription.segment","segment_id":0,"text":"late session","is_final":false,"event_index":1}
+        """])
+        defer { server.stop() }
+        XCTAssertEqual(server.ready.wait(timeout: .now() + 5), .success)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("voxt-late-load-\(UUID().uuidString)")
+        let modelDirectory = root.appendingPathComponent("model")
+        try FileManager.default.createDirectory(at: modelDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let executable = root.appendingPathComponent("server")
+        try """
+        #!/bin/sh
+        printf '{"event":"ready","host":"127.0.0.1","port":\(server.port),"model_name":"m","server_pid":%s}\\n' "$$"
+        read -r command
+        """.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        let runtime = OmniASRRuntime(
+            kind: .qwen3ASR,
+            modelDirectory: modelDirectory,
+            configuration: OmniBackendConfiguration(runtimeExecutable: executable)
+        )
+        let loadGate = ManualTaskBarrier()
+        let manager = MLXModelManager(modelRepo: MLXModelManager.defaultModelRepo) { _ in
+            await loadGate.wait()
+            _ = try await runtime.prepare()
+            return MLXLoadedModelBox(loaded: .omni(runtime))
+        }
+        let transcriber = MLXTranscriber(modelManager: manager)
+        transcriber.onPartialTranscription = { _ in XCTFail("A live session opened after Stop") }
+        transcriber.isRecording = true
+        let setup = transcriber.startNativeLiveSession(revision: 0)
+        await loadGate.waitUntilEntered()
+        transcriber.noteStopRequested()
+        loadGate.release()
+        await setup.value
+
+        XCTAssertEqual(server.connectionCount, 0)
+        XCTAssertFalse(transcriber.isModelInitializing)
+        transcriber.isRecording = false
+        await manager.shutdownForApplicationTermination()
+        await runtime.retire()
+    }
+
+    @MainActor
+    func testCancelledLiveSetupNeitherRetriesNorReportsAFailure() async {
+        let barrier = ManualTaskBarrier()
+        let attempts = StartupAttemptCounter()
+        let manager = MLXModelManager(modelRepo: MLXModelManager.defaultModelRepo) { _ in
+            await attempts.increment()
+            await barrier.wait()
+            throw OmniASRRuntimeError.launchFailed("injected cancelled failure")
+        }
+        let transcriber = MLXTranscriber(modelManager: manager)
+        transcriber.onRuntimeFailure = { _ in XCTFail("Cancelled setup reported a failure") }
+        transcriber.isRecording = true
+        let setup = transcriber.startNativeLiveSession(revision: 0)
+        await barrier.waitUntilEntered()
+        setup.cancel()
+        barrier.release()
+        await setup.value
+
+        let attemptCount = await attempts.value
+        XCTAssertEqual(attemptCount, 1)
+        XCTAssertNil(transcriber.consumePendingRuntimeFailureMessage())
+        XCTAssertFalse(manager.hasActiveUse)
+        transcriber.isRecording = false
+        await manager.shutdownForApplicationTermination()
+    }
+
     /// A server error ends the live session: the stream finishes, so whoever
     /// forwards it releases its runtime lease, and the message carries no text
     /// the server may have echoed from the request.
     func testALiveSocketErrorEventEndsTheSession() async throws {
-        let server = try ErrorEventServer(errorEvent: """
+        let server = try LiveEventServer(events: ["""
         {"type": "error", "error": {"type": "invalid_request_error", "code": "invalid_event", "message": "input_value='U0VDUkVUIEFVRElP'"}}
-        """)
+        """])
         defer { server.stop() }
         XCTAssertEqual(server.ready.wait(timeout: .now() + 5), .success)
         let session = OmniRealtimeTranscriptionSession(
@@ -88,6 +409,37 @@ final class OmniFailurePathTests: XCTestCase {
         }
         XCTAssertFalse(message.contains("U0VDUkVUIEFVRElP"))
         XCTAssertTrue(message.contains("invalid_event"))
+    }
+
+    /// A live feed that ignored how much audio was still unsent could overflow the queue when the
+    /// socket stalled, failing the session; the reported capacity is what lets the feed wait instead.
+    func testQueueCapacityShrinksWhileAudioIsUnsent() throws {
+        let listener = try NWListener(using: .tcp, on: .any)
+        let ready = DispatchSemaphore(value: 0)
+        listener.stateUpdateHandler = { state in
+            if case .ready = state { ready.signal() }
+        }
+        listener.newConnectionHandler = { _ in }
+        listener.start(queue: DispatchQueue(label: "omni-stalled-server"))
+        defer { listener.cancel() }
+        XCTAssertEqual(ready.wait(timeout: .now() + 5), .success)
+        let session = OmniRealtimeTranscriptionSession(
+            endpoint: OmniServerEndpoint(
+                host: "127.0.0.1",
+                port: Int(listener.port?.rawValue ?? 0),
+                modelName: "m",
+                serverProcessIdentifier: 0
+            ),
+            language: nil
+        )
+        defer { session.cancel() }
+        let maximum = OmniRealtimeTranscriptionSession.maximumQueuedSamples
+
+        XCTAssertEqual(session.queueCapacitySamples, maximum)
+        session.feedAudio(samples: [Float](repeating: 0.1, count: maximum - 1_000))
+        XCTAssertEqual(session.queueCapacitySamples, 1_000)
+        session.feedAudio(samples: [Float](repeating: 0.1, count: 1_000))
+        XCTAssertEqual(session.queueCapacitySamples, 0)
     }
 
     func testErrorDescriptionsCarryNoRequestOrTranscriptText() {
