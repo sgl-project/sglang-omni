@@ -4,22 +4,6 @@
 
 Qwen3-ASR does not support `/v1/audio/translations`; that endpoint returns HTTP 400. Use `/v1/audio/transcriptions`.
 
-## DFlash speculative decoding
-
-Enable experimental DFlash decoding for Qwen3-ASR-1.7B on one CUDA GPU:
-
-```bash
-sgl-omni serve \
-  --model-path Qwen/Qwen3-ASR-1.7B \
-  --asr.engine.speculative_algorithm DFLASH \
-  --asr.engine.speculative_draft_model_path mattymchen/Qwen3-ASR-1.7B-speculator.dflash \
-  --asr.engine.speculative_num_draft_tokens 8 \
-  --asr.engine.max_running_requests 8 \
-  --port 8000
-```
-
-Use greedy decoding. DFlash uses synchronous scheduling and retains CUDA graphs. Logprobs, hidden-state returns, `min_p`, and non-default repetition/frequency/presence penalties are unsupported. Realtime sessions are not validated.
-
 ## Prerequisites
 
 Install `sglang-omni` by following the [CUDA installation](../get_started/installation.md)
@@ -174,6 +158,19 @@ sgl-omni serve \
   --asr.factory.enable_async_decode false \
   --port 8000
 ```
+
+## DFlash speculative decoding
+
+Enable experimental DFlash decoding for Qwen3-ASR-1.7B on one CUDA GPU with the pinned draft model:
+
+```bash
+sgl-omni serve \
+  --config examples/configs/qwen3_asr_1_7b_dflash.yaml \
+  --asr.engine.max_running_requests 8 \
+  --port 8000
+```
+
+DFlash requires greedy decoding (`temperature=0`), uses synchronous scheduling, and retains CUDA graphs. Realtime sessions are not validated.
 
 ## Transcribe Audio
 

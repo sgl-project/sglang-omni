@@ -80,9 +80,11 @@ def create_sglang_qwen3_asr_executor(
             dtype=dtype,
             server_args_overrides=server_args_overrides,
         )
-    except Exception:
-        builder.cleanup_build_failure()
-        raise
+    finally:
+        if builder.draft_checkpoint is not None:
+            builder.draft_checkpoint.cleanup()
+        else:
+            pass
 
 
 def create_qwen3_asr_executor(*args, **kwargs):

@@ -30,10 +30,6 @@ from sglang_omni.models.qwen3_asr.audio_lengths import (
     qwen3_asr_max_audio_tokens,
     qwen3_asr_max_output_tokens,
 )
-from sglang_omni.models.qwen3_asr.dflash import (
-    Qwen3ASRDFlashWorker,
-    materialize_draft_checkpoint,
-)
 from sglang_omni.models.qwen3_asr.encoder_service import (
     Qwen3ASRPreLMEncoderService,
     build_cache_namespace,
@@ -394,6 +390,9 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         elif not current_platform.is_cuda() or overrides.get("tp_size", 1) != 1:
             raise ValueError("Qwen3-ASR DFlash currently requires one CUDA GPU")
         else:
+            # note (WilsonZheng0327): Draft modules import Triton kernels unavailable on Torch MPS hosts.
+            from sglang_omni.models.qwen3_asr.dflash import materialize_draft_checkpoint
+
             draft_model_path = overrides.get("speculative_draft_model_path")
             draft_revision = overrides.get("speculative_draft_model_revision")
             if not isinstance(draft_model_path, str) or not draft_model_path:
@@ -455,6 +454,9 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         if self.draft_checkpoint is None:
             return {}
         else:
+            # note (WilsonZheng0327): Draft modules import Triton kernels unavailable on Torch MPS hosts.
+            from sglang_omni.models.qwen3_asr.dflash import Qwen3ASRDFlashWorker
+
             return {
                 "supports_speculative_decoding": True,
                 "speculative_worker_class": Qwen3ASRDFlashWorker,
@@ -541,7 +543,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             context_length=self.context_length,
             audio_encoder_service=self.audio_encoder_service,
             should_wait_for_encode=self.should_wait_for_encode,
-            greedy_only=self.uses_torch_mps(),
+            greedy_only=self.uses_torch_mps() or self.draft_checkpoint is not None,
         )
 
     def make_abort_callback(self) -> Callable[[str], None] | None:
@@ -560,20 +562,12 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     def extra_scheduler_callbacks(self) -> dict[str, Callable[[], None]]:
-        if self.draft_checkpoint is None and self.audio_encoder_service is None:
+        if self.audio_encoder_service is None:
             return {}
         else:
-            return {"shutdown_callback": self.close_resources}
+            return {"shutdown_callback": self.audio_encoder_service.close}
 
     def cleanup_build_failure(self) -> None:
-        self.close_resources()
-
-    def close_resources(self) -> None:
-        if self.draft_checkpoint is not None:
-            self.draft_checkpoint.cleanup()
-            self.draft_checkpoint = None
-        else:
-            pass
         if self.audio_encoder_service is not None:
             self.audio_encoder_service.close()
             self.audio_encoder_service = None

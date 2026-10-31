@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
+import sys
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,8 +26,10 @@ import sglang_omni.utils.cuda_graph_batch_validator as cuda_graph_batch_validato
 import sglang_omni.utils.device as device_utils
 from sglang_omni.models.qwen3_asr import request_builders
 from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
+from sglang_omni.models.qwen3_asr.engine_builder import Qwen3ASREngineBuilder
 from sglang_omni.models.qwen3_asr.stages import create_sglang_qwen3_asr_executor
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_cuda_graph_bs,
@@ -670,10 +674,30 @@ def test_qwen3_asr_build_initializes_and_attests_prefill_graphs(monkeypatch) -> 
     assert len(recorded.attest_calls) == 1
 
 
+def test_qwen3_asr_stage_import_without_dflash() -> None:
+    """Ordinary ASR stage loading must not require the Triton-dependent draft module."""
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; "
+            "sys.modules['sglang_omni.models.qwen3_asr.dflash'] = None; "
+            "from sglang_omni.models.qwen3_asr.stages import "
+            "create_sglang_qwen3_asr_executor",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
 def test_qwen3_asr_dflash_build_uses_sync_runtime_and_cleans_resources(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """DFlash must use sync scheduling and release resources on shutdown or early build failure."""
+    """DFlash must release its temporary checkpoint after both successful and failed builds."""
+    # note (WilsonZheng0327): Only DFlash tests require the Triton-dependent worker.
+    from sglang_omni.models.qwen3_asr.dflash import Qwen3ASRDFlashWorker
+
     recorded = patch_engine_dependencies(monkeypatch, want_cuda_graph=True)
     monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: True)
     monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cpu", lambda: False)
@@ -694,6 +718,30 @@ def test_qwen3_asr_dflash_build_uses_sync_runtime_and_cleans_resources(
     (tmp_path / "config.json").write_text(json.dumps(source_config))
     (tmp_path / "model.safetensors").touch()
 
+    infra_kwargs = Qwen3ASREngineBuilder.infra_kwargs
+
+    def inspect_draft_checkpoint(
+        builder: Qwen3ASREngineBuilder,
+    ) -> InfrastructureOptions:
+        draft_path = Path(builder.draft_checkpoint.name)
+        config = json.loads((draft_path / "config.json").read_text())
+        assert config["dflash_config"] == {
+            "target_layer_ids": [1, 13, 24],
+            "mask_token_id": 151705,
+            "block_size": 8,
+            "sample_from_anchor": False,
+        }
+        assert config["draft_vocab_size"] == 32000
+        assert (
+            draft_path / "model.safetensors"
+        ).resolve() == tmp_path / "model.safetensors"
+        return infra_kwargs(builder)
+
+    monkeypatch.setattr(
+        Qwen3ASREngineBuilder,
+        "infra_kwargs",
+        inspect_draft_checkpoint,
+    )
     scheduler = qwen3_asr_stages.create_sglang_qwen3_asr_executor(
         "dummy",
         enable_async_decode=True,
@@ -703,31 +751,18 @@ def test_qwen3_asr_dflash_build_uses_sync_runtime_and_cleans_resources(
         },
     )
     draft_path = Path(recorded.build_kwargs["speculative_draft_model_path"])
-    config = json.loads((draft_path / "config.json").read_text())
-    assert config["dflash_config"] == {
-        "target_layer_ids": [1, 13, 24],
-        "mask_token_id": 151705,
-        "block_size": 8,
-        "sample_from_anchor": False,
-    }
-    assert config["draft_vocab_size"] == 32000
-    assert (
-        draft_path / "model.safetensors"
-    ).resolve() == tmp_path / "model.safetensors"
+    assert not draft_path.exists()
     assert recorded.infra_kwargs[-1]["supports_speculative_decoding"] is True
-    assert (
-        recorded.infra_kwargs[-1]["speculative_worker_class"]
-        is qwen3_asr_builder.Qwen3ASRDFlashWorker
-    )
+    assert recorded.infra_kwargs[-1]["speculative_worker_class"] is Qwen3ASRDFlashWorker
     assert scheduler.enable_async_decode is False
     assert scheduler.async_prefill is False
+    assert recorded.adapter_kwargs["greedy_only"] is True
     assert recorded.build_kwargs["enable_mixed_chunk"] is False
     assert recorded.build_kwargs["disable_overlap_schedule"] is True
     assert not recorded.build_kwargs.get("disable_cuda_graph", False)
     assert len(recorded.graph_init_calls) == 1
     assert len(recorded.attest_calls) == 1
     scheduler.shutdown_callback()
-    assert not draft_path.exists()
     assert recorded.encoder_service_close_calls == [True]
     assert (tmp_path / "config.json").exists()
 
