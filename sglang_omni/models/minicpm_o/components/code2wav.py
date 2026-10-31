@@ -19,6 +19,7 @@ from torch.nn.utils.rnn import pad_sequence
 
 from sglang_omni.models.minicpm_o.components.token2wav.vocoder import (
     SpeakerPrompt,
+    SpeakerReferenceFeatures,
     Token2Wav,
 )
 from sglang_omni.models.weight_loader import resolve_dtype, resolve_model_path
@@ -271,7 +272,10 @@ class MiniCPMOCode2Wav(nn.Module):
         return reference_key, resolved
 
     def submit_reference(
-        self, reference_key: str, reference: str | bytes
+        self,
+        reference_key: str,
+        reference: str | bytes,
+        features: SpeakerReferenceFeatures | None = None,
     ) -> Future[SpeakerPrompt]:
         """Start preparing one reference; the caller holds reference_lock."""
         source = io.BytesIO(reference) if isinstance(reference, bytes) else reference
@@ -280,7 +284,10 @@ class MiniCPMOCode2Wav(nn.Module):
             device_module = torch.get_device_module(self.token2wav.device)
             # note (zhaochenyang20): cached prompts must share the decoder's stream.
             with device_module.stream(self.decode_stream):
-                return self.token2wav.prepare_prompt(source)
+                if features is None:
+                    return self.token2wav.prepare_prompt(source)
+                else:
+                    return self.token2wav.prepare_prompt_from_features(features)
 
         future = self.reference_executor.submit(prepare_reference)
         self.pending_references[reference_key] = future
@@ -319,7 +326,11 @@ class MiniCPMOCode2Wav(nn.Module):
             del self.prompt_cache[reference_key]
 
     def prefetch_reference(
-        self, request_id: str, reference: str | bytes | None
+        self,
+        request_id: str,
+        reference: str | bytes | None,
+        *,
+        features: SpeakerReferenceFeatures | None = None,
     ) -> None:
         """Start preparing a queued request's reference and pin it until release."""
         reference_key, resolved = self.resolve_reference_key(reference)
@@ -329,7 +340,7 @@ class MiniCPMOCode2Wav(nn.Module):
             if reference_key in self.prompt_cache:
                 self.prompt_cache.move_to_end(reference_key)
             elif reference_key not in self.pending_references:
-                self.submit_reference(reference_key, resolved)
+                self.submit_reference(reference_key, resolved, features)
             else:
                 pass
 

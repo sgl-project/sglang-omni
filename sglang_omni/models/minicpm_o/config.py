@@ -167,6 +167,9 @@ def code2wav_stage(*, gpu: int, process: str) -> MiniCPMOCode2WavStageConfig:
         # As SGLang Omni Runtime moves better, we shall probably wait several
         # ms for grouping the batchs, but right now, set it to 0.0.
         gpu=gpu,
+        wait_for=["talker", "reference"],
+        wait_for_fn=f"{PKG}.routing.resolve_code2wav_wait_sources",
+        merge_fn=f"{PKG}.merge.merge_for_code2wav",
         terminal=True,
     )
 
@@ -183,8 +186,23 @@ def text_stages() -> list[StageConfig]:
 
 
 def speech_stages() -> list[StageConfig]:
+    preprocessing = preprocessing_stage(gpu=0, process="pipeline")
+    preprocessing.next.append("reference")
+    preprocessing.route_fn = f"{PKG}.routing.resolve_speech_preprocessing_next_stages"
+    preprocessing.project_payload["reference"] = (
+        f"{PKG}.routing.project_preprocessing_to_reference"
+    )
     return [
-        preprocessing_stage(gpu=0, process="pipeline"),
+        preprocessing,
+        StageConfig(
+            name="reference",
+            process="pipeline",
+            factory_path=f"{PKG}.stages.create_reference_executor",
+            factory=FactoryArgs(
+                max_concurrency=8, cache_entries=32, cache_bytes=64 * 1024**2
+            ),
+            next="code2wav",
+        ),
         # note (MayDomine): the thinker initializes the TP group reused by encoders.
         thinker_stage(gpu=0, process="pipeline", speech_enabled=True),
         image_encoder_stage(process="pipeline", gpu=0),

@@ -14,6 +14,7 @@ THINKER_STAGE = "thinker"
 DECODE_STAGE = "decode"
 TALKER_STAGE = "talker"
 CODE2WAV_STAGE = "code2wav"
+REFERENCE_STAGE = "reference"
 
 
 def output_modalities(request: OmniRequest) -> set[str] | None:
@@ -89,6 +90,14 @@ def code2wav_reference_audio(payload: StagePayload) -> bytes | None:
     return None
 
 
+def has_inline_reference_audio(payload: StagePayload) -> bool:
+    # note (0xtoward): a hook that raises stops its stage, so Code2Wav rejects an invalid reference instead.
+    try:
+        return code2wav_reference_audio(payload) is not None
+    except ValueError:
+        return False
+
+
 def resolve_preprocessing_next_stages(
     request_id: str, output: StagePayload
 ) -> list[str]:
@@ -115,6 +124,33 @@ def resolve_thinker_wait_sources(
         "preprocessing",
         *encoder_stages_with_model_inputs(state.encoder_inputs),
     ]
+
+
+def resolve_speech_preprocessing_next_stages(
+    request_id: str, output: StagePayload
+) -> list[str]:
+    stages = resolve_preprocessing_next_stages(request_id, output)
+    if should_generate_audio_output(output) and has_inline_reference_audio(output):
+        stages.append(REFERENCE_STAGE)
+    else:
+        pass
+    return stages
+
+
+def project_preprocessing_to_reference(payload: StagePayload) -> StagePayload:
+    return payload_with_state(payload, MiniCPMOPipelineState())
+
+
+def resolve_code2wav_wait_sources(
+    request_id: str, from_stage: str, payload: StagePayload
+) -> list[str] | None:
+    """Select fan-in sources; request_id is required by the wait-source interface."""
+    if from_stage != TALKER_STAGE:
+        return None
+    elif has_inline_reference_audio(payload):
+        return [TALKER_STAGE, REFERENCE_STAGE]
+    else:
+        return [TALKER_STAGE]
 
 
 def project_preprocessing_to_image_encoder(payload: StagePayload) -> StagePayload:

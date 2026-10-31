@@ -22,7 +22,7 @@ import soundfile as sf
 import torch
 
 from sglang_omni.client.client import build_params
-from sglang_omni.config import FactoryArgs
+from sglang_omni.config import FactoryArgs, StageConfig
 from sglang_omni.models.minicpm_o import stages
 from sglang_omni.models.minicpm_o.components import code2wav
 from sglang_omni.models.minicpm_o.components.code2wav import (
@@ -32,14 +32,19 @@ from sglang_omni.models.minicpm_o.components.code2wav import (
 from sglang_omni.models.minicpm_o.components.token2wav.hift_layers import (
     SourceModuleHnNSF2,
 )
-from sglang_omni.models.minicpm_o.components.token2wav.vocoder import SpeakerPrompt
+from sglang_omni.models.minicpm_o.components.token2wav.vocoder import (
+    SpeakerPrompt,
+    SpeakerReferenceFeatures,
+)
 from sglang_omni.models.minicpm_o.config import MiniCPMOSpeechPipelineConfig
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.routing import (
     code2wav_reference_audio,
+    payload_with_state,
     project_talker_to_code2wav,
 )
 from sglang_omni.models.minicpm_o.stages import vocode_code2wav_payloads
+from sglang_omni.pipeline.stage.input import AggregatedInput
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
@@ -48,6 +53,7 @@ from sglang_omni.serve.openai_api import (
     build_chat_generate_request,
 )
 from sglang_omni.utils.device import resolve_concrete_device
+from sglang_omni.utils.imports import import_string
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CHECKPOINT_CODEC_TOKENS = [1498, 1734, 3732, 3726, 3645]
@@ -105,6 +111,27 @@ def fake_prepare_prompt(source: str | io.BytesIO) -> SpeakerPrompt:
     else:
         reference_audio = source.getvalue()
     return fake_speaker_prompt(reference_audio)
+
+
+def fake_reference_features(reference_audio: bytes) -> SpeakerReferenceFeatures:
+    """One frame per reference byte, with every tensor tagged by its first byte."""
+    reference_id = float(reference_audio[0])
+    frame_count = len(reference_audio)
+    return SpeakerReferenceFeatures(
+        tokenizer_mel=torch.full((1, FAKE_MEL_BINS, frame_count), reference_id),
+        speaker_embedding=torch.full((1, 4), reference_id),
+        prompt_mel=torch.full(
+            (1, frame_count * FAKE_UP_RATE, FAKE_MEL_BINS), reference_id
+        ),
+    )
+
+
+def fake_prepare_prompt_from_features(
+    features: SpeakerReferenceFeatures,
+) -> SpeakerPrompt:
+    reference_id = int(features["speaker_embedding"][0, 0])
+    frame_count = features["tokenizer_mel"].shape[2]
+    return fake_speaker_prompt(bytes([reference_id]) * frame_count)
 
 
 def fake_flow_inference(
@@ -347,9 +374,13 @@ def require_checkpoint_dir() -> Path:
     return checkpoint
 
 
-def code2wav_stage_factory() -> FactoryArgs:
+def speech_stage(stage_name: str) -> StageConfig:
     config = MiniCPMOSpeechPipelineConfig(model_path="unused")
-    return next(stage for stage in config.stages if stage.name == "code2wav").factory
+    return next(stage for stage in config.stages if stage.name == stage_name)
+
+
+def code2wav_stage_factory() -> FactoryArgs:
+    return speech_stage("code2wav").factory
 
 
 def build_code2wav_stage(
@@ -1163,3 +1194,92 @@ def test_code2wav_stage_batch_releases_its_references(
     scheduler.batch_fn([scheduler.inbox.get_nowait().data for _ in QUEUED_REFERENCES])
     model.prepare_references([b"a"])
     assert fake_token2wav.prepare_prompt.call_count == len(QUEUED_REFERENCES) + 1
+
+
+@pytest.mark.parametrize(
+    ("params", "metadata", "takes_reference_branch"),
+    [
+        ({}, {}, False),
+        ({"ref_audio": "/tmp/ref.wav"}, {}, False),
+        ({"ref_audio": wav_data_uri(b"a")}, {"output_modalities": ["text"]}, False),
+        ({"ref_audio": wav_data_uri(b"a")}, {}, True),
+    ],
+    ids=["default_voice", "invalid_reference", "text_output", "voice_clone"],
+)
+def test_preprocessing_sends_only_voice_clones_to_the_reference_stage(
+    params: dict[str, str],
+    metadata: dict[str, list[str]],
+    takes_reference_branch: bool,
+) -> None:
+    route = import_string(speech_stage("preprocessing").route_fn)
+
+    destinations = route("clone", talker_payload(params=params, metadata=metadata))
+
+    assert ("reference" in destinations) == takes_reference_branch, destinations
+
+
+@pytest.mark.parametrize(
+    ("params", "arrival_order"),
+    [
+        ({}, ["talker"]),
+        ({"ref_audio": "/tmp/ref.wav"}, ["talker"]),
+        ({"ref_audio": wav_data_uri(b"a")}, ["talker", "reference"]),
+        ({"ref_audio": wav_data_uri(b"a")}, ["reference", "talker"]),
+    ],
+    ids=["default_voice", "invalid_reference", "talker_first", "reference_first"],
+)
+def test_code2wav_waits_for_the_reference_branch_only_when_it_runs(
+    params: dict[str, str], arrival_order: list[str]
+) -> None:
+    stage = speech_stage("code2wav")
+    fan_in = AggregatedInput(
+        set(stage.wait_for),
+        import_string(stage.merge_fn),
+        expected_sources_fn=import_string(stage.wait_for_fn),
+    )
+    talker = talker_payload(request_id="clone", codec_tokens=[7, 8], params=params)
+    features = fake_reference_features(b"a")
+    branches = {
+        "talker": talker,
+        "reference": payload_with_state(
+            talker, MiniCPMOPipelineState(reference_features=features)
+        ),
+    }
+
+    *waiting, joined = [
+        fan_in.receive("clone", source, branches[source]) for source in arrival_order
+    ]
+
+    assert waiting == [None] * len(waiting), "code2wav starts after every branch"
+    state = MiniCPMOPipelineState.from_dict(joined.data)
+    expected_features = features if "reference" in arrival_order else None
+    assert state.reference_features is expected_features, "reference features"
+    assert state.engine_outputs["talker"]["codec_tokens"].tolist() == [7, 8], "codec"
+
+
+def test_code2wav_stage_skips_cpu_reference_work_for_prepared_features(
+    build_code2wav_model: Code2WavBuilder,
+    fake_token2wav: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_token2wav.prepare_prompt_from_features.side_effect = (
+        fake_prepare_prompt_from_features
+    )
+    scheduler = build_code2wav_stage(build_code2wav_model(), monkeypatch)
+    talker = talker_payload(
+        request_id="clone", params={"ref_audio": wav_data_uri(b"a")}
+    )
+    state = MiniCPMOPipelineState.from_dict(talker.data)
+    state.reference_features = fake_reference_features(b"a")
+
+    scheduler.enqueue(
+        IncomingMessage("clone", "new_request", payload_with_state(talker, state))
+    )
+    (output,) = scheduler.batch_fn([scheduler.inbox.get_nowait().data])
+
+    fake_token2wav.prepare_prompt.assert_not_called()
+    fake_token2wav.prepare_prompt_from_features.assert_called_once()
+    np.testing.assert_array_equal(
+        np.frombuffer(output.data["audio_waveform"], dtype=np.float32),
+        expected_waveform([1, 2], b"a"),
+    )

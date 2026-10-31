@@ -73,6 +73,7 @@ class MiniCPMOPipelineState:
     thinker_out: ThinkerOutput | None = None
     engine_outputs: EngineOutputs = field(default_factory=dict)
     stream_state: Mapping[str, object] = field(default_factory=dict)
+    reference_features: dict[str, torch.Tensor] | None = None
 
     @classmethod
     def from_dict(cls, data: object) -> "MiniCPMOPipelineState":
@@ -95,6 +96,7 @@ class MiniCPMOPipelineState:
             thinker_out=thinker_out if isinstance(thinker_out, dict) else None,
             engine_outputs=_dict("engine_outputs"),
             stream_state=_dict("stream_state"),
+            reference_features=data.get("reference_features"),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -129,6 +131,10 @@ class MiniCPMOPipelineState:
             pass
         if self.stream_state:
             data["stream_state"] = self.stream_state
+        else:
+            pass
+        if self.reference_features is not None:
+            data["reference_features"] = self.reference_features
         else:
             pass
         return data
