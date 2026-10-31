@@ -545,6 +545,7 @@ def create_tts_engine_executor(
     enable_async_decode: bool = False,
     enable_fused_flow_head: bool = False,
     use_streaming_vocoder: bool = True,
+    enable_dense_streaming: bool = False,
     device: str | None = None,
     gpu_id: int | None = None,
     tp_rank: int = 0,
@@ -635,13 +636,13 @@ def create_tts_engine_executor(
         )
     )
     tokenizer = get_tokenizer(checkpoint, trust_remote_code=False)
+    if dense and not enable_dense_streaming:
+        use_streaming_vocoder = False
+    else:
+        pass
 
     def build_request(payload: StagePayload) -> Ming3TTSRequestData:
         parameters = payload.request.params
-        if dense and parameters.get("stream", False):
-            raise ValueError("Ming 3 0.5B streaming requires the companion dense PR")
-        else:
-            pass
         seed = parameters.get("seed")
         if dense:
             prompt = materialize_dense_prompt(tokenizer, payload.data)

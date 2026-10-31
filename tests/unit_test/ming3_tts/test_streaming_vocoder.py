@@ -403,6 +403,7 @@ def test_cpu_factory_preserves_full_decode(
         (True, None, True, "custom", "cuda"),
     ],
 )
+@pytest.mark.parametrize("enable_dense_streaming", [False, True])
 @torch.inference_mode()
 def test_gpu_generation_retains_full_latents_for_cpu_vocoder(
     vocoder: Ming3StreamingVocoder,
@@ -412,6 +413,7 @@ def test_gpu_generation_retains_full_latents_for_cpu_vocoder(
     stream: bool,
     vocoder_factory: Literal["current", "legacy", "custom"],
     platform_device_type: str,
+    enable_dense_streaming: bool,
 ) -> None:
     """GPU generation dropped full latents for stream=true even with a CPU vocoder."""
     monkeypatch.setattr(
@@ -491,6 +493,7 @@ def test_gpu_generation_retains_full_latents_for_cpu_vocoder(
             "checkpoint",
             max_seq_len=4096,
             enable_acoustic_graph=False,
+            enable_dense_streaming=enable_dense_streaming,
             **engine_kwargs,
         )
         generated_latents = torch.randn(
@@ -512,7 +515,7 @@ def test_gpu_generation_retains_full_latents_for_cpu_vocoder(
         )
         result = scheduler_factory.call_args.kwargs["result_adapter"](request)
     streaming_builder = scheduler_factory.call_args.kwargs["stream_output_builder"]
-    if vocoder_device is None:
+    if vocoder_device is None and (not dense or enable_dense_streaming):
         assert result.data["latents"] is None
         assert streaming_builder is engine_module.build_stream_output
     else:
