@@ -440,7 +440,7 @@ def padded_input(
     history_samples = int(module.padding)
     dilation = int(module.conv.dilation[0])
     # note (ratish): the tail completes the last dilation phase of the conv's folded input, by a
-    # ceil division, since a modulo of a symbolic length slows Inductor's compile several times.
+    # ceil division, since a modulo of a symbolic length costs more to trace and compile.
     tail_samples = -(-length // dilation) * dilation - length
     padded = frames_like.new_empty(
         batch_size, history_samples + length + tail_samples, channels
