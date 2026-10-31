@@ -1885,10 +1885,10 @@ def test_compiled_decode_serves_every_batch_and_width_above_one_with_one_program
         dtype=torch.bfloat16,
         num_quantizers=2,
         mode="warm",
-        fresh_frames=(2, 8),
+        fresh_frames=(4, 8),
         batch_sizes=(2, 4),
         min_free_gb=0.0,
-        compile_fresh_frames=(2, 8),
+        compile_fresh_frames=(4, 8),
         arena=arena,
         graph_pool=IncrementalCodecGraphPool(stream_priority=0),
     )
@@ -1896,7 +1896,7 @@ def test_compiled_decode_serves_every_batch_and_width_above_one_with_one_program
     programs = counters["stats"]["unique_graphs"]
     runner.capture()
 
-    assert sorted(incremental.compiled_shapes) == [(2, 2), (2, 8), (4, 2), (4, 8)]
+    assert sorted(incremental.compiled_shapes) == [(2, 4), (2, 8), (4, 4), (4, 8)]
     assert len(runner.graphs) == 4
     assert counters["stats"]["unique_graphs"] == programs + 1
 
