@@ -1,5 +1,6 @@
 numpy==2.3.5
 pyarrow==25.0.1
 pytest==9.1.1
+rapidfuzz==3.14.6
 soundfile==0.13.1
 websockets==17.2

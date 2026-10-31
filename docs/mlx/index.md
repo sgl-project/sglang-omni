@@ -42,6 +42,8 @@ agree on it with a maintainer first.
 
 ## Rule 2: Contribution requirements
 
+For reproducible long-session quality, memory and cancellation measurements, see [Qwen3-ASR long recordings](long_audio.md).
+
 **Placement and reuse**
 
 - A native model adds `src/<model>/` with `<model>_model`, `<model>_transcriber`

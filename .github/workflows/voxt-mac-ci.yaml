@@ -212,7 +212,8 @@ jobs:
           CI_DATA_ROOT: ${{ env.VOXT_CI_ROOT }}/data
         run: |
           "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_check_golden.py sglang_omni_mlx/native/ci/test_server_api.py sglang_omni_mlx/native/ci/test_vad_api.py \
-            sglang_omni_mlx/native/ci/test_sortformer_api.py
+            sglang_omni_mlx/native/ci/test_sortformer_api.py sglang_omni_mlx/native/ci/test_long_audio_benchmark.py \
+            sglang_omni_mlx/native/ci/test_long_audio_benchmark_native.py
 
       # The models beside Qwen3-ASR, each with its own server: their pinned
       # checkpoints, their golden outputs and their servers' API tests.
