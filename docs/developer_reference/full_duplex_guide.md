@@ -380,6 +380,7 @@ Every profile is a `launch.yaml` under `examples/streaming_cascade/profiles/`.
 | `qwen3-asr-qwen3.8-27b-vivian` | Qwen3-ASR-1.7B service on 8002 (`openai_transcription`) | Qwen3.8-27B on 8003, thinking off | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` | 2: the language model on GPU 0, both speech models on GPU 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut) | Alignment worker on 8010 |
 | `qwen3-asr-qwen3-tts-vivian` (default) | Qwen3-ASR-1.7B service on 8002 | Qwen3.8-27B on 8000, thinking off | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` | 2: the language model on GPU 0, both speech models on GPU 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published) | Alignment worker on 8010 |
 | `qwen3-asr-streaming-qwen3-tts-vivian` | Qwen3-ASR-1.7B service on 8002 started with `--enable-realtime` (`streaming_transcription`, a partial transcript every 1000 ms of speech) | Qwen3.8-27B on 8000, thinking off | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` | 2: the language model on GPU 0, both speech models on GPU 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published) | Alignment worker on 8010 |
+| `moss-td-qwen3-tts-vivian` | MOSS-Transcribe-Diarize service on 8002 (`speaker_transcription`, a final transcript with speaker labels per utterance) | Qwen3.8-27B on 8000, thinking off, told what the labels mean | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` | 2: the language model on GPU 0, both speech models on GPU 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, published) | Alignment worker on 8010 |
 | `qwen3-asr-qwen3-tts-base-clone` | Qwen3-ASR-1.7B service on 8002 | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `reference_zh.wav` in the profile directory | 1 | `vad`, `turn_detection` (published), `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published) | Alignment worker on 8010 |
 | `nemotron-qwen3-tts` | Nemotron 3.5 streaming ASR service on 8001 (`realtime_transcription`) | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-0.6B-Base on 8004, cloning `reference.wav` | 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced) | Alignment worker on 8010; a recording at `reference.wav`, with `reference_text` set to its transcript |
 | `nemotron-stage-qwen3-tts` | Nemotron 3.5 ASR as the `asr` stage on GPU 0, with `running_transcript` | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-0.6B-Base on 8004, cloning `reference.wav` | 1 | `vad`, `asr` (stage), `transcript`, `dialog`, `llm`, `tts`, `aligner` (forced) | Alignment worker on 8010; a recording at `reference.wav`, with `reference_text` set to its transcript |
@@ -497,7 +498,7 @@ The formats each kind consumes and produces:
 
 | Kind | Consumes | Produces |
 | --- | --- | --- |
-| `realtime_transcription`, `openai_transcription` | `pcm16`, `session` | `transcript` |
+| `realtime_transcription`, `openai_transcription`, `speaker_transcription` | `pcm16`, `session` | `transcript` |
 | `running_transcript` | `pcm16`, `session`, `text` | `transcript` |
 | `dialog` | `transcript`, `text_delta`, `session` | `messages`, `session` |
 | `openai_chat` | `messages` | `text_delta`, `session` |
@@ -612,6 +613,21 @@ Sends each finished utterance as a 16 kHz WAV to `<base_url>/audio/transcription
 | `response_format` | `verbose_json` or `json` | `verbose_json` | `verbose_json` reports the language heard in each utterance; `json` suits a service without it and reports none. |
 | `api_key_env` | string | `OPENAI_API_KEY` | As above. |
 | `timeout_s` | number > 0 | `120` | The request timeout. |
+
+(speaker_transcription)=
+
+**`speaker_transcription`**
+
+
+Sends each finished utterance as a 16 kHz WAV to `<base_url>/audio/transcriptions` of a MOSS-Transcribe-Diarize service, the CUDA server or the native MLX one, and reports one final transcript whose text is one `[S01] words` line per run of one speaker and whose `segments` list each segment's `speaker`, `start_ms`, `end_ms` on the session clock and `text`. The model numbers the speakers of every request from `S01`, so the node sends the utterance after the last `context_s` of the session's speech, with the labels it gave them, and a speaker the model hears in both keeps its label; a speaker it does not hear there, such as one silent for longer than `context_s`, gets a new label. When the model joins the utterance's first words to the speech before it, or leaves the utterance out, the node transcribes the utterance alone and takes its speakers from the joined transcription. The dialog keeps the labelled text, so the language model and the history see who said what. Its transcripts carry no language, and it sends no partial transcripts.
+
+| Option | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `base_url` | string, `http://` or `https://` | required | The service, including `/v1`. |
+| `model` | string | required | The `model` form field. |
+| `context_s` | number ≥ 0 | `20` | Seconds of the session's latest speech sent before each utterance; each request carries up to that much more audio. `0` sends the utterance alone, and every speaker of every utterance gets a new label. |
+| `api_key_env` | string | `OPENAI_API_KEY` | As above. |
+| `timeout_s` | number > 0 | `120` | The timeout of each request. |
 
 (running_transcript)=
 
