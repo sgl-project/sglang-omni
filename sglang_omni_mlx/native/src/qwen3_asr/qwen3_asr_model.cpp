@@ -215,6 +215,13 @@ mx::array Qwen3ASR::Decode(const mx::array &embeddings,
   return decoder_.LastLogits(decoder_.Forward(embeddings, caches));
 }
 
+mx::array Qwen3ASR::DecodeBatch(const mx::array &embeddings,
+                                std::vector<BatchedKVCache> &caches,
+                                const mx::array &offsets,
+                                const mx::array &valid) const {
+  return decoder_.DecodeBatch(embeddings, caches, offsets, valid);
+}
+
 std::vector<KVCache> Qwen3ASR::NewCaches() const {
   return decoder_.NewCaches();
 }

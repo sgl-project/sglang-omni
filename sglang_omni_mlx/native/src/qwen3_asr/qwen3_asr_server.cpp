@@ -52,10 +52,8 @@ public:
       throw std::invalid_argument(
           "audio_layout must be reference or voxt_swift");
     }
-    return [this, samples = std::move(samples),
-            options = std::move(options)](const std::atomic<bool> &cancel) {
-      return transcriber_.Transcribe(samples, options, cancel);
-    };
+    return qwen3_asr::BatchableTranscription{&transcriber_, std::move(samples),
+                                             std::move(options)};
   }
 
   void AddHandlers(mg_context *context,

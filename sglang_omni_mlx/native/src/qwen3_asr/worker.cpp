@@ -1,9 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "qwen3_asr/worker.h"
 
+#include <algorithm>
+#include <cstdlib>
+
 namespace qwen3_asr {
 
 TranscriptionWorker::TranscriptionWorker(std::function<void()> load) {
+  if (const char *value = std::getenv("QWEN3_ASR_MAX_BATCH")) {
+    max_batch_ = std::max(1, std::atoi(value));
+  } else {
+  }
   std::promise<void> loaded;
   std::future<void> loaded_future = loaded.get_future();
   thread_ = std::thread(&TranscriptionWorker::Run, this, std::move(loaded),
@@ -44,7 +51,7 @@ void TranscriptionWorker::Run(std::promise<void> loaded,
     return;
   }
   while (true) {
-    Job job;
+    std::vector<Job> jobs;
     {
       std::unique_lock<std::mutex> lock(mutex_);
       // Note (khazic): a decode keeps MLX's buffer cache, since freeing every
@@ -63,29 +70,70 @@ void TranscriptionWorker::Run(std::promise<void> loaded,
         return;
       } else {
       }
-      job = std::move(queue_.front());
+      jobs.push_back(std::move(queue_.front()));
       queue_.pop_front();
-      running_ = true;
-      running_cancel_ = job.cancel;
-    }
-    std::optional<TranscriptionResult> result;
-    std::exception_ptr error;
-    try {
-      // Note (khazic): a request cancelled while queued never starts.
-      if (job.cancel->load()) {
-        throw TranscriptionCancelled();
+      // Whatever batchable requests are already waiting decode together;
+      // nothing waits for more to arrive.
+      if (jobs.front().transcription.target<BatchableTranscription>()) {
+        while (static_cast<int>(jobs.size()) < max_batch_ && !queue_.empty() &&
+               queue_.front().transcription.target<BatchableTranscription>()) {
+          jobs.push_back(std::move(queue_.front()));
+          queue_.pop_front();
+        }
       } else {
       }
-      result = job.transcription(*job.cancel);
-    } catch (...) {
-      error = std::current_exception();
+      running_ = true;
+      running_count_ = static_cast<int>(jobs.size());
+      running_cancels_.clear();
+      for (const Job &job : jobs) {
+        running_cancels_.push_back(job.cancel);
+      }
+    }
+    std::vector<std::optional<TranscriptionResult>> results(jobs.size());
+    std::vector<std::exception_ptr> errors(jobs.size());
+    if (jobs.size() > 1) {
+      // Note (khazic): a request cancelled while queued never starts; the
+      // batch checks each flag before it prefills.
+      std::vector<BatchRequest> requests;
+      const Qwen3ASRTranscriber *transcriber = nullptr;
+      for (const Job &job : jobs) {
+        const auto *batchable =
+            job.transcription.target<BatchableTranscription>();
+        transcriber = batchable->transcriber;
+        requests.push_back(
+            {&batchable->samples, &batchable->options, job.cancel.get()});
+      }
+      try {
+        std::vector<BatchOutcome> outcomes =
+            transcriber->TranscribeBatch(requests);
+        for (size_t i = 0; i < jobs.size(); ++i) {
+          results[i] = std::move(outcomes[i].result);
+          errors[i] = outcomes[i].error;
+        }
+      } catch (...) {
+        std::fill(errors.begin(), errors.end(), std::current_exception());
+      }
+    } else {
+      try {
+        // Note (khazic): a request cancelled while queued never starts.
+        if (jobs[0].cancel->load()) {
+          throw TranscriptionCancelled();
+        } else {
+        }
+        results[0] = jobs[0].transcription(*jobs[0].cancel);
+      } catch (...) {
+        errors[0] = std::current_exception();
+      }
     }
     {
       std::lock_guard<std::mutex> lock(mutex_);
       running_ = false;
-      running_cancel_.reset();
+      running_count_ = 0;
+      running_cancels_.clear();
     }
-    job.completion(std::move(result), error);
+    for (size_t i = 0; i < jobs.size(); ++i) {
+      jobs[i].completion(std::move(results[i]), errors[i]);
+    }
   }
 }
 
@@ -119,7 +167,7 @@ std::map<std::string, int> TranscriptionWorker::RequestStates() const {
   std::lock_guard<std::mutex> lock(mutex_);
   std::map<std::string, int> states;
   if (running_) {
-    states["running"] = 1;
+    states["running"] = running_count_;
   } else {
   }
   if (!queue_.empty()) {
@@ -134,9 +182,8 @@ void TranscriptionWorker::CancelAll() {
   for (const Job &job : queue_) {
     job.cancel->store(true);
   }
-  if (running_cancel_) {
-    running_cancel_->store(true);
-  } else {
+  for (const CancelFlag &cancel : running_cancels_) {
+    cancel->store(true);
   }
 }
 

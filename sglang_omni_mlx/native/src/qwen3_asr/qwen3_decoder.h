@@ -35,11 +35,35 @@ public:
   std::pair<mlx::core::array, mlx::core::array>
   UpdateAndFetch(const mlx::core::array &keys, const mlx::core::array &values);
   int offset() const { return offset_; }
+  // The filled keys and values, [1, kv_heads, offset, head_dim].
+  std::pair<mlx::core::array, mlx::core::array> Filled() const;
 
 private:
   std::optional<mlx::core::array> keys_;
   std::optional<mlx::core::array> values_;
   int offset_ = 0;
+};
+
+// Key/value cache for sequences decoded in lockstep. Rows are left-padded to
+// the longest, so every row appends at the same index; the pad slots are
+// masked out of attention.
+class BatchedKVCache {
+public:
+  // Each row is one sequence's filled [1, kv_heads, length, head_dim]; room
+  // is kept for extra_tokens appended steps.
+  BatchedKVCache(
+      const std::vector<std::pair<mlx::core::array, mlx::core::array>> &rows,
+      int extra_tokens);
+  // Appends [batch, kv_heads, 1, head_dim] and returns everything filled.
+  std::pair<mlx::core::array, mlx::core::array>
+  Append(const mlx::core::array &keys, const mlx::core::array &values);
+  int length() const { return end_; }
+  int capacity() const { return keys_.shape(2); }
+
+private:
+  mlx::core::array keys_;
+  mlx::core::array values_;
+  int end_ = 0;
 };
 
 class Qwen3Decoder {
@@ -58,10 +82,21 @@ public:
   // Logits of the last position of the hidden states, [vocab].
   mlx::core::array LastLogits(const mlx::core::array &hidden_states) const;
   std::vector<KVCache> NewCaches() const;
+  // One decode step for a batch, embeddings [batch, 1, hidden]. offsets is
+  // each row's true position, int32 [batch]; valid is [batch, 1, 1, capacity],
+  // true where a cache slot is not padding. Returns logits [batch, vocab].
+  mlx::core::array DecodeBatch(const mlx::core::array &embeddings,
+                               std::vector<BatchedKVCache> &caches,
+                               const mlx::core::array &offsets,
+                               const mlx::core::array &valid) const;
 
 private:
   mlx::core::array Layer(const mlx::core::array &x, int layer,
                          KVCache &cache) const;
+  mlx::core::array BatchLayer(const mlx::core::array &x, int layer,
+                              BatchedKVCache &cache,
+                              const mlx::core::array &offsets,
+                              const mlx::core::array &mask) const;
 
   const omni_common::Checkpoint &checkpoint_;
   std::string prefix_;

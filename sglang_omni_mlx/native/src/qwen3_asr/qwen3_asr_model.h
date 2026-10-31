@@ -37,6 +37,11 @@ public:
   mlx::core::array Decode(const mlx::core::array &embeddings,
                           std::vector<KVCache> &caches) const;
   std::vector<KVCache> NewCaches() const;
+  // One decode step for a batch; see Qwen3Decoder::DecodeBatch.
+  mlx::core::array DecodeBatch(const mlx::core::array &embeddings,
+                               std::vector<BatchedKVCache> &caches,
+                               const mlx::core::array &offsets,
+                               const mlx::core::array &valid) const;
 
 private:
   Qwen3ASR(const nlohmann::json &config,

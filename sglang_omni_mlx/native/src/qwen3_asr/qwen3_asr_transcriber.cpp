@@ -173,14 +173,9 @@ Qwen3ASRTranscriber::RetainedPrefix(const std::string &text,
   return {{}, ""};
 }
 
-TranscriptionResult
-Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
-                                const TranscriptionOptions &options,
-                                const std::atomic<bool> &cancel) const {
-  if (cancel.load()) {
-    throw TranscriptionCancelled();
-  } else {
-  }
+Qwen3ASRTranscriber::Prompt
+Qwen3ASRTranscriber::BuildPrompt(const std::vector<float> &samples,
+                                 const TranscriptionOptions &options) const {
   const mx::array mel = LogMel(samples, options.layout);
   const int audio_token_count = TokenCount(mel.shape(-1), options.layout);
   const std::vector<int> prompt_ids = PromptIds(audio_token_count, options);
@@ -212,10 +207,18 @@ Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
                 static_cast<int>(std::ceil(static_cast<double>(samples.size()) /
                                            omni_common::kSampleRate *
                                            kOutputTokensPerAudioSecond)));
-  const auto is_stop = [&](int token_id) {
-    return token_id == im_end_id_ ||
-           (options.stop_at_end_of_text && token_id == end_of_text_id_);
-  };
+  return {embeddings, max_new_tokens};
+}
+
+TranscriptionResult
+Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
+                                const TranscriptionOptions &options,
+                                const std::atomic<bool> &cancel) const {
+  if (cancel.load()) {
+    throw TranscriptionCancelled();
+  } else {
+  }
+  const auto [embeddings, max_new_tokens] = BuildPrompt(samples, options);
   std::vector<KVCache> caches = model_.NewCaches();
   mx::array next_token = mx::argmax(model_.Decode(embeddings, caches));
   mx::async_eval({next_token});
@@ -234,7 +237,7 @@ Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
     mx::async_eval({next_token});
     const int token_id = static_cast<int>(token.item<uint32_t>());
     output_ids.push_back(token_id);
-    if (is_stop(token_id)) {
+    if (IsStopToken(token_id, options)) {
       finish_reason = FinishReason::kStop;
       break;
     } else if (options.stop_on_token_loop && IsTokenLoop(output_ids)) {
@@ -243,13 +246,186 @@ Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
     } else {
     }
   }
+  return FinishedResult(output_ids, options, finish_reason);
+}
+
+bool Qwen3ASRTranscriber::IsStopToken(
+    int token_id, const TranscriptionOptions &options) const {
+  return token_id == im_end_id_ ||
+         (options.stop_at_end_of_text && token_id == end_of_text_id_);
+}
+
+TranscriptionResult
+Qwen3ASRTranscriber::FinishedResult(const std::vector<int> &output_ids,
+                                    const TranscriptionOptions &options,
+                                    FinishReason finish_reason) const {
   auto [text, language] = SplitOutput(output_ids, options);
-  const bool ended_on_stop = !output_ids.empty() && is_stop(output_ids.back());
+  const bool ended_on_stop =
+      !output_ids.empty() && IsStopToken(output_ids.back(), options);
   return {options.prefix_text + text,
           language,
           static_cast<int>(output_ids.size()) - (ended_on_stop ? 1 : 0),
           finish_reason,
           {}};
+}
+
+struct Qwen3ASRTranscriber::BatchRow {
+  size_t request_index;
+  int prompt_length;
+  int max_new_tokens;
+  std::vector<KVCache> prefill_caches;
+  mx::array first_token;
+  std::vector<int> output_ids;
+  bool is_done = false;
+};
+
+std::vector<BatchOutcome> Qwen3ASRTranscriber::TranscribeBatch(
+    const std::vector<BatchRequest> &requests) const {
+  std::vector<BatchOutcome> outcomes(requests.size());
+  std::vector<BatchRow> rows = PrefillRows(requests, outcomes);
+  if (!rows.empty()) {
+    DecodeRows(requests, rows, outcomes);
+  } else {
+  }
+  return outcomes;
+}
+
+// Each request prefills alone: prompts differ in length, and the encoder and
+// prefill run once per request either way. A request that fails here ends with
+// its error and joins no batch.
+std::vector<Qwen3ASRTranscriber::BatchRow>
+Qwen3ASRTranscriber::PrefillRows(const std::vector<BatchRequest> &requests,
+                                 std::vector<BatchOutcome> &outcomes) const {
+  std::vector<BatchRow> rows;
+  for (size_t i = 0; i < requests.size(); ++i) {
+    try {
+      if (requests[i].cancel->load()) {
+        throw TranscriptionCancelled();
+      } else {
+      }
+      const Prompt prompt =
+          BuildPrompt(*requests[i].samples, *requests[i].options);
+      std::vector<KVCache> caches = model_.NewCaches();
+      const mx::array first_token =
+          mx::argmax(model_.Decode(prompt.embeddings, caches));
+      mx::async_eval({first_token});
+      rows.push_back({i,
+                      prompt.embeddings.shape(1),
+                      prompt.max_new_tokens,
+                      std::move(caches),
+                      first_token,
+                      {}});
+    } catch (...) {
+      outcomes[i].error = std::current_exception();
+    }
+  }
+  return rows;
+}
+
+std::vector<BatchedKVCache>
+Qwen3ASRTranscriber::StackCaches(const std::vector<BatchRow> &rows,
+                                 int extra_tokens) {
+  const int layer_count = static_cast<int>(rows[0].prefill_caches.size());
+  std::vector<BatchedKVCache> caches;
+  caches.reserve(layer_count);
+  for (int layer = 0; layer < layer_count; ++layer) {
+    std::vector<std::pair<mx::array, mx::array>> filled;
+    for (const BatchRow &row : rows) {
+      filled.push_back(row.prefill_caches[layer].Filled());
+    }
+    caches.emplace_back(filled, extra_tokens);
+  }
+  return caches;
+}
+
+bool Qwen3ASRTranscriber::AcceptToken(BatchRow &row, int token_id,
+                                      const TranscriptionOptions &options,
+                                      BatchOutcome &outcome) const {
+  row.output_ids.push_back(token_id);
+  if (IsStopToken(token_id, options) ||
+      (options.stop_on_token_loop && IsTokenLoop(row.output_ids))) {
+    outcome.result =
+        FinishedResult(row.output_ids, options, FinishReason::kStop);
+    return true;
+  } else if (static_cast<int>(row.output_ids.size()) >= row.max_new_tokens) {
+    outcome.result =
+        FinishedResult(row.output_ids, options, FinishReason::kLength);
+    return true;
+  } else {
+    return false;
+  }
+}
+
+void Qwen3ASRTranscriber::DecodeRows(
+    const std::vector<BatchRequest> &requests, std::vector<BatchRow> &rows,
+    std::vector<BatchOutcome> &outcomes) const {
+  const int batch = static_cast<int>(rows.size());
+  int longest_prompt = 0;
+  int most_new_tokens = 0;
+  std::vector<mx::array> first_tokens;
+  // Rows are left-padded to the longest prompt; the pad slots are masked out.
+  std::vector<int32_t> pads;
+  // Each row's true position, which differs from the shared cache index.
+  std::vector<int32_t> positions;
+  for (const BatchRow &row : rows) {
+    longest_prompt = std::max(longest_prompt, row.prompt_length);
+    most_new_tokens = std::max(most_new_tokens, row.max_new_tokens);
+    first_tokens.push_back(mx::reshape(row.first_token, {1}));
+    positions.push_back(row.prompt_length);
+  }
+  for (const BatchRow &row : rows) {
+    pads.push_back(longest_prompt - row.prompt_length);
+  }
+  // One step past the budget is queued before its token is read.
+  std::vector<BatchedKVCache> caches = StackCaches(rows, most_new_tokens + 1);
+  // The stacked caches hold the prefill keys and values; drop the per-row
+  // copies so the decode does not keep both alive.
+  for (BatchRow &row : rows) {
+    row.prefill_caches.clear();
+  }
+  const int capacity = caches[0].capacity();
+  const mx::array valid = mx::reshape(
+      mx::greater_equal(mx::arange(capacity, mx::int32),
+                        mx::array(pads.data(), {batch, 1}, mx::int32)),
+      {batch, 1, 1, capacity});
+  mx::array next_tokens = mx::concatenate(first_tokens, 0);
+  mx::async_eval({next_tokens});
+  int active_count = batch;
+  while (active_count > 0) {
+    const mx::array tokens = next_tokens;
+    // Queue the next step for the whole batch before reading this one, as the
+    // single-request loop does.
+    next_tokens = mx::argmax(
+        model_.DecodeBatch(
+            model_.EmbedTokens(mx::reshape(tokens, {batch, 1})), caches,
+            mx::array(positions.data(), {batch}, mx::int32), valid),
+        -1);
+    mx::async_eval({next_tokens});
+    mx::eval(tokens);
+    const uint32_t *token_ids = tokens.data<uint32_t>();
+    for (int i = 0; i < batch; ++i) {
+      BatchRow &row = rows[i];
+      ++positions[i];
+      if (row.is_done) {
+        continue;
+      } else {
+      }
+      const BatchRequest &request = requests[row.request_index];
+      BatchOutcome &outcome = outcomes[row.request_index];
+      if (request.cancel->load()) {
+        outcome.error = std::make_exception_ptr(TranscriptionCancelled());
+        row.is_done = true;
+      } else if (AcceptToken(row, static_cast<int>(token_ids[i]),
+                             *request.options, outcome)) {
+        row.is_done = true;
+      } else {
+      }
+      if (row.is_done) {
+        --active_count;
+      } else {
+      }
+    }
+  }
 }
 
 std::pair<std::string, std::optional<std::string>>

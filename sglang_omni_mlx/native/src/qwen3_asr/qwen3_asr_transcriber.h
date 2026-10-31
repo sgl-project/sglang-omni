@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <optional>
 #include <stdexcept>
@@ -69,6 +70,18 @@ SpeakerSegmentsJson(const std::vector<SpeakerSegment> &segments);
 // Voxt's Swift port, a name outside the table is used as given; blank is none.
 std::optional<std::string> NormalizeLanguage(const std::string &language);
 
+struct BatchRequest {
+  const std::vector<float> *samples;
+  const TranscriptionOptions *options;
+  const std::atomic<bool> *cancel;
+};
+
+// A finished request's result, or the exception that ended it.
+struct BatchOutcome {
+  std::optional<TranscriptionResult> result;
+  std::exception_ptr error;
+};
+
 class Qwen3ASRTranscriber {
 public:
   explicit Qwen3ASRTranscriber(const std::filesystem::path &model_directory);
@@ -81,8 +94,39 @@ public:
   TranscriptionResult Transcribe(const std::vector<float> &samples,
                                  const TranscriptionOptions &options,
                                  const std::atomic<bool> &cancel) const;
+  // Transcribes several requests, decoding them together; one outcome per
+  // request, in order. Greedy output matches Transcribe's.
+  std::vector<BatchOutcome>
+  TranscribeBatch(const std::vector<BatchRequest> &requests) const;
 
 private:
+  struct Prompt {
+    mlx::core::array embeddings;
+    int max_new_tokens;
+  };
+  // Mel, audio encoder and prompt embeddings [1, length, hidden], plus the
+  // token budget.
+  Prompt BuildPrompt(const std::vector<float> &samples,
+                     const TranscriptionOptions &options) const;
+  bool IsStopToken(int token_id, const TranscriptionOptions &options) const;
+  TranscriptionResult FinishedResult(const std::vector<int> &output_ids,
+                                     const TranscriptionOptions &options,
+                                     FinishReason finish_reason) const;
+
+  struct BatchRow;
+  // Prefills every request; outcomes holds the error of any that fail.
+  std::vector<BatchRow> PrefillRows(const std::vector<BatchRequest> &requests,
+                                    std::vector<BatchOutcome> &outcomes) const;
+  static std::vector<BatchedKVCache>
+  StackCaches(const std::vector<BatchRow> &rows, int extra_tokens);
+  // Decodes the rows together until each has finished or been cancelled.
+  void DecodeRows(const std::vector<BatchRequest> &requests,
+                  std::vector<BatchRow> &rows,
+                  std::vector<BatchOutcome> &outcomes) const;
+  // Appends the token to the row; true once the row's result is final.
+  bool AcceptToken(BatchRow &row, int token_id,
+                   const TranscriptionOptions &options,
+                   BatchOutcome &outcome) const;
   std::pair<std::string, std::optional<std::string>>
   SplitOutput(const std::vector<int> &output_ids,
               const TranscriptionOptions &options) const;
@@ -93,6 +137,19 @@ private:
   int end_of_text_id_;
   int im_end_id_;
   std::vector<int> asr_text_ids_;
+};
+
+// One request the worker may decode together with others. Called alone it
+// transcribes serially; the worker finds it through
+// std::function::target<BatchableTranscription>().
+struct BatchableTranscription {
+  const Qwen3ASRTranscriber *transcriber;
+  std::vector<float> samples;
+  TranscriptionOptions options;
+
+  TranscriptionResult operator()(const std::atomic<bool> &cancel) const {
+    return transcriber->Transcribe(samples, options, cancel);
+  }
 };
 
 } // namespace qwen3_asr
