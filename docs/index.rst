@@ -175,6 +175,7 @@ Supported Models
    developer_reference/profiler.md
    developer_reference/qwen3_asr_concurrency_profile.md
    developer_reference/full_duplex_guide.md
+   developer_reference/duplex_load_generator_pacing.md
    developer_reference/tts_bench.md
    developer_reference/tts_model_integration.md
    developer_reference/asr_bench.md
