@@ -1,0 +1,29 @@
+config_cls: MossTTSLocalPipelineConfig
+model_path: OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5
+mps: "off"
+vocoder_cuda_graph: true
+vocoder_cuda_graph_frames: [1, 2, 3, 4, 5, 6, 7]
+stages:
+  preprocessing:
+    factory:
+      compute_dtype: bfloat16
+      attention_backend: sdpa
+      encode_batch_size: 1
+  tts_engine:
+    factory:
+      dtype: bfloat16
+      frame_graph_batch_sizes: [1, 2, 4, 8, 12, 16]
+    engine:
+      attention_backend: ascend
+      sampling_backend: pytorch
+      kv_cache_bytes: 2147483648
+      max_running_requests: 16
+      cuda_graph_max_bs: 16
+      cuda_graph_backend_prefill: disabled
+      disable_cuda_graph: true
+  vocoder:
+    gpu: 0
+    factory:
+      dtype: float32
+      compute_dtype: bfloat16
+      attention_backend: sdpa

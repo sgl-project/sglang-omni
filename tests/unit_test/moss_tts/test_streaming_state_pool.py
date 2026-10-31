@@ -7,6 +7,8 @@ import pytest
 import torch
 
 from sglang_omni.models.moss_tts.audio_tokenizer import MossAudioTokenizerVocoder
+from sglang_omni.models.moss_tts.vocoder import decode_codes_batch
+from sglang_omni.platforms import current_platform
 
 
 def tiny_repository_vocoder(
@@ -55,6 +57,50 @@ def tiny_repository_vocoder(
     )
     model.eval()
     return model
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not current_platform.is_npu(), reason="requires NPU")
+def test_npu_codec_keeps_layer_norm_fp32_in_both_decode_paths() -> None:
+    """FP32 quantizer output must work with a BF16 decoder on NPU."""
+    device = torch.device(current_platform.device_type)
+    model = tiny_repository_vocoder().to(device)
+    model.decoder.to(torch.bfloat16)
+    model.decoder_dtype = torch.bfloat16
+    model.compute_dtype = torch.bfloat16
+    norm_dtypes: list[torch.dtype] = []
+    for module in model.decoder.modules():
+        if isinstance(module, torch.nn.LayerNorm):
+            module.register_forward_hook(
+                lambda module, inputs, output: norm_dtypes.append(output.dtype)
+            )
+        else:
+            pass
+    rows = torch.tensor([[1], [2], [3]])
+    [offline] = decode_codes_batch(
+        [rows],
+        quantizer_decode=model.quantizer.decode_codes,
+        decoder=model.decoder,
+        device=device,
+        compute_dtype=model.compute_dtype,
+        max_batch_size=1,
+    )
+    assert torch.isfinite(offline).all()
+    assert norm_dtypes and set(norm_dtypes) == {torch.float32}
+    norm_dtypes.clear()
+    model.initialize_decoder_state_pool(1)
+    try:
+        audio, lengths = model.decode_streaming_tensors(
+            rows.T.unsqueeze(1).to(device),
+            torch.tensor([3], device=device),
+            torch.tensor([0], device=device),
+            torch.tensor([True], device=device),
+        )
+        assert torch.isfinite(audio).all()
+        assert lengths.tolist() == [3]
+        assert norm_dtypes and set(norm_dtypes) == {torch.float32}
+    finally:
+        model.close_decoder_state_pool()
 
 
 @pytest.mark.parametrize(

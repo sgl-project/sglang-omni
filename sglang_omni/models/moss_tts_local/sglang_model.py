@@ -40,6 +40,8 @@ from sglang_omni.models.moss_tts_local.payload_types import (
     moss_tts_local_special_token_defaults,
 )
 from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeStatePool
+from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.device_graph import ReplayableGraph
 
 logger = logging.getLogger(__name__)
 
@@ -371,7 +373,10 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         return compiled
 
     def ensure_frame_sampler_compile(self) -> None:
-        if self.compiled_frame_sampler is None:
+        if current_platform.is_npu():
+            self.compiled_frame_sampler = sample_seeded_branchless
+            self.sample_seeded_branchless = sample_seeded_branchless
+        elif self.compiled_frame_sampler is None:
             if os.environ.get("MOSS_LOCAL_FUSED_FRAME_SAMPLER", "1") != "0":
                 self.compiled_frame_sampler = self.fused_or_branchless_sampler
                 self.sample_seeded_branchless = self.fused_or_branchless_sampler
@@ -479,6 +484,12 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         else:
             pass
         device = self.device
+        graph_backend = current_platform.get_device_graph_backend(device)
+        if graph_backend is None:
+            raise RuntimeError(f"Frame decode graphs are unavailable on {device}")
+        else:
+            pass
+        device_module = torch.get_device_module(device)
         max_eager_bs = int(self.decode_input_embedding.weight.shape[0])
         self.local_transformer.ensure_kv_cache(
             max(max(buckets), max_eager_bs), device, self.dtype
@@ -489,7 +500,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         self.frame_graphs: dict[
             int,
             tuple[
-                torch.cuda.CUDAGraph,
+                ReplayableGraph,
                 dict[str, torch.Tensor],
                 torch.Tensor,
                 torch.Tensor,
@@ -518,15 +529,14 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
                 "seeds": torch.zeros(bucket, device=device, dtype=torch.long),
                 "base_positions": torch.zeros(bucket, device=device, dtype=torch.long),
             }
-            warmup_stream = torch.cuda.Stream()
-            warmup_stream.wait_stream(torch.cuda.current_stream())
-            with torch.cuda.stream(warmup_stream):
+            warmup_stream = device_module.Stream(device=device)
+            warmup_stream.wait_stream(device_module.current_stream(device))
+            with device_module.stream(warmup_stream):
                 for _ in range(2):
                     frame_decode(**static_inputs)
-            torch.cuda.current_stream().wait_stream(warmup_stream)
-            torch.cuda.synchronize()
-            graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(graph):
+            device_module.current_stream(device).wait_stream(warmup_stream)
+            device_module.synchronize(device)
+            with graph_backend.capture() as graph:
                 stop_choice, codes, feedback = frame_decode(**static_inputs)
             self.frame_graphs[bucket] = (
                 graph,
@@ -536,7 +546,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
                 feedback,
             )
         logger.info(
-            f"MOSS-TTS Local frame-decode CUDA graphs captured for bs={buckets}"
+            f"MOSS-TTS Local frame-decode {device.type} graphs captured for bs={buckets}"
         )
 
     @property
