@@ -89,9 +89,11 @@ class FishS2ProEngineBuilder(TtsEngineBuilder[request_builders.S2ProSGLangReques
         *,
         max_new_tokens: int,
         ras_window: int,
+        enable_async_decode: bool = False,
     ) -> None:
         self.max_new_tokens = max_new_tokens
         self.ras_window = ras_window
+        self.enable_async_decode = enable_async_decode
         self.adapter: S2ProTokenizerAdapter | None = None
         self.tokenizer: PreTrainedTokenizerFast | None = None
 
@@ -194,6 +196,7 @@ class FishS2ProEngineBuilder(TtsEngineBuilder[request_builders.S2ProSGLangReques
             codebook_size=codebook_size,
             ras_window=self.ras_window,
         )
+        model.async_decode_state_enabled = self.enable_async_decode
 
     def get_model_buffer_bs(self, model: S2ProSGLangTextModel) -> int:
         return fish_stages.resolve_s2pro_model_buffer_bs(model)
@@ -245,4 +248,8 @@ class FishS2ProEngineBuilder(TtsEngineBuilder[request_builders.S2ProSGLangReques
     def extra_scheduler_kwargs(
         self,
     ) -> SchedulerExtras[request_builders.S2ProSGLangRequestData]:
-        return {"stream_output_builder": self.stream_output_builder}
+        return {
+            "stream_output_builder": self.stream_output_builder,
+            "enable_async_decode": self.enable_async_decode,
+            "async_decode_resolve_before_prefill": True,
+        }

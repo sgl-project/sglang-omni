@@ -701,9 +701,8 @@ def test_fish_tts_stream_output_builder_gates_and_clears_chunks() -> None:
     assert stream_output_builder("non-stream", non_stream_data, None) == []
 
 
-def test_lookahead_is_never_eligible_for_fish():
-    """The in-model sampler reads semantic history, so lookahead must stay off
-    even though the SamplingParams the base gate inspects are history-free."""
+def test_fish_lookahead_is_disabled_by_default() -> None:
+    """History-free generic sampling must not bypass the Fish opt-in flag."""
     runner = object.__new__(FishS2ProModelRunner)
     req = SimpleNamespace(
         sampling_params=SimpleNamespace(
@@ -715,3 +714,265 @@ def test_lookahead_is_never_eligible_for_fish():
         custom_logit_processor=None,
     )
     assert runner.lookahead_eligible(SimpleNamespace(reqs=[req])) is False
+
+
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        pytest.param(
+            "cuda",
+            marks=[
+                pytest.mark.accelerator,
+                pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA"),
+            ],
+        ),
+    ],
+)
+def test_fish_async_snapshots_survive_next_launch_and_skip_inactive_rows(
+    monkeypatch: pytest.MonkeyPatch, device: str
+) -> None:
+    """The next launch must not overwrite an unresolved frame or append overruns."""
+    requests = [make_s2pro_request(str(index)) for index in range(5)]
+    for index, request in enumerate(requests):
+        request.data.req.finished = lambda index=index: index == 3
+        request.data.req.is_retracted = index == 4
+    requests[2].data.req.inflight_middle_chunks = 1
+    code_rows = torch.arange(55, device=device).reshape(5, 11)
+    code_rows[:, 0] = SEMANTIC_TOKEN_ID
+    code_rows[1, 0] = IM_END_TOKEN_ID
+    expected_codes = code_rows.cpu().clone()
+    runner = object.__new__(FishS2ProModelRunner)
+    runner.model = SimpleNamespace(output_codes=code_rows, rep_history_len=4)
+    runner.im_end_token_id = IM_END_TOKEN_ID
+    runner.staging_slot = 0
+    runner.host_staging_buffers = []
+    if device == "cpu":
+        monkeypatch.setattr(
+            runner,
+            "next_host_staging",
+            lambda shape, dtype: torch.empty(shape, dtype=dtype),
+        )
+    else:
+        pass
+    first_result = SimpleNamespace(next_token_ids=None)
+    first_snapshot = runner.post_decode_launch(first_result, None, requests)
+    runner.model.output_codes[0, 0].add_(1)
+    runner.model.output_codes[:, 1:].add_(100)
+    second_result = SimpleNamespace(next_token_ids=None)
+    second_snapshot = runner.post_decode_launch(second_result, None, requests)
+    if device == "cuda":
+        torch.cuda.synchronize()
+    else:
+        pass
+
+    runner.post_decode_resolve(first_snapshot, first_result, None, None, requests)
+
+    assert first_result.next_token_ids.tolist() == expected_codes[:, 0].tolist()
+    torch.testing.assert_close(
+        requests[0].data.output_codes[0].cpu(), expected_codes[0].unsqueeze(1)
+    )
+    assert requests[0].data.semantic_history_count == 1
+    for request in requests[1:]:
+        assert request.data.output_codes == []
+        assert request.data.latest_stream_code_chunk is None
+        assert request.data.semantic_history_count == 0
+        assert request.data.last_codebook_values is None
+
+    runner.post_decode_resolve(second_snapshot, second_result, None, None, requests)
+    assert len(requests[0].data.output_codes) == 2
+    assert requests[0].data.semantic_history_count == 2
+    assert requests[0].data.previous_semantic_tokens == [
+        SEMANTIC_TOKEN_ID,
+        SEMANTIC_TOKEN_ID + 1,
+    ]
+    torch.testing.assert_close(
+        requests[0].data.last_codebook_values.cpu(), expected_codes[0, 1:] + 100
+    )
+
+
+class FishAsyncAudioDecoder:
+    """Small deterministic fast head for testing the real decode state lifecycle."""
+
+    def __init__(self, device: str) -> None:
+        self.codebook_embeddings = torch.nn.Embedding(80, 4, device=device)
+        self.codebook_offsets = torch.arange(10, device=device) * 8
+
+    def reset_caches(self) -> None:
+        pass
+
+    def project_in(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        return hidden_states
+
+    def embeddings(self, token_ids: torch.Tensor) -> torch.Tensor:
+        return token_ids.unsqueeze(1).expand(-1, 4).float()
+
+    def forward_kvcached(
+        self, hidden_states: torch.Tensor, *, codebook_idx: int
+    ) -> torch.Tensor:
+        token_ids = torch.arange(8, device=hidden_states.device)
+        return (
+            -(token_ids - codebook_idx % 8)
+            .float()
+            .square()
+            .expand(hidden_states.shape[0], 1, -1)
+        )
+
+
+def make_fish_async_runner(
+    device: str, *, enabled: bool
+) -> tuple[FishS2ProModelRunner, list[SchedulerRequest]]:
+    runner = object.__new__(FishS2ProModelRunner)
+    runner.model = SimpleNamespace(
+        vocab_size=640,
+        embed_tokens=SimpleNamespace(weight=torch.empty(1, device=device)),
+    )
+    S2ProSGLangTextModel.setup_vq_decode(
+        runner.model,
+        FishAsyncAudioDecoder(device),
+        num_codebooks=10,
+        codebook_size=8,
+        semantic_begin_id=200,
+        semantic_end_id=207,
+        im_end_token_id=99,
+        max_batch_size=3,
+        rep_history_len=4,
+    )
+    runner.model.async_decode_state_enabled = enabled
+    runner.async_enabled = enabled
+    runner.semantic_begin_id = 200
+    runner.semantic_end_id = 207
+    runner.im_end_token_id = 99
+    runner.last_decode_request_ids = None
+    request_builder, _, _ = make_tts_scheduler_adapters(tokenizer=FakeFishTokenizer())
+    requests = [
+        SchedulerRequest(
+            request_id=f"request-{index}",
+            data=request_builder(
+                make_s2pro_payload(
+                    make_s2pro_state(vq_parts=None, max_new_tokens=32, seed=42),
+                    request_id=f"request-{index}",
+                )
+            ),
+        )
+        for index in range(2)
+    ]
+    return runner, requests
+
+
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        pytest.param(
+            "cuda",
+            marks=[
+                pytest.mark.accelerator,
+                pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA"),
+            ],
+        ),
+    ],
+)
+def test_fish_async_device_state_matches_sync_after_history_wrap(
+    monkeypatch: pytest.MonkeyPatch, device: str
+) -> None:
+    """Decode without host collect must retain sync history, steps, codes and EOS."""
+    if device == "cpu":
+        monkeypatch.setitem(
+            S2ProSGLangTextModel.decode_codebooks.__wrapped__.__globals__,
+            "multinomial_with_seed",
+            lambda logprobs, seeds, pos: logprobs.argmax(-1, keepdim=True),
+        )
+    else:
+        pass
+    synchronous, requests = make_fish_async_runner(device, enabled=False)
+    asynchronous, _ = make_fish_async_runner(device, enabled=True)
+    requests[1].data.semantic_history_tokens = torch.tensor(
+        [205, 206, 0, 0], device=device
+    )
+    requests[1].data.semantic_history_count = 2
+    logits = torch.full((2, 640), -float("inf"), device=device)
+    logits[0, 200:208] = torch.arange(8, device=device).float() / 8
+    logits[1, 99] = 1.0
+    hidden_states = torch.zeros(2, 4, device=device)
+    asynchronous.sync_decode_state(requests)
+    if device == "cuda":
+        warmup_stream = torch.cuda.Stream()
+        warmup_stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(warmup_stream):
+            S2ProSGLangTextModel.decode_codebooks(
+                asynchronous.model, logits, hidden_states
+            )
+        torch.cuda.current_stream().wait_stream(warmup_stream)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            S2ProSGLangTextModel.decode_codebooks(
+                asynchronous.model, logits, hidden_states
+            )
+        asynchronous.sync_decode_state(requests)
+        asynchronous.model.vq_codes.zero_()
+    else:
+        pass
+
+    for step in range(8):
+        synchronous.sync_decode_state(requests)
+        S2ProSGLangTextModel.decode_codebooks(synchronous.model, logits, hidden_states)
+        synchronous.collect_step_outputs(SimpleNamespace(next_token_ids=None), requests)
+        if device == "cuda":
+            graph.replay()
+        else:
+            S2ProSGLangTextModel.decode_codebooks(
+                asynchronous.model, logits, hidden_states
+            )
+        torch.testing.assert_close(
+            asynchronous.model.output_codes, synchronous.model.output_codes
+        )
+        torch.testing.assert_close(
+            asynchronous.model.vq_codes[:2], synchronous.model.output_codes[:2, 1:]
+        )
+        torch.testing.assert_close(
+            asynchronous.model.prev_tokens[0], requests[0].data.semantic_history_tokens
+        )
+        assert asynchronous.model.prev_token_count.tolist() == [min(step + 1, 4), 2, 0]
+        assert asynchronous.model.step_count.tolist() == [step + 1, 2, 0]
+        torch.testing.assert_close(
+            asynchronous.model.prev_tokens[1], requests[1].data.semantic_history_tokens
+        )
+        assert asynchronous.model.prev_tokens[2].count_nonzero().item() == 0
+        assert asynchronous.model.vq_codes[2].count_nonzero().item() == 0
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_fish_async_stable_rows_keep_device_state_and_reordered_rows_resync() -> None:
+    """Stable rows must not reload stale host state; reordered rows must reload it."""
+    runner, requests = make_fish_async_runner("cuda", enabled=True)
+    forward_batch = SimpleNamespace(input_ids=torch.tensor([200, 200], device="cuda"))
+    batch = SimpleNamespace(reqs=[request.data.req for request in requests])
+    assert not runner.lookahead_eligible(batch)
+    runner.before_decode(forward_batch, batch, requests)
+    assert runner.lookahead_eligible(batch)
+    runner.model.vq_codes[:2].fill_(7)
+    runner.model.prev_tokens[:2].fill_(201)
+    runner.model.step_count[:2].fill_(9)
+
+    runner.before_decode(forward_batch, batch, requests, is_lookahead=True)
+
+    assert runner.model.vq_codes[:2].eq(7).all().item()
+    assert runner.model.prev_tokens[:2].eq(201).all().item()
+    assert runner.model.step_count[:2].tolist() == [9, 9]
+    for index, request in enumerate(requests):
+        request.data.last_codebook_values = torch.full((10,), index + 1)
+        request.data.semantic_history_tokens = torch.full((4,), 202 + index)
+        request.data.semantic_history_count = 6 + index
+    requests.reverse()
+    batch.reqs.reverse()
+    assert not runner.lookahead_eligible(batch)
+
+    runner.before_decode(forward_batch, batch, requests)
+
+    assert runner.model.vq_codes[:2].tolist() == [[2] * 10, [1] * 10]
+    assert runner.model.prev_tokens[:2].tolist() == [[203] * 4, [202] * 4]
+    assert runner.model.prev_token_count[:2].tolist() == [4, 4]
+    assert runner.model.step_count[:2].tolist() == [7, 6]
+    assert runner.lookahead_eligible(batch)

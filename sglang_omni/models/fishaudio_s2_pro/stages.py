@@ -493,6 +493,7 @@ def create_sglang_tts_engine_executor(
     max_new_tokens: int = 2048,
     top_k: int = 30,
     ras_window: int = 16,
+    enable_async_decode: bool = False,
     server_args_overrides: Mapping[str, object] | None = None,
 ):
     """Returns OmniScheduler for the Fish TTS AR engine."""
@@ -504,6 +505,7 @@ def create_sglang_tts_engine_executor(
     return FishS2ProEngineBuilder(
         max_new_tokens=max_new_tokens,
         ras_window=ras_window,
+        enable_async_decode=enable_async_decode,
     ).build(
         model_path,
         device=device,
