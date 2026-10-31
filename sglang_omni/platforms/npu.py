@@ -46,6 +46,10 @@ class NPUOmniPlatform(OmniPlatform):
         """Disabled as it run on CPU and faced errors during inference for now"""
         return False
 
+    def supports_graph_captured_fft(self) -> bool:
+        """Disabled: the CPU-side overlap-add fails inside a capture (107027)."""
+        return False
+
     def get_torch_profiler(self) -> TorchProfiler:
         from sglang_omni.profiler.torch_profiler import TorchNPUProfiler
 

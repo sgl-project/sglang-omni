@@ -17,11 +17,15 @@ import torch
         "context_length",
         "expected_tail_capacity",
         "expected_aggregator_capacity",
+        "has_platform_rope_kernel",
+        "platform_is_npu",
     ),
     [
-        (3, False, 8, 128, 8, 128),
-        (5, True, 64, 2, 5, 5),
-        (12, False, 8, 4, 12, 12),
+        (3, False, 8, 128, 8, 128, True, True),
+        (5, True, 64, 2, 5, 5, True, True),
+        (12, False, 8, 4, 12, 12, True, True),
+        # note: Ascend NPU has no joint-RoPE kernel, so it keeps native RoPE.
+        (3, False, 8, 128, 8, 128, False, True),
     ],
 )
 def test_ming_tts_owns_tail_execution_geometry(
@@ -32,6 +36,8 @@ def test_ming_tts_owns_tail_execution_geometry(
     context_length: int,
     expected_tail_capacity: int,
     expected_aggregator_capacity: int,
+    has_platform_rope_kernel: bool,
+    platform_is_npu: bool,
 ) -> None:
     from sglang_omni.models.ming_omni.talker.talker_module.execution import (
         TalkerExecutionConfig,
@@ -85,12 +91,15 @@ def test_ming_tts_owns_tail_execution_geometry(
             decode=SimpleNamespace(max_bs=graph_max_batch_size)
         ),
     )
-    kernel = Mock()
+    kernel = Mock() if has_platform_rope_kernel else None
     provider = Mock(return_value=kernel)
     monkeypatch.setattr(
         sglang_model,
         "current_platform",
-        SimpleNamespace(get_joint_rope_inplace_kernel=provider),
+        SimpleNamespace(
+            get_joint_rope_inplace_kernel=provider,
+            is_npu=lambda: platform_is_npu,
+        ),
     )
     monkeypatch.setattr(sglang_model, "MingBailingMoeTextModel", Backbone)
     monkeypatch.setattr(sglang_model, "Aggregator", CapturingAggregator)
@@ -137,7 +146,8 @@ def test_ming_tts_owns_tail_execution_geometry(
     assert config.aggregator_config["execution_config"] is stale_execution_config
     assert config.ditar_config["execution_config"] is stale_execution_config
     provider.assert_called_once_with()
-    kernel.assert_not_called()
+    if kernel is not None:
+        kernel.assert_not_called()
 
 
 @pytest.mark.parametrize("platform_name", ["CPUOmniPlatform"])

@@ -323,12 +323,21 @@ class AudioVAEFixedStreamingTransition:
             else nullcontext()
         )
         with torch.inference_mode(), reference_context:
+            # The large irfft/fold below faults the Ascend NPU vector core, so
+            # NPU builds this reference envelope on CPU; the rest of the module
+            # stays on the NPU device.
+            reference_device = torch.device("cpu") if device.type == "npu" else device
             reference_spectrum = torch.zeros(
                 (1, int(istft.n_fft) // 2 + 1, frames_per_patch),
-                device=device,
+                device=reference_device,
                 dtype=torch.complex64,
             )
-            _, reference_envelope = istft.overlap_add_components(reference_spectrum)
+            reference_window = (
+                istft.window.float().cpu() if device.type == "npu" else None
+            )
+            _, reference_envelope = istft.overlap_add_components(
+                reference_spectrum, window=reference_window
+            )
         tail_start = frames_per_patch * hop_length
         window_envelope_tail = reference_envelope[
             :, tail_start : tail_start + overlap
@@ -676,23 +685,33 @@ class AudioVAEFixedStreamingTransition:
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         head = self.decoder.head
         spectrum, _ = head.predict_spectrum(hidden)
-        frame_mask = torch.arange(self.max_frames, device=self.device).unsqueeze(
+        # The irfft/fold overlap-add faults the Ascend vector core, so run it on
+        # CPU and copy the results back to keep the streaming state on device.
+        work_device = torch.device("cpu") if self.device.type == "npu" else self.device
+        frame_lengths = frame_lengths.to(work_device)
+        exec_mask = exec_mask.to(work_device)
+        terminal_mask = terminal_mask.to(work_device)
+        frame_mask = torch.arange(self.max_frames, device=work_device).unsqueeze(
             0
         ) < frame_lengths.unsqueeze(1)
         numerator, denominator = head.istft.overlap_add_components(
-            spectrum, valid_frame_mask=frame_mask
+            spectrum.to(work_device),
+            valid_frame_mask=frame_mask,
+            window=(
+                head.istft.window.float().cpu() if work_device.type == "cpu" else None
+            ),
         )
-        started = (self.state.qwen_positions > 0) & exec_mask
+        started = (self.state.qwen_positions.to(work_device) > 0) & exec_mask
         numerator[:, : self.overlap].add_(
-            self.state.istft_audio_overlap * started.unsqueeze(1)
+            self.state.istft_audio_overlap.to(work_device) * started.unsqueeze(1)
         )
         denominator[:, : self.overlap].add_(
-            self.window_envelope_tail * started.unsqueeze(1)
+            self.window_envelope_tail.to(work_device) * started.unsqueeze(1)
         )
         raw_lengths = frame_lengths * self.hop_length + self.overlap
         buffer_start = torch.clamp(raw_lengths - self.overlap, min=0)
         buffer_index = buffer_start.unsqueeze(1) + torch.arange(
-            self.overlap, device=self.device
+            self.overlap, device=work_device
         ).unsqueeze(0)
         next_audio_overlap = torch.gather(numerator, 1, buffer_index)
         safe_denominator = torch.where(denominator > 1e-11, denominator, 1)
@@ -703,15 +722,19 @@ class AudioVAEFixedStreamingTransition:
         sample_lengths = torch.clamp(output_end - output_start, min=0)
         sample_lengths = torch.where(exec_mask, sample_lengths, 0)
         output_index = output_start.unsqueeze(1) + torch.arange(
-            self.max_output_samples, device=self.device
+            self.max_output_samples, device=work_device
         ).unsqueeze(0)
         output_index = torch.clamp(output_index, max=self.max_raw_samples - 1)
         waveform = torch.gather(normalized, 1, output_index)
         output_mask = torch.arange(
-            self.max_output_samples, device=self.device
+            self.max_output_samples, device=work_device
         ).unsqueeze(0) < sample_lengths.unsqueeze(1)
         waveform = waveform * output_mask
-        return (waveform, sample_lengths, next_audio_overlap)
+        return (
+            waveform.to(self.device),
+            sample_lengths.to(self.device),
+            next_audio_overlap.to(self.device),
+        )
 
     def commit(
         self,
