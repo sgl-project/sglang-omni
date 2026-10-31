@@ -201,3 +201,16 @@ test("a local interrupt cancels the open reply of a turn-based server only", () 
   native.session.cancelReply();
   assert.equal(native.cancels(), 0);
 });
+
+test("a task keeps its image across later updates and finds the reply that started it", () => {
+  const { session } = openSession("I will draw it.");
+  const seen = [];
+  session.listeners = { ...session.listeners, task: (task) => seen.push(task.status) };
+  const task = { id: "task_1", name: "generate_image", arguments: { prompt: "a cat" }, origin_item_id: "item_0" };
+  session.handle({ type: "sglang.task.updated", task: { ...task, status: "running" } });
+  session.handle({ type: "sglang.task.updated", task: { ...task, status: "succeeded", artifact: { type: "image", media_type: "image/jpeg", data: "AAAA" } } });
+  session.handle({ type: "sglang.task.updated", task: { ...task, status: "succeeded" } });
+  assert.equal(session.tasks.get("task_1").artifact.data, "AAAA");
+  assert.equal(session.replyOfItem(session.tasks.get("task_1").origin_item_id).text, "I will draw it.");
+  assert.deepEqual(seen, ["running", "succeeded", "succeeded"]);
+});

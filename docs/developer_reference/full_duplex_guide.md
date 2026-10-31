@@ -383,6 +383,7 @@ Every profile is a `launch.yaml` under `examples/streaming_cascade/profiles/`.
 | `qwen3-asr-qwen3-tts-base-clone` | Qwen3-ASR-1.7B service on 8002 | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `reference_zh.wav` in the profile directory | 1 | `vad`, `turn_detection` (published), `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published) | Alignment worker on 8010 |
 | `nemotron-qwen3-tts` | Nemotron 3.5 streaming ASR service on 8001 (`realtime_transcription`) | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-0.6B-Base on 8004, cloning `reference.wav` | 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced) | Alignment worker on 8010; a recording at `reference.wav`, with `reference_text` set to its transcript |
 | `nemotron-stage-qwen3-tts` | Nemotron 3.5 ASR as the `asr` stage on GPU 0, with `running_transcript` | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-0.6B-Base on 8004, cloning `reference.wav` | 1 | `vad`, `asr` (stage), `transcript`, `dialog`, `llm`, `tts`, `aligner` (forced) | Alignment worker on 8010; a recording at `reference.wav`, with `reference_text` set to its transcript |
+| `qwen3-asr-qwen3.8-27b-image-tool` | Qwen3-ASR-1.7B service on 8002 | Qwen3.8-27B on 8003, thinking on, tool calls through `--tool-call-parser qwen3_coder` | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` | 2: the language model on GPU 0, both speech models on GPU 1 | `vad`, `asr`, `dialog`, `llm`, `tool` (`async_tools`, published), `tts`, `aligner` (forced) | Alignment worker on 8010; `MODELSCOPE_API_KEY`, see [Background Tools](#background-tools) |
 
 `qwen3-asr-qwen3-tts-vivian` and `qwen3-asr-qwen3-tts-base-clone` publish their aligner's `session`, so their clients receive `sglang.response.progress`. Every profile cuts an interrupted reply at the word ends of the sentences whose audio was complete; the Qwen3-ASR profiles also send the delivered audio of the sentence at the cut to their own recognizer, so a sentence cut before its audio was complete keeps the part the listener heard.
 
@@ -409,6 +410,7 @@ Send 16 kHz mono PCM16 audio at real-time pace as `{"type": "input_audio_buffer.
 | `response.output_text.delta`, `response.output_audio.delta` | Reply text and reply audio, base64 PCM16 at 24 kHz mono. |
 | `sglang.response.progress` | In a profile that publishes its aligner's `session`: `text_end`, the length of the reply text whose audio has been produced, and `audio_ms`, where that audio ends in the reply's audio, so a client can mark the text as it plays. |
 | `sglang.response.heard` | After a `conversation.item.truncate`, in a profile that publishes its dialog's `session`: `text_end`, the length of the cut reply's text the history keeps, sent again whenever the cut moves, so a client can show what the history kept. |
+| `sglang.task.updated` | In a profile that publishes an `async_tools` node's `task_update`: `task` with `id`, `name`, `status` (`created`, `running`, `succeeded`, `failed` or `cancelled`), `arguments`, `origin_item_id` (the reply item whose tool call started it), and `error` or `artifact` (`type`, `media_type`, base64 `data`) at its end. See [Background Tools](#background-tools). |
 | `response.done` | The reply is complete; `response.status_details.reason` is `stop`, `empty_turn` when the utterance had no words, or `interrupted` when you spoke over it. |
 | `error` | The request or the session failed. |
 
@@ -428,6 +430,48 @@ Without it an utterance ends when the `vad` node hears `silence_duration_ms` of 
 The stage loads the BSD-2 licensed `smart-turn-v3.2-gpu.onnx` from the Hugging Face repository `pipecat-ai/smart-turn-v3` through the Hugging Face cache, or from the file or directory `stages.turn_detection.factory.model_path` names, and verifies its SHA-256 at startup. The stage's `factory.eagerness` (`low`, `medium` or `high`, default `medium`) sets how readily a pause ends the turn: `high` takes a shorter silence on a confident score and gives up a held pause sooner, `low` waits longer. The profile sets the `vad` node's `silence_duration_ms` to 160, the pause the detector scores as a candidate end; a client that selects `{"type": "server_vad"}` on this profile gets the VAD's boundaries unchanged, with that pause.
 
 A client selects the behaviour per session with the standard field, `{"turn_detection": {"type": "semantic_vad", "eagerness": "high"}}`; `session.created` lists `semantic_vad` under `turn_control` when the profile has the node. The Qwen3-Omni Session graph takes the node the same way: declare it in `examples/qwen3_omni/session_h200.yaml` beside `vad`, let `dialog` read `turn_detection:session` in place of `vad:session`, and publish `turn_detection: [session]` in place of `vad: [session]`.
+
+(background-tools)=
+
+**Background Tools**
+
+
+A profile with an `async_tools` node lets the language model call tools during a reply, and lets a slow tool, such as image generation, run in the background while the conversation goes on. `qwen3-asr-qwen3.8-27b-image-tool` generates images through the public ModelScope API-Inference service: the user asks for a picture, the reply says it has started, the picture appears on the client's screen when it is ready, and the assistant then says so in a turn of its own.
+
+The `llm` node lists the functions in `tools`. A completion that ends in tool calls sends them as one `tool_call` chunk of the reply's turn to the `tool` node, which answers at once on a control edge with one `tool_response`: a sync tool's result, or `{"status": "accepted", "task_id": "task_1"}` for an async tool, whose task then runs in the background. The `llm` node continues the same reply with the responses in its prompt, for at most `max_tool_rounds` rounds, and sends each round to the dialog as `tool_exchange`, so the history the next prompts read keeps the calls and their responses. The chat service must parse the model's tool calls: start it with a `--tool-call-parser` that matches the model, `qwen3_coder` for Qwen3.8-27B. At startup the node sends one tool request and fails the start when the model's tool call comes back as text.
+
+A task reports `created`, `running` and its end to the client as `sglang.task.updated`, and its end to the dialog as `task_result` on a control edge. Neither carries the reply's turn, so a task outlives the reply that started it. On `succeeded` or `failed` the dialog opens a turn of its own, once no reply runs and the user is not speaking, with a notice that the task ended at the end of the prompt, and marks the tool response that started the task with the task's status. An interrupt of the reply that started a task cancels it when its tool's `on_interrupt` is `cancel`, the default, and only until that reply has ended; the dialog then records the cancellation silently. The model can cancel a task with the built-in `cancel_task` tool, the end of the input cancels running tasks, and a closing session cancels them and sends nothing more. ModelScope finishes a task it was sent even after the session cancels it, so a cancelled image still counts against the account's quota.
+
+The image reaches the client base64-encoded in `sglang.task.updated`, as a JPEG of at most `max_side_px` pixels on its long side; one over `max_artifact_bytes` fails its task instead of the session. The browser playground shows each task as a card with its prompt, the reply that started it and its image.
+
+Before starting the profile, create a ModelScope access token at <https://modelscope.cn/my/myaccesstoken>, bind an Alibaba Cloud account and verify the account's email at <https://modelscope.cn/my/settings/account>; an unverified account is answered with HTTP 403. Then:
+
+```bash
+export MODELSCOPE_API_KEY=<token>
+python -m examples.streaming_cascade.tools.image_generation --prompt "an orange cat on a windowsill"
+PYTHONPATH=. sgl-omni serve --config examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-image-tool/launch.yaml --enable-realtime --port 8765
+python playground/cascade/app.py --api-base http://127.0.0.1:8765 --port 8090
+```
+
+The first command generates one image with the profile's settings into `generated.jpg`. `PYTHONPATH=.` lets the `tool` stage import the tool from `examples/`. Start the forced-alignment worker first as [The forced-alignment worker](#the-forced-alignment-worker) describes, or switch the profile's aligner to the asr method with `--session_nodes.aligner.method asr --session_nodes.aligner.alignment_url ""`. Then ask for a picture on the page: the reply says it has started, a card with the request appears at the top left, and the image fills it when it is ready.
+
+The `async_tools` node:
+
+| Option | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `tools` | map of function name to tool | required | The tools; their names, with `cancel_task` when `cancel_tool` is true, must equal the function names in the `llm` node's `tools`. |
+| `tools.<name>.implementation` | string | required | Import path of the tool. A sync tool takes the arguments and returns the response; an async tool is `async def tool(arguments, options) -> ToolOutcome`, with a `summary` the model reads and an optional `artifact` the client shows. |
+| `tools.<name>.mode` | `sync` or `async` | `async` | A sync tool answers in its tool response, within `sync_timeout_s`; an async one starts a task. |
+| `tools.<name>.timeout_s` | number > 0 | `180` | A task that takes longer fails. |
+| `tools.<name>.on_interrupt` | `cancel` or `keep` | `cancel` | Whether an interrupt of the reply that started a task cancels it. |
+| `tools.<name>.follow_up` | `speak` or `silent` | `speak` | Whether the dialog opens a turn about the task's end, or only records it. |
+| `tools.<name>.options` | object | `{}` | Passed to an async tool; the image tool takes `provider` (`modelscope`, `siliconflow` or `openai`), `base_url`, `model`, `api_key_env`, `size`, `poll_interval_s` and `max_side_px`. |
+| `sync_timeout_s` | number > 0 | `5` | The limit for one sync tool call. |
+| `max_jobs_per_session` | integer > 0 | `2` | Running tasks one session may hold; a call beyond them is answered `rejected`. |
+| `max_artifact_bytes` | integer > 0 | `3145728` | The largest artifact, before base64. |
+| `cancel_tool` | boolean | `true` | Whether the node answers the built-in `cancel_task(task_id)`. |
+
+The `openai_chat` node takes `tools` (chat-completions function definitions, default none), `max_tool_rounds` (default 2) and `tool_response_timeout_s` (default 10, after which the call is answered with an error). The `dialog` node takes `task_notice_templates`, the notice per status (`succeeded`, `failed`) with the fields `{name}`, `{task_id}`, `{summary}` and `{error}`. A profile whose `llm` has tools fails to load unless one `async_tools` node reads its `tool_call` and answers on `{kind: control, source: <node>, event: tool_response}`; a node that cancels on interrupt must take the dialog's `interrupt`, a node that speaks of results needs `{kind: control, source: <node>, event: task_result}` on the dialog, and only the client may read `task_update`.
 
 (scripted-conversation)=
 
@@ -499,8 +543,9 @@ The formats each kind consumes and produces:
 | --- | --- | --- |
 | `realtime_transcription`, `openai_transcription` | `pcm16`, `session` | `transcript` |
 | `running_transcript` | `pcm16`, `session`, `text` | `transcript` |
-| `dialog` | `transcript`, `text_delta`, `session` | `messages`, `session` |
-| `openai_chat` | `messages` | `text_delta`, `session` |
+| `dialog` | `transcript`, `text_delta`, `session`, optionally `tool_exchange` | `messages`, `session` |
+| `openai_chat` | `messages` | `text_delta`, `session`, `tool_call`, `tool_exchange` |
+| `async_tools` | `tool_call`, `session` | `tool_response`, `task_update`, `task_result` |
 | `openai_speech` | `text_delta`, `session` | `pcm_f32le` at 24 kHz, `session` |
 | `alignment` | `text_delta`, `pcm_f32le`, `session` | `session` |
 | stage `vad` | `input` | `session` |

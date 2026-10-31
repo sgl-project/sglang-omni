@@ -35,6 +35,13 @@ TRANSCRIPT_FORMAT = "transcript"
 TOOL_CALL = "tool_call"
 # {"responses": [{"id": str, "name": str, "response": object}, ...]}
 TOOL_RESPONSE = "tool_response"
+# {"calls": [...], "responses": [...], "text_offset": int}; one round of a reply's tool calls with their responses, after text_offset characters of the reply's text
+TOOL_EXCHANGE = "tool_exchange"
+TASK = "task"
+# {"task_id", "call_id", "name", "arguments", "origin_turn", "status", "error"?, "artifact"?}; a background task's state for the client
+TASK_UPDATE = "task_update"
+# {"task_id", "name", "status", "summary", "error", "follow_up"}; a background task's end for the node that opens turns
+TASK_RESULT = "task_result"
 SESSION_CONTROL = "session"  # {"type": <control type>, ...}
 # `turn_detection.type` of a realtime session: speech boundaries end turns, or an end-of-turn model holds a turn across a pause
 SERVER_VAD = "server_vad"
@@ -135,7 +142,7 @@ class ImagePort:
 
 @dataclass(frozen=True)
 class SessionPorts:
-    """What a pipeline's Session accepts and produces; `input` is one audio port and the image ports of the nodes that see; hot_settings are the realtime session fields a CONFIGURE control may change while it is open; turn_detection_types are the `turn_detection.type` values its nodes implement."""
+    """What a pipeline's Session accepts and produces; `input` is one audio port and the image ports of the nodes that see; hot_settings are the realtime session fields a CONFIGURE control may change while it is open; turn_detection_types are the `turn_detection.type` values its nodes implement; tasks are the background tools whose task updates it publishes, and is_proactive says it may speak without a new utterance, about a task's end."""
 
     input: tuple[AudioPort | ImagePort, ...]
     output: AudioPort | None
@@ -144,6 +151,8 @@ class SessionPorts:
     hot_settings: frozenset[str] = frozenset()
     sampling_parameters: tuple[str, ...] = ()
     turn_detection_types: tuple[str, ...] = ()
+    tasks: tuple[str, ...] = ()
+    is_proactive: bool = False
 
     def __post_init__(self) -> None:
         audio_ports = [port for port in self.input if isinstance(port, AudioPort)]
@@ -196,4 +205,7 @@ class SessionPorts:
                 for kind in node.turn_detection_types
                 if kind not in self.turn_detection_types
             ),
+            tasks=self.tasks
+            + tuple(name for name in node.tasks if name not in self.tasks),
+            is_proactive=self.is_proactive or node.is_proactive,
         )

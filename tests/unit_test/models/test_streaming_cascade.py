@@ -97,6 +97,7 @@ PROFILE_NAMES = (
     "nemotron-stage-qwen3-tts",
     "qwen3-asr-qwen3-tts-vivian",
     "qwen3-asr-qwen3.8-27b-vivian",
+    "qwen3-asr-qwen3.8-27b-image-tool",
     "qwen3-asr-streaming-qwen3-tts-vivian",
 )
 HTTP_PROFILE = PROFILES / "nemotron-qwen3-tts" / "launch.yaml"
@@ -1819,7 +1820,10 @@ def test_profiles_expand_components_into_independent_session_nodes(profile):
     assert graph.publish == {
         name: tuple(formats) for name, formats in config.session_publish.items()
     }
-    assert config.session_ports() == CASCADE_PORTS
+    # The image-tool profile also publishes its tool node's tasks; test_cascade_tools checks those ports.
+    assert (
+        replace(config.session_ports(), tasks=(), is_proactive=False) == CASCADE_PORTS
+    )
     assert (
         StreamingCascadePipelineConfig.model_validate(
             config.model_dump()

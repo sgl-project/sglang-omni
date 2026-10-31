@@ -26,6 +26,8 @@ from sglang_omni.models.nemotron3_5_asr.config import (
 )
 from sglang_omni.models.streaming_cascade.base import ComponentConfig
 from sglang_omni.models.streaming_cascade.components import COMPONENTS
+from sglang_omni.models.streaming_cascade.generators import OpenAIChatGeneratorConfig
+from sglang_omni.models.streaming_cascade.tasks import AsyncToolsConfig
 from sglang_omni.models.turn_detection.node import TURN_DETECTION_STAGE
 from sglang_omni.models.vad.node import VAD_STAGE
 from sglang_omni.proto.session import (
@@ -46,6 +48,10 @@ from sglang_omni.proto.streams import (
     REPLY_PROGRESS,
     SESSION_CONTROL,
     SESSION_INPUT_SAMPLE_RATE_HZ,
+    TASK_RESULT,
+    TASK_UPDATE,
+    TOOL_CALL,
+    TOOL_RESPONSE,
     TRUNCATE,
     AudioPort,
     SessionPorts,
@@ -231,6 +237,7 @@ class ComponentGraphConfig(BaseModel):
         self.check_turn_roles()
         self.check_progress()
         self.check_delivery()
+        self.check_tools()
         return self
 
     def check_names(self) -> None:
@@ -400,6 +407,70 @@ class ComponentGraphConfig(BaseModel):
             and SESSION_CONTROL in node.edges().get(other.name, frozenset())
         ]
 
+    def check_tools(self) -> None:
+        """A generator with tools has one tools node that reads its calls and answers them on a control edge, with the same tool names; a tools node that cancels on interrupt takes the turn opener's interrupt, one that speaks of results reaches the turn opener on a control edge, and only the client reads its task updates."""
+        openers = [node.name for node in self.nodes if node.opens_turns]
+        for node in self.nodes:
+            component = node.component
+            if isinstance(component, OpenAIChatGeneratorConfig) and component.tools:
+                readers = [
+                    other
+                    for other in self.nodes
+                    if isinstance(other.component, AsyncToolsConfig)
+                    and TOOL_CALL in other.edges().get(node.name, frozenset())
+                ]
+                answers = {
+                    edge.source for edge in node.controls if edge.event == TOOL_RESPONSE
+                }
+                names = {str(tool["function"]["name"]) for tool in component.tools}
+                if len(readers) != 1 or answers != {readers[0].name}:
+                    raise ValueError(
+                        f"node {node.name!r} has tools: one async_tools node must read its {TOOL_CALL} and answer on a control edge {{kind: control, source: <tools node>, event: {TOOL_RESPONSE}}}"
+                    )
+                elif names != readers[0].component.tool_names():
+                    raise ValueError(
+                        f"tools of node {node.name!r} {sorted(names)} differ from tools of node {readers[0].name!r} {sorted(readers[0].component.tool_names())}"
+                    )
+                else:
+                    pass
+            elif isinstance(component, AsyncToolsConfig):
+                tools = component.tools.values()
+                interrupters = {
+                    edge.source for edge in node.controls if edge.event == INTERRUPT
+                }
+                speaks_to = [
+                    other.name
+                    for other in self.nodes
+                    if other.opens_turns
+                    and any(
+                        edge.source == node.name and edge.event == TASK_RESULT
+                        for edge in other.controls
+                    )
+                ]
+                readers = [
+                    other.name
+                    for other in self.nodes
+                    if TASK_UPDATE in other.edges().get(node.name, frozenset())
+                ]
+                if any(tool.on_interrupt == "cancel" for tool in tools) and not (
+                    interrupters & set(openers)
+                ):
+                    raise ValueError(
+                        f"node {node.name!r} cancels tasks on interrupt and must take the {INTERRUPT} of {openers} on a control edge"
+                    )
+                elif any(tool.follow_up == "speak" for tool in tools) and not speaks_to:
+                    raise ValueError(
+                        f"node {node.name!r} speaks of task results: {openers} must take its {TASK_RESULT} on a control edge"
+                    )
+                elif readers:
+                    raise ValueError(
+                        f"nodes {readers} read {TASK_UPDATE}, which only the client reads"
+                    )
+                else:
+                    pass
+            else:
+                pass
+
     def node(self, name: str) -> NodeSettings:
         return next(node for node in self.nodes if node.name == name)
 
@@ -496,6 +567,14 @@ class ComponentGraphConfig(BaseModel):
             controls = frozenset({COMMIT, CONFIGURE, INTERRUPT, TRUNCATE})
         else:
             controls = frozenset({COMMIT, CONFIGURE, TRUNCATE})
+        task_tools = [
+            (name, tool)
+            for node in self.nodes
+            if isinstance(node.component, AsyncToolsConfig)
+            and TASK_UPDATE in self.publish.get(node.name, ())
+            for name, tool in node.component.tools.items()
+            if tool.mode == "async"
+        ]
         return SessionPorts(
             input=(AudioPort(PCM16, SESSION_INPUT_SAMPLE_RATE_HZ),),
             output=published_audio_port(self.published_audio_ports()),
@@ -505,6 +584,8 @@ class ComponentGraphConfig(BaseModel):
             sampling_parameters=(
                 tuple(SAMPLING_FIELDS) if "sampling" in hot_settings else ()
             ),
+            tasks=tuple(name for name, _ in task_tools),
+            is_proactive=any(tool.follow_up == "speak" for _, tool in task_tools),
         )
 
 

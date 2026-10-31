@@ -5,6 +5,7 @@ import logging
 import math
 from collections import deque
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
@@ -15,6 +16,7 @@ from sglang_omni.models.streaming_cascade.base import (
     StreamComponent,
     control_chunk,
     messages_chunk,
+    tool_round_messages,
 )
 from sglang_omni.proto.session import TimedChunk
 from sglang_omni.proto.streams import (
@@ -26,7 +28,9 @@ from sglang_omni.proto.streams import (
     REPLY_PROGRESS,
     SPEECH_STARTED,
     SPEECH_STOPPED,
+    TASK_RESULT,
     TEXT_DELTA,
+    TOOL_EXCHANGE,
     TRANSCRIPT_FORMAT,
     TRUNCATE,
     TURN_DONE,
@@ -36,6 +40,13 @@ from sglang_omni.proto.streams import (
     TURN_STARTED,
     chunk_language,
     control_type,
+    edge_event,
+)
+from sglang_omni.proto.tools import (
+    TaskResult,
+    ToolExchange,
+    task_result_of,
+    tool_exchange_of,
 )
 from sglang_omni.scheduling.session import ChunkEmitter
 
@@ -64,24 +75,46 @@ def heard_prefix(
 
 # note (Haoling Pu): a cut reply shown as is reads to the model as how it answers, and after a few interruptions it replies with fragments (#3063).
 CUT_REPLY_NOTE = "A reply of yours that ends with … was cut off when the user interrupted it; answer the latest message in full."
+# note (zengjiahua): the notice says it is not the user's words, so the model reports the result instead of answering it as a request, and says the image is on screen, so the model does not read it out.
+DEFAULT_TASK_NOTICE_TEMPLATES = {
+    "succeeded": "[Task update, not said by the user] The {name} task {task_id} you started has finished: {summary}. The result is already on the user's screen. Tell the user in one short spoken sentence, in the language of the conversation. Do not describe the result in detail and do not call any tool.",
+    "failed": "[Task update, not said by the user] The {name} task {task_id} you started failed: {error}. Tell the user in one short spoken sentence, in the language of the conversation, and ask whether to try again. Do not call any tool.",
+}
+MAX_NOTICE_FIELD_CHARS = 300
+
+
+def assistant_messages(message: ChatMessage) -> list[ChatMessage]:
+    """An assistant entry as the model reads it: its tool rounds expanded at their text offsets, a reply the listener cut ending with …, and only such a reply ending with …. A tool round past the cut keeps its calls and responses, since the task it started is real, but none of the text after the cut."""
+    if message.is_cut:
+        content = message.content.removesuffix("…")
+    else:
+        # note (Haoling Pu): the model sometimes ends a finished reply with …, which would read as cut and was followed by an empty reply in a live run.
+        content = message.content.rstrip().removesuffix("…")
+    expanded: list[ChatMessage] = []
+    start = 0
+    for exchange in message.tool_exchanges:
+        end = min(exchange.text_offset, len(content))
+        expanded.extend(tool_round_messages(content[start:end], exchange))
+        start = end
+    tail = content[start:]
+    if message.is_cut and (tail or not message.tool_exchanges):
+        expanded.append(ChatMessage(role="assistant", content=f"{tail}…"))
+    elif tail or not message.tool_exchanges:
+        expanded.append(ChatMessage(role="assistant", content=tail))
+    else:
+        pass
+    return expanded
 
 
 def prompt_messages(messages: list[ChatMessage]) -> list[ChatMessage]:
-    """The history as the model reads it: a reply the listener cut ends with … under a system note, and only such a reply ends with …."""
+    """The history as the model reads it, a cut reply under a system note."""
     prompt: list[ChatMessage] = []
-    has_cut = False
     for message in messages:
-        if message.is_cut:
-            content = message.content.removesuffix("…")
-            prompt.append(ChatMessage(role="assistant", content=f"{content}…"))
-            has_cut = True
-        elif message.role == "assistant":
-            # note (Haoling Pu): the model sometimes ends a finished reply with …, which would read as cut and was followed by an empty reply in a live run.
-            content = message.content.rstrip().removesuffix("…")
-            prompt.append(ChatMessage(role="assistant", content=content))
+        if message.role == "assistant":
+            prompt.extend(assistant_messages(message))
         else:
-            prompt.append(message)
-    if has_cut:
+            prompt.append(ChatMessage(role=message.role, content=message.content))
+    if any(message.is_cut for message in messages):
         prompt[0] = ChatMessage(
             role="system", content=f"{prompt[0].content} {CUT_REPLY_NOTE}"
         )
@@ -91,12 +124,29 @@ def prompt_messages(messages: list[ChatMessage]) -> list[ChatMessage]:
 
 
 class DialogConfig(ComponentConfig):
-    """Conversation history; one messages chunk per answered utterance."""
+    """Conversation history; one messages chunk per answered utterance and per task result the dialog speaks about."""
 
     kind: Literal["dialog"] = "dialog"
     system_prompt: str = "You are a helpful voice assistant. Answer concisely."
     max_history_chars: int = Field(default=MAX_HISTORY_CHARS, gt=0)
     max_text_chars: int = Field(default=16000, gt=0)
+    # Fields: {name}, {task_id}, {summary}, {error}.
+    task_notice_templates: dict[Literal["succeeded", "failed"], str] = Field(
+        default_factory=lambda: dict(DEFAULT_TASK_NOTICE_TEMPLATES)
+    )
+
+
+@dataclass(kw_only=True)
+class UserUtterance:
+    turn: int
+    text: str
+    language: str | None
+
+
+@dataclass(kw_only=True)
+class TaskFollowUp:
+    turn: int
+    result: TaskResult
 
 
 class Dialog(StreamComponent):
@@ -129,15 +179,21 @@ class Dialog(StreamComponent):
     Speech that started after an utterance ended and has not stopped when
     the utterance's reply begins is speech over that reply, so the reply
     ends as soon as it begins.
+
+    A reply's tool rounds stay on its history entry and are expanded only in
+    the prompt, so cuts and joins see one entry per reply. A task result the
+    dialog speaks about opens a turn of its own once no reply runs and the
+    user is not speaking; every task result also updates the tool response
+    that started the task.
     """
 
     def __init__(self, config: DialogConfig) -> None:
         self.config = config
         self.emit: ChunkEmitter | None = None
         self.messages = [ChatMessage(role="system", content=config.system_prompt)]
-        # Waiting utterances as (turn, transcript, language the recognizer heard).
-        self.waiting: deque[tuple[int, str, str | None]] = deque()
+        self.waiting: deque[UserUtterance | TaskFollowUp] = deque()
         self.reply: list[str] | None = None
+        self.reply_exchanges: list[ToolExchange] = []
         self.reply_turn = 0
         self.turns = 0
         # Reply audio produced so far as (characters of the reply text with audio, audio ms), one entry per spoken sentence, for truncating an interrupted reply to what was heard.
@@ -167,6 +223,7 @@ class Dialog(StreamComponent):
             self.messages = [self.messages[0], *previous.messages[1:]]
             self.waiting = previous.waiting
             self.reply = previous.reply
+            self.reply_exchanges = previous.reply_exchanges
             self.reply_turn = previous.reply_turn
             self.turns = previous.turns
             self.progress = previous.progress
@@ -183,7 +240,11 @@ class Dialog(StreamComponent):
 
     def state_bytes(self) -> int:
         chars = sum(len(message.content) for message in self.messages)
-        chars += sum(len(text) for _, text, _ in self.waiting)
+        chars += sum(
+            len(entry.text)
+            for entry in self.waiting
+            if isinstance(entry, UserUtterance)
+        )
         chars += sum(len(part) for part in self.reply or ())
         return chars * 4
 
@@ -214,6 +275,35 @@ class Dialog(StreamComponent):
                 self.progress.append(boundary)
             else:
                 pass
+        elif edge_event(event) == TASK_RESULT:
+            self.take_task_result(task_result_of(event))
+            self.respond_to_waiting()
+        else:
+            pass
+
+    def take_task_result(self, result: TaskResult) -> None:
+        """Record a task's end on the tool response that started it, and queue a turn about it when the task is to be spoken of."""
+        assert self.emit is not None
+        for exchange in [
+            *self.reply_exchanges,
+            *(
+                exchange
+                for message in self.messages
+                for exchange in message.tool_exchanges
+            ),
+        ]:
+            for response in exchange.responses:
+                if (
+                    isinstance(response.response, dict)
+                    and response.response.get("task_id") == result.task_id
+                ):
+                    response.response = {**response.response, "status": result.status}
+                else:
+                    pass
+        if result.follow_up == "speak" and result.status in ("succeeded", "failed"):
+            self.turns += 1
+            self.waiting.append(TaskFollowUp(turn=self.turns, result=result))
+            self.emit(control_chunk(TURN_QUEUED, turn=self.turns))
         else:
             pass
 
@@ -222,13 +312,15 @@ class Dialog(StreamComponent):
         if chunk.format == TRANSCRIPT_FORMAT and chunk.payload["is_final"]:
             self.turns += 1
             self.waiting.append(
-                (
-                    self.turns,
-                    str(chunk.payload["text"]).strip(),
-                    chunk_language(chunk),
+                UserUtterance(
+                    turn=self.turns,
+                    text=str(chunk.payload["text"]).strip(),
+                    language=chunk_language(chunk),
                 )
             )
             self.emit(control_chunk(TURN_QUEUED, turn=self.turns))
+        elif chunk.format == TOOL_EXCHANGE and self.is_reply(chunk):
+            self.reply_exchanges.append(tool_exchange_of(chunk))
         elif chunk.format == TEXT_DELTA and self.is_reply(chunk):
             self.reply.append(str(chunk.payload["text"]))
             if sum(len(part) for part in self.reply) > self.config.max_text_chars:
@@ -237,7 +329,14 @@ class Dialog(StreamComponent):
                 pass
         elif control_type(chunk) == TURN_DONE and self.is_reply(chunk):
             reply = "".join(self.reply)
-            self.messages.append(ChatMessage(role="assistant", content=reply))
+            self.messages.append(
+                ChatMessage(
+                    role="assistant",
+                    content=reply,
+                    tool_exchanges=self.reply_exchanges,
+                )
+            )
+            self.reply_exchanges = []
             self.truncatable = (self.reply_turn, len(self.messages) - 1)
             self.truncatable_text = reply
             self.is_truncatable_interrupted = False
@@ -280,7 +379,10 @@ class Dialog(StreamComponent):
         assert self.emit is not None and self.reply is not None
         turn = self.reply_turn
         text = "".join(self.reply)
-        self.messages.append(ChatMessage(role="assistant"))
+        self.messages.append(
+            ChatMessage(role="assistant", tool_exchanges=self.reply_exchanges)
+        )
+        self.reply_exchanges = []
         if text:
             self.truncatable_text = text
             self.is_truncatable_interrupted = True
@@ -306,8 +408,16 @@ class Dialog(StreamComponent):
                 or self.delivered_ms is not None
                 or self.heard_ms is not None
             )
+            and not (
+                isinstance(self.waiting[0], TaskFollowUp) and self.is_user_speaking
+            )
         ):
-            for output in self.respond(*self.waiting.popleft()):
+            entry = self.waiting.popleft()
+            if isinstance(entry, UserUtterance):
+                outputs = self.respond(entry.turn, entry.text, entry.language)
+            else:
+                outputs = self.respond_to_task(entry)
+            for output in outputs:
                 self.emit(output)
             if self.reply is not None and self.is_user_speaking:
                 self.interrupt_reply()
@@ -346,23 +456,27 @@ class Dialog(StreamComponent):
                 content=kept,
                 uncertain=uncertain,
                 is_cut=self.is_truncatable_interrupted or kept != content.rstrip(),
+                tool_exchanges=self.messages[index].tool_exchanges,
             )
             if self.heard_ms is not None:
                 self.emit(control_chunk(REPLY_HEARD, turn=turn, text_end=text_end))
             else:
                 pass
-            if not self.messages[index].content and index < len(self.messages) - 1:
+            if is_empty_reply(self.messages[index]) and index < len(self.messages) - 1:
                 self.join_around(index)
             else:
                 pass
 
     def join_around(self, index: int) -> None:
-        """Drop the reply at index, which the history keeps nothing of, and join the user messages around it: nothing of the reply was heard, so the user kept talking, and an empty assistant entry would only show the model an empty answer to copy."""
-        self.messages[index - 1] = ChatMessage(
-            role="user",
-            content=f"{self.messages[index - 1].content} {self.messages[index + 1].content}",
-        )
-        del self.messages[index : index + 2]
+        """Drop the reply at index, which the history keeps nothing of, and join the user messages around it: nothing of the reply was heard, so the user kept talking, and an empty assistant entry would only show the model an empty answer to copy. A task notice is not the user's words, so a reply next to one is only dropped."""
+        if self.messages[index - 1].is_notice or self.messages[index + 1].is_notice:
+            self.messages.pop(index)
+        else:
+            self.messages[index - 1] = ChatMessage(
+                role="user",
+                content=f"{self.messages[index - 1].content} {self.messages[index + 1].content}",
+            )
+            del self.messages[index : index + 2]
         if self.truncatable is not None and self.truncatable[1] == index:
             self.truncatable = None
         else:
@@ -383,7 +497,9 @@ class Dialog(StreamComponent):
             )
         else:
             self.messages.append(ChatMessage(role="user", content=text))
-            if self.messages[-2].role == "assistant" and not self.messages[-2].content:
+            if self.messages[-2].role == "assistant" and is_empty_reply(
+                self.messages[-2]
+            ):
                 self.join_around(len(self.messages) - 2)
             else:
                 pass
@@ -391,10 +507,40 @@ class Dialog(StreamComponent):
                 self.language = language
             else:
                 pass
-            self.reply = []
-            self.reply_turn = turn
-            self.progress = []
-            return [
-                control_chunk(TURN_STARTED, turn=turn),
-                messages_chunk(prompt_messages(self.messages), turn, self.language),
-            ]
+            return self.open_reply(turn)
+
+    def respond_to_task(self, follow_up: TaskFollowUp) -> list[TimedChunk]:
+        result = follow_up.result
+        notice = self.config.task_notice_templates[result.status].format(
+            name=result.name,
+            task_id=result.task_id,
+            summary=result.summary[:MAX_NOTICE_FIELD_CHARS],
+            error=(result.error or "")[:MAX_NOTICE_FIELD_CHARS],
+        )
+        if self.messages[-1].role == "assistant" and is_empty_reply(self.messages[-1]):
+            self.messages.pop()
+            if self.truncatable is not None and self.truncatable[1] == len(
+                self.messages
+            ):
+                self.truncatable = None
+            else:
+                pass
+        else:
+            pass
+        self.messages.append(ChatMessage(role="user", content=notice, is_notice=True))
+        return self.open_reply(follow_up.turn)
+
+    def open_reply(self, turn: int) -> list[TimedChunk]:
+        self.reply = []
+        self.reply_exchanges = []
+        self.reply_turn = turn
+        self.progress = []
+        return [
+            control_chunk(TURN_STARTED, turn=turn),
+            messages_chunk(prompt_messages(self.messages), turn, self.language),
+        ]
+
+
+def is_empty_reply(message: ChatMessage) -> bool:
+    """An assistant entry the history keeps nothing of: no text and no tool round."""
+    return not message.content and not message.tool_exchanges

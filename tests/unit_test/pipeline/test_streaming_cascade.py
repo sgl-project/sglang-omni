@@ -21,6 +21,7 @@ from sglang_omni.proto.streams import (
     PCM_F32,
     SPEECH_STARTED,
     SPEECH_STOPPED,
+    TASK_UPDATE,
     TEXT_DELTA,
     TRUNCATE,
     TURN_DONE,
@@ -405,4 +406,49 @@ async def test_audio_stays_paced_and_held_turn_is_interruptible(backends):
             )
         assert done.t_start_ms == pytest.approx(
             audio[-1].t_start_ms + audio[-1].duration_ms
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backends", ["tool"], indirect=True)
+async def test_a_background_task_outlives_its_reply_and_opens_a_turn_of_its_own(
+    backends,
+):
+    config, _, _, messages = backends
+    async with conversation(config) as session:
+        await session.audio()
+        await session.command(COMMIT)
+        await session.until(
+            lambda: any(
+                control_type(o) == TURN_DONE and o.turn == 2 for o in session.outputs
+            )
+        )
+        updates = [
+            (o.turn, o.payload["status"])
+            for o in session.outputs
+            if o.kind == "data" and o.format == TASK_UPDATE
+        ]
+        assert updates == [(None, "created"), (None, "running"), (None, "succeeded")]
+        succeeded = next(
+            o
+            for o in session.outputs
+            if o.format == TASK_UPDATE and o.payload["status"] == "succeeded"
+        )
+        assert (
+            succeeded.payload["origin_turn"] == 1
+            and succeeded.payload["artifact"]["data"] == "AAAA"
+        )
+        turn_one = [o.turn for o in session.outputs if control_type(o) == TURN_DONE]
+        assert turn_one == [1, 2]
+        after_tool, follow_up = messages[-2], messages[-1]
+        assert (
+            after_tool[-1]["role"] == "tool"
+            and '"accepted"' in after_tool[-1]["content"]
+        )
+        assert (
+            follow_up[-1]["role"] == "user"
+            and "an image of a cat" in follow_up[-1]["content"]
+        )
+        assert any(
+            m["role"] == "tool" and '"succeeded"' in m["content"] for m in follow_up
         )

@@ -117,6 +117,23 @@ def backends(request, backend_requests):
                 return
             else:
                 received_messages.append(request["messages"])
+            if (
+                scenario == "tool"
+                and request.get("tools")
+                and request["messages"][-1]["role"] == "user"
+                and not request["messages"][-1]["content"].startswith("[Task update")
+            ):
+                call = {
+                    "index": 0,
+                    "id": "call_1",
+                    "function": {"name": "draw", "arguments": '{"prompt": "a cat"}'},
+                }
+                self.event({"delta": {"tool_calls": [call]}, "finish_reason": None})
+                self.event({"delta": {}, "finish_reason": "tool_calls"})
+                self.wfile.write(b"data: [DONE]\n\n")
+                return
+            else:
+                pass
             deltas = [{"content": text} for text in ("Hel", "lo ", "world.")]
             finish_reason = {"failed_chat": "abort", "length_chat": "length"}.get(
                 scenario, "stop"
@@ -147,7 +164,9 @@ def backends(request, backend_requests):
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever)
     thread.start()
-    settings = loopback_graph(f"http://127.0.0.1:{server.server_port}/v1")
+    settings = (loopback_tool_graph if scenario == "tool" else loopback_graph)(
+        f"http://127.0.0.1:{server.server_port}/v1"
+    )
     try:
         yield settings, received_audio, received_words, received_messages
     finally:
@@ -308,6 +327,51 @@ session_publish:
 def loopback_graph(base_url: str) -> StreamingCascadePipelineConfig:
     """A commit-driven cascade of the OpenAI-compatible kinds, every one served at `base_url`."""
     declaration = yaml.safe_load(LOOPBACK_GRAPH.replace("URL", base_url))
+    return StreamingCascadePipelineConfig(
+        model_path="loopback", timeout_s=5, **declaration
+    )
+
+
+DRAW_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "draw",
+        "parameters": {"type": "object", "properties": {"prompt": {"type": "string"}}},
+    },
+}
+
+
+def loopback_tool_graph(base_url: str) -> StreamingCascadePipelineConfig:
+    """The loopback cascade with a tool node whose draw tool finishes in the background."""
+    declaration = yaml.safe_load(LOOPBACK_GRAPH.replace("URL", base_url))
+    nodes = declaration["session_nodes"]
+    nodes["dialog"]["inputs"] += [
+        {
+            "source": "llm:tool_exchange",
+            "feedback": True,
+            "overflow": "drop_oldest",
+            "capacity": 1024,
+        },
+        {"kind": "control", "source": "tool", "event": "task_result"},
+    ]
+    nodes["llm"]["inputs"].append(
+        {"kind": "control", "source": "tool", "event": "tool_response"}
+    )
+    nodes["llm"]["tools"] = [DRAW_TOOL]
+    nodes["tool"] = {
+        "kind": "async_tools",
+        "inputs": [
+            "llm:tool_call",
+            {"kind": "control", "source": "dialog", "event": "interrupt"},
+        ],
+        "cancel_tool": False,
+        "tools": {
+            "draw": {
+                "implementation": "tests.unit_test.fixtures.cascade_tools.sleeping_tool"
+            }
+        },
+    }
+    declaration["session_publish"]["tool"] = ["task_update"]
     return StreamingCascadePipelineConfig(
         model_path="loopback", timeout_s=5, **declaration
     )

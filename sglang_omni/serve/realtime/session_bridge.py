@@ -36,6 +36,8 @@ from sglang_omni.proto.streams import (
     SESSION_CONTROL,
     SPEECH_STARTED,
     SPEECH_STOPPED,
+    TASK,
+    TASK_UPDATE,
     TEXT,
     TEXT_DELTA,
     TRANSCRIPT,
@@ -49,6 +51,7 @@ from sglang_omni.proto.streams import (
     ImagePort,
     SessionPorts,
 )
+from sglang_omni.proto.tools import TaskUpdate
 from sglang_omni.serve.realtime.adapters import pipeline_limits_with_idle_backup
 from sglang_omni.serve.realtime.constants import CLOSE_REASON_INTERNAL
 from sglang_omni.serve.realtime.output import (
@@ -62,6 +65,8 @@ from sglang_omni.serve.realtime.output import (
     ResponseStarted,
     SpeechStarted,
     SpeechStopped,
+    TaskArtifactOutput,
+    TaskUpdated,
     TextDelta,
     TextFinished,
     TurnFailure,
@@ -127,6 +132,8 @@ def capabilities_of(ports: SessionPorts) -> Capabilities:
         supports_truncate=TRUNCATE in ports.controls,
         supports_cancel=INTERRUPT in ports.controls,
         supports_client_commit=COMMIT in ports.controls,
+        is_proactive=ports.is_proactive,
+        tasks=ports.tasks,
     )
 
 
@@ -179,6 +186,7 @@ class SessionBridge(InteractionAdapter):
             (TRANSCRIPT, TRANSCRIPT_FORMAT): self.on_transcript,
             (TEXT, TEXT_DELTA): self.on_text_delta,
             (CONTROL, SESSION_CONTROL): self.on_control,
+            (TASK, TASK_UPDATE): self.on_task_update,
         }
         if ports.output is not None:
             self.projections[(AUDIO, ports.output.format)] = self.on_audio
@@ -475,6 +483,35 @@ class SessionBridge(InteractionAdapter):
             return [ResponseHeard(response_id, item_id, output.payload["text_end"])]
         else:
             return []
+
+    def on_task_update(self, output: OutputChunk) -> list[OutputEvent]:
+        update = TaskUpdate.model_validate(output.payload)
+        return [
+            TaskUpdated(
+                task_id=update.task_id,
+                name=update.name,
+                status=update.status,
+                arguments=update.arguments,
+                origin_item_id=next(
+                    (
+                        item_id
+                        for item_id, turn in self.item_turns.items()
+                        if turn == update.origin_turn
+                    ),
+                    None,
+                ),
+                error=update.error,
+                artifact=(
+                    None
+                    if update.artifact is None
+                    else TaskArtifactOutput(
+                        type=update.artifact.type,
+                        media_type=update.artifact.media_type,
+                        data=update.artifact.data,
+                    )
+                ),
+            )
+        ]
 
     def on_speech_started(self, output: OutputChunk) -> list[OutputEvent]:
         return [SpeechStarted(self.new_user_item(), output.payload["t_ms"])]
