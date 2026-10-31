@@ -22,11 +22,13 @@ from sglang_omni.models.streaming_cascade.base import (
     iterate,
     replying,
     sentences,
+    with_language,
 )
 from sglang_omni.models.streaming_cascade.numerals import spoken_text
 from sglang_omni.proto.session import TimedChunk
 from sglang_omni.proto.streams import (
     REPLY_PROGRESS,
+    REPLY_SENTENCE,
     TEXT_DELTA,
     TURN_DONE,
     chunk_language,
@@ -52,15 +54,24 @@ def has_chinese_characters(sentence: str) -> bool:
     return any("\u4e00" <= char <= "\u9fff" for char in sentence)
 
 
+CJK_LANGUAGES = frozenset({"Chinese", "Cantonese", "Japanese", "Korean"})
+KANA = re.compile("[\u3040-\u30ff]")
+HANGUL = re.compile("[\uac00-\ud7af]")
+LATIN_WORD = re.compile(r"[A-Za-z]+")
+CJK_CHARACTER = re.compile("[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]")
+LATIN_VOWELS = re.compile("[aeiouy]+", re.IGNORECASE)
+
+
 class OpenAISpeechSynthesizerConfig(ComponentConfig):
     """Sentence-chunked `/v1/audio/speech` streaming PCM, one request per sentence.
 
     `language` is the service's language tag: empty leaves it to the
     service, `auto` follows the language the recognizer heard from the
-    user, and any other name tags every sentence without Chinese characters.
-    Without a known user language `auto` tags by script like `English`.
-    A sentence tagged English, with no Chinese characters, reaches the
-    service with its numbers read out as words.
+    user except in a sentence whose script contradicts it and carries most of
+    it, which is tagged by its script, and any other name tags every sentence
+    without Chinese characters. Without a known user language `auto` tags by
+    script like `English`. A sentence tagged English reaches the service with
+    its numbers read out as words.
     """
 
     kind: Literal["openai_speech"] = "openai_speech"
@@ -152,7 +163,38 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
 
     def sentence_language(self, sentence: str) -> str:
         """The language tag of one sentence."""
-        if self.config.language == "auto" and self.session_language is not None:
+        if KANA.search(sentence):
+            script = "Japanese"
+        elif HANGUL.search(sentence):
+            script = "Korean"
+        elif has_chinese_characters(sentence):
+            script = "Chinese"
+        elif any(char.isascii() and char.isalpha() for char in sentence):
+            script = "English"
+        else:
+            script = ""
+        # note (Haoling Pu): a sentence whose script contradicts the session language and carries most of it, as in a reply the user asked for in another language, is tagged by its script; a CJK character is about one syllable, so it is weighed against the vowel groups of the Latin words.
+        latin_syllable_count = sum(
+            max(len(LATIN_VOWELS.findall(word)), 1)
+            for word in LATIN_WORD.findall(sentence)
+        )
+        is_mostly_cjk = len(CJK_CHARACTER.findall(sentence)) > latin_syllable_count
+        is_switched = self.session_language is not None and (
+            (
+                script in ("Japanese", "Korean")
+                and script != self.session_language
+                and is_mostly_cjk
+            )
+            or (
+                script == "Chinese"
+                and self.session_language not in CJK_LANGUAGES
+                and is_mostly_cjk
+            )
+            or (script == "English" and self.session_language in CJK_LANGUAGES)
+        )
+        if self.config.language == "auto" and is_switched:
+            return script
+        elif self.config.language == "auto" and self.session_language is not None:
             return self.session_language
         elif has_chinese_characters(sentence):
             # Note (Junnan Li): A sentence with CJK characters is spoken as Chinese whatever the configured language, so a reply in the user's language keeps the right tag.
@@ -174,7 +216,9 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
                 pass
             yield chunk
 
-    async def speak(self, sentence: str) -> AsyncIterator[np.ndarray]:
+    async def speak(
+        self, sentence: str, language: str | None
+    ) -> AsyncIterator[np.ndarray]:
         body: dict[str, object] = {
             "model": self.config.model,
             "voice": self.config.voice,
@@ -182,10 +226,9 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
             "response_format": "pcm",
             "stream": True,
         }
-        if self.config.language:
-            language = self.sentence_language(sentence)
+        if language is not None:
             body["language"] = language
-            if language == "English" and not has_chinese_characters(sentence):
+            if language == "English":
                 # Note (ruoyu): A Base voice cloned from a Chinese reference read the digits of English sentences as Chinese numerals in 12 of 50 takes and the same numbers written as words in 0 of 50; the aligner reads the digits with the same words.
                 body["input"] = spoken_text(sentence, language)[0]
             else:
@@ -246,9 +289,15 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
                 TABLE_EDGE_PIPE.sub("", LINE_MARKER.sub("", BARE_URL.sub(r"\1", text))),
             )
             sentence = " ".join(text.split())
+            language = (
+                self.sentence_language(sentence) if self.config.language else None
+            )
+            emit(
+                control_chunk(REPLY_SENTENCE, turn=turn, **with_language({}, language))
+            )
             # Note (ruoyu): Qwen3-TTS answers 500 to a sentence with no word in it, which would close the session.
             if re.search(r"\w", sentence):
-                async for samples in self.speak(sentence):
+                async for samples in self.speak(sentence, language):
                     audio_ms += len(samples) * 1000 / self.sample_rate_hz
                     emit(audio_chunk(samples, self.sample_rate_hz, turn))
             else:

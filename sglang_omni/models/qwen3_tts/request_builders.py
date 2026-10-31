@@ -24,6 +24,7 @@ from sglang_omni.models.qwen3_tts.reference_encoder_cuda_graph import (
     DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES,
     Qwen3TTSReferenceEncoderCudaGraphRunner,
     ReferenceEncoderGraphStats,
+    exact_length_encode,
 )
 from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSPromptConstants
 from sglang_omni.platforms import current_platform
@@ -262,7 +263,12 @@ def set_qwen3_tts_preprocessing_context(
         get_qwen3_tts_adhoc_reference_service_locked(
             model,
             wrapper,
-            graph_bucket_frames=reference_encoder_graph_bucket_frames,
+            # note (ratish): only Base checkpoints encode references, so the others capture no encoder graphs.
+            graph_bucket_frames=(
+                reference_encoder_graph_bucket_frames
+                if model.tts_model_type == "base"
+                else ()
+            ),
         )
         _PREPROCESSING_CONTEXT = Qwen3TTSPreprocessingContext(
             model=model,
@@ -341,6 +347,21 @@ def adopt_prepared_tensors(prepared: Qwen3TTSPreparedRequest) -> None:
             tensor.record_stream(stream)
         else:
             pass
+
+
+def hand_off_to_default_stream(codes: torch.Tensor) -> None:
+    """Order the default stream after the talker's stream and keep codes the talker made alive there."""
+    if not codes.is_cuda:
+        return
+    else:
+        pass
+    talker_stream = torch.cuda.current_stream(codes.device)
+    default_stream = torch.cuda.default_stream(codes.device)
+    if talker_stream != default_stream:
+        default_stream.wait_stream(talker_stream)
+        codes.record_stream(default_stream)
+    else:
+        pass
 
 
 def pop_prepared_qwen3_tts_request(
@@ -987,6 +1008,7 @@ class Qwen3TTSRefCodeBatcher:
         param = next(self.encoder.parameters())
         self.encoder_device = param.device
         self.encoder_dtype = param.dtype
+        self.clip_samples = torch.zeros((), dtype=torch.long, device=param.device)
         self.max_batch_size = max(int(max_batch_size), 1)
         self.max_batch_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
         self.encode_stream = new_encode_stream(self.encoder_device)
@@ -1092,7 +1114,10 @@ class Qwen3TTSRefCodeBatcher:
             [waveform], sr=sample_rate
         )
         samples = torch.from_numpy(audio[0])
-        if self.graph_runner is not None:
+        if samples.numel() == 0:
+            # note (ratish): the encoder's tail padding repeats a clip's last step, which an empty clip does not have.
+            raise ValueError("Qwen3-TTS reference audio has no samples")
+        elif self.graph_runner is not None:
             codes = self.graph_runner.encode(samples)
             if codes is not None:
                 return codes
@@ -1101,9 +1126,7 @@ class Qwen3TTSRefCodeBatcher:
         else:
             pass
         frames = -(-samples.numel() // self.hop)
-        # note(ratish): whole frames, so every conv layer's own tail padding is
-        # zero and the eager encode has the shape the graphs capture; past the ladder a new
-        # length costs cuDNN a plan per conv, so lengths round up to the largest bucket.
+        # note (ratish): whole frames, so the eager encode has the shape the graphs capture; past the ladder a new length costs cuDNN a plan per conv, so lengths round up to the largest bucket.
         if (
             current_platform.is_cuda()
             and self.graph_runner is not None
@@ -1119,9 +1142,11 @@ class Qwen3TTSRefCodeBatcher:
             dtype=self.encoder_dtype,
         )
         values[0, 0, : samples.numel()].copy_(samples)
-        codes = self.encoder.encode(
-            values, num_quantizers=self.num_quantizers, return_dict=True
-        ).audio_codes
+        self.clip_samples.fill_(samples.numel())
+        with exact_length_encode(self.encoder, self.clip_samples):
+            codes = self.encoder.encode(
+                values, num_quantizers=self.num_quantizers, return_dict=True
+            ).audio_codes
         return codes[0, :, :frames].transpose(0, 1)
 
     def run(self) -> None:
@@ -1581,7 +1606,11 @@ def prepare_qwen3_tts_request(
     )
 
     validate_qwen3_tts_model_task(model, state)
-    if "max_new_tokens" in state.generation_kwargs:
+    # note (ratish): the text budget fitted to Base clones cuts slow CustomVoice and VoiceDesign speech far more often than these tasks run away, so they take the checkpoint's generation_config limit, which the scheduler clamps to the context and the KV pool.
+    if (
+        "max_new_tokens" in state.generation_kwargs
+        or state.task_type != QWEN3_TTS_TASK_BASE
+    ):
         generation_kwargs = state.generation_kwargs
     else:
         # note (luojiaxuan): The default budget counts the target text only; reference text and instructions are prompt, not speech.
@@ -1978,11 +2007,12 @@ def apply_sglang_qwen3_tts_result(
 
     if code_parts:
         device = code_parts[0].device
-        # note(ratish): the vocoder decodes these on this default stream.
         codes = torch.cat(
             [part.to(device=device, dtype=torch.long) for part in code_parts],
             dim=0,
         )
+        # note (ratish): the vocoder's decode and a cross-process send read these on the default stream, which waits for them as when the talker ran there.
+        hand_off_to_default_stream(codes)
     else:
         codes = torch.empty((0, 0), dtype=torch.long)
 
@@ -2020,11 +2050,14 @@ def make_qwen3_tts_scheduler_adapters(
     def result_adapter(data: Qwen3TTSSGLangRequestData) -> StagePayload:
         return apply_sglang_qwen3_tts_result(data.stage_payload, data)
 
+    handed_off_event: torch.Event | None = None
+
     def stream_output_builder(
         request_id: str,
         data: Qwen3TTSSGLangRequestData,
         req_output: RequestOutput,
     ) -> list[OutgoingMessage]:
+        nonlocal handed_off_event
         del req_output
         params = data.stage_payload.request.params
         if (
@@ -2103,6 +2136,12 @@ def make_qwen3_tts_scheduler_adapters(
             # chunk on its own stream, so it waits on the event that marks the
             # chunk complete instead of on everything the talker has enqueued.
             metadata["codes_ready_event"] = data.codes_ready_event
+            # note (ratish): a step's chunks share its event and snapshot, so a cross-process send's default stream waits once a step.
+            if data.codes_ready_event is not handed_off_event:
+                hand_off_to_default_stream(codes)
+                handed_off_event = data.codes_ready_event
+            else:
+                pass
         else:
             pass
 
