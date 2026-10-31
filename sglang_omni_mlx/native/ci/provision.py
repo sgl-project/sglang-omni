@@ -1,8 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Prepares a CI data root: pinned model checkpoints and the frozen corpus.
 
-Every file is checked against its recorded SHA-256, so a runner's cache is
-reused only when it matches what the golden files were made from.
+    python provision.py <data_root> [--corpus] [--model REPO ...]
+
+Every file is checked against its SHA-256 in model_pins.json or corpus/, so a
+runner's cache is reused only when it matches what the golden files were made
+from. A checkpoint lands in <data_root>/models/<org>_<name>; a Whisper
+checkpoint also gets the tokenizer files of its openai/whisper-* repo in that
+directory, where Voxt puts them, and Fun-CosyVoice3 gets its S3 speech
+tokenizer's checkpoint in speech_tokenizer/.
 """
 
 from __future__ import annotations
@@ -17,7 +23,7 @@ import tarfile
 import time
 import urllib.request
 from pathlib import Path
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 from huggingface_hub import snapshot_download
 
@@ -35,6 +41,17 @@ BYTES_PER_MEGABYTE = 1_000_000
 class FileSource(TypedDict):
     revision: str
     files: dict[str, str]
+
+
+class TokenizerSource(FileSource):
+    repo: str
+    # Where under the model directory its files go; the model directory itself
+    # when absent.
+    subdirectory: NotRequired[str]
+
+
+class ModelPin(FileSource):
+    tokenizer: NotRequired[TokenizerSource]
 
 
 def sha256(path: Path) -> str:
@@ -125,9 +142,18 @@ def provision_files(repo: str, source: FileSource, directory: Path) -> None:
         pass
 
 
-def provision_model(data_root: Path, repo: str, pin: FileSource) -> Path:
+def provision_model(data_root: Path, repo: str, pin: ModelPin) -> Path:
     model_directory = data_root / "models" / repo.replace("/", "_")
     provision_files(repo, pin, model_directory)
+    if "tokenizer" in pin:
+        tokenizer = pin["tokenizer"]
+        provision_files(
+            tokenizer["repo"],
+            tokenizer,
+            model_directory / tokenizer.get("subdirectory", ""),
+        )
+    else:
+        pass
     return model_directory
 
 
@@ -184,17 +210,23 @@ def provision_corpus(data_root: Path) -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("data_root", type=Path)
+    parser.add_argument("--corpus", action="store_true", help="also the corpus")
     parser.add_argument(
-        "--model", action="append", help="repo to provision (default: all pinned)"
+        "--model", action="append", default=[], help="pinned repo to provision"
     )
     arguments = parser.parse_args()
-    pins = json.loads((CI_DIRECTORY / "models.json").read_text())
-    for repo in arguments.model or list(pins):
+    pins: dict[str, ModelPin] = json.loads(
+        (CI_DIRECTORY / "model_pins.json").read_text()
+    )
+    for repo in arguments.model:
         print(
             f"model {repo}: {provision_model(arguments.data_root, repo, pins[repo])}",
             flush=True,
         )
-    print(f"corpus: {provision_corpus(arguments.data_root)}", flush=True)
+    if arguments.corpus:
+        print(f"corpus: {provision_corpus(arguments.data_root)}", flush=True)
+    else:
+        pass
 
 
 if __name__ == "__main__":

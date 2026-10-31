@@ -53,6 +53,7 @@ jobs:
       run_mac: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.plan.outputs.run_mac }}
       model_matrix: ${{ steps.models.outputs.model_matrix }}
       has_models: ${{ steps.models.outputs.has_models }}
+      native_runtime_pins: ${{ steps.models.outputs.native_runtime_pins }}
     steps:
       - name: Fetch latest PR gate state
         if: ${{ github.event_name == 'pull_request' }}
@@ -107,8 +108,7 @@ jobs:
           if [ -n "$BASE_SHA" ]; then
             git fetch -q --depth=1 origin "$BASE_SHA"
             git show "$BASE_SHA:sglang_omni_mlx/native/ci/model_pins.json" > "$RUNNER_TEMP/base_pins.json"
-            git show "$BASE_SHA:sglang_omni_mlx/native/ci/models.json" > "$RUNNER_TEMP/base_qwen3_asr_pins.json"
-            pin_arguments=(--base-pins "$RUNNER_TEMP/base_pins.json" --base-qwen3-asr-pins "$RUNNER_TEMP/base_qwen3_asr_pins.json")
+            pin_arguments=(--base-pins "$RUNNER_TEMP/base_pins.json")
           else
             :
           fi
@@ -173,8 +173,14 @@ jobs:
 
       - name: Provision checkpoints and corpus
         timeout-minutes: ${{ fromJSON(env.VOXT_PROVISION_TIMEOUT_MINUTES) }}
+        env:
+          RUNTIME_PINS: ${{ join(fromJSON(needs.preflight.outputs.native_runtime_pins), ' ') }}
         run: |
-          "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision.py "$VOXT_CI_ROOT/data"
+          model_arguments=()
+          for pin in $RUNTIME_PINS; do
+            model_arguments+=(--model "$pin")
+          done
+          "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision.py "$VOXT_CI_ROOT/data" --corpus "${model_arguments[@]}"
 
       - name: Build the runtime
         run: |
@@ -262,18 +268,17 @@ jobs:
           uv venv -q -p 3.12 --allow-existing "$VOXT_CI_ROOT/venv"
           VIRTUAL_ENV="$VOXT_CI_ROOT/venv" uv pip install -q -r sglang_omni_mlx/native/ci/requirements.lock
 
-      # The corpus and the Qwen3-ASR checkpoints serve the golden corpus and the speech models' ASR round trip.
+      # A model's pins include the checkpoints its tests load beside its own, such as Qwen3-ASR for a speech model's ASR round trip.
       - name: Provision the corpus and this model's checkpoints
         timeout-minutes: ${{ fromJSON(env.VOXT_PROVISION_TIMEOUT_MINUTES) }}
         env:
           MODEL_PINS: ${{ join(matrix.model.pins, ' ') }}
         run: |
-          "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision.py "$VOXT_CI_ROOT/data"
           model_arguments=()
           for pin in $MODEL_PINS; do
             model_arguments+=(--model "$pin")
           done
-          "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision_models.py "$VOXT_CI_ROOT/data" "${model_arguments[@]}"
+          "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision.py "$VOXT_CI_ROOT/data" --corpus "${model_arguments[@]}"
 
       - name: Build the runtime
         run: |

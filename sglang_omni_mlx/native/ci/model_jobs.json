@@ -8,6 +8,13 @@
     "^sglang_omni_mlx/native/src/qwen3_asr/",
     "^sglang_omni_mlx/native/ci/(model_jobs\\.json|provision.*\\.py|check_.*\\.py|speech_golden\\.py|test_check_golden\\.py|test_model_servers\\.py|test_server_api\\.py|requirements\\.lock)$"
   ],
+  "native_runtime_pins": [
+    "mlx-community/Qwen3-ASR-0.6B-4bit",
+    "mlx-community/Qwen3-ASR-1.7B-6bit",
+    "mlx-community/Qwen3-ASR-1.7B-8bit",
+    "mlx-community/silero-vad-v6",
+    "mlx-community/diar_streaming_sortformer_4spk-v2.1-fp16"
+  ],
   "models": [
     {
       "name": "whisper",
@@ -19,7 +26,6 @@
         "mlx-community/whisper-large-v3-mlx",
         "mlx-community/whisper-small-mlx"
       ],
-      "qwen3_asr_pins": [],
       "goldens": [
         "whisper-large-v3-turbo.json",
         "whisper-large-v3.json",
@@ -38,9 +44,7 @@
         "^sglang_omni_mlx/native/src/silero_vad/"
       ],
       "pins": [
-        "beshkenadze/cohere-transcribe-03-2026-mlx-fp16"
-      ],
-      "qwen3_asr_pins": [
+        "beshkenadze/cohere-transcribe-03-2026-mlx-fp16",
         "mlx-community/silero-vad-v6"
       ],
       "goldens": [
@@ -61,7 +65,6 @@
       "pins": [
         "OpenMOSS-Team/MOSS-Transcribe-Diarize"
       ],
-      "qwen3_asr_pins": [],
       "goldens": [
         "moss-transcribe-diarize.json"
       ],
@@ -80,7 +83,6 @@
       "pins": [
         "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
       ],
-      "qwen3_asr_pins": [],
       "goldens": [
         "nemotron-asr-streaming.json"
       ],
@@ -99,7 +101,6 @@
       "pins": [
         "mlx-community/parakeet-tdt-0.6b-v3"
       ],
-      "qwen3_asr_pins": [],
       "goldens": [
         "parakeet-tdt-0.6b-v3.json"
       ],
@@ -116,9 +117,7 @@
         "^sglang_omni_mlx/native/src/silero_vad/"
       ],
       "pins": [
-        "mlx-community/SenseVoiceSmall"
-      ],
-      "qwen3_asr_pins": [
+        "mlx-community/SenseVoiceSmall",
         "mlx-community/silero-vad-v6"
       ],
       "goldens": [
@@ -136,9 +135,7 @@
         "^sglang_omni_mlx/native/(src/voxtral_tts/|tools/voxtral_tts_|ci/(voxtral_golden\\.py|test_voxtral_tts_api\\.py|model_golden/voxtral-))"
       ],
       "pins": [
-        "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit"
-      ],
-      "qwen3_asr_pins": [
+        "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
         "mlx-community/Qwen3-ASR-0.6B-4bit"
       ],
       "goldens": [
@@ -171,7 +168,6 @@
       "pins": [
         "mlx-community/MiniMax-Music3-mxfp8"
       ],
-      "qwen3_asr_pins": [],
       "goldens": [
         "minimax-music3.json"
       ],
@@ -187,7 +183,8 @@
         "^sglang_omni_mlx/native/(src/cosyvoice3/|tools/cosyvoice3_|ci/(cosyvoice3_golden\\.py|test_cosyvoice3_api\\.py|model_golden/fun-cosyvoice3-))"
       ],
       "pins": [
-        "mlx-community/Fun-CosyVoice3-0.5B-2512-fp16"
+        "mlx-community/Fun-CosyVoice3-0.5B-2512-fp16",
+        "mlx-community/Qwen3-ASR-0.6B-4bit"
       ],
       "goldens": [
         "fun-cosyvoice3-0.5b-2512.json"
@@ -197,8 +194,12 @@
       ]
     }
   ],
-  "disabled_goldens": {
+  "disabled": {
     "reason": "Fish Audio Drama 3 is disabled on main: its checkpoints are too large for the runner.",
+    "pins": [
+      "mlx-community/fish-audio-drama-3-4bit",
+      "mlx-community/fish-audio-drama-3-8bit"
+    ],
     "goldens": [
       "fish-audio-drama-3-4bit.json",
       "fish-audio-drama-3-8bit.json"
