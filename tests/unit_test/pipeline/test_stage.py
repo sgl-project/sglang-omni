@@ -29,6 +29,7 @@ from sglang_omni.proto import (
     StagePayload,
     SubmitMessage,
 )
+from sglang_omni.proto.messages import StreamChunkBatchMessage
 from sglang_omni.proto.session import (
     SESSION_METADATA_KEY,
     SessionIdentity,
@@ -178,9 +179,9 @@ def test_stage_routes_results_streams_and_clears_abort_state(monkeypatch) -> Non
         stream_msg = next(
             msg
             for target, _, msg in control_plane.sent_to_stage
-            if target == "talker" and msg.chunk_id == 0
+            if target == "talker" and isinstance(msg, StreamChunkBatchMessage)
         )
-        assert stream_msg.chunk_id == 0
+        assert stream_msg.chunk_ids == [0]
 
         stage_obj.stream_queue = StreamQueue()
         stage_obj.stream_queue.open("req-1")
