@@ -1,7 +1,9 @@
 """Builds the frozen Qwen A/A/B corpus from public, human-transcribed test sets.
 
-Sources are LibriSpeech test-clean, FLEURS cmn_hans_cn and ASCEND (hashes in
-raw.sha256); selection is deterministic.
+Sources are LibriSpeech test-clean, FLEURS cmn_hans_cn and ASCEND (pinned in
+sources.json); selection is deterministic.
+
+    python build_corpus.py <data_root> <fleurs test.tsv> <ascend test parquet>
 """
 
 from __future__ import annotations
@@ -152,6 +154,8 @@ def concat_long(rng, items, group_key, count, low, high, used, joiner):
 
 def main() -> None:
     work = Path(sys.argv[1])
+    fleurs_tsv = Path(sys.argv[2])
+    ascend_parquet = Path(sys.argv[3])
     extracted = work / "corpus/extracted"
     out = work / "corpus/v1"
     clips = out / "clips"
@@ -160,8 +164,8 @@ def main() -> None:
     used: set = set()
 
     en = librispeech(extracted)
-    zh = fleurs(extracted, work / "corpus/raw/fleurs-cmn-test.tsv")
-    cs = ascend(work / "corpus/raw/ascend-test.parquet")
+    zh = fleurs(extracted, fleurs_tsv)
+    cs = ascend(ascend_parquet)
     zh_numbers = [item for item in zh if re.search(r"[0-9０-９]", item["reference"])]
 
     selection: list[tuple[str, dict]] = []

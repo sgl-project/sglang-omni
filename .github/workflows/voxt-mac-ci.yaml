@@ -7,8 +7,9 @@ name: Voxt Mac CI
 # model PR, not here.
 #
 # VOXT_CI_ROOT persists on the runner: the pinned checkpoints and the corpus are
-# fetched once and reused while their SHA-256 match (provision.py), and the
-# runtime's CMake build directory is reused across runs.
+# fetched once and reused while their SHA-256 match (provision.py), a download
+# cut off by a timeout resumes in the next job, and the runtime's CMake build
+# directory is reused across runs.
 #
 # The package job runs only when the repository variable
 # VOXT_ENABLE_CI_PACKAGE is true. Local development should use
@@ -43,6 +44,8 @@ env:
   VOXT_CI_ROOT: /Users/Shared/voxt-ci
   # A slow or stalled checkpoint download fails its step instead of using up the job.
   VOXT_PROVISION_TIMEOUT_MINUTES: 10
+  # Plain HTTP downloads resume from the partial file a timed-out step left; Xet ones start over.
+  HF_HUB_DISABLE_XET: "1"
 
 jobs:
   preflight:
