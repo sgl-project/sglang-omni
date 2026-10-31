@@ -20,6 +20,11 @@ enum class AudioLayout { kReference, kVoxtSwift };
 // Whisper-style log-mel in float32 on MLX, [mel_bins, frames]. The reference
 // layout drops the final centered STFT frame; the Swift layout keeps it.
 mlx::core::array LogMel(const std::vector<float> &samples, AudioLayout layout);
+// The same with a caller's Hann window [kFftSize] and mel filters
+// [kFftSize / 2 + 1, kMelBinCount], both float32.
+mlx::core::array LogMel(const std::vector<float> &samples, AudioLayout layout,
+                        const mlx::core::array &window,
+                        const mlx::core::array &filters);
 
 int ConvOutputFrames(int frame_count);
 int ReferenceTokenCount(int frame_count);

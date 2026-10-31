@@ -114,6 +114,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Check free disk space
+        id: native-disk
         env:
           RUN_MUSIC3: ${{ needs.preflight.outputs.run_music3 }}
         run: |
@@ -143,23 +144,27 @@ jobs:
             echo "::error::Only ${free_gb} GB free on the runner; this run needs at least ${required_gb} GB."
             exit 1
           else
-            :
+            echo "ready=true" >> "$GITHUB_OUTPUT"
           fi
 
       - uses: astral-sh/setup-uv@v6
 
       - name: Set up the CI Python
+        id: ci-python
         run: |
           uv venv -q -p 3.12 --allow-existing "$VOXT_CI_ROOT/venv"
           VIRTUAL_ENV="$VOXT_CI_ROOT/venv" uv pip install -q -r sglang_omni_mlx/native/ci/requirements.lock
 
       - name: Provision checkpoints and corpus
+        id: asr-checkpoints
         run: |
           "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision.py "$VOXT_CI_ROOT/data"
 
       - name: Build the runtime
+        id: native-build
         run: |
           sglang_omni_mlx/native/scripts/build_runtime.sh "$RUNNER_TEMP/runtime" "$VOXT_CI_ROOT/runtime-build"
+          "$VOXT_CI_ROOT/runtime-build/venv/bin/cmake" --build "$VOXT_CI_ROOT/runtime-build/cmake" --target asr_service_probe
 
       - name: Provision the Music3 checkpoint
         if: ${{ !cancelled() && needs.preflight.outputs.run_music3 == 'true' }}
@@ -207,8 +212,10 @@ jobs:
           exit $status
 
       - name: Server API tests
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' && steps.asr-checkpoints.outcome == 'success' }}
         env:
           NATIVE_RUNTIME_BIN: ${{ runner.temp }}/runtime/bin
+          NATIVE_SERVICE_PROBE: ${{ env.VOXT_CI_ROOT }}/runtime-build/cmake/asr_service_probe
           CI_DATA_ROOT: ${{ env.VOXT_CI_ROOT }}/data
         run: |
           "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_check_golden.py sglang_omni_mlx/native/ci/test_server_api.py sglang_omni_mlx/native/ci/test_vad_api.py \
@@ -217,13 +224,14 @@ jobs:
       # The models beside Qwen3-ASR, each with its own server: their pinned
       # checkpoints, their golden outputs and their servers' API tests.
       - name: Provision the other models' checkpoints
-        if: ${{ !cancelled() }}
+        id: model-checkpoints
+        if: ${{ !cancelled() && steps.native-disk.outputs.ready == 'true' && steps.ci-python.outcome == 'success' && steps.native-build.outcome == 'success' }}
         run: |
           "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision_models.py "$VOXT_CI_ROOT/data" \
             --exclude-model mlx-community/MiniMax-Music3-mxfp8
 
       - name: Other models' golden outputs on the frozen corpus
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' && steps.asr-checkpoints.outcome == 'success' && steps.model-checkpoints.outcome == 'success' }}
         run: |
           result=0
           for golden in sglang_omni_mlx/native/ci/model_golden/*.json; do
@@ -247,7 +255,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Other model servers' API tests
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' && steps.asr-checkpoints.outcome == 'success' && steps.model-checkpoints.outcome == 'success' }}
         env:
           NATIVE_RUNTIME_BIN: ${{ runner.temp }}/runtime/bin
           CI_DATA_ROOT: ${{ env.VOXT_CI_ROOT }}/data

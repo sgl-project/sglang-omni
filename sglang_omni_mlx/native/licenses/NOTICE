@@ -1,0 +1,19 @@
+AuK native runtime third-party notices
+
+Copyright (C) 2026 Tencent. All rights reserved.
+Copyright (c) 2022 NVIDIA CORPORATION.
+Copyright 2025 The Qwen team, Alibaba Group and the HuggingFace Inc. team.
+
+AuK diffusion and inference code derives from Tencent-Hunyuan/AuK (MIT).
+The VAE includes BigVGAN and alias-free activation code adapted from
+junjun3518/alias-free-torch (Apache-2.0).
+The conditioner adapts Qwen2.5-Omni text and audio modeling source (Apache-2.0).
+The Qwen2.5-Omni-3B weights have a separate Qwen Research License, permitting
+research and evaluation only; commercial use requires a separate license.
+Qwen is licensed under the Qwen RESEARCH LICENSE AGREEMENT, Copyright (c) Alibaba Cloud. All Rights Reserved.
+See qwen-research.txt and the original checkpoint license:
+https://huggingface.co/Qwen/Qwen2.5-Omni-3B/blob/f75b40e3da2003cdd6e1829b1f420ca70797c34e/LICENSE
+
+Built with Qwen. Prepared conditioner/model.safetensors contains only the
+Thinker text and audio tensors, extracted and repackaged for native serving.
+This modification does not change the original weights' license.
