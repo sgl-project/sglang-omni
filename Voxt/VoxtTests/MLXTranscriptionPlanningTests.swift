@@ -32,24 +32,84 @@ final class MLXTranscriptionPlanningTests: XCTestCase {
         XCTAssertTrue(buffer.observedSpeech)
     }
 
-    func testVoiceActivityFilteredSamplesBoundLongPrerollBeforeDetectedSpeech() {
+    func testVoiceActivityFilteredSamplesBoundLeadingAndBetweenBurstContext() {
         var buffer = MLXVoiceActivitySampleContextBuffer()
 
-        for index in 0..<6 {
+        for index in 0..<20 {
             XCTAssertEqual(
                 buffer.append(
-                    voiceActivityFrame(samples: [Float(index)], startSeconds: Double(index) * 0.1),
+                    voiceActivityFrame(samples: [Float(index)], startSeconds: Double(index) * 0.2, durationSeconds: 0.2),
                     isSpeech: false
                 ),
                 []
             )
         }
-        let filtered = buffer.append(
-            voiceActivityFrame(samples: [6], startSeconds: 0.6),
-            isSpeech: true
+        XCTAssertEqual(
+            buffer.append(voiceActivityFrame(samples: [20], startSeconds: 4.0, durationSeconds: 0.2), isSpeech: true),
+            (13...20).map(Float.init)
         )
+        for index in 21..<27 {
+            XCTAssertEqual(
+                buffer.append(
+                    voiceActivityFrame(samples: [Float(index)], startSeconds: 4.2 + Double(index - 21) * 0.1),
+                    isSpeech: false
+                ),
+                []
+            )
+        }
+        XCTAssertEqual(
+            buffer.append(voiceActivityFrame(samples: [27], startSeconds: 4.8), isSpeech: true),
+            [24, 25, 26, 27]
+        )
+    }
 
-        XCTAssertEqual(filtered, [3, 4, 5, 6])
+    /// The first syllables went missing: the first speech decision of a fresh Silero stream lags
+    /// the speech, and only 0.35 s before it reached ASR. Audio from key-down must reach ASR.
+    func testKeyDownToFirstAudioFrameReachingASRIsZeroWhenTheFirstSpeechDecisionLags() throws {
+        let sampleRate = 48_000.0
+        let samplesPerTapBuffer = 1_024
+        let tapBufferSeconds = Double(samplesPerTapBuffer) / sampleRate
+        let firstSpeechDecisionSeconds = 0.8
+        let store = MLXTranscriber.AudioSampleStore()
+        store.configureVoiceActivityFiltering(enabled: true)
+
+        var frameIndex = 0
+        while Double(frameIndex) * tapBufferSeconds < firstSpeechDecisionSeconds + 0.2 {
+            let startSeconds = Double(frameIndex) * tapBufferSeconds
+            store.appendVoiceActivityFrame(
+                ASRVoiceActivityAudioFrame(
+                    samples: [Float](repeating: Float(frameIndex), count: samplesPerTapBuffer),
+                    sampleRate: sampleRate,
+                    startSeconds: startSeconds,
+                    endSeconds: startSeconds + tapBufferSeconds,
+                    level: 0.2
+                ),
+                isSpeech: startSeconds >= firstSpeechDecisionSeconds
+            )
+            frameIndex += 1
+        }
+
+        let samplesReachingASR = store.snapshot()
+        let firstFrameIndexReachingASR = Int(try XCTUnwrap(samplesReachingASR.first))
+        let keyDownToFirstAudioFrameMilliseconds = Double(firstFrameIndexReachingASR) * tapBufferSeconds * 1_000
+        XCTAssertEqual(keyDownToFirstAudioFrameMilliseconds, 0)
+        XCTAssertEqual(samplesReachingASR.count, frameIndex * samplesPerTapBuffer)
+    }
+
+    /// The key-down latency must come from the first microphone callback of this recording:
+    /// a later callback must not move it, and a new recording must not inherit it.
+    func testFirstAudioFrameTimeIsTheFirstCallbackOfEachRecording() {
+        let keyDownAt = Date(timeIntervalSinceReferenceDate: 1_000)
+        let store = MLXTranscriber.AudioSampleStore()
+
+        store.noteCallback(at: keyDownAt.addingTimeInterval(0.120))
+        store.noteCallback(at: keyDownAt.addingTimeInterval(0.141))
+        let firstFrameAt = store.firstCallbackDate()
+        store.clear()
+        store.noteCallback(at: keyDownAt.addingTimeInterval(5))
+
+        XCTAssertEqual(firstFrameAt, keyDownAt.addingTimeInterval(0.120))
+        XCTAssertEqual(store.firstCallbackDate(), keyDownAt.addingTimeInterval(5))
     }
 
     func testVoiceActivityFilteredSamplesFlushPrerollBeforeEachSpeechBurst() {

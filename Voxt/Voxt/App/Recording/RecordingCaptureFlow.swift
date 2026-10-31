@@ -210,6 +210,7 @@ extension AppDelegate {
         invalidateActiveLLMRequest()
         sessionOutputMode = .transcription
         recordingRequestedAt = nil
+        recordingKeyDownAt = nil
         recordingStartedAt = nil
         recordingStoppedAt = nil
         transcriptionProcessingStartedAt = nil

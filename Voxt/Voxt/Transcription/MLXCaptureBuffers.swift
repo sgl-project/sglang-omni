@@ -4,15 +4,23 @@ import Foundation
 
 struct MLXVoiceActivitySampleContextBuffer {
     static let defaultMaximumContextSeconds: TimeInterval = 0.35
+    /// Audio kept from key-down until the first speech decision: a fresh Silero stream reports low
+    /// probabilities for its first chunks, so that decision can lag the first syllable by several hundred ms.
+    static let defaultLeadingContextSeconds: TimeInterval = 1.5
 
     private let maximumContextSeconds: TimeInterval
+    private let leadingContextSeconds: TimeInterval
     private var pendingFrames: [ASRVoiceActivityAudioFrame] = []
     private var pendingDurationSeconds: TimeInterval = 0
     private(set) var observedFrames = false
     private(set) var observedSpeech = false
 
-    init(maximumContextSeconds: TimeInterval = Self.defaultMaximumContextSeconds) {
+    init(
+        maximumContextSeconds: TimeInterval = Self.defaultMaximumContextSeconds,
+        leadingContextSeconds: TimeInterval = Self.defaultLeadingContextSeconds
+    ) {
         self.maximumContextSeconds = max(0, maximumContextSeconds)
+        self.leadingContextSeconds = max(0, leadingContextSeconds)
     }
 
     mutating func append(_ frame: ASRVoiceActivityAudioFrame, isSpeech: Bool) -> [Float] {
@@ -47,7 +55,8 @@ struct MLXVoiceActivitySampleContextBuffer {
         guard !frame.samples.isEmpty else { return }
         pendingFrames.append(frame)
         pendingDurationSeconds += Self.durationSeconds(for: frame)
-        while pendingDurationSeconds > maximumContextSeconds,
+        let contextLimitSeconds = observedSpeech ? maximumContextSeconds : leadingContextSeconds
+        while pendingDurationSeconds > contextLimitSeconds,
               let removed = pendingFrames.first {
             pendingFrames.removeFirst()
             pendingDurationSeconds -= Self.durationSeconds(for: removed)
@@ -118,13 +127,23 @@ extension MLXTranscriber {
         private let lock = NSLock()
         private var samples: [Float] = []
         private var callbackCount: Int = 0
+        private var firstCallbackAt: Date?
         private var enabled = false
         private var voiceActivityContextBuffer = MLXVoiceActivitySampleContextBuffer()
 
-        func noteCallback() {
+        func noteCallback(at callbackDate: Date = Date()) {
             lock.lock()
             defer { lock.unlock() }
+            if callbackCount == 0 {
+                firstCallbackAt = callbackDate
+            }
             callbackCount += 1
+        }
+
+        func firstCallbackDate() -> Date? {
+            lock.lock()
+            defer { lock.unlock() }
+            return firstCallbackAt
         }
 
         func append(_ newSamples: [Float]) {
@@ -193,6 +212,7 @@ extension MLXTranscriber {
             defer { lock.unlock() }
             samples.removeAll(keepingCapacity: false)
             callbackCount = 0
+            firstCallbackAt = nil
             enabled = false
             voiceActivityContextBuffer.reset()
         }

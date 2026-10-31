@@ -65,6 +65,8 @@ extension AppDelegate {
         outputMode: SessionOutputMode,
         transcriptionCaptureMode: TranscriptionCaptureSessionMode = .standard
     ) {
+        let keyDownAt = pendingRecordingKeyDownAt
+        pendingRecordingKeyDownAt = nil
         guard !isApplicationTerminating else { return }
         let availability = FeatureSettingsStore.availability()
         switch outputMode {
@@ -85,6 +87,7 @@ extension AppDelegate {
         }
 
         recordingRequestedAt = Date()
+        recordingKeyDownAt = keyDownAt ?? recordingRequestedAt
         VoxtLog.asr(
             "Begin recording requested. output=\(RecordingSessionSupport.outputLabel(for: outputMode)), isSessionActive=\(isSessionActive)",
             verbose: true

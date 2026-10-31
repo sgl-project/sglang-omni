@@ -242,7 +242,8 @@ class MLXTranscriber: ObservableObject, TranscriberProtocol {
         lastCaptureMetrics = TranscriptionCaptureMetrics(
             callbackCount: callbackCount,
             sampleCount: sampleCount,
-            sampleRate: sampleRate
+            sampleRate: sampleRate,
+            firstFrameAt: sampleStore.firstCallbackDate()
         )
         let capturedAudioSec = String(format: "%.2f", lastCaptureMetrics?.capturedAudioSeconds ?? 0)
         VoxtLog.asr(
