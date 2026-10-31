@@ -30,6 +30,7 @@ from sglang.srt.mem_cache.base_prefix_cache import (
 )
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.runtime_context import get_context
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
 from sglang_omni.admission import QueueFullError
 from sglang_omni.proto import OmniRequest, StagePayload
@@ -2193,6 +2194,9 @@ def test_speculative_reserve_rejection_names_the_reserve(monkeypatch) -> None:
         ({"presence_penalty": 0.5}, False, False, False, "presence_penalty"),
         ({"repetition_penalty": 1.2}, False, False, False, "repetition_penalty"),
         ({"repetition_penalty": 1.2}, False, False, True, None),
+        ({"sampling_seed": 42}, False, False, False, "seed"),
+        ({"sampling_seed": 42, "top_k": 1}, False, False, False, None),
+        ({"sampling_seed": 42, "max_new_tokens": 1}, False, False, False, None),
     ],
 )
 def test_speculative_admission_refuses_sampling_the_draft_cannot_reproduce(
@@ -2204,6 +2208,7 @@ def test_speculative_admission_refuses_sampling_the_draft_cannot_reproduce(
 ) -> None:
     scheduler = object.__new__(OmniScheduler)
     scheduler.draft_worker = SimpleNamespace()
+    scheduler.spec_algorithm = SpeculativeAlgorithm.DSPARK
     scheduler.model_runner = SimpleNamespace(
         speculative_verifies_repetition_penalty=verifies_repetition_penalty
     )
@@ -2212,6 +2217,9 @@ def test_speculative_admission_refuses_sampling_the_draft_cannot_reproduce(
         "frequency_penalty": 0.0,
         "presence_penalty": 0.0,
         "repetition_penalty": 1.0,
+        "sampling_seed": None,
+        "top_k": -1,
+        "max_new_tokens": 2,
     }
     sampling_params.update(sampling_overrides)
     request = SimpleNamespace(

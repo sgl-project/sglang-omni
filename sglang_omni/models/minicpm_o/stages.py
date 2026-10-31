@@ -182,6 +182,45 @@ def create_audio_encoder_executor(
 TALKER_PREFILL_CUDA_GRAPH_MAX_TOKENS = 2048
 
 
+def prepare_talker_draft(
+    model_path: str, overrides: dict[str, object], *, session_mode: bool
+) -> int:
+    """Point the talker's server args at a loadable copy of its DSpark draft.
+
+    Returns the KV tokens each request reserves past its own for verify windows.
+    """
+    from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
+
+    algorithm = SpeculativeAlgorithm.from_string(overrides["speculative_algorithm"])
+    draft_model_path = overrides.get("speculative_draft_model_path")
+    if not algorithm.is_dspark():
+        raise ValueError("MiniCPM-o talker speculative decoding supports DSPARK")
+    elif draft_model_path is None:
+        raise ValueError(
+            "talker speculative decoding needs speculative_draft_model_path"
+        )
+    elif session_mode:
+        raise ValueError("talker speculative decoding does not serve duplex sessions")
+    else:
+        pass
+    # note (0xtoward): the draft modules import Triton kernels, which only a speculative
+    # deployment needs.
+    from sglang_omni.models.minicpm_o.talker_dspark import materialize_draft_checkpoint
+
+    # SGLang reads the draft config while resolving the server args, so the copy must
+    # exist before that.
+    draft_dir, block_size = materialize_draft_checkpoint(
+        str(draft_model_path),
+        model_path,
+        overrides.get("speculative_draft_model_revision"),
+    )
+    overrides["speculative_draft_model_path"] = draft_dir
+    overrides["speculative_draft_model_revision"] = None
+    overrides.setdefault("speculative_dspark_block_size", block_size)
+    # Two verify windows past each request's tokens, as the scheduler reserves per decode.
+    return 2 * (int(overrides["speculative_dspark_block_size"]) + 1)
+
+
 def create_sglang_talker_executor_from_config(
     model_path: str,
     *,
@@ -228,8 +267,17 @@ def create_sglang_talker_executor_from_config(
     else:
         pass
     overrides["tp_size"] = tp_size
+    speculative_reserve_tokens = 0
+    if overrides.get("speculative_algorithm") is not None:
+        speculative_reserve_tokens = prepare_talker_draft(
+            model_path, overrides, session_mode=session_mode
+        )
+    else:
+        pass
     # note (MayDomine): cap talker KV allocation so it does not starve the thinker.
-    overrides.setdefault("max_total_tokens", 32 * max_seq_len)
+    overrides.setdefault(
+        "max_total_tokens", 32 * (max_seq_len + speculative_reserve_tokens)
+    )
     server_args = build_sglang_server_args(
         model_path,
         context_length=max_seq_len,
