@@ -15,14 +15,9 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import NotRequired, TypedDict
+from typing import NotRequired
 
-from provision import CI_DIRECTORY, download, provision_model
-
-
-class FileSource(TypedDict):
-    revision: str
-    files: dict[str, str]
+from provision import CI_DIRECTORY, FileSource, provision_files, provision_model
 
 
 class TokenizerSource(FileSource):
@@ -56,10 +51,11 @@ def main() -> None:
         model_directory = provision_model(arguments.data_root, repo, pin)
         if "tokenizer" in pin:
             tokenizer = pin["tokenizer"]
-            for name, digest in tokenizer["files"].items():
-                url = f"https://huggingface.co/{tokenizer['repo']}/resolve/{tokenizer['revision']}/{name}"
-                destination = model_directory / tokenizer.get("subdirectory", "")
-                download(url, destination / name, digest)
+            provision_files(
+                tokenizer["repo"],
+                tokenizer,
+                model_directory / tokenizer.get("subdirectory", ""),
+            )
         else:
             pass
         print(f"model {repo}: {model_directory}", flush=True)

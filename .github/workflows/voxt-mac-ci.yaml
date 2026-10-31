@@ -41,6 +41,8 @@ permissions:
 
 env:
   VOXT_CI_ROOT: /Users/Shared/voxt-ci
+  # provision.py prints one line per finished repo; per-file bars would flood the log.
+  HF_HUB_DISABLE_PROGRESS_BARS: "1"
 
 jobs:
   preflight:

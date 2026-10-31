@@ -14,8 +14,12 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import time
 import urllib.request
 from pathlib import Path
+from typing import TypedDict
+
+from huggingface_hub import snapshot_download
 
 CI_DIRECTORY = Path(__file__).resolve().parent
 CORPUS_SOURCES = {
@@ -25,6 +29,12 @@ CORPUS_SOURCES = {
     "ascend-test.parquet": "https://huggingface.co/datasets/CAiRE/ASCEND/resolve/main/main/test-00000-of-00001.parquet",
 }
 DOWNLOAD_CHUNK_BYTES = 1 << 20
+BYTES_PER_MEGABYTE = 1_000_000
+
+
+class FileSource(TypedDict):
+    revision: str
+    files: dict[str, str]
 
 
 def sha256(path: Path) -> str:
@@ -71,11 +81,53 @@ def download(url: str, destination: Path, expected_sha256: str) -> None:
     partial.rename(destination)
 
 
-def provision_model(data_root: Path, repo: str, pin: dict) -> Path:
+def provision_files(repo: str, source: FileSource, directory: Path) -> None:
+    """Fetches the pinned files of repo with huggingface_hub unless their SHA-256 already matches."""
+    stale_names = [
+        name
+        for name, digest in source["files"].items()
+        if not (directory / name).exists() or sha256(directory / name) != digest
+    ]
+    if stale_names:
+        # Note (XXXXRT666): huggingface_hub keeps a file whose recorded revision matches without rehashing it, so a mismatching file must be gone first.
+        for name in stale_names:
+            (directory / name).unlink(missing_ok=True)
+        print(
+            f"downloading {len(stale_names)} files of {repo} at {source['revision']}",
+            flush=True,
+        )
+        start_seconds = time.monotonic()
+        snapshot_download(
+            repo,
+            revision=source["revision"],
+            allow_patterns=stale_names,
+            local_dir=directory,
+        )
+        elapsed_seconds = time.monotonic() - start_seconds
+        downloaded_megabytes = (
+            sum((directory / name).stat().st_size for name in stale_names)
+            / BYTES_PER_MEGABYTE
+        )
+        print(
+            f"downloaded {downloaded_megabytes:.0f} MB in {elapsed_seconds:.0f} s"
+            f" ({downloaded_megabytes / elapsed_seconds:.1f} MB/s)",
+            flush=True,
+        )
+        for name in stale_names:
+            actual = sha256(directory / name)
+            if actual != source["files"][name]:
+                raise SystemExit(
+                    f"{repo}/{name}: SHA-256 {actual} does not match the pinned {source['files'][name]}"
+                )
+            else:
+                pass
+    else:
+        pass
+
+
+def provision_model(data_root: Path, repo: str, pin: FileSource) -> Path:
     model_directory = data_root / "models" / repo.replace("/", "_")
-    for name, digest in pin["files"].items():
-        url = f"https://huggingface.co/{repo}/resolve/{pin['revision']}/{name}"
-        download(url, model_directory / name, digest)
+    provision_files(repo, pin, model_directory)
     return model_directory
 
 
