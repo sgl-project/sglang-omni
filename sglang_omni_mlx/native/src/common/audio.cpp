@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <stdexcept>
@@ -163,6 +164,46 @@ std::vector<float> DecodeWav(std::string_view wav_bytes) {
     offset = body_offset + chunk_size + (chunk_size & 1u);
   }
   throw std::invalid_argument("WAV file has no data chunk");
+}
+
+std::string EncodeWavPcm16(std::string_view pcm_bytes, int sample_rate,
+                           int channels) {
+  if (sample_rate <= 0 || channels <= 0 ||
+      static_cast<size_t>(channels) >
+          std::numeric_limits<uint16_t>::max() / sizeof(int16_t)) {
+    throw std::invalid_argument("invalid WAV sample rate or channel count");
+  } else {
+  }
+  const uint32_t block_bytes = channels * sizeof(int16_t);
+  const uint64_t bytes_per_second =
+      static_cast<uint64_t>(sample_rate) * block_bytes;
+  if (bytes_per_second > std::numeric_limits<uint32_t>::max() ||
+      pcm_bytes.size() > std::numeric_limits<uint32_t>::max() - 36 ||
+      pcm_bytes.size() % block_bytes != 0) {
+    throw std::invalid_argument("PCM16 data cannot be represented as WAV");
+  } else {
+  }
+  std::string wav;
+  wav.reserve(44 + pcm_bytes.size());
+  const auto append = [&](uint32_t value, int bytes) {
+    for (int i = 0; i < bytes; ++i) {
+      wav.push_back(static_cast<char>((value >> (8 * i)) & 0xff));
+    }
+  };
+  wav += "RIFF";
+  append(36 + pcm_bytes.size(), 4);
+  wav += "WAVEfmt ";
+  append(16, 4);
+  append(kWavFormatPcm, 2);
+  append(channels, 2);
+  append(sample_rate, 4);
+  append(bytes_per_second, 4);
+  append(block_bytes, 2);
+  append(16, 2);
+  wav += "data";
+  append(pcm_bytes.size(), 4);
+  wav += pcm_bytes;
+  return wav;
 }
 
 const std::vector<float> &MelFilterBank(int mel_bin_count) {

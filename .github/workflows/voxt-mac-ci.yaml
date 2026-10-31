@@ -44,6 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
+      run_ming: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.ming.outputs.run_ming }}
       run_mac: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.plan.outputs.run_mac }}
       run_music3: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.pr.outputs.music3 }}
     steps:
@@ -102,12 +103,30 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: python .github/scripts/pr_ci_gate.py
 
+      - name: Select Ming tests
+        if: ${{ github.event_name == 'pull_request' && steps.plan.outputs.run_mac == 'true' }}
+        id: ming
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              per_page: 100,
+            });
+            const ming = /^(\.github\/workflows\/voxt-mac-ci\.yaml$|sglang_omni_mlx\/native\/(CMakeLists\.txt$|scripts\/|ci\/|src\/(ming_tts\/|common\/|qwen3_asr\/)))/;
+            core.setOutput("run_ming", files.some(file =>
+              ming.test(file.filename) || ming.test(file.previous_filename || "")));
+
   native-runtime:
     name: native runtime (golden + API)
     needs: [preflight]
     if: needs.preflight.outputs.run_mac == 'true'
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 60
+    env:
+      MING_MODEL_REPO: mlx-community/Ming-omni-tts-16.8B-A3B-4bit
     steps:
       - uses: actions/checkout@v4
         with:
@@ -149,17 +168,21 @@ jobs:
       - uses: astral-sh/setup-uv@v6
 
       - name: Set up the CI Python
+        id: ci-python
         run: |
           uv venv -q -p 3.12 --allow-existing "$VOXT_CI_ROOT/venv"
           VIRTUAL_ENV="$VOXT_CI_ROOT/venv" uv pip install -q -r sglang_omni_mlx/native/ci/requirements.lock
 
       - name: Provision checkpoints and corpus
+        id: asr-checkpoints
         run: |
           "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision.py "$VOXT_CI_ROOT/data"
 
       - name: Build the runtime
+        id: native-build
         run: |
           sglang_omni_mlx/native/scripts/build_runtime.sh "$RUNNER_TEMP/runtime" "$VOXT_CI_ROOT/runtime-build"
+          "$VOXT_CI_ROOT/runtime-build/venv/bin/cmake" --build "$VOXT_CI_ROOT/runtime-build/cmake" --target asr_service_probe
 
       - name: Provision the Music3 checkpoint
         if: ${{ !cancelled() && needs.preflight.outputs.run_music3 == 'true' }}
@@ -207,8 +230,10 @@ jobs:
           exit $status
 
       - name: Server API tests
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' && steps.asr-checkpoints.outcome == 'success' }}
         env:
           NATIVE_RUNTIME_BIN: ${{ runner.temp }}/runtime/bin
+          NATIVE_SERVICE_PROBE: ${{ env.VOXT_CI_ROOT }}/runtime-build/cmake/asr_service_probe
           CI_DATA_ROOT: ${{ env.VOXT_CI_ROOT }}/data
         run: |
           "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_check_golden.py sglang_omni_mlx/native/ci/test_server_api.py sglang_omni_mlx/native/ci/test_vad_api.py \
@@ -220,7 +245,8 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision_models.py "$VOXT_CI_ROOT/data" \
-            --exclude-model mlx-community/MiniMax-Music3-mxfp8
+            --exclude-model mlx-community/MiniMax-Music3-mxfp8 \
+            --exclude-model "$MING_MODEL_REPO"
 
       - name: Other models' golden outputs on the frozen corpus
         if: ${{ !cancelled() }}
@@ -268,6 +294,45 @@ jobs:
           name: voxt-native-runtime
           path: ${{ runner.temp }}/voxt-native-runtime.tar.gz
           if-no-files-found: error
+
+      - name: Check disk space and provision Ming checkpoint
+        if: ${{ !cancelled() && needs.preflight.outputs.run_ming == 'true' && steps.ci-python.outcome == 'success' && steps.native-build.outcome == 'success' }}
+        id: ming-checkpoint
+        run: |
+          cached_gb=0
+          ming_cache="$VOXT_CI_ROOT/data/models/${MING_MODEL_REPO/\//_}"
+          if [ -d "$ming_cache" ]; then
+            cached_gb=$(du -sk "$ming_cache" | awk '{print int($1 / 1048576)}')
+          else
+            :
+          fi
+          required_gb=20
+          missing_gb=$((10 - cached_gb))
+          if [ "$missing_gb" -gt 0 ]; then
+            required_gb=$((required_gb + missing_gb))
+          else
+            :
+          fi
+          free_gb=$(df -g "$VOXT_CI_ROOT" | awk 'NR == 2 {print $4}')
+          echo "Free under $VOXT_CI_ROOT: ${free_gb} GB; Ming needs ${required_gb} GB including reserve."
+          if [ "$free_gb" -lt "$required_gb" ]; then
+            echo "::error::Insufficient disk space for the Ming checkpoint."
+            exit 1
+          else
+            :
+          fi
+          "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision_models.py "$VOXT_CI_ROOT/data" \
+            --model "$MING_MODEL_REPO"
+
+      - name: Ming TTS API tests (Q4)
+        if: ${{ !cancelled() && needs.preflight.outputs.run_ming == 'true' && steps.native-build.outcome == 'success' && steps.asr-checkpoints.outcome == 'success' && steps.ming-checkpoint.outcome == 'success' }}
+        env:
+          NATIVE_RUNTIME_BIN: ${{ runner.temp }}/runtime/bin
+          CI_DATA_ROOT: ${{ env.VOXT_CI_ROOT }}/data
+          MING_MODEL_DIR: ${{ env.VOXT_CI_ROOT }}/data/models/mlx-community_Ming-omni-tts-16.8B-A3B-4bit
+        run: |
+          env -u MING_NATIVE_SERVER_URL "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q -ra \
+            sglang_omni_mlx/native/ci/test_ming_tts_api.py
 
   voxt-unit:
     name: Voxt Omni unit tests
