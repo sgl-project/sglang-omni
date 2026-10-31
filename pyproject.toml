@@ -30,11 +30,10 @@ dependencies = [
     "datasets>=2.14.0",       # Arrow-based SeedTTS dataset loading
     "fastapi>=0.110.0",       # OpenAI-compatible API adapter
     "uvicorn>=0.23.0",        # ASGI server for FastAPI
-    # note (yexiaodong): SGLang's PyPI wheel has unconditional CUDA dependencies,
-    # so Apple Silicon installs this exact tag from source with the all_mps extra.
-    "sglang==0.5.22; sys_platform != 'darwin' or platform_machine != 'arm64'",
+    # note (wirybeaver): the runtime overlays require these exact source interfaces.
+    "sglang @ git+https://github.com/sgl-project/sglang.git@9f6678aa3d6b8fd4e898fe0fc0b11b932126cf61#subdirectory=python ; sys_platform != 'darwin' or platform_machine != 'arm64'",
     "torch_memory_saver==0.0.10; sys_platform == 'linux' and platform_machine == 'x86_64'",
-    "flashinfer_python[cu13]==0.7.1; sys_platform != 'darwin' or platform_machine != 'arm64'",  # sglang pin. Do NOT add flashinfer-cubin: PyPI has no matching cubin, and any leftover cubin wheel fails MiniMax DIT import.
+    "flashinfer_python[cu13]==0.7.2; sys_platform != 'darwin' or platform_machine != 'arm64'",  # CUDA AOT packages must match this version.
     "cache-dit==1.3.0",      # MiniMax Music 3 DIT (hard import, not optional)
     "addict==2.4.0",         # sglang.multimodal_gen server_args; MiniMax DIT import
     "imageio==2.36.0",       # sglang.multimodal_gen vision utils; MiniMax DIT import
@@ -61,7 +60,7 @@ dependencies = [
     "pandas",
     "tabulate",
     "typer>=0.9.0",
-    "openai==2.6.1",
+    "openai==2.8.0",
     "openai-harmony==0.0.4",
     "soundfile>=0.12.0",
     "mistral_common[audio]>=1.11.0",
@@ -136,6 +135,7 @@ fishaudio = [
 
 [project.scripts]
 sgl-omni = "sglang_omni.cli:app"
+sgl-omni-prepare-runtime = "sglang_omni.vendor.sglang.runtime_patch:app"
 
 [project.entry-points."sglang.serve_backends"]
 omni = "sglang_omni.cli.sglang_backend:create_backend"
@@ -198,6 +198,7 @@ version = {attr = "sglang_omni.__version__"}
 
 # Non-Python data files that must ship with the wheel.
 [tool.setuptools.package-data]
+"sglang_omni.vendor.sglang" = ["patches/*.json", "patches/*.patch"]
 "sglang_omni.models.auk" = ["LICENSE"]
 "sglang_omni.models.fishaudio_s2_pro" = ["fish_speech/configs/*.yaml"]
 "sglang_omni.models.higgs_tts" = ["configs/*.json"]

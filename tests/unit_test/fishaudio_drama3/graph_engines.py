@@ -99,7 +99,7 @@ class GraphRecordingEngineBuilder(Drama3EngineBuilder):
         )
         self.spec = spec
         self.capture_break_recorder = CaptureBreakRecorder(
-            radix_attention.breakable_unified_attention_with_output
+            radix_attention.RadixAttention._eager_attention  # noqa: leading-underscore  # required backend hook
         )
         self.lean_choice_recorder = LeanChoiceRecorder(
             decode_attention.lean_capture_policy,
@@ -151,8 +151,8 @@ class GraphRecordingEngineBuilder(Drama3EngineBuilder):
             model_worker.model_runner.req_to_token_pool.size, torch.device(device)
         )
         sampling.sample_top_k_top_p = DrawRecorder(model, sampling.sample_top_k_top_p)
-        radix_attention.breakable_unified_attention_with_output = (
-            self.capture_break_recorder
+        radix_attention.RadixAttention._eager_attention = (  # noqa: leading-underscore  # required backend hook
+            self.capture_break_recorder.attention_break
         )
         tower_prefill = model.model.tower_prefill
         assert tower_prefill is not None
