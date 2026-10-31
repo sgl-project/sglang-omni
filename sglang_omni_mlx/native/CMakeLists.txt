@@ -251,3 +251,19 @@ set_target_properties(music3_server music3_synthesize PROPERTIES
 install(TARGETS music3_server music3_synthesize RUNTIME DESTINATION bin)
 
 install(FILES licenses/music3-MIT.txt DESTINATION licenses)
+
+# Note (Jiaxin Deng): Higgs Audio v3 TTS: higgs_tts_server, with the CUDA
+# server's /v1/audio/speech API, and its parity tool; the text decoder reuses
+# Qwen3's and the PCM and WAV writers Voxtral's.
+add_library(higgs_tts STATIC src/higgs_tts/higgs_tts_codec.cpp src/higgs_tts/higgs_tts_model.cpp)
+target_link_libraries(higgs_tts PUBLIC qwen3_asr voxtral_tts)
+target_compile_options(higgs_tts PRIVATE -Wall -Wextra)
+add_executable(higgs_tts_server src/higgs_tts/higgs_tts_server.cpp)
+target_link_libraries(higgs_tts_server PRIVATE higgs_tts asr_service)
+target_compile_options(higgs_tts_server PRIVATE -Wall -Wextra)
+add_executable(higgs_tts_synthesize tools/higgs_tts_synthesize.cpp)
+target_link_libraries(higgs_tts_synthesize PRIVATE higgs_tts)
+set_target_properties(higgs_tts_server higgs_tts_synthesize PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS higgs_tts_server higgs_tts_synthesize RUNTIME DESTINATION bin)

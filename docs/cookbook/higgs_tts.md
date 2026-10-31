@@ -605,3 +605,34 @@ Throughput on Seed-TTS EN (full set, **N=1088** per run). Client `--max-concurre
 - **audio_s/s** — Total seconds of audio produced divided by total benchmark wall-clock time.
 
 To reproduce the results, follow the instructions in [this script](https://github.com/sgl-project/sglang-omni/blob/main/benchmarks/eval/benchmark_tts_seedtts.py).
+
+## Apple Silicon (Native MLX)
+
+`higgs_tts_server` from the native MLX runtime (`sglang_omni_mlx/native`) serves the same zero-shot `/v1/audio/speech` API on an Apple Silicon Mac from the original [`bosonai/higgs-audio-v3-tts-4b`](https://huggingface.co/bosonai/higgs-audio-v3-tts-4b) checkpoint, as one C++ process without CUDA, PyTorch or Python. No MLX conversion of the checkpoint is needed: the decoder is quantized to 8 bits as it loads.
+
+```bash
+sglang_omni_mlx/native/scripts/build_runtime.sh ~/omni-runtime
+
+hf download bosonai/higgs-audio-v3-tts-4b \
+  --revision 239f63fb7b02b1aa085f98d9efae5e35cc5523e8 \
+  --include config.json model.safetensors tokenizer.json tokenizer_config.json \
+  --local-dir higgs-audio-v3-tts-4b
+
+~/omni-runtime/bin/higgs_tts_server --model-path higgs-audio-v3-tts-4b \
+  --model-name bosonai/higgs-audio-v3-tts-4b --port 8000
+```
+
+The zero-shot request above works unchanged; the streaming and inline control token requests work once their `references` are removed. The native server differs from the CUDA server in that:
+
+- Voice cloning is not served yet: `voice` must be `default`, and `ref_audio`, `ref_text` and `references` return 400.
+- `response_format` is `wav` or `pcm`; `speed` must be `1.0`; `stream_format` must be `audio`.
+- `temperature`, `top_p`, `top_k` and `seed` take the CUDA server's defaults (`0.8`, `0.8`, `30`) and bounds, but the sampled output is not CUDA's: a seed drives MLX's random generator, and top-k keeps exactly `k` codes where CUDA keeps ties. `max_new_tokens` must be at least `8` (one audio frame through the delay pattern), where CUDA accepts fewer and returns no audio; above `2048` it is `2048`, as the CUDA engine caps it. `repetition_penalty` and the other fields Higgs does not use return 400.
+- `--quantize-bits 8` (the default) quantizes the decoder's linear layers and text embeddings as they load; `--quantize-bits 0` keeps bfloat16 and needs about 9 GB. 4 bits is not offered: a quarter of seeded requests then never end.
+- Started with `--model-name`, it returns 404 for any other `model`; without that flag, `model` is ignored, as on CUDA.
+- Errors are `{"detail": "..."}`.
+- Requests run one at a time and `--max-queued-requests` (default 2) more wait; the rest get 503, and `/health` shows the queue.
+- A request not finished `--request-timeout-s` (default 600) seconds after it arrives, time in the queue included, is cancelled: it returns 504, or its stream ends early. A client that disconnects cancels its request.
+- A request body over 1 MiB returns 413.
+- A streamed response follows the CUDA vocoder's schedule (the first 20 frames once 27 rows are generated, the next window at row 150, then one every 75 rows, each with 8 frames of left context); a whole response decodes every frame at once, as CUDA does.
+
+Measured on an Apple M5 (24 GB, macOS 26.3.1), warm, 8-bit: 2.1 s load, 1.0 s median time to the first streamed audio, real-time factor 0.93 over 15 sentences (10 English, 5 Chinese; 61 s of audio), 5.0 GB peak MLX memory. In bfloat16 the real-time factor is 1.65 and the peak 8.8 GB. Transcribed back with Qwen3-ASR-1.7B-8bit, the 10 English sentences give 0.0% WER and the 5 Chinese sentences 0.0% CER, in both precisions. With the same seed, weights and MLX build, its delayed audio codes are bit-identical to mlx-audio 0.5.8's Higgs Audio v3 port for all 15 sentences, in bfloat16 and in 8 bits; its codec decodes them within one 16-bit step of the CUDA server's codec (transformers `HiggsAudioV2TokenizerModel`, float32). Mac CI checks four seeded requests (English, Chinese, inline control tokens, and a `max_new_tokens` cap) against `sglang_omni_mlx/native/ci/model_golden/higgs-audio-v3-tts-4b.json`: their codes exactly on chips with a recorded entry, their prompt ids on others.

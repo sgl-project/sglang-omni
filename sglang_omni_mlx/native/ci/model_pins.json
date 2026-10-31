@@ -139,5 +139,14 @@
       "tokenizer/tokenizer.json": "b1537fa9e59a537276ecbc2e12d0438edff635a1f4a4948e679774b5feb3e610",
       "tokenizer/tokenizer_config.json": "1689852cc9c45010de040c8302a8acdc0d2c4c6c740dd7e9dd0a8c704e16eada"
     }
+  },
+  "bosonai/higgs-audio-v3-tts-4b": {
+    "revision": "239f63fb7b02b1aa085f98d9efae5e35cc5523e8",
+    "files": {
+      "config.json": "2ead4442c079ee35c2123a5b197e126e18eccfc0bdb65d31c94767e75d7864d4",
+      "model.safetensors": "2f7965264c360b38180885006944aa16bd1de20f4e6cff79f6473bfcf8ae3d5a",
+      "tokenizer.json": "eb883de2de5adc5113f1f02b54830a0ea7cd6ef191cde65c41aceb3737d4d1c1",
+      "tokenizer_config.json": "b4d632e1239569fb1829bf0bfa3c674fa54f22c42e9cb2669d77c438d4b4e02c"
+    }
   }
 }
