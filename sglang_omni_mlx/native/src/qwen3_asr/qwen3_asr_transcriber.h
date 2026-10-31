@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -13,6 +14,7 @@
 #include "common/audio.h"
 #include "common/tokenizer.h"
 #include "nlohmann/json.hpp"
+#include "qwen3_asr/dflash_draft.h"
 #include "qwen3_asr/qwen3_asr_model.h"
 
 namespace qwen3_asr {
@@ -53,6 +55,8 @@ struct TranscriptionResult {
   FinishReason finish_reason = FinishReason::kLength;
   // Timestamped speaker segments, for models that produce them.
   std::vector<SpeakerSegment> segments;
+  // Rounds of draft verification; 0 when decoding without a draft.
+  int verify_round_count = 0;
 };
 
 class TranscriptionCancelled : public std::runtime_error {
@@ -71,7 +75,12 @@ std::optional<std::string> NormalizeLanguage(const std::string &language);
 
 class Qwen3ASRTranscriber {
 public:
-  explicit Qwen3ASRTranscriber(const std::filesystem::path &model_directory);
+  // With a DFlash draft directory, decoding verifies the draft's proposals
+  // instead of one token per step; the transcript stays greedy.
+  explicit Qwen3ASRTranscriber(
+      const std::filesystem::path &model_directory,
+      const std::filesystem::path &draft_directory = {},
+      int draft_quantization_bits = 0);
 
   std::vector<int> PromptIds(int audio_token_count,
                              const TranscriptionOptions &options) const;
@@ -83,6 +92,12 @@ public:
                                  const std::atomic<bool> &cancel) const;
 
 private:
+  // Greedy decoding with the draft: each round the target verifies the block
+  // the draft proposed and commits the accepted tokens plus one more. Tokens
+  // go to commit until it reports the output complete; returns the rounds.
+  int DecodeWithDraft(const mlx::core::array &embeddings,
+                      const std::function<bool(int)> &commit,
+                      const std::atomic<bool> &cancel) const;
   std::pair<std::string, std::optional<std::string>>
   SplitOutput(const std::vector<int> &output_ids,
               const TranscriptionOptions &options) const;
@@ -93,6 +108,7 @@ private:
   int end_of_text_id_;
   int im_end_id_;
   std::vector<int> asr_text_ids_;
+  std::optional<DFlashDraft> draft_;
 };
 
 } // namespace qwen3_asr
