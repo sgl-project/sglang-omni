@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from bisect import bisect_left
 from typing import NamedTuple
 
 import torch
@@ -10,6 +11,9 @@ from torch.nn import functional
 from transformers import T5GemmaConfig, T5GemmaEncoderModel, T5GemmaModuleConfig
 
 from sglang_omni.models.nemotron_voicechat.mog_head import MoGHead, RMSNorm
+from sglang_omni.platforms.device_graph import DeviceGraphBackend, ReplayableGraph
+
+GRAPH_WARMUP_STEPS = 3
 
 
 class SubwordFlagEmbedding(nn.Module):
@@ -226,6 +230,67 @@ class EarTtsTalker(nn.Module):
         return torch.stack([padded_QCD[q][codes_TQ[:, q]] for q in range(levels)]).sum(
             0
         )
+
+
+class GraphCodeGenerator:
+    """generate_codes captured once per batch bucket and replayed per decode step."""
+
+    def __init__(
+        self,
+        talker: EarTtsTalker,
+        mog_head: MoGHead,
+        *,
+        backend: DeviceGraphBackend,
+        buckets: list[int],
+        level_schedule: list[LevelScheduleEntry],
+        top_p: float,
+        noise_scale: float,
+    ) -> None:
+        device = talker.rvq_embs.device
+        self.buckets = sorted(buckets)
+        self.hidden_inputs: dict[int, torch.Tensor] = {}
+        self.codes_outputs: dict[int, torch.Tensor] = {}
+        self.graphs: dict[int, ReplayableGraph] = {}
+
+        def generate(hidden_input: torch.Tensor) -> torch.Tensor:
+            return talker.generate_codes(
+                hidden_input,
+                mog_head,
+                level_schedule=level_schedule,
+                top_p=top_p,
+                noise_scale=noise_scale,
+            )
+
+        capture_stream = torch.cuda.Stream(device=device)
+        current_stream = torch.cuda.current_stream(device)
+        pool = torch.get_device_module(device).graph_pool_handle()
+        with torch.inference_mode():
+            for bucket in reversed(self.buckets):
+                hidden_input = torch.zeros(
+                    bucket,
+                    talker.embed_code.out_features,
+                    dtype=torch.float32,
+                    device=device,
+                )
+                capture_stream.wait_stream(current_stream)
+                with torch.cuda.stream(capture_stream):
+                    for iteration in range(GRAPH_WARMUP_STEPS):
+                        generate(hidden_input)
+                current_stream.wait_stream(capture_stream)
+                with backend.capture(
+                    pool=pool, stream=capture_stream, thread_local_errors=True
+                ) as graph:
+                    self.codes_outputs[bucket] = generate(hidden_input)
+                self.hidden_inputs[bucket] = hidden_input
+                self.graphs[bucket] = graph
+
+    def __call__(self, hidden_BD: torch.Tensor) -> torch.Tensor:
+        rows = hidden_BD.shape[0]
+        bucket = self.buckets[bisect_left(self.buckets, rows)]
+        with torch.inference_mode():
+            self.hidden_inputs[bucket][:rows].copy_(hidden_BD)
+            self.graphs[bucket].replay()
+        return self.codes_outputs[bucket][:rows].clone()
 
 
 TALKER_ARCH = "NemotronVoiceChatTalker"
