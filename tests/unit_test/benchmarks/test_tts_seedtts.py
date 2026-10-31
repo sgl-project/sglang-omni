@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import BinaryIO
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 import requests
 from aiohttp import web
@@ -20,7 +21,9 @@ from aiohttp import web
 from benchmarks.benchmarker.data import FinishReason
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
 from benchmarks.dataset.seedtts import SampleInput
+from benchmarks.eval import benchmark_drama3_codec as codec_benchmark
 from benchmarks.eval import benchmark_tts_seedtts as tts
+from benchmarks.eval.benchmark_drama3_codec import frame_partitions, read_codes
 from benchmarks.eval.benchmark_tts_seedtts import (
     TtsSeedttsBenchmarkConfig,
     _build_arg_parser,
@@ -747,3 +750,63 @@ async def test_sustained_overshoot_uses_open_loop_and_unique_output_dir(
     }
     assert len(set(seen_samples[0])) == 64
     assert (tmp_path / "overshoot" / "sustained_overshoot.json").is_file()
+
+
+@pytest.mark.parametrize("frame_count", [1, 10, 63, 64, 65, 129, 500])
+def test_codec_reproduction_covers_every_frame_once(frame_count: int) -> None:
+    counts = frame_partitions(frame_count)
+    assert sum(counts) == frame_count
+    assert all(1 <= count <= 64 for count in counts)
+    with pytest.raises(ValueError, match="at least one frame"):
+        frame_partitions(0)
+
+
+def test_codec_reproduction_retains_failed_manifest_and_refuses_overwrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    codes = tmp_path / "codes.npy"
+    np.save(codes, np.zeros((10, 3), dtype=np.int64))
+    output = tmp_path / "output"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "codec",
+            "--codec-path",
+            "checkpoint",
+            "--codes",
+            str(codes),
+            "--output-dir",
+            str(output),
+        ],
+    )
+    monkeypatch.setattr(
+        codec_benchmark.subprocess,
+        "check_output",
+        lambda command, **kwargs: "test-head\n" if kwargs.get("text") else b"",
+    )
+
+    def fail_decode(codec_path: str, device: str, code_tensor, directory: Path) -> None:
+        raise RuntimeError("decode failed")
+
+    monkeypatch.setattr(codec_benchmark, "run_comparison", fail_decode)
+    with pytest.raises(RuntimeError, match="decode failed"):
+        codec_benchmark.main()
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert manifest["status"] == "failed"
+    assert manifest["frames"] == 3
+    assert manifest["error"] == "RuntimeError: decode failed"
+    with pytest.raises(FileExistsError):
+        codec_benchmark.main()
+    assert json.loads((output / "manifest.json").read_text()) == manifest
+
+
+def test_codec_reproduction_validates_integer_code_inputs(tmp_path: Path) -> None:
+    path = tmp_path / "codes.npy"
+    expected = np.arange(30, dtype=np.int64).reshape(10, 3)
+    np.save(path, expected)
+    assert np.array_equal(read_codes(path).numpy()[0], expected)
+    for invalid in [expected.astype(np.float32), expected.reshape(-1), -expected]:
+        np.save(path, invalid)
+        with pytest.raises(ValueError):
+            read_codes(path)

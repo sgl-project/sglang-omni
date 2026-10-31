@@ -141,6 +141,7 @@ class Coordinator(SessionGraphRunner):
         logical_process_plan: LogicalProcessPlan | None = None,
         binding_policy: BindingPolicy | None = None,
         max_in_flight: int | None = None,
+        abort_cleanup_stages: tuple[str, ...] = (),
         max_total_backlog_bytes: int | None = None,
         session_route: Callable[[], list[str]] | None = None,
         session_graph: SessionGraph | None = None,
@@ -221,9 +222,14 @@ class Coordinator(SessionGraphRunner):
         self.stream_backlogs: dict[str, StreamBacklog] = {}
         self.stream_backlog_bytes = 0
         self.failed_stream_count = 0
-        # Abort messages carry only the request ID. A strongly held task keeps
+        # A strongly held abort task keeps
         # local admission closed and lets the broadcast survive caller cancellation.
         self.abort_tasks: dict[str, asyncio.Task[bool]] = {}
+        self.abort_cleanup_stages: frozenset[str] = frozenset(abort_cleanup_stages)
+        self.pending_abort_cleanup: dict[str, tuple[str, set[str]]] = {}
+        self.failed_abort_broadcasts: set[str] = set()
+        self.abort_broadcasts_in_flight: set[str] = set()
+        self.deferred_abort_completions: dict[str, CompleteMessage] = {}
         self.admin_ops: dict[str, AdminPendingOperation] = {}
         self.admin_lock = asyncio.Lock()
 
@@ -278,6 +284,12 @@ class Coordinator(SessionGraphRunner):
             else:
                 pass
         self.requests.clear()
+        self.pending_abort_cleanup.clear()
+        self.failed_abort_broadcasts.clear()
+        self.abort_broadcasts_in_flight.clear()
+        for completion in self.deferred_abort_completions.values():
+            discard_saved_media(completion.result)
+        self.deferred_abort_completions.clear()
         self.partial_results.clear()
         # Note (Junnan Li): Session pumps await request futures; wake them before waiting for cleanup.
         await self.fail_sessions(message)
@@ -781,9 +793,9 @@ class Coordinator(SessionGraphRunner):
 
         # A FAILED request is still owned only when its abort was not
         # delivered, so aborting it again retries that release.
-        if info.state in (
-            RequestState.COMPLETED,
-            RequestState.ABORTED,
+        if info.state == RequestState.COMPLETED or (
+            info.state == RequestState.ABORTED
+            and request_id not in self.pending_abort_cleanup
         ):
             return False
         else:
@@ -799,12 +811,80 @@ class Coordinator(SessionGraphRunner):
         )
         return await asyncio.shield(abort_task)
 
+    def abort_message(self, request_id: str) -> AbortMessage:
+        if not self.abort_cleanup_stages:
+            return AbortMessage(request_id=request_id)
+        elif request_id in self.pending_abort_cleanup:
+            return AbortMessage(
+                request_id=request_id,
+                cleanup_token=self.pending_abort_cleanup[request_id][0],
+            )
+        else:
+            token = uuid.uuid4().hex
+            self.pending_abort_cleanup[request_id] = (
+                token,
+                set(self.abort_cleanup_stages),
+            )
+            return AbortMessage(request_id=request_id, cleanup_token=token)
+
+    def release_aborted_request(self, request_id: str) -> None:
+        if request_id not in self.pending_abort_cleanup:
+            self.requests.pop(request_id, None)
+        else:
+            pass
+
+    def handle_abort_cleanup(self, msg: CompleteMessage) -> None:
+        pending = self.pending_abort_cleanup.get(msg.request_id)
+        if not msg.success or pending is None or pending[0] != msg.cleanup_token:
+            return
+        else:
+            pending[1].discard(msg.from_stage)
+            if not pending[1]:
+                self.pending_abort_cleanup.pop(msg.request_id)
+                self.failed_abort_broadcasts.discard(msg.request_id)
+                info = self.requests.get(msg.request_id)
+                if info is not None and info.state in (
+                    RequestState.ABORTED,
+                    RequestState.FAILED,
+                ):
+                    self.requests.pop(msg.request_id, None)
+                else:
+                    pass
+            else:
+                pass
+
+    async def broadcast_abort_with_cleanup(self, request_id: str) -> None:
+        self.abort_broadcasts_in_flight.add(request_id)
+        try:
+            await self.control_plane.broadcast_abort(self.abort_message(request_id))
+        except Exception:
+            self.abort_broadcasts_in_flight.discard(request_id)
+            if request_id in self.pending_abort_cleanup:
+                self.failed_abort_broadcasts.add(request_id)
+            else:
+                pass
+            deferred = self.deferred_abort_completions.pop(request_id, None)
+            if deferred is not None:
+                await self.handle_completion(deferred)
+            else:
+                pass
+            raise
+        else:
+            self.abort_broadcasts_in_flight.discard(request_id)
+            self.failed_abort_broadcasts.discard(request_id)
+            deferred = self.deferred_abort_completions.pop(request_id, None)
+            if deferred is not None:
+                discard_saved_media(deferred.result)
+            else:
+                pass
+        finally:
+            self.abort_broadcasts_in_flight.discard(request_id)
+
     async def run_abort(
         self,
         request_id: str,
     ) -> bool:
-        await self.control_plane.broadcast_abort(AbortMessage(request_id=request_id))
-
+        await self.broadcast_abort_with_cleanup(request_id)
         info = self.requests.get(request_id)
         if info is None:
             return False
@@ -828,7 +908,7 @@ class Coordinator(SessionGraphRunner):
         else:
             pass
 
-        self.requests.pop(request_id, None)
+        self.release_aborted_request(request_id)
         self.partial_results.pop(request_id, None)
 
         logger.info("Coordinator aborted req=%s", request_id)
@@ -897,6 +977,49 @@ class Coordinator(SessionGraphRunner):
             },
         )
 
+        if msg.cleanup_token is not None:
+            self.handle_abort_cleanup(msg)
+            return
+        elif request_id in self.pending_abort_cleanup:
+            pending = self.pending_abort_cleanup[request_id]
+            terminal = self.replica_topology.logical_name(msg.from_stage)
+            if (
+                request_id in self.abort_broadcasts_in_flight
+                and msg.success
+                and msg.from_stage in pending[1]
+                and self.expected_terminal_stages(request_id) == {terminal}
+            ):
+                previous = self.deferred_abort_completions.setdefault(request_id, msg)
+                if previous is not msg:
+                    discard_saved_media(msg.result)
+                else:
+                    pass
+                return
+            else:
+                pass
+            if (
+                request_id in self.failed_abort_broadcasts
+                and msg.success
+                and pending[1] == {msg.from_stage}
+                and self.expected_terminal_stages(request_id) == {terminal}
+            ):
+                self.pending_abort_cleanup.pop(request_id)
+                self.failed_abort_broadcasts.discard(request_id)
+                info = self.requests.get(request_id)
+                if info is not None and info.state in (
+                    RequestState.ABORTED,
+                    RequestState.FAILED,
+                ):
+                    self.requests.pop(request_id, None)
+                    discard_saved_media(msg.result)
+                    return
+                else:
+                    pass
+            else:
+                discard_saved_media(msg.result)
+                return
+        else:
+            pass
         info = self.requests.get(request_id)
         if info is None or info.state == RequestState.FAILED:
             logger.debug(
@@ -942,10 +1065,12 @@ class Coordinator(SessionGraphRunner):
             info.state = RequestState.FAILED
             info.error = msg.error
             try:
-                await self.control_plane.broadcast_abort(
-                    AbortMessage(request_id=request_id)
-                )
+                await self.broadcast_abort_with_cleanup(request_id)
             except Exception:
+                if request_id in self.pending_abort_cleanup:
+                    self.failed_abort_broadcasts.add(request_id)
+                else:
+                    pass
                 # Other stages may still hold this request, so keep its ID and
                 # admission slot until a later abort or stop releases them.
                 logger.warning(
@@ -954,7 +1079,8 @@ class Coordinator(SessionGraphRunner):
                     exc_info=True,
                 )
             else:
-                self.requests.pop(request_id, None)
+                self.failed_abort_broadcasts.discard(request_id)
+                self.release_aborted_request(request_id)
             self.partial_results.pop(request_id, None)
             self.reject_completion_future(
                 request_id, QueueFullError.from_message(msg.error)

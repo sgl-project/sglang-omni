@@ -2540,11 +2540,23 @@ class Stage:
                 else:
                     pass
                 self.on_abort(abort_msg.request_id)
+                if self.owns_external_io and abort_msg.cleanup_token is not None:
+                    await self.control_plane.send_complete(
+                        CompleteMessage(
+                            request_id=abort_msg.request_id,
+                            from_stage=self.name,
+                            success=True,
+                            cleanup_token=abort_msg.cleanup_token,
+                        )
+                    )
+                else:
+                    pass
         except asyncio.CancelledError:
             pass
         except Exception:
             if self.scheduler_crash_error is None and self.running:
-                logger.exception("Stage %s abort listener crashed", self.name)
+                logger.exception(f"Stage {self.name} abort listener crashed")
+                raise
             else:
                 pass
 

@@ -1040,6 +1040,10 @@ class PipelineConfig(BaseModel):
         """Coordinator in-flight cap defaults (running + queued). Overlay with CLI."""
         return {}
 
+    def abort_cleanup_stages(self) -> tuple[str, ...]:
+        """Stages whose resource cleanup must precede admission release."""
+        return ()
+
     def entry_stage_admission_limit(self) -> int | None:
         """Requests one entry stage replica admits at once, when it owns admission.
 

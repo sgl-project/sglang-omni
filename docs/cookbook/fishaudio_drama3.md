@@ -315,3 +315,7 @@ Drama 3 tower fused layers: off, untested GPU sm_120
 - [Technical Report](https://github.com/fishaudio/fish-speech/tree/main/docs/assets/Fish_Audio_Drama_3_Technical_Report.pdf)
 - [Fish Audio Drama 3 SGLang Omni Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_drama3.html)
 - [SGLang Omni](https://sgl-project.github.io/sglang-omni/)
+
+## Incremental streaming codec
+
+The stateful codec retains per-request convolution and attention history and supports GEMM upsampling, folded codebooks, Snake/history fusion and precision-preserving compiled attention. The feature is disabled by default. Set --vocoder.factory.stateful_decode true to enable it, with individual optimization flags overridable. Slots are bounded by the engine factory running limit but do not impose a new HTTP admission cap: streams that cannot acquire a slot use the existing window decoder until completion. Explicit engine admission limits remain unchanged. Fixed routing, single replicas, a dedicated TP1 vocoder process and zero crossfade are required. Startup compiles only hot attention shapes while retaining graph execution for tails; enabling the feature still has compilation/capture cost. The measured hardware is H100. See [the selected codec benchmark report](../benchmarks/drama3_codec_selected_codec.md) for topology, memory/admission requirements, portable configuration, measured high-concurrency gains and first-audio/quality tradeoffs.

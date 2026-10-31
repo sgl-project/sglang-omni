@@ -39,6 +39,9 @@ from sglang_omni.models.fishaudio_drama3.engine_builder import Drama3EngineBuild
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
 from sglang_omni.models.fishaudio_drama3.request_builders import Drama3RequestData
 from sglang_omni.models.fishaudio_drama3.speech_request import Drama3SpeechPreprocessor
+from sglang_omni.models.fishaudio_drama3.stateful_decoder import StatefulDACDecoder
+from sglang_omni.models.fishaudio_drama3.stateful_graphs import StatefulGraphDecoder
+from sglang_omni.models.fishaudio_drama3.stateful_state import DecoderStateArena
 from sglang_omni.models.fishaudio_drama3.stream_windows import stream_window_lengths
 from sglang_omni.models.fishaudio_drama3.vocoder import (
     Drama3VocoderScheduler,
@@ -278,12 +281,37 @@ def create_vocoder_executor(
     max_batch_size: int,
     max_batch_wait_ms: int,
     window_cuda_graphs: bool,
+    stateful_decode: bool,
+    stateful_gemm_upsample: bool,
+    stateful_folded_codebooks: bool,
+    stateful_fuse_snake_history: bool,
+    stateful_compile_attention: bool,
+    stateful_max_streams: int,
     decode_dtype: Literal["float32", "float16"],
     max_new_tokens: int,
     total_gpu_memory_fraction: float | None = None,
 ) -> Drama3VocoderScheduler:
+    if (
+        stateful_gemm_upsample
+        or stateful_folded_codebooks
+        or stateful_fuse_snake_history
+        or stateful_compile_attention
+    ) and not stateful_decode:
+        raise ValueError("Codec optimizations require stateful_decode")
+    elif stateful_decode and stream_crossfade_samples:
+        raise ValueError("stateful_decode requires stream_crossfade_samples=0")
+    elif stateful_max_streams <= 0:
+        raise ValueError("stateful_max_streams must be > 0")
+    else:
+        pass
     resolved_device = str(resolve_concrete_device(device, gpu_id))
     torch_device = torch.device(resolved_device)
+    logger.info(
+        f"Drama 3 codec selection: stateful={stateful_decode}, device={resolved_device}, "
+        f"dtype={decode_dtype}, graphs={window_cuda_graphs}, capacity={stateful_max_streams}, "
+        f"gemm={stateful_gemm_upsample}, folded={stateful_folded_codebooks}, "
+        f"snake_history={stateful_fuse_snake_history}, attention={stateful_compile_attention}"
+    )
     codec = load_codec(resolve_codec_directory(codec_path), resolved_device)
     codec.fold_weight_norm()
     num_codebooks = (
@@ -294,7 +322,89 @@ def create_vocoder_executor(
         decode: WindowDecoder = ChannelsLastDecoder(codec, dtype=torch.float16)
     else:
         decode = codec.from_indices
-    if window_cuda_graphs:
+    if stateful_decode:
+        state_dtype = torch.float16 if decode_dtype == "float16" else torch.float32
+        arena_bytes = DecoderStateArena.required_nbytes(
+            codec, stateful_max_streams, state_dtype
+        )
+        if torch_device.type == "cpu":
+            pass
+        elif total_gpu_memory_fraction is None:
+            raise ValueError("stateful_decode requires a vocoder GPU memory budget")
+        else:
+            device_module = torch.get_device_module(torch_device)
+            budget_bytes = int(
+                device_module.get_device_properties(torch_device).total_memory
+                * total_gpu_memory_fraction
+            )
+            held_bytes = device_module.memory_reserved(torch_device)
+            if held_bytes + arena_bytes >= budget_bytes:
+                raise ValueError(
+                    f"stateful_decode arena requires {arena_bytes} bytes plus "
+                    f"{held_bytes} held bytes, exceeding vocoder budget "
+                    f"{budget_bytes} bytes before graph/workspace allocation"
+                )
+            else:
+                pass
+        logger.info(
+            f"Drama 3 state arena: requests={stateful_max_streams}, "
+            f"physical_slots={stateful_max_streams + 1}, bytes={arena_bytes}; "
+            f"graph/workspace memory is additional"
+        )
+        backend = StatefulDACDecoder(
+            codec,
+            dtype=torch.float16 if decode_dtype == "float16" else torch.float32,
+            capacity=stateful_max_streams,
+            gemm_upsample=stateful_gemm_upsample,
+            folded_codebooks=stateful_folded_codebooks,
+            fuse_snake_history=stateful_fuse_snake_history,
+            compile_attention=stateful_compile_attention,
+        )
+        stateful_decoder: StatefulDACDecoder | StatefulGraphDecoder | None
+        if window_cuda_graphs:
+            hot_frame_counts = tuple(
+                sorted(
+                    {
+                        min(64, count)
+                        for count in (
+                            stream_stride,
+                            *stream_followup_stride_ramp,
+                            stream_followup_stride,
+                        )
+                    }
+                )
+            )
+            stateful_decoder = StatefulGraphDecoder(
+                backend, compiled_frame_counts=hot_frame_counts
+            )
+            captured_frame_counts = sorted(stateful_decoder.graphs)
+        else:
+            stateful_decoder = backend
+            captured_frame_counts = []
+        logger.info(
+            f"Drama 3 codec activation: worker_pid={os.getpid()}, "
+            f"fuse_snake_history={backend.fuse_snake_history}, "
+            f"compile_attention={backend.compile_attention}, "
+            f"captured_frame_counts={captured_frame_counts}"
+        )
+        if torch_device.type != "cpu":
+            reserved_bytes = device_module.memory_reserved(torch_device)
+            if reserved_bytes > budget_bytes:
+                raise ValueError(
+                    f"stateful_decode codec, arena and captured graph/workspace "
+                    f"reserve {reserved_bytes} bytes, exceeding vocoder budget "
+                    f"{budget_bytes} bytes"
+                )
+            else:
+                logger.info(
+                    f"Drama 3 stateful capture: reserved_bytes={reserved_bytes}, "
+                    f"budget_bytes={budget_bytes}"
+                )
+        else:
+            pass
+    else:
+        stateful_decoder = None
+    if window_cuda_graphs and (not stateful_decode or torch_device.type != "cpu"):
         decode_window: WindowDecoder = WindowGraphDecoder(
             decode,
             num_codebooks=num_codebooks,
@@ -331,4 +441,6 @@ def create_vocoder_executor(
         max_batch_wait_ms=max_batch_wait_ms,
         decode_window=decode_window,
         max_padded_frames_per_decode=max_padded_frames_per_decode,
+        stateful_decoder=stateful_decoder,
+        stateful_max_streams=stateful_max_streams,
     )

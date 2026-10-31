@@ -237,13 +237,18 @@ class AbortMessage:
     """Broadcast abort signal to all stages."""
 
     request_id: str
+    cleanup_token: str | None = None
 
-    def to_dict(self) -> dict[str, str]:
-        return {"type": "abort", "request_id": self.request_id}
+    def to_dict(self) -> dict[str, str | None]:
+        return {
+            "type": "abort",
+            "request_id": self.request_id,
+            "cleanup_token": self.cleanup_token,
+        }
 
     @classmethod
     def from_dict(cls, d: Mapping[str, object]) -> "AbortMessage":
-        return cls(request_id=d["request_id"])
+        return cls(request_id=d["request_id"], cleanup_token=d.get("cleanup_token"))
 
 
 @dataclass
@@ -255,6 +260,7 @@ class CompleteMessage:
     success: bool
     result: object = None
     error: str | None = None
+    cleanup_token: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -264,6 +270,7 @@ class CompleteMessage:
             "success": self.success,
             "result": self.result,
             "error": self.error,
+            "cleanup_token": self.cleanup_token,
         }
 
     @classmethod
@@ -274,6 +281,7 @@ class CompleteMessage:
             success=d["success"],
             result=d.get("result"),
             error=d.get("error"),
+            cleanup_token=d.get("cleanup_token"),
         )
 
 

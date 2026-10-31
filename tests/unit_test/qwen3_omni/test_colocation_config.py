@@ -67,6 +67,10 @@ def test_qwen_worker_cpu_policy_and_fallback(
     monkeypatch.setattr(cpu.os, "sched_getaffinity", lambda process_id: set(range(32)))
     monkeypatch.setattr(cpu, "cgroup_cpu_quota_count", lambda: cpu_quota)
     monkeypatch.setattr(
+        "sglang_omni.pipeline.mp_runner.gpu_local_affinity",
+        lambda gpu_ids: frozenset(range(32)),
+    )
+    monkeypatch.setattr(
         "sglang_omni.pipeline.runtime_config.visible_device_count", lambda: 2
     )
     monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
