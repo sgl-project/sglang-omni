@@ -53,6 +53,8 @@ else:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_ENCODER_GRAPH_BATCH_BUCKETS = (1, 2, 4, 8, 12, 16)
+DEFAULT_MEM_FRACTION_STATIC = 0.85
+DEFAULT_NPU_MEM_FRACTION_STATIC = 0.50
 WHISPER_DENSE_PREFILL_PROMPT_LENGTH = 4
 
 
@@ -200,7 +202,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
         max_running_requests: int,
         max_new_tokens: int,
         stream_emit_interval_s: float = 0.05,
-        mem_fraction_static: float,
+        mem_fraction_static: float | None,
         enable_encoder_cuda_graph: bool = False,
         enable_dense_prefill_cuda_graph: bool = False,
         cpu_intra_op_threads: int | None = None,
@@ -479,12 +481,20 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
         overrides["cuda_graph_bs_prefill"] = build_default_prefill_cuda_graph_bs(cap)
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
+        if self.mem_fraction_static is None:
+            mem_fraction_static = (
+                DEFAULT_NPU_MEM_FRACTION_STATIC
+                if current_platform.is_npu()
+                else DEFAULT_MEM_FRACTION_STATIC
+            )
+        else:
+            mem_fraction_static = self.mem_fraction_static
         defaults: GenerationDefaults = {
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
             "enable_torch_compile": True,
-            "mem_fraction_static": self.mem_fraction_static,
+            "mem_fraction_static": mem_fraction_static,
             "max_prefill_tokens": 6144,
             "chunked_prefill_size": 0,
             "sampling_backend": "pytorch",

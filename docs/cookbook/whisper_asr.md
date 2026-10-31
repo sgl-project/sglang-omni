@@ -4,15 +4,37 @@ Whisper ASR checkpoints can be started through the OpenAI-compatible `/v1/audio/
 
 ## Prerequisites
 
-Install `sglang-omni` by following [Installation](../get_started/installation.md), then download a Whisper checkpoint:
+For CUDA, install `sglang-omni` by following [Installation](../get_started/installation.md). For Ascend, use the installation profile below. Download a Whisper checkpoint:
 
 ```bash
 hf download openai/whisper-large-v3
 ```
 
+## Ascend NPU
+
+The single-card NPU path uses `openai/whisper-large-v3` in FP16 and retains NPU decode graphs. It uses the released SGLang dependency without a SGLang source patch.
+
+Use the A3 runtime pinned by `base-image-a3` in `[tool.sglang-omni.npu]` in `pyproject_npu.toml`, rather than a rolling image tag. The current runtime selects SGLang 0.5.22, CANN 9.1.0, Python 3.12, PyTorch 2.10.0 and torch_npu 2.10.0.post6. The host driver and firmware must support this CANN release; see [Ascend prerequisites](../get_started/installation_npu.md#prerequisites). Install this checkout inside that prepared runtime:
+
+```bash
+bash scripts/npu/install_npu.sh --install-system-deps
+```
+
+The system-dependency option installs FFmpeg, libsndfile and SoX and requires root inside the container. Omit it if those dependencies are already present. Select a device and start the service:
+
+```bash
+export ASCEND_RT_VISIBLE_DEVICES=0
+export SGLANG_OMNI_PLATFORM_SPEC=sglang_omni.platforms.npu.NPUOmniPlatform
+sgl-omni serve --model-path openai/whisper-large-v3 --port 8000
+```
+
+Whisper defaults to `mem_fraction_static=0.50` on NPU and `0.85` on other platforms. Set `stages.asr.engine.mem_fraction_static` in the pipeline YAML to override the memory budget for your device or workload.
+
+The encoder CUDA Graph section below describes the CUDA path; the NPU encoder uses device SDPA. The optional dense-prefill CUDA optimization is also CUDA-only. These paths are separate from the retained NPU decode graph.
+
 ## Server Configuration
 
-Whisper ASR runs a single ASR stage on one GPU.
+Whisper ASR runs a single ASR stage on one GPU or on one Ascend NPU with the setup above.
 
 ```bash
 sgl-omni serve \
@@ -324,6 +346,16 @@ The async-decode comparison used the 128-sample SeedTTS EN subset on the same H2
 | 32 | 66.47 | 69.91 | +5.2% | 0.691 | 0.639 | -7.6% | 0.0084 |
 
 All 4,608 measured requests across both modes completed successfully, and all 2,304 paired transcripts matched exactly. Batch size 1 uses the synchronous fast path, so its 1.6% difference is run-to-run noise rather than async work. At concurrency 32, request-stage profiling measured 614.3 ms synchronous versus 585.5 ms asynchronous P95 from prefill completion to request completion. A separate async-only `openai/whisper-base` budget comparison showed why 6,144 is the default: relative to 4,096, scheduler queue P95 fell from 92.2 ms to 52.2 ms and throughput rose from 134.83 to 166.69 req/s.
+
+### Ascend NPU (Whisper-large-v3)
+
+The Ascend setup above was evaluated on one Ascend910_9362 with `openai/whisper-large-v3` in FP16, SGLang 0.5.22, CANN 9.1.0 and torch_npu 2.10.0.post6. The full English SeedTTS reference-audio set contains 1088 samples at dataset revision `27f4c1adee83b5b29b7c4b375f6b976324bda308`. The run used concurrency 32, one measured pass and a fresh service without extra sample warmup. OpenAI Whisper's EnglishTextNormalizer scores the reference transcripts.
+
+| Samples | Failed / skipped | Corpus WER | Throughput (requests/s) | Mean / p95 latency (s) |
+| --- | --- | --- | --- | --- |
+| 1088 | 0 / 0 | 183/13216 = 1.384685% | 6.216 | 5.114 / 7.148 |
+
+Runtime batch logs record NPU decode graph execution, and the prefill runner records 441 graph replays. The [historical RTX 4090 result](https://github.com/sgl-project/sglang-omni/pull/1653) reports 1.399818% WER and 16.503 requests/s on the full set. It used BF16, a different software revision, compile disabled, a 16-request admission limit and memory fraction 0.65; this NPU run used FP16, compile enabled, 64 and 0.50. These are reference results, not a controlled hardware comparison.
 
 ## Known Limitations
 

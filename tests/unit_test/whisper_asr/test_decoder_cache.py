@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.layers.radix_attention import RadixAttention
 from transformers import WhisperConfig
 
 from sglang_omni.models.whisper_asr import sglang_model
@@ -16,6 +17,7 @@ from sglang_omni.models.whisper_asr.sglang_model import (
     WhisperSGLangCrossAttention,
     WhisperSGLangSelfAttention,
 )
+from sglang_omni.platforms import current_platform
 
 
 def tiny_whisper_config() -> WhisperConfig:
@@ -154,3 +156,128 @@ def test_whisper_forward_caches_encoder_kv_before_decoder(
     model(input_ids, positions, forward_batch)
 
     assert calls == ["cache", "decoder", "logits"]
+
+
+def decode_attention_reference(
+    query: torch.Tensor,
+    keys: torch.Tensor,
+    values: torch.Tensor,
+    table: torch.Tensor,
+    batch: SimpleNamespace,
+    cross: bool,
+) -> torch.Tensor:
+    expected = torch.zeros_like(query)
+    for row in range(query.shape[0]):
+        start = 0 if cross else int(batch.encoder_lens[row].item())
+        length = int((batch.encoder_lens if cross else batch.seq_lens)[row].item())
+        if length:
+            indices = table[
+                int(batch.req_pool_indices[row].item()), start : start + length
+            ]
+            expected[row] = torch.nn.functional.scaled_dot_product_attention(
+                query[row].unsqueeze(1),
+                keys[indices].permute(1, 0, 2),
+                values[indices].permute(1, 0, 2),
+                scale=query.shape[-1] ** -0.5,
+            ).squeeze(1)
+        else:
+            pass
+    return expected
+
+
+@pytest.mark.parametrize("cross", [False, True], ids=["self", "cross"])
+@pytest.mark.parametrize("cache_span", [4, 12])
+def test_whisper_npu_decode_valid_spans(
+    monkeypatch: pytest.MonkeyPatch, cross: bool, cache_span: int
+) -> None:
+    torch.manual_seed(42)
+    query = torch.randn(3, 2, 64)
+    keys = torch.randn(64, 2, 64)
+    values = torch.randn_like(keys)
+    table = torch.arange(32).reshape(4, 8)
+    table[:, 6:] = -99999
+    batch = SimpleNamespace(
+        req_pool_indices=torch.tensor([2, 0, 1]),
+        seq_lens=torch.tensor([2, 1, 0]),
+        encoder_lens=torch.tensor([2, 3, 0]),
+    )
+    pool = SimpleNamespace(
+        get_key_buffer=lambda layer_id: keys,
+        get_value_buffer=lambda layer_id: values,
+    )
+    monkeypatch.setattr(
+        sglang_model,
+        "get_attn_backend",
+        lambda: SimpleNamespace(
+            token_to_kv_pool=pool,
+            req_to_token_pool=SimpleNamespace(req_to_token=table),
+        ),
+    )
+    layer = RadixAttention(2, 64, 64**-0.5, 2, 0, is_cross_attention=cross)
+    actual = sglang_model.whisper_npu_decode_attention(
+        query, layer, batch, cache_span=cache_span
+    )
+    expected = decode_attention_reference(query, keys, values, table, batch, cross)
+    torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.parametrize("cross", [False, True], ids=["self", "cross"])
+@pytest.mark.parametrize("cache_span", [4, 12])
+@pytest.mark.accelerator
+@pytest.mark.skipif(not current_platform.is_npu(), reason="requires Ascend NPU")
+def test_whisper_npu_decode_graph_updates_inputs(
+    monkeypatch: pytest.MonkeyPatch, cross: bool, cache_span: int
+) -> None:
+    torch.manual_seed(42)
+    query = torch.randn(2, 2, 64, device="npu", dtype=torch.float16)
+    keys = torch.randn(64, 2, 64, device="npu", dtype=torch.float16)
+    values = torch.randn_like(keys)
+    table = torch.arange(32, device="npu").reshape(4, 8)
+    table[:, 6:] = -99999
+    batch = SimpleNamespace(
+        req_pool_indices=torch.tensor([0, 1], device="npu"),
+        seq_lens=torch.tensor([2, 0], device="npu"),
+        encoder_lens=torch.tensor([2, 0], device="npu"),
+    )
+    monkeypatch.setattr(
+        sglang_model,
+        "get_attn_backend",
+        lambda: SimpleNamespace(
+            token_to_kv_pool=SimpleNamespace(
+                get_key_buffer=lambda layer_id: keys,
+                get_value_buffer=lambda layer_id: values,
+            ),
+            req_to_token_pool=SimpleNamespace(req_to_token=table),
+        ),
+    )
+    layer = RadixAttention(2, 64, 64**-0.5, 2, 0, is_cross_attention=cross)
+    for _ in range(3):
+        sglang_model.whisper_npu_decode_attention(
+            query, layer, batch, cache_span=cache_span
+        )
+    torch.npu.synchronize()
+    graph = torch.npu.NPUGraph()
+    with torch.npu.graph(graph):
+        actual = sglang_model.whisper_npu_decode_attention(
+            query, layer, batch, cache_span=cache_span
+        )
+    for step in range(3):
+        batch.req_pool_indices.copy_(
+            torch.tensor([step % 4, (step + 1) % 4], device="npu")
+        )
+        batch.seq_lens[0] = 2 + step % 2
+        batch.encoder_lens[0] = 2 + step % 2
+        query.add_(0.05)
+        values.mul_(0.95)
+        before_key_update = decode_attention_reference(
+            query, keys, values, table, batch, cross
+        )
+        start = 0 if cross else int(batch.encoder_lens[0].item())
+        key_index = int(table[int(batch.req_pool_indices[0].item()), start].item())
+        keys[key_index].add_(2 * query[0])
+        expected = decode_attention_reference(query, keys, values, table, batch, cross)
+        assert not torch.allclose(expected, before_key_update, atol=0.002, rtol=0.002)
+        graph.replay()
+        torch.npu.synchronize()
+        torch.testing.assert_close(actual, expected, atol=0.002, rtol=0.002)
+        assert torch.isfinite(actual).all().item()

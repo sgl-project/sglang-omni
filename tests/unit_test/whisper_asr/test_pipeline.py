@@ -31,6 +31,7 @@ from sglang_omni.models.whisper_asr.text_streaming import (
 )
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.npu import NPUOmniPlatform
 from sglang_omni.platforms.xpu import XPUOmniPlatform
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
@@ -177,26 +178,45 @@ def test_whisper_disables_chunked_prefill_for_atomic_encoder_prefix() -> None:
 
 
 @pytest.mark.parametrize(
-    ("platform_type", "expected_backend"),
-    [(XPUOmniPlatform, "torch_native"), (CUDAOmniPlatform, None)],
+    ("platform_type", "expected_backend", "default_memory_fraction"),
+    [
+        (XPUOmniPlatform, "torch_native", 0.85),
+        (CUDAOmniPlatform, None, 0.85),
+        (NPUOmniPlatform, None, 0.50),
+    ],
 )
-def test_whisper_encoder_decoder_attention_backend_defaults(
+@pytest.mark.parametrize("explicit_memory_fraction", [None, 0.40])
+def test_whisper_device_defaults_and_explicit_memory_override(
     monkeypatch: pytest.MonkeyPatch,
     platform_type: type[OmniPlatform],
     expected_backend: str | None,
+    default_memory_fraction: float,
+    explicit_memory_fraction: float | None,
 ) -> None:
     monkeypatch.setattr(whisper_asr_builder, "current_platform", platform_type())
     defaults = whisper_asr_builder.WhisperASREngineBuilder(
         encoder_attention_backend="auto",
         max_running_requests=4,
         max_new_tokens=32,
-        mem_fraction_static=0.2,
+        mem_fraction_static=explicit_memory_fraction,
     ).generation_defaults(dtype="float16")
 
     if expected_backend is None:
         assert "attention_backend" not in defaults
     else:
         assert defaults["attention_backend"] == expected_backend
+    assert defaults["disable_cuda_graph"] is False
+    assert defaults["enable_torch_compile"] is True
+    assert defaults["mem_fraction_static"] == (
+        default_memory_fraction
+        if explicit_memory_fraction is None
+        else explicit_memory_fraction
+    )
+    merged = build_generation_batch_overrides(
+        **defaults,
+        server_args_overrides={"mem_fraction_static": 0.30},
+    )
+    assert merged["mem_fraction_static"] == 0.30
 
 
 def test_whisper_breakable_prefill_graph_policy() -> None:
@@ -481,6 +501,9 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(
     assert build_kwargs["chunked_prefill_size"] == 0
     assert build_kwargs["enable_custom_logit_processor"] is True
     assert build_kwargs["max_prefill_tokens"] == 6144
+    assert build_kwargs["mem_fraction_static"] == (
+        0.50 if whisper_asr_builder.current_platform.is_npu() else 0.85
+    )
     assert scheduler_kwargs["enable_async_decode"] is False
     assert scheduler_kwargs["async_decode_min_batch_size"] == 4
     assert build_kwargs["cuda_graph_backend_prefill"] == CudaGraphBackend.BREAKABLE
