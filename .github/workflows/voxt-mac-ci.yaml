@@ -42,8 +42,8 @@ permissions:
 
 env:
   VOXT_CI_ROOT: /Users/Shared/voxt-ci
-  # A slow or stalled checkpoint download fails its step instead of using up the job.
-  VOXT_PROVISION_TIMEOUT_MINUTES: 10
+  # Provisioning stops here and leaves 15 of the job's 60 minutes to the build and tests; a download it cut off resumes in the next job.
+  VOXT_PROVISION_TIMEOUT_MINUTES: 45
   # Plain HTTP downloads resume from the partial file a timed-out step left; Xet ones start over.
   HF_HUB_DISABLE_XET: "1"
 
