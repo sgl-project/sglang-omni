@@ -246,7 +246,12 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
             pass
 
         window_start_raw = max(0, state.emitted_raw_frames - self.stream_overlap_tokens)
-        rows_end = emit_until_raw + num_codebooks - 1
+        decode_until_raw = raw_total
+        if use_initial_chunk and not is_final:
+            decode_until_raw = emit_until_raw
+        else:
+            pass
+        rows_end = decode_until_raw + num_codebooks - 1
         rows = state.delayed_rows[window_start_raw:rows_end]
         audio = self.decode_delayed_rows(
             rows,
@@ -254,13 +259,15 @@ class HiggsStreamingVocoderScheduler(StreamingVocoderBase[HiggsStreamState, None
             codebook_size=codebook_size,
         )
 
-        decoded_raw_frames = emit_until_raw - window_start_raw
+        decoded_raw_frames = decode_until_raw - window_start_raw
         samples_per_frame = self.samples_per_frame or max(
             int(audio.shape[-1]) // max(decoded_raw_frames, 1), 1
         )
         trim_frames = state.emitted_raw_frames - window_start_raw
         trim_samples = min(int(trim_frames * samples_per_frame), int(audio.shape[-1]))
-        if not is_final and self.samples_per_frame is not None:
+        if not is_final and (
+            self.samples_per_frame is not None or emit_until_raw < decode_until_raw
+        ):
             new_frames = emit_until_raw - state.emitted_raw_frames
             emit_samples = int(new_frames * samples_per_frame)
             delta = audio[trim_samples : trim_samples + emit_samples].contiguous()
