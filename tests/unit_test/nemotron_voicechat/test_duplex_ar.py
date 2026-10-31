@@ -24,7 +24,7 @@ from sglang_omni.models.nemotron_voicechat.duplex_stages import (
 from sglang_omni.models.nemotron_voicechat.fusion import AddFusion
 from sglang_omni.models.nemotron_voicechat.talker import LevelScheduleEntry
 from sglang_omni.models.nemotron_voicechat.talker_model_runner import (
-    NemotronVoiceChatTalkerModelRunner,
+    VoiceChatTalkerModelRunner,
 )
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
@@ -352,7 +352,7 @@ def test_sampler_replay_uses_new_hidden_states_and_randomness(
         return hidden + torch.rand_like(hidden)
 
     def initialize_runner(
-        runner: NemotronVoiceChatTalkerModelRunner,
+        runner: VoiceChatTalkerModelRunner,
         tp_worker: ModelWorker,
         output_processor: SGLangOutputProcessor,
     ) -> None:
@@ -368,9 +368,7 @@ def test_sampler_replay_uses_new_hidden_states_and_randomness(
         runner.top_p = 0.9
         runner.noise_scale = 1.0
 
-    monkeypatch.setattr(
-        NemotronVoiceChatTalkerModelRunner, "__init__", initialize_runner
-    )
+    monkeypatch.setattr(VoiceChatTalkerModelRunner, "__init__", initialize_runner)
     runner = DuplexTalkerRunner(
         Mock(spec=ModelWorker), Mock(spec=SGLangOutputProcessor)
     )

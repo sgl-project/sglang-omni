@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Literal, TypedDict
 
 import torch
+from transformers.models.mimi.modeling_mimi import MimiEuclideanCodebook
 
 from sglang_omni.models.qwen3_tts.compat import (
     apply_qwen_tts_transformers_compatibility_patches,
@@ -39,6 +40,7 @@ from sglang_omni.models.qwen3_tts.streaming_vocoder import (
     Qwen3TTSStreamingVocoderScheduler,
     UnsupportedAdminData,
 )
+from sglang_omni.models.weight_loader import load_weights_by_prefix
 from sglang_omni.platforms import current_platform
 from sglang_omni.proto.admin import ADMIN_MODEL_INFO
 from sglang_omni.proto.request import StagePayload
@@ -104,12 +106,33 @@ def resolve_qwen3_tts_attn_implementation(
     return attn_implementation or "sdpa"
 
 
+def load_float32_encoder_weights(
+    tokenizer: "Qwen3TTSTokenizer", checkpoint_dir: str
+) -> None:
+    """Give the codec encoder its float32 checkpoint weights and build its codebook tables from them; the decoder is untouched."""
+    # note (ratish): the encoder's quantizers pick each codeword by nearest distance, which bf16 rounding flips, so the encoder keeps the checkpoint's float32.
+    encoder = tokenizer.model.encoder
+    encoder.to(torch.float32)
+    encoder.load_state_dict(
+        load_weights_by_prefix(
+            os.path.join(checkpoint_dir, "speech_tokenizer"), prefix="encoder."
+        )
+    )
+    # note (ratish): a table built lazily by the first encode sits inside that encode's float32 activations and keeps them reserved when the KV pool is sized.
+    for module in encoder.modules():
+        if isinstance(module, MimiEuclideanCodebook):
+            module.embed
+        else:
+            pass
+
+
 def load_qwen3_tts_tokenizer(
     model_path: str,
     *,
     device: str,
     dtype: str,
     attn_implementation: str | None,
+    float32_encoder: bool,
 ) -> "Qwen3TTSTokenizer":
     apply_qwen_tts_transformers_compatibility_patches()
     try:
@@ -132,6 +155,18 @@ def load_qwen3_tts_tokenizer(
             logger.info(
                 f"Reusing the Qwen3-TTS speech tokenizer from {tokenizer_path} on {device}"
             )
+            # note (ratish): a stage that only decodes may have loaded this copy first, so a caller that encodes still gets the float32 encoder.
+            if (
+                float32_encoder
+                and next(tokenizer.model.encoder.parameters()).dtype != torch.float32
+            ):
+                logger.info(
+                    "Giving the reused Qwen3-TTS speech tokenizer's encoder its "
+                    f"float32 weights on {device}"
+                )
+                load_float32_encoder_weights(tokenizer, checkpoint_dir)
+            else:
+                pass
             return tokenizer
         else:
             pass
@@ -152,6 +187,11 @@ def load_qwen3_tts_tokenizer(
             attn_implementation or "upstream-default",
         )
         tokenizer = Qwen3TTSTokenizer.from_pretrained(tokenizer_path, **kwargs)
+        # note (ratish): converted right after the load, so the process's later allocations reuse the bf16 weights it frees; converted later, they sit between the decoder's weights and shrink the KV pool.
+        if float32_encoder:
+            load_float32_encoder_weights(tokenizer, checkpoint_dir)
+        else:
+            pass
         move_conv_padding_to_host(tokenizer.model.encoder)
         _SPEECH_TOKENIZERS[key] = tokenizer
         return tokenizer
@@ -341,6 +381,7 @@ def load_standalone_preprocessing_context(
         device=device,
         dtype=dtype,
         attn_implementation=attn_implementation,
+        float32_encoder=frontend.tts_model_type == "base",
     )
     frontend.load_speech_tokenizer(speech_tokenizer)
     if frontend.speaker_encoder_graph_runner is not None:
@@ -433,6 +474,7 @@ def create_vocoder_executor(
     suppress_bootstrap_silence: bool = True,
     suppress_bootstrap_max_streams: int = 24,
     running_stream_count: int | None = None,
+    shares_engine_speech_tokenizer: bool,
 ) -> Qwen3TTSStreamingVocoderScheduler:
     device = str(resolve_concrete_device(device, gpu_id))
     # note (luojiaxuan): the graph and compile switches follow the decoder
@@ -448,15 +490,16 @@ def create_vocoder_executor(
         )
     else:
         pass
+    checkpoint_config = load_qwen3_tts_checkpoint_config(model_path)
+    model_type = normalize_qwen3_tts_model_type(checkpoint_config.get("tts_model_type"))
+    # note (ratish): the vocoder only decodes, so its tokenizer's encoder takes float32 only on the copy the engine will share and encode with.
     tokenizer = load_qwen3_tts_tokenizer(
         model_path,
         device=device,
         dtype=dtype,
         attn_implementation=attn_implementation,
+        float32_encoder=shares_engine_speech_tokenizer and model_type == "base",
     )
-
-    checkpoint_config = load_qwen3_tts_checkpoint_config(model_path)
-    model_type = normalize_qwen3_tts_model_type(checkpoint_config.get("tts_model_type"))
     configured_model_size = checkpoint_config.get("tts_model_size")
     tts_model_size: Literal["0b6", "1b7"] | None = None
     if model_type == "base" and configured_model_size in {"0b6", "1b7"}:
