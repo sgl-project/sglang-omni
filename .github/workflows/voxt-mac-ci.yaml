@@ -41,8 +41,8 @@ permissions:
 
 env:
   VOXT_CI_ROOT: /Users/Shared/voxt-ci
-  # provision.py prints one line per finished repo; per-file bars would flood the log.
-  HF_HUB_DISABLE_PROGRESS_BARS: "1"
+  # A slow or stalled checkpoint download fails its step instead of using up the job.
+  VOXT_PROVISION_TIMEOUT_MINUTES: 10
 
 jobs:
   preflight:
@@ -171,6 +171,7 @@ jobs:
           VIRTUAL_ENV="$VOXT_CI_ROOT/venv" uv pip install -q -r sglang_omni_mlx/native/ci/requirements.lock
 
       - name: Provision checkpoints and corpus
+        timeout-minutes: ${{ fromJSON(env.VOXT_PROVISION_TIMEOUT_MINUTES) }}
         run: |
           "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision.py "$VOXT_CI_ROOT/data"
 
@@ -262,6 +263,7 @@ jobs:
 
       # The corpus and the Qwen3-ASR checkpoints serve the golden corpus and the speech models' ASR round trip.
       - name: Provision the corpus and this model's checkpoints
+        timeout-minutes: ${{ fromJSON(env.VOXT_PROVISION_TIMEOUT_MINUTES) }}
         env:
           MODEL_PINS: ${{ join(matrix.model.pins, ' ') }}
         run: |
