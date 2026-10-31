@@ -22,6 +22,10 @@ on:
       - "sglang_omni_mlx/**"
       - ".github/workflows/voxt-mac-ci.yaml"
   workflow_dispatch:
+    inputs:
+      models:
+        description: Model jobs to run (comma-separated names from model_jobs.json, or all)
+        default: all
 
 # One run per pull request; a new push replaces it. The single Apple Silicon
 # runner takes one job at a time, so runs of different pull requests queue
@@ -45,7 +49,8 @@ jobs:
     timeout-minutes: 15
     outputs:
       run_mac: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.plan.outputs.run_mac }}
-      run_music3: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.pr.outputs.music3 }}
+      model_matrix: ${{ steps.models.outputs.model_matrix }}
+      has_models: ${{ steps.models.outputs.has_models }}
     steps:
       - name: Fetch latest PR gate state
         if: ${{ github.event_name == 'pull_request' }}
@@ -68,9 +73,8 @@ jobs:
               pull_number: context.issue.number,
               per_page: 100,
             });
-            const music3 = /^(\.github\/workflows\/voxt-mac-ci\.yaml$|sglang_omni_mlx\/native\/(CMakeLists\.txt$|scripts\/|src\/(music3\/|common\/|qwen3_asr\/)|tools\/music3_|ci\/(music3_|generate_music3_reference\.py$|model_golden\/minimax-music3\.json$|model_pins\.json$|provision.*\.py$|check_.*\.py$|test_check_golden\.py$|test_model_servers\.py$|requirements\.lock$)))/;
-            core.setOutput("music3", files.some(file =>
-              music3.test(file.filename) || music3.test(file.previous_filename || "")));
+            core.setOutput("changed_files", JSON.stringify(files.flatMap(file =>
+              [file.filename, file.previous_filename].filter(Boolean))));
             core.setOutput("is_selected", labels.includes("run-all-ci") || labels.includes("run-mac-ci"));
 
       - name: Block draft PR
@@ -80,10 +84,25 @@ jobs:
           exit 1
 
       - name: Checkout CI label rules
-        if: ${{ steps.pr.outputs.is_selected == 'true' }}
+        if: ${{ steps.pr.outputs.is_selected == 'true' || github.event_name == 'workflow_dispatch' }}
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      # Each selected model gets its own job, so a slow checkpoint download
+      # for one model cannot time out another model's tests.
+      - name: Select model jobs
+        if: ${{ steps.pr.outputs.is_selected == 'true' || github.event_name == 'workflow_dispatch' }}
+        id: models
+        env:
+          CHANGED_FILES: ${{ steps.pr.outputs.changed_files || '[]' }}
+          REQUESTED_MODELS: ${{ inputs.models }}
+        run: |
+          printf '%s' "$CHANGED_FILES" > "$RUNNER_TEMP/changed_files.json"
+          python .github/scripts/select_voxt_models.py \
+            --changed-files "$RUNNER_TEMP/changed_files.json" \
+            ${REQUESTED_MODELS:+--requested "$REQUESTED_MODELS"} \
+            --github-output "$GITHUB_OUTPUT"
 
       - name: Resolve CI stages
         if: ${{ steps.pr.outputs.is_selected == 'true' }}
@@ -114,31 +133,12 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Check free disk space
-        env:
-          RUN_MUSIC3: ${{ needs.preflight.outputs.run_music3 }}
         run: |
           echo "Unified memory bytes: $(sysctl -n hw.memsize)"
           mkdir -p "$VOXT_CI_ROOT"
           free_gb=$(df -g "$VOXT_CI_ROOT" | awk 'NR == 2 {print $4}')
           echo "Free under $VOXT_CI_ROOT: ${free_gb} GB"
           required_gb=20
-          music3_cache="$VOXT_CI_ROOT/data/models/mlx-community_MiniMax-Music3-mxfp8"
-          if [ "$RUN_MUSIC3" = true ]; then
-            cached_gb=0
-            if [ -d "$music3_cache" ]; then
-              cached_gb=$(du -sk "$music3_cache" | awk '{print int($1 / 1048576)}')
-            else
-              :
-            fi
-            missing_gb=$((14 - cached_gb))
-            if [ "$missing_gb" -gt 0 ]; then
-              required_gb=$((required_gb + missing_gb))
-            else
-              :
-            fi
-          else
-            :
-          fi
           if [ "$free_gb" -lt "$required_gb" ]; then
             echo "::error::Only ${free_gb} GB free on the runner; this run needs at least ${required_gb} GB."
             exit 1
@@ -161,39 +161,6 @@ jobs:
         run: |
           sglang_omni_mlx/native/scripts/build_runtime.sh "$RUNNER_TEMP/runtime" "$VOXT_CI_ROOT/runtime-build"
 
-      - name: Provision the Music3 checkpoint
-        if: ${{ !cancelled() && needs.preflight.outputs.run_music3 == 'true' }}
-        run: |
-          "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision_models.py "$VOXT_CI_ROOT/data" \
-            --model mlx-community/MiniMax-Music3-mxfp8
-
-      - name: Music3 golden outputs
-        if: ${{ !cancelled() && needs.preflight.outputs.run_music3 == 'true' }}
-        run: |
-          "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/check_model_golden.py \
-            --runtime-bin "$RUNNER_TEMP/runtime/bin" --data-root "$VOXT_CI_ROOT/data" \
-            --golden sglang_omni_mlx/native/ci/model_golden/minimax-music3.json \
-            --outputs "$RUNNER_TEMP/golden-outputs"
-
-      - name: Upload this chip's Music3 outputs
-        if: ${{ always() && needs.preflight.outputs.run_music3 == 'true' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: music3-golden-outputs
-          path: |
-            ${{ runner.temp }}/golden-outputs/minimax-music3.json
-            ${{ runner.temp }}/golden-outputs/music3-resident-audio
-            ${{ runner.temp }}/golden-outputs/music3-offload-audio
-          if-no-files-found: ignore
-
-      - name: Music3 server API tests
-        if: ${{ !cancelled() && needs.preflight.outputs.run_music3 == 'true' }}
-        env:
-          NATIVE_RUNTIME_BIN: ${{ runner.temp }}/runtime/bin
-          CI_DATA_ROOT: ${{ env.VOXT_CI_ROOT }}/data
-        run: |
-          "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_model_servers.py -k music3
-
       # Every golden file is checked, even after one fails, and this chip's
       # outputs are uploaded so they can be recorded as its golden outputs.
       - name: Golden outputs on the frozen corpus
@@ -213,30 +180,7 @@ jobs:
         run: |
           "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_check_golden.py sglang_omni_mlx/native/ci/test_server_api.py sglang_omni_mlx/native/ci/test_vad_api.py \
             sglang_omni_mlx/native/ci/test_sortformer_api.py
-
-      # The models beside Qwen3-ASR, each with its own server: their pinned
-      # checkpoints, their golden outputs and their servers' API tests.
-      - name: Provision the other models' checkpoints
-        if: ${{ !cancelled() }}
-        run: |
-          "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision_models.py "$VOXT_CI_ROOT/data" \
-            --exclude-model mlx-community/MiniMax-Music3-mxfp8
-
-      - name: Other models' golden outputs on the frozen corpus
-        if: ${{ !cancelled() }}
-        run: |
-          result=0
-          for golden in sglang_omni_mlx/native/ci/model_golden/*.json; do
-            if [ "$(basename "$golden")" = minimax-music3.json ]; then
-              continue
-            else
-              :
-            fi
-            "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/check_model_golden.py \
-              --runtime-bin "$RUNNER_TEMP/runtime/bin" --data-root "$VOXT_CI_ROOT/data" --golden "$golden" \
-              --outputs "$RUNNER_TEMP/golden-outputs" || result=1
-          done
-          exit "$result"
+          "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_model_servers.py -k serves_only_its_model_kind
 
       - name: Upload this chip's outputs
         if: always()
@@ -245,15 +189,6 @@ jobs:
           name: golden-outputs
           path: ${{ runner.temp }}/golden-outputs
           if-no-files-found: ignore
-
-      - name: Other model servers' API tests
-        if: ${{ !cancelled() }}
-        env:
-          NATIVE_RUNTIME_BIN: ${{ runner.temp }}/runtime/bin
-          CI_DATA_ROOT: ${{ env.VOXT_CI_ROOT }}/data
-        run: |
-          "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_model_servers.py \
-            sglang_omni_mlx/native/ci/test_voxtral_tts_api.py -k 'not music3'
 
       - name: Archive tested native runtime
         if: success()
@@ -268,6 +203,88 @@ jobs:
           name: voxt-native-runtime
           path: ${{ runner.temp }}/voxt-native-runtime.tar.gz
           if-no-files-found: error
+
+
+  # One job per model selected in preflight (sglang_omni_mlx/native/ci/model_jobs.json): its pinned checkpoints, golden outputs and server API tests.
+  native-model:
+    name: native model (${{ matrix.model.name }})
+    needs: [preflight]
+    if: needs.preflight.outputs.run_mac == 'true' && needs.preflight.outputs.has_models == 'true'
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.preflight.outputs.model_matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Check free disk space
+        run: |
+          mkdir -p "$VOXT_CI_ROOT"
+          free_gb=$(df -g "$VOXT_CI_ROOT" | awk 'NR == 2 {print $4}')
+          echo "Free under $VOXT_CI_ROOT: ${free_gb} GB"
+          if [ "$free_gb" -lt 20 ]; then
+            echo "::error::Only ${free_gb} GB free on the runner; this run needs at least 20 GB."
+            exit 1
+          else
+            :
+          fi
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Set up the CI Python
+        run: |
+          uv venv -q -p 3.12 --allow-existing "$VOXT_CI_ROOT/venv"
+          VIRTUAL_ENV="$VOXT_CI_ROOT/venv" uv pip install -q -r sglang_omni_mlx/native/ci/requirements.lock
+
+      # The corpus and the Qwen3-ASR checkpoints serve the golden corpus and the speech models' ASR round trip.
+      - name: Provision the corpus and this model's checkpoints
+        env:
+          MODEL_PINS: ${{ join(matrix.model.pins, ' ') }}
+        run: |
+          "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision.py "$VOXT_CI_ROOT/data"
+          model_arguments=()
+          for pin in $MODEL_PINS; do
+            model_arguments+=(--model "$pin")
+          done
+          "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision_models.py "$VOXT_CI_ROOT/data" "${model_arguments[@]}"
+
+      - name: Build the runtime
+        run: |
+          sglang_omni_mlx/native/scripts/build_runtime.sh "$RUNNER_TEMP/runtime" "$VOXT_CI_ROOT/runtime-build"
+
+      - name: Golden outputs on the frozen corpus
+        env:
+          MODEL_GOLDENS: ${{ join(matrix.model.goldens, ' ') }}
+        run: |
+          result=0
+          for golden in $MODEL_GOLDENS; do
+            "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/check_model_golden.py \
+              --runtime-bin "$RUNNER_TEMP/runtime/bin" --data-root "$VOXT_CI_ROOT/data" \
+              --golden "sglang_omni_mlx/native/ci/model_golden/$golden" \
+              --outputs "$RUNNER_TEMP/golden-outputs" || result=1
+          done
+          exit "$result"
+
+      - name: Upload this chip's outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-outputs-${{ matrix.model.name }}
+          path: ${{ runner.temp }}/golden-outputs
+          if-no-files-found: ignore
+
+      - name: Server API tests
+        if: ${{ !cancelled() }}
+        env:
+          NATIVE_RUNTIME_BIN: ${{ runner.temp }}/runtime/bin
+          CI_DATA_ROOT: ${{ env.VOXT_CI_ROOT }}/data
+          MODEL_PYTEST: ${{ join(matrix.model.pytest, ' ') }}
+        run: |
+          # shellcheck disable=SC2086
+          "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q $MODEL_PYTEST
 
   voxt-unit:
     name: Voxt Omni unit tests
