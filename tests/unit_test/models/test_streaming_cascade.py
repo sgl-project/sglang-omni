@@ -1833,7 +1833,7 @@ def test_profiles_expand_components_into_independent_session_nodes(profile):
     for name, node in config.session_nodes.items():
         if node.kind is not None:
             assert graph.nodes[name].stages == (name,)
-            assert config.stage_named(name).process == "cascade"
+            assert config.stage_named(name).process == name
             assert config.stage_factory_kwargs(name)["name"] == name
         else:
             assert graph.nodes[name].stages == tuple(node.stages)
