@@ -1,0 +1,24 @@
+config_cls: Qwen3ASRPipelineConfig
+name: qwen3-asr-1-7b-npu
+model_path: Qwen/Qwen3-ASR-1.7B
+
+env_defaults:
+  PER_STREAM_QUEUE: "1"
+  TASK_QUEUE_ENABLE: "1"
+  ASCEND_LAUNCH_BLOCKING: "0"
+
+stages:
+  asr:
+    factory:
+      enable_async_decode: true
+      async_decode_min_batch_size: 1
+      enable_encoder_cuda_graph: true
+    engine:
+      disable_cuda_graph: true
+      cuda_graph_backend_prefill: disabled
+      enable_torch_compile: false
+      disable_radix_cache: true
+      max_running_requests: 64
+
+audio_chunking:
+  max_concurrent_long_audio_requests: 4
