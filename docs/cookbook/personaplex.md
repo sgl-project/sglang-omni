@@ -88,6 +88,40 @@ request values. Stage sampling also takes precedence for `seed`.
 The fixed caller-frame budget still determines the number of generated frames.
 
 
+## Opt-in FP8 inference
+
+BF16 remains the default. Use the existing LM engine flags independently:
+
+| Setting | Effect |
+|---|---|
+| `--lm.engine.quantization fp8` | FP8 backbone linear weights: weight-only Marlin on Ampere, native FP8 on supported sm89+ devices. |
+| `--lm.engine.kv_cache_dtype fp8_e4m3` | FP8 backbone KV storage. The measurements below use H100 with FA3. |
+| Both flags | Combine FP8 weights and KV. |
+
+The text head, embeddings, depformer and Mimi retain their precision. Set `--lm.engine.max_running_requests` explicitly for concurrent requests. Its offline default is one; the session default is `max_sessions` plus reserved request slots.
+
+### Choosing a configuration
+
+- **FP8 weights with BF16 KV** reduce backbone linear storage from 13.15 GB to 6.58 GB. On the measured workload, C1 throughput improved by 18.5% on H100 and 26.8% on A100 SXM4; mean first-audio latency increased by roughly 6–10 ms and 4–6 ms across C1/C4/C8, respectively.
+- **FP8 KV alone** is a capacity option, with no consistent throughput gain. Setting `--lm.engine.mem_fraction_static null --lm.engine.kv_cache_bytes 8GiB` allocated 16,384 BF16 or 32,768 FP8 positions. In 450-second padded-input checks with `max_running_requests=16`, sustained concurrency rose from four to eight streams; scheduler reservations also constrain admission, so this is not a universal capacity guarantee.
+- **Combined FP8 weights and KV** improved throughput over BF16 but was slower on average than FP8 weights alone. H100 C1 mean first-audio latency increased from 58.2 ms to 69.3 ms (+11.1 ms). H100 C8 audio chunk-gap p99 effects varied in both directions across pairs.
+
+These measurements use SGLang 0.5.22, PyTorch 2.14.1, H100 80GB/FA3 and A100 SXM4 80GB/FlashInfer. Performance uses finite batches from eight inputs, including one input at C1, rather than continuous saturation. The cookbook's recommendations concern the offline pipeline.
+
+### Audio quality and limitations
+
+All four FP8 candidates passed the predeclared UTMOS, WER and omission non-inferiority margins on 416 distinct English inputs × two seeds per configuration, with four voices, 30-second inputs, C8, normal sampling and CUDA graphs. Every frozen reply was retained. All FP8 KV quality runs used unit scales.
+
+WER/omission compare each reply's ASR with its own generated text; they measure text/audio consistency, not answer correctness or semantic equivalence to BF16. These results do not establish quality at other concurrency levels or in natural long conversations. FA3 also casts Q to FP8 without a query scale, so the KV results include FP8 attention arithmetic. Ada and Ampere FP8 KV were not evaluated.
+
+[Full results, exact tested revisions, statistical methods and reproduction scripts](https://gist.github.com/EdwardZhang1108/ca872094ef9d1000ab446f982c3b86fa) include paired timings, quality intervals, capacity outcomes and kernel profiles.
+
+### Custom KV scales
+
+With `--lm.engine.kv_cache_dtype fp8_e4m3`, an optional file can be supplied through `--lm.engine.quantization_param_path /path/to/scales.json`. Other KV dtypes ignore this path. The schema uses `model_type: "llama"`, `kv_cache.dtype: "float8_e4m3fn"` and `kv_cache.scaling_factor: {"0": {"0": scale, ..., "31": scale}}` for the single-GPU pipeline. Each layer's scale applies to both K and V.
+
+Invalid files or scales that are not finite and positive in FP32 fail startup. The loader keeps tensor and host-float scales consistent and preserves existing tensor storage. Custom scale loading rejects FNUZ backends. The quality results above do not validate a custom calibration file; K/V scaling also cannot correct FA3's unscaled Q cast.
+
 ## Known limitations
 
 ### All platforms
