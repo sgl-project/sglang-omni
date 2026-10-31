@@ -1110,6 +1110,8 @@ python -m benchmarks.duplex.fdb setup
 
 `JUDGE=gpt` needs `OPENAI_API_KEY`. With `JUDGE=qwen` the labels and ratings are not the paper's, but the judge is local and pinned, so runs with the same settings stay comparable with each other. The semantic judge sends six control cases (`benchmarks/duplex/semantic/`) together with its first grading batches and keeps the grades only if all 18 control axis statuses match `control-expected.json`; otherwise it discards them and stops. The controls check the rubric, not the judge's accuracy.
 
+`--skip-semantic-judge` on `judge`, or on `generate` with `--all-stages`, leaves the semantic judge out because it is the slowest judge phase, ~5 minutes for 20 pairs on one H100.
+
 A judge starts only when the step has a request for it: the v1.5 pairs and the v1.0 interruption subset need one, while the other v1.0 subsets are scored without an LLM. A run with only those subsets starts no judge server and needs no API key.
 
 ### Run the benchmark
@@ -1246,6 +1248,7 @@ Each repeat writes these files under `$FDB_WORK/runs/RUN_NAME/repeat-N/`:
 |---|---|
 | `sample-ids.txt`, `v10/sample-ids.txt` | The selected v1.5 pairs (empty when v1.5 was left out) and v1.0 samples (`v10/` exists only when v1.0 was selected) |
 | `recording/shard-*/`, `v10/recording/shard-*/` | Raw session traces, input and output audio, protocol reports |
+| `warmup/` | The unscored warmup sessions recorded before them, with their recorder logs; nothing reads them |
 | `logs/`, `v10/logs/` | `logs/` has the server logs and the v1.5 recorder logs, `v10/logs/` the v1.0 recorder logs; the v1.5 ASR and timing logs are in `scores/logs/` |
 | `reference-audio/` | v1.5 fixed-window WAVs and `reference-manifest.json` with eligibility |
 | `scores/summary.json` | v1.5 timing, ASR coverage and, with `JUDGE=gpt`, behavior labels |
@@ -1394,6 +1397,7 @@ The reported results came from one C1 and C2 screen, five C4 runs, two C8 runs, 
 - **Keep the settings fixed across the repeats of a run.** Mixing repeats with different selections, `--num-shards` or judges makes their mean meaningless; use a new run name instead.
 - **`--num-shards` changes what you measure.** With `--num-shards 2`, two sessions share the GPU, so the latencies are measured under load and do not compare with one shard. The model server keeps `max_sessions` at 2, so `generate` refuses more than 2 shards per server up front.
 - **`--gpus` spreads the shards over GPUs.** `--gpus 0,1` starts one model server on each listed GPU, each with its own port (`8097 + 10×GPU`) and caches, and sends shard i to the i-th server modulo their count. With as many shards as GPUs every session has a GPU to itself, so the timing compares with one shard. `asr` and `judge` still run on the job GPU, the first index of `CUDA_VISIBLE_DEVICES`, so `CUDA_VISIBLE_DEVICES=0,1` with `--gpus 0,1` records on both GPUs and transcribes on GPU 0.
+- **`generate` warms the model servers up first.** Once the servers are ready, every shard records the first selected sample, the first v1.5 pair or, with v1.5 left out, the first v1.0 sample, before any scored session starts. A fresh server pays its first-use costs in its first sessions, and with every shard starting at once those sessions answered seconds late, after the overlap they were meant to test had ended. These sessions go to `warmup/` and are never scored, and a failed one only logs a warning. `--skip-warmup` leaves them out, for example to compare a cold start with a warm one; keep that choice the same across the repeats of a run.
 - **The first N samples are not a random sample.** They give fast numbers that compare between runs, not estimates for the full dataset.
 - **Failed sessions are never dropped.** They stay in the denominators as ineligible, and an empty set of intervals shows as `n/a`, not as zero.
 

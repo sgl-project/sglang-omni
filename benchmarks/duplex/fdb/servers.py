@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
@@ -20,10 +20,12 @@ from benchmarks.benchmarker.utils import start_server_from_cmd, stop_server
 from benchmarks.duplex.fdb.common import (
     JUDGE_MODEL_ID,
     JUDGE_SERVED_MODEL,
+    REPO_ROOT,
     Settings,
     follow_log,
     log,
     log_tail,
+    visible_devices,
 )
 
 SERVER_READY_TIMEOUT_S = 1800
@@ -37,22 +39,65 @@ JUDGE_DECODING = {
     "max_tokens": 512,
 }
 JUDGE_SEEDS = [1, 2, 3]
+# note (jeffro): the cascade profile's alignment node posts to this port.
+ALIGNER_PORT = 8010
+ALIGNER_MODEL_ID = "Qwen/Qwen3-ForcedAligner-0.6B"
+ALIGNER_SCRIPT = REPO_ROOT / "examples" / "streaming_cascade" / "alignment_worker.py"
 
 
 def model_server_command(settings: Settings) -> list[str]:
+    if settings.engine.launch_config is None:
+        model_arguments = [
+            "--model-path",
+            str(settings.model_path),
+            "--variant",
+            "session",
+        ]
+    else:
+        model_arguments = ["--config", str(REPO_ROOT / settings.engine.launch_config)]
+    if settings.engine.sets_max_sessions:
+        model_arguments += ["--max_sessions", str(settings.engine.max_sessions)]
+    else:
+        pass
     return [
         sys.executable,
         "-m",
         "sglang_omni.cli",
         "serve",
-        "--model-path",
-        str(settings.model_path),
-        "--variant",
-        "session",
+        *model_arguments,
         "--enable-realtime",
         "--port",
         str(settings.server_port),
     ]
+
+
+def aligner_command(settings: Settings) -> list[str]:
+    return [
+        str(settings.aligner_python),
+        str(ALIGNER_SCRIPT),
+        "--model",
+        ALIGNER_MODEL_ID,
+        "--device",
+        "cuda:0",
+        "--language",
+        "English",
+        "--port",
+        str(ALIGNER_PORT),
+    ]
+
+
+def model_server_gpus(settings: Settings) -> str:
+    """The job GPU, or every visible GPU for a system that spans several."""
+    if settings.engine.server_gpu_count == 1:
+        return settings.gpu
+    elif len(visible_devices()) != settings.engine.server_gpu_count:
+        raise SystemExit(
+            f"ERROR: ENGINE={settings.engine.name} runs one server on "
+            f"{settings.engine.server_gpu_count} GPUs; set CUDA_VISIBLE_DEVICES "
+            "to exactly that many."
+        )
+    else:
+        return ",".join(visible_devices())
 
 
 def judge_server_command(settings: Settings) -> list[str]:
@@ -192,16 +237,38 @@ def running_server(
 
 @contextmanager
 def model_server(settings: Settings, log_file: Path) -> Iterator[RunningServer]:
-    with running_server(
-        "model server",
-        model_server_command(settings),
-        settings.gpu,
-        settings.server_port,
-        log_file,
-        health_path="/v1/realtime/capabilities",
-        ready_text='"native_full_duplex":true',
-        env=settings.cache_env(),
-    ) as server:
+    """The system under test, after its forced-alignment worker when it has
+    one; the worker runs on the last of the server's GPUs, beside the speech
+    models."""
+    gpus = model_server_gpus(settings)
+    with ExitStack() as stack:
+        if settings.engine.needs_aligner:
+            stack.enter_context(
+                running_server(
+                    "aligner",
+                    aligner_command(settings),
+                    gpus.split(",")[-1],
+                    ALIGNER_PORT,
+                    log_file.with_name(f"aligner-{log_file.name}"),
+                    health_path="/health",
+                    ready_text="ready",
+                    env={**settings.cache_env(), "PYTHONPATH": str(REPO_ROOT)},
+                )
+            )
+        else:
+            pass
+        server = stack.enter_context(
+            running_server(
+                "model server",
+                model_server_command(settings),
+                gpus,
+                settings.server_port,
+                log_file,
+                health_path="/v1/realtime/capabilities",
+                ready_text=settings.engine.ready_text,
+                env=settings.cache_env(),
+            )
+        )
         yield server
 
 
@@ -228,7 +295,7 @@ def serve_in_foreground(command: list[str], gpu: str) -> None:
 
 
 def serve_model(settings: Settings) -> None:
-    serve_in_foreground(model_server_command(settings), settings.gpu)
+    serve_in_foreground(model_server_command(settings), model_server_gpus(settings))
 
 
 def serve_judge(settings: Settings) -> None:
