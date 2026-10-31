@@ -36,7 +36,10 @@ if current_platform.is_cuda():
         fused_bias_snake_beta,
     )
     from sglang_omni.kernels.codec_state import history_exchange, overlap_exchange
-    from sglang_omni.kernels.single_output_conv import clamped_single_output_conv
+    from sglang_omni.kernels.single_output_conv import (
+        clamped_single_output_conv,
+        clamped_single_output_conv_from_weight,
+    )
 else:
     pass
 
@@ -331,6 +334,12 @@ def bias_snake_beta_sum_tensors(
     )
 
 
+def single_output_conv_fake(
+    padded: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor, length: int
+) -> torch.Tensor:
+    return padded.new_empty(padded.shape[0], 1, length)
+
+
 if current_platform.is_cuda():
     # note (ratish): as opaque ops, a trace runs no Triton front end on these kernels, and
     # Inductor writes the views they fill in place instead of cloning and copying each back.
@@ -353,6 +362,14 @@ if current_platform.is_cuda():
         bias_snake_beta_sum_tensors,
         op_name="qwen3_tts_codec_bias_snake_beta_sum",
         mutates_args=["out", "sum_out"],
+    )
+    # note (ratish): a traced Triton launch guards each integer argument's divisibility by 16,
+    # which the padded stride's symbolic width would split into programs.
+    compiled_single_output_conv = register_custom_op(
+        clamped_single_output_conv_from_weight,
+        op_name="qwen3_tts_codec_single_output_conv",
+        mutates_args=[],
+        fake_impl=single_output_conv_fake,
     )
 else:
     pass
@@ -1737,7 +1754,11 @@ class Qwen3TTSIncrementalDecoder:
             state.pad_slot,
         )
         # note (ratish): cuDNN has no tensor-core engine for one output channel.
-        return clamped_single_output_conv(padded, decoder.decoder[-1].conv, length)
+        conv = decoder.decoder[-1].conv
+        if torch.compiler.is_dynamo_compiling():
+            return compiled_single_output_conv(padded, conv.weight, conv.bias, length)
+        else:
+            return clamped_single_output_conv(padded, conv, length)
 
     def slot_upsample(
         self,
