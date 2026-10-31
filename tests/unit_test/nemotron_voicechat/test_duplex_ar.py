@@ -22,6 +22,9 @@ from sglang_omni.models.nemotron_voicechat.duplex_stages import (
     ThinkerBuilder,
 )
 from sglang_omni.models.nemotron_voicechat.fusion import AddFusion
+from sglang_omni.models.nemotron_voicechat.request_builders import (
+    NemotronVoiceChatRequestData,
+)
 from sglang_omni.models.nemotron_voicechat.talker import LevelScheduleEntry
 from sglang_omni.models.nemotron_voicechat.talker_model_runner import (
     VoiceChatTalkerModelRunner,
@@ -53,8 +56,10 @@ def thinker_adapter() -> ThinkerAdapter:
     tokenizer = Mock(spec=PreTrainedTokenizerBase, all_special_ids=[0])
     tokenizer.convert_tokens_to_ids.return_value = 0
     tokenizer.decode.side_effect = lambda token_ids: "x" * len(token_ids)
+    runner = object.__new__(DuplexThinkerRunner)
+    runner.model = model
     return ThinkerAdapter(
-        Mock(spec=DuplexThinkerRunner, model=model),
+        runner,
         prompt_token_ids=[1, 2],
         pad_token_id=0,
         tokenizer=tokenizer,
@@ -76,7 +81,7 @@ def test_runner_forwards_only_uncached_fusion_inputs(
         StagePayload("first", OmniRequest(None), {"acoustic": torch.ones(1, 4)}),
     )
     first_request.output_ids = [3]
-    first_request.extra_model_outputs = {"function_ids": [4]}
+    first_request.function_ids = [4]
     thinker_adapter.result(session_identity, first_request)
     next_request = thinker_adapter.build(
         session_identity,
@@ -124,7 +129,7 @@ def test_thinker_continuation_reuses_pending_token_position(
     )
     assert first_request.input_ids.tolist() == [1, 2, 0]
     first_request.output_ids = [3]
-    first_request.extra_model_outputs = {"function_ids": [4]}
+    first_request.function_ids = [4]
     first_output = thinker_adapter.result(session_identity, first_request)
     assert first_output.data["text"] == "x"
     assert first_output.data["text_token"] == 3
@@ -153,6 +158,37 @@ def test_duplex_ar_stages_disable_radix_cache_for_fusion_rows() -> None:
     assert talker.generation_defaults(dtype="bfloat16")["disable_radix_cache"]
 
 
+def test_thinker_unit_runs_through_runner_output_hook(
+    thinker_adapter: ThinkerAdapter,
+) -> None:
+    session_identity = SessionIdentity("runner-output")
+    thinker_adapter.open(session_identity, OmniRequest(None))
+    request_data = thinker_adapter.build(
+        session_identity,
+        TimedChunk("audio", 0, 80, 0, bytes(2560), "pcm16"),
+        StagePayload("unit", OmniRequest(None), {"acoustic": torch.ones(1, 4)}),
+    )
+    assert isinstance(request_data, NemotronVoiceChatRequestData)
+
+    thinker_adapter.runner.model.function_ids = torch.tensor([4])
+    generation_result = Mock(
+        logits_output=Mock(next_token_logits=torch.tensor([[0.0, 0.0, 0.0, 1.0]]))
+    )
+    thinker_adapter.runner.post_prefill(
+        generation_result,
+        None,
+        Mock(),
+        [SchedulerRequest("unit", data=request_data)],
+    )
+    assert request_data.function_ids == [4]
+    assert request_data.pending_stream_tokens == [3]
+
+    request_data.output_ids = [3]
+    output = thinker_adapter.result(session_identity, request_data)
+    assert output.data["text_token"] == 3
+    assert output.data["function_token"] == 4
+
+
 def test_context_limit_rejects_unit_without_corrupting_reopened_session(
     thinker_adapter: ThinkerAdapter,
 ) -> None:
@@ -168,7 +204,7 @@ def test_context_limit_rejects_unit_without_corrupting_reopened_session(
             ),
         )
         request.output_ids = [3]
-        request.extra_model_outputs = {"function_ids": [4]}
+        request.function_ids = [4]
         thinker_adapter.result(session_identity, request)
     for attempt in range(2):
         with pytest.raises(ContextExhaustedError, match="^context_exhausted:"):
@@ -211,7 +247,7 @@ def test_thinker_sessions_keep_text_history_independent(
             StagePayload("unit", OmniRequest(None), {"acoustic": torch.ones(1, 4)}),
         )
         request.output_ids = token_ids[-1:]
-        request.extra_model_outputs = {"function_ids": [4]}
+        request.function_ids = [4]
         texts.append(thinker_adapter.result(session_identity, request).data["text"])
         thinker_adapter.tokenizer.decode.assert_called_with(token_ids)
     assert texts == ["x", "x", "x"]
@@ -223,7 +259,7 @@ def test_thinker_sessions_keep_text_history_independent(
     )
     assert request.input_ids.numel() == 0
     request.output_ids = [6]
-    request.extra_model_outputs = {"function_ids": [4]}
+    request.function_ids = [4]
     assert thinker_adapter.result(second_session, request).data["text"] == "x"
     thinker_adapter.tokenizer.decode.assert_called_with([5, 6])
 
@@ -243,7 +279,7 @@ def test_thinker_withholds_incomplete_unicode_and_special_tokens(
             StagePayload("unit", OmniRequest(None), {"acoustic": torch.ones(1, 4)}),
         )
         request.output_ids = [token_id]
-        request.extra_model_outputs = {"function_ids": [4]}
+        request.function_ids = [4]
         deltas.append(thinker_adapter.result(session_identity, request).data["text"])
     assert deltas == ["", "", "你", "好"]
 
@@ -412,7 +448,7 @@ def test_thinker_routes_tool_call_out_and_forces_response_in(
             StagePayload("frame", OmniRequest(None), {"acoustic": torch.ones(1, 4)}),
         )
         request.output_ids = [0]
-        request.extra_model_outputs = {"function_ids": [function_token_id]}
+        request.function_ids = [function_token_id]
         return thinker_adapter.result(session_identity, request)
 
     # note (Junnan Li): The pad id inside a call span is not part of the call text.
