@@ -21,7 +21,7 @@ In this sense, two kinds of labels exist and they combine: a stage label decides
 | Omni CI: MPS | H100 | Two Higgs-TTS or MOSS-TTS workers sharing one H100 through CUDA MPS, with the TTS quality assertions | `run-mps-ci` or `run-all-ci` |
 | Omni CI: Omni | H100 | Qwen3-Omni or MiniCPM-o 4.5: thinker length limits, SeedTTS voice cloning, accuracy and speed on MMMU, MMSU, Video-MME and Video-AMME with text and spoken answers, a tensor parallel thinker, and Qwen3-Omni process replicas | `run-omni-ci` or `run-all-ci` |
 | CPU CI | Intel Xeon (`intel-omni-spr`) | Job `intel-cpu-ci (unit_test/cpu)`: `pytest tests/unit_test/cpu/` | `run-intel-cpu-ci` or `run-all-ci` |
-| XPU CI | Intel GPU (`intel-omni-bmg`) | Intel GPU device layer tests | `run-intel-xpu-ci` or `run-all-ci` |
+| XPU CI | Intel GPU (`intel-omni-bmg`) | Intel GPU device layer tests, AuK unit tests, and AuK and AuK-Flash speech generation | `run-intel-xpu-ci` or `run-all-ci` |
 | Voxt Mac CI | Apple Silicon | MLX native runtime and Voxt app tests | `run-mac-ci` or `run-all-ci` |
 
 The Omni CI stages are the core of the project's CI: they serve the main ASR, TTS and omni models end to end on H100 and gate their accuracy and speed.
@@ -144,7 +144,7 @@ The stage label is `run-intel-cpu-ci`. `run-unit-test-ci-only` does not select t
 
 ### XPU CI
 
-XPU CI pulls or builds the Intel GPU image from `docker/xpu.Dockerfile` and runs the device layer tests in `tests/unit_test/xpu/test_device_layer.py` and the dots.tts flow head and tail tests. Its tests run when the pull request touches `sglang_omni/`, `tests/unit_test/xpu/`, `tests/unit_test/dots_tts/`, `pyproject_xpu.toml`, `scripts/xpu/`, `docker/xpu.Dockerfile` or the workflow itself.
+XPU CI pulls or builds the Intel GPU image from `docker/xpu.Dockerfile` and runs the device layer tests in `tests/unit_test/xpu/test_device_layer.py`, the dots.tts flow head and tail tests and the AuK unit tests in `tests/unit_test/auk/`. It then serves AuK and AuK-Flash on the Intel GPU and checks instruction and voice-cloning speech and a rejected request through `/v1/audio/speech` (`tests/test_model/test_auk_xpu_ci.py`). That step needs the runner to set `XPU_CI_MODEL_DIR` to a directory holding `AuK`, `AuK-Flash` and `Qwen2.5-Omni-3B`; without it the step is skipped with a warning annotation. Its tests run when the pull request touches `sglang_omni/`, `tests/unit_test/xpu/`, `tests/unit_test/dots_tts/`, `tests/unit_test/auk/`, `tests/test_model/test_auk_xpu_ci.py`, `pyproject_xpu.toml`, `scripts/xpu/`, `docker/xpu.Dockerfile` or the workflow itself.
 
 The stage label is `run-intel-xpu-ci`.
 

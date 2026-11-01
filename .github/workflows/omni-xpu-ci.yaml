@@ -46,6 +46,10 @@ name: XPU CI
 #     user in the render/video groups;
 #   * (optional) $XPU_CI_MASK in the runner process's env-file set to the
 #     L0 card pair that runner should claim (e.g. "0,1"); unset -> "6,7";
+#   * (optional) $XPU_CI_MODEL_DIR in the same env-file, a directory holding
+#     the AuK, AuK-Flash and Qwen2.5-Omni-3B checkpoints under those names;
+#     it is mounted read-only at /models, and unset -> the AuK model tests
+#     are skipped with a warning;
 #   * intel/sglang-omni-xpu-dev:img-<fp> published on Docker Hub for the
 #     current main's <fp> (or the pull path falls back to a local build --
 #     see omni-xpu-docker-release.yaml).
@@ -83,6 +87,8 @@ jobs:
               - 'sglang_omni/**'
               - 'tests/unit_test/xpu/**'
               - 'tests/unit_test/dots_tts/**'
+              - 'tests/unit_test/auk/**'
+              - 'tests/test_model/test_auk_xpu_ci.py'
               - 'pyproject_xpu.toml'
               - 'scripts/xpu/**'
               - 'docker/xpu.Dockerfile'
@@ -237,6 +243,10 @@ jobs:
         run: |
           set -euxo pipefail
           docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true
+          model_mount=()
+          if [[ -n "${XPU_CI_MODEL_DIR:-}" ]]; then
+            model_mount=(-v "${XPU_CI_MODEL_DIR}:/models:ro")
+          fi
           docker run -dt \
             --name "${CONTAINER_NAME}" \
             --device /dev/dri \
@@ -244,6 +254,7 @@ jobs:
             --group-add render \
             --shm-size 32g \
             -v "${GITHUB_WORKSPACE}:/workspace/sglang-omni-pr" \
+            "${model_mount[@]}" \
             -e ZE_AFFINITY_MASK="${ZE_AFFINITY_MASK}" \
             "${IMAGE_TAG}" \
             sleep infinity
@@ -276,7 +287,24 @@ jobs:
           docker exec -w /workspace/sglang-omni-pr "${CONTAINER_NAME}" \
             pytest tests/unit_test/xpu/test_device_layer.py \
               tests/unit_test/dots_tts/test_flow_head.py \
-              tests/unit_test/dots_tts/test_tail.py -v -x
+              tests/unit_test/dots_tts/test_tail.py \
+              tests/unit_test/auk -v -x
+
+      - name: Run AuK and AuK-Flash on XPU
+        timeout-minutes: 45
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [[ -z "${XPU_CI_MODEL_DIR:-}" ]]; then
+            echo "::warning title=AuK XPU model tests skipped::The runner sets no XPU_CI_MODEL_DIR holding the AuK, AuK-Flash and Qwen2.5-Omni-3B checkpoints."
+            exit 0
+          fi
+          docker exec -w /workspace/sglang-omni-pr \
+            -e AUK_CHECKPOINT=/models/AuK \
+            -e AUK_FLASH_CHECKPOINT=/models/AuK-Flash \
+            -e AUK_TEXT_ENCODER=/models/Qwen2.5-Omni-3B \
+            "${CONTAINER_NAME}" \
+            pytest tests/test_model/test_auk_xpu_ci.py -v -s -rs
 
       - name: Cleanup container and image
         if: always()
