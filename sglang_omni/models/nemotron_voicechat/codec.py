@@ -60,8 +60,10 @@ class ResidualVectorQuantizer(nn.Module):
             for _ in range(num_quantizers)
         )
 
-    def forward(self, codes_TQ):
-        levels = [codebook[codes_TQ[:, q]] for q, codebook in enumerate(self.mus_list)]
+    def forward(self, codes_BTQ: torch.Tensor) -> torch.Tensor:
+        levels = [
+            codebook[codes_BTQ[..., q]] for q, codebook in enumerate(self.mus_list)
+        ]
         return torch.stack(levels, dim=0).sum(0)
 
 
@@ -95,8 +97,8 @@ class Latent2Wav(nn.Module):
         layers.append(nn.Conv1d(in_channels, self.n_fft + 2, kernel_size=1, bias=False))
         self.layers = nn.ModuleList(layers)
 
-    def forward(self, latent_TD):
-        hidden_BCT = rearrange(latent_TD, "t d -> 1 d t")
+    def forward(self, latent_BTD: torch.Tensor) -> torch.Tensor:
+        hidden_BCT = rearrange(latent_BTD, "b t d -> b d t")
         for layer in self.layers:
             hidden_BCT = layer(hidden_BCT)
         return self.spectrogram_to_wave(hidden_BCT.float())
@@ -156,11 +158,13 @@ class RVQVAEDecoder(nn.Module):
             persistent=False,
         )
 
-    def forward(self, codes_TQ):
-        codes_TQ = torch.where(
-            torch.isin(codes_TQ, self.control_codes),
-            self.silence_codes.to(codes_TQ.device).expand_as(codes_TQ),
-            codes_TQ,
+    def forward(self, codes_TQ: torch.Tensor) -> torch.Tensor:
+        return self.decode_batch(codes_TQ[None])[0]
+
+    def decode_batch(self, codes_BTQ: torch.Tensor) -> torch.Tensor:
+        codes_BTQ = torch.where(
+            torch.isin(codes_BTQ, self.control_codes),
+            self.silence_codes.to(codes_BTQ.device).expand_as(codes_BTQ),
+            codes_BTQ,
         )
-        wave_BS = self.decoder(self.prvq(codes_TQ))
-        return rearrange(wave_BS, "1 s -> s")
+        return self.decoder(self.prvq(codes_BTQ))
