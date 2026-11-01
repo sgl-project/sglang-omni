@@ -98,8 +98,30 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
             # note (Zhang Yiyang): Keep the measured buckets to bound prefill capture time and memory.
             # 160/192/320 cover the common short/medium prompt lengths (a
             # 157-token prompt otherwise replays the 256 bucket, wasting ~40%
-            # of the prefill replay on padding).
-            "cuda_graph_bs_prefill": [64, 128, 160, 192, 256, 320, 512],
+            # of the prefill replay on padding). 512..4096 cover the
+            # scheduler's coalesced multi-request prefill batches (~157 tokens
+            # per request, observed bs up to 17): anything above the ladder top
+            # fell back to the whole eager prefill body (~470 kernel launches
+            # per batch) instead of a replay.
+            "cuda_graph_bs_prefill": [
+                64,
+                128,
+                160,
+                192,
+                256,
+                320,
+                512,
+                768,
+                1024,
+                1536,
+                2048,
+                3072,
+                4096,
+            ],
+            # Full-backend request slots: the auto-derived default
+            # (chunked_prefill_size // 512 = 16) rejected every coalesced
+            # prefill above 16 requests.
+            "cuda_graph_config": {"prefill": {"full_prefill_max_req": 32}},
             "disable_overlap_schedule": True,
             # note: the slot-pool decode state is per (rid -> row) and a radix
             # prefix hit replays prompt KV without the pool's prepare/reset
