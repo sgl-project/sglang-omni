@@ -34,6 +34,7 @@ from sglang_omni.preprocessing.resource_connector import (
     get_global_resource_connector,
 )
 from sglang_omni.preprocessing.video import (
+    check_caller_video_budget,
     compute_video_cache_key,
     ensure_video_list_async,
 )
@@ -502,6 +503,14 @@ class MingPreprocessor:
         }
 
         # --- Load images, videos and audio concurrently ---
+        if raw_videos:
+            check_caller_video_budget(
+                max_frames=video_kwargs["max_frames"],
+                min_pixels=video_kwargs["min_pixels"],
+                total_pixels=video_kwargs["total_pixels"],
+            )
+        else:
+            pass
         image_coro = ensure_image_list_async(raw_images) if raw_images else None
         video_coro = (
             ensure_video_list_async(
