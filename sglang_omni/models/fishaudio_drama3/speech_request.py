@@ -205,6 +205,12 @@ class Drama3SpeechPreprocessor:
         top_p = given_number(request.params, "top_p", DEFAULT_TOP_P)
         top_k = given_integer(request.params, "top_k", DEFAULT_TOP_K)
         assert top_k is not None
+        # Unset stays None: its default depends on the engine's sampler.
+        epsilon_cutoff = (
+            given_number(request.params, "epsilon_cutoff", 0.0)
+            if "epsilon_cutoff" in request.params
+            else None
+        )
         max_new_tokens = given_integer(request.params, "max_new_tokens", None)
         repetition_penalty = given_number(request.params, "repetition_penalty", 1.0)
         if repetition_penalty != 1.0:
@@ -274,6 +280,7 @@ class Drama3SpeechPreprocessor:
                 temperature=temperature,
                 top_k=top_k,
                 top_p=top_p,
+                epsilon_cutoff=epsilon_cutoff,
             ),
         )
 

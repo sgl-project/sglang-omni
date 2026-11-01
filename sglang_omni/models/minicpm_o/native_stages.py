@@ -68,8 +68,6 @@ logger = logging.getLogger(__name__)
 
 # note (Junnan Li): A session's first unit and every later unit differ in mel window and encoder history, so warm-up runs one of each.
 WARM_UP_UNITS = 2
-# note (Junnan Li): One vocoder forward with the chunk graphs costs about this much before its width adds to it.
-FORWARD_FLOOR_MS = 45
 # note (0xtoward): these KV formats store per-block scales, so their bytes per token are not one element size.
 BLOCK_QUANTIZED_KV_CACHE_DTYPES = ("nvfp4", "fp4_mx_block16", "mxfp8")
 
@@ -267,24 +265,30 @@ class PerceptionHooks(BatchedSessionHooks):
 class SpeechState:
     session_id: str
     clock_ms: float = 0
+    turn: int = 0
 
 
 def vocoder_runs_unit(payload: StagePayload, chunk: TimedChunk) -> bool:
-    """A listening unit carries no codec tokens; only a turn or input end flushes the vocoder."""
+    """A listening unit carries no codec tokens unless it speaks a turn the model ended; only a turn or input end flushes the vocoder."""
     talker_result = payload.data
     return bool(
         talker_result["end_of_turn"]
         or chunk.eos
+        or talker_result["codec_tokens"]
         or (not talker_result["is_listen"] and talker_result["talker_conditions"])
     )
 
 
 class SpeechHooks(BatchedSessionHooks):
-    # note (Junnan Li): Units that wait for another session's unit wait at most half the forward that unit would otherwise run alone.
-    gather_window_ms = FORWARD_FLOOR_MS / 2
-
-    def __init__(self, runtime: MiniCPMOVocoderRuntime, reference_audio: bytes) -> None:
+    def __init__(
+        self,
+        runtime: MiniCPMOVocoderRuntime,
+        reference_audio: bytes,
+        *,
+        gather_window_ms: float,
+    ) -> None:
         self.runtime, self.reference_audio = runtime, reference_audio
+        self.gather_window_ms = gather_window_ms
         self.states: dict[SessionIdentity, SpeechState] = {}
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
@@ -302,7 +306,80 @@ class SpeechHooks(BatchedSessionHooks):
     def gathers_peers(self, payload: StagePayload, chunk: TimedChunk) -> bool:
         return vocoder_runs_unit(payload, chunk)
 
+    def emit_voice(
+        self,
+        append: SessionAppend,
+        waveform: np.ndarray | None,
+        *,
+        text: str,
+        end_of_turn: bool,
+        is_speech_cut: bool,
+        eos: bool,
+    ) -> None:
+        chunk, context = append.chunk, append.context
+        state = self.states[context.session_identity]
+        talker_result = append.payload.data
+        pcm = b""
+        duration_ms = 0
+        if waveform is not None:
+            samples = np.asarray(waveform, dtype=np.float32).reshape(-1)
+            pcm = np.clip(samples * 32768, -32768, 32767).astype("<i2").tobytes()
+            duration_ms = len(samples) * 1000 / OUTPUT_SAMPLE_RATE
+        else:
+            pass
+        context.emit(
+            TimedChunk(
+                "voice",
+                state.clock_ms,
+                duration_ms,
+                chunk.seq,
+                dict(
+                    text=text,
+                    pcm=pcm,
+                    end_of_turn=end_of_turn,
+                    is_listen=(
+                        None
+                        if chunk.eos and chunk.duration_ms == 0
+                        else talker_result["is_listen"]
+                    ),
+                    model_end_of_turn=end_of_turn,
+                    is_speech_cut=is_speech_cut,
+                ),
+                eos=eos,
+                turn=state.turn,
+            )
+        )
+        state.clock_ms += duration_ms
+        if end_of_turn:
+            state.turn += 1
+        else:
+            pass
+
     def append_batch(self, appends: list[SessionAppend]) -> list[StagePayload]:
+        for append in appends:
+            if append.payload.data["ends_previous_turn"]:
+                ((_, waveform),) = self.runtime.synthesize_batch(
+                    [
+                        SynthesisRequest(
+                            session_id=self.states[
+                                append.context.session_identity
+                            ].session_id,
+                            codec_token_ids=[],
+                            is_turn_start=False,
+                            end_of_turn=True,
+                        )
+                    ]
+                )
+                self.emit_voice(
+                    append,
+                    waveform,
+                    text="",
+                    end_of_turn=True,
+                    is_speech_cut=True,
+                    eos=False,
+                )
+            else:
+                pass
         is_turn_end = [
             append.payload.data["end_of_turn"] or append.chunk.eos for append in appends
         ]
@@ -313,43 +390,16 @@ class SpeechHooks(BatchedSessionHooks):
         ]
 
         def emit(index: int, waveform: np.ndarray | None) -> None:
-            chunk, payload, context = (
-                appends[index].chunk,
-                appends[index].payload,
-                appends[index].context,
+            talker_result = appends[index].payload.data
+            self.emit_voice(
+                appends[index],
+                waveform,
+                text=talker_result["text"],
+                end_of_turn=is_turn_end[index],
+                is_speech_cut=talker_result["is_speech_cut"],
+                eos=appends[index].chunk.eos,
             )
-            state = self.states[context.session_identity]
-            talker_result = payload.data
-            pcm = b""
-            duration_ms = 0
-            if waveform is not None:
-                samples = np.asarray(waveform, dtype=np.float32).reshape(-1)
-                pcm = np.clip(samples * 32768, -32768, 32767).astype("<i2").tobytes()
-                duration_ms = len(samples) * 1000 / OUTPUT_SAMPLE_RATE
-            else:
-                pass
-            context.emit(
-                TimedChunk(
-                    "voice",
-                    state.clock_ms,
-                    duration_ms,
-                    chunk.seq,
-                    dict(
-                        text=talker_result["text"],
-                        pcm=pcm,
-                        end_of_turn=is_turn_end[index],
-                        is_listen=(
-                            None
-                            if chunk.eos and chunk.duration_ms == 0
-                            else talker_result["is_listen"]
-                        ),
-                        model_end_of_turn=talker_result["end_of_turn"],
-                    ),
-                    eos=chunk.eos,
-                )
-            )
-            state.clock_ms += duration_ms
-            payload.data = None
+            appends[index].payload.data = None
 
         speaking = set(speaking_indices)
         for index in range(len(appends)):
@@ -389,6 +439,7 @@ def create_perception_scheduler(
     dtype: str = "bfloat16",
     reference_audio: str | None = None,
     max_open_sessions: int = DEFAULT_MAX_SESSIONS,
+    batch_sessions: bool,
 ) -> SessionScheduler:
     device = str(resolve_concrete_device(device, gpu_id))
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
@@ -414,6 +465,7 @@ def create_perception_scheduler(
     return SessionScheduler(
         hooks,
         max_open_sessions=max_open_sessions,
+        batch_sessions=batch_sessions,
     )
 
 
@@ -506,11 +558,14 @@ def create_speech_scheduler(
     gpu_id: int | None = None,
     reference_audio: str | None = None,
     max_open_sessions: int = DEFAULT_MAX_SESSIONS,
+    batch_sessions: bool,
     max_state_bytes_per_session: int = DEFAULT_SPEECH_STATE_BYTES_PER_SESSION,
     dtype: Literal["float32", "float16", "bfloat16"] = DEFAULT_SPEECH_SETTINGS.dtype,
     enable_dit_torch_compile: bool = DEFAULT_SPEECH_SETTINGS.enable_dit_torch_compile,
     enable_hift_torch_compile: bool = DEFAULT_SPEECH_SETTINGS.enable_hift_torch_compile,
     n_timesteps: int = DEFAULT_SPEECH_SETTINGS.n_timesteps,
+    enable_chunk_cuda_graph: bool = DEFAULT_SPEECH_SETTINGS.enable_chunk_cuda_graph,
+    gather_window_ms: float = DEFAULT_SPEECH_SETTINGS.gather_window_ms,
 ) -> SessionScheduler:
     device = str(resolve_concrete_device(device, gpu_id))
     # note (Junnan Li): Sessions stream one reference each, so the batched-offline options stay off.
@@ -538,9 +593,10 @@ def create_speech_scheduler(
     )
     reference_audio_bytes = Path(codec.default_prompt_wav).read_bytes()
     # note (Junnan Li): Code2Wav warms only the offline flow, so the streaming chunk graphs and compiled forms are built here.
-    runtime.warm_up(reference_audio_bytes)
+    runtime.warm_up(reference_audio_bytes, capture_chunk_graphs=enable_chunk_cuda_graph)
     return SessionScheduler(
-        SpeechHooks(runtime, reference_audio_bytes),
+        SpeechHooks(runtime, reference_audio_bytes, gather_window_ms=gather_window_ms),
         max_open_sessions=max_open_sessions,
         max_state_bytes_per_session=max_state_bytes_per_session,
+        batch_sessions=batch_sessions,
     )

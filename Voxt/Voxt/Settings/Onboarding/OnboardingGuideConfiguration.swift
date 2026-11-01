@@ -88,7 +88,9 @@ extension OnboardingGuideView {
 
     func isSpeechModelReady(_ selection: FeatureModelSelectionID) -> Bool {
         switch selection.asrSelection {
-        case .mlx(let repo): return mlxModelManager.isModelDownloaded(repo: repo)
+        case .mlx(let repo):
+            return OmniASRBackend.unavailabilityReason(for: repo) == nil
+                && mlxModelManager.isModelDownloaded(repo: repo)
         case .remote(let provider): return isRemoteASRConfigured(provider)
         case .dictation: return isPermissionGranted(.speechRecognition)
         case .none: return false

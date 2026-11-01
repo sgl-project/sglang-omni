@@ -225,6 +225,7 @@ struct ModelCatalogRow: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.tail)
+                            .help(trimmedStatusText)
                     }
 
                     Spacer(minLength: 0)
@@ -596,24 +597,15 @@ private struct ModelRowTagStrip: View {
     let tags: [String]
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 6) {
-                ForEach(tags, id: \.self) { tag in
-                    tagChip(tag)
-                }
+        HStack(spacing: 6) {
+            ForEach(Array(tags.prefix(5)), id: \.self) { tag in
+                tagChip(tag)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            HStack(spacing: 6) {
-                ForEach(Array(tags.prefix(5)), id: \.self) { tag in
-                    tagChip(tag)
-                }
-                if tags.count > 5 {
-                    tagChip("+\(tags.count - 5)")
-                }
+            if tags.count > 5 {
+                tagChip("+\(tags.count - 5)")
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func tagChip(_ text: String) -> some View {

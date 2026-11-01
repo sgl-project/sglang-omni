@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import TYPE_CHECKING, Callable
 
 from sglang.srt.environ import envs
@@ -310,9 +311,32 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         )
 
     def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
+        """Reject incompatible runtime settings before allocating engine resources."""
         from sglang.srt.arg_groups.model_override_base import resolved_view
 
         cfg = resolved_view(server_args)
+        # note (wangyao-i): NPU pre-LM graphs need independent Host queues so a blocked stream does not stall submission on another stream. See docs/get_started/installation_npu.md for further details.
+        if (
+            current_platform.is_npu()
+            and self.enable_pre_lm_encoder
+            and (
+                self.enable_encoder_cuda_graph
+                or cfg.cuda_graph_config.decode.backend != CudaGraphBackend.DISABLED
+                or cfg.cuda_graph_config.prefill.backend != CudaGraphBackend.DISABLED
+            )
+            and (
+                os.environ.get("PER_STREAM_QUEUE") != "1"
+                or os.environ.get("TASK_QUEUE_ENABLE", "1") != "1"
+                or os.environ.get("ASCEND_LAUNCH_BLOCKING") == "1"
+            )
+        ):
+            raise ValueError(
+                "Qwen3-ASR NPU pre-LM graphs require PER_STREAM_QUEUE=1, "
+                "TASK_QUEUE_ENABLE unset or 1, and ASCEND_LAUNCH_BLOCKING unset or 0 "
+                "before starting the server"
+            )
+        else:
+            pass
         if self.uses_torch_mps() and cfg.max_running_requests != 1:
             raise ValueError(
                 "Qwen3-ASR Torch MPS currently requires max_running_requests=1"

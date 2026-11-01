@@ -12,8 +12,8 @@ from sglang_omni.serve.realtime.negotiation import SessionNegotiation
 from sglang_omni.serve.realtime.reference_audio import MAX_REFERENCE_AUDIO_BYTES
 from sglang_omni.serve.realtime.schema import JsonValue
 from sglang_omni.serve.realtime.types import Capabilities, ProtocolError, RuntimeLimits
+from tests.unit_test.fixtures.realtime_fakes import ScriptedAdapter
 from tests.unit_test.serve.test_realtime_duplex_session import (
-    ScriptedAdapter,
     build_test_client,
     send_event,
 )

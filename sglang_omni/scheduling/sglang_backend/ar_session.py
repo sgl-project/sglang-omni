@@ -41,6 +41,7 @@ SESSION_STRING_LENGTH_LIMIT_CHARACTERS = 0
 
 class SessionKV(Protocol):
     kv_allocated_len: int
+    kv_committed_len: int
     holds_kv: bool
 
 
@@ -106,6 +107,8 @@ def is_close_request(payload: StagePayload) -> bool:
 class ARSessionPreparation:
     reset_history: bool = False
     bypass_generation: bool = False
+    # note (ruoyu): The native tokens to keep before the unit is appended, a prefix of the last unit's prompt that ends between units; the tokens past it leave the session's arrays, spans and KV.
+    kept_token_count: int | None = None
 
 
 class ARSessionAdapter:
@@ -323,6 +326,10 @@ class ARSessionBridge:
                 raise RuntimeError("native session reset failed")
             else:
                 pass
+        elif preparation.kept_token_count is not None:
+            self.rewind_streaming_session(
+                unit.session_identity.id, preparation.kept_token_count
+            )
         else:
             pass
         return preparation.bypass_generation
@@ -350,6 +357,36 @@ class ARSessionBridge:
             raise RuntimeError("streaming session close is still pending")
         else:
             pass
+
+    def rewind_streaming_session(self, session_id: str, kept_token_count: int) -> None:
+        """Rewind the native session to its first kept_token_count tokens, a prefix of the last unit's prompt that ends between units: the last request's generated tokens, the session's committed array lengths, its KV record and the retained spans shrink together, so the next unit extends the kept tokens without a re-prefill."""
+        native_session = self.bridge_scheduler.session_controller.get(session_id)
+        [last_request_node] = native_session.req_nodes.values()
+        last_request = last_request_node.req
+        session = self.sessions[session_id]
+        # note (ruoyu): The shared token array may still hold an aborted append's tokens until the next create_req trims it, so the finished prompt's length is the committed one.
+        committed_token_count = native_session.committed_origin_len
+        if committed_token_count is None or not (
+            0 < kept_token_count <= committed_token_count
+        ):
+            raise ValueError(
+                "a session rewind keeps a prefix of the last unit's prompt"
+            )
+        elif any(
+            span.start < kept_token_count < span.end for span in session.embedding_spans
+        ):
+            raise ValueError("a session rewind lands between units, outside every span")
+        else:
+            # note (ruoyu): The streaming session trims its shared token arrays to the committed lengths on the next append and matches its KV by length alone, so all of them shrink to the kept count together or the next unit reuses rows computed for the dropped tokens.
+            last_request.output_ids = last_request.output_ids[:0]
+            native_session.committed_origin_len = kept_token_count
+            native_session.committed_unpadded_len = kept_token_count
+            native_session.committed_fill_len = kept_token_count
+            record = self.bridge_scheduler.tree_cache.session_records()[session_id]
+            record.kv_committed_len = min(record.kv_committed_len, kept_token_count)
+            session.embedding_spans = [
+                span for span in session.embedding_spans if span.end <= kept_token_count
+            ]
 
     def create_session_request(
         self, payload: StagePayload, request_data: SGLangARRequestData

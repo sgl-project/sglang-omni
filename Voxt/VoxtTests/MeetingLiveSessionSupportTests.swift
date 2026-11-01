@@ -2,7 +2,6 @@
 // Provides Meeting Live Session Support Tests for Voxt test coverage.
 
 import XCTest
-import MLXAudioSTT
 @testable import Voxt
 
 final class MeetingLiveSessionSupportTests: XCTestCase {
@@ -171,9 +170,9 @@ final class MeetingLiveSessionSupportTests: XCTestCase {
     func testStructuredLiveFinalizationMapsReliableSegmentsOntoTimeline() {
         let mapped = MeetingNativeLiveStructuredFinalization.meetingSegments(
             from: [
-                STTTranscriptSegment(text: " Hello ", startTime: 0.2, endTime: 1.1),
-                STTTranscriptSegment(text: "world", startTime: 1.2, endTime: 2.0),
-                STTTranscriptSegment(text: "", startTime: 2.0, endTime: 2.5),
+                ASRTranscriptSegment(text: " Hello ", startSeconds: 0.2, endSeconds: 1.1),
+                ASRTranscriptSegment(text: "world", startSeconds: 1.2, endSeconds: 2.0),
+                ASRTranscriptSegment(text: "", startSeconds: 2.0, endSeconds: 2.5),
             ],
             timingGranularity: .sentence,
             modelFamily: .nemotronASR,
@@ -193,7 +192,7 @@ final class MeetingLiveSessionSupportTests: XCTestCase {
     func testStructuredLiveFinalizationRejectsUnreliableTiming() {
         let mapped = MeetingNativeLiveStructuredFinalization.meetingSegments(
             from: [
-                STTTranscriptSegment(text: "chunk", startTime: 0.0, endTime: 1.0)
+                ASRTranscriptSegment(text: "chunk", startSeconds: 0.0, endSeconds: 1.0)
             ],
             timingGranularity: .chunk,
             modelFamily: .qwen3ASR,
@@ -204,37 +203,61 @@ final class MeetingLiveSessionSupportTests: XCTestCase {
         XCTAssertTrue(mapped.isEmpty)
     }
 
-    func testStructuredLiveFinalizationMapsMOSSSpeakerIDs() {
+    func testStructuredLiveFinalizationPreservesMOSSTimingSpeakersAndReplacementID() {
+        let inFlightID = UUID()
         let mapped = MeetingNativeLiveStructuredFinalization.meetingSegments(
             from: [
-                STTTranscriptSegment(
-                    text: "[S01] Hello",
-                    startTime: 0.5,
-                    endTime: 1.5,
+                ASRTranscriptSegment(
+                    text: "[S01] [breath]",
+                    startSeconds: 0.1,
+                    endSeconds: 0.3,
                     speakerID: "S01"
-                )
+                ),
+                ASRTranscriptSegment(text: "No speaker", startSeconds: 0.3, endSeconds: 0.4),
+                ASRTranscriptSegment(
+                    text: "[S01] Hello [sniff]",
+                    startSeconds: 0.5,
+                    endSeconds: 1.5,
+                    speakerID: " S01 "
+                ),
+                ASRTranscriptSegment(
+                    text: "[S02] Hi",
+                    startSeconds: 2,
+                    endSeconds: 2,
+                    speakerID: "S02"
+                ),
             ],
             timingGranularity: .sentence,
             modelFamily: .mossTranscribeDiarize,
-            timelineOffsetSeconds: 0,
+            timelineOffsetSeconds: 10,
             speaker: .them,
-            audioSource: .systemAudio
+            audioSource: .systemAudio,
+            replacingSegmentID: inFlightID
         )
 
-        XCTAssertEqual(mapped.count, 1)
+        XCTAssertEqual(mapped.count, 2)
+        XCTAssertEqual(mapped[0].id, inFlightID)
         XCTAssertEqual(mapped[0].text, "Hello")
         XCTAssertEqual(mapped[0].speakerID, "moss:S01")
-        XCTAssertEqual(mapped[0].startSeconds, 0.5, accuracy: 0.0001)
-        XCTAssertEqual(mapped[0].endSeconds ?? -1, 1.5, accuracy: 0.0001)
+        XCTAssertEqual(mapped[0].startSeconds, 10.5, accuracy: 0.0001)
+        XCTAssertEqual(mapped[0].endSeconds ?? -1, 11.5, accuracy: 0.0001)
+        XCTAssertEqual(mapped[0].speaker, .them)
+        XCTAssertEqual(mapped[0].audioSource, .systemAudio)
+        XCTAssertTrue(mapped[0].preventsAdjacentMerge)
+        XCTAssertNotEqual(mapped[1].id, inFlightID)
+        XCTAssertEqual(mapped[1].text, "Hi")
+        XCTAssertEqual(mapped[1].speakerID, "moss:S02")
+        XCTAssertEqual(mapped[1].startSeconds, 12)
+        XCTAssertEqual(mapped[1].endSeconds, 12)
     }
 
     func testStructuredLiveFinalizationReusesInFlightSegmentIDForFirstItem() {
         let inFlightID = UUID()
         let mapped = MeetingNativeLiveStructuredFinalization.meetingSegments(
             from: [
-                STTTranscriptSegment(text: "", startTime: 0.0, endTime: 0.1),
-                STTTranscriptSegment(text: "first", startTime: 12.0, endTime: 13.0),
-                STTTranscriptSegment(text: "second", startTime: 13.2, endTime: 14.0),
+                ASRTranscriptSegment(text: "", startSeconds: 0.0, endSeconds: 0.1),
+                ASRTranscriptSegment(text: "first", startSeconds: 12.0, endSeconds: 13.0),
+                ASRTranscriptSegment(text: "second", startSeconds: 13.2, endSeconds: 14.0),
             ],
             timingGranularity: .sentence,
             modelFamily: .nemotronASR,

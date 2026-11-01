@@ -12,7 +12,7 @@
 #include "mlx/mlx.h"
 #include "nlohmann/json.hpp"
 
-namespace qwen3_asr {
+namespace omni_common {
 
 struct QuantizationConfig {
   int group_size = 0;
@@ -73,4 +73,4 @@ LstmCell LstmStep(const mlx::core::array &gates,
                   const std::optional<LstmCell> &state,
                   const mlx::core::array &recurrent_weight);
 
-} // namespace qwen3_asr
+} // namespace omni_common

@@ -144,7 +144,6 @@ def test_native_capability_requires_actual_true(value: JsonValue) -> None:
     ("key", "value"),
     [
         ("supports_resume", True),
-        ("supports_truncate", True),
         ("supports_server_interrupt", True),
         ("output_modalities", ["text"]),
         ("output_audio_format", {"type": "audio/pcm", "rate": 16000}),
@@ -524,6 +523,7 @@ def test_exhausted_admission_without_a_session_fails() -> None:
         ("cancelled", "stop", "contradicts reason"),
         ("completed", "disconnect", "unsupported response terminal reason"),
         ("cancelled", "client_cancelled", "unsupported response terminal reason"),
+        ("completed", "max_output_tokens", "unsupported response terminal reason"),
     ],
 )
 def test_response_terminal_reason_must_match_client_commands(
@@ -536,6 +536,15 @@ def test_response_terminal_reason_must_match_client_commands(
     result = evaluate_trace(trace)
     assert result["status"] == "fail"
     assert any(violation in item for item in result["violations"])
+
+
+def test_a_reply_cut_by_the_talker_budget_ends_incomplete() -> None:
+    """A MiniCPM-o reply whose turn ended before the talker spoke all its text failed the recording as an unsupported terminal."""
+    trace = trace_fixture()
+    find_event(trace, "response.done")["response"].update(
+        status="incomplete", status_details={"reason": "max_output_tokens"}
+    )
+    assert evaluate_trace(trace)["violations"] == []
 
 
 def test_response_terminal_without_reason_fails() -> None:

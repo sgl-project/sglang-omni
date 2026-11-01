@@ -161,6 +161,29 @@ def test_backlog_appends_of_distinct_sessions_share_one_hook_call():
     assert all(out.type == "result" for out in outputs.values())
 
 
+def test_without_session_batches_each_append_runs_alone_with_the_same_results():
+    def backlog() -> list[IncomingMessage]:
+        return opens("a", "b", "c") + [
+            message("a0", "append", "a", 0),
+            message("b0", "append", "b", 0),
+            message("a1", "append", "a", 1),
+            message("c0", "append", "c", 0),
+        ]
+
+    batched_hooks, alone_hooks = RecordingHooks(), RecordingHooks()
+    batched = run_backlog(SessionScheduler(batched_hooks), backlog())
+    alone_scheduler = SessionScheduler(alone_hooks, batch_sessions=False)
+    alone = run_backlog(alone_scheduler, backlog())
+
+    assert batched_hooks.calls == [["a0", "b0", "c0"], ["a1"]]
+    assert alone_hooks.calls == [["a0"], ["b0"], ["a1"], ["c0"]]
+    assert alone_scheduler.max_open_sessions == session_module.DEFAULT_MAX_OPEN_SESSIONS
+    assert alone_scheduler.max_concurrency == 1
+    assert {rid: (out.type, out.data.data) for rid, out in alone.items()} == {
+        rid: (out.type, out.data.data) for rid, out in batched.items()
+    }
+
+
 def test_batched_appends_emit_one_shared_stage_start_timestamp(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

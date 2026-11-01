@@ -45,6 +45,7 @@ class Qwen3TTSStageFactoryKwargs(TypedDict, total=False):
     followup_cuda_graph: bool
     async_decode: bool
     running_stream_count: int
+    shares_engine_speech_tokenizer: bool
 
 
 class Qwen3TTSPipelineConfig(PipelineConfig):
@@ -138,7 +139,19 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
                     "max_running_requests"
                 ]
             engine_process = stage_process_name(engine_stage)
-            if stage_process_name(self.stage_named(stage_name)) == engine_process:
+            vocoder_stage = self.stage_named(stage_name)
+            vocoder_process = stage_process_name(vocoder_stage)
+            vocoder_settings = resolve_stage_typed_kwargs(vocoder_stage)
+            engine_settings = resolve_stage_typed_kwargs(engine_stage)
+            # note (ratish): a process's stages share one GPU, and the tokenizer loader keeps one copy per checkpoint, device, dtype and attention implementation there; a separate frontend loads its own copy before a vocoder in its process, so only the engine's copy is one the vocoder loads first.
+            kwargs["shares_engine_speech_tokenizer"] = (
+                vocoder_process == engine_process
+                and all(
+                    vocoder_settings.get(name) == engine_settings.get(name)
+                    for name in ("model_path", "device", "dtype", "attn_implementation")
+                )
+            )
+            if vocoder_process == engine_process:
                 # note (Haoling Pu): each replica of a shared process decodes the
                 # streams its own engine runs.
                 kwargs["running_stream_count"] = running_request_count
@@ -206,6 +219,16 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             **resolve_stage_typed_kwargs(engine_stage),
         }
         return load_qwen3_tts_checkpoint_config(engine_factory_kwargs["model_path"])
+
+    def resolve_speaker_embedding_size(self) -> int | None:
+        checkpoint_config = self.load_engine_checkpoint_config()
+        model_type = normalize_qwen3_tts_model_type(
+            checkpoint_config.get("tts_model_type")
+        )
+        if model_type != "base":
+            return None
+        else:
+            return int(checkpoint_config["speaker_encoder_config"]["enc_dim"])
 
     def resolve_custom_voice_config(self) -> CustomVoiceConfig | None:
         checkpoint_config = self.load_engine_checkpoint_config()

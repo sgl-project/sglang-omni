@@ -68,26 +68,6 @@ nonisolated struct HotkeyRuntimeConfiguration {
         HotkeyPreference.cgFlags(from: transcriptionHotkey.modifiers)
     }
 
-    var translationFlags: CGEventFlags {
-        HotkeyPreference.cgFlags(from: translationHotkey.modifiers)
-    }
-
-    var rewriteFlags: CGEventFlags {
-        HotkeyPreference.cgFlags(from: rewriteHotkey.modifiers)
-    }
-
-    var meetingFlags: CGEventFlags {
-        meetingHotkey.map { HotkeyPreference.cgFlags(from: $0.modifiers) } ?? []
-    }
-
-    var customPasteFlags: CGEventFlags {
-        customPasteHotkey.map { HotkeyPreference.cgFlags(from: $0.modifiers) } ?? []
-    }
-
-    var noteFlags: CGEventFlags {
-        HotkeyPreference.cgFlags(from: noteHotkey.modifiers)
-    }
-
     var debugBindingsDescription: String {
         let meetingDescription = meetingHotkey.map {
             HotkeyPreference.displayString(for: $0, distinguishModifierSides: distinguishModifierSides)

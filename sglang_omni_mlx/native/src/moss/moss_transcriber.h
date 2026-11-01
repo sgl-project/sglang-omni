@@ -48,7 +48,7 @@ private:
   std::vector<int> AudioSpanIds(int audio_token_count) const;
 
   MossTranscribeDiarize model_;
-  qwen3_asr::Tokenizer tokenizer_;
+  omni_common::Tokenizer tokenizer_;
   std::vector<int> digit_token_ids_;
   int end_of_text_id_ = 0;
   int im_end_id_ = 0;

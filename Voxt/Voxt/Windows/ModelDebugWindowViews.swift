@@ -56,7 +56,7 @@ struct ASRDebugWindowView: View {
                         )
                 }
                 .buttonStyle(.plain)
-                .disabled(viewModel.isRunning)
+                .disabled(viewModel.isRunning || (!viewModel.isRecording && !viewModel.canRunSelectedModel))
 
                 Button {
                     isAudioSelectorPresented = true
@@ -92,9 +92,16 @@ struct ASRDebugWindowView: View {
                     .frame(width: 92, height: 30)
                 }
                 .buttonStyle(DetailPrimaryButtonStyle())
-                .disabled(viewModel.isRunning || viewModel.isRecording)
+                .disabled(viewModel.isRunning || viewModel.isRecording || !viewModel.canRunSelectedModel)
             }
             .frame(height: 54)
+
+            if let reason = viewModel.selectedModelDisabledReason {
+                Text(reason)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             ASRDebugVADSnapshotView(snapshot: viewModel.vadSnapshot)
 

@@ -10,7 +10,10 @@ from sglang_omni.models.nemotron3_5_asr.config import Nemotron3_5ASRPipelineConf
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import OutputChunk
 from sglang_omni.serve.realtime.adapters import CoordinatorAdapter
-from sglang_omni.serve.realtime.manager import RealtimeDeployment
+from sglang_omni.serve.realtime.manager import (
+    RealtimeDeployment,
+    runtime_limits_for_pipeline,
+)
 from sglang_omni.serve.realtime.output import (
     OutputEvent,
     ResponseFinished,
@@ -87,5 +90,6 @@ def create_realtime_deployment(
     return RealtimeDeployment(
         capabilities=Capabilities(native_unit_ms=native_unit_ms),
         adapter_factory=create_adapter,
+        limits=runtime_limits_for_pipeline(pipeline_config),
         max_connections=64,
     )

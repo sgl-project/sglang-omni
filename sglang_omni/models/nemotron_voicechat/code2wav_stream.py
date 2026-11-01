@@ -18,28 +18,32 @@ class StreamingCodec:
     def __init__(self, decoder, device) -> None:
         self.decoder = decoder
         self.device = device
-        self.codes_rows: list[torch.Tensor] = []
+        self.window_codes_TQ: torch.Tensor = torch.empty(
+            0, decoder.num_quantizers, dtype=torch.long, device=device
+        )
+        self.pushed_frames: int = 0
         self.emitted_samples = 0
 
     @torch.inference_mode()
     def push(self, codes_TQ: torch.Tensor) -> torch.Tensor:
-        for row in codes_TQ.to(self.device):
-            self.codes_rows.append(row)
+        window_codes_TQ = torch.cat((self.window_codes_TQ, codes_TQ.to(self.device)))
+        self.window_codes_TQ = window_codes_TQ[-DECODE_WINDOW_FRAMES:]
+        self.pushed_frames += codes_TQ.shape[0]
         return self.advance(final=False)
 
     @torch.inference_mode()
     def flush(self) -> torch.Tensor:
-        if not self.codes_rows:
+        if not self.pushed_frames:
             return torch.zeros(0)
         else:
             pass
         return self.advance(final=True)
 
     def advance(self, *, final: bool) -> torch.Tensor:
-        frames = len(self.codes_rows)
+        frames = self.pushed_frames
         samples_per_frame = self.decoder.samples_per_frame
-        first = max(0, frames - DECODE_WINDOW_FRAMES)
-        audio = self.decoder(torch.stack(self.codes_rows[first:]))
+        first = frames - self.window_codes_TQ.shape[0]
+        audio = self.decoder(self.window_codes_TQ)
         available = frames * samples_per_frame - (0 if final else TAIL_HOLDBACK_SAMPLES)
         start = self.emitted_samples - first * samples_per_frame
         fresh = audio[start : available - first * samples_per_frame].float().cpu()
@@ -113,7 +117,7 @@ class NemotronCode2WavScheduler(StreamingSimpleScheduler):
         else:
             pass
         messages: list[OutgoingMessage] = []
-        if state.codec.codes_rows:
+        if state.codec.pushed_frames:
             tail = state.codec.flush()
             if tail.numel():
                 state.audio_parts.append(tail)

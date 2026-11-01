@@ -171,13 +171,20 @@ enum ModelSettingsInstallActionResolver {
         target: LocalModelInstallTarget,
         perform: @escaping (LocalModelInstallTarget, LocalModelInstallActionKind) -> Void
     ) -> ModelTableAction {
-        ModelTableAction(
+        let isEnabled: Bool
+        switch (target, descriptor.kind) {
+        case (.mlx(let repo), .use), (.mlx(let repo), .install), (.mlx(let repo), .resume):
+            isEnabled = descriptor.isEnabled && OmniASRBackend.unavailabilityReason(for: repo) == nil
+        default:
+            isEnabled = descriptor.isEnabled
+        }
+        return ModelTableAction(
             title: descriptor.title,
             role: descriptor.isDestructive ? .destructive : nil,
-            isEnabled: descriptor.isEnabled,
+            isEnabled: isEnabled,
             showsProgress: descriptor.showsProgress
         ) {
-            guard descriptor.isEnabled else { return }
+            guard isEnabled else { return }
             guard descriptor.kind != .inactive else { return }
             perform(target, descriptor.kind)
         }

@@ -24,6 +24,11 @@
         "can_rerun_failed_ci": true,
         "reason": "custom override"
     },
+    "rwang5203": {
+        "can_tag_run_ci_label": true,
+        "can_rerun_failed_ci": true,
+        "reason": "custom override"
+    },
     "siju-samuel": {
         "can_tag_run_ci_label": true,
         "can_rerun_failed_ci": true,

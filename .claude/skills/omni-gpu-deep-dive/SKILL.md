@@ -12,7 +12,7 @@ The kernel, overlap, and fuse analysis is not in this repo. It lives in the
 
 - https://github.com/BBuf/AI-Infra-Auto-Driven-SKILLS
 
-Source attribution for `sglang_omni/` and `sglang_omni_router/` is part of that
+Source attribution for `sglang_omni/` is part of that
 skill as of its PR #96, so nothing here patches it. This skill owns three things:
 
 - the backend pointer and its capability check

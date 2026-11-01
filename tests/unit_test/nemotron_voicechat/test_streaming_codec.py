@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Incremental code2wav decoding must reproduce whole-utterance decoding."""
 
+import pytest
 import torch
 
 from sglang_omni.models.nemotron_voicechat.code2wav_stream import (
@@ -21,6 +22,7 @@ class FrameLocalDecoder:
     """
 
     samples_per_frame = SAMPLES_PER_FRAME
+    num_quantizers = NUM_QUANTIZERS
 
     def __init__(self):
         self.calls: list[int] = []
@@ -70,3 +72,12 @@ def test_multi_row_push_and_empty_flush():
     out = codec.push(make_codes(3))
     assert out.numel() == 3 * SAMPLES_PER_FRAME - TAIL_HOLDBACK_SAMPLES
     assert codec.emitted_samples == out.numel()
+
+
+@pytest.mark.parametrize("rows_per_push", [1, DECODE_WINDOW_FRAMES + 1])
+def test_retained_codes_stay_within_the_decode_window(rows_per_push):
+    codec = StreamingCodec(FrameLocalDecoder(), "cpu")
+    codes = make_codes(DECODE_WINDOW_FRAMES * 3)
+    for start in range(0, codes.shape[0], rows_per_push):
+        codec.push(codes[start : start + rows_per_push])
+    assert codec.window_codes_TQ.shape[0] == DECODE_WINDOW_FRAMES

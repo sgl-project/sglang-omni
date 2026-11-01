@@ -26,12 +26,15 @@ from sglang_omni.pipeline.stage_workers import (
     patched_spawn_env,
 )
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
+from sglang_omni.platforms.musa import MUSAOmniPlatform
 from sglang_omni.platforms.rocm import ROCMOmniPlatform
 from sglang_omni.utils.gpu_memory import get_gpu_startup_lock_path
 from tests.unit_test.fixtures import affinity_probe
 from tests.unit_test.fixtures.pipeline_fakes import FakeScheduler, fake_factory_path
 
 cuda_platform = CUDAOmniPlatform()
+musa_platform = MUSAOmniPlatform()
+rocm_platform = ROCMOmniPlatform()
 
 
 @pytest.fixture(autouse=True)
@@ -330,6 +333,57 @@ def test_tp_process_env_requires_gpu_id() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("platform", "native_visibility_variable"),
+    [
+        pytest.param(rocm_platform, "HIP_VISIBLE_DEVICES", id="rocm"),
+        pytest.param(musa_platform, "MUSA_VISIBLE_DEVICES", id="musa"),
+    ],
+)
+@pytest.mark.parametrize(
+    (
+        "native_visible_devices",
+        "cuda_visible_devices",
+        "expected_cuda_visible_devices",
+        "expect_native_visibility",
+    ),
+    [
+        pytest.param("3,5", "7,8", "5", True, id="native-over-cuda"),
+        pytest.param(None, "3,5", "5", False, id="native-absent"),
+        pytest.param("", "3,5", "5", False, id="native-empty"),
+        pytest.param(None, None, "1", False, id="no-process-mask"),
+    ],
+)
+def test_cuda_compatible_stage_process_env_maps_native_or_cuda_visibility(
+    platform: platforms.OmniPlatform,
+    native_visibility_variable: str,
+    native_visible_devices: str | None,
+    cuda_visible_devices: str | None,
+    expected_cuda_visible_devices: str,
+    expect_native_visibility: bool,
+) -> None:
+    source_env = {"MTHREADS_VISIBLE_DEVICES": "6,7"}
+    if native_visible_devices is not None:
+        source_env[native_visibility_variable] = native_visible_devices
+    else:
+        pass
+    if cuda_visible_devices is not None:
+        source_env["CUDA_VISIBLE_DEVICES"] = cuda_visible_devices
+    else:
+        pass
+
+    env = platform.get_stage_process_env(tp_spec(gpu_id=1), source_env)
+
+    assert env["CUDA_VISIBLE_DEVICES"] == expected_cuda_visible_devices
+    assert env["SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS"] == "true"
+    assert env["SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK"] == "false"
+    assert "NCCL_NVLS_ENABLE" not in env
+    if expect_native_visibility:
+        assert env[native_visibility_variable] == expected_cuda_visible_devices
+    else:
+        assert native_visibility_variable not in env
+
+
 def test_xpu_tp_process_env_emits_no_visibility_variable() -> None:
     """XPU TP must keep every card visible: ZE_AFFINITY_MASK isolation hides peers
     and hangs XCCL discovery, unlike CUDA_VISIBLE_DEVICES with NCCL. With nothing
@@ -448,10 +502,21 @@ def test_tp_child_keeps_parent_mapped_visible_device(monkeypatch) -> None:
     assert os.environ["CUDA_VISIBLE_DEVICES"] == "4"
 
 
-def test_rocm_tp_child_keeps_parent_mapped_hip_visible_device(monkeypatch) -> None:
-    """ROCm TP children normalize the single HIP-visible card to local cuda:0."""
-    monkeypatch.setattr(stage_workers, "current_platform", ROCMOmniPlatform())
-    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "5")
+@pytest.mark.parametrize(
+    ("platform", "native_visibility_variable"),
+    [
+        pytest.param(rocm_platform, "HIP_VISIBLE_DEVICES", id="rocm"),
+        pytest.param(musa_platform, "MUSA_VISIBLE_DEVICES", id="musa"),
+    ],
+)
+def test_cuda_compatible_tp_child_keeps_parent_mapped_native_visible_device(
+    monkeypatch: pytest.MonkeyPatch,
+    platform: platforms.OmniPlatform,
+    native_visibility_variable: str,
+) -> None:
+    """A mapped TP child normalizes once to its single local device."""
+    monkeypatch.setattr(stage_workers, "current_platform", platform)
+    monkeypatch.setenv(native_visibility_variable, "5")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "5")
     monkeypatch.setenv("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS", "true")
     spec = StageLaunchConfig(
@@ -471,7 +536,7 @@ def test_rocm_tp_child_keeps_parent_mapped_hip_visible_device(monkeypatch) -> No
     assert spec.placement_gpu_id == 1
     assert spec.factory_arg_defaults["gpu_id"] == 0
     assert spec.comm_config["gpu_id"] == 0
-    assert os.environ["HIP_VISIBLE_DEVICES"] == "5"
+    assert os.environ[native_visibility_variable] == "5"
     assert os.environ["CUDA_VISIBLE_DEVICES"] == "5"
     assert any("CUDA_VISIBLE_DEVICES=5" in message for message in log.messages)
     assert get_gpu_startup_lock_path(spec.gpu_id).name.endswith("_gpu_5_startup.lock")
@@ -519,32 +584,50 @@ def test_spawn_env_combines_stage_defaults_with_tp_visible_device(monkeypatch) -
     assert os.environ["CUDA_VISIBLE_DEVICES"] == "3,4"
 
 
-def test_rocm_spawn_env_maps_rank_through_hip_visible_devices(monkeypatch) -> None:
-    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "3,5")
+@pytest.mark.parametrize(
+    ("platform", "native_visibility_variable"),
+    [
+        pytest.param(rocm_platform, "HIP_VISIBLE_DEVICES", id="rocm"),
+        pytest.param(musa_platform, "MUSA_VISIBLE_DEVICES", id="musa"),
+    ],
+)
+def test_cuda_compatible_spawn_env_maps_rank_through_native_visible_devices(
+    monkeypatch: pytest.MonkeyPatch,
+    platform: platforms.OmniPlatform,
+    native_visibility_variable: str,
+) -> None:
+    monkeypatch.setenv(native_visibility_variable, "3,5")
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
-    monkeypatch.setattr(stage_workers, "current_platform", ROCMOmniPlatform())
+    monkeypatch.setattr(stage_workers, "current_platform", platform)
 
     with patched_spawn_env(worker_spec(tp_spec(gpu_id=1))):
-        assert os.environ["HIP_VISIBLE_DEVICES"] == "5"
+        assert os.environ[native_visibility_variable] == "5"
         assert os.environ["CUDA_VISIBLE_DEVICES"] == "5"
         assert os.environ["SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS"] == "true"
 
-    assert os.environ["HIP_VISIBLE_DEVICES"] == "3,5"
+    assert os.environ[native_visibility_variable] == "3,5"
     assert "CUDA_VISIBLE_DEVICES" not in os.environ
 
 
-@pytest.mark.parametrize("platform", [cuda_platform, ROCMOmniPlatform()])
-def test_native_child_owner_sees_only_its_gpus(monkeypatch, platform) -> None:
+@pytest.mark.parametrize(
+    ("platform", "visibility_variable"),
+    [
+        pytest.param(cuda_platform, "CUDA_VISIBLE_DEVICES", id="cuda"),
+        pytest.param(rocm_platform, "HIP_VISIBLE_DEVICES", id="rocm"),
+        pytest.param(musa_platform, "MUSA_VISIBLE_DEVICES", id="musa"),
+    ],
+)
+def test_native_child_owner_sees_only_its_gpus(
+    monkeypatch: pytest.MonkeyPatch,
+    platform: platforms.OmniPlatform,
+    visibility_variable: str,
+) -> None:
     """A stage that owns native children starts narrowed to the GPUs its
     engine owns and hands that engine local ids in their declared order."""
-    variable = (
-        "HIP_VISIBLE_DEVICES"
-        if isinstance(platform, ROCMOmniPlatform)
-        else "CUDA_VISIBLE_DEVICES"
-    )
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising=False)
-    monkeypatch.setenv(variable, "4,5,6,7")
+    monkeypatch.delenv("MUSA_VISIBLE_DEVICES", raising=False)
+    monkeypatch.setenv(visibility_variable, "4,5,6,7")
     monkeypatch.setattr(stage_workers, "current_platform", platform)
     spec = StageLaunchConfig(
         stage_name="generation",
@@ -557,14 +640,14 @@ def test_native_child_owner_sees_only_its_gpus(monkeypatch, platform) -> None:
 
     with patched_spawn_env(worker_spec(spec)):
         assert os.environ["CUDA_VISIBLE_DEVICES"] == "5,7"
-        assert os.environ[variable] == "5,7"
+        assert os.environ[visibility_variable] == "5,7"
         # The child starts with this environment.
         stage_workers.prepare_accelerator_environment(spec, RecordingLog())
 
     assert (spec.gpu_id, spec.placement_gpu_id) == (0, 1)
     assert spec.factory_kwargs["runtime_gpu_ids"] == [0, 1]
     assert spec.factory_arg_defaults["gpu_id"] == spec.comm_config["gpu_id"] == 0
-    assert os.environ[variable] == "4,5,6,7"
+    assert os.environ[visibility_variable] == "4,5,6,7"
 
 
 class RecordingLog:
@@ -923,7 +1006,7 @@ class Teardown:
         with open(marker, "a") as fh:
             fh.write("teardown,")
 
-def run_process(spec, ready_event, log):
+def run_process(spec, ready_event, log, startup_error_channel=None):
     threading.Thread(target=lambda: (time.sleep(0.2), note("thread,"))).start()
     atexit.register(note, "atexit,")
     sys.stdout.write("unflushed")

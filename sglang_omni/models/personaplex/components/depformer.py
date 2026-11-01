@@ -9,8 +9,6 @@ steps, written in place and re-made every frame.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
 import torch
 from einops import rearrange
 from torch import nn
@@ -22,6 +20,13 @@ from sglang_omni.models.personaplex.architecture import (
     TEXT_CARD,
     DepformerSpec,
 )
+from sglang_omni.models.personaplex.components.depformer_kernels import (
+    SUPPORTED_DTYPES,
+    fused_rms_norm_f32,
+    fused_silu_gate,
+)
+from sglang_omni.models.personaplex.sampling import AudioTokenSampler
+from sglang_omni.platforms import current_platform
 
 
 def rms_norm_f32(x: torch.Tensor, alpha: torch.Tensor, eps: float) -> torch.Tensor:
@@ -32,10 +37,21 @@ def rms_norm_f32(x: torch.Tensor, alpha: torch.Tensor, eps: float) -> torch.Tens
     return (x_f32 * (alpha.float() * torch.rsqrt(variance))).to(x.dtype)
 
 
+def silu_gate(gate_up: torch.Tensor) -> torch.Tensor:
+    """Round SiLU to the projection dtype before multiplying by the up projection."""
+    gate, up = gate_up.chunk(2, dim=-1)
+    return functional.silu(gate) * up
+
+
 class DepformerLayer(nn.Module):
     def __init__(self, spec: DepformerSpec) -> None:
         super().__init__()
         self.spec = spec
+        self.can_fuse_pointwise: bool = (
+            current_platform.is_cuda()
+            and spec.dim == DEPFORMER.dim
+            and spec.ffn_hidden == DEPFORMER.ffn_hidden
+        )
         dim, steps, ffn = spec.dim, spec.steps, spec.ffn_hidden
         self.in_proj_weight = nn.Parameter(torch.empty(steps, 3 * dim, dim))
         self.out_proj_weight = nn.Parameter(torch.empty(steps, dim, dim))
@@ -49,7 +65,14 @@ class DepformerLayer(nn.Module):
     ) -> torch.Tensor:
         """One step; cache_2BHSD holds this frame's keys and values, slot per step."""
         spec = self.spec
-        h = rms_norm_f32(x_BD, self.norm1_alpha, spec.rms_norm_eps)
+        can_fuse_pointwise = (
+            self.can_fuse_pointwise and x_BD.is_cuda and x_BD.dtype in SUPPORTED_DTYPES
+        )
+        normalize_hidden_states = (
+            fused_rms_norm_f32 if can_fuse_pointwise else rms_norm_f32
+        )
+        activate_gate = fused_silu_gate if can_fuse_pointwise else silu_gate
+        h = normalize_hidden_states(x_BD, self.norm1_alpha, spec.rms_norm_eps)
         qkv = functional.linear(h, self.in_proj_weight[step])
         q, k, v = rearrange(qkv, "b (p h d) -> p b h d", p=3, h=spec.num_heads)
         cache_2BHSD[0, :, :, step] = k
@@ -63,11 +86,10 @@ class DepformerLayer(nn.Module):
             rearrange(attn, "b h 1 d -> b (h d)"), self.out_proj_weight[step]
         )
 
-        h = rms_norm_f32(x_BD, self.norm2_alpha, spec.rms_norm_eps)
-        gate = functional.linear(h, self.gate_in_weight[step])
-        gate, up = gate.chunk(2, dim=-1)
+        h = normalize_hidden_states(x_BD, self.norm2_alpha, spec.rms_norm_eps)
+        gate_up = functional.linear(h, self.gate_in_weight[step])
         return x_BD + functional.linear(
-            functional.silu(gate) * up, self.gate_out_weight[step]
+            activate_gate(gate_up), self.gate_out_weight[step]
         )
 
 
@@ -91,14 +113,65 @@ class Depformer(nn.Module):
             nn.Linear(spec.dim, AUDIO_CARD, bias=False) for _ in range(spec.steps)
         )
 
+    def create_key_value_caches(
+        self, hidden_states: torch.Tensor
+    ) -> list[torch.Tensor]:
+        return [
+            hidden_states.new_empty(
+                2,
+                hidden_states.shape[0],
+                self.spec.num_heads,
+                self.spec.steps,
+                self.spec.head_dim,
+            )
+            for _ in self.layers
+        ]
+
+    @torch.inference_mode()
+    def warmup_pointwise(self) -> None:
+        """Compile the inference kernels for all batch sizes before accepting requests."""
+        hidden_states_dtype = self.depformer_in_weight.dtype
+        if (
+            self.depformer_in_weight.is_cuda
+            and hidden_states_dtype in SUPPORTED_DTYPES
+            and any(layer.can_fuse_pointwise for layer in self.layers)
+        ):
+            normalization_weights = {
+                alpha.dtype: alpha
+                for layer in self.layers
+                for alpha in (layer.norm1_alpha, layer.norm2_alpha)
+            }
+            for alpha in normalization_weights.values():
+                for batch_size in (1, 4, 8, 16):
+                    hidden_states = torch.zeros(
+                        batch_size,
+                        self.spec.dim,
+                        device=self.depformer_in_weight.device,
+                        dtype=hidden_states_dtype,
+                    )
+                    fused_rms_norm_f32(hidden_states, alpha, self.spec.rms_norm_eps)
+            fused_silu_gate(
+                torch.zeros(
+                    1,
+                    2 * self.spec.ffn_hidden,
+                    device=self.depformer_in_weight.device,
+                    dtype=hidden_states_dtype,
+                )
+            )
+        else:
+            pass
+
     def generate(
         self,
         text_token_B: torch.Tensor,
         transformer_out_BD: torch.Tensor,
         forced_BK: torch.Tensor,
-        sample: Callable[[torch.Tensor], torch.Tensor],
+        sample: AudioTokenSampler,
+        *,
+        key_value_caches: list[torch.Tensor] | None = None,
+        output_codes: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Spell out one frame of agent codes. Subsequent calls do not overwrite them.
+        """Spell out one frame of agent codes.
 
         Args:
             text_token_B: the frame's sampled text token.
@@ -107,18 +180,15 @@ class Depformer(nn.Module):
                 where the step is free. A forced code still conditions the
                 steps after it, as teacher forcing does in the reference.
             sample: [B, card] float logits → [B] ids.
+            key_value_caches: Preallocated per-layer caches reused during generation.
+            output_codes: Preallocated [B, steps] result overwritten by this call.
         """
         spec = self.spec
-        caches = [
-            transformer_out_BD.new_empty(
-                2,
-                transformer_out_BD.shape[0],
-                spec.num_heads,
-                spec.steps,
-                spec.head_dim,
-            )
-            for _ in self.layers
-        ]
+        caches = (
+            self.create_key_value_caches(transformer_out_BD)
+            if key_value_caches is None
+            else key_value_caches
+        )
         step_inputs_BSD = functional.linear(
             transformer_out_BD, self.depformer_in_weight.flatten(0, 1)
         ).unflatten(-1, (spec.steps, spec.dim))
@@ -137,7 +207,10 @@ class Depformer(nn.Module):
             forced = forced_BK[:, step]
             previous = torch.where(forced >= 0, forced, sampled)
             codes.append(previous)
-        return torch.stack(codes, dim=1)
+        if output_codes is None:
+            return torch.stack(codes, dim=1)
+        else:
+            return torch.stack(codes, dim=1, out=output_codes)
 
     def load_reference_weights(self, weights: dict[str, torch.Tensor]) -> None:
         """Load depformer* / linears.* tensors in the checkpoint's names.
@@ -190,4 +263,4 @@ class Depformer(nn.Module):
         self.load_state_dict(state, strict=True)
 
 
-__all__ = ["Depformer", "DepformerLayer", "rms_norm_f32"]
+__all__ = ["Depformer", "DepformerLayer", "rms_norm_f32", "silu_gate"]

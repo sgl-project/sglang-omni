@@ -390,6 +390,96 @@ final class FeatureSettingsStoreTests: XCTestCase {
         }
     }
 
+    func testRemindersSyncDefaultsToDisabledWithoutDisablingNotes() throws {
+        XCTAssertFalse(RemindersNoteSyncSettings().enabled)
+        try withEphemeralDefaults { defaults in
+            let fresh = FeatureSettingsStore.load(defaults: defaults)
+            XCTAssertTrue(fresh.transcription.notes.enabled)
+            XCTAssertFalse(fresh.transcription.notes.remindersSync.enabled)
+
+            FeatureSettingsStore.migrateIfNeeded(defaults: defaults)
+            let migrated = FeatureSettingsStore.load(defaults: defaults)
+            XCTAssertTrue(migrated.transcription.notes.enabled)
+            XCTAssertFalse(migrated.transcription.notes.remindersSync.enabled)
+        }
+    }
+
+    func testNotesWithoutRemindersSyncSettingsDecodeWithSyncDisabled() throws {
+        let selection = FeatureModelSelectionID.appleIntelligence
+        let encodedSelection = try XCTUnwrap(String(
+            data: JSONEncoder().encode(selection),
+            encoding: .utf8
+        ))
+        let payload = Data("{\"titleModelSelectionID\":\(encodedSelection)}".utf8)
+        let notes = try JSONDecoder().decode(TranscriptionNoteFeatureSettings.self, from: payload)
+
+        XCTAssertTrue(notes.enabled)
+        XCTAssertFalse(notes.remindersSync.enabled)
+        XCTAssertEqual(notes.remindersSync.selectedListIdentifier, "")
+        XCTAssertEqual(notes.remindersSync.selectedListTitle, "")
+        XCTAssertEqual(notes.titleModelSelectionID, selection)
+    }
+
+    func testRemindersSyncMigrationPreservesStoredEnabledAndDisabledChoices() throws {
+        for enabled in [true, false] {
+            try withEphemeralDefaults { defaults in
+                var settings = FeatureSettingsStore.deriveFromLegacy(defaults: defaults)
+                settings.transcription.notes.remindersSync = RemindersNoteSyncSettings(
+                    enabled: enabled,
+                    selectedListIdentifier: "list-1",
+                    selectedListTitle: "Voxt"
+                )
+                FeatureSettingsStore.save(settings, defaults: defaults, notify: false)
+
+                FeatureSettingsStore.migrateIfNeeded(defaults: defaults)
+                let reloaded = FeatureSettingsStore.load(defaults: defaults)
+                XCTAssertEqual(reloaded.transcription.notes.remindersSync, settings.transcription.notes.remindersSync)
+            }
+        }
+    }
+
+    func testStorageCanonicalizationPreservesTheCompleteSettingsSnapshot() throws {
+        try withEphemeralDefaults { defaults in
+            var settings = FeatureSettingsStore.deriveFromLegacy(defaults: defaults)
+            settings.availability.notesEnabled = false
+            settings.availability.appEnhancementEnabled = false
+            settings.transcription.notes.remindersSync = RemindersNoteSyncSettings(
+                enabled: true,
+                selectedListIdentifier: "list-1",
+                selectedListTitle: "Voxt"
+            )
+            settings.transcription.notes.obsidianSync = ObsidianNoteSyncSettings(
+                enabled: true,
+                vaultPath: "/tmp/Voxt-test-vault",
+                vaultBookmarkData: Data([1, 2, 3]),
+                relativeFolder: "Notes",
+                groupingMode: .daily
+            )
+            settings.transcription.prompt = "Custom transcription prompt."
+            settings.translation.prompt = "Custom translation prompt."
+            settings.rewrite.prompt = "Custom rewrite prompt."
+            settings.meeting.summaryPrompt = "Custom meeting prompt."
+            settings.meeting.summaryAutoGenerate = false
+            settings.meeting.hideOverlayFromScreenSharing = true
+            settings.translation.showResultWindow = false
+            FeatureSettingsStore.save(settings, defaults: defaults, notify: false)
+
+            let storedRaw = try XCTUnwrap(defaults.string(forKey: AppPreferenceKey.featureSettings))
+            let stored = try JSONDecoder().decode(FeatureSettings.self, from: Data(storedRaw.utf8))
+            var expected = FeatureSettingsStore.load(defaults: defaults)
+            expected.transcription.prompt = AppPromptDefaults.canonicalStoredText(expected.transcription.prompt, kind: .enhancement)
+            expected.translation.prompt = AppPromptDefaults.canonicalStoredText(expected.translation.prompt, kind: .translation)
+            expected.rewrite.prompt = AppPromptDefaults.canonicalStoredText(expected.rewrite.prompt, kind: .rewrite)
+            expected.meeting.summaryPrompt = AppPromptDefaults.canonicalStoredText(expected.meeting.summaryPrompt, kind: .transcriptSummary)
+
+            XCTAssertEqual(stored, expected)
+            XCTAssertEqual(stored.transcription.notes.remindersSync, settings.transcription.notes.remindersSync)
+            XCTAssertEqual(stored.transcription.notes.obsidianSync, settings.transcription.notes.obsidianSync)
+            XCTAssertFalse(stored.transcription.notes.enabled)
+            XCTAssertFalse(stored.rewrite.appEnhancementEnabled)
+        }
+    }
+
     func testNotePanelSettingsPersistAndClampDelays() throws {
         try withEphemeralDefaults { defaults in
             var settings = FeatureSettingsStore.load(defaults: defaults)
@@ -473,6 +563,73 @@ final class FeatureSettingsStoreTests: XCTestCase {
         XCTAssertEqual(settings.sileroVADSensitivity, .balanced)
         XCTAssertEqual(settings.speakerDiarizationModel, .sortformerV2)
         XCTAssertTrue(settings.finalTranscriptOptimizationEnabled)
+    }
+
+    func testSaveCanonicalizesMalformedMeetingRawValuesInStoredJSON() throws {
+        try withEphemeralDefaults { defaults in
+            var settings = FeatureSettingsStore.deriveFromLegacy(defaults: defaults)
+            settings.meeting.chunkingModeRawValue = "unknown-chunking"
+            settings.meeting.sileroVADSensitivityRawValue = "unknown-sensitivity"
+            settings.meeting.speakerDiarizationModelRawValue = "offlineVBx"
+            settings.meeting.realtimeTargetLanguageRawValue = "unknown-language"
+            settings.meeting.summaryPrompt = "Keep my custom summary."
+            settings.meeting.summaryAutoGenerate = false
+            settings.meeting.finalTranscriptOptimizationEnabled = false
+            let original = settings
+
+            FeatureSettingsStore.save(settings, defaults: defaults, notify: false)
+
+            let raw = try XCTUnwrap(defaults.string(forKey: AppPreferenceKey.featureSettings))
+            let stored = try JSONDecoder().decode(FeatureSettings.self, from: Data(raw.utf8))
+            XCTAssertEqual(stored.meeting.chunkingModeRawValue, MeetingChunkingMode.quality.rawValue)
+            XCTAssertEqual(stored.meeting.sileroVADSensitivityRawValue, MeetingSileroVADSensitivity.balanced.rawValue)
+            XCTAssertEqual(stored.meeting.speakerDiarizationModelRawValue, MeetingDiarizationMode.sortformerV2.rawValue)
+            XCTAssertEqual(stored.meeting.realtimeTargetLanguageRawValue, "")
+            XCTAssertEqual(stored.meeting.summaryPrompt, "Keep my custom summary.")
+            XCTAssertFalse(stored.meeting.summaryAutoGenerate)
+            XCTAssertFalse(stored.meeting.finalTranscriptOptimizationEnabled)
+            XCTAssertEqual(settings, original)
+        }
+    }
+
+    func testLoadMalformedSelectionsUsesLegacyFallbackWithoutWritingPreferences() throws {
+        try withEphemeralDefaults { defaults in
+            defaults.set(TranscriptionEngine.remote.rawValue, forKey: AppPreferenceKey.transcriptionEngine)
+            defaults.set(RemoteASRProvider.openAIWhisper.rawValue, forKey: AppPreferenceKey.remoteASRSelectedProvider)
+            defaults.set(EnhancementMode.appleIntelligence.rawValue, forKey: AppPreferenceKey.enhancementMode)
+            defaults.set(TranslationModelProvider.remoteLLM.rawValue, forKey: AppPreferenceKey.translationModelProvider)
+            defaults.set(RemoteLLMProvider.openAI.rawValue, forKey: AppPreferenceKey.translationRemoteLLMProvider)
+            defaults.set(RewriteModelProvider.remoteLLM.rawValue, forKey: AppPreferenceKey.rewriteModelProvider)
+            defaults.set(RemoteLLMProvider.openAI.rawValue, forKey: AppPreferenceKey.rewriteRemoteLLMProvider)
+            var settings = FeatureSettingsStore.deriveFromLegacy(defaults: defaults)
+            let malformed = FeatureModelSelectionID(rawValue: "unknown-selection")
+            settings.transcription.asrSelectionID = malformed
+            settings.transcription.llmSelectionID = malformed
+            settings.transcription.notes.titleModelSelectionID = malformed
+            settings.translation.asrSelectionID = malformed
+            settings.translation.modelSelectionID = malformed
+            settings.rewrite.asrSelectionID = malformed
+            settings.rewrite.llmSelectionID = malformed
+            settings.meeting.asrSelectionID = malformed
+            settings.meeting.summaryModelSelectionID = malformed
+            let raw = try XCTUnwrap(String(data: JSONEncoder().encode(settings), encoding: .utf8))
+            defaults.set(raw, forKey: AppPreferenceKey.featureSettings)
+            let originalPreferences = defaults.dictionaryRepresentation()
+
+            let loaded = FeatureSettingsStore.load(defaults: defaults)
+
+            XCTAssertEqual(loaded.transcription.asrSelectionID, .remoteASR(.openAIWhisper))
+            XCTAssertEqual(loaded.translation.asrSelectionID, .remoteASR(.openAIWhisper))
+            XCTAssertEqual(loaded.rewrite.asrSelectionID, .remoteASR(.openAIWhisper))
+            XCTAssertEqual(loaded.meeting.asrSelectionID, .remoteASR(.openAIWhisper))
+            XCTAssertEqual(loaded.transcription.llmSelectionID, .appleIntelligence)
+            XCTAssertEqual(loaded.transcription.notes.titleModelSelectionID, .appleIntelligence)
+            XCTAssertEqual(loaded.meeting.summaryModelSelectionID, .appleIntelligence)
+            XCTAssertEqual(loaded.translation.modelSelectionID, .remoteLLM(.openAI))
+            XCTAssertEqual(loaded.rewrite.llmSelectionID, .remoteLLM(.openAI))
+            XCTAssertEqual(defaults.string(forKey: AppPreferenceKey.featureSettings), raw)
+            XCTAssertEqual(NSDictionary(dictionary: defaults.dictionaryRepresentation()), NSDictionary(dictionary: originalPreferences))
+        }
     }
 
     func testMeetingSettingsStorageDoesNotEncodeVADBackend() throws {

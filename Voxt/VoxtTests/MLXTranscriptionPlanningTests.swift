@@ -417,32 +417,6 @@ final class MLXTranscriptionPlanningTests: XCTestCase {
         XCTAssertTrue(shouldUseVAD)
     }
 
-    func testSenseVoiceSplitRangeReturnsOriginalRangeWhenChunkingIsNotNeeded() {
-        let ranges = MLXTranscriptionPlanning.splitSenseVoiceRange(
-            start: 100,
-            end: 1000,
-            maxChunkSamples: 5000,
-            overlapSamples: 320
-        )
-
-        XCTAssertEqual(ranges, [100..<1000])
-    }
-
-    func testSenseVoiceSplitRangeProducesOverlappingChunksForLongSegments() {
-        let sampleCount = 16000 * 61
-        let ranges = MLXTranscriptionPlanning.splitSenseVoiceRange(
-            start: 0,
-            end: sampleCount,
-            maxChunkSamples: 16000 * 24,
-            overlapSamples: Int(0.35 * 16000)
-        )
-
-        XCTAssertGreaterThan(ranges.count, 1)
-        XCTAssertEqual(ranges.first?.lowerBound, 0)
-        XCTAssertEqual(ranges.last?.upperBound, sampleCount)
-        XCTAssertEqual(ranges[0].upperBound - ranges[1].lowerBound, Int(0.35 * 16000))
-    }
-
     func testNativeLiveLanguagePreservesAutomaticSelection() {
         XCTAssertNil(MLXTranscriptionPlanning.nativeLiveLanguage(from: nil))
         XCTAssertNil(MLXTranscriptionPlanning.nativeLiveLanguage(from: "  "))
@@ -476,54 +450,6 @@ final class MLXTranscriptionPlanningTests: XCTestCase {
             ),
             "auto"
         )
-    }
-
-    func testSenseVoiceSegmentRangesUseSharedVADPolicy() {
-        let probabilities: [Float] = [
-            0.01,
-            0.8,
-            0.82,
-            0.2,
-            0.1,
-            0.05
-        ]
-
-        let ranges = MLXTranscriptionPlanning.senseVoiceSegmentRanges(
-            probabilities: probabilities,
-            sampleCount: 6 * 1600,
-            sampleRate: 16_000,
-            probabilityFrameSampleCount: 1600,
-            vadThreshold: 0.5,
-            vadMinSpeechDurationMs: 150,
-            vadMinSilenceDurationMs: 200,
-            vadSpeechPadMs: 100,
-            maxChunkSamples: 16_000,
-            overlapSamples: 0
-        )
-
-        XCTAssertEqual(ranges, [0..<6400])
-    }
-
-    func testSenseVoiceSegmentRangesSplitLongSpeechSegments() {
-        let probabilities = [Float](repeating: 0.9, count: 12)
-
-        let ranges = MLXTranscriptionPlanning.senseVoiceSegmentRanges(
-            probabilities: probabilities,
-            sampleCount: 12 * 1600,
-            sampleRate: 16_000,
-            probabilityFrameSampleCount: 1600,
-            vadThreshold: 0.5,
-            vadMinSpeechDurationMs: 150,
-            vadMinSilenceDurationMs: 200,
-            vadSpeechPadMs: 0,
-            maxChunkSamples: 4800,
-            overlapSamples: 1600
-        )
-
-        XCTAssertGreaterThan(ranges.count, 1)
-        XCTAssertEqual(ranges.first, 0..<4800)
-        XCTAssertEqual(ranges.last?.upperBound, 19200)
-        XCTAssertEqual(ranges[0].upperBound - ranges[1].lowerBound, 1600)
     }
 
     func testSenseVoiceVisibleRealtimeCorrectionCadenceIsMoreAggressive() {
@@ -563,19 +489,19 @@ final class MLXTranscriptionPlanningTests: XCTestCase {
     }
 
     func testSenseVoiceSequentialMergeRemovesChunkBoundaryOverlap() {
-        let merged = MLXTranscriptionPlanning.mergeSequentialTranscript(
+        let merged = MLXTranscriptionPlanning.sequentialTranscriptMergeResult(
             base: "hello world",
             next: "world again"
-        )
+        ).text
 
         XCTAssertEqual(merged, "hello world again")
     }
 
     func testSenseVoiceSequentialMergeHandlesChineseBoundaryOverlap() {
-        let merged = MLXTranscriptionPlanning.mergeSequentialTranscript(
+        let merged = MLXTranscriptionPlanning.sequentialTranscriptMergeResult(
             base: "我们正在测试长音频切分",
             next: "音频切分和合并效果"
-        )
+        ).text
 
         XCTAssertEqual(merged, "我们正在测试长音频切分和合并效果")
     }

@@ -1,5 +1,5 @@
 {
-  "originHash" : "0194315ec5bd3bad8081722646e5e62ac5190d8c00733ddef236ac46cb1c2057",
+  "originHash" : "bd9f9d77564de022c6654e2caf13d789fa1693827d8b53fb3736e2b7b6865e5b",
   "pins" : [
     {
       "identity" : "eventsource",
@@ -35,14 +35,6 @@
       "state" : {
         "revision" : "716419d4d7aa542fce301e809cde7234c68ddbc6",
         "version" : "2.10549.0"
-      }
-    },
-    {
-      "identity" : "mlx-audio-swift",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/hehehai/mlx-audio-swift.git",
-      "state" : {
-        "revision" : "2a6e75d28ae6a399ba7c7aec842384ef7a3142b5"
       }
     },
     {

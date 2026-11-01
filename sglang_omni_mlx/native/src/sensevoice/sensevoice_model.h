@@ -60,7 +60,7 @@ private:
                                 const std::string &prefix, bool residual) const;
 
   SenseVoiceConfig config_;
-  qwen3_asr::Checkpoint checkpoint_;
+  omni_common::Checkpoint checkpoint_;
   std::vector<float> window_;
   mlx::core::array mel_filters_;
   std::optional<mlx::core::array> cmvn_means_;

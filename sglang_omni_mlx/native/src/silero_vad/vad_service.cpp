@@ -63,7 +63,7 @@ int HandleSpeechTimestamps(mg_connection *connection, void *data) {
   } else {
   }
   const char *content_type = mg_get_header(connection, "Content-Type");
-  const auto form = qwen3_asr::ParseMultipartForm(
+  const auto form = omni_common::ParseMultipartForm(
       content_type ? content_type : "", omni_server::ReadBody(connection));
   if (!form.has_value() || form->count("file") == 0 ||
       !form->at("file").filename.has_value()) {
@@ -73,7 +73,7 @@ int HandleSpeechTimestamps(mg_connection *connection, void *data) {
   std::vector<float> samples;
   TimestampOptions options = service->defaults();
   try {
-    samples = qwen3_asr::DecodeWav(form->at("file").value);
+    samples = omni_common::DecodeWav(form->at("file").value);
     if (!std::all_of(samples.begin(), samples.end(),
                      [](float sample) { return std::isfinite(sample); })) {
       throw std::invalid_argument("Audio must be finite.");

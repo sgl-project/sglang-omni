@@ -330,11 +330,15 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
             pool=pool, stream=capture_stream, keepalives=[static_codes]
         )
         graph: ReplayableGraph | None = None
+        # note (ratish): the compiled decode guards on this index's inference flag, so the
+        # warmups use it too; another index would recompile inside capture.
+        static_index = self.scratch_index(key.batch_bucket)
         try:
-            self.warmup_capture_shape(key, static_codes, static_valid_frames, resources)
+            self.warmup_capture_shape(
+                key, static_codes, static_valid_frames, static_index, resources
+            )
             current_stream = self.device_module.current_stream(self.device)
             compiled = key.fresh_frames in self.compile_fresh_frames
-            static_index = self.scratch_index(key.batch_bucket)
             resources.keepalives.append(static_index)
             if static_valid_frames is not None:
                 resources.keepalives.append(static_valid_frames)
@@ -381,6 +385,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         key: IncrementalCodecGraphKey,
         static_codes: torch.Tensor,
         static_valid_frames: torch.Tensor | None,
+        static_index: torch.Tensor,
         resources: CaptureResourceSet,
     ) -> None:
         """Run eager decodes that settle one shape before graph capture."""
@@ -389,17 +394,13 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         capture_stream.wait_stream(self.device_module.current_stream(self.device))
         with self.device_module.stream(capture_stream), torch.inference_mode():
             if compiled:
-                trace_state = self.arena.gather_by_index(
-                    self.scratch_index(key.batch_bucket)
-                )
+                trace_state = self.arena.gather_by_index(static_index)
                 resources.keepalives.append(trace_state)
                 self.decoder.precompile(static_codes, trace_state)
             else:
                 pass
             for _ in range(self.WARMUP_ITERATIONS):
-                warmup_state = self.arena.gather_by_index(
-                    self.scratch_index(key.batch_bucket)
-                )
+                warmup_state = self.arena.gather_by_index(static_index)
                 resources.keepalives.append(warmup_state)
                 self.decode_captured(
                     static_codes, static_valid_frames, warmup_state, compiled=compiled
@@ -558,8 +559,9 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         """Replay the bucket that fits this cohort directly against the arena.
 
         Returns the borrowed waveform rows, or None on a graph miss. Rows past
-        the cohort read and write the arena's scratch row. A tail runner takes each
-        row's valid width and replays the smallest captured width that holds the codes.
+        the cohort name the arena's scratch slot, whose conv state the exchanges
+        skip. A tail runner takes each row's valid width and replays the smallest
+        captured width that holds the codes.
         """
         if os.getpid() != self.owner_pid:
             raise RuntimeError(

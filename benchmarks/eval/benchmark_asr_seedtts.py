@@ -157,17 +157,12 @@ def _fetch_worker_snapshot(host: str, port: int) -> dict | None:
     """Best-effort read of per-worker router dispatch counters."""
     with requests.Session() as session:
         session.trust_env = False
-        for path in ("/diagnostics", "/workers"):
-            try:
-                response = session.get(f"http://{host}:{port}{path}", timeout=10)
-                response.raise_for_status()
-                payload = response.json()
-                if path == "/diagnostics":
-                    return _normalize_rust_worker_snapshot(payload)
-                return payload
-            except (requests.RequestException, ValueError, TypeError):
-                continue
-    return None
+        try:
+            response = session.get(f"http://{host}:{port}/diagnostics", timeout=10)
+            response.raise_for_status()
+            return _normalize_rust_worker_snapshot(response.json())
+        except (requests.RequestException, ValueError, TypeError):
+            return None
 
 
 def _normalize_rust_worker_snapshot(snapshot: dict) -> dict:

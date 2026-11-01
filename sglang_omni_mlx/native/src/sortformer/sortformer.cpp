@@ -170,7 +170,7 @@ SortformerModel::RelativePositionAttention(const mx::array &x,
       mx::matmul(q_with_bias_u, mx::transpose(k, {0, 1, 3, 2}));
   mx::array matrix_bd =
       mx::matmul(q_with_bias_v, mx::transpose(p, {0, 1, 3, 2}));
-  matrix_bd = qwen3_asr::RelativeShift(matrix_bd);
+  matrix_bd = omni_common::RelativeShift(matrix_bd);
   matrix_bd = mx::slice(matrix_bd, {0, 0, 0, 0},
                         {matrix_bd.shape(0), matrix_bd.shape(1),
                          matrix_bd.shape(2), matrix_ac.shape(3)});

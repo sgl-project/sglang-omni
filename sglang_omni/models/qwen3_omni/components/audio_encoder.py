@@ -8,6 +8,10 @@ from types import MethodType
 
 import torch
 import torch.nn as nn
+from sglang.srt.layers.attention.vision import (
+    VisionAttentionMetadata,
+    prepare_vision_attention_metadata,
+)
 from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_modeling
 from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
     Qwen3OmniMoeThinkerConfig,
@@ -15,8 +19,14 @@ from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
 
 from sglang_omni.models.qwen3_omni.components.audio_layer_graph import (
     AudioLayerGraphRunner,
+    packed_attention_forward,
+    stack_qkv_projection,
 )
 from sglang_omni.models.qwen3_omni.components.common import load_thinker_config
+from sglang_omni.models.qwen3_omni.components.packed_attention import (
+    PackedAttention,
+    resolve_packed_attention,
+)
 from sglang_omni.models.weight_loader import load_module, resolve_dtype
 from sglang_omni.utils import instantiate_module
 
@@ -74,12 +84,13 @@ def pack_padded_audio_features(
 
 
 class SegmentSplits:
-    """Per-request attention segment sizes, shared by every encoder layer."""
+    """Per-request attention segment sizes and packed attention metadata, shared by every encoder layer."""
 
-    __slots__ = ("value",)
+    __slots__ = ("value", "attention_metadata")
 
     def __init__(self) -> None:
         self.value: list[int] | None = None
+        self.attention_metadata: VisionAttentionMetadata | None = None
 
 
 def forward_with_shared_segments(
@@ -94,6 +105,15 @@ def forward_with_shared_segments(
         return self._omni_unshared_forward(
             hidden_states, cu_seqlens, max_seqlen=max_seqlen, **kwargs
         )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    else:
+        pass
+    if self.packed_attention is not None:
+        return packed_attention_forward(
+            self,
+            self.packed_attention,
+            hidden_states,
+            self._omni_segment_splits.attention_metadata,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        )
     else:
         pass
 
@@ -131,13 +151,16 @@ def forward_with_shared_segments(
     return self.out_proj(attn_output)
 
 
-def share_segment_splits(tower: nn.Module, splits: SegmentSplits) -> None:
+def share_segment_splits(
+    tower: nn.Module, splits: SegmentSplits, packed_attention: PackedAttention | None
+) -> None:
     # Note (wenyao): the stock attention derives its split sizes with a
     # device-to-host copy, so every one of the 32 layers stalls on the same
     # value; that sync is also what makes the stack uncapturable.
     for layer in tower.layers:
         attention = layer.self_attn
         attention._omni_segment_splits = splits  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        attention.packed_attention = packed_attention
         attention._omni_unshared_forward = (
             attention.forward
         )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -199,10 +222,25 @@ class Qwen3OmniAudioEncoder(nn.Module):
             hf_modeling._get_feat_extract_output_lengths
         )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         self.segment_splits = SegmentSplits()
-        share_segment_splits(self.audio_tower, self.segment_splits)
+        # note (ratish): one attention kernel for a clip whether or not its batch fits a layer graph.
+        self.packed_attention: PackedAttention | None = resolve_packed_attention(
+            self.device, torch_dtype
+        )
+        if self.packed_attention is not None:
+            for layer in self.audio_tower.layers:
+                stack_qkv_projection(layer.self_attn)
+        else:
+            pass
+        share_segment_splits(
+            self.audio_tower, self.segment_splits, self.packed_attention
+        )
         self.layer_graph_runner = None
-        if enable_layer_cuda_graph and self.device.type == "cuda":
+        if enable_layer_cuda_graph and self.packed_attention is not None:
             self.enable_layer_cuda_graph()
+        elif enable_layer_cuda_graph and self.device.type == "cuda":
+            logger.warning(
+                "audio layer CUDA graphs need an fp16 or bf16 encoder; staying eager"
+            )
         else:
             pass
 
@@ -214,7 +252,12 @@ class Qwen3OmniAudioEncoder(nn.Module):
             ).item()
         )
         window = chunk_tokens * (tower.n_window_infer // (tower.n_window * 2))
-        runner = AudioLayerGraphRunner(tower, device=self.device, window=window)
+        runner = AudioLayerGraphRunner(
+            tower,
+            device=self.device,
+            window=window,
+            packed_attention=self.packed_attention,
+        )
         runner.capture_all()
         if not runner.has_graphs:
             logger.warning("audio layer CUDA graphs unavailable; staying eager")
@@ -264,8 +307,16 @@ class Qwen3OmniAudioEncoder(nn.Module):
             tower.n_window,
         )
         self.segment_splits.value = (cu_seqlens[1:] - cu_seqlens[:-1]).tolist()
+        max_sequence_length = max(self.segment_splits.value)
         valid_indices = valid_indices.to(self.device, non_blocking=True)
         cu_seqlens = cu_seqlens.to(self.device, non_blocking=True)
+        self.segment_splits.attention_metadata = (
+            prepare_vision_attention_metadata(
+                cu_seqlens, cu_seqlens.device, max_seqlen=max_sequence_length
+            )
+            if self.packed_attention is not None
+            else None
+        )
         try:
             outputs = tower(
                 input_features,
@@ -274,10 +325,11 @@ class Qwen3OmniAudioEncoder(nn.Module):
                 chunk_lengths=chunk_lengths,
                 valid_indices=valid_indices,
                 cu_seqlens=cu_seqlens,
-                max_seqlen=max(self.segment_splits.value),
+                max_seqlen=max_sequence_length,
             )
         finally:
             self.segment_splits.value = None
+            self.segment_splits.attention_metadata = None
         audio_embeds = outputs.last_hidden_state
         audio_output_lengths = self.downsample_lengths(
             audio_feature_lengths, tower.n_window

@@ -255,13 +255,15 @@ struct FeatureModelCatalogBuilder {
             let selectionID = FeatureModelSelectionID.mlx(model.id)
             let isInstalled = mlxModelManager.isModelDownloaded(repo: model.id)
             let isChecking = mlxModelManager.isCheckingInstallation(repo: model.id)
-            let availability = Self.localSelectorAvailability(isInstalled: isInstalled, isChecking: isChecking)
+            let availability = Self.localSelectorAvailability(
+                isInstalled: isInstalled,
+                isChecking: isChecking,
+                unavailabilityReason: OmniASRBackend.unavailabilityReason(for: model.id)
+            )
             return FeatureModelSelectorEntry(
                 selectionID: selectionID,
                 title: model.title,
-                engine: MLXWhisperMigrationSupport.isWhisperRepo(model.id)
-                    ? localized("Whisper (MLX)")
-                    : localized("MLX Audio"),
+                engine: ModelCatalogEngineSupport.asrTitle(for: model.id),
                 sizeText: mlxModelManager.remoteSizeText(repo: model.id),
                 ratingText: MLXModelManager.ratingText(for: model.id),
                 filterTags: featureFilterTags(
@@ -325,8 +327,15 @@ struct FeatureModelCatalogBuilder {
         return entries
     }
 
-    static func localSelectorAvailability(isInstalled: Bool, isChecking: Bool = false) -> (isSelectable: Bool, disabledReason: String?) {
-        (
+    static func localSelectorAvailability(
+        isInstalled: Bool,
+        isChecking: Bool = false,
+        unavailabilityReason: String? = nil
+    ) -> (isSelectable: Bool, disabledReason: String?) {
+        if let unavailabilityReason {
+            return (isSelectable: false, disabledReason: unavailabilityReason)
+        }
+        return (
             isSelectable: isInstalled && !isChecking,
             disabledReason: isChecking ? localized("Loading…") : (isInstalled ? nil : localized("Install this model in Model settings first."))
         )

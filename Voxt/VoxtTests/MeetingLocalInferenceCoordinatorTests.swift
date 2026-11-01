@@ -16,7 +16,7 @@ final class MeetingLocalInferenceCoordinatorTests: XCTestCase {
     }
 
     func testHeavyInferenceRunsOneOperationAtATime() async throws {
-        let coordinator = MeetingLocalInferenceCoordinator()
+        let coordinator = MeetingLocalInferenceCoordinator(readThermalState: { .nominal })
         let tracker = MeetingInferenceConcurrencyTracker()
 
         async let first: Void = coordinator.withPermit(.liveASRFinal) {
@@ -36,7 +36,7 @@ final class MeetingLocalInferenceCoordinatorTests: XCTestCase {
     }
 
     func testHigherPriorityWorkRunsBeforeQueuedBackgroundWork() async throws {
-        let coordinator = MeetingLocalInferenceCoordinator()
+        let coordinator = MeetingLocalInferenceCoordinator(readThermalState: { .nominal })
         let gate = MeetingInferenceGate()
         let order = MeetingInferenceOrderRecorder()
 
@@ -52,7 +52,7 @@ final class MeetingLocalInferenceCoordinatorTests: XCTestCase {
                 await order.append("summary")
             }
         }
-        let didQueueBackground = await waitForQueuedWork(1, coordinator: coordinator)
+        let didQueueBackground = await waitForQueuedInferenceWork(1, coordinator: coordinator)
         XCTAssertTrue(didQueueBackground, "Background work did not enter the inference queue")
 
         let live = Task {
@@ -60,7 +60,7 @@ final class MeetingLocalInferenceCoordinatorTests: XCTestCase {
                 await order.append("live")
             }
         }
-        let didQueueLiveWork = await waitForQueuedWork(2, coordinator: coordinator)
+        let didQueueLiveWork = await waitForQueuedInferenceWork(2, coordinator: coordinator)
         XCTAssertTrue(didQueueLiveWork, "Live work did not enter the inference queue")
 
         await gate.open()
@@ -71,7 +71,7 @@ final class MeetingLocalInferenceCoordinatorTests: XCTestCase {
     }
 
     func testFileAnalysisWaitsThroughMemoryPressureAndResumes() async throws {
-        let coordinator = MeetingLocalInferenceCoordinator()
+        let coordinator = MeetingLocalInferenceCoordinator(readThermalState: { .nominal })
         let tracker = MeetingInferenceConcurrencyTracker()
         await coordinator.setMemoryPressureConstrained(true)
 
@@ -92,7 +92,7 @@ final class MeetingLocalInferenceCoordinatorTests: XCTestCase {
     }
 
     func testFileAnalysisWaitsThroughRecordingAndDoesNotFail() async throws {
-        let coordinator = MeetingLocalInferenceCoordinator()
+        let coordinator = MeetingLocalInferenceCoordinator(readThermalState: { .nominal })
         let tracker = MeetingInferenceConcurrencyTracker()
         await coordinator.setRecordingActive(true)
 
@@ -113,7 +113,7 @@ final class MeetingLocalInferenceCoordinatorTests: XCTestCase {
     }
 
     func testNonFileDeferrableWorkStillReportsMemoryPressure() async throws {
-        let coordinator = MeetingLocalInferenceCoordinator()
+        let coordinator = MeetingLocalInferenceCoordinator(readThermalState: { .nominal })
         await coordinator.setMemoryPressureConstrained(true)
 
         do {
@@ -127,7 +127,7 @@ final class MeetingLocalInferenceCoordinatorTests: XCTestCase {
     }
 
     func testFileSpeakerAnalysisWaitsForPressureAndCanBeCancelled() async throws {
-        let coordinator = MeetingLocalInferenceCoordinator()
+        let coordinator = MeetingLocalInferenceCoordinator(readThermalState: { .nominal })
         let tracker = MeetingInferenceConcurrencyTracker()
         await coordinator.setMemoryPressureConstrained(true)
         let task = Task {
@@ -152,7 +152,7 @@ final class MeetingLocalInferenceCoordinatorTests: XCTestCase {
     }
 
     func testPressureAppearingWhileFileSpeakerWaitsForLaneIsRechecked() async throws {
-        let coordinator = MeetingLocalInferenceCoordinator()
+        let coordinator = MeetingLocalInferenceCoordinator(readThermalState: { .nominal })
         let gate = MeetingInferenceGate()
         let tracker = MeetingInferenceConcurrencyTracker()
         let first = Task {
@@ -179,13 +179,13 @@ final class MeetingLocalInferenceCoordinatorTests: XCTestCase {
     }
 
     func testBlockedNonFileWaiterDoesNotPreventBoundedFileWorkUnderWarning() async throws {
-        let coordinator = MeetingLocalInferenceCoordinator(readMemoryPressure: { false })
+        let coordinator = MeetingLocalInferenceCoordinator(readMemoryPressure: { false }, readThermalState: { .nominal })
         let gate = MeetingInferenceGate()
         let order = MeetingInferenceOrderRecorder()
         let active = Task { try await coordinator.withPermit(.liveASRFinal) { await gate.wait() } }
         await gate.waitUntilStarted()
         let summary = Task { try await coordinator.withPermit(.summary) { await order.append("summary") } }
-        let queued = await waitForQueuedWork(1, coordinator: coordinator)
+        let queued = await waitForQueuedInferenceWork(1, coordinator: coordinator)
         XCTAssertTrue(queued)
         await coordinator.setMemoryPressureConstrained(true)
         await gate.open()
@@ -200,7 +200,7 @@ final class MeetingLocalInferenceCoordinatorTests: XCTestCase {
     }
 
     func testBackgroundWorkWaitsWhileRecording() async throws {
-        let coordinator = MeetingLocalInferenceCoordinator()
+        let coordinator = MeetingLocalInferenceCoordinator(readThermalState: { .nominal })
         let tracker = MeetingInferenceConcurrencyTracker()
         await coordinator.setRecordingActive(true)
 
@@ -220,65 +220,26 @@ final class MeetingLocalInferenceCoordinatorTests: XCTestCase {
         XCTAssertEqual(peakAfterRecording, 1)
     }
 
-    private func waitForQueuedWork(
-        _ expectedCount: Int,
-        coordinator: MeetingLocalInferenceCoordinator,
-        timeout: Duration = .seconds(5)
-    ) async -> Bool {
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: timeout)
-
-        while clock.now < deadline {
-            let statistics = await coordinator.currentStatistics()
-            if statistics.peakQueuedCount >= expectedCount {
-                return true
+    func testOrdinaryPermitStillRestoresCacheOnErrorAndCancellation() async throws {
+        for shouldCancel in [false, true] {
+            let hooks = MeetingInferenceHooks()
+            let coordinator = hooks.makeCoordinator()
+            do {
+                try await coordinator.withPermit(.fileSpeakerAnalysis) {
+                    if shouldCancel { throw CancellationError() }
+                    throw URLError(.cannotDecodeContentData)
+                }
+                XCTFail("Expected operation error")
+            } catch {
+                if shouldCancel { XCTAssertTrue(error is CancellationError) }
+                else { XCTAssertEqual((error as? URLError)?.code, .cannotDecodeContentData) }
             }
-            await Task.yield()
-        }
-        return false
-    }
-}
-
-private actor MeetingInferenceConcurrencyTracker {
-    private var active = 0
-    private var peak = 0
-
-    func begin() {
-        active += 1
-        peak = max(peak, active)
-    }
-
-    func end() {
-        active -= 1
-    }
-
-    func peakCount() -> Int { peak }
-}
-
-private actor MeetingInferenceGate {
-    private var started = false
-    private var continuation: CheckedContinuation<Void, Never>?
-
-    func wait() async {
-        started = true
-        await withCheckedContinuation { continuation = $0 }
-    }
-
-    func waitUntilStarted() async {
-        while !started {
-            await Task.yield()
+            XCTAssertEqual(hooks.events, [.trim(false), .begin, .trim(false), .restore])
+            let statistics = await coordinator.currentStatistics()
+            XCTAssertEqual(statistics.completedCount, 0)
+            try await coordinator.withPermit(.liveASRFinal) { hooks.record(.probe) }
+            XCTAssertEqual(hooks.events.last, .probe)
         }
     }
 
-    func open() {
-        continuation?.resume()
-        continuation = nil
-    }
-}
-
-private actor MeetingInferenceOrderRecorder {
-    private var recorded: [String] = []
-
-    func append(_ value: String) { recorded.append(value) }
-    func values() -> [String] { recorded }
 }

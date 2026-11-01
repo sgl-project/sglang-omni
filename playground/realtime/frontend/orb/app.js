@@ -13,16 +13,15 @@ const LEVEL_GAIN = 5;
 const MIC_TALK_LEVEL = 0.12;
 const MODEL_TALK_LEVEL = 0.04;
 const CAPTION_FADE_MS = 5000;
-// Output quieter than this counts as silence when deciding to end a local interrupt.
-const QUIET_RMS = 0.01;
-const UNMUTE_QUIET_MS = 400;
 // The stop button is offered while the model has been audible this recently.
 const INTERRUPT_WINDOW_MS = 1500;
+// The server's confirmation of a stop stays on the status line this long.
+const STOPPED_HOLD_MS = 2000;
 // Speech has gaps between syllables; a mood holds this long after the last loud frame.
 const MODEL_HOLD_MS = 700;
 const MIC_HOLD_MS = 400;
 
-const ids = ["brandName", "statusPill", "statusText", "transcriptBtn", "traceBtn", "themeBtn", "warning", "selfView", "cameraPreview", "frameCount", "orb", "orbCanvas", "statusLine", "caption", "note", "startBtn", "dock", "cameraBtn", "cameraOn", "cameraOff", "muteBtn", "micOn", "micOff", "interruptBtn", "endBtn", "hint", "sheet", "sheetClose", "transcript", "settingsBtn", "settingsPanel", "settingsClose", "settingsForm", "settingsLocked", "presetRow", "setPreset", "setPrompt", "voiceRow", "setVoice", "voicePreview", "voiceInfo", "voiceFile", "outputRow", "setOutput", "setMic", "advanced", "greedyRow", "setGreedy", "samplingFields", "sliceRow", "setSlices", "settingsReset"];
+const ids = ["brandName", "statusPill", "statusText", "transcriptBtn", "traceBtn", "themeBtn", "warning", "selfView", "cameraPreview", "frameCount", "orb", "orbCanvas", "statusLine", "caption", "note", "startBtn", "dock", "cameraBtn", "cameraOn", "cameraOff", "muteBtn", "micOn", "micOff", "interruptBtn", "endBtn", "hint", "sheet", "sheetClose", "transcript", "settingsBtn", "settingsPanel", "settingsClose", "settingsForm", "settingsLocked", "presetRow", "setPreset", "setPrompt", "voiceRow", "setVoice", "voicePreview", "voiceInfo", "voiceFile", "voiceNameRow", "setVoiceName", "outputRow", "setOutput", "setMic", "turnRow", "setTurnType", "silenceRow", "setSilence", "eagernessRow", "setEagerness", "advanced", "greedyRow", "setGreedy", "samplingFields", "sliceRow", "setSlices", "settingsReset"];
 const ui = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 
 function wsUrl() {
@@ -60,10 +59,14 @@ let serverUp = null;
 let sessionStart = null;
 let muted = false;
 let mutedResponse = false;
-// Quiet output heard since a local interrupt; enough of it ends the mute.
-let mutedQuietMs = 0;
+// When the stop button was pressed; the mute lasts until the user speaks after it.
+let mutedAt = -Infinity;
+// When a microphone frame last carried speech, from the capture worklet's own level.
+let lastInputSpeechAt = -Infinity;
 // A response is open but has not produced audio yet.
 let awaitingAudio = false;
+// When the server last confirmed a stop with a cancelled response.done.
+let stoppedAt = -Infinity;
 let lastSpokeAt = 0;
 let lastModelLoudAt = -Infinity;
 let lastMicLoudAt = -Infinity;
@@ -124,6 +127,10 @@ function setButtons() {
   ui.muteBtn.title = muted ? "Unmute microphone" : "Mute microphone";
   ui.micOn.hidden = muted;
   ui.micOff.hidden = !muted;
+  // Note (ruoyu): The button stops the reply on the server only where the grant says so; elsewhere it mutes playback and the model keeps talking.
+  const stopLabel = session && session.cancellable ? "Stop the current answer" : "Mute the current answer here (the model keeps talking)";
+  ui.interruptBtn.title = stopLabel;
+  ui.interruptBtn.setAttribute("aria-label", stopLabel);
   const offerCamera = OFFER_CAMERA && Boolean(session && session.imageGranted && isReady());
   ui.cameraBtn.hidden = !offerCamera;
   ui.cameraBtn.disabled = startingCamera;
@@ -144,8 +151,15 @@ function levelOf(analyser) {
   analyser.getFloatTimeDomainData(samples);
   let energy = 0;
   for (let index = 0; index < samples.length; index += 1) energy += samples[index] * samples[index];
-  const rms = Math.sqrt(energy / samples.length);
+  return levelOfRms(Math.sqrt(energy / samples.length));
+}
+
+function levelOfRms(rms) {
   return Math.min(1, Math.max(0, (rms - LEVEL_FLOOR) * LEVEL_GAIN) ** 0.7);
+}
+
+function spokeSinceMute(activeSession) {
+  return activeSession.turnBased ? activeSession.lastSpeechStartedAt > mutedAt : lastInputSpeechAt > mutedAt;
 }
 
 // What the orb and the status line show, derived every frame.
@@ -157,6 +171,10 @@ function mood(micLevel, modelLevel, now) {
     if (remoteBusy) return { mood: "idle", level: 0, line: "Someone else is talking to it, try again soon" };
     return { mood: "idle", level: 0, line: "" };
   }
+  if (session.stopPending) return { mood: "thinking", level: 0, line: "Stopping…" };
+  if (now - stoppedAt < STOPPED_HOLD_MS) return { mood: "listening", level: micLevel, line: "Stopped" };
+  // Nothing of the model is heard while the stop button's mute lasts, so the line says what lifts it.
+  if (mutedResponse && !spokeSinceMute(session)) return { mood: "listening", level: micLevel, line: "Muted until you speak" };
   if (session.turnBased) return turnMood(micLevel, modelLevel, now);
   if (now - lastModelLoudAt < MODEL_HOLD_MS) return { mood: "speaking", level: modelLevel, line: "" };
   if (muted) return { mood: "idle", level: 0, line: "Microphone muted" };
@@ -191,7 +209,10 @@ function render(now) {
 }
 
 function tick() {
-  ui.interruptBtn.disabled = mutedResponse || !isOpen() || performance.now() - lastModelLoudAt > INTERRUPT_WINDOW_MS;
+  const audible = performance.now() - lastModelLoudAt <= INTERRUPT_WINDOW_MS;
+  // A server stop is offered for the whole reply; a local mute only while there is something to hear.
+  const stoppable = Boolean(session) && session.cancellable && session.responseOpen;
+  ui.interruptBtn.disabled = mutedResponse || !isOpen() || !(audible || stoppable);
   let label;
   let pill;
   if (isOpen() && sessionStart !== null) {
@@ -319,23 +340,17 @@ async function ensurePlayback(rate) {
   await playbackContext.resume();
 }
 
-function rmsOf(samples) {
-  let energy = 0;
-  for (let index = 0; index < samples.length; index += 1) energy += samples[index] * samples[index];
-  return samples.length ? Math.sqrt(energy / samples.length) : 0;
-}
-
 // Sub-second streaming units stall on every network hiccup, so they get a deeper adaptive jitter buffer.
 const STREAMING_UNIT_MS = 500;
 const NATIVE_PLAYBACK = { jitterMs: JITTER_MS, maxJitterMs: JITTER_MS, maxMs: 2500, keepMs: 1500, catchUp: { slow: 0.2, fast: 0.7, skip: 1.5, slowRate: 1.12, fastRate: 1.25 } };
 const STREAMING_PLAYBACK = { jitterMs: 400, maxJitterMs: 900, maxMs: 3500, keepMs: 2200, catchUp: { slow: 0.5, fast: 1.0, skip: 2.0, slowRate: 1.06, fastRate: 1.12 } };
 
-function configurePlayback(unitMs) {
+function configurePlayback(unitMs, turnBased) {
   if (!playbackNode) return;
   const samples = (ms) => Math.round((playbackContext.sampleRate * ms) / 1000);
   const nativeUnitSamples = Number.isFinite(unitMs) && unitMs > 0 ? samples(unitMs) : 0;
   const { jitterMs, maxJitterMs, maxMs, keepMs, catchUp } = nativeUnitSamples > 0 && unitMs < STREAMING_UNIT_MS ? STREAMING_PLAYBACK : NATIVE_PLAYBACK;
-  playbackNode.port.postMessage({ type: "config", initialSamples: samples(jitterMs), maxJitterSamples: samples(maxJitterMs), maxSamples: samples(maxMs), keepSamples: samples(keepMs), catchUp, nativeUnitSamples });
+  playbackNode.port.postMessage({ type: "config", initialSamples: samples(jitterMs), maxJitterSamples: samples(maxJitterMs), maxSamples: samples(maxMs), keepSamples: samples(keepMs), catchUp, nativeUnitSamples, turnBased });
 }
 
 function pcm16ToFloat(bytes, sourceRate, targetRate) {
@@ -357,6 +372,7 @@ function pcm16ToFloat(bytes, sourceRate, targetRate) {
 
 function sessionListeners(activeSession) {
   let boundPlaybackNode = null;
+  let lastResponseId = null;
   return {
     state: (state) => {
       if (state !== "ready") stopCamera();
@@ -367,7 +383,7 @@ function sessionListeners(activeSession) {
       sessionStart = performance.now();
       await ensurePlayback(activeSession.outputRate);
       if (session !== activeSession || !isOpen()) return;
-      configurePlayback(activeSession.unitMs);
+      configurePlayback(activeSession.unitMs, activeSession.turnBased);
       const node = playbackNode;
       if (node !== boundPlaybackNode) {
         boundPlaybackNode = node;
@@ -387,28 +403,29 @@ function sessionListeners(activeSession) {
       if (!playbackNode) return;
       awaitingAudio = false;
       const samples = pcm16ToFloat(bytes, activeSession.outputRate, playbackContext.sampleRate);
-      // After a local interrupt, drop what the model is still saying. Models that
-      // answer in turns lift the mute at the next response.created; models that
-      // stream one response for the whole session lift it once they fall quiet.
       if (mutedResponse) {
-        mutedQuietMs = rmsOf(samples) < QUIET_RMS ? mutedQuietMs + (samples.length * 1000) / playbackContext.sampleRate : 0;
-        if (mutedQuietMs < UNMUTE_QUIET_MS) return;
+        // Note (ruoyu): A new response id is no proof of a new answer, a stopped model can continue the old one under it; only the user's next utterance lifts the mute, the server's speech_started where it has turn detection, the microphone's own level on a native model.
+        if (!spokeSinceMute(activeSession)) return;
         mutedResponse = false;
       }
       playbackNode.port.postMessage({ type: "push", samples, responseId }, [samples.buffer]);
     },
-    response: ({ open, id, status }) => {
-      if (open) mutedResponse = false;
+    response: ({ open, id, status, stopConfirmed }) => {
+      // Only the server's cancelled response.done confirms a stop.
+      if (stopConfirmed) stoppedAt = performance.now();
       awaitingAudio = open;
       setButtons();
       if (playbackNode) {
+        // note (luojiaxuan): turn-based playback never trims, so once the user has taken the turn the previous reply's leftovers are dropped by its id.
+        if (open && activeSession.turnBased && lastResponseId !== null) playbackNode.port.postMessage({ type: "cancel", responseId: lastResponseId });
         if (open) playbackNode.port.postMessage({ type: "open" });
         // A cancelled reply stops now; a completed one plays out what is buffered.
         else if (status === "cancelled") playbackNode.port.postMessage({ type: "cancel", responseId: id });
         else playbackNode.port.postMessage({ type: "flush" });
       }
       // A new answer means whatever is still queued belongs to the previous one.
-      if (open && playbackNode) playbackNode.port.postMessage({ type: "trim", keepSamples: Math.round(playbackContext.sampleRate * 0.5) });
+      if (open && playbackNode && !activeSession.turnBased) playbackNode.port.postMessage({ type: "trim", keepSamples: Math.round(playbackContext.sampleRate * 0.5) });
+      if (open) lastResponseId = id;
       renderTranscript();
     },
     text: renderTranscript,
@@ -432,6 +449,9 @@ async function connect() {
   stopCamera();
   sessionStart = null;
   muted = false;
+  mutedResponse = false;
+  mutedAt = -Infinity;
+  stoppedAt = -Infinity;
   session = null;
   renderTranscript();
   warn("");
@@ -451,6 +471,7 @@ async function connect() {
       outputModalities: options.outputModalities,
       instructions: options.instructions,
       extension: options.extension,
+      turnDetection: options.turnDetection,
     });
     activeSession.listeners = sessionListeners(activeSession);
     session = activeSession;
@@ -539,6 +560,7 @@ async function startMic() {
     pendingContext = null;
     pendingNode.port.onmessage = ({ data }) => {
       if (data.type !== "frame" || captureNode !== pendingNode) return;
+      if (!muted && levelOfRms(data.rms) > MIC_TALK_LEVEL) lastInputSpeechAt = performance.now();
       feedInput(new Int16Array(data.frame));
     };
   } finally {
@@ -573,7 +595,8 @@ async function closeNow() {
 
 function interrupt() {
   mutedResponse = true;
-  mutedQuietMs = 0;
+  mutedAt = performance.now();
+  if (session) session.cancelReply();
   if (playbackNode) playbackNode.port.postMessage({ type: "clear" });
   setButtons();
 }

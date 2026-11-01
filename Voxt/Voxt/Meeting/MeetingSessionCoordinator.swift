@@ -974,7 +974,7 @@ final class MeetingSessionCoordinator {
         let generation = beginCaptureEpoch(for: .them)
         try systemAudioCapture.start { [weak self] buffer, level in
             let sampleRate = buffer.format.sampleRate
-            guard let samples = Self.extractMonoSamples(from: buffer) else {
+            guard let samples = AudioLevelMeter.monoSamples(from: buffer) else {
                 let format = buffer.format
                 let isInterleaved = format.isInterleaved
                 let channelCount = format.channelCount
@@ -1022,7 +1022,7 @@ final class MeetingSessionCoordinator {
         let generation = beginCaptureEpoch(for: .me)
         try microphoneCapture.start { [weak self] buffer, level in
             let sampleRate = buffer.format.sampleRate
-            guard let samples = Self.extractMonoSamples(from: buffer) else {
+            guard let samples = AudioLevelMeter.monoSamples(from: buffer) else {
                 let format = buffer.format
                 let isInterleaved = format.isInterleaved
                 let channelCount = format.channelCount
@@ -1106,15 +1106,6 @@ final class MeetingSessionCoordinator {
         }
     }
 
-    func switchMicrophoneInput(to deviceID: AudioDeviceID?) throws {
-        guard overlayState.captureMode.usesMicrophone else { return }
-        microphoneStartupWatchdogTask?.cancel()
-        microphoneCapture.stop()
-        microphoneCapture.setPreferredInputDevice(deviceID)
-        try startMicrophoneCapture(with: deviceID)
-        scheduleMicrophoneStartupWatchdog(with: deviceID)
-    }
-
     private func finalizeCurrentRecordingSlice() {
         if let recordingStartedAt {
             accumulatedRecordingDuration += max(Date().timeIntervalSince(recordingStartedAt), 0)
@@ -1146,10 +1137,6 @@ final class MeetingSessionCoordinator {
         await orderedLiveAudioScheduler.cancel()
         await audioAnalysisScheduler.flush()
         await orderedLiveAudioScheduler.flush()
-    }
-
-    private func flushPendingTranslations() async {
-        await realtimeTranslationScheduler.flush()
     }
 
     private func persistMeetingAudioArchive() async throws -> URL? {
@@ -1335,15 +1322,6 @@ final class MeetingSessionCoordinator {
         guard let sessionToken, liveSessions.accepts(sessionToken, for: speaker) else { return }
         liveSessions.remove(sessionToken)
         localLivePendingAudio[speaker] = nil
-    }
-
-    private func inferredAudioSource(for speaker: MeetingSpeaker) -> TranscriptAudioSource {
-        switch speaker {
-        case .me:
-            return .microphone
-        case .them:
-            return .systemAudio
-        }
     }
 
     private func reconfigureAccumulators(for profile: MeetingChunkingProfile) {
@@ -1579,16 +1557,6 @@ final class MeetingSessionCoordinator {
         self.activeLocalEngine = nil
     }
 
-    private func resolvedMeetingMainLanguage() -> UserMainLanguageOption {
-        let storedCodes = UserDefaults.standard.string(forKey: AppPreferenceKey.userMainLanguageCodes)
-        let selectedOptions = UserMainLanguageOption.storedSelection(from: storedCodes)
-        if let firstCode = selectedOptions.first,
-           let option = UserMainLanguageOption.option(for: firstCode) {
-            return option
-        }
-        return UserMainLanguageOption.fallbackOption()
-    }
-
     private func resolvedMeetingHintPayload(
         target: ASRHintTarget,
         settings: ASRHintSettings
@@ -1616,10 +1584,6 @@ final class MeetingSessionCoordinator {
             stored: stored
         )
         return (provider, configuration)
-    }
-
-    private nonisolated static func extractMonoSamples(from buffer: AVAudioPCMBuffer) -> [Float]? {
-        AudioLevelMeter.monoSamples(from: buffer)
     }
 
     private var usesLiveSessionPath: Bool {

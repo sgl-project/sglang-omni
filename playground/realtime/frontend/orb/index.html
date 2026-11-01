@@ -228,15 +228,21 @@
         <span id="voiceInfo" class="hint"></span>
         <input id="voiceFile" type="file" accept="audio/*" hidden>
       </div>
+      <label id="voiceNameRow" class="field">Voice<select id="setVoiceName"></select></label>
       <label id="outputRow" class="field">Reply as<select id="setOutput"><option value="audio">Voice and text</option><option value="text">Text only</option></select></label>
       <label class="field">Microphone<select id="setMic"></select></label>
+      <div id="turnRow" class="field">Turn detection
+        <select id="setTurnType" aria-label="Turn detection"></select>
+        <label id="silenceRow" class="field inline"><span>Silence that ends a turn (ms)</span><input id="setSilence" type="number" step="10" min="0" placeholder="default"></label>
+        <label id="eagernessRow" class="field inline"><span>Eagerness</span><select id="setEagerness"><option value="">Deployment default</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
+      </div>
       <details id="advanced">
         <summary>Advanced</summary>
         <div>
           <label id="greedyRow" class="field inline"><span>Greedy decoding</span><input id="setGreedy" type="checkbox"></label>
           <div id="samplingFields" style="display:flex;flex-direction:column;gap:10px"></div>
           <label id="sliceRow" class="field">Camera detail (image slices)<select id="setSlices"></select></label>
-          <span class="hint">Empty fields keep the server's defaults.</span>
+          <span class="hint">Empty fields keep the deployment's defaults.</span>
         </div>
       </details>
       <button id="settingsReset" class="text-btn" type="button">Reset to defaults</button>

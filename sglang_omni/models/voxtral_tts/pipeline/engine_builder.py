@@ -89,7 +89,7 @@ class VoxtralTtsEngineBuilder(TtsEngineBuilder[VoxtralSGLangRequestData]):
         # Note (Jiaxin Deng): eager, the 7-step flow-matching loop is launch bound
         # (~10 ms per decode step at any batch size); replay takes ~3.6 ms on H200.
         batch_sizes = get_decode_cuda_graph_bs(server_args)
-        if batch_sizes:
+        if batch_sizes and self.device.startswith("cuda"):
             model.init_acoustic_graphs(list(batch_sizes))
         else:
             pass

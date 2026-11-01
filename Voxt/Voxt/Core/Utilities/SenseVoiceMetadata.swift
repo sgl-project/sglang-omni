@@ -2,7 +2,6 @@
 // Provides Sense Voice Metadata for shared utilities.
 
 import Foundation
-import MLXAudioSTT
 
 struct SenseVoiceSegmentMetadata: Identifiable, Codable, Hashable, Sendable {
     let id: UUID
@@ -74,7 +73,7 @@ struct SenseVoiceTranscriptMetadata: Codable, Hashable, Sendable {
 
 extension SenseVoiceTranscriptMetadata {
     nonisolated static func fromOutput(
-        _ output: STTOutput,
+        _ output: ASRTranscriptionResult,
         startSeconds: TimeInterval,
         endSeconds: TimeInterval,
         usedVADSegmentation: Bool
@@ -141,11 +140,11 @@ extension SenseVoiceTranscriptMetadata {
     }
 
     private nonisolated static func segments(
-        from output: STTOutput,
+        from output: ASRTranscriptionResult,
         startSeconds: TimeInterval,
         endSeconds: TimeInterval
     ) -> [SenseVoiceSegmentMetadata] {
-        let rawSegments = output.segments ?? []
+        let rawSegments = output.segments
         guard !rawSegments.isEmpty else {
             return [
                 SenseVoiceSegmentMetadata(
@@ -166,8 +165,8 @@ extension SenseVoiceTranscriptMetadata {
                 startSeconds: startSeconds,
                 endSeconds: endSeconds
             )
-            let segmentStart = segment.startTime ?? fallbackRange.lowerBound
-            let segmentEnd = segment.endTime ?? fallbackRange.upperBound
+            let segmentStart = segment.startSeconds ?? fallbackRange.lowerBound
+            let segmentEnd = segment.endSeconds ?? fallbackRange.upperBound
             return SenseVoiceSegmentMetadata(
                 startSeconds: min(segmentStart, segmentEnd),
                 endSeconds: max(segmentStart, segmentEnd),

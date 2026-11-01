@@ -221,7 +221,7 @@ processes:
 
 Resolved layout:
 
-```
+```text
 GPU 0: image_encoder + audio_encoder + thinker
 GPU 1: talker_ar@r0 + code2wav@r0
 GPU 2: talker_ar@r1 + code2wav@r1

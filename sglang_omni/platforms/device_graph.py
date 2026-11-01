@@ -17,6 +17,13 @@ import torch
 from torch.cuda import _POOL_HANDLE as CudaGraphPoolHandle
 
 try:
+    import torch_npu
+except ImportError:
+    # note (chaijiacheng888): only NPU stacks install torch_npu; the NPU backend
+    # reads its option API lazily, so a non-NPU build can still import this.
+    torch_npu = None
+
+try:
     from torch.xpu import _POOL_HANDLE as XpuGraphPoolHandle
 except ImportError:
     # note (cocoa): NPU stacks on PyTorch 2.10 do not expose XPU graph types.
@@ -127,12 +134,20 @@ class NpuDeviceGraphBackend:
             kwargs["capture_error_mode"] = "thread_local"
         else:
             pass
-        capture = torch.npu.graph(npu_graph=graph, **kwargs)
-        with ExitStack() as stack:
-            # note (cocoa): NPU capture caches tensors updated outside inference mode.
-            with torch.inference_mode(False):
-                stack.enter_context(capture)
-            yield graph
+        # note (chaijiacheng888): capture rejects aclop, which internal formats select.
+        previous_internal_format = torch_npu._C._npu_getOption(
+            "ALLOW_INTERNAL_FORMAT"
+        ).decode()  # noqa: leading-underscore  # torch-npu 2.10 has no public getter.
+        torch.npu.config.allow_internal_format = False
+        try:
+            capture = torch.npu.graph(npu_graph=graph, **kwargs)
+            with ExitStack() as stack:
+                # note (cocoa): NPU capture caches tensors updated outside inference mode.
+                with torch.inference_mode(False):
+                    stack.enter_context(capture)
+                yield graph
+        finally:
+            torch.npu.set_option({"ALLOW_INTERNAL_FORMAT": previous_internal_format})
 
 
 class XpuDeviceGraphBackend:

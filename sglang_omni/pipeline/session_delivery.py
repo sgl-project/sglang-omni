@@ -14,7 +14,6 @@ from sglang_omni.proto.streams import (
     PCM_F32,
     TURN_DONE,
     TURN_INTERRUPTED,
-    TURN_STARTED,
     control_type,
     is_interrupted_reply,
 )
@@ -68,13 +67,17 @@ class DeliveryPacer:
         self.wake = wake
         self.items: deque[Budgeted] = deque()
         self.unsent: deque[Budgeted] = deque()
+        # note (luojiaxuan): The client plays a reply from its first audio, so the release of a turn's first audio starts the reply's real time; audio before any turn's is not paced.
         self.reply_start_ms = 0.0
-        # Note (Junnan Li): Before the first turn.started nothing waits; the horizon is infinite.
         self.reply_started_at = -math.inf
+        self.clock_turn: int | None = None
         self.is_input_ended = False
         # Note (Junnan Li): The audio of the latest turn handed to the client, so an interrupt can say how much of its reply left the server.
         self.sent_turn: int | None = None
         self.sent_ms = 0.0
+        # note (luojiaxuan): Where the released audio of released_turn ends on its reply's timeline; its turn.done leaves once the client has played that far.
+        self.released_turn: int | None = None
+        self.released_end_ms = 0.0
 
     def offer(self, output: OutputChunk, size: int) -> int:
         """Queue an output; returns the budgeted bytes a turn.interrupted dropped from its turn."""
@@ -131,6 +134,12 @@ class DeliveryPacer:
     def horizon_ms(self, now: float) -> float:
         return self.reply_start_ms + (now - self.reply_started_at) * 1000 + self.lead_ms
 
+    def take_audio(self, released: list[Budgeted], audio: Budgeted) -> None:
+        output, _ = audio
+        self.released_turn = output.turn
+        self.released_end_ms = output.t_start_ms + output.duration_ms
+        released.append(audio)
+
     def release(self, now: float) -> list[Budgeted]:
         self.wake.clear()
         released: list[Budgeted] = []
@@ -140,6 +149,12 @@ class DeliveryPacer:
             if held and (is_reply_audio or control_type(output) == TURN_DONE):
                 held.append((output, size))
             elif is_reply_audio and not self.is_input_ended:
+                if output.turn != self.clock_turn:
+                    self.clock_turn = output.turn
+                    self.reply_start_ms = output.t_start_ms
+                    self.reply_started_at = now
+                else:
+                    pass
                 horizon_ms = self.horizon_ms(now)
                 if output.t_start_ms >= horizon_ms:
                     held.append((output, size))
@@ -152,14 +167,17 @@ class DeliveryPacer:
                         held.append((output, size))
                     else:
                         head, tail = split
-                        released.append(head)
+                        self.take_audio(released, head)
                         held.append(tail)
                 else:
-                    released.append((output, size))
-            elif control_type(output) == TURN_STARTED:
-                self.reply_start_ms = output.t_start_ms
-                self.reply_started_at = now
-                released.append((output, size))
+                    self.take_audio(released, (output, size))
+            elif (
+                control_type(output) == TURN_DONE
+                and not self.is_input_ended
+                and output.turn == self.released_turn
+                and self.horizon_ms(now) - self.lead_ms < self.released_end_ms
+            ):
+                held.append((output, size))
             else:
                 released.append((output, size))
         self.items = held
@@ -197,7 +215,10 @@ class DeliveryPacer:
         loop = asyncio.get_running_loop()
         if self.items and not self.wake.is_set():
             output, _ = self.items[0]
-            due_ms = output.t_start_ms + min(output.duration_ms, MIN_SLICE_MS)
+            if control_type(output) == TURN_DONE:
+                due_ms = self.released_end_ms + self.lead_ms
+            else:
+                due_ms = output.t_start_ms + min(output.duration_ms, MIN_SLICE_MS)
             delay_s = (
                 self.reply_started_at
                 + (due_ms - self.reply_start_ms - self.lead_ms) / 1000

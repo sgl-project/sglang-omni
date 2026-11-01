@@ -151,7 +151,7 @@ find_launched_pid() {
 
 PID=""
 if [[ "$LAUNCH_MODE" == "direct" ]]; then
-  env "${LAUNCH_ENV[@]}" "$EXECUTABLE_PATH" "${LAUNCH_ARGS[@]}" >> "$LOG_PATH" 2>&1 &
+  env ${LAUNCH_ENV[@]+"${LAUNCH_ENV[@]}"} "$EXECUTABLE_PATH" ${LAUNCH_ARGS[@]+"${LAUNCH_ARGS[@]}"} >> "$LOG_PATH" 2>&1 &
   PID="$!"
 else
   if [[ "${#LAUNCH_ARGS[@]}" -gt 0 ]]; then
@@ -203,7 +203,7 @@ UNIFIED_LOG_CAPTURE="$(mktemp "${TMPDIR:-/tmp}/voxt-launch-smoke-log.XXXXXX")"
 cat "$UNIFIED_LOG_CAPTURE" >> "$LOG_PATH"
 
 LOG_SCAN_FAILED=false
-for regex in "${FAIL_ON_LOG_REGEXES[@]}"; do
+for regex in ${FAIL_ON_LOG_REGEXES[@]+"${FAIL_ON_LOG_REGEXES[@]}"}; do
   if grep -E "$regex" "$UNIFIED_LOG_CAPTURE" >/dev/null 2>&1; then
     echo "logFailureRegex=$regex" >> "$LOG_PATH"
     LOG_SCAN_FAILED=true

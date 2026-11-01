@@ -244,6 +244,7 @@ def test_minimax_music3_default_follows_the_visible_gpus(
     assert stages["dit_dav"].gpu == acoustic_gpu
     assert stages["dit_dav"].factory.dtype == acoustic_dtype
     assert stages["dit_dav"].factory.compile_acoustic is True
+    assert stages["dit_dav"].factory.fp32_flex_attention is None
     assert config.placement.require_memory_fraction_for_colocation is colocation_check
     assert MiniMaxMusic3PipelineConfig.stage_config_cls(
         "minimax_music3_ar"
@@ -303,6 +304,7 @@ def test_native_sdpa_matches_reference_without_diffusion_server_args() -> None:
             dim_heads=64,
             compute_dtype=torch.float32,
             attention_backend="torch_sdpa",
+            fp32_flex_attention=False,
         )
         .to(device)
         .eval()

@@ -56,7 +56,7 @@ dependencies = [
 
     # --- Model loading / HF -------------------------------------------------
     "accelerate>=0.27.0",
-    "transformers==5.12.1",        # Match the pinned SGLang stack
+    "transformers==5.19.0",        # Match the pinned SGLang stack
     "safetensors>=0.4.3",
     "pillow>=10.0.0",
     "huggingface-hub[hf_xet]>=0.36.0",
@@ -114,7 +114,6 @@ fun-cosyvoice3 = [
 
 [project.scripts]
 sgl-omni = "sglang_omni.cli:app"
-sgl-omni-router-py = "sglang_omni_router.python.serve:main"
 
 [project.entry-points."sglang.serve_backends"]
 omni = "sglang_omni.cli.sglang_backend:create_backend"
@@ -131,9 +130,9 @@ override-dependencies = [
 
 # Shared by the installer and image builds. This metadata does not install SGLang.
 [tool.sglang-omni.npu]
-sglang-version = "0.5.20"
-base-image-a3 = "lmsysorg/sglang:v0.5.20-cann9.0.0-a3@sha256:0756b534a0379863c435ec8b7896ba17a18fccda2c8889326fb1dc9453de9be4"
-base-image-910b = "lmsysorg/sglang:v0.5.20-cann9.0.0-910b@sha256:ee030245e37859d4534f226791919c6c28761a3b4c16c79eb780f9673b92ac8a"
+sglang-version = "0.5.22"
+base-image-a3 = "lmsysorg/sglang:v0.5.22-cann9.1.0-a3@sha256:5f384cab0e16a4951ed0bdc54e1280f2108aeda6b8ede90ee527d8f4b5146443"
+base-image-950 = "lmsysorg/sglang:v0.5.22-cann9.1.0-950@sha256:5390aa7fdefbb6891a332e47a6165002366f34beefdcba05690eb373e695e394"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
@@ -148,8 +147,6 @@ where = ["."]
 include = [
     "sglang_omni",
     "sglang_omni.*",
-    "sglang_omni_router.python",
-    "sglang_omni_router.python.*",
 ]
 namespaces = true
 

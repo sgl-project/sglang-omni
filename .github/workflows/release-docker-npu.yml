@@ -41,7 +41,7 @@ jobs:
     outputs:
       matrix: ${{ steps.config.outputs.matrix }}
       base_image_a3: ${{ steps.config.outputs.base_image_a3 }}
-      base_image_910b: ${{ steps.config.outputs.base_image_910b }}
+      base_image_950: ${{ steps.config.outputs.base_image_950 }}
       publish: ${{ steps.publication.outputs.publish }}
     steps:
       - name: Validate publication settings
@@ -70,10 +70,10 @@ jobs:
         run: |
           matrix=$(python scripts/npu/config.py --matrix)
           base_image_a3=$(python scripts/npu/config.py --get base-image-a3)
-          base_image_910b=$(python scripts/npu/config.py --get base-image-910b)
+          base_image_950=$(python scripts/npu/config.py --get base-image-950)
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "base_image_a3=$base_image_a3" >> "$GITHUB_OUTPUT"
-          echo "base_image_910b=$base_image_910b" >> "$GITHUB_OUTPUT"
+          echo "base_image_950=$base_image_950" >> "$GITHUB_OUTPUT"
 
   build_and_publish_arm64:
     needs: preprocess
@@ -115,7 +115,7 @@ jobs:
           file: docker/npu.Dockerfile
           platforms: linux/arm64
           build-args: |
-            SGLANG_IMAGE=${{ matrix.device == 'a3' && needs.preprocess.outputs.base_image_a3 || needs.preprocess.outputs.base_image_910b }}
+            SGLANG_IMAGE=${{ matrix.device == 'a3' && needs.preprocess.outputs.base_image_a3 || needs.preprocess.outputs.base_image_950 }}
           labels: ${{ steps.meta.outputs.labels }}
           tags: ${{ steps.meta.outputs.tags }}
           push: ${{ needs.preprocess.outputs.publish == 'true' }}

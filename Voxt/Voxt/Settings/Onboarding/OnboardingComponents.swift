@@ -240,6 +240,7 @@ struct LocalModelPickerCard<PickerContent: View>: View {
                         .foregroundStyle(.orange)
                     Button(localized("Continue"), action: onResume ?? onInstall)
                         .buttonStyle(SettingsPillButtonStyle())
+                        .disabled(!isInstallEnabled)
                     if let onCancel {
                         Button(localized("Cancel"), role: .destructive, action: onCancel)
                             .buttonStyle(SettingsPillButtonStyle(tone: .destructive))

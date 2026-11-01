@@ -136,7 +136,6 @@ fishaudio = [
 
 [project.scripts]
 sgl-omni = "sglang_omni.cli:app"
-sgl-omni-router-py = "sglang_omni_router.python.serve:main"
 
 [project.entry-points."sglang.serve_backends"]
 omni = "sglang_omni.cli.sglang_backend:create_backend"
@@ -184,15 +183,13 @@ select = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"!{sglang_omni,sglang_omni_router/python}/**" = ["ANN401"]
+"!sglang_omni/**" = ["ANN401"]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = [
     "sglang_omni",
     "sglang_omni.*",
-    "sglang_omni_router.python",
-    "sglang_omni_router.python.*",
 ]
 namespaces = true
 

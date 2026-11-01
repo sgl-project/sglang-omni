@@ -42,6 +42,10 @@
 	<key>com.apple.security.network.client</key>
 	<true/>
 
+	<!-- Local Native Omni runtime listens on a loopback HTTP port. -->
+	<key>com.apple.security.network.server</key>
+	<true/>
+
 	<!-- Apple Events to supported browsers for active-tab URL -->
 	<key>com.apple.security.temporary-exception.apple-events</key>
 	<array>

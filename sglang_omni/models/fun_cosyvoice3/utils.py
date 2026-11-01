@@ -9,6 +9,10 @@ from typing import Callable
 import numpy as np
 import torch
 
+# note (ratish): the longest reference the speech tokenizer takes, 30 s at its 16 kHz.
+MAX_REFERENCE_SECONDS = 30
+MAX_REFERENCE_SAMPLES = MAX_REFERENCE_SECONDS * 16000
+
 
 class CosyVoice3Tokenizer:
     def __init__(self, token_path: str, skip_special_tokens: bool = True):
@@ -88,9 +92,10 @@ class SpeechTokenizerV3:
         else:
             pass
 
-        if audio.shape[1] / sample_rate > 30:
+        if audio.shape[1] > MAX_REFERENCE_SAMPLES:
             raise ValueError(
-                "Audio longer than 30s is not supported for speech token extraction"
+                f"Audio longer than {MAX_REFERENCE_SAMPLES // sample_rate}s is not "
+                "supported for speech token extraction"
             )
         else:
             pass

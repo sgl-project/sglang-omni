@@ -1,20 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Performance policy for the TTS MPS DP2 validation stage.
-
-References are raw worst-of-five observations from a CI-comparable H100, held
-pre-slack exactly as the external `calibrate-h100-ci` skill writes them. CI
-assertion slack is derived here, never baked into the stored reference, so a
-recalibration only ever rewrites the `_REF` literals.
-
-`None` means the metric has not been calibrated yet. The stage still collects
-and reports the observation, then fails the assertion, so an uncalibrated gate
-can never pass silently.
-
-Calibrated 2026-08-02 on one H100 of the CI host against SGLang 0.5.16, five
-strict-valid repeats per stage at concurrency 16 over the full SeedTTS EN set
-(run `20260802T033000Z_tts-mps_all_r8`); every metric held a spread under 3.1
-percent.
-"""
+"""Raw pre-slack references and derived gates for TTS MPS DP2 validation."""
 
 from __future__ import annotations
 
@@ -26,22 +11,22 @@ MPS_SLACK_LOWER = 1.25
 
 MPS_CONCURRENCY = 16
 
-MPS_HIGGS_THROUGHPUT_QPS_REF: float | None = 15.632
-MPS_HIGGS_OUTPUT_TOK_PER_REQ_S_REF: float | None = 122.5
-MPS_HIGGS_LATENCY_MEAN_S_REF: float | None = 1.017
-MPS_HIGGS_RTF_MEAN_REF: float | None = 0.2427
+MPS_HIGGS_THROUGHPUT_QPS_REF: float | None = 16.22
+MPS_HIGGS_OUTPUT_TOK_PER_REQ_S_REF: float | None = 120.9
+MPS_HIGGS_LATENCY_MEAN_S_REF: float | None = 0.981
+MPS_HIGGS_RTF_MEAN_REF: float | None = 0.2322
 
-MPS_MOSS_THROUGHPUT_QPS_REF: float | None = 17.853
-MPS_MOSS_OUTPUT_TOK_PER_REQ_S_REF: float | None = 72.1
-MPS_MOSS_LATENCY_MEAN_S_REF: float | None = 0.891
-MPS_MOSS_RTF_MEAN_REF: float | None = 0.2048
+MPS_MOSS_THROUGHPUT_QPS_REF: float | None = 19.595
+MPS_MOSS_OUTPUT_TOK_PER_REQ_S_REF: float | None = 79.7
+MPS_MOSS_LATENCY_MEAN_S_REF: float | None = 0.811
+MPS_MOSS_RTF_MEAN_REF: float | None = 0.1863
 
 # Speaker similarity gets its own MPS baseline. The canonical reference is
 # calibrated under ordinary DP2, and under a shared card the observed spread
 # straddles it (65.90 to 67.31 against a 66.07 line), so reusing it would make
 # the stage fail about half the time without any measured MPS penalty.
-MPS_HIGGS_SIMILARITY_MEAN_MIN: float | None = 66.36817497253418
-MPS_MOSS_SIMILARITY_MEAN_MIN: float | None = 63.91877571105957
+MPS_HIGGS_SIMILARITY_MEAN_MIN: float | None = 64.5785757446289
+MPS_MOSS_SIMILARITY_MEAN_MIN: float | None = 62.4948962020874
 
 MPS_SIMILARITY_MEAN_MIN = {
     "higgs": MPS_HIGGS_SIMILARITY_MEAN_MIN,

@@ -119,6 +119,8 @@ consume `steady_chunk_patches` at a time. The provided configuration uses two in
 four steady patches, and the terminal step flushes any remainder. Pipe the response to `ffplay`
 to play it during generation:
 
+Streaming AudioVAE automatically uses Triton BTH upsampling when Triton is available and the input is a non-empty CUDA BF16 BTH tensor with non-negative strides; other streaming inputs use the existing PyTorch upsampler, and non-streaming AudioVAE decode is unchanged.
+
 ```bash
 curl -sS --fail --no-buffer -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \

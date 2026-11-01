@@ -2,7 +2,53 @@ import XCTest
 @testable import Voxt
 
 @MainActor
-final class OnboardingGuideTests: XCTestCase {
+final class OnboardingGuideTests: MLXModelManagerTestCase {
+    func testUnknownSpeechCannotCompleteModelSetupWhileNativeSpeechUsesPlatformGate() async throws {
+        let disabledRepo = "unknown/model"
+        let nativeRepo = "mlx-community/SenseVoiceSmall"
+        try await withIsolatedModelStorageRoot { root in
+            try seedValidMLXModelDirectory(repo: nativeRepo, root: root)
+            let mlx = MLXModelManager(modelRepo: disabledRepo)
+            let llm = CustomLLMModelManager(modelRepo: CustomLLMModelManager.defaultModelRepo)
+            _ = try await mlx.refreshInstallation(repo: nativeRepo)
+            let guide = OnboardingGuideView(
+                currentStep: .constant(.models),
+                mlxModelManager: mlx,
+                customLLMManager: llm,
+                overlayState: OverlayState(),
+                onClose: {},
+                onFinish: {}
+            )
+            XCTAssertFalse(guide.isSpeechModelReady(.mlx(disabledRepo)))
+#if arch(arm64)
+            XCTAssertTrue(guide.isSpeechModelReady(.mlx(nativeRepo)))
+#else
+            XCTAssertFalse(guide.isSpeechModelReady(.mlx(nativeRepo)))
+#endif
+            await mlx.shutdownForApplicationTermination()
+            await llm.shutdownForApplicationTermination()
+        }
+    }
+
+    func testOpeningGuidePreservesNativeSpeechSelections() {
+        let defaults = TestDoubles.makeUserDefaults()
+        var settings = mixedSettings()
+        let selection = FeatureModelSelectionID.mlx("mlx-community/SenseVoiceSmall")
+        settings.transcription.asrSelectionID = selection
+        settings.translation.asrSelectionID = selection
+        settings.rewrite.asrSelectionID = selection
+        settings.meeting.asrSelectionID = selection
+        FeatureSettingsStore.save(settings, defaults: defaults)
+        let savedPreferences = defaults.dictionaryRepresentation() as NSDictionary
+        let loaded = FeatureSettingsStore.load(defaults: defaults)
+        XCTAssertEqual(OnboardingModelDraft().applying(to: loaded), loaded)
+        XCTAssertEqual(loaded.transcription.asrSelectionID, selection)
+        XCTAssertEqual(loaded.translation.asrSelectionID, selection)
+        XCTAssertEqual(loaded.rewrite.asrSelectionID, selection)
+        XCTAssertEqual(loaded.meeting.asrSelectionID, selection)
+        XCTAssertEqual(defaults.dictionaryRepresentation() as NSDictionary, savedPreferences)
+    }
+
     func testSixStepNavigation() {
         let steps: [OnboardingGuideStep] = [
             .permissions, .models, .transcriptionShortcut,

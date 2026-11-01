@@ -1,0 +1,59 @@
+{
+ "model": "mlx-community/MiniMax-Music3-mxfp8",
+ "kind": "minimax_music3",
+ "reference": "sgl-project/sglang-omni#1990 at 195e4e9058e13af605f13f5c55a26efe651805a6; MLX 0.32.3",
+ "cases": [
+  {
+   "id": "en_short",
+   "input": "[Verse]\nWalking through the morning light\nEvery little thing feels right",
+   "instructions": "A gentle acoustic folk song with piano and soft vocals at 85 BPM",
+   "seed": 42,
+   "max_new_tokens": 50,
+   "dit_steps": 30
+  },
+  {
+   "id": "zh_cross_chunk",
+   "input": "[Verse]\n清晨的风吹过窗台\n阳光轻轻落在心海\n[Chorus]\n让歌声陪着我们向前走",
+   "instructions": "A warm Mandarin pop song with piano, acoustic guitar and gentle drums at 90 BPM",
+   "seed": 7,
+   "max_new_tokens": 250,
+   "dit_steps": 30
+  }
+ ],
+ "devices": {
+  "Apple M5": {
+   "metrics": {},
+   "clips": {
+    "en_short": {
+     "sha256": "8c0b4fc76f0e7a66deff62a70c0e6f8000a6a059cabef43afe9a4a33483ba4ac",
+     "sample_count": 63902,
+     "sample_rate": 32000,
+     "generated_frames": 50
+    },
+    "zh_cross_chunk": {
+     "sha256": "97356d0712b012d290369a53c95e6a995e3548663e92c31ca97fac0e26c3da2c",
+     "sample_count": 319879,
+     "sample_rate": 32000,
+     "generated_frames": 250
+    }
+   }
+  },
+  "Apple M4 Pro": {
+   "metrics": {},
+   "clips": {
+    "en_short": {
+     "sha256": "634c11fb480daa0fd2186b1755ad8d7f69754ace65d24d48b47c6cdc1c3352f1",
+     "sample_count": 63902,
+     "sample_rate": 32000,
+     "generated_frames": 50
+    },
+    "zh_cross_chunk": {
+     "sha256": "5c8b1edbdbeb0dd795de4f16369b1d62e43125d60596bd99f93e3634bd8252ee",
+     "sample_count": 319879,
+     "sample_rate": 32000,
+     "generated_frames": 250
+    }
+   }
+  }
+ }
+}

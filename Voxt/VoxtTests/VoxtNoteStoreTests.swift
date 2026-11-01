@@ -332,6 +332,183 @@ final class VoxtNoteStoreTests: XCTestCase {
         XCTAssertEqual(unchanged.text, "Updated content")
     }
 
+    func testQueryOrderingHonorsPriorityManualOrderTimestampAndIdentity() {
+        let low = queryNote(1, priority: .low, manualOrder: 100, updatedAt: 500)
+        let ordered = queryNote(2, priority: .high, manualOrder: 2, updatedAt: 100)
+        let newer = queryNote(3, priority: .high, manualOrder: 1, updatedAt: 300)
+        let older = queryNote(4, priority: .high, manualOrder: 1, updatedAt: 200)
+        let tied = queryNote(5, priority: .high, manualOrder: 1, updatedAt: 200)
+        let unordered = queryNote(6, priority: .high, updatedAt: 1_000)
+        let backlog = queryNote(7, status: .backlog, priority: .high, manualOrder: 10)
+        let notes = [backlog, unordered, tied, older, low, newer, ordered]
+
+        XCTAssertEqual(VoxtNoteQueries.orderedItems(notes, for: .todo).map(\.id),
+                       [ordered, newer, older, tied, unordered, low].map(\.id))
+        XCTAssertEqual(VoxtNoteQueries.orderedItems(notes, for: .backlog).map(\.id), [backlog.id])
+    }
+
+    func testCompletedQueryUsesCompletionFallbackAndIdentityNotPriority() {
+        let completed = queryNote(1, status: .done, priority: .low, completedAt: 300)
+        let fallback = queryNote(2, status: .done, priority: .high, manualOrder: 10, updatedAt: 200)
+        let tied = queryNote(3, status: .done, updatedAt: 200)
+        XCTAssertEqual(VoxtNoteQueries.orderedItems([tied, fallback, completed], for: .done).map(\.id),
+                       [completed.id, fallback.id, tied.id])
+    }
+
+    func testScopeQueryOmitsEmptySectionsAndCountsOnlyActiveStatuses() {
+        let todo = queryNote(1)
+        let completed = queryNote(2, status: .done)
+        let backlog = queryNote(3, status: .backlog)
+        let notes = [backlog, completed, todo]
+        let snapshot = VoxtNoteQueries.snapshot(notes, for: .notes)
+        XCTAssertEqual(snapshot.sections.map(\.status), [.todo, .done])
+        XCTAssertEqual(snapshot.visibleCount, 2)
+        XCTAssertEqual(snapshot.activeCount, 1)
+        let backlogSnapshot = VoxtNoteQueries.snapshot(notes, for: .backlog)
+        XCTAssertEqual(backlogSnapshot.sections.flatMap(\.items).map(\.id), [backlog.id])
+        XCTAssertEqual(backlogSnapshot.activeCount, 1)
+        XCTAssertEqual(VoxtNoteQueries.snapshot([], for: .notes).visibleCount, 0)
+        XCTAssertTrue(VoxtNoteQueries.snapshot([], for: .backlog).sections.isEmpty)
+    }
+
+    func testPublicationQueryUsesCreationTimeRatherThanSectionOrder() {
+        let first = queryNote(1, priority: .low, createdAt: 200)
+        let second = queryNote(2, priority: .high, createdAt: 200, updatedAt: 500)
+        let newest = queryNote(3, status: .done, createdAt: 300)
+        XCTAssertEqual(VoxtNoteQueries.publicationOrder([second, first, newest]).map(\.id),
+                       [newest.id, first.id, second.id])
+    }
+
+    func testRecordProjectionPreservesValuesAndUnknownRawValueFallbacks() {
+        let note = queryNote(1, status: .done, priority: .high, manualOrder: .max, completedAt: 300)
+        let record = VoxtNoteRecord(item: note)
+        XCTAssertEqual(record.item, note)
+        record.titleGenerationStateRaw = "unknown"
+        record.statusRaw = "unknown"
+        record.priorityRaw = "unknown"
+        record.sourceRaw = "unknown"
+        XCTAssertEqual(record.item.titleGenerationState, .fallback)
+        XCTAssertEqual(record.item.status, .todo)
+        XCTAssertEqual(record.item.priority, .none)
+        XCTAssertEqual(record.item.source, .transcription)
+        XCTAssertEqual(record.item.completedAt, note.completedAt)
+        XCTAssertEqual(record.item.manualOrder, .max)
+    }
+
+    func testTitleNormalizationPreservesDifferentUserAndGeneratedPolicies() {
+        XCTAssertEqual(VoxtNoteTitleSupport.normalizedTitle(" \"User\"\n\t title "), "\"User\" title")
+        XCTAssertEqual(VoxtNoteTitleSupport.normalizedTitle(String(repeating: "x", count: 60)).count, 60)
+        XCTAssertEqual(VoxtNoteTitleSupport.normalizedGeneratedTitle("\"Generated\"\nignored"), "Generated")
+        XCTAssertEqual(VoxtNoteTitleSupport.normalizedGeneratedTitle(String(repeating: "x", count: 60)).count, 48)
+        XCTAssertEqual(VoxtNoteTitleSupport.fallbackTitle(from: String(repeating: "中", count: 30)).count, 20)
+        XCTAssertEqual(VoxtNoteTitleSupport.fallbackTitle(from: "\n\t"), "Note")
+        XCTAssertEqual(VoxtNoteTitleSupport.normalizedTitle("\n\t"), "")
+    }
+
+    func testManualOrderOverflowAndReorderRemainScopedAndPersist() throws {
+        let directory = try TemporaryDirectory()
+        let legacyURL = directory.url.appendingPathComponent("voxt-notes.json")
+        let first = queryNote(1, manualOrder: .max, updatedAt: 100)
+        let second = queryNote(2, manualOrder: 4, updatedAt: 200)
+        let otherPriority = queryNote(3, priority: .high, manualOrder: .max)
+        try JSONEncoder().encode([first, second, otherPriority]).write(to: legacyURL)
+        let timestamp = Date(timeIntervalSince1970: 900)
+        let store = VoxtNoteStore(fileURL: legacyURL, now: { timestamp })
+        let created = try XCTUnwrap(store.append(
+            sessionID: UUID(), text: " Body ", title: " New\n title ", titleGenerationState: .fallback
+        ))
+        XCTAssertEqual(created.manualOrder, 3)
+        XCTAssertEqual(created.text, "Body")
+        XCTAssertEqual(created.title, "New title")
+        XCTAssertEqual(store.items.first(where: { $0.id == first.id })?.manualOrder, 2)
+        XCTAssertEqual(store.items.first(where: { $0.id == second.id })?.manualOrder, 1)
+        XCTAssertEqual(store.items.first(where: { $0.id == otherPriority.id })?.manualOrder, .max)
+        XCTAssertFalse(store.reorder(noteID: first.id, relativeTo: otherPriority.id))
+        XCTAssertFalse(store.reorder(noteID: first.id, relativeTo: first.id))
+        XCTAssertFalse(store.reorder(noteID: UUID(), relativeTo: first.id))
+        XCTAssertTrue(store.reorder(noteID: created.id, relativeTo: second.id))
+        XCTAssertEqual(store.orderedItems(for: .todo).map(\.id),
+                       [otherPriority.id, first.id, second.id, created.id])
+        XCTAssertEqual(store.items.first(where: { $0.id == first.id })?.updatedAt, first.updatedAt)
+        XCTAssertEqual(store.items.first(where: { $0.id == created.id })?.updatedAt, timestamp)
+        let reloaded = VoxtNoteStore(fileURL: legacyURL)
+        XCTAssertEqual(reloaded.orderedItems(for: .todo).map(\.id), store.orderedItems(for: .todo).map(\.id))
+    }
+
+    func testLegacyCodableDefaultsAndExplicitStatusPrecedence() throws {
+        let payload = """
+        {"id":"00000000-0000-0000-0000-000000000001",
+         "sessionID":"00000000-0000-0000-0000-000000000002",
+         "createdAt":100,"text":"Body","title":"Title","titleGenerationState":"fallback",
+         "isCompleted":true}
+        """
+        let legacy = try JSONDecoder().decode(VoxtNoteItem.self, from: Data(payload.utf8))
+        XCTAssertEqual(legacy.status, .done)
+        XCTAssertEqual(legacy.updatedAt, legacy.createdAt)
+        XCTAssertNil(legacy.completedAt)
+        XCTAssertNil(legacy.manualOrder)
+        XCTAssertEqual(legacy.priority, .none)
+        XCTAssertEqual(legacy.source, .migrated)
+        let explicit = payload.replacingOccurrences(of: "\"isCompleted\":true", with: "\"isCompleted\":true,\"status\":\"backlog\"")
+        XCTAssertEqual(try JSONDecoder().decode(VoxtNoteItem.self, from: Data(explicit.utf8)).status, .backlog)
+        let encoded = try JSONEncoder().encode(legacy)
+        XCTAssertEqual(try JSONDecoder().decode(VoxtNoteItem.self, from: encoded), legacy)
+        struct LegacyCompletion: Decodable { let isCompleted: Bool }
+        XCTAssertTrue(try JSONDecoder().decode(LegacyCompletion.self, from: encoded).isCompleted)
+    }
+
+    func testFailedReorderRollsBackOrderAndTimestamp() throws {
+        var shouldFail = false
+        var timestamp = Date(timeIntervalSince1970: 100)
+        let store = VoxtNoteStore(inMemory: true, now: { timestamp }, persist: { context in
+            if shouldFail { throw StorageOpenError() }
+            try context.save()
+        })
+        let first = try XCTUnwrap(store.append(
+            sessionID: UUID(), text: "First", title: "First", titleGenerationState: .fallback
+        ))
+        let second = try XCTUnwrap(store.append(
+            sessionID: UUID(), text: "Second", title: "Second", titleGenerationState: .fallback
+        ))
+        XCTAssertNil(first.manualOrder)
+        XCTAssertNil(second.manualOrder)
+        let original = store.items
+        let ordered = store.orderedItems(for: .todo)
+        let movedID = try XCTUnwrap(ordered.last?.id)
+        let targetID = try XCTUnwrap(ordered.first?.id)
+        timestamp = Date(timeIntervalSince1970: 200)
+        shouldFail = true
+        XCTAssertFalse(store.reorder(noteID: movedID, relativeTo: targetID))
+        XCTAssertEqual(store.items, original)
+        XCTAssertEqual(store.lastErrorMessage, "Injected note storage open failure")
+        shouldFail = false
+        XCTAssertTrue(store.reorder(noteID: movedID, relativeTo: targetID))
+        XCTAssertEqual(store.orderedItems(for: .todo).map(\.id), [movedID, targetID])
+        XCTAssertEqual(store.items.first(where: { $0.id == movedID })?.updatedAt, timestamp)
+        XCTAssertTrue(store.setStatus(.inProgress, for: movedID))
+        XCTAssertNil(store.items.first(where: { $0.id == movedID })?.manualOrder)
+    }
+
+    private func queryNote(
+        _ identity: Int,
+        status: VoxtNoteStatus = .todo,
+        priority: VoxtNotePriority = .none,
+        manualOrder: Int64? = nil,
+        createdAt: TimeInterval = 100,
+        updatedAt: TimeInterval = 100,
+        completedAt: TimeInterval? = nil
+    ) -> VoxtNoteItem {
+        VoxtNoteItem(
+            id: UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", identity))!,
+            sessionID: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
+            createdAt: Date(timeIntervalSince1970: createdAt),
+            text: "Body", title: "Title", titleGenerationState: .generated,
+            updatedAt: Date(timeIntervalSince1970: updatedAt),
+            completedAt: completedAt.map { Date(timeIntervalSince1970: $0) },
+            status: status, priority: priority, manualOrder: manualOrder, source: .selection
+        )
+    }
+
     func testFallbackTitlePrefersSentencePrefix() {
         XCTAssertEqual(
             VoxtNoteTitleSupport.fallbackTitle(from: "Call Alice about the roadmap. Also share the draft."),

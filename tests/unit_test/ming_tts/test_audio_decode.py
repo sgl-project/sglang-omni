@@ -109,7 +109,7 @@ def make_facade(
 def test_full_empty_latents_skip_audio_vae(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    decoder, audio_vae, transition, runner = make_facade(monkeypatch)
+    decoder, audio_vae, _, _ = make_facade(monkeypatch)
 
     waveform = decoder.decode_full(torch.empty((0, 2, 3), dtype=torch.float32))
 

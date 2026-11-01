@@ -52,6 +52,7 @@ from sglang_omni.proto.streams import (
     INTERRUPT,
     PCM_F32,
     REPLY_PROGRESS,
+    REPLY_TRUNCATED,
     SESSION_CONTROL,
     TEXT,
     TURN_DONE,
@@ -176,6 +177,8 @@ class StreamingVocoderBase(
         self.session_appends: dict[str, SessionOperation] = {}
         # Note (Junnan Li): A unit that is a whole reply publishes turn.started before its first chunk and turn.done after its last.
         self.started_reply_units: set[str] = set()
+        # A reply whose generation stopped at the talker's token budget; its turn.done carries the flag.
+        self.truncated_reply_units: set[str] = set()
         self.session_units: dict[str, list[str]] = {}
         self.session_unit_audio_ms: dict[str, float] = {}
         self.pending_session_controls: dict[str, list[OutgoingMessage]] = {}
@@ -422,7 +425,12 @@ class StreamingVocoderBase(
             messages.append(self.reply_progress_message(request_id, operation))
             if self.is_reply_unit(operation):
                 messages.append(
-                    self.session_control_message(request_id, operation, TURN_DONE)
+                    self.session_control_message(
+                        request_id,
+                        operation,
+                        TURN_DONE,
+                        truncated=request_id in self.truncated_reply_units,
+                    )
                 )
             else:
                 pass
@@ -537,6 +545,7 @@ class StreamingVocoderBase(
 
     def clear_stream_state(self, request_id: str) -> None:
         self.emitted_stream_ids.discard(request_id)
+        self.truncated_reply_units.discard(request_id)
         if request_id in self.pending_session_controls and not self.is_aborted(
             request_id
         ):
@@ -621,6 +630,12 @@ class StreamingVocoderBase(
         else:
             pass
         operation = self.session_appends.get(request_id)
+        if operation is not None and metadata.get(REPLY_TRUNCATED) is True:
+            # The talker reports a reply it could not finish; the flag rides the reply's turn.done, in order with its audio.
+            self.truncated_reply_units.add(request_id)
+            return None
+        else:
+            pass
         if operation is not None and metadata.get("modality") == TEXT:
             # Note (Junnan Li): A reply's text reaches the client through its audio's owner, in order with the audio.
             for message in self.reply_unit_start(request_id, operation):
@@ -730,14 +745,23 @@ class StreamingVocoderBase(
 
     @staticmethod
     def session_control_message(
-        request_id: str, operation: SessionOperation, event: str
+        request_id: str,
+        operation: SessionOperation,
+        event: str,
+        *,
+        truncated: bool = False,
     ) -> OutgoingMessage:
+        payload: dict[str, object] = {"type": event}
+        if truncated:
+            payload[REPLY_TRUNCATED] = True
+        else:
+            pass
         chunk = TimedChunk(
             CONTROL,
             0,
             0,
             operation.chunk.seq,
-            {"type": event},
+            payload,
             format=SESSION_CONTROL,
             turn=operation.chunk.turn,
         )

@@ -80,6 +80,15 @@ final class SettingsPermissionSupportTests: XCTestCase {
         XCTAssertEqual(SettingsPermissionRequirementResolver.requiredPermissions(context: context), [.microphone, .accessibility])
     }
 
+    func testDefaultNotesDoNotRequireRemindersPermission() {
+        let settings = FeatureSettings.placeholder
+        let context = SettingsPermissionRequirementContext(selectedEngine: .mlxAudio, featureSettings: settings)
+
+        XCTAssertTrue(settings.transcription.notes.enabled)
+        XCTAssertFalse(settings.transcription.notes.remindersSync.enabled)
+        XCTAssertFalse(SettingsPermissionRequirementResolver.requiredPermissions(context: context).contains(.reminders))
+    }
+
     func testRemindersOnlyRequiredForEnabledNotesSync() {
         for notesEnabled in [false, true] {
             let context = SettingsPermissionRequirementContext(

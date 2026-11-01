@@ -147,6 +147,116 @@ final class PromptBuildersTests: XCTestCase {
         XCTAssertContains(prompt, "A previous answer was empty or unusable.")
     }
 
+    @MainActor
+    func testTemplateDeliveryUsesOnlyExactInputTokens() {
+        XCTAssertEqual(
+            TextTransformPromptSupport.deliveryForTemplate(
+                "Translate {{SOURCE_TEXT}} to {{TARGET_LANGUAGE}}",
+                variableTokens: ["{{SOURCE_TEXT}}"]
+            ),
+            .userMessage
+        )
+        XCTAssertEqual(
+            TextTransformPromptSupport.deliveryForTemplate(
+                "Rewrite {{DICTATED_PROMPT}}",
+                variableTokens: ["{{DICTATED_PROMPT}}", "{{SOURCE_TEXT}}"]
+            ),
+            .userMessage
+        )
+        for template in ["", "Translate to {{TARGET_LANGUAGE}}", "Translate {{source_text}}", "Rewrite {SOURCE_TEXT}"] {
+            XCTAssertEqual(
+                TextTransformPromptSupport.deliveryForTemplate(
+                    template,
+                    variableTokens: ["{{SOURCE_TEXT}}", "{{DICTATED_PROMPT}}"]
+                ),
+                .systemPrompt
+            )
+        }
+    }
+
+    @MainActor
+    func testRewriteConversationPromptAppendsPlainTextRetryOnlyWhenRequested() {
+        let prompt = TextTransformPromptSupport.rewriteConversationPrompt(forceNonEmptyAnswer: false)
+        let retryPrompt = TextTransformPromptSupport.rewriteConversationPrompt(forceNonEmptyAnswer: true)
+
+        XCTAssertContains(prompt, "The previous conversation is provided as chat messages.")
+        XCTAssertContains(prompt, "Never repeat or paraphrase the latest assistant reply")
+        XCTAssertContains(prompt, "Return plain text only.")
+        XCTAssertFalse(prompt.contains("Retry rule:"))
+        XCTAssertTrue(retryPrompt.hasPrefix(prompt + "\n\nRetry rule:"))
+        XCTAssertContains(retryPrompt, "empty, quoted-empty, or otherwise unusable")
+        XCTAssertContains(retryPrompt, "Do not return surrounding quotes.")
+    }
+
+    @MainActor
+    func testRewriteConversationPromptKeepsNewestFourTurnsInChronologicalOrder() {
+        let history = (0..<6).map { index in
+            RewriteConversationPromptTurn(
+                userPromptText: "instruction-\(index)",
+                resultTitle: "title-\(index)",
+                resultContent: "answer-\(index)"
+            )
+        }
+        let prompt = RewritePromptBuilder.build(
+            systemPrompt: "Base",
+            dictatedPrompt: "continue",
+            sourceText: "",
+            conversationHistory: TextTransformPromptSupport.trimmedRewriteConversationHistory(history),
+            structuredAnswerOutput: false,
+            directAnswerMode: true,
+            forceNonEmptyAnswer: false
+        )
+
+        XCTAssertFalse(prompt.contains("instruction-0"))
+        XCTAssertFalse(prompt.contains("instruction-1"))
+        for index in 2..<6 {
+            XCTAssertContains(prompt, "User: instruction-\(index)")
+            XCTAssertContains(prompt, "Assistant: answer-\(index)")
+        }
+        XCTAssertLessThan(
+            prompt.range(of: "User: instruction-2")!.lowerBound,
+            prompt.range(of: "User: instruction-5")!.lowerBound
+        )
+    }
+
+    @MainActor
+    func testRewriteConversationPromptIncludesExactCharacterBudgetAndKeepsOversizedLatestTurn() {
+        let turn = RewriteConversationPromptTurn(
+            userPromptText: "x",
+            resultTitle: String(repeating: "title", count: 400),
+            resultContent: String(repeating: "a", count: 797)
+        )
+        let exactBudgetHistory = TextTransformPromptSupport.trimmedRewriteConversationHistory([turn, turn, turn])
+        let prompt = RewritePromptBuilder.build(
+            systemPrompt: "Base",
+            dictatedPrompt: "continue",
+            sourceText: "",
+            conversationHistory: exactBudgetHistory,
+            structuredAnswerOutput: false,
+            directAnswerMode: true,
+            forceNonEmptyAnswer: false
+        )
+        XCTAssertEqual(prompt.components(separatedBy: "Assistant: ").count - 1, 2)
+
+        let oversizedTurn = RewriteConversationPromptTurn(
+            userPromptText: "latest request",
+            resultTitle: "Latest",
+            resultContent: String(repeating: "界", count: 1_601)
+        )
+        let oversizedPrompt = RewritePromptBuilder.build(
+            systemPrompt: "Base",
+            dictatedPrompt: "continue",
+            sourceText: "",
+            conversationHistory: TextTransformPromptSupport.trimmedRewriteConversationHistory([turn, oversizedTurn]),
+            structuredAnswerOutput: false,
+            directAnswerMode: true,
+            forceNonEmptyAnswer: false
+        )
+        XCTAssertContains(oversizedPrompt, "User: latest request")
+        XCTAssertContains(oversizedPrompt, oversizedTurn.resultContent)
+        XCTAssertFalse(oversizedPrompt.contains("User: x"))
+    }
+
     func testRewriteDirectAnswerRuntimeGuidanceDeclaresDateTimeZoneAndLiveAccess() throws {
         let timeZone = try XCTUnwrap(TimeZone(identifier: "Asia/Shanghai"))
         let date = try XCTUnwrap(

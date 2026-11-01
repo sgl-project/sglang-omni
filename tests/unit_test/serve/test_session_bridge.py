@@ -2,6 +2,7 @@
 """SessionBridge: units become appends and Session outputs become realtime events."""
 
 import asyncio
+import logging
 from dataclasses import replace
 
 import numpy as np
@@ -9,6 +10,9 @@ import pytest
 
 from sglang_omni.admission import QueueFullError
 from sglang_omni.models.qwen3_omni.session_node import SESSION_PORTS as QWEN3_OMNI_PORTS
+from sglang_omni.models.streaming_cascade.config import StreamingCascadePipelineConfig
+from sglang_omni.pipeline.types import SessionIdleTimeoutError, SessionOutputBudgetError
+from sglang_omni.proto.session import SessionLimits
 from sglang_omni.proto.streams import (
     AUDIO,
     COMMIT,
@@ -20,6 +24,7 @@ from sglang_omni.proto.streams import (
     INTERRUPT,
     PCM16,
     PCM_F32,
+    REPLY_HEARD,
     REPLY_PROGRESS,
     SESSION_CONTROL,
     SPEECH_STARTED,
@@ -43,6 +48,7 @@ from sglang_omni.serve.realtime.output import (
     AudioFinished,
     InputTranscription,
     ResponseFinished,
+    ResponseHeard,
     ResponseProgress,
     ResponseStarted,
     SpeechStarted,
@@ -53,9 +59,11 @@ from sglang_omni.serve.realtime.output import (
 )
 from sglang_omni.serve.realtime.runtime import SessionRuntime
 from sglang_omni.serve.realtime.session_bridge import SessionBridge, capabilities_of
-from sglang_omni.serve.realtime.types import RuntimeLimits, Unit
+from sglang_omni.serve.realtime.session_deployment import build_realtime_deployment
+from sglang_omni.serve.realtime.types import ProtocolError, RuntimeLimits, Unit
 from tests.unit_test.fixtures.session_client import PORTS, FakeSessionClient
 
+BRIDGE_LOGGER_NAME = "sglang_omni.serve.realtime.session_bridge"
 RATE = 16000
 UNIT_SAMPLES = 3200
 CONFIG = {"audio": {"input": {"format": {"type": "audio/pcm", "rate": RATE}}}}
@@ -85,6 +93,61 @@ def unit(index, *, eos=False, samples=UNIT_SAMPLES):
 
 async def settle():
     await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
+async def test_runtime_limits_raise_pipeline_idle_backup_before_open() -> None:
+    """A long runtime idle window must not expire at the shorter pipeline timeout."""
+    harness = Harness(limits=SessionLimits(idle_timeout_s=1, max_output_chunks=7))
+    harness.bridge.set_limits(RuntimeLimits(idle_timeout_s=300, cleanup_timeout_s=10))
+    try:
+        await harness.open()
+        session_limits = harness.client.opened[0][1]
+        assert isinstance(session_limits, SessionLimits)
+        assert session_limits.idle_timeout_s == 640
+        assert session_limits.operation_timeout_s == 30
+        assert session_limits.max_output_chunks == 7
+    finally:
+        await harness.bridge.close()
+
+
+@pytest.mark.parametrize(
+    ("configured_idle_seconds", "runtime_idle_seconds", "pipeline_idle_seconds"),
+    [(7200, 20, 21600), (10, 300, 21600), (30, 30, 21600)],
+)
+@pytest.mark.asyncio
+async def test_realtime_idle_limit_preserves_pipeline_session_timeout(
+    configured_idle_seconds: float,
+    runtime_idle_seconds: float,
+    pipeline_idle_seconds: float,
+) -> None:
+    """Realtime idle overrides must preserve the independent backend idle policy."""
+    pipeline_config = StreamingCascadePipelineConfig(
+        model_path="unused",
+        session_nodes={"vad": {"stages": ["vad"], "inputs": ["input:pcm16"]}},
+        session_publish={"vad": ["session"]},
+        realtime_idle_timeout_s=configured_idle_seconds,
+    )
+    assert pipeline_config.session_limits().idle_timeout_s == 6 * 3600
+    client = FakeSessionClient()
+    deployment = build_realtime_deployment(client, pipeline_config)
+    assert deployment.session_limits.idle_timeout_s == 6 * 3600
+    assert deployment.limits.idle_timeout_s == configured_idle_seconds
+    runtime = SessionRuntime(
+        "configured-graph",
+        deployment.capabilities,
+        deployment.adapter_factory,
+        replace(deployment.limits, idle_timeout_s=runtime_idle_seconds),
+    )
+    runtime.start()
+    try:
+        await runtime.update({}, "open")
+        session_limits = client.opened[0][1]
+        assert isinstance(session_limits, SessionLimits)
+        assert session_limits.idle_timeout_s == pipeline_idle_seconds
+        assert session_limits.idle_timeout_s > runtime_idle_seconds
+    finally:
+        await runtime.close("client_closed")
 
 
 @pytest.mark.asyncio
@@ -190,6 +253,23 @@ async def test_every_vocabulary_item_projects_through_the_table():
 
 
 @pytest.mark.asyncio
+async def test_a_reply_the_talker_cut_at_its_token_budget_ends_incomplete():
+    """Reaching the talker's token budget ends the response as incomplete instead of reporting a completed one."""
+    h = Harness()
+    await h.open()
+    h.client.control(TURN_STARTED, turn=0)
+    h.client.emit(TEXT, TEXT_DELTA, {"text": "Half a sen"})
+    h.client.control(TURN_DONE, reply_truncated=True)
+    await settle()
+    assert [event for event in h.published if isinstance(event, ResponseFinished)] == [
+        ResponseFinished(
+            "resp_0", "item_0", "Half a sen", False, "incomplete", "max_output_tokens"
+        )
+    ]
+    await h.bridge.close()
+
+
+@pytest.mark.asyncio
 async def test_reply_progress_maps_to_the_open_response_of_its_turn():
     h = Harness()
     await h.open()
@@ -207,10 +287,55 @@ async def test_reply_progress_maps_to_the_open_response_of_its_turn():
 
 
 @pytest.mark.asyncio
+async def test_reply_heard_maps_to_the_ended_response_of_its_turn():
+    h = Harness()
+    await h.open()
+    h.client.control(TURN_STARTED, turn=3)
+    h.client.emit(TEXT, TEXT_DELTA, {"text": "One, two."}, turn=3)
+    h.client.control(REPLY_HEARD, turn=3, text_end=4)
+    h.client.control(TURN_INTERRUPTED, turn=3)
+    h.client.control(REPLY_HEARD, turn=3, text_end=5)
+    h.client.control(REPLY_HEARD, turn=2, text_end=9)
+    h.client.control(TURN_EMPTY, turn=4)
+    h.client.control(REPLY_HEARD, turn=3, text_end=6)
+    h.client.control(TURN_STARTED, turn=5)
+    h.client.control(REPLY_HEARD, turn=3, text_end=9)
+    await settle()
+    assert [event for event in h.published if isinstance(event, ResponseHeard)] == [
+        ResponseHeard("resp_0", "item_0", 5),
+        ResponseHeard("resp_0", "item_0", 6),
+    ]
+    await h.bridge.close()
+
+
+@pytest.mark.asyncio
+async def test_a_truncate_names_the_turn_of_its_item():
+    """A truncate reached the session without its item, so the dialog cut the reply it guessed; an item the bridge never sent is an error and appends nothing."""
+    h = Harness()
+    await h.open()
+    h.client.control(TURN_STARTED, turn=3)
+    h.client.control(TURN_INTERRUPTED, turn=3)
+    h.client.control(TURN_STARTED, turn=5)
+    await settle()
+    await h.bridge.truncate("item_0", 400.0)
+    await h.bridge.truncate("item_1", 200.0)
+    with pytest.raises(ProtocolError, match="not found") as error:
+        await h.bridge.truncate("item_7", 100.0)
+    assert error.value.code == "item_not_found"
+    assert [(chunk.payload, chunk.turn) for chunk in h.client.appended] == [
+        ({"type": TRUNCATE, "t_ms": 400.0}, 3),
+        ({"type": TRUNCATE, "t_ms": 200.0}, 5),
+    ]
+    await h.bridge.close()
+
+
+@pytest.mark.asyncio
 async def test_runtime_updates_cancel_and_truncate_reach_the_session_client():
-    ports = replace(PORTS, controls=frozenset({COMMIT, CONFIGURE, TRUNCATE}))
+    ports = replace(PORTS, controls=frozenset({COMMIT, CONFIGURE, INTERRUPT, TRUNCATE}))
     assert capabilities_of(ports).supports_truncate
+    assert capabilities_of(ports).supports_cancel
     assert not capabilities_of(PORTS).supports_truncate
+    assert not capabilities_of(PORTS).supports_cancel
     h = Harness(ports)
     runtime = SessionRuntime(
         "m", capabilities_of(ports), lambda: h.bridge, RuntimeLimits()
@@ -241,9 +366,9 @@ async def test_runtime_updates_cancel_and_truncate_reach_the_session_client():
             "instructions": "Be verbose.",
             "turn_detection": {"silence_duration_ms": 800},
         }
-        sampling = {**runtime.config, "sglang": {"sampling": {"temperature": 0.7}}}
-        await h.bridge.update(sampling)
-        await h.bridge.update(sampling)
+        sampling = {"sglang": {"sampling": {"temperature": 0.7}}}
+        await runtime.update(sampling, "sampling")
+        await runtime.update(sampling, "sampling repeated")
         assert len(h.client.appended) == 3
         assert h.client.appended[-1].payload == {
             "type": CONFIGURE,
@@ -255,8 +380,14 @@ async def test_runtime_updates_cancel_and_truncate_reach_the_session_client():
         assert event.format == SESSION_CONTROL and event.payload == {"type": INTERRUPT}
         assert event.t_start_ms == 200.0
         assert stages is None and should_preempt
-        await runtime.truncate(1234.5)
-        assert h.client.appended[-1].payload == {"type": TRUNCATE, "t_ms": 1234.5}
+        h.client.control(TURN_STARTED, turn=1)
+        await settle()
+        await runtime.truncate("item_0", 1234.5)
+        truncate = h.client.appended[-1]
+        assert (truncate.payload, truncate.turn) == (
+            {"type": TRUNCATE, "t_ms": 1234.5},
+            1,
+        )
         assert await h.bridge.clear() == 0
     finally:
         await runtime.close("client_closed")
@@ -274,6 +405,40 @@ async def test_reader_failure_reports_turn_failure_and_fails_the_next_unit():
     with pytest.raises(RuntimeError, match="output stream closed"):
         await h.bridge.process(unit(0))
     await h.bridge.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "code", "is_logged"),
+    [
+        (RuntimeError("talker step failed"), "internal", True),
+        (SessionIdleTimeoutError(300), "session_idle_timeout", False),
+        (SessionOutputBudgetError(), "output_budget_exhausted", False),
+        (
+            RuntimeError("context_exhausted: the session is full"),
+            "context_exhausted",
+            False,
+        ),
+    ],
+)
+async def test_reader_failure_reaches_the_client_with_its_own_code(
+    error: Exception,
+    code: str,
+    is_logged: bool,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A reader failure must reach the client under its own code, not internal, and only an unclassified one is logged with a traceback."""
+    h = Harness()
+    await h.open()
+    with caplog.at_level(logging.ERROR, logger=BRIDGE_LOGGER_NAME):
+        h.client.outputs.put_nowait(error)
+        await settle()
+    await h.bridge.close()
+
+    assert h.published[-1] == TurnFailure("server_error", code, str(error))
+    assert any(record.name == BRIDGE_LOGGER_NAME for record in caplog.records) == (
+        is_logged
+    )
 
 
 @pytest.mark.asyncio

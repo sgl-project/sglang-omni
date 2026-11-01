@@ -5,7 +5,7 @@ import Foundation
 /// remain pinned until the terminal event or explicit cancellation.
 actor MeetingMLXNativeFeedScheduler {
     typealias Delivery = @Sendable ([Float]) async throws -> Void
-    private let session: any MLXNativeStreamingSession
+    private let session: any ASRStreamingSession
     private let deliver: Delivery
     private let maximumPendingSamples: Int
     private var pendingSamples: [Float] = []
@@ -17,7 +17,7 @@ actor MeetingMLXNativeFeedScheduler {
     private var didStop = false
 
     init(
-        session: any MLXNativeStreamingSession,
+        session: any ASRStreamingSession,
         maximumPendingSamples: Int = 160_000,
         deliver: Delivery? = nil
     ) {

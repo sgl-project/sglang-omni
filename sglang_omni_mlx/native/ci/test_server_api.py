@@ -48,6 +48,7 @@ class Server:
         binary: str = "qwen3_asr_server",
         model_kind: str = "qwen3_asr",
         directory: Path | None = None,
+        flags: tuple[str, ...] = (),
     ) -> None:
         self.process = subprocess.Popen(
             [
@@ -57,6 +58,7 @@ class Server:
                 model_kind,
                 "--model-directory",
                 str(directory or model_directory()),
+                *flags,
             ],  # fmt: skip
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,

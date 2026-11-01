@@ -1,6 +1,5 @@
 import XCTest
 @preconcurrency import MLX
-import MLXAudioVAD
 @testable import Voxt
 
 @MainActor
@@ -20,37 +19,36 @@ final class SortformerBoundedFeedIntegrationTests: XCTestCase {
     func testInstalledSortformerKeepsStreamingStateBoundedForTwentyMinutes() async throws {
         try ModelTestGate.requireEnabled("Sortformer bounded-feed integration test")
         ModelTestGate.configureStorageRoot(for: self)
-        guard let directory = await MeetingSortformerModelStorage.validatedModelDirectory() else {
+        guard await MeetingSortformerModelStorage.validatedModelDirectory() != nil else {
             throw XCTSkip("Install the configured Sortformer model before running this test")
         }
-        let model = try SortformerModel.fromModelDirectory(directory)
-        let config = model.config
-        let policy = try MeetingSpeakerFeedPolicy(
-            sampleRate: config.processorConfig.samplingRate, hopLength: config.processorConfig.hopLength,
-            subsamplingFactor: config.fcEncoderConfig.subsamplingFactor,
-            chunkFrames: config.modulesConfig.chunkLen, cacheFrames: config.modulesConfig.spkcacheLen,
-            updateFrames: config.modulesConfig.spkcacheUpdatePeriod, usesAOSC: config.modulesConfig.useAosc
-        )
-        var state = model.initStreamingState()
+        guard OmniSortformerRuntime.isEnabled else {
+            throw XCTSkip("Configure the packaged Native runtime before running this test")
+        }
+        let model = try await MeetingSortformerModelLease.load()
+        let policy = try model.configuration.feedPolicy()
+        let stream = OmniDiarizationStream(endpoint: model.endpoint, options: OmniDiarizationOptions(
+            spkcacheMax: policy.cacheMaximumFrames, fifoMax: MeetingSpeakerFeedPolicy.fifoMaximumFrames
+        ))
+        var framesProcessed = 0
         let samples = (0..<policy.samplesPerFeed).map {
             Float(sin(Double($0) * 2 * .pi * 220 / 16_000)) * 0.1
         }
         let feedCount = (20 * 60 * 16_000 + samples.count - 1) / samples.count
-        for index in 0..<feedCount {
-            let restore = MeetingFileInferenceCache.beginWorkUnit()
-            defer {
-                MeetingFileInferenceCache.trimIfNeeded(underPressure: false)
-                restore()
+        do {
+            for index in 0..<feedCount {
+                let feed = try await stream.feed(samples16k: samples)
+                try policy.validate(fifoFrames: feed.fifoLength, cacheFrames: feed.spkcacheLength)
+                XCTAssertGreaterThan(feed.framesProcessed, framesProcessed, "feed \(index)")
+                framesProcessed = feed.framesProcessed
             }
-            let (_, nextState) = try await model.feed(
-                chunk: MLXArray(samples), state: state, sampleRate: 16_000,
-                spkcacheMax: policy.cacheMaximumFrames, fifoMax: MeetingSpeakerFeedPolicy.fifoMaximumFrames
-            )
-            try policy.validate(fifoFrames: nextState.fifoLen, cacheFrames: nextState.spkcacheLen)
-            XCTAssertGreaterThan(nextState.framesProcessed, state.framesProcessed, "feed \(index)")
-            state = nextState
-            // The following feed consumes the same state across cache scopes.
+        } catch {
+            await stream.close()
+            await model.close()
+            throw error
         }
+        await stream.close()
+        await model.close()
         // Synthetic audio proves a memory-state invariant, not diarization quality.
         // Real multi-speaker recordings must separately validate DER and timestamps.
     }

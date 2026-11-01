@@ -171,12 +171,14 @@ enum ModelStorageDirectoryManager {
     }
 
     static func saveUserSelectedRootURL(_ url: URL) throws {
-        let normalized = url.standardizedFileURL
-        let bookmark = try normalized.bookmarkData(
+        // Keep the original URL from NSOpenPanel for bookmark creation. It carries
+        // the temporary security scope; standardizing it first can drop that scope.
+        let bookmark = try url.bookmarkData(
             options: [.withSecurityScope],
             includingResourceValuesForKeys: nil,
             relativeTo: nil
         )
+        let normalized = url.standardizedFileURL
 
         guard let scopedAccess = prepareSecurityScopedURL(from: bookmark) else {
             throw AccessIssue.securityScopeDenied(path: normalized.path)

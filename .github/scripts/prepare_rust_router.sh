@@ -7,7 +7,7 @@ if [[ "${mode}" != "path" && "${mode}" != "build" ]]; then
   exit 2
 fi
 
-crate_dir="sglang_omni_router/rust"
+crate_dir="sglang_omni_router"
 tree="$(git -c safe.directory="${PWD}" rev-parse "HEAD:${crate_dir}")"
 router_dir="$(dirname "${OMNI_CI_HOME}")/rust-router"
 binary="${router_dir}/bin/${tree}/sgl-omni-router"

@@ -9,6 +9,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 
 #include "common/audio.h"
+#include "common/text.h"
 
 namespace sensevoice {
 
@@ -167,8 +168,8 @@ std::string MergeSequentialTranscript(const std::string &base,
   } else {
   }
   const bool alphanumeric_edges =
-      IsAlphanumeric(qwen3_asr::CodePoints(left).back()) &&
-      IsAlphanumeric(qwen3_asr::CodePoints(right).front());
+      IsAlphanumeric(omni_common::CodePoints(left).back()) &&
+      IsAlphanumeric(omni_common::CodePoints(right).front());
   const size_t minimum_overlap = alphanumeric_edges ? 3 : 2;
   size_t overlap = 0;
   for (size_t candidate = std::min(left_count, right_count); candidate >= 1;
@@ -220,7 +221,7 @@ std::vector<std::pair<size_t, size_t>> SplitRange(size_t start, size_t end,
 
 std::pair<size_t, size_t> ChunkSampleCounts(double max_chunk_seconds,
                                             double chunk_overlap_seconds) {
-  const double sample_rate = qwen3_asr::kSampleRate;
+  const double sample_rate = omni_common::kSampleRate;
   if (!(max_chunk_seconds * sample_rate >= 1.0) ||
       !(chunk_overlap_seconds >= 0.0)) {
     throw std::invalid_argument(

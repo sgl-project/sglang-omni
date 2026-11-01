@@ -1,5 +1,4 @@
 import Foundation
-import MLXAudioSTT
 
 /// Value-only inference planning. The transcriber owns session/model resources;
 /// this policy receives an explicit snapshot and never reads mutable defaults.
@@ -23,28 +22,28 @@ enum MLXInferenceConfiguration {
             scope: transcriptionPurpose.mossUsageScope
         )
         let family = capability.family
-        var chunkDuration: Float
-        var minChunkDuration: Float
+        var chunkDurationSeconds: Float
+        var minimumChunkDurationSeconds: Float
         if capability.configurationCapabilities.contains(.recognitionPreset) {
             switch tuningSettings.preset {
             case .balanced:
-                chunkDuration = 1200
-                minChunkDuration = 1
+                chunkDurationSeconds = 1200
+                minimumChunkDurationSeconds = 1
             case .accuracyFirst:
-                chunkDuration = 90
-                minChunkDuration = 2.5
+                chunkDurationSeconds = 90
+                minimumChunkDurationSeconds = 2.5
             }
         } else {
             // Models without recognitionPreset (for example Whisper's fixed window) ignore
             // leftover preset values so stale settings cannot change decoding windows.
-            chunkDuration = 1200
-            minChunkDuration = 1
+            chunkDurationSeconds = 1200
+            minimumChunkDurationSeconds = 1
         }
         if stage == .postStopFinal {
-            chunkDuration = MLXTranscriptionPlanning.postStopFinalChunkDuration(
-                presetChunkDuration: chunkDuration
+            chunkDurationSeconds = MLXTranscriptionPlanning.postStopFinalChunkDuration(
+                presetChunkDuration: chunkDurationSeconds
             )
-            minChunkDuration = min(minChunkDuration, 1)
+            minimumChunkDurationSeconds = min(minimumChunkDurationSeconds, 1)
         }
 
         var languageHint = hintPayload.language
@@ -55,32 +54,32 @@ enum MLXInferenceConfiguration {
             break
         }
 
-        let stageMaxTokens: Int
+        let stageMaximumTokenCount: Int
         switch stage {
         case .intermediate:
-            stageMaxTokens = 1024
+            stageMaximumTokenCount = 1024
         case .postStopQuick:
-            stageMaxTokens = sessionAllowsRealtimeTextDisplay ? 1024 : 512
+            stageMaximumTokenCount = sessionAllowsRealtimeTextDisplay ? 1024 : 512
         case .postStopFinal:
             if let audioDurationSeconds {
-                stageMaxTokens = MLXTranscriptionPlanning.postStopFinalMaxTokens(
+                stageMaximumTokenCount = MLXTranscriptionPlanning.postStopFinalMaxTokens(
                     audioDurationSeconds: audioDurationSeconds
                 )
             } else {
-                stageMaxTokens = 8192
+                stageMaximumTokenCount = 8192
             }
         }
-        let maxTokens: Int
+        let maximumTokenCount: Int
         let temperature: Float
         let usePunctuation: Bool?
         switch family {
         case .cohereTranscribe:
             // P3: Cohere keeps tuning budget on all stages (including Final).
-            maxTokens = tuningSettings.cohereMaxTokens
+            maximumTokenCount = tuningSettings.cohereMaxTokens
             temperature = Float(tuningSettings.cohereTemperature)
             usePunctuation = tuningSettings.cohereUsePunctuation
         default:
-            maxTokens = stageMaxTokens
+            maximumTokenCount = stageMaximumTokenCount
             temperature = family == .whisper ? Float(tuningSettings.whisperTemperature) : 0.0
             usePunctuation = nil
         }
@@ -97,19 +96,19 @@ enum MLXInferenceConfiguration {
 
         return ResolvedInferenceConfiguration(
             family: family,
-            generationParameters: STTGenerateParameters(
-                maxTokens: maxTokens,
+            generationParameters: ASRGenerationOptions(
+                maximumTokenCount: maximumTokenCount,
                 temperature: temperature,
-                topP: 0.95,
-                topK: 0,
+                topProbabilityThreshold: 0.95,
+                topTokenCount: 0,
                 verbose: false,
                 language: languageHint,
                 usePunctuation: usePunctuation,
-                chunkDuration: chunkDuration,
-                minChunkDuration: minChunkDuration,
-                kvBits: kvCachePolicy?.bits,
-                kvGroupSize: kvCachePolicy?.groupSize ?? 64,
-                quantizedKVStart: kvCachePolicy?.quantizedStart ?? 0
+                chunkDurationSeconds: chunkDurationSeconds,
+                minimumChunkDurationSeconds: minimumChunkDurationSeconds,
+                kvCacheBitWidth: kvCachePolicy?.bits,
+                kvCacheGroupSize: kvCachePolicy?.groupSize ?? 64,
+                kvCacheQuantizedStartTokenCount: kvCachePolicy?.quantizedStart ?? 0
             ),
             languageHint: languageHint,
             timingGranularity: capability.timingGranularity,

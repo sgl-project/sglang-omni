@@ -14,7 +14,7 @@
 
 #include "nlohmann/json.hpp"
 
-namespace qwen3_asr {
+namespace omni_common {
 
 namespace {
 
@@ -216,6 +216,12 @@ struct Tokenizer::Pcre2Regex {
 
 Tokenizer::Tokenizer(const std::filesystem::path &model_directory)
     : split_pattern_(std::make_unique<Pcre2Regex>()) {
+  if (!std::filesystem::exists(model_directory / "vocab.json")) {
+    LoadJson(
+        nlohmann::json::parse(ReadFile(model_directory / "tokenizer.json")));
+    return;
+  } else {
+  }
   const nlohmann::json vocabulary =
       nlohmann::json::parse(ReadFile(model_directory / "vocab.json"));
   for (const auto &[token, id] : vocabulary.items()) {
@@ -253,6 +259,79 @@ Tokenizer::Tokenizer(const std::filesystem::path &model_directory)
                                token.at("special").get<bool>()});
     }
   }
+  Initialize(kQwen2SplitPattern);
+}
+
+Tokenizer Tokenizer::FromJson(const nlohmann::json &tokenizer) {
+  return Tokenizer(tokenizer, Serialized{});
+}
+
+Tokenizer::Tokenizer(const nlohmann::json &tokenizer, Serialized)
+    : split_pattern_(std::make_unique<Pcre2Regex>()) {
+  LoadJson(tokenizer);
+}
+
+void Tokenizer::LoadJson(const nlohmann::json &tokenizer) {
+  const auto &model = tokenizer.at("model");
+  const auto &pre = tokenizer.at("pre_tokenizer");
+  const auto continuing_subword_prefix =
+      model.value("continuing_subword_prefix", nlohmann::json());
+  const auto end_of_word_suffix =
+      model.value("end_of_word_suffix", nlohmann::json());
+  if (model.at("type") != "BPE" ||
+      !model.value("dropout", nlohmann::json()).is_null() ||
+      !model.value("unk_token", nlohmann::json()).is_null() ||
+      (!continuing_subword_prefix.is_null() &&
+       continuing_subword_prefix != "") ||
+      (!end_of_word_suffix.is_null() && end_of_word_suffix != "") ||
+      model.value("byte_fallback", false) ||
+      model.value("ignore_merges", false) ||
+      tokenizer.at("normalizer").at("type") != "NFC" ||
+      pre.at("type") != "Sequence" || pre.at("pretokenizers").size() != 2) {
+    throw std::invalid_argument("tokenizer requires NFC and byte-level BPE");
+  } else {
+  }
+  const auto &split = pre.at("pretokenizers").at(0);
+  const auto &bytes = pre.at("pretokenizers").at(1);
+  if (split.at("type") != "Split" || split.at("behavior") != "Isolated" ||
+      split.at("invert") != false || bytes.at("type") != "ByteLevel" ||
+      bytes.at("add_prefix_space") != false || bytes.at("use_regex") != false) {
+    throw std::invalid_argument("unsupported byte-level pre-tokenizer");
+  } else {
+  }
+  for (const auto &[token, id] : model.at("vocab").items()) {
+    if (id.get<int>() < 0) {
+      throw std::invalid_argument("vocabulary token ids must be nonnegative");
+    } else {
+      vocabulary_.emplace(token, id.get<int>());
+    }
+  }
+  int rank = 0;
+  for (const auto &pair : model.at("merges")) {
+    if (!pair.is_array() || pair.size() != 2) {
+      throw std::invalid_argument("BPE merges must contain token pairs");
+    } else {
+      merge_ranks_.emplace(pair.at(0).get<std::string>() + " " +
+                               pair.at(1).get<std::string>(),
+                           rank++);
+    }
+  }
+  for (const auto &token : tokenizer.at("added_tokens")) {
+    const int id = token.at("id").get<int>();
+    const std::string content = token.at("content");
+    if (id < 0 || content.empty() || token.at("single_word") != false ||
+        token.at("lstrip") != false || token.at("rstrip") != false ||
+        token.at("normalized") != false) {
+      throw std::invalid_argument("unsupported added token matching rules");
+    } else {
+      added_token_index_by_id_[id] = added_tokens_.size();
+      added_tokens_.push_back({content, id, token.at("special").get<bool>()});
+    }
+  }
+  Initialize(split.at("pattern").at("Regex").get<std::string>());
+}
+
+void Tokenizer::Initialize(const std::string &split_pattern) {
   size_t largest_id = 0;
   for (const auto &[token, id] : vocabulary_)
     largest_id = std::max(largest_id, static_cast<size_t>(id));
@@ -264,11 +343,12 @@ Tokenizer::Tokenizer(const std::filesystem::path &model_directory)
 
   int error_code = 0;
   PCRE2_SIZE error_offset = 0;
-  split_pattern_->code = pcre2_compile(
-      reinterpret_cast<PCRE2_SPTR>(kQwen2SplitPattern), PCRE2_ZERO_TERMINATED,
-      PCRE2_UTF | PCRE2_UCP, &error_code, &error_offset, nullptr);
+  split_pattern_->code =
+      pcre2_compile(reinterpret_cast<PCRE2_SPTR>(split_pattern.c_str()),
+                    PCRE2_ZERO_TERMINATED, PCRE2_UTF | PCRE2_UCP, &error_code,
+                    &error_offset, nullptr);
   if (split_pattern_->code == nullptr) {
-    throw std::runtime_error("cannot compile the Qwen2 split pattern");
+    throw std::runtime_error("cannot compile the tokenizer split pattern");
   } else {
   }
 }
@@ -451,4 +531,4 @@ std::string Tokenizer::Decode(const std::vector<int> &ids,
   return FromUtf8Lossy(bytes);
 }
 
-} // namespace qwen3_asr
+} // namespace omni_common

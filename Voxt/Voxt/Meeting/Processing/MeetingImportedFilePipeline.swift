@@ -25,7 +25,12 @@ final class MeetingImportedFilePipeline: MeetingImportedFileAnalyzing {
         progress: @escaping @MainActor @Sendable (MeetingFileAnalysisProgress) -> Void
     ) async throws -> MeetingSessionResult {
         try Task.checkCancellation()
-        progress(MeetingFileAnalysisProgress(stage: .preparing, stageFraction: sourceIsPreparedAudio ? 1 : 0))
+        if engineContext.engine == .mlxAudio,
+           let unavailable = OmniASRBackend.unavailability(for: engineContext.mlxModelRepo ?? modelManager.currentModelRepo) {
+            throw unavailable
+        } else {
+            progress(MeetingFileAnalysisProgress(stage: .preparing, stageFraction: sourceIsPreparedAudio ? 1 : 0))
+        }
         var stage = "audio-validation"
         do {
             let sourceIsPreparedAudio = sourceIsPreparedAudio

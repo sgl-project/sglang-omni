@@ -3,10 +3,6 @@
 import Foundation
 
 extension MLXTranscriptionPlanning {
-    nonisolated static func mergeSequentialTranscript(base: String, next: String) -> String {
-        sequentialTranscriptMergeResult(base: base, next: next).text
-    }
-
     nonisolated static func sequentialTranscriptMergeResult(base: String, next: String) -> MLXSequentialTranscriptMergeResult {
         let left = base.trimmingCharacters(in: .whitespacesAndNewlines)
         let right = next.trimmingCharacters(in: .whitespacesAndNewlines)

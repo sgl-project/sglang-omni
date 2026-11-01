@@ -363,10 +363,13 @@ extension OnboardingGuideView {
             isPaused: mlxModelManager.isPaused(repo: repo),
             status: mlxDownloadStatus(for: repo),
             errorMessage: mlxDownloadErrorMessage(for: repo),
+            unavailabilityReason: OmniASRBackend.unavailabilityReason(for: repo),
             onSelect: {
+                guard OmniASRBackend.unavailabilityReason(for: repo) == nil else { return }
                 modelDraft.speech = .mlx(MLXModelManager.canonicalModelRepo(repo))
             },
             onInstall: {
+                guard OmniASRBackend.unavailabilityReason(for: repo) == nil else { return }
                 let canonicalRepo = MLXModelManager.canonicalModelRepo(repo)
                 modelDraft.speech = .mlx(canonicalRepo)
                 Task { await mlxModelManager.downloadModel(repo: canonicalRepo) }

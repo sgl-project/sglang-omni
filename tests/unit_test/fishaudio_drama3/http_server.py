@@ -50,12 +50,15 @@ ENGINE_MEMORY_FRACTION = "0.3"
 
 
 class EosMaskedLogits(nn.Module):
-    """Wraps the logits processor so end-of-speech never wins a sample."""
+    """Wraps the logits processor so end-of-speech never wins a sample.
 
-    def __init__(self, logits_processor: LogitsProcessor, *, eos_token_id: int) -> None:
+    The lm_head scores the main-token candidates only, so end-of-speech is a candidate column, not its token id.
+    """
+
+    def __init__(self, logits_processor: LogitsProcessor, *, eos_column: int) -> None:
         super().__init__()
         self.logits_processor = logits_processor
-        self.eos_token_id = eos_token_id
+        self.eos_column = eos_column
 
     def forward(
         self,
@@ -65,7 +68,7 @@ class EosMaskedLogits(nn.Module):
         forward_batch: ForwardBatch,
     ) -> LogitsProcessorOutput:
         output = self.logits_processor(input_ids, hidden_states, lm_head, forward_batch)
-        output.next_token_logits[:, self.eos_token_id] = float("-inf")
+        output.next_token_logits[:, self.eos_column] = float("-inf")
         return output
 
 
@@ -77,8 +80,10 @@ class EosMaskedDrama3Model(Drama3ForCausalLM):
         prefix: str = "",
     ) -> None:
         super().__init__(config, quant_config, prefix)
+        candidate_token_ids = self.audio_decoder.main_token_candidate_ids.tolist()
         self.logits_processor = EosMaskedLogits(
-            self.logits_processor, eos_token_id=config.eos_token_id
+            self.logits_processor,
+            eos_column=candidate_token_ids.index(config.eos_token_id),
         )
 
 

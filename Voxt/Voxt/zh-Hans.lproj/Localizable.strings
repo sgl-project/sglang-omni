@@ -1266,7 +1266,7 @@
 "Clear one or more filters to view more models." = "清除一个或多个筛选项以查看更多模型。";
 "Cloud" = "云端";
 "Configure the speech path, translation engine, target language, and prompt behavior for translation mode." = "配置翻译模式使用的语音路径、翻译模型、目标语言和提示词行为。";
-"Configure this provider in Model settings first." = "请先到模型设置中完成这个服务商的配置。";
+"Configure this provider in Model settings first." = "未配置";
 "Configured" = "已配置";
 "Experimental" = "实验性";
 "Enable LLM Enhancement" = "启用 LLM 增强";
@@ -1275,7 +1275,7 @@
 "Fast" = "快速";
 "In Use" = "使用中";
 "Install" = "安装";
-"Install this model in Model settings first." = "请先到模型设置中安装这个模型。";
+"Install this model in Model settings first." = "未安装";
 "LLM" = "LLM";
 "LLM Model" = "LLM 模型";
 "Local LLM" = "本地 LLM";
@@ -1330,6 +1330,9 @@
 "Translation Model" = "翻译模型";
 "Translation will keep using the best compatible model automatically." = "翻译会继续自动使用最兼容的模型。";
 "Unavailable" = "不可用";
+"This model is temporarily unavailable while Native Omni support is being added. Choose another ASR model." = "此模型暂不可用，Native Omni 支持正在开发中。请选择其他语音识别模型。";
+"Local Native Omni models require Apple Silicon. Choose a Remote ASR provider or Direct Dictation." = "本地 Native Omni 模型需要 Apple Silicon。请选择远程语音识别服务或系统听写。";
+"The Native Omni runtime is unavailable. Reinstall Voxt or configure the development runtime." = "Native Omni 运行时不可用。请重新安装 Voxt 或配置开发运行时。";
 "Uninstall" = "卸载";
 "Usage" = "使用位置";
 "Use" = "使用";

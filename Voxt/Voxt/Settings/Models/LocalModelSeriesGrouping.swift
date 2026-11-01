@@ -7,6 +7,20 @@ private func localized(_ key: String) -> String {
     AppLocalization.localizedString(key)
 }
 
+enum ModelCatalogEngineSupport {
+    static let sglangOmniTitle = localized("SGLang Omni")
+
+    static func asrTitle(for repo: String) -> String {
+        if OmniASRBackend.usesOmniRuntime(for: repo) {
+            return sglangOmniTitle
+        }
+        if MLXWhisperMigrationSupport.isWhisperRepo(repo) {
+            return localized("Whisper (MLX)")
+        }
+        return localized("MLX Audio")
+    }
+}
+
 enum ModelCatalogBadgeSupport {
     private static let recommendedMLXRepos: Set<String> = [
         "mlx-community/whisper-large-v3-turbo",
@@ -27,10 +41,10 @@ enum ModelCatalogBadgeSupport {
     ]
 
     static func recommendedBadgeText(forLocalSeriesDescriptor descriptor: LocalModelSeriesDescriptor) -> String? {
-        if descriptor.engine == localized("MLX Audio") && descriptor.title == "Qwen3" {
+        if descriptor.engine == ModelCatalogEngineSupport.sglangOmniTitle && descriptor.title == "Qwen3" {
             return localized("Recommended")
         }
-        if descriptor.engine == localized("Whisper (MLX)") && descriptor.title == "Whisper" {
+        if descriptor.engine == ModelCatalogEngineSupport.sglangOmniTitle && descriptor.title == "Whisper" {
             return localized("Recommended")
         }
         if descriptor.engine == localized("Local LLM") && descriptor.title == "Qwen" {
@@ -291,11 +305,14 @@ enum LocalModelSeriesClassifier {
             return prefixedFamily(title: title, prefix: "Whisper ", family: "Whisper")
         }
 
-        if engine == localized("MLX Audio") {
+        if engine == localized("MLX Audio") || engine == ModelCatalogEngineSupport.sglangOmniTitle {
             if let family = prefixedFamily(title: title, prefix: "Qwen3 ", family: "Qwen3") {
                 return family
             }
             if let family = prefixedFamily(title: title, prefix: "Parakeet ", family: "Parakeet") {
+                return family
+            }
+            if let family = prefixedFamily(title: title, prefix: "Whisper ", family: "Whisper") {
                 return family
             }
             return nil

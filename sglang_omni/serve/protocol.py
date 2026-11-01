@@ -396,6 +396,7 @@ class SpeechReference(BaseModel):
     media_type: str | None = None
     text: str | None = None
     vq_codes: list[list[int]] | list[int] | None = None
+    speaker_embedding: list[float] | None = None
 
 
 class CreateSpeechRequest(BaseModel):
@@ -440,6 +441,7 @@ class CreateSpeechRequest(BaseModel):
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None
+    epsilon_cutoff: float | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
 
@@ -477,6 +479,7 @@ class SpeechBatchItem(BaseModel):
     temperature: object = None
     top_p: object = None
     top_k: object = None
+    epsilon_cutoff: object = None
     repetition_penalty: object = None
     seed: object = None
     stage_params: object = None
@@ -512,6 +515,7 @@ class CreateSpeechBatchRequest(BaseModel):
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None
+    epsilon_cutoff: float | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
     stage_params: dict[str, dict[str, object]] | None = None
@@ -577,6 +581,7 @@ class SpeechStreamSessionConfig(BaseModel):
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None
+    epsilon_cutoff: float | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
     stage_params: dict[str, dict[str, object]] | None = None
@@ -616,6 +621,7 @@ class TranscriptionResponse(BaseModel):
 
     text: str
     usage: TranscriptionUsage | None = None
+    finish_reason: str | None = None
 
 
 class TranscriptionSegment(BaseModel):
@@ -636,6 +642,7 @@ class TranscriptionVerboseResponse(BaseModel):
     text: str
     segments: list[TranscriptionSegment] = Field(default_factory=list)
     usage: TranscriptionUsage | None = None
+    finish_reason: str | None = None
 
 
 class TranscriptionTextDeltaEvent(BaseModel):
@@ -651,6 +658,7 @@ class TranscriptionTextDoneEvent(BaseModel):
     type: str = "transcript.text.done"
     text: str
     usage: TranscriptionUsage | None = None
+    finish_reason: str | None = None
 
 
 class ModelPermission(BaseModel):

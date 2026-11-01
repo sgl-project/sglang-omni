@@ -13,27 +13,6 @@ enum MLXTranscriptionPlanning {
         return durationSeconds > directPassMaximumDurationSeconds
     }
 
-    nonisolated static func splitSenseVoiceRange(
-        start: Int,
-        end: Int,
-        maxChunkSamples: Int,
-        overlapSamples: Int
-    ) -> [Range<Int>] {
-        guard maxChunkSamples > 0, end - start > maxChunkSamples else {
-            return start < end ? [start..<end] : []
-        }
-
-        var ranges: [Range<Int>] = []
-        var cursor = start
-        while cursor < end {
-            let upperBound = min(cursor + maxChunkSamples, end)
-            ranges.append(cursor..<upperBound)
-            guard upperBound < end else { break }
-            cursor = max(start, upperBound - overlapSamples)
-        }
-        return ranges
-    }
-
     /// Whether dictation Final may replace full PCM with VAD-filtered speech.
     /// SenseVoice keeps catalog `.standard` (meeting validation) but must not also
     /// externally trim PCM before its own long-form Silero segmentation.
@@ -112,82 +91,6 @@ enum MLXTranscriptionPlanning {
             return catalogPolicy ?? .conservativeQwen
         }
         return catalogPolicy
-    }
-
-    nonisolated static func senseVoiceSegmentRanges(
-        probabilities: [Float],
-        sampleCount: Int,
-        sampleRate: Int,
-        probabilityFrameSampleCount: Int,
-        vadThreshold: Float,
-        vadMinSpeechDurationMs: Int,
-        vadMinSilenceDurationMs: Int,
-        vadSpeechPadMs: Int,
-        maxChunkSamples: Int,
-        overlapSamples: Int
-    ) -> [Range<Int>] {
-        guard sampleCount > 0,
-              sampleRate > 0,
-              probabilityFrameSampleCount > 0,
-              !probabilities.isEmpty
-        else {
-            return []
-        }
-
-        let configuration = ASRVoiceActivityConfiguration(
-            onsetProbabilityThreshold: vadThreshold,
-            offsetProbabilityThreshold: max(vadThreshold - 0.15, 0.01),
-            minSpeechSeconds: Double(max(vadMinSpeechDurationMs, 0)) / 1000,
-            minSilenceSeconds: Double(max(vadMinSilenceDurationMs, 0)) / 1000,
-            speechPadSeconds: Double(max(vadSpeechPadMs, 0)) / 1000,
-            maxSegmentSeconds: nil
-        )
-        var segmenter = ASRVoiceActivitySegmenter(configuration: configuration)
-        var segments: [ASRVoiceActivitySegment] = []
-
-        for (index, probability) in probabilities.enumerated() {
-            let startSample = min(index * probabilityFrameSampleCount, sampleCount)
-            let endSample = min((index + 1) * probabilityFrameSampleCount, sampleCount)
-            guard endSample > startSample else { break }
-
-            let events = segmenter.append(
-                ASRVoiceActivityFrameDecision(
-                    startSeconds: Double(startSample) / Double(sampleRate),
-                    endSeconds: Double(endSample) / Double(sampleRate),
-                    isSpeech: false,
-                    probability: probability
-                )
-            )
-            for event in events {
-                switch event {
-                case .speechEnded(let segment), .speechForced(let segment):
-                    segments.append(segment)
-                case .speechStarted, .speechRejected:
-                    break
-                }
-            }
-        }
-
-        if let finalEvent = segmenter.finish(at: Double(sampleCount) / Double(sampleRate)) {
-            switch finalEvent {
-            case .speechEnded(let segment), .speechForced(let segment):
-                segments.append(segment)
-            case .speechStarted, .speechRejected:
-                break
-            }
-        }
-
-        return segments.flatMap { segment -> [Range<Int>] in
-            let start = max(0, min(Int(floor(segment.startSeconds * Double(sampleRate))), sampleCount))
-            let end = max(start, min(Int(ceil(segment.endSeconds * Double(sampleRate))), sampleCount))
-            guard end > start else { return [] }
-            return splitSenseVoiceRange(
-                start: start,
-                end: end,
-                maxChunkSamples: maxChunkSamples,
-                overlapSamples: overlapSamples
-            )
-        }
     }
 
     static func correctionCadence(

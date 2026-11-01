@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // The Qwen3 text decoder Qwen3-ASR and MOSS-Transcribe-Diarize share; only the
-// weight-name prefix differs.
+// weight-name prefix differs. Voxtral TTS's Mistral decoder is the same
+// without the query/key norms and with traditional rotary embeddings.
 #pragma once
 
 #include <optional>
@@ -21,6 +22,13 @@ struct Qwen3DecoderConfig {
   int head_dim = 0;
   float rms_norm_eps = 0.0f;
   float rope_theta = 0.0f;
+  bool has_query_key_norm = true;
+  // Rotates adjacent rather than half-split pairs of each head.
+  bool traditional_rope = false;
+  // Rotates with cosines and sines rounded to the input's dtype, and masks
+  // a multi-token step with an additive mask, as Hugging Face-style MLX
+  // ports do, instead of the fused rope and causal attention.
+  bool rotary_tables = false;
 
   static Qwen3DecoderConfig FromJson(const nlohmann::json &text_config);
 };
@@ -42,7 +50,7 @@ class Qwen3Decoder {
 public:
   // Weights under prefix (layers, norm, embed_tokens); the output projection
   // is the tied embedding table.
-  Qwen3Decoder(const Checkpoint &checkpoint, std::string prefix,
+  Qwen3Decoder(const omni_common::Checkpoint &checkpoint, std::string prefix,
                Qwen3DecoderConfig config);
 
   // Token ids [1, length] to embeddings [1, length, hidden].
@@ -56,10 +64,19 @@ public:
   std::vector<KVCache> NewCaches() const;
 
 private:
-  mlx::core::array Layer(const mlx::core::array &x, int layer,
-                         KVCache &cache) const;
+  // A step's rotary tables [1, 1, length, head_dim] and, for a step of more
+  // than one token, its additive causal mask [length, cached + length].
+  struct RotaryInputs {
+    mlx::core::array cosines;
+    mlx::core::array sines;
+    std::optional<mlx::core::array> mask;
+  };
 
-  const Checkpoint &checkpoint_;
+  mlx::core::array Layer(const mlx::core::array &x, int layer, KVCache &cache,
+                         const std::optional<RotaryInputs> &rotary) const;
+  RotaryInputs Rotary(int length, int offset, mlx::core::Dtype dtype) const;
+
+  const omni_common::Checkpoint &checkpoint_;
   std::string prefix_;
   Qwen3DecoderConfig config_;
 };

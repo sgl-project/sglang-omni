@@ -32,12 +32,51 @@ export function heardTextEnd(progress, playedMs) {
   return textEnd;
 }
 
+// note (Haoling Pu): the server counts text_end in code points, while String.slice counts UTF-16 code units.
+function codeUnitOffset(text, codePoints) {
+  let offset = 0;
+  let count = 0;
+  for (const char of text) {
+    if (count === codePoints) break;
+    offset += char.length;
+    count += 1;
+  }
+  return offset;
+}
+
+const WORDS = new Intl.Segmenter(undefined, { granularity: "word" });
+
+// note (luojiaxuan): How far into a playing reply's text the caption has reached, in UTF-16 code
+// units: past the last progress point whose audio has played, then on through the stretch being
+// played to the last whole word its played share of audio reaches.
+export function playingTextEnd(text, progress, playedMs) {
+  let start = { textEnd: 0, audioMs: 0 };
+  let next = null;
+  for (const point of progress) {
+    if (point.audioMs <= playedMs && point.textEnd > start.textEnd) start = point;
+    else if (point.audioMs > playedMs && point.textEnd > start.textEnd && (next === null || point.textEnd < next.textEnd)) next = point;
+  }
+  const startUnits = codeUnitOffset(text, start.textEnd);
+  if (next === null || next.textEnd <= start.textEnd) return startUnits;
+  // note (luojiaxuan): Only the two ends of the stretch are timed, so the caption takes its words as evenly paced between them; a stretch whose end is not timed yet waits at its start.
+  const reached = codeUnitOffset(text, Math.floor(start.textEnd + ((next.textEnd - start.textEnd) * (playedMs - start.audioMs)) / (next.audioMs - start.audioMs)));
+  let end = startUnits;
+  for (const { index, segment, isWordLike } of WORDS.segment(text)) {
+    if (index + segment.length > reached) break;
+    if (isWordLike && index + segment.length > startUnits) end = index + segment.length;
+  }
+  return end;
+}
+
 export class DuplexSession {
   // transport(event) sends one JSON-serialisable client event; now() returns ms.
-  constructor({ transport, now, outputModalities = ["audio"], listeners = {} }) {
+  constructor({ transport, now, outputModalities = ["audio"], instructions = "", extension = null, turnDetection = null, listeners = {} }) {
     this.transport = transport;
     this.now = now;
     this.outputModalities = outputModalities;
+    this.instructions = instructions;
+    this.extension = extension;
+    this.turnDetection = turnDetection;
     this.listeners = listeners;
     this.state = "connecting";
     this.sessionId = null;
@@ -77,14 +116,25 @@ export class DuplexSession {
   }
 
   // What the caption shows of a reply: the heard part and the part still to play. A reply that ended
-  // other than completed keeps only what was heard, nothing when none of its audio played; without
-  // progress from the server a reply is shown whole unless none of it played.
+  // other than completed, or that the player stopped, keeps only what was heard: the prefix the
+  // server's history kept once it reports one, else where its caption was when it stopped, and nothing
+  // when none of its audio played. A reply without progress from the server is shown whole until it is cut.
   captionParts(responseId) {
     const reply = this.reply(responseId);
     if (!reply) return { heard: "", pending: "" };
-    const cut = reply.status !== null && reply.status !== "completed";
+    const cut = (reply.status !== null && reply.status !== "completed") || reply.stopped;
     if (cut && reply.playedMs <= 0) return { heard: "", pending: "" };
-    const end = reply.progress.length ? this.heardEnd(responseId) : reply.text.length;
+    let end;
+    if (cut && reply.keptEnd !== null) {
+      end = codeUnitOffset(reply.text, reply.keptEnd);
+    } else if (reply.progress.length) {
+      // note (luojiaxuan): A playing reply's heard part moves word by word through the stretch being played; playedMs stops with a stopped reply, so its caption stays put until the kept prefix arrives.
+      end = playingTextEnd(reply.text, reply.progress, reply.playedMs);
+    } else if (cut) {
+      end = 0;
+    } else {
+      end = reply.text.length;
+    }
     return { heard: reply.text.slice(0, end), pending: cut ? "" : reply.text.slice(end) };
   }
 
@@ -100,6 +150,11 @@ export class DuplexSession {
       }
     }
     this.emit("played", responseId);
+  }
+
+  // note (Haoling Pu): only a turn-based server stops its open reply on response.cancel; the player's truncate then cuts its history.
+  cancelReply() {
+    if (this.state === "ready" && this.turnBased && this.responseOpen) this.send("response.cancel");
   }
 
   get turnBased() {
@@ -221,7 +276,11 @@ export class DuplexSession {
       case "session.created": {
         this.sessionId = event.session && event.session.id;
         this.state = "negotiating";
-        this.send("session.update", { session: { output_modalities: this.outputModalities } });
+        const session = { output_modalities: this.outputModalities };
+        if (this.instructions) session.instructions = this.instructions;
+        if (this.turnDetection) session.audio = { input: { turn_detection: this.turnDetection } };
+        if (this.extension && Object.keys(this.extension).length) session.sglang = this.extension;
+        this.send("session.update", { session });
         break;
       }
       case "session.updated": {
@@ -254,7 +313,7 @@ export class DuplexSession {
       case "response.created":
         this.responseOpen = true;
         this.responseId = (event.response && event.response.id) || null;
-        this.replies.set(this.responseId, { text: "", itemId: null, progress: [], playedMs: 0, stopped: false, status: null });
+        this.replies.set(this.responseId, { text: "", itemId: null, progress: [], playedMs: 0, stopped: false, status: null, keptEnd: null });
         this.lastReplyId = this.responseId;
         if (this.replies.size > MAX_REPLIES_KEPT) this.replies.delete(this.replies.keys().next().value);
         this.emit("response", { open: true, id: this.responseId });
@@ -277,6 +336,12 @@ export class DuplexSession {
       case "sglang.response.progress": {
         const reply = this.reply(event.response_id);
         if (reply) reply.progress.push({ textEnd: event.text_end, audioMs: event.audio_ms });
+        this.emit("progress", event.response_id);
+        break;
+      }
+      case "sglang.response.heard": {
+        const reply = this.reply(event.response_id);
+        if (reply) reply.keptEnd = event.text_end;
         this.emit("progress", event.response_id);
         break;
       }

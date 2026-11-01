@@ -24,6 +24,7 @@ from sglang_omni.serve.realtime.output import (
     InputTranscription,
     OutputEvent,
     ResponseFinished,
+    ResponseHeard,
     ResponseProgress,
     ResponseStarted,
     ResponseStatus,
@@ -215,6 +216,15 @@ def project_output(
             content_index=0,
             text_end=event.text_end,
             audio_ms=event.audio_ms,
+        )
+    elif isinstance(event, ResponseHeard):
+        return dict(
+            type="sglang.response.heard",
+            response_id=event.response_id,
+            item_id=event.item_id,
+            output_index=0,
+            content_index=0,
+            text_end=event.text_end,
         )
     elif isinstance(event, TurnFailure):
         return dict(

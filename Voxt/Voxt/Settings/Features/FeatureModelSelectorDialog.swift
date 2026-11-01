@@ -117,6 +117,7 @@ struct FeatureModelSelectorDialog: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.tail)
+                    .help(selectionReminder)
             }
         }
     }
@@ -516,6 +517,7 @@ private struct FeatureModelSelectorRow: View {
                             .foregroundStyle(entry.isSelectable ? Color.secondary : Color.orange)
                             .lineLimit(1)
                             .truncationMode(.tail)
+                            .help(hintText)
                     }
 
                     Spacer(minLength: 0)

@@ -20,6 +20,7 @@ from sglang_omni.config import (
 )
 from sglang_omni.models.qwen3_asr.audio_lengths import QWEN3_ASR_MAX_INPUT_SECONDS
 from sglang_omni.models.qwen3_asr.streaming import Qwen3ASRStreamingStrategy
+from sglang_omni.platforms import current_platform
 
 _PKG = "sglang_omni.models.qwen3_asr"
 
@@ -51,7 +52,6 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
     """Single-stage batched ASR pipeline for Qwen3-ASR checkpoints."""
 
     architecture: ClassVar[str] = "Qwen3ASRForConditionalGeneration"
-    freeze_api_gc_on_startup: ClassVar[bool] = True
     allow_audio_chunking: ClassVar[bool] = True
     max_native_clip_s: ClassVar[float] = float(QWEN3_ASR_MAX_INPUT_SECONDS)
     audio_chunking: AudioChunkingConfig = QWEN3_ASR_AUDIO_CHUNKING
@@ -102,6 +102,13 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
         )
     ]
 
+    def resolved_env_defaults(self) -> dict[str, str]:
+        # Set before worker startup: torch_npu caches its Host queue settings.
+        if current_platform.is_npu():
+            return {"PER_STREAM_QUEUE": "1", **self.env_defaults}
+        else:
+            return dict(self.env_defaults)
+
     def resolved_stage_env_defaults(self, stage_name: str) -> dict[str, str]:
         env_defaults = super().resolved_stage_env_defaults(stage_name)
         env_defaults.setdefault("SGLANG_ENABLE_METADATA_GLUE_GRAPH", "1")
@@ -109,8 +116,6 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
 
     @property
     def resolved_audio_chunking(self) -> ResolvedAudioChunking:
-        from sglang_omni.platforms import current_platform
-
         policy = super().resolved_audio_chunking
         if not current_platform.is_mps():
             return policy

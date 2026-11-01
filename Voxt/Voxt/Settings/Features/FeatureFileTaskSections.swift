@@ -6,6 +6,11 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 extension FeatureSettingsView {
+    private var meetingFileASRUnavailabilityReason: String? {
+        guard case .mlx(let repo)? = featureSettings.meeting.asrSelectionID.asrSelection else { return nil }
+        return OmniASRBackend.unavailabilityReason(for: repo)
+    }
+
     var filesContent: some View {
         VStack(alignment: .leading, spacing: 18) {
             ScrollView {
@@ -17,6 +22,7 @@ extension FeatureSettingsView {
                             MeetingFileTaskRow(
                                 task: task,
                                 now: Date(),
+                                retryDisabledReason: meetingFileASRUnavailabilityReason,
                                 onCancel: {
                                     meetingFileTaskQueue.cancel(taskID: task.id)
                                 },
@@ -24,6 +30,7 @@ extension FeatureSettingsView {
                                     meetingFileTaskQueue.prioritize(taskID: task.id)
                                 },
                                 onRetry: {
+                                    guard meetingFileASRUnavailabilityReason == nil else { return }
                                     meetingFileTaskQueue.retry(taskID: task.id)
                                 },
                                 onOpenDetails: {
@@ -47,6 +54,7 @@ extension FeatureSettingsView {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
             MeetingFileUploadCard(
+                disabledReason: meetingFileASRUnavailabilityReason,
                 onChooseFiles: chooseMeetingFiles,
                 onImportDroppedFiles: importDroppedMeetingFiles
             )
@@ -59,6 +67,7 @@ extension FeatureSettingsView {
     }
 
     private func chooseMeetingFiles() {
+        guard meetingFileASRUnavailabilityReason == nil else { return }
         let panel = NSOpenPanel()
         panel.title = featureSettingsLocalized("Analyze Meeting File")
         panel.prompt = featureSettingsLocalized("Choose File")
@@ -77,6 +86,10 @@ extension FeatureSettingsView {
     }
 
     private func enqueueMeetingFiles(_ urls: [URL]) {
+        if let reason = meetingFileASRUnavailabilityReason {
+            showMeetingFileImportToast(reason)
+            return
+        }
         let validURLs = urls.filter { MeetingFileImportSupport.isSupportedImportFile(at: $0) }
         let invalidCount = urls.count - validURLs.count
         if invalidCount > 0 {
@@ -122,6 +135,7 @@ private struct MeetingFileTaskRow: View {
 
     let task: MeetingFileTask
     let now: Date
+    let retryDisabledReason: String?
     let onCancel: () -> Void
     let onPrioritize: () -> Void
     let onRetry: () -> Void
@@ -198,6 +212,8 @@ private struct MeetingFileTaskRow: View {
         case .failed, .cancelled:
             Button(featureSettingsLocalized("Retry"), action: onRetry)
                 .buttonStyle(SettingsPillButtonStyle(horizontalPadding: 10, height: 27))
+                .disabled(retryDisabledReason != nil)
+                .help(retryDisabledReason ?? "")
         case .queued:
             HStack(spacing: 6) {
                 Button(featureSettingsLocalized("Prioritize"), action: onPrioritize)
@@ -310,6 +326,7 @@ private struct MeetingFileTaskRow: View {
 }
 
 private struct MeetingFileUploadCard: View {
+    let disabledReason: String?
     let onChooseFiles: () -> Void
     let onImportDroppedFiles: ([URL]) -> Void
     @State private var isDropTargeted = false
@@ -328,6 +345,7 @@ private struct MeetingFileUploadCard: View {
                 Spacer(minLength: 12)
                 Button(featureSettingsLocalized("Upload File"), action: onChooseFiles)
                     .buttonStyle(SettingsPillButtonStyle(horizontalPadding: 13, height: 30))
+                    .disabled(disabledReason != nil)
             }
 
             Button(action: onChooseFiles) {
@@ -361,6 +379,14 @@ private struct MeetingFileUploadCard: View {
                 .contentShape(RoundedRectangle(cornerRadius: SettingsUIStyle.compactCornerRadius, style: .continuous))
             }
             .buttonStyle(.plain)
+            .disabled(disabledReason != nil)
+
+            if let disabledReason {
+                Text(disabledReason)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(16)
         .settingsPanelSurface()
@@ -370,6 +396,7 @@ private struct MeetingFileUploadCard: View {
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard disabledReason == nil else { return false }
         let fileProviders = providers.filter {
             $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
         }

@@ -85,43 +85,12 @@ struct ModelSettingsView: View {
 
     let modelStateRefreshTimer = Timer.publish(every: 2.0, on: .main, in: .common).autoconnect()
 
-    var selectedEngine: TranscriptionEngine {
-        TranscriptionEngine(rawValue: engineRaw) ?? .mlxAudio
-    }
-
-    var selectedEnhancementMode: EnhancementMode {
-        EnhancementMode.resolved(
-            storedRawValue: enhancementModeRaw,
-            appleIntelligenceAvailable: appleIntelligenceAvailable,
-            customLLMAvailable: customEnhancementModelAvailable,
-            remoteLLMAvailable: remoteEnhancementModelAvailable
-        )
-    }
-
-    var selectedRemoteASRProvider: RemoteASRProvider {
-        RemoteASRProvider(rawValue: remoteASRSelectedProviderRaw) ?? .openAIWhisper
-    }
-
-    var selectedRemoteLLMProvider: RemoteLLMProvider {
-        RemoteLLMProvider(rawValue: remoteLLMSelectedProviderRaw) ?? .openAI
-    }
-
     var selectedTranslationModelProvider: TranslationModelProvider {
         TranslationModelProvider(rawValue: translationModelProviderRaw) ?? .customLLM
     }
 
     var selectedRewriteModelProvider: RewriteModelProvider {
         RewriteModelProvider(rawValue: rewriteModelProviderRaw) ?? .customLLM
-    }
-
-    var selectedTranslationFallbackModelProvider: TranslationModelProvider {
-        TranslationProviderResolver.sanitizedFallbackProvider(
-            TranslationModelProvider(rawValue: translationFallbackModelProviderRaw) ?? .customLLM
-        )
-    }
-
-    var selectedTranslationTargetLanguage: TranslationTargetLanguage {
-        TranslationTargetLanguage(rawValue: translationTargetLanguageRaw) ?? .english
     }
 
     var remoteASRConfigurations: [String: RemoteProviderConfiguration] {
@@ -136,24 +105,9 @@ struct ModelSettingsView: View {
         UserMainLanguageOption.storedSelection(from: userMainLanguageCodesRaw)
     }
 
-    var appleIntelligenceAvailable: Bool {
-        appleIntelligenceAvailability.isAvailable
-    }
-
     var appleIntelligenceAvailability: AppleIntelligenceAvailability {
         _ = appleIntelligenceRefreshRevision
         return AppleIntelligenceAvailability.current
-    }
-
-    var customEnhancementModelAvailable: Bool {
-        customLLMManager.isModelDownloaded(repo: customLLMManager.currentModelRepo)
-    }
-
-    var remoteEnhancementModelAvailable: Bool {
-        RemoteModelConfigurationStore.isStoredLLMConfigurationConfigured(
-            provider: selectedRemoteLLMProvider,
-            stored: remoteLLMConfigurations
-        )
     }
 
     private var featureSettings: FeatureSettings {
@@ -196,8 +150,6 @@ struct ModelSettingsView: View {
             showASRHintTarget: { activeASRHintTarget = $0 }
         )
     }
-
-    private var allEntries: [ModelCatalogEntry] { catalogSnapshot.allEntries }
 
     private var hiddenModelVisibilityIDs: Set<String> {
         ModelVisibilityStore.decode(hiddenModelVisibilityIDsRaw)

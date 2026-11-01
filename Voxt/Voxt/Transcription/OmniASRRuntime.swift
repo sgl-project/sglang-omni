@@ -1,63 +1,5 @@
 import Foundation
-
-/// Which native server binary to run and how to start it.
-nonisolated struct OmniBackendConfiguration: Sendable, Equatable {
-    var runtimeExecutable: URL
-    var startupTimeoutSeconds: Double = 180
-}
-
-/// The last bytes a child process wrote, kept in memory only.
-nonisolated final class OmniDiagnosticTail: @unchecked Sendable {
-    private let limit: Int
-    private let lock = NSLock()
-    private var bytes = Data()
-
-    init(limit: Int) {
-        self.limit = limit
-    }
-
-    func append(_ data: Data) {
-        lock.lock()
-        defer { lock.unlock() }
-        bytes.append(data)
-        if bytes.count > limit {
-            bytes = Data(bytes.suffix(limit))
-        }
-    }
-
-    var text: String {
-        lock.lock()
-        defer { lock.unlock() }
-        return String(decoding: bytes, as: UTF8.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-}
-
-nonisolated struct OmniServerEndpoint: Sendable, Equatable {
-    let host: String
-    let port: Int
-    let modelName: String
-    let serverProcessIdentifier: Int32
-
-    var baseURL: URL { URL(string: "http://\(host):\(port)")! }
-}
-
-nonisolated enum OmniASRRuntimeError: LocalizedError, Equatable {
-    case launchFailed(String)
-    case serverExited(Int?)
-    case retired
-
-    var errorDescription: String? {
-        switch self {
-        case .launchFailed(let reason):
-            return "The local Omni server did not start: \(reason)"
-        case .serverExited(let code):
-            return "The local Omni server stopped unexpectedly (code \(code.map(String.init) ?? "unknown"))."
-        case .retired:
-            return "The local Omni server was released before the request finished."
-        }
-    }
-}
+import OmniModelArtifacts
 
 /// One owned local Omni server for one model: prepare once, share, retire once.
 ///
@@ -89,6 +31,7 @@ actor OmniASRRuntime {
 
     private(set) var state: State = .idle
     private var serverProcess: Process?
+    private var modelDirectoryLease: OmniModelDirectoryLease?
     private var controlPipe: Pipe?
     private var servingEndpoint: OmniServerEndpoint?
     private var preparation: Task<OmniServerEndpoint, Error>?
@@ -244,19 +187,29 @@ actor OmniASRRuntime {
 
     /// The server process has exited; requests must stop here instead of
     /// reaching whatever later binds the port.
-    private func serverProcessExited() {
-        guard case .ready = state else { return }
-        state = .failed("The local Omni server stopped unexpectedly.")
-        servingEndpoint = nil
+    private func serverProcessExited(processIdentifier: Int32) {
+        guard let process = serverProcess, process.processIdentifier == processIdentifier,
+              !process.isRunning else { return }
+        process.terminationHandler = nil
+        modelDirectoryLease = nil
+        if case .ready = state {
+            state = .failed("The local Omni server stopped unexpectedly.")
+            servingEndpoint = nil
+        }
     }
 
     private func launch() async throws -> OmniServerEndpoint {
+        let directoryLease = try await ModelDiskOperations.perform {
+            try OmniModelDirectoryLease.acquire(for: self.modelDirectory, mode: .sharedRead)
+        }
+        guard case .starting = state else { throw OmniASRRuntimeError.retired }
+        modelDirectoryLease = directoryLease
         let process = Process()
         process.executableURL = configuration.runtimeExecutable
         process.arguments = [
             "--supervised",
             "--model-kind", kind.rawValue,
-            "--model-directory", modelDirectory.path,
+            "--model-directory", directoryLease.directory.path,
             "--startup-timeout-s", String(configuration.startupTimeoutSeconds),
         ]
         process.environment = Self.runtimeEnvironment(inheriting: ProcessInfo.processInfo.environment)
@@ -279,8 +232,9 @@ actor OmniASRRuntime {
                 stderrTail.append(data)
             }
         }
-        process.terminationHandler = { [weak self] _ in
-            Task { await self?.serverProcessExited() }
+        // Note (Omni): a live child must retain its reader even if the last caller drops the runtime.
+        process.terminationHandler = { [self] terminated in
+            Task { await self.serverProcessExited(processIdentifier: terminated.processIdentifier) }
         }
         // A retire that ran before this launch got the actor must win; nothing
         // suspends between this check and the spawn.
@@ -288,6 +242,7 @@ actor OmniASRRuntime {
         do {
             try process.run()
         } catch {
+            process.terminationHandler = nil
             throw OmniASRRuntimeError.launchFailed(error.localizedDescription)
         }
         serverProcess = process
@@ -333,19 +288,29 @@ actor OmniASRRuntime {
 
     /// Asks for an orderly shutdown, then escalates to SIGTERM and finally SIGKILL.
     private func stopServerProcess() async {
-        guard let process = serverProcess else { return }
-        serverProcess = nil
+        guard let process = serverProcess else {
+            modelDirectoryLease = nil
+            return
+        }
         if let controlPipe {
             let shutdown = Data("{\"command\": \"shutdown\"}\n".utf8)
             try? controlPipe.fileHandleForWriting.write(contentsOf: shutdown)
             try? controlPipe.fileHandleForWriting.close()
         }
         controlPipe = nil
-        if await Self.waitForExit(process, within: Self.shutdownGrace) { return }
-        process.terminate()
-        if await Self.waitForExit(process, within: Self.terminateGrace) { return }
-        kill(process.processIdentifier, SIGKILL)
-        _ = await Self.waitForExit(process, within: Self.terminateGrace)
+        if !(await Self.waitForExit(process, within: Self.shutdownGrace)) {
+            process.terminate()
+            if !(await Self.waitForExit(process, within: Self.terminateGrace)) {
+                kill(process.processIdentifier, SIGKILL)
+                // Note (Omni): an escalation deadline is not proof that the child released model files.
+                while process.isRunning {
+                    try? await Task.sleep(for: .milliseconds(20))
+                }
+            }
+        }
+        process.terminationHandler = nil
+        serverProcess = nil
+        modelDirectoryLease = nil
     }
 
     /// Voxt's environment without the dynamic loader settings a debugger or XCTest
@@ -392,282 +357,5 @@ actor OmniASRRuntime {
             }
             continuation.onTermination = { _ in handle.readabilityHandler = nil }
         }
-    }
-}
-
-/// Whether a launch's startup deadline passed.
-nonisolated final class OmniStartupDeadline: @unchecked Sendable {
-    private let lock = NSLock()
-    private var passed = false
-
-    func expire() {
-        lock.lock()
-        passed = true
-        lock.unlock()
-    }
-
-    var expired: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return passed
-    }
-}
-
-/// Splits bytes into newline-terminated lines across reads.
-nonisolated final class OmniLineBuffer: @unchecked Sendable {
-    private let lock = NSLock()
-    private var pending = Data()
-
-    /// The complete lines in what has arrived so far, without their newlines;
-    /// a trailing partial line waits for the next call.
-    func append(_ data: Data) -> [Data] {
-        lock.lock()
-        defer { lock.unlock() }
-        pending.append(data)
-        var lines: [Data] = []
-        while let newline = pending.firstIndex(of: UInt8(ascii: "\n")) {
-            let line = pending[pending.startIndex ..< newline]
-            if !line.isEmpty {
-                lines.append(Data(line))
-            }
-            pending.removeSubrange(pending.startIndex ... newline)
-        }
-        return lines
-    }
-}
-
-nonisolated extension URLSession {
-    /// Streams an upload's response so cancellation reaches the server mid-request.
-    func streamingUpload(
-        _ request: URLRequest,
-        body: Data
-    ) async throws -> (URLSession.AsyncBytes, URLResponse) {
-        var uploadRequest = request
-        uploadRequest.httpBody = body
-        return try await bytes(for: uploadRequest)
-    }
-}
-
-extension OmniASRRuntime {
-    /// Qwen3-ASR Final as MLXAudio decoded it: ≤1200 s energy-cut chunks share one
-    /// token budget, and the first chunk's detected language is forced on the rest.
-    /// One Qwen3-ASR Final chunk, built the way Voxt's Swift model built it:
-    /// its stop rules, and its prompt audio layout (one more mel frame and its
-    /// own audio token count), so transcripts match the original backend.
-    /// Like the original, an energy cut may land up to 5 s past the chunk end,
-    /// unless that could exceed the server's 1200 s per-request limit.
-    nonisolated static func qwenCutMayPassChunkEnd(chunkDurationSeconds: Float) -> Bool {
-        chunkDurationSeconds + OmniTranscriptionPlanning.energyCutSearchSeconds <= qwenMaximumRequestSeconds
-    }
-
-    nonisolated static func qwenFinalRequest(
-        samples: [Float],
-        sampleRate: Int,
-        language: String?,
-        context: String?,
-        maxNewTokens: Int
-    ) -> OmniTranscriptionRequest {
-        OmniTranscriptionRequest(
-            samples: samples,
-            sampleRate: sampleRate,
-            language: language,
-            prompt: context,
-            maxNewTokens: maxNewTokens,
-            stopAtEndOfText: true,
-            stopOnTokenLoop: true,
-            includeGenerationMetadata: true,
-            audioLayout: "voxt_swift"
-        )
-    }
-
-    /// Whisper Final as MLXAudio decoded it: the server cuts the recording into
-    /// 30 s windows and decodes each with the same budget, so one request
-    /// carries the whole recording.
-    nonisolated static func whisperFinalRequest(
-        samples: [Float],
-        sampleRate: Int,
-        language: String?,
-        maxNewTokens: Int,
-        temperature: Float
-    ) -> OmniTranscriptionRequest {
-        OmniTranscriptionRequest(
-            samples: samples,
-            sampleRate: sampleRate,
-            language: language,
-            prompt: nil,
-            maxNewTokens: maxNewTokens,
-            stopAtEndOfText: false,
-            stopOnTokenLoop: false,
-            temperature: temperature
-        )
-    }
-
-    /// Cohere Transcribe Final as MLXAudio decoded it: energy-cut chunks, or
-    /// speech segments for long audio, share one token budget on the server.
-    nonisolated static func cohereFinalRequest(
-        samples: [Float],
-        sampleRate: Int,
-        language: String?,
-        usePunctuation: Bool?,
-        maxNewTokens: Int,
-        temperature: Float,
-        chunkDuration: Float,
-        minChunkDuration: Float,
-        speechSegments: OmniSpeechSegments?
-    ) -> OmniTranscriptionRequest {
-        OmniTranscriptionRequest(
-            samples: samples,
-            sampleRate: sampleRate,
-            language: language,
-            prompt: nil,
-            maxNewTokens: maxNewTokens,
-            stopAtEndOfText: false,
-            stopOnTokenLoop: false,
-            temperature: temperature,
-            usePunctuation: usePunctuation,
-            chunkDuration: chunkDuration,
-            minChunkDuration: minChunkDuration,
-            speechSegments: speechSegments
-        )
-    }
-
-    /// Note (Dayuxiaoshui): Parakeet Final as MLXAudio's generateStream decoded it: the
-    /// server cuts the chunks from Voxt's chunk length and merges them.
-    nonisolated static func parakeetFinalRequest(
-        samples: [Float],
-        sampleRate: Int,
-        chunkDuration: Float
-    ) -> OmniTranscriptionRequest {
-        OmniTranscriptionRequest(
-            samples: samples,
-            sampleRate: sampleRate,
-            language: nil,
-            prompt: nil,
-            maxNewTokens: nil,
-            stopAtEndOfText: false,
-            stopOnTokenLoop: false,
-            chunkDuration: chunkDuration
-        )
-    }
-
-    /// Note (Dayuxiaoshui): SenseVoice Final as MLXAudio decoded it: one pass, or for long
-    /// audio the speech segments' chunks; the server normalizes the hint as Voxt does.
-    nonisolated static func senseVoiceFinalRequest(
-        samples: [Float],
-        sampleRate: Int,
-        language: String?,
-        useITN: Bool,
-        speechSegments: OmniSpeechSegments?
-    ) -> OmniTranscriptionRequest {
-        OmniTranscriptionRequest(
-            samples: samples,
-            sampleRate: sampleRate,
-            language: language,
-            prompt: nil,
-            maxNewTokens: nil,
-            stopAtEndOfText: false,
-            stopOnTokenLoop: false,
-            speechSegments: speechSegments,
-            useITN: useITN
-        )
-    }
-
-    func transcribeQwenFinal(
-        samples: [Float],
-        sampleRate: Int,
-        language: String?,
-        context: String?,
-        maxTokens: Int,
-        chunkDurationSeconds: Float = 1200,
-        minChunkDurationSeconds: Float = 1
-    ) async throws -> (text: String, language: String?) {
-        let chunkDuration = min(chunkDurationSeconds, Self.qwenMaximumRequestSeconds)
-        let chunks = OmniTranscriptionPlanning.energySplitChunks(
-            samples,
-            sampleRate: sampleRate,
-            chunkDurationSeconds: chunkDuration,
-            minChunkDurationSeconds: minChunkDurationSeconds,
-            allowsCutPastChunkEnd: Self.qwenCutMayPassChunkEnd(chunkDurationSeconds: chunkDuration)
-        )
-        let endpoint = try beginUse()
-        defer { endUse() }
-        var remainingTokens = maxTokens
-        var resolvedLanguage = language
-        var text = ""
-        for chunk in chunks {
-            if remainingTokens <= 0 { break }
-            try Task.checkCancellation()
-            let result = try await transcribe(Self.qwenFinalRequest(
-                samples: chunk.samples,
-                sampleRate: sampleRate,
-                language: resolvedLanguage,
-                context: context,
-                maxNewTokens: remainingTokens
-            ), holding: endpoint)
-            guard let metadata = result.generationMetadata else {
-                throw OmniTranscriptionError.streamError("generation metadata missing")
-            }
-            remainingTokens -= metadata.generatedTokenCount
-            if resolvedLanguage == nil {
-                resolvedLanguage = metadata.language
-            }
-            text += result.text
-        }
-        return (text.trimmingCharacters(in: .whitespacesAndNewlines), resolvedLanguage)
-    }
-}
-
-extension OmniASRRuntime {
-    /// MOSS-Transcribe-Diarize Final as MLXAudio decoded it: one request for the
-    /// whole recording, which the server cuts into 1200 s chunks, each with the
-    /// token budget, decoded greedily with both end tokens and the loop guard.
-    func transcribeMossFinal(
-        samples: [Float],
-        sampleRate: Int,
-        prompt: String?,
-        maxTokens: Int
-    ) async throws -> OmniTranscriptionResult {
-        try await transcribe(OmniTranscriptionRequest(
-            samples: samples,
-            sampleRate: sampleRate,
-            language: nil,
-            prompt: prompt,
-            maxNewTokens: maxTokens,
-            stopAtEndOfText: true,
-            stopOnTokenLoop: true
-        ))
-    }
-}
-
-extension OmniASRRuntime {
-    /// Nemotron 3.5 ASR Final as MLXAudio decoded it: the whole recording through
-    /// the cache-aware stream at the native chunk, with the language hint as given.
-    func transcribeNemotronFinal(
-        samples: [Float],
-        sampleRate: Int,
-        language: String?
-    ) async throws -> OmniTranscriptionResult {
-        try await transcribe(OmniTranscriptionRequest(
-            samples: samples,
-            sampleRate: sampleRate,
-            language: language,
-            prompt: nil,
-            maxNewTokens: nil,
-            stopAtEndOfText: false,
-            stopOnTokenLoop: false
-        ))
-    }
-
-    /// Note (Dayuxiaoshui): Voxt maps a live language onto the checkpoint's
-    /// prompt languages, which the Swift backend read from the loaded model;
-    /// here they come from the same config.json the server loads.
-    nonisolated static func nemotronPromptLanguages(
-        modelDirectory: URL
-    ) throws -> (languages: [String], defaultLanguage: String) {
-        let data = try Data(contentsOf: modelDirectory.appendingPathComponent("config.json"))
-        let config = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        let prompt = config?["prompt"] as? [String: Any]
-        let dictionary = prompt?["prompt_dictionary"] as? [String: Any] ?? [:]
-        return (Array(dictionary.keys), config?["default_language"] as? String ?? "auto")
     }
 }

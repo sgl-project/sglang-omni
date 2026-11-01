@@ -272,6 +272,17 @@ struct FeatureSettingsView: View {
     }
 
     func applySelection(_ selectionID: FeatureModelSelectionID, for sheet: FeatureModelSelectorSheet) {
+        switch sheet {
+        case .transcriptionASR, .translationASR, .rewriteASR, .meetingASR:
+            if case .mlx(let repo)? = selectionID.asrSelection,
+               OmniASRBackend.unavailability(for: repo) != nil {
+                return
+            } else {
+                break
+            }
+        default:
+            break
+        }
         FeatureSettingsStore.update(defaults: .standard) { settings in
             switch sheet {
             case .transcriptionASR:

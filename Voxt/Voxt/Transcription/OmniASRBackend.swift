@@ -1,27 +1,44 @@
 import Foundation
-import MLXAudioSTT
 
-/// A loaded local ASR model: an in-process MLXAudio model or an owned Omni server.
-nonisolated enum LoadedASRModel: @unchecked Sendable {
-    case mlx(any STTGenerationModel)
+/// A loaded local ASR model owns a Native server; test fixtures cannot transcribe.
+nonisolated enum LoadedASRModel: Sendable {
     case omni(OmniASRRuntime)
+    case modelUseFixture(ASRModelUseFixture)
 
     var omniRuntime: OmniASRRuntime? {
-        if case .omni(let runtime) = self { return runtime }
-        return nil
+        switch self {
+        case .omni(let runtime): return runtime
+        case .modelUseFixture: return nil
+        }
     }
 
-    var mlxModel: (any STTGenerationModel)? {
-        if case .mlx(let model) = self { return model }
-        return nil
+    func requireOmniRuntime() throws -> OmniASRRuntime {
+        switch self {
+        case .omni(let runtime): return runtime
+        case .modelUseFixture: throw ASRModelUseFixture.InferenceError.unavailable
+        }
+    }
+}
+
+nonisolated struct MLXLoadedModelBox: Sendable {
+    let loaded: LoadedASRModel
+}
+
+/// Identity-only model use for loader lifecycle tests, never a numerical backend.
+nonisolated final class ASRModelUseFixture: Sendable {
+    enum InferenceError: LocalizedError {
+        case unavailable
+
+        var errorDescription: String? {
+            "A model-use fixture cannot run ASR inference."
+        }
     }
 }
 
 /// Which checkpoints run on the local Omni server, fixed per process.
 ///
-/// Only the listed checkpoints are eligible, and only when the development
-/// backend is configured; every other model keeps its Swift backend. The choice
-/// is read once so a running process never switches the backend of a checkpoint.
+/// Only the listed checkpoints are eligible. Other models remain in the
+/// catalog but cannot load while Native support is pending.
 nonisolated enum OmniASRBackend {
     static let modelKindsByRepo: [String: OmniASRModelKind] = [
         "mlx-community/Qwen3-ASR-0.6B-4bit": .qwen3ASR,
@@ -37,24 +54,103 @@ nonisolated enum OmniASRBackend {
         "mlx-community/SenseVoiceSmall": .senseVoice,
     ]
 
-    static let launchSettings: LaunchSettings? = LaunchSettings(environment: ProcessInfo.processInfo.environment)
+    static var isAppleSilicon: Bool {
+#if arch(arm64)
+        true
+#else
+        false
+#endif
+    }
+
+    enum Unavailability: Error, LocalizedError, Equatable, Sendable {
+        case unsupportedModel
+        case unsupportedPlatform
+        case runtimeUnavailable
+
+        var errorDescription: String? {
+            switch self {
+            case .unsupportedModel:
+                return AppLocalization.localizedString("This model is temporarily unavailable while Native Omni support is being added. Choose another ASR model.")
+            case .unsupportedPlatform:
+                return AppLocalization.localizedString("Local Native Omni models require Apple Silicon. Choose a Remote ASR provider or Direct Dictation.")
+            case .runtimeUnavailable:
+                return AppLocalization.localizedString("The Native Omni runtime is unavailable. Reinstall Voxt or configure the development runtime.")
+            }
+        }
+    }
+
+    static func nativeModelKind(for repo: String) -> OmniASRModelKind? {
+        modelKindsByRepo[MLXModelCatalog.canonicalModelRepo(repo)]
+    }
+
+    static func unavailability(
+        for repo: String,
+        isAppleSilicon: Bool = OmniASRBackend.isAppleSilicon
+    ) -> Unavailability? {
+        if !isAppleSilicon {
+            return .unsupportedPlatform
+        } else if nativeModelKind(for: repo) == nil {
+            return .unsupportedModel
+        } else {
+            return nil
+        }
+    }
+
+    static func unavailabilityReason(for repo: String) -> String? {
+        unavailability(for: repo)?.errorDescription
+    }
+
+    static let launchSettings: LaunchSettings? = LaunchSettings(
+        environment: ProcessInfo.processInfo.environment,
+        bundle: .main
+    )
 
     struct LaunchSettings: Sendable, Equatable {
         let runtimeExecutable: URL
 
-        /// `VOXT_ASR_BACKEND=omni` with `VOXT_OMNI_RUNTIME`, the path to the
-        /// native `qwen3_asr_server` binary; the other kinds' servers sit beside it.
+        /// Resolve an explicit development path first, then the packaged runtime.
+        init?(environment: [String: String], bundle: Bundle) {
+#if !arch(arm64)
+            return nil
+#else
+            if environment["VOXT_ASR_BACKEND"] == "swift" {
+                return nil
+            }
+
+            if let runtime = environment["VOXT_OMNI_RUNTIME"], !runtime.isEmpty {
+                runtimeExecutable = URL(fileURLWithPath: runtime)
+            } else if let runtime = bundle.url(
+                forResource: "qwen3_asr_server",
+                withExtension: nil,
+                subdirectory: "OmniRuntime/bin"
+            ) {
+                runtimeExecutable = runtime
+            } else {
+                return nil
+            }
+#endif
+        }
+
         init?(environment: [String: String]) {
-            guard environment["VOXT_ASR_BACKEND"] == "omni",
-                  let runtime = environment["VOXT_OMNI_RUNTIME"], !runtime.isEmpty
-            else { return nil }
-            runtimeExecutable = URL(fileURLWithPath: runtime)
+            self.init(environment: environment, bundle: .main)
         }
     }
 
     static func modelKind(for repo: String) -> OmniASRModelKind? {
         guard launchSettings != nil else { return nil }
-        return modelKindsByRepo[repo]
+        return nativeModelKind(for: repo)
+    }
+
+    /// Returns whether the checkpoint is assigned to the Omni runtime.
+    ///
+    /// This is a model-routing property and does not depend on the current
+    /// process having a packaged runtime available.
+    static func usesOmniRuntime(for repo: String) -> Bool {
+#if arch(arm64)
+        nativeModelKind(for: repo) != nil
+#else
+        false
+#endif
     }
 
     /// Qwen3-ASR, Silero VAD and Sortformer run `VOXT_OMNI_RUNTIME`; every other

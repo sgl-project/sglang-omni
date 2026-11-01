@@ -37,9 +37,10 @@ nlohmann::json ReadConfig(const std::filesystem::path &path) {
       std::regex_replace(contents.str(), std::regex("-?Infinity|NaN"), "null"));
 }
 
-qwen3_asr::WeightMap
+omni_common::WeightMap
 BFloat16Weights(const std::filesystem::path &model_directory) {
-  qwen3_asr::WeightMap weights = qwen3_asr::LoadSafetensors(model_directory);
+  omni_common::WeightMap weights =
+      omni_common::LoadSafetensors(model_directory);
   for (auto &[name, weight] : weights) {
     if (mx::issubdtype(weight.dtype(), mx::floating)) {
       weight = mx::astype(weight, mx::bfloat16);
@@ -210,7 +211,7 @@ mx::array ParakeetModel::Attention(const mx::array &x,
       heads(checkpoint_.Linear(x, prefix + ".linear_v"), time);
   const mx::array position_keys = heads(
       checkpoint_.Linear(positions, prefix + ".linear_pos"), position_count);
-  mx::array position_scores = qwen3_asr::RelativeShift(
+  mx::array position_scores = omni_common::RelativeShift(
       mx::matmul(position_queries, mx::swapaxes(position_keys, -2, -1)));
   position_scores = mx::multiply(
       mx::slice(position_scores, {0, 0, 0, 0}, {1, head_count, time, time}),
@@ -332,9 +333,9 @@ ParakeetModel::DecodeGraph(const std::vector<mx::array> &inputs) const {
     const mx::array gates =
         mx::addmm(checkpoint_.Weight(lstm + ".bias"), output,
                   mx::transpose(checkpoint_.Weight(lstm + ".Wx")));
-    const qwen3_asr::LstmCell next = qwen3_asr::LstmStep(
+    const omni_common::LstmCell next = omni_common::LstmStep(
         mx::squeeze(mx::slice(gates, {0, 0, 0}, {1, 1, gates.shape(2)}), 1),
-        qwen3_asr::LstmCell{layer_state(hidden), layer_state(cell)},
+        omni_common::LstmCell{layer_state(hidden), layer_state(cell)},
         checkpoint_.Weight(lstm + ".Wh"));
     hidden_states.push_back(next.hidden);
     cell_states.push_back(next.cell);

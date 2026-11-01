@@ -5,6 +5,8 @@ graph replayed hops and whole-history solves their eager solves."""
 from __future__ import annotations
 
 import copy
+import gc
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -29,6 +31,7 @@ from sglang_omni.models.fun_cosyvoice3.prefix_cache import (
 )
 from sglang_omni.models.fun_cosyvoice3.prefix_cuda_graph import PrefixCudaGraphRunner
 from sglang_omni.models.fun_cosyvoice3.solve_graph_capture import SolveGraphCapture
+from sglang_omni.models.fun_cosyvoice3.stages import build_prefix_pool
 from sglang_omni.models.fun_cosyvoice3.whole_history_cuda_graph import (
     WholeHistoryCudaGraphRunner,
 )
@@ -422,6 +425,47 @@ def test_grow_rows_takes_nothing_on_a_shortfall() -> None:
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_prefix_pool_leaves_its_reserve_under_the_allocator_cap() -> None:
+    """A pool sized under an allocator cap took its padding block and the allocator's
+    rounding out of its reserve, so the step it was sized beside failed to allocate."""
+    device = torch.device("cuda", torch.cuda.current_device())
+    attention = SimpleNamespace(heads=16, inner_dim=1024)
+    flow = SimpleNamespace(
+        decoder=SimpleNamespace(
+            estimator=SimpleNamespace(
+                transformer_blocks=[SimpleNamespace(attn=attention)] * 22,
+                input_embed=SimpleNamespace(proj=SimpleNamespace(out_features=1024)),
+            )
+        )
+    )
+    reserve_bytes = 6 * 2**30
+    gc.collect()
+    torch.cuda.empty_cache()
+    total_bytes = torch.cuda.get_device_properties(device).total_memory
+    entry_fraction = torch.cuda.get_per_process_memory_fraction(device)
+    torch.cuda.set_per_process_memory_fraction(
+        (torch.cuda.memory_reserved(device) + 8 * 2**30) / total_bytes, device
+    )
+    try:
+        pool = build_prefix_pool(
+            flow,
+            device,
+            torch.bfloat16,
+            size_gb=None,
+            max_blocks=None,
+            stage_reserve_bytes=reserve_bytes,
+            headroom_bytes=0,
+            share_ceiling_bytes=None,
+        )
+        assert pool is not None
+        step = torch.empty(reserve_bytes, dtype=torch.uint8, device=device)
+        del step, pool
+    finally:
+        torch.cuda.set_per_process_memory_fraction(entry_fraction, device)
+        torch.cuda.empty_cache()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 @pytest.mark.parametrize("compile_prefix", [False, True], ids=["eager", "compiled"])
 def test_prefix_graph_replays_equal_the_eager_solve(compile_prefix: bool) -> None:
     """Replays with padding frames and unused row slots equal the eager solve,
@@ -598,6 +642,58 @@ def test_prefix_graph_replays_equal_the_eager_solve(compile_prefix: bool) -> Non
         for pool, pair in zip(pools, pair_per_pool):
             release_rows(pool, list(pair))
     assert all(len(pool.free_blocks) == 64 for pool in pools)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_prefix_graph_tiers_capture_over_one_set_of_input_buffers() -> None:
+    estimator = make_estimator()
+    device = torch.device("cuda", torch.cuda.current_device())
+    dtype = torch.bfloat16
+    pool = PrefixKVPool(
+        layer_num=LAYERS,
+        euler_steps=10,
+        head_num=HEADS,
+        head_dim=HEAD_DIM,
+        capacity_frames=8 * BLOCK_FRAMES,
+        device=device,
+        dtype=dtype,
+    )
+    unit = torch.linspace(0, 1, 11, device=device, dtype=dtype)
+    time_span = (1 - torch.cos(unit * 0.5 * torch.pi)).float()
+    with torch.inference_mode(), torch.autocast("cuda", dtype=dtype):
+        estimator.build_modulations(time_span, dtype)
+    backend = current_platform.get_device_graph_backend(device)
+    assert backend is not None
+    runner = PrefixCudaGraphRunner(
+        estimator,
+        pool,
+        graphs=SolveGraphCapture(backend, device=device, autocast_dtype=dtype),
+        frame_dtype=torch.float32,
+        speaker_dtype=dtype,
+        cfg_rate=0.7,
+        mel_channels=CHANNELS,
+        speaker_channels=CHANNELS,
+        max_rows=4,
+        hop_frames=2 * CHUNK,
+        min_hop_frames=CHUNK,
+        max_frames=1024,
+    )
+    runner.capture()
+    assert len({captured.layout.row_slots for captured in runner.captured}) > 1
+    for field in (
+        "noise",
+        "mu",
+        "mel_conditioning",
+        "speaker_embeddings",
+        "time_span",
+        "context",
+        "next_context",
+    ):
+        storages = {
+            getattr(captured, field).untyped_storage().data_ptr()
+            for captured in runner.captured
+        }
+        assert len(storages) == 1, field
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")

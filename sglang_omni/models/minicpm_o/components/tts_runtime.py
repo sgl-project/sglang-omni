@@ -9,10 +9,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import torch
 
-from sglang_omni.models.minicpm_o.components.code2wav import (
-    OUTPUT_SAMPLE_RATE,
-    MiniCPMOCode2Wav,
-)
+from sglang_omni.models.minicpm_o.components.code2wav import MiniCPMOCode2Wav
 from sglang_omni.models.minicpm_o.components.token2wav.vocoder import (
     SILENCE_TOKEN_ID,
     SpeakerPrompt,
@@ -156,13 +153,6 @@ class MiniCPMOVocoderRuntime:
                 waveform = None
             else:
                 waveform = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
-                if (
-                    not requests[index].end_of_turn
-                    and waveform.size < OUTPUT_SAMPLE_RATE
-                ):
-                    waveform = np.pad(waveform, (OUTPUT_SAMPLE_RATE - waveform.size, 0))
-                else:
-                    pass
             if requests[index].end_of_turn:
                 self.reset_turn_state(states[index])
             else:
@@ -217,8 +207,8 @@ class MiniCPMOVocoderRuntime:
         else:
             return max(1, unheld_bytes // forward_bytes_per_stream)
 
-    def warm_up(self, reference_audio: bytes) -> None:
-        """Capture the flow's chunk graphs for this voice, then decode a stream prefill and an equal-length and a ragged chunk forward of every width a forward can reach."""
+    def warm_up(self, reference_audio: bytes, *, capture_chunk_graphs: bool) -> None:
+        """Capture the flow's chunk graphs for this voice if asked, then decode a stream prefill and an equal-length and a ragged chunk forward of every width a forward can reach."""
         # note (Junnan Li): A forward wider than every graph runs eagerly, and a compiled estimator compiles its equal and ragged forms once each.
         if self.max_open_sessions > CHUNK_GRAPH_MAX_STREAMS:
             forward_stream_counts = (2, CHUNK_GRAPH_MAX_STREAMS + 1)
@@ -248,25 +238,28 @@ class MiniCPMOVocoderRuntime:
         requests = [request for batch in batches for request in batch]
         for request in requests:
             self.open_session(request.session_id, reference_audio=reference_audio)
-        speaker = self.sessions[requests[0].session_id].speaker
-        up_rate = self.token2wav.flow.up_rate
-        widest_graph = min(CHUNK_GRAPH_MAX_STREAMS, self.max_open_sessions)
-        # note (Junnan Li): A steady chunk decodes CODEC_CHUNK_SIZE tokens; a turn's last chunk also decodes its lookahead, at most one token short of a full window.
-        self.token2wav.capture_chunk_graphs(
-            speaker.prompt,
-            speaker.base_caches,
-            stream_counts=tuple(
-                2**power
-                for power in range(widest_graph.bit_length())
-                if 2**power < widest_graph
+        if capture_chunk_graphs:
+            speaker = self.sessions[requests[0].session_id].speaker
+            up_rate = self.token2wav.flow.up_rate
+            widest_graph = min(CHUNK_GRAPH_MAX_STREAMS, self.max_open_sessions)
+            # note (Junnan Li): A steady chunk decodes CODEC_CHUNK_SIZE tokens; a turn's last chunk also decodes its lookahead, at most one token short of a full window.
+            self.token2wav.capture_chunk_graphs(
+                speaker.prompt,
+                speaker.base_caches,
+                stream_counts=tuple(
+                    2**power
+                    for power in range(widest_graph.bit_length())
+                    if 2**power < widest_graph
+                )
+                + (widest_graph,),
+                frame_counts=(
+                    CODEC_CHUNK_SIZE * up_rate,
+                    (CODEC_CHUNK_SIZE + self.token2wav.flow.pre_lookahead_len - 1)
+                    * up_rate,
+                ),
             )
-            + (widest_graph,),
-            frame_counts=(
-                CODEC_CHUNK_SIZE * up_rate,
-                (CODEC_CHUNK_SIZE + self.token2wav.flow.pre_lookahead_len - 1)
-                * up_rate,
-            ),
-        )
+        else:
+            pass
         for batch in batches:
             list(self.synthesize_batch(batch))
         for request in requests:

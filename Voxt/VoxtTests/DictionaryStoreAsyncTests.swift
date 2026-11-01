@@ -143,6 +143,63 @@ final class DictionaryStoreAsyncTests: XCTestCase {
         XCTAssertEqual(queriedEntries.first?.replacementTerms.map(\.text), ["vox target"])
     }
 
+    func testFailedReplacementUpdatePreservesSnapshotAndValidationIndex() async throws {
+        let repository = try makeFixture()
+        let suiteName = "DictionaryStoreAsyncTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = DictionaryStore(defaults: defaults, fileManager: .default, repository: repository)
+        try store.createManualEntry(
+            term: "Voxt", replacementTerms: ["old alias"], groupID: nil, groupNameSnapshot: nil
+        )
+        let snapshot = store.entries
+        let persistedSnapshot = try repository.allEntries()
+        let entry = try XCTUnwrap(snapshot.first)
+        repository.failNextUpsertRequest()
+        XCTAssertThrowsError(try store.updateEntry(
+            id: entry.id, term: "Renamed", replacementTerms: ["new alias"],
+            groupID: nil, groupNameSnapshot: nil
+        ))
+        XCTAssertEqual(store.entries, snapshot)
+        XCTAssertEqual(store.filteredEntries(for: .manualAdded), snapshot)
+        XCTAssertEqual(try repository.allEntries(), persistedSnapshot)
+        XCTAssertThrowsError(try store.createManualEntry(
+            term: "Other", replacementTerms: ["old alias"], groupID: nil, groupNameSnapshot: nil
+        ))
+        try store.createManualEntry(
+            term: "Other", replacementTerms: ["new alias"], groupID: nil, groupNameSnapshot: nil
+        )
+        XCTAssertEqual(store.entries.count, 2)
+    }
+
+    func testReinforcementAndMatchesKeepPublishedChangesWhenBothWritesFail() async throws {
+        let repository = try makeFixture()
+        let entry = makeEntry(term: "Voxt")
+        try repository.upsert(entry)
+        let persistedSnapshot = try repository.allEntries()
+        let suiteName = "DictionaryStoreAsyncTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = DictionaryStore(defaults: defaults, fileManager: .default, repository: repository)
+        repository.failNextUpsertRequest()
+        repository.failNextReplaceAllRequest()
+        let result = try store.createOrReinforceManualEntry(term: "VOXT", groupID: nil, groupNameSnapshot: nil)
+        XCTAssertEqual(result, DictionaryEntryUpsertResult(term: "Voxt", added: false, reinforcedCount: 1))
+        XCTAssertEqual(store.entries.first?.matchCount, 1)
+        XCTAssertEqual(try repository.allEntries().first?.matchCount, 0)
+
+        repository.failNextUpsertRequest()
+        repository.failNextReplaceAllRequest()
+        store.recordMatches([DictionaryMatchCandidate(
+            entryID: entry.id, term: entry.term, matchedText: "vox", normalizedMatchedText: "vox",
+            score: 0.985, reason: .fuzzyWindow, source: .term, matchRange: nil
+        )])
+        XCTAssertEqual(store.entries.first?.matchCount, 2)
+        XCTAssertEqual(store.entries.first?.observedVariants.first?.confidence, .high)
+        XCTAssertEqual(store.filteredEntries(for: .manualAdded), store.entries)
+        XCTAssertEqual(try repository.allEntries(), persistedSnapshot)
+    }
+
     private func makeFixture() throws -> BlockingDictionaryRepository {
         let directoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("voxt-dictionary-async-tests-\(UUID().uuidString)", isDirectory: true)
@@ -205,6 +262,8 @@ private final class BlockingDictionaryRepository: DictionaryRepositoryProtocol, 
     private let requestRelease = DispatchSemaphore(value: 0)
     private var shouldBlockNextAllEntriesRequest = false
     private var shouldFailNextAllEntriesRequest = false
+    private var shouldFailNextUpsertRequest = false
+    private var shouldFailNextReplaceAllRequest = false
 
     init(base: DictionaryRepositoryProtocol) {
         self.base = base
@@ -228,6 +287,14 @@ private final class BlockingDictionaryRepository: DictionaryRepositoryProtocol, 
         lock.withLock {
             shouldFailNextAllEntriesRequest = true
         }
+    }
+
+    func failNextUpsertRequest() {
+        lock.withLock { shouldFailNextUpsertRequest = true }
+    }
+
+    func failNextReplaceAllRequest() {
+        lock.withLock { shouldFailNextReplaceAllRequest = true }
     }
 
     func allCategories() throws -> [DictionaryCategory] {
@@ -290,6 +357,14 @@ private final class BlockingDictionaryRepository: DictionaryRepositoryProtocol, 
     }
 
     func upsert(_ entry: DictionaryEntry) throws {
+        let shouldFail = lock.withLock {
+            let value = shouldFailNextUpsertRequest
+            shouldFailNextUpsertRequest = false
+            return value
+        }
+        if shouldFail {
+            throw TestRepositoryError.writeFailed
+        }
         try base.upsert(entry)
     }
 
@@ -298,6 +373,14 @@ private final class BlockingDictionaryRepository: DictionaryRepositoryProtocol, 
     }
 
     func replaceAll(_ entries: [DictionaryEntry]) throws {
+        let shouldFail = lock.withLock {
+            let value = shouldFailNextReplaceAllRequest
+            shouldFailNextReplaceAllRequest = false
+            return value
+        }
+        if shouldFail {
+            throw TestRepositoryError.writeFailed
+        }
         try base.replaceAll(entries)
     }
 
@@ -324,4 +407,5 @@ private final class BlockingDictionaryRepository: DictionaryRepositoryProtocol, 
 
 private enum TestRepositoryError: Error {
     case readFailed
+    case writeFailed
 }

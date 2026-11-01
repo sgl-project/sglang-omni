@@ -1,18 +1,14 @@
 import Foundation
-import MLXAudioSTT
 
-nonisolated protocol MLXNativeStreamingSession: AnyObject, Sendable {
-    var events: AsyncStream<TranscriptionEvent> { get }
+nonisolated protocol ASRStreamingSession: AnyObject, Sendable {
+    var events: AsyncStream<ASRStreamingEvent> { get }
     func feedAudio(samples: [Float])
     func stop()
     func cancel()
 }
 
-extension StreamingInferenceSession: MLXNativeStreamingSession {}
-extension NemotronASRStreamingSession: MLXNativeStreamingSession {}
-
 nonisolated struct MLXMeetingNativeStreamingConfiguration: Sendable {
-    let session: any MLXNativeStreamingSession
+    let session: any ASRStreamingSession
     let liveMode: MLXLiveMode
     let qwenUsesAutomaticLanguageProtocol: Bool
     let mossVisibleOutputMode: MossASROutputMode?
@@ -20,13 +16,13 @@ nonisolated struct MLXMeetingNativeStreamingConfiguration: Sendable {
 
 /// Owns the installed stream, its two consumer/feed tasks and the transferred
 /// model-use release. A retiring stream cannot clear its replacement's state.
-/// This waits for Voxt's tasks only: the library's synchronous cancel() does not
-/// expose an awaitable barrier for its internal decode/Metal work.
+/// HTTP sessions hold their own runtime use until the forwarding task exits;
+/// the runtime separately waits for active uses and actual server process exit.
 @MainActor
 final class MLXNativeLiveRuntime {
     private struct Active {
         let id: UUID
-        let session: any MLXNativeStreamingSession
+        let session: any ASRStreamingSession
         let eventTask: Task<Void, Never>
         let feedTask: Task<Void, Never>
         let releaseModel: @MainActor () -> Void
@@ -34,15 +30,15 @@ final class MLXNativeLiveRuntime {
 
     private var active: Active?
     private var retirementTasks: [UUID: Task<Void, Never>] = [:]
-    var session: (any MLXNativeStreamingSession)? { active?.session }
+    var session: (any ASRStreamingSession)? { active?.session }
     var hasPendingWork: Bool { active != nil || !retirementTasks.isEmpty }
 
     func install(
-        _ session: any MLXNativeStreamingSession,
+        _ session: any ASRStreamingSession,
         pollInterval: Duration,
         nextSamples: @escaping @MainActor () -> [Float],
         shouldContinue: @escaping @MainActor () -> Bool,
-        onEvent: @escaping @MainActor (TranscriptionEvent) -> Void,
+        onEvent: @escaping @MainActor (ASRStreamingEvent) -> Void,
         releaseModel: @escaping @MainActor () -> Void
     ) {
         release(cancelSession: true)
@@ -74,8 +70,6 @@ final class MLXNativeLiveRuntime {
         retired.feedTask.cancel()
         retired.eventTask.cancel()
         if cancelSession { retired.session.cancel() }
-        // Cleanup must run even during shutdown, so it is not a cancellable work
-        // submission. Retain this owner until both Voxt tasks exit and the use is released.
         retirementTasks[retired.id] = Task { @MainActor [self] in
             await retired.feedTask.value
             await retired.eventTask.value

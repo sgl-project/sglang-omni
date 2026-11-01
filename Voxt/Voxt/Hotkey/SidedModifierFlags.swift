@@ -19,14 +19,6 @@ nonisolated struct SidedModifierFlags: OptionSet, Equatable {
     static let allOption: SidedModifierFlags = [.leftOption, .rightOption]
     static let allCommand: SidedModifierFlags = [.leftCommand, .rightCommand]
 
-    static func toggled(from current: SidedModifierFlags, keyCode: UInt16) -> SidedModifierFlags {
-        guard let flag = sidedFlag(for: keyCode) else { return current }
-        if current.contains(flag) {
-            return current.subtracting(flag)
-        }
-        return current.union(flag)
-    }
-
     static func updating(from current: SidedModifierFlags, keyCode: UInt16, isPressed: Bool) -> SidedModifierFlags {
         guard let flag = sidedFlag(for: keyCode) else { return current }
         if isPressed {

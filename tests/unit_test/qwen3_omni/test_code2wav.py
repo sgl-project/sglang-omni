@@ -1118,7 +1118,7 @@ def make_pool(
         capture_slots=0,
         ring_frames=incremental_codec.spec.retained_context + largest_part,
         device=torch.device("cuda"),
-        dtype=torch.bfloat16,
+        dtype=incremental_codec.model.dtype,
     )
 
 
@@ -1166,8 +1166,12 @@ def decode_in_parts(
     ],
 )
 @pytest.mark.parametrize("parts", [(4, 6, 7), (1,) * 17, (10, 7)])
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 def test_slot_decodes_error_to_fp32_is_the_fused_forward_error(
-    monkeypatch: pytest.MonkeyPatch, parts: tuple[int, ...], is_paged_attention: bool
+    monkeypatch: pytest.MonkeyPatch,
+    parts: tuple[int, ...],
+    is_paged_attention: bool,
+    dtype: torch.dtype,
 ) -> None:
     monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
     whole_error = 0.0
@@ -1177,7 +1181,7 @@ def test_slot_decodes_error_to_fp32_is_the_fused_forward_error(
         codes = torch.randint(0, 16, (2, 2, sum(parts)), device="cuda")
         with torch.inference_mode():
             reference = model(codes)
-            model.to(torch.bfloat16)
+            model.to(dtype)
             model.use_channels_last()
             model.use_fused_transformer(
                 current_platform.get_joint_rope_inplace_kernel(),

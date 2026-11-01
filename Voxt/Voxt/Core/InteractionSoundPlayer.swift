@@ -26,13 +26,6 @@ final class InteractionSoundPlayer: @unchecked Sendable {
         }
     }
 
-    @discardableResult
-    func playStart() -> TimeInterval {
-        playbackQueue.sync {
-            play(role: "start", for: currentPreset())
-        }
-    }
-
     /// Starts playback off the main actor and invokes completion shortly after
     /// the audible part of the cue. System sound files often contain a long
     /// trailing silence that must not delay output muting.

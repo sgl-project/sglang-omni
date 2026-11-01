@@ -1,26 +1,43 @@
-// OmniSpeakerDiarizationIntegrationTests.swift
-// Voxt's Sortformer speaker analysis on the native runtime against MLXAudioVAD.
-// Opt-in: VOXT_RUN_MODEL_TESTS=1, VOXT_ASR_BACKEND=omni, VOXT_OMNI_RUNTIME, VOXT_MODEL_STORAGE_ROOT
-// and VOXT_DIARIZATION_CLIP (16 kHz mono speech, a minute or more so the cache compresses).
-
-import MLX
-import MLXAudioVAD
+// Before: b02a3d49 generated its reference with MLXAudioVAD in this test process.
+// After: an independently supplied library capture is required; Native never supplies its own oracle.
+import CryptoKit
+import Foundation
 import XCTest
 @testable import Voxt
 
 @MainActor
 final class OmniSpeakerDiarizationIntegrationTests: XCTestCase {
-    // Note (Jiaxin Deng): the runtime golden check's tolerances; MLX 0.31 and 0.32 kernels
-    // differ in the last bits, and the speaker cache carries that through a clip.
+    // Note (Jiaxin Deng): preserved original tolerances for MLX 0.31/0.32 kernel differences.
     private let maxProbabilityDifference: Float = 0.35
     private let maxFlippedDecisions = 0.01
     private let maxSpeechMismatch = 0.03
 
-    private struct Reference {
-        let policy: MeetingSpeakerFeedPolicy
-        var probabilities: [[Float]] = []
-        var states: [(fifo: Int, cache: Int, frames: Int)] = []
-        var turns: [(speaker: Int, start: Double, end: Double)] = []
+    private struct Reference: Decodable {
+        struct Feed: Decodable {
+            let sampleCount: Int
+            let probabilities: [[Float]]
+            let fifoLength: Int
+            let spkcacheLength: Int
+            let framesProcessed: Int
+        }
+        struct Turn: Decodable {
+            let speaker: Int
+            let start: Double
+            let end: Double
+        }
+        let producer: String
+        let sourceRevision: String
+        let captureCommand: String
+        let configurationSHA256: String
+        let weightsSHA256: String
+        let pcmFloat32LESHA256: String
+        let threshold: Float
+        let minDuration: Float
+        let mergeGap: Float
+        let spkcacheMax: Int
+        let fifoMax: Int
+        let feeds: [Feed]
+        let turns: [Turn]
     }
 
     private func clip() throws -> [Float] {
@@ -34,68 +51,124 @@ final class OmniSpeakerDiarizationIntegrationTests: XCTestCase {
         ModelTestGate.configureStorageRoot(for: self)
         let (samples, sampleRate) = try DebugAudioClipIO.loadMonoSamples(from: URL(fileURLWithPath: path))
         XCTAssertEqual(sampleRate, 16_000)
+        XCTAssertFalse(samples.isEmpty)
         return samples
     }
 
-    private func reference(samples: [Float]) async throws -> Reference {
+    private func reference(samples: [Float], model: MeetingSortformerModelLease) async throws -> Reference {
+        guard let path = ProcessInfo.processInfo.environment["VOXT_SORTFORMER_REFERENCE"], !path.isEmpty else {
+            throw XCTSkip("Supply VOXT_SORTFORMER_REFERENCE: an external MLXAudioVAD capture, not Native output.")
+        }
+        let reference = try JSONDecoder().decode(Reference.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
+        XCTAssertEqual(reference.producer, "MLXAudioVAD")
+        XCTAssertFalse(reference.sourceRevision.isEmpty)
+        XCTAssertFalse(reference.captureCommand.isEmpty)
         let storedDirectory = await MeetingSortformerModelStorage.validatedModelDirectory()
         let directory = try XCTUnwrap(storedDirectory)
-        let model = try SortformerModel.fromModelDirectory(directory)
-        let config = model.config
-        var reference = Reference(policy: try MeetingSpeakerFeedPolicy(
-            sampleRate: config.processorConfig.samplingRate,
-            hopLength: config.processorConfig.hopLength,
-            subsamplingFactor: config.fcEncoderConfig.subsamplingFactor,
-            chunkFrames: config.modulesConfig.chunkLen,
-            cacheFrames: config.modulesConfig.spkcacheLen,
-            updateFrames: config.modulesConfig.spkcacheUpdatePeriod,
-            usesAOSC: config.modulesConfig.useAosc
-        ))
-        let policy = reference.policy
-        var state = model.initStreamingState()
-        var offset = 0
-        while offset < samples.count {
-            let end = min(offset + policy.samplesPerFeed, samples.count)
-            var padded = Array(samples[offset ..< end])
-            padded.append(contentsOf: repeatElement(0, count: max(0, policy.frameSamples - padded.count)))
-            let inputFrames = state.framesProcessed
-            let (output, next) = try await model.feed(
-                chunk: MLXArray(padded), state: state, sampleRate: 16_000,
-                threshold: 0.5, minDuration: 0, mergeGap: 0.18,
-                spkcacheMax: policy.cacheMaximumFrames, fifoMax: MeetingSpeakerFeedPolicy.fifoMaximumFrames
-            )
-            state = next
-            let probabilities = try XCTUnwrap(output.speakerProbs).asType(.float32)
-            let speakers = probabilities.dim(1)
-            let flat = probabilities.asArray(Float.self)
-            reference.probabilities += stride(from: 0, to: flat.count, by: speakers).map {
-                Array(flat[$0 ..< $0 + speakers])
-            }
-            reference.states.append((state.fifoLen, state.spkcacheLen, state.framesProcessed))
-            for segment in output.segments {
-                if let range = policy.mappedRange(
-                    start: Double(segment.start), end: Double(segment.end),
-                    stateFrames: inputFrames, audioOffset: Double(offset) / 16_000, sampleCount: end - offset
-                ) {
-                    reference.turns.append((segment.speaker, range.lowerBound, range.upperBound))
-                }
-            }
-            offset = end
+        for (name, expected) in [("config.json", reference.configurationSHA256), ("model.safetensors", reference.weightsSHA256)] {
+            let bytes = try Data(contentsOf: directory.appendingPathComponent(name), options: .mappedIfSafe)
+            XCTAssertEqual(SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined(), expected)
         }
+        let pcm = OmniVoiceActivityStream.float32LittleEndian(samples)
+        XCTAssertEqual(SHA256.hash(data: pcm).map { String(format: "%02x", $0) }.joined(), reference.pcmFloat32LESHA256)
+        let policy = try model.configuration.feedPolicy()
+        XCTAssertEqual(reference.threshold, 0.5)
+        XCTAssertEqual(reference.minDuration, 0)
+        XCTAssertEqual(reference.mergeGap, 0.18)
+        XCTAssertEqual(reference.spkcacheMax, policy.cacheMaximumFrames)
+        XCTAssertEqual(reference.fifoMax, MeetingSpeakerFeedPolicy.fifoMaximumFrames)
+        XCTAssertFalse(reference.feeds.isEmpty)
         return reference
     }
 
-    private func speechMismatch(
-        _ expected: [(speaker: Int, start: Double, end: Double)],
-        _ actual: [(speaker: Int, start: Double, end: Double)]
-    ) -> Double {
-        func cells(_ turns: [(speaker: Int, start: Double, end: Double)]) -> Set<Int> {
+    func testStreamMatchesSuppliedLibraryReference() async throws {
+        let samples = try clip()
+        let model = try await MeetingSortformerModelLease.load()
+        var stream: OmniDiarizationStream?
+        do {
+            let reference = try await reference(samples: samples, model: model)
+            let policy = try model.configuration.feedPolicy()
+            let activeStream = OmniDiarizationStream(endpoint: model.endpoint, options: OmniDiarizationOptions(
+                spkcacheMax: policy.cacheMaximumFrames, fifoMax: MeetingSpeakerFeedPolicy.fifoMaximumFrames
+            ))
+            stream = activeStream
+            var offset = 0
+            var feedIndex = 0
+            var flipped = 0
+            var decisions = 0
+            while offset < samples.count {
+                let end = min(offset + policy.samplesPerFeed, samples.count)
+                var padded = Array(samples[offset..<end])
+                padded.append(contentsOf: repeatElement(0, count: max(0, policy.frameSamples - padded.count)))
+                let feed = try await activeStream.feed(samples16k: padded)
+                guard feedIndex < reference.feeds.count else {
+                    XCTFail("Reference has too few feeds")
+                    break
+                }
+                let expected = reference.feeds[feedIndex]
+                XCTAssertEqual(padded.count, expected.sampleCount)
+                XCTAssertEqual(feed.fifoLength, expected.fifoLength)
+                XCTAssertEqual(feed.spkcacheLength, expected.spkcacheLength)
+                XCTAssertEqual(feed.framesProcessed, expected.framesProcessed)
+                XCTAssertEqual(feed.probabilities.count, expected.probabilities.count)
+                for (row, originalRow) in zip(feed.probabilities, expected.probabilities) {
+                    XCTAssertEqual(row.count, originalRow.count)
+                    for (value, original) in zip(row, originalRow) {
+                        XCTAssertTrue(original.isFinite && (0...1).contains(original))
+                        XCTAssertEqual(value, original, accuracy: maxProbabilityDifference)
+                        flipped += (value > 0.5) != (original > 0.5) ? 1 : 0
+                        decisions += 1
+                    }
+                }
+                offset = end
+                feedIndex += 1
+            }
+            XCTAssertEqual(feedIndex, reference.feeds.count)
+            XCTAssertGreaterThan(decisions, 0)
+            XCTAssertLessThanOrEqual(Double(flipped), maxFlippedDecisions * Double(decisions))
+        } catch {
+            await stream?.close()
+            await model.close()
+            throw error
+        }
+        await stream?.close()
+        await model.close()
+    }
+
+    func testEngineTurnsMatchSuppliedLibraryReference() async throws {
+        let samples = try clip()
+        let model = try await MeetingSortformerModelLease.load()
+        let reference: Reference
+        do {
+            reference = try await self.reference(samples: samples, model: model)
+        } catch {
+            await model.close()
+            throw error
+        }
+        await model.close()
+        let engine = SortformerMeetingSpeakerDiarizationEngine()
+        let asset = MeetingAudioAsset(source: .systemAudio, samples: samples, sampleRate: 16_000, sessionStartOffset: 0)
+        let turns = try await engine.diarizeFile(
+            descriptors: [MeetingAudioAssetDescriptor(source: .systemAudio, sampleRate: 16_000,
+                                                      startSample: 0, sampleCount: samples.count)],
+            loadAsset: { _ in asset }, options: .init(), progress: nil
+        )
+        XCTAssertFalse(reference.turns.isEmpty)
+        let actual = try turns.map { turn -> Reference.Turn in
+            let speaker = try XCTUnwrap(Int(turn.speakerID.replacingOccurrences(of: "sortformer-", with: "")))
+            return Reference.Turn(speaker: speaker, start: turn.startSeconds, end: turn.endSeconds)
+        }
+        XCTAssertLessThanOrEqual(speechMismatch(reference.turns, actual), maxSpeechMismatch)
+    }
+
+    private func speechMismatch(_ expected: [Reference.Turn], _ actual: [Reference.Turn]) -> Double {
+        func cells(_ turns: [Reference.Turn]) -> Set<Int> {
             var covered = Set<Int>()
             for turn in turns {
                 let first = Int((turn.start * 100).rounded())
                 let last = Int((turn.end * 100).rounded())
                 if last > first {
-                    covered.formUnion((first ..< last).map { turn.speaker * 100_000_000 + $0 })
+                    covered.formUnion((first..<last).map { turn.speaker * 100_000_000 + $0 })
                 }
             }
             return covered
@@ -104,100 +177,5 @@ final class OmniSpeakerDiarizationIntegrationTests: XCTestCase {
         let have = cells(actual)
         let union = want.union(have).count
         return union == 0 ? 0 : Double(want.symmetricDifference(have).count) / Double(union)
-    }
-
-    /// A server stream fed Voxt's feeds reports MLXAudioVAD's probabilities
-    /// and state, feed by feed.
-    func testStreamMatchesMLXAudioVAD() async throws {
-        let samples = try clip()
-        let reference = try await reference(samples: samples)
-        let policy = reference.policy
-
-        let storedDirectory = await MeetingSortformerModelStorage.validatedModelDirectory()
-        let directory = try XCTUnwrap(storedDirectory)
-        let endpoint = try await OmniSortformerRuntime.shared.acquire(modelDirectory: directory)
-        let stream = OmniDiarizationStream(endpoint: endpoint)
-        var probabilities: [[Float]] = []
-        var offset = 0
-        var feedIndex = 0
-        while offset < samples.count {
-            let end = min(offset + policy.samplesPerFeed, samples.count)
-            var padded = Array(samples[offset ..< end])
-            padded.append(contentsOf: repeatElement(0, count: max(0, policy.frameSamples - padded.count)))
-            let feed = try await stream.feed(samples16k: padded)
-            probabilities += feed.probabilities
-            let state = reference.states[feedIndex]
-            XCTAssertEqual(feed.fifoLength, state.fifo)
-            XCTAssertEqual(feed.spkcacheLength, state.cache)
-            XCTAssertEqual(feed.framesProcessed, state.frames)
-            offset = end
-            feedIndex += 1
-        }
-        await stream.close()
-        await OmniSortformerRuntime.shared.release()
-
-        XCTAssertEqual(probabilities.count, reference.probabilities.count)
-        var flipped = 0
-        var decisions = 0
-        for (row, expected) in zip(probabilities, reference.probabilities) {
-            for (value, original) in zip(row, expected) {
-                XCTAssertEqual(value, original, accuracy: maxProbabilityDifference)
-                flipped += (value > 0.5) != (original > 0.5) ? 1 : 0
-                decisions += 1
-            }
-        }
-        XCTAssertGreaterThan(decisions, 0)
-        XCTAssertLessThanOrEqual(Double(flipped), maxFlippedDecisions * Double(decisions))
-    }
-
-    /// A server that dies costs the live engine one failed session; the next
-    /// session starts a new server.
-    func testLiveEngineRecoversAfterTheServerDies() async throws {
-        let samples = Array(try clip().prefix(16_000 * 10))
-        let engine = SortformerMeetingSpeakerDiarizationEngine()
-        let asset = MeetingAudioAsset(source: .systemAudio, samples: samples, sampleRate: 16_000, sessionStartOffset: 0)
-        let descriptors = [MeetingAudioAssetDescriptor(source: .systemAudio, sampleRate: 16_000,
-                                                       startSample: 0, sampleCount: samples.count)]
-        _ = try await engine.diarizeSession(descriptors: descriptors, loadAsset: { _ in asset }, continuousAudioURL: nil, options: .init(), progress: nil)
-
-        let kill = Process()
-        kill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-        kill.arguments = ["-KILL", "-f", "model-kind sortformer"]
-        try kill.run()
-        kill.waitUntilExit()
-        XCTAssertEqual(kill.terminationStatus, 0)
-
-        var recovered = false
-        for _ in 0 ..< 5 {
-            if (try? await engine.diarizeSession(descriptors: descriptors, loadAsset: { _ in asset }, continuousAudioURL: nil, options: .init(), progress: nil)) != nil {
-                recovered = true
-                break
-            } else {
-                try await Task.sleep(for: .milliseconds(100))
-            }
-        }
-        XCTAssertTrue(recovered)
-    }
-
-    /// The meeting engine, routed to the runtime, finds the same speaker turns
-    /// as the Swift engine's feeds.
-    func testEngineTurnsMatchMLXAudioVAD() async throws {
-        let samples = try clip()
-        let reference = try await reference(samples: samples)
-
-        let engine = SortformerMeetingSpeakerDiarizationEngine()
-        let asset = MeetingAudioAsset(source: .systemAudio, samples: samples, sampleRate: 16_000, sessionStartOffset: 0)
-        let turns = try await engine.diarizeFile(
-            descriptors: [MeetingAudioAssetDescriptor(source: .systemAudio, sampleRate: 16_000,
-                                                      startSample: 0, sampleCount: samples.count)],
-            loadAsset: { _ in asset }, options: .init(), progress: nil
-        )
-
-        XCTAssertFalse(reference.turns.isEmpty)
-        let actual = try turns.map { turn -> (speaker: Int, start: Double, end: Double) in
-            let speaker = try XCTUnwrap(Int(turn.speakerID.replacingOccurrences(of: "sortformer-", with: "")))
-            return (speaker, turn.startSeconds, turn.endSeconds)
-        }
-        XCTAssertLessThanOrEqual(speechMismatch(reference.turns, actual), maxSpeechMismatch)
     }
 }

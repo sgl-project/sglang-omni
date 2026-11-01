@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import inspect
+import runpy
 from contextlib import nullcontext
 from types import SimpleNamespace, TracebackType
+from typing import Literal
 
 import pytest
 import torch
 
+import sglang_omni.platforms.device_graph as device_graph_module
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.device_graph import (
     CudaDeviceGraphBackend,
@@ -17,6 +20,15 @@ from sglang_omni.platforms.device_graph import (
     XpuDeviceGraphBackend,
 )
 from tests.unit_test.fixtures.accelerator import require_device_streams
+
+
+def test_graph_backend_import_without_xpu_pool_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delattr(torch.xpu, "_POOL_HANDLE", raising=False)
+    module = runpy.run_path(inspect.getfile(CudaDeviceGraphBackend))
+
+    assert module["XpuGraphPoolHandle"] == tuple[int, int]
 
 
 def recording_module(graph_attr: str) -> SimpleNamespace:
@@ -31,6 +43,34 @@ def recording_module(graph_attr: str) -> SimpleNamespace:
         return nullcontext()
 
     return SimpleNamespace(calls=calls, graph=graph, **{graph_attr: Graph})
+
+
+def install_npu_internal_format(
+    monkeypatch: pytest.MonkeyPatch,
+    module: SimpleNamespace,
+    *,
+    initial: bool = True,
+) -> None:
+    """Back torch_npu's option getter with a fake torch.npu config/set_option."""
+
+    def set_option(options: dict[str, str]) -> None:
+        module.config.allow_internal_format = (
+            options["ALLOW_INTERNAL_FORMAT"] == "enable"
+        )
+
+    module.config = SimpleNamespace(allow_internal_format=initial)
+    module.set_option = set_option
+    monkeypatch.setattr(
+        device_graph_module,
+        "torch_npu",
+        SimpleNamespace(
+            _C=SimpleNamespace(
+                _npu_getOption=lambda name: (
+                    b"enable" if module.config.allow_internal_format else b"disable"
+                )
+            )
+        ),
+    )
 
 
 def test_cuda_backend_records_into_a_cuda_graph(monkeypatch) -> None:
@@ -79,37 +119,77 @@ def test_xpu_backend_records_into_an_xpu_graph_without_error_mode(monkeypatch) -
 
 
 @pytest.mark.parametrize("thread_local_errors", [False, True])
+@pytest.mark.parametrize("initial_internal_format", [True, False])
 def test_npu_backend_records_into_an_npu_graph(
-    monkeypatch, thread_local_errors
+    monkeypatch: pytest.MonkeyPatch,
+    thread_local_errors: bool,
+    initial_internal_format: bool,
 ) -> None:
     module = recording_module("NPUGraph")
+    install_npu_internal_format(monkeypatch, module, initial=initial_internal_format)
     monkeypatch.setattr(torch, "npu", module, raising=False)
     pool = object()
     stream = object()
+    seen_internal_format: list[bool] = []
 
     with NpuDeviceGraphBackend().capture(
         pool=pool, stream=stream, thread_local_errors=thread_local_errors
     ) as graph:
-        pass
+        seen_internal_format.append(module.config.allow_internal_format)
 
     assert isinstance(graph, module.NPUGraph)
     expected = {"npu_graph": graph, "pool": pool, "stream": stream}
     if thread_local_errors:
         expected["capture_error_mode"] = "thread_local"
     assert module.calls == [expected]
+    assert seen_internal_format == [False]
+    assert module.config.allow_internal_format is initial_internal_format
 
 
-def test_each_backend_uses_the_keyword_its_torch_context_declares() -> None:
-    """The stub tests above accept any keyword, so pin the real ones here.
+@pytest.mark.parametrize("initial_internal_format", [True, False])
+def test_npu_backend_restores_internal_formats_after_a_failed_capture(
+    monkeypatch: pytest.MonkeyPatch, initial_internal_format: bool
+) -> None:
+    module = recording_module("NPUGraph")
+    install_npu_internal_format(monkeypatch, module, initial=initial_internal_format)
+    monkeypatch.setattr(torch, "npu", module, raising=False)
 
-    Both contexts are plain Python classes that a build without the device still
-    exposes, so this runs anywhere.
-    """
-    cuda = inspect.signature(torch.cuda.graph).parameters
-    xpu = inspect.signature(torch.xpu.graph).parameters
+    with pytest.raises(RuntimeError, match="capture failed"):
+        with NpuDeviceGraphBackend().capture(
+            pool=None, stream=None, thread_local_errors=False
+        ):
+            assert module.config.allow_internal_format is False
+            raise RuntimeError("capture failed")
 
-    assert "cuda_graph" in cuda and "capture_error_mode" in cuda
-    assert "xpu_graph" in xpu and "capture_error_mode" not in xpu
+    assert module.config.allow_internal_format is initial_internal_format
+
+
+@pytest.mark.parametrize(
+    "backend,graph_keyword,has_capture_error_mode",
+    [
+        ("cuda", "cuda_graph", True),
+        pytest.param(
+            "xpu",
+            "xpu_graph",
+            False,
+            marks=pytest.mark.skipif(
+                not hasattr(torch.xpu, "graph"),
+                reason="This PyTorch build does not provide XPU graph contexts",
+            ),
+        ),
+    ],
+)
+def test_each_backend_uses_the_keyword_its_torch_context_declares(
+    backend: Literal["cuda", "xpu"],
+    graph_keyword: str,
+    has_capture_error_mode: bool,
+) -> None:
+    """Verify the real graph context keywords for each available backend."""
+    graph_context = torch.cuda.graphs.graph if backend == "cuda" else torch.xpu.graph
+    parameters = inspect.signature(graph_context).parameters
+
+    assert graph_keyword in parameters
+    assert ("capture_error_mode" in parameters) == has_capture_error_mode
 
 
 @pytest.mark.parametrize(
@@ -132,6 +212,7 @@ def test_a_capture_that_raises_still_closes_its_context(backend, monkeypatch) ->
     module.graph = lambda **kwargs: Ctx()
     module.XPUGraph = module.CUDAGraph
     module.NPUGraph = module.CUDAGraph
+    install_npu_internal_format(monkeypatch, module)
     monkeypatch.setattr(torch, "cuda", module)
     monkeypatch.setattr(torch, "xpu", module)
     monkeypatch.setattr(torch, "npu", module, raising=False)
@@ -165,6 +246,7 @@ def test_a_graph_context_that_suppresses_is_honored(backend, monkeypatch) -> Non
     module.graph = lambda **kwargs: Ctx()
     module.XPUGraph = module.CUDAGraph
     module.NPUGraph = module.CUDAGraph
+    install_npu_internal_format(monkeypatch, module)
     monkeypatch.setattr(torch, "cuda", module)
     monkeypatch.setattr(torch, "xpu", module)
     monkeypatch.setattr(torch, "npu", module, raising=False)
@@ -227,6 +309,7 @@ def test_backend_opens_the_capture_outside_inference_mode(
 
     module = recording_module(graph_attr)
     module.graph = lambda **kwargs: CaptureContext()
+    install_npu_internal_format(monkeypatch, module)
     monkeypatch.setattr(torch, module_name, module, raising=False)
 
     with torch.inference_mode(inference_mode_enabled):

@@ -6,9 +6,9 @@
 #include <string>
 #include <vector>
 
-#include "common/audio.h"
 #include "common/layers.h"
 #include "mlx/mlx.h"
+#include "qwen3_asr/qwen3_audio.h"
 #include "qwen3_asr/qwen3_decoder.h"
 
 namespace qwen3_asr {
@@ -47,7 +47,7 @@ private:
                                      int layer) const;
 
   AudioEncoderConfig audio_;
-  Checkpoint checkpoint_;
+  omni_common::Checkpoint checkpoint_;
   Qwen3Decoder decoder_;
 };
 

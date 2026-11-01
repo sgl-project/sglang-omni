@@ -382,6 +382,7 @@ struct MLXModelCatalog {
             languages: qwenLanguageCodes,
             routing: .languageName,
             liveMode: .nativeQwenLive,
+            realtime: true,
             outputs: [.text, .timestamps],
             timingGranularity: .chunk,
             configuration: [.recognitionPreset, .languageRouting, .qwenContext],
@@ -392,8 +393,7 @@ struct MLXModelCatalog {
             family: .cohereTranscribe,
             languages: cohereLanguageCodes,
             routing: .iso6391(requiresExplicitPrimaryLanguage: true),
-            liveMode: .nativeStreamingLive,
-            realtime: true,
+            liveMode: .batchPreview,
             configuration: [.recognitionPreset, .languageRouting, .cohereLongForm],
             vadPolicy: .modelManaged
         )
@@ -520,11 +520,27 @@ struct MLXModelCatalog {
     }
 
     nonisolated static func isRealtimeCapableModelRepo(_ repo: String) -> Bool {
-        capability(for: repo).isRealtimeCapable
+        guard OmniASRBackend.unavailability(for: repo) == nil else { return false }
+        switch OmniASRBackend.nativeModelKind(for: repo) {
+        case .qwen3ASR, .mossTranscribeDiarize, .nemotronASR:
+            return true
+        default:
+            return false
+        }
     }
 
     nonisolated static func liveMode(for repo: String) -> MLXLiveMode {
-        capability(for: repo).liveMode
+        guard OmniASRBackend.unavailability(for: repo) == nil else { return .batchPreview }
+        switch OmniASRBackend.nativeModelKind(for: repo) {
+        case .qwen3ASR:
+            return .nativeQwenLive
+        case .mossTranscribeDiarize:
+            return .nativeStreamingLive
+        case .nemotronASR:
+            return .nativeNemotronLive
+        default:
+            return .batchPreview
+        }
     }
 
     nonisolated static func ratingText(for repo: String) -> String {

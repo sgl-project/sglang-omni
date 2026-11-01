@@ -20,7 +20,7 @@ struct mg_context;
 
 namespace asr_service {
 
-using FormFields = std::map<std::string, qwen3_asr::FormField>;
+using FormFields = std::map<std::string, omni_common::FormField>;
 using qwen3_asr::Transcription;
 
 // A loaded checkpoint of the served kind.
@@ -40,6 +40,19 @@ public:
   RequestStates(const qwen3_asr::TranscriptionWorker &worker) const {
     return worker.RequestStates();
   }
+  // The name /v1/models lists, and whether --model-name chose it rather
+  // than the server generating it; set before AddHandlers runs.
+  const std::string &model_name() const { return model_name_; }
+  bool has_chosen_model_name() const { return has_chosen_model_name_; }
+  void set_model_name(const std::string &model_name,
+                      bool has_chosen_model_name) {
+    model_name_ = model_name;
+    has_chosen_model_name_ = has_chosen_model_name;
+  }
+
+private:
+  std::string model_name_;
+  bool has_chosen_model_name_ = false;
 };
 
 using ModelLoader =

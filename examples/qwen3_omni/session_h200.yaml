@@ -41,6 +41,8 @@ session_nodes:
     inputs:
       - "dialog:qwen.unit"
       - {kind: control, source: input, event: configure}
+      # Note (ruoyu): A configure appended with the audio, as /v1/realtime sends it, reaches only the readers of input:session; the dialog forwards it here.
+      - {kind: control, source: dialog, event: configure}
       - {kind: control, source: dialog, event: interrupt, preempt: true}
       - {kind: control, source: dialog, event: qwen.truncate}
   dialog:
@@ -52,8 +54,9 @@ session_nodes:
       - "vad:session"
       - {kind: control, source: input, event: interrupt, preempt: true}
       # A reply publishes three controls (turn.started, reply.progress, turn.done) and the dialog
-      # starts the next reply only once it took turn.done, so with an interrupted reply leaving at
-      # most two behind, the default capacity of 16 never drops one.
+      # starts the next reply only once it took turn.done, or the reply.delivered of an interrupted
+      # one, so with an interrupted reply leaving at most three behind, the default capacity of 16
+      # never drops one.
       - {source: "qwen_omni:session", feedback: true, overflow: drop_oldest}
 
 session_publish:

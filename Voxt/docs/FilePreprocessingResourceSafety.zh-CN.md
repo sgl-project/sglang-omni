@@ -68,7 +68,7 @@
 
 常规日志只保留任务开始、阶段切换、资源等待开始、失败和完成。默认不再输出解码/复制进度、队列心跳、ASR 分块、说话人 feed、许可进出或缓存回收快照。
 
-需要复现时才设置 `VOXT_FILE_TASK_TRACE=1` 并重启；Debug 和 Release 默认都关闭。详细事件仍由 `MeetingFileTrace` 输出，前缀为 `[FileTaskTrace]`，仅包含状态、数量、随机 ID 和错误类别，不包含媒体内容或文件路径。任务 ID 由独立的 `MeetingFileTaskContext` 传递，不依赖日志开关。
+当前生产链路没有接入逐 feed 的详细 trace；原 `MeetingFileTrace` 仅剩测试引用，本轮精简已删除该无入口设施和专属测试。`VOXT_FILE_TASK_TRACE` 不会启用额外事件，不能作为复现前提。任务 ID 仍由独立的 `MeetingFileTaskContext` 传递，实际生命周期和错误日志继续保留。
 
 沿用现有滚动日志存储（单文件约 2 MiB，保留 5 个归档），不另建无界日志文件：
 
@@ -77,7 +77,7 @@
 ~/Library/Application Support/Voxt/Logs/archive/
 ```
 
-沙盒构建可能在应用容器对应目录中。复现后尽快通过应用日志导出功能导出，或一起收集 current.log 与 archive；长任务的早期日志可能已轮转。Xcode 控制台可筛选 `FileTaskTrace`，再按 task ID 查完整链路。最后一个 `asr-chunk-started` / `speaker-window-started` 与对应完成/错误事件可区分排队、推理、失败及清理，不必猜测总进度。
+沙盒构建可能在应用容器对应目录中。复现后尽快通过应用日志导出功能导出，或一起收集 current.log 与 archive；长任务的早期日志可能已轮转。按 task ID 查看实际阶段、资源等待、错误和完成日志；没有逐块开始/完成事件时，不能仅凭总进度推断卡在推理还是清理。
 
 ## 验证
 

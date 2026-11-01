@@ -19,6 +19,10 @@ DEFAULT_SPEECH_STATE_BYTES_PER_SESSION = 2 << 30
 THINKER_CONTEXT_LENGTH = 8192
 THINKER_GPU_MEMORY_FRACTION = 0.52
 TALKER_CONTEXT_LENGTH = 4096
+# note (Junnan Li): One vocoder forward with the chunk graphs costs about this much before its width adds to it.
+FORWARD_FLOOR_MS = 45
+# note (wenyao): The thinker writes text faster than the talker speaks it, so a turn the model ends can still owe speech; at most this many more units speak it.
+MAX_DRAIN_UNITS = 3
 
 
 def stages() -> list[StageConfig]:
@@ -116,6 +120,11 @@ class MiniCPMODuplexSpeech(BaseModel):
     enable_dit_torch_compile: bool = False
     enable_hift_torch_compile: bool = False
     n_timesteps: int = Field(default=5, ge=1)
+    enable_chunk_cuda_graph: bool = True
+    "Replay the flow's chunk loop from CUDA graphs captured at startup; false decodes every chunk eagerly."
+    # note (Junnan Li): Units that wait for another session's unit wait at most half the forward that unit would otherwise run alone.
+    gather_window_ms: float = Field(default=FORWARD_FLOOR_MS / 2, ge=0)
+    "How long an idle speech stage waits for other sessions' units to decode them together; 0 decodes what is ready."
 
 
 DEFAULT_SPEECH_SETTINGS = MiniCPMODuplexSpeech()
@@ -130,6 +139,8 @@ class MiniCPMODuplexPipelineConfig(PipelineConfig):
     model_path: str
     reference_audio: str | None = None
     max_sessions: int = Field(default=DEFAULT_MAX_SESSIONS, ge=1)
+    batch_sessions: bool = True
+    "Perception and speech run one unit of every ready session in one call; false runs each session's unit in a call of its own."
     speech_state_bytes_per_session: int = Field(
         default=DEFAULT_SPEECH_STATE_BYTES_PER_SESSION, ge=1
     )
@@ -152,6 +163,7 @@ class MiniCPMODuplexPipelineConfig(PipelineConfig):
             kwargs: dict[str, JsonValue] = {
                 "reference_audio": self.reference_audio,
                 "max_open_sessions": self.max_sessions,
+                "batch_sessions": self.batch_sessions,
             }
             if stage_name == "speech":
                 kwargs["max_state_bytes_per_session"] = (
@@ -165,6 +177,8 @@ class MiniCPMODuplexPipelineConfig(PipelineConfig):
                     self.speech.enable_hift_torch_compile
                 )
                 kwargs["n_timesteps"] = self.speech.n_timesteps
+                kwargs["enable_chunk_cuda_graph"] = self.speech.enable_chunk_cuda_graph
+                kwargs["gather_window_ms"] = self.speech.gather_window_ms
             else:
                 pass
             return kwargs

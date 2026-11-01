@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import io
 import pickle
-from dataclasses import fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from multiprocessing.reduction import ForkingPickler
 from typing import Protocol, overload
 
@@ -24,10 +24,11 @@ from sglang_omni.proto import DataReadyMessage, StagePayload
 from sglang_omni.proto.messages import (
     DirectCudaIpcPayloadRef,
     DirectCudaIpcStreamChunkRef,
-    InlineStreamChunkRef,
     StageDataRef,
+    StreamChunkBatchMessage,
 )
 from sglang_omni.relay.base import Relay, RelayOperation
+from sglang_omni.relay.shm import ShmRelay
 
 
 class StageMessageSender(Protocol):
@@ -131,7 +132,11 @@ def extract_cuda_tensors(
             }, {path: obj}
         else:
             pass
-        return obj, {}
+        # note (ratish): pickle writes a CPU tensor's whole storage and the receiver keeps all of it, so a view of a larger storage is sent as a copy of its own bytes.
+        if obj.untyped_storage().nbytes() > obj.numel() * obj.element_size():
+            return obj.clone(), {}
+        else:
+            return obj, {}
     else:
         pass
     if isinstance(obj, dict):
@@ -362,95 +367,79 @@ def serialize_direct_cuda_ipc_stream_chunk(
     return ref
 
 
-_INLINE_STREAM_CHUNK_TYPE = "InlineStreamChunk"
-_INLINE_STREAM_CHUNK_BYTES_LIMIT = 16 * 1024
+@dataclass(frozen=True, kw_only=True)
+class BatchedStreamChunk:
+    """One small CPU stream chunk carried in its target's packed batch."""
+
+    request_id: str
+    chunk_id: int
+    data: torch.Tensor
+    metadata: dict[str, object] | None
 
 
-def serialize_inline_stream_chunk(
-    data: object, metadata: dict[str, object] | None
-) -> InlineStreamChunkRef | None:
-    if not isinstance(data, torch.Tensor) or data.device.type != "cpu":
-        return None
-    else:
-        pass
-    if contains_cuda_tensor(metadata) or contains_cpu_tensor(metadata):
-        return None
-    else:
-        pass
-    if data.element_size() * data.numel() > _INLINE_STREAM_CHUNK_BYTES_LIMIT:
-        return None
-    else:
-        pass
-    data = data.detach()
-    if data.untyped_storage().nbytes() > _INLINE_STREAM_CHUNK_BYTES_LIMIT:
-        data = data.clone(memory_format=torch.contiguous_format)
-    else:
-        pass
-    payload = pickle.dumps((data, metadata))
-    if len(payload) > _INLINE_STREAM_CHUNK_BYTES_LIMIT:
-        return None
-    else:
-        pass
-    return {
-        "_type": _INLINE_STREAM_CHUNK_TYPE,
-        "version": 1,
-        "payload": payload,
-    }
+def pack_stream_chunk_batch(
+    chunks: list[BatchedStreamChunk],
+    *,
+    from_stage: str,
+    to_stage: str,
+    replica_bindings: dict[str, dict[str, int]],
+) -> StreamChunkBatchMessage:
+    tensor_bytes: list[bytes] = []
+    for chunk in chunks:
+        # note (ratish): flattening first lets a 0-dim tensor take the byte view, which needs stride 1 and no lazy conjugate or negative bit, and contiguous() keeps both bits and any stride on a tensor of at most one element.
+        flat = chunk.data.contiguous().reshape(-1)
+        if flat.stride(0) != 1 or flat.is_conj() or flat.is_neg():
+            flat = flat.clone(memory_format=torch.contiguous_format)
+        else:
+            pass
+        tensor_bytes.append(flat.view(torch.uint8).numpy().tobytes())
+    return StreamChunkBatchMessage(
+        from_stage=from_stage,
+        to_stage=to_stage,
+        request_ids=[chunk.request_id for chunk in chunks],
+        chunk_ids=[chunk.chunk_id for chunk in chunks],
+        dtypes=[str(chunk.data.dtype) for chunk in chunks],
+        shapes=[list(chunk.data.shape) for chunk in chunks],
+        tensor_bytes=tensor_bytes,
+        pickled_metadata=pickle.dumps([chunk.metadata for chunk in chunks]),
+        replica_bindings=replica_bindings,
+    )
 
 
-def is_inline_stream_chunk_ref(value: object) -> bool:
-    return isinstance(value, dict) and value.get("_type") == _INLINE_STREAM_CHUNK_TYPE
-
-
-def deserialize_inline_stream_chunk(
-    data_ref: dict[str, object] | StageDataRef,
-) -> tuple[torch.Tensor, dict[str, object] | None]:
-    if data_ref.get("_type") != _INLINE_STREAM_CHUNK_TYPE:
-        raise ValueError("data_ref is not an inline stream chunk")
-    else:
-        pass
-    if data_ref.get("version") != 1:
-        raise ValueError(
-            f"unsupported inline stream chunk version {data_ref.get('version')!r}"
+def unpack_stream_chunk_batch(
+    message: StreamChunkBatchMessage,
+) -> list[BatchedStreamChunk]:
+    chunks: list[BatchedStreamChunk] = []
+    for request_id, chunk_id, dtype_name, shape, chunk_bytes, metadata in zip(
+        message.request_ids,
+        message.chunk_ids,
+        message.dtypes,
+        message.shapes,
+        message.tensor_bytes,
+        pickle.loads(message.pickled_metadata),
+        strict=True,
+    ):
+        if type(chunk_bytes) is not bytes:
+            raise TypeError(
+                f"stream chunk batch tensor bytes must be bytes, got {type(chunk_bytes).__name__}"
+            )
+        elif metadata is not None and not isinstance(metadata, dict):
+            raise TypeError(
+                f"stream chunk batch metadata must be dict or None, got {type(metadata).__name__}"
+            )
+        else:
+            pass
+        dtype = torch_dtype(dtype_name)
+        if chunk_bytes:
+            data = torch.frombuffer(bytearray(chunk_bytes), dtype=dtype).reshape(shape)
+        else:
+            data = torch.empty(shape, dtype=dtype)
+        chunks.append(
+            BatchedStreamChunk(
+                request_id=request_id, chunk_id=chunk_id, data=data, metadata=metadata
+            )
         )
-    else:
-        pass
-    payload = data_ref.get("payload")
-    if not isinstance(payload, bytes):
-        raise TypeError(
-            f"inline stream chunk payload must be bytes, got {type(payload).__name__}"
-        )
-    else:
-        pass
-    if len(payload) > _INLINE_STREAM_CHUNK_BYTES_LIMIT:
-        raise ValueError(
-            "inline stream chunk payload exceeds "
-            f"{_INLINE_STREAM_CHUNK_BYTES_LIMIT} bytes"
-        )
-    else:
-        pass
-    data, metadata = pickle.loads(payload)
-    if not isinstance(data, torch.Tensor):
-        raise TypeError(
-            f"inline stream chunk data must be torch.Tensor, got {type(data).__name__}"
-        )
-    else:
-        pass
-    if data.device.type != "cpu":
-        device_type = data.device.type
-        raise ValueError(
-            f"inline stream chunk data must be a CPU tensor, got {device_type}"
-        )
-    else:
-        pass
-    if metadata is not None and not isinstance(metadata, dict):
-        raise TypeError(
-            "inline stream chunk metadata must be dict or None, got "
-            f"{type(metadata).__name__}"
-        )
-    else:
-        pass
-    return data, metadata
+    return chunks
 
 
 def is_direct_cuda_ipc_stream_chunk_ref(value: object) -> bool:
@@ -514,17 +503,21 @@ async def write_payload(
     to_stage: str | None = None,
 ) -> tuple[DataRef, RelayOperation]:
     data_without_tensors, tensors = extract_tensors(payload.data)
-    packed, entries = pack_tensors(tensors, device=relay_device(relay))
+    chunks, entries = pack_tensor_chunks(tensors, device=relay_device(relay))
     header = StagePayload(
         request_id=payload.request_id,
         request=payload.request,
         data=data_without_tensors,
     )
-    op = await relay.put_async(
-        packed,
-        request_id=request_id,
-        receiver_id=to_stage,
-    )
+    # note (ratish): the SHM relay concatenates the chunks straight into its block, so the payload is copied once instead of packed and then copied again.
+    if isinstance(relay, ShmRelay):
+        op = await relay.put_chunks_async(chunks, request_id=request_id)
+    else:
+        op = await relay.put_async(
+            torch.cat(chunks),
+            request_id=request_id,
+            receiver_id=to_stage,
+        )
     data_ref = DataRef(
         version=1,
         object_id=f"{request_id}:payload:{from_stage or ''}:{to_stage or ''}",
@@ -791,11 +784,12 @@ async def with_stream_metadata(
     )
 
 
-def pack_tensors(
+def pack_tensor_chunks(
     tensors: dict[str, torch.Tensor],
     *,
     device: str,
-) -> tuple[torch.Tensor, list[TensorMeta]]:
+) -> tuple[list[torch.Tensor], list[TensorMeta]]:
+    """The payload's byte chunks in order, alignment padding included, and each tensor's entry."""
     target_device = torch.device(device)
     entries, chunks, offset = [], [], 0
     for path, tensor in tensors.items():
@@ -826,7 +820,7 @@ def pack_tensors(
         chunks.append(torch.zeros(1, dtype=torch.uint8, device=target_device))
     else:
         pass
-    return torch.cat(chunks), entries
+    return chunks, entries
 
 
 async def read_transfer_buffer(

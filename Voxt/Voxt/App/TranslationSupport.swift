@@ -117,6 +117,20 @@ extension AppDelegate {
             targetLanguage: targetLanguage,
             isSelectedTextTranslation: isSelectedTextTranslationFlow
         )
+        return try await executeTranslation(
+            text,
+            targetLanguage: targetLanguage,
+            resolution: resolution,
+            strict: false
+        )
+    }
+
+    private func executeTranslation(
+        _ text: String,
+        targetLanguage: TranslationTargetLanguage,
+        resolution: TranslationProviderResolution,
+        strict: Bool
+    ) async throws -> String {
         let modelProvider = resolution.provider
         let providerOverride: LLMExecutionProvider?
         switch modelProvider {
@@ -139,34 +153,52 @@ extension AppDelegate {
         let promptResolution = resolvedTranslationPrompt(
             targetLanguage: targetLanguage,
             sourceText: text,
-            strict: false,
+            strict: strict,
             glossarySelectionPolicy: provisionalStrategy.glossarySelectionPolicy
         )
         let translationModel = translationModelLogDescriptor(for: modelProvider)
-        VoxtLog.llmDebug(
-            "Translation request. promptChars=\(promptResolution.content.count), inputChars=\(text.count), provider=\(modelProvider.rawValue), selectedProvider=\(translationModelProvider.rawValue), translationModel=\(translationModel), delivery=\(String(describing: promptResolution.delivery)), promptProfile=\(promptResolution.promptProfile)"
-        )
+        if strict {
+            VoxtLog.llmDebug(
+                "Strict translation retry. promptChars=\(promptResolution.content.count), inputChars=\(text.count), provider=\(modelProvider.rawValue), selectedProvider=\(translationModelProvider.rawValue), translationModel=\(translationModel), delivery=\(String(describing: promptResolution.delivery)), promptProfile=\(promptResolution.promptProfile)"
+            )
+        } else {
+            VoxtLog.llmDebug(
+                "Translation request. promptChars=\(promptResolution.content.count), inputChars=\(text.count), provider=\(modelProvider.rawValue), selectedProvider=\(translationModelProvider.rawValue), translationModel=\(translationModel), delivery=\(String(describing: promptResolution.delivery)), promptProfile=\(promptResolution.promptProfile)"
+            )
+        }
 
         if modelProvider == .customLLM {
             let translationRepo = translationCustomLLMRepo
             guard customLLMManager.canAttemptInference(repo: translationRepo) else {
-                VoxtLog.translationWarning("Translation provider customLLM unavailable: model not downloaded. repo=\(translationRepo)")
+                if !strict {
+                    VoxtLog.translationWarning("Translation provider customLLM unavailable: model not downloaded. repo=\(translationRepo)")
+                }
                 throw TextTransformFailure.translationModelNotInstalled
             }
-            VoxtLog.translation("Translation provider selected: customLLM")
+            if !strict {
+                VoxtLog.translation("Translation provider selected: customLLM")
+            }
         } else if modelProvider == .localGGUF {
             guard ggufTranslationModelManager.canAttemptInference(id: translationGGUFModelID) else {
-                VoxtLog.translationWarning("Translation provider localGGUF unavailable: model not downloaded. modelID=\(translationGGUFModelID.rawValue)")
+                if !strict {
+                    VoxtLog.translationWarning("Translation provider localGGUF unavailable: model not downloaded. modelID=\(translationGGUFModelID.rawValue)")
+                }
                 throw TextTransformFailure.translationModelNotInstalled
             }
-            VoxtLog.translation("Translation provider selected: localGGUF(\(translationGGUFModelID.rawValue))")
+            if !strict {
+                VoxtLog.translation("Translation provider selected: localGGUF(\(translationGGUFModelID.rawValue))")
+            }
         } else if modelProvider == .remoteLLM {
             let context = resolvedRemoteLLMContext(forTranslation: true)
             guard isStoredRemoteLLMConfigured(context.provider) else {
-                VoxtLog.translationWarning("Translation provider remoteLLM unavailable: no configured model.")
+                if !strict {
+                    VoxtLog.translationWarning("Translation provider remoteLLM unavailable: no configured model.")
+                }
                 throw TextTransformFailure.translationRemoteModelNotConfigured
             }
-            VoxtLog.translation("Translation provider selected: remoteLLM(\(context.provider.rawValue))")
+            if !strict {
+                VoxtLog.translation("Translation provider selected: remoteLLM(\(context.provider.rawValue))")
+            }
         } else {
             throw TextTransformFailure.translationProviderUnavailable
         }
@@ -195,9 +227,15 @@ extension AppDelegate {
             strategy: strategy
         )
         if guarded.didFallback {
-            VoxtLog.translationWarning(
-                "Translation truncation guard restored source text. inputChars=\(text.count), outputChars=\(translated.count), reason=\(guarded.reason ?? "unknown"), strategy=\(strategy.logLabel)"
-            )
+            if strict {
+                VoxtLog.translationWarning(
+                    "Strict translation truncation guard restored source text. inputChars=\(text.count), outputChars=\(translated.count), reason=\(guarded.reason ?? "unknown"), strategy=\(strategy.logLabel)"
+                )
+            } else {
+                VoxtLog.translationWarning(
+                    "Translation truncation guard restored source text. inputChars=\(text.count), outputChars=\(translated.count), reason=\(guarded.reason ?? "unknown"), strategy=\(strategy.logLabel)"
+                )
+            }
             throw TextTransformFailure.translationRejectedByGuard(reason: guarded.reason)
         }
         return guarded.text
@@ -214,7 +252,7 @@ extension AppDelegate {
         onResponseID: ((String) -> Void)? = nil
     ) async throws -> String {
         let directAnswerMode = sourceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let trimmedConversationHistory = trimmedRewriteConversationHistory(
+        let trimmedConversationHistory = TextTransformPromptSupport.trimmedRewriteConversationHistory(
             conversationHistory
         )
         let modelProvider = rewriteModelProvider
@@ -360,84 +398,12 @@ extension AppDelegate {
             targetLanguage: targetLanguage,
             isSelectedTextTranslation: isSelectedTextTranslationFlow
         )
-        let modelProvider = resolution.provider
-        let providerOverride: LLMExecutionProvider?
-        switch modelProvider {
-        case .customLLM:
-            providerOverride = .customLLM(repo: translationCustomLLMRepo)
-        case .localGGUF:
-            providerOverride = .localGGUF(modelID: translationGGUFModelID)
-        case .remoteLLM:
-            let context = resolvedRemoteLLMContext(forTranslation: true)
-            providerOverride = .remote(provider: context.provider, configuration: context.configuration)
-        }
-        let basePolicy = DictionaryGlossaryPurpose.translation.selectionPolicy
-        let provisionalStrategy = TaskLLMStrategyResolver.resolve(
-            taskKind: .translation,
-            rawText: text,
-            promptCharacterCount: 0,
-            baseGlossarySelectionPolicy: basePolicy,
-            capabilities: providerOverride.map(llmProviderModelCapabilities(for:)) ?? .unknown
-        )
-        let promptResolution = resolvedTranslationPrompt(
+        return try await executeTranslation(
+            text,
             targetLanguage: targetLanguage,
-            sourceText: text,
-            strict: true,
-            glossarySelectionPolicy: provisionalStrategy.glossarySelectionPolicy
+            resolution: resolution,
+            strict: true
         )
-        let translationModel = translationModelLogDescriptor(for: modelProvider)
-        VoxtLog.llmDebug(
-            "Strict translation retry. promptChars=\(promptResolution.content.count), inputChars=\(text.count), provider=\(modelProvider.rawValue), selectedProvider=\(translationModelProvider.rawValue), translationModel=\(translationModel), delivery=\(String(describing: promptResolution.delivery)), promptProfile=\(promptResolution.promptProfile)"
-        )
-
-        if modelProvider == .customLLM {
-            let translationRepo = translationCustomLLMRepo
-            guard customLLMManager.canAttemptInference(repo: translationRepo) else {
-                throw TextTransformFailure.translationModelNotInstalled
-            }
-        } else if modelProvider == .localGGUF {
-            guard ggufTranslationModelManager.canAttemptInference(id: translationGGUFModelID) else {
-                throw TextTransformFailure.translationModelNotInstalled
-            }
-        } else if modelProvider == .remoteLLM {
-            let context = resolvedRemoteLLMContext(forTranslation: true)
-            guard isStoredRemoteLLMConfigured(context.provider) else {
-                throw TextTransformFailure.translationRemoteModelNotConfigured
-            }
-        } else {
-            throw TextTransformFailure.translationProviderUnavailable
-        }
-
-        let strategy = TaskLLMStrategyResolver.resolve(
-            taskKind: .translation,
-            rawText: text,
-            promptCharacterCount: promptResolution.content.count + (promptResolution.dictionaryGlossary?.count ?? 0),
-            baseGlossarySelectionPolicy: basePolicy,
-            capabilities: providerOverride.map(llmProviderModelCapabilities(for:)) ?? .unknown
-        )
-        guard let plan = buildTranslationExecutionPlan(
-            sourceText: text,
-            targetLanguage: targetLanguage,
-            promptResolution: promptResolution,
-            modelProvider: modelProvider,
-            providerOverride: providerOverride,
-            executionStrategy: strategy
-        ) else {
-            throw TextTransformFailure.translationPlanUnavailable
-        }
-        let translated = try await executeLLMExecutionPlan(plan)
-        let guarded = TaskLLMStrategyResolver.applyTruncationGuard(
-            outputText: translated,
-            originalText: text,
-            strategy: strategy
-        )
-        if guarded.didFallback {
-            VoxtLog.translationWarning(
-                "Strict translation truncation guard restored source text. inputChars=\(text.count), outputChars=\(translated.count), reason=\(guarded.reason ?? "unknown"), strategy=\(strategy.logLabel)"
-            )
-            throw TextTransformFailure.translationRejectedByGuard(reason: guarded.reason)
-        }
-        return guarded.text
     }
 
     static func effectiveTranslationTargetLanguage(
@@ -681,7 +647,7 @@ extension AppDelegate {
         return VariablePromptResolution(
             content: basePrompt,
             dictionaryGlossary: glossary,
-            delivery: deliveryForTemplate(
+            delivery: TextTransformPromptSupport.deliveryForTemplate(
                 translationSystemPrompt,
                 variableTokens: ["{{SOURCE_TEXT}}"]
             ),
@@ -715,19 +681,12 @@ extension AppDelegate {
         return VariablePromptResolution(
             content: resolved,
             dictionaryGlossary: glossary,
-            delivery: deliveryForTemplate(
+            delivery: TextTransformPromptSupport.deliveryForTemplate(
                 rewriteSystemPrompt,
                 variableTokens: ["{{DICTATED_PROMPT}}", "{{SOURCE_TEXT}}"]
             ),
             promptProfile: "standard"
         )
-    }
-
-    private func deliveryForTemplate(
-        _ template: String,
-        variableTokens: [String]
-    ) -> VariablePromptDelivery {
-        variableTokens.contains { template.contains($0) } ? .userMessage : .systemPrompt
     }
 
     private func translationModelLogDescriptor(for provider: TranslationModelProvider) -> String {
@@ -743,66 +702,7 @@ extension AppDelegate {
     }
 
     func resolvedRewriteConversationPrompt(forceNonEmptyAnswer: Bool) -> String {
-        let retryConstraint = forceNonEmptyAnswer
-            ? """
-            Retry rule:
-            - A previous answer was empty, quoted-empty, or otherwise unusable.
-            - This time, you must return a non-empty plain-text answer.
-            - Do not return surrounding quotes.
-            """
-            : ""
-
-        let base = """
-        You are Voxt's follow-up voice conversation assistant.
-
-        The previous conversation is provided as chat messages.
-        Respond to the latest user message directly based on that conversation.
-
-        Rules:
-        1. Treat the latest user message as a follow-up to the previous assistant reply.
-        2. If the user omits context with a short follow-up like “那大同呢”, infer the missing subject from the conversation history.
-        3. Treat short confirmations such as “对”, “是”, or “yes” as answers to the latest assistant question, incorporate them, and continue the original task.
-        4. Never repeat or paraphrase the latest assistant reply as the next answer, and never ask the same clarification twice.
-        5. Do not ask the user to confirm a place, date, subject, or qualifier that already appears in the conversation.
-        6. Ask a clarification question only when essential information is genuinely absent from the whole conversation.
-        7. If current information cannot be verified because live lookup is unavailable, state that limitation directly instead of treating the request as ambiguous.
-        8. Return plain text only.
-        9. Do not return JSON, field names, markdown, or surrounding quotes.
-        10. Do not return an empty string.
-        """
-
-        let prompt = [base, retryConstraint]
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .joined(separator: "\n\n")
-
-        return prompt
-    }
-
-    private func trimmedRewriteConversationHistory(
-        _ turns: [RewriteConversationPromptTurn]
-    ) -> [RewriteConversationPromptTurn] {
-        guard !turns.isEmpty else { return [] }
-        let budget = (maxTurns: 4, maxCharacters: 1_600)
-
-        let candidates = Array(turns.suffix(budget.maxTurns)).reversed()
-        var selectedReversed: [RewriteConversationPromptTurn] = []
-        var consumedCharacters = 0
-
-        for turn in candidates {
-            let turnCharacters = turn.modelUserMessage.count + turn.resultContent.count
-            let separatorCost = selectedReversed.isEmpty ? 0 : 4
-            let nextCount = consumedCharacters + separatorCost + turnCharacters
-
-            if !selectedReversed.isEmpty && nextCount > budget.maxCharacters {
-                break
-            }
-
-            selectedReversed.append(turn)
-            consumedCharacters = nextCount
-        }
-
-        return selectedReversed.reversed()
+        TextTransformPromptSupport.rewriteConversationPrompt(forceNonEmptyAnswer: forceNonEmptyAnswer)
     }
 
     func shouldRetryStructuredRewriteAnswer(for text: String, dictatedPrompt: String) -> Bool {
