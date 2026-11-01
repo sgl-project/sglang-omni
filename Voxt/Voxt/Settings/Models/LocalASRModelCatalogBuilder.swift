@@ -31,7 +31,7 @@ extension ModelCatalogBuilder {
             primaryAction: ModelTableAction(title: localizedModelCatalog("Settings")) {
                 showASRHintTarget(.dictation)
             },
-            secondaryActions: []
+            secondaryActions: assignmentActions(.dictation)
         )
     }
 
@@ -60,7 +60,7 @@ extension ModelCatalogBuilder {
                 usageLocations: decoration.usageLocations,
                 badgeText: installSnapshot.badgeText ?? ModelCatalogBadgeSupport.recommendedBadgeText(forMLXRepo: repo),
                 primaryAction: catalogPrimaryAction(installSnapshot),
-                secondaryActions: catalogSecondaryActions(installSnapshot)
+                secondaryActions: assignmentActions(selectionID) + catalogSecondaryActions(installSnapshot)
             )
         }
     }

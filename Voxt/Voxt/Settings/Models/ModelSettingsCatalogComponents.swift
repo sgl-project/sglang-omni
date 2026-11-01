@@ -486,6 +486,10 @@ final class ModelRowActionMenuHostView: NSView {
         true
     }
 
+    override var acceptsFirstResponder: Bool {
+        true
+    }
+
     override var intrinsicContentSize: NSSize {
         NSSize(width: 28, height: 28)
     }
@@ -511,6 +515,10 @@ final class ModelRowActionMenuHostView: NSView {
             iconView.heightAnchor.constraint(equalToConstant: 12)
         ])
 
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel(localized("More"))
+
         updateAppearance()
     }
 
@@ -526,12 +534,10 @@ final class ModelRowActionMenuHostView: NSView {
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        if let trackingAreaRef {
-            removeTrackingArea(trackingAreaRef)
-        }
+        guard trackingAreaRef == nil else { return }
 
         let trackingArea = NSTrackingArea(
-            rect: bounds,
+            rect: .zero,
             options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
             owner: self,
             userInfo: nil
@@ -541,19 +547,59 @@ final class ModelRowActionMenuHostView: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        isHovered = true
+        if !isHovered {
+            isHovered = true
+        }
     }
 
     override func mouseExited(with event: NSEvent) {
-        isHovered = false
+        if isHovered {
+            isHovered = false
+        }
     }
 
     override func mouseDown(with event: NSEvent) {
+        presentMenu()
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if event.charactersIgnoringModifiers == " " || event.keyCode == 36 || event.keyCode == 49 {
+            presentMenu()
+        } else {
+            super.keyDown(with: event)
+        }
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        presentMenu()
+        return true
+    }
+
+    private func presentMenu() {
         guard !popupMenu.items.isEmpty else { return }
         isPressed = true
         let anchorPoint = NSPoint(x: 0, y: bounds.height + 6)
         _ = popupMenu.popUp(positioning: nil, at: anchorPoint, in: self)
         isPressed = false
+        refreshHoverFromPointer()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        refreshHoverFromPointer()
+    }
+
+    /// Menu tracking and tracking-area rebuilds can consume the exit event.
+    private func refreshHoverFromPointer() {
+        let shouldHover: Bool
+        if let window {
+            shouldHover = bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
+        } else {
+            shouldHover = false
+        }
+        if isHovered != shouldHover {
+            isHovered = shouldHover
+        }
     }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -577,17 +623,19 @@ final class ModelRowActionMenuHostView: NSView {
     }
 
     private func updateAppearance() {
-        let fillColor: NSColor
-        if isPressed {
-            fillColor = SettingsUIStyle.subtleFillNSColor.blended(withFraction: 0.18, of: .labelColor) ?? SettingsUIStyle.subtleFillNSColor
-        } else if isHovered {
-            fillColor = SettingsUIStyle.subtleFillNSColor.blended(withFraction: 0.08, of: .labelColor) ?? SettingsUIStyle.subtleFillNSColor
-        } else {
-            fillColor = SettingsUIStyle.subtleFillNSColor
-        }
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            let fillColor: NSColor
+            if isPressed {
+                fillColor = SettingsUIStyle.subtleFillNSColor.blended(withFraction: 0.18, of: .labelColor) ?? SettingsUIStyle.subtleFillNSColor
+            } else if isHovered {
+                fillColor = SettingsUIStyle.subtleFillNSColor.blended(withFraction: 0.08, of: .labelColor) ?? SettingsUIStyle.subtleFillNSColor
+            } else {
+                fillColor = SettingsUIStyle.subtleFillNSColor
+            }
 
-        layer?.backgroundColor = fillColor.cgColor
-        layer?.borderColor = SettingsUIStyle.subtleBorderNSColor.cgColor
+            layer?.backgroundColor = fillColor.cgColor
+            layer?.borderColor = SettingsUIStyle.subtleBorderNSColor.cgColor
+        }
         layer?.borderWidth = 1
         iconView.contentTintColor = isPressed ? .labelColor : .secondaryLabelColor
     }

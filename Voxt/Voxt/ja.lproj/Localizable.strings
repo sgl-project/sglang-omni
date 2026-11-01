@@ -2376,3 +2376,12 @@
 "API Format" = "API 形式";
 
 "Automatic keeps OpenAI on Responses and respects explicit Chat Completions URLs for custom endpoints." = "自動では OpenAI に Responses を使用し、カスタムエンドポイントに明示した Chat Completions URL を維持します。";
+
+"Apply to Scenes" = "シーンに適用";
+"Only selected scenes will change their ASR model. Other models and feature switches remain unchanged." = "選択したシーンの音声認識モデルのみ変更します。他のモデルと機能の設定は変更しません。";
+"This provider does not support meeting transcription." = "このプロバイダーは会議の文字起こしに対応していません。";
+"Select All" = "すべて選択";
+
+"Only selected scenes will change their text model. Other models and feature switches remain unchanged." = "選択したシーンのテキストモデルのみ変更します。他のモデルと機能のスイッチは変更しません。";
+"This model is not supported for this scene." = "このモデルはこのシーンに対応していません。";
+"Current model: %@" = "現在のモデル：%@";

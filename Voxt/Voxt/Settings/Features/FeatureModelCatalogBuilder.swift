@@ -297,6 +297,7 @@ struct FeatureModelCatalogBuilder {
                 provider: provider,
                 stored: remoteConfigurations
             )
+            let meetingUnsupported = sheet == .meetingASR && provider == .googleGeminiASR
             return FeatureModelSelectorEntry(
                 selectionID: selectionID,
                 title: provider.title,
@@ -319,8 +320,10 @@ struct FeatureModelCatalogBuilder {
                 statusText: configuration.isConfigured ? localized("Configured") : localized("Not configured"),
                 usageLocations: usageLabels(for: selectionID),
                 badgeText: ModelCatalogBadgeSupport.recommendedBadgeText(forRemoteASRProvider: provider),
-                isSelectable: configuration.isConfigured,
-                disabledReason: configuration.isConfigured ? nil : localized("Configure this provider in Model settings first.")
+                isSelectable: configuration.isConfigured && !meetingUnsupported,
+                disabledReason: meetingUnsupported
+                    ? localized("This provider does not support meeting transcription.")
+                    : (configuration.isConfigured ? nil : localized("Configure this provider in Model settings first."))
             )
         })
 
