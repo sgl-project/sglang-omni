@@ -7,7 +7,7 @@ Rules for Apple Silicon work. They write down what the native runtime PRs under
 
 | Path | Contents |
 | --- | --- |
-| `sglang_omni_mlx/native/` | C++ runtime on MLX: one server binary per model, a parity CLI per model in `tools/`. Each model's code is in `src/<model>/`; code shared across models is in `src/common/`: `audio`, `form`, `layers`, `npz`, `text` and `tokenizer` (the `common` library), `service` and `http` (the `omni_service` library: server lifecycle, request helpers, client-disconnect detection), `tts_service` (the speech-synthesis worker) and `swift_port`. The ASR-specific server code (`asr_service`, `worker`, `realtime`) is still in `src/qwen3_asr/`. |
+| `sglang_omni_mlx/native/` | C++ runtime on MLX: one server binary per model, a parity CLI per model in `tools/`. Each model's code is in `src/<model>/`; code shared across models is in `src/common/`: `audio`, `form`, `layers`, `npz`, `text` and `tokenizer` (the `common` library), `service` and `http` (the `omni_service` library: server lifecycle, request helpers, client-disconnect detection), `tts_service` (the speech-synthesis worker) and `swift_port`. The ASR-specific server code (`asr_service`, `worker`, `realtime`) is still in `src/qwen3_asr/`, and so is `speech_service`, the `/v1/audio/speech` API that `voxtral_tts_server` and `fishaudio_drama3_server` share on top of `asr_service`. |
 | `sglang_omni_mlx/native/ci/` | Model pins, the 392-clip corpus, golden outputs, server API tests. |
 | `sglang_omni_mlx/<model>/` | Python MLX servers, e.g. the Qwen3-ASR reference server. |
 | `Voxt/` | The macOS app that runs the native servers. See [`Voxt/backend/README.md`](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/backend/README.md). |
@@ -50,7 +50,8 @@ agree on it with a maintainer first.
   (`common`, `swift_port`, `silero_vad`, `sortformer`). An ASR model adds
   `<model>_transcriber` and serves it on `asr_service`; a speech model serves
   through `omni_server::Service` (`common/service`) with the `tts_service`
-  worker. Shared code goes in
+  worker (Voxtral TTS and Drama 3 still serve through `speech_service` on
+  `asr_service`). Shared code goes in
   `src/common/`, not in another model's directory or library. Include project
   headers by their path under `src/`, e.g. `#include "common/layers.h"`.
 - Shared audio, checkpoint/layer, tokenizer and multipart APIs use the `omni_common` namespace and the `common` library. HTTP and server helpers use `omni_server` and the `omni_service` library; neither library depends on a model. Qwen3-ASR audio layouts, log-mel extraction and encoder token counts belong to `qwen3_asr/qwen3_audio.h`. Shared decoder and ASR serving types still live under `qwen3_asr/`; their extraction is separate from the common primitive APIs.
@@ -76,8 +77,8 @@ agree on it with a maintainer first.
 - Add a golden under `ci/model_golden/`. Import the Mac CI runner's outputs
   (`golden-outputs` artifact, `--import`) so the runner checks exactly. A
   speech model's golden holds seeded requests' codes and a PCM hash
-  (`ci/voxtral_golden.py`, `ci/qwen3_tts_golden.py`), and its prompt ids
-  include every control id (speaker, language, instructions).
+  (`ci/speech_golden.py`), and its prompt ids include every control id
+  (speaker, language, instructions).
 - Add a second golden for paths the corpus misses (long-audio chunking, VAD).
 
 **Tests**
