@@ -40,8 +40,12 @@ public:
     }
     options.stop_at_end_of_text = omni_common::FormFlag(
         asr_service::TextField(form, "stop_at_end_of_text"));
-    options.stop_on_token_loop = omni_common::FormFlag(
-        asr_service::TextField(form, "stop_on_token_loop"));
+    const auto stop_on_token_loop =
+        asr_service::TextField(form, "stop_on_token_loop");
+    // Note (Minyi Tang): greedy decoding loops on audio with little speech, so
+    // the guard is on unless a request turns it off.
+    options.stop_on_token_loop = !stop_on_token_loop.has_value() ||
+                                 omni_common::FormFlag(stop_on_token_loop);
     const std::string layout =
         asr_service::TextField(form, "audio_layout").value_or("");
     if (layout.empty() || layout == "reference") {

@@ -10,6 +10,9 @@ namespace {
 
 constexpr size_t kTokenLoopWindow = 24;
 constexpr size_t kTokenLoopMaxDistinct = 3;
+// Note (Minyi Tang): half the window, as a short unit can stop the guard while
+// the window still holds a token from before the loop.
+constexpr size_t kTokenLoopMinTokens = kTokenLoopWindow / 2;
 
 } // namespace
 
@@ -107,6 +110,28 @@ bool IsTokenLoop(const std::vector<int> &output_ids) {
   const std::set<int> distinct(output_ids.end() - kTokenLoopWindow,
                                output_ids.end());
   return distinct.size() <= kTokenLoopMaxDistinct;
+}
+
+std::vector<int> CollapseTokenLoop(const std::vector<int> &output_ids) {
+  const size_t token_count = output_ids.size();
+  for (size_t unit_token_count = 1;
+       2 * unit_token_count <= std::min(token_count, kTokenLoopWindow);
+       ++unit_token_count) {
+    size_t loop_start = token_count - unit_token_count;
+    while (loop_start > 0 &&
+           output_ids[loop_start - 1] ==
+               output_ids[loop_start - 1 + unit_token_count]) {
+      --loop_start;
+    }
+    if (token_count - loop_start >=
+        std::max(kTokenLoopMinTokens, 2 * unit_token_count)) {
+      return std::vector<int>(output_ids.begin(), output_ids.begin() +
+                                                      loop_start +
+                                                      unit_token_count);
+    } else {
+    }
+  }
+  return output_ids;
 }
 
 std::optional<std::vector<uint8_t>> DecodeBase64(const std::string &text) {

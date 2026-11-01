@@ -26,6 +26,7 @@ struct TranscriptionOptions {
   std::optional<std::string> context;
   std::optional<int> max_new_tokens;
   bool stop_at_end_of_text = false;
+  // Stops decoding at a greedy token loop and keeps one copy of its unit.
   bool stop_on_token_loop = false;
   AudioLayout layout = AudioLayout::kReference;
   // Realtime refreshes continue from text already shown, as ids and text.

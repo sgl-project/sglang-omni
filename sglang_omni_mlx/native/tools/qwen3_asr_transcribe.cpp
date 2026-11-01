@@ -24,6 +24,8 @@ int main(int argc, char **argv) {
   bool encode = false;
   bool profile = false;
   qwen3_asr::TranscriptionOptions options;
+  // Note (Minyi Tang): the loop guard is on by default, as on the server.
+  options.stop_on_token_loop = true;
   std::vector<std::string> files;
   for (int i = 1; i < argc; ++i) {
     const std::string argument = argv[i];
@@ -43,6 +45,8 @@ int main(int argc, char **argv) {
       options.stop_at_end_of_text = true;
     } else if (argument == "--stop-on-token-loop") {
       options.stop_on_token_loop = true;
+    } else if (argument == "--no-stop-on-token-loop") {
+      options.stop_on_token_loop = false;
     } else if (argument == "--max-new-tokens") {
       options.max_new_tokens = std::stoi(value());
     } else if (argument == "--encode") {

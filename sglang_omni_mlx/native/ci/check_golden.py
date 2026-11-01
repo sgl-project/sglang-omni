@@ -127,7 +127,7 @@ def transcribe(
     if request["stop_on_token_loop"]:
         command.append("--stop-on-token-loop")
     else:
-        pass
+        command.append("--no-stop-on-token-loop")
     completed = subprocess.run(
         command + [str(clip) for clip in clips],
         check=True,
