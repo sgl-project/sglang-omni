@@ -368,4 +368,557 @@ final class MLXModelManagerStorageTests: MLXModelManagerTestCase {
             XCTAssertNil(manager.pausedStatusMessage(for: otherRepo))
         }
     }
+
+    /// Models in a storage root inside Downloads disappeared whenever the user cleaned that folder.
+    func testStorageRootInsideDownloadsMovesOnlyVoxtFilesToTheDefaultRoot() throws {
+        let scratch = try TestDoubles.canonicalTemporaryDirectory()
+            .appendingPathComponent("voxt-downloads-migration-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let downloadsURL = scratch.appendingPathComponent("Downloads", isDirectory: true)
+        let sourceRootURL = downloadsURL.appendingPathComponent("Voxt Models", isDirectory: true)
+        let destinationRootURL = scratch.appendingPathComponent("Application Support/model-storage", isDirectory: true)
+        try writeFixture("source qwen", to: sourceRootURL.appendingPathComponent("mlx-audio/org_qwen/weights.safetensors"))
+        try writeFixture("source shared", to: sourceRootURL.appendingPathComponent("mlx-audio/org_shared/weights.safetensors"))
+        try writeFixture("{}", to: sourceRootURL.appendingPathComponent("mlx-audio/org_shared/config.json"))
+        try writeFixture("source q8", to: sourceRootURL.appendingPathComponent("gguf-translation/hy/q8.gguf"))
+        try writeFixture("source llm", to: sourceRootURL.appendingPathComponent("mlx-llm/org_llm/weights.safetensors"))
+        try writeFixture("user file", to: sourceRootURL.appendingPathComponent("holiday.mov"))
+        try writeFixture("default shared", to: destinationRootURL.appendingPathComponent("mlx-audio/org_shared/weights.safetensors"))
+        try writeFixture("default q4", to: destinationRootURL.appendingPathComponent("gguf-translation/hy/q4.gguf"))
+        let defaults = TestDoubles.makeUserDefaults()
+        defaults.set(sourceRootURL.path, forKey: AppPreferenceKey.modelStorageRootPath)
+        ModelStorageDirectoryManager.resetForTesting()
+        ModelStorageDirectoryManager.setAuthorizedRootURLForTesting(sourceRootURL)
+        defer { ModelStorageDirectoryManager.resetForTesting() }
+
+        ModelStorageDirectoryManager.migrateRootOutOfDownloadsIfNeeded(
+            defaults: defaults,
+            downloadsURL: downloadsURL,
+            destinationRootURL: destinationRootURL
+        )
+
+        XCTAssertEqual(fixtureText(at: "mlx-audio/org_qwen/weights.safetensors", under: destinationRootURL), "source qwen")
+        XCTAssertEqual(fixtureText(at: "mlx-llm/org_llm/weights.safetensors", under: destinationRootURL), "source llm")
+        XCTAssertEqual(fixtureText(at: "mlx-audio/org_shared/weights.safetensors", under: destinationRootURL), "default shared")
+        XCTAssertEqual(fixtureText(at: "mlx-audio/org_shared/config.json", under: destinationRootURL), "{}")
+        XCTAssertEqual(fixtureText(at: "gguf-translation/hy/q8.gguf", under: destinationRootURL), "source q8")
+        XCTAssertEqual(fixtureText(at: "gguf-translation/hy/q4.gguf", under: destinationRootURL), "default q4")
+        XCTAssertEqual(fixtureText(at: "holiday.mov", under: sourceRootURL), "user file")
+        XCTAssertNil(fixtureText(at: "holiday.mov", under: destinationRootURL))
+        XCTAssertNil(defaults.string(forKey: AppPreferenceKey.modelStorageRootPath))
+        XCTAssertNil(defaults.data(forKey: AppPreferenceKey.modelStorageRootBookmark))
+    }
+
+    /// A move that failed halfway left models outside every readable root.
+    func testFailedMigrationOutOfDownloadsUndoesItsMovesAndKeepsTheSavedRoot() throws {
+        let scratch = try TestDoubles.canonicalTemporaryDirectory()
+            .appendingPathComponent("voxt-downloads-migration-\(UUID().uuidString)", isDirectory: true)
+        let downloadsURL = scratch.appendingPathComponent("Downloads", isDirectory: true)
+        let sourceRootURL = downloadsURL.appendingPathComponent("Voxt Models", isDirectory: true)
+        let destinationRootURL = scratch.appendingPathComponent("model-storage", isDirectory: true)
+        let readOnlyURL = destinationRootURL.appendingPathComponent("mlx-llm", isDirectory: true)
+        try writeFixture("source qwen", to: sourceRootURL.appendingPathComponent("mlx-audio/org_qwen/weights.safetensors"))
+        try writeFixture("source llm", to: sourceRootURL.appendingPathComponent("mlx-llm/org_llm/weights.safetensors"))
+        try FileManager.default.createDirectory(at: readOnlyURL, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: readOnlyURL.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: readOnlyURL.path)
+            try? FileManager.default.removeItem(at: scratch)
+        }
+        let defaults = TestDoubles.makeUserDefaults()
+        defaults.set(sourceRootURL.path, forKey: AppPreferenceKey.modelStorageRootPath)
+        ModelStorageDirectoryManager.resetForTesting()
+        ModelStorageDirectoryManager.setAuthorizedRootURLForTesting(sourceRootURL)
+        defer { ModelStorageDirectoryManager.resetForTesting() }
+
+        let moved = ModelStorageDirectoryManager.migrateRootOutOfDownloadsIfNeeded(
+            defaults: defaults,
+            downloadsURL: downloadsURL,
+            destinationRootURL: destinationRootURL
+        )
+
+        XCTAssertTrue(moved.isEmpty)
+        XCTAssertEqual(fixtureText(at: "mlx-audio/org_qwen/weights.safetensors", under: sourceRootURL), "source qwen")
+        XCTAssertEqual(fixtureText(at: "mlx-llm/org_llm/weights.safetensors", under: sourceRootURL), "source llm")
+        XCTAssertNil(fixtureText(at: "mlx-audio/org_qwen/weights.safetensors", under: destinationRootURL))
+        XCTAssertEqual(defaults.string(forKey: AppPreferenceKey.modelStorageRootPath), sourceRootURL.path)
+    }
+
+    /// Merging into an incomplete copy could split one complete model into two broken halves.
+    func testMigrationThatWouldLeaveAnIncompleteModelIsUndone() throws {
+        let scratch = try TestDoubles.canonicalTemporaryDirectory()
+            .appendingPathComponent("voxt-downloads-migration-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let downloadsURL = scratch.appendingPathComponent("Downloads", isDirectory: true)
+        let sourceRootURL = downloadsURL.appendingPathComponent("Voxt Models", isDirectory: true)
+        let destinationRootURL = scratch.appendingPathComponent("model-storage", isDirectory: true)
+        try writeFixture("{}", to: sourceRootURL.appendingPathComponent("mlx-audio/org_qwen/config.json"))
+        try writeFixture("source weights", to: sourceRootURL.appendingPathComponent("mlx-audio/org_qwen/weights.safetensors"))
+        try writeFixture("not json", to: destinationRootURL.appendingPathComponent("mlx-audio/org_qwen/config.json"))
+        let defaults = TestDoubles.makeUserDefaults()
+        defaults.set(sourceRootURL.path, forKey: AppPreferenceKey.modelStorageRootPath)
+        ModelStorageDirectoryManager.resetForTesting()
+        ModelStorageDirectoryManager.setAuthorizedRootURLForTesting(sourceRootURL)
+        defer { ModelStorageDirectoryManager.resetForTesting() }
+
+        let moved = ModelStorageDirectoryManager.migrateRootOutOfDownloadsIfNeeded(
+            defaults: defaults,
+            downloadsURL: downloadsURL,
+            destinationRootURL: destinationRootURL
+        )
+
+        XCTAssertTrue(moved.isEmpty)
+        XCTAssertEqual(fixtureText(at: "mlx-audio/org_qwen/weights.safetensors", under: sourceRootURL), "source weights")
+        XCTAssertNil(fixtureText(at: "mlx-audio/org_qwen/weights.safetensors", under: destinationRootURL))
+        XCTAssertEqual(defaults.string(forKey: AppPreferenceKey.modelStorageRootPath), sourceRootURL.path)
+    }
+
+    /// Following a symbolic link would move files from wherever the link points.
+    func testMigrationStopsAtASymbolicLinkWithoutMovingItsTarget() throws {
+        let scratch = try TestDoubles.canonicalTemporaryDirectory()
+            .appendingPathComponent("voxt-downloads-migration-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let downloadsURL = scratch.appendingPathComponent("Downloads", isDirectory: true)
+        let sourceRootURL = downloadsURL.appendingPathComponent("Voxt Models", isDirectory: true)
+        let destinationRootURL = scratch.appendingPathComponent("model-storage", isDirectory: true)
+        let unrelatedURL = scratch.appendingPathComponent("Documents", isDirectory: true)
+        try writeFixture("user document", to: unrelatedURL.appendingPathComponent("org_notes/notes.txt"))
+        try FileManager.default.createDirectory(at: sourceRootURL, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: sourceRootURL.appendingPathComponent("mlx-audio"),
+            withDestinationURL: unrelatedURL
+        )
+        try writeFixture("default weights", to: destinationRootURL.appendingPathComponent("mlx-audio/org_qwen/weights.safetensors"))
+        let defaults = TestDoubles.makeUserDefaults()
+        defaults.set(sourceRootURL.path, forKey: AppPreferenceKey.modelStorageRootPath)
+        ModelStorageDirectoryManager.resetForTesting()
+        ModelStorageDirectoryManager.setAuthorizedRootURLForTesting(sourceRootURL)
+        defer { ModelStorageDirectoryManager.resetForTesting() }
+
+        let moved = ModelStorageDirectoryManager.migrateRootOutOfDownloadsIfNeeded(
+            defaults: defaults,
+            downloadsURL: downloadsURL,
+            destinationRootURL: destinationRootURL
+        )
+
+        XCTAssertTrue(moved.isEmpty)
+        XCTAssertEqual(fixtureText(at: "org_notes/notes.txt", under: unrelatedURL), "user document")
+        XCTAssertNil(fixtureText(at: "mlx-audio/org_notes/notes.txt", under: destinationRootURL))
+        XCTAssertEqual(defaults.string(forKey: AppPreferenceKey.modelStorageRootPath), sourceRootURL.path)
+    }
+
+    /// Each case once left models in Downloads while the saved root was switched away from them.
+    func testMigrationIsUndoneWhenAFolderCannotMoveCleanly() throws {
+        let cases: [(name: String, prepare: (URL, URL) throws -> Void)] = [
+            ("file in the way", { _, destinationRootURL in
+                try self.writeFixture("not a folder", to: destinationRootURL.appendingPathComponent("mlx-llm"))
+            }),
+            ("link inside a moved model", { sourceRootURL, _ in
+                try FileManager.default.createSymbolicLink(
+                    atPath: sourceRootURL.appendingPathComponent("mlx-llm/org_llm/linked.safetensors").path,
+                    withDestinationPath: "weights.safetensors"
+                )
+            }),
+            ("file where the model folder goes", { _, destinationRootURL in
+                try self.writeFixture("not a folder", to: destinationRootURL.appendingPathComponent("mlx-llm/org_llm"))
+            }),
+            ("link inside the existing destination model", { sourceRootURL, destinationRootURL in
+                let destinationModelURL = destinationRootURL.appendingPathComponent("mlx-llm/org_llm", isDirectory: true)
+                try FileManager.default.createDirectory(at: destinationModelURL, withIntermediateDirectories: true)
+                try FileManager.default.createSymbolicLink(
+                    atPath: destinationModelURL.appendingPathComponent("tokenizer.json").path,
+                    withDestinationPath: sourceRootURL.appendingPathComponent("tokenizer.json").path
+                )
+            }),
+        ]
+        for testCase in cases {
+            let scratch = try TestDoubles.canonicalTemporaryDirectory()
+                .appendingPathComponent("voxt-downloads-migration-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: scratch) }
+            let downloadsURL = scratch.appendingPathComponent("Downloads", isDirectory: true)
+            let sourceRootURL = downloadsURL.appendingPathComponent("Voxt Models", isDirectory: true)
+            let destinationRootURL = scratch.appendingPathComponent("model-storage", isDirectory: true)
+            try writeFixture("source qwen", to: sourceRootURL.appendingPathComponent("mlx-audio/org_qwen/weights.safetensors"))
+            try writeFixture("source llm", to: sourceRootURL.appendingPathComponent("mlx-llm/org_llm/weights.safetensors"))
+            try testCase.prepare(sourceRootURL, destinationRootURL)
+            let defaults = TestDoubles.makeUserDefaults()
+            defaults.set(sourceRootURL.path, forKey: AppPreferenceKey.modelStorageRootPath)
+            ModelStorageDirectoryManager.resetForTesting()
+            ModelStorageDirectoryManager.setAuthorizedRootURLForTesting(sourceRootURL)
+
+            let moved = ModelStorageDirectoryManager.migrateRootOutOfDownloadsIfNeeded(
+                defaults: defaults,
+                downloadsURL: downloadsURL,
+                destinationRootURL: destinationRootURL
+            )
+            ModelStorageDirectoryManager.resetForTesting()
+
+            XCTAssertTrue(moved.isEmpty, testCase.name)
+            XCTAssertEqual(fixtureText(at: "mlx-audio/org_qwen/weights.safetensors", under: sourceRootURL), "source qwen", testCase.name)
+            XCTAssertEqual(fixtureText(at: "mlx-llm/org_llm/weights.safetensors", under: sourceRootURL), "source llm", testCase.name)
+            XCTAssertEqual(defaults.string(forKey: AppPreferenceKey.modelStorageRootPath), sourceRootURL.path, testCase.name)
+        }
+    }
+
+    /// Moving a model that a native server or download still uses would pull its files away mid-use.
+    func testMigrationLeavesStorageUnchangedWhileAModelIsInUse() throws {
+        let scratch = try TestDoubles.canonicalTemporaryDirectory()
+            .appendingPathComponent("voxt-downloads-migration-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let downloadsURL = scratch.appendingPathComponent("Downloads", isDirectory: true)
+        let sourceRootURL = downloadsURL.appendingPathComponent("Voxt Models", isDirectory: true)
+        let destinationRootURL = scratch.appendingPathComponent("model-storage", isDirectory: true)
+        let modelURL = sourceRootURL.appendingPathComponent("mlx-audio/org_qwen", isDirectory: true)
+        try writeFixture("source qwen", to: modelURL.appendingPathComponent("weights.safetensors"))
+        let defaults = TestDoubles.makeUserDefaults()
+        defaults.set(sourceRootURL.path, forKey: AppPreferenceKey.modelStorageRootPath)
+        ModelStorageDirectoryManager.resetForTesting()
+        ModelStorageDirectoryManager.setAuthorizedRootURLForTesting(sourceRootURL)
+        defer { ModelStorageDirectoryManager.resetForTesting() }
+        let readerLease = try OmniModelDirectoryLease.acquire(for: modelURL, mode: .sharedRead)
+
+        let moved = withExtendedLifetime(readerLease) {
+            ModelStorageDirectoryManager.migrateRootOutOfDownloadsIfNeeded(
+                defaults: defaults,
+                downloadsURL: downloadsURL,
+                destinationRootURL: destinationRootURL
+            )
+        }
+
+        XCTAssertTrue(moved.isEmpty)
+        XCTAssertEqual(fixtureText(at: "mlx-audio/org_qwen/weights.safetensors", under: sourceRootURL), "source qwen")
+        XCTAssertEqual(defaults.string(forKey: AppPreferenceKey.modelStorageRootPath), sourceRootURL.path)
+    }
+
+    /// A publisher reserves a destination model before writing it; moving into it would corrupt that publication.
+    func testMigrationLeavesStorageUnchangedWhileTheDestinationModelIsReserved() throws {
+        let scratch = try TestDoubles.canonicalTemporaryDirectory()
+            .appendingPathComponent("voxt-downloads-migration-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let downloadsURL = scratch.appendingPathComponent("Downloads", isDirectory: true)
+        let sourceRootURL = downloadsURL.appendingPathComponent("Voxt Models", isDirectory: true)
+        let destinationRootURL = scratch.appendingPathComponent("model-storage", isDirectory: true)
+        try writeFixture("source qwen", to: sourceRootURL.appendingPathComponent("mlx-audio/org_qwen/weights.safetensors"))
+        let destinationFolderURL = destinationRootURL.appendingPathComponent("mlx-audio", isDirectory: true)
+        try FileManager.default.createDirectory(at: destinationFolderURL, withIntermediateDirectories: true)
+        let defaults = TestDoubles.makeUserDefaults()
+        defaults.set(sourceRootURL.path, forKey: AppPreferenceKey.modelStorageRootPath)
+        ModelStorageDirectoryManager.resetForTesting()
+        ModelStorageDirectoryManager.setAuthorizedRootURLForTesting(sourceRootURL)
+        defer { ModelStorageDirectoryManager.resetForTesting() }
+        let publisherLease = try OmniModelDirectoryLease.acquire(
+            for: destinationFolderURL.appendingPathComponent("org_qwen", isDirectory: true),
+            mode: .exclusiveMutation
+        )
+
+        let moved = withExtendedLifetime(publisherLease) {
+            ModelStorageDirectoryManager.migrateRootOutOfDownloadsIfNeeded(
+                defaults: defaults,
+                downloadsURL: downloadsURL,
+                destinationRootURL: destinationRootURL
+            )
+        }
+
+        XCTAssertTrue(moved.isEmpty)
+        XCTAssertEqual(fixtureText(at: "mlx-audio/org_qwen/weights.safetensors", under: sourceRootURL), "source qwen")
+        XCTAssertNil(fixtureText(at: "mlx-audio/org_qwen/weights.safetensors", under: destinationRootURL))
+        XCTAssertEqual(defaults.string(forKey: AppPreferenceKey.modelStorageRootPath), sourceRootURL.path)
+    }
+
+    /// Moving a whole namespace folder took its lock folder along, so new locks at the old paths
+    /// would not exclude the migration that still held the moved ones.
+    func testMigrationIntoAnAbsentNamespaceLeavesEachRootItsOwnLockFolder() throws {
+        let scratch = try TestDoubles.canonicalTemporaryDirectory()
+            .appendingPathComponent("voxt-downloads-migration-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let downloadsURL = scratch.appendingPathComponent("Downloads", isDirectory: true)
+        let sourceRootURL = downloadsURL.appendingPathComponent("Voxt Models", isDirectory: true)
+        let destinationRootURL = scratch.appendingPathComponent("model-storage", isDirectory: true)
+        try writeFixture("source qwen", to: sourceRootURL.appendingPathComponent("mlx-audio/org_qwen/weights.safetensors"))
+        let defaults = TestDoubles.makeUserDefaults()
+        defaults.set(sourceRootURL.path, forKey: AppPreferenceKey.modelStorageRootPath)
+        ModelStorageDirectoryManager.resetForTesting()
+        ModelStorageDirectoryManager.setAuthorizedRootURLForTesting(sourceRootURL)
+        defer { ModelStorageDirectoryManager.resetForTesting() }
+
+        ModelStorageDirectoryManager.migrateRootOutOfDownloadsIfNeeded(
+            defaults: defaults,
+            downloadsURL: downloadsURL,
+            destinationRootURL: destinationRootURL
+        )
+
+        XCTAssertEqual(fixtureText(at: "mlx-audio/org_qwen/weights.safetensors", under: destinationRootURL), "source qwen")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sourceRootURL.appendingPathComponent("mlx-audio/.omni-model-locks").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destinationRootURL.appendingPathComponent("mlx-audio/.omni-model-locks").path))
+        XCTAssertNil(defaults.string(forKey: AppPreferenceKey.modelStorageRootPath))
+    }
+
+    /// An active download stages its files in a sibling folder; moving it would pull them from under the downloader.
+    func testMigrationLeavesStorageUnchangedWhileADownloadStagesFiles() throws {
+        let scratch = try TestDoubles.canonicalTemporaryDirectory()
+            .appendingPathComponent("voxt-downloads-migration-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let downloadsURL = scratch.appendingPathComponent("Downloads", isDirectory: true)
+        let sourceRootURL = downloadsURL.appendingPathComponent("Voxt Models", isDirectory: true)
+        let destinationRootURL = scratch.appendingPathComponent("model-storage", isDirectory: true)
+        try writeFixture("source qwen", to: sourceRootURL.appendingPathComponent("mlx-audio/org_qwen/weights.safetensors"))
+        let stagingURL = sourceRootURL.appendingPathComponent("mlx-audio/org_new-download", isDirectory: true)
+        try writeFixture("partial", to: stagingURL.appendingPathComponent("weights.safetensors.part"))
+        let defaults = TestDoubles.makeUserDefaults()
+        defaults.set(sourceRootURL.path, forKey: AppPreferenceKey.modelStorageRootPath)
+        ModelStorageDirectoryManager.resetForTesting()
+        ModelStorageDirectoryManager.setAuthorizedRootURLForTesting(sourceRootURL)
+        defer { ModelStorageDirectoryManager.resetForTesting() }
+        let downloaderLease = try OmniModelDirectoryLease.acquire(for: stagingURL, mode: .exclusiveMutation)
+
+        let moved = withExtendedLifetime(downloaderLease) {
+            ModelStorageDirectoryManager.migrateRootOutOfDownloadsIfNeeded(
+                defaults: defaults,
+                downloadsURL: downloadsURL,
+                destinationRootURL: destinationRootURL
+            )
+        }
+
+        XCTAssertTrue(moved.isEmpty)
+        XCTAssertEqual(fixtureText(at: "mlx-audio/org_new-download/weights.safetensors.part", under: sourceRootURL), "partial")
+        XCTAssertEqual(fixtureText(at: "mlx-audio/org_qwen/weights.safetensors", under: sourceRootURL), "source qwen")
+        XCTAssertEqual(defaults.string(forKey: AppPreferenceKey.modelStorageRootPath), sourceRootURL.path)
+    }
+
+    /// A storage root reached through a symbolic link, at the root or any folder above it, would move
+    /// files out of, or into, wherever the link points.
+    func testMigrationStopsWhenEitherRootPathContainsASymbolicLink() throws {
+        let cases = ["source root", "source parent", "destination root", "destination parent"]
+        for linkCase in cases {
+            let scratch = try TestDoubles.canonicalTemporaryDirectory()
+                .appendingPathComponent("voxt-downloads-migration-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: scratch) }
+            let downloadsURL = scratch.appendingPathComponent("Downloads", isDirectory: true)
+            let realURL = scratch.appendingPathComponent("Elsewhere", isDirectory: true)
+            try FileManager.default.createDirectory(at: downloadsURL, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: realURL, withIntermediateDirectories: true)
+            var sourceRootURL = downloadsURL.appendingPathComponent("Voxt Models", isDirectory: true)
+            var destinationRootURL = scratch.appendingPathComponent("model-storage", isDirectory: true)
+            var modelsURL = sourceRootURL
+            switch linkCase {
+            case "source root":
+                try FileManager.default.createSymbolicLink(at: sourceRootURL, withDestinationURL: realURL)
+                modelsURL = realURL
+            case "source parent":
+                let aliasURL = downloadsURL.appendingPathComponent("Alias", isDirectory: true)
+                try FileManager.default.createSymbolicLink(at: aliasURL, withDestinationURL: realURL)
+                sourceRootURL = aliasURL.appendingPathComponent("Models", isDirectory: true)
+                modelsURL = realURL.appendingPathComponent("Models", isDirectory: true)
+            case "destination root":
+                try FileManager.default.createSymbolicLink(at: destinationRootURL, withDestinationURL: realURL)
+            default:
+                let aliasURL = scratch.appendingPathComponent("Linked Support", isDirectory: true)
+                try FileManager.default.createSymbolicLink(at: aliasURL, withDestinationURL: realURL)
+                destinationRootURL = aliasURL.appendingPathComponent("model-storage", isDirectory: true)
+            }
+            try writeFixture("weights", to: modelsURL.appendingPathComponent("mlx-audio/org_qwen/weights.safetensors"))
+            let defaults = TestDoubles.makeUserDefaults()
+            defaults.set(sourceRootURL.path, forKey: AppPreferenceKey.modelStorageRootPath)
+            ModelStorageDirectoryManager.resetForTesting()
+            ModelStorageDirectoryManager.setAuthorizedRootURLForTesting(sourceRootURL)
+
+            let moved = ModelStorageDirectoryManager.migrateRootOutOfDownloadsIfNeeded(
+                defaults: defaults,
+                downloadsURL: downloadsURL,
+                destinationRootURL: destinationRootURL
+            )
+            ModelStorageDirectoryManager.resetForTesting()
+
+            XCTAssertTrue(moved.isEmpty, linkCase)
+            XCTAssertEqual(fixtureText(at: "mlx-audio/org_qwen/weights.safetensors", under: modelsURL), "weights", linkCase)
+            XCTAssertEqual(defaults.string(forKey: AppPreferenceKey.modelStorageRootPath), sourceRootURL.path, linkCase)
+        }
+    }
+
+    /// Released leases and Finder metadata leave files beside models in both roots; they are not models to move.
+    func testLockFilesAndFinderMetadataInBothRootsDoNotBlockMigration() throws {
+        let scratch = try TestDoubles.canonicalTemporaryDirectory()
+            .appendingPathComponent("voxt-downloads-migration-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let downloadsURL = scratch.appendingPathComponent("Downloads", isDirectory: true)
+        let sourceRootURL = downloadsURL.appendingPathComponent("Voxt Models", isDirectory: true)
+        let destinationRootURL = scratch.appendingPathComponent("model-storage", isDirectory: true)
+        for rootURL in [sourceRootURL, destinationRootURL] {
+            let modelURL = rootURL.appendingPathComponent("mlx-audio/org_qwen", isDirectory: true)
+            try writeFixture("{}", to: modelURL.appendingPathComponent("config.json"))
+            try writeFixture("weights", to: modelURL.appendingPathComponent("weights.safetensors"))
+            _ = try OmniModelDirectoryLease.acquire(for: modelURL, mode: .sharedRead)
+        }
+        try writeFixture("source llm", to: sourceRootURL.appendingPathComponent("mlx-llm/org_llm/weights.safetensors"))
+        for rootURL in [sourceRootURL, destinationRootURL] {
+            try writeFixture("finder", to: rootURL.appendingPathComponent("mlx-audio/.DS_Store"))
+        }
+        try writeFixture("finder", to: sourceRootURL.appendingPathComponent("mlx-llm/.DS_Store"))
+        let defaults = TestDoubles.makeUserDefaults()
+        defaults.set(sourceRootURL.path, forKey: AppPreferenceKey.modelStorageRootPath)
+        ModelStorageDirectoryManager.resetForTesting()
+        ModelStorageDirectoryManager.setAuthorizedRootURLForTesting(sourceRootURL)
+        defer { ModelStorageDirectoryManager.resetForTesting() }
+
+        ModelStorageDirectoryManager.migrateRootOutOfDownloadsIfNeeded(
+            defaults: defaults,
+            downloadsURL: downloadsURL,
+            destinationRootURL: destinationRootURL
+        )
+
+        XCTAssertEqual(fixtureText(at: "mlx-llm/org_llm/weights.safetensors", under: destinationRootURL), "source llm")
+        XCTAssertNil(defaults.string(forKey: AppPreferenceKey.modelStorageRootPath))
+    }
+
+    /// A Whisper model stored as weights.npz was judged incomplete, which undid every migration it was part of.
+    func testDuplicateWhisperModelWithNpzWeightsDoesNotBlockMigration() throws {
+        let scratch = try TestDoubles.canonicalTemporaryDirectory()
+            .appendingPathComponent("voxt-downloads-migration-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let downloadsURL = scratch.appendingPathComponent("Downloads", isDirectory: true)
+        let sourceRootURL = downloadsURL.appendingPathComponent("Voxt Models", isDirectory: true)
+        let destinationRootURL = scratch.appendingPathComponent("model-storage", isDirectory: true)
+        let whisperRepo = "mlx-community/whisper-large-v3-turbo"
+        let whisperFolder = "mlx-audio/mlx-community_whisper-large-v3-turbo"
+        let destinationWhisperURL = destinationRootURL.appendingPathComponent(whisperFolder)
+        try writeFixture(#"{"model_type":"whisper"}"#, to: destinationWhisperURL.appendingPathComponent("config.json"))
+        try writeFixture("npz weights", to: destinationWhisperURL.appendingPathComponent("weights.npz"))
+        for assetPath in MLXModelDownloadSupport.whisperTokenizerAssetPaths {
+            try writeFixture("asset", to: destinationWhisperURL.appendingPathComponent(assetPath))
+        }
+        XCTAssertTrue(
+            MLXModelDownloadSupport.isModelDirectoryValid(destinationWhisperURL, repo: whisperRepo, fileManager: .default)
+        )
+        try writeFixture(#"{"model_type":"whisper"}"#, to: sourceRootURL.appendingPathComponent(whisperFolder + "/config.json"))
+        try writeFixture("source qwen", to: sourceRootURL.appendingPathComponent("mlx-audio/org_qwen/weights.safetensors"))
+        let defaults = TestDoubles.makeUserDefaults()
+        defaults.set(sourceRootURL.path, forKey: AppPreferenceKey.modelStorageRootPath)
+        ModelStorageDirectoryManager.resetForTesting()
+        ModelStorageDirectoryManager.setAuthorizedRootURLForTesting(sourceRootURL)
+        defer { ModelStorageDirectoryManager.resetForTesting() }
+
+        ModelStorageDirectoryManager.migrateRootOutOfDownloadsIfNeeded(
+            defaults: defaults,
+            downloadsURL: downloadsURL,
+            destinationRootURL: destinationRootURL
+        )
+
+        XCTAssertEqual(fixtureText(at: "mlx-audio/org_qwen/weights.safetensors", under: destinationRootURL), "source qwen")
+        XCTAssertNil(defaults.string(forKey: AppPreferenceKey.modelStorageRootPath))
+    }
+
+    /// Without folder access every model looks absent, which must not clear the saved root.
+    func testUnauthorizedStorageRootInsideDownloadsIsKept() throws {
+        let scratch = try TestDoubles.canonicalTemporaryDirectory()
+            .appendingPathComponent("voxt-downloads-migration-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let downloadsURL = scratch.appendingPathComponent("Downloads", isDirectory: true)
+        let sourceRootURL = downloadsURL.appendingPathComponent("Voxt Models", isDirectory: true)
+        let defaults = TestDoubles.makeUserDefaults()
+        defaults.set(sourceRootURL.path, forKey: AppPreferenceKey.modelStorageRootPath)
+        ModelStorageDirectoryManager.resetForTesting()
+        defer { ModelStorageDirectoryManager.resetForTesting() }
+
+        let moved = ModelStorageDirectoryManager.migrateRootOutOfDownloadsIfNeeded(
+            defaults: defaults,
+            downloadsURL: downloadsURL,
+            destinationRootURL: scratch.appendingPathComponent("model-storage", isDirectory: true)
+        )
+
+        XCTAssertTrue(moved.isEmpty)
+        XCTAssertEqual(defaults.string(forKey: AppPreferenceKey.modelStorageRootPath), sourceRootURL.path)
+    }
+
+    func testStorageRootOutsideDownloadsIsNeitherMovedNorReset() throws {
+        let scratch = try TestDoubles.canonicalTemporaryDirectory()
+            .appendingPathComponent("voxt-downloads-migration-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let sourceRootURL = scratch.appendingPathComponent("External/Voxt Models", isDirectory: true)
+        let weightsURL = sourceRootURL.appendingPathComponent("mlx-audio/org_qwen/weights.safetensors")
+        try writeFixture("weights", to: weightsURL)
+        let defaults = TestDoubles.makeUserDefaults()
+        defaults.set(sourceRootURL.path, forKey: AppPreferenceKey.modelStorageRootPath)
+        ModelStorageDirectoryManager.resetForTesting()
+        ModelStorageDirectoryManager.setAuthorizedRootURLForTesting(sourceRootURL)
+        defer { ModelStorageDirectoryManager.resetForTesting() }
+
+        let moved = ModelStorageDirectoryManager.migrateRootOutOfDownloadsIfNeeded(
+            defaults: defaults,
+            downloadsURL: scratch.appendingPathComponent("Downloads", isDirectory: true),
+            destinationRootURL: scratch.appendingPathComponent("model-storage", isDirectory: true)
+        )
+
+        XCTAssertTrue(moved.isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: weightsURL.path))
+        XCTAssertEqual(defaults.string(forKey: AppPreferenceKey.modelStorageRootPath), sourceRootURL.path)
+    }
+
+    private func writeFixture(_ text: String, to url: URL) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(text.utf8).write(to: url)
+    }
+
+    private func fixtureText(at path: String, under root: URL) -> String? {
+        (try? Data(contentsOf: root.appendingPathComponent(path))).map { String(decoding: $0, as: UTF8.self) }
+    }
+
+    /// Choosing the saved Downloads folder again is how a user restores access so its models can move out.
+    func testOnlyTheSavedDownloadsFolderCanBeChosenAgain() {
+        let downloadsURL = URL(fileURLWithPath: "/Users/someone/Downloads", isDirectory: true)
+        let savedRootURL = downloadsURL.appendingPathComponent("Voxt Models", isDirectory: true)
+
+        XCTAssertEqual(
+            ModelStorageDirectoryManager.selectionIssue(
+                for: downloadsURL.appendingPathComponent("Other Models"),
+                savedRootPath: savedRootURL.path,
+                downloadsURL: downloadsURL
+            ),
+            .insideDownloads(path: downloadsURL.path)
+        )
+        XCTAssertEqual(
+            ModelStorageDirectoryManager.selectionIssue(
+                for: savedRootURL,
+                savedRootPath: nil,
+                downloadsURL: downloadsURL
+            ),
+            .insideDownloads(path: downloadsURL.path)
+        )
+        XCTAssertNil(
+            ModelStorageDirectoryManager.selectionIssue(
+                for: savedRootURL,
+                savedRootPath: savedRootURL.path,
+                downloadsURL: downloadsURL
+            )
+        )
+        XCTAssertNil(
+            ModelStorageDirectoryManager.selectionIssue(
+                for: URL(fileURLWithPath: "/Volumes/External/Voxt Models", isDirectory: true),
+                savedRootPath: nil,
+                downloadsURL: downloadsURL
+            )
+        )
+    }
+
+    /// Deleting an installed model while Voxt ran left it reported as installed, so every
+    /// activation failed to start the server instead of reporting the missing files.
+    func testLoadAfterInstalledFilesWereDeletedReportsTheModelAsNotDownloaded() async throws {
+        try XCTSkipUnless(OmniASRBackend.isAppleSilicon, "Native ASR loads only run on Apple Silicon.")
+        try await withIsolatedModelStorageRoot { root in
+            let repo = MLXModelManager.defaultModelRepo
+            try seedValidMLXModelDirectory(repo: repo, root: root)
+            let manager = MLXModelManager(modelRepo: repo)
+            _ = try await manager.refreshInstallation(repo: repo)
+            XCTAssertTrue(manager.isModelDownloaded(repo: repo))
+            try FileManager.default.removeItem(at: root.appendingPathComponent("mlx-audio"))
+
+            do {
+                _ = try await manager.loadModel()
+                XCTFail("Loading a deleted model succeeded")
+            } catch {
+                XCTAssertEqual(manager.state, .notDownloaded)
+                XCTAssertFalse(manager.isModelDownloaded(repo: repo))
+            }
+            await manager.shutdownForApplicationTermination()
+        }
+    }
 }

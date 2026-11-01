@@ -2382,3 +2382,6 @@
 "API Format" = "API Format";
 
 "Automatic keeps OpenAI on Responses and respects explicit Chat Completions URLs for custom endpoints." = "Automatic keeps OpenAI on Responses and respects explicit Chat Completions URLs for custom endpoints.";
+
+"MLX model files were not found. Open Settings > Model to download the model again." = "MLX model files were not found. Open Settings > Model to download the model again.";
+"Models stored in the Downloads folder are lost when it is cleaned up. Choose a folder outside %@." = "Models stored in the Downloads folder are lost when it is cleaned up. Choose a folder outside %@.";

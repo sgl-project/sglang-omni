@@ -653,7 +653,16 @@ class MLXModelManager: ObservableObject {
                 )
             } else {
                 if repo == modelRepo {
-                    setState(.error("Model load failed: \(error.localizedDescription)"), for: repo)
+                    // Note (Minyi Tang): the cached scan can predate a folder cleanup that deleted the model.
+                    invalidateLocalCache(for: repo)
+                    let installation = try? await refreshInstallation(repo: repo)
+                    if Task.isCancelled || repo != modelRepo || revision != storageRevision {
+                        VoxtLog.modelInfo("MLX Audio model state left to the newer selection or storage root. repo=\(repo)", verbose: true)
+                    } else if let installation, !installation.isInstalled {
+                        applyInstallationState(installation, repo: repo)
+                    } else {
+                        setState(.error("Model load failed: \(error.localizedDescription)"), for: repo)
+                    }
                 }
                 VoxtLog.modelError("MLX Audio model load failed. repo=\(repo), elapsedMs=\(elapsedMs), error=\(error.localizedDescription)")
             }
@@ -843,7 +852,7 @@ class MLXModelManager: ObservableObject {
             throw NSError(
                 domain: "MLXModelManager",
                 code: 1004,
-                userInfo: [NSLocalizedDescriptionKey: "MLX model is not installed locally."]
+                userInfo: [NSLocalizedDescriptionKey: AppLocalization.localizedString("MLX model files were not found. Open Settings > Model to download the model again.")]
             )
         }
         try Task.checkCancellation()

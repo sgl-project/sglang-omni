@@ -103,7 +103,9 @@ final class RecordingStartPlannerTests: XCTestCase {
         XCTAssertEqual(decision, OmniASRBackend.isAppleSilicon ? .start(.mlxAudio) : .blocked(.mlxModelUnavailable(detail: OmniASRBackend.unavailabilityReason(for: "mlx-community/whisper-small-mlx"))))
     }
 
-    func testMLXAudioPausedSelectedModelBlocksRecordingStart() {
+    /// A leftover partial download used to report "still downloading" although nothing was
+    /// downloading and the installed model files were gone.
+    func testMLXAudioPausedSelectedModelReportsMissingFilesInsteadOfDownloading() {
         let decision = RecordingStartPlanner.resolve(
             selectedEngine: .mlxAudio,
             selectedMLXRepo: "mlx-community/Qwen3-ASR-0.6B-4bit",
@@ -118,7 +120,7 @@ final class RecordingStartPlannerTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(decision, OmniASRBackend.isAppleSilicon ? .blocked(.mlxModelDownloading) : .blocked(.mlxModelUnavailable(detail: OmniASRBackend.unavailabilityReason(for: MLXModelManager.defaultModelRepo))))
+        XCTAssertEqual(decision, OmniASRBackend.isAppleSilicon ? .blocked(.mlxModelFilesNotFound) : .blocked(.mlxModelUnavailable(detail: OmniASRBackend.unavailabilityReason(for: MLXModelManager.defaultModelRepo))))
     }
 
     func testDictationStartIgnoresMLXModelState() {

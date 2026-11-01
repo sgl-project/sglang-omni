@@ -94,7 +94,7 @@ final class MeetingStartPlannerTests: XCTestCase {
         XCTAssertEqual(decision, OmniASRBackend.isAppleSilicon ? .start(.mlxAudio) : .blocked(.recording(.mlxModelUnavailable(detail: OmniASRBackend.unavailabilityReason(for: "mlx-community/whisper-small-mlx")))))
     }
 
-    func testMLXMeetingBlocksWhenSelectedModelIsPaused() {
+    func testMLXMeetingReportsMissingFilesWhenSelectedModelIsPaused() {
         let decision = MeetingStartPlanner.resolve(
             selectedEngine: .mlxAudio,
             selectedMLXRepo: "mlx-community/Qwen3-ASR-0.6B-4bit",
@@ -110,7 +110,7 @@ final class MeetingStartPlannerTests: XCTestCase {
             remoteASRConfiguration: .init(providerID: RemoteASRProvider.openAIWhisper.rawValue, model: "", endpoint: "", apiKey: "")
         )
 
-        XCTAssertEqual(decision, OmniASRBackend.isAppleSilicon ? .blocked(.recording(.mlxModelDownloading)) : .blocked(.recording(.mlxModelUnavailable(detail: OmniASRBackend.unavailabilityReason(for: MLXModelManager.defaultModelRepo)))))
+        XCTAssertEqual(decision, OmniASRBackend.isAppleSilicon ? .blocked(.recording(.mlxModelFilesNotFound)) : .blocked(.recording(.mlxModelUnavailable(detail: OmniASRBackend.unavailabilityReason(for: MLXModelManager.defaultModelRepo)))))
     }
 
     func testRemoteMeetingRequiresConfiguredProvider() {

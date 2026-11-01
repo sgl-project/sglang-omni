@@ -6,6 +6,7 @@ import Foundation
 enum RecordingStartBlockReason: Equatable {
     case mlxModelNotInstalled
     case mlxModelDownloading
+    case mlxModelFilesNotFound
     case mlxModelUnavailable(detail: String?)
 
     var userMessage: String {
@@ -14,6 +15,8 @@ enum RecordingStartBlockReason: Equatable {
             return AppLocalization.localizedString("MLX model is not downloaded. Open Settings > Model to install it.")
         case .mlxModelDownloading:
             return AppLocalization.localizedString("MLX model is still downloading. Wait for installation to finish and try again.")
+        case .mlxModelFilesNotFound:
+            return AppLocalization.localizedString("MLX model files were not found. Open Settings > Model to download the model again.")
         case .mlxModelUnavailable(let detail):
             return detailedUnavailableMessage(
                 base: AppLocalization.localizedString("MLX model is unavailable. Open Settings > Model to fix it."),
@@ -29,6 +32,8 @@ enum RecordingStartBlockReason: Equatable {
             return "MLX Audio model is not downloaded."
         case .mlxModelDownloading:
             return "MLX Audio model download is still in progress."
+        case .mlxModelFilesNotFound:
+            return "MLX Audio model files were not found and no download is running."
         case .mlxModelUnavailable(let detail):
             return detailedLogDescription(
                 base: "MLX Audio model is unavailable.",
@@ -77,6 +82,7 @@ enum RecordingStartPlanner {
         case ready
         case notDownloaded
         case downloadingSelectedModel
+        case filesNotFound
         case unavailable(String?)
     }
 
@@ -84,6 +90,7 @@ enum RecordingStartPlanner {
         case ready
         case notDownloaded
         case activeDownload
+        case incompleteDownload
         case unavailable
     }
 
@@ -110,6 +117,7 @@ enum RecordingStartPlanner {
                 ),
                 notInstalledReason: .mlxModelNotInstalled,
                 downloadingReason: .mlxModelDownloading,
+                filesNotFoundReason: .mlxModelFilesNotFound,
                 unavailableReason: { .mlxModelUnavailable(detail: $0) }
             )
         }
@@ -120,6 +128,7 @@ enum RecordingStartPlanner {
         availability: DownloadableModelAvailability,
         notInstalledReason: RecordingStartBlockReason,
         downloadingReason: RecordingStartBlockReason,
+        filesNotFoundReason: RecordingStartBlockReason,
         unavailableReason: (String?) -> RecordingStartBlockReason
     ) -> RecordingStartDecision {
         switch availability {
@@ -129,6 +138,8 @@ enum RecordingStartPlanner {
             return .blocked(notInstalledReason)
         case .downloadingSelectedModel:
             return .blocked(downloadingReason)
+        case .filesNotFound:
+            return .blocked(filesNotFoundReason)
         case .unavailable(let detail):
             return .blocked(unavailableReason(detail))
         }
@@ -189,6 +200,9 @@ enum RecordingStartPlanner {
                 return .downloadingSelectedModel
             }
             return isSelectedModelDownloaded ? .ready : .notDownloaded
+        case .incompleteDownload:
+            // Only leftover partial files remain; nothing is downloading, so waiting would never help.
+            return isSelectedModelDownloaded ? .ready : .filesNotFound
         case .unavailable:
             return .unavailable(unavailableDetail)
         }
@@ -200,8 +214,10 @@ enum RecordingStartPlanner {
             return .ready
         case .notDownloaded:
             return .notDownloaded
-        case .downloading, .paused:
+        case .downloading:
             return .activeDownload
+        case .paused:
+            return .incompleteDownload
         case .error:
             return .unavailable
         }

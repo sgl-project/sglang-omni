@@ -2382,3 +2382,6 @@
 "API Format" = "API 格式";
 
 "Automatic keeps OpenAI on Responses and respects explicit Chat Completions URLs for custom endpoints." = "自动模式下，官方 OpenAI 使用 Responses；自定义端点按明确填写的 Chat Completions 地址调用。";
+
+"MLX model files were not found. Open Settings > Model to download the model again." = "未找到 MLX 模型文件。请打开“设置 > 模型”重新下载模型。";
+"Models stored in the Downloads folder are lost when it is cleaned up. Choose a folder outside %@." = "存放在“下载”文件夹中的模型会在清理该文件夹时丢失。请选择 %@ 以外的文件夹。";
