@@ -25,6 +25,7 @@ from sglang_omni.proto import (
     SubmitMessage,
     parse_message,
 )
+from sglang_omni.proto.messages import StreamChunkBatchMessage
 
 logger = logging.getLogger(__name__)
 ControlMessage = (
@@ -32,6 +33,7 @@ ControlMessage = (
     | AdminResultMessage
     | DataAckMessage
     | DataReadyMessage
+    | StreamChunkBatchMessage
     | KVTransferPrepareMessage
     | KVTransferReadyMessage
     | AbortMessage
@@ -320,6 +322,7 @@ class StageControlPlane:
         AdminMessage
         | DataAckMessage
         | DataReadyMessage
+        | StreamChunkBatchMessage
         | SubmitMessage
         | ShutdownMessage
         | FreezeGCMessage
@@ -336,6 +339,7 @@ class StageControlPlane:
             msg,
             (
                 DataReadyMessage,
+                StreamChunkBatchMessage,
                 DataAckMessage,
                 SubmitMessage,
                 ShutdownMessage,
@@ -354,7 +358,7 @@ class StageControlPlane:
         self,
         next_stage: str,
         next_stage_endpoint: str,
-        msg: DataReadyMessage | DataAckMessage,
+        msg: DataReadyMessage | StreamChunkBatchMessage | DataAckMessage,
     ) -> None:
         """Send a stage-to-stage control message."""
         await send_to_endpoint(self.next_stage_sockets, next_stage_endpoint, msg)

@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 import torch
 from safetensors.torch import save_file
+from torch._dynamo.utils import counters
 from transformers import MimiConfig, MimiModel
 from transformers.models.mimi.modeling_mimi import (
     MimiConv1d,
@@ -24,7 +25,7 @@ from sglang_omni.models.qwen3_tts import stages as qwen3_stages
 from sglang_omni.models.qwen3_tts.reference_encoder_cuda_graph import (
     Qwen3TTSReferenceEncoderCudaGraphRunner,
     exact_length_encode,
-    move_conv_padding_to_host,
+    pad_convs_by_integers,
     smallest_bucket,
 )
 
@@ -53,22 +54,39 @@ def small_mimi_config() -> MimiConfig:
     )
 
 
-def test_move_conv_padding_to_host_keeps_the_conv_arithmetic() -> None:
+@pytest.mark.parametrize(
+    ("kernel_size", "stride", "dilation", "pad_mode"),
+    [
+        (7, 1, 1, "constant"),
+        (3, 1, 2, "constant"),
+        (1, 1, 1, "constant"),
+        (8, 4, 1, "constant"),
+        (4, 2, 1, "replicate"),
+    ],
+)
+def test_integer_padding_keeps_the_conv_output(
+    kernel_size: int, stride: int, dilation: int, pad_mode: str
+) -> None:
     torch.manual_seed(3)
     config = small_mimi_config()
-    conv = MimiConv1d(config, 4, 4, kernel_size=7, stride=2)
-    values = torch.randn(1, 4, 21)
-    before = conv(values)
+    conv = MimiConv1d(
+        config,
+        4,
+        4,
+        kernel_size=kernel_size,
+        stride=stride,
+        dilation=dilation,
+        pad_mode=pad_mode,
+    )
+    tensor_padded_conv = copy.deepcopy(conv)
 
-    assert move_conv_padding_to_host(conv) == 1
-    assert conv.stride.device.type == "cpu"
-    assert conv.kernel_size.device.type == "cpu"
-    assert conv.padding_total.device.type == "cpu"
-    assert conv.padding_left.device.type == "cpu"
-    assert torch.equal(conv(values), before)
+    assert pad_convs_by_integers(conv) == 1
+    for length in (1, 5, 21, 32):
+        values = torch.randn(1, 4, length)
+        assert torch.equal(conv(values), tensor_padded_conv(values))
 
 
-def test_speech_tokenizer_loader_moves_the_encoder_padding_to_host(
+def test_speech_tokenizer_loader_pads_the_encoder_convs_by_integers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = small_mimi_config()
@@ -97,9 +115,13 @@ def test_speech_tokenizer_loader_moves_the_encoder_padding_to_host(
         float32_encoder=False,
     )
 
+    def tensor_padding(self: MimiConv1d, hidden_states: torch.Tensor) -> torch.Tensor:
+        raise AssertionError("a conv padded from its tensor buffers")
+
+    monkeypatch.setattr(MimiConv1d, "_get_extra_padding_for_conv1d", tensor_padding)
     convs = [m for m in tokenizer.model.encoder.modules() if isinstance(m, MimiConv1d)]
     assert len(convs) == 1 + 2 * (2 + 1) + 1
-    assert all(conv.padding_total.device.type == "cpu" for conv in convs)
+    assert tokenizer.model.encoder(torch.randn(1, 1, 3 * HOP + 5)).shape[-1] > 0
 
 
 def fake_speech_tokenizer(encoder: MimiModel, quantizers: int) -> SimpleNamespace:
@@ -261,7 +283,7 @@ def test_smallest_bucket_picks_the_first_bucket_that_fits() -> None:
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
-def test_reference_encoder_graph_replays_match_eager_and_miss_above_the_largest_bucket() -> (
+def test_reference_encoder_graph_replays_match_the_compiled_encode_and_miss_above_the_largest_bucket() -> (
     None
 ):
     torch.manual_seed(11)
@@ -272,13 +294,20 @@ def test_reference_encoder_graph_replays_match_eager_and_miss_above_the_largest_
         if isinstance(module, MimiEuclideanCodebook):
             module.embed_sum.normal_()
     model = model.to(device).eval()
-    move_conv_padding_to_host(model)
+    for module in model.modules():
+        if isinstance(module, MimiEuclideanCodebook):
+            module.embed
+        else:
+            pass
+    pad_convs_by_integers(model)
     hop = HOP
     quantizers = 2
     stream = torch.cuda.Stream(device)
     runner = Qwen3TTSReferenceEncoderCudaGraphRunner(
         model, hop=hop, num_quantizers=quantizers, bucket_frames=(4, 8), stream=stream
     )
+    torch.compiler.reset()
+    graphs_before = counters["stats"]["unique_graphs"]
     runner.capture()
     assert runner.stats()["enabled"]
     assert runner.stats()["captured"] == [4, 8]
@@ -299,22 +328,20 @@ def test_reference_encoder_graph_replays_match_eager_and_miss_above_the_largest_
     assert first.shape == (4, quantizers)
     assert second.shape == (7, quantizers)
     assert third.shape == (7, quantizers)
-    eager = []
-    with torch.inference_mode():
-        for waveform, bucket in ((short, 4), (long, 8), (long_other, 8)):
-            values = torch.zeros((1, 1, bucket * hop), device=device)
-            values[0, 0, : waveform.numel()].copy_(waveform)
-            clip_samples = torch.tensor(waveform.numel(), device=device)
-            with exact_length_encode(model, clip_samples):
-                codes = model.encode(
-                    values, num_quantizers=quantizers, return_dict=True
-                ).audio_codes
-            frames = -(-waveform.numel() // hop)
-            eager.append(codes[0, :, :frames].transpose(0, 1))
-    assert not torch.equal(eager[1], eager[2])
-    assert torch.equal(first, eager[0])
-    assert torch.equal(second, eager[1])
-    assert torch.equal(third, eager[2])
+    compiled_codes = []
+    for waveform, bucket in ((short, 4), (long, 8), (long_other, 8)):
+        values = torch.zeros((1, 1, bucket * hop), device=device)
+        values[0, 0, : waveform.numel()].copy_(waveform)
+        clip_samples = torch.tensor(waveform.numel(), device=device)
+        with torch.inference_mode(), exact_length_encode(model, clip_samples):
+            codes = runner.compiled_encode(values)
+        frames = -(-waveform.numel() // hop)
+        compiled_codes.append(codes[0, :, :frames].transpose(0, 1))
+    assert not torch.equal(compiled_codes[1], compiled_codes[2])
+    assert torch.equal(first, compiled_codes[0])
+    assert torch.equal(second, compiled_codes[1])
+    assert torch.equal(third, compiled_codes[2])
+    assert counters["stats"]["unique_graphs"] == graphs_before + 1
 
 
 @pytest.mark.accelerator
@@ -330,7 +357,7 @@ def test_reference_code_batcher_replays_captured_buckets_and_encodes_the_rest(
         if isinstance(module, MimiEuclideanCodebook):
             module.embed_sum.normal_()
     model = model.to(device).eval()
-    move_conv_padding_to_host(model)
+    pad_convs_by_integers(model)
     batcher = qwen3_request_builders.Qwen3TTSRefCodeBatcher(
         fake_speech_tokenizer(model, quantizers=2),
         max_batch_wait_ms=0,
