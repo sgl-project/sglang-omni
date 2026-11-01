@@ -1,4 +1,4 @@
-# Qwen3-ASR transcribes each utterance through its transcription endpoint, Qwen3.8-27B answers with thinking off and Qwen3-TTS Base speaks it in the voice of one Vivian recording, cloned from its speaker embedding, each a service of its own, with the VAD node beside the cascade.
+# Qwen3-ASR transcribes each utterance through its transcription endpoint, Qwen3.8-27B answers with thinking off and Qwen3-TTS Base speaks it in the voice of one Vivian recording, cloned with its transcript, each a service of its own, with the VAD node beside the cascade.
 config_cls: StreamingCascadePipelineConfig
 model_path: examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian
 
@@ -57,6 +57,7 @@ session_nodes:
     base_url: "http://127.0.0.1:8005/v1"
     model: Qwen/Qwen3-TTS-12Hz-1.7B-Base
     reference_audio_path: examples/streaming_cascade/voices/vivian.wav
+    reference_text: Hi there, it is nice to meet you, and I am happy to help with whatever you need today.
     language: auto
   aligner:
     kind: alignment
