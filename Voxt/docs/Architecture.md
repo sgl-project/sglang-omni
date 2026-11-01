@@ -57,6 +57,27 @@ Auxiliary provisioning validates bounded config/safetensors structure with `Omni
 
 These readers do not protect hostile namespace changes, external blob writes, power-loss/fsync durability or an App crash that releases locks before an orphaned server exits. Cache/blob/repair/orphan recovery remains unfinished. Run `swift test --package-path Voxt/Packages/OmniModelArtifacts` without models; portable tests are not real Metal/model acceptance. See the [Native HTTP migration plan](../plan/NativeHTTPMigrationPlan.zh-CN.md).
 
+## Swift package dependencies
+
+`Voxt.xcodeproj` builds only the Voxt app. The Native model servers under `sglang_omni_mlx/native` build with CMake and link none of these packages, so MLX model work does not depend on this project. Every product below is imported by app sources; exact pins live in [MLXAudioDependency](MLXAudioDependency.md).
+
+| Package | Products | Used by | Purpose | Removable when |
+| --- | --- | --- | --- | --- |
+| mlx-swift-lm | MLXLLM, MLXLMCommon | `Core/Models/CustomLLM*`, `MemoryEfficientModelContainerLoader`, `PrequantizedModelLoading`, `LocalTokenizerLoader` | Local LLM for enhancement, translation, rewrite and note/transcript titles | Local LLM requests run on a Native server, or Voxt keeps only Remote LLM |
+| mlx-swift-lm | MLXVLM | `MemoryEfficientModelContainerLoader`, `CustomLLMModelManager` | Loading factory for the Qwen3-VL 4B, Ministral-3 3B and Gemma-4 checkpoints; requests stay text-only | Qwen3-VL 4B is retired, and Gemma-4 and Ministral-3 pass real-weight checks through the MLXLLM `gemma4` and `mistral3` loaders |
+| llama.swift | LlamaSwift | `GGUFTranslationRuntime` | Local Hy-MT2 1.8B GGUF translation (Q4_K_M, Q8_0) | An MLX Hy-MT2 checkpoint on the MLXLLM `hunyuan_v1_dense` loader matches the GGUF translation quality, latency and memory, and installed GGUF selections migrate |
+| mlx-swift | MLX | LLM loaders, `IdleMemoryReclamation`, `MeetingFileInferenceCache`, `MLXModelManager` | MLX cache limits and release for in-process models | No in-process MLX model remains |
+| swift-transformers | Tokenizers | `LocalTokenizerLoader` | Tokenizers for local LLMs | MLXLLM is removed |
+| swift-huggingface | HuggingFace | ASR, local LLM, Silero and Sortformer download support | Hugging Face Hub downloads | Not MLX-specific; Native model downloads use it too |
+| OmniModelArtifacts (local) | OmniModelArtifacts | ASR, Silero and Sortformer storage, `ModelDiskOperations` | Artifact validation, directory leases and atomic publication for Native model directories | Not MLX-specific |
+| GRDB.swift | GRDB | `VoxtDatabase`, history and dictionary repositories | SQLite persistence | Not MLX-specific |
+| swift-log | Logging | `Core/Logging/` | Structured logging | Not MLX-specific |
+| Sparkle | Sparkle | `AppUpdateManager` | In-app updates | Not MLX-specific |
+| PermissionFlow | PermissionFlow, SystemSettingsKit | `PermissionGuidance` | Permission guidance | Not MLX-specific |
+| FaviconFinder | FaviconFinder | `OverlayIconResolver` | Website icons in the overlay | Not MLX-specific |
+
+mlx-audio-swift (MLXAudioCore, MLXAudioSTT and MLXAudioVAD) is no longer linked: local ASR, Silero and Sortformer run on the Native HTTP servers, and `tools/audit_model_stack.py` rejects its products and pin.
+
 ## Permission and input boundaries
 
 LLM requests are text-only. Automatic foreground-window text/structure capture, screenshots, image attachment models and debug capture have been removed. App identity snapshots still support App Branch, dictionary scope and delivery targeting; selected-text operations remain. Some text-generation checkpoints still require MLXVLM's loading factory.
