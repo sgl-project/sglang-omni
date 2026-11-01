@@ -51,7 +51,7 @@ class S2ProPipelineConfig(PipelineConfig):
             name="tts_engine",
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
-            factory=FactoryArgs(max_new_tokens=2048),
+            factory=FactoryArgs(max_new_tokens=2048, enable_async_decode=False),
             gpu=0,
             next="vocoder",
             stream_to=["vocoder"],

@@ -25,6 +25,7 @@ from sglang.srt.managers.scheduler import Scheduler
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.sglang_execution import SGLangExecutionBridge
+from sglang_omni.models.fishaudio_s2_pro.engine_builder import FishS2ProEngineBuilder
 from sglang_omni.scheduling import omni_scheduler
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler, PendingDecode
 from sglang_omni.scheduling.types import (
@@ -1363,11 +1364,22 @@ def schedule_once(
     s.get_next_batch_to_run = get_next_batch_to_run
 
 
-def test_a_predicted_prefill_resolves_first_then_receives_again_before_selecting() -> (
-    None
-):
+@pytest.mark.parametrize("use_fish_builder", [False, True])
+def test_a_predicted_prefill_resolves_first_then_receives_again_before_selecting(
+    use_fish_builder: bool,
+) -> None:
     events: list[str] = []
     s = scaffold_resolve_before_prefill(events, async_pending=in_flight_step())
+    if use_fish_builder:
+        s.async_decode_resolve_before_prefill = False
+        builder = FishS2ProEngineBuilder(
+            max_new_tokens=32, ras_window=4, enable_async_decode=True
+        )
+        builder.stream_output_builder = None
+        for name, value in builder.extra_scheduler_kwargs().items():
+            setattr(s, name, value)
+    else:
+        pass
     late_request = object()
     receives = iter(([], [late_request]))
     s.recv_requests = lambda: events.append("receive") or next(receives)

@@ -50,6 +50,22 @@ sgl-omni serve \
   --port 8000
 ```
 
+### Async Decode
+
+On CUDA, enable one-step async decode to overlap CPU result collection with the next GPU decode step:
+
+```bash
+sgl-omni serve \
+  --model-path fishaudio/s2-pro \
+  --config examples/configs/s2pro_tts.yaml \
+  --tts_engine.factory.enable_async_decode true \
+  --port 8000
+```
+
+This is opt-in. A decode batch enters the lookahead path only after its request rows stabilize; prefill and batch changes use synchronous decoding. Before selecting an expected prefill batch, the scheduler resolves any pending decode so selection uses the updated request state. The GPU updates the previous codebooks, semantic repetition history, and sampling step before the next forward starts. The existing overlap scheduler remains disabled.
+
+One decode step may already be in flight when the host observes a request completion. The effective CUDA Graph batch size can therefore shrink one step later than in synchronous decoding. Different batch sizes can produce different floating-point results and generated codes, even with the same seed.
+
 ## Synthesize Speech
 
 Plain TTS:
