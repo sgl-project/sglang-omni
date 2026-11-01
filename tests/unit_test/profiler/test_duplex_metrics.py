@@ -481,6 +481,7 @@ def test_stage_start_observation_does_not_cross_profiler_runs(tmp_path: Path) ->
     observation = capture_session_stage_start()
     assert observation is not None
     run_id, timestamp_ns = observation
+    recorder.stop(wait=True)
 
     run_b_path = recorder.start("run-b", str(tmp_path / "run-b"), "stage")
     emit_session_stage_started(

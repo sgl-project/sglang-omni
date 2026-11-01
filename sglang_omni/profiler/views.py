@@ -46,12 +46,10 @@ class ProfilerReport(TypedDict):
 # ---------------------------------------------------------------------------
 
 
-_EVENT_FILENAME_RE = re.compile(
-    r"^events_.+?_(?P<pid>[0-9]+)(?:_(?P<generation>[0-9]+))?\.jsonl$"
-)
+EVENT_FILENAME_RE = re.compile(r"^events_.+_(?P<pid>[0-9]+)\.jsonl$")
 
 
-def _event_paths(source: str | Path | Iterable[str | Path]) -> list[Path]:
+def event_paths(source: str | Path | Iterable[str | Path]) -> list[Path]:
     paths: list[Path] = []
     if isinstance(source, (str, Path)):
         sources: list[str | Path] = [source]
@@ -70,7 +68,7 @@ def _event_paths(source: str | Path | Iterable[str | Path]) -> list[Path]:
 
 def iter_events(source: str | Path | Iterable[str | Path]) -> Iterator[JsonValue]:
     """Yield every JSON event from a file, directory, or list of either."""
-    for path in _event_paths(source):
+    for path in event_paths(source):
         with path.open("r", encoding="utf-8") as fp:
             for line_no, line in enumerate(fp, 1):
                 line = line.strip()
@@ -97,20 +95,18 @@ def assess_completeness(
     readable. Missing or malformed sidecars are reported as ``unknown`` and
     ``complete`` is always false in that case.
     """
-    event_paths = _event_paths(source)
+    events = event_paths(source)
     expected_status_paths: set[Path] = set()
     incomplete_reasons: set[str] = set()
-    for event_path in event_paths:
-        match = _EVENT_FILENAME_RE.match(event_path.name)
+    invalid_event_filename = False
+    for event_path in events:
+        match = EVENT_FILENAME_RE.match(event_path.name)
         if match is None:
+            invalid_event_filename = True
             incomplete_reasons.add("unrecognized_event_filename")
         else:
             pid = match.group("pid")
-            generation = match.group("generation")
-            suffix = "" if generation is None else f"_{generation}"
-            expected_status_paths.add(
-                event_path.parent / f"run_status_{pid}{suffix}.json"
-            )
+            expected_status_paths.add(event_path.parent / f"run_status_{pid}.json")
 
     missing_status_files: list[str] = []
     found_status_files = 0
@@ -129,10 +125,29 @@ def assess_completeness(
                     invalid_status = True
                 else:
                     reasons = status.get("incomplete_reasons")
+                    counters = (
+                        "accepted_events",
+                        "processed_events",
+                        "written_events",
+                        "unwritten_events",
+                        "dropped_events",
+                        "metadata_snapshot_failures",
+                        "metadata_truncations",
+                        "serialization_failures",
+                        "event_file_open_failures",
+                        "write_failures",
+                        "finalization_failures",
+                    )
                     if (
                         not isinstance(status.get("complete"), bool)
                         or status.get("completeness_scope") != "event_storage"
                         or not isinstance(reasons, list)
+                        or any(
+                            not isinstance(status.get(counter), int)
+                            or isinstance(status.get(counter), bool)
+                            or status[counter] < 0
+                            for counter in counters
+                        )
                     ):
                         invalid_status = True
                     elif status["complete"] is False:
@@ -141,17 +156,29 @@ def assess_completeness(
                             reason for reason in reasons if isinstance(reason, str)
                         )
                     else:
-                        if reasons:
+                        if (
+                            reasons
+                            or status["accepted_events"] != status["processed_events"]
+                            or status["accepted_events"] != status["written_events"]
+                            or status["unwritten_events"]
+                            or status["dropped_events"]
+                            or any(status[counter] for counter in counters[5:])
+                        ):
                             incomplete_status = True
                             incomplete_reasons.add("status_incomplete_reasons_present")
                         else:
                             pass
                 found_status_files += 1
 
-    if not event_paths:
+    if not events:
         state: Literal["complete", "incomplete", "unknown"] = "unknown"
         incomplete_reasons.add("no_event_files")
-    elif not expected_status_paths or missing_status_files or invalid_status:
+    elif (
+        invalid_event_filename
+        or not expected_status_paths
+        or missing_status_files
+        or invalid_status
+    ):
         state = "unknown"
         if not expected_status_paths:
             incomplete_reasons.add("missing_status_sidecar")

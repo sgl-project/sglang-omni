@@ -44,43 +44,15 @@ views layer merges files from every process by `request_id`. The writer creates
 each JSONL file exclusively; an existing file is a storage failure rather than
 an append target.
 
-The recorder uses one bounded producer-private buffer per OS thread and one
-low-priority writer thread per process, created only after the run stops. The
-default per-producer capacity is 8192 events and can be reduced in unit tests
-with `RequestEventRecorder(queue_capacity=...)`. During an active run, each OS
-thread registers its producer buffer once under a small control-plane lock.
-After that registration, producers capture timestamps, stage attribution, and
-bounded JSON-like metadata without acquiring the recorder control lock. They
-do not start a writer, open files, serialize JSON, flush, or enqueue into a
-shared queue.
-JSON serialization, file operations, and flushes run only after deactivation.
-The recorder caps producer registration at 256 buffers per process and bounds
-deferred `RequestEventBuffer` storage by the same per-producer event capacity.
-Events therefore do not exist on disk until the run has stopped; consumers
-must treat a missing sidecar, or a sidecar with `complete: false`, as
-incomplete.
+The recorder uses one bounded producer-private buffer per OS thread and one low-priority writer thread per process, created only after the run stops. Each producer can retain 1024 events by default; the `queue_capacity` constructor argument sets this per-producer limit. The recorder accepts at most 16 producer threads per process, for a maximum of 16,384 retained events. Each event's metadata snapshot is limited to 512 characters and 32 values, for about 8 Mi characters total (up to about 32 MiB of raw Unicode character storage), plus Python event and container overhead.
 
-Each finalized run also attempts to write
-`run_status_<pid>.json` beside the JSONL file. When publication succeeds, it
-records `run_id`, `pid`, `stages`, `accepted_events`, `processed_events`,
-`written_events`, `unwritten_events`, `dropped_events`, metadata snapshot and
-truncation counts, serialization/write/finalization failures,
-`incomplete_reasons`, and `complete`; that flag has `completeness_scope` set to
-`event_storage` and does not claim semantic timing or cross-process coverage.
-The sidecar also records whether the writer obtained `SCHED_IDLE` or used the
-default scheduling policy.
-Producer-buffer overflow, writer failure, metadata snapshot failure, metadata
-truncation, and a missing or failed drain mark the run incomplete. Consumers
-must not treat a missing sidecar, or a sidecar with `complete: false`, as a
-complete trace.
+Each OS thread registers its buffer once under a small control lock. Cached producers then capture timestamps, stage attribution, and bounded metadata without acquiring that lock. Buffer admission is the stop cutoff: the post-stop writer waits for admitted operations, while a capture that has not reserved a buffer before stop is ignored and does not consume its snapshots. `RequestEventBuffer` uses the same producer buffer: deferred records count against the same event limit and are snapshotted once. During capture, producers do not start a writer, open files, serialize JSON, flush, or enqueue into a shared queue. JSON serialization, file operations, and flushes run only after deactivation.
 
-Metadata is intentionally limited to scalars, JSON-like mappings/sequences,
-and tensor-like values represented by shape/dtype/device summaries. Tensor
-contents are never materialized by the producer. Unsupported values are
-rejected without calling arbitrary `repr`; the serving path records a metadata
-snapshot failure and continues. Strings are bounded, and bytes are unsupported
-rather than copied into the trace. Bounded depth/item truncation is recorded in
-the event metadata and in the status sidecar rather than reported as complete.
+Events do not exist on disk until the run has stopped. Consumers must treat a missing sidecar, or a sidecar with `complete: false`, as incomplete.
+
+Each finalized run also attempts to write `run_status_<pid>.json` beside the JSONL file. When publication succeeds, it records `run_id`, `pid`, `stages`, `accepted_events`, `processed_events`, `written_events`, `unwritten_events`, `dropped_events`, metadata snapshot and truncation counts, serialization/write/finalization failures, `incomplete_reasons`, and `complete`; that flag has `completeness_scope` set to `event_storage` and does not claim semantic timing or cross-process coverage. The sidecar also records whether the writer obtained `SCHED_IDLE` or used the default scheduling policy. `SCHED_IDLE` is best effort and does not guarantee zero Python GIL interference. `RequestEventFinalization.wait()` reports whether the status sidecar was published; inspect `complete` separately to determine whether the trace is complete. Producer-buffer overflow, writer failure, metadata snapshot failure, metadata truncation, and a missing or failed drain mark the run incomplete. Consumers must not treat a missing sidecar, or a sidecar with `complete: false`, as a complete trace.
+
+Metadata is intentionally limited to scalars, JSON-like mappings/sequences, and tensor-like values represented by shape/dtype/device summaries. Tensor contents are never materialized by the producer. Unsupported values are rejected without calling arbitrary `repr`; the serving path records a metadata snapshot failure and continues. Strings are bounded, and bytes are unsupported rather than copied into the trace. Bounded depth/item truncation is recorded in the event metadata and in the status sidecar rather than reported as complete.
 
 ### Standard event names
 
@@ -292,11 +264,7 @@ print(report["request_count"], len(report["stage_breakdown"]))
 print(report["completeness"]["state"])
 ```
 
-`build_report` validates the process-local `run_status_<pid>.json` sidecars
-against the event filenames. It reports `complete`, `incomplete`, or `unknown`;
-missing or malformed sidecars are always `unknown` with `complete: false`.
-Consumers must inspect this result before using timing numbers as a complete
-event-storage trace.
+`build_report` validates the process-local `run_status_<pid>.json` sidecars against the supplied event filenames. It reports `complete`, `incomplete`, or `unknown`; missing or malformed sidecars are always `unknown` with `complete: false`. This checks only the files supplied to the report. A directory containing one TP rank's files can establish local event-storage completeness for that rank, but cannot establish that every expected TP rank or process is present. Global completeness requires an expected-process inventory, which this report does not provide.
 
 …or via the CLI:
 
@@ -353,7 +321,7 @@ multi-GB trace — only opt in when you need that specific information.
 |---|---|---|---|
 | POST | `/start_profile` | `{"run_id": ?, "trace_path_template": ?, "event_dir": ?, "enable_torch": true \| false, "config": ?}` | Starts torch trace + event recorder. `run_id` auto-generated if omitted. |
 | POST | `/stop_profile` | `{"run_id": ?}` | Stops torch trace + event recorder. Omitting `run_id` is a wildcard ("stop whatever's active"). |
-| POST | `/start_request_profile` | `{"run_id": ?, "event_dir": ?}` | Event recorder only — no torch trace. Lower overhead; safer to leave on. |
+| POST | `/start_request_profile` | `{"run_id": ?, "event_dir": ?}` | Event recorder only — no torch trace. Lower overhead; still intended for short, opt-in captures. |
 | POST | `/stop_request_profile` | `{"run_id": ?}` | Same wildcard semantics as `/stop_profile`. |
 
 Example: record cheap events on every request without a kernel trace:

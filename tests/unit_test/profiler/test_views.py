@@ -31,6 +31,17 @@ def write_status(path: Path, *, complete: bool, reasons: list[str]) -> None:
                 "complete": complete,
                 "completeness_scope": "event_storage",
                 "incomplete_reasons": reasons,
+                "accepted_events": 0,
+                "processed_events": 0,
+                "written_events": 0,
+                "unwritten_events": 0,
+                "dropped_events": 0,
+                "metadata_snapshot_failures": 0,
+                "metadata_truncations": 0,
+                "serialization_failures": 0,
+                "event_file_open_failures": 0,
+                "write_failures": 0,
+                "finalization_failures": 0,
             }
         ),
         encoding="utf-8",
@@ -489,3 +500,22 @@ def test_complete_status_sidecar_allows_complete_report(tmp_path: Path) -> None:
 
     assert report["completeness"]["state"] == "complete"
     assert report["completeness"]["complete"] is True
+
+
+def test_inconsistent_complete_status_is_not_accepted(tmp_path: Path) -> None:
+    event_path = tmp_path / f"events_coordinator_{os.getpid()}.jsonl"
+    write_events(event_path, [make_ev("r1", "coordinator", "event", 1)])
+    write_status(
+        tmp_path / f"run_status_{os.getpid()}.json",
+        complete=True,
+        reasons=[],
+    )
+    status_path = tmp_path / f"run_status_{os.getpid()}.json"
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    status["dropped_events"] = 1
+    status_path.write_text(json.dumps(status), encoding="utf-8")
+
+    completeness = assess_completeness(tmp_path)
+
+    assert completeness["state"] == "incomplete"
+    assert completeness["complete"] is False

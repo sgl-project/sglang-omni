@@ -5,52 +5,53 @@ from __future__ import annotations
 
 import contextvars
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_EVENT_QUEUE_CAPACITY = 8192
-MAX_PRODUCER_BUFFERS = 256
-MAX_PENDING_BUFFER_STATES = 4
+from sglang_omni.utils.json import JsonValue
+
+DEFAULT_EVENT_BUFFER_CAPACITY = 1024
+MAX_PRODUCER_BUFFERS = 16
 MAX_EVENT_TEXT_LENGTH = 1024
 EVENT_FILE_BUFFER_BYTES = 64 * 1024
-MAX_METADATA_SNAPSHOT_DEPTH = 8
-MAX_METADATA_SNAPSHOT_ITEMS = 256
-MAX_METADATA_STRING_LENGTH = 4096
-MAX_PENDING_FINALIZATIONS = 4
-WRITER_POLL_INTERVAL_SECONDS = 0.05
+MAX_METADATA_SNAPSHOT_DEPTH = 6
+MAX_METADATA_SNAPSHOT_ITEMS = 32
+MAX_METADATA_SNAPSHOT_CHARACTERS = 512
+MAX_METADATA_STRING_LENGTH = 256
+WRITER_POLL_INTERVAL_SECONDS = 0.01
 DEFAULT_FINALIZATION_TIMEOUT_SECONDS = 5.0
 
 
-_thread_active_stage = threading.local()
-_active_stage_cv: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+thread_active_stage = threading.local()
+active_stage_context: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "sglang_omni_active_stage", default=None
 )
 
 
 def set_active_stage(stage: str | None) -> contextvars.Token[str | None]:
     """Bind ``stage`` for this thread / task. Returns a Token for reset."""
-    _thread_active_stage.stage = stage
-    return _active_stage_cv.set(stage)
+    thread_active_stage.stage = stage
+    return active_stage_context.set(stage)
 
 
 def reset_active_stage(token: contextvars.Token[str | None] | None) -> None:
     """Undo :func:`set_active_stage`. ``token=None`` clears the binding."""
     if token is not None:
-        _active_stage_cv.reset(token)
+        active_stage_context.reset(token)
     else:
-        _active_stage_cv.set(None)
-    _thread_active_stage.stage = None
+        active_stage_context.set(None)
+    thread_active_stage.stage = None
 
 
 def get_active_stage() -> str | None:
     """Active stage for this thread / task, contextvar first."""
-    stage = _active_stage_cv.get()
+    stage = active_stage_context.get()
     if stage is not None:
         return stage
     else:
         pass
-    return getattr(_thread_active_stage, "stage", None)
+    return getattr(thread_active_stage, "stage", None)
 
 
 @dataclass(frozen=True)
@@ -63,9 +64,9 @@ class RequestEvent:
     timestamp_ns: int
     run_id: str | None = None
     pid: int | None = None
-    metadata: dict[str, object] = field(default_factory=dict)
+    metadata: dict[str, JsonValue] = field(default_factory=dict)
 
-    def to_dict(self) -> dict[str, object]:
+    def to_dict(self) -> dict[str, JsonValue]:
         """Return the event's JSON-compatible field mapping."""
         return {
             "request_id": self.request_id,
@@ -81,21 +82,20 @@ class RequestEvent:
 @dataclass(frozen=True, kw_only=True)
 class RequestEventSnapshot:
     request_id: str
-    metadata: dict[str, int | float | str]
+    metadata: dict[str, JsonValue]
 
 
 @dataclass(frozen=True, kw_only=True)
 class PendingRequestEvent:
     request_id: str
     event_name: str
-    metadata: dict[str, object]
+    metadata: dict[str, JsonValue]
     timestamp_ns: int
-    run_id: str
 
 
 @dataclass(kw_only=True)
 class RequestEventFinalization:
-    """Completion handle for one deactivated recorder run."""
+    """Report whether one deactivated writer published its status sidecar."""
 
     path: str
     status_path: str
@@ -103,7 +103,7 @@ class RequestEventFinalization:
     successful: bool = False
 
     def wait(self, timeout_seconds: float | None = None) -> bool:
-        """Wait for the writer to close the event file and status sidecar."""
+        """Wait until the writer exits after attempting status publication."""
         if not self.completion_event.wait(timeout_seconds):
             return False
         else:
@@ -121,7 +121,6 @@ class RecorderRunState:
     status_path: Path
     finalization: RequestEventFinalization
     producer_buffers: list[ProducerBuffer] = field(default_factory=list)
-    deferred_buffer_finalizers: list[Callable[[], int]] = field(default_factory=list)
     accepted_events: int = 0
     processed_events: int = 0
     written_events: int = 0
@@ -135,22 +134,16 @@ class RecorderRunState:
     finalization_failures: int = 0
     incomplete_reasons: set[str] = field(default_factory=set)
     writer_scheduling: str = "unknown"
-    producer_counters_aggregated: bool = False
 
 
 @dataclass
 class ProducerBuffer:
-    """A bounded event buffer owned by one producer thread for one run.
-
-    The owner appends to ``events`` without a recorder-wide lock. The writer
-    reads the buffer only after the recorder has stopped accepting events and
-    the owner has reported ``in_flight == 0``.
-    """
+    """Bounded event storage owned by one producer thread for one run."""
 
     run_state: RecorderRunState
-    thread_id: int
     capacity: int
-    events: list[QueuedRequestEvent] = field(default_factory=list)
+    events: list[RequestEvent] = field(default_factory=list)
+    deferred_events: list[PendingRequestEvent] = field(default_factory=list)
     in_flight: int = 0
     accepted_events: int = 0
     dropped_events: int = 0
@@ -159,10 +152,19 @@ class ProducerBuffer:
     incomplete_reasons: set[str] = field(default_factory=set)
 
 
-@dataclass(frozen=True, kw_only=True)
-class QueuedRequestEvent:
-    run_state: RecorderRunState
-    event: RequestEvent
+def snapshot_metadata_text(
+    value: object,
+    remaining_characters: list[int],
+    truncated: list[bool],
+) -> str:
+    text = str(value)
+    captured_text = text[: min(MAX_METADATA_STRING_LENGTH, remaining_characters[0])]
+    remaining_characters[0] -= len(captured_text)
+    if len(captured_text) != len(text):
+        truncated[0] = True
+    else:
+        pass
+    return captured_text
 
 
 def snapshot_metadata_value(
@@ -170,14 +172,16 @@ def snapshot_metadata_value(
     *,
     depth: int,
     remaining_items: list[int],
-    truncated: list[bool] | None = None,
-) -> object:
+    remaining_characters: list[int],
+    truncated: list[bool],
+) -> JsonValue:
     """Copy bounded JSON-like metadata without touching tensor contents."""
-    if remaining_items[0] <= 0 or depth > MAX_METADATA_SNAPSHOT_DEPTH:
-        if truncated is not None:
-            truncated[0] = True
-        else:
-            pass
+    if (
+        remaining_items[0] <= 0
+        or remaining_characters[0] <= 0
+        or depth > MAX_METADATA_SNAPSHOT_DEPTH
+    ):
+        truncated[0] = True
         return {
             "__metadata_truncated__": True,
             "reason": "snapshot_limit",
@@ -186,38 +190,80 @@ def snapshot_metadata_value(
         pass
     remaining_items[0] -= 1
 
-    if metadata_value is None or isinstance(metadata_value, (bool, int, float)):
+    if metadata_value is None or isinstance(metadata_value, bool):
         return metadata_value
-    elif isinstance(metadata_value, str):
-        if len(metadata_value) <= MAX_METADATA_STRING_LENGTH:
-            return metadata_value
+    elif isinstance(metadata_value, int):
+        if metadata_value.bit_length() > MAX_METADATA_SNAPSHOT_CHARACTERS * 4:
+            truncated[0] = True
+            return {
+                "__metadata_truncated__": True,
+                "reason": "integer_limit",
+            }
         else:
-            if truncated is not None:
-                truncated[0] = True
-            else:
-                pass
+            numeric_text = str(metadata_value)
+    elif isinstance(metadata_value, float):
+        numeric_text = repr(metadata_value)
+    elif isinstance(metadata_value, str):
+        captured_text = metadata_value[
+            : min(MAX_METADATA_STRING_LENGTH, remaining_characters[0])
+        ]
+        remaining_characters[0] -= len(captured_text)
+        if len(captured_text) == len(metadata_value):
+            return captured_text
+        else:
+            truncated[0] = True
             return {
                 "__metadata_truncated__": True,
                 "reason": "string_limit",
-                "value": metadata_value[:MAX_METADATA_STRING_LENGTH],
+                "value": captured_text,
             }
     elif isinstance(metadata_value, (bytes, bytearray, memoryview)):
         raise TypeError(f"unsupported metadata value {type(metadata_value).__name__}")
     else:
         pass
 
+    if isinstance(metadata_value, (int, float)):
+        captured_text = numeric_text[: remaining_characters[0]]
+        if len(captured_text) != len(numeric_text):
+            truncated[0] = True
+            return {
+                "__metadata_truncated__": True,
+                "reason": "number_limit",
+                "value": captured_text,
+            }
+        else:
+            remaining_characters[0] -= len(captured_text)
+            return metadata_value
+    else:
+        pass
+
     shape = getattr(metadata_value, "shape", None)
     dtype = getattr(metadata_value, "dtype", None)
     if shape is not None and dtype is not None:
+        shape_values: list[int] | None = []
+        shape_was_truncated = False
         try:
-            shape_values = tuple(int(dimension) for dimension in shape)
+            for dimension_index, dimension in enumerate(shape):
+                if dimension_index >= min(
+                    MAX_METADATA_SNAPSHOT_ITEMS, remaining_items[0]
+                ):
+                    shape_was_truncated = True
+                    truncated[0] = True
+                    break
+                else:
+                    pass
+                shape_values.append(int(dimension))
         except (TypeError, ValueError):
             shape_values = None
         else:
             pass
-        if shape_values == ():
+        if shape_values == []:
             device = getattr(metadata_value, "device", None)
-            device_text = str(device) if device is not None else None
+            device_text = (
+                snapshot_metadata_text(device, remaining_characters, truncated)
+                if device is not None
+                else None
+            )
             scalar_available = False
             scalar_value: object = None
             if hasattr(metadata_value, "item") and (
@@ -235,55 +281,93 @@ def snapshot_metadata_value(
                 scalar_value is None
                 or isinstance(scalar_value, (bool, int, float, str))
             ):
-                return scalar_value
+                return snapshot_metadata_value(
+                    scalar_value,
+                    depth=depth + 1,
+                    remaining_items=remaining_items,
+                    remaining_characters=remaining_characters,
+                    truncated=truncated,
+                )
             else:
                 pass
+            type_name = snapshot_metadata_text(
+                type(metadata_value).__name__, remaining_characters, truncated
+            )
+            dtype_text = snapshot_metadata_text(dtype, remaining_characters, truncated)
             return {
                 "__tensor_summary__": True,
-                "type": type(metadata_value).__name__,
+                "type": type_name,
                 "shape": [],
-                "dtype": str(dtype),
+                "dtype": dtype_text,
                 "device": device_text,
             }
         else:
             pass
         if shape_values is not None:
             device = getattr(metadata_value, "device", None)
-            return {
+            device_text = (
+                snapshot_metadata_text(device, remaining_characters, truncated)
+                if device is not None
+                else None
+            )
+            type_name = snapshot_metadata_text(
+                type(metadata_value).__name__, remaining_characters, truncated
+            )
+            dtype_text = snapshot_metadata_text(dtype, remaining_characters, truncated)
+            captured_shape: list[int] = []
+            for dimension in shape_values:
+                dimension_characters = len(str(dimension))
+                if dimension_characters > remaining_characters[0]:
+                    truncated[0] = True
+                    shape_was_truncated = True
+                    break
+                else:
+                    pass
+                remaining_characters[0] -= dimension_characters
+                captured_shape.append(dimension)
+            tensor_summary: dict[str, JsonValue] = {
                 "__tensor_summary__": True,
-                "type": type(metadata_value).__name__,
-                "shape": list(shape_values),
-                "dtype": str(dtype),
-                "device": str(device) if device is not None else None,
+                "type": type_name,
+                "shape": captured_shape,
+                "dtype": dtype_text,
+                "device": device_text,
             }
+            if shape_was_truncated:
+                tensor_summary["shape_truncated"] = True
+            else:
+                pass
+            return tensor_summary
         else:
             pass
     else:
         pass
 
     if isinstance(metadata_value, Mapping):
-        copied_mapping: dict[str, object] = {}
+        copied_mapping: dict[str, JsonValue] = {}
         for metadata_key, nested_value in metadata_value.items():
-            if remaining_items[0] <= 0:
-                if truncated is not None:
-                    truncated[0] = True
-                else:
-                    pass
+            if remaining_items[0] <= 0 or remaining_characters[0] <= 0:
+                truncated[0] = True
                 break
             else:
                 pass
             if not isinstance(metadata_key, str):
-                if truncated is not None:
-                    truncated[0] = True
-                else:
-                    pass
+                truncated[0] = True
                 continue
             else:
                 pass
+            if len(metadata_key) > min(
+                MAX_METADATA_STRING_LENGTH, remaining_characters[0]
+            ):
+                truncated[0] = True
+                break
+            else:
+                pass
+            remaining_characters[0] -= len(metadata_key)
             copied_mapping[metadata_key] = snapshot_metadata_value(
                 nested_value,
                 depth=depth + 1,
                 remaining_items=remaining_items,
+                remaining_characters=remaining_characters,
                 truncated=truncated,
             )
         return copied_mapping
@@ -291,13 +375,10 @@ def snapshot_metadata_value(
         pass
 
     if isinstance(metadata_value, (list, tuple)):
-        copied_values: list[object] = []
+        copied_values: list[JsonValue] = []
         for nested_value in metadata_value:
-            if remaining_items[0] <= 0:
-                if truncated is not None:
-                    truncated[0] = True
-                else:
-                    pass
+            if remaining_items[0] <= 0 or remaining_characters[0] <= 0:
+                truncated[0] = True
                 break
             else:
                 pass
@@ -306,6 +387,7 @@ def snapshot_metadata_value(
                     nested_value,
                     depth=depth + 1,
                     remaining_items=remaining_items,
+                    remaining_characters=remaining_characters,
                     truncated=truncated,
                 )
             )
@@ -315,15 +397,16 @@ def snapshot_metadata_value(
     raise TypeError(f"unsupported metadata value {type(metadata_value).__name__}")
 
 
-def snapshot_metadata(metadata: Mapping[str, object] | None) -> dict[str, object]:
+def snapshot_metadata(metadata: Mapping[str, object] | None) -> dict[str, JsonValue]:
     """Capture bounded metadata ownership on the producer thread."""
     if metadata is None:
         return {}
     else:
         pass
     remaining_items = [MAX_METADATA_SNAPSHOT_ITEMS]
+    remaining_characters = [MAX_METADATA_SNAPSHOT_CHARACTERS]
     truncated = [False]
-    copied_metadata: dict[str, object] = {}
+    copied_metadata: dict[str, JsonValue] = {}
     for metadata_key, metadata_value in metadata.items():
         if remaining_items[0] <= 0:
             truncated[0] = True
@@ -335,10 +418,17 @@ def snapshot_metadata(metadata: Mapping[str, object] | None) -> dict[str, object
             continue
         else:
             pass
+        if len(metadata_key) > min(MAX_METADATA_STRING_LENGTH, remaining_characters[0]):
+            truncated[0] = True
+            break
+        else:
+            pass
+        remaining_characters[0] -= len(metadata_key)
         copied_metadata[metadata_key] = snapshot_metadata_value(
             metadata_value,
             depth=0,
             remaining_items=remaining_items,
+            remaining_characters=remaining_characters,
             truncated=truncated,
         )
     if truncated[0]:
@@ -350,35 +440,12 @@ def snapshot_metadata(metadata: Mapping[str, object] | None) -> dict[str, object
     return copied_metadata
 
 
-def json_default(obj: object) -> object:
+def json_default(metadata_value: object) -> JsonValue:
     """Safely summarize tensor-like values without materializing contents."""
-    shape = getattr(obj, "shape", None)
-    dtype = getattr(obj, "dtype", None)
-    if shape is not None and dtype is not None:
-        device = getattr(obj, "device", None)
-        device_text = str(device) if device is not None else None
-        try:
-            if (
-                len(shape) == 0
-                and hasattr(obj, "item")
-                and (device_text is None or device_text.startswith("cpu"))
-            ):
-                return obj.item()
-            else:
-                pass
-        except TypeError:
-            pass
-        try:
-            shape_list: list[int] | str = [int(dimension) for dimension in shape]
-        except Exception:
-            shape_list = "unavailable"
-        return {
-            "__tensor_summary__": True,
-            "type": type(obj).__name__,
-            "shape": shape_list,
-            "dtype": str(dtype),
-            "device": device_text,
-        }
-    else:
-        pass
-    raise TypeError(f"unsupported metadata value {type(obj).__name__}")
+    return snapshot_metadata_value(
+        metadata_value,
+        depth=0,
+        remaining_items=[MAX_METADATA_SNAPSHOT_ITEMS],
+        remaining_characters=[MAX_METADATA_SNAPSHOT_CHARACTERS],
+        truncated=[False],
+    )
