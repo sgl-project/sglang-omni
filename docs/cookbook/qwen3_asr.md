@@ -94,7 +94,8 @@ sgl-omni serve \
 Radix caching, chunked prefill, and CUDA graphs are not used by this path. The
 HTTP and SSE transcription interfaces below are the same as on CUDA;
 `stream=true` provides pseudo-streaming transcript deltas as tokens are decoded.
-The Apple path does not provide sampling penalties or token logprobs yet.
+The Apple path applies `repetition_penalty` but does not provide other sampling
+penalties or token logprobs yet.
 
 The initial Torch MPS profile is bounded to a 2,048-token KV budget, uses
 `audio_chunking.max_audio_clip_s` for non-streaming chunks (30 seconds by
@@ -301,6 +302,7 @@ rollback state.
 | `prompt` | string | none | Vocabulary biasing: terms likely to appear in the audio, such as names and jargon. See the note below the table |
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
 | `temperature` | float | `0` | Sampling temperature; `0` uses greedy decoding |
+| `repetition_penalty` | float | `1.0` | Penalty in `(0, 2]` on tokens already generated. Values above `1` discourage repeats and can stop a runaway loop on noisy or silent audio, but they also lower accuracy on clean audio, so keep `1.0` unless loops occur |
 | `max_new_tokens` | integer | server stage limit | Per-request generation-token limit |
 | `stream` | boolean | `false` | Return SSE transcript deltas; supports `json` or `text` response format |
 

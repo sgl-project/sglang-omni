@@ -507,6 +507,31 @@ def test_qwen3_asr_greedy_only_rejects_non_greedy_sampling(monkeypatch) -> None:
         request_builder(payload)
 
 
+@pytest.mark.parametrize(
+    ("params", "expected_repetition_penalty"),
+    [
+        ({}, 1.0),
+        ({"repetition_penalty": 1.3}, 1.3),
+    ],
+)
+def test_qwen3_asr_request_builder_preserves_repetition_penalty(
+    monkeypatch,
+    params: dict[str, float],
+    expected_repetition_penalty: float,
+) -> None:
+    """A transcription request's repetition_penalty must reach decoding instead of being dropped."""
+    request_builder = budget_test_builder(monkeypatch, num_samples=1600)
+    payload = StagePayload(
+        request_id="req-asr-repetition-penalty",
+        request=OmniRequest(inputs={"audio_bytes": b"wav"}, params=params),
+        data={},
+    )
+
+    data = request_builder(payload)
+
+    assert data.req.sampling_params.repetition_penalty == expected_repetition_penalty
+
+
 def test_qwen3_asr_request_builder_preserves_audio_beyond_30_seconds(
     monkeypatch,
 ) -> None:
