@@ -114,6 +114,12 @@ class MossTTSLocalDecodeStatePool:
         # Real rows 0..P-2 are assignable; the padding row stays out of the
         # free list so it is never handed to a request.
         self.free_rows: list[int] = list(range(self.padding_row))
+        # Zero-row templates for reset_row: slice-copies from these are
+        # device-to-device kernels, unlike ``t[i] = python_scalar`` whose
+        # pageable H2D blocks the scheduler thread until the in-flight
+        # forward drains.
+        self._zero_row_f32 = torch.zeros(1, device=self.device, dtype=torch.float32)
+        self._zero_row_i64 = torch.zeros(1, device=self.device, dtype=torch.int64)
 
     def _pinned_pool_row_bufs(self, n: int) -> list[torch.Tensor]:
         """Pinned ping-pong staging buffers for the per-step row-index H2D.
@@ -172,18 +178,26 @@ class MossTTSLocalDecodeStatePool:
         self.free_rows.append(row_idx)
 
     def reset_row(self, row_idx: int) -> None:
-        """Zero every field of ``row_idx`` (clears stranded feedback/params)."""
+        """Zero every field of ``row_idx`` (clears stranded feedback/params).
+
+        Every write is an async device kernel: scalar assignments like
+        ``self.text_temp[row_idx] = 0.0`` are pageable H2D copies that block
+        the scheduler thread until the in-flight forward drains (~4.6 ms per
+        finished request at c=128 once no earlier sync drains the stream).
+        """
         self.feedback_embeds[row_idx].zero_()
-        self.text_temp[row_idx] = 0.0
-        self.text_top_p[row_idx] = 0.0
-        self.audio_temp[row_idx] = 0.0
-        self.audio_top_p[row_idx] = 0.0
-        self.text_top_k[row_idx] = 0
-        self.audio_top_k[row_idx] = 0
-        self.seeds[row_idx] = 0
-        self.generation_steps[row_idx] = 0
-        self.sampling_steps[row_idx] = 0
-        self.audio_repetition_penalty[row_idx] = 0.0
+        z32 = self._zero_row_f32
+        z64 = self._zero_row_i64
+        self.text_temp[row_idx : row_idx + 1] = z32
+        self.text_top_p[row_idx : row_idx + 1] = z32
+        self.audio_temp[row_idx : row_idx + 1] = z32
+        self.audio_top_p[row_idx : row_idx + 1] = z32
+        self.audio_repetition_penalty[row_idx : row_idx + 1] = z32
+        self.text_top_k[row_idx : row_idx + 1] = z64
+        self.audio_top_k[row_idx : row_idx + 1] = z64
+        self.seeds[row_idx : row_idx + 1] = z64
+        self.generation_steps[row_idx : row_idx + 1] = z64
+        self.sampling_steps[row_idx : row_idx + 1] = z64
         self.audio_token_presence[row_idx].zero_()
         self.audio_repetition_penalty_rows.discard(int(row_idx))
 
@@ -375,7 +389,14 @@ class MossTTSLocalDecodeJournal:
         rids: list[str],
         pool_rows: list[int],
         rows: torch.Tensor,
+        host_slab: torch.Tensor | None = None,
+        host_slab_count: int = 0,
     ) -> None:
         self.rids = rids
         self.pool_rows = pool_rows
         self.rows = rows
+        # Pinned host copy of this step's emitted audio codes (columns 1:),
+        # staged as ONE batched D2H at launch time; post_process_outputs
+        # scatters it into per-request buffers after the launch event wait.
+        self.host_slab = host_slab
+        self.host_slab_count = host_slab_count

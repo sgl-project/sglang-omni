@@ -299,6 +299,90 @@ class MossTTSLocalModelRunner(ModelRunner):
         result.next_token_ids = next_token_ids
         self.stage_token_ids(result, next_token_ids)
 
+    def _stage_codes_slab(
+        self, emit_rows: torch.Tensor
+    ) -> tuple[torch.Tensor | None, int]:
+        """Stage this step's emitted audio codes as ONE batched pinned D2H.
+
+        The terminal payload used to pay a whole-utterance ``torch.stack`` +
+        pageable ``.cpu()`` on the scheduler thread per finished request
+        (~5.8 ms, waiting for the in-flight forward to drain). The slab copy
+        is enqueued here, BEFORE the launch completion event, so resolve
+        (which waits that event) finds it complete and scatters it into
+        per-request host buffers with cheap host-to-host copies.
+
+        Ping-pong slabs: launch N+1 stages the other slab while resolve N
+        still reads this one (the journal holds the reference, so a realloc
+        never strands an in-flight reader).
+        """
+        k = int(emit_rows.shape[0])
+        width = int(emit_rows.shape[1]) - 1
+        if k == 0 or width <= 0:
+            return None, 0
+        else:
+            pass
+        slabs = getattr(self, "_codes_slabs", None)
+        if (
+            slabs is None
+            or slabs[0].shape[1] != width
+            or slabs[0].shape[0] < k
+        ):
+            capacity = max(k, 128)
+            slabs = [
+                torch.zeros(capacity, width, dtype=torch.long, pin_memory=True),
+                torch.zeros(capacity, width, dtype=torch.long, pin_memory=True),
+            ]
+            self._codes_slabs = slabs
+            self._codes_slab_slot = 0
+        else:
+            pass
+        slot = self._codes_slab_slot
+        self._codes_slab_slot = slot ^ 1
+        slab = slabs[slot]
+        slab[:k].copy_(emit_rows[:, 1:], non_blocking=True)
+        return slab, k
+
+    def _scatter_host_codes(
+        self,
+        data: "MossTTSLocalSGLangRequestData",
+        row: torch.Tensor,
+    ) -> None:
+        """Append one staged code row to the request's pinned host buffer.
+
+        Called from post_process_outputs after the launch completion event
+        wait, so the slab D2H has landed; host-to-host pinned copies only.
+        The buffer is sized once from max_new_tokens and never grown; a
+        request that outgrows it sets ``host_codes_overflow`` and the finish
+        path falls back to the synchronous stack+D2H.
+        """
+        if getattr(data, "host_codes_overflow", False):
+            return
+        else:
+            pass
+        pos = int(getattr(data, "host_codes_count", 0))
+        buf = getattr(data, "host_codes_buf", None)
+        if buf is None:
+            capacity = 4096
+            try:
+                max_new_tokens = data.req.sampling_params.max_new_tokens
+            except AttributeError:
+                max_new_tokens = None
+            if isinstance(max_new_tokens, int) and max_new_tokens > 0:
+                capacity = min(max_new_tokens, 4096)
+            else:
+                pass
+            data.host_codes_buf = buf = torch.zeros(
+                capacity, int(row.shape[0]), dtype=torch.long, pin_memory=True
+            )
+        elif buf.shape[1] != int(row.shape[0]) or buf.shape[0] <= pos:
+            data.host_codes_overflow = True
+            data.host_codes_buf = None
+            return
+        else:
+            pass
+        buf[pos].copy_(row)
+        data.host_codes_count = pos + 1
+
     def run_frame_decode(
         self,
         result: GenerationBatchResult,
@@ -497,10 +581,13 @@ class MossTTSLocalModelRunner(ModelRunner):
             pool.feedback_embeds[emit_row_t] = emit_embeds.detach().to(
                 device=pool.feedback_embeds.device, dtype=pool.feedback_embeds.dtype
             )
+            host_slab, host_slab_count = self._stage_codes_slab(emit_rows)
             result.moss_journal = MossTTSLocalDecodeJournal(
                 rids=[requests[i].request_id for i in emit_indices],
                 pool_rows=emit_pool_rows,
                 rows=emit_rows,
+                host_slab=host_slab,
+                host_slab_count=host_slab_count,
             )
         else:
             pass
@@ -760,6 +847,8 @@ class MossTTSLocalModelRunner(ModelRunner):
             )
         else:
             pass
+        host_slab = getattr(journal, "host_slab", None)
+        host_slab_count = int(getattr(journal, "host_slab_count", 0) or 0)
         for i, sched_req in enumerate(expected_reqs):
             req = sched_req.data.req
             if req is not None:
@@ -781,6 +870,10 @@ class MossTTSLocalModelRunner(ModelRunner):
             if req_output.data is None or int(req_output.data) == end_id:
                 self.flush_stream_rows(sched_req.request_id, sched_req.data, force=True)
                 continue
+            else:
+                pass
+            if host_slab is not None and i < host_slab_count:
+                self._scatter_host_codes(sched_req.data, host_slab[i])
             else:
                 pass
             sched_req.data.output_rows.append(journal.rows[i])

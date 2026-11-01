@@ -88,7 +88,12 @@ class MossTTSLocalSGLangRequestData(ARRequestData):
     engine_start_s: float = 0.0
     stream_metadata: dict[str, object] | None = None
     stream_pending_rows: list[torch.Tensor] = field(default_factory=list)
-    stream_first_batch_sent: bool = False
+    # Launch-side pinned staging of generated audio codes: filled frame-by-frame
+    # at launch time so the terminal payload build never pays a blocking
+    # whole-utterance D2H on the scheduler thread (see _stage_host_codes).
+    host_codes_buf: torch.Tensor | None = None
+    host_codes_count: int = 0
+    host_codes_overflow: bool = False
 
 
 @dataclass
@@ -478,8 +483,23 @@ def apply_sglang_moss_tts_local_result(
         )
     else:
         pass
-    generated_rows = torch.stack(data.output_rows, dim=0).to(dtype=torch.long)
-    state.audio_codes = generated_rows[:, 1:].detach().cpu()
+    host_buf = data.host_codes_buf
+    host_count = data.host_codes_count
+    if (
+        host_buf is not None
+        and not data.host_codes_overflow
+        and host_count == len(data.output_rows)
+    ):
+        # Frames were staged into pinned host memory at launch time (the
+        # copies are covered by the launch completion event resolve already
+        # waited on), so the terminal codes are ready with zero copy and
+        # zero wait. Keep the stack+D2H path as the fallback for any request
+        # the staging did not cover.
+        state.audio_codes = host_buf[:host_count]
+    else:
+        pass
+        generated_rows = torch.stack(data.output_rows, dim=0).to(dtype=torch.long)
+        state.audio_codes = generated_rows[:, 1:].detach().cpu()
 
     state.prompt_tokens = len(data.input_ids) if data.input_ids is not None else 0
     state.completion_tokens = len(data.output_rows)
