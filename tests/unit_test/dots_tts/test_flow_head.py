@@ -459,6 +459,17 @@ def test_flow_matching_checkpoint_runs_the_single_request_solver(tmp_path) -> No
     assert torch.isfinite(step.feedback_embedding).all()
 
 
+def test_batched_eos_ignores_cuda_compatibility_alias(tmp_path, monkeypatch) -> None:
+    """Non-CUDA EOS flags must work when a compatibility shim aliases is_cuda."""
+    flow = flow_head(tmp_path)
+    flow.prepare_batched_eos_staging(2, torch.device("cpu"))
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda tensor: True))
+    for flags in ([True, False], [False, True]):
+        flow.stage_batched_eos(torch.tensor(flags))
+        assert flow.resolve_batched_eos() == flags
+        assert not flow.has_pending_batched_eos
+
+
 def test_batched_eos_resolve_reads_staged_flags(tmp_path) -> None:
     torch.manual_seed(7)
     flow = flow_head(tmp_path)
