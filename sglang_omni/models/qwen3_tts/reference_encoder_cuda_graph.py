@@ -27,9 +27,10 @@ logger = logging.getLogger(__name__)
 # 32 MiB, so keys below 32 frames save nothing measurable; the step keeps the padding
 # under half a clip, and clips past 256 frames run eager.
 DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES = (32, 48, 64, 96, 128, 192, 256)
-# note (ratish): a kernel with several configs benchmarks them on its first call, at one bucket's shape, so its pick can change between boots; this gives pointwise kernels one heuristic config instead.
+# note (ratish): a kernel with several configs benchmarks them on its first call and keeps the fastest, so its pick can change between compiles, and a split LayerNorm's combine sums in the picked order, which moves codes; pointwise kernels get one heuristic config, and an unsplit LayerNorm gets one persistent config, so no kernel is picked by timing.
 REFERENCE_ENCODER_INDUCTOR_OPTIONS: dict[str, bool] = {
-    "triton.autotune_pointwise": False
+    "triton.autotune_pointwise": False,
+    "split_reductions": False,
 }
 
 
