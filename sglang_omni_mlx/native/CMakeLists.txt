@@ -325,11 +325,10 @@ add_library(chatterbox STATIC src/chatterbox/chatterbox_audio.cpp
 target_link_libraries(chatterbox PUBLIC qwen3_asr)
 target_compile_options(chatterbox PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(chatterbox_server src/chatterbox/chatterbox_server.cpp)
-# Note (Jiaxin Deng): both binaries reuse Voxtral's PCM16 and WAV encoders.
-target_link_libraries(chatterbox_server PRIVATE chatterbox voxtral_tts asr_service)
+target_link_libraries(chatterbox_server PRIVATE chatterbox asr_service)
 target_compile_options(chatterbox_server PRIVATE -Wall -Wextra)
 add_executable(chatterbox_synthesize tools/chatterbox_synthesize.cpp)
-target_link_libraries(chatterbox_synthesize PRIVATE chatterbox voxtral_tts)
+target_link_libraries(chatterbox_synthesize PRIVATE chatterbox)
 set_target_properties(chatterbox_server chatterbox_synthesize PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
   INSTALL_RPATH "@loader_path")

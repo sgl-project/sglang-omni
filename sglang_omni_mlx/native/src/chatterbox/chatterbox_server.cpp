@@ -54,11 +54,11 @@
 
 #include "chatterbox/chatterbox_model.h"
 #include "civetweb.h"
+#include "common/audio.h"
 #include "common/http.h"
 #include "common/text.h"
 #include "qwen3_asr/asr_service.h"
 #include "qwen3_asr/qwen3_asr_transcriber.h"
-#include "voxtral_tts/voxtral_tts_codec.h"
 
 namespace {
 
@@ -766,10 +766,10 @@ private:
     } else {
     }
 
-    const std::string pcm = voxtral_tts::Pcm16Bytes(channel->samples);
+    const std::string pcm = omni_common::Pcm16Bytes(channel->samples);
     const std::string audio =
         request->response_format == "wav"
-            ? voxtral_tts::WavBytes(pcm, chatterbox::kOutputSampleRate)
+            ? omni_common::WavBytes(pcm, chatterbox::kOutputSampleRate)
             : pcm;
     const size_t prompt_tokens = request->text_ids.size();
     const int completion_tokens = channel->result.generated_token_count;

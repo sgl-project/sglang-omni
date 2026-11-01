@@ -20,8 +20,8 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from speech_api import transcript_words, word_errors, words
 from test_server_api import DATA_ROOT, RUNTIME_BIN, Server
-from test_voxtral_tts_api import transcript_words, word_errors, words
 
 pytestmark = pytest.mark.skipif(
     not RUNTIME_BIN or not DATA_ROOT, reason="set NATIVE_RUNTIME_BIN and CI_DATA_ROOT"
@@ -154,7 +154,7 @@ def test_chatterbox_speaks_its_input_in_the_builtin_voice(
     assert int(headers["X-SGLang-Omni-Total-Tokens"]) == int(
         headers["X-Prompt-Tokens"]
     ) + int(headers["X-Completion-Tokens"])
-    heard = transcript_words(asr_server, pcm_of(audio))
+    heard = transcript_words(asr_server, pcm_of(audio), SAMPLE_RATE)
     assert word_errors(words(SENTENCE), heard) <= MAX_WORD_ERRORS, heard
 
 
@@ -181,7 +181,7 @@ def test_chatterbox_speaks_in_a_cloned_voice(
         {"input": SENTENCE, "seed": 2, **reference_fields()},
     )
     assert (status, headers["X-Finish-Reason"]) == (200, "stop")
-    heard = transcript_words(asr_server, pcm_of(audio))
+    heard = transcript_words(asr_server, pcm_of(audio), SAMPLE_RATE)
     assert word_errors(words(SENTENCE), heard) <= MAX_WORD_ERRORS, heard
 
 

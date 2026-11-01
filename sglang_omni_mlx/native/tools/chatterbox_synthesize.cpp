@@ -23,8 +23,8 @@
 #include <vector>
 
 #include "chatterbox/chatterbox_model.h"
+#include "common/audio.h"
 #include "nlohmann/json.hpp"
-#include "voxtral_tts/voxtral_tts_codec.h"
 
 namespace {
 
@@ -140,8 +140,8 @@ int main(int argc, char **argv) {
       static_cast<double>(samples.size()) / chatterbox::kOutputSampleRate;
 
   if (!output_path.empty()) {
-    std::ofstream(output_path, std::ios::binary) << voxtral_tts::WavBytes(
-        voxtral_tts::Pcm16Bytes(samples), chatterbox::kOutputSampleRate);
+    std::ofstream(output_path, std::ios::binary) << omni_common::WavBytes(
+        omni_common::Pcm16Bytes(samples), chatterbox::kOutputSampleRate);
   } else {
   }
   if (!samples_output_path.empty()) {
