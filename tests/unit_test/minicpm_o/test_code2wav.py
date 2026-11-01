@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Public MiniCPM-o vocoder contracts: import, checkpoint decode, speaker ref."""
+"""Public MiniCPM-o vocoder contracts: import, checkpoint decode, speaker ref, placement."""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ import torch
 
 from sglang_omni.client.client import build_params
 from sglang_omni.config import FactoryArgs
+from sglang_omni.config.placement import build_stage_placement_plan
 from sglang_omni.models.minicpm_o import stages
 from sglang_omni.models.minicpm_o.components import code2wav
 from sglang_omni.models.minicpm_o.components.code2wav import (
@@ -48,6 +49,7 @@ from sglang_omni.serve.openai_api import (
     build_chat_generate_request,
 )
 from sglang_omni.utils.device import resolve_concrete_device
+from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CHECKPOINT_CODEC_TOKENS = [1498, 1734, 3732, 3726, 3645]
@@ -792,6 +794,21 @@ def test_code2wav_executor_uses_the_stage_batch_window(
         float(factory.max_batch_wait_ms) / MILLISECONDS_PER_SECOND
     )
     assert scheduler.batch_wait_when_idle is factory.batch_wait_when_idle
+
+
+def test_speech_pipeline_runs_code2wav_in_its_own_process_on_the_talker_gpu() -> None:
+    config = MiniCPMOSpeechPipelineConfig(model_path="unused")
+
+    topology = build_compiled_process_topology(config)
+    placement = build_stage_placement_plan(config)
+
+    assert (
+        topology.stage_to_process["code2wav"] == "code2wav"
+    ), "code2wav owns a process"
+    assert topology.stage_to_process["talker"] == "talker", "talker keeps its process"
+    assert (
+        placement.stages["code2wav"].gpu_ids == placement.stages["talker"].gpu_ids
+    ), "code2wav shares the talker's GPU"
 
 
 def test_cuda_flow_blocks_compile_with_packed_precision(

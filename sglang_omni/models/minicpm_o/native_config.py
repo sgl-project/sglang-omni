@@ -149,6 +149,7 @@ class MiniCPMODuplexPipelineConfig(PipelineConfig):
     speech: MiniCPMODuplexSpeech = Field(default_factory=MiniCPMODuplexSpeech)
     entry_stage: str = "perception"
     stages: list[StageConfig] = Field(default_factory=stages)
+    mps: Literal["off", "on", "auto"] = "auto"
 
     realtime_deployment_factory: ClassVar[str] = (
         "sglang_omni.models.minicpm_o.session_adapters.build_realtime_deployment"
