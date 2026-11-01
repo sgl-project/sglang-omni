@@ -608,6 +608,13 @@ def load_runs(runs: list[Path], trace_format: TraceFormat) -> tuple[
         else:
             pass
         profile = manifest.get("profile")
+        if profile in PROFILES and PROFILES[profile].input_sample_rate != RATE:
+            raise ValueError(
+                f"Reference export requires {RATE} Hz recorded input; "
+                f"profile {profile!r} uses {PROFILES[profile].input_sample_rate} Hz"
+            )
+        else:
+            pass
         protocol = PROFILES[profile].protocol if profile in PROFILES else None
         if (
             trace_format is not TraceFormat.PCM16
