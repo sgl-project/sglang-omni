@@ -1086,6 +1086,13 @@ class PipelineConfig(BaseModel):
         """Return whether this pipeline can serve /v1/audio/translations."""
         return False
 
+    def resolve_speaker_embedding_size(self) -> int | None:
+        """Return the number of values a precomputed speaker embedding carries.
+
+        None rejects requests carrying speaker_embedding at validation time.
+        """
+        return None
+
     @property
     def gpu_placement(self) -> dict[str, int | list[int]]:
         out: dict[str, int | list[int]] = {}

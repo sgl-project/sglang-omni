@@ -107,6 +107,13 @@ def test_ar_stages_take_continuation_aware_admission_from_their_factory_settings
         assert kwargs["continuation_aware_admission"] is admission
 
 
+def test_every_session_stage_admits_the_configured_session_count() -> None:
+    config = profile_config().model_copy(update={"max_sessions": 32})
+    for stage_name in ("vad", "dialog"):
+        kwargs = resolve_stage_factory_args(config.stage_named(stage_name), config)
+        assert kwargs["max_open_sessions"] == 32
+
+
 def test_a_node_reading_every_input_format_must_take_camera_frames():
     config = profile_config()
     blind_vad = SessionNodeConfig(stages=["vad"], inputs=["input"])

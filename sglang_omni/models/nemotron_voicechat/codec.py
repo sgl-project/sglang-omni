@@ -144,6 +144,7 @@ class RVQVAEDecoder(nn.Module):
         self.prvq = ResidualVectorQuantizer(config)
         self.decoder = Latent2Wav(config)
         self.samples_per_frame = int(config["wav_to_token_ratio"])
+        self.num_quantizers = int(config["num_quantizers"])
         # The codes marking an utterance's edges sit above the codebook and
         # index nothing, so they decode as silence.
         self.register_buffer(
@@ -151,7 +152,7 @@ class RVQVAEDecoder(nn.Module):
         )
         self.register_buffer(
             "silence_codes",
-            torch.empty(int(config["num_quantizers"]), dtype=torch.long),
+            torch.empty(self.num_quantizers, dtype=torch.long),
             persistent=False,
         )
 

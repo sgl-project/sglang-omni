@@ -13,6 +13,7 @@ SGLang-Omni serves a live voice conversation on `/v1/realtime` in two ways. A na
 | --- | --- | --- |
 | MiniCPM-o 4.5 | Native full duplex, audio and camera input | [Native Full Duplex: MiniCPM-o](#native-full-duplex-minicpm-o) |
 | PersonaPlex | Native full duplex, audio input | [Native Full Duplex: PersonaPlex](#native-full-duplex-personaplex) |
+| Nemotron VoiceChat | Native full duplex, audio input | [Native Full Duplex: Nemotron VoiceChat](#native-full-duplex-nemotron-voicechat) |
 | Streaming cascade | Turn-based, with interruption | [Streaming Cascade](#streaming-cascade) |
 
 ### Native Full Duplex: MiniCPM-o
@@ -56,6 +57,8 @@ While the server starts, the speech stage records the voice decoder as CUDA grap
 Speech settings also accept dotted CLI flags, such as `--speech.dtype float16 --speech.n_timesteps 10`. Stage settings use `--speech.factory.<field>` or `--speech.process`. The automatic thinker KV budget follows `thinker.engine.dtype` and `thinker.engine.kv_cache_dtype`; block-quantized KV caches require an explicit `thinker.engine.kv_cache_bytes` budget.
 
 A session holds at most 8192 tokens of history, which is the model's trained context length. When that fills, the server sends `context_exhausted` and closes the session.
+
+The realtime activity timeout closes an inactive session with `idle_timeout`; the pipeline's separate idle fallback reports `session_idle_timeout`. A session whose pending server events outgrow the server's output buffers is closed with `output_budget_exhausted`; this happens when the client stops reading events. A single response whose transcript outgrows `max_history_chars` is closed with `context_limit`.
 
 The full-duplex server is ready when this returns JSON containing `"native_full_duplex":true`:
 
@@ -116,8 +119,8 @@ When the session ends, the server closes the WebSocket with one of these codes:
 | Close code | Meaning | Close reason |
 |---|---|---|
 | `1000` | Normal close | `client_closed`, `disconnect` |
-| `1008` | A server limit was reached | `session_update_timeout`, `idle_timeout`, `context_exhausted` |
-| `1011` | Server error | For example `internal` or `cleanup_timeout` |
+| `1008` | A server limit was reached | `session_update_timeout`, `idle_timeout`, `session_idle_timeout`, `context_exhausted`, `context_limit`, `output_budget_exhausted` |
+| `1011` | Server error | For example `internal`, `session_open_timeout` or `cleanup_timeout` |
 
 If a session has no input and no output for `realtime_idle_timeout_s`, the server closes it with `idle_timeout`. The pipeline configuration defaults to 300 seconds for native sessions and 6 hours for audio Session graphs, including the streaming cascade. WebSocket pings do not count as activity. Set `realtime_idle_timeout_s` in the pipeline YAML or override it with `--realtime-idle-timeout-s`. The server also waits for the first `session.update` up to `realtime_session_update_timeout_s` (default 60 seconds), which can be overridden with `--realtime-session-update-timeout-s`.
 
@@ -175,6 +178,39 @@ The protocol follows the [MiniCPM-o steps](#full-duplex-protocol), with these di
 | Sampling | `sglang.sampling` | The fields listed under `sampling` above; unset fields keep the deployment defaults |
 
 The whole session is one response: `response.created` arrives with the first output, each unit brings 80 ms of agent audio (160 ms for the first), and `response.done` follows the end of the input. The transcript is the words the model speaks, streamed word piece by word piece. `response.cancel` and `conversation.item.truncate` are answered with `not_supported`, and the capabilities grant neither `supports_cancel` nor `supports_truncate`: a client can only mute its own playback, and the model keeps talking. The session variant only accepts `/v1/realtime` requests; use the default pipeline for `/generate` and chat completions.
+
+### Native Full Duplex: Nemotron VoiceChat
+
+[NemotronLabs VoiceChat 11B](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-VoiceChat-11B) is served for full duplex with its `session` variant; [Nemotron VoiceChat](../cookbook/nemotron_voicechat.md) covers its installation and offline usage.
+
+```bash
+python -m sglang_omni.cli serve \
+  --model-path nvidia/NVIDIA-NemotronLabs-VoiceChat-11B --variant session \
+  --enable-realtime --port 8000
+```
+
+Before it reports ready, the server runs one silent conversation, so the first real conversation compiles no kernels. A failed warmup stops the server, `SGLANG_OMNI_WARMUP_TIMEOUT` (seconds, default 600) bounds it, and `--skip-server-warmup` skips it.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `max_sessions` | 1 | Conversations at the same time. Further connections get HTTP 503. Each conversation keeps its own perception, thinker, talker and codec state, and the thinker and talker reserve KV for `max_sessions + 1` conversations |
+
+Every 80 ms of input has to pass perception, the thinker, the talker and the codec within 80 ms, or the conversation falls behind; concurrent conversations share that budget, and perception and the codec handle one conversation at a time. A conversation holds at most 6144 positions in the thinker and in the talker, about eight minutes; the unit that would pass it ends the session with `context_exhausted`.
+
+The full-duplex server is ready when this returns JSON containing `"native_full_duplex":true` and `"native_unit_ms":80`:
+
+```bash
+curl --fail http://localhost:8000/v1/realtime/capabilities
+```
+
+The protocol follows the [MiniCPM-o steps](#full-duplex-protocol), with these differences:
+
+| Setting | Field | Notes |
+|---|---|---|
+| Audio | `input_audio_buffer.append` | 16 kHz mono PCM16 in, 22.05 kHz out; the server pads a trailing partial 80 ms unit |
+| Prompt | `instructions` | Not accepted: the model uses its checkpoint's system prompt, and a session that sends `instructions` is refused |
+
+The whole session is one response, and every unit brings 80 ms of agent audio, silent while the model listens. The session variant only accepts `/v1/realtime` requests; use the default pipeline for offline recordings.
 
 ### Streaming Cascade
 
@@ -308,7 +344,7 @@ PYTHONPATH=. python examples/streaming_cascade/alignment_worker.py --model Qwen/
 | --- | --- | --- |
 | `--model` | required | The forced-aligner checkpoint. |
 | `--device` | `cpu` | The device the aligner runs on. |
-| `--language` | `Chinese` | The language of a sentence sent without one; a sentence carries the language of its reply once the recognizer has named the user's language. |
+| `--language` | `Chinese` | The language of a sentence sent without one; a sentence carries the language tag `openai_speech` spoke it with, and without a tag the language of its reply once the recognizer has named the user's language. |
 | `--host` | `127.0.0.1` | The bind address. |
 | `--port` | required | The port; the node's `alignment_url` must point at it. |
 
@@ -438,7 +474,7 @@ A setting comes from one of three places: the profile file, read at launch; comm
 | `session_publish` | required | Per node, the formats that reach the client. |
 | `stages` | none | Settings of stage routes by stage name, such as `asr: {gpu: 0}` or `vad: {factory: {silence_duration_ms: 800}}`. |
 | `timeout_s` | `120` | How long one input or control operation on a cascade node may take, including the wait for the last replies once the input has ended; past it the session fails with `component '<name>' append timed out`. |
-| `unit_ms` | `200` | The length of the input audio units the server forwards into the session; reported as `native_unit_ms`. |
+| `unit_ms` | `200` | The length of the input audio units the server acknowledges with `sglang.unit.done`; reported as `native_unit_ms`. Audio reaches the session as each append arrives, so the VAD node ends a turn without waiting for a unit to fill. |
 | `max_sessions` | `16` | Sessions that every component node, the VAD node and the turn detection node hold at once. A session beyond them is refused when it opens; raise it, for example with `--max_sessions 32`, when the services have room for more. |
 | `max_output_lead_ms` | `1000` | How far ahead of real time reply audio is delivered; audio already delivered cannot be taken back by an interruption. |
 | `max_pending_output_chunks` | `1024` | Reply chunks held for a client that has stopped reading before the session fails. |
@@ -593,7 +629,7 @@ Turns the running text of the `asr` stage into utterances: partial transcripts w
 **`dialog`**
 
 
-Keeps the conversation history, opens a turn for each final transcript and sends the history to the language model. An utterance that arrives during a reply waits for it to end; after an interruption it also waits until the audio the graph delivered (`reply.delivered`) or the client's truncate says how much of the reply the history keeps. Speech that starts during a reply interrupts it, and so does speech that started after the utterance ended and has not stopped when the reply begins, so that reply ends before any of it is heard.
+Keeps the conversation history, opens a turn for each final transcript and sends the history to the language model. An utterance that arrives during a reply waits for it to end; after an interruption it also waits until the audio the graph delivered (`reply.delivered`) or the client's truncate says how much of the reply the history keeps. Speech that starts during a reply interrupts it, and so does speech that started after the utterance ended and has not stopped when the reply begins, so that reply ends before any of it is heard. The language the recognizer heard in the last utterance of at least 3 words or 3 Chinese, Japanese or Korean characters is the session language; a shorter utterance, often a noise such as "嗯。", leaves it unchanged, and when the recognizer heard another language in it, that turn's latest user message asks for a reply in the session language.
 
 | Option | Type | Default | Effect |
 | --- | --- | --- | --- |
@@ -627,7 +663,7 @@ Cuts the reply text into sentences and sends one streaming request per sentence 
 
 Every sentence is its own request, and Qwen3-TTS samples each request with a fresh seed. A CustomVoice speaker given by `voice` is held only by its speaker token, so its timbre moves from sentence to sentence and from turn to turn; a Base model cloning one `reference_audio_path` for every request keeps one voice, which is why the English profiles clone `examples/streaming_cascade/voices/vivian.wav`, a recording of the CustomVoice speaker Vivian. They leave `reference_text` empty, so Base clones from the recording's speaker embedding alone: with the transcript it continues the recording itself and opens each sentence with a pause of about half a second, which a listener hears as a later reply.
 
-`openai_speech` sends each sentence without its emoji, asterisks and backticks, a markdown link as its text alone, a bare URL as its host alone, and a markdown line without its heading, list or quote marker and with its table cells separated by commas, because a speech service reads them as stray sounds or a spelled-out URL, and can run on for 40 s or more after a marker or a table row. A sentence with no word left, such as one of only emoji or punctuation or a table's separator row, is not sent because the speech service answers it with an error, and its end still counts in `reply.progress`. A sentence tagged `English` without Chinese characters is sent with its numbers written out as words, the way the forced-alignment worker reads them: a year as two pairs, spaced digit groups such as a phone number digit by digit, a decimal with `point`, and an ordinal such as `21st` as `twenty first`. The reply text and the `reply.progress` offsets keep everything the model wrote. The profiles' system prompts also tell the language model to use neither markdown nor emoji.
+`openai_speech` sends each sentence without its emoji, asterisks and backticks, a markdown link as its text alone, a bare URL as its host alone, and a markdown line without its heading, list or quote marker and with its table cells separated by commas, because a speech service reads them as stray sounds or a spelled-out URL, and can run on for 40 s or more after a marker or a table row. A sentence with no word left, such as one of only emoji or punctuation or a table's separator row, is not sent because the speech service answers it with an error, and its end still counts in `reply.progress`. A sentence tagged `English` is sent with its numbers written out as words, the way the forced-alignment worker reads them: a year as two pairs, spaced digit groups such as a phone number digit by digit, a decimal with `point`, and an ordinal such as `21st` as `twenty first`. The reply text and the `reply.progress` offsets keep everything the model wrote. The profiles' system prompts also tell the language model to use neither markdown nor emoji.
 
 | Option | Type | Default | Effect |
 | --- | --- | --- | --- |
@@ -636,7 +672,7 @@ Every sentence is its own request, and Qwen3-TTS samples each request with a fre
 | `voice` | string | `default` | The `voice` field; for Qwen3-TTS CustomVoice a built-in speaker, `default` meaning `Vivian`. |
 | `reference_audio_path` | string | `""` | A WAV the speech service reads, for voice cloning. |
 | `reference_text` | string | `""` | The transcript of the reference, sent with it when set. |
-| `language` | string | `""` | The language tag: empty sends none; `auto` tags every sentence with the language the recognizer last heard in an answered turn; any other name tags every sentence with that name. With a fixed name, and with `auto` before the recognizer has named a language, a sentence containing Chinese characters is tagged `Chinese`; `auto` tags the others `English` until then. |
+| `language` | string | `""` | The language tag: empty sends none; `auto` tags every sentence with the dialog's session language, except a sentence whose script contradicts it, as in a reply the user asked for in another language, which is tagged by its script: `Japanese` for kana, `Korean` for hangul, `Chinese` for Chinese characters in a session that is not Chinese, Cantonese, Japanese or Korean, and `English` for Latin letters without those in one that is; a sentence whose Chinese, Japanese or Korean characters, each about one syllable, are no more than the syllables of its Latin words, such as "In Japanese, hello is こんにちは.", keeps the session language; any other name tags every sentence with that name. With a fixed name, and with `auto` before the session language is known, a sentence containing Chinese characters is tagged `Chinese`; `auto` tags the others `English` until then. |
 | `max_sentence_words` | integer > 0 | `24` | The most words sent in one request. A longer sentence is cut into requests of at most this many words and at least half as many, at a comma, colon or dash when one falls in that range; the first request of such a sentence waits for up to half as many words more, so its rest is never a word or two on its own. |
 | `api_key_env` | string | `OPENAI_API_KEY` | As above. |
 | `timeout_s` | number > 0 | `120` | The request timeout. |
@@ -656,11 +692,11 @@ Reports how far into the reply text the reply audio has reached, as `reply.progr
 | `heard_asr_model` | string | `""` | The `model` form field of those requests; set together with `heard_asr_url`. |
 | `timeout_s` | number > 0 | `2` | The limit for one worker or transcription request; a sentence whose request fails or times out keeps only its sentence end. |
 
-The dialog cuts an interrupted reply at the points `reply.progress` reports, up to the audio the graph sent to the client before the interruption, which the graph reports to the readers of the `tts` node's `session` output as `reply.delivered`. Without an `alignment` node the dialog takes `reply.progress` from the `tts` node, which reports the end of each sentence. With one, as in `qwen3-asr-qwen3-tts-vivian`, the `aligner` node reads `["llm:text_delta", "tts:pcm_f32le", "tts:session", "dialog:session", "input:session"]` and the dialog's `{kind: control, source: aligner, event: reply.progress}` input replaces the one from `tts`; a profile names exactly one source of `reply.progress`. Once the client's `conversation.item.truncate` arrives, the dialog reports every cut of that reply as `reply.heard` with `text_end`, the characters the history keeps, which reaches the client as `sglang.response.heard`.
+The dialog cuts an interrupted reply at the points `reply.progress` reports, up to the audio the graph sent to the client before the interruption, which the graph reports to the readers of the `tts` node's `session` output as `reply.delivered`. Before the audio of each sentence the `tts` node reports the language tag it sends with it as `reply.sentence`, which reaches the readers of its `session` and never the client, so the aligner aligns and recognizes every sentence, including one cut off partway, in the language it was spoken in, and a sentence sent without a tag in the reply's language. Without an `alignment` node the dialog takes `reply.progress` from the `tts` node, which reports the end of each sentence. With one, as in `qwen3-asr-qwen3-tts-vivian`, the `aligner` node reads `["llm:text_delta", "tts:pcm_f32le", "tts:session", "dialog:session", "input:session"]` and the dialog's `{kind: control, source: aligner, event: reply.progress}` input replaces the one from `tts`; a profile names exactly one source of `reply.progress`. Once the client's `conversation.item.truncate` arrives, the dialog reports every cut of that reply as `reply.heard` with `text_end`, the characters the history keeps, which reaches the client as `sglang.response.heard`.
 
-`method: sentence` keeps the sentence ends, so a truncated reply keeps the sentences whose audio was played to the end and drops the sentence the listener was hearing. `method: forced` also sends each finished sentence and its audio to the worker at `alignment_url` and reports the word ends it returns, so the cut can fall inside a sentence that finished; when the worker fails or exceeds `timeout_s`, that sentence keeps its sentence end. A sentence that an interruption cuts off before its audio is complete gets no word ends and counts as unheard in both methods.
+`method: sentence` keeps the sentence ends, so a truncated reply keeps the sentences whose audio was played to the end and drops the sentence the listener was hearing. `method: forced` also sends each finished sentence and its audio to the worker at `alignment_url`, in the language it was spoken in, and reports the word ends it returns, so the cut can fall inside a sentence that finished; when the worker fails or exceeds `timeout_s`, that sentence keeps its sentence end. A sentence that an interruption cuts off before its audio is complete gets no word ends and counts as unheard in both methods.
 
-`method: asr` keeps the sentence ends and, when a reply is cut, sends the audio of the sentence at the cut, from the sentence's start to the cut, as a WAV file in the reply's language to the `/audio/transcriptions` endpoint of the OpenAI-compatible service at `heard_asr_url` with `heard_asr_model`; the reply keeps the sentences before it and the longest prefix of that sentence's text the transcript says, with the punctuation that follows it. The cut is the client's `truncate` position and never past `reply.delivered`, the same cut the dialog makes, so the aligner reads `input:session` for the client's `truncate`. The match ignores case and punctuation, reads digits, English numbers up to twenty and ordinary Chinese numbers as the same number, and stops at the first word the transcript leaves out, repeats or says differently. When the request fails, exceeds `timeout_s` or the first words differ, the sentence counts as unheard. It needs no model beyond the profile's own recognizer. `method: forced` takes `heard_asr_url` and `heard_asr_model` too, and then recognizes the sentence at the cut only when no word end at or after the cut covers it, such as a sentence cut off before its audio was complete; `method: sentence` takes neither.
+`method: asr` keeps the sentence ends and, when a reply is cut, sends the audio of the sentence at the cut, from the sentence's start to the cut, as a WAV file in the language that sentence was spoken in to the `/audio/transcriptions` endpoint of the OpenAI-compatible service at `heard_asr_url` with `heard_asr_model`; the reply keeps the sentences before it and the longest prefix of that sentence's text the transcript says, with the punctuation that follows it. The cut is the client's `truncate` position and never past `reply.delivered`, the same cut the dialog makes, so the aligner reads `input:session` for the client's `truncate`. The match ignores case and punctuation, reads digits, English numbers up to twenty and ordinary Chinese numbers as the same number, and stops at the first word the transcript leaves out, repeats or says differently. When the request fails, exceeds `timeout_s` or the first words differ, the sentence counts as unheard. It needs no model beyond the profile's own recognizer. `method: forced` takes `heard_asr_url` and `heard_asr_model` too, and then recognizes the sentence at the cut only when no word end at or after the cut covers it, such as a sentence cut off before its audio was complete; `method: sentence` takes neither.
 
 (stage-vad)=
 
@@ -674,6 +710,7 @@ Declared as `vad: {stages: [vad], inputs: [input]}`; reports `speech.started` an
 | `threshold` | number 0 to 1 | `0.5` | Speech probability above which a frame is speech. |
 | `prefix_padding_ms` | integer ≥ 0 | `300` | Audio before the first speech frame that belongs to the utterance. |
 | `silence_duration_ms` | integer ≥ 0 | `500` | Silence that ends an utterance. |
+| `background_margin_db` | number ≥ 0 or `null` | `6` | A voice this many dB quieter than the last utterance starts no speech, so it neither opens a turn nor interrupts the reply. `null` hears every voice. A session's `turn_detection` does not change it. |
 | `max_open_sessions` | integer ≥ 1 | `16` | Sessions the detector holds at once. |
 | `max_concurrency` | integer ≥ 1 | `4` | Sessions it processes at once. |
 
@@ -761,6 +798,7 @@ Each rule is followed by the error it raises.
 
 **Rejected in a realtime session**
 
+During initial session opening, only a capacity rejection is reported as `admission_rejected` with `sglang.fatal: false`; the client may retry `session.update` on the same WebSocket before sending audio, within the admission deadline. If opening exceeds its own deadline, the server sends fatal `session_open_timeout` and closes the session. This differs from `session_update_timeout`, which limits the wait for an initial update or retryable admission; an admission already in progress may finish after that deadline. The separate pipeline idle fallback reports `session_idle_timeout`. Other initialization failures close the session with their known error code, or `internal` when no specific code is available. Configuration negotiation errors below retain their existing request-error behavior.
 
 - A sampling parameter other than `temperature` and `max_new_tokens_per_unit` — `unsupported sampling parameters: ...`.
 - A field other than the hot ones in [Session settings](#session-settings) changed after the first `session.update`, or `instructions` or `sglang.sampling` in a profile whose capabilities report `supports_instruction_updates` or `supports_sampling_updates` as false — `session field is frozen`.

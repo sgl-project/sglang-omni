@@ -48,24 +48,7 @@ For Intel GPUs, follow the [Nemotron VoiceChat XPU recipe](../get_started/instal
 
 ## Realtime conversation
 
-```bash
-python examples/run_nemotron_voicechat_duplex.py \
-  --model-path /path/to/NVIDIA-NemotronLabs-VoiceChat-11B \
-  --serve --port 8097 --max-sessions 1
-```
-
-Open http://localhost:8097, click **Start**, and allow microphone access.
-If the server runs on a remote GPU host, forward port 8097 to your local machine first.
-Headphones help avoid acoustic feedback. The example uses the shared realtime
-playground with a four-minute browser limit. It defaults to one session and uses
-the checkpoint's default prompt and voice.
-
-`--max-sessions` controls concurrent conversations. The default remains one.
-Each admitted session owns independent perception, transformer KV, and codec
-state; the thinker and talker KV pools are sized for the session limit plus one
-incoming request row. Perception and codec execution remain serialized in this
-foundation, so benchmark the 80 ms unit deadline before raising the limit in a
-latency-sensitive deployment.
+VoiceChat also serves live full-duplex voice sessions on `/v1/realtime` with its `session` variant. Launching, settings and the protocol are in [Full-Duplex Guide](../developer_reference/full_duplex_guide.md#native-full-duplex-nemotron-voicechat).
 
 ## Offline request parameters
 

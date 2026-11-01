@@ -2,6 +2,7 @@
 #include "qwen3_asr/qwen3_decoder.h"
 
 #include <cmath>
+#include <limits>
 
 namespace qwen3_asr {
 
@@ -12,6 +13,14 @@ namespace {
 constexpr int kKvCacheStepTokens = 256;
 
 } // namespace
+
+std::vector<mx::array> KVCache::Arrays() const {
+  if (keys_.has_value()) {
+    return {*keys_, *values_};
+  } else {
+    return {};
+  }
+}
 
 Qwen3DecoderConfig
 Qwen3DecoderConfig::FromJson(const nlohmann::json &text_config) {
@@ -66,8 +75,8 @@ mx::array Qwen3Decoder::EmbedTokens(const mx::array &ids) const {
   return checkpoint_.Embed(ids, prefix_ + ".embed_tokens");
 }
 
-mx::array Qwen3Decoder::Layer(const mx::array &x, int layer,
-                              KVCache &cache) const {
+mx::array Qwen3Decoder::Layer(const mx::array &x, int layer, KVCache &cache,
+                              const std::optional<RotaryInputs> &rotary) const {
   const std::string prefix = prefix_ + ".layers." + std::to_string(layer);
   const float eps = config_.rms_norm_eps;
   const int batch = x.shape(0);
@@ -91,20 +100,46 @@ mx::array Qwen3Decoder::Layer(const mx::array &x, int layer,
   const mx::array values =
       mx::reshape(checkpoint_.Linear(normed, prefix + ".self_attn.v_proj"),
                   {batch, length, kv_head_count, head_dim});
-  queries = mx::fast::rope(mx::transpose(queries, {0, 2, 1, 3}), head_dim,
-                           config_.traditional_rope, config_.rope_theta, 1.0f,
-                           cache.offset());
-  keys = mx::fast::rope(mx::transpose(keys, {0, 2, 1, 3}), head_dim,
-                        config_.traditional_rope, config_.rope_theta, 1.0f,
-                        cache.offset());
-  auto [cached_keys, cached_values] =
-      cache.UpdateAndFetch(keys, mx::transpose(values, {0, 2, 1, 3}));
-  const mx::array attended = mx::fast::scaled_dot_product_attention(
-      queries, cached_keys, cached_values,
-      static_cast<float>(std::pow(static_cast<double>(head_dim), -0.5)),
-      length > 1 ? "causal" : "");
+  const float scale =
+      static_cast<float>(std::pow(static_cast<double>(head_dim), -0.5));
+  std::optional<mx::array> attended;
+  if (rotary.has_value()) {
+    const auto rotate = [&](const mx::array &heads) {
+      const int half = head_dim / 2;
+      const mx::Shape &shape = heads.shape();
+      const mx::array first =
+          mx::slice(heads, {0, 0, 0, 0}, {shape[0], shape[1], shape[2], half});
+      const mx::array second = mx::slice(heads, {0, 0, 0, half}, shape);
+      return mx::add(
+          mx::multiply(heads, rotary->cosines),
+          mx::multiply(mx::concatenate({mx::negative(second), first}, -1),
+                       rotary->sines));
+    };
+    queries = rotate(mx::transpose(queries, {0, 2, 1, 3}));
+    keys = rotate(mx::transpose(keys, {0, 2, 1, 3}));
+    auto [cached_keys, cached_values] =
+        cache.UpdateAndFetch(keys, mx::transpose(values, {0, 2, 1, 3}));
+    if (rotary->mask.has_value()) {
+      attended = mx::fast::scaled_dot_product_attention(
+          queries, cached_keys, cached_values, scale, "", *rotary->mask);
+    } else {
+      attended = mx::fast::scaled_dot_product_attention(queries, cached_keys,
+                                                        cached_values, scale);
+    }
+  } else {
+    queries = mx::fast::rope(mx::transpose(queries, {0, 2, 1, 3}), head_dim,
+                             config_.traditional_rope, config_.rope_theta, 1.0f,
+                             cache.offset());
+    keys = mx::fast::rope(mx::transpose(keys, {0, 2, 1, 3}), head_dim,
+                          config_.traditional_rope, config_.rope_theta, 1.0f,
+                          cache.offset());
+    auto [cached_keys, cached_values] =
+        cache.UpdateAndFetch(keys, mx::transpose(values, {0, 2, 1, 3}));
+    attended = mx::fast::scaled_dot_product_attention(
+        queries, cached_keys, cached_values, scale, length > 1 ? "causal" : "");
+  }
   const mx::array hidden = mx::add(
-      x, checkpoint_.Linear(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
+      x, checkpoint_.Linear(mx::reshape(mx::transpose(*attended, {0, 2, 1, 3}),
                                         {batch, length, -1}),
                             prefix + ".self_attn.o_proj"));
   const mx::array mlp_input =
@@ -120,9 +155,14 @@ mx::array Qwen3Decoder::Layer(const mx::array &x, int layer,
 
 mx::array Qwen3Decoder::Forward(const mx::array &embeddings,
                                 std::vector<KVCache> &caches) const {
+  const std::optional<RotaryInputs> rotary =
+      config_.rotary_tables
+          ? std::optional<RotaryInputs>(Rotary(
+                embeddings.shape(1), caches[0].offset(), embeddings.dtype()))
+          : std::nullopt;
   mx::array hidden = embeddings;
   for (int layer = 0; layer < config_.num_hidden_layers; ++layer) {
-    hidden = Layer(hidden, layer, caches[layer]);
+    hidden = Layer(hidden, layer, caches[layer], rotary);
   }
   return hidden;
 }
@@ -136,6 +176,41 @@ mx::array Qwen3Decoder::LastLogits(const mx::array &hidden_states) const {
   const mx::array logits =
       checkpoint_.TiedProjection(last, prefix_ + ".embed_tokens");
   return mx::reshape(logits, {logits.shape(-1)});
+}
+
+Qwen3Decoder::RotaryInputs Qwen3Decoder::Rotary(int length, int offset,
+                                                mx::Dtype dtype) const {
+  const int head_dim = config_.head_dim;
+  const mx::array inverse_frequencies = mx::divide(
+      mx::array(1.0f),
+      mx::power(mx::array(config_.rope_theta),
+                mx::divide(mx::arange(0.0, static_cast<double>(head_dim), 2.0,
+                                      mx::float32),
+                           mx::array(static_cast<float>(head_dim)))));
+  const mx::array positions =
+      mx::astype(mx::arange(offset, offset + length), mx::float32);
+  const mx::array frequencies =
+      mx::transpose(mx::multiply(mx::reshape(inverse_frequencies, {1, -1, 1}),
+                                 mx::reshape(positions, {1, 1, -1})),
+                    {0, 2, 1});
+  const mx::array angles = mx::concatenate({frequencies, frequencies}, -1);
+  RotaryInputs rotary{mx::expand_dims(mx::astype(mx::cos(angles), dtype), 1),
+                      mx::expand_dims(mx::astype(mx::sin(angles), dtype), 1),
+                      std::nullopt};
+  if (length > 1) {
+    // Each query sees the cached keys and the step's keys up to its own.
+    const mx::array query_positions =
+        mx::expand_dims(mx::arange(offset, offset + length), 1);
+    const mx::array key_positions =
+        mx::expand_dims(mx::arange(offset + length), 0);
+    rotary.mask = mx::astype(
+        mx::multiply(
+            mx::astype(mx::less(query_positions, key_positions), mx::float32),
+            mx::array(std::numeric_limits<float>::lowest())),
+        dtype);
+  } else {
+  }
+  return rotary;
 }
 
 std::vector<KVCache> Qwen3Decoder::NewCaches() const {
