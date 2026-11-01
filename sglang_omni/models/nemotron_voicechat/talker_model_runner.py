@@ -128,17 +128,22 @@ class VoiceChatTalkerModelRunner(ModelRunner):
             device=self.fusion_device(),
         )
 
-    def step_row(self, prev_codes: torch.Tensor, token: int) -> torch.Tensor:
-        """The one row a frame forwards: last frame's codes, this frame's text."""
+    def step_rows(self, prev_codes_BQ: torch.Tensor, tokens: list[int]) -> torch.Tensor:
         talker = self.model.talker
-        if self.force_silence and token == self.text_eos_id:
-            prev_codes = self.model.codec_silence_tokens.unsqueeze(0)
+        if self.force_silence and self.text_eos_id in tokens:
+            at_eos_B = torch.tensor(
+                [token == self.text_eos_id for token in tokens],
+                device=prev_codes_BQ.device,
+            )
+            prev_codes_BQ = torch.where(
+                at_eos_B[:, None], self.model.codec_silence_tokens, prev_codes_BQ
+            )
         else:
             pass
-        audio_1D = talker.embed_codes(prev_codes)
-        ids, chars, lengths = self.char_batch([token])
-        text_1D = talker.embed_subword(ids, chars, lengths)
-        return talker.gated_fusion_audio_text(audio_1D, text_1D)
+        audio_BD = talker.embed_codes(prev_codes_BQ)
+        ids, chars, lengths = self.char_batch(tokens)
+        text_BD = talker.embed_subword(ids, chars, lengths)
+        return talker.gated_fusion_audio_text(audio_BD, text_BD)
 
     def generate_codes(self, index: int) -> torch.Tensor:
         return self.sample_codes(self.model.hidden_out[index : index + 1])
@@ -196,7 +201,7 @@ class NemotronVoiceChatTalkerModelRunner(VoiceChatTalkerModelRunner):
     ) -> None:
         del forward_batch, is_lookahead
         model = self.model
-        rows = []
+        tokens = []
         for request, req in zip(requests, schedule_batch.reqs, strict=True):
             data = request.data
             queue = data.pending_text_queue
@@ -211,14 +216,12 @@ class NemotronVoiceChatTalkerModelRunner(VoiceChatTalkerModelRunner):
                     f"talker request {request.request_id} reached decode with no "
                     "text token and no finish reason"
                 )
-            rows.append(
-                self.step_row(
-                    data.talker_model_inputs["prev_codes"],
-                    token,
-                )
-            )
-        batch = len(rows)
-        model.fusion_buffer[:batch] = torch.cat(rows, dim=0)
+            tokens.append(token)
+        prev_codes_BQ = torch.cat(
+            [request.data.talker_model_inputs["prev_codes"] for request in requests]
+        )
+        batch = len(tokens)
+        model.fusion_buffer[:batch] = self.step_rows(prev_codes_BQ, tokens)
         model.fusion_mask[:batch] = True
 
     def post_decode(self, result, forward_batch, schedule_batch, requests) -> None:

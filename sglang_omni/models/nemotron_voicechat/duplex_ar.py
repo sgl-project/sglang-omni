@@ -429,7 +429,7 @@ class TalkerAdapter(FrameAdapter):
         previous_codes = (
             runner.pad_codes() if state.previous_codes is None else state.previous_codes
         )
-        row = runner.step_row(previous_codes, int(payload.data["text_token"]))
+        row = runner.step_rows(previous_codes, [int(payload.data["text_token"])])
         if state.position_count == 0:
             rows = torch.cat([runner.warmup(), row])
             opening_token_ids = [0] * rows.shape[0]

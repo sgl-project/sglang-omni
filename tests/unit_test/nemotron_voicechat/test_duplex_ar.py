@@ -298,9 +298,9 @@ def test_runner_rejects_misaligned_fusion_history(
 
 def test_talker_continuation_fuses_previous_codes_with_current_text() -> None:
     def fuse_codes_and_text(
-        previous_codes: torch.Tensor, text_token_id: int
+        previous_codes: torch.Tensor, text_token_ids: list[int]
     ) -> torch.Tensor:
-        return previous_codes.float() + text_token_id
+        return previous_codes.float() + text_token_ids[0]
 
     runner = Mock(
         spec=DuplexTalkerRunner,
@@ -308,7 +308,7 @@ def test_talker_continuation_fuses_previous_codes_with_current_text() -> None:
     )
     runner.pad_codes.return_value = torch.zeros(1, 4, dtype=torch.long)
     runner.warmup.return_value = torch.ones(2, 4)
-    runner.step_row.side_effect = fuse_codes_and_text
+    runner.step_rows.side_effect = fuse_codes_and_text
     runner.generate_codes.return_value = torch.tensor([[5, 6, 7, 8]])
     adapter = TalkerAdapter(runner, context_length=8)
     session_identity = SessionIdentity("talker")
