@@ -5,8 +5,8 @@ returns is checked by transcribing it with qwen3_asr_server.
     NATIVE_RUNTIME_BIN=<dir with the servers> CI_DATA_ROOT=<provisioned root> \
         python -m pytest sglang_omni_mlx/native/ci/test_fishaudio_drama3_api.py
 
-The data root holds Qwen3-ASR (provision.py), the 4-bit checkpoint
-(provision_models.py) and the voice (fishaudio_drama3_voice.py).
+The data root holds Qwen3-ASR and the 4-bit checkpoint (provision.py) and the
+voice (fishaudio_drama3_voice.py).
 """
 
 from __future__ import annotations
