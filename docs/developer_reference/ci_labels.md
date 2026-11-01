@@ -144,7 +144,7 @@ The stage label is `run-intel-cpu-ci`. `run-unit-test-ci-only` does not select t
 
 ### XPU CI
 
-XPU CI pulls or builds the Intel GPU image from `docker/xpu.Dockerfile` and runs the device layer tests in `tests/unit_test/xpu/test_device_layer.py` and the dots.tts flow head and tail tests. Its tests run when the pull request touches `sglang_omni/`, `tests/unit_test/xpu/`, `tests/unit_test/dots_tts/`, `pyproject_xpu.toml`, `scripts/xpu/`, `docker/xpu.Dockerfile` or the workflow itself.
+XPU CI pulls or builds the Intel GPU image from `docker/xpu.Dockerfile` and runs the device layer tests in `tests/unit_test/xpu/test_device_layer.py`, the dots.tts flow head and tail tests, and the ZONOS2 XPU adaptation tests in `tests/unit_test/zonos2/test_xpu_adaptation.py`. Its tests run when the pull request touches `sglang_omni/`, `tests/unit_test/xpu/`, `tests/unit_test/dots_tts/`, `tests/unit_test/zonos2/test_xpu_adaptation.py`, `pyproject_xpu.toml`, `scripts/xpu/`, `docker/xpu.Dockerfile` or the workflow itself.
 
 The stage label is `run-intel-xpu-ci`.
 
