@@ -163,6 +163,10 @@ class ModelRunner(Generic[RequestDataInput]):
 
     # True when the model's own speculative verify applies repetition_penalty exactly.
     speculative_verifies_repetition_penalty: bool = False
+    # True when every verify row takes this runner's logits hooks, as its plain decode row would.
+    speculative_verify_takes_logits_hooks: bool = False
+    # True when the model's sampled DFlash or DSpark verify draws without the request seed.
+    speculative_ignores_request_seed: bool = False
     # An EAGLE draft extends on the embeddings the target prefilled with, which a
     # runner composing multimodal inputs keeps here for one prefill.
     retain_prefill_input_embeds: bool = False

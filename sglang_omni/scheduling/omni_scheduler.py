@@ -2023,7 +2023,8 @@ class OmniScheduler(Generic[RequestDataT]):
                     and sampling_params.top_k != 1
                     and sampling_params.max_new_tokens != 1
                     and self.spec_algorithm
-                    in (SpeculativeAlgorithm.DFLASH, SpeculativeAlgorithm.DSPARK),
+                    in (SpeculativeAlgorithm.DFLASH, SpeculativeAlgorithm.DSPARK)
+                    and self.model_runner.speculative_ignores_request_seed,
                 ),
                 ("frequency_penalty", sampling_params.frequency_penalty != 0.0),
                 ("presence_penalty", sampling_params.presence_penalty != 0.0),
@@ -2377,10 +2378,13 @@ class OmniScheduler(Generic[RequestDataT]):
             pass
         resolve_forward_inputs(batch, self.future_map)
         target_worker = self.tp_worker.speculative_target_worker
-        target_worker.verify_requests = [
-            SchedulerRequest(request_id=req.rid, data=req.omni_data)
-            for req in batch.reqs
-        ]
+        if self.model_runner.speculative_verify_takes_logits_hooks:
+            target_worker.verify_requests = [
+                SchedulerRequest(request_id=req.rid, data=req.omni_data)
+                for req in batch.reqs
+            ]
+        else:
+            pass
         try:
             with _Upstream._forward_isolation(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                 self, batch, overlap=False

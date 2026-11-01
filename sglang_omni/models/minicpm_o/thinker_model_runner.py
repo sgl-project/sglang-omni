@@ -39,6 +39,9 @@ else:
 class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
     """Run the thinker and accumulate hidden states for speech conditioning."""
 
+    speculative_verify_takes_logits_hooks = True
+    speculative_ignores_request_seed = True
+
     def __init__(
         self,
         tp_worker: ModelWorker,

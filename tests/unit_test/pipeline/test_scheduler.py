@@ -2227,7 +2227,8 @@ def test_speculative_admission_refuses_sampling_the_draft_cannot_reproduce(
     scheduler.draft_worker = SimpleNamespace()
     scheduler.spec_algorithm = SpeculativeAlgorithm.DSPARK
     scheduler.model_runner = SimpleNamespace(
-        speculative_verifies_repetition_penalty=verifies_repetition_penalty
+        speculative_verifies_repetition_penalty=verifies_repetition_penalty,
+        speculative_ignores_request_seed=True,
     )
     sampling_params = {
         "min_p": 0.0,
@@ -2251,6 +2252,10 @@ def test_speculative_admission_refuses_sampling_the_draft_cannot_reproduce(
         assert error is None
     else:
         assert refused_option in error
+    scheduler.model_runner.speculative_ignores_request_seed = False
+    assert (scheduler.speculative_request_error(request, request_data) is None) == (
+        refused_option in (None, "seed")
+    ), "only a runner whose verify ignores the seed refuses it"
     scheduler.draft_worker = None
     assert scheduler.speculative_request_error(request, request_data) is None
 
