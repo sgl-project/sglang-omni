@@ -10,12 +10,16 @@ back.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Iterator
+from pathlib import Path
 
 import torch
+from sglang.kernels.ops.quantization.fp8_kernel import is_fp8_fnuz
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+from sglang.srt.model_loader.weight_utils import QuantParamSchema
 from sglang.srt.models.llama import LlamaForCausalLM
 from sglang.srt.runtime_context import get_schedule
 from sglang.srt.utils import add_prefix
@@ -99,6 +103,81 @@ class PersonaPlexForCausalLM(nn.Module):
         # note (LinzeShi): The full ring masks its oldest slot; the left window
         # excludes the current key, leaving context - 1 visible keys in total.
         return self.temporal.context - 2
+
+    @torch.no_grad()
+    def load_kv_cache_scales(self, quantization_param_path: str) -> None:
+        """Load validated FP8 KV scales before attention graphs are captured."""
+        if is_fp8_fnuz():
+            raise NotImplementedError(
+                "PersonaPlex custom KV scales do not support FP8 FNUZ"
+            )
+        else:
+            pass
+        backbone = self.llm.model
+        # Note (edwardzh): Llama's shard layout supplies the schema's rank context.
+        rank, size = backbone._kv_cache_parallel_layout  # noqa: leading-underscore
+        # Note (edwardzh): Llama's loader replaces scale Parameters with floats, leaves host mirrors stale, and swallows file errors; validate directly until https://github.com/sgl-project/sglang/issues/47357 is fixed.
+        schema = QuantParamSchema.model_validate_json(
+            Path(quantization_param_path).read_text(),
+            strict=True,
+            context={
+                "model_type": backbone.config.__class__.model_type,
+                "num_hidden_layers": backbone.config.num_hidden_layers,
+                "tp_rank": rank,
+                "tp_size": size,
+            },
+        )
+        scales = torch.tensor(
+            [
+                schema.kv_cache.scaling_factor[rank][i]
+                for i in range(len(backbone.layers))
+            ],
+            dtype=torch.float32,
+            device="cpu",
+        ).tolist()
+        if any(not math.isfinite(scale) or scale <= 0 for scale in scales):
+            raise ValueError("KV scales must remain finite and positive in float32")
+        else:
+            pass
+
+        # Note (edwardzh): Validate every target before mutation; offloaded Parameters return to the execution device through the offloader, but ordinary tensors do not.
+        device = self.fusion_buffer.device
+        for layer in backbone.layers:
+            attention = layer.self_attn.attn
+            for name in ("k_scale", "v_scale"):
+                current = getattr(attention, name)
+                if current is not None and (
+                    not isinstance(current, torch.Tensor)
+                    or current.ndim != 0
+                    or current.dtype != torch.float32
+                    or (
+                        current.device != device
+                        and not (
+                            isinstance(current, nn.Parameter)
+                            and current.device.type == "cpu"
+                        )
+                    )
+                ):
+                    raise ValueError(
+                        f"{name} must be a scalar float32 tensor on {device} or an offloaded CPU Parameter"
+                    )
+                else:
+                    pass
+
+        for layer, scale in zip(backbone.layers, scales, strict=True):
+            attention = layer.self_attn.attn
+            for name in ("k_scale", "v_scale"):
+                current = getattr(attention, name)
+                if current is None:
+                    setattr(
+                        attention,
+                        name,
+                        torch.tensor(scale, dtype=torch.float32, device=device),
+                    )
+                else:
+                    current.fill_(scale)
+                # Note (edwardzh): Tensor and host-float consumers must use the same FP32-rounded value without replacing captured storage.
+                setattr(attention, f"{name}_float", scale)
 
     def embed_rows(self, rows_NK: torch.Tensor) -> torch.Tensor:
         """Sum the 17 stream embeddings of each row, in the reference's order
