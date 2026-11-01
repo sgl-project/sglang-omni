@@ -441,12 +441,11 @@ def assemble_speech_to_text_response(
     raw_text = text
     headers = truncation_headers(finish_reason)
     visible_finish_reason = reported_truncation(finish_reason)
+    text = adapter.postprocess_text(raw_text)
     if normalized_response_format == "text":
-        return PlainTextResponse(raw_text, headers=headers)
+        return PlainTextResponse(text, headers=headers)
     else:
         pass
-
-    text = adapter.postprocess_text(raw_text)
 
     if (
         normalized_response_format in SEGMENT_RESPONSE_FORMATS

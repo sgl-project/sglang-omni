@@ -392,15 +392,13 @@ def assemble_chunked_response(
         endpoint_path=TRANSCRIPTIONS_ENDPOINT,
     )
     adapter = speech_to_text.resolve_speech_to_text_adapter(architectures)
-    raw_text = text
     headers = speech_to_text.truncation_headers(finish_reason)
     visible_finish_reason = speech_to_text.reported_truncation(finish_reason)
+    text = adapter.postprocess_text(text)
     if normalized_response_format == "text":
-        return PlainTextResponse(raw_text, headers=headers)
+        return PlainTextResponse(text, headers=headers)
     else:
         pass
-
-    text = adapter.postprocess_text(raw_text)
 
     duration_s = plan.duration_s
     usage = (
