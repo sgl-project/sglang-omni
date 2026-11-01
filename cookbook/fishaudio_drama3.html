@@ -585,6 +585,10 @@
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#defaults-parameters">Defaults Parameters</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#apple-silicon-native-mlx">Apple Silicon: native MLX</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#reference-parity-and-performance">Reference parity and performance</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#links">Links</a></li>
 </ul>
             </nav>
@@ -1002,6 +1006,187 @@ Drama 3 tower fused layers: off, untested GPU sm_120
 </pre></div>
 </div>
 </section>
+<section id="apple-silicon-native-mlx">
+<h2>Apple Silicon: native MLX<a class="headerlink" href="#apple-silicon-native-mlx" title="Link to this heading">#</a></h2>
+<p>The standalone <code class="docutils literal notranslate"><span class="pre">fishaudio_drama3_server</span></code> runs entirely in C++ on MLX under <code class="docutils literal notranslate"><span class="pre">sglang_omni_mlx/native/</span></code> and serves <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code> with the CUDA server’s request fields; reference audio is sent as base64 WAV (see the table below). It serves two community MLX conversions of <code class="docutils literal notranslate"><span class="pre">fishaudio/drama-3</span></code>, made by mlx-audio’s <code class="docutils literal notranslate"><span class="pre">fish_drama3/convert.py</span></code> from the official FP8 checkpoint:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Checkpoint</p></th>
+<th class="head"><p>Routed experts</p></th>
+<th class="head"><p>Other projections</p></th>
+<th class="head text-right"><p>On disk</p></th>
+<th class="head text-right"><p>Peak MLX memory, mlx-audio</p></th>
+<th class="head text-right"><p>Unified memory</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">mlx-community/fish-audio-drama-3-4bit</span></code></p></td>
+<td><p>4-bit</p></td>
+<td><p>8-bit</p></td>
+<td class="text-right"><p>24 GB</p></td>
+<td class="text-right"><p>28.7 GB</p></td>
+<td class="text-right"><p>48 GB or more</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">mlx-community/fish-audio-drama-3-8bit</span></code></p></td>
+<td><p>8-bit</p></td>
+<td><p>bf16</p></td>
+<td class="text-right"><p>42 GB</p></td>
+<td class="text-right"><p>47.1 GB</p></td>
+<td class="text-right"><p>64 GB or more</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Both quantize with MLX affine groups of 64 and keep the embeddings in bf16, the norm gains and the codec in fp32; the 8-bit checkpoint quantizes only the routed experts. The 4-bit checkpoint peaks above the GPU working set of a 32 or 36 GB Mac; the 8-bit one fits the 55.7 GB working set of a 64 GB Mac, with nothing else holding much memory. Both were measured on a 64 GB Mac. Download a pinned checkpoint, then build with the native runtime’s MLX 0.32.3 toolchain:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>sglang_omni_mlx/native/ci/provision_models.py<span class="w"> </span><span class="s2">"</span><span class="nv">$DRAMA3_DATA</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model<span class="w"> </span>mlx-community/fish-audio-drama-3-4bit
+sglang_omni_mlx/native/scripts/build_runtime.sh<span class="w"> </span><span class="s2">"</span><span class="nv">$DRAMA3_RUNTIME</span><span class="s2">"</span><span class="w"> </span><span class="s2">"</span><span class="nv">$DRAMA3_BUILD</span><span class="s2">"</span>
+<span class="s2">"</span><span class="nv">$DRAMA3_RUNTIME</span><span class="s2">/bin/fishaudio_drama3_server"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span><span class="s2">"</span><span class="nv">$DRAMA3_DATA</span><span class="s2">/models/mlx-community_fish-audio-drama-3-4bit"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-name<span class="w"> </span>fishaudio/drama-3<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>Set <code class="docutils literal notranslate"><span class="pre">DRAMA3_DATA</span></code>, <code class="docutils literal notranslate"><span class="pre">DRAMA3_RUNTIME</span></code> and <code class="docutils literal notranslate"><span class="pre">DRAMA3_BUILD</span></code> to separate local directories; for the 8-bit checkpoint, replace <code class="docutils literal notranslate"><span class="pre">4bit</span></code> with <code class="docutils literal notranslate"><span class="pre">8bit</span></code> in both commands. Serving needs neither Python nor SGLang’s CUDA package. Voice cloning sends the reference clip, a mono 44.1 kHz WAV, as base64:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s2">"{\"input\": \"Get the trust fund to the bank early.\",</span>
+<span class="s2">       \"references\": [{\"data\": \"</span><span class="k">$(</span>base64<span class="w"> </span>&lt;<span class="w"> </span>reference_44k.wav<span class="w"> </span><span class="p">|</span><span class="w"> </span>tr<span class="w"> </span>-d<span class="w"> </span><span class="s1">'\n'</span><span class="k">)</span><span class="s2">\",</span>
+<span class="s2">                       \"text\": \"We asked over twenty different people, and they all said it was his.\"}]}"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output<span class="w"> </span>output_voice_cloning.wav
+</pre></div>
+</div>
+<p>The server reads the request fields the CUDA server reads and refuses the same unsupported ones (<code class="docutils literal notranslate"><span class="pre">seed</span></code> included). Where they differ:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p></p></th>
+<th class="head"><p>CUDA server</p></th>
+<th class="head"><p>Native MLX server</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Reference audio</p></td>
+<td><p>A path, URL or base64 data in any format the server decodes, resampled to 44.1 kHz; up to 60 s each by default</p></td>
+<td><p>Base64 mono 44.1 kHz PCM16 or float32 WAV, as <code class="docutils literal notranslate"><span class="pre">references[i].data</span></code>, a <code class="docutils literal notranslate"><span class="pre">data:</span></code> URL in <code class="docutils literal notranslate"><span class="pre">references[i].audio</span></code>, or <code class="docutils literal notranslate"><span class="pre">ref_audio</span></code> with <code class="docutils literal notranslate"><span class="pre">ref_text</span></code>; paths and remote URLs are refused</p></td>
+</tr>
+<tr class="row-odd"><td><p>References</p></td>
+<td><p>Any number, within the prompt row limit (<code class="docutils literal notranslate"><span class="pre">max_prompt_rows</span></code>)</p></td>
+<td><p>Up to 4, together at most 30 s (646 frames of <code class="docutils literal notranslate"><span class="pre">vq_codes</span></code>) and 1024 transcript characters</p></td>
+</tr>
+<tr class="row-even"><td><p>Voices</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">default</span></code> (or <code class="docutils literal notranslate"><span class="pre">speaker</span></code>) or an uploaded voice</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">default</span></code> (or <code class="docutils literal notranslate"><span class="pre">speaker</span></code>) only</p></td>
+</tr>
+<tr class="row-odd"><td><p>Long input</p></td>
+<td><p>One prompt; <code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code> defaults to the remaining context, up to 2048 frames</p></td>
+<td><p>Split into chunks of about 300 bytes, each seeing the first and the previous chunk; <code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code> (default 1024, at most 4096) caps each chunk; <code class="docutils literal notranslate"><span class="pre">input</span></code> holds at most 4096 characters</p></td>
+</tr>
+<tr class="row-even"><td><p>Requests</p></td>
+<td><p>Batched</p></td>
+<td><p>One at a time; <code class="docutils literal notranslate"><span class="pre">--max-queued-requests</span></code> more may wait (2 by default), the rest get 503; a request not done <code class="docutils literal notranslate"><span class="pre">--request-timeout-s</span></code> seconds after it arrives (600 by default) gets 504, and a disconnected client’s request is cancelled</p></td>
+</tr>
+<tr class="row-odd"><td><p>Streaming</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;stream&quot;:</span> <span class="pre">true</span></code> with <code class="docutils literal notranslate"><span class="pre">&quot;response_format&quot;:</span> <span class="pre">&quot;pcm&quot;</span></code></p></td>
+<td><p>The same, with audio every 7 frames (0.33 s)</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">fishaudio_drama3_synthesize</span></code> runs one request from the command line and prints its timings; with <code class="docutils literal notranslate"><span class="pre">--codes-output</span></code> it also writes the first chunk’s prompt ids and every frame’s codes, for parity checks.</p>
+<section id="reference-parity-and-performance">
+<h3>Reference parity and performance<a class="headerlink" href="#reference-parity-and-performance" title="Link to this heading">#</a></h3>
+<p>The numerical reference is mlx-audio 0.6.2 (<code class="docutils literal notranslate"><span class="pre">f6d5da9</span></code>: <code class="docutils literal notranslate"><span class="pre">mlx_audio/tts/models/fish_drama3</span></code> and <code class="docutils literal notranslate"><span class="pre">mlx_audio/codec/models/fish_s1_dac</span></code>) on the same checkpoint and MLX 0.32.3; <code class="docutils literal notranslate"><span class="pre">native/licenses/fishaudio_drama3-MIT.txt</span></code> holds its license. The native runtime runs the gated delta rule on MLX’s <code class="docutils literal notranslate"><span class="pre">mx::fast::gated_delta_update</span></code>, where mlx-audio runs its own Metal kernel, and the two round their bf16 outputs differently. With mlx-audio’s gated delta step on the same MLX primitive and the same seed (given to <code class="docutils literal notranslate"><span class="pre">fishaudio_drama3_synthesize</span></code>), the native runtime samples the same codes and decodes the same PCM16 samples on every seeded test request.</p>
+<p>Measured on an Apple M4 Max (64 GB), warm, in ABBA order (native, reference, reference, native). The server takes no seed, so each side ran each request three times; the table gives each round’s median real-time factor (generation time over audio duration) and the median time to the first streamed audio. Native times include the HTTP request and PCM encoding. The 4-bit checkpoint:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Request</p></th>
+<th class="head text-right"><p>Real-time factor, native</p></th>
+<th class="head text-right"><p>Real-time factor, mlx-audio 0.6.2</p></th>
+<th class="head text-right"><p>First streamed audio, native</p></th>
+<th class="head text-right"><p>First streamed audio, mlx-audio</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>English, no reference</p></td>
+<td class="text-right"><p>0.376 / 0.377</p></td>
+<td class="text-right"><p>0.372 / 0.372</p></td>
+<td class="text-right"><p>0.18 s</p></td>
+<td class="text-right"><p>0.18 s</p></td>
+</tr>
+<tr class="row-odd"><td><p>English, cloned voice</p></td>
+<td class="text-right"><p>0.375 / 0.373</p></td>
+<td class="text-right"><p>0.375 / 0.372</p></td>
+<td class="text-right"><p>0.18 s</p></td>
+<td class="text-right"><p>0.18 s</p></td>
+</tr>
+<tr class="row-even"><td><p>Chinese, cloned voice</p></td>
+<td class="text-right"><p>0.367 / 0.370</p></td>
+<td class="text-right"><p>0.366 / 0.366</p></td>
+<td class="text-right"><p>0.18 s</p></td>
+<td class="text-right"><p>0.18 s</p></td>
+</tr>
+<tr class="row-odd"><td><p>Two speakers, cloned voice</p></td>
+<td class="text-right"><p>0.371 / 0.373</p></td>
+<td class="text-right"><p>0.368 / 0.369</p></td>
+<td class="text-right"><p>0.19 s</p></td>
+<td class="text-right"><p>0.18 s</p></td>
+</tr>
+<tr class="row-even"><td><p>26 s passage, two chunks</p></td>
+<td class="text-right"><p>0.374 / 0.371</p></td>
+<td class="text-right"><p>0.369 / 0.377</p></td>
+<td class="text-right"><p>0.22 s</p></td>
+<td class="text-right"><p>0.22 s</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Loading takes 4.1 s native and 4.5 s for the reference, from a warm file cache. Peak MLX memory (<code class="docutils literal notranslate"><span class="pre">mx.get_peak_memory()</span></code>) is 28.2 GB native on the passage and 28.7 GB in the reference; the server’s process footprint stays near 32 GB under mixed load, against 23 GB idle.</p>
+<p>The 8-bit checkpoint, measured the same way:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Request</p></th>
+<th class="head text-right"><p>Real-time factor, native</p></th>
+<th class="head text-right"><p>Real-time factor, mlx-audio 0.6.2</p></th>
+<th class="head text-right"><p>First streamed audio, native</p></th>
+<th class="head text-right"><p>First streamed audio, mlx-audio</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>English, no reference</p></td>
+<td class="text-right"><p>0.513 / 0.513</p></td>
+<td class="text-right"><p>0.513 / 0.514</p></td>
+<td class="text-right"><p>0.25 s</p></td>
+<td class="text-right"><p>0.25 s</p></td>
+</tr>
+<tr class="row-odd"><td><p>English, cloned voice</p></td>
+<td class="text-right"><p>0.507 / 0.506</p></td>
+<td class="text-right"><p>0.510 / 0.506</p></td>
+<td class="text-right"><p>0.25 s</p></td>
+<td class="text-right"><p>0.25 s</p></td>
+</tr>
+<tr class="row-even"><td><p>Chinese, cloned voice</p></td>
+<td class="text-right"><p>0.500 / 0.499</p></td>
+<td class="text-right"><p>0.502 / 0.501</p></td>
+<td class="text-right"><p>0.25 s</p></td>
+<td class="text-right"><p>0.25 s</p></td>
+</tr>
+<tr class="row-odd"><td><p>Two speakers, cloned voice</p></td>
+<td class="text-right"><p>0.504 / 0.500</p></td>
+<td class="text-right"><p>0.508 / 0.505</p></td>
+<td class="text-right"><p>0.26 s</p></td>
+<td class="text-right"><p>0.26 s</p></td>
+</tr>
+<tr class="row-even"><td><p>26 s passage, two chunks</p></td>
+<td class="text-right"><p>0.496 / 0.495</p></td>
+<td class="text-right"><p>0.498 / 0.497</p></td>
+<td class="text-right"><p>0.30 s</p></td>
+<td class="text-right"><p>0.30 s</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Loading takes 6.4 to 6.8 s native and 6.9 to 7.2 s for the reference. Peak MLX memory is 47.1 GB in the reference, and the server’s process footprint reaches 48 GB. Its routed experts are twice the size of the 4-bit ones and its other projections are bf16, and it runs about 1.35 times slower.</p>
+</section>
+</section>
 <section id="links">
 <h2>Links<a class="headerlink" href="#links" title="Link to this heading">#</a></h2>
 <ul class="simple">
@@ -1082,6 +1267,10 @@ Drama 3 tower fused layers: off, untested GPU sm_120
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#defaults-parameters">Defaults Parameters</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#apple-silicon-native-mlx">Apple Silicon: native MLX</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#reference-parity-and-performance">Reference parity and performance</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#links">Links</a></li>
 </ul>
   </nav></div>
