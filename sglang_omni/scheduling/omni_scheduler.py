@@ -2007,6 +2007,12 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
         sampling_params = request.sampling_params
+        # note (0xtoward): the runner's own sampler draws a one-token request's token
+        # on the target prefill, which never reaches a verify.
+        if sampling_params.max_new_tokens == 1:
+            return None
+        else:
+            pass
         # note (wilsonzheng0327): SGLang's draft workers drop min_p and apply each
         # penalty once per verify block; logprobs come from the runner's sampler, which
         # speculative decode bypasses, and hidden-state results need the per-request
@@ -2021,7 +2027,6 @@ class OmniScheduler(Generic[RequestDataT]):
                     "seed",
                     sampling_params.sampling_seed is not None
                     and sampling_params.top_k != 1
-                    and sampling_params.max_new_tokens != 1
                     and self.spec_algorithm
                     in (SpeculativeAlgorithm.DFLASH, SpeculativeAlgorithm.DSPARK)
                     and self.model_runner.speculative_ignores_request_seed,
