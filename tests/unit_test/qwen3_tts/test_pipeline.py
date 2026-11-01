@@ -2383,6 +2383,7 @@ def test_qwen3_tts_preprocessing_pool_thread_stays_on_the_stream_card(
 
     class FakeModel:
         model = SimpleNamespace(codec_embedding=torch.nn.Embedding(1, 4))
+        tts_model_type = "base"
 
         def build_prompt_constants(self) -> Qwen3TTSPromptConstants:
             return placeholder_prompt_constants()
@@ -8238,6 +8239,7 @@ def test_qwen3_tts_prompt_key_and_tail_guard_order(
         process_result,  # noqa: leading-underscore  # production name
     )
     scheduler = object.__new__(OmniScheduler)
+    scheduler.enable_overlap = False
     plain = SimpleNamespace(output_ids=[])
     batch = SimpleNamespace(reqs=[first.req, second.req, plain])
     scheduler.process_batch_result(batch, None)
@@ -8544,6 +8546,8 @@ def test_qwen3_tts_ar_scheduler_abort_cleans_prepared_state() -> None:
             )  # noqa: leading-underscore  # production name
 
         scheduler = object.__new__(OmniScheduler)
+        scheduler.enable_overlap = False
+        scheduler.result_queue = deque()
         scheduler.abort_callback = (
             qwen3_request_builders.cleanup_prepared_qwen3_tts_request
         )
@@ -11342,6 +11346,45 @@ def test_qwen3_tts_reference_encoder_stats_read_the_encoders_preprocessing_uses(
         assert qwen3_request_builders.qwen3_tts_reference_encoder_stats() is None
     finally:
         qwen3_request_builders.clear_qwen3_tts_preprocessing_context()
+
+
+@pytest.mark.parametrize(
+    ("tts_model_type", "graph_bucket_frames"),
+    [("base", (32, 64)), ("custom_voice", ())],
+)
+def test_qwen3_tts_only_base_captures_reference_encoder_graphs(
+    monkeypatch: pytest.MonkeyPatch,
+    tts_model_type: str,
+    graph_bucket_frames: tuple[int, ...],
+) -> None:
+    requested_bucket_frames: list[tuple[int, ...]] = []
+
+    class FakeModel:
+        model = SimpleNamespace(codec_embedding=torch.nn.Embedding(1, 4))
+
+        def build_prompt_constants(self) -> Qwen3TTSPromptConstants:
+            return placeholder_prompt_constants()
+
+    model = FakeModel()
+    model.tts_model_type = tts_model_type
+    monkeypatch.setattr(
+        qwen3_request_builders,
+        "get_qwen3_tts_adhoc_reference_service_locked",
+        lambda model, wrapper, *, graph_bucket_frames: requested_bucket_frames.append(
+            tuple(graph_bucket_frames)
+        ),
+    )
+    qwen3_request_builders.clear_qwen3_tts_preprocessing_context()
+    try:
+        qwen3_request_builders.set_qwen3_tts_preprocessing_context(
+            model=model,
+            wrapper=SimpleNamespace(),
+            reference_encoder_graph_bucket_frames=(32, 64),
+        )
+    finally:
+        qwen3_request_builders.clear_qwen3_tts_preprocessing_context()
+
+    assert requested_bucket_frames == [graph_bucket_frames]
 
 
 @pytest.mark.parametrize(
