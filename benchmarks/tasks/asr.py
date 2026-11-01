@@ -9,6 +9,7 @@ Owns the ASR/WER primitives shared by the standalone ASR benchmark
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import concurrent.futures
 import functools
@@ -537,6 +538,25 @@ def build_asr_eval_results(
         if key in perf:
             speed[key] = perf[key]
     return {"summary": wer_summary, "speed": speed, "per_sample": per_sample}
+
+
+SKIPPED_TEXT_AUDIO_WER_WARNING = (
+    "Skipping text-audio WER: pass --asr-router-port with the port of a running "
+    "SGLang Omni ASR server to compute it."
+)
+
+
+def add_asr_router_port_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--asr-router-port",
+        type=int,
+        default=None,
+        help=(
+            f"Port of a running SGLang Omni ASR server, such as {QWEN3_ASR_MODEL_PATH}, "
+            "that transcribes the audio output for text-audio WER. WER is skipped "
+            "without it."
+        ),
+    )
 
 
 def compute_text_audio_consistency(
