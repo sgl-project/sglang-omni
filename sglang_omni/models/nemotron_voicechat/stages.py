@@ -180,8 +180,15 @@ def create_talker_executor(
     )
 
 
-def create_code2wav_executor(model_path, *, dtype=None, device=None, gpu_id=None):
-    device = resolve_concrete_device(device, gpu_id)
+def create_code2wav_executor(
+    model_path: str,
+    *,
+    chunk_frames: tuple[int, ...],
+    dtype: str | None = None,
+    device: str | None = None,
+    gpu_id: int | None = None,
+) -> NemotronCode2WavScheduler:
+    concrete_device = resolve_concrete_device(device, gpu_id)
     generation = speech_generation_config(model_path)
     weights = load_weights_by_prefix(model_path, prefix=("tts_model.audio_codec.",))
     markers = {
@@ -199,13 +206,13 @@ def create_code2wav_executor(model_path, *, dtype=None, device=None, gpu_id=None
     # are the checkpoint's to say.
     decoder.control_codes.copy_(markers["_control_codes"].reshape(-1))
     decoder.silence_codes.copy_(markers["codec_silence_tokens"].reshape(-1))
-    decoder = decoder.to(device=device, dtype=resolve_dtype(dtype)).eval()
+    decoder = decoder.to(device=concrete_device, dtype=resolve_dtype(dtype)).eval()
 
     @torch.inference_mode()
     def decode(payload: StagePayload) -> StagePayload:
         """Render a whole code stack at once, for a reply that never streamed."""
         state = NemotronVoiceChatState.from_dict(payload.data)
-        waveform = decoder(state.codes.to(device)).float().cpu()
+        waveform = decoder(state.codes.to(concrete_device)).float().cpu()
         payload.data = audio_waveform_payload(
             waveform,
             sample_rate=OUTPUT_SAMPLE_RATE,
@@ -214,7 +221,9 @@ def create_code2wav_executor(model_path, *, dtype=None, device=None, gpu_id=None
         )
         return payload
 
-    return NemotronCode2WavScheduler(decoder, device, compute_fn=decode)
+    return NemotronCode2WavScheduler(
+        decoder, concrete_device, chunk_frames=chunk_frames, compute_fn=decode
+    )
 
 
 def create_decode_executor(model_path, **_):
