@@ -2134,6 +2134,7 @@ def test_qwen_sglang_request_hashes_media_tokens_without_changing_mrope_ids(
             audio_token_id=audio_token_id,
         ),
         capture_prompt_hidden_states=False,
+        speaks=False,
     )
 
     pad_values = req_data.req.omni_model_inputs["pad_values"]
@@ -2190,6 +2191,7 @@ def test_qwen_sglang_request_records_mm_token_positions(
             audio_token_id=audio_token_id,
         ),
         capture_prompt_hidden_states=False,
+        speaks=False,
     )
 
     positions = (

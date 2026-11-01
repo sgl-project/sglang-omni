@@ -165,6 +165,7 @@ def create_thinker_scheduler(
         vocab_size=model_config.vocab_size,
         thinker_config=thinker_config,
         capture_prompt_hidden_states=capture_prompt_hidden_states,
+        speech_enabled=speech_enabled,
         is_speculative=model_worker.speculative_worker is not None,
     )
     # Note (Junnan Li): A session turn streams its tokens to the talker like any request; the session only owns the lifecycle.
@@ -176,7 +177,10 @@ def create_thinker_scheduler(
         session_adapter = None
     else:
         session_adapter = QwenThinkerSessionAdapter(
-            tokenizer, model_config.vocab_size, thinker_config
+            tokenizer,
+            model_config.vocab_size,
+            thinker_config,
+            speech_enabled=speech_enabled,
         )
 
     scheduler = OmniScheduler(
