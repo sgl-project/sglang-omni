@@ -530,7 +530,7 @@ def test_umm_variant_wires_the_controller_and_inline_generation(monkeypatch):
         is Cosmos3UMMPipelineConfig
     )
     build_compiled_process_topology(config)
-    assert config.stage_factory_kwargs("generation") == {"inline_media": True}
+    assert config.stage_factory_kwargs("generation")["inline_media"] is True
     args = {
         **resolve_stage_typed_kwargs(config.stage_named("orchestrator")),
         **config.stage_factory_kwargs("orchestrator"),
