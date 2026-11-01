@@ -180,8 +180,12 @@ class ModelRunner(Generic[RequestDataInput]):
         self.model = tp_worker.model_runner.model
         self.execution_bridge: SGLangExecutionBridge | None = None
 
-        # Async decode (one-step lookahead). Inert unless ``_async_enabled`` is set.
+        # Async decode (lookahead pipeline). Inert unless ``_async_enabled``
+        # is set. The scheduler sets the depth alongside async_enabled; the
+        # pinned host-staging rings size themselves to depth + 1 so a launch
+        # can never overwrite a buffer a resolve still has to read.
         self.async_enabled: bool = False
+        self.async_lookahead_depth: int = 1
         self.staging_slot: int = 0
         self.host_staging_buffers: list[torch.Tensor] = []
         # Observability: how often resolve found the launched step's event
@@ -209,18 +213,22 @@ class ModelRunner(Generic[RequestDataInput]):
         else:
             pass
         n = ids.shape[0]
-        buf = self.next_token_id_host_buf(ids, n)
+        buf, slot = self.next_token_id_host_buf(ids, n)
         buf[:n].copy_(ids[:n], non_blocking=True)
-        event = self.next_token_id_event()
+        event = self.next_token_id_event(slot)
         event.record()
         result._host_token_ids = buf[
             :n
         ]  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         result._host_token_ids_event = event  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
-    def next_token_id_host_buf(self, like: torch.Tensor, n: int) -> torch.Tensor:
-        # Note (wenyao): two buffers ping-ponged so a step's host read never races
-        # the next step's async copy
+    def next_token_id_host_buf(
+        self, like: torch.Tensor, n: int
+    ) -> tuple[torch.Tensor, int]:
+        # Note (wenyao): a ring of pinned buffers so a step's host read never
+        # races a later step's async copy into the same slot; the ring is
+        # lookahead_depth + 1 large, and the returned slot keys the guarding
+        # event (buffer i is guarded by event i).
         return self.pinned_pingpong(
             "token_id_host_bufs",
             "token_id_host_slot",
@@ -229,16 +237,24 @@ class ModelRunner(Generic[RequestDataInput]):
             realloc_on_grow=True,
         )
 
-    def next_token_id_event(self) -> torch.cuda.Event:
+    def next_token_id_event(self, slot: int) -> torch.cuda.Event:
         # note (ratish): a new event is created at its first record, which waits while
-        # another thread of the process is inside the CUDA runtime; two, as the buffers.
-        if not self.token_id_events:
-            self.token_id_events = [torch.cuda.Event() for _ in range(2)]
+        # another thread of the process is inside the CUDA runtime; one per ring slot.
+        count = self.pinned_ring_size()
+        if len(self.token_id_events) != count:
+            self.token_id_events = [torch.cuda.Event() for _ in range(count)]
         else:
             pass
-        event = self.token_id_events[self.token_id_event_slot]
-        self.token_id_event_slot ^= 1
-        return event
+        return self.token_id_events[slot % count]
+
+    def pinned_ring_size(self) -> int:
+        """Pinned host-staging ring size: one buffer per launch that may be
+        in flight while a resolve still owes a host read, plus the one being
+        staged. Two buffers (the historic ping-pong pair) are only safe at
+        lookahead depth 1: resolve(N) reads its buffer after at most one more
+        launch stages. At depth D, launch N+D can stage into that same buffer
+        before resolve(N) reads it, so the ring needs D + 1 slots."""
+        return max(2, int(getattr(self, "async_lookahead_depth", 1)) + 1)
 
     def pinned_pingpong(
         self,
@@ -248,16 +264,21 @@ class ModelRunner(Generic[RequestDataInput]):
         dtype: torch.dtype,
         *,
         realloc_on_grow: bool,
-    ) -> torch.Tensor:
-        """Return one of two pinned host buffers, alternating slot each call.
+    ) -> tuple[torch.Tensor, int]:
+        """Return ``(buffer, slot)`` from a pinned host ring, cycling slots.
+
+        The ring holds ``pinned_ring_size()`` buffers; the returned slot also
+        keys the guarding event where the caller uses one (the token-id
+        staging pairs buffer ``i`` with event ``i``).
 
         ``realloc_on_grow`` reallocates (and resets the slot) when the request
-        outgrows the buffer or changes dtype; otherwise the pair is allocated
+        outgrows the buffer or changes dtype; otherwise the ring is allocated
         once on first use with the given fixed shape.
         """
+        count = self.pinned_ring_size()
         bufs = getattr(self, bufs_attr)
-        need_alloc = not bufs
-        if realloc_on_grow and bufs:
+        need_alloc = not bufs or len(bufs) != count
+        if realloc_on_grow and bufs and len(bufs) == count:
             need_alloc = (
                 bufs[0].shape[0] < shape[0]
                 or bufs[0].shape[1:] != tuple(shape[1:])
@@ -268,16 +289,16 @@ class ModelRunner(Generic[RequestDataInput]):
         if need_alloc:
             bufs = [
                 torch.empty(shape, dtype=dtype, device="cpu", pin_memory=True)
-                for _ in range(2)
+                for _ in range(count)
             ]
             setattr(self, bufs_attr, bufs)
             setattr(self, slot_attr, 0)
         else:
             pass
-        slot = getattr(self, slot_attr)
+        slot = getattr(self, slot_attr) % count
         buf = bufs[slot]
-        setattr(self, slot_attr, slot ^ 1)
-        return buf
+        setattr(self, slot_attr, (slot + 1) % count)
+        return buf, slot
 
     def resolve_host_token_ids(
         self, result: GenerationBatchResult
@@ -390,14 +411,16 @@ class ModelRunner(Generic[RequestDataInput]):
         self, shape: tuple[int, ...] | torch.Size, dtype: torch.dtype
     ) -> torch.Tensor:
         """Return a pinned host staging buffer covering ``shape``/``dtype``,
-        ping-ponging between two buffers on each call. Runners that stage the
+        cycling a ring of pinned buffers on each call. Runners that stage the
         collect to host use this: Higgs passes its fixed CG staging shape, the
         base plain-LM launch passes the step's ``(batch_size,)`` ids shape.
         Device-snapshot runners (MOSS-TTS-Local) never do.
 
-        Two buffers are required: resolve(N) reads one on the host while
-        launch(N+1)'s async host copy writes the other. That CPU-read vs
-        GPU-write overlap is not protected by single-stream ordering.
+        The ring is ``pinned_ring_size()`` (lookahead_depth + 1) large:
+        resolve(N) reads one on the host while up to ``depth`` later launches
+        stage into the others. That CPU-read vs GPU-write overlap is not
+        protected by single-stream ordering; the historic two-buffer
+        ping-pong was only safe at depth 1.
         Buffers are allocated lazily on first use and replaced when the
         requested dim 0 outgrows them (or trailing dims / dtype change); a
         resolve still holding the previous buffer keeps it alive, so
@@ -409,7 +432,7 @@ class ModelRunner(Generic[RequestDataInput]):
             tuple(shape),
             dtype,
             realloc_on_grow=True,
-        )
+        )[0]
 
     def execute(self, scheduler_output: SchedulerOutput) -> ModelRunnerOutput:
         """Full synchronous pipeline: build → prepare → forward → post →

@@ -375,7 +375,7 @@ class GraphSchedulerDriver:
 
     def is_pipeline_drained(self) -> bool:
         return (
-            self.scheduler.async_pending is None
+            not self.scheduler.async_pending
             and self.scheduler.previous_pending_decode is None
             and not self.runner.unresolved_forward_indices
         )

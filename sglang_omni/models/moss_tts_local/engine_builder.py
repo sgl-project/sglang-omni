@@ -63,6 +63,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
         *,
         enable_async_decode: bool,
         async_decode_min_batch_size: int,
+        async_decode_lookahead_depth: int = 1,
         prefill_coalesce_requests: int = 0,
         prefill_coalesce_wait_ms: float = 60.0,
         total_gpu_memory_fraction: float | None,
@@ -71,6 +72,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
     ) -> None:
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
+        self.async_decode_lookahead_depth = max(1, int(async_decode_lookahead_depth))
         self.prefill_coalesce_requests = prefill_coalesce_requests
         self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
         self.total_gpu_memory_fraction = total_gpu_memory_fraction
@@ -96,6 +98,12 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
             # note (Zhang Yiyang): Keep the measured buckets to bound prefill capture time and memory.
             "cuda_graph_bs_prefill": [64, 128, 256, 512],
             "disable_overlap_schedule": True,
+            # note: the slot-pool decode state is per (rid -> row) and a radix
+            # prefix hit replays prompt KV without the pool's prepare/reset
+            # bookkeeping, so a repeated prompt deterministically mis-samples
+            # (the second identical request diverges from frame 0). Drama 3
+            # enforces the same constraint for its slot pool.
+            "disable_radix_cache": True,
             # note (Zhang Yiyang): Tests showed costly startup with no consistent throughput gain from compile.
             "enable_torch_compile": False,
             "max_prefill_tokens": min(self.context_length, 8192),
@@ -225,6 +233,11 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
         return {
             "enable_async_decode": self.enable_async_decode,
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
+            # Launched-but-unresolved decode steps kept in flight. Depth 1 is
+            # the classic one-step lookahead; 2+ hides longer resolves behind
+            # GPU forwards (finishing requests overrun by up to `depth` frames,
+            # dropped by the resolve's prior-step-finish skip).
+            "async_decode_lookahead_depth": self.async_decode_lookahead_depth,
             # Whole-prompt prefill lookahead. The MOSS runner's post_prefill
             # collects the first frame, and post_prefill_launch hands that
             # snapshot to resolve instead of sampling a second time. Chunked or

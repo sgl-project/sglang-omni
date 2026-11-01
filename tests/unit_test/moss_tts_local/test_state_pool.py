@@ -131,7 +131,8 @@ def test_release_resets_row_fields():
     pool = MossTTSLocalDecodeStatePool(make_model())
     row = pool.acquire_row("a")
     pool.write_params(row, make_params(seed=123))
-    pool.commit_generation_step("a", 3)
+    pool.sampling_steps[row] = 3
+    pool.generation_steps[row] = 3
     pool.feedback_embeds[row].fill_(1.0)
     pool.release_row("a")
     assert torch.all(pool.feedback_embeds[row] == 0)
@@ -197,22 +198,12 @@ def test_ensure_params_writes_once_until_invalidated():
     assert int(pool.seeds[row]) == 2
 
 
-def test_commit_generation_step_updates_active_row():
-    pool = MossTTSLocalDecodeStatePool(make_model())
-    row = pool.acquire_row("a")
-
-    pool.commit_generation_step("a", 7)
-    pool.commit_generation_step("ghost", 3)
-
-    assert int(pool.generation_steps[row]) == 7
-    assert int(pool.sampling_steps[row]) == 7
-
-
 def test_reset_for_refill_clears_active_row():
     pool = MossTTSLocalDecodeStatePool(make_model())
     row = pool.acquire_row("a")
     pool.ensure_params(row, "a", make_params(seed=1))
-    pool.commit_generation_step("a", 4)
+    pool.sampling_steps[row] = 4
+    pool.generation_steps[row] = 4
     pool.feedback_embeds[row] = 1.0
     pool.audio_token_presence[row, 0, 7] = True
 
@@ -415,7 +406,8 @@ def test_collect_frame_reads_generation_steps_from_pool():
     request = SimpleNamespace(request_id="rid", data=data)
     row = pool.acquire_row("rid")
     pool.ensure_params(row, "rid", data)
-    pool.commit_generation_step("rid", 4)
+    pool.sampling_steps[row] = 4
+    pool.generation_steps[row] = 4
     result = SimpleNamespace(
         logits_output=SimpleNamespace(hidden_states=torch.zeros(1, hidden_size))
     )
@@ -566,7 +558,9 @@ def test_pool_sampling_position_leads_unresolved_lookahead_launches():
     assert row is not None
     assert torch.equal(captured[0], torch.tensor([0]))
     assert torch.equal(captured[1], torch.tensor([13]))
-    assert int(pool.generation_steps[row]) == 0
+    # Both counters advance on device at emit (launch side), so both lead
+    # the unresolved lookahead launches; the async floor is their max.
+    assert int(pool.generation_steps[row]) == 2
     assert int(pool.sampling_steps[row]) == 2
 
 
@@ -779,7 +773,10 @@ def test_cached_pool_rows_drive_collect_and_batched_step_commit():
         raise AssertionError("collect path must reuse cached moss_pool_row_t")
 
     pool.prepare_active_rows = fail_prepare_active_rows
-    pool.commit_generation_steps(row_t, torch.tensor([4, 8], dtype=torch.long))
+    pool.sampling_steps[row_a] = 4
+    pool.sampling_steps[row_b] = 8
+    pool.generation_steps[row_a] = 4
+    pool.generation_steps[row_b] = 8
     captured = {}
 
     def decode_frame_graphed(hidden_states, **kwargs):
@@ -830,7 +827,7 @@ def test_cached_pool_rows_drive_collect_and_batched_step_commit():
     assert int(pool.generation_steps[row_b]) == 9
 
 
-def test_finalize_commits_generation_steps_to_pool():
+def test_finalize_advances_host_generation_steps_only():
     model = make_model(max_running_requests=2)
     pool = MossTTSLocalDecodeStatePool(model)
     model.state_pool = pool
@@ -865,7 +862,8 @@ def test_finalize_commits_generation_steps_to_pool():
     )
 
     assert data.generation_steps == 1
-    assert int(pool.generation_steps[row]) == 1
+    # The pool counter advances on device at emit, never in finalize.
+    assert int(pool.generation_steps[row]) == 0
 
 
 def test_resume_reprefill_overwrites_stranded_feedback():
@@ -885,7 +883,8 @@ def test_resume_reprefill_overwrites_stranded_feedback():
 
     row = pool.acquire_row("a")
     pool.ensure_params(row, "a", make_params(seed=1))
-    pool.commit_generation_step("a", 3)
+    pool.sampling_steps[row] = 3
+    pool.generation_steps[row] = 3
     # Feedback stranded by the retraction (must be wiped by the resume).
     pool.feedback_embeds[row].fill_(5.0)
     pool.audio_token_presence[row, 0, 99] = True

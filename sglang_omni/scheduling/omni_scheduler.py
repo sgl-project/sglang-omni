@@ -280,6 +280,7 @@ class OmniSchedulerArguments(TypedDict, Generic[RequestDataT], total=False):
     enable_overlap: bool
     enable_async_decode: bool
     async_decode_min_batch_size: int
+    async_decode_lookahead_depth: int
     async_decode_resolve_before_prefill: bool
     async_prefill: bool
     should_run_top_priority_stream: bool
@@ -353,6 +354,7 @@ class OmniScheduler(Generic[RequestDataT]):
         enable_overlap: bool = False,
         enable_async_decode: bool = False,
         async_decode_min_batch_size: int = 1,
+        async_decode_lookahead_depth: int = 1,
         async_decode_resolve_before_prefill: bool = False,
         async_prefill: bool = False,
         should_run_top_priority_stream: bool = False,
@@ -456,6 +458,12 @@ class OmniScheduler(Generic[RequestDataT]):
         # instead of the lookahead. The default 1 sends every decode batch the
         # runner allows through the lookahead.
         self.async_decode_min_batch_size = int(async_decode_min_batch_size)
+        # Launched-but-unresolved steps kept in flight (oldest resolved first).
+        # Depth 1 is the classic one-step lookahead; deeper pipelines hide more
+        # resolve host work behind GPU forwards at the cost of up to `depth`
+        # overrun frames per finishing request (dropped by the resolve's
+        # prior-step-finish skip).
+        self.async_decode_lookahead_depth = max(1, int(async_decode_lookahead_depth))
         self.async_decode_resolve_before_prefill = async_decode_resolve_before_prefill
         # Plain prefill batches join the lookahead: launch, then resolve after
         # the next launch, so the host never blocks on a prefill's tokens.
@@ -557,10 +565,11 @@ class OmniScheduler(Generic[RequestDataT]):
         self.running_batch = ScheduleBatch(reqs=[], batch_is_full=False)
         self.cur_batch = None
         self.last_batch = None
-        # Async decode (one-step lookahead): the launched-but-not-resolved
-        # decode batch, or None. Tracked here (not just a loop local) so abort
-        # can reach the in-flight step. See _event_loop_async_decode.
-        self.async_pending: PendingDecode | None = None
+        # Async decode (lookahead pipeline): launched-but-unresolved steps,
+        # oldest first, at most async_decode_lookahead_depth of them. Tracked
+        # here (not just a loop local) so abort can reach the in-flight steps.
+        # See event_loop_async_decode.
+        self.async_pending: list[PendingDecode] = []
         self.previous_pending_decode = None
         self.forward_ct = 0
         self.return_health_check_ct = 0
@@ -769,6 +778,7 @@ class OmniScheduler(Generic[RequestDataT]):
             future_map=self.future_map,
         )
         model_runner.async_enabled = self.enable_async_decode
+        model_runner.async_lookahead_depth = self.async_decode_lookahead_depth
         model_runner.bind_execution_bridge(bridge)
         if self.draft_worker is not None:
             self.tp_worker.speculative_target_worker.attach_runner(model_runner)
@@ -3452,7 +3462,7 @@ class OmniScheduler(Generic[RequestDataT]):
             self.running_batch,
             self.cur_batch,
             self.last_batch,
-            self.async_pending_batch(),
+            *self.async_pending_batches(),
         ):
             if batch is None:
                 continue
@@ -3540,7 +3550,7 @@ class OmniScheduler(Generic[RequestDataT]):
             self.running_batch,
             self.cur_batch,
             self.last_batch,
-            self.async_pending_batch(),
+            *self.async_pending_batches(),
         ):
             if batch is None or id(batch) in seen:
                 continue
@@ -3581,7 +3591,7 @@ class OmniScheduler(Generic[RequestDataT]):
             self.running_batch,
             self.cur_batch,
             self.last_batch,
-            self.async_pending_batch(),
+            *self.async_pending_batches(),
         ):
             if batch is None:
                 continue
@@ -3734,31 +3744,27 @@ class OmniScheduler(Generic[RequestDataT]):
             and all(req.inflight_middle_chunks <= 0 for req in batch.reqs)
         )
 
-    def async_pending_batch(self) -> ScheduleBatch | None:
-        """Return the launched decode batch awaiting result processing, or None."""
-        pending_decode = self.async_pending
-        return pending_decode.batch if pending_decode is not None else None
+    def async_pending_batches(self) -> list[ScheduleBatch]:
+        """Return the launched batches awaiting result processing, oldest first."""
+        return [pending_decode.batch for pending_decode in self.async_pending]
 
     def synchronize_launched_decode(self) -> None:
-        pending_decode = self.async_pending
-        if pending_decode is not None:
+        for pending_decode in self.async_pending:
             pending_decode.device_step.event.synchronize()
-        else:
-            pass
 
     def wait_async_device(self, batch: ScheduleBatch, device_step: PendingStep) -> None:
         device_steps = [device_step]
-        pending_decode = self.async_pending
-        if (
-            pending_decode is not None
-            and pending_decode.device_step is not device_step
-            and any(
-                request.session is not None and request.session.streaming
-                for request in batch.reqs
-            )
+        other_steps = [
+            pending_decode.device_step
+            for pending_decode in self.async_pending
+            if pending_decode.device_step is not device_step
+        ]
+        if other_steps and any(
+            request.session is not None and request.session.streaming
+            for request in batch.reqs
         ):
             # note (Junnan Li): Prior-result collection may trim KV still used by the current step.
-            device_steps.append(pending_decode.device_step)
+            device_steps.extend(other_steps)
         else:
             pass
         for launched_step in device_steps:
@@ -3846,27 +3852,27 @@ class OmniScheduler(Generic[RequestDataT]):
                 self.process_owned_async(pending_decode)
             else:
                 pass
-            if self.async_pending is not None:
-                self.wait_async_device(
-                    self.async_pending.batch, self.async_pending.device_step
-                )
-                pending_decode, self.async_pending = self.async_pending, None
-                self.process_owned_async(pending_decode)
-            else:
-                pass
-        elif self.async_pending is None:
-            return
+            while self.async_pending:
+                pending_decode = self.async_pending.pop(0)
+                self.previous_pending_decode = pending_decode
+                try:
+                    self.wait_async_device(
+                        pending_decode.batch, pending_decode.device_step
+                    )
+                    self.process_owned_async(pending_decode)
+                finally:
+                    self.previous_pending_decode = None
         else:
-            pending_decode = self.async_pending
-            self.async_pending = None
-            try:
-                self.resolve_and_process(
-                    pending_decode.batch,
-                    pending_decode.scheduler_output,
-                    pending_decode.device_step,
-                )
-            except Exception as exc:
-                self.handle_batch_failure(pending_decode.batch, exc)
+            while self.async_pending:
+                pending_decode = self.async_pending.pop(0)
+                try:
+                    self.resolve_and_process(
+                        pending_decode.batch,
+                        pending_decode.scheduler_output,
+                        pending_decode.device_step,
+                    )
+                except Exception as exc:
+                    self.handle_batch_failure(pending_decode.batch, exc)
 
     def drop_stale_overrun(self, batch):
         """Drop reqs finished OR retracted by the just-completed drain from the
@@ -3977,14 +3983,17 @@ class OmniScheduler(Generic[RequestDataT]):
 
     @DynamicGradMode()
     def event_loop_async_decode(self) -> None:
-        """One-step-lookahead decode loop (single stream + CUDA event).
+        """Lookahead decode loop (single stream + CUDA event).
 
         Each iteration LAUNCHES the current decode step (GPU forward + on-GPU
         sample, then ``post_decode_launch`` publishes the resolve payload, no GPU
-        wait) and THEN RESOLVES the previous step's host-side collect, so the
-        resolve host work overlaps the current step's GPU forward (launch-first,
-        D1 in design.md section 1.3). Prefill / empty batches flush any in-flight
-        decode first and run synchronously (the in-flight step is never stranded).
+        wait) and THEN RESOLVES the oldest launched step once more than
+        ``async_decode_lookahead_depth`` steps are in flight, so resolve host
+        work overlaps GPU forwards (launch-first, D1 in design.md section 1.3).
+        Depth 1 is the classic one-step lookahead; deeper settings keep more
+        steps in flight to hide longer resolves. Prefill / empty batches flush
+        any in-flight decode first and run synchronously (the in-flight steps
+        are never stranded).
         """
         while self.running:
             self.process_admin_requests()
@@ -4000,7 +4009,7 @@ class OmniScheduler(Generic[RequestDataT]):
                 pass
 
             if (
-                self.async_pending is not None
+                self.async_pending
                 and self.is_mixed_chunk
                 and (
                     self.chunked_req is not None
@@ -4010,7 +4019,7 @@ class OmniScheduler(Generic[RequestDataT]):
                 self.resolve_pending_async()
             elif (
                 self.async_decode_resolve_before_prefill
-                and self.async_pending is not None
+                and self.async_pending
                 and self.is_prefill_expected()
             ):
                 self.resolve_pending_async()
@@ -4042,13 +4051,15 @@ class OmniScheduler(Generic[RequestDataT]):
                 except Exception as exc:
                     self.handle_batch_failure(batch, exc)
                 else:
-                    prev_pending = self.async_pending
-                    self.async_pending = PendingDecode(
-                        batch=batch.copy(),
-                        scheduler_output=sched_output,
-                        device_step=pending_step,
+                    self.async_pending.append(
+                        PendingDecode(
+                            batch=batch.copy(),
+                            scheduler_output=sched_output,
+                            device_step=pending_step,
+                        )
                     )
-                    if prev_pending is not None:
+                    while len(self.async_pending) > self.async_decode_lookahead_depth:
+                        prev_pending = self.async_pending.pop(0)
                         if self.session_bridge is not None:
                             self.previous_pending_decode = prev_pending
                             self.wait_async_device(
@@ -4065,16 +4076,14 @@ class OmniScheduler(Generic[RequestDataT]):
                                 )
                             except Exception as exc:
                                 self.handle_batch_failure(prev_pending.batch, exc)
-                    else:
-                        pass
             else:
                 # Prefill, empty batches, decode batches below the configured
                 # threshold and batches the runner marks ineligible for the
-                # lookahead all land here. Flush any in-flight lookahead step
+                # lookahead all land here. Flush any in-flight lookahead steps
                 # first to keep ordering, which is also the drain when a batch
                 # leaves the lookahead, then run this batch synchronously. Skip
                 # the drain call when nothing is pending, since it would no-op.
-                if self.async_pending is not None:
+                if self.async_pending:
                     self.resolve_pending_async()
                     # Stale-batch overrun: `batch` was built (get_next_batch_to_run,
                     # top of loop) BEFORE this drain, which can finish OR retract reqs
@@ -4179,7 +4188,7 @@ class OmniScheduler(Generic[RequestDataT]):
             self.running_batch,
             self.cur_batch,
             self.last_batch,
-            self.async_pending_batch(),
+            *self.async_pending_batches(),
         ):
             if batch is None:
                 continue

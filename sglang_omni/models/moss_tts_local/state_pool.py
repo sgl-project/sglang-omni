@@ -146,27 +146,39 @@ class MossTTSLocalDecodeStatePool:
             else None
         )
 
-    def _pinned_pool_row_bufs(self, n: int) -> list[torch.Tensor]:
-        """Pinned ping-pong staging buffers for the per-step row-index H2D.
+    def _acquire_pinned_row_buf(
+        self, n: int
+    ) -> tuple[torch.Tensor, "torch.cuda.Event | None"]:
+        """Pinned staging buffer for the per-step row-index H2D, plus the
+        event guarding its last enqueue.
 
         ``torch.tensor(list, device="cuda")`` is a pageable H2D copy: it waits
         for the current stream to drain, so on the async-decode path (where
         launch N overlaps forward N-1) it serialized the scheduler thread
         against the in-flight forward. Pinned ``copy_(non_blocking=True)``
         returns immediately and the copy overlaps the forward.
+
+        A buffer is reused only once its guarding event reports complete, so
+        the host write can never overwrite a copy the GPU has not executed.
+        The classic ping-pong pair is only safe at lookahead depth 1 (the
+        previous same-slot copy is always covered by a waited event); deeper
+        pipelines can hold several un-waited launches, and the pool self-sizes
+        to the realized depth instead of guessing it.
         """
-        bufs = getattr(self, "_pool_row_pinned", None)
-        if bufs is None or bufs[0].numel() < n:
-            size = max(n, 128)
-            bufs = [
-                torch.empty(size, dtype=torch.long, pin_memory=True),
-                torch.empty(size, dtype=torch.long, pin_memory=True),
-            ]
-            self._pool_row_pinned = bufs
-            self._pool_row_slot = 0
+        entries = getattr(self, "_pool_row_pinned", None)
+        if entries is None:
+            entries = []
+            self._pool_row_pinned = entries
         else:
-            pass
-        return bufs
+            for buf, event in entries:
+                if buf.numel() >= n and (event is None or event.query()):
+                    return buf, event
+                else:
+                    pass
+        size = max(n, 128)
+        buf = torch.empty(size, dtype=torch.long, pin_memory=True)
+        entries.append((buf, None))
+        return buf, None
 
     def acquire_row(self, rid: str) -> int:
         """Assign (or return the existing) row for ``rid``.
@@ -232,26 +244,58 @@ class MossTTSLocalDecodeStatePool:
     def write_params(self, row_idx: int, data: "MossTTSLocalSGLangRequestData") -> None:
         """Write the seven request-static sampling fields into ``row_idx``.
 
-        Routed through the same ``float(...)``/``int(...)`` host casts the
-        previous per-composition ``_param_cache`` used so the rounded values
-        are bit-identical.
+        The values travel as ONE pinned ring upload plus device-side row
+        writes: eight per-row scalar assignments are pageable H2D copies, and
+        each one blocks the scheduler thread until every in-flight forward
+        drains — on the lookahead pipeline that stall scales with the queue
+        depth (measured 15% of the scheduler thread at depth 2).
         """
-        self.text_temp[row_idx] = float(data.text_temperature)
-        self.text_top_p[row_idx] = float(data.text_top_p)
-        self.audio_temp[row_idx] = float(data.audio_temperature)
-        self.audio_top_p[row_idx] = float(data.audio_top_p)
-        self.text_top_k[row_idx] = int(data.text_top_k)
-        self.audio_top_k[row_idx] = int(data.audio_top_k)
-        self.seeds[row_idx] = int(data.sampling_seed)
         try:
             audio_repetition_penalty = float(data.audio_repetition_penalty)
         except AttributeError:
             audio_repetition_penalty = 1.0
-        self.audio_repetition_penalty[row_idx] = audio_repetition_penalty
         if audio_repetition_penalty == 1.0:
             self.audio_repetition_penalty_rows.discard(int(row_idx))
         else:
             self.audio_repetition_penalty_rows.add(int(row_idx))
+        if self.device.type == "cuda":
+            fbuf, ibuf, slot = self._acquire_pinned_param_buf()
+            fbuf[0, 0] = float(data.text_temperature)
+            fbuf[0, 1] = float(data.text_top_p)
+            fbuf[0, 2] = float(data.audio_temperature)
+            fbuf[0, 3] = float(data.audio_top_p)
+            fbuf[0, 4] = audio_repetition_penalty
+            ibuf[0, 0] = int(data.text_top_k)
+            ibuf[0, 1] = int(data.audio_top_k)
+            ibuf[0, 2] = int(data.sampling_seed)
+            staged_f = fbuf[:1].to(
+                device=self.device, dtype=torch.float32, non_blocking=True
+            )
+            staged_i = ibuf[:1].to(
+                device=self.device, dtype=torch.long, non_blocking=True
+            )
+            lo, hi = int(row_idx), int(row_idx) + 1
+            self.text_temp[lo:hi] = staged_f[:, 0]
+            self.text_top_p[lo:hi] = staged_f[:, 1]
+            self.text_top_k[lo:hi] = staged_i[:, 0]
+            self.audio_temp[lo:hi] = staged_f[:, 2]
+            self.audio_top_p[lo:hi] = staged_f[:, 3]
+            self.audio_top_k[lo:hi] = staged_i[:, 1]
+            self.seeds[lo:hi] = staged_i[:, 2]
+            self.audio_repetition_penalty[lo:hi] = staged_f[:, 4]
+            if self._param_events[slot] is None:
+                self._param_events[slot] = torch.cuda.Event()
+            self._param_events[slot].record()
+        else:
+            pass
+            self.text_temp[row_idx] = float(data.text_temperature)
+            self.text_top_p[row_idx] = float(data.text_top_p)
+            self.audio_temp[row_idx] = float(data.audio_temperature)
+            self.audio_top_p[row_idx] = float(data.audio_top_p)
+            self.text_top_k[row_idx] = int(data.text_top_k)
+            self.audio_top_k[row_idx] = int(data.audio_top_k)
+            self.seeds[row_idx] = int(data.sampling_seed)
+            self.audio_repetition_penalty[row_idx] = audio_repetition_penalty
 
     def ensure_params(
         self, row_idx: int, rid: str, data: "MossTTSLocalSGLangRequestData"
@@ -262,6 +306,34 @@ class MossTTSLocalDecodeStatePool:
             self.params_written_rids.add(rid)
         else:
             pass
+
+    def _acquire_pinned_param_buf(
+        self,
+    ) -> tuple[torch.Tensor, torch.Tensor, int]:
+        """Pinned staging ring (float32 + int64 halves) for the batched param
+        upload; see ``_acquire_pinned_row_buf`` for the reuse guard."""
+        entries = getattr(self, "_param_pinned", None)
+        if entries is None:
+            count = 4
+            entries = [
+                (
+                    torch.empty(1, 5, dtype=torch.float32, pin_memory=True),
+                    torch.empty(1, 3, dtype=torch.long, pin_memory=True),
+                )
+                for _ in range(count)
+            ]
+            self._param_pinned = entries
+            self._param_events = [None] * count
+        else:
+            pass
+        for slot, (fbuf, ibuf) in enumerate(entries):
+            event = self._param_events[slot]
+            if event is None or event.query():
+                return fbuf, ibuf, slot
+            else:
+                pass
+        fbuf, ibuf = entries[0]
+        return fbuf, ibuf, 0
 
     def invalidate_params(self, rid: str) -> None:
         """Force params to be rewritten on the next ``ensure_params`` call."""
@@ -410,15 +482,24 @@ class MossTTSLocalDecodeStatePool:
                 has_audio_repetition_penalty = True
             else:
                 pass
-        bufs = self._pinned_pool_row_bufs(len(pool_rows))
-        slot = self._pool_row_slot
-        self._pool_row_slot = slot ^ 1
-        buf = bufs[slot]
+        buf, event = self._acquire_pinned_row_buf(len(pool_rows))
         buf[: len(pool_rows)] = torch.tensor(pool_rows, dtype=torch.long)
         row_tensor = torch.empty(
             len(pool_rows), dtype=torch.long, device=self.device
         )
         row_tensor.copy_(buf[: len(pool_rows)], non_blocking=True)
+        if self.device.type == "cuda":
+            if event is None:
+                event = torch.cuda.Event()
+            event.record()
+            for i, (entry_buf, _) in enumerate(self._pool_row_pinned):
+                if entry_buf is buf:
+                    self._pool_row_pinned[i] = (buf, event)
+                    break
+                else:
+                    pass
+        else:
+            pass
         return (
             row_tensor,
             pool_rows,
