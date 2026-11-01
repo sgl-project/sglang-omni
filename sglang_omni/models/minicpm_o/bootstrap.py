@@ -10,6 +10,7 @@ from sglang.srt.speculative.ragged_verify import (
     RaggedVerifyMode,
     read_ragged_verify_mode,
 )
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.minicpm_o.components.sglang_thinker import (
@@ -181,9 +182,10 @@ def create_thinker_scheduler(
 
     cfg = resolved_view(server_args)
     want_cuda_graph = not bool(cfg.disable_cuda_graph)
-    speculative = cfg.speculative_algorithm is not None
+    speculative_algorithm = SpeculativeAlgorithm.from_string(cfg.speculative_algorithm)
+    speculative = not speculative_algorithm.is_none()
     if (
-        cfg.speculative_algorithm == "DSPARK"
+        speculative_algorithm.is_dspark()
         and read_ragged_verify_mode() != RaggedVerifyMode.STATIC
     ):
         raise ValueError(

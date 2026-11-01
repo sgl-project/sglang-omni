@@ -20,6 +20,7 @@ from sglang_omni.audio.vad import StatelessVAD
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 from sglang_omni.models.minicpm_o import bootstrap as bootstrap_module
+from sglang_omni.models.minicpm_o import stages as stages_module
 from sglang_omni.models.minicpm_o.components import sglang_thinker as thinker_module
 from sglang_omni.models.minicpm_o.components.streaming_perception import (
     SAMPLE_RATE,
@@ -439,6 +440,58 @@ def test_speech_capture_copies_the_prefill_ceiling_and_text_capture_stays_empty(
     else:
         assert model.prefill_hidden_rows is None
         assert model.speculative_hidden_rows is None
+
+
+@pytest.mark.parametrize(
+    ("speculative_overrides", "message"),
+    [
+        ({"speculative_draft_model_path": "draft"}, "needs a speculative_algorithm"),
+        ({"speculative_algorithm": "DSPARK"}, "needs speculative_draft_model_path"),
+        (
+            {"speculative_algorithm": "NGRAM", "speculative_draft_model_path": "draft"},
+            "supports EAGLE3, DFLASH and DSPARK",
+        ),
+        (
+            {
+                "speculative_algorithm": "DSPARK",
+                "speculative_draft_model_path": "draft",
+                "enable_mixed_chunk": True,
+            },
+            "needs enable_mixed_chunk off",
+        ),
+    ],
+)
+def test_the_thinker_stage_checks_the_algorithm_draft_and_mixed_chunk_together(
+    speculative_overrides: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        stages_module.create_sglang_thinker_executor_from_config(
+            "dummy", server_args_overrides=speculative_overrides
+        )
+
+
+def test_the_thinker_stage_keeps_max_seq_len_within_the_draft_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        stages_module,
+        "AutoConfig",
+        SimpleNamespace(
+            from_pretrained=lambda *args, **kwargs: SimpleNamespace(
+                max_position_embeddings=4096
+            )
+        ),
+    )
+
+    with pytest.raises(ValueError, match="exceeds the draft's"):
+        stages_module.create_sglang_thinker_executor_from_config(
+            "dummy",
+            max_seq_len=8192,
+            server_args_overrides={
+                "speculative_algorithm": "DSPARK",
+                "speculative_draft_model_path": "draft",
+            },
+        )
 
 
 @pytest.mark.parametrize(
