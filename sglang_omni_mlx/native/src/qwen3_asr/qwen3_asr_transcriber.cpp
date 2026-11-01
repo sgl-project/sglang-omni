@@ -284,11 +284,14 @@ int Qwen3ASRTranscriber::DecodeWithDraft(
   std::vector<KVCache> caches = model_.NewCaches();
   std::vector<KVCache> draft_caches = draft_->NewCaches();
   std::vector<mx::array> aux_hidden_states;
-  const mx::array prompt_hidden = decoder.Forward(
-      embeddings, caches, draft_->aux_layers(), &aux_hidden_states);
-  draft_->AppendContext(aux_hidden_states, embeddings.shape(1), draft_caches);
-  int anchor_id = static_cast<int>(
-      mx::argmax(decoder.LastLogits(prompt_hidden)).item<uint32_t>());
+  int anchor_id;
+  {
+    const mx::array prompt_hidden = decoder.Forward(
+        embeddings, caches, draft_->aux_layers(), &aux_hidden_states);
+    draft_->AppendContext(aux_hidden_states, embeddings.shape(1), draft_caches);
+    anchor_id = static_cast<int>(
+        mx::argmax(decoder.LastLogits(prompt_hidden)).item<uint32_t>());
+  }
   if (cancel.load()) {
     throw TranscriptionCancelled();
   } else {
