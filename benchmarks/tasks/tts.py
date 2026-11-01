@@ -1325,6 +1325,7 @@ def _collect_chat_streaming_audio(
     chunk_times_out: list[float] | None = None,
     text_first_time_holder: list[float] | None = None,
 ) -> tuple[int, int, int] | None:
+    received_at_s = time.perf_counter()
     event = parse_sse_event(line)
     if event is None:
         return pcm_format
@@ -1344,30 +1345,55 @@ def _collect_chat_streaming_audio(
         delta = choice.get("delta")
         if not isinstance(delta, dict):
             continue
-        if text_first_time_holder is not None and not text_first_time_holder:
-            content = delta.get("content")
-            if isinstance(content, str) and content:
-                text_first_time_holder.append(time.perf_counter())
+        content = delta.get("content")
         audio = delta.get("audio")
-        if not isinstance(audio, dict) or not audio.get("data"):
-            continue
+        has_audio_field = isinstance(audio, dict) and bool(audio.get("data"))
+        content_is_audio = False
+        encoded_audio = audio["data"] if has_audio_field else None
+        if (
+            encoded_audio is None
+            and isinstance(content, str)
+            and content.startswith("UklGR")
+        ):
+            encoded_audio = content
         try:
-            chunk_bytes = base64.b64decode(audio["data"])
-            if len(chunk_bytes) <= WAV_HEADER_SIZE:
-                continue
-            with io.BytesIO(chunk_bytes) as buf:
-                with wave.open(buf, "rb") as wf:
-                    pcm_chunks.append(wf.readframes(wf.getnframes()))
-                    if chunk_times_out is not None:
-                        chunk_times_out.append(time.perf_counter())
-                    if pcm_format is None:
-                        pcm_format = (
+            if encoded_audio is not None:
+                chunk_bytes = base64.b64decode(
+                    encoded_audio, validate=not has_audio_field
+                )
+                if chunk_bytes[:4] != b"RIFF" or chunk_bytes[8:12] != b"WAVE":
+                    raise wave.Error("Expected a RIFF/WAVE audio chunk")
+                with io.BytesIO(chunk_bytes) as buf:
+                    with wave.open(buf, "rb") as wf:
+                        decoded_format = (
                             wf.getframerate(),
                             wf.getnchannels(),
                             wf.getsampwidth(),
                         )
-        except (binascii.Error, wave.Error, EOFError) as exc:
+                        frame_count = wf.getnframes()
+                        pcm_bytes = wf.readframes(frame_count)
+                        if (
+                            len(pcm_bytes)
+                            != frame_count * decoded_format[1] * decoded_format[2]
+                        ):
+                            raise wave.Error("Incomplete WAV audio frames")
+                content_is_audio = not has_audio_field
+                if pcm_bytes:
+                    pcm_chunks.append(pcm_bytes)
+                    if chunk_times_out is not None:
+                        chunk_times_out.append(received_at_s)
+                    if pcm_format is None:
+                        pcm_format = decoded_format
+        except (binascii.Error, ValueError, wave.Error, EOFError) as exc:
             logger.debug(f"Skipping malformed chat streaming audio chunk: {exc}")
+        if (
+            text_first_time_holder is not None
+            and not text_first_time_holder
+            and isinstance(content, str)
+            and content
+            and not content_is_audio
+        ):
+            text_first_time_holder.append(received_at_s)
     return pcm_format
 
 
