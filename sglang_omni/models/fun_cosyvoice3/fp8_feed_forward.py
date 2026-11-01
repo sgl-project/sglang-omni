@@ -1,7 +1,7 @@
 """FP8 feed forward for the Fun-CosyVoice3 DiT on SM120.
 
-out = W4 x fp8(gelu(x @ W3^T + b3)) + b4. The GEMM 3 epilogue applies GELU and a static
-scale and stores FP8, so GEMM 4 needs no separate quantize.
+out = W4 x fp8(gelu(fp8(norm) @ W3^T + b3)) + b4. The fused LayerNorm stores FP8 for
+GEMM 3, and the GEMM 3 epilogue stores FP8 for GEMM 4, so no separate quantize runs.
 """
 
 import math
@@ -9,12 +9,18 @@ import math
 import cuda.bindings.driver as cuda
 import cutlass
 import cutlass.cute as cute
+import cutlass.utils.blackwell_helpers as sm120_utils
 import torch
 from cutlass.cute.runtime import from_dlpack, make_fake_stream
+from sglang.kernels.kda_kernels.layernorm_modulate_triton import (
+    fused_layernorm_modulate_fp8_quant_raw,
+)
 from sglang.srt.utils.custom_op import register_custom_op
 
 CTA_TILER = (64, 128, 64)
 NUM_STAGES = 2
+# UE8M0 scale byte, 0x7F is exactly 1.0. Static scales run in the epilogue.
+UNIT_SCALE_BYTE = 0x7F
 GELU_CUBIC = 0.044715
 GELU_SQRT_2_OVER_PI = math.sqrt(2.0 / math.pi)
 
@@ -46,6 +52,26 @@ def copy_A_tile(
                 pass
 
 
+def make_unit_scale_A(thr_mma, tidx, tile_mk):
+    reference = cute.make_rmem_tensor(
+        cute.make_layout(tile_mk, stride=(0, 0)),
+        cutlass.Float8E8M0FNU,
+    )
+    fragment = sm120_utils.partition_fragment_SFA(reference, thr_mma, tidx)
+    cute.recast_tensor(fragment, cutlass.Uint8).fill(UNIT_SCALE_BYTE)
+    return fragment
+
+
+def make_unit_scale_B(thr_mma, tidx, tile_nk):
+    reference = cute.make_rmem_tensor(
+        cute.make_layout(tile_nk, stride=(0, 0)),
+        cutlass.Float8E8M0FNU,
+    )
+    fragment = sm120_utils.partition_fragment_SFB(reference, thr_mma, tidx)
+    cute.recast_tensor(fragment, cutlass.Uint8).fill(UNIT_SCALE_BYTE)
+    return fragment
+
+
 @cute.kernel
 def gemm3_kernel(
     mA: cute.Tensor,
@@ -53,6 +79,7 @@ def gemm3_kernel(
     mC: cute.Tensor,
     mBias: cute.Tensor,
     inverse_scale: cutlass.Float32,
+    weight_scale: cutlass.Float32,
     sA_layout: cute.Layout,
     sB_layout: cute.Layout,
     sA_swizzle: cute.Swizzle,
@@ -128,13 +155,16 @@ def gemm3_kernel(
 
     tCrC.fill(0.0)
 
+    tCrSFA = make_unit_scale_A(thr_mma, tidx, (cta_tiler[0], cta_tiler[2]))
+    tCrSFB = make_unit_scale_B(thr_mma, tidx, (cta_tiler[1], cta_tiler[2]))
+
     atom_copy_s2r_A = cute.make_copy_atom(
-        cute.nvgpu.warp.LdMatrix8x8x16bOp(False, 4),
+        cute.nvgpu.warp.LdMatrix8x16x8bOp(transpose=False, num_matrices=4),
         mA.element_type,
     )
 
     atom_copy_s2r_B = cute.make_copy_atom(
-        cute.nvgpu.warp.LdMatrix8x8x16bOp(False, 4),
+        cute.nvgpu.warp.LdMatrix8x16x8bOp(transpose=False, num_matrices=4),
         mB.element_type,
     )
 
@@ -209,8 +239,14 @@ def gemm3_kernel(
             cute.gemm(
                 tiled_mma,
                 tCrC,
-                tCrA[None, None, k_block],
-                tCrB[None, None, k_block],
+                [
+                    tCrA[None, None, k_block],
+                    tCrSFA[None, None, k_block],
+                ],
+                [
+                    tCrB[None, None, k_block],
+                    tCrSFB[None, (None, k_block)],
+                ],
                 tCrC,
             )
 
@@ -243,7 +279,7 @@ def gemm3_kernel(
     cute.autovec_copy(tCgBias, tCrBias)
 
     # note (emre): the static scale keeps GELU below FP8_MAX for real inputs.
-    hidden = tCrC.load() + tCrBias.load().to(cutlass.Float32)
+    hidden = tCrC.load() * weight_scale + tCrBias.load().to(cutlass.Float32)
     cubic = hidden + GELU_CUBIC * hidden * hidden * hidden
     gelu = 0.5 * hidden * (1.0 + cute.math.tanh(GELU_SQRT_2_OVER_PI * cubic))
     scaled = gelu * inverse_scale
@@ -267,14 +303,16 @@ def gemm3_kernel(
 
 ATOM_LAYOUT_MNK = (2, 2, 1)
 NUM_THREADS = 2 * 2 * 1 * 32  # atom layout carpimi x 32
-MMA_SHAPE = (16, 8, 16)
+MMA_SHAPE = (16, 8, 32)
 
 
 def make_smem_layout_ab(dtype, copy_bits, smem_tiler):
-    major_size = min(smem_tiler[1], 128 * 8 // dtype.width)
-    swizzle_bits = min(int(math.log2(major_size * dtype.width // copy_bits)), 3)
-    base_bits = int(math.log2(copy_bits // 8))
-    shift_bits = int(math.log2(copy_bits // dtype.width))
+    major_size = smem_tiler[1]
+    row_bytes = major_size * dtype.width // 8
+    chunk_bytes = copy_bits // 8
+    swizzle_bits = min(int(math.log2(row_bytes // chunk_bytes)), 3)
+    base_bits = int(math.log2(chunk_bytes))
+    shift_bits = int(math.log2(128 // chunk_bytes))
     swizzle = cute.make_swizzle(swizzle_bits, base_bits, shift_bits)
     atom = cute.make_layout((8, major_size), stride=(major_size, 1))
     layout = cute.tile_to_shape(atom, smem_tiler, (0, 1, 2))
@@ -298,6 +336,7 @@ def gemm3_host(
     mC: cute.Tensor,
     mBias: cute.Tensor,
     inverse_scale: cutlass.Float32,
+    weight_scale: cutlass.Float32,
     stream: cuda.CUstream,
 ):
     bM, bN, bK = CTA_TILER
@@ -307,10 +346,12 @@ def gemm3_host(
     mB = cute.make_tensor(mB.iterator, cute.select(mB.layout, mode=[1, 2, 0]))
     mC = cute.make_tensor(mC.iterator, cute.select(mC.layout, mode=[1, 2, 0]))
 
-    op = cute.nvgpu.warp.MmaF16BF16Op(mA.element_type, cutlass.Float32, MMA_SHAPE)
+    op = cute.nvgpu.warp.MmaMXF8Op(
+        mA.element_type, cutlass.Float32, cutlass.Float8E8M0FNU
+    )
     permutation_mnk = (
         ATOM_LAYOUT_MNK[0] * MMA_SHAPE[0],
-        ATOM_LAYOUT_MNK[1] * MMA_SHAPE[1] * 2,
+        ATOM_LAYOUT_MNK[1] * MMA_SHAPE[1],
         ATOM_LAYOUT_MNK[2] * MMA_SHAPE[2],
     )
     tiled_mma = cute.make_tiled_mma(
@@ -344,6 +385,7 @@ def gemm3_host(
         mC,
         mBias,
         inverse_scale,
+        weight_scale,
         sA_layout,
         sB_layout,
         sA_swizzle,
@@ -359,6 +401,7 @@ def gemm3_host(
 
 
 GELU_SCALE = 1.0 / 8.0
+LAYER_NORM_EPS = 1e-6
 FP8_MAX = 448.0
 # note (emre): measured crossover against the compiled BF16 path, M 1000 0.90x, M 1300 1.08x.
 FP8_MIN_ROWS = 1200
@@ -373,16 +416,19 @@ def wrap_rows(tensor: torch.Tensor) -> cute.Tensor:
 
 
 def fake_fp8_feed_forward(
-    x: torch.Tensor,
-    in_weight: torch.Tensor,
+    h: torch.Tensor,
+    scale: torch.Tensor,
+    shift: torch.Tensor,
+    norm_scale: torch.Tensor,
+    in_weight_fp8: torch.Tensor,
     in_bias: torch.Tensor,
-    out_weight: torch.Tensor,
+    in_weight_scale: float,
     out_weight_fp8: torch.Tensor,
     out_bias: torch.Tensor,
     out_weight_scale: torch.Tensor,
     gelu_scale: torch.Tensor,
 ) -> torch.Tensor:
-    return x.new_empty(x.shape, dtype=torch.bfloat16)
+    return h.new_empty(h.shape, dtype=torch.bfloat16)
 
 
 @register_custom_op(
@@ -391,34 +437,43 @@ def fake_fp8_feed_forward(
     fake_impl=fake_fp8_feed_forward,
 )
 def fp8_feed_forward(
-    x: torch.Tensor,
-    in_weight: torch.Tensor,
+    h: torch.Tensor,
+    scale: torch.Tensor,
+    shift: torch.Tensor,
+    norm_scale: torch.Tensor,
+    in_weight_fp8: torch.Tensor,
     in_bias: torch.Tensor,
-    out_weight: torch.Tensor,
+    in_weight_scale: float,
     out_weight_fp8: torch.Tensor,
     out_bias: torch.Tensor,
     out_weight_scale: torch.Tensor,
     gelu_scale: torch.Tensor,
 ) -> torch.Tensor:
-    """x: (1, M, K) BF16, in_weight: (N, K), out_weight_fp8: (K, N) FP8."""
-    assert x.is_contiguous()
-    hidden = torch.empty(
-        (1, x.shape[1], in_weight.shape[0]), device=x.device, dtype=torch.float8_e4m3fn
+    """h: (1, M, K) BF16 before ff_norm, scale, shift: (1, K) BF16, in_weight_fp8:
+    (1, N, K) FP8, out_weight_fp8: (K, N) FP8."""
+    assert h.is_contiguous()
+    norm_fp8 = fused_layernorm_modulate_fp8_quant_raw(
+        h, scale, shift, norm_scale, LAYER_NORM_EPS
     )
-    batched_weight = in_weight.detach().unsqueeze(0)
+    hidden = torch.empty(
+        (1, h.shape[1], in_weight_fp8.shape[1]),
+        device=h.device,
+        dtype=torch.float8_e4m3fn,
+    )
     tensors = (
-        wrap_rows(x.detach()),
-        from_dlpack(batched_weight, assumed_align=16),
+        wrap_rows(norm_fp8),
+        from_dlpack(in_weight_fp8.detach(), assumed_align=16),
         wrap_rows(hidden),
         from_dlpack(in_bias.detach(), assumed_align=16),
         1.0 / GELU_SCALE,
+        in_weight_scale,
     )
-    key = (in_weight.shape[0], in_weight.shape[1])
+    key = (in_weight_fp8.shape[1], in_weight_fp8.shape[2])
     if key not in compiled_kernels:
         compiled_kernels[key] = cute.compile(gemm3_host, *tensors, make_fake_stream())
     else:
         pass
-    stream = cuda.CUstream(torch.cuda.current_stream(x.device).cuda_stream)
+    stream = cuda.CUstream(torch.cuda.current_stream(h.device).cuda_stream)
     compiled_kernels[key](*tensors, stream)
     with torch.autocast(device_type="cuda", enabled=False):
         out = torch._scaled_mm(  # noqa: leading-underscore

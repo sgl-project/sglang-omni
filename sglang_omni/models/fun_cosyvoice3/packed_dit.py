@@ -369,6 +369,8 @@ class PackedDiT:
         device = torch.device(device)
         self.is_ragged = supports_ragged_attention(device)
         self.use_fp8_feed_forward = False
+        self.fp8_in_weights: list[torch.nn.Parameter] = []
+        self.fp8_in_scales: list[float] = []
         self.fp8_out_weights: list[torch.nn.Parameter] = []
         self.fp8_out_scales: list[torch.nn.Parameter] = []
         self.is_compiled = False
@@ -502,8 +504,24 @@ class PackedDiT:
             ),
             requires_grad=False,
         )
+        self.fp8_norm_scale = torch.nn.Parameter(
+            torch.ones((), device=device, dtype=torch.float32),
+            requires_grad=False,
+        )
         with torch.no_grad():
             for block in self.dit.transformer_blocks:
+                in_weight = block.ff.ff[0][0].weight.float()
+                in_scale = in_weight.abs().max() / fp8_feed_forward.FP8_MAX
+                self.fp8_in_weights.append(
+                    torch.nn.Parameter(
+                        (in_weight / in_scale)
+                        .to(torch.float8_e4m3fn)
+                        .unsqueeze(0)
+                        .contiguous(),
+                        requires_grad=False,
+                    )
+                )
+                self.fp8_in_scales.append(in_scale.item())
                 out_weight = block.ff.ff[2].weight.float()
                 out_scale = out_weight.abs().max() / fp8_feed_forward.FP8_MAX
                 fp8_weight = (out_weight / out_scale).to(torch.float8_e4m3fn)
@@ -516,16 +534,20 @@ class PackedDiT:
         # note (emre): the kernel compiles on its first call, so it must not be a request.
         block = self.dit.transformer_blocks[0]
         ff_in = block.ff.ff[0][0]
+        hidden_size = ff_in.weight.shape[1]
         with torch.no_grad():
             self.fp8_feed_forward(
                 torch.zeros(
-                    (1, fp8_feed_forward.FP8_MIN_ROWS, ff_in.weight.shape[1]),
+                    (1, fp8_feed_forward.FP8_MIN_ROWS, hidden_size),
                     device=device,
                     dtype=torch.bfloat16,
                 ),
-                ff_in.weight,
+                torch.zeros((1, hidden_size), device=device, dtype=torch.bfloat16),
+                torch.zeros((1, hidden_size), device=device, dtype=torch.bfloat16),
+                self.fp8_norm_scale,
+                self.fp8_in_weights[0],
                 ff_in.bias,
-                block.ff.ff[2].weight,
+                self.fp8_in_scales[0],
                 self.fp8_out_weights[0],
                 block.ff.ff[2].bias,
                 self.fp8_out_scales[0],
@@ -588,22 +610,26 @@ class PackedDiT:
                 self.qkv_weights[block_index],
                 self.qkv_biases[block_index],
             )
-            ff_norm = block.ff_norm(h) * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
             # note (emre): the branch stays in the compiled graph, so small M never pays
             # for the Python op. c1 lost about 1% to that call.
-            if self.use_fp8_feed_forward and ff_norm.shape[1] >= self.fp8_min_rows:
-                ff_in = block.ff.ff[0][0]
+            if self.use_fp8_feed_forward and h.shape[1] >= self.fp8_min_rows:
                 ff_out = self.fp8_feed_forward(
-                    ff_norm.to(torch.bfloat16),
-                    ff_in.weight,
-                    ff_in.bias,
-                    block.ff.ff[2].weight,
+                    h.to(torch.bfloat16),
+                    scale_mlp,
+                    shift_mlp,
+                    self.fp8_norm_scale,
+                    self.fp8_in_weights[block_index],
+                    block.ff.ff[0][0].bias,
+                    self.fp8_in_scales[block_index],
                     self.fp8_out_weights[block_index],
                     block.ff.ff[2].bias,
                     self.fp8_out_scales[block_index],
                     self.fp8_gelu_scale,
                 )
             else:
+                ff_norm = (
+                    block.ff_norm(h) * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
+                )
                 ff_out = block.ff(ff_norm)
             h = h + gate_mlp.unsqueeze(1) * ff_out
         if dit.long_skip_connection is not None:
