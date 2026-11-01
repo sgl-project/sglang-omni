@@ -1317,7 +1317,8 @@ async def test_a_preempting_interrupt_drops_its_turn_at_every_owner_of_the_targe
         assert [output.payload for output in received if output.format == "text"] == [
             {"turn": 2}
         ]
-        assert has_appended("sink", 2) and not has_appended("sink", 1)
+        await wait_until(lambda: has_appended("sink", 2))
+        assert not has_appended("sink", 1)
         await outputs.aclose()
         await wait_until(lambda: not coordinator.sessions and not coordinator.graphs)
 
