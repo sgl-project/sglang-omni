@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Fun-CosyVoice3 golden check for check_golden.py: seeded speech requests through
 cosyvoice3_synthesize, whose text ids and speech tokens a chip with golden outputs
-must give exactly; voxtral_golden.check compares them. Another chip's GPU
+must give exactly; speech_golden.check compares them. Another chip's GPU
 arithmetic may sample other tokens, so there only the text ids, which the
 tokenizer alone sets, must match.
 
@@ -28,7 +28,7 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
-import voxtral_golden
+import speech_golden
 
 # Note (Jiaxin Deng): the two MLX wheel builds (macOS 15 and 26 kernels) on one
 # Apple M5 give vocode means at most 0.021 apart in log-mel, a stand-in for
@@ -147,8 +147,8 @@ def synthesize_cases(
 def check(
     golden: dict, device: str, results: dict[str, dict]
 ) -> tuple[list[str], list[str]]:
-    """voxtral_golden.check, plus every chip's vocode cases within tolerance."""
-    lines, failures = voxtral_golden.check(golden, device, results)
+    """speech_golden.check, plus every chip's vocode cases within tolerance."""
+    lines, failures = speech_golden.check(golden, device, results)
     reference = reference_device(golden, device)
     for case_id, case in golden["cases"].items():
         if "vocode_tokens_from" not in case or reference is None:
@@ -176,8 +176,4 @@ def check(
                 )
             else:
                 lines.append(f"`{case_id}` {field} within {gap:.4f} of {reference}")
-        if reference == device and expected["pcm_sha256"] != actual["pcm_sha256"]:
-            failures.append(f"`{case_id}` has other 16-bit PCM than {reference}'s")
-        else:
-            pass
     return lines, failures

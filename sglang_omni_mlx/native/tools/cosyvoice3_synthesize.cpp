@@ -25,9 +25,9 @@
 #include <string>
 #include <vector>
 
+#include "common/audio.h"
 #include "cosyvoice3/cosyvoice3_model.h"
 #include "nlohmann/json.hpp"
-#include "voxtral_tts/voxtral_tts_codec.h"
 
 namespace {
 
@@ -203,8 +203,8 @@ int main(int argc, char **argv) {
       static_cast<double>(audio.size()) / cosyvoice3::kSampleRate;
 
   if (!output_path.empty()) {
-    std::ofstream(output_path, std::ios::binary) << voxtral_tts::WavBytes(
-        voxtral_tts::Pcm16Bytes(audio), cosyvoice3::kSampleRate);
+    std::ofstream(output_path, std::ios::binary) << omni_common::WavBytes(
+        omni_common::Pcm16Bytes(audio), cosyvoice3::kSampleRate);
   } else {
   }
   if (!tokens_output_path.empty()) {

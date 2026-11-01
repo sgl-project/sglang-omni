@@ -55,12 +55,12 @@
 #include <vector>
 
 #include "civetweb.h"
+#include "common/audio.h"
 #include "common/http.h"
 #include "common/text.h"
 #include "cosyvoice3/cosyvoice3_model.h"
 #include "qwen3_asr/asr_service.h"
 #include "qwen3_asr/qwen3_asr_transcriber.h"
-#include "voxtral_tts/voxtral_tts_codec.h"
 
 namespace {
 
@@ -963,7 +963,7 @@ private:
     } else {
     }
 
-    const std::string pcm = voxtral_tts::Pcm16Bytes(*channel->samples);
+    const std::string pcm = omni_common::Pcm16Bytes(*channel->samples);
     if (request.stream) {
       mg_write(connection, pcm.data(), pcm.size());
       return 200;
@@ -971,7 +971,7 @@ private:
     }
     const std::string audio =
         request.response_format == "wav"
-            ? voxtral_tts::WavBytes(pcm, cosyvoice3::kSampleRate)
+            ? omni_common::WavBytes(pcm, cosyvoice3::kSampleRate)
             : pcm;
     const int prompt_tokens = channel->prompt_token_count;
     const int completion_tokens = channel->completion_token_count;

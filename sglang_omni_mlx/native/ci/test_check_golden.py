@@ -15,8 +15,7 @@ import check_golden
 import cosyvoice3_golden
 import music3_golden
 import pytest
-import qwen3_tts_golden
-import voxtral_golden
+import speech_golden
 
 CLIP = {
     "text": "hello",
@@ -217,7 +216,7 @@ def test_music3_golden_records_only_matching_successful_waveforms(
         assert golden_path.read_text() == original_golden
 
 
-def speech_golden(case_ids: tuple[str, ...] = ("en", "fr")) -> dict:
+def speech_golden_file(case_ids: tuple[str, ...] = ("en", "fr")) -> dict:
     return {
         "model": "v",
         "kind": "voxtral_tts",
@@ -228,46 +227,50 @@ def speech_golden(case_ids: tuple[str, ...] = ("en", "fr")) -> dict:
 
 def test_a_recorded_chip_requires_every_voxtral_code() -> None:
     same = {"en": SPEECH, "fr": SPEECH}
-    assert voxtral_golden.check(speech_golden(), "Apple M5", same)[1] == []
+    assert speech_golden.check(speech_golden_file(), "Apple M5", same)[1] == []
     changed = {
         "en": {**SPEECH, "codes": ["1 2", "3 0"]},
         "fr": {**SPEECH, "codes": ["1 2"], "finish_reason": "length"},
     }
-    failures = voxtral_golden.check(speech_golden(), "Apple M5", changed)[1]
+    failures = speech_golden.check(speech_golden_file(), "Apple M5", changed)[1]
     assert failures == ["`en` differs from frame 1", "`fr` has frame count 1, not 2"]
+
+
+def test_a_recorded_chip_requires_the_same_decoded_audio() -> None:
+    """Drama 3 and Qwen3-TTS goldens hold a hash of the decoded audio beside the
+    codes; only a recorded chip is held to it."""
+    recorded = {**SPEECH, "pcm_sha256": "ab"}
+    golden = {
+        **speech_golden_file(),
+        "kind": "fishaudio_drama3",
+        "devices": {
+            "Apple M5": {"metrics": {}, "clips": {"en": recorded, "fr": recorded}}
+        },
+    }
+    redecoded = {"en": {**recorded, "pcm_sha256": "cd"}, "fr": recorded}
+    failures = speech_golden.check(golden, "Apple M5", redecoded)[1]
+    assert failures == ["`en` decodes to other audio"]
+    assert speech_golden.check(golden, "Apple M4 Pro", redecoded)[1] == []
 
 
 def test_another_chip_is_held_to_voxtral_prompt_ids() -> None:
     sampled = {"en": {**SPEECH, "codes": ["5 6"]}, "fr": SPEECH}
-    assert voxtral_golden.check(speech_golden(), "Apple M4 Pro", sampled)[1] == []
+    assert speech_golden.check(speech_golden_file(), "Apple M4 Pro", sampled)[1] == []
     retokenized = {"en": {**SPEECH, "prompt_ids": "7 8"}, "fr": SPEECH}
-    failures = voxtral_golden.check(speech_golden(), "Apple M4 Pro", retokenized)[1]
+    failures = speech_golden.check(speech_golden_file(), "Apple M4 Pro", retokenized)[1]
     assert failures == ["`en` has other prompt ids than Apple M5's"]
 
 
 @pytest.mark.parametrize("device", ["Apple M5", "Apple M4 Pro"])
 def test_a_voxtral_case_without_golden_outputs_fails(device: str) -> None:
     results = {"en": SPEECH, "fr": SPEECH, "de": SPEECH}
-    golden = speech_golden(("en", "fr", "de"))
-    failures = voxtral_golden.check(golden, device, results)[1]
+    golden = speech_golden_file(("en", "fr", "de"))
+    failures = speech_golden.check(golden, device, results)[1]
     assert failures == ["`de` has no golden output"]
-    empty = {**speech_golden(), "devices": {}}
-    assert voxtral_golden.check(empty, "Apple M5", results)[1] == [
+    empty = {**speech_golden_file(), "devices": {}}
+    assert speech_golden.check(empty, "Apple M5", results)[1] == [
         "the golden file has no outputs"
     ]
-
-
-def test_a_recorded_chip_requires_every_qwen3_tts_pcm_sample() -> None:
-    recorded = {**SPEECH, "pcm_sha256": "a"}
-    golden = speech_golden()
-    golden["devices"]["Apple M5"]["clips"] = {"en": recorded, "fr": recorded}
-    same = {"en": recorded, "fr": recorded}
-    assert qwen3_tts_golden.check(golden, "Apple M5", same)[1] == []
-    changed = {"en": {**recorded, "pcm_sha256": "b"}, "fr": recorded}
-    failures = qwen3_tts_golden.check(golden, "Apple M5", changed)[1]
-    assert failures == ["`en` has other PCM"]
-    # Another chip is held to the prompt ids only.
-    assert qwen3_tts_golden.check(golden, "Apple M4 Pro", changed)[1] == []
 
 
 @pytest.mark.parametrize("device", ["Apple M5", "Apple M4 Pro"])
@@ -322,5 +325,33 @@ def test_cosyvoice3_golden_rejects_nonfinite_mel_means(
     if should_fail:
         assert len(failures) == 1
         assert field in failures[0]
+    else:
+        assert failures == []
+
+
+@pytest.mark.parametrize(
+    "device,should_fail", [("Apple M5", True), ("Apple M4 Pro", False)]
+)
+def test_cosyvoice3_keeps_the_shared_per_chip_pcm_gate(
+    device: str, should_fail: bool
+) -> None:
+    """The shared checker must preserve the recorded chip's CosyVoice3 PCM gate."""
+    recorded = {
+        **SPEECH,
+        "pcm_sha256": "original",
+        "mel_band_means": [-2.0],
+        "mel_frame_means": [-2.0],
+    }
+    golden = {
+        "model": "cosyvoice3",
+        "kind": "cosyvoice3",
+        "cases": {"vocode": {"vocode_tokens_from": "speech"}},
+        "devices": {"Apple M5": {"clips": {"vocode": recorded}}},
+    }
+    _, failures = cosyvoice3_golden.check(
+        golden, device, {"vocode": {**recorded, "pcm_sha256": "changed"}}
+    )
+    if should_fail:
+        assert failures == ["`vocode` decodes to other audio"]
     else:
         assert failures == []
