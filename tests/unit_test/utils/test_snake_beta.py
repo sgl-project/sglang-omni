@@ -36,6 +36,7 @@ if find_spec("cutlass") is not None:
         compile_kernel,
         conv1d,
         pointwise_conv,
+        warmup_conv1d,
     )
     from sglang_omni.models.qwen3_tts.cutedsl.snake_beta import fuse_cutedsl_vocoder
 else:
@@ -86,6 +87,7 @@ def test_cutedsl_decoder_replacement_and_graph_replay(windowed: bool) -> None:
     fused = copy.deepcopy(original)
     assert fuse_cutedsl_vocoder(fused) > 0
     assert fuse_cutedsl_convolutions(fused) > 0
+    compiled_convolutions = compile_kernel.cache_info().misses
     assert all(
         isinstance(block.block[1], ChannelsLastUpsample)
         for block in fused.decoder[1:-2]
@@ -119,6 +121,7 @@ def test_cutedsl_decoder_replacement_and_graph_replay(windowed: bool) -> None:
         torch.testing.assert_close(
             waveform, expected, atol=absolute_tolerance, rtol=0.02
         )
+    assert compile_kernel.cache_info().misses == compiled_convolutions
 
 
 @pytest.mark.accelerator
@@ -334,25 +337,39 @@ def test_cutedsl_output_convolution_compiled_fallback() -> None:
     not torch.cuda.is_available() or fuse_cutedsl_vocoder is None,
     reason="requires CUDA and CUTLASS DSL",
 )
+@pytest.mark.parametrize("channels,kernel_size", [(96, 7), (768, 1)])
 @torch.inference_mode()
-def test_cutedsl_convolution_dynamic_sizes() -> None:
-    """Changing batch and length reuses full/partial-tile binaries with correct boundaries."""
+def test_cutedsl_convolution_dynamic_sizes(channels: int, kernel_size: int) -> None:
+    """Uncaptured batch/length combinations must not JIT-compile convolution variants during requests."""
     if torch.cuda.get_device_capability() not in ((9, 0), (10, 0), (10, 3)):
         pytest.skip("requires Hopper or datacenter Blackwell")
     else:
         pass
     torch.manual_seed(42)
     weight = (
-        torch.randn(96, 7, 96, device="cuda", dtype=torch.bfloat16) / (7 * 96) ** 0.5
+        torch.randn(
+            channels, kernel_size, channels, device="cuda", dtype=torch.bfloat16
+        )
+        / (kernel_size * channels) ** 0.5
     )
     compile_kernel.cache_clear()
-    for batch_size, length in ((1, 1), (2, 65), (3, 257), (1, 33), (2, 128), (1, 384)):
+    warmup_conv1d(weight, 3, has_bias=False)
+    compiled_convolutions = compile_kernel.cache_info().misses
+    for batch_size, length in (
+        (1, 1),
+        (2, 65),
+        (3, 257),
+        (5, 33),
+        (2, 128),
+        (32, 128),
+        (1, 384),
+    ):
         hidden_states = torch.randn(
-            batch_size, length, 96, device="cuda", dtype=weight.dtype
+            batch_size, length, channels, device="cuda", dtype=weight.dtype
         )
         expected = torch.nn.functional.conv1d(
             torch.nn.functional.pad(
-                hidden_states.transpose(1, 2).contiguous(), (18, 0)
+                hidden_states.transpose(1, 2).contiguous(), (3 * (kernel_size - 1), 0)
             ),
             weight.transpose(1, 2).contiguous(),
             dilation=3,
@@ -360,7 +377,7 @@ def test_cutedsl_convolution_dynamic_sizes() -> None:
         torch.testing.assert_close(
             conv1d(hidden_states, weight, None, 3), expected, atol=0.03125, rtol=0.02
         )
-    assert compile_kernel.cache_info().misses == 2
+    assert compile_kernel.cache_info().misses == compiled_convolutions
 
 
 @pytest.mark.accelerator

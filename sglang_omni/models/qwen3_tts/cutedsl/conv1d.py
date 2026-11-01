@@ -85,30 +85,20 @@ def compile_kernel(
     )
 
 
-def conv1d(
-    hidden_states: torch.Tensor,
-    weight: torch.Tensor,
-    bias: torch.Tensor | None,
-    dilation: int,
-    activation: CuTeDSLSnakeBeta | None = None,
-    residual: torch.Tensor | None = None,
-) -> torch.Tensor:
-    """Convolve contiguous BTC activations with prepared OWC weights; stride and groups are one."""
-    batch_size, sequence_length, input_channels = hidden_states.shape
-    output_channels, kernel_size, _ = weight.shape
-    architecture = device_arch(hidden_states.device)
-    row_tile = 64 if architecture == "sm_90a" else 128
-    multiprocessors = torch.cuda.get_device_properties(
-        hidden_states.device
-    ).multi_processor_count
+def launch_configuration(
+    input_channels: int,
+    output_channels: int,
+    kernel_size: int,
+    row_tiles: int,
+    multiprocessors: int,
+    architecture: str,
+) -> tuple[int, int, int]:
+    """Select channel tiling, pipeline stages, and blocks per multiprocessor."""
     if architecture != "sm_90a":
         if (
             kernel_size == 1
             and input_channels == output_channels
-            and batch_size
-            * math.ceil(sequence_length / row_tile)
-            * math.ceil(output_channels / 64)
-            <= multiprocessors
+            and row_tiles * math.ceil(output_channels / 64) <= multiprocessors
         ):
             # note (Hao Wang): Short streaming chunks fit one wave with narrower channel tiles.
             channel_tile, stages, blocks_per_multiprocessor = 64, 4, 1
@@ -129,9 +119,7 @@ def conv1d(
                 1,
             )
             if (
-                batch_size
-                * math.ceil(sequence_length / row_tile)
-                * math.ceil(output_channels / channel_tile)
+                row_tiles * math.ceil(output_channels / channel_tile)
                 < multiprocessors // 2
             ):
                 channel_tile = 128 if input_channels == output_channels else 64
@@ -151,15 +139,77 @@ def conv1d(
             4 if kernel_size == 1 else 6,
             1,
         )
-        if (
-            batch_size
-            * math.ceil(sequence_length / 64)
-            * math.ceil(output_channels / channel_tile)
-            < multiprocessors // 2
-        ):
+        if row_tiles * math.ceil(output_channels / channel_tile) < multiprocessors // 2:
             channel_tile = 64
         else:
             pass
+    return channel_tile, stages, blocks_per_multiprocessor
+
+
+def warmup_conv1d(
+    weight: torch.Tensor,
+    dilation: int,
+    has_bias: bool,
+    has_residual: bool = False,
+    has_activation: bool = False,
+) -> None:
+    """Compile every launch variant before uncaptured audio lengths reach the vocoder."""
+    output_channels, kernel_size, input_channels = weight.shape
+    architecture = device_arch(weight.device)
+    multiprocessors = torch.cuda.get_device_properties(
+        weight.device
+    ).multi_processor_count
+    # note (Hao Wang): All tile-selection thresholds are at or below one row tile per SM.
+    configurations = {
+        launch_configuration(
+            input_channels,
+            output_channels,
+            kernel_size,
+            row_tiles,
+            multiprocessors,
+            architecture,
+        )[:2]
+        for row_tiles in range(1, multiprocessors + 2)
+    }
+    for channel_tile, stages in sorted(configurations):
+        for full_rows in (False, True):
+            compile_kernel(
+                tuple(weight.shape),
+                dilation,
+                channel_tile,
+                stages,
+                has_bias,
+                has_residual,
+                has_activation,
+                full_rows,
+                architecture,
+            )
+
+
+def conv1d(
+    hidden_states: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor | None,
+    dilation: int,
+    activation: CuTeDSLSnakeBeta | None = None,
+    residual: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Convolve contiguous BTC activations with prepared OWC weights; stride and groups are one."""
+    batch_size, sequence_length, input_channels = hidden_states.shape
+    output_channels, kernel_size, _ = weight.shape
+    architecture = device_arch(hidden_states.device)
+    row_tile = 64 if architecture == "sm_90a" else 128
+    multiprocessors = torch.cuda.get_device_properties(
+        hidden_states.device
+    ).multi_processor_count
+    channel_tile, stages, blocks_per_multiprocessor = launch_configuration(
+        input_channels,
+        output_channels,
+        kernel_size,
+        batch_size * math.ceil(sequence_length / row_tile),
+        multiprocessors,
+        architecture,
+    )
     tiles = (
         batch_size
         * math.ceil(sequence_length / row_tile)

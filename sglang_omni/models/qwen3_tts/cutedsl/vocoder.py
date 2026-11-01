@@ -6,7 +6,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from sglang_omni.models.qwen3_tts.cutedsl.conv1d import conv1d
+from sglang_omni.models.qwen3_tts.cutedsl.conv1d import conv1d, warmup_conv1d
 from sglang_omni.models.qwen3_tts.cutedsl.runtime import supports_auxiliary
 from sglang_omni.models.qwen3_tts.cutedsl.snake_beta import CuTeDSLSnakeBeta
 from sglang_omni.utils.channels_last_conv import (
@@ -71,6 +71,21 @@ class CuTeDSLCausalConv1d(nn.Module):
         return self.forward_btc(hidden_states.transpose(1, 2).contiguous()).transpose(
             1, 2
         )
+
+    def warmup(
+        self, *, has_activation: bool = False, has_residual: bool = False
+    ) -> None:
+        """Cover both full and partial tiles beyond the decoder's CUDA graph buckets."""
+        if self.has_custom_kernel:
+            warmup_conv1d(
+                self.packed_weight.transpose(1, 2),
+                self.conv.dilation[0],
+                self.conv.bias is not None,
+                has_residual=has_residual,
+                has_activation=has_activation,
+            )
+        else:
+            pass
 
 
 class ChannelsLastUpsample(nn.Module):
@@ -155,10 +170,14 @@ def fuse_cutedsl_convolutions(decoder: nn.Module) -> int:
     else:
         layers[0] = CuTeDSLCausalConv1d(layers[0])
         layers[-1] = CuTeDSLCausalConv1d(layers[-1])
+        layers[0].warmup()
+        layers[-1].warmup()
         for block in layers[1:-2]:
             block.block[1] = ChannelsLastUpsample(block.block[1])
             for index in range(2, len(block.block)):
                 block.block[index] = CuTeDSLResidualUnit(block.block[index])
+                block.block[index].conv1.warmup(has_activation=True)
+                block.block[index].conv2.warmup(has_residual=True)
         return sum(
             module.has_custom_kernel
             for module in decoder.modules()
