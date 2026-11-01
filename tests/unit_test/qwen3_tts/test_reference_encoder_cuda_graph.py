@@ -13,7 +13,6 @@ import pytest
 import torch
 from safetensors.torch import save_file
 from torch._dynamo.utils import counters
-from torch._inductor.runtime.triton_heuristics import CachingAutotuner
 from transformers import MimiConfig, MimiModel
 from transformers.models.mimi.modeling_mimi import (
     MimiConv1d,
@@ -288,14 +287,6 @@ def test_reference_encoder_capture_benchmarks_no_kernel_config(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(tmp_path))
-    benchmarked = []
-    original = CachingAutotuner.benchmark_all_configs
-
-    def record(self, *args, **kwargs):
-        benchmarked.append(self.inductor_meta.get("kernel_name"))
-        return original(self, *args, **kwargs)
-
-    monkeypatch.setattr(CachingAutotuner, "benchmark_all_configs", record)
     torch.manual_seed(11)
     device = torch.device("cuda", torch.cuda.current_device())
     model = MimiModel(MimiConfig(num_hidden_layers=1, num_quantizers=8))
@@ -312,7 +303,7 @@ def test_reference_encoder_capture_benchmarks_no_kernel_config(
     runner.capture()
 
     assert runner.stats()["captured"] == [256]
-    assert benchmarked == []
+    assert sorted(tmp_path.rglob("*.best_config")) == []
 
 
 @pytest.mark.accelerator
