@@ -163,6 +163,11 @@ def check(
             pass
         for field in ("mel_band_means", "mel_frame_means"):
             want, got = np.array(expected[field]), np.array(actual[field])
+            if not np.isfinite(want).all() or not np.isfinite(got).all():
+                failures.append(f"`{case_id}` {field} contain nonfinite values")
+                continue
+            else:
+                pass
             gap = float(np.abs(want - got).max()) if want.shape == got.shape else None
             if gap is None or gap > MEL_TOLERANCE:
                 failures.append(

@@ -7,10 +7,12 @@ import hashlib
 import json
 import subprocess
 import wave
+from copy import deepcopy
 from pathlib import Path
 from typing import Literal
 
 import check_golden
+import cosyvoice3_golden
 import music3_golden
 import pytest
 import qwen3_tts_golden
@@ -266,3 +268,59 @@ def test_a_recorded_chip_requires_every_qwen3_tts_pcm_sample() -> None:
     assert failures == ["`en` has other PCM"]
     # Another chip is held to the prompt ids only.
     assert qwen3_tts_golden.check(golden, "Apple M4 Pro", changed)[1] == []
+
+
+@pytest.mark.parametrize("device", ["Apple M5", "Apple M4 Pro"])
+@pytest.mark.parametrize("field", ["mel_band_means", "mel_frame_means"])
+@pytest.mark.parametrize(
+    "source,mel_value,should_fail",
+    [
+        ("actual", float("nan"), True),
+        ("expected", float("nan"), True),
+        ("both", float("nan"), True),
+        ("actual", float("inf"), True),
+        ("expected", float("inf"), True),
+        ("both", float("inf"), True),
+        ("actual", -float("inf"), True),
+        ("expected", -float("inf"), True),
+        ("both", -float("inf"), True),
+        ("actual", -2.0, False),
+        ("actual", -1.975, False),
+        ("actual", -1.0, True),
+    ],
+)
+def test_cosyvoice3_golden_rejects_nonfinite_mel_means(
+    device: str,
+    field: Literal["mel_band_means", "mel_frame_means"],
+    source: Literal["actual", "expected", "both"],
+    mel_value: float,
+    should_fail: bool,
+) -> None:
+    """NaN and matching infinities previously passed the mel tolerance gate."""
+    expected = {
+        **SPEECH,
+        "mel_band_means": [-2.0, -3.0],
+        "mel_frame_means": [-2.0, -3.0],
+        "pcm_sha256": "same-waveform",
+    }
+    actual = deepcopy(expected)
+    if source in ("actual", "both"):
+        actual[field][0] = mel_value
+    else:
+        pass
+    if source in ("expected", "both"):
+        expected[field][0] = mel_value
+    else:
+        pass
+    golden = {
+        "model": "cosyvoice3",
+        "kind": "cosyvoice3",
+        "cases": {"vocode": {"vocode_tokens_from": "speech"}},
+        "devices": {"Apple M5": {"clips": {"vocode": expected}}},
+    }
+    _, failures = cosyvoice3_golden.check(golden, device, {"vocode": actual})
+    if should_fail:
+        assert len(failures) == 1
+        assert field in failures[0]
+    else:
+        assert failures == []
