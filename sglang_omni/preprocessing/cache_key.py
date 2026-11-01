@@ -46,7 +46,7 @@ def hash_file_sampled(
             f.seek(-tail_size, 2)  # Seek from end
             tail = f.read(tail_size)
         else:
-            tail = b""  # Small file, head already covers it
+            tail = f.read()  # Small file, the rest after the head
 
     payload = head + tail + f"|size:{file_size}".encode()
     return xxhash.xxh3_64(payload).hexdigest()
