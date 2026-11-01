@@ -22,6 +22,8 @@ import torch
 from sglang.srt.arg_groups.overrides import resolution_result
 from sglang.srt.runtime_context import get_context, get_exec, publish
 
+from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.runtime import resolve_stage_typed_kwargs
 from sglang_omni.models.fishaudio_s2_pro import stages as s2pro_stages
 from sglang_omni.models.fishaudio_s2_pro.config import S2ProPipelineConfig
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.tokenizer import (
@@ -84,6 +86,22 @@ def cuda_platform_for_engine_builder_tests(
         "current_platform",
         SimpleNamespace(is_npu=lambda: False),
     )
+
+
+def test_vocoder_decoding_flags_reach_the_factory_typed() -> None:
+    """Untyped, a dotted window_cuda_graphs flag reaches the factory as the text
+    "false", which is truthy and would keep the graphs on."""
+    merged = ConfigManager(S2ProPipelineConfig(model_path="model")).merge_config(
+        [
+            ("vocoder.factory.decode_dtype", "float32"),
+            ("vocoder.factory.window_cuda_graphs", "false"),
+        ]
+    )
+
+    factory_kwargs = resolve_stage_typed_kwargs(merged.stage_named("vocoder"))
+
+    assert factory_kwargs["decode_dtype"] == "float32"
+    assert factory_kwargs["window_cuda_graphs"] is False
 
 
 def test_fish_config_state_and_tokenizer_prompt_contracts() -> None:

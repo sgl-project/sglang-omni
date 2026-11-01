@@ -3,15 +3,11 @@
 
 from __future__ import annotations
 
-import bisect
-
 import torch
 
 from sglang_omni.models.fishaudio_drama3.request_builders import Drama3GenerationResult
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.dac.modded_dac import DAC
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
-from sglang_omni.platforms import current_platform
-from sglang_omni.platforms.device_graph import ReplayableGraph
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.audio_stream import (
     FinalAudioData,
@@ -60,77 +56,6 @@ def non_streaming_decode_groups(
             else:
                 groups.append([index])
         return groups
-
-
-class WindowGraphDecoder:
-    def __init__(
-        self,
-        decode: WindowDecoder,
-        *,
-        num_codebooks: int,
-        frame_length: int,
-        device: torch.device,
-        window_lengths: tuple[int, ...],
-    ) -> None:
-        graph_backend = current_platform.get_device_graph_backend(device)
-        if graph_backend is None:
-            raise RuntimeError(
-                f"no device graph backend for {device}; set "
-                f"stages.vocoder.factory.window_cuda_graphs to false to decode eagerly"
-            )
-        else:
-            pass
-        self.decode = decode
-        self.frame_length = frame_length
-        self.window_lengths = tuple(sorted(window_lengths))
-        self.static_indices: dict[int, torch.Tensor] = {}
-        self.static_audio: dict[int, torch.Tensor] = {}
-        self.graphs: dict[int, ReplayableGraph] = {}
-        device_module = torch.get_device_module(device)
-        current_stream = device_module.current_stream(device)
-        capture_stream = device_module.Stream(device=device)
-        capture_stream.wait_stream(current_stream)
-        with torch.no_grad(), device_module.device(device):
-            with device_module.stream(capture_stream):
-                for window_length in reversed(self.window_lengths):
-                    decode(
-                        torch.zeros(
-                            (1, num_codebooks, window_length),
-                            dtype=torch.long,
-                            device=device,
-                        )
-                    )
-            capture_stream.synchronize()
-            graph_pool = device_module.graph_pool_handle()
-            for window_length in reversed(self.window_lengths):
-                static_indices = torch.zeros(
-                    (1, num_codebooks, window_length), dtype=torch.long, device=device
-                )
-                with graph_backend.capture(
-                    pool=graph_pool, stream=capture_stream
-                ) as graph:
-                    self.static_audio[window_length] = decode(static_indices)
-                self.static_indices[window_length] = static_indices
-                self.graphs[window_length] = graph
-        current_stream.wait_stream(capture_stream)
-        device_module.synchronize(device)
-
-    def __call__(self, indices: torch.Tensor) -> torch.Tensor:
-        frame_count = int(indices.shape[-1])
-        if indices.shape[0] != 1 or frame_count > self.window_lengths[-1]:
-            return self.decode(indices)
-        else:
-            pass
-        window_length = self.window_lengths[
-            bisect.bisect_left(self.window_lengths, frame_count)
-        ]
-        static_indices = self.static_indices[window_length]
-        static_indices[..., :frame_count].copy_(indices)
-        static_indices[..., frame_count:].zero_()
-        self.graphs[window_length].replay()
-        return self.static_audio[window_length][
-            ..., : frame_count * self.frame_length
-        ].clone()
 
 
 class Drama3VocoderScheduler(StreamingVocoderScheduler):

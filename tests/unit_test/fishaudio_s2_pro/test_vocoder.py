@@ -11,10 +11,14 @@ from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
 from sglang_omni.models.fishaudio_s2_pro import stages
+from sglang_omni.models.fishaudio_s2_pro.channels_last_decoder import (
+    ChannelsLastDecoder,
+)
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.dac import modded_dac
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.dac.modded_dac import DAC
 from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
 from sglang_omni.scheduling.message import IncomingMessage
+from sglang_omni.scheduling.stream_windows import WindowGraphDecoder
 from tests.unit_test.fixtures.fish_fakes import FakeFishCodec, make_s2pro_payload
 from tests.unit_test.pipeline.helpers import run_scheduler
 
@@ -31,6 +35,8 @@ def test_fish_vocoder_batches_and_trims_audio_by_code_length(
         device="cpu",
         max_batch_size=4,
         max_batch_wait_ms=50,
+        decode_dtype="float16",
+        window_cuda_graphs=True,
     )
     assert scheduler.stream_stride == 40
     assert scheduler.stream_followup_stride == 45
@@ -161,6 +167,35 @@ def test_a_codec_decode_can_be_captured_in_a_cuda_graph() -> None:
         graph.replay()
 
     torch.testing.assert_close(graph_audio, eager_audio)
+
+
+@pytest.mark.parametrize(
+    "device", ["cpu", pytest.param("cuda", marks=pytest.mark.accelerator)]
+)
+def test_the_vocoder_replays_float16_window_graphs_only_on_cuda(
+    monkeypatch: pytest.MonkeyPatch, device: str
+) -> None:
+    """Off CUDA the vocoder keeps the float32 codec module, which needs no Triton; on
+    CUDA it replays the float16 channels-last decoder from one graph per window."""
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("needs a CUDA device")
+    else:
+        pass
+    monkeypatch.setattr(stages, "_resolve_checkpoint", lambda model_path: model_path)
+    monkeypatch.setattr(
+        stages, "load_codec", lambda checkpoint_dir, device: tiny_codec().to(device)
+    )
+
+    scheduler = stages.create_vocoder_executor(
+        "checkpoint", device=device, decode_dtype="float16", window_cuda_graphs=True
+    )
+
+    if device == "cpu":
+        assert scheduler.decode_window is None
+    else:
+        assert isinstance(scheduler.decode_window, WindowGraphDecoder)
+        assert scheduler.decode_window.window_lengths == (40, 65)
+        assert isinstance(scheduler.decode_window.decode, ChannelsLastDecoder)
 
 
 @pytest.mark.parametrize("samples", [4096, 4133])

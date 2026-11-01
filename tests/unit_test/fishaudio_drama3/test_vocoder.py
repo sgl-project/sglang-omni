@@ -11,23 +11,16 @@ import torch
 import torch.nn.functional as F
 from dac.nn.layers import Snake1d
 
-from sglang_omni.models.fishaudio_drama3.channels_last_decoder import (
-    ChannelsLastDecoder,
-    snake_channels_last_kernel,
-)
 from sglang_omni.models.fishaudio_drama3.config import Drama3VocoderFactoryArgs
 from sglang_omni.models.fishaudio_drama3.request_builders import (
     Drama3FrameStreamer,
     Drama3GenerationResult,
     Drama3RequestData,
 )
-from sglang_omni.models.fishaudio_drama3.stream_windows import (
-    frames_in_complete_windows,
-    stream_window_lengths,
-)
-from sglang_omni.models.fishaudio_drama3.vocoder import (
-    Drama3VocoderScheduler,
-    WindowGraphDecoder,
+from sglang_omni.models.fishaudio_drama3.vocoder import Drama3VocoderScheduler
+from sglang_omni.models.fishaudio_s2_pro.channels_last_decoder import (
+    ChannelsLastDecoder,
+    snake_channels_last_kernel,
 )
 from sglang_omni.models.fishaudio_s2_pro.fish_speech.models.dac.modded_dac import (
     CausalConvNet,
@@ -38,6 +31,11 @@ from sglang_omni.models.fishaudio_s2_pro.streaming_vocoder import WindowDecoder
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.scheduling.stream_windows import (
+    WindowGraphDecoder,
+    frames_in_complete_windows,
+    stream_window_lengths,
+)
 from sglang_omni.scheduling.types import RequestOutput
 from tests.unit_test.fishaudio_s2_pro.test_vocoder import tiny_codec
 
