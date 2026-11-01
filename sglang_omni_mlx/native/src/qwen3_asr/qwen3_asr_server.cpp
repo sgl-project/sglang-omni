@@ -34,8 +34,13 @@ public:
                            : std::nullopt;
     options.context = asr_service::TextField(form, "prompt");
     options.max_new_tokens = asr_service::IntegerField(form, "max_new_tokens");
+    options.repetition_penalty =
+        asr_service::NumberField(form, "repetition_penalty")
+            .value_or(options.repetition_penalty);
     if (options.max_new_tokens.value_or(0) < 0) {
       throw std::invalid_argument("max_new_tokens must not be negative");
+    } else if (options.repetition_penalty <= 0) {
+      throw std::invalid_argument("repetition_penalty must be positive");
     } else {
     }
     options.stop_at_end_of_text = omni_common::FormFlag(
