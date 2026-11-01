@@ -159,6 +159,27 @@ sgl-omni serve \
   --port 8000
 ```
 
+### Ascend NPU
+
+Follow the [Ascend NPU installation guide](../get_started/installation_npu.md) for setup. Both profiles were validated on Ascend910_9362 (64 GiB), CANN 9.0/A3, PyTorch/TorchNPU 2.10.0 and SGLang 0.5.22.
+
+Mount this checkout in the container and run from its root:
+
+```bash
+mkdir -p /tmp/qwen3-asr-cann-work
+PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}" \
+OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 \
+ASCEND_WORK_PATH=/tmp/qwen3-asr-cann-work ASCEND_USE_FIA=False \
+PER_STREAM_QUEUE=1 TASK_QUEUE_ENABLE=1 ASCEND_LAUNCH_BLOCKING=0 \
+sgl-omni serve \
+  --config examples/configs/qwen3_asr_0_6b_npu.yaml \
+  --port 8000
+```
+
+For 1.7B, use `qwen3_asr_1_7b_npu.yaml`. For local weights, add `--model-path /path/to/model` and `--model-name Qwen/Qwen3-ASR-0.6B` (or `Qwen/Qwen3-ASR-1.7B`); use the same model name in transcription requests.
+
+Set the queue variables before startup as shown; inherited environment values override YAML defaults.
+
 ## Transcribe Audio
 
 ```bash
