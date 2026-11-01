@@ -11,10 +11,16 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
+from sglang.srt.arg_groups.model_override_base import (
+    attention_backends_of,
+    resolved_view,
+)
+from sglang.srt.model_executor.cuda_graph_config import Phase, with_phase
 from sglang.srt.server_args import ServerArgs
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
 from sglang_omni.model_runner.model_worker import ModelWorker
-from sglang_omni.models.fun_cosyvoice3 import request_builders
+from sglang_omni.models.fun_cosyvoice3 import CAPABILITIES, request_builders
 from sglang_omni.models.fun_cosyvoice3.request_builders import (
     CosyVoice3SGLangRequestData,
 )
@@ -27,13 +33,21 @@ from sglang_omni.models.fun_cosyvoice3.utils import (
 )
 from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
+from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 from sglang_omni.scheduling.engine_factory import (
     GenerationDefaults,
     SchedulerExtras,
     TtsEngineBuilder,
 )
+from sglang_omni.scheduling.generation_batch_policy import (
+    FULL_PREFILL_ATTENTION_BACKENDS,
+    CudaGraphBackend,
+    nested_prefill_overrides,
+    operator_selected_prefill_backend,
+)
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
+from sglang_omni.vendor.sglang.server_args import override_server_args
 
 if TYPE_CHECKING:
 
@@ -58,6 +72,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
     context_length = 4096
     mem_fraction_static = 0.85
     model_arch_override = "FunCosyVoice3SGLangModel"
+    supports_full_prefill_cuda_graph = CAPABILITIES.supports_full_prefill_cuda_graph
 
     def __init__(
         self,
@@ -74,6 +89,7 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
         self.token_hop_len = hop
         self.checkpoint_root: str | None = None
         self.device: str | None = None
+        self.has_draft_model: bool = False
 
         # note (Dayuxiaoshui): both ONNX sessions get a pool of this size, so
         # cap it at the host core count instead of trusting the default of 16.
@@ -128,16 +144,108 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
             "sampling_backend": (
                 "flashinfer" if current_platform.is_cuda() else "pytorch"
             ),
+            # note (ratish): run eagerly, a prefill launches about 320 kernels for 2 ms of
+            # device work while every running row waits for it.
+            "cuda_graph_backend_prefill": (
+                CudaGraphBackend.FULL
+                if current_platform.is_cuda()
+                else CudaGraphBackend.DISABLED
+            ),
             "trust_remote_code": True,
         }
 
+    def customize_server_args(self, server_args: ServerArgs) -> None:
+        resolved = resolved_view(server_args)
+        graph_config = resolved.cuda_graph_config
+        prefill = graph_config.prefill
+        if (
+            prefill.backend == CudaGraphBackend.FULL
+            and attention_backends_of(resolved)[0]
+            not in FULL_PREFILL_ATTENTION_BACKENDS
+            and not operator_selected_prefill_backend(self.server_args_overrides)
+        ):
+            # note (ratish): the full prefill graph is this model's default only where
+            # the attention backend captures it; elsewhere the prefill stays eager.
+            override_server_args(
+                server_args,
+                "fun_cosyvoice3.prefill_cuda_graph_backend",
+                cuda_graph_config=with_phase(
+                    graph_config, Phase.PREFILL, backend=CudaGraphBackend.DISABLED
+                ),
+            )
+        elif (
+            prefill.backend == CudaGraphBackend.FULL
+            and prefill.bs
+            and prefill.bs[0] != 1
+            and self.server_args_overrides.get("cuda_graph_bs_prefill") is None
+            and "bs" not in nested_prefill_overrides(self.server_args_overrides)
+        ):
+            # note (ratish): a prompt the radix cache holds re-prefills only its last
+            # token, which the ladder's first bucket of 4 pads past twice its size and
+            # runs eagerly; every eager prefill measured at c16 and c64 was one.
+            override_server_args(
+                server_args,
+                "fun_cosyvoice3.prefill_cuda_graph_shape",
+                cuda_graph_config=with_phase(
+                    graph_config, Phase.PREFILL, bs=[1, *prefill.bs]
+                ),
+            )
+        else:
+            pass
+
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+        draft_model_path = overrides.get("speculative_draft_model_path")
+        speculative_algorithm = SpeculativeAlgorithm.from_string(
+            overrides.get("speculative_algorithm")
+        )
+        speculative_reserve_tokens = 0
+        if draft_model_path is None:
+            if not speculative_algorithm.is_none():
+                raise ValueError(
+                    "Fun-CosyVoice3 speculative decoding needs "
+                    "speculative_draft_model_path"
+                )
+            else:
+                pass
+        elif not (speculative_algorithm.is_none() or speculative_algorithm.is_dspark()):
+            raise ValueError("Fun-CosyVoice3 speculative decoding supports DSPARK")
+        else:
+            # note (wilsonzheng0327): the draft modules import Triton kernels, which
+            # a Torch MPS host of this builder cannot load.
+            from sglang_omni.models.fun_cosyvoice3.dspark_draft import (
+                DRAFT_TOKENS_PER_STEP,
+                VERIFY_TOKENS_PER_STEP,
+                materialize_draft_checkpoint,
+            )
+
+            if overrides.get("speculative_dspark_block_size") not in (
+                None,
+                DRAFT_TOKENS_PER_STEP,
+            ):
+                raise ValueError(
+                    f"the published draft proposes {DRAFT_TOKENS_PER_STEP} tokens per step"
+                )
+            else:
+                pass
+            # note (wilsonzheng0327): SGLang reads the draft config while resolving
+            # the server args, so the stage-vocabulary copy must exist before that.
+            overrides["speculative_algorithm"] = SpeculativeAlgorithm.DSPARK.name
+            overrides["speculative_draft_model_path"] = materialize_draft_checkpoint(
+                draft_model_path, overrides.get("speculative_draft_model_revision")
+            )
+            overrides["speculative_draft_model_revision"] = None
+            overrides["speculative_dspark_block_size"] = DRAFT_TOKENS_PER_STEP
+            # note (wilsonzheng0327): matches the scheduler's per-decode reservation,
+            # two verify windows past each request's tokens, which the server args
+            # cannot report before they are resolved.
+            speculative_reserve_tokens = 2 * VERIFY_TOKENS_PER_STEP
+            self.has_draft_model = True
         # Note (Jiaxin Deng): the fraction alone sized a 62 GB pool on an
         # H100 that the running requests can never fill; the vocoder shares
         # the GPU and was left about 10 GB of dynamic-shape headroom.
         if overrides.get("max_total_tokens") is None:
-            overrides["max_total_tokens"] = (
-                overrides["max_running_requests"] * self.context_length
+            overrides["max_total_tokens"] = overrides["max_running_requests"] * (
+                self.context_length + speculative_reserve_tokens
             )
         else:
             pass
@@ -252,6 +360,20 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
         # note (ratish): the vocoder shares this process and card on its own stream, and
         # at equal priority the AR's decode replays wait behind its kernels.
         return {"should_run_top_priority_stream": current_platform.is_cuda()}
+
+    def infra_kwargs(self) -> InfrastructureOptions:
+        if not self.has_draft_model:
+            return {}
+        else:
+            pass
+        from sglang_omni.models.fun_cosyvoice3.dspark_worker import (
+            FunCosyVoice3DSparkWorker,
+        )
+
+        return {
+            "supports_speculative_decoding": True,
+            "speculative_worker_class": FunCosyVoice3DSparkWorker,
+        }
 
     def make_abort_callback(self) -> Callable[[str], None]:
         return request_builders.cleanup_prepared_cosyvoice3_request

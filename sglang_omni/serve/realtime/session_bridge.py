@@ -32,6 +32,7 @@ from sglang_omni.proto.streams import (
     PCM_F32,
     REPLY_HEARD,
     REPLY_PROGRESS,
+    REPLY_TRUNCATED,
     SESSION_CONTROL,
     SPEECH_STARTED,
     SPEECH_STOPPED,
@@ -48,6 +49,7 @@ from sglang_omni.proto.streams import (
     ImagePort,
     SessionPorts,
 )
+from sglang_omni.serve.realtime.adapters import pipeline_limits_with_idle_backup
 from sglang_omni.serve.realtime.constants import CLOSE_REASON_INTERNAL
 from sglang_omni.serve.realtime.output import (
     AudioDelta,
@@ -75,6 +77,7 @@ from sglang_omni.serve.realtime.types import (
     ProtocolError,
     RuntimeLimits,
     Unit,
+    failure_code,
     samples_to_ms,
 )
 
@@ -122,6 +125,7 @@ def capabilities_of(ports: SessionPorts) -> Capabilities:
         supports_instruction_updates="instructions" in ports.hot_settings,
         supports_sampling_updates="sampling" in ports.hot_settings,
         supports_truncate=TRUNCATE in ports.controls,
+        supports_cancel=INTERRUPT in ports.controls,
         supports_client_commit=COMMIT in ports.controls,
     )
 
@@ -186,7 +190,7 @@ class SessionBridge(InteractionAdapter):
             SPEECH_STOPPED: self.on_speech_stopped,
             TURN_QUEUED: self.on_turn_queued,
             TURN_STARTED: self.on_turn_started,
-            TURN_DONE: partial(self.finish_response, "completed", "stop"),
+            TURN_DONE: self.on_turn_done,
             TURN_EMPTY: self.on_turn_empty,
             TURN_INTERRUPTED: partial(self.finish_response, "cancelled", "interrupted"),
             CONFIGURED: self.on_configured,
@@ -218,8 +222,9 @@ class SessionBridge(InteractionAdapter):
         self.response_text = ""
         self.has_audio = False
 
-    def set_limits(self, limits: RuntimeLimits) -> None:
-        self.cleanup_timeout_s = limits.cleanup_timeout_s
+    def set_limits(self, runtime_limits: RuntimeLimits) -> None:
+        self.cleanup_timeout_s = runtime_limits.cleanup_timeout_s
+        self.limits = pipeline_limits_with_idle_backup(self.limits, runtime_limits)
 
     async def open(
         self, session_id: str, config: SessionConfiguration, emit: OutputSink
@@ -362,17 +367,18 @@ class SessionBridge(InteractionAdapter):
                 pass
         except Exception as exc:
             if ContextExhaustedError.matches(exc):
-                failure_code = ContextExhaustedError.CODE
+                code = ContextExhaustedError.CODE
             else:
+                code = failure_code(exc)
+            if code == CLOSE_REASON_INTERNAL:
                 logger.exception("Session bridge output reader failed")
-                failure_code = CLOSE_REASON_INTERNAL
+            else:
+                pass
             self.reader_error = exc
             if self.input_done is not None and not self.input_done.done():
                 self.input_done.set_exception(exc)
             elif not self.is_closing:
-                await self.output_sink(
-                    TurnFailure("server_error", failure_code, str(exc))
-                )
+                await self.output_sink(TurnFailure("server_error", code, str(exc)))
             else:
                 pass
 
@@ -502,6 +508,13 @@ class SessionBridge(InteractionAdapter):
         self.ended_response = (self.response_turn, *ids)
         self.response_id = None
         return events
+
+    def on_turn_done(self, output: OutputChunk) -> list[OutputEvent]:
+        """A reply the talker stopped at its token budget is incomplete; any other reply completed."""
+        if output.payload.get(REPLY_TRUNCATED) is True:
+            return self.finish_response("incomplete", "max_output_tokens", output)
+        else:
+            return self.finish_response("completed", "stop", output)
 
     def on_turn_empty(self, output: OutputChunk) -> list[OutputEvent]:
         events = self.start_response(output.turn)

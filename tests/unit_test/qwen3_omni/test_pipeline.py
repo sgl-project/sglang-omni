@@ -6,9 +6,12 @@ import asyncio
 import base64
 import inspect
 import threading
+from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from io import BytesIO
 from types import SimpleNamespace
+from typing import Protocol
 from unittest.mock import AsyncMock, Mock
 
 import numpy as np
@@ -69,6 +72,7 @@ from sglang_omni.models.qwen3_omni.request_builders import (
     resolve_preprocessing_next_stages_speech,
 )
 from sglang_omni.preprocessing.audio import decode_audio_bytes
+from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
 from sglang_omni.preprocessing.text import split_content_parts
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
@@ -438,6 +442,7 @@ def test_qwen_preprocessor_two_videos_and_audio_with_real_processor(
     pre.default_video_min_pixels = 28 * 28
     pre.default_video_max_pixels = 28 * 28
     pre.default_video_total_pixels = total_pixels
+    pre.video_decode_threads = 16
     pre.processor = processor
     payload = StagePayload(
         request_id="two-videos-and-audio",
@@ -533,6 +538,7 @@ def test_qwen_preprocessor_passes_embedded_video_audio_to_processor(
     pre.default_video_min_pixels = None
     pre.default_video_max_pixels = None
     pre.default_video_total_pixels = None
+    pre.video_decode_threads = 16
     pre.processor = FakeProcessor()
     payload = StagePayload(
         request_id="embedded-audio",
@@ -668,10 +674,15 @@ def test_qwen_preprocessor_limit_is_the_checkpoint_thinker_context(
     )
     monkeypatch.setattr(preprocessor_mod, "ensure_chat_template", lambda *_, **__: None)
 
-    assert preprocessor_mod.Qwen3OmniPreprocessor(str(tmp_path)).max_seq_len == 65536
     assert (
         preprocessor_mod.Qwen3OmniPreprocessor(
-            str(tmp_path), max_seq_len=4096
+            str(tmp_path), video_decode_threads=16
+        ).max_seq_len
+        == 65536
+    )
+    assert (
+        preprocessor_mod.Qwen3OmniPreprocessor(
+            str(tmp_path), max_seq_len=4096, video_decode_threads=16
         ).max_seq_len
         == 4096
     )
@@ -709,7 +720,9 @@ def test_qwen_preprocessor_retries_without_special_token_compat(
     )
     monkeypatch.setattr(preprocessor_mod, "ensure_chat_template", lambda *_, **__: None)
 
-    preprocessor_mod.Qwen3OmniPreprocessor(str(tmp_path), max_seq_len=8192)
+    preprocessor_mod.Qwen3OmniPreprocessor(
+        str(tmp_path), max_seq_len=8192, video_decode_threads=16
+    )
 
     assert calls[0]["extra_special_tokens"] == {
         "image_token": "<|image_pad|>",
@@ -760,6 +773,7 @@ def test_qwen_preprocessor_rejects_text_too_long_to_fit_before_tokenizing(
     pre.normalizer = NFC()
     for name in ("fps", "max_frames", "min_pixels", "max_pixels", "total_pixels"):
         setattr(pre, "default_video_" + name, None)
+    pre.video_decode_threads = 16
     pre.processor = FakeProcessor()
     payload = StagePayload(
         request_id="long-text",
@@ -1356,7 +1370,7 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     monkeypatch.setattr(
         omni_scheduler,
         "OmniScheduler",
-        SimpleNamespace,
+        lambda **kwargs: SimpleNamespace(outbox=Mock(), **kwargs),
     )
 
     session_runner = Mock()
@@ -1412,6 +1426,7 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
         )
         assert scheduler.model_runner is session_runner.return_value
         assert scheduler.session_adapter is session_adapter.return_value
+        assert session_adapter.return_value.outbox is scheduler.outbox
 
 
 def test_qwen_thinker_enables_and_attests_breakable_prefill_graphs(
@@ -2276,6 +2291,7 @@ def decoded_audio_preprocessor(monkeypatch):
     pre.processor = Processor()
     for name in ("fps", "max_frames", "min_pixels", "max_pixels", "total_pixels"):
         setattr(pre, "default_video_" + name, None)
+    pre.video_decode_threads = 16
     loaded = {"audio": [np.zeros(10000, dtype=np.float32)], "video": [], "loads": 0}
 
     async def audio_loader(raw, **kwargs):
@@ -2426,6 +2442,171 @@ def test_qwen_visual_cache_key_tracks_decoded_content(
     assert after != before
     # Identical content at another address shares the entry.
     assert run("other") == after
+
+
+class VideoProcessorProtocol(Protocol):
+    def __call__(
+        self,
+        *,
+        text: str,
+        images: list[Image.Image] | None,
+        videos: list[torch.Tensor] | None,
+        audio: list[np.ndarray] | None,
+        add_special_tokens: bool,
+        return_tensors: str,
+        videos_kwargs: preprocessor_mod.VideoProcessorKwargs,
+    ) -> dict[str, torch.Tensor]: ...
+
+
+class VideoCacheKeyProtocol(Protocol):
+    def __call__(self, videos: list[torch.Tensor]) -> str | None: ...
+
+
+def run_video_request(
+    pre: preprocessor_mod.Qwen3OmniPreprocessor,
+    monkeypatch: pytest.MonkeyPatch,
+    frames: torch.Tensor,
+    process: VideoProcessorProtocol,
+    video_cache_key: VideoCacheKeyProtocol,
+) -> StagePayload:
+    class Processor:
+        def apply_chat_template(
+            self,
+            messages: Sequence[Mapping[str, object]],
+            *,
+            add_generation_prompt: bool,
+            tokenize: bool,
+        ) -> str:
+            return "video prompt"
+
+        __call__ = staticmethod(process)
+
+    async def video_loader(
+        videos: list[str],
+        *,
+        fps: float | None,
+        max_frames: int | None,
+        min_pixels: int | None,
+        max_pixels: int | None,
+        total_pixels: int | None,
+        extract_audio: bool,
+        audio_target_sr: int,
+        resource_connector: MultiModalResourceConnector,
+        video_decode_threads: int,
+    ) -> tuple[list[torch.Tensor], list[float], None]:
+        return [frames], [2.0], None
+
+    pre.processor = Processor()
+    monkeypatch.setattr(preprocessor_mod, "ensure_video_list_async", video_loader)
+    monkeypatch.setattr(preprocessor_mod, "compute_video_cache_key", video_cache_key)
+    payload = StagePayload(
+        request_id="video-cache",
+        request=OmniRequest(
+            inputs={
+                "messages": [{"role": "user", "content": "hello"}],
+                "videos": ["https://media.invalid/clip.mp4"],
+            }
+        ),
+        data={},
+    )
+    return asyncio.run(pre.call_impl(payload))
+
+
+def test_qwen_video_cache_key_is_hashed_while_the_processor_runs(
+    decoded_audio_preprocessor, monkeypatch
+):
+    pre, _, _ = decoded_audio_preprocessor
+    frames = torch.zeros(4, 3, 2, 2)
+    processor_entered = threading.Event()
+    hash_finished = threading.Event()
+    hash_saw_processor: list[bool] = []
+    processor_saw_hash: list[bool] = []
+    compute_video_cache_key = preprocessor_mod.compute_video_cache_key
+
+    def video_cache_key(videos: list[torch.Tensor]) -> str | None:
+        hash_saw_processor.append(processor_entered.wait(timeout=5))
+        key = compute_video_cache_key(videos)
+        hash_finished.set()
+        return key
+
+    def process(
+        *,
+        text: str,
+        images: list[Image.Image] | None,
+        videos: list[torch.Tensor] | None,
+        audio: list[np.ndarray] | None,
+        add_special_tokens: bool,
+        return_tensors: str,
+        videos_kwargs: preprocessor_mod.VideoProcessorKwargs,
+    ) -> dict[str, torch.Tensor]:
+        processor_entered.set()
+        processor_saw_hash.append(hash_finished.wait(timeout=5))
+        return {
+            "input_ids": torch.tensor([[1, 2]]),
+            "pixel_values_videos": torch.ones(1, 3),
+        }
+
+    state = Qwen3OmniPipelineState.from_dict(
+        run_video_request(pre, monkeypatch, frames, process, video_cache_key).data
+    )
+
+    assert hash_saw_processor == [True]
+    assert processor_saw_hash == [True]
+    assert state.encoder_inputs["image_encoder"]["cache_key"].startswith(
+        compute_video_cache_key([frames])
+    )
+
+
+def test_qwen_video_cache_key_hash_ends_with_a_failed_request(
+    decoded_audio_preprocessor, monkeypatch
+):
+    """A request whose processor call failed surfaced its error while its video hash still read the frames."""
+    pre, _, _ = decoded_audio_preprocessor
+    trace: list[str] = []
+    hash_started = threading.Event()
+    request_cleanup = threading.Event()
+    compute_video_cache_key = preprocessor_mod.compute_video_cache_key
+
+    class RequestExecutor(ThreadPoolExecutor):
+        def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
+            request_cleanup.set()
+            super().shutdown(wait=wait, cancel_futures=cancel_futures)
+
+    def video_cache_key(videos: list[torch.Tensor]) -> str | None:
+        trace.append("hash started")
+        hash_started.set()
+        request_cleanup.wait(timeout=10)
+        key = compute_video_cache_key(videos)
+        trace.append("hash finished")
+        return key
+
+    def process(
+        *,
+        text: str,
+        images: list[Image.Image] | None,
+        videos: list[torch.Tensor] | None,
+        audio: list[np.ndarray] | None,
+        add_special_tokens: bool,
+        return_tensors: str,
+        videos_kwargs: preprocessor_mod.VideoProcessorKwargs,
+    ) -> dict[str, torch.Tensor]:
+        hash_started.wait(timeout=10)
+        trace.append("processor failed")
+        raise RuntimeError("processor failed")
+
+    monkeypatch.setattr(preprocessor_mod, "ThreadPoolExecutor", RequestExecutor)
+    with pytest.raises(RuntimeError, match="processor failed"):
+        run_video_request(
+            pre, monkeypatch, torch.zeros(4, 3, 2, 2), process, video_cache_key
+        )
+    trace.append("request failed")
+
+    assert trace == [
+        "hash started",
+        "processor failed",
+        "hash finished",
+        "request failed",
+    ]
 
 
 def test_preprocessing_executor_defaults_to_serial_dispatch(monkeypatch):
@@ -2705,6 +2886,7 @@ def test_threaded_preprocessing_loads_repeated_remote_images(monkeypatch):
     pre.processor = Processor()
     for name in ("fps", "max_frames", "min_pixels", "max_pixels", "total_pixels"):
         setattr(pre, "default_video_" + name, None)
+    pre.video_decode_threads = 16
     monkeypatch.setattr(qwen_stages, "Qwen3OmniPreprocessor", lambda **_: pre)
     # Isolate the old global client so this catches cross-request loop reuse.
     monkeypatch.setattr(
@@ -2857,6 +3039,7 @@ def bare_preprocessor(processor: Mock) -> preprocessor_mod.Qwen3OmniPreprocessor
         "default_video_total_pixels",
     ):
         setattr(pre, name, None)
+    pre.video_decode_threads = 16
     return pre
 
 

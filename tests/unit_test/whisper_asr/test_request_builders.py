@@ -328,6 +328,21 @@ def test_timestamped_text_renders_markers_from_token_ids() -> None:
     assert text == "<|0.00|>7 8<|1.00|><|1.50|>9<|2.00|>"
 
 
+def test_result_adapter_reports_a_token_budget_stop() -> None:
+    _, result_adapter = make_whisper_scheduler_adapters(
+        processor=SimpleNamespace(),
+        tokenizer=FakeTokenizer(),
+        generation_config=generation_config(),
+        encoder_token_count=ENCODER_TOKEN_COUNT,
+        max_new_tokens=32,
+    )
+    data = whisper_request_builders.WhisperASRRequestData(
+        output_ids=[7, 8], stage_payload=make_payload(), finish_reason="length"
+    )
+
+    assert result_adapter(data).data["finish_reason"] == "length"
+
+
 def test_request_builder_pre_lm_encode_attaches_embeddings(monkeypatch) -> None:
     monkeypatch.setattr(
         transcription,

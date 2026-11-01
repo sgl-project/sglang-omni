@@ -29,6 +29,7 @@ from sglang_omni.proto import (
     StagePayload,
     SubmitMessage,
 )
+from sglang_omni.proto.messages import StreamChunkBatchMessage
 from sglang_omni.proto.session import (
     SESSION_METADATA_KEY,
     SessionIdentity,
@@ -178,9 +179,9 @@ def test_stage_routes_results_streams_and_clears_abort_state(monkeypatch) -> Non
         stream_msg = next(
             msg
             for target, _, msg in control_plane.sent_to_stage
-            if target == "talker" and msg.chunk_id == 0
+            if target == "talker" and isinstance(msg, StreamChunkBatchMessage)
         )
-        assert stream_msg.chunk_id == 0
+        assert stream_msg.chunk_ids == [0]
 
         stage_obj.stream_queue = StreamQueue()
         stage_obj.stream_queue.open("req-1")
@@ -272,15 +273,18 @@ def test_stage_process_accepts_iterable_dynamic_wait_sources() -> None:
 def test_stage_run_raises_when_scheduler_thread_crashes() -> None:
     async def run() -> None:
         scheduler = FakeScheduler(fail_start=RuntimeError("boom"))
+        reported = threading.Event()
         stage_obj = make_stage(
             scheduler=scheduler,
             control_plane=CloseAwareControlPlane(),
+            process_failure_callback=reported.set,
         )
 
         with pytest.raises(RuntimeError, match="Scheduler thread"):
             await asyncio.wait_for(stage_obj.run(), timeout=2.0)
 
         assert scheduler.stopped is True
+        assert reported.is_set()
 
     asyncio.run(run())
 
@@ -540,6 +544,64 @@ def test_stage_stop_warns_but_succeeds_on_a_stuck_scheduler_thread(
             release.set()
             if stage_obj.scheduler_thread is not None:
                 await asyncio.to_thread(stage_obj.scheduler_thread.join, 1.0)
+
+    asyncio.run(run())
+
+
+def test_spec_stage_stop_retains_communication_until_inflight_work_drains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A valid speculative drain used to hard-exit when the local join timeout elapsed."""
+
+    async def run() -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        joining = threading.Event()
+        drained = threading.Event()
+        join_timeouts: list[float | None] = []
+        scheduler = FakeScheduler()
+        scheduler.enable_overlap = True
+
+        def forward() -> None:
+            entered.set()
+            release.wait()
+            drained.set()
+
+        scheduler.start = forward
+        relay = FakeRelay()
+        stage = make_stage(scheduler=scheduler, relay=relay)
+        monkeypatch.setattr(stage_runtime_module, "_SCHEDULER_THREAD_JOIN_TIMEOUT_S", 0)
+        monkeypatch.setattr(
+            stage_runtime_module,
+            "terminate_gpu_worker",
+            Mock(side_effect=RuntimeError("unexpected hard exit")),
+            raising=False,
+        )
+        await stage.start()
+        assert await asyncio.to_thread(entered.wait, 2)
+        thread = stage.scheduler_thread
+        original_join = thread.join
+
+        def join(timeout: float | None = None) -> None:
+            join_timeouts.append(timeout)
+            joining.set()
+            original_join(timeout)
+
+        monkeypatch.setattr(thread, "join", join)
+        stopping = asyncio.create_task(stage.stop())
+        try:
+            assert await asyncio.to_thread(joining.wait, 2)
+            assert join_timeouts == [None]
+            assert not stopping.done()
+            assert not stage.control_plane.closed
+            assert not relay.closed
+            assert not drained.is_set()
+        finally:
+            release.set()
+            await asyncio.wait_for(stopping, 2)
+        assert drained.is_set()
+        assert not thread.is_alive()
+        assert stage.control_plane.closed and relay.closed
 
     asyncio.run(run())
 
@@ -1445,6 +1507,57 @@ def test_direct_cuda_ipc_payload_preserves_inline_cpu_tensors() -> None:
     assert [entry["path"] for entry in ref["tensors"]] == ["gpu"]
 
 
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_direct_cuda_ipc_payload_header_sends_a_cpu_views_own_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transfer_buffer = torch.arange(1 << 20, dtype=torch.int64)
+    grid = transfer_buffer[3:6].view(1, 3)
+    positions = transfer_buffer[8:20].view(3, 4).t()
+    payload = make_stage_payload(
+        data={
+            "gpu": torch.arange(2, device="cuda:0"),
+            "grid": grid,
+            "positions": positions,
+        }
+    )
+    monkeypatch.setattr(stage_io, "ipc_pickle", lambda value: b"cuda-handle")
+
+    payload_reference = stage_io.serialize_direct_cuda_ipc_payload(payload)
+    header = pickle.loads(payload_reference["header"])
+
+    assert len(payload_reference["header"]) < transfer_buffer.untyped_storage().nbytes()
+    assert torch.equal(header.data["grid"], grid)
+    assert torch.equal(header.data["positions"], positions)
+    assert header.data["positions"].stride() == positions.stride()
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_direct_cuda_ipc_payload_header_copies_only_views_of_a_larger_storage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transfer_buffer = torch.arange(1 << 20, dtype=torch.int64)
+    features = transfer_buffer[: 3 << 18]
+    mask = torch.ones(1, dtype=torch.int64).expand(1 << 20)
+    payload = make_stage_payload(
+        data={
+            "gpu": torch.arange(2, device="cuda:0"),
+            "features": features,
+            "mask": mask,
+        }
+    )
+    monkeypatch.setattr(stage_io, "ipc_pickle", lambda value: b"cuda-handle")
+
+    payload_reference = stage_io.serialize_direct_cuda_ipc_payload(payload)
+    header = pickle.loads(payload_reference["header"])
+
+    assert len(payload_reference["header"]) < transfer_buffer.untyped_storage().nbytes()
+    assert torch.equal(header.data["features"], features)
+    assert torch.equal(header.data["mask"], mask)
+
+
 def test_direct_cuda_ipc_payload_allows_large_ordinary_header(monkeypatch) -> None:
     payload = make_stage_payload(
         data={"gpu": "placeholder"},
@@ -1736,6 +1849,27 @@ def test_aborted_request_id_resubmit_fails_without_new_state() -> None:
         assert "req-1" not in stage.active_requests
         assert "req-1" not in stage.replica_bindings
         assert "req-1" in stage.aborted
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("role", ["leader", "follower"])
+def test_tp_rank_runs_fanned_out_work_after_abort(role: str) -> None:
+    async def run() -> None:
+        scheduler = SimpleScheduler(lambda payload: payload)
+        stage = make_stage(role=role, scheduler=scheduler, tp_fanout=Mock())
+        payload = make_stage_payload(request_id="req-1")
+        if role == "leader":
+            await stage.execute(payload)
+            stage.on_abort("req-1")
+        else:
+            stage.on_abort("req-1")
+            await stage.execute(payload)
+        threading.Thread(target=scheduler.start, daemon=True).start()
+        try:
+            assert scheduler.outbox.get(timeout=5).request_id == "req-1"
+        finally:
+            scheduler.stop()
 
     asyncio.run(run())
 

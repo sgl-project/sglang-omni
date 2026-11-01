@@ -1019,7 +1019,7 @@ that happened to contain an older version of the test.
 
 ### Streaming cascade
 
-`unit_test/models/test_streaming_cascade.py`, `unit_test/pipeline/test_streaming_cascade.py`, `unit_test/serve/test_session_bridge.py`, `unit_test/serve/test_session_wire.py`, `unit_test/serve/test_realtime_turn_based.py`, `unit_test/pipeline/test_session_graph.py` and `unit_test/scheduling/test_streaming_vocoder_session.py` cover the cascade and the turn-based realtime interaction on CPU with loopback services; `test_model/test_streaming_cascade_realtime.py` runs against live services as described in the [Full Duplex Interactive Model](../docs/developer_reference/full_duplex_interactive_model.md#streaming-cascade).
+`unit_test/models/test_streaming_cascade.py`, `unit_test/pipeline/test_streaming_cascade.py`, `unit_test/serve/test_session_bridge.py`, `unit_test/serve/test_session_wire.py`, `unit_test/serve/test_realtime_turn_based.py`, `unit_test/pipeline/test_session_graph.py` and `unit_test/scheduling/test_streaming_vocoder_session.py` cover the cascade and the turn-based realtime interaction on CPU with loopback services; `test_model/test_streaming_cascade_realtime.py` runs against live services as described in the [Full Duplex Interactive Model](../docs/developer_reference/full_duplex_guide.md#streaming-cascade).
 
 ```bash
 python -m pytest tests/unit_test/models/test_streaming_cascade.py tests/unit_test/pipeline/test_streaming_cascade.py tests/unit_test/serve/test_session_bridge.py tests/unit_test/serve/test_session_wire.py tests/unit_test/serve/test_realtime_turn_based.py tests/unit_test/pipeline/test_session_graph.py -q

@@ -14,10 +14,12 @@ from sglang_omni.models.qwen3_omni.stages import run_single_encoder_payload
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.scheduling.session import (
+    DEFAULT_MAX_CONCURRENCY,
     SessionContext,
     SessionHooks,
     SessionScheduler,
 )
+from sglang_omni.utils.cpu import automatic_video_decode_threads
 from sglang_omni.utils.device import resolve_concrete_device
 
 
@@ -82,7 +84,13 @@ def create_preprocessing_scheduler(
 ) -> SessionScheduler:
     return SessionScheduler(
         QwenPreprocessingHooks(
-            Qwen3OmniPreprocessor(model_path, max_seq_len=max_seq_len)
+            Qwen3OmniPreprocessor(
+                model_path,
+                max_seq_len=max_seq_len,
+                video_decode_threads=automatic_video_decode_threads(
+                    DEFAULT_MAX_CONCURRENCY
+                ),
+            )
         ),
         max_open_sessions=max_open_sessions,
     )
