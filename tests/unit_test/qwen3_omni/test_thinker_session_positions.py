@@ -13,10 +13,7 @@ from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
 from sglang_omni.models.qwen3_omni import thinker_session
 from sglang_omni.models.qwen3_omni.mrope_positions import feat_extract_output_lengths
 from sglang_omni.models.qwen3_omni.request_builders import compute_mrope_positions
-from sglang_omni.models.qwen3_omni.thinker_session import (
-    CODEC_FRAME_MS,
-    QwenThinkerSessionAdapter,
-)
+from sglang_omni.models.qwen3_omni.thinker_session import QwenThinkerSessionAdapter
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from tests.unit_test.qwen3_omni.test_thinker_session import (
     END,
@@ -25,6 +22,7 @@ from tests.unit_test.qwen3_omni.test_thinker_session import (
     PROMPT_TEXT,
     SYSTEM_PREFIX,
     abort,
+    spoken_ms,
     truncate,
     unit_chunk,
 )
@@ -205,7 +203,7 @@ def test_every_prefill_takes_the_positions_of_the_whole_conversation(
     third = adapter.build(IDENTITY, unit_chunk(3), turn_payload(3, lengths[2]))
     native.bind(adapter, third)
     abort(adapter, [71, 72, 73, 74, 75, 76])
-    adapter.control(IDENTITY, truncate(3, t_ms=2 * CODEC_FRAME_MS))
+    adapter.control(IDENTITY, truncate(3, t_ms=spoken_ms(5)))
 
     fourth = adapter.build(IDENTITY, unit_chunk(4), turn_payload(4, lengths[3]))
     request = native.bind(adapter, fourth)
