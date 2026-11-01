@@ -170,7 +170,8 @@ extension ModelSettingsView {
     var contentWithLifecycle: some View {
         stateObservedContent
             .onReceive(installationRefreshPublisher) { _ in
-                guard isActive, mainWindowState.isVisible else { return }
+                // Each body builds a new subscription that replays the current revisions.
+                guard isActive, mainWindowState.isVisible, !isCatalogBuiltFromCurrentInstallations else { return }
                 refreshCatalogSnapshot()
             }
             .onReceive(modelStateRefreshTimer) { _ in

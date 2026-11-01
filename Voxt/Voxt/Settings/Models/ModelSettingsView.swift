@@ -67,7 +67,7 @@ struct ModelSettingsView: View {
     @State private var isModelDownloadSettingsPresented = false
     @State private var expandedModelGroupIDs = Set<String>()
     @State private var collapsedModelGroupIDs = Set<String>()
-    @State var catalogSnapshot = ModelSettingsCatalogSnapshot.empty
+    @StateObject private var catalogStore = ModelSettingsCatalogStore()
     @State private var isCatalogRefreshScheduled = false
     @State private var isRefreshingCatalogSnapshot = false
     @State private var needsAnotherCatalogRefresh = false
@@ -153,6 +153,15 @@ struct ModelSettingsView: View {
 
     private var hiddenModelVisibilityIDs: Set<String> {
         ModelVisibilityStore.decode(hiddenModelVisibilityIDsRaw)
+    }
+
+    private var catalogSnapshot: ModelSettingsCatalogSnapshot { catalogStore.snapshot }
+
+    var isCatalogBuiltFromCurrentInstallations: Bool {
+        catalogStore.installationRevisions == ModelInstallationObservation.revisions(
+            mlx: mlxModelManager,
+            customLLM: customLLMManager
+        )
     }
 
     private var availableTags: [String] { catalogSnapshot.availableTags }
@@ -561,6 +570,10 @@ struct ModelSettingsView: View {
         }
 
         reconcileCancellingInstallTargets()
+        catalogStore.installationRevisions = ModelInstallationObservation.revisions(
+            mlx: mlxModelManager,
+            customLLM: customLLMManager
+        )
 
         let entries = switch catalogTab {
         case .asr:
@@ -569,7 +582,7 @@ struct ModelSettingsView: View {
             catalogBuilder.llmEntries()
         }
 
-        catalogSnapshot = ModelSettingsCatalogSnapshotBuilder.build(
+        catalogStore.snapshot = ModelSettingsCatalogSnapshotBuilder.build(
             entries: entries,
             selectedTags: selectedTags,
             hiddenIDs: hiddenModelVisibilityIDs
