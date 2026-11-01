@@ -29,7 +29,7 @@ import soundfile as sf
 import torch
 from tqdm import tqdm
 
-from benchmarks.benchmarker.data import FinishReason, RequestResult
+from benchmarks.benchmarker.data import RequestResult, finish_reason_from_server
 from benchmarks.benchmarker.runner import AfterSendFn, SendFn
 from benchmarks.benchmarker.utils import (
     WAV_HEADER_SIZE,
@@ -1109,15 +1109,6 @@ def _resolve_tts_generation_kwargs(
     resolved = dict(gen_kwargs)
     resolved["token_count"] = estimate_moss_tts_duration_tokens(sample.target_text)
     return resolved
-
-
-def finish_reason_from_server(value: str | None) -> FinishReason:
-    try:
-        return FinishReason(value)
-    except ValueError:
-        # note (Yucheng Hu): absent from servers without the field; other
-        # values are engine states this metric does not classify.
-        return FinishReason.UNKNOWN
 
 
 def set_token_rate(result: RequestResult) -> None:

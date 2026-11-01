@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import importlib
 import logging
+import time
 from collections.abc import Callable, Sequence
+from types import FunctionType
 from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
@@ -15,6 +17,7 @@ from sglang.srt.arg_groups.model_override_base import (
     attention_backends_of,
     resolved_view,
 )
+from sglang.srt.mem_cache.allocator.base import BaseTokenToKVPoolAllocator
 from sglang.srt.model_executor.cuda_graph_config import Phase, with_phase
 from sglang.srt.runtime_context import get_model, get_platform, get_schedule
 from sglang.srt.server_args import ServerArgs
@@ -46,6 +49,16 @@ from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputP
 from sglang_omni.scheduling.types import StreamOutputBuilder
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
+if current_platform.is_npu():
+    import triton
+    from sgl_kernel_npu.mem_cache import allocator as allocator_kernels
+    from sglang.srt.hardware_backend.npu.allocator_npu import (
+        NPUPagedTokenToKVPoolAllocator,
+    )
+    from sglang.srt.layers.sampler import multinomial_with_seed
+else:
+    pass
+
 if TYPE_CHECKING:
     from qwen_tts import Qwen3TTSModel
 
@@ -73,6 +86,76 @@ def is_truthy(value: object) -> bool:
     else:
         pass
     return False
+
+
+def prepare_npu_kernels(
+    allocator: BaseTokenToKVPoolAllocator, max_running_requests: int, vocab_size: int
+) -> None:
+    """Warm allocation and seeded sampling with the resolved pool and vocabulary."""
+    if not isinstance(allocator, NPUPagedTokenToKVPoolAllocator):
+        return
+    else:
+        pass
+    assert max_running_requests > 0
+    assert vocab_size > 0
+    started = time.perf_counter()
+    kernel = allocator_kernels.alloc_extend_kernel
+    extend_parameter = kernel.arg_names.index("max_num_extend_tokens")
+    if extend_parameter in kernel.constexprs:
+        original_function = kernel.fn
+        function = FunctionType(
+            original_function.__code__,
+            original_function.__globals__,
+            original_function.__name__,
+            original_function.__defaults__,
+            original_function.__closure__,
+        )
+        # Clone annotations so the dependency function is not mutated.
+        function.__annotations__ = dict(original_function.__annotations__)
+        function.__annotations__.pop("max_num_extend_tokens")
+        kernel = triton.jit(
+            function,
+            do_not_specialize=["free_page_ptr", "max_num_extend_tokens"],
+        )
+        allocator_kernels.alloc_extend_kernel = kernel
+    else:
+        pass
+
+    device = allocator.free_pages.device
+    page_size = allocator.page_size
+    batch_buckets = [
+        1 << exponent for exponent in range((max_running_requests - 1).bit_length() + 1)
+    ]
+    for batch_size in batch_buckets:
+        prefix_lengths = torch.zeros(batch_size, dtype=torch.int64, device=device)
+        sequence_lengths = torch.full_like(prefix_lengths, page_size + 1)
+        last_positions = torch.full_like(prefix_lengths, -1)
+        free_pages = torch.arange(
+            1, 2 * batch_size + 1, dtype=allocator.free_pages.dtype, device=device
+        )
+        output = torch.empty(
+            batch_size * (page_size + 1), dtype=torch.int64, device=device
+        )
+        kernel[(batch_size,)](
+            prefix_lengths,
+            sequence_lengths,
+            last_positions,
+            free_pages,
+            output,
+            batch_size,
+            page_size,
+            triton.next_power_of_2(output.numel()),
+        )
+        multinomial_with_seed(
+            torch.zeros((batch_size, vocab_size), dtype=torch.float32, device=device),
+            torch.zeros(batch_size, dtype=torch.int64, device=device),
+            torch.zeros(batch_size, dtype=torch.int64, device=device),
+        )
+    torch.get_device_module(device).synchronize(device)
+    logger.info(
+        f"Qwen3-TTS NPU kernels prepared: page_size={page_size}, vocab_size={vocab_size}, "
+        f"batch_buckets={batch_buckets}, elapsed_s={time.perf_counter() - started:.3f}"
+    )
 
 
 # note (luojiaxuan): on 1.7B and 0.6B Base the share of generated leading silence these probes cover
@@ -300,11 +383,17 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
             device=device,
             dtype=self.dtype,
             attn_implementation=self.attn_implementation,
+            float32_encoder=model.tts_model_type == "base",
         )
         model.load_speech_tokenizer(speech_tokenizer)
         # note (luojiaxuan): only Base checkpoints serve x-vector clones, so the
         # other variants skip the probe and the per-step mask.
         if self.leading_silence_mask_frames > 0 and model.tts_model_type == "base":
+            # note (ratish): the probe runs this thread's first GEMM on the device, and a cuBLAS workspace made inside its float32 activations keeps them reserved when the KV pool is sized.
+            if current_platform.is_cuda():
+                torch.cuda.current_blas_handle()
+            else:
+                pass
             self.silence_codec_ids = derive_silence_codec_ids(speech_tokenizer, device)
             logger.info(
                 f"Qwen3-TTS masks {self.silence_codec_ids.numel()} silence codec ids "
@@ -376,6 +465,16 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
             raise ValueError("Qwen3-TTS torch.compile is not supported")
         else:
             pass
+        if (
+            current_platform.is_xpu()
+            and self.device.split(":")[0] == "xpu"
+            and overrides.get("attention_backend") is None
+            and overrides.get("prefill_attention_backend") is None
+            and overrides.get("decode_attention_backend") is None
+        ):
+            overrides["attention_backend"] = "intel_xpu"
+        else:
+            pass
         # note (ratish): fa4 avoids fa3's per-slot split KV combine but runs FP8 KV only
         # on SM100, so a quantized KV cache keeps the default backend.
         prefill_backend = nested_prefill_overrides(overrides).get(
@@ -399,6 +498,14 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
         schedule = get_schedule()
         running = int(schedule.max_running_requests)
         context = int(get_model().context_length)
+        if current_platform.is_npu():
+            prepare_npu_kernels(
+                scheduler.token_to_kv_pool_allocator,
+                running,
+                scheduler.tp_worker.model_runner.model.vocab_size,
+            )
+        else:
+            pass
         pool = scheduler.tp_worker.model_runner.token_to_kv_pool
         k_bytes, v_bytes = pool.get_kv_size_bytes()
         logger.info(
@@ -445,10 +552,12 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
     def extra_scheduler_kwargs(self) -> SchedulerExtras[Qwen3TTSSGLangRequestData]:
         # note (ratish): requests build on the scheduler thread: preprocessing already did the
         # model work, and a pooled build that misses the pass waits a whole engine step for admission.
+        # note (ratish): on the default stream the talker's steps run in order with the vocoder's whole-utterance decodes, so the talker takes a stream of its own, above the vocoder's.
         return {
             "stream_output_builder": self.stream_output_builder,
             "prefill_coalesce_requests": self.prefill_coalesce_requests,
             "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
+            "should_run_top_priority_stream": current_platform.is_cuda(),
         }
 
     def make_abort_callback(self) -> Callable[[str], None]:

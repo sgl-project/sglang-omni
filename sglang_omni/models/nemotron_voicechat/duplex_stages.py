@@ -11,10 +11,7 @@ from transformers import AutoTokenizer
 
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.nemotron_voicechat.code2wav_stream import DECODE_WINDOW_FRAMES
-from sglang_omni.models.nemotron_voicechat.conformer import (
-    SAMPLES_PER_FRAME,
-    AudioPerception,
-)
+from sglang_omni.models.nemotron_voicechat.conformer import AudioPerception
 from sglang_omni.models.nemotron_voicechat.duplex_ar import (
     DuplexTalkerRunner,
     DuplexThinkerRunner,
@@ -41,6 +38,7 @@ from sglang_omni.models.nemotron_voicechat.tools import (
 )
 from sglang_omni.models.weight_loader import load_module, resolve_dtype
 from sglang_omni.proto.request import StagePayload
+from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.session import SessionScheduler
 from sglang_omni.scheduling.sglang_backend.ar_session import ARSessionAdapter
@@ -67,6 +65,8 @@ class OfflineResultAdapter(Protocol):
 class DuplexSessionBuilderMixin:
     adapter: ARSessionAdapter
     scheduler_class = OmniScheduler
+    # note (Junnan Li): an eager thinker unit leaves no room in the 80 ms frame for a second session.
+    disable_cuda_graph = False
 
     def generation_defaults(self, *, dtype: str) -> dict[str, str | int | bool]:
         return {
@@ -77,6 +77,7 @@ class DuplexSessionBuilderMixin:
             # Triton supports the single-token KV pages used by streaming sessions.
             "attention_backend": "triton",
             "page_size": 1,
+            "cuda_graph_backend_prefill": CudaGraphBackend.DISABLED,
         }
 
     def extra_scheduler_kwargs(self) -> dict[str, ARSessionAdapter | int]:
@@ -179,6 +180,7 @@ def create_talker(
 def create_perception(
     model_path: str,
     *,
+    max_open_sessions: int,
     dtype: str = "float32",
     device: str | None = None,
     gpu_id: int | None = None,
@@ -193,15 +195,17 @@ def create_perception(
         device=concrete_device,
         strict=True,
     )
-    hooks = PerceptionHooks(model.eval())
-    hooks.stream.push(torch.zeros(SAMPLES_PER_FRAME, device=concrete_device))
-    hooks.stream.reset()
-    return SessionScheduler(hooks, max_open_sessions=1, max_concurrency=1)
+    hooks = PerceptionHooks(model.eval(), max_open_sessions=max_open_sessions)
+    hooks.warm_up()
+    return SessionScheduler(
+        hooks, max_open_sessions=max_open_sessions, max_concurrency=1
+    )
 
 
 def create_codec(
     model_path: str,
     *,
+    max_open_sessions: int,
     dtype: str = "float32",
     device: str | None = None,
     gpu_id: int | None = None,
@@ -224,6 +228,6 @@ def create_codec(
         pass
     return SessionScheduler(
         hooks,
-        max_open_sessions=1,
+        max_open_sessions=max_open_sessions,
         max_concurrency=1,
     )

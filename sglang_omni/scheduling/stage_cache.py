@@ -20,8 +20,12 @@ class CacheEntry:
     size_bytes: int
 
 
+def is_view_of_larger_storage(value: torch.Tensor) -> bool:
+    return value.untyped_storage().nbytes() > value.numel() * value.element_size()
+
+
 def to_pinned_host(value: torch.Tensor) -> torch.Tensor:
-    if value.device.type == "cpu" and value.is_pinned():
+    if value.is_pinned() and not is_view_of_larger_storage(value):
         return value
     else:
         pass
@@ -50,7 +54,11 @@ def detach_value(
             value = value.to(device=device)
         else:
             pass
-        return value
+        # note (ratish): a view keeps its whole storage alive, such as a received transfer buffer or a batch output, while the budget counts only the view's bytes, so an admitted view is copied out.
+        if is_view_of_larger_storage(value):
+            return value.clone()
+        else:
+            return value
     else:
         pass
     if isinstance(value, dict):

@@ -26,7 +26,90 @@ from sglang.srt.sampling.penaltylib import BatchedRepetitionPenalizer
 from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.models.qwen3_tts.model_runner import Qwen3TTSModelRunner
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+if current_platform.is_npu():
+    from sgl_kernel_npu.mem_cache import allocator as allocator_kernels
+    from sglang.srt.hardware_backend.npu.allocator_npu import (
+        NPUPagedTokenToKVPoolAllocator,
+    )
+
+    from sglang_omni.models.qwen3_tts import engine_builder as qwen3_engine_builder
+else:
+    pass
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not current_platform.is_npu(), reason="Requires an NPU")
+@pytest.mark.parametrize("page_size", [16, 128])
+def test_npu_allocator_preparation_preserves_pool_and_page_mapping(
+    page_size: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Warmup must not consume real KV pages or change partial-page allocation."""
+    allocator = NPUPagedTokenToKVPoolAllocator(
+        size=8192,
+        page_size=page_size,
+        dtype=torch.float16,
+        device="npu:0",
+        kvcache=None,
+        need_sort=False,
+    )
+    free_pages_before = allocator.free_pages.clone()
+    dependency_kernel = allocator_kernels.alloc_extend_kernel
+    monkeypatch.setattr(allocator_kernels, "alloc_extend_kernel", dependency_kernel)
+    dependency_function = dependency_kernel.fn
+    dependency_annotations = dict(dependency_function.__annotations__)
+    sampling_shapes: list[tuple[int, int]] = []
+    original_sampler = qwen3_engine_builder.multinomial_with_seed
+
+    def sample(
+        logprobs: torch.Tensor, seed: torch.Tensor, positions: torch.Tensor
+    ) -> torch.Tensor:
+        sampling_shapes.append(tuple(logprobs.shape))
+        return original_sampler(logprobs, seed, positions)
+
+    monkeypatch.setattr(qwen3_engine_builder, "multinomial_with_seed", sample)
+    qwen3_engine_builder.prepare_npu_kernels(allocator, 3, 3072)
+    prepared_kernel = allocator_kernels.alloc_extend_kernel
+    qwen3_engine_builder.prepare_npu_kernels(allocator, 3, 3072)
+
+    assert sampling_shapes == [(1, 3072), (2, 3072), (4, 3072)] * 2
+    assert allocator_kernels.alloc_extend_kernel is prepared_kernel
+    assert (
+        prepared_kernel.arg_names.index("max_num_extend_tokens")
+        not in prepared_kernel.constexprs
+    )
+    assert dependency_function.__annotations__ == dependency_annotations
+    torch.testing.assert_close(allocator.free_pages, free_pages_before, rtol=0, atol=0)
+
+    allocator.alloc(3 * page_size)
+    free_pages = allocator.free_pages.cpu().tolist()
+    prefixes_cpu = torch.tensor([0, 1, page_size], dtype=torch.int64)
+    sequences_cpu = torch.tensor(
+        [page_size + 3, page_size + 5, page_size + 2], dtype=torch.int64
+    )
+    last_positions = torch.tensor(
+        [-1, 2 * page_size, 4 * page_size - 1], dtype=torch.int64, device="npu:0"
+    )
+    expected = [
+        *range(free_pages[0] * page_size, (free_pages[0] + 1) * page_size),
+        *range(free_pages[1] * page_size, free_pages[1] * page_size + 3),
+        *range(2 * page_size + 1, 3 * page_size),
+        *range(free_pages[2] * page_size, free_pages[2] * page_size + 5),
+        *range(free_pages[3] * page_size, free_pages[3] * page_size + 2),
+    ]
+    actual = allocator.alloc_extend(
+        prefixes_cpu.to("npu:0"),
+        prefixes_cpu,
+        sequences_cpu.to("npu:0"),
+        sequences_cpu,
+        last_positions,
+        extend_num_tokens=int((sequences_cpu - prefixes_cpu).sum()),
+    )
+
+    assert actual.cpu().tolist() == expected
+    assert allocator.free_pages.cpu().tolist() == free_pages[4:]
 
 
 class TinyModel(torch.nn.Module):

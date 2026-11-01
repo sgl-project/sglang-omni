@@ -20,7 +20,8 @@ from collections.abc import Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import replace
-from typing import Awaitable, Callable, Literal
+from functools import partial
+from typing import Awaitable, Callable, Literal, Protocol
 
 import torch
 
@@ -61,6 +62,7 @@ from sglang_omni.proto import (
     StreamMessage,
     SubmitMessage,
 )
+from sglang_omni.proto.messages import StreamChunkBatchMessage
 from sglang_omni.proto.request import RoutedPayloads
 from sglang_omni.proto.session import SessionOperation, find_session_operation
 from sglang_omni.relay.base import Relay
@@ -78,6 +80,7 @@ logger = logging.getLogger(__name__)
 
 _SCHEDULER_THREAD_JOIN_TIMEOUT_S = 5.0
 _OUTBOX_DRAIN_BATCH_SIZE = 64
+BATCHED_STREAM_CHUNK_BYTES_LIMIT = 16 * 1024
 
 
 GetNextFn = Callable[[str, object], str | list[str] | None]
@@ -86,6 +89,16 @@ GetStreamDoneTargetsFn = Callable[[str, object], str | list[str] | None]
 
 def error_text(exc: BaseException) -> str:
     return str(exc) or type(exc).__name__
+
+
+class ProcessFailureCallback(Protocol):
+    def __call__(self) -> None:
+        """Notify the owner before process cleanup can block."""
+
+
+class ReceiveStep(Protocol):
+    def __call__(self, predecessor: asyncio.Future[None] | None) -> Awaitable[None]:
+        """Start one lane's receive work, which waits on the predecessor before routing."""
 
 
 class Stage:
@@ -138,7 +151,11 @@ class Stage:
         replica_topology: dict[str, list[str]] | None = None,
         allow_child_processes: bool = False,
         http_socket_path: str | None = None,
+        process_failure_callback: ProcessFailureCallback | None = None,
     ) -> None:
+        self.process_failure_callback: ProcessFailureCallback | None = (
+            process_failure_callback
+        )
         self.name = name
         self.role = role
         self.get_next = get_next
@@ -297,6 +314,10 @@ class Stage:
                     self.scheduler.start()
                 except Exception as exc:
                     logger.exception("Scheduler thread for stage %s crashed", self.name)
+                    if self.process_failure_callback is not None:
+                        self.process_failure_callback()
+                    else:
+                        pass
                     self.running = False
                     loop = self.loop
                     if loop is not None and not loop.is_closed():
@@ -380,6 +401,7 @@ class Stage:
         self.receive_tasks.clear()
         self.receive_lane_tails.clear()
         if self.scheduler is not None:
+            is_speculative_overlap = getattr(self.scheduler, "enable_overlap", False)
             try:
                 self.scheduler.stop()
             except Exception as exc:
@@ -388,23 +410,26 @@ class Stage:
             # model-path events from its own finally, and the MPS validation
             # stage reads those files right after stop() returns, so wait for
             # the thread instead of letting a daemon thread be reclaimed at
-            # process exit. A slow thread is logged, not fatal: shutdown
-            # correctness must not start depending on this timeout.
+            # process exit.
             scheduler_thread = self.scheduler_thread
             if scheduler_thread is not None:
                 try:
+                    # note (YzXiao): the parent process enforces the shutdown deadline while speculative work drains.
                     await asyncio.to_thread(
                         scheduler_thread.join,
-                        _SCHEDULER_THREAD_JOIN_TIMEOUT_S,
+                        (
+                            None
+                            if is_speculative_overlap
+                            else _SCHEDULER_THREAD_JOIN_TIMEOUT_S
+                        ),
                     )
                 except Exception as exc:
                     _record_cleanup_error("scheduler thread", exc)
                 else:
                     if scheduler_thread.is_alive():
                         logger.warning(
-                            "Stage %s scheduler thread did not stop within %gs",
-                            self.name,
-                            _SCHEDULER_THREAD_JOIN_TIMEOUT_S,
+                            f"Stage {self.name} scheduler thread did not stop within "
+                            f"{_SCHEDULER_THREAD_JOIN_TIMEOUT_S:g}s"
                         )
                     else:
                         self.scheduler_thread = None
@@ -481,6 +506,10 @@ class Stage:
             pass
         except Exception:
             if self.scheduler_crash_error is None:
+                if self.process_failure_callback is not None:
+                    self.process_failure_callback()
+                else:
+                    pass
                 raise
             else:
                 pass
@@ -509,6 +538,7 @@ class Stage:
             SubmitMessage
             | DataAckMessage
             | DataReadyMessage
+            | StreamChunkBatchMessage
             | FreezeGCMessage
             | ProfilerStartMessage
             | ProfilerStopMessage
@@ -521,6 +551,8 @@ class Stage:
             self.comm.ack_transfer(msg)
         elif isinstance(msg, DataReadyMessage):
             self.schedule_receive_task(msg)
+        elif isinstance(msg, StreamChunkBatchMessage):
+            self.schedule_stream_chunk_batch(msg)
         elif isinstance(msg, FreezeGCMessage):
             gc.freeze()
         elif isinstance(msg, ProfilerStartMessage):
@@ -546,14 +578,20 @@ class Stage:
         else:
             handler = self.on_data_ready
             label = f"data {msg.request_id}:{msg.from_stage}"
+        self.schedule_lane_task(
+            (msg.request_id, msg.from_stage), label, partial(handler, msg)
+        )
 
-        lane = (msg.request_id, msg.from_stage)
+    def schedule_lane_task(
+        self, lane: tuple[str, str], label: str, step: ReceiveStep
+    ) -> None:
+        """Run the step as a task behind the lane's earlier receive work."""
         predecessor = self.receive_lane_tails.get(lane)
         completion: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self.receive_lane_tails[lane] = completion
         task = asyncio.create_task(
             self.run_receive_task(
-                handler(msg, predecessor),
+                step(predecessor),
                 lane,
                 predecessor,
                 completion,
@@ -562,6 +600,98 @@ class Stage:
         self.receive_tasks.add(task)
         task.add_done_callback(self.receive_tasks.discard)
         task.add_done_callback(lambda done: self.on_background_task_done(done, label))
+
+    def schedule_stream_chunk_batch(self, msg: StreamChunkBatchMessage) -> None:
+        """Route each chunk now, or behind its own request's unfinished receive work."""
+        try:
+            chunks = stage_io.unpack_stream_chunk_batch(msg)
+        except Exception as exc:
+            logger.error(
+                f"Stage {self.name}: stream chunk batch from {msg.from_stage} failed to unpack: {exc}"
+            )
+            for request_id in dict.fromkeys(msg.request_ids):
+                self.schedule_lane_task(
+                    (request_id, msg.from_stage),
+                    f"stream chunk batch {request_id}:{msg.from_stage}",
+                    partial(
+                        self.fail_stream_chunk_batch, request_id, msg.from_stage, exc
+                    ),
+                )
+            return
+        for chunk in chunks:
+            request_id = chunk.request_id
+            self.record_replica_bindings(
+                request_id, msg.replica_bindings.get(request_id)
+            )
+            if request_id in self.aborted:
+                continue
+            else:
+                pass
+            self.active_requests.add(request_id)
+            lane = (request_id, msg.from_stage)
+            # note (ratish): a lane with no unfinished receive work holds nothing this chunk must follow, so it goes straight to the scheduler.
+            if lane not in self.receive_lane_tails and (
+                self.open_pre_payload_stream_if_allowed(request_id)
+            ):
+                self.route_stream_item(
+                    request_id, self.received_stream_item(msg.from_stage, chunk)
+                )
+            else:
+                self.schedule_lane_task(
+                    lane,
+                    f"stream chunk {request_id}:{msg.from_stage}:{chunk.chunk_id}",
+                    partial(self.route_batched_stream_chunk, msg.from_stage, chunk),
+                )
+
+    async def route_batched_stream_chunk(
+        self,
+        from_stage: str,
+        chunk: stage_io.BatchedStreamChunk,
+        predecessor: asyncio.Future[None] | None,
+    ) -> None:
+        await self.wait_for_receive_predecessor(predecessor)
+        if chunk.request_id in self.aborted:
+            return
+        else:
+            pass
+        await self.route_stream_item_or_fail(
+            chunk.request_id, self.received_stream_item(from_stage, chunk)
+        )
+
+    def received_stream_item(
+        self, from_stage: str, chunk: stage_io.BatchedStreamChunk
+    ) -> StreamItem:
+        """Record a batched chunk as received where it is routed, as a per-message chunk is."""
+        self.emit_stream_chunk_received(
+            request_id=chunk.request_id,
+            from_stage=from_stage,
+            chunk_id=chunk.chunk_id,
+        )
+        _comm_trace(
+            "comm_stream_read",
+            request_id=chunk.request_id,
+            from_stage=from_stage,
+            to_stage=self.name,
+            chunk_id=chunk.chunk_id,
+            transport="inline",
+            bytes=chunk.data.nbytes,
+        )
+        return StreamItem(
+            chunk_id=chunk.chunk_id,
+            data=chunk.data,
+            from_stage=self.logical_source(from_stage),
+            metadata=chunk.metadata,
+        )
+
+    async def fail_stream_chunk_batch(
+        self,
+        request_id: str,
+        from_stage: str,
+        error: Exception,
+        predecessor: asyncio.Future[None] | None,
+    ) -> None:
+        await self.wait_for_receive_predecessor(predecessor)
+        await self.queue_stream_error(request_id, from_stage, error)
 
     async def run_receive_task(
         self,
@@ -832,49 +962,6 @@ class Stage:
         else:
             pass
 
-        if stage_io.is_inline_stream_chunk_ref(msg.data_ref):
-            try:
-                data, metadata = stage_io.deserialize_inline_stream_chunk(msg.data_ref)
-            except Exception as exc:
-                logger.error(
-                    "Stage %s: inline stream chunk deserialize failed for %s: %s",
-                    self.name,
-                    request_id,
-                    exc,
-                )
-                await self.wait_for_receive_predecessor(predecessor)
-                await self.queue_stream_error(request_id, msg.from_stage, exc)
-                return
-            await self.wait_for_receive_predecessor(predecessor)
-            if request_id in self.aborted:
-                return
-            else:
-                pass
-            item = StreamItem(
-                chunk_id=msg.chunk_id,
-                data=data,
-                from_stage=msg.from_stage,
-                metadata=metadata,
-            )
-            self.emit_stream_chunk_received(
-                request_id=msg.request_id,
-                from_stage=msg.from_stage,
-                chunk_id=msg.chunk_id,
-            )
-            _comm_trace(
-                "comm_stream_read",
-                request_id=msg.request_id,
-                from_stage=msg.from_stage,
-                to_stage=self.name,
-                chunk_id=msg.chunk_id,
-                transport="inline",
-                bytes=data.nbytes,
-            )
-            await self.route_stream_item_or_fail(request_id, item)
-            return
-        else:
-            pass
-
         data_ref = self.data_ref_from_message(msg)
         relay = self.comm.relay(data_ref.transport)
         try:
@@ -1060,10 +1147,6 @@ class Stage:
             return
         else:
             pass
-        if stage_io.is_inline_stream_chunk_ref(msg.data_ref):
-            return
-        else:
-            pass
         if msg.chunk_id is None:
             raise ValueError("stream chunk discard requires chunk_id")
         else:
@@ -1172,7 +1255,8 @@ class Stage:
 
     async def execute(self, payload: StagePayload) -> None:
         request_id = payload.request_id
-        if request_id in self.aborted:
+        # note (Richard Wang): the leader drops aborted work before fanout, so a follower runs all work it receives.
+        if request_id in self.aborted and self.role != "follower":
             return
         else:
             pass
@@ -1513,36 +1597,46 @@ class Stage:
                     break
 
     async def route_stream_run(self, messages: list[OutgoingMessage]) -> None:
-        """Route targeted stream messages in order, one dispatch per same-process run."""
+        """Route targeted stream messages in order, one dispatch per same-process run and one packed batch per remote target."""
         local_target: str | None = None
         local_chunks: list[LocalStreamChunk] = []
+        batches: dict[str, list[stage_io.BatchedStreamChunk]] = {}
         for out in messages:
             if out.request_id not in self.active_requests:
                 continue
             else:
                 pass
             target = self.resolve_target_instance(out.request_id, out.target)
-            if target not in self.same_process_targets:
-                await self.send_local_stream_chunks(local_target, local_chunks)
-                local_target, local_chunks = None, []
-                await self.send_stream_to_target(
-                    out.request_id, out.data, out.target, out.metadata
-                )
-            elif target != local_target:
-                await self.send_local_stream_chunks(local_target, local_chunks)
-                local_target = target
-                local_chunks = [
-                    self.local_stream_chunk(
-                        out.request_id, target, out.data, out.metadata
-                    )
-                ]
-            else:
+            if target in self.same_process_targets:
+                if target != local_target:
+                    await self.send_local_stream_chunks(local_target, local_chunks)
+                    local_target, local_chunks = target, []
+                else:
+                    pass
                 local_chunks.append(
                     self.local_stream_chunk(
                         out.request_id, target, out.data, out.metadata
                     )
                 )
+            else:
+                batched = self.batched_stream_chunk(
+                    out.request_id, target, out.data, out.metadata
+                )
+                if batched is not None:
+                    batches.setdefault(target, []).append(batched)
+                else:
+                    # note (ratish): nothing the run emitted before an awaited send may wait behind it, so the same-process run and every pending batch go first, which also keeps each request's chunks in order at their target.
+                    await self.send_local_stream_chunks(local_target, local_chunks)
+                    local_target, local_chunks = None, []
+                    for pending_target, chunks in batches.items():
+                        await self.send_stream_chunk_batch(pending_target, chunks)
+                    batches.clear()
+                    await self.send_stream_to_target(
+                        out.request_id, out.data, out.target, out.metadata
+                    )
         await self.send_local_stream_chunks(local_target, local_chunks)
+        for target, chunks in batches.items():
+            await self.send_stream_chunk_batch(target, chunks)
 
     async def drain_outbox_follower(self) -> None:
         """Drain follower outbox without emitting external stage traffic."""
@@ -2194,6 +2288,72 @@ class Stage:
             from_stage=self.name, to_stage=target, chunks=chunks
         )
 
+    def batched_stream_chunk(
+        self,
+        request_id: str,
+        target: str,
+        data: object,
+        metadata: dict[str, object] | None,
+    ) -> stage_io.BatchedStreamChunk | None:
+        """Number a small CPU chunk for its target's packed batch, or None when it needs IPC or the relay."""
+        metadata = stage_io.strip_process_local_metadata(metadata)
+        if (
+            not isinstance(data, torch.Tensor)
+            or data.device.type != "cpu"
+            or data.nbytes > BATCHED_STREAM_CHUNK_BYTES_LIMIT
+            or stage_io.contains_cuda_tensor(metadata)
+            or stage_io.contains_cpu_tensor(metadata)
+        ):
+            return None
+        else:
+            pass
+        chunk_id = self.number_stream_chunk(request_id, target, metadata)
+        self.record_nonlocal_stream_target(request_id, target)
+        _emit_event(
+            request_id=request_id,
+            stage=self.name,
+            event_name="stage_stream_chunk_sent",
+            metadata={
+                "to_stage": target,
+                "chunk_id": chunk_id,
+                "modality": (
+                    metadata.get("modality") if isinstance(metadata, dict) else None
+                ),
+                "transport": "inline",
+            },
+        )
+        self.comm.router.note_transport_choice("stream", target, "inline")
+        _comm_trace(
+            "comm_stream_send",
+            request_id=request_id,
+            from_stage=self.name,
+            to_stage=target,
+            chunk_id=chunk_id,
+            transport="inline",
+            bytes=data.nbytes,
+        )
+        return stage_io.BatchedStreamChunk(
+            request_id=request_id, chunk_id=chunk_id, data=data, metadata=metadata
+        )
+
+    async def send_stream_chunk_batch(
+        self, target: str, chunks: list[stage_io.BatchedStreamChunk]
+    ) -> None:
+        await self.control_plane.send_to_stage(
+            target,
+            self.endpoints[target],
+            stage_io.pack_stream_chunk_batch(
+                chunks,
+                from_stage=self.name,
+                to_stage=target,
+                replica_bindings={
+                    chunk.request_id: self.replica_bindings[chunk.request_id]
+                    for chunk in chunks
+                    if self.replica_bindings.get(chunk.request_id)
+                },
+            ),
+        )
+
     async def send_stream_to_target(
         self,
         request_id: str,
@@ -2210,6 +2370,12 @@ class Stage:
             await self.send_local_stream_chunks(
                 target, [self.local_stream_chunk(request_id, target, data, metadata)]
             )
+            return
+        else:
+            pass
+        batched = self.batched_stream_chunk(request_id, target, data, metadata)
+        if batched is not None:
+            await self.send_stream_chunk_batch(target, [batched])
             return
         else:
             pass
@@ -2260,44 +2426,6 @@ class Stage:
                     from_stage=self.name,
                     to_stage=target,
                     data_ref=direct_ref,
-                    chunk_id=chunk_id,
-                    replica_bindings=self.replica_bindings.get(request_id),
-                ),
-            )
-            return
-        else:
-            pass
-        inline_ref = stage_io.serialize_inline_stream_chunk(data, metadata)
-        if inline_ref is not None:
-            _emit_event(
-                request_id=request_id,
-                stage=self.name,
-                event_name="stage_stream_chunk_sent",
-                metadata={
-                    "to_stage": target,
-                    "chunk_id": chunk_id,
-                    "modality": chunk_modality,
-                    "transport": "inline",
-                },
-            )
-            self.comm.router.note_transport_choice("stream", target, "inline")
-            _comm_trace(
-                "comm_stream_send",
-                request_id=request_id,
-                from_stage=self.name,
-                to_stage=target,
-                chunk_id=chunk_id,
-                transport="inline",
-                bytes=data.nbytes,
-            )
-            await self.control_plane.send_to_stage(
-                target,
-                endpoint,
-                DataReadyMessage(
-                    request_id=request_id,
-                    from_stage=self.name,
-                    to_stage=target,
-                    data_ref=inline_ref,
                     chunk_id=chunk_id,
                     replica_bindings=self.replica_bindings.get(request_id),
                 ),
@@ -2548,7 +2676,13 @@ class Stage:
         self.record_aborted_request_id(request_id)
         self.comm.cleanup(request_id)
         self.clear_request_state(request_id)
-        self.scheduler.abort(request_id)
+        # note (Richard Wang): TP ranks run fanned-out work to completion, since a skip on one rank pairs different requests in one collective.
+        if self.role == "single" or not getattr(
+            self.scheduler, "requires_tp_work_fanout", False
+        ):
+            self.scheduler.abort(request_id)
+        else:
+            pass
 
     def on_profiler_start(self, msg: ProfilerStartMessage) -> None:
         run_id = msg.run_id
@@ -2619,6 +2753,10 @@ class Stage:
         )
         if self.background_task_error is None:
             self.background_task_error = exc
+        else:
+            pass
+        if self.process_failure_callback is not None:
+            self.process_failure_callback()
         else:
             pass
         self.running = False

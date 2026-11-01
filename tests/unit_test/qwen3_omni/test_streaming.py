@@ -259,6 +259,7 @@ def test_qwen_talker_conditions_on_streamed_token_ids():
     )
     prefill_builder.device = torch.device("cpu")
     prefill_builder.dtype = torch.float32
+    prefill_builder.projected_text_cache = {}
     prefill_builder.audio_token_id = 30
     prefill_builder.image_token_id = None
     prefill_builder.video_token_id = None

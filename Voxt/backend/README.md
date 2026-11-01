@@ -46,7 +46,8 @@ Voxt/backend/run_omni_dev.sh run
 `moss_transcribe_diarize_server`, `moss_transcribe`, `nemotron_asr_server`,
 `nemotron_transcribe`, `parakeet_server`, `parakeet_transcribe`,
 `sensevoice_server`, `sensevoice_transcribe`, `voxtral_tts_server`,
-`voxtral_tts_synthesize`, `chatterbox_server`, `chatterbox_synthesize`, and the
+`voxtral_tts_synthesize`, `qwen3_tts_server`, `qwen3_tts_synthesize`,
+`chatterbox_server`, `chatterbox_synthesize`, and the
 pinned MLX library
 and Metal kernels next to them.
 

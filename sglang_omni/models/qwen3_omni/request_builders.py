@@ -1114,7 +1114,7 @@ def make_thinker_stream_output_builder(
 
         token_id = int(req_output.data)
         # note (ratish): a cross-process stream chunk must be a tensor, and one
-        # this small is pickled inline with the control message
+        # this small rides packed in its target's batched control message
         token_tensor = torch.tensor([token_id], dtype=torch.long)
         messages = []
         for target in stream_targets:
@@ -1154,6 +1154,7 @@ def make_thinker_scheduler_adapters(
     thinker_config: Qwen3OmniMoeThinkerConfig | None = None,
     stage_name: str = "thinker",
     capture_prompt_hidden_states: bool,
+    is_speculative: bool = False,
 ) -> tuple[
     Callable[[StagePayload], SGLangARRequestData],
     Callable[[SGLangARRequestData], StagePayload],
@@ -1173,6 +1174,15 @@ def make_thinker_scheduler_adapters(
             capture_prompt_hidden_states=capture_prompt_hidden_states,
         )
         req_data.stage_payload = payload
+        multimodal_inputs = req_data.req.multimodal_inputs
+        if is_speculative and multimodal_inputs is not None:
+            # note (wilsonzheng0327): verify adds the delta to integer positions without
+            # the integer cast decode applies, so it is cast here the same way.
+            multimodal_inputs.mrope_position_delta = (
+                multimodal_inputs.mrope_position_delta.long()
+            )
+        else:
+            pass
         return req_data
 
     def result_adapter(data: SGLangARRequestData) -> StagePayload:

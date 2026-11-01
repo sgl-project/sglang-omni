@@ -76,6 +76,9 @@ Supported Models
    * - `nvidia/nemotron-3.5-asr-streaming-0.6b <https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b>`_
      - ASR
      - Multilingual RNN-T transcription; internal native PCM streaming runtime (see `cookbook <cookbook/nemotron3_5_asr.html>`_)
+   * - `nvidia/Nemotron-3.5-Transcribe-30B-A4B <https://huggingface.co/nvidia/Nemotron-3.5-Transcribe-30B-A4B>`_
+     - ASR
+     - Whole-file transcription with native speech and speaker-fusion encoders (see `cookbook <cookbook/nemotron_transcribe.html>`_)
    * - `OpenMOSS-Team/MOSS-Transcribe-Diarize <https://huggingface.co/OpenMOSS-Team/MOSS-Transcribe-Diarize>`_
      - ASR
      - Multi-speaker transcription + diarization + timestamps
@@ -116,40 +119,25 @@ Supported Models
 
 
 .. toctree::
-   :maxdepth: 1
+   :maxdepth: 2
    :caption: Cookbook
 
-   cookbook/qwen3_tts.md
-   cookbook/moss_tts.md
-   cookbook/whisper_asr.md
-   cookbook/nemotron3_5_asr.md
-   cookbook/moss_transcribe_diarize.md
-   cookbook/fishaudio_s2_pro.md
-   cookbook/fun_cosyvoice3.md
-   cookbook/nemotron_voicechat.md
-   cookbook/personaplex.md
-   cookbook/cosmos3_nano.md
-   cookbook/qwen3_omni.md
-   cookbook/qwen3_asr.md
-   cookbook/minicpm_o.md
-   cookbook/fun_asr.md
-   cookbook/higgs_tts.md
-   cookbook/moss_tts_local.md
-   cookbook/nemotron_diarization.md
-   cookbook/fishaudio_drama3.md
-   cookbook/minimax_music3.md
-   cookbook/ming_omni.md
-   cookbook/auk.md
-   cookbook/zonos2.md
-   cookbook/arkasr.md
-   cookbook/voxtral_tts.md
-   cookbook/chatterbox_turbo.md
-   cookbook/dots_tts.md
-   cookbook/llada2_uni.md
-   cookbook/ming_tts.md
-   cookbook/ming3_asr.md
-   cookbook/ming3_audio.md
-   cookbook/ming3_tts.md
+   cookbook/companies/qwen.md
+   cookbook/companies/openmoss.md
+   cookbook/companies/openai.md
+   cookbook/companies/nvidia.md
+   cookbook/companies/fish_audio.md
+   cookbook/companies/fun_audio_llm.md
+   cookbook/companies/openbmb.md
+   cookbook/companies/boson_ai.md
+   cookbook/companies/minimax.md
+   cookbook/companies/inclusionai.md
+   cookbook/companies/tencent.md
+   cookbook/companies/zyphra.md
+   cookbook/companies/autoark_ai.md
+   cookbook/companies/mistral_ai.md
+   cookbook/companies/dots_studio.md
+   cookbook/companies/resemble_ai.md
 
 .. toctree::
    :maxdepth: 1
@@ -181,15 +169,13 @@ Supported Models
    developer_reference/main.md
    developer_reference/apiserver_design.md
    developer_reference/pipeline.md
-   developer_reference/full_duplex_interactive_model.md
    developer_reference/config.md
    developer_reference/adding_parameters.md
    developer_reference/communication.md
    developer_reference/reference_encode_service.md
    developer_reference/profiler.md
    developer_reference/qwen3_asr_concurrency_profile.md
-   developer_reference/full_duplex_bench.md
-   developer_reference/full_duplex_metrics.md
+   developer_reference/full_duplex_guide.md
    developer_reference/tts_bench.md
    developer_reference/tts_model_integration.md
    developer_reference/asr_bench.md
