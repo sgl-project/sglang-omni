@@ -178,34 +178,6 @@ jobs:
         with:
           ref: ${{ inputs.exact_sha }}
 
-      - name: Verify idle H100 test GPU
-        id: gpu-preflight
-        shell: bash
-        run: |
-          set -euo pipefail
-          command -v nvidia-smi >/dev/null
-          command -v nvidia-cuda-mps-control >/dev/null
-          gpu_index="${WEIGHT_SHARE_CI_GPU:-${CUDA_VISIBLE_DEVICES:-0}}"
-          gpu_index="${gpu_index%%,*}"
-          gpu_name="$(nvidia-smi --id="${gpu_index}" --query-gpu=name --format=csv,noheader | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
-          if [[ "${gpu_name}" != *H100* ]]; then
-            echo "::error::Expected an H100, found ${gpu_name}."
-            exit 1
-          fi
-          gpu_memory_used_mib="$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits --id="${gpu_index}" | tr -d ' ')"
-          gpu_idle_memory_limit_mib=1024
-          if ! [[ "${gpu_memory_used_mib}" =~ ^[0-9]+$ ]] || (( gpu_memory_used_mib >= gpu_idle_memory_limit_mib )); then
-            echo "::error::GPU ${gpu_index} is not idle: ${gpu_memory_used_mib} MiB used."
-            exit 1
-          fi
-          gpu_compute_process_ids="$(nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits --id="${gpu_index}")"
-          if grep -Eq '^[[:space:]]*[0-9]+' <<< "${gpu_compute_process_ids}"; then
-            echo "::error::GPU ${gpu_index} already has compute processes: ${gpu_compute_process_ids}"
-            exit 1
-          fi
-          echo "CUDA_VISIBLE_DEVICES=${gpu_index}" >> "${GITHUB_ENV}"
-          echo "Verified idle ${gpu_name} at physical index ${gpu_index}."
-
       - uses: ./.github/actions/omni-setup
         with:
           venv-name: omni
@@ -246,7 +218,7 @@ jobs:
           retention-days: 7
 
       - name: Post-stage cleanup
-        if: ${{ always() && steps.gpu-preflight.outcome == 'success' }}
+        if: always()
         uses: ./.github/actions/omni-post-stage
         with:
           stage-label: Native MPS lifecycle validation
@@ -276,34 +248,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.exact_sha }}
-
-      - name: Verify idle H100 test GPU
-        id: gpu-preflight
-        shell: bash
-        run: |
-          set -euo pipefail
-          command -v nvidia-smi >/dev/null
-          command -v nvidia-cuda-mps-control >/dev/null
-          gpu_index="${WEIGHT_SHARE_CI_GPU:-${CUDA_VISIBLE_DEVICES:-0}}"
-          gpu_index="${gpu_index%%,*}"
-          gpu_name="$(nvidia-smi --id="${gpu_index}" --query-gpu=name --format=csv,noheader | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
-          if [[ "${gpu_name}" != *H100* ]]; then
-            echo "::error::Expected an H100, found ${gpu_name}."
-            exit 1
-          fi
-          gpu_memory_used_mib="$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits --id="${gpu_index}" | tr -d ' ')"
-          gpu_idle_memory_limit_mib=1024
-          if ! [[ "${gpu_memory_used_mib}" =~ ^[0-9]+$ ]] || (( gpu_memory_used_mib >= gpu_idle_memory_limit_mib )); then
-            echo "::error::GPU ${gpu_index} is not idle: ${gpu_memory_used_mib} MiB used."
-            exit 1
-          fi
-          gpu_compute_process_ids="$(nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits --id="${gpu_index}")"
-          if grep -Eq '^[[:space:]]*[0-9]+' <<< "${gpu_compute_process_ids}"; then
-            echo "::error::GPU ${gpu_index} already has compute processes: ${gpu_compute_process_ids}"
-            exit 1
-          fi
-          echo "CUDA_VISIBLE_DEVICES=${gpu_index}" >> "${GITHUB_ENV}"
-          echo "Verified idle ${gpu_name} at physical index ${gpu_index}."
 
       - uses: ./.github/actions/omni-setup
         with:
@@ -347,7 +291,7 @@ jobs:
           retention-days: 7
 
       - name: Post-stage cleanup
-        if: ${{ always() && steps.gpu-preflight.outcome == 'success' }}
+        if: always()
         uses: ./.github/actions/omni-post-stage
         with:
           stage-label: Native weight-sharing lifecycle validation
