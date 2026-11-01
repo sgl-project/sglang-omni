@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import torch
+import torch._dynamo as dynamo
 import torch.nn.functional as F
 from sglang.kernels.ops.activation import silu_and_mul
 from sglang.kernels.ops.attention.rope import (
@@ -136,7 +137,7 @@ class Qwen3TTSIncrementalCodecState:
             )
         else:
             pass
-        if int(self.frame_positions.shape[0]) != batch_size:
+        if self.frame_positions.shape[0] != batch_size:
             raise ValueError(
                 "Qwen3-TTS incremental codec state carries "
                 f"{int(self.frame_positions.shape[0])} row positions for a batch "
@@ -420,8 +421,10 @@ def padded_input(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     batch_size, length, channels = frames_like.shape
     history_samples = int(module.padding)
-    # note (ratish): the tail completes the last dilation phase of the conv's folded input.
-    tail_samples = (-length) % int(module.conv.dilation[0])
+    dilation = int(module.conv.dilation[0])
+    # note (ratish): the tail completes the last dilation phase of the conv's folded input, by a
+    # ceil division, since a modulo of a symbolic length costs more to trace and compile.
+    tail_samples = -(-length // dilation) * dilation - length
     padded = frames_like.new_empty(
         batch_size, history_samples + length + tail_samples, channels
     )
@@ -456,7 +459,7 @@ def slot_causal_transconv(
     conv = module.conv
     # note (ratish): the consumer adds the bias after the overlap, so overlaps carry it once.
     output = channels_last_conv_transpose1d(frames, conv, weight, None)
-    emitted_samples = int(frames.shape[1]) * int(conv.stride[0])
+    emitted_samples = frames.shape[1] * int(conv.stride[0])
     if overlap_pool.shape[1] > 0:
         exchange = (
             compiled_overlap_exchange
@@ -791,7 +794,7 @@ class FusedIncrementalTransformer:
         kv_heads * head_dim) value, from one qkv GEMM on the normed rows."""
         attention = layer.self_attn
         head_dim = int(attention.head_dim)
-        rows = int(hidden_states.shape[0])
+        rows = hidden_states.shape[0]
         normalized = self.normalize(hidden_states, layer.input_layernorm)
         query, key, value = F.linear(normalized, attention.qkv_weight).split(
             [
@@ -932,8 +935,8 @@ class FusedIncrementalTransformer:
         transformer = self.transformer
         rings = state.kv_rings
         hidden_states = transformer.input_proj(hidden_states)
-        batch_size = int(hidden_states.shape[0])
-        fresh_frames = int(hidden_states.shape[1])
+        batch_size = hidden_states.shape[0]
+        fresh_frames = hidden_states.shape[1]
         hidden_size = int(hidden_states.shape[2])
         rows = batch_size * fresh_frames
         device = hidden_states.device
@@ -1683,7 +1686,7 @@ class Qwen3TTSIncrementalDecoder:
     ) -> torch.Tensor:
         decoder = self.decoder
         coefficients = self.snake_coefficients
-        slot_index = state.conv_slots(int(hidden_states.shape[0]), hidden_states.device)
+        slot_index = state.conv_slots(hidden_states.shape[0], hidden_states.device)
         padded, length = self.slot_upsample(hidden_states, state, slot_index)
         decoder_output = slot_causal_conv(
             decoder.decoder[0],
@@ -1725,7 +1728,7 @@ class Qwen3TTSIncrementalDecoder:
                     padded_frames,
                     residual=residual,
                 )
-        length = int(conv_output.shape[1])
+        length = conv_output.shape[1]
         slot_history_exchange(
             padded,
             state.conv_histories["decoder.final"],
@@ -1806,7 +1809,7 @@ class Qwen3TTSIncrementalDecoder:
             state.pad_slot,
         )
         residual_units = decoder_block.block[2:]
-        length = int(frames.shape[1])
+        length = frames.shape[1]
         residual = frames.new_empty(frames.shape)
         padded, padded_frames = padded_input(residual_units[0].conv1, frames)
         slot_bias_snake_beta(
@@ -1881,12 +1884,19 @@ class Qwen3TTSIncrementalDecoder:
             return
         else:
             pass
-        # note (luojiaxuan): one trace per (batch, width) pair, past the default
-        # 8; ``decode`` never compiles a new shape, so the limit only matters here.
-        with torch._dynamo.config.patch(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-            recompile_limit=max(
-                torch._dynamo.config.recompile_limit, 64
-            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-        ):
-            self.compiled_kernel(codes, state)
+        # note (ratish): batch and width stay symbolic, so sizes share programs; Dynamo keeps a size
+        # of one apart, and a width divisible by a dilated conv's 3 splits once more: five in all.
+        batch_tensors = (
+            codes,
+            state.frame_positions,
+            state.slot_index,
+            None if state.kv_rings is None else state.kv_rings.slot_rows,
+        )
+        for tensor in batch_tensors:
+            if tensor is not None:
+                dynamo.maybe_mark_dynamic(tensor, 0)
+            else:
+                pass
+        dynamo.maybe_mark_dynamic(codes, 2)
+        self.compiled_kernel(codes, state)
         self.compiled_shapes.add(shape)
