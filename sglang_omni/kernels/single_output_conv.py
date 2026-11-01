@@ -65,23 +65,14 @@ def clamped_single_output_conv(
     """The (B, 1, length) outputs of a stride-one, undilated, ungrouped conv to one output
     channel over a (B, length + kernel - 1, C) activation that carries its left context, its
     bias added and clamped to [-1, 1]."""
+    batch_size, padded_length, channels = padded.shape
+    taps = conv.kernel_size[0]
     assert (
         conv.out_channels == 1
         and conv.stride == (1,)
         and conv.dilation == (1,)
         and conv.groups == 1
     ), "a stride-one, undilated, ungrouped conv to one output channel"
-    return clamped_single_output_conv_from_weight(
-        padded, conv.weight, conv.bias, length
-    )
-
-
-def clamped_single_output_conv_from_weight(
-    padded: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor, length: int
-) -> torch.Tensor:
-    """clamped_single_output_conv from such a conv's (1, C, kernel) weight and (1,) bias."""
-    batch_size, padded_length, channels = padded.shape
-    taps = weight.shape[2]
     assert padded_length == length + taps - 1, "the input carries the left context"
     assert padded.stride(2) == 1 and padded.stride(1) == channels, "contiguous rows"
     output = padded.new_empty(batch_size, 1, length)
@@ -96,10 +87,10 @@ def clamped_single_output_conv_from_weight(
     ](
         padded,
         padded.stride(0),
-        weight,
-        weight.stride(1),
-        weight.stride(2),
-        bias,
+        conv.weight,
+        conv.weight.stride(1),
+        conv.weight.stride(2),
+        conv.bias,
         output,
         length,
         CHANNELS=channels,
