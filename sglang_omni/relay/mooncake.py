@@ -12,14 +12,15 @@ import torch
 from .base import CreditAllocator, Relay, RelayOperation, register_relay
 
 logger = logging.getLogger(__name__)
+MOONCAKE_IMPORT_ERROR: ImportError | None = None
 try:
     from mooncake.engine import TransferEngine, TransferNotify, TransferOpcode
 
     MOONCAKE_AVAILABLE = True
-except ImportError as e:
-    logger.error(
-        f"Failed to import mooncake: {e}. MooncakeRelay will not work. Install with: pip install mooncake-transfer-engine"
-    )
+except ImportError as import_error:
+    # note (Minyi Tang): SHM-only installs omit mooncake; MooncakeConnection raises if it is selected.
+    logger.debug(f"mooncake is unavailable: {import_error}")
+    MOONCAKE_IMPORT_ERROR = import_error
     MOONCAKE_AVAILABLE = False
 
     class TransferEngine:
@@ -84,6 +85,12 @@ class MooncakeConnection:
             protocol: Transfer protocol ("tcp", "rdma", "nvlink")
             device_name: RDMA device name (e.g., "mlx5_0") for RDMA protocol
         """
+        if MOONCAKE_IMPORT_ERROR is not None:
+            raise RuntimeError(
+                f"Mooncake relay requires the mooncake package, which failed to import: {MOONCAKE_IMPORT_ERROR}"
+            ) from MOONCAKE_IMPORT_ERROR
+        else:
+            pass
         self.engine_id = engine_id
         self.hostname = hostname
         self.protocol = protocol
