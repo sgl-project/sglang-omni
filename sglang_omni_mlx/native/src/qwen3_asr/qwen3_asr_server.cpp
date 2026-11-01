@@ -21,8 +21,11 @@ using qwen3_asr::TranscriptionOptions;
 class Qwen3ASRModel : public asr_service::ServedModel {
 public:
   Qwen3ASRModel(const std::filesystem::path &model_directory,
-                qwen3_asr::RealtimeSettings realtime)
-      : transcriber_(model_directory), realtime_(realtime) {}
+                qwen3_asr::RealtimeSettings realtime,
+                const std::filesystem::path &draft_directory,
+                int draft_quantization_bits)
+      : transcriber_(model_directory, draft_directory, draft_quantization_bits),
+        realtime_(realtime) {}
 
   asr_service::Transcription
   Prepare(std::vector<float> samples,
@@ -132,6 +135,8 @@ int main(int argc, char **argv) {
   int decode_interval_ms = 1000;
   int first_decode_ms = 100;
   double max_segment_seconds = 30.0;
+  std::filesystem::path draft_directory;
+  int draft_quantization_bits = 0;
   asr_service::ServedKind qwen3_asr;
   qwen3_asr.model_kind = "qwen3_asr";
   qwen3_asr.flags = {
@@ -145,6 +150,12 @@ int main(int argc, char **argv) {
        [&](const std::string &value) {
          max_segment_seconds = std::stod(value);
        }},
+      {"--draft-model-path",
+       [&](const std::string &value) { draft_directory = value; }},
+      {"--draft-bits",
+       [&](const std::string &value) {
+         draft_quantization_bits = std::stoi(value);
+       }},
   };
   qwen3_asr.check_flags = [&]() {
     const double max_segment_samples =
@@ -157,6 +168,11 @@ int main(int argc, char **argv) {
                  max_segment_samples <= std::numeric_limits<int>::max())) {
       throw std::invalid_argument(
           "--max-segment-seconds must span one sample to 134217 s");
+    } else if (draft_quantization_bits != 0 && draft_quantization_bits != 4 &&
+               draft_quantization_bits != 6 && draft_quantization_bits != 8) {
+      throw std::invalid_argument("--draft-bits must be 4, 6 or 8");
+    } else if (draft_quantization_bits != 0 && draft_directory.empty()) {
+      throw std::invalid_argument("--draft-bits needs --draft-model-path");
     } else {
     }
   };
@@ -164,7 +180,8 @@ int main(int argc, char **argv) {
     return std::make_unique<Qwen3ASRModel>(
         model_directory,
         qwen3_asr::MakeRealtimeSettings(decode_interval_ms, first_decode_ms,
-                                        max_segment_seconds));
+                                        max_segment_seconds),
+        draft_directory, draft_quantization_bits);
   };
   // Note (khazic): Voxt passes the realtime flags to every kind.
   asr_service::ServedKind silero_vad = qwen3_asr;
