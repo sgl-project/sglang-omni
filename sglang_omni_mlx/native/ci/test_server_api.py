@@ -27,10 +27,12 @@ pytestmark = pytest.mark.skipif(
     not RUNTIME_BIN or not DATA_ROOT, reason="set NATIVE_RUNTIME_BIN and CI_DATA_ROOT"
 )
 MODEL_REPO = "mlx-community/Qwen3-ASR-0.6B-4bit"
+DRAFT_REPO = "wilsonzheng0327/Qwen3-ASR-0.6B-dflash"
+LARGE_DRAFT_REPO = "wilsonzheng0327/Qwen3-ASR-1.7B-dflash"
 
 
-def model_directory() -> Path:
-    return Path(DATA_ROOT) / "models" / MODEL_REPO.replace("/", "_")
+def model_directory(repo: str = MODEL_REPO) -> Path:
+    return Path(DATA_ROOT) / "models" / repo.replace("/", "_")
 
 
 def clip(clip_id: str) -> bytes:
@@ -172,6 +174,61 @@ def test_voxt_final_request_streams_text_and_generation_metadata(
             "finish_reason": "stop",
         },
     }
+
+
+def test_a_draft_model_serves_the_voxt_final_request() -> None:
+    """The draft's proposals are verified in place: Voxt's request is answered as without one,
+    and a token budget below the block size is kept exactly."""
+    with_draft = Server(flags=("--draft-model-path", str(model_directory(DRAFT_REPO))))
+    try:
+        status, body = with_draft.post_form(
+            {
+                "model": with_draft.ready["model_name"],
+                "stream": "true",
+                "language": "English",
+                "max_new_tokens": "1024",
+                "stop_at_end_of_text": "true",
+                "stop_on_token_loop": "true",
+                "include_generation_metadata": "true",
+                "audio_layout": "voxt_swift",
+            },
+            clip("0006_en_short"),
+        )
+        budget_status, budget_body = with_draft.post_form(
+            {
+                "model": with_draft.ready["model_name"],
+                "stream": "true",
+                "language": "English",
+                "max_new_tokens": "2",
+                "include_generation_metadata": "true",
+                "audio_layout": "voxt_swift",
+            },
+            clip("0006_en_short"),
+        )
+    finally:
+        with_draft.stop()
+    assert status == 200
+    events = sse_events(body)
+    assert events[-1] == "[DONE]"
+    assert events[0]["type"] == "transcript.text.done"
+    assert events[0]["text"]
+    assert events[0]["generation_metadata"]["finish_reason"] == "stop"
+    assert events[0]["generation_metadata"]["language"] == "English"
+    assert budget_status == 200
+    budget_done = sse_events(budget_body)[0]
+    assert budget_done["text"]
+    assert budget_done["generation_metadata"]["finish_reason"] == "length"
+    assert budget_done["generation_metadata"]["generated_token_count"] == 2
+
+
+def test_a_draft_for_another_target_fails_at_load() -> None:
+    """A draft of the wrong hidden size is refused before ready, not at the first request."""
+    failed = Server(
+        flags=("--draft-model-path", str(model_directory(LARGE_DRAFT_REPO)))
+    )
+    assert failed.ready["event"] == "failed"
+    assert "hidden size 2048" in failed.ready["reason"]
+    assert failed.process.wait(timeout=10) == 1
 
 
 def test_plain_request_returns_json_text(server: Server) -> None:
@@ -346,9 +403,11 @@ def test_unknown_model_kinds_are_rejected() -> None:
         ("--max-segment-seconds", "0.00001"),
         ("--decode-interval-ms", "0"),
         ("--first-decode-ms", "-1"),
+        ("--draft-bits", "-1"),
+        ("--draft-bits", "8"),
     ],
 )
-def test_invalid_realtime_settings_fail_at_startup(flag: str, value: str) -> None:
+def test_invalid_settings_fail_at_startup(flag: str, value: str) -> None:
     completed = subprocess.run(
         [
             str(Path(RUNTIME_BIN) / "qwen3_asr_server"),

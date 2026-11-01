@@ -264,6 +264,26 @@ final class ASRHintSettingsTests: XCTestCase {
     }
 
 
+    /// The draft setting is off until chosen and is shared by the Qwen3-ASR family.
+    func testSpeculativeDecodingDefaultsOffAndIsStoredPerFamily() {
+        let defaults = MLXLocalTuningSettingsStore.resolvedSettings(
+            for: "mlx-community/Qwen3-ASR-1.7B-8bit",
+            rawValue: nil
+        )
+        XCTAssertFalse(defaults.speculativeDecoding)
+
+        let stored = MLXLocalTuningSettingsStore.save(
+            MLXLocalTuningSettings(speculativeDecoding: true),
+            for: "mlx-community/Qwen3-ASR-1.7B-8bit",
+            rawValue: nil
+        )
+        let settings = MLXLocalTuningSettingsStore.resolvedSettings(
+            for: "mlx-community/Qwen3-ASR-1.7B-6bit",
+            rawValue: stored
+        )
+        XCTAssertTrue(settings.speculativeDecoding)
+    }
+
     func testMLXLocalTuningLoadsStoredSettingsWithoutWhisperTemperature() throws {
         let raw = """
         {"whisper":{"preset":"accuracyFirst","qwenContextBias":"","granitePromptBias":"","senseVoiceUseITN":false}}

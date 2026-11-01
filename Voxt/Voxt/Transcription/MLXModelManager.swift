@@ -64,6 +64,8 @@ class MLXModelManager: ObservableObject {
     private var shutdownTask: Task<Void, Never>?
     private let downloadSizeTolerance: Double = 0.9
     private var activeUseCount = 0
+    // The model to drop once the current use ends, when a setting changed mid-use.
+    private var configurationChangedRepo: String?
     private var deletingRepos: Set<String> = []
     private var storageRevision = UUID()
     private var storageRoots: [URL] = []
@@ -451,7 +453,7 @@ class MLXModelManager: ObservableObject {
     }
 
     private func checkDownloadAvailability(for repo: String) throws {
-        if repo == SileroVADModelSupport.repo {
+        if repo == SileroVADModelSupport.repo || OmniASRBackend.isDraftModelRepo(repo) {
             return
         } else if let unavailable = OmniASRBackend.unavailability(for: repo) {
             throw unavailable
@@ -675,6 +677,10 @@ class MLXModelManager: ObservableObject {
         activeUseCount = max(0, activeUseCount - 1)
         guard activeUseCount == 0 else { return }
         resumeActiveUseWaiters()
+        if let repo = configurationChangedRepo {
+            configurationChangedRepo = nil
+            unloadLoadedModelIfIdle(expectedRepo: repo, reason: "configuration-changed")
+        }
         scheduleIdleUnloadIfNeeded()
     }
 
@@ -847,10 +853,49 @@ class MLXModelManager: ObservableObject {
             )
         }
         try Task.checkCancellation()
+        let draftDirectory = try await speculativeDraftDirectory(for: repo)
+        let runtime: OmniASRRuntime
+        do {
+            runtime = try await startRuntime(
+                kind: kind,
+                modelDirectory: sourceModelDir,
+                draftDirectory: draftDirectory,
+                configuration: configuration
+            )
+        } catch where draftDirectory != nil && !(error is CancellationError) {
+            // note (wilsonzheng0327): speculative decoding is optional; a draft
+            // the server refuses must not take the model down with it.
+            VoxtLog.modelWarning(
+                "Omni ASR server failed to start with the speculative draft; retrying without it. repo=\(repo), error=\(error.localizedDescription)"
+            )
+            runtime = try await startRuntime(
+                kind: kind,
+                modelDirectory: sourceModelDir,
+                draftDirectory: nil,
+                configuration: configuration
+            )
+        }
+        VoxtLog.modelInfo("Omni ASR server ready. repo=\(repo), kind=\(kind.rawValue)")
+        return .omni(runtime)
+    }
+
+    /// Starts one server once every earlier runtime has stopped; a launch that
+    /// fails or loses its last waiter is released again.
+    private func startRuntime(
+        kind: OmniASRModelKind,
+        modelDirectory: URL,
+        draftDirectory: URL?,
+        configuration: OmniBackendConfiguration
+    ) async throws -> OmniASRRuntime {
         // One server at a time: earlier runtimes stop before this one starts.
         await omniLedger.waitForRetirements()
         try Task.checkCancellation()
-        let runtime = OmniASRRuntime(kind: kind, modelDirectory: sourceModelDir, configuration: configuration)
+        let runtime = OmniASRRuntime(
+            kind: kind,
+            modelDirectory: modelDirectory,
+            draftDirectory: draftDirectory,
+            configuration: configuration
+        )
         omniLedger.track(runtime)
         do {
             let ledger = omniLedger
@@ -865,8 +910,35 @@ class MLXModelManager: ObservableObject {
             omniLedger.release(runtime)
             throw error
         }
-        VoxtLog.modelInfo("Omni ASR server ready. repo=\(repo), kind=\(kind.rawValue)")
-        return .omni(runtime)
+        return runtime
+    }
+
+    /// The installed draft for repo when its speculative decoding setting is
+    /// on; a draft that is still downloading leaves the model decoding without
+    /// one rather than failing the load.
+    private func speculativeDraftDirectory(for repo: String) async throws -> URL? {
+        guard let draftRepo = OmniASRBackend.draftModelRepo(for: repo) else { return nil }
+        let tuning = MLXLocalTuningSettingsStore.resolvedSettings(
+            for: repo,
+            rawValue: UserDefaults.standard.string(forKey: AppPreferenceKey.mlxLocalASRTuningSettings)
+        )
+        guard tuning.speculativeDecoding else { return nil }
+        let installation = try await refreshInstallation(repo: draftRepo)
+        if installation.directory == nil {
+            VoxtLog.modelWarning("Speculative draft is not installed; decoding without it. repo=\(repo), draft=\(draftRepo)")
+        }
+        return installation.directory
+    }
+
+    /// Drops a loaded model whose server must restart with new settings: at
+    /// once when idle, otherwise as soon as the current use ends.
+    func releaseLoadedModelForConfigurationChange(repo: String) {
+        let repo = Self.canonicalModelRepo(repo)
+        if activeUseCount > 0 {
+            configurationChangedRepo = repo
+        } else {
+            unloadLoadedModelIfIdle(expectedRepo: repo, reason: "configuration-changed")
+        }
     }
 
     private func downloadTempDirectory(for repo: String) -> URL? {
