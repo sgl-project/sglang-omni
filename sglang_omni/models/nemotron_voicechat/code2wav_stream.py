@@ -12,6 +12,10 @@ from sglang_omni.utils.audio_payload import audio_waveform_payload
 OUTPUT_SAMPLE_RATE = 22_050
 DECODE_WINDOW_FRAMES = 16
 TAIL_HOLDBACK_SAMPLES = 256
+# note (Lushali): the codec's causal convolutions and iSTFT overlap reach 3
+# frames before the held-back tail, so a decode must keep them in the window.
+TAIL_CONTEXT_FRAMES = 3
+MAX_FRAMES_PER_DECODE = DECODE_WINDOW_FRAMES - TAIL_CONTEXT_FRAMES
 
 
 class StreamingCodec:
@@ -26,10 +30,13 @@ class StreamingCodec:
 
     @torch.inference_mode()
     def push(self, codes_TQ: torch.Tensor) -> torch.Tensor:
-        window_codes_TQ = torch.cat((self.window_codes_TQ, codes_TQ.to(self.device)))
-        self.window_codes_TQ = window_codes_TQ[-DECODE_WINDOW_FRAMES:]
-        self.pushed_frames += codes_TQ.shape[0]
-        return self.advance(final=False)
+        fresh_audio_parts: list[torch.Tensor] = []
+        for piece_codes_TQ in codes_TQ.to(self.device).split(MAX_FRAMES_PER_DECODE):
+            window_codes_TQ = torch.cat((self.window_codes_TQ, piece_codes_TQ))
+            self.window_codes_TQ = window_codes_TQ[-DECODE_WINDOW_FRAMES:]
+            self.pushed_frames += piece_codes_TQ.shape[0]
+            fresh_audio_parts.append(self.advance(final=False))
+        return torch.cat(fresh_audio_parts)
 
     @torch.inference_mode()
     def flush(self) -> torch.Tensor:
@@ -46,6 +53,10 @@ class StreamingCodec:
         audio = self.decoder(self.window_codes_TQ)
         available = frames * samples_per_frame - (0 if final else TAIL_HOLDBACK_SAMPLES)
         start = self.emitted_samples - first * samples_per_frame
+        assert start >= 0, (
+            f"decode window starts at frame {first}, past unemitted sample "
+            f"{self.emitted_samples}"
+        )
         fresh = audio[start : available - first * samples_per_frame].float().cpu()
         self.emitted_samples = available
         return fresh
