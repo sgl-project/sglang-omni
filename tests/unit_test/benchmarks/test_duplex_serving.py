@@ -186,6 +186,19 @@ def test_unit_without_receipt_is_missed(tmp_path: Path) -> None:
     assert session["units_missed"] == 1
 
 
+def test_units_of_tail_silence_after_the_input_are_not_scored(tmp_path: Path) -> None:
+    variant_dir = record_session(
+        tmp_path / "session", [START_S + 1.1, START_S + 2.1, START_S + 3.1], input_s=3.0
+    )
+    (variant_dir / "input.pcm").write_bytes(b"\x00\x00" * 32000)
+
+    session = score_session(variant_dir, PROFILE, PLAYBACK_RESERVE_S)
+
+    assert session["units_expected"] == 2
+    assert len(session["unit_lag_s"]) == 2
+    assert session["units_missed"] == 0
+
+
 @pytest.mark.parametrize(
     ("input_s", "unit_done_s", "unit_lags_s", "units_missed"),
     [
