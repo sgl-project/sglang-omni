@@ -7,7 +7,7 @@ Rules for Apple Silicon work. They write down what the native runtime PRs under
 
 | Path | Contents |
 | --- | --- |
-| `sglang_omni_mlx/native/` | C++ runtime on MLX: one server binary per model, a parity CLI per model in `tools/`. Each model's code is in `src/<model>/`; code shared across models (`audio`, `form`, `layers`, `npz`, `tokenizer`, built as the `common` library, plus `swift_port` and `http`) is in `src/common/`. The shared ASR server code (`asr_service`, `worker`, `realtime`) is still in `src/qwen3_asr/`, and so is the `/v1/audio/speech` API that `voxtral_tts_server` and `fishaudio_drama3_server` share (`speech_service`), built on `asr_service`. |
+| `sglang_omni_mlx/native/` | C++ runtime on MLX: one server binary per model, a parity CLI per model in `tools/`. Each model's code is in `src/<model>/`; code shared across models is in `src/common/`: `audio`, `form`, `layers`, `npz`, `text` and `tokenizer` (the `common` library), `service` and `http` (the `omni_service` library: server lifecycle, request helpers, client-disconnect detection), `tts_service` (the speech-synthesis worker) and `swift_port`. The ASR-specific server code (`asr_service`, `worker`, `realtime`) is still in `src/qwen3_asr/`, and so is `speech_service`, the `/v1/audio/speech` API that `voxtral_tts_server` and `fishaudio_drama3_server` share on top of `asr_service`. |
 | `sglang_omni_mlx/native/ci/` | Model pins, the 392-clip corpus, golden outputs, server API tests. |
 | `sglang_omni_mlx/<model>/` | Python MLX servers, e.g. the Qwen3-ASR reference server. |
 | `Voxt/` | The macOS app that runs the native servers. See [`Voxt/backend/README.md`](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/backend/README.md). |
@@ -44,14 +44,17 @@ agree on it with a maintainer first.
 
 **Placement and reuse**
 
-- A native model adds `src/<model>/` with `<model>_model`, `<model>_transcriber`
-  and a server on the shared `asr_service` (a speech model's on
-  `speech_service`), a CLI in `tools/`, and CMake
+- A native model adds `src/<model>/` with `<model>_model`, a server, a CLI in
+  `tools/`, and CMake
   targets: a library for the model's own sources that links what it reuses
-  (`common`, `swift_port`, `silero_vad`, `sortformer`). Shared code goes in
+  (`common`, `swift_port`, `silero_vad`, `sortformer`). An ASR model adds
+  `<model>_transcriber` and serves it on `asr_service`; a speech model serves
+  through `omni_server::Service` (`common/service`) with the `tts_service`
+  worker (Voxtral TTS and Drama 3 still serve through `speech_service` on
+  `asr_service`). Shared code goes in
   `src/common/`, not in another model's directory or library. Include project
   headers by their path under `src/`, e.g. `#include "common/layers.h"`.
-- Shared audio, checkpoint/layer, tokenizer and multipart APIs use the `omni_common` namespace and the `common` library. HTTP helpers use `omni_server` and the `common_http` library; neither library depends on a model. Qwen3-ASR audio layouts, log-mel extraction and encoder token counts belong to `qwen3_asr/qwen3_audio.h`. Shared decoder and ASR serving types still live under `qwen3_asr/`; their extraction is separate from the common primitive APIs.
+- Shared audio, checkpoint/layer, tokenizer and multipart APIs use the `omni_common` namespace and the `common` library. HTTP and server helpers use `omni_server` and the `omni_service` library; neither library depends on a model. Qwen3-ASR audio layouts, log-mel extraction and encoder token counts belong to `qwen3_asr/qwen3_audio.h`. Shared decoder and ASR serving types still live under `qwen3_asr/`; their extraction is separate from the common primitive APIs.
 - Reuse `layers`, `swift_port`, the Sortformer front end and the Silero VAD
   port. If your code duplicates something on `main`, move it into the shared
   file in the same PR.
@@ -63,7 +66,8 @@ agree on it with a maintainer first.
 - Name the reference (Voxt's Swift backend at a pinned mlx-audio-swift commit,
   or a Python MLX reference) and use the same weights and MLX version.
 - Keep the reference's behavior. Behavior changes go in a separate PR.
-- Report English WER, Chinese CER and mixed MER on the 392-clip corpus,
+- Report English WER, Chinese CER and mixed MER on the 392-clip corpus (for a
+  speech model: transcribe its output with the native Qwen3-ASR server),
   reference vs native, plus the count of identical clips. Explain where
   differing clips diverge.
 
@@ -72,7 +76,9 @@ agree on it with a maintainer first.
 - Pin every checkpoint file by revision and SHA-256 in `ci/model_pins.json`.
 - Add a golden under `ci/model_golden/`. Import the Mac CI runner's outputs
   (`golden-outputs` artifact, `--import`) so the runner checks exactly. A
-  speech model's golden holds seeded requests' codes (`ci/speech_golden.py`).
+  speech model's golden holds seeded requests' codes and a PCM hash
+  (`ci/speech_golden.py`), and its prompt ids include every control id
+  (speaker, language, instructions).
 - Add a second golden for paths the corpus misses (long-audio chunking, VAD).
 
 **Tests**
@@ -89,7 +95,14 @@ agree on it with a maintainer first.
 
 - Check the checkpoint config at load, so bad checkpoints fail at load, not
   mid-request.
-- Validate requests before they reach the worker.
+- Validate requests before they reach the worker; bad input gets 400, never
+  500. Cap text fields, prompt length and the request body (413).
+- Do heavy request work (audio decode, resampling, long tokenization) after
+  admission, under the request deadline. No exception may escape a civetweb
+  callback.
+- A speech server answers a timeout with 504 and stops the job, a full queue
+  with 503, and cancels a job whose client disconnects, queued or running, using
+  the shared disconnect detection in `common/http`.
 - Streaming sessions use bounded memory: trim consumed audio, cap session
   length, clear the MLX cache.
 
@@ -102,6 +115,8 @@ agree on it with a maintainer first.
 
 - Target `main` (stacked PRs get no Mac CI), non-draft, with the `run-mac-ci`
   or `run-all-ci` label. Both Mac CI jobs must pass on a real run.
+- Code copied from another file keeps its `Note (<author>)` attribution, and
+  the authors of a superseded PR are credited as co-authors.
 - Run pre-commit and follow
   [coding-style.md](https://github.com/sgl-project/sglang-omni/blob/main/.claude/skills/code-review/coding-style.md).
 - Update `Voxt/backend/README.md`. Follow the PR format of
