@@ -93,6 +93,7 @@ dependencies = [
 
     # --- dots.tts ---
     "dots.tts==0.2.1",
+
 ]
 
 [project.optional-dependencies]
@@ -121,12 +122,23 @@ fun-cosyvoice3 = [
     "matplotlib",
     "hydra-core",
 ]
+fishaudio = [
+    "descript-audiotools==0.7.2",
+    "descript-audio-codec==1.0.0",
+    "hydra-core>=1.3.2",
+]
 
 [project.scripts]
 sgl-omni = "sglang_omni.cli:app"
 
 [project.entry-points."sglang.serve_backends"]
 omni = "sglang_omni.cli.sglang_backend:create_backend"
+
+[tool.uv]
+# note (yao-matrix): The codec's protobuf pin conflicts with the XPU stack.
+override-dependencies = [
+    "protobuf>=6.31.1,<8.0.0",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
