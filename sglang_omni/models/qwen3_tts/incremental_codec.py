@@ -302,6 +302,131 @@ def add_into(out: torch.Tensor, first: torch.Tensor, second: torch.Tensor) -> No
         torch.add(first, second, out=out)
 
 
+def bias_snake_beta_tensors(
+    conv_output: torch.Tensor,
+    bias: torch.Tensor,
+    alpha_scale: torch.Tensor,
+    inverse_beta: torch.Tensor,
+    out: torch.Tensor,
+    residual: torch.Tensor | None,
+) -> None:
+    fused_bias_snake_beta(
+        conv_output,
+        bias,
+        SnakeBetaCoefficients(alpha_scale=alpha_scale, inverse_beta=inverse_beta),
+        out,
+        residual=residual,
+        should_round_like_eager=False,
+    )
+
+
+def bias_snake_beta_sum_tensors(
+    conv_output: torch.Tensor,
+    bias: torch.Tensor,
+    alpha_scale: torch.Tensor,
+    inverse_beta: torch.Tensor,
+    out: torch.Tensor,
+    sum_out: torch.Tensor,
+    has_residual: bool,
+) -> None:
+    # note (ratish): the residual the sum overwrites comes in once, as sum_out, so Inductor
+    # writes it in place.
+    fused_bias_snake_beta(
+        conv_output,
+        bias,
+        SnakeBetaCoefficients(alpha_scale=alpha_scale, inverse_beta=inverse_beta),
+        out,
+        residual=sum_out if has_residual else None,
+        sum_out=sum_out,
+        should_round_like_eager=False,
+    )
+
+
+if current_platform.is_cuda():
+    # note (ratish): as opaque ops, a trace runs no Triton front end on these kernels, and
+    # Inductor writes the views they fill in place instead of cloning and copying each back.
+    compiled_history_exchange = register_custom_op(
+        history_exchange,
+        op_name="qwen3_tts_codec_history_exchange",
+        mutates_args=["padded", "history_pool"],
+    )
+    compiled_overlap_exchange = register_custom_op(
+        overlap_exchange,
+        op_name="qwen3_tts_codec_overlap_exchange",
+        mutates_args=["output", "overlap_pool"],
+    )
+    compiled_bias_snake_beta = register_custom_op(
+        bias_snake_beta_tensors,
+        op_name="qwen3_tts_codec_bias_snake_beta",
+        mutates_args=["out"],
+    )
+    compiled_bias_snake_beta_sum = register_custom_op(
+        bias_snake_beta_sum_tensors,
+        op_name="qwen3_tts_codec_bias_snake_beta_sum",
+        mutates_args=["out", "sum_out"],
+    )
+else:
+    pass
+
+
+def slot_history_exchange(
+    padded: torch.Tensor,
+    history_pool: torch.Tensor,
+    slot_index: torch.Tensor,
+    new_samples: int,
+    pad_slot: int,
+) -> None:
+    exchange = (
+        compiled_history_exchange
+        if torch.compiler.is_dynamo_compiling()
+        else history_exchange
+    )
+    exchange(padded, history_pool, slot_index, new_samples, False, pad_slot)
+
+
+def slot_bias_snake_beta(
+    conv_output: torch.Tensor,
+    bias: torch.Tensor,
+    coefficients: SnakeBetaCoefficients,
+    out: torch.Tensor,
+    *,
+    residual: torch.Tensor | None = None,
+    sum_out: torch.Tensor | None = None,
+) -> None:
+    """fused_bias_snake_beta in fp32, rounded once; an opaque op in a compiled decode."""
+    # note (ratish): eager rounding would land further from fp32 than main's compiled adds.
+    if not torch.compiler.is_dynamo_compiling():
+        fused_bias_snake_beta(
+            conv_output,
+            bias,
+            coefficients,
+            out,
+            residual=residual,
+            sum_out=sum_out,
+            should_round_like_eager=False,
+        )
+    elif sum_out is None:
+        compiled_bias_snake_beta(
+            conv_output,
+            bias,
+            coefficients.alpha_scale,
+            coefficients.inverse_beta,
+            out,
+            residual,
+        )
+    else:
+        assert residual is None or residual is sum_out, "the sum replaces its residual"
+        compiled_bias_snake_beta_sum(
+            conv_output,
+            bias,
+            coefficients.alpha_scale,
+            coefficients.inverse_beta,
+            out,
+            sum_out,
+            residual is not None,
+        )
+
+
 def padded_input(
     module: "Qwen3TTSTokenizerV2CausalConvNet", frames_like: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -325,14 +450,7 @@ def slot_causal_conv(
     length: int,
 ) -> torch.Tensor:
     if history_pool.shape[1] > 0:
-        history_exchange(
-            padded,
-            history_pool,
-            slot_index,
-            new_samples=length,
-            is_cold=False,
-            pad_slot=pad_slot,
-        )
+        slot_history_exchange(padded, history_pool, slot_index, length, pad_slot)
     else:
         pass
     # note (ratish): the consumer adds the bias, fused into its activation.
@@ -352,14 +470,12 @@ def slot_causal_transconv(
     output = channels_last_conv_transpose1d(frames, conv, weight, None)
     emitted_samples = int(frames.shape[1]) * int(conv.stride[0])
     if overlap_pool.shape[1] > 0:
-        overlap_exchange(
-            output,
-            overlap_pool,
-            slot_index,
-            emitted_samples=emitted_samples,
-            is_cold=False,
-            pad_slot=pad_slot,
+        exchange = (
+            compiled_overlap_exchange
+            if torch.compiler.is_dynamo_compiling()
+            else overlap_exchange
         )
+        exchange(output, overlap_pool, slot_index, emitted_samples, False, pad_slot)
     else:
         pass
     return output[:, :emitted_samples]
@@ -1525,13 +1641,8 @@ class Qwen3TTSIncrementalDecoder:
         padded, padded_frames = padded_input(module, frames)
         padded_frames.copy_(frames)
         if valid_frames is None:
-            history_exchange(
-                padded,
-                history_pool,
-                slot_index,
-                new_samples=length,
-                is_cold=False,
-                pad_slot=state.pad_slot,
+            slot_history_exchange(
+                padded, history_pool, slot_index, length, state.pad_slot
             )
         else:
             history_samples = int(module.padding)
@@ -1612,13 +1723,11 @@ class Qwen3TTSIncrementalDecoder:
         )
         decoder_blocks = decoder.decoder[1:-2]
         activated = decoder_output.new_empty(decoder_output.shape)
-        # note (ratish): eager rounding would land further from fp32 than main's compiled adds.
-        fused_bias_snake_beta(
+        slot_bias_snake_beta(
             decoder_output,
             decoder.decoder[0].conv.bias,
             coefficients[decoder_blocks[0].block[0]],
             activated,
-            should_round_like_eager=False,
         )
         for block_index, decoder_block in enumerate(decoder_blocks, start=1):
             conv_output, residual = self.slot_decoder_block(
@@ -1627,32 +1736,29 @@ class Qwen3TTSIncrementalDecoder:
             bias = decoder_block.block[-1].conv2.conv.bias
             if block_index < len(decoder_blocks):
                 activated = conv_output.new_empty(conv_output.shape)
-                fused_bias_snake_beta(
+                slot_bias_snake_beta(
                     conv_output,
                     bias,
                     coefficients[decoder_blocks[block_index].block[0]],
                     activated,
                     residual=residual,
-                    should_round_like_eager=False,
                 )
             else:
                 padded, padded_frames = padded_input(decoder.decoder[-1], conv_output)
-                fused_bias_snake_beta(
+                slot_bias_snake_beta(
                     conv_output,
                     bias,
                     coefficients[decoder.decoder[-2]],
                     padded_frames,
                     residual=residual,
-                    should_round_like_eager=False,
                 )
         length = int(conv_output.shape[1])
-        history_exchange(
+        slot_history_exchange(
             padded,
             state.conv_histories["decoder.final"],
             slot_index,
-            new_samples=length,
-            is_cold=False,
-            pad_slot=state.pad_slot,
+            length,
+            state.pad_slot,
         )
         # note (ratish): cuDNN has no tensor-core engine for one output channel.
         return clamped_single_output_conv(padded, decoder.decoder[-1].conv, length)
@@ -1686,13 +1792,12 @@ class Qwen3TTSIncrementalDecoder:
             )
             residual = depthwise_input[:, :, history_samples:].transpose(1, 2)
             add_into(residual, frames, transconv.conv.bias)
-            history_exchange(
+            slot_history_exchange(
                 depthwise_input.transpose(1, 2),
                 state.conv_histories[f"{key}.convnext.dwconv"],
                 slot_index,
-                new_samples=length,
-                is_cold=False,
-                pad_slot=state.pad_slot,
+                length,
+                state.pad_slot,
             )
             normed = convnext.norm(
                 convnext.dwconv.conv(depthwise_input).transpose(1, 2)
@@ -1731,13 +1836,12 @@ class Qwen3TTSIncrementalDecoder:
         length = int(frames.shape[1])
         residual = frames.new_empty(frames.shape)
         padded, padded_frames = padded_input(residual_units[0].conv1, frames)
-        fused_bias_snake_beta(
+        slot_bias_snake_beta(
             frames,
             transconv.conv.bias,
             coefficients[residual_units[0].act1],
             padded_frames,
             sum_out=residual,
-            should_round_like_eager=False,
         )
         for residual_index, unit in enumerate(residual_units):
             unit_key = f"{key}.residual.{residual_index}"
@@ -1751,12 +1855,11 @@ class Qwen3TTSIncrementalDecoder:
                 length,
             )
             padded, padded_frames = padded_input(unit.conv2, frames)
-            fused_bias_snake_beta(
+            slot_bias_snake_beta(
                 conv1_output,
                 unit.conv1.conv.bias,
                 coefficients[unit.act2],
                 padded_frames,
-                should_round_like_eager=False,
             )
             if self.pointwise_conv is not None:
                 # note (Hao Wang): The following fused activation owns bias and residual addition.
@@ -1779,14 +1882,13 @@ class Qwen3TTSIncrementalDecoder:
             if residual_index + 1 < len(residual_units):
                 next_unit = residual_units[residual_index + 1]
                 padded, padded_frames = padded_input(next_unit.conv1, frames)
-                fused_bias_snake_beta(
+                slot_bias_snake_beta(
                     conv2_output,
                     unit.conv2.conv.bias,
                     coefficients[next_unit.act1],
                     padded_frames,
                     residual=residual,
                     sum_out=residual,
-                    should_round_like_eager=False,
                 )
             else:
                 pass

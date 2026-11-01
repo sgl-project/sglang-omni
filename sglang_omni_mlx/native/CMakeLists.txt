@@ -97,6 +97,11 @@ add_library(asr_service STATIC src/qwen3_asr/asr_service.cpp)
 target_link_libraries(asr_service PUBLIC qwen3_asr omni_service)
 target_compile_options(asr_service PRIVATE -Wall -Wextra)
 
+# The /v1/audio/speech API the TTS servers share.
+add_library(speech_service STATIC src/qwen3_asr/speech_service.cpp)
+target_link_libraries(speech_service PUBLIC asr_service)
+target_compile_options(speech_service PRIVATE -Wall -Wextra)
+
 add_executable(qwen3_asr_server src/qwen3_asr/qwen3_asr_server.cpp src/silero_vad/vad_service.cpp
   src/sortformer/sortformer_service.cpp)
 target_link_libraries(qwen3_asr_server PRIVATE asr_service silero_vad sortformer)
@@ -228,7 +233,7 @@ add_library(voxtral_tts STATIC src/voxtral_tts/voxtral_tts_tokenizer.cpp
 target_link_libraries(voxtral_tts PUBLIC qwen3_asr)
 target_compile_options(voxtral_tts PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(voxtral_tts_server src/voxtral_tts/voxtral_tts_server.cpp)
-target_link_libraries(voxtral_tts_server PRIVATE voxtral_tts asr_service)
+target_link_libraries(voxtral_tts_server PRIVATE voxtral_tts speech_service)
 target_compile_options(voxtral_tts_server PRIVATE -Wall -Wextra)
 add_executable(voxtral_tts_synthesize tools/voxtral_tts_synthesize.cpp)
 target_link_libraries(voxtral_tts_synthesize PRIVATE voxtral_tts)
@@ -250,13 +255,11 @@ set_target_properties(music3_server music3_synthesize PROPERTIES
   INSTALL_RPATH "@loader_path")
 install(TARGETS music3_server music3_synthesize RUNTIME DESTINATION bin)
 
-install(FILES licenses/music3-MIT.txt DESTINATION licenses)
-
 # Note (Jiaxin Deng): Qwen3-TTS CustomVoice: qwen3_tts_server, with the CUDA
 # server's /v1/audio/speech API, and its parity tool; the talker and code
-# predictor reuse Qwen3's decoder, and WAV/PCM encoding comes from Voxtral TTS.
+# predictor reuse Qwen3's decoder.
 add_library(qwen3_tts STATIC src/qwen3_tts/qwen3_tts_codec.cpp src/qwen3_tts/qwen3_tts_model.cpp)
-target_link_libraries(qwen3_tts PUBLIC qwen3_asr voxtral_tts)
+target_link_libraries(qwen3_tts PUBLIC qwen3_asr)
 target_compile_options(qwen3_tts PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(qwen3_tts_server src/qwen3_tts/qwen3_tts_server.cpp)
 target_link_libraries(qwen3_tts_server PRIVATE qwen3_tts asr_service)
@@ -267,3 +270,49 @@ set_target_properties(qwen3_tts_server qwen3_tts_synthesize PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
   INSTALL_RPATH "@loader_path")
 install(TARGETS qwen3_tts_server qwen3_tts_synthesize RUNTIME DESTINATION bin)
+
+# Note (Jiaxin Deng): Fun-CosyVoice3 0.5B: cosyvoice3_server, with the CUDA
+# server's /v1/audio/speech API, and its parity tool; the Qwen2 decoder reuses
+# Qwen3's, and the WAV and PCM writers are shared in common/audio.
+add_library(cosyvoice3 STATIC src/cosyvoice3/cosyvoice3_vocoder.cpp
+  src/cosyvoice3/cosyvoice3_audio.cpp src/cosyvoice3/cosyvoice3_speaker.cpp
+  src/cosyvoice3/cosyvoice3_speech_tokenizer.cpp
+  src/cosyvoice3/cosyvoice3_model.cpp)
+target_link_libraries(cosyvoice3 PUBLIC qwen3_asr)
+target_compile_options(cosyvoice3 PRIVATE -Wall -Wextra -ffp-contract=off)
+add_executable(cosyvoice3_server src/cosyvoice3/cosyvoice3_server.cpp)
+target_link_libraries(cosyvoice3_server PRIVATE cosyvoice3 asr_service)
+target_compile_options(cosyvoice3_server PRIVATE -Wall -Wextra)
+add_executable(cosyvoice3_synthesize tools/cosyvoice3_synthesize.cpp)
+target_link_libraries(cosyvoice3_synthesize PRIVATE cosyvoice3)
+set_target_properties(cosyvoice3_server cosyvoice3_synthesize PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS cosyvoice3_server cosyvoice3_synthesize RUNTIME DESTINATION bin)
+
+# Note (Yitong Li): Fish Audio Drama 3: fishaudio_drama3_server, with the CUDA
+# server's /v1/audio/speech API, and its parity tool; attention layers keep
+# Qwen3's KV cache.
+add_library(fishaudio_drama3 STATIC
+  src/fishaudio_drama3/fishaudio_drama3_text.cpp
+  src/fishaudio_drama3/fishaudio_drama3_prompt.cpp
+  src/fishaudio_drama3/fishaudio_drama3_codec.cpp
+  src/fishaudio_drama3/fishaudio_drama3_codec_stream.cpp
+  src/fishaudio_drama3/fishaudio_drama3_model.cpp
+  src/fishaudio_drama3/fishaudio_drama3_backbone.cpp
+  src/fishaudio_drama3/fishaudio_drama3_tower.cpp
+  src/fishaudio_drama3/fishaudio_drama3_generation.cpp)
+target_link_libraries(fishaudio_drama3 PUBLIC qwen3_asr)
+target_compile_options(fishaudio_drama3 PRIVATE -Wall -Wextra -ffp-contract=off)
+add_executable(fishaudio_drama3_server src/fishaudio_drama3/fishaudio_drama3_server.cpp)
+target_link_libraries(fishaudio_drama3_server PRIVATE fishaudio_drama3 speech_service)
+target_compile_options(fishaudio_drama3_server PRIVATE -Wall -Wextra)
+add_executable(fishaudio_drama3_synthesize tools/fishaudio_drama3_synthesize.cpp)
+target_link_libraries(fishaudio_drama3_synthesize PRIVATE fishaudio_drama3)
+set_target_properties(fishaudio_drama3_server fishaudio_drama3_synthesize PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS fishaudio_drama3_server fishaudio_drama3_synthesize RUNTIME DESTINATION bin)
+
+install(FILES licenses/music3-MIT.txt licenses/fishaudio_drama3-MIT.txt
+  DESTINATION licenses)

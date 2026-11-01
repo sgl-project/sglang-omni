@@ -8249,6 +8249,7 @@ def test_qwen3_tts_prompt_key_and_tail_guard_order(
         process_result,  # noqa: leading-underscore  # production name
     )
     scheduler = object.__new__(OmniScheduler)
+    scheduler.enable_overlap = False
     plain = SimpleNamespace(output_ids=[])
     batch = SimpleNamespace(reqs=[first.req, second.req, plain])
     scheduler.process_batch_result(batch, None)
@@ -8555,6 +8556,8 @@ def test_qwen3_tts_ar_scheduler_abort_cleans_prepared_state() -> None:
             )  # noqa: leading-underscore  # production name
 
         scheduler = object.__new__(OmniScheduler)
+        scheduler.enable_overlap = False
+        scheduler.result_queue = deque()
         scheduler.abort_callback = (
             qwen3_request_builders.cleanup_prepared_qwen3_tts_request
         )

@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import subprocess
+import sys
 from unittest.mock import Mock
 
 import pytest
@@ -26,6 +28,16 @@ def test_vocoder_platform_default_keeps_npu_opt_in(
     expected["running_stream_count"] = 64
     expected["shares_engine_speech_tokenizer"] = True
     assert config.stage_factory_kwargs("vocoder") == expected
+
+
+def test_admission_defaults_load_without_the_engine() -> None:
+    script = (
+        "import sys\n"
+        "from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig\n"
+        "Qwen3TTSPipelineConfig.generation_admission_defaults()\n"
+        "assert 'sglang_omni.models.qwen3_tts.engine_builder' not in sys.modules\n"
+    )
+    subprocess.run([sys.executable, "-c", script], check=True, timeout=120)
 
 
 @pytest.mark.parametrize("size", ["0.6B"])
