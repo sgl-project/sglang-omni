@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Higgs Audio v3 TTS golden check for check_golden.py: seeded speech requests
-through higgs_tts_synthesize, held to their prompt ids and delayed rows as
-voxtral_golden.py holds Voxtral's frames.
+through higgs_tts_synthesize, whose prompt ids and delayed rows a chip with golden
+outputs must give exactly. Another chip's GPU arithmetic may sample other codes, so
+there only the prompt ids, which the tokenizer alone sets, must match.
 
 A golden file of kind higgs_tts names its cases (text, seed and max_new_tokens,
-sampled with the server's defaults); each chip's outputs keep one string of
-codes per delayed row, so a divergence reads as the row it starts at.
+sampled with the server's defaults); each chip's outputs keep one string of codes
+per delayed row, and speech_golden.py compares them.
 """
 
 from __future__ import annotations
@@ -15,10 +16,12 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from voxtral_golden import joined
+from speech_golden import SpeechCase, SpeechOutputs, joined
 
 
-def synthesize(runtime_bin: Path, model_directory: Path, case: dict) -> dict:
+def synthesize(
+    runtime_bin: Path, model_directory: Path, case: SpeechCase
+) -> SpeechOutputs:
     with tempfile.TemporaryDirectory(prefix="higgs-golden-") as directory:
         codes_path = Path(directory) / "codes.json"
         completed = subprocess.run(
@@ -44,13 +47,4 @@ def synthesize(runtime_bin: Path, model_directory: Path, case: dict) -> dict:
         "prompt_ids": joined(codes["prompt_ids"]),
         "finish_reason": json.loads(completed.stdout.splitlines()[-1])["finish_reason"],
         "codes": [joined(row) for row in codes["rows"]],
-    }
-
-
-def synthesize_cases(
-    runtime_bin: Path, model_directory: Path, cases: dict[str, dict]
-) -> dict[str, dict]:
-    return {
-        case_id: synthesize(runtime_bin, model_directory, case)
-        for case_id, case in cases.items()
     }

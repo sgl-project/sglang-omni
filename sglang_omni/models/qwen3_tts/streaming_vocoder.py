@@ -528,9 +528,10 @@ class Qwen3TTSInitialDecodeGraphs:
                 capture_stream.wait_stream(
                     self.device_module.current_stream(self.device)
                 )
+                # note (ratish): one eager run pays the shape's one-time setup; a second captures
+                # the same graph, bit for bit, at the same replay time, and costs a decode per shape.
                 with torch.inference_mode(), self.device_module.stream(capture_stream):
-                    for _ in range(2):
-                        self.decoder(static_input)
+                    self.decoder(static_input)
                 capture_stream.synchronize()
                 with (
                     torch.inference_mode(),

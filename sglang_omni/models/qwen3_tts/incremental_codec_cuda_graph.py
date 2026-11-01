@@ -120,7 +120,9 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
     replay on one stream share their graph_pool.
     """
 
-    WARMUP_ITERATIONS = 3
+    # note (ratish): one eager decode pays the shape's one-time setup; more capture the same
+    # graph, bit for bit, at the same replay time.
+    WARMUP_ITERATIONS = 1
 
     def __init__(
         self,
