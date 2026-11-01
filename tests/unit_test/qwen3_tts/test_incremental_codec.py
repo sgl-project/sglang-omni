@@ -1962,8 +1962,8 @@ def test_compiled_decode_shares_a_program_per_size_class_and_tracks_fp32(
             assert relative_error(
                 retained["compiled"], retained["reference"]
             ) <= 1.1 * relative_error(retained["eager"], retained["reference"])
+        untouched = arena.gather([3])
 
-    untouched = arena.gather([3])
     assert untouched.frame_positions.tolist() == [0]
     assert not any(
         rows.any() for mapping in state_rows(untouched)[2:] for rows in mapping.values()
