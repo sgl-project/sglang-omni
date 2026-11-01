@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import nullcontext
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal
 from unittest.mock import Mock, patch
@@ -14,10 +16,13 @@ import pytest
 import torch
 
 import sglang_omni.platforms as platforms
-from sglang_omni.config.runtime import resolve_stage_factory_kwargs
+from sglang_omni.config.runtime import (
+    resolve_stage_factory_kwargs,
+    resolve_stage_typed_kwargs,
+)
 from sglang_omni.models.ming3_tts import stages as engine_module
 from sglang_omni.models.ming3_tts import vocoder as factory_module
-from sglang_omni.models.ming3_tts.config import Ming3TTSPipelineConfig, default_stages
+from sglang_omni.models.ming3_tts.config import Ming3TTSPipelineConfig
 from sglang_omni.models.ming3_tts.model_runner import Ming3TTSRequestData
 from sglang_omni.models.ming3_tts.streaming_vocoder import Ming3StreamingVocoder
 from sglang_omni.modules.ming_audio.vae.configuration_audio_vae import AudioVAEconfig
@@ -403,7 +408,7 @@ def test_cpu_factory_preserves_full_decode(
         (True, None, True, "custom", "cuda"),
     ],
 )
-@pytest.mark.parametrize("enable_dense_streaming", [False, True])
+@pytest.mark.parametrize("enable_dense_streaming", [None, False, True])
 @torch.inference_mode()
 def test_gpu_generation_retains_full_latents_for_cpu_vocoder(
     vocoder: Ming3StreamingVocoder,
@@ -413,25 +418,12 @@ def test_gpu_generation_retains_full_latents_for_cpu_vocoder(
     stream: bool,
     vocoder_factory: Literal["current", "legacy", "custom"],
     platform_device_type: str,
-    enable_dense_streaming: bool,
+    enable_dense_streaming: bool | None,
+    tmp_path: Path,
 ) -> None:
-    """GPU generation dropped full latents for stream=true even with a CPU vocoder."""
+    """Dense defaults stayed on fallback; CPU vocoders still need full latents."""
     monkeypatch.setattr(
         platforms, "current_platform", SimpleNamespace(device_type=platform_device_type)
-    )
-    stages = default_stages(dense)
-    stages[-1].factory.device = vocoder_device
-    if vocoder_factory == "legacy":
-        stages[-1].factory_path = (
-            "sglang_omni.models.ming3_tts.stages.create_vocoder_executor"
-        )
-    elif vocoder_factory == "custom":
-        stages[-1].factory_path = "test.custom_vocoder"
-    else:
-        pass
-    config = Ming3TTSPipelineConfig(model_path="checkpoint", stages=stages, mps="off")
-    engine_kwargs = resolve_stage_factory_kwargs(
-        config.stage_named("tts_engine"), config
     )
     checkpoint_config = {
         "model_type": "dense" if dense else "tiny",
@@ -456,6 +448,30 @@ def test_gpu_generation_retains_full_latents_for_cpu_vocoder(
             "speaker_end_token_id": 5,
         },
     }
+    checkpoint_config["ditar_config"] = {}
+    checkpoint_config["architectures"] = ["BailingMMNativeForConditionalGeneration"]
+    checkpoint_path = tmp_path / "checkpoint"
+    checkpoint_path.mkdir()
+    (checkpoint_path / "config.json").write_text(json.dumps(checkpoint_config))
+    config = Ming3TTSPipelineConfig(model_path=str(checkpoint_path), mps="off")
+    vocoder_stage = config.stage_named("vocoder")
+    vocoder_stage.factory.device = vocoder_device
+    if vocoder_factory == "legacy":
+        vocoder_stage.factory_path = (
+            "sglang_omni.models.ming3_tts.stages.create_vocoder_executor"
+        )
+    elif vocoder_factory == "custom":
+        vocoder_stage.factory_path = "test.custom_vocoder"
+    else:
+        pass
+    engine_stage = config.stage_named("tts_engine")
+    if enable_dense_streaming is not None:
+        engine_stage.factory.enable_dense_streaming = enable_dense_streaming
+    else:
+        pass
+    engine_kwargs = resolve_stage_typed_kwargs(engine_stage)
+    engine_kwargs.update(resolve_stage_factory_kwargs(engine_stage, config))
+    engine_kwargs["enable_acoustic_graph"] = False
     scheduler_factory = Mock()
     with monkeypatch.context() as engine_patches:
         engine_patches.setattr(
@@ -489,13 +505,7 @@ def test_gpu_generation_retains_full_latents_for_cpu_vocoder(
                 Stream=lambda **kwargs: None, stream=lambda stream: nullcontext()
             ),
         )
-        engine_module.create_tts_engine_executor(
-            "checkpoint",
-            max_seq_len=4096,
-            enable_acoustic_graph=False,
-            enable_dense_streaming=enable_dense_streaming,
-            **engine_kwargs,
-        )
+        engine_module.create_tts_engine_executor("checkpoint", **engine_kwargs)
         generated_latents = torch.randn(
             5, 1, 4, generator=torch.Generator().manual_seed(19)
         )
@@ -515,7 +525,7 @@ def test_gpu_generation_retains_full_latents_for_cpu_vocoder(
         )
         result = scheduler_factory.call_args.kwargs["result_adapter"](request)
     streaming_builder = scheduler_factory.call_args.kwargs["stream_output_builder"]
-    if vocoder_device is None and (not dense or enable_dense_streaming):
+    if vocoder_device is None and (not dense or enable_dense_streaming is not False):
         assert result.data["latents"] is None
         assert streaming_builder is engine_module.build_stream_output
     else:

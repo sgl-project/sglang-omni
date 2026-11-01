@@ -46,6 +46,7 @@ def default_stages(dense: bool = False) -> list[StageConfig]:
                 max_seq_len=4096,
                 enable_acoustic_graph=True,
                 enable_fused_flow_head=dense,
+                enable_dense_streaming=dense,
                 prefill_graph_token_counts=(
                     [
                         64,
