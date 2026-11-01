@@ -19,17 +19,18 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from test_server_api import DATA_ROOT, RUNTIME_BIN, Server
-from test_voxtral_tts_api import (
+from speech_api import (
     open_speech_stream,
     request_states,
     send_speech_request,
     speak,
+    transcript_words,
     wait_until_idle,
     wait_until_running,
     word_errors,
     words,
 )
+from test_server_api import DATA_ROOT, RUNTIME_BIN, Server
 
 pytestmark = pytest.mark.skipif(
     not RUNTIME_BIN or not DATA_ROOT, reason="set NATIVE_RUNTIME_BIN and CI_DATA_ROOT"
@@ -38,7 +39,6 @@ MOSS_REPO = "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
 CODEC_REPO = "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2"
 CHOSEN_MODEL_NAME = "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
 SAMPLE_RATE = 48000
-ASR_SAMPLE_RATE = 16000
 # One audio frame is 80 ms: 3840 samples a channel, 16-bit.
 FRAME_SAMPLES = 3840
 SENTENCE = "Please remember to bring your passport and boarding pass to the airport."
@@ -52,6 +52,8 @@ SEED = 1
 MAX_QUEUED_REQUESTS = 1
 REQUEST_TIMEOUT_SECONDS = 20
 MAX_REQUEST_BODY_BYTES = 1024 * 1024
+# A cancelled generation stops within two 25-frame codec chunks.
+CANCEL_SECONDS = 8.0
 
 
 def model_directory(repo: str) -> Path:
@@ -86,23 +88,6 @@ def asr_server() -> Iterator[Server]:
     running.stop()
 
 
-def transcript_words(asr_server: Server, mono_pcm: bytes) -> list[str]:
-    samples = np.frombuffer(mono_pcm, dtype="<i2").astype(np.float64)
-    resampled_count = len(samples) * ASR_SAMPLE_RATE // SAMPLE_RATE
-    # Band-limited resampling: keep the spectrum below the new Nyquist rate.
-    spectrum = np.fft.rfft(samples)[: resampled_count // 2 + 1]
-    resampled = np.fft.irfft(spectrum, resampled_count) * resampled_count / len(samples)
-    buffer = io.BytesIO()
-    with wave.open(buffer, "wb") as writer:
-        writer.setnchannels(1)
-        writer.setsampwidth(2)
-        writer.setframerate(ASR_SAMPLE_RATE)
-        writer.writeframes(np.clip(resampled, -32768, 32767).astype("<i2").tobytes())
-    status, body = asr_server.post_form({"language": "en"}, buffer.getvalue())
-    assert status == 200
-    return words(json.loads(body)["text"])
-
-
 def test_moss_wav_speaks_its_input_in_stereo(
     moss_server: Server, asr_server: Server
 ) -> None:
@@ -131,7 +116,7 @@ def test_moss_wav_speaks_its_input_in_stereo(
         stereo = np.frombuffer(reader.readframes(reader.getnframes()), dtype="<i2")
     assert len(stereo) == frame_count * FRAME_SAMPLES * 2
     mono = stereo.reshape(-1, 2).mean(axis=1).astype("<i2").tobytes()
-    heard = transcript_words(asr_server, mono)
+    heard = transcript_words(asr_server, mono, SAMPLE_RATE)
     assert word_errors(words(SENTENCE), heard) <= MAX_WORD_ERRORS, heard
 
 
@@ -209,18 +194,18 @@ def test_moss_speed_resamples_to_the_cuda_length(moss_server: Server) -> None:
 
 
 def test_moss_disconnect_stops_its_generation(moss_server: Server) -> None:
-    with open_speech_stream(moss_server, LONG_SENTENCE) as client:
+    with open_speech_stream(moss_server, {"input": LONG_SENTENCE}) as client:
         assert client.recv(65536)
         assert request_states(moss_server) == {"running": 1}
-    wait_until_idle(moss_server)
+    wait_until_idle(moss_server, CANCEL_SECONDS)
 
 
 def test_moss_disconnect_stops_a_generation_it_has_not_answered(
     moss_server: Server,
 ) -> None:
     with send_speech_request(moss_server, {"input": PASSAGE}):
-        wait_until_running(moss_server)
-    wait_until_idle(moss_server)
+        wait_until_running(moss_server, CANCEL_SECONDS)
+    wait_until_idle(moss_server, CANCEL_SECONDS)
 
 
 def test_moss_half_closed_client_counts_as_gone(moss_server: Server) -> None:
@@ -230,13 +215,13 @@ def test_moss_half_closed_client_counts_as_gone(moss_server: Server) -> None:
         while chunk := client.recv(65536):
             received += chunk
         assert received == b""
-    wait_until_idle(moss_server)
+    wait_until_idle(moss_server, CANCEL_SECONDS)
 
 
 def test_moss_refuses_requests_beyond_its_queue(moss_server: Server) -> None:
     # A queued stream gets its 200 only once it starts, as on CUDA.
     with (
-        open_speech_stream(moss_server, LONG_SENTENCE) as running,
+        open_speech_stream(moss_server, {"input": LONG_SENTENCE}) as running,
         send_speech_request(
             moss_server,
             {"input": LONG_SENTENCE, "response_format": "pcm", "stream": True},
@@ -248,14 +233,14 @@ def test_moss_refuses_requests_beyond_its_queue(moss_server: Server) -> None:
             "running": 1,
             "queued": MAX_QUEUED_REQUESTS,
         }:
-            assert time.monotonic() - started_at < 8.0
+            assert time.monotonic() - started_at < CANCEL_SECONDS
             time.sleep(0.05)
         status, _, body = speak(moss_server, {"input": "hi"})
         assert (status, json.loads(body)) == (
             503,
             {"detail": "The request queue is full."},
         )
-    wait_until_idle(moss_server, 16.0)
+    wait_until_idle(moss_server, 2 * CANCEL_SECONDS)
 
 
 def test_moss_times_out_a_request_past_its_deadline(moss_server: Server) -> None:
@@ -266,15 +251,15 @@ def test_moss_times_out_a_request_past_its_deadline(moss_server: Server) -> None
         {"detail": "Speech generation timed out."},
     )
     assert time.monotonic() - started_at >= REQUEST_TIMEOUT_SECONDS
-    wait_until_idle(moss_server)
+    wait_until_idle(moss_server, CANCEL_SECONDS)
 
 
 def test_moss_stops_a_stream_its_client_stops_reading_at_its_deadline(
     moss_server: Server,
 ) -> None:
-    with open_speech_stream(moss_server, PASSAGE, receive_buffer_bytes=4096):
+    with open_speech_stream(moss_server, {"input": PASSAGE}, receive_buffer_bytes=4096):
         assert request_states(moss_server) == {"running": 1}
-        wait_until_idle(moss_server, REQUEST_TIMEOUT_SECONDS + 8.0)
+        wait_until_idle(moss_server, REQUEST_TIMEOUT_SECONDS + CANCEL_SECONDS)
 
 
 def test_moss_accepts_the_cuda_fields_it_passes_over(moss_server: Server) -> None:
