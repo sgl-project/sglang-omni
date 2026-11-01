@@ -6,7 +6,7 @@
     "^sglang_omni_mlx/native/scripts/",
     "^sglang_omni_mlx/native/src/common/",
     "^sglang_omni_mlx/native/src/qwen3_asr/",
-    "^sglang_omni_mlx/native/ci/(model_jobs\\.json|provision.*\\.py|check_.*\\.py|test_check_golden\\.py|test_model_servers\\.py|test_server_api\\.py|requirements\\.lock)$"
+    "^sglang_omni_mlx/native/ci/(model_jobs\\.json|provision.*\\.py|check_.*\\.py|speech_golden\\.py|test_check_golden\\.py|test_model_servers\\.py|test_server_api\\.py|requirements\\.lock)$"
   ],
   "models": [
     {
@@ -138,6 +138,21 @@
       ]
     },
     {
+      "name": "qwen3-tts",
+      "paths": [
+        "^sglang_omni_mlx/native/(src/qwen3_tts/|tools/qwen3_tts_|ci/(qwen3_tts_golden\\.py|test_qwen3_tts_api\\.py|model_golden/qwen3-tts-))"
+      ],
+      "pins": [
+        "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16"
+      ],
+      "goldens": [
+        "qwen3-tts-12hz-0.6b-customvoice.json"
+      ],
+      "pytest": [
+        "sglang_omni_mlx/native/ci/test_qwen3_tts_api.py"
+      ]
+    },
+    {
       "name": "music3",
       "paths": [
         "^sglang_omni_mlx/native/(src/music3/|tools/music3_|ci/(music3_|generate_music3_reference\\.py|model_golden/minimax-music3))"
@@ -153,6 +168,28 @@
         "-k",
         "music3"
       ]
+    },
+    {
+      "name": "cosyvoice3",
+      "paths": [
+        "^sglang_omni_mlx/native/(src/cosyvoice3/|tools/cosyvoice3_|ci/(cosyvoice3_golden\\.py|test_cosyvoice3_api\\.py|model_golden/fun-cosyvoice3-))"
+      ],
+      "pins": [
+        "mlx-community/Fun-CosyVoice3-0.5B-2512-fp16"
+      ],
+      "goldens": [
+        "fun-cosyvoice3-0.5b-2512.json"
+      ],
+      "pytest": [
+        "sglang_omni_mlx/native/ci/test_cosyvoice3_api.py"
+      ]
     }
-  ]
+  ],
+  "disabled_goldens": {
+    "reason": "Fish Audio Drama 3 is disabled on main: its checkpoints are too large for the runner.",
+    "goldens": [
+      "fish-audio-drama-3-4bit.json",
+      "fish-audio-drama-3-8bit.json"
+    ]
+  }
 }

@@ -34,6 +34,8 @@ def selected_names(
         ("sglang_omni_mlx/native/src/music3/music3_service.cpp", ["music3"]),
         ("sglang_omni_mlx/native/ci/model_golden/whisper-small.json", ["whisper"]),
         ("sglang_omni_mlx/native/ci/test_voxtral_tts_api.py", ["voxtral-tts"]),
+        ("sglang_omni_mlx/native/src/qwen3_tts/qwen3_tts_server.cpp", ["qwen3-tts"]),
+        ("sglang_omni_mlx/native/ci/test_cosyvoice3_api.py", ["cosyvoice3"]),
         ("Voxt/backend/README.md", []),
     ],
 )
@@ -78,7 +80,9 @@ def test_every_model_job_names_existing_pins_and_goldens() -> None:
         for pattern in model["paths"]:
             re.compile(pattern)
     listed = {golden for model in MODEL_JOBS["models"] for golden in model["goldens"]}
-    assert listed == {path.name for path in golden_directory.glob("*.json")}
+    disabled = set(MODEL_JOBS["disabled_goldens"]["goldens"])
+    assert not listed & disabled
+    assert listed | disabled == {path.name for path in golden_directory.glob("*.json")}
 
 
 @pytest.mark.parametrize(
