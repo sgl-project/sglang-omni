@@ -1082,6 +1082,7 @@ def umm_result_chunk(request_id: str, result: dict[str, object]) -> GenerateChun
     else:
         pass
     finish_reason = result.get("finish_reason")
+    usage = result.get("usage")
     return UMMGenerateChunk(
         request_id=request_id,
         text="".join(
@@ -1090,6 +1091,7 @@ def umm_result_chunk(request_id: str, result: dict[str, object]) -> GenerateChun
             if segment.kind == "text" and isinstance(segment.data, str)
         ),
         finish_reason=finish_reason if isinstance(finish_reason, str) else "stop",
+        usage=UsageInfo.from_dict(usage) if isinstance(usage, Mapping) else None,
         model_finish_reason="",
         modality="mixed",
         segments=segments,
