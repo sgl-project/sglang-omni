@@ -29,19 +29,24 @@ MIN_DECODE_SM_COUNT = 96
 class CuTeDSLDecoderLayer(nn.Module):
     """Pack loaded weights without changing the engine's attention or cache ownership."""
 
-    def __init__(self, layer: nn.Module) -> None:
+    def __init__(self, layer: nn.Module, *, is_predictor: bool = False) -> None:
         super().__init__()
         self._derived_weight_cache_error = (  # noqa: leading-underscore - SGLang contract
             "Online weight updates are unsupported with Qwen3-TTS CuTeDSL packed "
             "weights. Restart with SGLANG_OMNI_QTTS_BACKEND=default to enable them."
         )
         attention = layer.self_attn
+        deferred_residual = (
+            not is_predictor and layer.input_layernorm.weight.numel() == 1024
+        )
         self.pre_attention = SlotPreAttention(
             layer.input_layernorm.weight,
             attention.qkv_proj.weight,
             attention.q_norm.weight,
             attention.k_norm.weight,
             layer.input_layernorm.variance_epsilon,
+            is_predictor=is_predictor,
+            deferred_residual=deferred_residual,
         )
         gate_weight, up_weight = layer.mlp.gate_up_proj.weight.chunk(2, dim=0)
         self.post_attention = PackedPostAttention(
@@ -51,10 +56,14 @@ class CuTeDSLDecoderLayer(nn.Module):
             layer.mlp.down_proj.weight,
             layer.post_attention_layernorm.weight,
             layer.post_attention_layernorm.variance_epsilon,
+            is_predictor=is_predictor,
+            deferred_residual=deferred_residual,
         )
 
 
-def build_cutedsl_layers(layers: nn.ModuleList) -> nn.ModuleList | None:
+def build_cutedsl_layers(
+    layers: nn.ModuleList, *, is_predictor: bool = False
+) -> nn.ModuleList | None:
     """Keep unsupported weights, devices, and tensor-parallel layouts on the default path."""
     for layer in layers:
         attention = layer.self_attn
@@ -87,4 +96,6 @@ def build_cutedsl_layers(layers: nn.ModuleList) -> nn.ModuleList | None:
             return None
         else:
             pass
-    return nn.ModuleList(CuTeDSLDecoderLayer(layer) for layer in layers)
+    return nn.ModuleList(
+        CuTeDSLDecoderLayer(layer, is_predictor=is_predictor) for layer in layers
+    )

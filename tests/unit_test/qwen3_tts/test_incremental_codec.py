@@ -6,6 +6,7 @@ import copy
 import os
 import random
 from importlib.util import find_spec
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -42,10 +43,12 @@ if find_spec("cutlass") is not None:
         CuTeDSLCodecStateArena,
         copy_state_rows,
     )
+    from sglang_omni.models.qwen3_tts.cutedsl.vocoder import ChannelsLastUpsample
 else:
     pointwise_conv = None
     CuTeDSLCodecStateArena = None
     copy_state_rows = None
+    ChannelsLastUpsample = None
 
 
 @pytest.mark.accelerator
@@ -504,6 +507,49 @@ def test_slot_causal_transconv_matches_whole(
 
     torch.testing.assert_close(torch.cat(actual, dim=1), expected)
     assert torch.count_nonzero(overlap_pool[:2]).item() == 0
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or ChannelsLastUpsample is None,
+    reason="requires CUDA and CUTLASS DSL",
+)
+@torch.inference_mode()
+def test_cutedsl_upsample_shared_compile_cache() -> None:
+    """Four upsamplers must tolerate singleton/batched inputs and worker thread states."""
+    original_threads = torch.get_num_threads()
+    torch._dynamo.reset()  # noqa: leading-underscore - PyTorch compiler API
+    try:
+        with torch._dynamo.config.patch(  # noqa: leading-underscore - PyTorch compiler API
+            recompile_limit=8
+        ):
+            upsamplers = []
+            for index, stride in enumerate((8, 5, 4, 3)):
+                conv = nn.ConvTranspose1d(
+                    1536 >> index, 768 >> index, 2 * stride, stride=stride
+                ).to("cuda", torch.bfloat16)
+                upsamplers.append(
+                    ChannelsLastUpsample(
+                        SimpleNamespace(conv=conv, left_pad=0, right_pad=stride)
+                    )
+                )
+            for threads in (1, 2):
+                torch.set_num_threads(threads)
+                for batch_size in (16, 1):
+                    for upsampler in upsamplers:
+                        inputs = torch.randn(
+                            batch_size,
+                            8,
+                            upsampler.conv.in_channels,
+                            device="cuda",
+                            dtype=torch.bfloat16,
+                        )
+                        actual = upsampler(inputs.transpose(1, 2)).transpose(1, 2)
+                        expected = upsampler.channels_last_forward(inputs)
+                        torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+    finally:
+        torch.set_num_threads(original_threads)
+        torch._dynamo.reset()  # noqa: leading-underscore - PyTorch compiler API
 
 
 @pytest.mark.accelerator

@@ -2312,7 +2312,7 @@ def relative_error(actual: torch.Tensor, expected: torch.Tensor) -> float:
 @pytest.mark.parametrize("batch_size", [1, 16])
 @torch.inference_mode()
 def test_cutedsl_pair_matches_serial_decode_and_graph_replay(batch_size: int) -> None:
-    """The two-token prefix preserves causal attention, token order, and cache slots on replay."""
+    """Predictor rounding must match the default path while pair replay preserves causal cache writes."""
     if (
         torch.cuda.get_device_capability() not in ((9, 0), (10, 0), (10, 3))
         or torch.cuda.get_device_properties("cuda").multi_processor_count
@@ -2327,9 +2327,15 @@ def test_cutedsl_pair_matches_serial_decode_and_graph_replay(batch_size: int) ->
     final_norm = real_shape_norm(FUSED_HIDDEN, device)
     pair = real_shape_talker(device, layers, final_norm, fused=False)
     serial = real_shape_talker(device, layers, final_norm, fused=False)
+    with get_context().override_server_args(
+        cuda_graph_config=CudaGraphConfig(
+            prefill=PhaseConfig(backend=Backend.DISABLED)
+        ),
+    ):
+        reference = real_shape_talker(device, layers, final_norm, fused=True)
     for talker in (pair, serial):
         talker.predictor_cutedsl_layers = [
-            CuTeDSLDecoderLayer(layer) for layer in layers
+            CuTeDSLDecoderLayer(layer, is_predictor=True) for layer in layers
         ]
         talker.predictor_k_rows = [
             layer.flatten(0, 1) for layer in talker.predictor_k_cache
@@ -2349,6 +2355,16 @@ def test_cutedsl_pair_matches_serial_decode_and_graph_replay(batch_size: int) ->
     for _ in range(2):
         embeddings.normal_()
         graph.replay()
+        expected = reference.predictor_forward_tokens(
+            token_embeds=embeddings, batch_size=batch_size, cache_len=0
+        )
+        torch.testing.assert_close(actual, expected, **BF16_GEMM_ROUNDING)
+        torch.testing.assert_close(
+            pair.predictor_k_cache, reference.predictor_k_cache, **BF16_GEMM_ROUNDING
+        )
+        torch.testing.assert_close(
+            pair.predictor_v_cache, reference.predictor_v_cache, **BF16_GEMM_ROUNDING
+        )
         first = serial.predictor_forward_tokens(
             token_embeds=embeddings[:, :1].contiguous(),
             batch_size=batch_size,

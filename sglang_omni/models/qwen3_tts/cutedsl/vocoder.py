@@ -98,9 +98,17 @@ class ChannelsLastUpsample(nn.Module):
         return output[:, : output.shape[1] - self.right_pad].contiguous()
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        return self.operation(hidden_states.transpose(1, 2).contiguous()).transpose(
-            1, 2
-        )
+        # note (Hao Wang): four upsamplers share one cache across batch and thread-state variants.
+        with (
+            torch._dynamo.config.patch(  # noqa: leading-underscore  # upstream spelling
+                recompile_limit=max(
+                    torch._dynamo.config.recompile_limit, 64
+                )  # noqa: leading-underscore  # upstream spelling
+            )
+        ):
+            return self.operation(hidden_states.transpose(1, 2).contiguous()).transpose(
+                1, 2
+            )
 
 
 class CuTeDSLResidualUnit(nn.Module):

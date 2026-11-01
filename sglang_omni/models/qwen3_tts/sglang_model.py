@@ -52,8 +52,6 @@ from sglang_omni.models.qwen3_tts.cutedsl.runtime import (
     KV_HEADS,
     MAX_DECODE_ROWS,
     QTTS_BACKEND,
-    QUERY_HEADS,
-    QUERY_WIDTH,
 )
 from sglang_omni.models.qwen3_tts.predictor_kernels import (
     gather_codec_embedding_and_add,
@@ -76,7 +74,10 @@ from sglang_omni.sampling.sampler_compile import (
     compile_sampler_functions,
 )
 from sglang_omni.scheduling.types import SchedulerRequest
-from sglang_omni.utils.predictor_layers import resolve_fused_predictor_layers
+from sglang_omni.utils.predictor_layers import (
+    decode_attention,
+    resolve_fused_predictor_layers,
+)
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.distributed import get_group_rank_size
 from sglang_omni.vendor.sglang.layers import ReplicatedLinear, RMSNorm
@@ -436,6 +437,10 @@ class Qwen3TTSTalkerTextModel(nn.Module):
                 and first_cache.shape[1:] == (KV_HEADS, HEAD_DIM)
             ):
                 token_positions = positions[0] if positions.ndim == 2 else positions
+                deferred = self.cutedsl_layers[0].pre_attention.deferred_residual
+                residual = None
+                combined = torch.empty_like(hidden_states) if deferred else None
+                next_residual = torch.empty_like(hidden_states) if deferred else None
                 for idx in range(self.start_layer, self.end_layer):
                     attention = self.layers[idx].self_attn
                     fused_layer = self.cutedsl_layers[idx]
@@ -446,14 +451,25 @@ class Qwen3TTSTalkerTextModel(nn.Module):
                         forward_batch.out_cache_loc,
                         cache_pool.get_key_buffer(attention.layer_id),
                         cache_pool.get_value_buffer(attention.layer_id),
+                        residual=residual,
+                        residual_output=combined,
                     )
                     attention_output = attention.attn(
                         q, None, None, forward_batch, save_kv_cache=False
                     )
-                    hidden_states = fused_layer.post_attention(
-                        attention_output, hidden_states
-                    )
-                return self.norm(hidden_states)
+                    if deferred:
+                        hidden_states = fused_layer.post_attention(
+                            attention_output, combined, residual_output=next_residual
+                        )
+                        residual = next_residual
+                    else:
+                        hidden_states = fused_layer.post_attention(
+                            attention_output, hidden_states
+                        )
+                if deferred:
+                    return self.norm(hidden_states, residual)[0]
+                else:
+                    return self.norm(hidden_states)
             else:
                 pass
         else:
@@ -2274,22 +2290,17 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
                     self.predictor_k_rows[layer_idx].view(-1, KV_HEADS, HEAD_DIM),
                     self.predictor_v_rows[layer_idx].view(-1, KV_HEADS, HEAD_DIM),
                 )
-                attention_output = predictor_gqa_attention(
-                    q.view(batch_size, num_tokens, QUERY_HEADS, HEAD_DIM).transpose(
-                        1, 2
-                    ),
-                    self.predictor_k_cache[layer_idx, :batch_size, :end].transpose(
-                        1, 2
-                    ),
-                    self.predictor_v_cache[layer_idx, :batch_size, :end].transpose(
-                        1, 2
-                    ),
-                    num_heads=QUERY_HEADS,
-                    num_key_value_heads=KV_HEADS,
-                    is_causal=num_tokens > 1,
+                attention_output = torch.empty_like(q)
+                decode_attention(
+                    q=q,
+                    tokens_per_row=num_tokens,
+                    k_cache=self.predictor_k_cache[layer_idx, :batch_size],
+                    v_cache=self.predictor_v_cache[layer_idx, :batch_size],
+                    end=end,
+                    attention_output=attention_output,
                 )
                 hidden_states = fused_layer.post_attention(
-                    attention_output.transpose(1, 2).reshape(num_rows, QUERY_WIDTH),
+                    attention_output,
                     hidden_states,
                 )
             return self.code_predictor.model.norm(hidden_states).view(
@@ -2567,7 +2578,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             else:
                 self.model.cutedsl_layers = build_cutedsl_layers(self.model.layers)
                 self.predictor_cutedsl_layers = build_cutedsl_layers(
-                    self.code_predictor.model.layers
+                    self.code_predictor.model.layers, is_predictor=True
                 )
                 logger.info(
                     f"Qwen3-TTS CuTeDSL decode: talker={self.model.cutedsl_layers is not None}, "

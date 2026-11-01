@@ -8,6 +8,7 @@ from cutlass import cute
 from cutlass.experimental import cuda as tensor_map
 from cutlass.experimental import primitives as p
 
+from sglang_omni.models.qwen3_tts.cutedsl.normalization import square_sum
 from sglang_omni.models.qwen3_tts.cutedsl.sm100.mma import (
     descriptor,
     fragment_column,
@@ -70,15 +71,20 @@ def activation_words(
 
 @cute.jit
 def residual_words(
-    residual, thread, j: cutlass.Constexpr, slot, batch_tile: cutlass.Constexpr
+    residual,
+    thread,
+    j: cutlass.Constexpr,
+    slot,
+    batch_tile: cutlass.Constexpr,
+    word_factor: cutlass.Constexpr = 1,
 ):
     """Load one of four 8-value groups per lane; each warp owns a full row."""
     row, column = thread // 32 + (j // 4) * 8, (thread % 32) * 8 + (j % 4) * 256
-    offset = (slot * batch_tile + row) * 512 + column // 2
+    offset = ((slot * batch_tile + row) * 512 + column // 2) * word_factor
     return p.load_ext(
         residual.iterator.raw_ptr() + offset,
         dtype=cutlass.Int32,
-        count=4,
+        count=4 * word_factor,
         order="volatile",
     )
 
@@ -104,6 +110,7 @@ def gemm(
     projection: cutlass.Constexpr,
     batch_size: cutlass.Int32,
     batch_tile: cutlass.Constexpr,
+    is_predictor: cutlass.Constexpr = False,
 ):
     """Consume resident gate/up operands or stage two split-projection operands."""
     if thread == 0:
@@ -157,7 +164,11 @@ def gemm(
                 if cutlass.const_expr(projection == "output"):
                     channel_start = rank * 512 + stage * 256
                 else:
-                    channel_start = stage * 1536 + rank * 384
+                    channel_start = (
+                        rank * 768 + stage * 384
+                        if is_predictor
+                        else stage * 1536 + rank * 384
+                    )
                 if cutlass.const_expr(projection == "down"):  # noqa: SIM102
                     if thread == 0:
                         p.mbarrier_expect_tx(bars.subview(stage), group * 8192)
@@ -352,6 +363,9 @@ def post_attention_kernel(
     batch_size: cutlass.Int32,
     batch_tile: cutlass.Constexpr,
     norm_epsilon: cutlass.Constexpr,
+    is_predictor: cutlass.Constexpr = False,
+    residual_output: cute.Tensor = None,
+    deferred_residual: cutlass.Constexpr = False,
 ):
     thread, _, _ = cute.arch.thread_idx()
     block, _, _ = cute.arch.block_idx()
@@ -436,7 +450,18 @@ def post_attention_kernel(
         for j in cutlass.range_constexpr(batch_tile // 16):
             idx = thread + j * 256
             batch, channel = idx // 16, idx % 16
-            if channel % 2 == 0:
+            if cutlass.const_expr(deferred_residual):
+                offset = (
+                    ((1 - (epoch & 1)) * batch_tile + batch) * 1024
+                    + block * 16
+                    + channel
+                )
+                p.store_ext(
+                    cutlass.Int32(-2147483648).ir_value(),
+                    r.iterator.raw_ptr() + offset,
+                    order="volatile",
+                )
+            elif channel % 2 == 0:
                 offset = (
                     ((1 - (epoch & 1)) * batch_tile + batch) * 512
                     + block * 8
@@ -497,14 +522,14 @@ def post_attention_kernel(
             projected = cutlass.BFloat16(
                 reduce_partial(mailbox, row, batch, batch_tile)
             )
-            value = cutlass.BFloat16(0)
+            combined = cutlass.Float32(0)
             if batch < batch_size:
-                value = cutlass.BFloat16(
-                    cutlass.Float32(projected)
-                    + cutlass.Float32(residual[batch, cluster * 64 + row])
+                combined = cutlass.Float32(projected) + cutlass.Float32(
+                    residual[batch, cluster * 64 + row]
                 )
             else:
                 pass
+            value = cutlass.BFloat16(combined)
             bits = cutlass.Int32(value.bitcast(cutlass.Uint16))
             if bits == 0x8000:
                 bits = cutlass.Int32(0)
@@ -513,7 +538,19 @@ def post_attention_kernel(
             # Neighboring lanes own adjacent channels; publish each pair in
             # one aligned word so consumers can test that word independently.
             neighbor = cute.arch.shuffle_sync_bfly(bits, 1)
-            if channel % 2 == 0:
+            if cutlass.const_expr(deferred_residual):
+                raw = combined.bitcast(cutlass.Int32)
+                if raw == -2147483648:
+                    raw = cutlass.Int32(0)
+                else:
+                    pass
+                offset = (
+                    ((epoch & 1) * batch_tile + batch) * 1024 + block * 16 + channel
+                )
+                p.store_ext(
+                    raw.ir_value(), r.iterator.raw_ptr() + offset, order="volatile"
+                )
+            elif channel % 2 == 0:
                 packed = bits | (neighbor << 16)
                 offset = (
                     ((epoch & 1) * batch_tile + batch) * 512 + block * 8 + channel // 2
@@ -551,7 +588,13 @@ def post_attention_kernel(
     else:
         pass
     prefetch_gate_up(weights, bars, wgu, block, thread)
-    norm_inputs = cute.make_rmem_tensor((4, batch_tile // 2), cutlass.Int32)
+    word_factor: cutlass.Constexpr = 2 if deferred_residual else 1
+    residual_empty: cutlass.Constexpr = (
+        -2147483648 if deferred_residual else PAYLOAD_EMPTY
+    )
+    norm_inputs = cute.make_rmem_tensor(
+        (4 * word_factor, batch_tile // 2), cutlass.Int32
+    )
     norm_scales = cute.make_rmem_tensor((8, 4), cutlass.BFloat16)
     for group in cutlass.range_constexpr(4):
         values = (gamma.iterator.raw_ptr() + (thread % 32) * 8 + group * 256).load(
@@ -560,57 +603,108 @@ def post_attention_kernel(
         for k in cutlass.range_constexpr(8):
             norm_scales[k, group] = values[k]
     for j in cutlass.range_constexpr(batch_tile // 2):
-        values = residual_words(r, thread, j, epoch & 1, batch_tile)
-        for k in cutlass.range_constexpr(4):
+        values = residual_words(r, thread, j, epoch & 1, batch_tile, word_factor)
+        for k in cutlass.range_constexpr(4 * word_factor):
             norm_inputs[k, j] = values[k]
     norm_ready = cutlass.Boolean(True)
     for j in cutlass.range_constexpr(batch_tile // 2):
         norm_ready &= cutlass.all_(
-            norm_inputs[None, j].load().to_vector() != PAYLOAD_EMPTY
+            norm_inputs[None, j].load().to_vector() != residual_empty
         )
     while not norm_ready:
         for j in cutlass.range_constexpr(batch_tile // 2):
-            if cutlass.any_(norm_inputs[None, j].load().to_vector() == PAYLOAD_EMPTY):
-                values = residual_words(r, thread, j, epoch & 1, batch_tile)
-                for k in cutlass.range_constexpr(4):
+            if cutlass.any_(norm_inputs[None, j].load().to_vector() == residual_empty):
+                values = residual_words(
+                    r, thread, j, epoch & 1, batch_tile, word_factor
+                )
+                for k in cutlass.range_constexpr(4 * word_factor):
                     norm_inputs[k, j] = values[k]
             else:
                 pass
         norm_ready = cutlass.Boolean(True)
         for j in cutlass.range_constexpr(batch_tile // 2):
             norm_ready &= cutlass.all_(
-                norm_inputs[None, j].load().to_vector() != PAYLOAD_EMPTY
+                norm_inputs[None, j].load().to_vector() != residual_empty
             )
-    # Retain polled inputs in registers. Each warp reduces its own rows,
-    # with no shared partials or cross-warp inverse-RMS broadcast.
-    norm_inverse = cute.make_rmem_tensor((batch_tile // 8,), cutlass.Float32)
-    for token in cutlass.range_constexpr(batch_tile // 8):
-        total = cutlass.Float32(0)
-        for group in cutlass.range_constexpr(4):
-            words = norm_inputs[None, token * 4 + group].load().to_vector()
-            values = words.bitcast(cutlass.BFloat16).to(cutlass.Float32)
-            squares = values * values
-            left = (squares[0] + squares[1]) + (squares[2] + squares[3])
-            right = (squares[4] + squares[5]) + (squares[6] + squares[7])
-            total += left + right
-        for delta in cutlass.range_constexpr(5):
-            total += cute.arch.shuffle_sync_bfly(total, 1 << delta)
-        norm_inverse[token] = cute.math.rsqrt(total / 1024 + norm_epsilon)
+    # note (Hao Wang): The predictor reproduces Tensor Core norm accumulation; the talker reduces register-resident rows.
+    if cutlass.const_expr(is_predictor):
+        inverse_shared = cutlass.Array(
+            cutlass.Float32, batch_tile, space=cutlass.AddressSpace.smem, alignment=16
+        )
+        for j in cutlass.range_constexpr(batch_tile // 2):
+            row, column = thread // 32 + (j // 4) * 8, (thread % 32) * 8 + (j % 4) * 256
+            values = norm_inputs[None, j].load().to_vector().bitcast(cutlass.BFloat16)
+            normalized.store(
+                values,
+                idx=(column // 64) * batch_tile * 64 + swizzle(row, column % 64),
+                alignment=16,
+            )
+        p.barrier_cta_sync()
+        if thread // 32 < batch_tile // 8:
+            lane = thread % 32
+            row = (thread // 32) * 8 + lane // 4
+            total = square_sum(normalized, row, lane, batch_tile)
+            if lane // 4 == (lane % 4) * 2 or lane // 4 == (lane % 4) * 2 + 1:
+                inverse_shared.store(
+                    cute.math.rsqrt(total / 1024 + norm_epsilon), idx=row
+                )
+            else:
+                pass
+        else:
+            pass
+        p.barrier_cta_sync()
+    else:
+        norm_inverse = cute.make_rmem_tensor((batch_tile // 8,), cutlass.Float32)
+        for token in cutlass.range_constexpr(batch_tile // 8):
+            total = cutlass.Float32(0)
+            if cutlass.const_expr(deferred_residual):
+                norm_squares = cute.make_rmem_tensor((8, 4), cutlass.Float32)
+            else:
+                pass
+            for group in cutlass.range_constexpr(4):
+                words = norm_inputs[None, token * 4 + group].load().to_vector()
+                if cutlass.const_expr(deferred_residual):
+                    values = words.bitcast(cutlass.Float32)
+                else:
+                    values = words.bitcast(cutlass.BFloat16).to(cutlass.Float32)
+                squares = values * values
+                if cutlass.const_expr(deferred_residual):
+                    for i in cutlass.range_constexpr(8):
+                        norm_squares[i, group] = squares[i]
+                else:
+                    left = (squares[0] + squares[1]) + (squares[2] + squares[3])
+                    right = (squares[4] + squares[5]) + (squares[6] + squares[7])
+                    total += left + right
+            if cutlass.const_expr(deferred_residual):
+                total = norm_squares.load().reduce(
+                    cute.ReductionOp.ADD,
+                    init_val=cutlass.Float32(0),
+                    reduction_profile=0,
+                )
+            else:
+                pass
+            for delta in cutlass.range_constexpr(5):
+                total += cute.arch.shuffle_sync_bfly(total, 1 << delta)
+            norm_inverse[token] = cute.math.rsqrt(total / 1024 + norm_epsilon)
     for j in cutlass.range_constexpr(batch_tile // 2):
         row, column = thread // 32 + (j // 4) * 8, (thread % 32) * 8 + (j % 4) * 256
-        values = (
-            norm_inputs[None, j]
-            .load()
-            .to_vector()
-            .bitcast(cutlass.BFloat16)
-            .to(cutlass.Float32)
-        )
+        words = norm_inputs[None, j].load().to_vector()
+        if cutlass.const_expr(deferred_residual):
+            values = words.bitcast(cutlass.Float32)
+        else:
+            values = words.bitcast(cutlass.BFloat16).to(cutlass.Float32)
         scale = norm_scales[None, j % 4].load().to_vector().to(cutlass.Float32)
-        unit = (values * norm_inverse[j // 4]).to(cutlass.BFloat16).to(cutlass.Float32)
+        if cutlass.const_expr(is_predictor):
+            unit = values
+        elif cutlass.const_expr(deferred_residual):
+            unit = values * norm_inverse[j // 4]
+        else:
+            unit = (
+                (values * norm_inverse[j // 4]).to(cutlass.BFloat16).to(cutlass.Float32)
+            )
         offset = (column // 64) * batch_tile * 64 + swizzle(row, column % 64)
         normalized.store((unit * scale).to(cutlass.BFloat16), idx=offset, alignment=16)
-    # The only norm CTA rendezvous: all operand rows must reach SMEM
-    # before the consumer warp issues MMA.
+    # note (Hao Wang): All operand rows must reach SMEM before the consumer warp issues MMA.
     p.fence_proxy("async_shared", space=p.SharedSpace.shared_cta)
     p.barrier_cta_sync()
     accumulator.fill(0)
@@ -639,8 +733,13 @@ def post_attention_kernel(
         for j in cutlass.range_constexpr(batch_tile // 2):
             row = fragment_row(thread - 128, j)
             column = fragment_column(thread - 128, j)
+            product = accumulator[j]
+            if cutlass.const_expr(is_predictor):
+                product *= inverse_shared.load(idx=column)
+            else:
+                pass
             partial.store(
-                cutlass.Float32(cutlass.BFloat16(accumulator[j])),
+                cutlass.Float32(cutlass.BFloat16(product)),
                 idx=gate_up_index(row, column, batch_tile),
             )
     else:
@@ -655,8 +754,11 @@ def post_attention_kernel(
         for half in cutlass.range_constexpr(2):
             gate = partial.load(idx=gate_up_index(channel + half, batch, batch_tile))
             up = partial.load(idx=gate_up_index(channel + half + 32, batch, batch_tile))
-            silu = cutlass.BFloat16(gate / (1 + cute.math.exp(-gate)))
-            value = cutlass.BFloat16(cutlass.Float32(silu) * up)
+            if cutlass.const_expr(is_predictor or deferred_residual):
+                value = cutlass.BFloat16((gate / (1 + cute.math.exp(-gate))) * up)
+            else:
+                silu = cutlass.BFloat16(gate / (1 + cute.math.exp(-gate)))
+                value = cutlass.BFloat16(cutlass.Float32(silu) * up)
             bits = cutlass.Int32(value.bitcast(cutlass.Uint16))
             if bits == 0x8000:
                 bits = cutlass.Int32(0)
@@ -693,6 +795,7 @@ def post_attention_kernel(
             projection="down",
             batch_size=batch_size,
             batch_tile=batch_tile,
+            is_predictor=is_predictor,
         )
         # note (Hao Wang): Down needs every residual publication, each following its phase-0 mailbox read, so reuse needs no extra barrier.
         scatter_partial(accumulator, mailbox, ready, 1, thread, rank, batch_tile)
@@ -701,18 +804,34 @@ def post_attention_kernel(
             row, column = rank * 16 + idx % 16, idx // 16
             value = cutlass.BFloat16(reduce_partial(mailbox, row, column, batch_tile))
             if column < batch_size:
-                offset = (
-                    ((epoch & 1) * batch_tile + column) * 512 + cluster * 32 + row // 2
-                )
-                word = p.load_ext(
-                    r.iterator.raw_ptr() + offset, dtype=cutlass.Int32, order="volatile"
-                )
-                skip = cutlass.Uint16((word >> (16 * (row % 2))) & 0xFFFF).bitcast(
-                    cutlass.BFloat16
-                )
-                output[column, cluster * 64 + row] = cutlass.BFloat16(
-                    cutlass.Float32(value) + cutlass.Float32(skip)
-                )
+                if cutlass.const_expr(deferred_residual):
+                    offset = (
+                        ((epoch & 1) * batch_tile + column) * 1024 + cluster * 64 + row
+                    )
+                    skip = p.load_ext(
+                        r.iterator.raw_ptr() + offset,
+                        dtype=cutlass.Int32,
+                        order="volatile",
+                    ).bitcast(cutlass.Float32)
+                    output[column, cluster * 64 + row] = value
+                    residual_output[column, cluster * 64 + row] = cutlass.BFloat16(skip)
+                else:
+                    offset = (
+                        ((epoch & 1) * batch_tile + column) * 512
+                        + cluster * 32
+                        + row // 2
+                    )
+                    word = p.load_ext(
+                        r.iterator.raw_ptr() + offset,
+                        dtype=cutlass.Int32,
+                        order="volatile",
+                    )
+                    skip = cutlass.Uint16((word >> (16 * (row % 2))) & 0xFFFF).bitcast(
+                        cutlass.BFloat16
+                    )
+                    output[column, cluster * 64 + row] = cutlass.BFloat16(
+                        cutlass.Float32(value) + cutlass.Float32(skip)
+                    )
             else:
                 pass
         # Every mailbox is consumed; only the cluster lifetime rendezvous remains.
@@ -743,6 +862,9 @@ def post_attention_host(
     stream: cuda.CUstream,
     batch_tile: cutlass.Constexpr,
     norm_epsilon: cutlass.Constexpr,
+    is_predictor: cutlass.Constexpr = False,
+    residual_output: cute.Tensor = None,
+    deferred_residual: cutlass.Constexpr = False,
 ):
     batch_size = cutlass.Int32(attention.shape[0])
     wo_map = tensor_map.create_tensor_map_tiled_from_view(
@@ -768,6 +890,9 @@ def post_attention_host(
         batch_size,
         batch_tile,
         norm_epsilon,
+        is_predictor,
+        residual_output,
+        deferred_residual,
     ).launch(
         grid=(96, 1, 1),
         block=(256, 1, 1),

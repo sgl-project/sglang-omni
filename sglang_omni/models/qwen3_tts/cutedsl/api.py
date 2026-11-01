@@ -50,6 +50,9 @@ def compile_pre_attention(
     slot_dtype: torch.dtype,
     epsilon: float,
     architecture: str,
+    is_predictor: bool = False,
+    deferred_residual: bool = False,
+    has_residual: bool = False,
 ) -> JitCompiledFunction:
     batch_size = cutlass.sym_int64()
     cache_slots = cutlass.sym_int64()
@@ -73,13 +76,23 @@ def compile_pre_attention(
         hidden_size,
         fake_tensor(slot_type, batch_size),
         fake_tensor(cutlass.BFloat16, cache_slots, 8, 128),
+        is_predictor,
+        fake_tensor(cutlass.BFloat16, batch_size, hidden_size),
+        fake_tensor(cutlass.BFloat16, batch_size, hidden_size),
+        deferred_residual,
+        has_residual,
         options=f"--enable-tvm-ffi --gpu-arch={architecture} --ptxas-options=--fmad=false",
     )
 
 
 @cache
 def compile_post_attention(
-    batch_tile: int, hidden_size: int, epsilon: float, architecture: str
+    batch_tile: int,
+    hidden_size: int,
+    epsilon: float,
+    architecture: str,
+    is_predictor: bool = False,
+    deferred_residual: bool = False,
 ) -> JitCompiledFunction:
     batch_size = cutlass.sym_int64()
     channel_tile = 128 if hidden_size == 2048 else 64
@@ -110,7 +123,12 @@ def compile_post_attention(
             64,
         ),
         fake_tensor(cutlass.BFloat16, hidden_size),
-        fake_tensor(cutlass.Int32, 2, batch_tile, hidden_size // 2),
+        fake_tensor(
+            cutlass.Int32,
+            2,
+            batch_tile,
+            hidden_size if deferred_residual else hidden_size // 2,
+        ),
         fake_tensor(
             cutlass.Int32,
             2,
@@ -123,6 +141,15 @@ def compile_post_attention(
         make_fake_stream(),
         batch_tile,
         epsilon,
+        *(
+            [
+                is_predictor,
+                fake_tensor(cutlass.BFloat16, batch_size, hidden_size),
+                deferred_residual,
+            ]
+            if hidden_size == 1024
+            else []
+        ),
         options=f"--enable-tvm-ffi --gpu-arch={architecture}",
     )
 
@@ -137,11 +164,15 @@ class SlotPreAttention(nn.Module):
         q_norm_weight: torch.Tensor,
         k_norm_weight: torch.Tensor,
         epsilon: float,
+        is_predictor: bool = False,
+        deferred_residual: bool = False,
     ) -> None:
         super().__init__()
         self.hidden_size = norm_weight.numel()
         self.architecture = device_arch(norm_weight.device)
         self.epsilon = epsilon
+        self.is_predictor = is_predictor
+        self.deferred_residual = deferred_residual
         self.register_buffer("norm_weight", norm_weight.detach())
         self.register_buffer("q_norm_weight", q_norm_weight.detach())
         self.register_buffer("k_norm_weight", k_norm_weight.detach())
@@ -162,6 +193,8 @@ class SlotPreAttention(nn.Module):
         cache_slots: torch.Tensor,
         key_cache: torch.Tensor,
         value_cache: torch.Tensor,
+        residual: torch.Tensor | None = None,
+        residual_output: torch.Tensor | None = None,
     ) -> torch.Tensor:
         batch_size = hidden_states.shape[0]
         assert 1 <= batch_size <= MAX_DECODE_ROWS
@@ -177,6 +210,9 @@ class SlotPreAttention(nn.Module):
             cache_slots.dtype,
             self.epsilon,
             self.architecture,
+            self.is_predictor,
+            self.deferred_residual,
+            residual is not None,
         )(
             hidden_states,
             self.norm_weight,
@@ -190,6 +226,8 @@ class SlotPreAttention(nn.Module):
             cuda.CUstream(torch.cuda.current_stream(hidden_states.device).cuda_stream),
             cache_slots,
             value_cache,
+            residual if residual is not None else hidden_states,
+            residual_output if residual_output is not None else hidden_states,
         )
         return queries.reshape(batch_size, 2048)
 
@@ -208,11 +246,15 @@ class PackedPostAttention(nn.Module):
         down_weight: torch.Tensor,
         norm_weight: torch.Tensor,
         epsilon: float,
+        is_predictor: bool = False,
+        deferred_residual: bool = False,
     ) -> None:
         super().__init__()
         self.hidden_size = output_weight.shape[0]
         self.architecture = device_arch(output_weight.device)
         self.epsilon = epsilon
+        self.is_predictor = is_predictor
+        self.deferred_residual = deferred_residual
         self.register_buffer("norm_weight", norm_weight.detach())
         channel_tile = 128 if self.hidden_size == 2048 else 64
         self.gate_channels = channel_tile // 2
@@ -252,15 +294,28 @@ class PackedPostAttention(nn.Module):
         self.workspaces: dict[int, tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}
 
     @torch.compiler.disable
-    def forward(self, attention: torch.Tensor, residual: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        attention: torch.Tensor,
+        residual: torch.Tensor,
+        residual_output: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         batch_size = attention.shape[0]
         assert 1 <= batch_size <= MAX_DECODE_ROWS
         batch_tile = 16 if batch_size <= 16 else 32
         if batch_size not in self.workspaces:
             self.workspaces[batch_size] = (
                 torch.full(
-                    (2, batch_tile, self.hidden_size // 2),
-                    PAYLOAD_EMPTY,
+                    (
+                        2,
+                        batch_tile,
+                        (
+                            self.hidden_size
+                            if self.deferred_residual
+                            else self.hidden_size // 2
+                        ),
+                    ),
+                    -2147483648 if self.deferred_residual else PAYLOAD_EMPTY,
                     device=attention.device,
                     dtype=torch.int32,
                 ),
@@ -285,7 +340,12 @@ class PackedPostAttention(nn.Module):
             pass
         output = torch.empty_like(residual, memory_format=torch.contiguous_format)
         compile_post_attention(
-            batch_tile, self.hidden_size, self.epsilon, self.architecture
+            batch_tile,
+            self.hidden_size,
+            self.epsilon,
+            self.architecture,
+            self.is_predictor,
+            self.deferred_residual,
         )(
             attention.reshape(batch_size, 2048),
             residual.reshape(batch_size, self.hidden_size),
@@ -296,5 +356,10 @@ class PackedPostAttention(nn.Module):
             *self.workspaces[batch_size],
             output.reshape(batch_size, self.hidden_size),
             cuda.CUstream(torch.cuda.current_stream(attention.device).cuda_stream),
+            *(
+                [residual_output if residual_output is not None else residual]
+                if self.hidden_size == 1024
+                else []
+            ),
         )
         return output
