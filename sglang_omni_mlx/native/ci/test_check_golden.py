@@ -13,6 +13,7 @@ from typing import Literal
 
 import check_golden
 import cosyvoice3_golden
+import fish_s2_pro_golden
 import music3_golden
 import pytest
 import speech_golden
@@ -251,6 +252,25 @@ def test_a_recorded_chip_requires_the_same_decoded_audio() -> None:
     failures = speech_golden.check(golden, "Apple M5", redecoded)[1]
     assert failures == ["`en` decodes to other audio"]
     assert speech_golden.check(golden, "Apple M4 Pro", redecoded)[1] == []
+
+
+def test_a_recorded_chip_requires_fish_reference_codes_and_pcm() -> None:
+    """The Fish golden gated only codes, not the decoded audio."""
+    fish = {**SPEECH, "reference_codes": [["1 2"]], "audio_sha256": "a"}
+    golden = {**speech_golden_file(), "kind": "fish_s2_pro"}
+    golden["devices"]["Apple M5"]["clips"] = {"en": fish, "fr": fish}
+    assert (
+        fish_s2_pro_golden.check(golden, "Apple M5", {"en": fish, "fr": fish})[1] == []
+    )
+    changed = {
+        "en": {**fish, "audio_sha256": "b"},
+        "fr": {**fish, "reference_codes": [["1 3"]]},
+    }
+    assert fish_s2_pro_golden.check(golden, "Apple M5", changed)[1] == [
+        "`en` has other audio_sha256",
+        "`fr` has other reference_codes",
+    ]
+    assert fish_s2_pro_golden.check(golden, "Apple M4 Pro", changed)[1] == []
 
 
 def test_another_chip_is_held_to_voxtral_prompt_ids() -> None:

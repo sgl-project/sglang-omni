@@ -72,7 +72,8 @@ agree on it with a maintainer first.
 - Pin every checkpoint file by revision and SHA-256 in `ci/model_pins.json`.
 - Add a golden under `ci/model_golden/`. Import the Mac CI runner's outputs
   (`golden-outputs` artifact, `--import`) so the runner checks exactly. A
-  speech model's golden holds seeded requests' codes (`ci/speech_golden.py`).
+  speech model's golden holds seeded requests' codes (`ci/speech_golden.py`; Fish S2-Pro's also holds its reference codes, in
+  `ci/fish_s2_pro_golden.py`).
 - Add a second golden for paths the corpus misses (long-audio chunking, VAD).
 
 **Tests**

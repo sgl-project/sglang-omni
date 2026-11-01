@@ -316,3 +316,19 @@ install(TARGETS fishaudio_drama3_server fishaudio_drama3_synthesize RUNTIME DEST
 
 install(FILES licenses/music3-MIT.txt licenses/fishaudio_drama3-MIT.txt
   DESTINATION licenses)
+
+# Note (Jiaxin Deng): Fish S2-Pro: fish_s2_pro_server, with the CUDA server's
+# /v1/audio/speech API and reference-audio voice cloning, and its parity tool.
+add_library(fish_s2_pro STATIC src/fish_s2_pro/fish_s2_pro_codec.cpp
+  src/fish_s2_pro/fish_s2_pro_model.cpp)
+target_link_libraries(fish_s2_pro PUBLIC qwen3_asr)
+target_compile_options(fish_s2_pro PRIVATE -Wall -Wextra -ffp-contract=off)
+add_executable(fish_s2_pro_server src/fish_s2_pro/fish_s2_pro_server.cpp)
+target_link_libraries(fish_s2_pro_server PRIVATE fish_s2_pro asr_service)
+target_compile_options(fish_s2_pro_server PRIVATE -Wall -Wextra)
+add_executable(fish_s2_pro_synthesize tools/fish_s2_pro_synthesize.cpp)
+target_link_libraries(fish_s2_pro_synthesize PRIVATE fish_s2_pro)
+set_target_properties(fish_s2_pro_server fish_s2_pro_synthesize PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS fish_s2_pro_server fish_s2_pro_synthesize RUNTIME DESTINATION bin)
