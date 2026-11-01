@@ -1114,7 +1114,7 @@ def make_thinker_stream_output_builder(
 
         token_id = int(req_output.data)
         # note (ratish): a cross-process stream chunk must be a tensor, and one
-        # this small is pickled inline with the control message
+        # this small rides packed in its target's batched control message
         token_tensor = torch.tensor([token_id], dtype=torch.long)
         messages = []
         for target in stream_targets:
