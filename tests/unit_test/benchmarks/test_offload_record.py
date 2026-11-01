@@ -16,6 +16,7 @@ from benchmarks.offload.offload_record import (
     Provenance,
     compare_runs,
     format_comparison,
+    format_value,
     load_run,
     write_run,
 )
@@ -120,3 +121,9 @@ def test_the_report_names_every_metric_it_compared() -> None:
     assert "candidate against baseline" in text
     assert "memory.peak_mib" in text
     assert "not compared" in text
+
+
+def test_byte_counters_print_whole_and_timings_print_decimals() -> None:
+    """A cache-miss count is a count: three decimals would read as a measurement it is not."""
+    assert format_value("moe_cache_miss_bytes", 123456789.0) == "123456789"
+    assert format_value("latency.ttfa_p95_s", 0.5) == "0.500"

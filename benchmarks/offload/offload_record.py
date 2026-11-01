@@ -216,13 +216,25 @@ def compare_runs(baseline: OffloadRun, candidate: OffloadRun) -> Comparison:
     )
 
 
+FORMATTED_WHOLE = frozenset({"moe_cache_miss_bytes"})
+
+
+def format_value(metric: str, value: float) -> str:
+    """One metric's value: byte counters are whole numbers, timings and ratios keep three decimals."""
+    if metric in FORMATTED_WHOLE:
+        return f"{value:.0f}"
+    else:
+        return f"{value:.3f}"
+
+
 def format_comparison(comparison: Comparison) -> str:
     """The comparison as the lines a maintainer reads in a PR."""
     lines = [f"{comparison.candidate} against {comparison.baseline}:"]
     for delta in comparison.deltas:
         verdict = "better" if delta.is_improvement else "worse"
         lines.append(
-            f"  {delta.metric}: {delta.baseline:.3f} -> {delta.candidate:.3f} "
+            f"  {delta.metric}: {format_value(delta.metric, delta.baseline)}"
+            f" -> {format_value(delta.metric, delta.candidate)} "
             f"({delta.ratio:.2f}x, {verdict})"
         )
     if comparison.skipped:
