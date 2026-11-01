@@ -72,6 +72,7 @@ class GpuEnvironmentInfo(NvmlSystemInfo):
     cuda_visible_devices: str | None
     cuda_runtime_version: str | None
     pytorch_version: str | None
+    pytorch_accelerator_build: str | None
     pytorch_cuda_build: str | None
     cuda_available: bool
     logical_device_count: int
@@ -86,6 +87,7 @@ class GpuDiagnosticsReport(TypedDict):
 
 
 VISIBLE_DEVICES_VARIABLES = {
+    "musa": "MUSA_VISIBLE_DEVICES",
     "xpu": "ZE_AFFINITY_MASK",
     "npu": "ASCEND_RT_VISIBLE_DEVICES",
 }
@@ -502,8 +504,13 @@ def collect_gpu_diagnostics(
     visible_value = source_env.get(visible_variable)
     visible_devices = parse_cuda_visible_devices(visible_value or "")
     torch = torch_module or importlib.import_module("torch")
+    uses_accelerator_device_module = (
+        current_platform.is_xpu()
+        or current_platform.is_npu()
+        or current_platform.is_musa()
+    )
 
-    if current_platform.is_xpu() or current_platform.is_npu():
+    if uses_accelerator_device_module:
         warnings: list[str] = []
         devices, driver_version = accelerator_logical_devices(
             torch, device_type, visible_devices, warnings
@@ -523,6 +530,8 @@ def collect_gpu_diagnostics(
             else:
                 pass
 
+    build_device_type = device_type if uses_accelerator_device_module else "cuda"
+    torch_version = getattr(torch, "version", None)
     backends = backend_inventory()
     warnings.extend(
         backend["reason"]
@@ -530,7 +539,7 @@ def collect_gpu_diagnostics(
         if backend["installed"] and not backend["importable"]
     )
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "environment": {
             "device_type": device_type,
             "visible_devices_variable": visible_variable,
@@ -539,9 +548,10 @@ def collect_gpu_diagnostics(
             **system,
             "cuda_runtime_version": cuda_runtime_version(),
             "pytorch_version": getattr(torch, "__version__", None),
-            "pytorch_cuda_build": getattr(
-                getattr(torch, "version", None), "cuda", None
+            "pytorch_accelerator_build": getattr(
+                torch_version, build_device_type, None
             ),
+            "pytorch_cuda_build": getattr(torch_version, "cuda", None),
             "cuda_available": bool(torch.cuda.is_available()),
             "logical_device_count": len(devices),
         },
@@ -556,6 +566,9 @@ def render_gpu_diagnostics(report: GpuDiagnosticsReport) -> str:
 
     environment = report["environment"]
     device_type = environment["device_type"]
+    build_device_type = (
+        device_type if device_type in VISIBLE_DEVICES_VARIABLES else "cuda"
+    )
     visible = environment["visible_devices"]
     lines = [
         "SGLang-Omni GPU diagnostics (no model loaded)",
@@ -571,9 +584,9 @@ def render_gpu_diagnostics(report: GpuDiagnosticsReport) -> str:
             f"{environment['cuda_runtime_version'] or 'unavailable'}"
         ),
         (
-            "PyTorch/CUDA build: "
+            f"PyTorch/{build_device_type.upper()} build: "
             f"{environment['pytorch_version'] or 'unavailable'} / "
-            f"{environment['pytorch_cuda_build'] or 'unavailable'}"
+            f"{environment['pytorch_accelerator_build'] or 'unavailable'}"
         ),
         "GPUs:",
     ]
