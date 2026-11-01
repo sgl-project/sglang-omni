@@ -25,6 +25,7 @@ TranscribeCorpus = Callable[[Path, Path, dict, dict[str, dict]], dict[str, dict]
 
 import fish_s2_pro_golden
 import music3_golden
+import qwen3_tts_golden
 import sortformer_golden
 import vad_golden
 import voxtral_golden
@@ -294,6 +295,13 @@ def run(transcribe_corpus: TranscribeCorpus) -> None:
             golden["cases"],
         )
         metrics = {}
+    elif golden.get("kind") == "qwen3_tts":
+        results = qwen3_tts_golden.synthesize_cases(
+            arguments.runtime_bin,
+            model_directory(arguments.data_root, golden["model"]),
+            golden["cases"],
+        )
+        metrics = {}
     elif golden.get("kind") == "fish_s2_pro":
         results = fish_s2_pro_golden.synthesize_cases(
             arguments.runtime_bin,
@@ -343,6 +351,8 @@ def run(transcribe_corpus: TranscribeCorpus) -> None:
         report(*fish_s2_pro_golden.check(golden, device, results))
     elif golden.get("kind") == "voxtral_tts":
         report(*voxtral_golden.check(golden, device, results))
+    elif golden.get("kind") == "qwen3_tts":
+        report(*qwen3_tts_golden.check(golden, device, results))
     else:
         report(*check(golden, device, results, metrics))
 

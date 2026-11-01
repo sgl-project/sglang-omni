@@ -137,9 +137,11 @@ that upstream no longer builds for its own models is a surface to re-check at
 every bump: its base-class contract moves with the one upstream does build.
 
 **The vendor layer.** `sglang_omni/vendor/sglang/layers.py` patches
-`RMSNorm.forward_cuda` and `models.py` patches `apply_qk_norm`; the module
-docstrings state what each patch does, and `models.py` the condition for
-removing it. Check that the wrapped upstream body still has the shape the
+`RMSNorm.forward_cuda`, `models.py` patches `apply_qk_norm`, and
+`flashattention_backend.py` patches `FlashAttentionBackend.__init__` for
+DSpark drafts, installed by the bootstrap only when a DSpark draft is set;
+the module docstrings state what each patch does, and `models.py` and
+`flashattention_backend.py` the condition for removing it. Check that the wrapped upstream body still has the shape the
 patch assumes (a dispatch rewrite upstream can route around a patched method
 without an error) and that `tests/unit_test/vendor/` still pins it.
 

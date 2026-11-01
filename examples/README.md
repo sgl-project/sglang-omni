@@ -6,7 +6,7 @@ Run these commands from the repository root after installing `sglang-omni`.
 
 MiniCPM-o and PersonaPlex launch commands, server settings, and the realtime
 protocol are in
-[Full Duplex Interactive Model](../docs/developer_reference/full_duplex_interactive_model.md).
+[Full Duplex Interactive Model](../docs/developer_reference/full_duplex_guide.md).
 
 ## Unified Launcher
 

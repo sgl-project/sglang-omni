@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING, Literal, TypedDict
 import torch
 import torch.nn.functional as F
 from sglang.srt.server_args import ServerArgs
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
+from transformers import AutoConfig
 
 from sglang_omni.models.qwen3_omni.bootstrap import create_thinker_scheduler
 from sglang_omni.models.qwen3_omni.components.audio_encoder import Qwen3OmniAudioEncoder
@@ -52,6 +54,7 @@ from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestDa
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
+from sglang_omni.utils.cpu import automatic_video_decode_threads
 from sglang_omni.utils.gpu_memory import format_bytes_gib, get_process_gpu_memory_bytes
 from sglang_omni.utils.misc import avail_gpu_mem
 
@@ -67,6 +70,35 @@ AUDIO_STAGE = "audio_encoder"
 THINKER_STAGE = "thinker"
 
 logger = logging.getLogger(__name__)
+
+
+def disable_torch_compile_on_npu(
+    server_args_overrides: Mapping[str, object] | None,
+) -> Mapping[str, object] | None:
+    """Keep Qwen3-Omni from enabling torch.compile on NPU.
+
+    NPU graph capture reaches several known dynamo/Triton/ATB incompatibilities,
+    so set the switch explicitly instead of relying on the builder default.
+    """
+    from sglang_omni.platforms import current_platform
+
+    if not current_platform.is_npu():
+        return server_args_overrides
+    else:
+        pass
+
+    if server_args_overrides and server_args_overrides.get("enable_torch_compile"):
+        logger.warning(
+            "Qwen3-Omni: torch.compile is disabled on NPU due to known "
+            "dynamo/Triton/ATB incompatibilities."
+        )
+    else:
+        pass
+
+    overrides = dict(server_args_overrides or {})
+    overrides["enable_torch_compile"] = False
+    return overrides
+
 
 # Image-encoder batching budget; the multiplier accounts for transient activations.
 QWEN3_IMAGE_ENCODER_BATCH_BUDGET_BYTES = 10 * 1024**3
@@ -978,10 +1010,15 @@ def create_preprocessing_executor(
     video_min_pixels: int | None = None,
     video_max_pixels: int | None = None,
     video_total_pixels: int | None = None,
+    video_decode_threads: int | None = None,
 ) -> (
     SimpleScheduler[StagePayload, StagePayload]
     | ThreadedSimpleScheduler[StagePayload, StagePayload]
 ):
+    if video_decode_threads is None:
+        video_decode_threads = automatic_video_decode_threads(max(max_concurrency, 1))
+    else:
+        pass
     preprocessor = Qwen3OmniPreprocessor(
         model_path=model_path,
         max_seq_len=max_seq_len,
@@ -990,6 +1027,7 @@ def create_preprocessing_executor(
         video_min_pixels=video_min_pixels,
         video_max_pixels=video_max_pixels,
         video_total_pixels=video_total_pixels,
+        video_decode_threads=video_decode_threads,
     )
 
     async def _preprocess(payload: StagePayload) -> StagePayload:
@@ -1234,6 +1272,7 @@ def create_sglang_thinker_executor_from_config(
         prefill_graph_backend = CudaGraphBackend.BREAKABLE
     else:
         prefill_graph_backend = CudaGraphBackend.DISABLED
+    server_args_overrides = disable_torch_compile_on_npu(server_args_overrides)
     overrides = build_generation_batch_overrides(
         max_running_requests=64,
         server_args_overrides=server_args_overrides,
@@ -1250,6 +1289,63 @@ def create_sglang_thinker_executor_from_config(
         overrides["enable_streaming_session"] = True
     else:
         pass
+    draft_model_path = overrides.get("speculative_draft_model_path")
+    speculative_algorithm = SpeculativeAlgorithm.from_string(
+        overrides.get("speculative_algorithm")
+    )
+    if speculative_algorithm.is_none():
+        if draft_model_path is not None:
+            raise ValueError(
+                "speculative_draft_model_path needs a speculative_algorithm"
+            )
+        else:
+            pass
+    else:
+        # note (wilsonzheng0327): the draft worker drives a synchronous loop that
+        # verifies whole blocks, so mixed prefill tails and the lookahead stay off.
+        if not (speculative_algorithm.is_dflash() or speculative_algorithm.is_eagle3()):
+            raise ValueError(
+                "Qwen3-Omni speculative thinker decoding supports DFLASH and EAGLE3, "
+                f"not {speculative_algorithm.name}"
+            )
+        elif draft_model_path is None:
+            raise ValueError(
+                f"speculative_algorithm={speculative_algorithm.name} needs "
+                "speculative_draft_model_path"
+            )
+        elif (server_args_overrides or {}).get("enable_mixed_chunk"):
+            raise ValueError(
+                "speculative thinker decoding needs enable_mixed_chunk off"
+            )
+        elif speech_enabled:
+            # note (wilsonzheng0327): with speech output the thinker captures the
+            # talker's accept layer through the same layers_to_capture a draft sets,
+            # and sets it after the draft is built, so the draft would read the wrong
+            # hidden states. The speculative prefill also skips post_prefill, which
+            # stores the talker's multimodal prompt rows. Lifting this needs both
+            # captures side by side and the rows stored on the speculative prefill.
+            raise ValueError(
+                "speculative thinker decoding does not support speech output yet; "
+                "serve the thinker with --text-only"
+            )
+        else:
+            pass
+        overrides["enable_mixed_chunk"] = False
+        enable_async_decode = False
+        # The draft has its own positional capacity; the target serves within it.
+        draft_context_length = int(
+            AutoConfig.from_pretrained(
+                draft_model_path,
+                revision=overrides.get("speculative_draft_model_revision"),
+            ).max_position_embeddings
+        )
+        if max_seq_len is not None and max_seq_len > draft_context_length:
+            raise ValueError(
+                f"max_seq_len={max_seq_len} exceeds the draft's "
+                f"{draft_context_length}-token context"
+            )
+        else:
+            max_seq_len = max_seq_len or draft_context_length
 
     if not current_platform.enable_thinker_decode_graph():
         overrides.setdefault("disable_decode_cuda_graph", True)
@@ -1413,6 +1509,7 @@ def create_talker_ar_executor_from_config(
         prefill_graph_backend = CudaGraphBackend.BREAKABLE
     else:
         prefill_graph_backend = CudaGraphBackend.DISABLED
+    server_args_overrides = disable_torch_compile_on_npu(server_args_overrides)
     overrides = build_generation_batch_overrides(
         max_running_requests=max_running_requests,
         server_args_overrides=server_args_overrides,

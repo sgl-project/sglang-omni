@@ -87,6 +87,9 @@ jobs:
         uses: ./.github/actions/omni-post-stage
         with:
           stage-label: TTS stage 1 (non-streaming)
+          artifact-upload-name: tts-generation-budget-nonstream-${{ github.run_attempt }}
+          artifact-upload-path: >-
+            ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}/generation_budget_*/**
           artifact-search-root: ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
           artifact-path-globs: |
             */speed_results.json
@@ -146,6 +149,9 @@ jobs:
         uses: ./.github/actions/omni-post-stage
         with:
           stage-label: TTS stage 2 (streaming)
+          artifact-upload-name: tts-generation-budget-stream-${{ github.run_attempt }}
+          artifact-upload-path: >-
+            ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}/generation_budget_*/**
           artifact-search-root: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
           artifact-path-globs: |
             */speed_results.json
