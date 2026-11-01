@@ -13,7 +13,7 @@ from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.scheduling.types import ARRequestData, SchedulerRequest
 
 if TYPE_CHECKING:
-    from sglang.srt.managers.schedule_batch import ScheduleBatch
+    from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
     from sglang.srt.managers.scheduler import GenerationBatchResult
     from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
@@ -56,6 +56,20 @@ class AudioTorchMpsModelRunner(ModelRunner):
             next_token_ids=next_token_ids,
             can_run_cuda_graph=False,
         )
+
+    def penalize_repeated_tokens(self, logits: torch.Tensor, req: Req) -> torch.Tensor:
+        """Applies SGLang's repetition penalty to tokens the request already emitted."""
+        penalty = req.sampling_params.repetition_penalty
+        if penalty == 1.0 or not req.output_ids:
+            return logits
+        else:
+            pass
+        token_ids = torch.tensor(
+            req.output_ids, dtype=torch.long, device=logits.device
+        ).expand(logits.shape[0], -1)
+        scores = logits.gather(1, token_ids)
+        scores = torch.where(scores < 0, scores * penalty, scores / penalty)
+        return logits.scatter(1, token_ids, scores)
 
     @torch.inference_mode()
     def custom_prefill_forward(
@@ -159,7 +173,8 @@ class AudioTorchMpsModelRunner(ModelRunner):
             logits_to_keep=1,
         )
         self.past_key_values[scheduler_request.request_id] = output.past_key_values
-        return self.next_token_result(output.logits[:, -1, :].argmax(dim=-1))
+        logits = self.penalize_repeated_tokens(output.logits[:, -1, :], req)
+        return self.next_token_result(logits.argmax(dim=-1))
 
     @torch.inference_mode()
     def custom_decode_forward(
@@ -189,7 +204,10 @@ class AudioTorchMpsModelRunner(ModelRunner):
             logits_to_keep=1,
         )
         self.past_key_values[request_id] = output.past_key_values
-        return self.next_token_result(output.logits[:, -1, :].argmax(dim=-1))
+        logits = self.penalize_repeated_tokens(
+            output.logits[:, -1, :], scheduler_request.data.req
+        )
+        return self.next_token_result(logits.argmax(dim=-1))
 
     def on_request_finished(self, request_id: str, req_data: ARRequestData) -> None:
         del req_data

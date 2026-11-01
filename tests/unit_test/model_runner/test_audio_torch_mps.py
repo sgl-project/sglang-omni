@@ -48,7 +48,9 @@ def test_torch_runner_cache_lifecycle_and_audio_features(device, batched_audio):
     runner.next_token_result = lambda tokens: tokens
     item = SimpleNamespace(feature=torch.zeros(1), pad_value=999)
     req = SimpleNamespace(
-        multimodal_inputs=SimpleNamespace(mm_items=[item], audio_token_id=10)
+        multimodal_inputs=SimpleNamespace(mm_items=[item], audio_token_id=10),
+        sampling_params=SimpleNamespace(repetition_penalty=1.0),
+        output_ids=[],
     )
     requests = [SimpleNamespace(request_id="one", data=SimpleNamespace(req=req))]
     first = runner.custom_prefill_forward(
@@ -93,6 +95,44 @@ def test_shared_runner_retains_model_specific_errors():
         ValueError, match="Other ASR Torch MPS requires exactly one audio item"
     ):
         runner.custom_prefill_forward(None, None, [request])
+
+
+@pytest.mark.parametrize(
+    ("repeated_logit", "runner_up_logit"),
+    [(2.0, 1.9), (-0.10, -0.12)],
+)
+def test_torch_runner_applies_repetition_penalty_to_emitted_tokens(
+    repeated_logit: float, runner_up_logit: float
+) -> None:
+    """Torch MPS decoding must honor repetition_penalty instead of re-emitting a token it already emitted."""
+    from sglang_omni.models.qwen3_asr.torch_mps_runner import (
+        Qwen3ASRTorchMpsModelRunner,
+    )
+
+    repeated_token_id, runner_up_token_id = 5, 6
+    logits = torch.full((1, 1, 8), -10.0)
+    logits[0, 0, repeated_token_id] = repeated_logit
+    logits[0, 0, runner_up_token_id] = runner_up_logit
+    runner = object.__new__(Qwen3ASRTorchMpsModelRunner)
+    runner.device = torch.device("cpu")
+    runner.past_key_values = {"one": None}
+    runner.model = SimpleNamespace(
+        language_model=lambda **kwargs: SimpleNamespace(
+            logits=logits, past_key_values=None
+        )
+    )
+    runner.next_token_result = lambda tokens: tokens
+    req = SimpleNamespace(
+        sampling_params=SimpleNamespace(repetition_penalty=1.3),
+        output_ids=[repeated_token_id],
+    )
+    requests = [SimpleNamespace(request_id="one", data=SimpleNamespace(req=req))]
+
+    next_token = runner.custom_decode_forward(
+        None, SimpleNamespace(input_ids=torch.tensor([repeated_token_id])), requests
+    )
+
+    assert next_token.tolist() == [runner_up_token_id]
 
 
 @pytest.mark.parametrize("token_ids", [[1, 2], [1, 999, 2, 999]])
@@ -159,7 +199,9 @@ def test_audio_tower_runs_before_token_embedding():
     runner.next_token_result = lambda tokens: tokens
     item = SimpleNamespace(feature=torch.zeros(1), pad_value=999)
     req = SimpleNamespace(
-        multimodal_inputs=SimpleNamespace(mm_items=[item], audio_token_id=10)
+        multimodal_inputs=SimpleNamespace(mm_items=[item], audio_token_id=10),
+        sampling_params=SimpleNamespace(repetition_penalty=1.0),
+        output_ids=[],
     )
     requests = [SimpleNamespace(request_id="one", data=SimpleNamespace(req=req))]
     runner.custom_prefill_forward(
