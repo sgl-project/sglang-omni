@@ -1213,6 +1213,7 @@ def test_moss_prompt_key_and_tail_guard_order(
         process_result,  # noqa: leading-underscore  # production name
     )
     scheduler = object.__new__(OmniScheduler)
+    scheduler.enable_overlap = False
     plain = SimpleNamespace(output_ids=[])
     batch = SimpleNamespace(reqs=[first.req, second.req, plain])
     scheduler.process_batch_result(batch, None)
