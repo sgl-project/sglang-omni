@@ -11,6 +11,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from sglang_omni.models.qwen3_tts import incremental_codec
 from sglang_omni.models.qwen3_tts.codec_state_arena import Qwen3TTSCodecStateArena
 from sglang_omni.models.qwen3_tts.compat import (
     apply_qwen_tts_transformers_compatibility_patches,
@@ -447,6 +448,165 @@ def test_slot_causal_transconv_matches_whole(
 
     torch.testing.assert_close(torch.cat(actual, dim=1), expected)
     assert torch.count_nonzero(overlap_pool[:2]).item() == 0
+
+
+def slot_ops_step(
+    padded: torch.Tensor,
+    history_pool: torch.Tensor,
+    slot_index: torch.Tensor,
+    bias: torch.Tensor,
+    alpha_scale: torch.Tensor,
+    inverse_beta: torch.Tensor,
+    residual: torch.Tensor,
+    sum_out: torch.Tensor,
+    outputs: list[torch.Tensor],
+    overlap: torch.Tensor,
+    overlap_pool: torch.Tensor,
+    fresh_frames: int,
+) -> tuple[torch.Tensor, ...]:
+    incremental_codec.slot_history_exchange(
+        padded, history_pool, slot_index, fresh_frames, 4
+    )
+    frames = padded[:, 6 : 6 + fresh_frames].contiguous()
+    coefficients = incremental_codec.SnakeBetaCoefficients(
+        alpha_scale=alpha_scale, inverse_beta=inverse_beta
+    )
+    views = [output[:, 2 : 2 + fresh_frames] for output in outputs]
+    incremental_codec.slot_bias_snake_beta(frames, bias, coefficients, views[0])
+    incremental_codec.slot_bias_snake_beta(
+        frames, bias, coefficients, views[1], residual=residual
+    )
+    incremental_codec.slot_bias_snake_beta(
+        frames, bias, coefficients, views[2], sum_out=sum_out
+    )
+    incremental_codec.slot_bias_snake_beta(
+        frames, bias, coefficients, views[3], residual=sum_out, sum_out=sum_out
+    )
+    exchange = (
+        incremental_codec.compiled_overlap_exchange
+        if torch.compiler.is_dynamo_compiling()
+        else incremental_codec.overlap_exchange
+    )
+    exchange(overlap, overlap_pool, slot_index, 8, False, 4)
+    return (
+        padded.clone(),
+        history_pool.clone(),
+        sum_out.clone(),
+        *(output.clone() for output in outputs),
+        overlap.clone(),
+        overlap_pool.clone(),
+        views[3].clone(),
+    )
+
+
+def slot_ops_inputs(fresh_frames: int) -> list:
+    torch.manual_seed(3403)
+    device = torch.device("cuda", torch.cuda.current_device())
+    rows, channels = 4, 16
+    values = {
+        "padded": torch.randn(
+            rows, channels, 6 + fresh_frames + 2, device=device, dtype=torch.bfloat16
+        ).transpose(1, 2),
+        "history_pool": torch.randn(
+            5, 6, channels, device=device, dtype=torch.bfloat16
+        ),
+        "slot_index": torch.tensor([3, 1, 4, 4], device=device),
+        "bias": torch.randn(channels, device=device, dtype=torch.bfloat16),
+        "alpha_scale": torch.randn(channels, device=device, dtype=torch.bfloat16).exp(),
+        "inverse_beta": torch.rand(channels, device=device, dtype=torch.bfloat16),
+        "residual": torch.randn(
+            rows, fresh_frames, channels, device=device, dtype=torch.bfloat16
+        ),
+        "sum_out": torch.randn(
+            rows, fresh_frames, channels, device=device, dtype=torch.bfloat16
+        ),
+        "outputs": [
+            torch.full(
+                (rows, fresh_frames + 5, channels),
+                7,
+                device=device,
+                dtype=torch.bfloat16,
+            )
+            for _ in range(4)
+        ],
+        "overlap": torch.randn(rows, 11, channels, device=device, dtype=torch.bfloat16),
+        "overlap_pool": torch.randn(
+            5, 3, channels, device=device, dtype=torch.bfloat16
+        ),
+    }
+    return [*values.values(), fresh_frames]
+
+
+def clone_slot_ops_inputs(values: list) -> list:
+    return [
+        (
+            [item.clone() for item in value]
+            if isinstance(value, list)
+            else (
+                value.clone(memory_format=torch.preserve_format)
+                if isinstance(value, torch.Tensor)
+                else value
+            )
+        )
+        for value in values
+    ]
+
+
+def copy_slot_ops_inputs(targets: list, sources: list) -> None:
+    for target, source in zip(targets, sources):
+        if isinstance(target, list):
+            for item, item_source in zip(target, source):
+                item.copy_(item_source)
+        elif isinstance(target, torch.Tensor):
+            target.copy_(source)
+        else:
+            pass
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(
+    not current_platform.is_cuda(), reason="the slot convs run on NVIDIA CUDA only"
+)
+@pytest.mark.parametrize("fresh_frames", [1, 8])
+def test_compiled_slot_ops_keep_their_view_writes_and_slot_state(
+    fresh_frames: int,
+) -> None:
+    initial = slot_ops_inputs(fresh_frames)
+    eager_inputs = clone_slot_ops_inputs(initial)
+    compiled_inputs = clone_slot_ops_inputs(initial)
+    compiled = torch.compile(slot_ops_step, fullgraph=True, dynamic=False)
+
+    with torch.inference_mode():
+        for _ in range(2):
+            expected = slot_ops_step(*eager_inputs)
+            actual = compiled(*compiled_inputs)
+            assert all(
+                torch.equal(first, second) for first, second in zip(actual, expected)
+            )
+
+        stream = torch.cuda.Stream()
+        captured_inputs = clone_slot_ops_inputs(initial)
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            compiled(*captured_inputs)
+        stream.synchronize()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, stream=stream):
+            captured = compiled(*captured_inputs)
+        copy_slot_ops_inputs(captured_inputs, initial)
+        graph.replay()
+        torch.cuda.synchronize()
+        expected = slot_ops_step(*clone_slot_ops_inputs(initial))
+
+    assert all(torch.equal(first, second) for first, second in zip(captured, expected))
+    untouched_slots = [0, 2, 4]
+    assert torch.equal(compiled_inputs[1][untouched_slots], initial[1][untouched_slots])
+    assert torch.equal(
+        compiled_inputs[10][untouched_slots], initial[10][untouched_slots]
+    )
+    for output in compiled_inputs[8]:
+        assert bool((output[:, :2] == 7).all())
+        assert bool((output[:, 2 + fresh_frames :] == 7).all())
 
 
 @pytest.mark.accelerator
