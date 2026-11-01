@@ -17,6 +17,7 @@ from sglang_omni.models.ming_omni.io import (
 from sglang_omni.models.ming_omni.pipeline.next_stage import AUDIO_STAGE, IMAGE_STAGE
 from sglang_omni.models.ming_omni.tp_utils import validate_stage_tp_support
 from sglang_omni.proto import StagePayload
+from sglang_omni.utils.cpu import automatic_video_decode_threads
 
 
 def project_preprocessing_to_audio_encoder(payload: StagePayload) -> StagePayload:
@@ -242,11 +243,19 @@ def single_encoder_stage_name(state: MingOmniPipelineState) -> str:
     return next(iter(state.encoder_outs))
 
 
-def create_preprocessing_executor(model_path: str):
+def create_preprocessing_executor(
+    model_path: str, video_decode_threads: int | None = None
+):
     from sglang_omni.models.ming_omni.components.preprocessor import MingPreprocessor
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 
-    preprocessor = MingPreprocessor(model_path=model_path)
+    if video_decode_threads is None:
+        video_decode_threads = automatic_video_decode_threads(1)
+    else:
+        pass
+    preprocessor = MingPreprocessor(
+        model_path=model_path, video_decode_threads=video_decode_threads
+    )
 
     async def _preprocess(payload: StagePayload) -> StagePayload:
         return await preprocessor(payload)

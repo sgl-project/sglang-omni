@@ -8,16 +8,8 @@ SGLang's scheduler/worker boundary is an explicit protocol:
   ForwardBatch.init_new applies per-forward overrides passed as explicit
   keyword arguments, never by mutating the batch.
 
-Omni owns its scheduler loop and model-runner wrapper, so it cannot rely on
-sglang.srt.managers.scheduler.Scheduler.run_batch to provide that protocol.
-This adapter is the single compatibility boundary used by both synchronous and
-lookahead execution.
-
-Upstream's protocol also splits scheduler writes and model forwards onto
-separate CUDA streams, fenced by the decode CUDA-graph read-done event. That
-two-stream contract belongs to the upstream-style overlap loop, which Omni
-refuses to run (OmniScheduler._event_loop_overlap raises), so this bridge
-is deliberately single-stream: launch-current/resolve-previous on one stream.
+This adapter handles ordinary synchronous and single-stream lookahead execution.
+Native speculative workers use OmniScheduler.run_speculative_batch for their cross-stream handoff and result completion.
 """
 
 from __future__ import annotations

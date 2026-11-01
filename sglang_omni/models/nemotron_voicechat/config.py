@@ -104,6 +104,6 @@ class NemotronVoiceChatPipelineConfig(PipelineConfig):
 
 EntryClass = NemotronVoiceChatPipelineConfig
 Variants = {
-    "duplex": NemotronVoiceChatDuplexPipelineConfig,
+    "session": NemotronVoiceChatDuplexPipelineConfig,
     "tool": NemotronVoiceChatToolPipelineConfig,
 }
