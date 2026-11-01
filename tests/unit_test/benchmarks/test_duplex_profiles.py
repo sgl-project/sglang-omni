@@ -540,3 +540,23 @@ def test_personaplex_rejects_invalid_contract(invalid_contract: str) -> None:
         terminal["time_s"] = 100.275
         records.sort(key=lambda record: record["time_s"])
     assert evaluate_trace(records, profile="personaplex")["status"] == "fail"
+
+
+@pytest.mark.parametrize(
+    ("profile", "reason"),
+    [("personaplex", "stop"), ("nemotron-voicechat-pr2188", "input_audio_ended")],
+)
+def test_input_end_terminal_reason_is_profile_specific(
+    profile: str, reason: str
+) -> None:
+    """A native profile must reject the input-end terminal reason of another server."""
+    records = personaplex_trace() if profile == "personaplex" else trace_fixture()
+    terminal = next(
+        record["event"]
+        for record in records
+        if record["event"]["type"] == "response.done"
+    )
+    terminal["response"]["status_details"]["reason"] = reason
+    result = evaluate_trace(records, profile=profile)
+    assert result["status"] == "fail", result
+    assert any(reason in violation for violation in result["violations"])

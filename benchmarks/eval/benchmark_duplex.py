@@ -10,6 +10,7 @@ import json
 import wave
 from pathlib import Path
 
+import soundfile
 from pydantic import JsonValue
 
 from benchmarks.duplex.artifacts import (
@@ -135,7 +136,7 @@ def main() -> None:
         pcm, _ = normalize_audio(
             args.audio, sample_rate=PROFILES[args.profile].input_sample_rate
         )
-    except (OSError, wave.Error) as exc:
+    except (OSError, wave.Error, soundfile.LibsndfileError) as exc:
         parser.error(f"--audio is unreadable: {exc}")
     duration_s = len(pcm) / (PROFILES[args.profile].input_sample_rate * 2)
     if not 0 < duration_s < MAX_TIMEOUT_S:

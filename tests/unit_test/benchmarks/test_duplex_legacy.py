@@ -13,6 +13,7 @@ import json
 import threading
 import time
 from collections.abc import Callable, Iterator
+from dataclasses import asdict
 from pathlib import Path
 from typing import Literal
 
@@ -25,6 +26,7 @@ from websockets.asyncio.server import ServerConnection
 
 from benchmarks.duplex.client import TurnDetection, run_session
 from benchmarks.duplex.oracle import evaluate_trace
+from benchmarks.duplex.profiles import PROFILES, DuplexProfile
 from benchmarks.duplex.reference_capture import TraceFormat
 from benchmarks.duplex.reference_export import export_runs
 from benchmarks.duplex.v15_audio import LEGACY_BARGE_IN_CUT, reconstruct_output
@@ -299,6 +301,36 @@ async def capture(
 
 def sent_types(records: list[dict[str, JsonValue]]) -> list[str]:
     return [r["event"]["type"] for r in records if r["direction"] == "send"]
+
+
+def test_profiles_declare_their_protocol() -> None:
+    assert PROFILES[LEGACY] == DuplexProfile(
+        native_unit_ms=20,
+        output_sample_rate=24000,
+        stop_requires_eos=False,
+        continuous_output=False,
+        protocol="legacy",
+    )
+    assert asdict(PROFILES["nemotron-voicechat-pr2188"]) == {
+        "native_unit_ms": 80,
+        "output_sample_rate": 22050,
+        "stop_requires_eos": True,
+        "continuous_output": True,
+        "protocol": "native",
+        "input_sample_rate": 16000,
+        "initial_extra_output_frames": 0,
+        "input_end_terminal_reason": "stop",
+    }
+    assert asdict(PROFILES[NATIVE]) == {
+        "native_unit_ms": 1000,
+        "output_sample_rate": 24000,
+        "stop_requires_eos": False,
+        "continuous_output": False,
+        "protocol": "native",
+        "input_sample_rate": 16000,
+        "initial_extra_output_frames": 0,
+        "input_end_terminal_reason": "stop",
+    }
 
 
 def test_client_records_a_passing_legacy_session(tmp_path: Path) -> None:

@@ -28,6 +28,7 @@ class DuplexProfile:
     protocol: Protocol
     input_sample_rate: int = 16000
     initial_extra_output_frames: int = 0
+    input_end_terminal_reason: Literal["stop", "input_audio_ended"] = "stop"
 
 
 PROFILES: dict[ProfileName, DuplexProfile] = {
@@ -39,6 +40,7 @@ PROFILES: dict[ProfileName, DuplexProfile] = {
         continuous_output=True,
         protocol="native",
         initial_extra_output_frames=1,
+        input_end_terminal_reason="input_audio_ended",
     ),
     "nemotron-voicechat-pr2188": DuplexProfile(
         native_unit_ms=80,
