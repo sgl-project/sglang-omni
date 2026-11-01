@@ -8,6 +8,7 @@ from typing import ClassVar
 from pydantic import Field
 
 from sglang_omni.config.schema import (
+    EngineArgs,
     EngineStageConfig,
     FactoryArgs,
     PipelineConfig,
@@ -386,9 +387,70 @@ class MingOmniStreamingSpeechPipelineConfig(MingOmniBasePipelineConfig):
         )
 
 
+def pd_text_stages() -> list[StageConfig]:
+    return [
+        preprocessing_stage(process="preprocessing"),
+        image_encoder_stage(gpu=0, process="image_encoder"),
+        audio_encoder_stage(gpu=0, process="audio_encoder"),
+        aggregate_stage(process="mm_aggregate"),
+        EngineStageConfig(
+            name="thinker",
+            process="thinker",
+            gpu=0,
+            factory_path=f"{_PKG}.stages.create_sglang_thinker_executor_from_config",
+            factory=FactoryArgs(
+                thinker_max_seq_len=8192,
+                pd_role="prefill",
+                pd_stage_name="thinker",
+                pd_partner_stage="thinker_decode",
+            ),
+            engine=EngineArgs(disable_radix_cache=True, page_size=1),
+            next="thinker_decode",
+        ),
+        EngineStageConfig(
+            name="thinker_decode",
+            process="thinker_decode",
+            gpu=1,
+            factory_path=f"{_PKG}.stages.create_sglang_thinker_executor_from_config",
+            factory=FactoryArgs(
+                thinker_max_seq_len=8192,
+                pd_role="decode",
+                pd_stage_name="thinker_decode",
+            ),
+            engine=EngineArgs(disable_radix_cache=True, page_size=1),
+            next="decode",
+            stream_to=["decode"],
+            project_payload={"decode": f"{_PKG}.stages.project_thinker_to_decode"},
+        ),
+        decode_stage(process="decode"),
+    ]
+
+
+class MingOmniPDPipelineConfig(MingOmniBasePipelineConfig):
+    """Explicit single-node PD stages for thinker text output."""
+
+    model_path: str
+    entry_stage: str = "preprocessing"
+    stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
+        "thinker": EngineStageConfig,
+        "thinker_decode": EngineStageConfig,
+    }
+    stages: list[StageConfig] = Field(default_factory=pd_text_stages)
+
+    def model_post_init(self, __context: object = None) -> None:
+        super().model_post_init(__context)
+        validate_ming_stage_tp_support(self.stages)
+        for stage in self.stages:
+            if stage.name in ("thinker", "thinker_decode") and stage.tp_size != 1:
+                raise ValueError("Ming PD thinker stages currently require TP=1")
+            else:
+                pass
+
+
 EntryClass = MingOmniSpeechPipelineConfig
 
 Variants = {
+    "pd": MingOmniPDPipelineConfig,
     "text": MingOmniPipelineConfig,
     "speech": MingOmniSpeechPipelineConfig,
     "streaming_speech": MingOmniStreamingSpeechPipelineConfig,
