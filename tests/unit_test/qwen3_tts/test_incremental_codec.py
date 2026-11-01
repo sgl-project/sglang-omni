@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import os
 import random
+from pathlib import Path
 
 import pytest
 import torch
@@ -569,8 +570,9 @@ def copy_slot_ops_inputs(targets: list, sources: list) -> None:
 )
 @pytest.mark.parametrize("fresh_frames", [1, 8])
 def test_compiled_slot_ops_keep_their_view_writes_and_slot_state(
-    fresh_frames: int,
+    fresh_frames: int, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(tmp_path))
     initial = slot_ops_inputs(fresh_frames)
     eager_inputs = clone_slot_ops_inputs(initial)
     compiled_inputs = clone_slot_ops_inputs(initial)
