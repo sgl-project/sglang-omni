@@ -34,6 +34,7 @@ public:
 
   const mlx::core::array &Weight(const std::string &name) const;
   bool Has(const std::string &name) const;
+  const QuantizationConfig &quantization() const { return quantization_; }
   mlx::core::array Linear(const mlx::core::array &x,
                           const std::string &prefix) const;
   mlx::core::array LayerNorm(const mlx::core::array &x,
