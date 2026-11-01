@@ -138,6 +138,21 @@
       ]
     },
     {
+      "name": "qwen3-tts",
+      "paths": [
+        "^sglang_omni_mlx/native/(src/qwen3_tts/|tools/qwen3_tts_|ci/(qwen3_tts_golden\\.py|test_qwen3_tts_api\\.py|model_golden/qwen3-tts-))"
+      ],
+      "pins": [
+        "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16"
+      ],
+      "goldens": [
+        "qwen3-tts-12hz-0.6b-customvoice.json"
+      ],
+      "pytest": [
+        "sglang_omni_mlx/native/ci/test_qwen3_tts_api.py"
+      ]
+    },
+    {
       "name": "music3",
       "paths": [
         "^sglang_omni_mlx/native/(src/music3/|tools/music3_|ci/(music3_|generate_music3_reference\\.py|model_golden/minimax-music3))"

@@ -75,7 +75,8 @@ agree on it with a maintainer first.
 - Register the model in `ci/model_jobs.json` (its paths, pins, goldens and
   pytest selection). Mac CI runs one job per model a PR touches, and every
   model when shared code changes; `workflow_dispatch` takes a `models` list. A
-  speech model's golden holds seeded requests' codes (`ci/voxtral_golden.py`).
+  speech model's golden holds seeded requests' codes (`ci/voxtral_golden.py`,
+  `ci/qwen3_tts_golden.py`).
 - Add a second golden for paths the corpus misses (long-audio chunking, VAD).
 
 **Tests**
