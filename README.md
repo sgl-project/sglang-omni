@@ -10,6 +10,10 @@
 <a href="https://deepwiki.com/sgl-project/sglang-omni"><img src="https://img.shields.io/badge/Ask-DeepWiki-087fca?style=for-the-badge" alt="Ask DeepWiki"></a>
 </p>
 
+<p align="center">
+  <b>English</b> | <a href="https://github.com/sgl-project/sglang-omni/blob/main/README.zh.md">简体中文</a>
+</p>
+
 </div>
 
 --------------------------------------------------------------------------------
