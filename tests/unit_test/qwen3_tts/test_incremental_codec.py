@@ -10,7 +10,6 @@ import pytest
 import torch
 import torch.nn.functional as F
 from torch import nn
-from torch._dynamo.utils import counters
 
 from sglang_omni.models.qwen3_tts.codec_state_arena import Qwen3TTSCodecStateArena
 from sglang_omni.models.qwen3_tts.compat import (
@@ -1678,65 +1677,6 @@ def test_arena_rings_keep_each_slot_apart_across_cohorts_and_graph_replays() -> 
         for ring in (*shared_arena.key_rings, *shared_arena.value_rings)
     ]
     assert not any(rows.any() for rows in untouched_ring_rows)
-
-
-@pytest.mark.accelerator
-@pytest.mark.skipif(
-    not current_platform.is_cuda(), reason="channels-last convs run on NVIDIA CUDA only"
-)
-def test_compiled_decode_serves_every_batch_and_width_above_one_with_one_program() -> (
-    None
-):
-    apply_qwen_tts_transformers_compatibility_patches()
-    from qwen_tts.core.tokenizer_12hz.configuration_qwen3_tts_tokenizer_v2 import (
-        Qwen3TTSTokenizerV2DecoderConfig,
-    )
-    from qwen_tts.core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2 import (
-        Qwen3TTSTokenizerV2DecoderTransformerModel,
-    )
-
-    torch.manual_seed(33)
-    device = torch.device("cuda", torch.cuda.current_device())
-    decoder = Decoder(block_channels=(16, 8))
-    decoder.pre_transformer = Qwen3TTSTokenizerV2DecoderTransformerModel(
-        Qwen3TTSTokenizerV2DecoderConfig(
-            hidden_size=512,
-            latent_dim=2,
-            num_attention_heads=16,
-            num_key_value_heads=16,
-            head_dim=64,
-            intermediate_size=1024,
-            num_hidden_layers=2,
-        )
-    )
-    incremental = Qwen3TTSIncrementalDecoder(decoder.to(device).bfloat16().eval())
-    arena = Qwen3TTSCodecStateArena(
-        incremental,
-        num_slots=4,
-        device=device,
-        dtype=torch.bfloat16,
-        in_place_frames=8,
-    )
-    runner = Qwen3TTSIncrementalCodecCudaGraphRunner(
-        incremental,
-        device=device,
-        dtype=torch.bfloat16,
-        num_quantizers=2,
-        mode="warm",
-        fresh_frames=(4, 8),
-        batch_sizes=(2, 4),
-        min_free_gb=0.0,
-        compile_fresh_frames=(4, 8),
-        arena=arena,
-        graph_pool=IncrementalCodecGraphPool(stream_priority=0),
-    )
-    torch.compiler.reset()
-    programs = counters["stats"]["unique_graphs"]
-    runner.capture()
-
-    assert sorted(incremental.compiled_shapes) == [(2, 4), (2, 8), (4, 4), (4, 8)]
-    assert len(runner.graphs) == 4
-    assert counters["stats"]["unique_graphs"] == programs + 1
 
 
 @pytest.mark.accelerator
