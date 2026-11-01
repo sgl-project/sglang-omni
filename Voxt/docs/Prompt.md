@@ -774,6 +774,7 @@ The speaker's primary language is {{USER_MAIN_LANGUAGE}}. Prioritize accurate re
 - Keep ASR hint prompts short; they are recognition bias, not generation prompts
 - `Doubao ASR` uses language hints and automatically follows the selected simplified or traditional Chinese main language variant
 - `Aliyun Bailian ASR` derives language hints from the user's selected main languages
+- Local `Qwen3-ASR` receives the main language as a forced language only when it is the only selected language; with more than one selected language it detects the language itself, because a forced language can make it translate speech in another language
 
 ## Prompt Writing Guidelines
 

@@ -415,10 +415,11 @@ jobs:
             -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO > "$RUNNER_TEMP/voxt-build.log" 2>&1 \
             || { tail -100 "$RUNNER_TEMP/voxt-build.log"; exit 1; }
 
-      - name: Omni, API, and hotkey unit tests
+      - name: Omni, ASR hint, API, and hotkey unit tests
         run: |
           xctestrun="$(find "$RUNNER_TEMP/voxt-derived/Build/Products" -maxdepth 1 -name 'Voxt_*.xctestrun' -print -quit)"
           xcodebuild test-without-building -xctestrun "$xctestrun" -destination platform=macOS \
+            -only-testing:VoxtTests/ASRHintSettingsTests \
             -only-testing:VoxtTests/OmniTranscriptionRequestTests \
             -only-testing:VoxtTests/OmniRealtimeSessionUpdateTests \
             -only-testing:VoxtTests/OmniASRRuntimeLaunchTests \
