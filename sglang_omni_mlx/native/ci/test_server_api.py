@@ -203,15 +203,15 @@ def test_invalid_requests_are_rejected(server: Server, fields: dict, wav) -> Non
 
 
 def long_wav(seconds: int) -> bytes:
-    """A clip repeated to about seconds long, so a full decode takes several seconds."""
-    pcm = pcm16("0344_en_long")
-    repeated = pcm * (seconds * 32000 // len(pcm) + 1)
+    """Distinct long clips joined to seconds, so a full decode takes several seconds."""
+    pcm = b"".join(pcm16(f"{index:04d}_en_long") for index in range(344, 360))
+    assert len(pcm) >= seconds * 32000
     out = io.BytesIO()
     with wave.open(out, "wb") as writer:
         writer.setnchannels(1)
         writer.setsampwidth(2)
         writer.setframerate(16000)
-        writer.writeframes(repeated[: seconds * 32000])
+        writer.writeframes(pcm[: seconds * 32000])
     return out.getvalue()
 
 
@@ -235,8 +235,10 @@ def test_a_disconnected_stream_stops_its_decode(server: Server) -> None:
     )
     response = connection.getresponse()
     assert response.status == 200
-    # Note (Jiaxin Deng): cancellation is checked between generated tokens, so
-    # give the request time to get past encoding and prefill.
+    # Note (evanderfan): disconnect at the first heartbeat. Cancellation is
+    # checked between generated tokens, so the deadline below also covers the
+    # rest of encoding and prefill.
+    assert response.readline() == b":\n"
     time.sleep(4.0)
     assert json.loads(server.request("GET", "/health")[1])["request_states"] == {
         "running": 1
