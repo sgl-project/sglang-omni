@@ -398,7 +398,25 @@ class S2ProSGLangTextModel(nn.Module):
             pass
 
         # Logits
-        if self.tie_word_embeddings:
+        if self.vq_ready and self.tie_word_embeddings:
+            output_weight = self.embed_tokens.weight
+            semantic_logits = torch.nn.functional.linear(
+                hidden_states,
+                output_weight[self.semantic_begin_id : self.semantic_end_id + 1],
+            )
+            eos_logits = torch.nn.functional.linear(
+                hidden_states,
+                output_weight[self.im_end_token_id : self.im_end_token_id + 1],
+            )
+            # Note (EddieTzy): keep vocabulary-shaped logits for scheduler consumers.
+            logits = hidden_states.new_full(
+                (hidden_states.shape[0], output_weight.shape[0]), -float("inf")
+            )
+            logits[:, self.semantic_begin_id : self.semantic_end_id + 1] = (
+                semantic_logits
+            )
+            logits[:, self.im_end_token_id : self.im_end_token_id + 1] = eos_logits
+        elif self.tie_word_embeddings:
             logits = torch.nn.functional.linear(hidden_states, self.embed_tokens.weight)
         else:
             logits = self.lm_head(hidden_states)
