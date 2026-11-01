@@ -15,6 +15,7 @@ from huggingface_hub import hf_hub_download
 
 from sglang_omni.client.types import DiarizationResult, DiarizationSegment
 from sglang_omni.models.nemotron_diarization.model import NemotronDiarizationModel
+from sglang_omni.utils.device import supports_device_streams
 
 CHECKPOINT_FILENAME = "Nemotron-3-Diarization.nemo"
 SAMPLE_RATE = 16000
@@ -189,8 +190,11 @@ def load_diarization_model(
         raise ValueError(
             f"Unknown diarization profile {profile!r}, use one of {list(PROFILES)}"
         )
-    elif device.type != "cuda":
-        raise ValueError("Nemotron 3 diarization requires an NVIDIA CUDA device")
+    elif not supports_device_streams(device):
+        raise ValueError(
+            "Nemotron 3 diarization requires a CUDA device, or another"
+            " accelerator that provides device streams"
+        )
     else:
         pass
     checkpoint = resolve_nemo_checkpoint(model_path)
