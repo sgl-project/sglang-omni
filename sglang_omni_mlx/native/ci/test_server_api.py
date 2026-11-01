@@ -236,6 +236,7 @@ def test_repetition_penalty_ends_a_token_loop(server: Server) -> None:
                 "stream": "true",
                 "language": "zh",
                 "include_generation_metadata": "true",
+                "stop_on_token_loop": "false",
                 "repetition_penalty": repetition_penalty,
             },
             looping_wav,
