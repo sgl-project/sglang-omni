@@ -21,8 +21,13 @@ def test_rollout_logprobs_align_per_request_at_batch_2(
     sampler_logprobs: torch.Tensor,
 ) -> None:
     runner = object.__new__(ModelRunner)
-    data0 = SimpleNamespace(return_logprob=True, output_token_logprobs=[])
-    data1 = SimpleNamespace(return_logprob=True, output_token_logprobs=[])
+    final_chunk = SimpleNamespace(inflight_middle_chunks=0)
+    data0 = SimpleNamespace(
+        return_logprob=True, output_token_logprobs=[], req=final_chunk
+    )
+    data1 = SimpleNamespace(
+        return_logprob=True, output_token_logprobs=[], req=final_chunk
+    )
     requests = [SimpleNamespace(data=data0), SimpleNamespace(data=data1)]
 
     runner.record_rollout_logprobs(sampler_logprobs, torch.tensor([11, 22]), requests)
@@ -32,6 +37,22 @@ def test_rollout_logprobs_align_per_request_at_batch_2(
     assert data1.output_token_logprobs[0][1] == 22
     assert math.isclose(data0.output_token_logprobs[0][0], -0.5, abs_tol=1e-4)
     assert math.isclose(data1.output_token_logprobs[0][0], -1.5, abs_tol=1e-4)
+
+
+def test_rollout_logprobs_skip_a_middle_prefill_chunk() -> None:
+    """A prompt prefilled in two chunks commits only the last chunk's sample, so
+    its logprob list used to start with one for a token that was never output."""
+    runner = object.__new__(ModelRunner)
+    req = SimpleNamespace(inflight_middle_chunks=1)
+    data = SimpleNamespace(return_logprob=True, output_token_logprobs=[], req=req)
+    request = SimpleNamespace(data=data)
+
+    runner.record_rollout_logprobs(torch.tensor([-2.0]), torch.tensor([99]), [request])
+    req.inflight_middle_chunks = 0
+    runner.record_rollout_logprobs(torch.tensor([-0.5]), torch.tensor([5]), [request])
+    runner.record_rollout_logprobs(torch.tensor([-0.25]), torch.tensor([6]), [request])
+
+    assert data.output_token_logprobs == [[-0.5, 5], [-0.25, 6]]
 
 
 def test_rollout_logprobs_raises_on_batch_size_mismatch() -> None:

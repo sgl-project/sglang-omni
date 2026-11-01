@@ -1979,13 +1979,11 @@ class OmniScheduler(Generic[RequestDataT]):
             pass
         sampling_params = request.sampling_params
         # note (wilsonzheng0327): SGLang's draft workers drop min_p and apply each
-        # penalty once per verify block; logprobs come from the runner's sampler, which
-        # speculative decode bypasses, and hidden-state results need the per-request
+        # penalty once per verify block, and hidden-state results need the per-request
         # extend lengths run_speculative_batch leaves unset.
         unsupported_options = [
             option_name
             for option_name, is_set in (
-                ("logprobs", request_data.return_logprob),
                 ("return_hidden_states", request.return_hidden_states),
                 ("min_p", sampling_params.min_p > 0.0),
                 ("frequency_penalty", sampling_params.frequency_penalty != 0.0),
@@ -2225,6 +2223,25 @@ class OmniScheduler(Generic[RequestDataT]):
             return _FAILED_BATCH_RESULT
 
     def process_batch_result(self, batch, result) -> None:
+        if (
+            self.draft_worker is not None
+            and batch.return_logprob
+            and batch.forward_mode.is_decode()
+        ):
+            # The upstream processor streams the committed tokens, so their
+            # logprobs reach each request first.
+            result.copy_done.synchronize()
+            accepted_logprob_rows = result.logits_output.next_token_logprobs.tolist()
+            for request, accepted_logprobs in zip(
+                batch.reqs, accepted_logprob_rows, strict=True
+            ):
+                request_data = request.omni_data
+                if request_data is not None and request_data.return_logprob:
+                    request_data.accepted_token_logprobs = accepted_logprobs
+                else:
+                    pass
+        else:
+            pass
         _Upstream.process_batch_result(self, batch, result)
         # note (Richard Wang): cache prompt before blocking tail inserts
         for req in batch.reqs:
@@ -2282,6 +2299,16 @@ class OmniScheduler(Generic[RequestDataT]):
             # note (wilsonzheng0327): a re-prefilled request samples its next token
             # here, and speculative decode never cumulates penalty history.
             self.model_runner.restore_output_penalty_history(batch)
+        elif any(
+            request.omni_data is not None and request.omni_data.return_logprob
+            for request in batch.reqs
+        ):
+            # note (wenchen76): the draft worker gathers each accepted token's
+            # logprob from the verify logits only for a batch that asks. Requests
+            # keep return_logprob off, so the runner still owns prefill logprobs.
+            batch.return_logprob = True
+            batch.top_logprobs_nums = [0] * len(batch.reqs)
+            batch.token_ids_logprobs = [None] * len(batch.reqs)
         else:
             pass
         resolve_forward_inputs(batch, self.future_map)
@@ -2739,9 +2766,19 @@ class OmniScheduler(Generic[RequestDataT]):
             int(token_id)
             for token_id in committed_ids[request_data.emitted_token_count :]
         ]
+        accepted_logprobs = request_data.accepted_token_logprobs
+        request_data.accepted_token_logprobs = []
         if not new_token_ids:
             return
+        elif accepted_logprobs:
+            assert len(new_token_ids) <= len(accepted_logprobs)
+            request_data.output_token_logprobs.extend(
+                [logprob, token_id]
+                for logprob, token_id in zip(accepted_logprobs, new_token_ids)
+            )
         else:
+            # accepted_logprobs is empty for a prefill's token, whose logprob the
+            # runner's sampler logged, and for a request without return_logprob.
             pass
         request_data.emitted_token_count = len(committed_ids)
         request_data.generation_steps += len(new_token_ids)

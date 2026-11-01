@@ -96,6 +96,9 @@ class SGLangARRequestData(ARRequestData):
     # Output tokens already handed to the runner and stream builder under
     # speculative decoding, where one step commits several.
     emitted_token_count: int = 0
+    # Logprobs of the tokens the latest verify accepted, held until those tokens
+    # are committed, since finishing can trim the accepted run at the stop.
+    accepted_token_logprobs: list[float] = field(default_factory=list)
     suppress_tokens: list[int] | None = None
     top_p: float = 1.0
     top_k: int = -1

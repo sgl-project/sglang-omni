@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import collections
+import contextlib
 import gc
 import importlib
 import pickle
@@ -1964,6 +1965,7 @@ def test_speculative_stream_output_emits_each_committed_token_before_the_result(
         decode_input_embeds=None,
         emitted_token_count=1,
         generation_steps=1,
+        accepted_token_logprobs=[],
     )
     finished = False
     req = SimpleNamespace(
@@ -2012,6 +2014,162 @@ def test_speculative_stream_output_emits_each_committed_token_before_the_result(
     ]
 
 
+@pytest.mark.parametrize("wants_logprob", [True, False])
+def test_speculative_decode_asks_the_draft_worker_for_logprobs_only_when_needed(
+    monkeypatch, wants_logprob: bool
+) -> None:
+    """The draft worker gathers accepted-token logprobs only for a batch that asks,
+    and requests never set return_logprob themselves."""
+
+    class StopAtDraftWorker(Exception):
+        pass
+
+    seen: dict[str, object] = {}
+
+    def forward_batch_generation(batch):
+        seen["return_logprob"] = batch.return_logprob
+        seen["top_logprobs_nums"] = batch.top_logprobs_nums
+        seen["token_ids_logprobs"] = batch.token_ids_logprobs
+        raise StopAtDraftWorker
+
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.draft_worker = SimpleNamespace(
+        forward_batch_generation=forward_batch_generation
+    )
+    scheduler.future_map = None
+    monkeypatch.setattr(
+        omni_scheduler_module, "resolve_forward_inputs", lambda batch, future_map: None
+    )
+    monkeypatch.setattr(
+        sglang_scheduler_module.Scheduler,
+        "_forward_isolation",
+        lambda scheduler, batch, overlap: contextlib.nullcontext(),
+    )
+    batch = SimpleNamespace(
+        forward_mode=SimpleNamespace(is_extend=lambda: False),
+        reqs=[
+            SimpleNamespace(omni_data=SimpleNamespace(return_logprob=wants_logprob)),
+            SimpleNamespace(omni_data=SimpleNamespace(return_logprob=False)),
+        ],
+        return_logprob=False,
+        top_logprobs_nums=None,
+        token_ids_logprobs=None,
+    )
+
+    with pytest.raises(StopAtDraftWorker):
+        scheduler.run_speculative_batch(batch)
+
+    if wants_logprob:
+        assert seen == {
+            "return_logprob": True,
+            "top_logprobs_nums": [0, 0],
+            "token_ids_logprobs": [None, None],
+        }
+    else:
+        assert seen == {
+            "return_logprob": False,
+            "top_logprobs_nums": None,
+            "token_ids_logprobs": None,
+        }
+    assert all(not hasattr(request, "return_logprob") for request in batch.reqs)
+
+
+def test_speculative_logprobs_follow_the_committed_tokens_through_the_stop(
+    monkeypatch,
+) -> None:
+    """Each committed token carries the logprob its verify row gave it, the run
+    past the stop is dropped with its tokens, and the prefill token keeps the
+    sampler's logprob."""
+    scheduler = object.__new__(OmniScheduler)
+    init_terminal_output_state(scheduler)
+    scheduler.outbox = Queue()
+    scheduler.aborted_request_ids = set()
+    scheduler.first_emit_done = set()
+    scheduler.prefill_start_done = {"req-logprob", "req-plain"}
+    scheduler.prefill_end_done = set()
+    scheduler.draft_worker = SimpleNamespace()
+    scheduler.model_runner = SimpleNamespace(
+        on_speculative_tokens=lambda scheduler_request, token_ids: None,
+        on_request_finished=lambda rid, data: None,
+    )
+    monkeypatch.setattr(
+        omni_scheduler_module, "_emit_model_path_end", lambda rid, *, status: None
+    )
+    results: dict[str, list[list[float | int]]] = {}
+    scheduler.result_adapter = lambda data: results.setdefault(
+        data.req.rid, [list(entry) for entry in data.output_token_logprobs]
+    )
+
+    def running_request(request_id: str, return_logprob: bool) -> SimpleNamespace:
+        request_data = SimpleNamespace(
+            return_logprob=return_logprob,
+            output_token_logprobs=[[-0.1, 5]] if return_logprob else [],
+            accepted_token_logprobs=[],
+            emitted_token_count=1,
+            generation_steps=1,
+            prefill_input_embeds=None,
+            decode_input_embeds=None,
+        )
+        request = SimpleNamespace(
+            rid=request_id,
+            omni_data=request_data,
+            output_ids=[5],
+            output_ids_through_stop=[5],
+            finished=lambda: False,
+            finished_reason=None,
+            _omni_terminal_claimed=False,
+        )
+        request_data.req = request
+        return request
+
+    logprob_request = running_request("req-logprob", return_logprob=True)
+    plain_request = running_request("req-plain", return_logprob=False)
+    accepted_runs: list[dict[str, tuple[list[int], int | None]]] = [
+        {"req-logprob": ([6, 7], None), "req-plain": ([6], None)},
+        # The second verify accepts 9, the stop, then two drafts past it.
+        {"req-logprob": ([9, 8, 8], 4), "req-plain": ([9], 2)},
+    ]
+
+    def upstream_process_batch_result(scheduler, batch, result):
+        for request in batch.reqs:
+            accepted_ids, finished_len = accepted_runs[0][request.rid]
+            request.output_ids = request.output_ids + accepted_ids
+            if finished_len is None:
+                request.output_ids_through_stop = request.output_ids
+            else:
+                request.output_ids_through_stop = request.output_ids[:finished_len]
+                request.finished = lambda: True
+        accepted_runs.pop(0)
+        scheduler.stream_output(batch.reqs)
+
+    monkeypatch.setattr(
+        sglang_scheduler_module.Scheduler,
+        "process_batch_result",
+        upstream_process_batch_result,
+    )
+    batch = SimpleNamespace(
+        reqs=[logprob_request, plain_request],
+        return_logprob=True,
+        forward_mode=SimpleNamespace(is_decode=lambda: True),
+    )
+    for verify_rows in (
+        [[-0.2, -0.3, -0.9, -0.9], [-0.4, -0.9, -0.9, -0.9]],
+        [[-0.6, -0.7, -0.8, -0.9], [-0.5, -0.9, -0.9, -0.9]],
+    ):
+        result = SimpleNamespace(
+            copy_done=SimpleNamespace(synchronize=lambda: None),
+            logits_output=SimpleNamespace(
+                next_token_logprobs=torch.tensor(verify_rows, dtype=torch.float64)
+            ),
+        )
+        scheduler.process_batch_result(batch, result)
+
+    assert results == {
+        "req-logprob": [[-0.1, 5], [-0.2, 6], [-0.3, 7], [-0.6, 9]],
+        "req-plain": [],
+    }
+
+
 def test_speculative_emission_failure_fails_only_its_request() -> None:
     scheduler = object.__new__(OmniScheduler)
     init_terminal_output_state(scheduler)
@@ -2035,7 +2193,9 @@ def test_speculative_emission_failure_fails_only_its_request() -> None:
     def running_request(request_id: str) -> SimpleNamespace:
         return SimpleNamespace(
             rid=request_id,
-            omni_data=SimpleNamespace(emitted_token_count=1, generation_steps=1),
+            omni_data=SimpleNamespace(
+                emitted_token_count=1, generation_steps=1, accepted_token_logprobs=[]
+            ),
             output_ids_through_stop=[5, 6],
             finished=lambda: False,
             finished_reason=None,
@@ -2102,7 +2262,9 @@ def test_abort_during_speculative_emission_lands_before_or_after_the_step(
     scheduler.prefill_start_done = set()
     scheduler.prefill_end_done = set()
     scheduler.waiting_queue = []
-    request_data = SimpleNamespace(emitted_token_count=1, generation_steps=1)
+    request_data = SimpleNamespace(
+        emitted_token_count=1, generation_steps=1, accepted_token_logprobs=[]
+    )
     req = SimpleNamespace(
         rid="req-spec-abort",
         omni_data=request_data,
@@ -2186,7 +2348,7 @@ def test_speculative_reserve_rejection_names_the_reserve(monkeypatch) -> None:
     ),
     [
         ({}, False, False, False, None),
-        ({}, True, False, False, "logprobs"),
+        ({}, True, False, False, None),
         ({}, False, True, False, "return_hidden_states"),
         ({"min_p": 0.05}, False, False, False, "min_p"),
         ({"frequency_penalty": 0.5}, False, False, False, "frequency_penalty"),

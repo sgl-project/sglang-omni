@@ -180,7 +180,7 @@ sgl-omni serve \
 ```
 
 - **Context.** The thinker serves within the draft's context (8,192 tokens for both drafts), and a request whose prompt plus `max_tokens` exceeds it, less a few tokens each step reserves, is rejected with an error. Setting `--preprocessing.factory.max_seq_len 8192` rejects most of them before the thinker.
-- **Sampling.** Requests with `repetition_penalty`, `frequency_penalty`, `presence_penalty`, `min_p` or logprobs are rejected, because the draft workers apply penalties once per verify block, drop `min_p`, and skip the sampler that records logprobs. Rollout `/generate` requests default to `return_logprob: true`, so they must send `false`.
+- **Sampling.** Requests with `repetition_penalty`, `frequency_penalty`, `presence_penalty` or `min_p` are rejected, because the draft workers apply penalties once per verify block and drop `min_p`. Logprobs are returned for each committed token, computed from the verify logits the same way the sampler computes them.
 - **Scheduling.** Async decode is turned off, and setting `enable_mixed_chunk` is rejected. Sessions and weight updates are refused while a draft is loaded.
 - **Speech output.** A draft is refused on a speech server for now. The thinker captures the layer the talker reads through the same hidden-state capture the drafts use, and the speculative prefill does not store the talker's prompt rows, so serve with `--text-only`.
 

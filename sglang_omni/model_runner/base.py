@@ -1205,12 +1205,16 @@ class ModelRunner(Generic[RequestDataInput]):
             pass
         for row_idx, sched_req in enumerate(requests):
             data = sched_req.data
-            if data.return_logprob:
+            if not data.return_logprob:
+                pass
+            elif data.req.inflight_middle_chunks > 0:
+                # The scheduler drops a middle prefill chunk's sampled token, so
+                # its logprob would have no output token to pair with.
+                pass
+            else:
                 data.output_token_logprobs.append(
                     [logprobs[row_idx], token_ids[row_idx]]
                 )
-            else:
-                pass
 
     @staticmethod
     def req_is_retracted(req: Req) -> bool:
