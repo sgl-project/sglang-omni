@@ -60,9 +60,8 @@ def run_op(fp8_module, inputs: dict[str, torch.Tensor]) -> torch.Tensor:
 
 @pytest.mark.parametrize("rows", [1, 63, 65, 840, 1300])
 def test_fp8_matches_bf16_at_every_row_count(
-    fp8_module, monkeypatch: pytest.MonkeyPatch, rows: int
+    fp8_module, rows: int
 ) -> None:
-    monkeypatch.setattr(fp8_module, "FP8_MIN_ROWS", 0)
     inputs = make_inputs(rows)
     with torch.inference_mode():
         hidden = F.gelu(
@@ -75,21 +74,7 @@ def test_fp8_matches_bf16_at_every_row_count(
     assert (output - expected).norm() / expected.norm() < 0.05
 
 
-def test_rows_below_the_threshold_stay_in_bf16(fp8_module) -> None:
-    inputs = make_inputs(fp8_module.FP8_MIN_ROWS - 1)
-    with torch.inference_mode():
-        hidden = F.gelu(
-            F.linear(inputs["x"], inputs["in_weight"], inputs["in_bias"]),
-            approximate="tanh",
-        )
-        expected = F.linear(hidden, inputs["out_weight"], inputs["out_bias"])
-        assert torch.equal(run_op(fp8_module, inputs), expected)
-
-
-def test_gelu_above_the_static_limit_stays_finite(
-    fp8_module, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(fp8_module, "FP8_MIN_ROWS", 0)
+def test_gelu_above_the_static_limit_stays_finite(fp8_module) -> None:
     inputs = make_inputs(128)
     inputs["x"] = torch.full_like(inputs["x"], 1000.0)
     with torch.inference_mode():

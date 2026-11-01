@@ -256,9 +256,27 @@ class FunCosyVoice3StreamingVocoderScheduler(
             self.make_warmup_flow_input(hop_tokens),
             self.make_warmup_flow_input(hop_tokens + self.token_hop_len),
         ]
+        batches = [first, second]
+        if packed_estimator.use_fp8_feed_forward:
+            # note (emre): a row above the FP8 threshold, so that branch compiles here.
+            prompt_token_count = packed_estimator.fp8_min_rows // (
+                2 * self.vocoder.flow.token_mel_ratio
+            )
+            prompt_token_count += prompt_token_pad(
+                prompt_token_count, hop_len=self.token_hop_len
+            )
+            batches.append(
+                [
+                    self.make_warmup_flow_input(
+                        hop_tokens, prompt_token_count=prompt_token_count
+                    )
+                ]
+            )
+        else:
+            pass
         started = time.monotonic()
         with self.vocoder.stream_context:
-            for items in (first, second):
+            for items in batches:
                 self.vocoder.hop_batch(items)
                 self.vocoder.leftover_batch(items)
         logger.info(

@@ -494,6 +494,7 @@ class PackedDiT:
         from sglang_omni.models.fun_cosyvoice3 import fp8_feed_forward
 
         self.fp8_feed_forward = fp8_feed_forward.fp8_feed_forward
+        self.fp8_min_rows = fp8_feed_forward.FP8_MIN_ROWS
         # note (emre): made once, a host copy in the op blocks until the GPU is idle.
         self.fp8_gelu_scale = torch.nn.Parameter(
             torch.tensor(
@@ -588,7 +589,9 @@ class PackedDiT:
                 self.qkv_biases[block_index],
             )
             ff_norm = block.ff_norm(h) * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
-            if self.use_fp8_feed_forward:
+            # note (emre): the branch stays in the compiled graph, so small M never pays
+            # for the Python op. c1 lost about 1% to that call.
+            if self.use_fp8_feed_forward and ff_norm.shape[1] >= self.fp8_min_rows:
                 ff_in = block.ff.ff[0][0]
                 ff_out = self.fp8_feed_forward(
                     ff_norm.to(torch.bfloat16),

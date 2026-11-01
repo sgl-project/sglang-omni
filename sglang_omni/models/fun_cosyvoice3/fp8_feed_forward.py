@@ -10,7 +10,6 @@ import cuda.bindings.driver as cuda
 import cutlass
 import cutlass.cute as cute
 import torch
-import torch.nn.functional as F
 from cutlass.cute.runtime import from_dlpack, make_fake_stream
 from sglang.srt.utils.custom_op import register_custom_op
 
@@ -394,11 +393,6 @@ def fp8_feed_forward(
     gelu_scale: torch.Tensor,
 ) -> torch.Tensor:
     """x: (1, M, K) BF16, in_weight: (N, K), out_weight_fp8: (K, N) FP8."""
-    if x.shape[1] < FP8_MIN_ROWS:
-        hidden = F.gelu(F.linear(x, in_weight, in_bias), approximate="tanh")
-        return F.linear(hidden, out_weight, out_bias)
-    else:
-        pass
     assert x.is_contiguous()
     hidden = torch.empty(
         (1, x.shape[1], in_weight.shape[0]), device=x.device, dtype=torch.float8_e4m3fn
