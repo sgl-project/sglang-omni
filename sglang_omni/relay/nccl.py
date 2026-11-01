@@ -67,7 +67,7 @@ class Connection:
             if "MASTER_PORT" not in os.environ:
                 from sglang_omni.utils.port_claim import claim_tcp_port
 
-                os.environ["MASTER_PORT"] = str(claim_tcp_port())
+                os.environ["MASTER_PORT"] = str(claim_tcp_port(allow_kernel_port=True))
             else:
                 pass
 
