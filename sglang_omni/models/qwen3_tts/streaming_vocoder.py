@@ -1134,7 +1134,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                 batch_sizes=graph_batch_sizes,
                 min_free_gb=min_free_gb,
                 enabled=graph_enabled,
-                # note (ratish): the size classes give every width one program, so each width that
+                # note (ratish): the size classes share a program across widths, so each width that
                 # attends in place compiles; a wider one takes the gathered step and stays eager.
                 compile_fresh_frames=(
                     tuple(
