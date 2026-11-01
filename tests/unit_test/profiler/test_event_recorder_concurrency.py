@@ -143,26 +143,65 @@ def test_producer_buffer_limit_is_counted(tmp_path: Path) -> None:
     recorder = RequestEventRecorder(queue_capacity=2)
     path = recorder.start("producer-limit", str(tmp_path), "stage")
     barrier = threading.Barrier(MAX_PRODUCER_BUFFERS + 2)
+    rejected_ready = threading.Event()
+    release_rejected = threading.Event()
+    rejected_thread_id: int | None = None
 
-    def produce() -> None:
+    def produce(producer_number: int) -> None:
+        nonlocal rejected_thread_id
         barrier.wait(timeout=5)
-        recorder.emit(request_id="request", stage="stage", event_name="event")
+        recorder.emit(
+            request_id=f"request-{producer_number}",
+            stage="stage",
+            event_name="event",
+        )
+        if getattr(recorder.producer_local, "buffer", None) is None:
+            rejected_thread_id = threading.get_ident()
+            rejected_ready.set()
+            if not release_rejected.wait(timeout=5):
+                raise AssertionError("test did not release the rejected producer")
+            else:
+                pass
+            for event_number in range(3):
+                recorder.emit(
+                    request_id=f"rejected-{event_number}",
+                    stage="stage",
+                    event_name="event",
+                )
+        else:
+            pass
 
     producers = [
-        threading.Thread(target=produce) for _ in range(MAX_PRODUCER_BUFFERS + 1)
+        threading.Thread(target=produce, args=(producer_number,))
+        for producer_number in range(MAX_PRODUCER_BUFFERS + 1)
     ]
     for producer in producers:
         producer.start()
     barrier.wait(timeout=5)
-    for producer in producers:
+    assert rejected_ready.wait(timeout=5)
+    accepted_producers = [
+        producer for producer in producers if producer.ident != rejected_thread_id
+    ]
+    for producer in accepted_producers:
         producer.join(timeout=5)
         assert producer.is_alive() is False
+
+    rejected_producer = next(
+        producer for producer in producers if producer.ident == rejected_thread_id
+    )
+    with pytest.MonkeyPatch.context() as control_lock_patch:
+        control_lock_patch.setattr(recorder, "control_lock", object())
+        release_rejected.set()
+        rejected_producer.join(timeout=5)
+        assert rejected_producer.is_alive() is False
 
     recorder.stop(wait=True)
     status = read_status(path)
     assert status["accepted_events"] == MAX_PRODUCER_BUFFERS
-    assert status["dropped_events"] == 1
+    assert status["dropped_events"] == 4
     assert status["complete"] is False
+    assert status["producer_buffer_count"] == MAX_PRODUCER_BUFFERS
+    assert sorted(status["producer_buffer_event_counts"]) == [1] * MAX_PRODUCER_BUFFERS
 
 
 def test_stop_waits_for_an_admitted_emit_to_finish(tmp_path: Path) -> None:

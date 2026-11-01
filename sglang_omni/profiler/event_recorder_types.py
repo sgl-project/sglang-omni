@@ -121,6 +121,7 @@ class RecorderRunState:
     status_path: Path
     finalization: RequestEventFinalization
     producer_buffers: list[ProducerBuffer] = field(default_factory=list)
+    producer_drop_counters: list[ProducerDropCounter] = field(default_factory=list)
     accepted_events: int = 0
     processed_events: int = 0
     written_events: int = 0
@@ -143,13 +144,25 @@ class ProducerBuffer:
     run_state: RecorderRunState
     capacity: int
     events: list[RequestEvent] = field(default_factory=list)
-    deferred_events: list[PendingRequestEvent] = field(default_factory=list)
+    deferred_event_buffers: list[list[PendingRequestEvent]] = field(
+        default_factory=list
+    )
+    pending_event_count: int = 0
     in_flight: int = 0
     accepted_events: int = 0
     dropped_events: int = 0
     metadata_snapshot_failures: int = 0
     metadata_truncations: int = 0
     incomplete_reasons: set[str] = field(default_factory=set)
+
+
+@dataclass
+class ProducerDropCounter:
+    """Count events rejected after the producer-buffer limit is reached."""
+
+    run_state: RecorderRunState
+    dropped_events: int = 0
+    in_flight: int = 0
 
 
 def snapshot_metadata_text(

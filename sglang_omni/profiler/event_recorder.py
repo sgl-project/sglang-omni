@@ -58,6 +58,7 @@ class RequestEventBuffer(threading.local):
 
     def __init__(self) -> None:
         self.producer_buffer: ProducerBuffer | None = None
+        self.pending_events: list[PendingRequestEvent] = []
 
     def capture(
         self,
@@ -77,15 +78,19 @@ class RequestEventBuffer(threading.local):
             return
         else:
             pass
-        self.producer_buffer = producer_buffer
         run_state = producer_buffer.run_state
         timestamp_ns = time.time_ns()
         monotonic_seconds = time.monotonic()
         worker_name = threading.current_thread().name
         try:
+            if self.producer_buffer is not producer_buffer:
+                producer_buffer.deferred_event_buffers.append(self.pending_events)
+                self.producer_buffer = producer_buffer
+            else:
+                pass
             for snapshot in snapshots:
                 if (
-                    len(producer_buffer.events) + len(producer_buffer.deferred_events)
+                    len(producer_buffer.events) + producer_buffer.pending_event_count
                     >= producer_buffer.capacity
                 ):
                     producer_buffer.dropped_events += 1
@@ -123,7 +128,7 @@ class RequestEventBuffer(threading.local):
                     producer_buffer.incomplete_reasons.add("metadata_truncated")
                 else:
                     pass
-                producer_buffer.deferred_events.append(
+                self.pending_events.append(
                     PendingRequestEvent(
                         request_id=snapshot.request_id,
                         event_name=event_name,
@@ -131,6 +136,7 @@ class RequestEventBuffer(threading.local):
                         timestamp_ns=timestamp_ns,
                     )
                 )
+                producer_buffer.pending_event_count += 1
         except Exception:
             producer_buffer.dropped_events += 1
             producer_buffer.incomplete_reasons.add("deferred_buffer_capture_failure")
@@ -140,7 +146,8 @@ class RequestEventBuffer(threading.local):
     def flush(self, *, stage: str | None) -> None:
         """Move captured events to the main producer buffer outside serving locks."""
         producer_buffer = self.producer_buffer
-        if producer_buffer is None:
+        pending_events = self.pending_events
+        if producer_buffer is None or not pending_events:
             return
         else:
             pass
@@ -153,39 +160,40 @@ class RequestEventBuffer(threading.local):
             pass
 
         resolved_stage = stage or get_active_stage() or run_state.stage or "unknown"
-        pending_events = producer_buffer.deferred_events
-        producer_buffer.deferred_events = []
+        pending_event_count = len(pending_events)
         try:
             for pending_event in pending_events:
-                if not RequestEventRecorder.event_text_is_bounded(
-                    pending_event.request_id,
-                    resolved_stage,
-                    pending_event.event_name,
-                    run_state.run_id,
-                ):
-                    producer_buffer.dropped_events += 1
-                    producer_buffer.incomplete_reasons.add("event_payload_too_large")
-                    continue
-                else:
-                    pass
                 try:
-                    request_event = RequestEvent(
-                        request_id=pending_event.request_id,
-                        stage=resolved_stage,
-                        event_name=pending_event.event_name,
-                        timestamp_ns=pending_event.timestamp_ns,
-                        run_id=run_state.run_id,
-                        pid=get_recorder().pid,
-                        metadata=pending_event.metadata,
-                    )
-                    producer_buffer.events.append(request_event)
-                    producer_buffer.accepted_events += 1
+                    if not RequestEventRecorder.event_text_is_bounded(
+                        pending_event.request_id,
+                        resolved_stage,
+                        pending_event.event_name,
+                        run_state.run_id,
+                    ):
+                        producer_buffer.dropped_events += 1
+                        producer_buffer.incomplete_reasons.add(
+                            "event_payload_too_large"
+                        )
+                    else:
+                        request_event = RequestEvent(
+                            request_id=pending_event.request_id,
+                            stage=resolved_stage,
+                            event_name=pending_event.event_name,
+                            timestamp_ns=pending_event.timestamp_ns,
+                            run_id=run_state.run_id,
+                            pid=get_recorder().pid,
+                            metadata=pending_event.metadata,
+                        )
+                        producer_buffer.events.append(request_event)
+                        producer_buffer.accepted_events += 1
                 except Exception:
                     producer_buffer.dropped_events += 1
                     producer_buffer.incomplete_reasons.add(
                         "deferred_buffer_flush_failure"
                     )
         finally:
+            producer_buffer.pending_event_count -= pending_event_count
+            pending_events.clear()
             producer_buffer.in_flight -= 1
 
 

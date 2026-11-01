@@ -38,23 +38,34 @@ def test_zero_event_run_publishes_complete_status(tmp_path: Path) -> None:
     assert status["complete"] is True
 
 
-def test_unflushed_deferred_events_are_counted_as_lost(tmp_path: Path) -> None:
+def test_unflushed_instance_events_are_counted_as_lost(tmp_path: Path) -> None:
     recorder = get_recorder()
-    buffer = RequestEventBuffer()
+    buffer_a = RequestEventBuffer()
+    buffer_b = RequestEventBuffer()
     path = recorder.start("deferred", str(tmp_path), "stage")
-    buffer.capture(
-        "event",
-        (RequestEventSnapshot(request_id="pending", metadata={"value": 1}),),
+    buffer_a.capture(
+        "event_a",
+        (RequestEventSnapshot(request_id="request_a", metadata={"value": 1}),),
         {},
     )
+    buffer_b.capture(
+        "event_b",
+        (RequestEventSnapshot(request_id="request_b", metadata={"value": 2}),),
+        {},
+    )
+    buffer_a.flush(stage="stage_a")
 
     finalization = recorder.deactivate()
 
     assert finalization is not None
     assert finalization.wait(timeout_seconds=5) is True
     status = read_status_file(finalization.status_path)
-    assert read_events(path) == []
-    assert status["accepted_events"] == 0
+    events = read_events(path)
+    assert len(events) == 1
+    assert events[0]["event_name"] == "event_a"
+    assert events[0]["stage"] == "stage_a"
+    assert status["accepted_events"] == 1
+    assert status["written_events"] == 1
     assert status["dropped_events"] == 1
     assert status["complete"] is False
     assert "deferred_buffer_unflushed" in status["incomplete_reasons"]

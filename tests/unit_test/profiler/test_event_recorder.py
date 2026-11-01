@@ -140,6 +140,42 @@ def test_deferred_buffer_snapshots_metadata_once_before_flush(
     assert events[0]["metadata"]["sample_count"] == 12
 
 
+def test_deferred_buffers_keep_per_instance_stage_and_timestamp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorder = get_recorder()
+    path = recorder.start("deferred-ownership", str(tmp_path), "coordinator")
+    buffer_a = RequestEventBuffer()
+    buffer_b = RequestEventBuffer()
+    timestamps = iter((101, 202))
+    monkeypatch.setattr(event_recorder.time, "time_ns", lambda: next(timestamps))
+
+    buffer_a.capture(
+        "event_a",
+        (RequestEventSnapshot(request_id="request_a", metadata={}),),
+        {},
+    )
+    buffer_b.capture(
+        "event_b",
+        (RequestEventSnapshot(request_id="request_b", metadata={}),),
+        {},
+    )
+    buffer_a.flush(stage="stage_a")
+    buffer_b.flush(stage="stage_b")
+    recorder.stop(wait=True)
+
+    events = {event["event_name"]: event for event in read_events(path)}
+    assert set(events) == {"event_a", "event_b"}
+    assert events["event_a"]["stage"] == "stage_a"
+    assert events["event_b"]["stage"] == "stage_b"
+    assert events["event_a"]["timestamp_ns"] == 101
+    assert events["event_b"]["timestamp_ns"] == 202
+    status = read_status(path)
+    assert status["complete"] is True
+    assert status["producer_buffer_count"] == 1
+    assert status["producer_buffer_event_counts"] == [2]
+
+
 def test_co_located_stages_share_file_and_release_independently(
     tmp_path: Path,
 ) -> None:

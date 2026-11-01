@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 import gc
 import signal
+import threading
 import weakref
 from collections.abc import Awaitable, Callable, Coroutine
-import threading
 from pathlib import Path
 from traceback import format_exception
 from types import FrameType, SimpleNamespace

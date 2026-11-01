@@ -19,6 +19,7 @@ from sglang_omni.profiler.event_recorder_types import (
     MAX_PRODUCER_BUFFERS,
     WRITER_POLL_INTERVAL_SECONDS,
     ProducerBuffer,
+    ProducerDropCounter,
     RecorderRunState,
     RequestEvent,
     RequestEventFinalization,
@@ -92,6 +93,21 @@ class RequestEventRecorder:
         else:
             pass
 
+        producer_drop_counter = getattr(self.producer_local, "drop_counter", None)
+        if (
+            producer_drop_counter is not None
+            and producer_drop_counter.run_state is observed_state
+        ):
+            producer_drop_counter.in_flight += 1
+            if self.active_state is observed_state:
+                producer_drop_counter.dropped_events += 1
+            else:
+                pass
+            producer_drop_counter.in_flight -= 1
+            return None
+        else:
+            pass
+
         with self.control_lock:
             if self.active_state is not observed_state:
                 return None
@@ -107,7 +123,12 @@ class RequestEventRecorder:
             else:
                 pass
             if len(observed_state.producer_buffers) >= MAX_PRODUCER_BUFFERS:
-                observed_state.dropped_events += 1
+                producer_drop_counter = ProducerDropCounter(
+                    run_state=observed_state,
+                    dropped_events=1,
+                )
+                observed_state.producer_drop_counters.append(producer_drop_counter)
+                self.producer_local.drop_counter = producer_drop_counter
                 observed_state.incomplete_reasons.add(
                     "producer_buffer_registration_limit"
                 )
@@ -152,7 +173,7 @@ class RequestEventRecorder:
             else:
                 pass
             if (
-                len(producer_buffer.events) + len(producer_buffer.deferred_events)
+                len(producer_buffer.events) + producer_buffer.pending_event_count
                 >= producer_buffer.capacity
             ):
                 producer_buffer.dropped_events += 1
@@ -380,8 +401,14 @@ class RequestEventRecorder:
             while any(
                 producer_buffer.in_flight > 0
                 for producer_buffer in run_state.producer_buffers
+            ) or any(
+                drop_counter.in_flight > 0
+                for drop_counter in run_state.producer_drop_counters
             ):
                 time.sleep(WRITER_POLL_INTERVAL_SECONDS)
+
+            for drop_counter in run_state.producer_drop_counters:
+                run_state.dropped_events += drop_counter.dropped_events
 
             for producer_buffer in run_state.producer_buffers:
                 run_state.accepted_events += producer_buffer.accepted_events
@@ -391,12 +418,19 @@ class RequestEventRecorder:
                 )
                 run_state.metadata_truncations += producer_buffer.metadata_truncations
                 run_state.incomplete_reasons.update(producer_buffer.incomplete_reasons)
-                if producer_buffer.deferred_events:
-                    run_state.dropped_events += len(producer_buffer.deferred_events)
+                pending_event_count = sum(
+                    len(pending_events)
+                    for pending_events in producer_buffer.deferred_event_buffers
+                )
+                if pending_event_count:
+                    producer_buffer.dropped_events += pending_event_count
+                    run_state.dropped_events += pending_event_count
                     run_state.incomplete_reasons.add("deferred_buffer_unflushed")
-                    producer_buffer.deferred_events.clear()
                 else:
                     pass
+                for pending_events in producer_buffer.deferred_event_buffers:
+                    pending_events.clear()
+                producer_buffer.pending_event_count = 0
 
             file_handle = self.open_event_file(run_state)
             for producer_buffer in run_state.producer_buffers:
@@ -548,6 +582,11 @@ class RequestEventRecorder:
             "event_path": str(run_state.path),
             "stages": sorted(run_state.stages),
             "accepted_events": run_state.accepted_events,
+            "producer_buffer_count": len(run_state.producer_buffers),
+            "producer_buffer_event_counts": [
+                producer_buffer.accepted_events + producer_buffer.dropped_events
+                for producer_buffer in run_state.producer_buffers
+            ],
             "processed_events": run_state.processed_events,
             "written_events": run_state.written_events,
             "unwritten_events": run_state.unwritten_events,
