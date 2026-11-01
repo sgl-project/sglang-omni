@@ -6,7 +6,7 @@
 Every file is checked against the SHA-256 in model_pins.json. A checkpoint
 lands in <data_root>/models/<org>_<name>; a Whisper checkpoint also gets the
 tokenizer files of its openai/whisper-* repo in that directory, where Voxt
-puts them, and Chatterbox-Turbo gets its S3 speech tokenizer's checkpoint in
+puts them, and Fun-CosyVoice3 and Chatterbox-Turbo get their S3 speech tokenizer's checkpoints in
 speech_tokenizer/. The corpus comes from provision.py.
 """
 
