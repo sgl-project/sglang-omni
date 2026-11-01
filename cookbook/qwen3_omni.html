@@ -1001,40 +1001,15 @@ sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\<
 </pre></div>
 </div>
 <ul class="simple">
-<li><p><strong>Context.</strong> The thinker serves within the draft’s context (8,192 tokens for both drafts), and a request whose prompt plus <code class="docutils literal notranslate"><span class="pre">max_tokens</span></code> exceeds it, less a few tokens each step reserves, is rejected with an error. Setting <code class="docutils literal notranslate"><span class="pre">--preprocessing.factory.max_seq_len</span> <span class="pre">8192</span></code> rejects most of them before the thinker.</p></li>
-<li><p><strong>Sampling.</strong> Requests with <code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code>, <code class="docutils literal notranslate"><span class="pre">frequency_penalty</span></code>, <code class="docutils literal notranslate"><span class="pre">presence_penalty</span></code>, <code class="docutils literal notranslate"><span class="pre">min_p</span></code> or logprobs are rejected, because the draft workers apply penalties once per verify block, drop <code class="docutils literal notranslate"><span class="pre">min_p</span></code>, and skip the sampler that records logprobs. Rollout <code class="docutils literal notranslate"><span class="pre">/generate</span></code> requests default to <code class="docutils literal notranslate"><span class="pre">return_logprob:</span> <span class="pre">true</span></code>, so they must send <code class="docutils literal notranslate"><span class="pre">false</span></code>.</p></li>
-<li><p><strong>Scheduling.</strong> Async decode is turned off, and setting <code class="docutils literal notranslate"><span class="pre">enable_mixed_chunk</span></code> is rejected. Sessions and weight updates are refused while a draft is loaded.</p></li>
-<li><p><strong>Speech output.</strong> A draft is refused on a speech server for now. The thinker captures the layer the talker reads through the same hidden-state capture the drafts use, and the speculative prefill does not store the talker’s prompt rows, so serve with <code class="docutils literal notranslate"><span class="pre">--text-only</span></code>.</p></li>
+<li><p><strong>Context.</strong> The drafts shown above have an 8,192-token context. The prompt, output budget and speculative reservations must fit within it. Use <code class="docutils literal notranslate"><span class="pre">--preprocessing.factory.max_seq_len</span> <span class="pre">8192</span></code> to reject oversized prompts early.</p></li>
+<li><p><strong>Sampling.</strong> Keep <code class="docutils literal notranslate"><span class="pre">repetition_penalty=1</span></code>, <code class="docutils literal notranslate"><span class="pre">frequency_penalty=0</span></code>, <code class="docutils literal notranslate"><span class="pre">presence_penalty=0</span></code>, and <code class="docutils literal notranslate"><span class="pre">min_p=0</span></code>. Disable logprobs and <code class="docutils literal notranslate"><span class="pre">return_hidden_states</span></code>. For <code class="docutils literal notranslate"><span class="pre">/generate</span></code>, send <code class="docutils literal notranslate"><span class="pre">return_logprob:</span> <span class="pre">false</span></code>.</p></li>
+<li><p><strong>Scheduling.</strong> Speculative decoding is synchronous by default. Add <code class="docutils literal notranslate"><span class="pre">--thinker.factory.enable_async_decode</span> <span class="pre">true</span></code> to either command to enable overlap, keeping <code class="docutils literal notranslate"><span class="pre">async_decode_min_batch_size=1</span></code>. Mixed prefill/decode batches (<code class="docutils literal notranslate"><span class="pre">enable_mixed_chunk=true</span></code>), sessions and weight updates are unsupported with a draft.</p></li>
+<li><p><strong>Overlap trade-offs.</strong> Overlap can improve decode throughput. Prefill-heavy workloads or short outputs can see higher TTFT and lower throughput.</p></li>
+<li><p><strong>Prefill boundary.</strong> Set <code class="docutils literal notranslate"><span class="pre">SGLANG_DISABLE_CONSECUTIVE_PREFILL_OVERLAP=1</span></code> before launch to process the previous prefill batch’s result before launching the next consecutive prefill batch. This can lower TTFT at a throughput cost. Decode rounds continue to overlap.</p></li>
+<li><p><strong>Execution failure.</strong> An execution failure in speculative overlap stops the pipeline and fails its pending requests.</p></li>
+<li><p><strong>Speech output.</strong> Speech generation is unsupported with a draft; use <code class="docutils literal notranslate"><span class="pre">--text-only</span></code>.</p></li>
 </ul>
-<p>Text-only ASR on LibriSpeech test-clean (<code class="docutils literal notranslate"><span class="pre">--text-only</span></code>, thinker on one H200 141GB with FA3 and SGLang 0.5.22, greedy, <code class="docutils literal notranslate"><span class="pre">max_tokens</span> <span class="pre">200</span></code>), in requests per second; concurrency 1 over all 2,620 utterances, concurrency 4 and 8 over the two halves, each on a server that has not seen them:</p>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Concurrency</p></th>
-<th class="head"><p>Baseline</p></th>
-<th class="head"><p>DFlash</p></th>
-<th class="head"><p>EAGLE3</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p>1</p></td>
-<td><p>7.78</p></td>
-<td><p>12.95 (1.66x)</p></td>
-<td><p>11.57 (1.49x)</p></td>
-</tr>
-<tr class="row-odd"><td><p>4</p></td>
-<td><p>16.54</p></td>
-<td><p>24.23 (1.46x)</p></td>
-<td><p>21.43 (1.30x)</p></td>
-</tr>
-<tr class="row-even"><td><p>8</p></td>
-<td><p>23.94</p></td>
-<td><p>37.19 (1.55x)</p></td>
-<td><p>31.80 (1.33x)</p></td>
-</tr>
-</tbody>
-</table>
-</div>
-<p>DFlash accepts 4.7 tokens per verify and EAGLE3 3.4, with WER unchanged. Requests that repeat earlier audio hit the prefix cache, which speeds the baseline up and slows DFlash down, so benchmark each pass on utterances its server has not seen.</p>
+<p>Compare modes with matching workloads and prefix-cache conditions. Measure TTFT, throughput and accuracy for your workload.</p>
 </section>
 </section>
 
