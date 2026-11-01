@@ -440,18 +440,13 @@ The harness follows the session protocol merged in
 output epochs, `response.cancel` and the `session.closed.held` resource receipt.
 Use a VoiceChat server that includes this protocol and record its actual revision.
 
-This needs **two checkouts**, because neither side contains the other: the
-launcher `examples/run_nemotron_voicechat_duplex.py` exists only in the pinned
-target, and `benchmarks/duplex/` exists only here. Run the server from the
-target checkout and the harness from this one.
-
 ```bash
-# Terminal A — in the pinned target checkout: serve the native duplex endpoint
-python examples/run_nemotron_voicechat_duplex.py \
-    --model-path nvidia/NVIDIA-NemotronLabs-VoiceChat-11B \
-    --serve --port 8097
+# Terminal A — serve the native duplex endpoint
+python -m sglang_omni.cli serve \
+    --model-path nvidia/NVIDIA-NemotronLabs-VoiceChat-11B --variant session \
+    --enable-realtime --port 8097
 
-# Terminal B — in this repository: record and grade the continuous case
+# Terminal B — record and grade the continuous case
 python -m benchmarks.eval.benchmark_duplex \
     --url ws://127.0.0.1:8097/v1/realtime \
     --audio caller-16k.wav \
@@ -610,7 +605,7 @@ profile does not change their definitions or imply paper-identical evaluation.
 `benchmark_duplex_v15.py` records the four v1.5 overlap subsets against the same native
 endpoint; `benchmark_duplex_reference.py` scores them with the official ASR, timing and
 behavior code. Follow the
-[Full-Duplex-Bench v1.5 runbook](../docs/developer_reference/full_duplex_bench.md)
+[Full-Duplex Guide](../docs/developer_reference/full_duplex_guide.md)
 for setup, the copy-paste commands, measurement definitions and results.
 
 ## Full-Duplex-Bench v1.0 turn-taking tasks (VoiceChat)
@@ -648,8 +643,8 @@ post-processing. Connections above the server's capacity are retried on HTTP
 Scoring runs on a reference tree: `reference-export`, `reference-asr` with the
 pinned Parakeet checkpoint, then `reference-evaluate` for the official numbers
 and `unified-score` for the metrics in
-[full_duplex_metrics.md](../docs/developer_reference/full_duplex_metrics.md).
-The [runbook](../docs/developer_reference/full_duplex_bench.md) runs all of them.
+[full_duplex_guide.md](../docs/developer_reference/full_duplex_guide.md#full-duplex-bench-v10-unified-metrics).
+The [runbook](../docs/developer_reference/full_duplex_guide.md) runs all of them.
 
 Both `*_seedtts.py` scripts also support speech quality and similarity evaluation via UTMOS and WavLM speaker verification metrics. Running with `--utmos-only` or `--similarity-only` loads the respective pre-trained predictor and computes scores on the previously generated audio in the output directory without requiring the TTS/ASR servers to be running.
 

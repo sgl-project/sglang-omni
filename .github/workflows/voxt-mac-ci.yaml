@@ -121,7 +121,7 @@ jobs:
           mkdir -p "$VOXT_CI_ROOT"
           free_gb=$(df -g "$VOXT_CI_ROOT" | awk 'NR == 2 {print $4}')
           echo "Free under $VOXT_CI_ROOT: ${free_gb} GB"
-          required_gb=20
+          required_gb=23
           music3_cache="$VOXT_CI_ROOT/data/models/mlx-community_MiniMax-Music3-mxfp8"
           if [ "$RUN_MUSIC3" = true ]; then
             cached_gb=0
@@ -197,7 +197,8 @@ jobs:
           name: music3-golden-outputs
           path: |
             ${{ runner.temp }}/golden-outputs/minimax-music3.json
-            ${{ runner.temp }}/golden-outputs/music3-audio
+            ${{ runner.temp }}/golden-outputs/music3-resident-audio
+            ${{ runner.temp }}/golden-outputs/music3-offload-audio
           if-no-files-found: ignore
 
       - name: Music3 server API tests
@@ -267,7 +268,8 @@ jobs:
           CI_DATA_ROOT: ${{ env.VOXT_CI_ROOT }}/data
         run: |
           "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_model_servers.py \
-            sglang_omni_mlx/native/ci/test_voxtral_tts_api.py sglang_omni_mlx/native/ci/test_moss_tts_local_api.py -k 'not music3'
+            sglang_omni_mlx/native/ci/test_voxtral_tts_api.py sglang_omni_mlx/native/ci/test_moss_tts_local_api.py \
+            sglang_omni_mlx/native/ci/test_qwen3_tts_api.py -k 'not music3'
 
       - name: Archive tested native runtime
         if: success()

@@ -7,7 +7,9 @@ import asyncio
 import base64
 import itertools
 import json
+import os
 import time
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from http import HTTPStatus
 from pathlib import Path
 
@@ -669,13 +671,77 @@ def test_slow_report_write_does_not_delay_another_sessions_input(
         write_json(path, value)
 
     monkeypatch.setattr(v15_runner, "write_json", slow_report_write)
-    result = asyncio.run(CappedPeerServer().record(dataset, output, concurrency=2))
+    # note (edwingao28): A thread pool keeps the patched write in this process.
+    with ThreadPoolExecutor(max_workers=1) as postprocess:
+        result = asyncio.run(
+            CappedPeerServer().record(
+                dataset, output, concurrency=2, postprocess=postprocess
+            )
+        )
 
     assert result["load"]["input_pacing_violations"] == 0
     assert result["summary"]["variants"]["pass"] == 2
     for variant in result["samples"][0]["variants"].values():
         report = json.loads((output / variant["directory"] / "report.json").read_text())
         assert report["cases"][0]["status"] == "pass"
+    assert json.loads((output / "run.json").read_text()) == result
+
+
+GIL_HOLD_S = 1.5
+# One sort of this many floats is one C call, which keeps the GIL for well over 80 ms,
+# as parsing a whole trace or a full collection of a large heap does.
+GIL_HOLD_SORT_ITEMS = 2_000_000
+
+
+def test_post_processing_that_holds_the_gil_does_not_delay_another_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Replay in the recording process kept the GIL from the loop pacing open sessions."""
+    dataset, output = tmp_path / "data", tmp_path / "run"
+    sample_directory = write_sample(dataset, "user_interruption", "1")
+    soundfile.write(
+        str(sample_directory / "clean_input.wav"),
+        np.tile(FIXTURE_SAMPLES, 6),
+        16000,
+        subtype="PCM_16",
+    )
+    replay_run = v15_runner.replay_run
+
+    def gil_holding_replay_run(variant_dir: Path) -> dict[str, JsonValue]:
+        values = np.random.default_rng(0).random(GIL_HOLD_SORT_ITEMS).tolist()
+        deadline_s = time.perf_counter() + GIL_HOLD_S
+        while time.perf_counter() < deadline_s:
+            sorted(values)
+        return replay_run(variant_dir)
+
+    # note (edwingao28): The patch reaches only this process, so replay spins only here.
+    monkeypatch.setattr(v15_runner, "replay_run", gil_holding_replay_run)
+    result = asyncio.run(CappedPeerServer().record(dataset, output, concurrency=2))
+
+    assert result["load"]["input_pacing_violations"] == 0
+    assert result["load"]["client_loop"]["lags_over_tolerance"] == 0
+    assert result["summary"]["variants"]["pass"] == 2
+
+
+def test_run_samples_shuts_down_the_post_processing_pool_it_owns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset, output = tmp_path / "data", tmp_path / "run"
+    write_sample(dataset, "user_interruption", "1")
+    pools: list[ProcessPoolExecutor] = []
+    make_pool = v15_runner.postprocess_executor
+
+    def tracked_pool(workers: int) -> ProcessPoolExecutor:
+        pools.append(make_pool(workers))
+        return pools[-1]
+
+    monkeypatch.setattr(v15_runner, "postprocess_executor", tracked_pool)
+    result = asyncio.run(CappedPeerServer().record(dataset, output, concurrency=2))
+
+    assert len(pools) == 1
+    with pytest.raises(RuntimeError, match="after shutdown"):
+        pools[0].submit(os.getpid)
+    assert result["summary"]["variants"]["pass"] == 2
     assert json.loads((output / "run.json").read_text()) == result
 
 

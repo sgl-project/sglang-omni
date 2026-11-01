@@ -148,6 +148,18 @@
       "model-00003-of-00003.safetensors": "d0449fe1b0ef1f6045946867148d8166b9a91a58d0feca4a18b641494d0b22da"
     }
   },
+  "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16": {
+    "revision": "6415d95f88be018ff9e46813119dc3bc12261328",
+    "files": {
+      "config.json": "69c1b78421a5e408b5e91a74a9995213546613ffe2a1d87a00c7743900ead6ee",
+      "merges.txt": "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3",
+      "model.safetensors": "e6eb20e645c5a28ee66bf8434edb5b67a5f151530dab63afe22787d71bcf5382",
+      "speech_tokenizer/config.json": "ee65bb901c876664ab8707c487157aa1a6ee57c65969b28fb5ec9dc211e68167",
+      "speech_tokenizer/model.safetensors": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258",
+      "tokenizer_config.json": "dc3c31c3bdaedd5016382bb3cbe07323026775ad51f5a4fb564505992ae4a670",
+      "vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+    }
+  },
   "mlx-community/MiniMax-Music3-mxfp8": {
     "revision": "d00a12c3c7f80eb66379dd02dd0f30ed0ce2d96e",
     "files": {

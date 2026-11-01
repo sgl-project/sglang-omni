@@ -268,3 +268,19 @@ set_target_properties(music3_server music3_synthesize PROPERTIES
 install(TARGETS music3_server music3_synthesize RUNTIME DESTINATION bin)
 
 install(FILES licenses/music3-MIT.txt DESTINATION licenses)
+
+# Note (Jiaxin Deng): Qwen3-TTS CustomVoice: qwen3_tts_server, with the CUDA
+# server's /v1/audio/speech API, and its parity tool; the talker and code
+# predictor reuse Qwen3's decoder, and WAV/PCM encoding comes from Voxtral TTS.
+add_library(qwen3_tts STATIC src/qwen3_tts/qwen3_tts_codec.cpp src/qwen3_tts/qwen3_tts_model.cpp)
+target_link_libraries(qwen3_tts PUBLIC qwen3_asr voxtral_tts)
+target_compile_options(qwen3_tts PRIVATE -Wall -Wextra -ffp-contract=off)
+add_executable(qwen3_tts_server src/qwen3_tts/qwen3_tts_server.cpp)
+target_link_libraries(qwen3_tts_server PRIVATE qwen3_tts asr_service)
+target_compile_options(qwen3_tts_server PRIVATE -Wall -Wextra)
+add_executable(qwen3_tts_synthesize tools/qwen3_tts_synthesize.cpp)
+target_link_libraries(qwen3_tts_synthesize PRIVATE qwen3_tts)
+set_target_properties(qwen3_tts_server qwen3_tts_synthesize PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS qwen3_tts_server qwen3_tts_synthesize RUNTIME DESTINATION bin)

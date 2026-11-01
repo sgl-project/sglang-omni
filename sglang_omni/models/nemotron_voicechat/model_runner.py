@@ -10,7 +10,35 @@ from sglang_omni.model_runner.prefill_inputs import (
 from sglang_omni.models.nemotron_voicechat.payload_types import NemotronVoiceChatState
 
 
-class NemotronVoiceChatModelRunner(ModelRunner):
+class VoiceChatModelRunner(ModelRunner):
+    def record_function_ids(self, requests) -> None:
+        sampled = self.model.function_ids[: len(requests)].tolist()
+        for request, token in zip(requests, sampled):
+            request.data.extra_model_outputs.setdefault("function_ids", []).append(
+                token
+            )
+
+    @staticmethod
+    def record_stream_tokens(result, requests) -> None:
+        # Sampling has not happened yet in the post hooks; the thinker decodes
+        # greedily, so the argmax IS the token the sampler will record.
+        logits = result.logits_output.next_token_logits
+        sampled = logits[: len(requests)].argmax(dim=-1).tolist()
+        for request, token in zip(requests, sampled):
+            request.data.pending_stream_tokens.append(int(token))
+
+    def post_prefill(self, result, forward_batch, schedule_batch, requests) -> None:
+        del forward_batch, schedule_batch
+        self.record_function_ids(requests)
+        self.record_stream_tokens(result, requests)
+
+    def post_decode(self, result, forward_batch, schedule_batch, requests) -> None:
+        del forward_batch, schedule_batch
+        self.record_function_ids(requests)
+        self.record_stream_tokens(result, requests)
+
+
+class NemotronVoiceChatModelRunner(VoiceChatModelRunner):
     def before_prefill(self, forward_batch, schedule_batch, requests) -> None:
         del schedule_batch
         rows = [self.prefill_rows(request.data) for request in requests]
@@ -76,29 +104,3 @@ class NemotronVoiceChatModelRunner(ModelRunner):
         text, function = embeddings(tokens).to(device=device, dtype=dtype)
         acoustic = self.acoustic_row(data, frame_index).to(device=device, dtype=dtype)
         return self.model.fusion(acoustic, text, function)
-
-    def record_function_ids(self, requests) -> None:
-        sampled = self.model.function_ids[: len(requests)].tolist()
-        for request, token in zip(requests, sampled):
-            request.data.extra_model_outputs.setdefault("function_ids", []).append(
-                token
-            )
-
-    @staticmethod
-    def record_stream_tokens(result, requests) -> None:
-        # Sampling has not happened yet in the post hooks; the thinker decodes
-        # greedily, so the argmax IS the token the sampler will record.
-        logits = result.logits_output.next_token_logits
-        sampled = logits[: len(requests)].argmax(dim=-1).tolist()
-        for request, token in zip(requests, sampled):
-            request.data.pending_stream_tokens.append(int(token))
-
-    def post_prefill(self, result, forward_batch, schedule_batch, requests) -> None:
-        del forward_batch, schedule_batch
-        self.record_function_ids(requests)
-        self.record_stream_tokens(result, requests)
-
-    def post_decode(self, result, forward_batch, schedule_batch, requests) -> None:
-        del forward_batch, schedule_batch
-        self.record_function_ids(requests)
-        self.record_stream_tokens(result, requests)
