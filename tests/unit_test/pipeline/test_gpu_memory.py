@@ -232,9 +232,32 @@ def test_get_process_gpu_memory_returns_zero_when_pid_not_present(
     fake = FakeNVML(processes=[SimpleNamespace(pid=os.getpid() + 1, usedGpuMemory=1)])
     install_fake_nvml(monkeypatch, fake)
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    monkeypatch.setattr(
+        gpu_memory,
+        "INITIAL_PID_NAMESPACE_INODE",
+        os.stat("/proc/self/ns/pid").st_ino,
+    )
 
     assert gpu_memory.get_process_gpu_memory_bytes(0) == 0
     assert fake.index_handles == [0]
+
+
+@pytest.mark.parametrize(
+    "host_pids",
+    [[], [os.getpid() + 1, os.getpid() + 2]],
+)
+def test_get_process_gpu_memory_returns_none_in_separate_pid_namespace(
+    monkeypatch: pytest.MonkeyPatch,
+    host_pids: list[int],
+) -> None:
+    host_processes = [
+        SimpleNamespace(pid=pid, usedGpuMemory=8 * 1024**3) for pid in host_pids
+    ]
+    install_fake_nvml(monkeypatch, FakeNVML(processes=host_processes))
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    monkeypatch.setattr(gpu_memory, "INITIAL_PID_NAMESPACE_INODE", 0)
+
+    assert gpu_memory.get_process_gpu_memory_bytes(0) is None
 
 
 def test_get_process_gpu_memory_returns_none_on_query_failure(
