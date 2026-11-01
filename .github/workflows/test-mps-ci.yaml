@@ -151,3 +151,211 @@ jobs:
           # Evidence is uploaded above; leaving the generated audio behind
           # accumulates one attempt-sized copy per rerun in the CI home.
           rm -rf "${TTS_MPS_OUTPUT_ROOT}" "${TTS_MPS_STATE_ROOT}"
+
+  stage-2-native-mps:
+    name: stage 2 - native MPS lifecycle
+    needs: stage-1-mps-nonstream
+    if: always() && !cancelled()
+    runs-on: [self-hosted, h100]
+    timeout-minutes: 120
+    container:
+      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
+      options: >-
+        --init
+        --rm
+        --cap-add SYS_NICE
+        -e NVIDIA_VISIBLE_DEVICES
+        -v /dev/shm:/dev/shm
+        -v /data/omni-ci:/data/omni-ci
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
+    env:
+      MPS_NATIVE_CI_MODEL: bosonai/higgs-tts-3-4b
+      MPS_NATIVE_CI_STATE_ROOT: /tmp/mps-native-ci
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.exact_sha }}
+
+      - name: Verify exclusive idle H100 ownership
+        id: gpu-preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v nvidia-smi >/dev/null
+          command -v nvidia-cuda-mps-control >/dev/null
+          mapfile -t gpu_indices < <(nvidia-smi --query-gpu=index --format=csv,noheader,nounits)
+          if (( ${#gpu_indices[@]} != 1 )); then
+            echo "::error::Expected exactly one GPU exposed to this runner, found ${#gpu_indices[@]}."
+            exit 1
+          fi
+          gpu_index="${gpu_indices[0]}"
+          gpu_name="$(nvidia-smi --id="${gpu_index}" --query-gpu=name --format=csv,noheader | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+          if [[ "${gpu_name}" != *H100* ]]; then
+            echo "::error::Expected an H100, found ${gpu_name}."
+            exit 1
+          fi
+          gpu_memory_used_mib="$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits --id="${gpu_index}" | tr -d ' ')"
+          gpu_idle_memory_limit_mib=1024
+          if ! [[ "${gpu_memory_used_mib}" =~ ^[0-9]+$ ]] || (( gpu_memory_used_mib >= gpu_idle_memory_limit_mib )); then
+            echo "::error::GPU ${gpu_index} is not idle: ${gpu_memory_used_mib} MiB used."
+            exit 1
+          fi
+          gpu_compute_process_ids="$(nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits --id="${gpu_index}")"
+          if grep -Eq '^[[:space:]]*[0-9]+' <<< "${gpu_compute_process_ids}"; then
+            echo "::error::GPU ${gpu_index} already has compute processes: ${gpu_compute_process_ids}"
+            exit 1
+          fi
+          echo "CUDA_VISIBLE_DEVICES=${gpu_index}" >> "${GITHUB_ENV}"
+          echo "Verified idle ${gpu_name} at physical index ${gpu_index}."
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni
+
+      - name: Run native MPS lifecycle validation
+        shell: bash
+        run: |
+          source omni/bin/activate
+          mkdir -p test-results/native-mps
+          export PYTHONPATH=$PWD
+          "${OMNI_CI_PYTHON}" -m pytest tests/test_ci/test_mps_native.py -v -s -x --junitxml=test-results/native-mps/junit.xml
+          "${OMNI_CI_PYTHON}" -c '
+          import sys
+          import xml.etree.ElementTree as ET
+
+          test_cases = ET.parse(sys.argv[1]).findall(".//testcase")
+          skipped_test_count = sum(test_case.find("skipped") is not None for test_case in test_cases)
+          print(f"collected={len(test_cases)} skipped={skipped_test_count}")
+          if len(test_cases) != 2 or skipped_test_count != 0:
+              raise SystemExit(1)
+          ' test-results/native-mps/junit.xml
+
+      - name: Collect native MPS diagnostics
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p test-results/native-mps
+          find /tmp -maxdepth 1 -type f -name 'mps-native-ci-*.log' -exec cp -t test-results/native-mps {} +
+          nvidia-smi -q > test-results/native-mps/nvidia-smi.txt 2>&1 || true
+
+      - name: Upload native MPS evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-mps-lifecycle-evidence
+          path: test-results/native-mps/**
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Post-stage cleanup
+        if: ${{ always() && steps.gpu-preflight.outcome == 'success' }}
+        uses: ./.github/actions/omni-post-stage
+        with:
+          stage-label: Native MPS lifecycle validation
+
+  stage-3-native-weight-share:
+    name: stage 3 - native weight-sharing lifecycle
+    needs: stage-2-native-mps
+    if: always() && !cancelled()
+    runs-on: [self-hosted, h100]
+    timeout-minutes: 120
+    container:
+      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
+      options: >-
+        --init
+        --rm
+        --cap-add SYS_NICE
+        -e NVIDIA_VISIBLE_DEVICES
+        -v /dev/shm:/dev/shm
+        -v /data/omni-ci:/data/omni-ci
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
+    env:
+      WEIGHT_SHARE_CI_MODEL: OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5
+      WEIGHT_SHARE_CI_GPU: "0"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.exact_sha }}
+
+      - name: Verify exclusive idle H100 ownership
+        id: gpu-preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v nvidia-smi >/dev/null
+          command -v nvidia-cuda-mps-control >/dev/null
+          mapfile -t gpu_indices < <(nvidia-smi --query-gpu=index --format=csv,noheader,nounits)
+          if (( ${#gpu_indices[@]} != 1 )); then
+            echo "::error::Expected exactly one GPU exposed to this runner, found ${#gpu_indices[@]}."
+            exit 1
+          fi
+          gpu_index="${gpu_indices[0]}"
+          gpu_name="$(nvidia-smi --id="${gpu_index}" --query-gpu=name --format=csv,noheader | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+          if [[ "${gpu_name}" != *H100* ]]; then
+            echo "::error::Expected an H100, found ${gpu_name}."
+            exit 1
+          fi
+          gpu_memory_used_mib="$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits --id="${gpu_index}" | tr -d ' ')"
+          gpu_idle_memory_limit_mib=1024
+          if ! [[ "${gpu_memory_used_mib}" =~ ^[0-9]+$ ]] || (( gpu_memory_used_mib >= gpu_idle_memory_limit_mib )); then
+            echo "::error::GPU ${gpu_index} is not idle: ${gpu_memory_used_mib} MiB used."
+            exit 1
+          fi
+          gpu_compute_process_ids="$(nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits --id="${gpu_index}")"
+          if grep -Eq '^[[:space:]]*[0-9]+' <<< "${gpu_compute_process_ids}"; then
+            echo "::error::GPU ${gpu_index} already has compute processes: ${gpu_compute_process_ids}"
+            exit 1
+          fi
+          echo "CUDA_VISIBLE_DEVICES=${gpu_index}" >> "${GITHUB_ENV}"
+          echo "Verified idle ${gpu_name} at physical index ${gpu_index}."
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni
+
+      - name: Run native weight-sharing lifecycle validation
+        shell: bash
+        run: |
+          source omni/bin/activate
+          mkdir -p test-results/native-weight-share
+          export PYTHONPATH=$PWD
+          "${OMNI_CI_PYTHON}" -m pytest tests/test_ci/test_weight_share_native.py -v -s -x --junitxml=test-results/native-weight-share/junit.xml
+          "${OMNI_CI_PYTHON}" -c '
+          import sys
+          import xml.etree.ElementTree as ET
+
+          test_cases = ET.parse(sys.argv[1]).findall(".//testcase")
+          skipped_test_count = sum(test_case.find("skipped") is not None for test_case in test_cases)
+          print(f"collected={len(test_cases)} skipped={skipped_test_count}")
+          if len(test_cases) != 2 or skipped_test_count != 0:
+              raise SystemExit(1)
+          ' test-results/native-weight-share/junit.xml
+
+      - name: Collect native weight-sharing diagnostics
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p test-results/native-weight-share
+          if [ -f /tmp/weight-share-ci.log ]; then
+            cp /tmp/weight-share-ci.log test-results/native-weight-share/
+          fi
+          nvidia-smi -q > test-results/native-weight-share/nvidia-smi.txt 2>&1 || true
+
+      - name: Upload native weight-sharing evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-weight-share-lifecycle-evidence
+          path: test-results/native-weight-share/**
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Post-stage cleanup
+        if: ${{ always() && steps.gpu-preflight.outcome == 'success' }}
+        uses: ./.github/actions/omni-post-stage
+        with:
+          stage-label: Native weight-sharing lifecycle validation
