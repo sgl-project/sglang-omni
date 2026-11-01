@@ -100,6 +100,49 @@ class StubRunner(ModelRunner):
         return ModelRunnerOutput(outputs={}, req_ids=[], req_id_to_index={})
 
 
+class PrefillStubRunner(StubRunner):
+    """StubRunner that launches a prefill and only implements prefill hooks."""
+
+    def __init__(self):
+        super().__init__()
+        self.prefill_launch_calls = 0
+        self.prefill_resolve_calls = 0
+
+    def build_forward_batch(self, scheduler_output):
+        forward_batch, schedule_batch, _ = super().build_forward_batch(
+            scheduler_output
+        )
+        return forward_batch, schedule_batch, True
+
+    def post_prefill_launch(self, result, forward_batch, requests):
+        self.prefill_launch_calls += 1
+        return f"prefillbuf-{self.prefill_launch_calls}"
+
+    def post_prefill_resolve(
+        self, launch_buf, result, forward_batch, schedule_batch, requests
+    ):
+        self.prefill_resolve_calls += 1
+        self.last_resolved_buf = launch_buf
+
+    def post_decode_launch(self, result, forward_batch, requests):
+        raise AssertionError("prefill launch must not use the decode hook")
+
+    def post_decode_resolve(
+        self, launch_buf, result, forward_batch, schedule_batch, requests
+    ):
+        raise AssertionError("prefill resolve must not use the decode hook")
+
+
+class DefaultPrefillStubRunner(StubRunner):
+    """Prefill runner with no prefill hooks; must keep the decode fallback."""
+
+    def build_forward_batch(self, scheduler_output):
+        forward_batch, schedule_batch, _ = super().build_forward_batch(
+            scheduler_output
+        )
+        return forward_batch, schedule_batch, True
+
+
 def patch_event(ready: bool):
     class FakeEvent:
         def __init__(self):
@@ -193,6 +236,29 @@ def test_launch_returns_handle_resolve_consumes_it():
     # already published at the right length. Re-stamping the lagged step's
     # tokens leaves a stale-length rail -> input_ids/seq_lens mismatch once a
     # req finishes mid-batch (the bs>1 replay crash). The launch publishes it.
+
+
+def test_prefill_launch_and_resolve_use_prefill_hooks():
+    r = PrefillStubRunner()
+    with patch_event(ready=True):
+        step = r.execute_launch(make_sched_output(1))
+        assert step is not None
+        assert step.is_prefill is True
+        out = r.execute_resolve(step)
+    assert out is not None
+    assert (r.prefill_launch_calls, r.prefill_resolve_calls) == (1, 1)
+    assert r.last_resolved_buf == "prefillbuf-1"
+
+
+def test_prefill_falls_back_to_decode_hooks_by_default():
+    r = DefaultPrefillStubRunner()
+    with patch_event(ready=True):
+        step = r.execute_launch(make_sched_output(1))
+        assert step is not None
+        assert step.is_prefill is True
+        r.execute_resolve(step)
+    assert (r.launch_calls, r.resolve_calls) == (1, 1)
+    assert r.last_resolved_buf == "hostbuf-1"
 
 
 def test_two_launches_return_distinct_handles():

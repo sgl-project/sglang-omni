@@ -506,6 +506,23 @@ class MossTTSLocalModelRunner(ModelRunner):
             pass
         return (rows, end_id, next_token_ids)
 
+    def post_prefill_launch(
+        self,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> torch.Tensor | None:
+        """Return the frame ``post_prefill`` already collected.
+
+        The synchronous prefill path collects the first frame in
+        ``post_prefill``. Reusing ``post_decode_launch`` here would run
+        ``run_frame_decode`` a second time, advancing the RNG and overwriting
+        the published ids. Hand resolve a private snapshot instead.
+        """
+        del forward_batch, requests
+        ids = getattr(result, "next_token_ids", None)
+        return ids.clone() if isinstance(ids, torch.Tensor) else ids
+
     def post_decode_launch(
         self,
         result: GenerationBatchResult,
@@ -623,6 +640,36 @@ class MossTTSLocalModelRunner(ModelRunner):
         else:
             pass
 
+    def _gen_pinned_bufs(
+        self, n: int
+    ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+        """Pinned ping-pong staging buffers for the per-step H2D copies.
+
+        A pageable ``.to(device="cuda")`` is synchronous: it waits for the
+        current stream to drain, so on the async-decode path it serialized the
+        scheduler thread against the in-flight forward (measured ~10 ms per
+        step, ~45% of wall time). Pinned ``copy_(non_blocking=True)`` returns
+        immediately and the copy overlaps the forward.
+        """
+        bufs = getattr(self, "_gen_pinned", None)
+        if bufs is None or bufs[0][0].numel() < n:
+            size = max(n, 128)
+            bufs = (
+                [
+                    torch.empty(size, dtype=torch.long, pin_memory=True),
+                    torch.empty(size, dtype=torch.long, pin_memory=True),
+                ],
+                [
+                    torch.empty(size, dtype=torch.long, pin_memory=True),
+                    torch.empty(size, dtype=torch.long, pin_memory=True),
+                ],
+            )
+            self._gen_pinned = bufs
+            self._gen_pinned_slot = 0
+        else:
+            pass
+        return bufs
+
     def on_generation_steps_advanced(
         self,
         advanced_steps: list[tuple[SchedulerRequest, int]],
@@ -636,13 +683,22 @@ class MossTTSLocalModelRunner(ModelRunner):
             return
         else:
             pass
+        rows_bufs, steps_bufs = self._gen_pinned_bufs(len(advanced_steps))
+        slot = getattr(self, "_gen_pinned_slot", 0)
+        self._gen_pinned_slot = slot ^ 1
+        rows_buf = rows_bufs[slot]
+        steps_buf = steps_bufs[slot]
         steps = [int(generation_steps) for _, generation_steps in advanced_steps]
+        steps_buf[: len(steps)] = torch.tensor(steps, dtype=torch.long)
         try:
             row_t = forward_batch.moss_pool_row_t
         except AttributeError:
             row_t = None
         if row_t is not None and int(row_t.numel()) == len(steps):
-            step_t = torch.tensor(steps, dtype=torch.long, device=row_t.device)
+            step_t = torch.empty(
+                len(steps), dtype=torch.long, device=row_t.device
+            )
+            step_t.copy_(steps_buf[: len(steps)], non_blocking=True)
             pool.commit_generation_steps(row_t, step_t)
             return
         else:
@@ -662,8 +718,12 @@ class MossTTSLocalModelRunner(ModelRunner):
         else:
             pass
         device = pool.generation_steps.device
-        row_t = torch.tensor(rows, dtype=torch.long, device=device)
-        step_t = torch.tensor(row_steps, dtype=torch.long, device=device)
+        rows_buf[: len(rows)] = torch.tensor(rows, dtype=torch.long)
+        steps_buf[: len(row_steps)] = torch.tensor(row_steps, dtype=torch.long)
+        row_t = torch.empty(len(rows), dtype=torch.long, device=device)
+        step_t = torch.empty(len(row_steps), dtype=torch.long, device=device)
+        row_t.copy_(rows_buf[: len(rows)], non_blocking=True)
+        step_t.copy_(steps_buf[: len(row_steps)], non_blocking=True)
         pool.commit_generation_steps(row_t, step_t)
 
     def post_process_outputs(

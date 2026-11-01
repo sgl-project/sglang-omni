@@ -854,6 +854,20 @@ def test_moss_tts_local_generation_defaults(disable_prefill: bool) -> None:
         assert overrides["cuda_graph_bs_prefill"] == [64, 128, 256, 512]
 
 
+def test_moss_tts_local_prefill_lookahead_follows_async_decode() -> None:
+    def kwargs(enable_async_decode: bool) -> dict[str, object]:
+        builder = MossTtsLocalEngineBuilder(
+            enable_async_decode=enable_async_decode,
+            async_decode_min_batch_size=1,
+            total_gpu_memory_fraction=None,
+            codec_mem_reserve=0.0,
+        )
+        return dict(builder.extra_scheduler_kwargs())
+
+    assert kwargs(False)["async_prefill"] is False
+    assert kwargs(True)["async_prefill"] is True
+
+
 def test_moss_local_context_probe_uses_runtime_model_config_inputs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2098,6 +2112,32 @@ def test_async_launch_resolve_matches_sync_collect():
     )
     assert len(req_s.data.output_rows) == len(req_a.data.output_rows) == 1
     assert torch.equal(req_s.data.output_rows[0], req_a.data.output_rows[0])
+
+
+def test_prefill_launch_reuses_the_frame_post_prefill_collected():
+    """Prefill launch must hand resolve the frame post_prefill already sampled.
+
+    ``post_prefill`` calls ``collect_frame``; routing prefill through the decode
+    launch hook would run ``run_frame_decode`` a second time and advance the RNG.
+    """
+    pytest.importorskip("sglang")
+    import types
+
+    from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
+
+    runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
+    runner.model = types.SimpleNamespace(
+        decode_frame=lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("prefill launch must not sample again")
+        )
+    )
+    ids = torch.tensor([11, 12], dtype=torch.long)
+    result = types.SimpleNamespace(next_token_ids=ids)
+
+    launch_buf = runner.post_prefill_launch(result, None, [])
+
+    assert launch_buf is not ids
+    assert torch.equal(launch_buf, ids)
 
 
 def test_async_resolve_preserves_stop_id_through_output_ids_clobber():

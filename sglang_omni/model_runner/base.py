@@ -119,16 +119,17 @@ def resolve_deferred_prefill_inputs(
 
 @dataclass
 class PendingStep:
-    """One decode step launched on the GPU but not yet consumed on the host.
+    """One step launched on the GPU but not yet consumed on the host.
 
-    Async-decode (one-step lookahead) bookkeeping: a launched step has its
-    forward + on-GPU sample + collect enqueued and ``event`` recorded right
-    after, so ``event.query()`` true means the launched step's GPU work is
-    published. ``launch_buf`` is whatever ``post_decode_launch`` returns for
-    resolve to consume: a device-side correctness snapshot of the published ids
-    (MOSS-TTS-Local, no host copy), or a pinned host staging buffer an async host
-    copy filled (Higgs); only the latter provides host-D2H overlap.
-    ``execute_resolve`` later waits on ``event`` and reads ``launch_buf``.
+    Async lookahead bookkeeping: a launched step has its forward + on-GPU
+    sample/collect enqueued and ``event`` recorded right after, so
+    ``event.query()`` true means the launched step's GPU work is published.
+    ``launch_buf`` is whatever ``post_prefill_launch`` / ``post_decode_launch``
+    returns for resolve to consume: a device-side correctness snapshot of the
+    published ids (MOSS-TTS-Local, no host copy), or a pinned host staging
+    buffer an async host copy filled (Higgs); only the latter provides host-D2H
+    overlap. ``execute_resolve`` later waits on ``event`` and reads
+    ``launch_buf`` through the matching prefill/decode resolve hook.
 
     Invariant: at most one ``_PendingStep`` is live at a time (see
     ``ModelRunner._pending``). When the launch uses host staging it is pinned
@@ -136,9 +137,9 @@ class PendingStep:
     launch(N+1) writes the other (design.md section 1.4).
     """
 
-    event: CompletionEvent  # device Event, recorded after post_decode_launch publishes
+    event: CompletionEvent  # device Event, recorded after the launch hook publishes
     launch_buf: (
-        DecodeLaunchBuffer  # post_decode_launch return: device snapshot or host staging
+        DecodeLaunchBuffer  # launch-hook return: device snapshot or host staging
     )
     scheduler_output: (
         SchedulerOutput  # this step's SchedulerOutput (routing + output proc)
@@ -148,6 +149,9 @@ class PendingStep:
     batch_result: (
         GenerationBatchResult  # carries logits_output (device of next_token_ids)
     )
+    # Required by execute_resolve to pick post_prefill_resolve vs
+    # post_decode_resolve. Defaults to False for test-built handles.
+    is_prefill: bool = False
 
 
 class ModelRunner(Generic[RequestDataInput]):
@@ -466,14 +470,19 @@ class ModelRunner(Generic[RequestDataInput]):
         )
 
     def execute_launch(self, scheduler_output: SchedulerOutput) -> "PendingStep | None":
-        """Enqueue a decode or supported whole-prompt prefill step, call
-        ``post_decode_launch`` to publish a model-specific resolve payload
+        """Enqueue a decode or supported whole-prompt prefill step, call the
+        matching launch hook to publish a model-specific resolve payload
         (returned as launch_buf), and record a device event right after
         publication. Does NOT wait on the GPU. ``launch_buf``
         is a device-side correctness snapshot (MOSS-TTS-Local) or pinned host
         staging (Higgs); only the latter overlaps a host copy with the next
         forward, and ``event.query()`` proves the launched step's GPU work is
         done, not that any host overlap happened.
+
+        Prefill and decode have separate launch hooks so a model whose prefill
+        already collected its first frame (MOSS-TTS-Local) does not collect it a
+        second time here. The default prefill hooks delegate to the decode
+        hooks, preserving the behavior of models that only implement decode.
 
         Returns the ``_PendingStep`` handle (or None if there was no batch).
         The CALLER owns the handle and passes it to ``execute_resolve`` later.
@@ -507,11 +516,25 @@ class ModelRunner(Generic[RequestDataInput]):
                     schedule_batch,
                     scheduler_output.requests,
                 )
+                launch_buf = self.post_prefill_launch(
+                    batch_result, forward_batch, scheduler_output.requests
+                )
+            else:
+                launch_buf = self.post_decode_launch(
+                    batch_result, forward_batch, scheduler_output.requests
+                )
+            if (
+                not is_prefill
+                and isinstance(batch_result.next_token_ids, torch.Tensor)
+                and batch_result.next_token_ids.is_cuda
+            ):
+                # Async decode launches never run the sync collect hook, so
+                # stage the pinned host copy here; otherwise finalize's
+                # resolve falls back to a blocking .tolist() D2H on the
+                # scheduler thread (30% of step time in py-spy).
+                self.stage_token_ids(batch_result, batch_result.next_token_ids)
             else:
                 pass
-            launch_buf = self.post_decode_launch(
-                batch_result, forward_batch, scheduler_output.requests
-            )
             self.ensure_next_token_ids(
                 batch_result,
                 forward_batch,
@@ -538,17 +561,18 @@ class ModelRunner(Generic[RequestDataInput]):
             forward_batch=forward_batch,
             schedule_batch=resolve_batch,
             batch_result=batch_result,
+            is_prefill=is_prefill,
         )
 
     def execute_resolve(
         self, pending: "PendingStep | None"
     ) -> ModelRunnerOutput | None:
-        """Consume a launched decode step: wait on its event (non-blocking
+        """Consume a launched step: wait on its event (non-blocking
         ``query()``, else ``synchronize()``), read its ``launch_buf`` (a device
-        snapshot or pinned host staging) and run the per-request collect loop
-        (``post_decode_resolve``), then
-        finalize sampling/output. Returns that step's ``ModelRunnerOutput``,
-        or None if ``pending`` is None (first iteration / after a drain).
+        snapshot or pinned host staging) through the matching prefill/decode
+        resolve hook, then finalize sampling/output. Returns that step's
+        ``ModelRunnerOutput``, or None if ``pending`` is None (first iteration /
+        after a drain).
         """
         if pending is None:
             return None
@@ -566,13 +590,22 @@ class ModelRunner(Generic[RequestDataInput]):
             for req in pending.scheduler_output.requests
             if req.data.req.finished() or self.req_is_retracted(req.data.req)
         }
-        self.post_decode_resolve(
-            pending.launch_buf,
-            pending.batch_result,
-            pending.forward_batch,
-            pending.schedule_batch,
-            pending.scheduler_output.requests,
-        )
+        if pending.is_prefill:
+            self.post_prefill_resolve(
+                pending.launch_buf,
+                pending.batch_result,
+                pending.forward_batch,
+                pending.schedule_batch,
+                pending.scheduler_output.requests,
+            )
+        else:
+            self.post_decode_resolve(
+                pending.launch_buf,
+                pending.batch_result,
+                pending.forward_batch,
+                pending.schedule_batch,
+                pending.scheduler_output.requests,
+            )
         return self.finalize(
             pending.batch_result,
             pending.forward_batch,
@@ -977,6 +1010,44 @@ class ModelRunner(Generic[RequestDataInput]):
         is enqueued on the same outbox, so runners that buffer stream chunks
         across decode steps can flush them ahead of stream completion.
         """
+
+    def post_prefill_launch(
+        self,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> DecodeLaunchBuffer:
+        """Async-prefill GPU half of ``post_prefill``.
+
+        Called instead of ``post_decode_launch`` for an extend batch when the
+        scheduler admits whole-prompt prefill to lookahead. Return the payload
+        ``post_prefill_resolve`` consumes; the caller records the completion
+        event right after this call.
+
+        Default: delegate to ``post_decode_launch`` so a model that only
+        implements the decode half keeps its existing prefill behavior. A model
+        whose ``post_prefill`` already sampled/collected (MOSS-TTS-Local) must
+        override this to return that snapshot instead of sampling again.
+        """
+        return self.post_decode_launch(result, forward_batch, requests)
+
+    def post_prefill_resolve(
+        self,
+        launch_buf: DecodeLaunchBuffer,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch | None,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
+    ) -> None:
+        """Async-prefill host half of ``post_prefill``.
+
+        Called instead of ``post_decode_resolve`` when resolving an extend batch
+        launched by ``post_prefill_launch``. Default: delegate to the decode
+        resolve hook; prefill-specific state is restored by overriding this.
+        """
+        self.post_decode_resolve(
+            launch_buf, result, forward_batch, schedule_batch, requests
+        )
 
     def post_decode_launch(
         self,

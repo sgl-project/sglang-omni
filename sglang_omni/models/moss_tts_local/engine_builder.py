@@ -225,6 +225,11 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
         return {
             "enable_async_decode": self.enable_async_decode,
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
+            # Whole-prompt prefill lookahead. The MOSS runner's post_prefill
+            # collects the first frame, and post_prefill_launch hands that
+            # snapshot to resolve instead of sampling a second time. Chunked or
+            # mixed prefills stay synchronous in the scheduler.
+            "async_prefill": self.enable_async_decode,
             "prefill_coalesce_requests": self.prefill_coalesce_requests,
             "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
         }
