@@ -162,21 +162,23 @@ def run_once(
     checkpoint_files: list[Path],
     body: bytes,
 ) -> SpawnRun:
-    resident_pages = 0
-    checkpoint_pages = 0
     for path in checkpoint_files:
         if cache_state == "warm":
             with path.open("rb") as checkpoint_file:
                 while checkpoint_file.read(READ_CHUNK_BYTES):
                     pass
         else:
-            pass
-        resident, total = page_cache_pages(path, should_evict=cache_state == "cold")
+            page_cache_pages(path, should_evict=True)
+    # note (Minyi Tang): count residency only after every file is prepared, since warming a later shard can evict an earlier one.
+    resident_pages = 0
+    checkpoint_pages = 0
+    for path in checkpoint_files:
+        resident, total = page_cache_pages(path, should_evict=False)
         resident_pages += resident
         checkpoint_pages += total
     port = free_port()
     command = [
-        str(arguments.server),
+        str(arguments.server.resolve()),
         "--model-path", str(arguments.model_path),
         "--host", "127.0.0.1",
         "--port", str(port),
@@ -190,6 +192,10 @@ def run_once(
         while True:
             if process.poll() is not None:
                 raise RuntimeError(f"server exited with {process.returncode}")
+            elif time.monotonic() - started > arguments.startup_timeout_seconds:
+                raise TimeoutError(
+                    f"server not healthy after {arguments.startup_timeout_seconds} s"
+                )
             else:
                 pass
             try:
@@ -254,6 +260,7 @@ def main() -> None:
         default=5.0,
         help="wait after the last request before reading the footprint",
     )
+    parser.add_argument("--startup-timeout-seconds", type=float, default=600.0)
     parser.add_argument("--output", type=Path, help="write every run as JSON")
     parser.add_argument(
         "--server-log", type=argparse.FileType("w"), default="/dev/null"
@@ -266,6 +273,14 @@ def main() -> None:
     else:
         pass
     body = arguments.request.read_bytes()
+    request = json.loads(body)
+    if not isinstance(request, dict):
+        parser.error("--request must hold a JSON object")
+    elif request.get("stream") is True:
+        # note (Minyi Tang): a streamed response is HTTP 200 before synthesis, so a failed generation would count as audio.
+        parser.error("--request must not stream")
+    else:
+        pass
     checkpoint_files = sorted(
         path for path in arguments.model_path.rglob("*") if path.is_file()
     )
