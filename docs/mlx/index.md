@@ -97,6 +97,7 @@ agree on it with a maintainer first.
 
 - Mac CI checks correctness only. Report total time, realtime factor, peak
   memory and load time against the reference, with the device stated.
+- For a TTS server, `ci/tts_spawn_bench.py` measures cold and warm spawn to first audio and the idle footprint, the numbers Voxt's idle-unload default depends on. Run it on AC power: a request in flight while the Mac sleeps passes its server deadline.
 
 **CI and style**
 
