@@ -11,7 +11,6 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
-import torch._inductor.config as inductor_config
 from safetensors.torch import save_file
 from torch._dynamo.utils import counters
 from torch._inductor.runtime.triton_heuristics import CachingAutotuner
@@ -286,8 +285,9 @@ def test_smallest_bucket_picks_the_first_bucket_that_fits() -> None:
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_reference_encoder_capture_benchmarks_no_kernel_config(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(tmp_path))
     benchmarked = []
     original = CachingAutotuner.benchmark_all_configs
 
@@ -309,8 +309,7 @@ def test_reference_encoder_capture_benchmarks_no_kernel_config(
         stream=torch.cuda.Stream(device),
     )
     torch.compiler.reset()
-    with inductor_config.patch(force_disable_caches=True):
-        runner.capture()
+    runner.capture()
 
     assert runner.stats()["captured"] == [256]
     assert benchmarked == []
