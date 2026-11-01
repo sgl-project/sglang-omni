@@ -3583,10 +3583,12 @@ def test_qwen3_tts_window_frames_build_the_window_runner(
         incremental_codec_cuda_graph_window_frames=(1, 2, 4, 8, 16, 32),
     )
 
-    assert compiled.initial_window_decode_graphs.compile_fresh_frames == frozenset({8})
+    assert compiled.initial_window_decode_graphs.compile_fresh_frames == frozenset(
+        {1, 2, 4, 8}
+    )
     assert compiled.followup_incremental_graph_holders[
         0
-    ].compile_fresh_frames == frozenset({8})
+    ].compile_fresh_frames == frozenset(range(1, 9))
     assert compiled.initial_incremental_decode_graphs.compile_fresh_frames == (
         frozenset({1, 2})
     )

@@ -946,14 +946,15 @@ class Qwen3TTSStreamingVocoderScheduler(
                 )
             )
         )
+        in_place_frames = max(
+            (self.stream_followup_stride, *self.followup_stride_ramp, *cold_frames)
+        )
         self.codec_arena = self.build_codec_arena(
             int(codec_state_slots),
             dtype=codec_state_dtype,
             # note (ratish): the widest cold and follow-up decodes, which graphs may compile, so
             # each attends in place; compiled, the gathered step would copy every ring a decode.
-            in_place_frames=max(
-                (self.stream_followup_stride, *self.followup_stride_ramp, *cold_frames)
-            ),
+            in_place_frames=in_place_frames,
         )
         (
             self.initial_incremental_decode_graphs,
@@ -974,6 +975,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             ),
             min_free_gb=incremental_codec_cuda_graph_min_free_gb,
             has_reference_prefixed_first_chunks=has_reference_prefixed_first_chunks,
+            in_place_frames=in_place_frames,
         )
         self.codec_fallback_count = 0
         self.codec_stats_last_log_s = time.monotonic()
@@ -1084,6 +1086,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         window_frames: Sequence[int],
         min_free_gb: float,
         has_reference_prefixed_first_chunks: bool,
+        in_place_frames: int,
     ) -> tuple[
         Qwen3TTSIncrementalCodecCudaGraphRunner | None,
         Qwen3TTSIncrementalCodecCudaGraphRunner | None,
@@ -1131,8 +1134,14 @@ class Qwen3TTSStreamingVocoderScheduler(
                 batch_sizes=graph_batch_sizes,
                 min_free_gb=min_free_gb,
                 enabled=graph_enabled,
+                # note (ratish): the size classes give every width one program, so each width that
+                # attends in place compiles; a wider one takes the gathered step and stays eager.
                 compile_fresh_frames=(
-                    (self.stream_followup_stride,) if compile_kernels else ()
+                    tuple(
+                        frames for frames in window_frames if frames <= in_place_frames
+                    )
+                    if compile_kernels
+                    else ()
                 ),
                 arena=self.codec_arena,
                 graph_pool=initial_graph_pool,
@@ -1195,9 +1204,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                     batch_sizes=graph_batch_sizes,
                     min_free_gb=min_free_gb,
                     enabled=graph_enabled,
-                    compile_fresh_frames=(
-                        (self.stream_followup_stride,) if compile_kernels else ()
-                    ),
+                    compile_fresh_frames=warm_fresh_frames if compile_kernels else (),
                     arena=self.codec_arena,
                     graph_pool=IncrementalCodecGraphPool(
                         stream_priority=self.decode_stream_priority
