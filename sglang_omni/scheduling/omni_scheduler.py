@@ -2382,21 +2382,17 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
         resolve_forward_inputs(batch, self.future_map)
-        target_worker = self.tp_worker.speculative_target_worker
         if self.model_runner.speculative_verify_takes_logits_hooks:
-            target_worker.verify_requests = [
-                SchedulerRequest(request_id=req.rid, data=req.omni_data)
-                for req in batch.reqs
-            ]
+            # The next step of this loop replaces the list the verify reads here.
+            self.tp_worker.speculative_target_worker.verify_requests = (
+                self.build_sched_output(batch).requests
+            )
         else:
             pass
-        try:
-            with _Upstream._forward_isolation(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-                self, batch, overlap=False
-            ):
-                result = self.draft_worker.forward_batch_generation(batch)
-        finally:
-            target_worker.verify_requests = []
+        with _Upstream._forward_isolation(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            self, batch, overlap=False
+        ):
+            result = self.draft_worker.forward_batch_generation(batch)
         self.model_runner.after_speculative_step(
             batch,
             is_prefill=is_prefill,
