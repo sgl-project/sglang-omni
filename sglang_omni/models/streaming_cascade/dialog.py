@@ -127,10 +127,11 @@ class Dialog(StreamComponent):
     arrives after the next reply began still cuts the history later prompts
     read. A reply the history keeps nothing of leaves no entry once an
     utterance follows it, and that utterance joins the user message the reply
-    answered. The language the recognizer heard in the last utterance of at
-    least 3 words or 3 Chinese, Japanese or Korean characters is the
-    Session's language, and every messages chunk carries it; a shorter
-    utterance leaves it unchanged, and when the recognizer heard another
+    answered. The Session's language is the configured language when set,
+    and otherwise the language the recognizer heard in the last utterance of
+    at least 3 words or 3 Chinese, Japanese or Korean characters; every
+    messages chunk carries it, a shorter utterance leaves the recognizer's
+    language unchanged, and when the recognizer heard another
     language in it, that turn's latest user message asks for a reply in the
     Session's language. A replacement adopts the history, the open reply and
     the waiting utterances, so new settings apply at once and reach the next
