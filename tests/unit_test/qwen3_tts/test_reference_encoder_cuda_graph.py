@@ -11,9 +11,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
-import torch._dynamo as dynamo
 import torch._inductor.config as inductor_config
-import torch.nn.functional as F
 from safetensors.torch import save_file
 from torch._dynamo.utils import counters
 from torch._inductor.runtime.triton_heuristics import CachingAutotuner
@@ -27,7 +25,6 @@ from transformers.models.mimi.modeling_mimi import (
 from sglang_omni.models.qwen3_tts import request_builders as qwen3_request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
 from sglang_omni.models.qwen3_tts.reference_encoder_cuda_graph import (
-    REFERENCE_ENCODER_INDUCTOR_OPTIONS,
     Qwen3TTSReferenceEncoderCudaGraphRunner,
     exact_length_encode,
     pad_convs_by_integers,
@@ -288,7 +285,7 @@ def test_smallest_bucket_picks_the_first_bucket_that_fits() -> None:
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
-def test_reference_encoder_compile_benchmarks_no_kernel_for_a_layer_norm(
+def test_reference_encoder_capture_benchmarks_no_kernel_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     benchmarked = []
@@ -299,23 +296,23 @@ def test_reference_encoder_compile_benchmarks_no_kernel_for_a_layer_norm(
         return original(self, *args, **kwargs)
 
     monkeypatch.setattr(CachingAutotuner, "benchmark_all_configs", record)
+    torch.manual_seed(11)
     device = torch.device("cuda", torch.cuda.current_device())
-    weight = torch.randn(512, device=device)
-    bias = torch.randn(512, device=device)
-
-    def layer_norm(values: torch.Tensor) -> torch.Tensor:
-        return F.layer_norm(values, (512,), weight, bias)
-
-    compiled = torch.compile(
-        layer_norm, fullgraph=True, options=dict(REFERENCE_ENCODER_INDUCTOR_OPTIONS)
+    model = MimiModel(MimiConfig(num_hidden_layers=1, num_quantizers=8))
+    model = model.to(device).eval()
+    pad_convs_by_integers(model)
+    runner = Qwen3TTSReferenceEncoderCudaGraphRunner(
+        model,
+        hop=1920,
+        num_quantizers=8,
+        bucket_frames=(256,),
+        stream=torch.cuda.Stream(device),
     )
-    values = torch.randn(1, 512, 512, device=device)
-    dynamo.maybe_mark_dynamic(values, 1)
     torch.compiler.reset()
     with inductor_config.patch(force_disable_caches=True):
-        compiled(values)
-    torch.cuda.synchronize(device)
+        runner.capture()
 
+    assert runner.stats()["captured"] == [256]
     assert benchmarked == []
 
 
