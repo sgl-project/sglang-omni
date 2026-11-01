@@ -1846,9 +1846,7 @@ def test_arena_rings_keep_each_slot_apart_across_cohorts_and_graph_replays() -> 
 @pytest.mark.skipif(
     not current_platform.is_cuda(), reason="channels-last convs run on NVIDIA CUDA only"
 )
-def test_compiled_decode_serves_every_batch_and_width_above_one_with_one_program() -> (
-    None
-):
+def test_compiled_decode_compiles_one_program_per_size_class() -> None:
     apply_qwen_tts_transformers_compatibility_patches()
     from qwen_tts.core.tokenizer_12hz.configuration_qwen3_tts_tokenizer_v2 import (
         Qwen3TTSTokenizerV2DecoderConfig,
