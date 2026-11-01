@@ -57,7 +57,7 @@ class AudioVAEStreamingSlotBindings:
             slot = self.request_to_slot.get(request_id)
             if slot is None:
                 raise RuntimeError(
-                    f"Ming-Omni-TTS stream {request_id!r} has no AudioVAE slot"
+                    f"AudioVAE stream {request_id!r} has no AudioVAE slot"
                 )
             else:
                 pass
@@ -182,21 +182,20 @@ class AudioVAEStreamingVocoder(StreamingVocoderBase[StreamState, _StreamingStepP
         metadata = item.metadata
         if not isinstance(metadata, dict):
             raise TypeError(
-                f"Ming-Omni-TTS stream chunk for {request_id!r} must include "
-                "metadata"
+                f"AudioVAE stream chunk for {request_id!r} must include " "metadata"
             )
         else:
             pass
         if item.chunk_id != state.expected_chunk_id:
             raise ValueError(
-                f"Ming-Omni-TTS stream chunk for {request_id!r} has "
+                f"AudioVAE stream chunk for {request_id!r} has "
                 f"chunk_id={item.chunk_id}, expected {state.expected_chunk_id}"
             )
         else:
             pass
         if state.terminal_received:
             raise ValueError(
-                f"Ming-Omni-TTS stream chunk arrived after the terminal patch "
+                f"AudioVAE stream chunk arrived after the terminal patch "
                 f"for {request_id!r}"
             )
         else:
@@ -204,7 +203,7 @@ class AudioVAEStreamingVocoder(StreamingVocoderBase[StreamState, _StreamingStepP
         is_last = metadata.get("is_last")
         if not isinstance(is_last, bool):
             raise TypeError(
-                f"Ming-Omni-TTS stream chunk for {request_id!r} must include "
+                f"AudioVAE stream chunk for {request_id!r} must include "
                 "boolean metadata['is_last']"
             )
         else:
@@ -226,14 +225,13 @@ class AudioVAEStreamingVocoder(StreamingVocoderBase[StreamState, _StreamingStepP
         del request_id, state
         if latents.device.type != "cpu":
             raise ValueError(
-                "Ming-Omni-TTS stream latent must be on CPU, "
-                f"got device {latents.device}"
+                "AudioVAE stream latent must be on CPU, " f"got device {latents.device}"
             )
         else:
             pass
         if latents.dtype != torch.float32:
             raise TypeError(
-                "Ming-Omni-TTS stream latent dtype must be torch.float32, "
+                "AudioVAE stream latent dtype must be torch.float32, "
                 f"got {latents.dtype}"
             )
         else:
@@ -241,7 +239,7 @@ class AudioVAEStreamingVocoder(StreamingVocoderBase[StreamState, _StreamingStepP
         expected_shape = (self.patch_size, self.latent_dim)
         if tuple(latents.shape) != expected_shape:
             raise ValueError(
-                f"Ming-Omni-TTS stream latent shape must be {expected_shape}, "
+                f"AudioVAE stream latent shape must be {expected_shape}, "
                 f"got {tuple(latents.shape)}"
             )
         else:
@@ -373,7 +371,7 @@ class AudioVAEStreamingVocoder(StreamingVocoderBase[StreamState, _StreamingStepP
         del is_final
         if not state.terminal_received:
             raise RuntimeError(
-                f"Ming-Omni-TTS stream {request_id!r} ended without a "
+                f"AudioVAE stream {request_id!r} ended without a "
                 "terminal latent patch"
             )
         else:
@@ -384,14 +382,14 @@ class AudioVAEStreamingVocoder(StreamingVocoderBase[StreamState, _StreamingStepP
             else:
                 pass
             raise RuntimeError(
-                f"Ming-Omni-TTS stream {request_id!r} ended before its terminal "
+                f"AudioVAE stream {request_id!r} ended before its terminal "
                 "AudioVAE transition completed"
             )
         else:
             pass
         if state.emitted_samples <= 0:
             raise RuntimeError(
-                f"Ming-Omni-TTS stream {request_id!r} completed without audio"
+                f"AudioVAE stream {request_id!r} completed without audio"
             )
         else:
             pass
@@ -409,7 +407,7 @@ class AudioVAEStreamingVocoder(StreamingVocoderBase[StreamState, _StreamingStepP
         sample_count = int(waveform.numel())
         if sample_count == 0:
             raise RuntimeError(
-                f"Ming-Omni-TTS stream {request_id!r} completed without audio"
+                f"AudioVAE stream {request_id!r} completed without audio"
             )
         else:
             pass
@@ -426,8 +424,7 @@ class AudioVAEStreamingVocoder(StreamingVocoderBase[StreamState, _StreamingStepP
             self.slot_bindings.reset_and_release(pending)
         except Exception:
             logger.exception(
-                "Ming-Omni-TTS failed to reset AudioVAE rows; their slots "
-                "will remain unavailable"
+                "AudioVAE failed to reset rows; their slots " "will remain unavailable"
             )
         finally:
             self.pending_release_ids.difference_update(pending)
@@ -453,9 +450,7 @@ class AudioVAEStreamingVocoder(StreamingVocoderBase[StreamState, _StreamingStepP
         else:
             pass
         if not self.decoder.streaming_ready:
-            raise RuntimeError(
-                "Ming-Omni-TTS streaming AudioVAE backend is not prepared"
-            )
+            raise RuntimeError("AudioVAE streaming backend is not prepared")
         else:
             pass
 
