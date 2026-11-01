@@ -165,12 +165,7 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
                 seq.append(hidden_rows[-1].detach().clone())
 
     def after_speculative_step(
-        self,
-        batch: ScheduleBatch,
-        result: GenerationBatchResult,
-        *,
-        is_prefill: bool,
-        num_draft_tokens: int,
+        self, batch: ScheduleBatch, *, is_prefill: bool, num_draft_tokens: int
     ) -> None:
         """Queue each request's hidden rows for the tokens this step commits.
 

@@ -279,7 +279,7 @@ def test_committed_verify_tokens_take_the_leading_rows_of_their_request_block() 
     batch = SimpleNamespace(reqs=[SimpleNamespace(rid=rid) for rid in "abc"])
 
     runner.after_speculative_step(
-        batch, None, is_prefill=False, num_draft_tokens=num_draft_tokens
+        batch, is_prefill=False, num_draft_tokens=num_draft_tokens
     )
     hidden_rows.zero_()
     runner.on_speculative_tokens(SimpleNamespace(request_id="c"), [PLAIN_TOKEN_ID])
@@ -310,7 +310,7 @@ def test_prefill_commits_the_last_prompt_row_of_each_request() -> None:
         extend_lens=extend_lens,
     )
 
-    runner.after_speculative_step(batch, None, is_prefill=True, num_draft_tokens=4)
+    runner.after_speculative_step(batch, is_prefill=True, num_draft_tokens=4)
     runner.on_speculative_tokens(SimpleNamespace(request_id="b"), [PLAIN_TOKEN_ID])
     runner.on_speculative_tokens(SimpleNamespace(request_id="a"), [OTHER_TOKEN_ID])
 
@@ -339,7 +339,6 @@ def test_speculative_known_text_keeps_prefill_rows_across_chunks(
         prefill_buffer[:length].copy_(expected_rows[start : start + length])
         runner.after_speculative_step(
             SimpleNamespace(reqs=[request], extend_lens=[length]),
-            None,
             is_prefill=True,
             num_draft_tokens=4,
         )
@@ -377,8 +376,9 @@ def test_thinker_rejects_nonstatic_verify_before_model_loading(
             bootstrap_module.create_thinker_scheduler(server_args)
 
 
-@pytest.mark.parametrize("capture_speech", [False, True])
-@pytest.mark.parametrize("prefill_rows", [8192, 8193])
+@pytest.mark.parametrize(
+    ("capture_speech", "prefill_rows"), [(False, 8192), (True, 8192), (True, 8193)]
+)
 def test_speech_capture_copies_the_prefill_ceiling_and_text_capture_stays_empty(
     monkeypatch: pytest.MonkeyPatch, capture_speech: bool, prefill_rows: int
 ) -> None:

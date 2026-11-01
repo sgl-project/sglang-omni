@@ -730,12 +730,7 @@ class ModelRunner(Generic[RequestDataInput]):
         self.process_sampling_logits(logits_output, rows)
 
     def after_speculative_step(
-        self,
-        batch: ScheduleBatch,
-        result: GenerationBatchResult,
-        *,
-        is_prefill: bool,
-        num_draft_tokens: int,
+        self, batch: ScheduleBatch, *, is_prefill: bool, num_draft_tokens: int
     ) -> None:
         """Hook right after a speculative step, before its tokens are emitted."""
         return None

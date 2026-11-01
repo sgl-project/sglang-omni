@@ -2390,13 +2390,8 @@ class OmniScheduler(Generic[RequestDataT]):
             target_worker.verify_requests = []
         self.model_runner.after_speculative_step(
             batch,
-            result,
             is_prefill=is_prefill,
-            num_draft_tokens=getattr(
-                self.draft_worker,
-                "speculative_num_draft_tokens",
-                get_spec().speculative_num_draft_tokens,
-            ),
+            num_draft_tokens=self.draft_worker.speculative_num_draft_tokens,
         )
         batch.spec_info = result.next_draft_input
         new_sequence_lengths = result.new_seq_lens
