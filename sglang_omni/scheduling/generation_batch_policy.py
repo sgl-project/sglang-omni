@@ -168,6 +168,7 @@ class GenerationStageDefaults(TypedDict, total=False):
     random_seed: int
     mem_fraction_static: float | None
     dtype: str
+    mamba_ssm_dtype: str
     attention_backend: str
     mm_attention_backend: str
     prefill_attention_backend: str
