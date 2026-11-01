@@ -345,7 +345,7 @@ def test_realtime_loop_does_not_grow(server: Server, end_seconds: int) -> None:
         for event in events
         if event["type"] == "transcription.segment" and not event["is_final"]
     ]
-    assert len(previews) >= 2, "the preview decodes before the loop did not run"
+    assert any("我覺得" * 3 in event["text"] for event in previews), "no preview looped"
     final_text = events[-1]["text"]
     assert final_text
     assert "我覺得" * 3 not in final_text
