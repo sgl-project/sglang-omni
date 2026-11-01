@@ -124,6 +124,8 @@ def test_cutedsl_talker_decode_cache(
                 ),
             )
             assert build_cutedsl_layers(model.layers) is None
+        if hidden_size == 2048:
+            assert build_cutedsl_layers(model.layers, is_predictor=True) is None
         fused_layers = build_cutedsl_layers(model.layers)
         assert fused_layers is not None
         model.cutedsl_layers = None

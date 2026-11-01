@@ -77,6 +77,7 @@ def build_cutedsl_layers(
             or torch.cuda.get_device_properties(weight.device).multi_processor_count
             < MIN_DECODE_SM_COUNT
             or hidden_size not in (1024, 2048)
+            or (is_predictor and hidden_size != 1024)
             or (attention.num_heads, attention.num_kv_heads, attention.head_dim)
             != (QUERY_HEADS, KV_HEADS, HEAD_DIM)
             or weight.shape != (QKV_WIDTH, hidden_size)
