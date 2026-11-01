@@ -1,0 +1,195 @@
+{
+  "shared_paths": [
+    "^\\.github/workflows/voxt-mac-ci\\.yaml$",
+    "^\\.github/scripts/select_voxt_models\\.py$",
+    "^sglang_omni_mlx/native/CMakeLists\\.txt$",
+    "^sglang_omni_mlx/native/scripts/",
+    "^sglang_omni_mlx/native/src/common/",
+    "^sglang_omni_mlx/native/src/qwen3_asr/",
+    "^sglang_omni_mlx/native/ci/(model_jobs\\.json|provision.*\\.py|check_.*\\.py|speech_golden\\.py|test_check_golden\\.py|test_model_servers\\.py|test_server_api\\.py|requirements\\.lock)$"
+  ],
+  "models": [
+    {
+      "name": "whisper",
+      "paths": [
+        "^sglang_omni_mlx/native/(src/whisper/|tools/whisper_|ci/model_golden/whisper-)"
+      ],
+      "pins": [
+        "mlx-community/whisper-large-v3-turbo",
+        "mlx-community/whisper-large-v3-mlx",
+        "mlx-community/whisper-small-mlx"
+      ],
+      "goldens": [
+        "whisper-large-v3-turbo.json",
+        "whisper-large-v3.json",
+        "whisper-small.json"
+      ],
+      "pytest": [
+        "sglang_omni_mlx/native/ci/test_model_servers.py",
+        "-k",
+        "whisper"
+      ]
+    },
+    {
+      "name": "cohere",
+      "paths": [
+        "^sglang_omni_mlx/native/(src/cohere/|tools/cohere_|ci/model_golden/cohere-)",
+        "^sglang_omni_mlx/native/src/silero_vad/"
+      ],
+      "pins": [
+        "beshkenadze/cohere-transcribe-03-2026-mlx-fp16",
+        "mlx-community/silero-vad-v6"
+      ],
+      "goldens": [
+        "cohere-transcribe-03-2026.json",
+        "cohere-transcribe-03-2026-chunked.json"
+      ],
+      "pytest": [
+        "sglang_omni_mlx/native/ci/test_model_servers.py",
+        "-k",
+        "cohere"
+      ]
+    },
+    {
+      "name": "moss-transcribe-diarize",
+      "paths": [
+        "^sglang_omni_mlx/native/(src/moss/|tools/moss_|ci/model_golden/moss-transcribe-)"
+      ],
+      "pins": [
+        "OpenMOSS-Team/MOSS-Transcribe-Diarize"
+      ],
+      "goldens": [
+        "moss-transcribe-diarize.json"
+      ],
+      "pytest": [
+        "sglang_omni_mlx/native/ci/test_model_servers.py",
+        "-k",
+        "moss"
+      ]
+    },
+    {
+      "name": "nemotron",
+      "paths": [
+        "^sglang_omni_mlx/native/(src/nemotron/|tools/nemotron_|ci/model_golden/nemotron-)",
+        "^sglang_omni_mlx/native/src/sortformer/"
+      ],
+      "pins": [
+        "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
+      ],
+      "goldens": [
+        "nemotron-asr-streaming.json"
+      ],
+      "pytest": [
+        "sglang_omni_mlx/native/ci/test_model_servers.py",
+        "-k",
+        "nemotron"
+      ]
+    },
+    {
+      "name": "parakeet",
+      "paths": [
+        "^sglang_omni_mlx/native/(src/parakeet/|tools/parakeet_|ci/model_golden/parakeet-)",
+        "^sglang_omni_mlx/native/src/sortformer/"
+      ],
+      "pins": [
+        "mlx-community/parakeet-tdt-0.6b-v3"
+      ],
+      "goldens": [
+        "parakeet-tdt-0.6b-v3.json"
+      ],
+      "pytest": [
+        "sglang_omni_mlx/native/ci/test_model_servers.py",
+        "-k",
+        "parakeet"
+      ]
+    },
+    {
+      "name": "sensevoice",
+      "paths": [
+        "^sglang_omni_mlx/native/(src/sensevoice/|tools/sensevoice_|ci/model_golden/sensevoice-)",
+        "^sglang_omni_mlx/native/src/silero_vad/"
+      ],
+      "pins": [
+        "mlx-community/SenseVoiceSmall",
+        "mlx-community/silero-vad-v6"
+      ],
+      "goldens": [
+        "sensevoice-small.json"
+      ],
+      "pytest": [
+        "sglang_omni_mlx/native/ci/test_model_servers.py",
+        "-k",
+        "sensevoice"
+      ]
+    },
+    {
+      "name": "voxtral-tts",
+      "paths": [
+        "^sglang_omni_mlx/native/(src/voxtral_tts/|tools/voxtral_tts_|ci/(voxtral_golden\\.py|test_voxtral_tts_api\\.py|model_golden/voxtral-))"
+      ],
+      "pins": [
+        "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit"
+      ],
+      "goldens": [
+        "voxtral-4b-tts-2603.json"
+      ],
+      "pytest": [
+        "sglang_omni_mlx/native/ci/test_voxtral_tts_api.py"
+      ]
+    },
+    {
+      "name": "qwen3-tts",
+      "paths": [
+        "^sglang_omni_mlx/native/(src/qwen3_tts/|tools/qwen3_tts_|ci/(qwen3_tts_golden\\.py|test_qwen3_tts_api\\.py|model_golden/qwen3-tts-))"
+      ],
+      "pins": [
+        "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16"
+      ],
+      "goldens": [
+        "qwen3-tts-12hz-0.6b-customvoice.json"
+      ],
+      "pytest": [
+        "sglang_omni_mlx/native/ci/test_qwen3_tts_api.py"
+      ]
+    },
+    {
+      "name": "music3",
+      "paths": [
+        "^sglang_omni_mlx/native/(src/music3/|tools/music3_|ci/(music3_|generate_music3_reference\\.py|model_golden/minimax-music3))"
+      ],
+      "pins": [
+        "mlx-community/MiniMax-Music3-mxfp8"
+      ],
+      "goldens": [
+        "minimax-music3.json"
+      ],
+      "pytest": [
+        "sglang_omni_mlx/native/ci/test_model_servers.py",
+        "-k",
+        "music3"
+      ]
+    },
+    {
+      "name": "cosyvoice3",
+      "paths": [
+        "^sglang_omni_mlx/native/(src/cosyvoice3/|tools/cosyvoice3_|ci/(cosyvoice3_golden\\.py|test_cosyvoice3_api\\.py|model_golden/fun-cosyvoice3-))"
+      ],
+      "pins": [
+        "mlx-community/Fun-CosyVoice3-0.5B-2512-fp16"
+      ],
+      "goldens": [
+        "fun-cosyvoice3-0.5b-2512.json"
+      ],
+      "pytest": [
+        "sglang_omni_mlx/native/ci/test_cosyvoice3_api.py"
+      ]
+    }
+  ],
+  "disabled_goldens": {
+    "reason": "Fish Audio Drama 3 is disabled on main: its checkpoints are too large for the runner.",
+    "goldens": [
+      "fish-audio-drama-3-4bit.json",
+      "fish-audio-drama-3-8bit.json"
+    ]
+  }
+}
