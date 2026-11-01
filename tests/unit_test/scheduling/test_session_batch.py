@@ -206,7 +206,7 @@ def test_batched_appends_emit_one_shared_stage_start_timestamp(
             + [message("a0", "append", "a"), message("b0", "append", "b")],
         )
     finally:
-        recorder.stop()
+        recorder.stop(wait=True)
 
     assert outputs["a0"].type == outputs["b0"].type == "result"
     assert time_ns.call_count == 1

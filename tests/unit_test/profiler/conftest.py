@@ -15,12 +15,14 @@ def reset_recorder() -> Iterator[None]:
     """Close the process-global recorder and clear stage context per test."""
     recorder = get_recorder()
     if recorder.is_active():
-        recorder.stop()
+        recorder.stop(wait=True)
     else:
         pass
+    recorder.wait_for_finalizations(timeout_seconds=5)
     reset_active_stage(None)
     yield
     if recorder.is_active():
-        recorder.stop()
+        recorder.stop(wait=True)
     else:
         pass
+    recorder.wait_for_finalizations(timeout_seconds=5)

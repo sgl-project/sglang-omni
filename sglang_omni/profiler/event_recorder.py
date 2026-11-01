@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Request-level event recorder compatibility facade.
 
-The producer-facing API stays here. Queue ownership and all file I/O live in
-the dedicated writer module so instrumentation call sites remain lightweight.
+The producer-facing API stays here. Deferred-buffer ownership and all file I/O
+live in the dedicated writer module so instrumentation call sites remain
+lightweight.
 """
 
 from __future__ import annotations
@@ -11,10 +12,12 @@ import functools
 import threading
 import time
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from sglang_omni.profiler.event_recorder_types import (
     DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
+    MAX_PENDING_BUFFER_STATES,
     PendingRequestEvent,
     RequestEvent,
     RequestEventFinalization,
@@ -58,11 +61,74 @@ __all__ = [
 ]
 
 
+@dataclass
+class _DeferredBufferState:
+    """Bounded deferred records belonging to one recorder run."""
+
+    run_id: str
+    records: list[PendingRequestEvent] = field(default_factory=list)
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    in_flight: int = 0
+    sealed: bool = False
+
+    def seal(self) -> int:
+        """Prevent future flushes and return records that were never flushed."""
+        while True:
+            with self.lock:
+                if self.in_flight == 0:
+                    pending_count = len(self.records)
+                    self.records = []
+                    self.sealed = True
+                    return pending_count
+                else:
+                    pass
+            time.sleep(0.001)
+
+
 class RequestEventBuffer(threading.local):
-    """Capture scalar records on a thread, then flush outside serving locks."""
+    """Capture bounded scalar records on a thread, then flush them later."""
 
     def __init__(self) -> None:
-        self.records: list[PendingRequestEvent] = []
+        self._states: dict[str, _DeferredBufferState] = {}
+
+    def _state_for_run(
+        self,
+        recorder: RequestEventRecorder,
+        run_id: str,
+    ) -> _DeferredBufferState | None:
+        for stale_run_id in tuple(self._states):
+            stale_state = self._states[stale_run_id]
+            with stale_state.lock:
+                stale = stale_state.sealed
+            if stale:
+                del self._states[stale_run_id]
+            else:
+                pass
+        existing_state = self._states.get(run_id)
+        if existing_state is not None:
+            with existing_state.lock:
+                if existing_state.sealed:
+                    del self._states[run_id]
+                else:
+                    existing_state.in_flight += 1
+                    return existing_state
+        else:
+            pass
+        if len(self._states) >= MAX_PENDING_BUFFER_STATES:
+            return None
+        else:
+            pass
+        state = _DeferredBufferState(run_id=run_id)
+        with state.lock:
+            state.in_flight = 1
+        if not recorder.register_deferred_buffer(run_id, state.seal):
+            with state.lock:
+                state.in_flight -= 1
+            return None
+        else:
+            pass
+        self._states[run_id] = state
+        return state
 
     def capture(
         self,
@@ -71,43 +137,103 @@ class RequestEventBuffer(threading.local):
         metadata: dict[str, int | float | str],
     ) -> None:
         """Consume snapshots now; all requests in this cohort share capture clocks."""
-        active_run = get_recorder().capture_active_run_timestamp_ns()
+        recorder = get_recorder()
+        active_run = recorder.capture_active_run_timestamp_ns()
         if active_run is None:
             return
         else:
             pass
         run_id, timestamp_ns = active_run
+        state = self._state_for_run(recorder, run_id)
+        if state is None:
+            lost_count = sum(1 for _ in snapshots)
+            recorder.record_external_loss(
+                run_id, lost_count, "deferred_buffer_registration_failure"
+            )
+            return
+        else:
+            pass
         monotonic_seconds = time.monotonic()
         worker_name = threading.current_thread().name
-        for snapshot in snapshots:
-            self.records.append(
-                PendingRequestEvent(
-                    request_id=snapshot.request_id,
-                    event_name=event_name,
-                    metadata={
-                        **metadata,
-                        **snapshot.metadata,
-                        "worker": worker_name,
-                        "monotonic_s": monotonic_seconds,
-                    },
-                    timestamp_ns=timestamp_ns,
-                    run_id=run_id,
+        overflow_count = 0
+        snapshot_failure_count = 0
+        try:
+            for snapshot in snapshots:
+                try:
+                    captured_metadata = snapshot_metadata(
+                        {
+                            **metadata,
+                            **snapshot.metadata,
+                            "worker": worker_name,
+                            "monotonic_s": monotonic_seconds,
+                        }
+                    )
+                except Exception:
+                    snapshot_failure_count += 1
+                    continue
+                else:
+                    pass
+                with state.lock:
+                    if len(state.records) >= recorder.queue_capacity:
+                        overflow_count += 1
+                    else:
+                        state.records.append(
+                            PendingRequestEvent(
+                                request_id=snapshot.request_id,
+                                event_name=event_name,
+                                metadata=captured_metadata,
+                                timestamp_ns=timestamp_ns,
+                                run_id=run_id,
+                            )
+                        )
+            if overflow_count:
+                recorder.record_external_loss(
+                    run_id, overflow_count, "deferred_buffer_overflow"
                 )
-            )
+            else:
+                pass
+            if snapshot_failure_count:
+                recorder.record_external_metadata_snapshot_failure(
+                    run_id, snapshot_failure_count
+                )
+            else:
+                pass
+        except Exception:
+            recorder.record_external_loss(run_id, 1, "deferred_buffer_capture_failure")
+        finally:
+            with state.lock:
+                state.in_flight -= 1
 
     def flush(self, *, stage: str | None) -> None:
         recorder = get_recorder()
-        records = self.records
-        self.records = []
-        for record in records:
-            recorder.emit(
-                request_id=record.request_id,
-                stage=stage,
-                event_name=record.event_name,
-                metadata=record.metadata,
-                timestamp_ns=record.timestamp_ns,
-                expected_run_id=record.run_id,
-            )
+        for state in tuple(self._states.values()):
+            with state.lock:
+                if state.sealed:
+                    continue
+                else:
+                    pass
+                state.in_flight += 1
+                records = state.records
+                state.records = []
+            try:
+                for record in records:
+                    retained = recorder.emit_record(
+                        request_id=record.request_id,
+                        stage=stage,
+                        event_name=record.event_name,
+                        metadata=record.metadata,
+                        timestamp_ns=record.timestamp_ns,
+                        expected_run_id=record.run_id,
+                    )
+                    if not retained and recorder.active_run_id() != record.run_id:
+                        recorder.record_external_loss(
+                            record.run_id, 1, "deferred_buffer_stale"
+                        )
+                    else:
+                        pass
+            finally:
+                with state.lock:
+                    state.in_flight -= 1
 
 
 _RECORDER = RequestEventRecorder()

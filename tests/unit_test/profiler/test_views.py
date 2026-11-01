@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 
 from sglang_omni.profiler.views import (
+    assess_completeness,
     build_report,
     hop_breakdown,
     reconstruct_timelines,
@@ -21,6 +22,19 @@ def write_events(path: Path, events: list[dict]) -> None:
         for ev in events:
             fp.write(json.dumps(ev))
             fp.write("\n")
+
+
+def write_status(path: Path, *, complete: bool, reasons: list[str]) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "complete": complete,
+                "completeness_scope": "event_storage",
+                "incomplete_reasons": reasons,
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def make_ev(request_id, stage, name, ts, **md):
@@ -431,3 +445,47 @@ def test_build_report_returns_all_three_views(tmp_path: Path) -> None:
     assert any(
         r["src"] == "encoder" and r["dst"] == "thinker" for r in rep["hop_breakdown"]
     )
+
+
+def test_missing_status_sidecar_is_unknown_and_not_complete(tmp_path: Path) -> None:
+    event_path = tmp_path / f"events_coordinator_{os.getpid()}.jsonl"
+    write_events(event_path, [make_ev("r1", "coordinator", "event", 1)])
+
+    completeness = assess_completeness(tmp_path)
+
+    assert completeness["state"] == "unknown"
+    assert completeness["complete"] is False
+    assert completeness["expected_status_files"] == 1
+    assert completeness["found_status_files"] == 0
+    assert "missing_status_sidecar" in completeness["incomplete_reasons"]
+
+
+def test_incomplete_status_sidecar_propagates_to_report(tmp_path: Path) -> None:
+    event_path = tmp_path / f"events_coordinator_{os.getpid()}.jsonl"
+    write_events(event_path, [make_ev("r1", "coordinator", "event", 1)])
+    write_status(
+        tmp_path / f"run_status_{os.getpid()}.json",
+        complete=False,
+        reasons=["producer_buffer_overflow"],
+    )
+
+    report = build_report(tmp_path)
+
+    assert report["completeness"]["state"] == "incomplete"
+    assert report["completeness"]["complete"] is False
+    assert report["completeness"]["incomplete_reasons"] == ["producer_buffer_overflow"]
+
+
+def test_complete_status_sidecar_allows_complete_report(tmp_path: Path) -> None:
+    event_path = tmp_path / f"events_coordinator_{os.getpid()}.jsonl"
+    write_events(event_path, [make_ev("r1", "coordinator", "event", 1)])
+    write_status(
+        tmp_path / f"run_status_{os.getpid()}.json",
+        complete=True,
+        reasons=[],
+    )
+
+    report = build_report(tmp_path)
+
+    assert report["completeness"]["state"] == "complete"
+    assert report["completeness"]["complete"] is True

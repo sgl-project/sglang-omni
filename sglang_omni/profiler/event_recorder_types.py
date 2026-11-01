@@ -5,11 +5,14 @@ from __future__ import annotations
 
 import contextvars
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
 DEFAULT_EVENT_QUEUE_CAPACITY = 8192
+MAX_PRODUCER_BUFFERS = 256
+MAX_PENDING_BUFFER_STATES = 4
+MAX_EVENT_TEXT_LENGTH = 1024
 EVENT_FILE_BUFFER_BYTES = 64 * 1024
 MAX_METADATA_SNAPSHOT_DEPTH = 8
 MAX_METADATA_SNAPSHOT_ITEMS = 256
@@ -85,7 +88,7 @@ class RequestEventSnapshot:
 class PendingRequestEvent:
     request_id: str
     event_name: str
-    metadata: dict[str, int | float | str]
+    metadata: dict[str, object]
     timestamp_ns: int
     run_id: str
 
@@ -117,6 +120,8 @@ class RecorderRunState:
     path: Path
     status_path: Path
     finalization: RequestEventFinalization
+    producer_buffers: list[ProducerBuffer] = field(default_factory=list)
+    deferred_buffer_finalizers: list[Callable[[], int]] = field(default_factory=list)
     accepted_events: int = 0
     processed_events: int = 0
     written_events: int = 0
@@ -128,6 +133,29 @@ class RecorderRunState:
     event_file_open_failures: int = 0
     write_failures: int = 0
     finalization_failures: int = 0
+    incomplete_reasons: set[str] = field(default_factory=set)
+    writer_scheduling: str = "unknown"
+    producer_counters_aggregated: bool = False
+
+
+@dataclass
+class ProducerBuffer:
+    """A bounded event buffer owned by one producer thread for one run.
+
+    The owner appends to ``events`` without a recorder-wide lock. The writer
+    reads the buffer only after the recorder has stopped accepting events and
+    the owner has reported ``in_flight == 0``.
+    """
+
+    run_state: RecorderRunState
+    thread_id: int
+    capacity: int
+    events: list[QueuedRequestEvent] = field(default_factory=list)
+    in_flight: int = 0
+    accepted_events: int = 0
+    dropped_events: int = 0
+    metadata_snapshot_failures: int = 0
+    metadata_truncations: int = 0
     incomplete_reasons: set[str] = field(default_factory=set)
 
 

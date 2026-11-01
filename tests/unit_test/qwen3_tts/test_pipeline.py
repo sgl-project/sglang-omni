@@ -6901,7 +6901,7 @@ def test_qwen3_tts_async_decode_records_request_events(
 
     path = recorder.start(run_id="decode", event_dir=str(tmp_path), stage="thinker")
     if not recording:
-        recorder.stop()
+        recorder.stop(wait=True)
     else:
         pass
     loop = asyncio.new_event_loop()
@@ -6941,7 +6941,7 @@ def test_qwen3_tts_async_decode_records_request_events(
         assert scheduler.outbox.get(timeout=1).type == "result"
     finally:
         scheduler.stop()
-        recorder.stop()
+        recorder.stop(wait=True)
         loop.close()
 
     events = [json.loads(line) for line in Path(path).read_text().splitlines()]
@@ -10237,7 +10237,7 @@ def test_qwen3_tts_incremental_failure_requeues_instead_of_aborting(
             "request", state, RuntimeError("injected decode failure")
         )
     finally:
-        recorder.stop()
+        recorder.stop(wait=True)
 
     assert state.incremental_codec_fallback is True
     assert state.codec_slot is None

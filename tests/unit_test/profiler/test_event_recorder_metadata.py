@@ -104,7 +104,7 @@ def test_emit_with_tensor_metadata_does_not_materialize(tmp_path: Path) -> None:
             "gpu_loss": CudaScalar(),
         },
     )
-    rec.stop()
+    rec.stop(wait=True)
 
     events = read_events(p)
     assert len(events) == 1
@@ -121,7 +121,6 @@ def test_nested_metadata_is_snapshotted_before_writer_serialization(
 ) -> None:
     recorder = RequestEventRecorder(queue_capacity=8)
     path = recorder.start(run_id="metadata", event_dir=str(tmp_path), stage="stage")
-    writer_entered, release_writer = stall_writer(recorder, monkeypatch)
     nested_metadata = {"values": [1, {"name": "before"}]}
     recorder.emit(
         request_id="request",
@@ -129,13 +128,16 @@ def test_nested_metadata_is_snapshotted_before_writer_serialization(
         event_name="event",
         metadata={"nested": nested_metadata},
     )
+    writer_entered, release_writer = stall_writer(recorder, monkeypatch)
+    finalization = recorder.deactivate()
+    assert finalization is not None
     try:
         assert writer_entered.wait(timeout=5)
         nested_metadata["values"][0] = 2
         nested_metadata["values"][1]["name"] = "after"
     finally:
         release_writer.set()
-        recorder.stop()
+    assert finalization.wait(timeout_seconds=5)
 
     event = read_events(path)[0]
     assert event["metadata"] == {"nested": {"values": [1, {"name": "before"}]}}
@@ -152,7 +154,7 @@ def test_metadata_truncation_is_reported_in_status(tmp_path: Path) -> None:
         event_name="event",
         metadata={f"field-{index}": index for index in range(300)},
     )
-    recorder.stop()
+    recorder.stop(wait=True)
 
     status = read_status(path)
     assert status["metadata_truncations"] == 1
@@ -177,11 +179,12 @@ def test_metadata_snapshot_failure_marks_run_incomplete(tmp_path: Path) -> None:
         event_name="event",
         metadata={"broken": BrokenMetadata()},
     )
-    recorder.stop()
+    recorder.stop(wait=True)
 
     assert repr_called is False
     status = read_status(path)
     assert status["metadata_snapshot_failures"] == 1
+    assert status["dropped_events"] == 1
     assert status["complete"] is False
     assert "metadata_snapshot_failure" in status["incomplete_reasons"]
 
@@ -197,7 +200,7 @@ def test_metadata_string_is_bounded_and_marks_run_incomplete(tmp_path: Path) -> 
         event_name="event",
         metadata={"large": "x" * 10000},
     )
-    recorder.stop()
+    recorder.stop(wait=True)
 
     event = read_events(path)[0]
     assert len(event["metadata"]["large"]["value"]) <= 4096
@@ -217,7 +220,7 @@ def test_bytes_metadata_is_rejected_without_repr(tmp_path: Path) -> None:
         event_name="event",
         metadata={"payload": b"x" * 100000},
     )
-    recorder.stop()
+    recorder.stop(wait=True)
 
     assert read_events(path) == []
     status = read_status(path)
@@ -244,7 +247,7 @@ def test_file_write_failure_marks_run_incomplete(tmp_path: Path, monkeypatch) ->
 
     monkeypatch.setattr(recorder, "open_event_file", open_broken_file)
     recorder.emit(request_id="request", stage="stage", event_name="event")
-    recorder.stop()
+    recorder.stop(wait=True)
 
     status = read_status(path)
     assert status["write_failures"] >= 1

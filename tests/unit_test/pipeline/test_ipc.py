@@ -1146,7 +1146,7 @@ async def test_launcher_uses_runner_and_mounts_profiler_routes(
     finally:
         rec = get_recorder()
         if rec.is_active():
-            rec.stop()
+            rec.stop(wait=True)
 
 
 def test_start_profile_request_only_mode_does_not_require_trace_template(
@@ -1184,7 +1184,7 @@ def test_start_profile_request_only_mode_does_not_require_trace_template(
     finally:
         rec = get_recorder()
         if rec.is_active():
-            rec.stop()
+            rec.stop(wait=True)
 
 
 class RecordingProfilerControl:
@@ -1275,7 +1275,7 @@ async def test_coordinator_shutdown_always_finalizes_profiler(
 ) -> None:
     recorder = get_recorder()
     if recorder.is_active():
-        recorder.stop()
+        recorder.stop(wait=True)
     else:
         pass
     event_dir = tmp_path / "events"
@@ -1307,7 +1307,7 @@ async def test_coordinator_shutdown_waits_for_profiler_off_event_loop(
 ) -> None:
     recorder = get_recorder()
     if recorder.is_active():
-        recorder.stop()
+        recorder.stop(wait=True)
     else:
         pass
     recorder.start("coordinator-shutdown", str(tmp_path / "events"), "coordinator")
@@ -1347,7 +1347,7 @@ async def test_coordinator_shutdown_waits_for_profiler_off_event_loop(
         else:
             pass
         if recorder.is_active():
-            recorder.stop()
+            recorder.stop(wait=True)
         else:
             pass
 

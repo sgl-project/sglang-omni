@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import threading
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -43,6 +45,7 @@ def test_stale_expected_run_id_cannot_enter_a_later_run(tmp_path: Path) -> None:
     first_path = recorder.start(
         run_id="first", event_dir=str(tmp_path / "first"), stage="stage"
     )
+    recorder.stop(wait=True)
     recorder.start(run_id="second", event_dir=str(tmp_path / "second"), stage="stage")
     recorder.emit(
         request_id="stale",
@@ -51,7 +54,7 @@ def test_stale_expected_run_id_cannot_enter_a_later_run(tmp_path: Path) -> None:
         expected_run_id="first",
     )
     second_path = recorder.active_path()
-    recorder.stop()
+    recorder.stop(wait=True)
     assert recorder.wait_for_finalizations(timeout_seconds=5)
     assert read_events(first_path) == []
     assert second_path is not None
@@ -71,14 +74,87 @@ def test_buffered_event_keeps_original_run_identity_after_rotation(
         (RequestEventSnapshot(request_id="stale", metadata={"value": 1}),),
         {},
     )
+    recorder.stop(wait=True)
     second_path = recorder.start(
         run_id="second", event_dir=str(tmp_path / "second"), stage="stage"
     )
     buffer.flush(stage="stage")
-    recorder.stop()
-    assert recorder.wait_for_finalizations(timeout_seconds=5)
+    recorder.stop(wait=True)
+    assert recorder.wait_for_finalizations(timeout_seconds=5) is False
     assert read_events(first_path) == []
     assert read_events(second_path) == []
+
+
+def test_delayed_buffer_flush_is_counted_as_incomplete(
+    tmp_path: Path,
+) -> None:
+    recorder = get_recorder()
+    buffer = RequestEventBuffer()
+    path = recorder.start("delayed", str(tmp_path), "stage")
+    buffer.capture(
+        "event",
+        (RequestEventSnapshot(request_id="pending", metadata={"value": 1}),),
+        {},
+    )
+
+    finalization = recorder.deactivate()
+    assert finalization is not None
+    assert finalization.wait(timeout_seconds=5) is False
+    status = read_status_file(finalization.status_path)
+    assert status["accepted_events"] == 0
+    assert status["dropped_events"] == 1
+    assert status["complete"] is False
+    assert "deferred_buffer_unflushed" in status["incomplete_reasons"]
+
+    buffer.flush(stage="stage")
+    assert read_events(path) == []
+
+
+def test_buffer_capture_reserves_state_before_stop_finalizes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorder = get_recorder()
+    buffer = RequestEventBuffer()
+    path = recorder.start("capture-race", str(tmp_path), "stage")
+    register_entered = threading.Event()
+    release_register = threading.Event()
+    original_register = recorder.register_deferred_buffer
+
+    def delayed_register(run_id: str, finalizer: Callable[[], int]) -> bool:
+        registered = original_register(run_id, finalizer)
+        register_entered.set()
+        if not release_register.wait(timeout=5):
+            raise AssertionError("test did not release deferred-buffer registration")
+        else:
+            pass
+        return registered
+
+    monkeypatch.setattr(recorder, "register_deferred_buffer", delayed_register)
+    capture_thread = threading.Thread(
+        target=buffer.capture,
+        args=(
+            "event",
+            (RequestEventSnapshot(request_id="pending", metadata={"value": 1}),),
+            {},
+        ),
+    )
+    capture_thread.start()
+    assert register_entered.wait(timeout=5)
+
+    finalization = recorder.deactivate()
+    assert finalization is not None
+    assert finalization.completion_event.is_set() is False
+    release_register.set()
+    capture_thread.join(timeout=5)
+    assert capture_thread.is_alive() is False
+    assert finalization.wait(timeout_seconds=5) is False
+
+    status = read_status_file(finalization.status_path)
+    assert read_events(path) == []
+    assert status["accepted_events"] == 0
+    assert status["dropped_events"] == 1
+    assert status["complete"] is False
+    assert "deferred_buffer_unflushed" in status["incomplete_reasons"]
 
 
 def test_status_publication_failure_does_not_report_success(
@@ -113,4 +189,4 @@ def test_stop_returns_none_when_finalization_publication_fails(
 
     fail_status_replace(monkeypatch)
 
-    assert recorder.stop() is None
+    assert recorder.stop(wait=True) is None
