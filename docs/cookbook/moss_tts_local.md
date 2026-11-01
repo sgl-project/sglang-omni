@@ -318,6 +318,39 @@ These results were measured with audio sampling parameters `temperature=1.7`,
 `top_p=0.8`, and `top_k=25`. In tests from MOSI.AI, `temperature=0.6`, `top_p=0.95`,
 `top_k=25`, and `audio_repetition_penalty=1.2` may produce better quality.
 
+## Apple Silicon (Native MLX)
+
+`moss_tts_local_server` from the native MLX runtime (`sglang_omni_mlx/native`) serves the same `/v1/audio/speech` API on an Apple Silicon Mac, as one C++ process without CUDA, PyTorch or Python. It loads the original bfloat16 checkpoints; there is no MLX conversion to download. At load it quantizes the Qwen3 backbone and the local transformer (8-bit by default, `--quantization-bits 4` or `16` for bfloat16) and runs the codec decoder in bfloat16.
+
+```bash
+sglang_omni_mlx/native/scripts/build_runtime.sh ~/omni-runtime
+
+hf download OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5 \
+  --revision be7766a6735b98bd793f7c79fb720b4d0f5d13b8 --local-dir moss-tts-local-v1.5
+hf download OpenMOSS-Team/MOSS-Audio-Tokenizer-v2 \
+  --revision f6e20e543b33d2c252a7ef71bdf8aa71e5ff9169 --local-dir moss-audio-tokenizer-v2 \
+  --include "config.json" "*.safetensors"
+
+~/omni-runtime/bin/moss_tts_local_server --model-path moss-tts-local-v1.5 \
+  --codec-path moss-audio-tokenizer-v2 \
+  --model-name OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5 --port 8000
+```
+
+Requests without reference audio work unchanged. The native server differs from the CUDA server in that:
+
+- Reference audio (`ref_audio`, `references`) is not supported yet and returns 400; `ref_text` alone is ignored, as on CUDA.
+- `response_format` is `wav` (48 kHz stereo) or `pcm` (mono, as on CUDA); `stream_format` must be `audio`.
+- `input` and `instructions` are at most 4096 characters. `max_new_tokens` is at most `4096` frames for a WAV or PCM file (about 5.5 minutes) and `22500` for a stream (CUDA's streaming limit, 30 minutes); `token_count`, `duration_tokens` and the `${token:N}` prefix are at most `22500`.
+- Out-of-range sampling fields (`temperature`, `top_p`, `top_k`, `repetition_penalty`) return 400, where CUDA returns 500.
+- Started with `--model-name`, it returns 404 for any other `model`; without that flag, `model` is ignored, as on CUDA.
+- Errors are `{"detail": "..."}`.
+- Requests run one at a time and `--max-queued-requests` (default 2) more wait; the rest get 503, and `/health` shows the queue.
+- A request not finished `--request-timeout-s` (default 600) seconds after it arrives, time in the queue included, is cancelled: it returns 504, or its stream ends early. A client that disconnects cancels its request.
+- A request body over 1 MiB returns 413.
+- A fixed `seed` reproduces on one chip and MLX build, but not the CUDA server's audio: the two samplers draw different random numbers.
+
+Measured on an Apple M5 (24 GB), warm, over 15 sentences: the default 8-bit server is ready 5.4 to 6.4 s after launch (a warm-up generation included), streams its first audio in 0.46 s, runs at a real-time factor of 0.71 to 0.74 and peaks at 8.4 GB; with `--quantization-bits 4`, 4.7 s, 0.39 s, 0.49 and 6.4 GB. Transcribed back with Qwen3-ASR-1.7B, 10 English sentences give 0% WER and 5 Chinese sentences 0% CER at both settings. With the same seed, quantization and MLX build, its audio codes and 16-bit PCM are bit-identical to mlx-audio 0.5.8's MOSS-TTS port. Mac CI checks five seeded requests' codes against `sglang_omni_mlx/native/ci/model_golden/moss-tts-local-transformer-v1.5.json`.
+
 ## Known Limitations
 
 - **Voice cloning depends on the reference.** Omit the reference for non-cloned speech; provide

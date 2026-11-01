@@ -23,7 +23,8 @@ class SpeechReference(TypedDict, total=False):
 
 class SpeechCase(TypedDict, total=False):
     """A seeded request; voice for Voxtral, speaker and language for Qwen3-TTS,
-    sampling and a reference for Drama 3."""
+    sampling and a reference for Drama 3, instructions and token_count for
+    MOSS-TTS-Local."""
 
     text: Required[str]
     seed: Required[int]
@@ -35,6 +36,8 @@ class SpeechCase(TypedDict, total=False):
     top_p: float
     top_k: int
     reference: SpeechReference
+    instructions: str
+    token_count: int
 
 
 class SpeechOutputs(TypedDict):

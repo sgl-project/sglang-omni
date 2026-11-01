@@ -4,7 +4,8 @@
 Greedy decoding follows each Apple chip's GPU arithmetic, so a golden file keeps
 exact outputs per chip; other chips are gated on error rates within tolerance.
 Silero VAD and Sortformer golden files are checked within kernel tolerances.
-Voxtral TTS golden files hold seeded speech requests' codes, exact per chip.
+Voxtral TTS and MOSS-TTS-Local golden files hold seeded speech requests' codes,
+exact per chip.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ TranscribeCorpus = Callable[[Path, Path, dict, dict[str, dict]], dict[str, dict]
 
 import cosyvoice3_golden
 import fishaudio_drama3_golden
+import moss_tts_local_golden
 import music3_golden
 import qwen3_tts_golden
 import sortformer_golden
@@ -48,6 +50,7 @@ SPEECH_SYNTHESIZERS: dict[str, SpeechSynthesizer] = {
     "voxtral_tts": voxtral_golden.synthesize,
     "qwen3_tts": qwen3_tts_golden.synthesize,
     "fishaudio_drama3": fishaudio_drama3_golden.synthesize,
+    "moss_tts_local": moss_tts_local_golden.synthesize,
 }
 COMPARED_FIELDS = ("text", "language", "generated_token_count", "finish_reason")
 QUALITY_GROUPS = {
