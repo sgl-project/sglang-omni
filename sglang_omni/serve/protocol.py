@@ -564,6 +564,7 @@ class SpeechStreamSessionConfig(BaseModel):
     response_format: str = "pcm"
     speed: float = 1.0
     stream_audio: bool = False
+    carry_previous_audio: bool = False
     split_granularity: str = "sentence"
     task_type: str | None = None
     language: str | None = None

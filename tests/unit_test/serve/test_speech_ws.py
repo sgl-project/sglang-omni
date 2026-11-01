@@ -16,10 +16,11 @@ from sglang_omni.client.types import SpeechResult
 from sglang_omni.config import CustomVoiceConfig
 from sglang_omni.serve import create_app
 from sglang_omni.serve import speech_ws as speech_ws_module
-from sglang_omni.serve.protocol import SpeechStreamSessionConfig
+from sglang_omni.serve.protocol import CreateSpeechRequest, SpeechStreamSessionConfig
 from sglang_omni.serve.speech_errors import SpeechAPIError
 from sglang_omni.serve.speech_service import (
     MAX_SPEECH_INPUT_CHARS,
+    PreparedSpeechRequest,
     SpeechRequestValidator,
 )
 from sglang_omni.serve.speech_ws import (
@@ -572,6 +573,40 @@ def test_supported_speech_fields_check_only_what_the_client_sent() -> None:
         assert websocket.receive_json()["type"] == "session.done"
 
 
+def test_speech_websocket_carries_previous_audio_as_next_reference() -> None:
+    async def run() -> None:
+        client = StreamingSpeechClient()
+        speech_service = SpeechRequestValidator(default_model="tts")
+        session = SpeechWebSocketSession(
+            RecordingWebSocket(),
+            client=client,
+            speech_service=speech_service,
+        )
+        session.config = SpeechStreamSessionConfig(
+            model="tts",
+            response_format="wav",
+            stream_audio=False,
+            carry_previous_audio=True,
+        )
+        session.config_prepared_request = PreparedSpeechRequest(
+            request=CreateSpeechRequest(input="probe", model="tts"),
+            reference_descriptors=[{"audio_path": "ref.wav", "text": "ref"}],
+        )
+        await session.generate_sentence("First.")
+        await session.generate_sentence("Second.")
+        first, second = client.speech_prompts
+        assert first == {
+            "text": "First.",
+            "references": [{"audio_path": "ref.wav", "text": "ref"}],
+        }
+        assert second["text"] == "Second."
+        assert second["references"][0]["text"] == "First."
+        assert second["references"][0]["media_type"] == "audio/wav"
+        assert second["references"][0]["data"]
+
+    asyncio.run(run())
+
+
 def test_speech_websocket_rejects_missing_initial_config() -> None:
     client = TestClient(create_app(StreamingSpeechClient(), model_name="tts"))
 
@@ -758,8 +793,9 @@ def test_speech_websocket_default_config_leaves_sampling_fields_unset() -> None:
             "top_p",
             "top_k",
             "repetition_penalty",
-            "seed",
         } & set(params)
+        assert params["seed"] == session.config.seed
+        assert gen_req.metadata["tts_params"]["seed"] == session.config.seed
 
     asyncio.run(run())
 
@@ -815,7 +851,8 @@ def test_speech_websocket_passes_the_set_sampling_fields() -> None:
         params = Client.build_omni_request(gen_req).params
         assert params["temperature"] == 0.7
         assert params["top_k"] == 20
-        assert not {"top_p", "repetition_penalty", "seed"} & set(params)
+        assert params["seed"] == session.config.seed
+        assert not {"top_p", "repetition_penalty"} & set(params)
 
     asyncio.run(run())
 
