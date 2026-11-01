@@ -113,7 +113,7 @@ def create_preprocessing_executor(
         pass
     checkpoint_dir = resolve_checkpoint(model_path)
     codec_directory = resolve_codec_directory(codec_path)
-    codec = load_codec(codec_directory, resolved_device)
+    codec = load_codec(codec_directory, resolved_device, encode_only=True)
     reference_encode_hook = FishReferenceEncodeHook(
         codec=codec,
         checkpoint_id=os.path.join(codec_directory, CODEC_FILE_NAME),
