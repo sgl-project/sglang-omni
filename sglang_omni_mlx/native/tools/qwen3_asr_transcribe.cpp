@@ -45,6 +45,8 @@ int main(int argc, char **argv) {
       options.stop_on_token_loop = true;
     } else if (argument == "--max-new-tokens") {
       options.max_new_tokens = std::stoi(value());
+    } else if (argument == "--repetition-penalty") {
+      options.repetition_penalty = std::stof(value());
     } else if (argument == "--encode") {
       encode = true;
       encode_text = value();

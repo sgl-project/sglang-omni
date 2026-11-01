@@ -76,7 +76,7 @@ and quitting stops it.
 - The Qwen3-ASR server API:
   - `/health` with `request_states`;
   - `/v1/models`;
-  - `/v1/audio/transcriptions` (JSON or SSE);
+  - `/v1/audio/transcriptions` (JSON or SSE), whose optional `repetition_penalty` (positive, default 1 = off; Voxt does not send it) scales down the logits of tokens already generated, as SGLang's sampler does on CUDA, to break runaway token loops;
   - the `/v1/realtime` manual-turn socket.
 - `Voxt/Transcription/Omni*.swift` is the client:
   - `OmniASRRuntime` handles launch, requests, and an awaitable retire that drains in-flight work.

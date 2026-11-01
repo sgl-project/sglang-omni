@@ -217,8 +217,12 @@ Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
            (options.stop_at_end_of_text && token_id == end_of_text_id_);
   };
   std::vector<KVCache> caches = model_.NewCaches();
-  mx::array next_token = mx::argmax(model_.Decode(embeddings, caches));
+  const mx::array prefill_logits = model_.Decode(embeddings, caches);
+  mx::array next_token = mx::argmax(prefill_logits);
   mx::async_eval({next_token});
+  // Note (Minyi Tang): only generated tokens are penalized, as on CUDA; the
+  // scales stay lazy so penalizing adds no host sync to the queued step.
+  mx::array penalty_by_token_id = mx::ones(prefill_logits.shape(), mx::float32);
   std::vector<int> output_ids;
   FinishReason finish_reason = FinishReason::kLength;
   while (static_cast<int>(output_ids.size()) < max_new_tokens) {
@@ -229,8 +233,19 @@ Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
     const mx::array token = next_token;
     // Note (Jiaxin Deng): queue the next step before reading this token, so
     // the GPU decodes while the stop rules are checked.
-    next_token = mx::argmax(
-        model_.Decode(model_.EmbedTokens(mx::reshape(token, {1, 1})), caches));
+    mx::array logits =
+        model_.Decode(model_.EmbedTokens(mx::reshape(token, {1, 1})), caches);
+    if (options.repetition_penalty != 1.0f) {
+      penalty_by_token_id =
+          mx::put_along_axis(penalty_by_token_id, mx::reshape(token, {1}),
+                             mx::array(options.repetition_penalty), 0);
+      logits = mx::astype(logits, mx::float32);
+      logits = mx::where(mx::less(logits, mx::array(0.0f)),
+                         mx::multiply(logits, penalty_by_token_id),
+                         mx::divide(logits, penalty_by_token_id));
+    } else {
+    }
+    next_token = mx::argmax(logits);
     mx::async_eval({next_token});
     const int token_id = static_cast<int>(token.item<uint32_t>());
     output_ids.push_back(token_id);
