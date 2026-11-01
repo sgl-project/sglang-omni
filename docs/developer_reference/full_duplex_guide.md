@@ -634,7 +634,7 @@ Keeps the conversation history, opens a turn for each final transcript and sends
 | Option | Type | Default | Effect |
 | --- | --- | --- | --- |
 | `system_prompt` | string | `You are a helpful voice assistant. Answer concisely.` | The system message; realtime `instructions` set it. |
-| `language` | string | `""` | The session language, a speech-service language tag such as `English`; empty follows the language the recognizer heard in the last utterance of at least 3 words or 3 Chinese, Japanese or Korean characters. |
+| `language` | string | `""` | The session language, written as the recognizer reports it and the speech service takes it: one of `Chinese`, `English`, `French`, `German`, `Italian`, `Japanese`, `Korean`, `Portuguese`, `Russian` and `Spanish` with the bundled profiles, which speak through Qwen3-TTS. Empty follows the language the recognizer heard in the last utterance of at least 3 words. |
 | `max_history_chars` | integer > 0 | `65536` | The bound on the history: a turn whose history plus utterance plus `max_text_chars` would exceed it fails the session. |
 | `max_text_chars` | integer > 0 | `16000` | The longest utterance transcript and the longest reply. |
 
