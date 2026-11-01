@@ -3363,6 +3363,7 @@ def construct_omni_scheduler(
         enable_metrics=False,
         enable_metrics_for_all_schedulers=False,
         prefill_decode_interval=prefill_decode_interval,
+        prefill_decode_interval_min_bs=0,
     )
 
     class StrictParallelContext:
@@ -3505,7 +3506,7 @@ def test_unset_prefill_decode_interval_never_defers_prefill(monkeypatch) -> None
     )  # noqa: leading-underscore  # upstream name
 
     assert (
-        scheduler._should_defer_prefill() is False
+        scheduler._should_defer_prefill(scheduler.running_batch) is False
     )  # noqa: leading-underscore  # upstream name
 
 
@@ -3685,6 +3686,7 @@ def test_omni_scheduler_binds_one_execution_bridge_to_any_runner(
         enable_metrics=False,
         enable_metrics_for_all_schedulers=False,
         prefill_decode_interval=0,
+        prefill_decode_interval_min_bs=0,
     )
     monkeypatch.setattr(
         "sglang.srt.managers.scheduler_components.new_token_ratio_tracker.get_schedule",
@@ -3771,6 +3773,7 @@ def test_omni_scheduler_refuses_spec_overlap_without_a_draft(monkeypatch) -> Non
         enable_metrics=False,
         enable_metrics_for_all_schedulers=False,
         prefill_decode_interval=0,
+        prefill_decode_interval_min_bs=0,
     )
     monkeypatch.setattr(
         "sglang.srt.runtime_context.get_parallel",

@@ -2,6 +2,9 @@
 # Full rebuild of OMNI_CI_HOME (never reuses an existing tree).
 set -euo pipefail
 
+# note (wirybeaver): Match the qualified source runtime without building Rust cache extensions.
+export SGLANG_BUILD_RUST_EXTS=none
+
 if [ "$#" -ne 1 ]; then
   echo "usage: $0 <venv-name>" >&2
   exit 1
@@ -61,6 +64,7 @@ if [ "${#OVERRIDE_REQUIREMENTS[@]}" -gt 0 ]; then
   python -m pip install --no-deps "${OVERRIDE_REQUIREMENTS[@]}"
 fi
 uv pip install --no-deps -e .
+sgl-omni-prepare-runtime
 
 COSYVOICE_COMMIT=074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc
 COSYVOICE_PATH="${HOST}/src/CosyVoice"
