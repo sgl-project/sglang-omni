@@ -154,6 +154,12 @@ std::pair<std::vector<int>, std::string>
 Qwen3ASRTranscriber::RetainedPrefix(const std::string &text,
                                     int rollback_token_count) const {
   const std::vector<int> token_ids = tokenizer_.Encode(text);
+  // Note (Mei Li): checked before the rollback, which can cut a short loop
+  // below the detection window.
+  if (IsTokenLoop(token_ids)) {
+    return {{}, ""};
+  } else {
+  }
   const size_t keep =
       token_ids.size() > static_cast<size_t>(rollback_token_count)
           ? token_ids.size() - rollback_token_count

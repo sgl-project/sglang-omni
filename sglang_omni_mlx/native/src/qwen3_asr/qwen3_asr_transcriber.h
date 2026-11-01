@@ -75,7 +75,8 @@ public:
 
   std::vector<int> PromptIds(int audio_token_count,
                              const TranscriptionOptions &options) const;
-  // Text already shown minus its last tokens, cut back to whole characters.
+  // Text already shown minus its last tokens, cut back to whole characters;
+  // empty when the text ends in a token loop, which a prefix would extend.
   std::pair<std::vector<int>, std::string>
   RetainedPrefix(const std::string &text, int rollback_token_count) const;
   TranscriptionResult Transcribe(const std::vector<float> &samples,

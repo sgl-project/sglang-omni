@@ -262,6 +262,7 @@ std::vector<float> RealtimeSession::SegmentSamples(const Segment &segment,
 TranscriptionOptions RealtimeSession::DecodeOptions(Segment &segment) {
   TranscriptionOptions options;
   options.language = segment.language;
+  options.stop_on_token_loop = true;
   const bool use_prefix = segment.decode_count >= kPrefixAfterRefreshCount &&
                           !segment.transcript.empty() &&
                           segment.language.has_value();
