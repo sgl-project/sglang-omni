@@ -187,6 +187,31 @@ def test_whisper_uploads_original_wav_when_torchcodec_is_unavailable(
     )
 
 
+def test_whisper_uploads_long_wav_in_one_request(tmp_path: Path) -> None:
+    """Overlapping client chunks transcribed the words at each boundary twice."""
+    wav_path = tmp_path / "long.wav"
+    with wave.open(str(wav_path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(16000)
+        wav_file.writeframes(b"\x00\x00" * 16000 * 35)
+    with patch(
+        "benchmarks.tasks.asr.requests.post", autospec=True
+    ) as post_transcription:
+        post_transcription.return_value.json.return_value = {"text": "hello world"}
+        transcript = _transcribe_omni_whisper(
+            load_omni_whisper_asr(router_port=0), str(wav_path), "en"
+        )
+
+    assert transcript == "hello world"
+    post_transcription.assert_called_once()
+    assert post_transcription.call_args.kwargs["files"]["file"] == (
+        wav_path.name,
+        wav_path.read_bytes(),
+        "audio/wav",
+    )
+
+
 def pcm_seconds(seconds: float) -> bytes:
     return b"\x01\x00" * int(SAMPLE_RATE * seconds)
 
