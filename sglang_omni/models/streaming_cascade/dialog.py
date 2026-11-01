@@ -36,6 +36,7 @@ from sglang_omni.proto.streams import (
     TURN_QUEUED,
     TURN_STARTED,
     chunk_language,
+    chunk_style,
     control_type,
 )
 from sglang_omni.scheduling.session import ChunkEmitter
@@ -72,19 +73,39 @@ SHORT_UTTERANCE_NOTE = "Reply in {language}, the language of this conversation; 
 CUT_REPLY_NOTE = "A reply of yours that ends with … was cut off when the user interrupted it; answer the latest message in full."
 
 
+def tagged(content: str, style_starts: list[tuple[int, str]]) -> str:
+    """The reply with the tag [style] back before the first text of each style it keeps."""
+    for text_start, style in reversed(style_starts):
+        if text_start < len(content):
+            content = f"{content[:text_start]}[{style}] {content[text_start:]}"
+        else:
+            pass
+    return content
+
+
 def prompt_messages(messages: list[ChatMessage]) -> list[ChatMessage]:
-    """The history as the model reads it: a reply the listener cut ends with … under a system note, and only such a reply ends with …."""
+    """The history as the model reads it: a reply the listener cut ends with … under a system note, only such a reply ends with …, and a reply shows the style tags the model wrote in it."""
     prompt: list[ChatMessage] = []
     has_cut = False
     for message in messages:
         if message.is_cut:
             content = message.content.removesuffix("…")
-            prompt.append(ChatMessage(role="assistant", content=f"{content}…"))
+            prompt.append(
+                ChatMessage(
+                    role="assistant",
+                    content=f"{tagged(content, message.style_starts)}…",
+                )
+            )
             has_cut = True
         elif message.role == "assistant":
             # note (Haoling Pu): the model sometimes ends a finished reply with …, which would read as cut and was followed by an empty reply in a live run.
             content = message.content.rstrip().removesuffix("…")
-            prompt.append(ChatMessage(role="assistant", content=content))
+            # note (Haoling Pu): decoding without a regex, under a prompt that asked for a tag only when a feeling fit, Qwen3.8-27B tagged 7 of 16 emotional turns of six-turn English conversations when its earlier replies were shown without their tags, against 16 of 16 with them.
+            prompt.append(
+                ChatMessage(
+                    role="assistant", content=tagged(content, message.style_starts)
+                )
+            )
         else:
             prompt.append(message)
     if has_cut:
@@ -135,6 +156,10 @@ class Dialog(StreamComponent):
     the waiting utterances, so new settings apply at once and reach the next
     prompt.
 
+    A reply whose deltas carry a style shows the model, in later prompts,
+    the tag [style] before the first text of each style; the history,
+    its cuts and their offsets count only the reply text.
+
     Speech that started after an utterance ended and has not stopped when
     the utterance's reply begins is speech over that reply, so the reply
     ends as soon as it begins.
@@ -147,6 +172,8 @@ class Dialog(StreamComponent):
         # Waiting utterances as (turn, transcript, language the recognizer heard).
         self.waiting: deque[tuple[int, str, str | None]] = deque()
         self.reply: list[str] | None = None
+        # The open reply's style changes as (characters of the reply before the style, style).
+        self.reply_style_starts: list[tuple[int, str]] = []
         self.reply_turn = 0
         self.turns = 0
         # Reply audio produced so far as (characters of the reply text with audio, audio ms), one entry per spoken sentence, for truncating an interrupted reply to what was heard.
@@ -155,6 +182,7 @@ class Dialog(StreamComponent):
         self.truncatable: tuple[int, int] | None = None
         # Note (Junnan Li): The ended reply's full text, the reply audio the graph delivered (unknown, or all of it once the reply is done) and the last truncate's heard position, so progress that arrives later re-cuts it.
         self.truncatable_text = ""
+        self.truncatable_style_starts: list[tuple[int, str]] = []
         # note (Haoling Pu): an interrupted reply was cut even when the listener heard all the text it had produced.
         self.is_truncatable_interrupted = False
         # note (luojiaxuan): The ended reply's progress, which keeps arriving while the next reply runs.
@@ -176,11 +204,13 @@ class Dialog(StreamComponent):
             self.messages = [self.messages[0], *previous.messages[1:]]
             self.waiting = previous.waiting
             self.reply = previous.reply
+            self.reply_style_starts = previous.reply_style_starts
             self.reply_turn = previous.reply_turn
             self.turns = previous.turns
             self.progress = previous.progress
             self.truncatable = previous.truncatable
             self.truncatable_text = previous.truncatable_text
+            self.truncatable_style_starts = previous.truncatable_style_starts
             self.is_truncatable_interrupted = previous.is_truncatable_interrupted
             self.truncatable_progress = previous.truncatable_progress
             self.delivered_ms = previous.delivered_ms
@@ -239,6 +269,15 @@ class Dialog(StreamComponent):
             )
             self.emit(control_chunk(TURN_QUEUED, turn=self.turns))
         elif chunk.format == TEXT_DELTA and self.is_reply(chunk):
+            style = chunk_style(chunk)
+            if style is not None and (
+                not self.reply_style_starts or self.reply_style_starts[-1][1] != style
+            ):
+                self.reply_style_starts.append(
+                    (sum(len(part) for part in self.reply), style)
+                )
+            else:
+                pass
             self.reply.append(str(chunk.payload["text"]))
             if sum(len(part) for part in self.reply) > self.config.max_text_chars:
                 raise ValueError("reply exceeds max_text_chars")
@@ -246,9 +285,16 @@ class Dialog(StreamComponent):
                 pass
         elif control_type(chunk) == TURN_DONE and self.is_reply(chunk):
             reply = "".join(self.reply)
-            self.messages.append(ChatMessage(role="assistant", content=reply))
+            self.messages.append(
+                ChatMessage(
+                    role="assistant",
+                    content=reply,
+                    style_starts=self.reply_style_starts,
+                )
+            )
             self.truncatable = (self.reply_turn, len(self.messages) - 1)
             self.truncatable_text = reply
+            self.truncatable_style_starts = self.reply_style_starts
             self.is_truncatable_interrupted = False
             self.truncatable_progress, self.progress = self.progress, []
             self.delivered_ms = math.inf
@@ -292,6 +338,7 @@ class Dialog(StreamComponent):
         self.messages.append(ChatMessage(role="assistant"))
         if text:
             self.truncatable_text = text
+            self.truncatable_style_starts = self.reply_style_starts
             self.is_truncatable_interrupted = True
             self.truncatable = (turn, len(self.messages) - 1)
             self.truncatable_progress, self.progress = self.progress, []
@@ -355,6 +402,7 @@ class Dialog(StreamComponent):
                 content=kept,
                 uncertain=uncertain,
                 is_cut=self.is_truncatable_interrupted or kept != content.rstrip(),
+                style_starts=self.truncatable_style_starts,
             )
             if self.heard_ms is not None:
                 self.emit(control_chunk(REPLY_HEARD, turn=turn, text_end=text_end))
@@ -419,6 +467,7 @@ class Dialog(StreamComponent):
             else:
                 pass
             self.reply = []
+            self.reply_style_starts = []
             self.reply_turn = turn
             self.progress = []
             return [

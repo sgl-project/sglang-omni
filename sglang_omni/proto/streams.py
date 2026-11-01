@@ -74,6 +74,11 @@ def chunk_language(chunk: TimedChunk) -> str | None:
     return chunk.payload.get("language")
 
 
+def chunk_style(chunk: TimedChunk) -> str | None:
+    """The speaking style a text delta carries, named by the language model's last tag; None before any tag."""
+    return chunk.payload.get("style")
+
+
 def control_type(chunk: TimedChunk | OutputChunk) -> str | None:
     """The control type of a SESSION_CONTROL chunk; None for any other chunk and for an input confirmation, which carries no payload."""
     if chunk.format != SESSION_CONTROL or chunk.payload is None:

@@ -162,7 +162,8 @@ class ComponentSession:
             await previous.close()
             self.start()
         else:
-            pass
+            # note (Haoling Pu): a component also reads other nodes' settings where it is placed, such as the styles of the speech nodes a chat node feeds.
+            self.component.place(settings, self.name)
         self.settings = settings
 
     async def control(self, event: TimedChunk) -> None:
