@@ -17,8 +17,7 @@ Architecturally, MOSS-TTS-v1.5 is the `delay-pattern` counterpart to [MOSS-TTS-L
 
 ## Prerequisites
 
-Install `sglang-omni` by following [Installation](../get_started/installation.md), then
-download the model (public, no token required):
+For CUDA, install `sglang-omni` by following [Installation](../get_started/installation.md). For Ascend, use the installation profile below. Download the model (public, no token required):
 
 ```bash
 hf download OpenMOSS-Team/MOSS-TTS-v1.5
@@ -26,6 +25,49 @@ hf download OpenMOSS-Team/MOSS-TTS-v1.5
 
 The processor ships with the checkpoint, so no extra TTS package is needed. Decoding base64
 (data-URI) reference audio additionally requires `soundfile` (`uv pip install soundfile`).
+
+### Ascend NPU
+
+The single-card NPU path uses BF16 MOSS-TTS-v1.5 with backbone decode and sampling/state-machine graphs. It uses the released SGLang dependency without a SGLang source patch.
+
+Use the A3 runtime pinned by `base-image-a3` in `[tool.sglang-omni.npu]` in `pyproject_npu.toml`, rather than a rolling image tag. The current runtime selects SGLang 0.5.22, CANN 9.1.0, Python 3.12, PyTorch 2.10.0 and torch_npu 2.10.0.post6. The host driver and firmware must support this CANN release; see [Ascend prerequisites](../get_started/installation_npu.md#prerequisites). Install this checkout inside that prepared runtime:
+
+```bash
+bash scripts/npu/install_npu.sh --install-system-deps
+```
+
+Run this command from the base image's root shell. The system-dependency option installs FFmpeg, libsndfile and SoX; omit it if these are already installed.
+
+Set the device and queue options before starting the server:
+
+```bash
+export ASCEND_RT_VISIBLE_DEVICES=0
+export SGLANG_OMNI_PLATFORM_SPEC=sglang_omni.platforms.npu.NPUOmniPlatform
+export PER_STREAM_QUEUE=1
+export TASK_QUEUE_ENABLE=1
+```
+
+`PER_STREAM_QUEUE` is an [experimental torch_npu option](https://www.hiascend.com/document/detail/en/Pytorch/2610/devguide/fwfeatures/docs/en/framework_feature_guide_pytorch/stream_taskqueue_parallel_delivery.md). Device 0 is an example; select the device allocated to your deployment.
+
+Download `OpenMOSS-Team/MOSS-Audio-Tokenizer` as well as the TTS checkpoint. For local weights, create `npu-moss.yaml`:
+
+```yaml
+config_cls: MossTTSPipelineConfig
+model_path: /models/MOSS-TTS-v1.5
+stages:
+  preprocessing:
+    factory:
+      codec_model_path: /models/MOSS-Audio-Tokenizer
+  vocoder:
+    factory:
+      codec_model_path: /models/MOSS-Audio-Tokenizer
+```
+
+Start the server, then use the speech requests below:
+
+```bash
+sgl-omni serve --model-path /models/MOSS-TTS-v1.5 --config npu-moss.yaml --port 8000
+```
 
 ## Server Configuration
 
@@ -242,15 +284,10 @@ over the single-value aliases.
 
 ## Seed Reproducibility
 
-MOSS-TTS samples each row, position, and codebook with `multinomial_with_seed`, deriving a
-per-request seed from the public `seed` and combining it with a per-(step, channel) position. A
-sampled token therefore depends only on its own seed and position — never on its batch
-neighbours — so a fixed `seed` is reproducible at any concurrency, not just batch size 1.
+MOSS-TTS derives a per-request seed from the public `seed` and combines it with a per-(step, channel) position and original token ID to generate sampling noise. With identical logits and prepared inputs, the sampler reproduces its selection across batches independently of batch neighbours.
 Limitations:
 
-- Reproducibility holds for a **fixed server configuration and hardware**. Floating-point
-  non-determinism in the backbone (different batch shapes, GPU models, or kernels) can still
-  change the logits, and thus the sampled tokens, across deployments.
+- Reproducibility holds for a **fixed server configuration and hardware**. Floating-point differences in reference encoding and the backbone (different batch shapes, device models, or kernels) can change prepared codes or logits, and thus the sampled tokens. A fixed seed does not guarantee identical end-to-end audio across concurrency settings or deployments.
 - `seed` must be a non-negative integer; non-integer or negative values are rejected.
 - Requests **without** a `seed` draw a fresh random per-request seed, so they are not
   reproducible across runs (but are still independent of batch neighbours).
@@ -282,9 +319,17 @@ references, not CI thresholds.
 | EN | 1.68% | 1.32% (4 outliers) | 3.449 / 4.141 | 0.811 | 2.312 |
 | ZH | 1.36% | 1.27% (2 outliers) | 3.608 / 4.153 | 0.635 | 2.213 |
 
-A handful of utterances run away into a repetition loop (> 50% WER) and dominate the raw
+A handful of utterances in the H200 reference run away into a repetition loop (> 50% WER) and dominate the raw
 micro-average; excluding them, corpus WER is ~1.3% in both languages, and per-sample median WER
 is 0.00%.
+
+The Ascend profile above completed all 1088 EN samples with BF16 MOSS-TTS-v1.5 on one Ascend910_9362, SGLang 0.5.22, CANN 9.1.0 and torch_npu 2.10.0.post6. The run used concurrency 8, seed 1234, eight warmup requests, reference audio/text and automatic duration tokens. HF Whisper-large-v3 FP32 scored every output, with zero generation or scoring failures.
+
+| Device | WER (all samples) | Auxiliary WER (excl. >50%) | Latency mean / p95 (s) | Throughput (qps) |
+| --- | --- | --- | --- | --- |
+| Ascend910_9362 | 204/11943 = 1.7081% | 185/11920 = 1.5520% (3 severe samples) | 7.479 / 9.773 | 1.068 |
+
+All three severe samples remain in the primary WER; their cause is unresolved. Hardware, software revision and recorded seed conditions differ from the historical H200 reference, so these results are not a matched hardware comparison. Backbone decode and sampling/state-machine graphs remain enabled on the NPU.
 
 ## Known Limitations
 

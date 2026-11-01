@@ -32,7 +32,7 @@ class StaticSamplingInputs(NamedTuple):
 
 
 class CapturedSamplingGraph(NamedTuple):
-    graph: torch.cuda.CUDAGraph
+    graph: torch.cuda.CUDAGraph | torch.npu.NPUGraph
     rows: torch.Tensor
     next_delay_state: torch.Tensor
 
@@ -67,13 +67,14 @@ class MossTTSDelaySamplingCudaGraphRunner:
         else:
             pass
         self.model = model
+        self.device_module = torch.npu if model.device.type == "npu" else torch.cuda
         self.capture_bs = tuple(int(batch_size) for batch_size in capture_bs)
         self.disable_padding = bool(disable_padding)
         self.graphs: dict[int, CapturedSamplingGraph] = {}
         self.inputs: StaticSamplingInputs | None = None
         self.graph_pool = None
-        self.warmup_stream: torch.cuda.Stream | None = None
-        self.capture_stream: torch.cuda.Stream | None = None
+        self.warmup_stream: torch.Stream | None = None
+        self.capture_stream: torch.Stream | None = None
 
     @classmethod
     def capture(
@@ -90,8 +91,8 @@ class MossTTSDelaySamplingCudaGraphRunner:
         )
         capture_failed = False
         try:
-            with torch.cuda.device(model.device):
-                torch.cuda.synchronize()
+            with runner.device_module.device(model.device):
+                runner.device_module.synchronize()
                 runner.capture_all()
         except Exception as exc:
             capture_failed = True
@@ -124,7 +125,7 @@ class MossTTSDelaySamplingCudaGraphRunner:
         self.inputs = self.make_static_inputs(buckets[-1])
 
         for bucket in reversed(buckets):
-            free_bytes, _ = torch.cuda.mem_get_info(self.model.device)
+            free_bytes, _ = self.device_module.mem_get_info(self.model.device)
             if free_bytes < _MIN_CAPTURE_FREE_BYTES:
                 logger.warning(
                     "MOSS-TTS Delay sampling CUDA graph capture stopped: free "
@@ -141,8 +142,8 @@ class MossTTSDelaySamplingCudaGraphRunner:
             try:
                 self.graphs[bucket] = self.capture_bucket(bucket)
                 logger.info(
-                    "Captured MOSS-TTS Delay sampling CUDA graph backbone_bucket=%s",
-                    bucket,
+                    f"Captured MOSS-TTS Delay sampling graph device={self.model.device} "
+                    f"backbone_bucket={bucket}"
                 )
             except Exception as exc:
                 self.graphs.pop(bucket, None)
@@ -176,7 +177,7 @@ class MossTTSDelaySamplingCudaGraphRunner:
         self.warmup_stream = None
         self.capture_stream = None
         gc.collect()
-        if self.model.device.type in ("cuda", "musa"):
+        if self.model.device.type in ("cuda", "musa", "npu"):
             device_module = torch.get_device_module(self.model.device)
             if device_module.is_available():
                 with device_module.device(self.model.device):
@@ -253,37 +254,47 @@ class MossTTSDelaySamplingCudaGraphRunner:
     ) -> CapturedSamplingGraph:
         device = self.model.device
         if self.warmup_stream is None:
-            self.warmup_stream = torch.cuda.Stream(device=device)
+            self.warmup_stream = self.device_module.Stream(device=device)
         else:
             pass
         warmup_stream = self.warmup_stream
-        warmup_stream.wait_stream(torch.cuda.current_stream(device))
-        with torch.cuda.stream(warmup_stream):
+        warmup_stream.wait_stream(self.device_module.current_stream(device))
+        with self.device_module.stream(warmup_stream):
             for _ in range(2):
                 self.run_static(bucket)
-        torch.cuda.current_stream(device).wait_stream(warmup_stream)
-        torch.cuda.synchronize(device)
+        self.device_module.current_stream(device).wait_stream(warmup_stream)
+        self.device_module.synchronize(device)
 
         if self.graph_pool is None:
-            self.graph_pool = torch.cuda.graph_pool_handle()
+            self.graph_pool = self.device_module.graph_pool_handle()
         else:
             pass
         if self.capture_stream is None:
-            self.capture_stream = torch.cuda.Stream(device=device)
+            self.capture_stream = self.device_module.Stream(device=device)
         else:
             pass
         capture_stream = self.capture_stream
-        capture_stream.wait_stream(torch.cuda.current_stream(device))
-        graph = torch.cuda.CUDAGraph()
-        with torch.cuda.stream(capture_stream):
-            with torch.cuda.graph(
+        capture_stream.wait_stream(self.device_module.current_stream(device))
+        if device.type == "npu":
+            graph = self.device_module.NPUGraph()
+            capture_context = self.device_module.graph(
+                npu_graph=graph,
+                pool=self.graph_pool,
+                stream=capture_stream,
+                capture_error_mode="thread_local",
+            )
+        else:
+            graph = torch.cuda.CUDAGraph()
+            capture_context = torch.cuda.graph(
                 graph,
                 pool=self.graph_pool,
                 stream=capture_stream,
                 capture_error_mode="thread_local",
-            ):
+            )
+        with self.device_module.stream(capture_stream):
+            with capture_context:
                 output = self.run_static(bucket)
-        torch.cuda.current_stream(device).wait_stream(capture_stream)
+        self.device_module.current_stream(device).wait_stream(capture_stream)
         return CapturedSamplingGraph(
             graph=graph,
             rows=output.rows,
