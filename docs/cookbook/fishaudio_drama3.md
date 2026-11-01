@@ -259,6 +259,17 @@ A single stream gets its first audio in under 100 ms. At concurrency 16, audio i
 
 With the vocoder on the engine's GPU, at 256 streams the vocoder is fully loaded and each new stream's first audio waits in its queue. Moving it to a second GPU, as described under [Deployment](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_drama3.html#deployment), gave about 72% more throughput and a 37% lower median TTFA at 256 streams. Use this layout when you need many concurrent streams and a short time to first audio together.
 
+### Streaming Vocoder Batches
+
+With `--vocoder.factory.window_cuda_graphs false`, the vocoder coalesces
+already-queued chunks from distinct requests without waiting for a batch.
+Ready windows of the same length decode together, up to
+`--vocoder.factory.max_batch_size` (8 by default) and the startup frame budget.
+Each request keeps its own window schedule, overlap and crossfade state. Tail
+windows flush immediately when that request completes.
+`--vocoder.factory.max_batch_wait_ms` applies only to non-streaming requests.
+The default singleton CUDA graphs retain per-request decoding.
+
 ### Non-Streaming Requests
 
 The vocoder decodes a non-streaming request's audio in one piece after the engine finishes it, batching requests that
