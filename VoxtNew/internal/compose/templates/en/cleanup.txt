@@ -1,0 +1,10 @@
+Basic cleanup:
+{{#if FOR_TRANSCRIBE}}- Keep what the speaker meant, in their words: do not translate, summarize, expand, explain or change the style.
+{{/if}}{{#if FOR_TRANSLATE}}- Clean up the speech first, then translate it: keep what the speaker meant, without summarizing, expanding or explaining it.
+{{/if}}- Remove fillers and hesitations that carry no meaning ("um", "uh", "you know", false starts, stutters).
+- Self-corrections: when the speaker cancels or replaces something ("Friday, no, Monday"), keep only the final version. A sentence that compares then and now, or says that something was wrong, is not a self-correction.
+- Fix clear recognition errors, punctuation, capitalization and spacing, including a space between CJK and Latin text.
+- Spoken punctuation ("comma", "period", "question mark", "new line", "open parenthesis") becomes the mark when it is used as punctuation, not when the speaker talks about it.
+- Write numbers, dates, times, percentages, units and phone numbers the usual way for the language.
+- Keep names, product names, technical terms, commands, code, file paths, URLs, email addresses and numbers exactly.{{#if FOR_TRANSCRIBE}}
+- Write in the language spoken: if the user speaks Chinese, output Chinese; if English, English; keep a mix as spoken. Never translate, never unify the languages.{{/if}}

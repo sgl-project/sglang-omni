@@ -1,0 +1,27 @@
+{
+  "name": "VoxtNew",
+  "identifier": "dev.hehehai.voxtnew",
+  "version": "0.1.0-beta.1",
+  "copyright": "Copyright © 2026 ActNow and the SGLang-Omni Team. Licensed under the Apache License 2.0.",
+  "out": "build",
+  "urlSchemes": [
+    "voxtnew"
+  ],
+  "resources": [
+    "LICENSE",
+    "NOTICE",
+    "LICENSES"
+  ],
+  "macos": {
+    "minimumSystemVersion": "15.0",
+    "infoPlist": {
+      "LSApplicationCategoryType": "public.app-category.productivity",
+      "NSMicrophoneUsageDescription": "VoxtNew records your voice while you use its shortcut and recognises it on this Mac: the audio never leaves it. 录音只在你使用快捷键时进行，并在这台 Mac 上识别：音频不会离开这台 Mac。"
+    },
+    "entitlements": "helper/Support/app.entitlements",
+    "helperEntitlements": {
+      "helper/voxtnew-helper": "helper/Support/helper.entitlements",
+      "llm/voxtnew-llm": "llm/Support/llm.entitlements"
+    }
+  }
+}
