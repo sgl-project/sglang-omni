@@ -263,6 +263,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let silenceAudioLevelThreshold: Float = 0.06
     let sessionFinishDelay: TimeInterval = 1.2
     var recordingRequestedAt: Date?
+    /// The hotkey press that started this recording, before any long-press debounce.
+    var recordingKeyDownAt: Date?
+    var pendingRecordingKeyDownAt: Date?
     var recordingStartedAt: Date?
     var recordingStoppedAt: Date?
     var transcriptionProcessingStartedAt: Date?

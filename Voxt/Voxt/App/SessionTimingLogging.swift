@@ -10,6 +10,7 @@ extension AppDelegate {
         let asrModel: String
         let captureMetrics: TranscriptionCaptureMetrics?
         let recordingRequestedAt: Date?
+        let recordingKeyDownAt: Date?
         let recordingStartedAt: Date?
         let recordingStoppedAt: Date?
         let transcriptionResultReceivedAt: Date?
@@ -29,6 +30,10 @@ extension AppDelegate {
         let finalLLMExecution = snapshot.llmExecutions.last
 
         let requestToStartMs = resolvedDurationMs(from: snapshot.recordingRequestedAt, to: snapshot.recordingStartedAt)
+        let keyDownToFirstAudioFrameMs = resolvedDurationMs(
+            from: snapshot.recordingKeyDownAt,
+            to: snapshot.captureMetrics?.firstFrameAt
+        )
         let startToStopMs = resolvedDurationMs(from: snapshot.recordingStartedAt, to: snapshot.recordingStoppedAt)
         let startToFirstLiveASRMs = resolvedDurationMs(
             from: snapshot.recordingStartedAt,
@@ -74,7 +79,7 @@ extension AppDelegate {
 
         VoxtLog.input(
             """
-            Session timing summary. output=\(RecordingSessionSupport.outputLabel(for: outputMode)), pipeline=\(snapshot.transcriptionCapturePipeline.rawValue), stages=\(snapshot.captureStageLabels.joined(separator: ">")), asrProvider=\(snapshot.asrProvider), asrModel=\(snapshot.asrModel), llmCalls=\(snapshot.llmExecutions.count), deliveredChars=\(deliveredText.count), didInject=\(didInject), requestToStartMs=\(timingValueLabel(requestToStartMs)), startToStopMs=\(timingValueLabel(startToStopMs)), startToFirstLiveASRMs=\(timingValueLabel(startToFirstLiveASRMs)), capturedAudioMs=\(timingValueLabel(capturedAudioMs)), captureGapMs=\(timingValueLabel(captureGapMs)), stopToASRMs=\(timingValueLabel(stopToASRMs)), asrToFirstLLMChunkMs=\(timingValueLabel(asrToFirstChunkMs)), asrToFirstLLMCompleteMs=\(timingValueLabel(asrToFirstCompleteMs)), asrToFinalLLMCompleteMs=\(timingValueLabel(asrToFinalCompleteMs)), asrToDeliveredMs=\(timingValueLabel(asrToDeliveredMs)), stopToDeliveredMs=\(timingValueLabel(stopToDeliveredMs)), overallMs=\(timingValueLabel(overallMs)), firstLLM=\(firstLLMSummary), finalLLM=\(finalLLMSummary)
+            Session timing summary. output=\(RecordingSessionSupport.outputLabel(for: outputMode)), pipeline=\(snapshot.transcriptionCapturePipeline.rawValue), stages=\(snapshot.captureStageLabels.joined(separator: ">")), asrProvider=\(snapshot.asrProvider), asrModel=\(snapshot.asrModel), llmCalls=\(snapshot.llmExecutions.count), deliveredChars=\(deliveredText.count), didInject=\(didInject), requestToStartMs=\(timingValueLabel(requestToStartMs)), keyDownToFirstAudioFrameMs=\(timingValueLabel(keyDownToFirstAudioFrameMs)), startToStopMs=\(timingValueLabel(startToStopMs)), startToFirstLiveASRMs=\(timingValueLabel(startToFirstLiveASRMs)), capturedAudioMs=\(timingValueLabel(capturedAudioMs)), captureGapMs=\(timingValueLabel(captureGapMs)), stopToASRMs=\(timingValueLabel(stopToASRMs)), asrToFirstLLMChunkMs=\(timingValueLabel(asrToFirstChunkMs)), asrToFirstLLMCompleteMs=\(timingValueLabel(asrToFirstCompleteMs)), asrToFinalLLMCompleteMs=\(timingValueLabel(asrToFinalCompleteMs)), asrToDeliveredMs=\(timingValueLabel(asrToDeliveredMs)), stopToDeliveredMs=\(timingValueLabel(stopToDeliveredMs)), overallMs=\(timingValueLabel(overallMs)), firstLLM=\(firstLLMSummary), finalLLM=\(finalLLMSummary)
             """
         )
     }

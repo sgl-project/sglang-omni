@@ -207,6 +207,7 @@ extension AppDelegate {
             asrModel: asrSummary.model,
             captureMetrics: currentTranscriptionCaptureMetrics(),
             recordingRequestedAt: recordingRequestedAt,
+            recordingKeyDownAt: recordingKeyDownAt,
             recordingStartedAt: recordingStartedAt,
             recordingStoppedAt: recordingStoppedAt,
             transcriptionResultReceivedAt: transcriptionResultReceivedAt,

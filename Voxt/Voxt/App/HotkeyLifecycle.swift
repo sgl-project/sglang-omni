@@ -640,6 +640,7 @@ extension AppDelegate {
     ) {
         guard !blockNonMeetingRecordingWhileMeetingIsActive(source: "pendingTranscriptionStart:\(reason)") else { return }
         VoxtLog.hotkey("Scheduling pending transcription start. delaySec=\(delay), reason=\(reason)")
+        let keyDownAt = Date()
         pendingTranscriptionStartTask?.cancel()
         pendingTranscriptionStartTask = Task { [weak self] in
             guard let self else { return }
@@ -665,6 +666,7 @@ extension AppDelegate {
             }
             self.pendingTranscriptionStartTask = nil
             VoxtLog.hotkey("Pending transcription start fired.")
+            self.pendingRecordingKeyDownAt = keyDownAt
             self.beginRecording(outputMode: .transcription)
         }
     }
