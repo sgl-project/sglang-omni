@@ -185,6 +185,7 @@ def register_translations(app: FastAPI) -> None:
                 architectures=getattr(app.state, "architectures", None),
                 duration_s=duration_s,
                 response_formats=TRANSLATION_RESPONSE_FORMATS,
+                finish_reason=result.finish_reason,
             )
         except HTTPException as exc:
             return http_exception_response(exc, param=None)

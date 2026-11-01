@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +17,8 @@ import torch
 from sglang_omni.preprocessing import audio, image, video
 from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
 from sglang_omni.serve.openai_errors import is_bad_request_error
+
+MPEG4_KEYFRAME_INTERVAL = 2
 
 
 def write_video_with_audio(path: Path) -> None:
@@ -196,7 +199,7 @@ def test_video_reader_error_classification(
         {"torchvision": fail, "decord": fail},
     )
     with pytest.raises(video.VideoDecodeError) as caught:
-        video.load_video_path(path)
+        video.load_video_path(path, decode_threads=16)
     assert caught.value.__cause__ is error
     assert is_bad_request_error(caught.value) is bad_request
 
@@ -223,7 +226,9 @@ async def test_media_loads_cancel_and_await_siblings(cancel, kind):
     Connector.fetch_image_async = Connector.fetch_video_async
     Connector.fetch_audio_async = Connector.fetch_video_async
     loader = {
-        "video": video.ensure_video_list_async,
+        "video": functools.partial(
+            video.ensure_video_list_async, video_decode_threads=16
+        ),
         "image": image.ensure_image_list_async,
         "audio": audio.ensure_audio_list_async,
     }[kind]
@@ -269,7 +274,9 @@ async def test_cancelled_decoder_is_drained_before_returning(
     monkeypatch.setattr(audio.AudioMediaIO, "load_http_bytes", decode)
     connector = MultiModalResourceConnector()
     loaders = {
-        "video": video.ensure_video_list_async,
+        "video": functools.partial(
+            video.ensure_video_list_async, video_decode_threads=16
+        ),
         "image": image.ensure_image_list_async,
         "audio": audio.ensure_audio_list_async,
     }
@@ -282,7 +289,7 @@ async def test_cancelled_decoder_is_drained_before_returning(
         )
         if through_video_loader
         else connector.load_resource_async(
-            "https://example/video.mp4", video.VideoMediaIO()
+            "https://example/video.mp4", video.VideoMediaIO(decode_threads=16)
         )
     )
     try:
@@ -328,7 +335,9 @@ async def test_local_video_audio_decode_concurrently_and_drain(
     path = tmp_path / "video.mp4"
     path.touch()
     task = asyncio.create_task(
-        video.ensure_video_list_async([path], extract_audio=True)
+        video.ensure_video_list_async(
+            [path], extract_audio=True, video_decode_threads=16
+        )
     )
     try:
         await asyncio.wait_for(asyncio.gather(*(event.wait() for event in started)), 5)
@@ -364,7 +373,11 @@ async def test_local_video_audio_decode_concurrently_and_drain(
 def mpeg4_video(tmp_path: Path) -> Path:
     path = tmp_path / "video.mp4"
     with av.open(str(path), "w") as container:
-        stream = container.add_stream("mpeg4", rate=4)
+        stream = container.add_stream(
+            "mpeg4",
+            rate=4,
+            options={"g": str(MPEG4_KEYFRAME_INTERVAL), "sc_threshold": "1000000000"},
+        )
         stream.width = stream.height = 56
         stream.pix_fmt = "yuv420p"
         for index in range(8):
@@ -382,13 +395,15 @@ def mpeg4_video(tmp_path: Path) -> Path:
 def test_a_processed_video_before_a_file_keeps_every_video_in_place(
     mpeg4_video: Path, tensor_index: int, extract_audio: bool
 ) -> None:
-    decoded, _ = video.load_video_path(mpeg4_video, fps=2)
+    decoded, _ = video.load_video_path(mpeg4_video, fps=2, decode_threads=16)
     processed = torch.zeros_like(decoded)
     inputs: list[object] = [mpeg4_video, mpeg4_video]
     inputs.insert(tensor_index, processed)
 
     videos, sample_fps, audios = asyncio.run(
-        video.ensure_video_list_async(inputs, fps=2, extract_audio=extract_audio)
+        video.ensure_video_list_async(
+            inputs, fps=2, extract_audio=extract_audio, video_decode_threads=16
+        )
     )
 
     assert len(videos) == 3
@@ -399,3 +414,114 @@ def test_a_processed_video_before_a_file_keeps_every_video_in_place(
             assert torch.equal(loaded, decoded)
     assert sample_fps is None
     assert audios == ([None, None, None] if extract_audio else None)
+
+
+@pytest.fixture
+def opened_decoders(monkeypatch) -> list[tuple[int, list[int]]]:
+    native_decoder = video.VideoDecoder
+    opened: list[tuple[int, list[int]]] = []
+
+    class RecordingDecoder:
+        def __init__(self, source: str, *, num_ffmpeg_threads: int) -> None:
+            self.decoder = native_decoder(source, num_ffmpeg_threads=num_ffmpeg_threads)
+            self.metadata = self.decoder.metadata
+            self.requested_indices: list[int] = []
+            opened.append((num_ffmpeg_threads, self.requested_indices))
+
+        def _get_key_frame_indices(self) -> torch.Tensor:
+            return self.decoder._get_key_frame_indices()  # noqa: leading-underscore
+
+        def get_frames_at(self, indices: list[int]) -> SimpleNamespace:
+            self.requested_indices.extend(indices)
+            return SimpleNamespace(
+                data=self.decoder.get_frames_at(indices=indices).data
+            )
+
+    monkeypatch.delenv("TORCHCODEC_NUM_THREADS", raising=False)
+    monkeypatch.setattr(video, "VideoDecoder", RecordingDecoder)
+    return opened
+
+
+@pytest.mark.skipif(
+    video.VideoDecoder is None, reason="the torchcodec native decoder is unavailable"
+)
+@pytest.mark.parametrize(
+    "frame_range",
+    [
+        {"video_start": 0.25, "video_end": 1.5},
+        {"video_start": 0.5, "video_end": 0.75},
+    ],
+)
+def test_parallel_torchcodec_decode_returns_the_reader_frames(
+    mpeg4_video: Path,
+    opened_decoders: list[tuple[int, list[int]]],
+    frame_range: dict[str, float],
+) -> None:
+    """Frames of one keyframe group went to several decoders that each decoded the group from its keyframe, and decoders beyond the reader's took threads past the budget, so dense sampling ran slower than the reader."""
+    decode_threads = 16
+    video_options = {"video": str(mpeg4_video), "fps": 4.0, **frame_range}
+
+    frames, sample_fps = video.read_video_torchcodec(
+        dict(video_options), decode_threads
+    )
+    expected_frames, expected_fps = video.qwen_vision.VIDEO_READER_BACKENDS[
+        "torchcodec"
+    ](dict(video_options))
+
+    assert torch.equal(frames, expected_frames)
+    assert sample_fps == expected_fps
+    decoder_groups = [
+        {frame_index // MPEG4_KEYFRAME_INTERVAL for frame_index in requested_indices}
+        for _, requested_indices in opened_decoders
+    ]
+    sampled_groups = set().union(*decoder_groups)
+    assert sum(len(groups) for groups in decoder_groups) == len(sampled_groups)
+    assert opened_decoders[0][0] == video.READER_FFMPEG_THREADS
+    assert sum(thread_count for thread_count, _ in opened_decoders) <= max(
+        decode_threads, video.READER_FFMPEG_THREADS
+    )
+    assert len(opened_decoders) <= len(sampled_groups)
+
+
+@pytest.mark.skipif(
+    video.VideoDecoder is None, reason="the torchcodec native decoder is unavailable"
+)
+def test_videos_of_one_request_share_its_decode_threads(
+    mpeg4_video: Path, opened_decoders: list[tuple[int, list[int]]]
+) -> None:
+    """Each video a request loaded at once took the whole decode thread count, so videos loading together multiplied the FFmpeg threads."""
+    videos, _, _ = asyncio.run(
+        video.ensure_video_list_async(
+            [mpeg4_video, mpeg4_video], fps=4.0, video_decode_threads=16
+        )
+    )
+
+    assert len(videos) == 2
+    assert [thread_count for thread_count, _ in opened_decoders] == [
+        video.READER_FFMPEG_THREADS
+    ] * 2
+
+
+def test_torchcodec_reader_of_record_runs_when_the_native_decoder_is_unavailable(
+    mpeg4_video: Path, monkeypatch
+) -> None:
+    """A torchcodec package whose native decoder failed to load surfaced as a call of None, not the reader's error."""
+    reader_calls: list[str] = []
+
+    def reader(
+        video_options: dict[str, str | float | int],
+    ) -> tuple[torch.Tensor, float]:
+        reader_calls.append(str(video_options["video"]))
+        return torch.zeros(2, 3, 28, 28, dtype=torch.uint8), 2.0
+
+    monkeypatch.setattr(video, "VideoDecoder", None)
+    monkeypatch.setattr(
+        video.qwen_vision, "get_video_reader_backend", lambda: "torchcodec"
+    )
+    monkeypatch.setitem(video.qwen_vision.VIDEO_READER_BACKENDS, "torchcodec", reader)
+
+    frames, sample_fps = video.load_video_path(mpeg4_video, fps=4.0, decode_threads=16)
+
+    assert reader_calls == [str(mpeg4_video)]
+    assert frames.shape[0] == 2
+    assert sample_fps == 2.0

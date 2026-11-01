@@ -24,6 +24,7 @@ def test_vocoder_platform_default_keeps_npu_opt_in(
 
     expected = {"async_decode": False} if use_npu else {}
     expected["running_stream_count"] = 64
+    expected["shares_engine_speech_tokenizer"] = True
     assert config.stage_factory_kwargs("vocoder") == expected
 
 
@@ -97,6 +98,26 @@ def test_custom_voice_config_rejects_missing_or_invalid_speakers(
 
     with pytest.raises(ValueError, match="spk_id"):
         config.resolve_custom_voice_config()
+
+
+@pytest.mark.parametrize(
+    ("checkpoint_config", "speaker_embedding_size"),
+    [
+        ({"tts_model_type": "base", "speaker_encoder_config": {"enc_dim": 2048}}, 2048),
+        (
+            {"tts_model_type": "custom_voice", "talker_config": {"spk_id": {"a": 1}}},
+            None,
+        ),
+        ({"tts_model_type": "voice_design"}, None),
+    ],
+)
+def test_speaker_embedding_size_is_the_base_speaker_encoder_width(
+    tmp_path, checkpoint_config, speaker_embedding_size
+) -> None:
+    (tmp_path / "config.json").write_text(json.dumps(checkpoint_config))
+    config = Qwen3TTSPipelineConfig(model_path=str(tmp_path))
+
+    assert config.resolve_speaker_embedding_size() == speaker_embedding_size
 
 
 @pytest.mark.parametrize(
@@ -255,3 +276,43 @@ def test_vocoder_receives_the_streams_one_replica_may_hold(
     factory_kwargs = config.stage_factory_kwargs("vocoder")
 
     assert factory_kwargs["running_stream_count"] == running_stream_count
+
+
+@pytest.mark.parametrize(
+    (
+        "preprocessing_process",
+        "vocoder_process",
+        "vocoder_attn_implementation",
+        "shares_engine_speech_tokenizer",
+    ),
+    [
+        ("pipeline", "pipeline", None, True),
+        ("pipeline", "vocoder", None, False),
+        ("pipeline", "pipeline", "eager", False),
+        ("tts_frontend", "pipeline", None, True),
+        ("tts_frontend", "tts_frontend", None, False),
+    ],
+)
+def test_vocoder_shares_the_engine_speech_tokenizer_only_on_its_cache_entry(
+    preprocessing_process: str,
+    vocoder_process: str,
+    vocoder_attn_implementation: str | None,
+    shares_engine_speech_tokenizer: bool,
+) -> None:
+    config = Qwen3TTSPipelineConfig(model_path="org/model")
+    config.stage_named("preprocessing").process = preprocessing_process
+    vocoder_stage = config.stage_named("vocoder")
+    vocoder_stage.process = vocoder_process
+    if vocoder_attn_implementation is None:
+        pass
+    else:
+        vocoder_stage.factory = FactoryArgs(
+            dtype="bfloat16", attn_implementation=vocoder_attn_implementation
+        )
+
+    factory_kwargs = config.stage_factory_kwargs("vocoder")
+
+    assert (
+        factory_kwargs["shares_engine_speech_tokenizer"]
+        is shares_engine_speech_tokenizer
+    )

@@ -7,6 +7,13 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol, TypedDict
 
+import torch
+from sglang.srt.arg_groups.model_override_base import (
+    attention_backends_of,
+    resolved_view,
+)
+from sglang.srt.runtime_context import get_context, get_schedule
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from typing_extensions import Unpack
 
 if TYPE_CHECKING:
@@ -21,6 +28,7 @@ from sglang_omni.utils.gpu_compat import (
     get_visible_gpu_sm_version,
     gpu_architecture_for_sm,
 )
+from sglang_omni.vendor.sglang.server_args import override_server_args
 
 logger = logging.getLogger(__name__)
 
@@ -42,17 +50,14 @@ class InfrastructureOptions(TypedDict, total=False):
     before_memory_pool: Callable[["ModelWorker"], None] | None
     supports_speculative_decoding: bool
     speculative_worker_class: type[BaseSpecWorker] | None
+    enable_async_decode: bool
+    should_run_top_priority_stream: bool
 
 
 def describe_sglang_runtime_configuration(
     server_args: SGLangServerArgsForDiagnostics,
     gpu_id: int,
 ) -> str:
-    from sglang.srt.arg_groups.model_override_base import (
-        attention_backends_of,
-        resolved_view,
-    )
-
     sm_version = get_visible_gpu_sm_version(gpu_id)
     cfg = resolved_view(server_args)
     prefill_attention_backend, decode_attention_backend = attention_backends_of(cfg)
@@ -87,7 +92,16 @@ def init_sglang_cuda_graphs(
             model_config.is_multimodal = original_is_multimodal
     if model_worker.speculative_worker is not None:
         model_worker.speculative_worker.init_cuda_graphs()
-        model_worker.speculative_worker.prewarm_sampling()
+        if get_schedule().disable_overlap_schedule:
+            model_worker.speculative_worker.prewarm_sampling()
+        else:
+            device_module = torch.get_device_module(model_worker.device)
+            initialization_stream = device_module.current_stream()
+            forward_stream = model_worker.model_runner.forward_stream
+            forward_stream.wait_stream(initialization_stream)
+            with device_module.stream(forward_stream):
+                model_worker.speculative_worker.prewarm_sampling()
+            initialization_stream.wait_stream(forward_stream)
     else:
         pass
 
@@ -106,6 +120,8 @@ def create_sglang_infrastructure(
     before_memory_pool: Callable[["ModelWorker"], None] | None = None,
     supports_speculative_decoding: bool = False,
     speculative_worker_class: type[BaseSpecWorker] | None = None,
+    enable_async_decode: bool = False,
+    should_run_top_priority_stream: bool = False,
 ):
     """Create SGLang worker, memory pools, and tree cache.
 
@@ -121,21 +137,28 @@ def create_sglang_infrastructure(
     # silently reconfigure whatever already runs here, so an engine is only
     # built where the context is unpublished. A construction that failed after
     # publishing is therefore not retried here.
-    from sglang.srt.runtime_context import get_context, get_schedule, get_spec
-    from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
-
     from sglang_omni.model_runner.model_worker import ModelWorker, ModelWorkerConfig
-    from sglang_omni.model_runner.speculative_target_worker import (
-        SpeculativeTargetWorker,
-    )
     from sglang_omni.scheduling.sglang_backend import create_tree_cache
     from sglang_omni.scheduling.stage_kv_budget import consume_stage_kv_cache_bytes
+    from sglang_omni.speculative.target_worker import SpeculativeTargetWorker
 
     if get_context().is_config_namespace_published("model"):
         raise RuntimeError(
             "this process already holds a published SGLang runtime context; "
             "an SGLang AR engine must own its OS process. Place SGLang AR "
             "stages in separate processes."
+        )
+    else:
+        pass
+
+    speculative_algorithm = SpeculativeAlgorithm.from_string(
+        resolved_view(server_args).speculative_algorithm
+    )
+    if speculative_algorithm.is_some():
+        override_server_args(
+            server_args,
+            "sglang_omni.speculative_async_decode",
+            disable_overlap_schedule=not enable_async_decode,
         )
     else:
         pass
@@ -158,6 +181,19 @@ def create_sglang_infrastructure(
         tp_rank=tp_rank,
     )
 
+    model_runner = model_worker.model_runner
+    if (
+        speculative_algorithm.is_some()
+        and enable_async_decode
+        and should_run_top_priority_stream
+    ):
+        device_module = torch.get_device_module(model_worker.device)
+        model_runner.forward_stream = device_module.Stream(
+            priority=device_module.Stream.priority_range()[1]
+        )
+    else:
+        pass
+
     if before_memory_pool is not None:
         # note(ratish): sglang sizes the pool from free memory at this point, so
         # whatever the stage keeps resident has to exist before the reading.
@@ -166,10 +202,6 @@ def create_sglang_infrastructure(
         pass
 
     # Phase order follows upstream Scheduler.init_model_worker().
-    model_runner = model_worker.model_runner
-    speculative_algorithm = SpeculativeAlgorithm.from_string(
-        get_spec().speculative_algorithm
-    )
     if speculative_algorithm.is_none():
         model_runner.alloc_memory_pool()
         model_runner.init_attention_backends()
@@ -181,9 +213,19 @@ def create_sglang_infrastructure(
             "stage does not support speculative decoding"
         )
     else:
+        if speculative_algorithm.is_dspark():
+            # note (wilsonzheng0327): SGLang's FA3 backend imports sgl_kernel, which
+            # an MPS or CPU install lacks, so only a DSpark build loads the shim.
+            from sglang_omni.vendor.sglang.flashattention_backend import (
+                install_fa3_draft_width,
+            )
+
+            install_fa3_draft_width()
+        else:
+            pass
         # note (wilsonzheng0327): the draft loads before the pool is sized, so its
         # weights are counted, and its KV pool shares the target's slot ids.
-        target_worker = SpeculativeTargetWorker(model_worker)
+        target_worker = SpeculativeTargetWorker(model_worker, speculative_algorithm)
         if speculative_worker_class is None:
             speculative_worker_class = speculative_algorithm.create_worker(server_args)
         else:
@@ -261,8 +303,6 @@ def create_sglang_infrastructure_defer_cuda_graph(
     The caller finishes stage-specific decode setup, then runs
     init_cuda_graphs() only when this returns that CUDA graphs were requested.
     """
-    from sglang.srt.arg_groups.model_override_base import resolved_view
-
     cfg = resolved_view(server_args)
     want_cuda_graph = not bool(cfg.disable_cuda_graph)
     infrastructure = create_sglang_infrastructure(

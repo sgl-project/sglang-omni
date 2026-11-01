@@ -8,6 +8,7 @@ import torch
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from transformers import PreTrainedTokenizerBase
 
+from sglang_omni.admission import ContextExhaustedError
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.models.nemotron_voicechat.duplex_ar import (
@@ -16,9 +17,14 @@ from sglang_omni.models.nemotron_voicechat.duplex_ar import (
     TalkerAdapter,
     ThinkerAdapter,
 )
+from sglang_omni.models.nemotron_voicechat.duplex_stages import (
+    TalkerBuilder,
+    ThinkerBuilder,
+)
 from sglang_omni.models.nemotron_voicechat.fusion import AddFusion
+from sglang_omni.models.nemotron_voicechat.talker import LevelScheduleEntry
 from sglang_omni.models.nemotron_voicechat.talker_model_runner import (
-    NemotronVoiceChatTalkerModelRunner,
+    VoiceChatTalkerModelRunner,
 )
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
@@ -140,13 +146,20 @@ def test_thinker_continuation_reuses_pending_token_position(
     assert reopened_request.input_ids.tolist() == [1, 2, 0]
 
 
+def test_duplex_ar_stages_disable_radix_cache_for_fusion_rows() -> None:
+    talker = TalkerBuilder()
+    talker.gpu_id = 0
+    assert ThinkerBuilder().generation_defaults(dtype="bfloat16")["disable_radix_cache"]
+    assert talker.generation_defaults(dtype="bfloat16")["disable_radix_cache"]
+
+
 def test_context_limit_rejects_unit_without_corrupting_reopened_session(
     thinker_adapter: ThinkerAdapter,
 ) -> None:
     session_identity = SessionIdentity("context-limit")
     thinker_adapter.open(session_identity, OmniRequest(None))
     chunk = TimedChunk("audio", 0, 80, 0, bytes(2560), "pcm16")
-    for unit_index in range(5):
+    for unit_index in range(4):
         request = thinker_adapter.build(
             session_identity,
             chunk,
@@ -158,7 +171,7 @@ def test_context_limit_rejects_unit_without_corrupting_reopened_session(
         request.extra_model_outputs = {"function_ids": [4]}
         thinker_adapter.result(session_identity, request)
     for attempt in range(2):
-        with pytest.raises(ValueError, match="context limit"):
+        with pytest.raises(ContextExhaustedError, match="^context_exhausted:"):
             thinker_adapter.build(
                 session_identity,
                 chunk,
@@ -332,16 +345,14 @@ def test_sampler_replay_uses_new_hidden_states_and_randomness(
         hidden: torch.Tensor,
         head: torch.nn.Module,
         *,
-        num_iter: int,
-        exponent: float,
+        level_schedule: list[LevelScheduleEntry],
         top_p: float,
         noise_scale: float,
-        assignment_counts: tuple[int, ...],
     ) -> torch.Tensor:
         return hidden + torch.rand_like(hidden)
 
     def initialize_runner(
-        runner: NemotronVoiceChatTalkerModelRunner,
+        runner: VoiceChatTalkerModelRunner,
         tp_worker: ModelWorker,
         output_processor: SGLangOutputProcessor,
     ) -> None:
@@ -350,13 +361,14 @@ def test_sampler_replay_uses_new_hidden_states_and_randomness(
             talker=Mock(num_quantizers=8, generate_codes=sample_codes),
             mog_head=Mock(),
         )
-        runner.exponent = 1.0
+        runner.level_schedule = [
+            LevelScheduleEntry(first_level=0, level_count=4),
+            LevelScheduleEntry(first_level=4, level_count=4),
+        ]
         runner.top_p = 0.9
         runner.noise_scale = 1.0
 
-    monkeypatch.setattr(
-        NemotronVoiceChatTalkerModelRunner, "__init__", initialize_runner
-    )
+    monkeypatch.setattr(VoiceChatTalkerModelRunner, "__init__", initialize_runner)
     runner = DuplexTalkerRunner(
         Mock(spec=ModelWorker), Mock(spec=SGLangOutputProcessor)
     )
