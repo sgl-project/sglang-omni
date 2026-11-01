@@ -783,6 +783,7 @@ The speaker's primary language is {{USER_MAIN_LANGUAGE}}. Prioritize accurate re
 - ASR hint prompt 应该保持很短，它是识别偏置，不是生成式 prompt
 - `Doubao ASR` 主要依赖语言提示；中文输出会自动跟随你选的简体 / 繁体主语言
 - `Aliyun Bailian ASR` 会根据用户主语言列表生成语言 hints
+- 本地 `Qwen3-ASR` 只在用户只选了一种语言时才强制指定主语言；选了多种语言时由模型自动识别语言，因为强制指定语言可能让它把另一种语言的语音翻译成主语言
 
 ## 提示词使用规范
 
