@@ -20,6 +20,7 @@ from sglang_omni.client.audio import (
     encode_audio,
     to_numpy,
 )
+from sglang_omni.client.image_media import parse_image_usage
 from sglang_omni.client.types import (
     UNKNOWN_FINISH_REASON,
     AbortLevel,
@@ -840,12 +841,25 @@ class Client:
             else:
                 pass
             Client.set_audio_data(chunk, result)
+            image_b64 = result.get("image_b64")
+            if isinstance(image_b64, str):
+                chunk.image_b64 = image_b64
+            else:
+                pass
+            images_b64 = result.get("images_b64")
+            if isinstance(images_b64, list) and all(
+                isinstance(encoded_image, str) for encoded_image in images_b64
+            ):
+                chunk.images_b64 = images_b64
+            else:
+                pass
             if result.get("image") is not None:
                 chunk.image = result["image"]
                 chunk.modality = "image"
             else:
                 pass
             chunk.usage = Client.build_usage_info(result)
+            chunk.image_usage = parse_image_usage(result.get("image_usage"))
             diarization = result.get("diarization")
             chunk.diarization = (
                 None
@@ -1054,12 +1068,21 @@ def extract_inputs(request: GenerateRequest) -> object:
 def umm_segment_chunk(chunk: GenerateChunk, data: dict[str, object]) -> GenerateChunk:
     """Carry one streamed segment of an interleaved (UMM) request."""
     segment = UMMSegment.from_dict(data)
+    stage_name = chunk.stage_name
+    if segment.kind == "usage" and isinstance(segment.data, dict):
+        raw_stage_name = segment.data.get("stage_name")
+        if isinstance(raw_stage_name, str):
+            stage_name = raw_stage_name
+        else:
+            pass
+    else:
+        pass
     return UMMGenerateChunk(
         request_id=chunk.request_id,
         index=segment.segment_index,
         text=segment.data if segment.kind == "text" else "",
         stage_id=chunk.stage_id,
-        stage_name=chunk.stage_name,
+        stage_name=stage_name,
         modality=segment.kind,
         segment=segment,
     )
@@ -1081,6 +1104,24 @@ def umm_result_chunk(request_id: str, result: dict[str, object]) -> GenerateChun
         raise ValueError("UMM final segments must be one ordered execution")
     else:
         pass
+    usage_segment = next(
+        (segment for segment in segments if segment.kind == "usage"), None
+    )
+    image_usage = None
+    stage_name = None
+    if usage_segment is None:
+        pass
+    elif usage_segment.data is None:
+        pass
+    elif not isinstance(usage_segment.data, dict):
+        raise ValueError("Invalid UMM usage segment")
+    else:
+        image_usage = parse_image_usage(usage_segment.data.get("image_usage"))
+        raw_stage_name = usage_segment.data.get("stage_name")
+        if isinstance(raw_stage_name, str):
+            stage_name = raw_stage_name
+        else:
+            pass
     finish_reason = result.get("finish_reason")
     return UMMGenerateChunk(
         request_id=request_id,
@@ -1092,6 +1133,8 @@ def umm_result_chunk(request_id: str, result: dict[str, object]) -> GenerateChun
         finish_reason=finish_reason if isinstance(finish_reason, str) else "stop",
         model_finish_reason="",
         modality="mixed",
+        image_usage=image_usage,
+        stage_name=stage_name,
         segments=segments,
     )
 
