@@ -230,7 +230,9 @@ class MossTTSLocalModelRunner(ModelRunner):
             else:
                 pass
             embeds = self.model.prepare_multi_modal_inputs(
-                current_rows.to(device=forward_batch.input_ids.device)
+                current_rows.to(
+                    device=forward_batch.input_ids.device, non_blocking=True
+                )
             )
             pieces.append(embeds)
         if not pieces:
@@ -269,9 +271,35 @@ class MossTTSLocalModelRunner(ModelRunner):
             )
         else:
             pass
-        row_tensor, pool_rows, has_audio_repetition_penalty = pool.prepare_active_rows(
-            requests
+        memo_key = tuple(
+            pool.rid_to_row.get(sched_req.request_id) for sched_req in requests
         )
+        memo = getattr(self, "_active_rows_memo", None)
+        if (
+            memo is not None
+            and memo[0] == memo_key
+            and memo[1].shape[0] >= batch_size
+        ):
+            # Same batch membership as the previous step (the steady decode
+            # state): params are already written, the row tensor and the
+            # penalty verdict are unchanged, so skip the per-request
+            # acquire/ensure/penalty loop and the pinned row-index upload.
+            row_tensor, pool_rows, has_audio_repetition_penalty = (
+                memo[1][:batch_size],
+                memo[2][:batch_size],
+                memo[3],
+            )
+        else:
+            pass
+            row_tensor, pool_rows, has_audio_repetition_penalty = (
+                pool.prepare_active_rows(requests)
+            )
+            self._active_rows_memo = (
+                memo_key,
+                row_tensor,
+                pool_rows,
+                has_audio_repetition_penalty,
+            )
         with torch.no_grad():
             weight[:batch_size].copy_(pool.feedback_embeds[row_tensor])
         forward_batch.moss_pool_row_t = row_tensor
@@ -298,90 +326,6 @@ class MossTTSLocalModelRunner(ModelRunner):
         )
         result.next_token_ids = next_token_ids
         self.stage_token_ids(result, next_token_ids)
-
-    def _stage_codes_slab(
-        self, emit_rows: torch.Tensor
-    ) -> tuple[torch.Tensor | None, int]:
-        """Stage this step's emitted audio codes as ONE batched pinned D2H.
-
-        The terminal payload used to pay a whole-utterance ``torch.stack`` +
-        pageable ``.cpu()`` on the scheduler thread per finished request
-        (~5.8 ms, waiting for the in-flight forward to drain). The slab copy
-        is enqueued here, BEFORE the launch completion event, so resolve
-        (which waits that event) finds it complete and scatters it into
-        per-request host buffers with cheap host-to-host copies.
-
-        Ping-pong slabs: launch N+1 stages the other slab while resolve N
-        still reads this one (the journal holds the reference, so a realloc
-        never strands an in-flight reader).
-        """
-        k = int(emit_rows.shape[0])
-        width = int(emit_rows.shape[1]) - 1
-        if k == 0 or width <= 0:
-            return None, 0
-        else:
-            pass
-        slabs = getattr(self, "_codes_slabs", None)
-        if (
-            slabs is None
-            or slabs[0].shape[1] != width
-            or slabs[0].shape[0] < k
-        ):
-            capacity = max(k, 128)
-            slabs = [
-                torch.zeros(capacity, width, dtype=torch.long, pin_memory=True),
-                torch.zeros(capacity, width, dtype=torch.long, pin_memory=True),
-            ]
-            self._codes_slabs = slabs
-            self._codes_slab_slot = 0
-        else:
-            pass
-        slot = self._codes_slab_slot
-        self._codes_slab_slot = slot ^ 1
-        slab = slabs[slot]
-        slab[:k].copy_(emit_rows[:, 1:], non_blocking=True)
-        return slab, k
-
-    def _scatter_host_codes(
-        self,
-        data: "MossTTSLocalSGLangRequestData",
-        row: torch.Tensor,
-    ) -> None:
-        """Append one staged code row to the request's pinned host buffer.
-
-        Called from post_process_outputs after the launch completion event
-        wait, so the slab D2H has landed; host-to-host pinned copies only.
-        The buffer is sized once from max_new_tokens and never grown; a
-        request that outgrows it sets ``host_codes_overflow`` and the finish
-        path falls back to the synchronous stack+D2H.
-        """
-        if getattr(data, "host_codes_overflow", False):
-            return
-        else:
-            pass
-        pos = int(getattr(data, "host_codes_count", 0))
-        buf = getattr(data, "host_codes_buf", None)
-        if buf is None:
-            capacity = 4096
-            try:
-                max_new_tokens = data.req.sampling_params.max_new_tokens
-            except AttributeError:
-                max_new_tokens = None
-            if isinstance(max_new_tokens, int) and max_new_tokens > 0:
-                capacity = min(max_new_tokens, 4096)
-            else:
-                pass
-            data.host_codes_buf = buf = torch.zeros(
-                capacity, int(row.shape[0]), dtype=torch.long, pin_memory=True
-            )
-        elif buf.shape[1] != int(row.shape[0]) or buf.shape[0] <= pos:
-            data.host_codes_overflow = True
-            data.host_codes_buf = None
-            return
-        else:
-            pass
-        buf[pos].copy_(row)
-        data.host_codes_count = pos + 1
 
     def run_frame_decode(
         self,
@@ -561,8 +505,16 @@ class MossTTSLocalModelRunner(ModelRunner):
                     emit_next_text = emit_rows[:, 0]
                 else:
                     pass
+            # Both counters advance on device at emit: sampling_steps has
+            # always been launch-side, and generation_steps now joins it —
+            # the async floor is max(sampling, generation) so the value is
+            # unchanged, and sync mode reads the same number it used to
+            # receive from the resolve-side host commit (see state_pool).
             pool.sampling_steps[emit_row_t] = (emit_steps + 1).to(
                 device=pool.sampling_steps.device, dtype=torch.int64
+            )
+            pool.generation_steps[emit_row_t] = (emit_steps + 1).to(
+                device=pool.generation_steps.device, dtype=torch.int64
             )
             if has_audio_repetition_penalty:
                 keep_history = emit_next_text != end_id
@@ -581,13 +533,16 @@ class MossTTSLocalModelRunner(ModelRunner):
             pool.feedback_embeds[emit_row_t] = emit_embeds.detach().to(
                 device=pool.feedback_embeds.device, dtype=pool.feedback_embeds.dtype
             )
-            host_slab, host_slab_count = self._stage_codes_slab(emit_rows)
+            # Slot-pool codes accumulation: one device scatter per step; the
+            # finish path reads it back with a single side-stream pinned D2H.
+            pool.accumulate_codes(
+                emit_row_t,
+                emit_rows[:, 1:].to(dtype=torch.long),
+            )
             result.moss_journal = MossTTSLocalDecodeJournal(
                 rids=[requests[i].request_id for i in emit_indices],
                 pool_rows=emit_pool_rows,
                 rows=emit_rows,
-                host_slab=host_slab,
-                host_slab_count=host_slab_count,
             )
         else:
             pass
@@ -715,103 +670,18 @@ class MossTTSLocalModelRunner(ModelRunner):
             if self.is_chunked_request(sched_req)
         }
 
-    def on_generation_step_advanced(
-        self, sched_req: SchedulerRequest, generation_steps: int
-    ) -> None:
-        try:
-            pool = self.model.state_pool
-        except AttributeError:
-            return
-        if pool is not None:
-            pool.commit_generation_step(sched_req.request_id, generation_steps)
-        else:
-            pass
-
-    def _gen_pinned_bufs(
-        self, n: int
-    ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-        """Pinned ping-pong staging buffers for the per-step H2D copies.
-
-        A pageable ``.to(device="cuda")`` is synchronous: it waits for the
-        current stream to drain, so on the async-decode path it serialized the
-        scheduler thread against the in-flight forward (measured ~10 ms per
-        step, ~45% of wall time). Pinned ``copy_(non_blocking=True)`` returns
-        immediately and the copy overlaps the forward.
-        """
-        bufs = getattr(self, "_gen_pinned", None)
-        if bufs is None or bufs[0][0].numel() < n:
-            size = max(n, 128)
-            bufs = (
-                [
-                    torch.empty(size, dtype=torch.long, pin_memory=True),
-                    torch.empty(size, dtype=torch.long, pin_memory=True),
-                ],
-                [
-                    torch.empty(size, dtype=torch.long, pin_memory=True),
-                    torch.empty(size, dtype=torch.long, pin_memory=True),
-                ],
-            )
-            self._gen_pinned = bufs
-            self._gen_pinned_slot = 0
-        else:
-            pass
-        return bufs
-
     def on_generation_steps_advanced(
         self,
         advanced_steps: list[tuple[SchedulerRequest, int]],
         forward_batch: ForwardBatch | None,
     ) -> None:
-        try:
-            pool = self.model.state_pool
-        except AttributeError:
-            return
-        if pool is None or not advanced_steps:
-            return
-        else:
-            pass
-        rows_bufs, steps_bufs = self._gen_pinned_bufs(len(advanced_steps))
-        slot = getattr(self, "_gen_pinned_slot", 0)
-        self._gen_pinned_slot = slot ^ 1
-        rows_buf = rows_bufs[slot]
-        steps_buf = steps_bufs[slot]
-        steps = [int(generation_steps) for _, generation_steps in advanced_steps]
-        steps_buf[: len(steps)] = torch.tensor(steps, dtype=torch.long)
-        try:
-            row_t = forward_batch.moss_pool_row_t
-        except AttributeError:
-            row_t = None
-        if row_t is not None and int(row_t.numel()) == len(steps):
-            step_t = torch.empty(
-                len(steps), dtype=torch.long, device=row_t.device
-            )
-            step_t.copy_(steps_buf[: len(steps)], non_blocking=True)
-            pool.commit_generation_steps(row_t, step_t)
-            return
-        else:
-            pass
-        rows = []
-        row_steps = []
-        for sched_req, generation_steps in advanced_steps:
-            row = pool.row_for(sched_req.request_id)
-            if row is None:
-                continue
-            else:
-                pass
-            rows.append(row)
-            row_steps.append(int(generation_steps))
-        if not rows:
-            return
-        else:
-            pass
-        device = pool.generation_steps.device
-        rows_buf[: len(rows)] = torch.tensor(rows, dtype=torch.long)
-        steps_buf[: len(row_steps)] = torch.tensor(row_steps, dtype=torch.long)
-        row_t = torch.empty(len(rows), dtype=torch.long, device=device)
-        step_t = torch.empty(len(row_steps), dtype=torch.long, device=device)
-        row_t.copy_(rows_buf[: len(rows)], non_blocking=True)
-        step_t.copy_(steps_buf[: len(row_steps)], non_blocking=True)
-        pool.commit_generation_steps(row_t, step_t)
+        """No-op: pool generation_steps advance on device at emit time
+        (see run_frame_decode); the host-side commit this hook used to
+        perform — a per-step O(batch) Python list build plus a pinned H2D —
+        is gone. The host ``data.generation_steps`` counter the base class
+        maintains still drives reporting and the retraction re-prefill.
+        """
+        del advanced_steps, forward_batch
 
     def post_process_outputs(
         self,
@@ -847,8 +717,6 @@ class MossTTSLocalModelRunner(ModelRunner):
             )
         else:
             pass
-        host_slab = getattr(journal, "host_slab", None)
-        host_slab_count = int(getattr(journal, "host_slab_count", 0) or 0)
         for i, sched_req in enumerate(expected_reqs):
             req = sched_req.data.req
             if req is not None:
@@ -870,10 +738,6 @@ class MossTTSLocalModelRunner(ModelRunner):
             if req_output.data is None or int(req_output.data) == end_id:
                 self.flush_stream_rows(sched_req.request_id, sched_req.data, force=True)
                 continue
-            else:
-                pass
-            if host_slab is not None and i < host_slab_count:
-                self._scatter_host_codes(sched_req.data, host_slab[i])
             else:
                 pass
             sched_req.data.output_rows.append(journal.rows[i])

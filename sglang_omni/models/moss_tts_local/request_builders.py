@@ -88,12 +88,8 @@ class MossTTSLocalSGLangRequestData(ARRequestData):
     engine_start_s: float = 0.0
     stream_metadata: dict[str, object] | None = None
     stream_pending_rows: list[torch.Tensor] = field(default_factory=list)
-    # Launch-side pinned staging of generated audio codes: filled frame-by-frame
-    # at launch time so the terminal payload build never pays a blocking
-    # whole-utterance D2H on the scheduler thread (see _stage_host_codes).
-    host_codes_buf: torch.Tensor | None = None
-    host_codes_count: int = 0
-    host_codes_overflow: bool = False
+    # (Per-request host codes staging removed: codes accumulate on device in
+    # the state pool's slot-indexed generated_codes tensor.)
 
 
 @dataclass
@@ -444,11 +440,17 @@ def build_sglang_moss_tts_local_request(
         input_ids=prepared.input_ids,
         max_new_tokens=max_new_tokens,
         temperature=0.0,
-        output_ids=req.output_ids,
+        # Pinned so prefill's H2D is non_blocking: a pageable prompt-rows
+        # transfer waits for the in-flight forward to drain (~5 ms per
+        # prefill at high concurrency).
+        prompt_rows=(
+            prepared.prompt_rows.pin_memory()
+            if prepared.prompt_rows.is_cpu
+            else prepared.prompt_rows
+        ),
         req=req,
         state=prepared.state,
         model_config=cfg,
-        prompt_rows=prepared.prompt_rows,
         text_temperature=float(gen_kwargs.get("text_temperature", 1.0)),
         text_top_p=float(gen_kwargs.get("text_top_p", 1.0)),
         text_top_k=int(gen_kwargs.get("text_top_k", 50)),
@@ -475,6 +477,8 @@ def build_sglang_moss_tts_local_request(
 def apply_sglang_moss_tts_local_result(
     payload: StagePayload,
     data: MossTTSLocalSGLangRequestData,
+    *,
+    model: "MossTTSLocalSGLangModel | None" = None,
 ) -> StagePayload:
     state = data.state
     if not data.output_rows:
@@ -483,19 +487,17 @@ def apply_sglang_moss_tts_local_result(
         )
     else:
         pass
-    host_buf = data.host_codes_buf
-    host_count = data.host_codes_count
-    if (
-        host_buf is not None
-        and not data.host_codes_overflow
-        and host_count == len(data.output_rows)
-    ):
-        # Frames were staged into pinned host memory at launch time (the
-        # copies are covered by the launch completion event resolve already
-        # waited on), so the terminal codes are ready with zero copy and
-        # zero wait. Keep the stack+D2H path as the fallback for any request
-        # the staging did not cover.
-        state.audio_codes = host_buf[:host_count]
+    pool = getattr(model, "state_pool", None) if model is not None else None
+    codes = (
+        pool.copy_codes_to_host(payload.request_id, len(data.output_rows))
+        if pool is not None
+        else None
+    )
+    if codes is not None:
+        # Codes accumulated on device per slot (one scatter per emit); the
+        # side-stream pinned D2H lands in ~tens of µs because resolve already
+        # waited on the launch completion event covering the last scatter.
+        state.audio_codes = codes
     else:
         pass
         generated_rows = torch.stack(data.output_rows, dim=0).to(dtype=torch.long)
@@ -524,7 +526,9 @@ def make_moss_tts_local_scheduler_adapters(
 
     def result_adapter(data: MossTTSLocalSGLangRequestData) -> StagePayload:
         try:
-            return apply_sglang_moss_tts_local_result(data.stage_payload, data)
+            return apply_sglang_moss_tts_local_result(
+                data.stage_payload, data, model=model
+            )
         finally:
             # note (Yue Yin): release the finished request's decode-state pool row
             # (mirrors higgs_tts/request_builders.py); recycles the row for a waiter.

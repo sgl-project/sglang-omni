@@ -20,7 +20,11 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from sglang_omni.scheduling.types import SchedulerRequest
+
+# Device-side generated-codes pool capacity per slot, in frames. Matches the
+# per-request host staging bound it replaces (max_new_tokens default 4096);
+# requests that generate more frames fall back to the stack+D2H finish path.
+_CODES_CAPACITY_FRAMES = 4096
 
 if TYPE_CHECKING:
     from sglang_omni.models.moss_tts_local.request_builders import (
@@ -120,6 +124,27 @@ class MossTTSLocalDecodeStatePool:
         # forward drains.
         self._zero_row_f32 = torch.zeros(1, device=self.device, dtype=torch.float32)
         self._zero_row_i64 = torch.zeros(1, device=self.device, dtype=torch.int64)
+        # Device-side accumulation of generated audio codes (the Drama3
+        # slot-pool pattern): each emit scatters its rows into
+        # generated_codes[row, pos] with pos from frame_counts, so the
+        # terminal payload's whole-utterance D2H becomes one side-stream
+        # pinned copy at finish instead of per-step staging + host scatter.
+        self.codes_capacity = _CODES_CAPACITY_FRAMES
+        self.frame_counts = torch.zeros(
+            self.num_rows, device=self.device, dtype=torch.int64
+        )
+        self.generated_codes = torch.zeros(
+            self.num_rows,
+            self.codes_capacity,
+            self.n_vq,
+            device=self.device,
+            dtype=torch.int64,
+        )
+        self._codes_stream = (
+            torch.cuda.Stream(device=self.device)
+            if self.device.type == "cuda"
+            else None
+        )
 
     def _pinned_pool_row_bufs(self, n: int) -> list[torch.Tensor]:
         """Pinned ping-pong staging buffers for the per-step row-index H2D.
@@ -198,6 +223,9 @@ class MossTTSLocalDecodeStatePool:
         self.seeds[row_idx : row_idx + 1] = z64
         self.generation_steps[row_idx : row_idx + 1] = z64
         self.sampling_steps[row_idx : row_idx + 1] = z64
+        # Codes accumulation restarts at position 0 for the row's next owner;
+        # the codes pool itself is overwritten lazily (reads are [:count]).
+        self.frame_counts[row_idx : row_idx + 1] = z64
         self.audio_token_presence[row_idx].zero_()
         self.audio_repetition_penalty_rows.discard(int(row_idx))
 
@@ -239,32 +267,57 @@ class MossTTSLocalDecodeStatePool:
         """Force params to be rewritten on the next ``ensure_params`` call."""
         self.params_written_rids.discard(rid)
 
-    def commit_generation_step(self, rid: str, generation_steps: int) -> None:
-        """Mirror the request's committed generation step into its pool row."""
-        row_idx = self.row_for(rid)
-        if row_idx is None:
-            return
-        else:
-            pass
-        step = int(generation_steps)
-        self.generation_steps[row_idx] = step
-        self.sampling_steps[row_idx] = torch.maximum(
-            self.sampling_steps[row_idx],
-            torch.tensor(step, device=self.device, dtype=torch.int64),
-        )
+    def accumulate_codes(self, row_t: torch.Tensor, codes: torch.Tensor) -> None:
+        """Scatter one step's emitted code rows into the per-slot pool.
 
-    def commit_generation_steps(
-        self, row_t: torch.Tensor, generation_steps: torch.Tensor
-    ) -> None:
-        """Mirror committed generation steps into active pool rows in one write."""
-        if row_t.numel() == 0:
+        ``row_t`` [k] pool rows, ``codes`` [k, n_vq] device tensor. Positions
+        come from the device-side ``frame_counts`` counter (clamped to the
+        capacity so an over-long request writes the last slot harmlessly —
+        the host-side frame count gates the finish path to the stack+D2H
+        fallback long before that matters). All device kernels; the caller
+        runs this at launch, before the completion event resolve waits on.
+        """
+        k = int(row_t.numel())
+        if k == 0:
             return
         else:
             pass
-        steps = generation_steps.to(device=self.device, dtype=torch.int64)
-        row_t = row_t.to(device=self.device, dtype=torch.long)
-        self.generation_steps[row_t] = steps
-        self.sampling_steps[row_t] = torch.maximum(self.sampling_steps[row_t], steps)
+        pos_t = self.frame_counts[row_t].clamp(max=self.codes_capacity - 1)
+        self.generated_codes[row_t, pos_t] = codes
+        self.frame_counts[row_t] += 1
+
+    def copy_codes_to_host(self, rid: str, frame_count: int) -> torch.Tensor | None:
+        """One side-stream pinned D2H of ``rid``'s accumulated codes.
+
+        Called from the finish path after resolve waited on the launch
+        completion event, so the last emit's scatter has already completed
+        (host barrier) and the row is still held — a fresh side-stream copy
+        races nothing. Returns ``None`` when the pool cannot serve the
+        request (no row, or more frames than capacity) and the caller falls
+        back to the synchronous stack+D2H.
+        """
+        row_idx = self.row_for(rid)
+        if row_idx is None or frame_count <= 0 or frame_count > self.codes_capacity:
+            return None
+        else:
+            pass
+        codes_dev = self.generated_codes[row_idx, :frame_count]
+        if self._codes_stream is None:
+            return codes_dev.detach().to("cpu", dtype=torch.long)
+        else:
+            pass
+        with torch.cuda.stream(self._codes_stream):
+            host = torch.empty(
+                (frame_count, self.n_vq),
+                dtype=torch.long,
+                device="cpu",
+                pin_memory=True,
+            )
+            host.copy_(codes_dev, non_blocking=True)
+            event = torch.cuda.Event()
+            event.record(self._codes_stream)
+        event.synchronize()
+        return host
 
     def reset_for_refill(self, rid: str, generation_steps: int = 0) -> bool:
         """Invalidate params and zero ``rid``'s row for a retraction re-prefill.
@@ -389,14 +442,7 @@ class MossTTSLocalDecodeJournal:
         rids: list[str],
         pool_rows: list[int],
         rows: torch.Tensor,
-        host_slab: torch.Tensor | None = None,
-        host_slab_count: int = 0,
     ) -> None:
         self.rids = rids
         self.pool_rows = pool_rows
         self.rows = rows
-        # Pinned host copy of this step's emitted audio codes (columns 1:),
-        # staged as ONE batched D2H at launch time; post_process_outputs
-        # scatters it into per-request buffers after the launch event wait.
-        self.host_slab = host_slab
-        self.host_slab_count = host_slab_count
