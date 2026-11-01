@@ -566,3 +566,11 @@ Use `--lang zh --no-ref-text` for the Chinese cross-lingual split. See
 - **Flow batch scope.** Flow batching supports the CosyVoice PyTorch estimator and the opt-in TensorRT estimator. Buffered HiFT grouping is independent and uses `hift_max_padding_waste`. Streaming coalesces first/follow-up hops across requests (`_can_batch_stream_chunks`, short peer wait) so TTFP stays low under load.
 - **Speculative decoding.** The DSpark draft runs on CUDA with TP 1, the TTS engine's scheduler steps synchronously while it is on, weight updates are refused while it is loaded, and `seed` does not make output reproducible.
 - **cosyvoice dependency.** The `cosyvoice` package has no PyPI release and must be installed from GitHub. Matcha-TTS is a required submodule and must also be importable; only the CosyVoice Flow and HiFT paths are used by the vocoder.
+
+## AR metadata graph
+
+Set `SGLANG_ENABLE_METADATA_GLUE_GRAPH=1` to use SGLang's existing attention
+metadata graph alongside the AR forward graph. CosyVoice3 defaults this capture
+to `thread_local`, without changing global Torch capture settings. The flag remains
+off by default and is disabled unless both prefill and decode use FA3; unsupported
+SGLang versions keep the existing eager metadata path.
