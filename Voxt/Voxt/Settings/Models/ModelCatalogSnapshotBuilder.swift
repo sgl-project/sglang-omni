@@ -1,7 +1,16 @@
 // ModelCatalogSnapshotBuilder.swift
 // Provides Model Catalog Snapshot Builder for model settings.
 
+import Combine
 import Foundation
+
+/// Entry actions capture copies of ModelSettingsView; keeping the snapshot behind a
+/// reference stops each copy from holding the previous snapshot alive.
+@MainActor
+final class ModelSettingsCatalogStore: ObservableObject {
+    @Published var snapshot = ModelSettingsCatalogSnapshot.empty
+    var installationRevisions: ModelInstallationRevisions?
+}
 
 struct ModelSettingsCatalogSnapshot {
     let allEntries: [ModelCatalogEntry]
