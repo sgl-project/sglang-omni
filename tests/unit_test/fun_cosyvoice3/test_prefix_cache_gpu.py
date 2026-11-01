@@ -288,8 +288,9 @@ def test_prefix_hops_are_bit_identical_to_whole_history_hops(
                 ]
                 actual = cached[
                     0,
-                    row * (total - start) + previous - start : (row + 1)
-                    * (total - start),
+                    row * (total - start)
+                    + previous
+                    - start : (row + 1) * (total - start),
                 ]
                 assert_within_baseline(
                     f"hop_solve {total} {row}",
