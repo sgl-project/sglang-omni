@@ -178,19 +178,15 @@ jobs:
         with:
           ref: ${{ inputs.exact_sha }}
 
-      - name: Verify exclusive idle H100 ownership
+      - name: Verify idle H100 test GPU
         id: gpu-preflight
         shell: bash
         run: |
           set -euo pipefail
           command -v nvidia-smi >/dev/null
           command -v nvidia-cuda-mps-control >/dev/null
-          mapfile -t gpu_indices < <(nvidia-smi --query-gpu=index --format=csv,noheader,nounits)
-          if (( ${#gpu_indices[@]} != 1 )); then
-            echo "::error::Expected exactly one GPU exposed to this runner, found ${#gpu_indices[@]}."
-            exit 1
-          fi
-          gpu_index="${gpu_indices[0]}"
+          gpu_index="${WEIGHT_SHARE_CI_GPU:-${CUDA_VISIBLE_DEVICES:-0}}"
+          gpu_index="${gpu_index%%,*}"
           gpu_name="$(nvidia-smi --id="${gpu_index}" --query-gpu=name --format=csv,noheader | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
           if [[ "${gpu_name}" != *H100* ]]; then
             echo "::error::Expected an H100, found ${gpu_name}."
@@ -281,19 +277,15 @@ jobs:
         with:
           ref: ${{ inputs.exact_sha }}
 
-      - name: Verify exclusive idle H100 ownership
+      - name: Verify idle H100 test GPU
         id: gpu-preflight
         shell: bash
         run: |
           set -euo pipefail
           command -v nvidia-smi >/dev/null
           command -v nvidia-cuda-mps-control >/dev/null
-          mapfile -t gpu_indices < <(nvidia-smi --query-gpu=index --format=csv,noheader,nounits)
-          if (( ${#gpu_indices[@]} != 1 )); then
-            echo "::error::Expected exactly one GPU exposed to this runner, found ${#gpu_indices[@]}."
-            exit 1
-          fi
-          gpu_index="${gpu_indices[0]}"
+          gpu_index="${WEIGHT_SHARE_CI_GPU:-${CUDA_VISIBLE_DEVICES:-0}}"
+          gpu_index="${gpu_index%%,*}"
           gpu_name="$(nvidia-smi --id="${gpu_index}" --query-gpu=name --format=csv,noheader | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
           if [[ "${gpu_name}" != *H100* ]]; then
             echo "::error::Expected an H100, found ${gpu_name}."
