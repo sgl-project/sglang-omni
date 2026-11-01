@@ -107,6 +107,8 @@ final class CustomLLMModelSupportTests: XCTestCase {
         XCTAssertTrue(modelIDs.contains("mlx-community/gemma-4-e2b-it-4bit"))
         XCTAssertTrue(modelIDs.contains("mlx-community/gemma-4-e4b-it-4bit"))
         XCTAssertTrue(modelIDs.contains("mlx-community/gemma-4-12B-it-OptiQ-4bit"))
+        XCTAssertTrue(modelIDs.contains("mlx-community/Hy-MT2-1.8B-4bit"))
+        XCTAssertTrue(modelIDs.contains("mlx-community/Hy-MT2-1.8B-8bit"))
         XCTAssertFalse(modelIDs.contains("Qwen/Qwen2-1.5B-Instruct"))
         XCTAssertFalse(modelIDs.contains("Qwen/Qwen2.5-3B-Instruct"))
         XCTAssertFalse(modelIDs.contains("mlx-community/Qwen2.5-VL-3B-Instruct-4bit"))

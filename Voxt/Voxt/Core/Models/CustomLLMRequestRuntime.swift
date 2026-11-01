@@ -44,19 +44,45 @@ enum CustomLLMRequestRuntime {
             }
         }
 
-        let repetitionPenalty: Float? =
-            settings.repetitionPenalty.map(Float.init) ?? (behavior.family == .qwen3 ? 1.05 : nil)
+        let defaults = samplingDefaults(for: behavior.family)
+        let repetitionPenalty: Float? = settings.repetitionPenalty.map(Float.init) ?? defaults.repetitionPenalty
 
         return GenerateParameters(
             maxTokens: budget,
-            temperature: settings.temperature.map(Float.init) ?? 0,
-            topP: settings.topP.map(Float.init) ?? 1.0,
-            topK: settings.topK ?? 0,
+            temperature: settings.temperature.map(Float.init) ?? defaults.temperature,
+            topP: settings.topP.map(Float.init) ?? defaults.topP,
+            topK: settings.topK ?? defaults.topK,
             minP: settings.minP.map(Float.init) ?? 0,
             repetitionPenalty: repetitionPenalty,
-            repetitionContextSize: 32,
+            repetitionContextSize: defaults.repetitionContextSize,
             prefill: .init(stepSize: prefillStepSize, chunking: .remainder)
         )
+    }
+
+    private struct SamplingDefaults {
+        var temperature: Float = 0
+        var topP: Float = 1.0
+        var topK = 0
+        var repetitionPenalty: Float?
+        var repetitionContextSize = 32
+    }
+
+    private static func samplingDefaults(for family: CustomLLMModelFamily) -> SamplingDefaults {
+        switch family {
+        case .qwen3:
+            return SamplingDefaults(repetitionPenalty: 1.05)
+        case .hunyuan:
+            // Same sampler Voxt used for Hy-MT2 on llama.cpp.
+            return SamplingDefaults(
+                temperature: 0.2,
+                topP: 0.9,
+                topK: 10,
+                repetitionPenalty: 1.05,
+                repetitionContextSize: 64
+            )
+        case .glm4, .mistral, .gemma, .other:
+            return SamplingDefaults()
+        }
     }
 
     private static func defaultOutputTokenBudget(for kind: CustomLLMTaskKind, estimated: Int) -> Int {

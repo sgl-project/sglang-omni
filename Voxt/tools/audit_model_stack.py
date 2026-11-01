@@ -52,7 +52,7 @@ def source_errors(root):
         if RETIRED_API.search(text) or re.search(r"(?:import|canImport\()\s*(?:FluidAudio|MLXAudio(?:Core|STT|VAD))", text):
             errors.append(f"Retired runtime API: {path.relative_to(root)}")
     for name, count in [("Voxt/Transcription/MLXModelSupport.swift", 11),
-                        ("Voxt/Core/Models/CustomLLMModelSupport.swift", 12)]:
+                        ("Voxt/Core/Models/CustomLLMModelSupport.swift", 14)]:
         text = (root / name).read_text()
         ids = re.findall(r'\bOption\(\s*id:\s*"([^"]+)"', text)
         if len(ids) != count or len(set(ids)) != count:

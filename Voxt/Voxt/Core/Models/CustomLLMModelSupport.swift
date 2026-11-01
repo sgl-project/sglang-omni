@@ -293,6 +293,7 @@ enum CustomLLMModelFamily: Equatable {
     case glm4
     case mistral
     case gemma
+    case hunyuan
     case other
 
     var logLabel: String {
@@ -301,6 +302,7 @@ enum CustomLLMModelFamily: Equatable {
         case .glm4: return "glm4"
         case .mistral: return "mistral"
         case .gemma: return "gemma"
+        case .hunyuan: return "hunyuan"
         case .other: return "other"
         }
     }
@@ -313,6 +315,7 @@ enum CustomLLMModelFamily: Equatable {
         }
         if normalizedRepo.contains("mistral") || normalizedRepo.contains("ministral") { return .mistral }
         if normalizedRepo.contains("gemma") { return .gemma }
+        if normalizedRepo.contains("hy-mt") || normalizedRepo.contains("hunyuan") { return .hunyuan }
         return .other
     }
 }
@@ -442,7 +445,21 @@ struct CustomLLMModelCatalog {
         ),
     ]
 
-    nonisolated private static let allModels: [Option] = visibleModels
+    /// Dedicated translation models. They are offered only by the translation model selector.
+    nonisolated private static let translationOnlyModels: [Option] = [
+        Option(
+            id: "mlx-community/Hy-MT2-1.8B-4bit",
+            title: "Hy-MT2 1.8B (4bit)",
+            description: "Tencent Hy-MT2 translation model tuned for low-latency multilingual translation on-device."
+        ),
+        Option(
+            id: "mlx-community/Hy-MT2-1.8B-8bit",
+            title: "Hy-MT2 1.8B (8bit)",
+            description: "Higher-precision Hy-MT2 translation model with a larger local footprint."
+        ),
+    ]
+
+    nonisolated private static let allModels: [Option] = visibleModels + translationOnlyModels
 
     nonisolated static let availableModels: [Option] = allModels
 
@@ -460,6 +477,8 @@ struct CustomLLMModelCatalog {
         "mlx-community/LFM2-1.2B-4bit": PresentationMetadata(ratingText: "4.0", tagKeys: ["Fast"]),
         "mlx-community/LFM2-8B-A1B-3bit-MLX": PresentationMetadata(ratingText: "4.4", tagKeys: ["Balanced"]),
         "mlx-community/Qwen3.6-27B-4bit": PresentationMetadata(ratingText: "4.9", tagKeys: ["Accurate"]),
+        "mlx-community/Hy-MT2-1.8B-4bit": PresentationMetadata(ratingText: "4.5", tagKeys: ["Fast", "Translation"]),
+        "mlx-community/Hy-MT2-1.8B-8bit": PresentationMetadata(ratingText: "4.8", tagKeys: ["Accurate", "Translation"]),
     ]
 
     nonisolated private static let knownRemoteSizeBytesByRepo: [String: Int64] = [
@@ -475,7 +494,14 @@ struct CustomLLMModelCatalog {
         "mlx-community/LFM2-1.2B-4bit": 663_392_070,
         "mlx-community/LFM2-8B-A1B-3bit-MLX": 4_176_559_875,
         "mlx-community/Qwen3.6-27B-4bit": 16_081_490_064,
+        "mlx-community/Hy-MT2-1.8B-4bit": 1_017_364_089,
+        "mlx-community/Hy-MT2-1.8B-8bit": 1_912_834_600,
     ]
+
+    nonisolated static func isTranslationOnlyModel(_ repo: String) -> Bool {
+        let canonicalRepo = canonicalModelRepo(repo)
+        return translationOnlyModels.contains { $0.id == canonicalRepo }
+    }
 
     nonisolated static func canonicalModelRepo(_ repo: String) -> String {
         let trimmed = repo.trimmingCharacters(in: .whitespacesAndNewlines)

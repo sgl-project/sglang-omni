@@ -31,7 +31,7 @@ final class ModelLogoKeyTests: XCTestCase {
         XCTAssertEqual(FeatureModelCatalogBuilder.compactModelBadgeTitle(from: "Qwen3 VL 4B Instruct (4bit)"), "Qwen")
         XCTAssertEqual(FeatureModelCatalogBuilder.compactModelBadgeTitle(from: "Parakeet TDT 0.6B v2"), "Parakeet")
         XCTAssertEqual(FeatureModelCatalogBuilder.compactModelBadgeTitle(from: "FunASR Nano"), "FunASR")
-        XCTAssertEqual(FeatureModelCatalogBuilder.compactModelBadgeTitle(from: "Hy-MT2 1.8B (Q4_K_M)"), "Hy-MT2")
+        XCTAssertEqual(FeatureModelCatalogBuilder.compactModelBadgeTitle(from: "Hy-MT2 1.8B (4bit)"), "Hy-MT2")
         XCTAssertEqual(FeatureModelCatalogBuilder.compactModelBadgeTitle(from: "Meta Llama 3.1 8B Instruct (4bit)"), "Llama")
         XCTAssertEqual(FeatureModelCatalogBuilder.compactModelBadgeTitle(from: "SenseVoice"), "SenseVoice")
         XCTAssertEqual(FeatureModelCatalogBuilder.compactModelBadgeTitle(from: "GLM Nano (4bit)"), "GLM")

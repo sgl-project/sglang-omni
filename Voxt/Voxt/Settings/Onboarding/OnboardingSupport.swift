@@ -159,7 +159,7 @@ enum OnboardingFeatureSelectionResolver {
             return .remoteLLM(provider)
         case .appleIntelligence:
             switch existingSelection.translationSelection {
-            case .localLLM, .localGGUF, .remoteLLM:
+            case .localLLM, .remoteLLM:
                 return existingSelection
             case .none:
                 return .localLLM(fallbackLocalLLMRepo)

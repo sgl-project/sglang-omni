@@ -12,7 +12,7 @@ Voxt is a macOS 15+ menu bar application, built with the shared `Voxt` Xcode sch
 | `Voxt/Core/LLM/` | Execution plans, provider payloads, remote requests, parsing and answer models |
 | `Voxt/Core/History/`, `Voxt/Core/Dictionary/` | Domain stores, repositories and query/value support |
 | `Voxt/Core/Notes/` | Note storage, external export state and Obsidian/Reminders sync |
-| `Voxt/Core/Models/` | Local LLM/GGUF loading, installation, downloads and model storage support |
+| `Voxt/Core/Models/` | Local LLM loading, installation, downloads and model storage support |
 | `Voxt/Core/Transcription/` | Capture metrics, VAD planning, ASR hints and transcript support |
 | `Voxt/Transcription/` | Native HTTP speech adapters, ASR model management and shared contracts |
 | `Voxt/Transcription/RemoteASR/` | Remote ASR capture, upload and streaming protocols |
@@ -45,7 +45,7 @@ Resumable transfer is shared under `Core/Models`; managers retain install/downlo
 
 Local ASR, Silero and Sortformer execute in the existing Native server subprocesses through their HTTP/WebSocket protocols. The shared `sglang_omni_mlx/native` package is not a Voxt extension point: keep it identical to the officially merged source, with future synchronization through normal official-main merges. Voxt owns request conversion, process management and model-storage coordination outside that package.
 
-The abandoned XPC service, C ABI wrappers, typed-engine extraction, helper/client/contracts, App Group configurations and smoke tools are removed. XPC is not a pending production factory or release gate. This does not restore the Swift Audio fallback: the app still has no AudioSTT/VAD/Core product/package/pin. Keep MLX Swift LLM/VLM/MLX, Tokenizers/HuggingFace, llama.swift, Remote routes, saved model choices and installed directories.
+The abandoned XPC service, C ABI wrappers, typed-engine extraction, helper/client/contracts, App Group configurations and smoke tools are removed. XPC is not a pending production factory or release gate. This does not restore the Swift Audio fallback: the app still has no AudioSTT/VAD/Core product/package/pin. Keep MLX Swift LLM/VLM/MLX, Tokenizers/HuggingFace, Remote routes, saved model choices and installed directories.
 
 All eleven ASR catalog checkpoints map to the existing seven-family Native HTTP servers. Qwen/MOSS/Nemotron have realtime routes; Whisper/Cohere/Parakeet/SenseVoice retain batch-preview behavior. Family options, language/hint settings, chunk cadence and longform remain at the existing caller boundaries. No former 30-second validation transport cap becomes a production recording limit.
 
@@ -56,6 +56,28 @@ Silero detectors serialize preparation, exchanges, reset and unload, preserving 
 Auxiliary provisioning validates bounded config/safetensors structure with `OmniModelArtifacts`, without loading tensors or Swift Audio models. Structural validation does not establish model-key compatibility, immutable weights, blob hashes or numerical quality. Atomic publication requires cooperating readers/exclusive mutation and canonical sibling staging; a committed replacement remains successful if old-payload cleanup fails. Failed staging remains for deliberate recovery, not blind resume. Preparation copies dereferenced regular files under source/staging readers and explicit budgets.
 
 These readers do not protect hostile namespace changes, external blob writes, power-loss/fsync durability or an App crash that releases locks before an orphaned server exits. Cache/blob/repair/orphan recovery remains unfinished. Run `swift test --package-path Voxt/Packages/OmniModelArtifacts` without models; portable tests are not real Metal/model acceptance. See the [Native HTTP migration plan](../plan/NativeHTTPMigrationPlan.zh-CN.md).
+
+## Swift package dependencies
+
+`Voxt.xcodeproj` builds only the Voxt app. The Native model servers under `sglang_omni_mlx/native` build with CMake and link none of these packages, so MLX model work does not depend on this project. Every product below is imported by app sources; exact pins live in [MLXAudioDependency](MLXAudioDependency.md).
+
+| Package | Products | Used by | Purpose | Removable when |
+| --- | --- | --- | --- | --- |
+| mlx-swift-lm | MLXLLM, MLXLMCommon | `Core/Models/CustomLLM*`, `MemoryEfficientModelContainerLoader`, `PrequantizedModelLoading`, `LocalTokenizerLoader` | Local LLM for enhancement, translation, rewrite and note/transcript titles; Hy-MT2 1.8B translation (4-bit, 8-bit) through the `hunyuan_v1_dense` loader | Local LLM requests run on a Native server, or Voxt keeps only Remote LLM |
+| mlx-swift-lm | MLXVLM | `MemoryEfficientModelContainerLoader`, `CustomLLMModelManager` | Loading factory for the Qwen3-VL 4B, Ministral-3 3B and Gemma-4 checkpoints; requests stay text-only | Qwen3-VL 4B is retired, and Gemma-4 and Ministral-3 pass real-weight checks through the MLXLLM `gemma4` and `mistral3` loaders |
+| mlx-swift | MLX | LLM loaders, `IdleMemoryReclamation`, `MeetingFileInferenceCache`, `MLXModelManager` | MLX cache limits and release for in-process models | No in-process MLX model remains |
+| swift-transformers | Tokenizers | `LocalTokenizerLoader` | Tokenizers for local LLMs on both the MLXLLM and MLXVLM loading paths | No in-process LLM or VLM remains |
+| swift-huggingface | HuggingFace | ASR, local LLM, Silero and Sortformer download support | Hugging Face Hub downloads | Not MLX-specific; Native model downloads use it too |
+| OmniModelArtifacts (local) | OmniModelArtifacts | ASR, Silero and Sortformer storage, `ModelDiskOperations` | Artifact validation, directory leases and atomic publication for Native model directories | Not MLX-specific |
+| GRDB.swift | GRDB | `VoxtDatabase`, history and dictionary repositories | SQLite persistence | Not MLX-specific |
+| swift-log | Logging | `Core/Logging/` | Structured logging | Not MLX-specific |
+| Sparkle | Sparkle | `AppUpdateManager` | In-app updates | Not MLX-specific |
+| PermissionFlow | PermissionFlow, SystemSettingsKit | `PermissionGuidance` | Permission guidance | Not MLX-specific |
+| FaviconFinder | FaviconFinder | `OverlayIconResolver` | Website icons in the overlay | Not MLX-specific |
+
+mlx-audio-swift (MLXAudioCore, MLXAudioSTT and MLXAudioVAD) is no longer linked: local ASR, Silero and Sortformer run on the Native HTTP servers, and `tools/audit_model_stack.py` rejects its products and pin.
+
+llama.swift (LlamaSwift) is no longer linked either: Hy-MT2 translation runs on the `mlx-community/Hy-MT2-1.8B-4bit` and `-8bit` checkpoints through MLXLLM. `LegacyGGUFTranslationMigration` moves saved GGUF selections to the matching checkpoint (Q8_0 to 8-bit, everything else to 4-bit) without downloading it, so an upgraded user sees the usual "Model needs to be installed" state until they install it. After each launch, on the `ModelDiskOperations` queue, it deletes the unused `gguf-translation` model directory only once that checkpoint is installed. The XCTest host never runs this cleanup.
 
 ## Permission and input boundaries
 

@@ -22,7 +22,6 @@ struct ModelSettingsView: View {
     @AppStorage(AppPreferenceKey.customLLMGenerationSettings) var customLLMGenerationSettingsRaw = CustomLLMGenerationSettingsStore.defaultStoredValue()
     @AppStorage(AppPreferenceKey.customLLMGenerationSettingsByRepo) var customLLMGenerationSettingsByRepoRaw = CustomLLMGenerationSettingsStore.defaultByRepoStoredValue()
     @AppStorage(AppPreferenceKey.translationCustomLLMModelRepo) var translationCustomLLMRepo = CustomLLMModelManager.defaultModelRepo
-    @AppStorage(AppPreferenceKey.translationGGUFModelID) var translationGGUFModelIDRaw = GGUFTranslationModelCatalog.defaultModelID.rawValue
     @AppStorage(AppPreferenceKey.rewriteCustomLLMModelRepo) var rewriteCustomLLMRepo = CustomLLMModelManager.defaultModelRepo
     @AppStorage(AppPreferenceKey.translationModelProvider) var translationModelProviderRaw = TranslationModelProvider.customLLM.rawValue
     @AppStorage(AppPreferenceKey.translationFallbackModelProvider) var translationFallbackModelProviderRaw = TranslationModelProvider.customLLM.rawValue
@@ -44,7 +43,6 @@ struct ModelSettingsView: View {
 
     let mlxModelManager: MLXModelManager
     let customLLMManager: CustomLLMModelManager
-    let ggufTranslationModelManager: GGUFTranslationModelManager
     @ObservedObject var mainWindowState: MainWindowVisibilityState
     let missingConfigurationIssues: [ModelConfigurationIssue]
     let navigationRequest: SettingsNavigationRequest?
@@ -118,7 +116,6 @@ struct ModelSettingsView: View {
         ModelCatalogBuilder(
             mlxModelManager: mlxModelManager,
             customLLMManager: customLLMManager,
-            ggufTranslationModelManager: ggufTranslationModelManager,
             remoteASRConfigurations: remoteASRConfigurations,
             remoteLLMConfigurations: remoteLLMConfigurations,
             featureSettings: featureSettings,
@@ -132,7 +129,6 @@ struct ModelSettingsView: View {
             appleIntelligenceAvailability: appleIntelligenceAvailability,
             mlxInstallSnapshot: mlxInstallSnapshot(for:),
             customLLMInstallSnapshot: customLLMInstallSnapshot(for:),
-            ggufTranslationInstallSnapshot: ggufTranslationInstallSnapshot(for:),
             catalogPrimaryAction: {
                 ModelSettingsInstallActionResolver.catalogPrimaryAction(
                     for: $0,
@@ -396,9 +392,6 @@ struct ModelSettingsView: View {
             guard isActive else { return }
             handleStorageAuthorizationNavigationRequest()
         }
-        .onReceive(ggufTranslationModelManager.$stateByID) { states in
-            presentGGUFErrors(states)
-        }
     }
 
     func showModelOperationToast(_ message: String, duration: Duration = .seconds(4)) {
@@ -416,21 +409,6 @@ struct ModelSettingsView: View {
     private func dismissModelOperationToast() {
         modelOperationToastDismissTask?.cancel()
         modelOperationToastMessage = ""
-    }
-
-    private func presentGGUFErrors(_ states: [GGUFTranslationModelID: GGUFTranslationModelManager.ModelState]) {
-        for (modelID, state) in states {
-            let targetID = "gguf-translation:\(modelID.rawValue)"
-            if case .error(let message) = state {
-                presentModelError(
-                    targetID: targetID,
-                    modelName: ggufTranslationModelManager.displayTitle(for: modelID),
-                    message: message
-                )
-            } else {
-                clearPresentedModelError(targetID: targetID)
-            }
-        }
     }
 
     func presentModelError(targetID: String, modelName: String, message: String) {
@@ -715,9 +693,7 @@ struct ModelSettingsView: View {
             },
             customLLMState: customLLMManager.state,
             customLLMStateByRepo: customLLMManager.stateByRepo,
-            customLLMHasActiveDownloadingRepos: !customLLMManager.activeDownloadRepos.isEmpty,
-            ggufStateByID: ggufTranslationModelManager.stateByID,
-            ggufActiveDownloadModelID: ggufTranslationModelManager.activeDownloadModelID
+            customLLMHasActiveDownloadingRepos: !customLLMManager.activeDownloadRepos.isEmpty
         )
     }
 

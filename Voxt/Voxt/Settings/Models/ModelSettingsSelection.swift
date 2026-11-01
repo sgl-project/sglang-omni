@@ -36,8 +36,6 @@ extension ModelSettingsView {
             } else if !CustomLLMModelManager.isSupportedModelRepo(translationCustomLLMRepo) {
                 translationCustomLLMRepo = customLLMRepo
             }
-        case .localGGUF:
-            translationGGUFModelIDRaw = GGUFTranslationModelCatalog.resolvedModelID(translationGGUFModelIDRaw).rawValue
         }
     }
 

@@ -550,6 +550,23 @@ final class ModelCatalogBuilderTests: XCTestCase {
         XCTAssertEqual(qwenLLMGroup.badgeText, recommended)
     }
 
+    func testHyMT2MLXCheckpointsGroupUnderLocalLLMWithRecommendedBadge() throws {
+        let builder = makeBuilder(featureSettings: makeFeatureSettings())
+
+        let hyMT2Group = try XCTUnwrap(
+            LocalModelSeriesGrouping.modelCatalogItems(from: builder.llmEntries()).compactMap { item -> ModelCatalogGroupSection? in
+                guard case .group(let group) = item, group.title == "Hy-MT2" else { return nil }
+                return group
+            }.first
+        )
+
+        XCTAssertEqual(hyMT2Group.badgeText, AppLocalization.localizedString("Recommended"))
+        XCTAssertEqual(
+            Set(hyMT2Group.entries.map(\.id)),
+            ["local-llm:mlx-community/Hy-MT2-1.8B-4bit", "local-llm:mlx-community/Hy-MT2-1.8B-8bit"]
+        )
+    }
+
     private func makeBuilder(
         featureSettings: FeatureSettings,
         remoteASRConfigurations: [String: RemoteProviderConfiguration] = [:],
@@ -562,9 +579,6 @@ final class ModelCatalogBuilderTests: XCTestCase {
         isDownloadingCustomLLM: @escaping (String) -> Bool = { _ in false },
         isPausedCustomLLM: @escaping (String) -> Bool = { _ in false },
         isCustomLLMInstalled: @escaping (String) -> Bool = { _ in false },
-        isDownloadingGGUFTranslation: @escaping (GGUFTranslationModelID) -> Bool = { _ in false },
-        isPausedGGUFTranslation: @escaping (GGUFTranslationModelID) -> Bool = { _ in false },
-        isGGUFTranslationInstalled: @escaping (GGUFTranslationModelID) -> Bool = { _ in false },
         isUninstallingModel: @escaping (String) -> Bool = { _ in false },
         isUninstallingCustomLLM: @escaping (String) -> Bool = { _ in false },
         pauseModelDownload: @escaping (String) -> Void = { _ in },
@@ -625,27 +639,9 @@ final class ModelCatalogBuilderTests: XCTestCase {
             )
         }
 
-        let ggufTranslationInstallSnapshot: (GGUFTranslationModelID) -> LocalModelInstallSnapshot = { modelID in
-            let isDownloading = isDownloadingGGUFTranslation(modelID)
-            let isPaused = isPausedGGUFTranslation(modelID)
-            let isInstalled = !isDownloading && !isPaused && isGGUFTranslationInstalled(modelID)
-            let state: LocalModelInstallState
-            if isDownloading { state = .downloading }
-            else if isPaused { state = .paused }
-            else if isInstalled { state = .installed }
-            else { state = .installable(isEnabled: true) }
-            return LocalModelInstallSnapshot(
-                target: .ggufTranslation(modelID), state: state, isInstalled: isInstalled,
-                isCurrentSelection: featureSettings.translation.modelSelectionID == .localGGUFTranslation(modelID),
-                statusText: "", badgeText: nil, downloadStatus: nil, canOpenLocation: isInstalled,
-                canConfigure: false, configureActionTitle: nil
-            )
-        }
-
         return ModelCatalogBuilder(
             mlxModelManager: TestModelManagers.mlx,
             customLLMManager: TestModelManagers.customLLM,
-            ggufTranslationModelManager: TestModelManagers.gguf,
             remoteASRConfigurations: remoteASRConfigurations,
             remoteLLMConfigurations: remoteLLMConfigurations,
             featureSettings: featureSettings,
@@ -657,7 +653,6 @@ final class ModelCatalogBuilderTests: XCTestCase {
             appleIntelligenceAvailability: appleIntelligenceAvailability,
             mlxInstallSnapshot: mlxInstallSnapshot,
             customLLMInstallSnapshot: customLLMInstallSnapshot,
-            ggufTranslationInstallSnapshot: ggufTranslationInstallSnapshot,
             catalogPrimaryAction: { snapshot in
                 ModelSettingsInstallActionResolver.catalogPrimaryAction(for: snapshot, perform: performAction)
             },
@@ -694,5 +689,4 @@ final class ModelCatalogBuilderTests: XCTestCase {
 private enum TestModelManagers {
     static let mlx = MLXModelManager(modelRepo: MLXModelManager.defaultModelRepo)
     static let customLLM = CustomLLMModelManager(modelRepo: CustomLLMModelManager.defaultModelRepo)
-    static let gguf = GGUFTranslationModelManager(modelID: .hyMT2Q4KM)
 }

@@ -17,7 +17,7 @@ enum AppPreferenceKey {
     static let customLLMGenerationSettings = "customLLMGenerationSettings"
     static let customLLMGenerationSettingsByRepo = "customLLMGenerationSettingsByRepo"
     static let translationCustomLLMModelRepo = "translationCustomLLMModelRepo"
-    static let translationGGUFModelID = "translationGGUFModelID"
+    static let legacyTranslationGGUFModelID = "translationGGUFModelID"
     static let translationModelProvider = "translationModelProvider"
     static let translationFallbackModelProvider = "translationFallbackModelProvider"
     static let rewriteSystemPrompt = "rewriteSystemPrompt"

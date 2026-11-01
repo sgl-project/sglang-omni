@@ -2117,7 +2117,6 @@
 "Higher values allow more variation. Keep this near 0 for deterministic dictation." = "値を高くすると出力の変化が増えます。確定的な音声入力では 0 付近にしてください。";
 "Language detection" = "言語検出";
 "Let speaker analysis estimate the speaker count automatically." = "話者分析で話者数を自動推定します。";
-"Local GGUF" = "ローカル GGUF";
 "MLX uses language hints by default. Some model families also expose model-specific local tuning in the Configure dialog." = "MLX は既定で言語ヒントを使用します。一部のモデル系列では、設定ダイアログにモデル固有のローカル調整項目も表示されます。";
 "MOSS" = "MOSS";
 "Max 2" = "最大 2 人";

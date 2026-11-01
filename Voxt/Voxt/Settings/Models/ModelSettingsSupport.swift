@@ -43,7 +43,6 @@ enum LocalASRConfigurationTarget: Equatable, Identifiable {
 enum LocalModelRemovalTarget: Equatable, Identifiable {
     case mlx(repo: String)
     case customLLM(repo: String)
-    case ggufTranslation(modelID: GGUFTranslationModelID)
 
     var id: String {
         switch self {
@@ -51,8 +50,6 @@ enum LocalModelRemovalTarget: Equatable, Identifiable {
             return "mlx:\(MLXModelManager.canonicalModelRepo(repo))"
         case .customLLM(let repo):
             return "custom-llm:\(CustomLLMModelManager.canonicalModelRepo(repo))"
-        case .ggufTranslation(let modelID):
-            return "gguf-translation:\(modelID.rawValue)"
         }
     }
 }

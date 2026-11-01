@@ -183,8 +183,6 @@ enum ModelConfigurationIssueResolver {
                !customLLMManager.isModelDownloaded(repo: repo) {
                 issues.append(.init(scope: .translationCustomLLM(repo), message: modelNeedsInstallMessage))
             }
-        case .localGGUF:
-            return
         case .remoteLLM(let provider):
             if !RemoteModelConfigurationStore.isStoredLLMConfigurationConfigured(
                 provider: provider,

@@ -2123,7 +2123,6 @@
 "Higher values allow more variation. Keep this near 0 for deterministic dictation." = "数值越高，生成变化越大。确定性听写建议保持接近 0。";
 "Language detection" = "语言检测";
 "Let speaker analysis estimate the speaker count automatically." = "让说话人分析自动估算人数。";
-"Local GGUF" = "本地 GGUF";
 "MLX uses language hints by default. Some model families also expose model-specific local tuning in the Configure dialog." = "MLX 默认使用语言提示。部分模型系列还会在配置对话框中提供专用的本地调节选项。";
 "MOSS" = "MOSS";
 "Max 2" = "最多 2 人";
