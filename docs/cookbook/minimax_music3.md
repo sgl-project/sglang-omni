@@ -57,7 +57,7 @@ below. Download the pinned converted checkpoint, then build with the native
 runtime's existing MLX 0.32.3 toolchain:
 
 ```bash
-python sglang_omni_mlx/native/ci/provision_models.py "$MUSIC3_DATA" \
+python sglang_omni_mlx/native/ci/provision.py "$MUSIC3_DATA" \
   --model mlx-community/MiniMax-Music3-mxfp8
 sglang_omni_mlx/native/scripts/build_runtime.sh "$MUSIC3_RUNTIME" "$MUSIC3_BUILD"
 "$MUSIC3_RUNTIME/bin/music3_server" \

@@ -1,0 +1,21 @@
+{
+  "k2-fsa/LibriSpeech": {
+    "revision": "2dd4206a992cd7a475e1ce2e82b708b014319152",
+    "files": {
+      "test-clean.tar.gz": "39fde525e59672dc6d1551919b1478f724438a95aa55f874b576be21967e6c23"
+    }
+  },
+  "google/fleurs": {
+    "revision": "70bb2e84b976b7e960aa89f1c648e09c59f894dd",
+    "files": {
+      "data/cmn_hans_cn/audio/test.tar.gz": "09d19ad18f5d7e91076880807e866cd16abd924c7052b55f71cdae91714fc166",
+      "data/cmn_hans_cn/test.tsv": "5734461648f816181d7dab5fc79204b18c4b9bc2cd5138225b25c72d18385d21"
+    }
+  },
+  "CAiRE/ASCEND": {
+    "revision": "737e9800ae31be9932ba8464c80366559bd28424",
+    "files": {
+      "main/test-00000-of-00001.parquet": "a4c81d2b5ed6124f052089a695972808c16e0ce0c365ec9773c5d1a8fcf043a7"
+    }
+  }
+}

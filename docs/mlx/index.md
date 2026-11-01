@@ -71,8 +71,14 @@ agree on it with a maintainer first.
 
 - Pin every checkpoint file by revision and SHA-256 in `ci/model_pins.json`.
 - Add a golden under `ci/model_golden/`. Import the Mac CI runner's outputs
-  (`golden-outputs` artifact, `--import`) so the runner checks exactly. A
-  speech model's golden holds seeded requests' codes (`ci/speech_golden.py`).
+  (the `golden-outputs-<model>` artifact of the model's job, `--import`) so the
+  runner checks exactly.
+- Register the model in `ci/model_jobs.json` (its paths, pins, goldens and
+  pytest selection). Its pins list every checkpoint its goldens and tests load,
+  such as Qwen3-ASR for an ASR round trip; the job provisions only those. Mac CI
+  runs one job per model a PR touches, and every model when shared code
+  changes; `workflow_dispatch` takes a `models` list. A speech model's golden
+  holds seeded requests' codes (`ci/speech_golden.py`).
 - Add a second golden for paths the corpus misses (long-audio chunking, VAD).
 
 **Tests**

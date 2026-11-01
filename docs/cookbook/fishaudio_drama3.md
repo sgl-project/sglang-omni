@@ -320,7 +320,7 @@ The standalone `fishaudio_drama3_server` runs entirely in C++ on MLX under `sgla
 Both quantize with MLX affine groups of 64 and keep the embeddings in bf16, the norm gains and the codec in fp32; the 8-bit checkpoint quantizes only the routed experts. The 4-bit checkpoint peaks above the GPU working set of a 32 or 36 GB Mac; the 8-bit one fits the 55.7 GB working set of a 64 GB Mac, with nothing else holding much memory. Both were measured on a 64 GB Mac. Download a pinned checkpoint, then build with the native runtime's MLX 0.32.3 toolchain:
 
 ```bash
-python sglang_omni_mlx/native/ci/provision_models.py "$DRAMA3_DATA" \
+python sglang_omni_mlx/native/ci/provision.py "$DRAMA3_DATA" \
   --model mlx-community/fish-audio-drama-3-4bit
 sglang_omni_mlx/native/scripts/build_runtime.sh "$DRAMA3_RUNTIME" "$DRAMA3_BUILD"
 "$DRAMA3_RUNTIME/bin/fishaudio_drama3_server" \
