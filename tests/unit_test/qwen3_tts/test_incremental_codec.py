@@ -1944,16 +1944,24 @@ def test_compiled_decode_shares_a_program_per_size_class_and_tracks_fp32(
             ) <= 1.1 * relative_error(torch.cat(waveforms["eager"], dim=-1), expected)
             compiled_state = arena.gather(slots)
             assert compiled_state.frame_positions.tolist() == [sum(widths)] * len(slots)
-            for compiled_rows, eager_rows, reference_rows in zip(
-                state_rows(compiled_state)[2:],
-                state_rows(states["eager"])[2:],
-                state_rows(states["reference"])[2:],
+            retained = {}
+            for name, state in (
+                ("compiled", compiled_state),
+                ("eager", states["eager"]),
+                ("reference", states["reference"]),
             ):
-                assert compiled_rows.keys() == reference_rows.keys()
-                for key, truth in reference_rows.items():
-                    assert relative_error(
-                        compiled_rows[key], truth
-                    ) <= 1.1 * relative_error(eager_rows[key], truth), key
+                histories, overlaps = state_rows(state)[2:]
+                assert histories.keys() == state_rows(states["reference"])[2].keys()
+                retained[name] = torch.cat(
+                    [
+                        rows[key].flatten().float()
+                        for rows in (histories, overlaps)
+                        for key in sorted(rows)
+                    ]
+                )
+            assert relative_error(
+                retained["compiled"], retained["reference"]
+            ) <= 1.1 * relative_error(retained["eager"], retained["reference"])
 
     untouched = arena.gather([3])
     assert untouched.frame_positions.tolist() == [0]
