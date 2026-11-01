@@ -54,6 +54,16 @@ REFERENCE_WAV = encode_wav(
     ),
     SAMPLE_RATE,
 )
+MULTI_SPEAKER_REQUEST = {
+    "input": "<|speaker:0|> Morning. <|speaker:1|> Good morning.",
+    "references": [
+        {"text": "<|speaker:0|> Hello there.", "vq_codes": [[7] * 12] * NUM_CODEBOOKS},
+        {
+            "text": "<|speaker:1|> Nice to see you.",
+            "vq_codes": [[19] * 12] * NUM_CODEBOOKS,
+        },
+    ],
+}
 
 
 def write_checkpoint(checkpoint_dir: Path) -> None:
@@ -154,6 +164,12 @@ def test_speech_holds_exactly_the_frames_asked_for(
     assert wav_sample_count(response) == 30 * SAMPLES_PER_FRAME
 
 
+def test_multi_speaker_speech_returns_valid_audio(base_url: str) -> None:
+    response = speech(base_url, {**MULTI_SPEAKER_REQUEST, "max_new_tokens": 30})
+
+    assert wav_sample_count(response) == 30 * SAMPLES_PER_FRAME
+
+
 def streamed_events(
     base_url: str, request_fields: dict[str, object]
 ) -> list[dict[str, object]]:
@@ -200,6 +216,22 @@ def test_streamed_speech_arrives_in_the_fixed_windows(base_url: str) -> None:
     assert usage["input_tokens"] > 0
 
 
+def test_multi_speaker_streamed_speech_returns_valid_audio(base_url: str) -> None:
+    events = streamed_events(base_url, {**MULTI_SPEAKER_REQUEST, "max_new_tokens": 30})
+    audio_events = [event for event in events if event["type"] == "speech.audio.delta"]
+
+    assert audio_events
+    assert (
+        sum(len(base64.b64decode(str(event["audio"]))) // 2 for event in audio_events)
+        == 30 * SAMPLES_PER_FRAME
+    )
+    done = events[-1]
+    assert done["type"] == "speech.audio.done"
+    usage = done["usage"]
+    assert isinstance(usage, dict)
+    assert usage["output_tokens"] == 30
+
+
 def full_round(base_url: str) -> list[int]:
     """Sample counts of as many concurrent requests as the engine runs at once."""
     with ThreadPoolExecutor(max_workers=MAX_RUNNING_REQUESTS) as pool:
@@ -226,7 +258,7 @@ REFUSED_REQUESTS = [
         id="reference-speaker",
     ),
     pytest.param({"repetition_penalty": 1.2}, id="repetition-penalty"),
-    pytest.param({"input": "<|speaker:1|> hello"}, id="speaker-one"),
+    pytest.param({"input": "<|speaker:16|> hello"}, id="speaker-sixteen"),
 ]
 
 

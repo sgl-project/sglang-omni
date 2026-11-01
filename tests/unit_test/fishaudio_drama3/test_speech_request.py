@@ -172,10 +172,20 @@ def refused(preprocessor: Drama3SpeechPreprocessor, payload: StagePayload) -> st
 
 
 @pytest.mark.parametrize(
-    "text", ["hello", "<|speaker:0|> hello"], ids=["untagged", "tagged"]
+    ("text", "prompt_text"),
+    [
+        pytest.param(
+            "hello", "<|speaker:0|> hello", id="untagged-defaults-to-speaker-zero"
+        ),
+        pytest.param("<|speaker:0|> hello", "<|speaker:0|> hello", id="speaker-zero"),
+        pytest.param("<|speaker:1|> hello", "<|speaker:1|> hello", id="speaker-one"),
+        pytest.param(
+            "<|speaker:15|> hello", "<|speaker:15|> hello", id="speaker-fifteen"
+        ),
+    ],
 )
-def test_text_becomes_a_tts_prompt_spoken_by_speaker_zero(
-    tokenizer: Tokenizer, text: str
+def test_input_speaker_tags_are_preserved_in_tts_prompt_rows(
+    tokenizer: Tokenizer, text: str, prompt_text: str
 ) -> None:
     payload = lowered({"input": text})
 
@@ -186,7 +196,24 @@ def test_text_becomes_a_tts_prompt_spoken_by_speaker_zero(
         generation_input_of(preprocessed).prompt_rows,
         expected_rows(
             tokenizer,
-            DEFAULT_SYSTEM_TURN + [USER, "<|speaker:0|> hello", END, VOICE_TURN],
+            DEFAULT_SYSTEM_TURN + [USER, prompt_text, END, VOICE_TURN],
+        ),
+    )
+
+
+def test_multiple_speaker_tags_in_input_are_preserved_in_prompt_rows(
+    tokenizer: Tokenizer,
+) -> None:
+    prompt_text = "<|speaker:0|> Hello. <|speaker:1|> Hi. <|speaker:15|> Goodbye."
+    generation_input = generation_input_of(
+        speech_preprocessor(tokenizer)(lowered({"input": prompt_text}))
+    )
+
+    assert torch.equal(
+        generation_input.prompt_rows,
+        expected_rows(
+            tokenizer,
+            DEFAULT_SYSTEM_TURN + [USER, prompt_text, END, VOICE_TURN],
         ),
     )
 
@@ -291,6 +318,45 @@ def test_references_become_a_reference_prompt(tokenizer: Tokenizer) -> None:
     assert hook.encoded == [FishReferenceInput("base64", reference_data, "audio/wav")]
 
 
+def test_references_keep_their_speaker_tags_and_codec_rows(
+    tokenizer: Tokenizer,
+) -> None:
+    first_codes = clip_codes(4, 1)
+    second_codes = clip_codes(5, 2)
+    payload = lowered(
+        {
+            "input": "<|speaker:1|> answer take",
+            "references": [
+                {
+                    "text": "<|speaker:0|> first voice take",
+                    "vq_codes": first_codes.tolist(),
+                },
+                {
+                    "text": "<|speaker:1|> second voice take",
+                    "vq_codes": second_codes.tolist(),
+                },
+            ],
+        }
+    )
+
+    generation_input = generation_input_of(speech_preprocessor(tokenizer)(payload))
+
+    assert torch.equal(
+        generation_input.prompt_rows,
+        expected_rows(
+            tokenizer,
+            [SYSTEM, REFERENCE_INSTRUCTION]
+            + [reference_header(1, "<|speaker:0|> first voice take"), first_codes]
+            + [
+                reference_header(2, "<|speaker:1|> second voice take"),
+                second_codes,
+                END,
+            ]
+            + [USER, "<|speaker:1|> answer take", END, VOICE_TURN],
+        ),
+    )
+
+
 def test_an_uploaded_voice_speaks_from_its_reference(
     tokenizer: Tokenizer, tmp_path: Path
 ) -> None:
@@ -357,12 +423,26 @@ REFUSED_REQUESTS = [
     ),
     pytest.param({"voice": "narrator"}, "unknown voice 'narrator'", id="unknown-voice"),
     pytest.param(
-        {"input": "<|speaker:1|> hello"}, "speaker tags [1]", id="speaker-one-in-input"
+        {"input": "<|speaker:16|> hello"},
+        "speaker tags must be written",
+        id="speaker-sixteen-in-input",
     ),
     pytest.param(
-        {"references": [{"text": "<|speaker:2|> take", "vq_codes": TWO_FRAME_CODES}]},
-        "speaker tags [2]",
-        id="speaker-two-in-a-transcript",
+        {"input": "<|speaker:x|> hello"},
+        "speaker tags must be written",
+        id="malformed-speaker-tag-in-input",
+    ),
+    pytest.param(
+        {
+            "references": [
+                {
+                    "text": "<|speaker:16|> take",
+                    "vq_codes": TWO_FRAME_CODES,
+                }
+            ]
+        },
+        "speaker tags must be written",
+        id="speaker-sixteen-in-reference",
     ),
     pytest.param(
         {"references": [{"text": "take"}]},
