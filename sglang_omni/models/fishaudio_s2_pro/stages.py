@@ -271,6 +271,22 @@ class FishReferenceEncodeHook(TensorReferenceEncodeHook[FishReferenceInput]):
         raise ValueError("FishAudio reference input has no audio payload")
 
     def encode_one(self, item: FishReferenceInput) -> torch.Tensor:
+        audio_tensor, sample_rate = self.reference_waveform_of(item)
+        return self.encode_reference_waveform(audio_tensor, sample_rate)
+
+    def can_encode_batch(self) -> bool:
+        return True
+
+    def encode_batch(self, items: list[FishReferenceInput]) -> list[torch.Tensor]:
+        reference_waveforms = [
+            self.prepare_reference_waveform(*self.reference_waveform_of(item))
+            for item in items
+        ]
+        return self.encode_reference_waveforms(reference_waveforms)
+
+    def reference_waveform_of(
+        self, item: FishReferenceInput
+    ) -> tuple[torch.Tensor, int]:
         if item.source_kind == "path":
             audio = load_audio(
                 str(item.source),
@@ -278,9 +294,7 @@ class FishReferenceEncodeHook(TensorReferenceEncodeHook[FishReferenceInput]):
                 mono=True,
             )
             audio_tensor = torch.from_numpy(audio).float().reshape(1, -1)
-            return self.encode_reference_waveform(
-                audio_tensor, int(self.codec.sample_rate)
-            )
+            return audio_tensor, int(self.codec.sample_rate)
         else:
             pass
         if item.source_kind in ("bytes", "base64"):
@@ -295,7 +309,7 @@ class FishReferenceEncodeHook(TensorReferenceEncodeHook[FishReferenceInput]):
             except ValueError:
                 audio, sample_rate = decode_audio_bytes_av(audio_bytes)
             audio_tensor = torch.from_numpy(audio).float().reshape(1, -1)
-            return self.encode_reference_waveform(audio_tensor, sample_rate)
+            return audio_tensor, sample_rate
         else:
             pass
         raise TypeError(f"unknown FishAudio reference source: {item.source_kind}")
@@ -327,15 +341,18 @@ class FishReferenceEncodeHook(TensorReferenceEncodeHook[FishReferenceInput]):
             pass
         return None
 
-    def encode_reference_waveform(self, audio: torch.Tensor, sr: int) -> torch.Tensor:
+    def prepare_reference_waveform(
+        self, audio: torch.Tensor, sample_rate: int
+    ) -> torch.Tensor:
         import torchaudio
 
         if (
             self.max_reference_audio_seconds is not None
-            and audio.shape[-1] > self.max_reference_audio_seconds * sr
+            and audio.shape[-1] > self.max_reference_audio_seconds * sample_rate
         ):
             raise ValueError(
-                f"reference audio lasts {audio.shape[-1] / sr:.1f} s, longer than "
+                f"reference audio lasts {audio.shape[-1] / sample_rate:.1f} s, "
+                f"longer than "
                 f"the {self.max_reference_audio_seconds:g} s limit; shorten it or "
                 f"raise max_reference_audio_seconds"
             )
@@ -345,13 +362,19 @@ class FishReferenceEncodeHook(TensorReferenceEncodeHook[FishReferenceInput]):
             audio = audio.mean(0, keepdim=True)
         else:
             pass
-        audio = torchaudio.functional.resample(audio, sr, self.codec.sample_rate)
-        audios = audio.squeeze(0).unsqueeze(0)
+        audio = torchaudio.functional.resample(
+            audio, sample_rate, self.codec.sample_rate
+        )
         if self.autocast_dtype is not None:
-            audios = audios.clamp(-1.0, 1.0)
+            return audio.clamp(-1.0, 1.0)
         else:
-            pass
-        audio_lengths = torch.tensor([audios.shape[1]], dtype=torch.long)
+            return audio
+
+    def encode_reference_waveform(
+        self, audio: torch.Tensor, sample_rate: int
+    ) -> torch.Tensor:
+        prepared_audio = self.prepare_reference_waveform(audio, sample_rate)
+        audio_lengths = torch.tensor([prepared_audio.shape[1]], dtype=torch.long)
         with (
             torch.no_grad(),
             torch.autocast(
@@ -362,13 +385,64 @@ class FishReferenceEncodeHook(TensorReferenceEncodeHook[FishReferenceInput]):
             self.encode_lock if self.device.type != "cpu" else nullcontext(),
         ):
             indices, _ = self.codec.encode(
-                audios.to(self.device), audio_lengths.to(self.device)
+                prepared_audio.to(self.device), audio_lengths.to(self.device)
             )
             if indices.ndim == 3:
                 indices = indices[0]
             else:
                 pass
         return indices.cpu()
+
+    def encode_reference_waveforms(
+        self, reference_waveforms: list[torch.Tensor]
+    ) -> list[torch.Tensor]:
+        if not reference_waveforms:
+            return []
+        else:
+            pass
+        audio_lengths = torch.tensor(
+            [audio.shape[1] for audio in reference_waveforms], dtype=torch.long
+        )
+        padded_audios = torch.nn.utils.rnn.pad_sequence(
+            [audio.squeeze(0) for audio in reference_waveforms], batch_first=True
+        )
+        with (
+            torch.no_grad(),
+            torch.autocast(
+                self.device.type,
+                dtype=self.autocast_dtype,
+                enabled=self.autocast_dtype is not None,
+            ),
+            self.encode_lock if self.device.type != "cpu" else nullcontext(),
+        ):
+            indices, code_lengths = self.codec.encode(
+                padded_audios.to(self.device), audio_lengths.to(self.device)
+            )
+        if indices.ndim != 3:
+            raise RuntimeError(
+                f"batched FishAudio reference encoding returned {indices.ndim} "
+                f"dimensions, expected 3"
+            )
+        else:
+            pass
+        if code_lengths is None:
+            raise RuntimeError(
+                "batched FishAudio reference encoding did not return code lengths"
+            )
+        else:
+            pass
+        if int(code_lengths.shape[0]) != len(reference_waveforms):
+            raise RuntimeError(
+                f"batched FishAudio reference encoding returned "
+                f"{code_lengths.shape[0]} code lengths for "
+                f"{len(reference_waveforms)} waveforms"
+            )
+        else:
+            pass
+        return [
+            indices[index, :, : int(code_length)].cpu()
+            for index, code_length in enumerate(code_lengths.tolist())
+        ]
 
 
 def create_preprocessing_executor(

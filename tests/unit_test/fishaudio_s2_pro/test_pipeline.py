@@ -947,8 +947,6 @@ def run_s2pro_engine_with_fake_buffers(
             init_graph_calls.append(True)
 
     class FakeWorker:
-        speculative_worker = None
-
         def __init__(self, server_args: SimpleNamespace) -> None:
             self.model_runner = FakeSGLangRunner(server_args)
             self.enable_prefill_input_embeds = False
@@ -1326,6 +1324,99 @@ def test_fish_reference_encode_service_same_key_concurrent_merge(
     assert all(result is not None for result in results)
     assert all(torch.equal(result, torch.tensor([[1, 2, 3]])) for result in results)
     assert service.stats()["merged"] == 3
+
+
+def test_fish_reference_encode_service_batches_distinct_cache_misses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def parse_wav_bytes(
+        data: bytes, source: str
+    ) -> tuple[npt.NDArray[np.float32], int]:
+        assert source == "bytes"
+        return np.zeros(4 if data == b"short" else 6, dtype=np.float32), 16000
+
+    class Codec:
+        sample_rate = 16000
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[tuple[int, ...], list[int]]] = []
+
+        def encode(
+            self, audios: torch.Tensor, audio_lengths: torch.Tensor
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            self.calls.append((tuple(audios.shape), audio_lengths.tolist()))
+            code_lengths = (audio_lengths + 1) // 2
+            codes = torch.zeros(
+                (audios.shape[0], 2, int(code_lengths.max())), dtype=torch.long
+            )
+            for index, code_length in enumerate(code_lengths.tolist()):
+                codes[index, :, :code_length] = index + 1
+            return codes, code_lengths
+
+    monkeypatch.setattr(s2pro_stages, "parse_wav_bytes", parse_wav_bytes)
+    monkeypatch.setitem(
+        sys.modules,
+        "torchaudio",
+        SimpleNamespace(
+            functional=SimpleNamespace(
+                resample=lambda audio, source_rate, target_rate: audio,
+            )
+        ),
+    )
+    codec = Codec()
+    barrier = threading.Barrier(2)
+    normalize_lock = threading.Lock()
+    normalized_count = 0
+
+    class BatchingFishReferenceEncodeHook(FishReferenceEncodeHook):
+        def normalize_input(self, raw_input):
+            nonlocal normalized_count
+            item = super().normalize_input(raw_input)
+            with normalize_lock:
+                normalized_count += 1
+                should_wait_for_batch = normalized_count <= 2
+            if should_wait_for_batch:
+                barrier.wait(timeout=5)
+            else:
+                pass
+            return item
+
+    service = ReferenceEncodeService(
+        BatchingFishReferenceEncodeHook(codec=codec, checkpoint_id="ckpt"),
+        max_batch_size=2,
+        max_batch_wait_ms=50,
+    )
+    results: list[torch.Tensor | None] = [None, None]
+    errors: list[BaseException] = []
+
+    def encode_reference(index: int, reference_bytes: bytes) -> None:
+        try:
+            results[index] = service.get_or_encode({"bytes": reference_bytes})
+        except BaseException as error:
+            errors.append(error)
+
+    threads = [
+        threading.Thread(target=encode_reference, args=(0, b"short")),
+        threading.Thread(target=encode_reference, args=(1, b"longer")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+    service.close()
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert not errors
+    assert results[0] is not None
+    assert results[1] is not None
+    assert len(codec.calls) == 1
+    assert codec.calls[0][0] == (2, 6)
+    assert sorted(codec.calls[0][1]) == [4, 6]
+    assert results[0].shape == (2, 2)
+    assert results[1].shape == (2, 3)
+    assert torch.equal(service.get_or_encode({"bytes": b"short"}), results[0])
+    assert len(codec.calls) == 1
+    assert service.stats()["entries"] == 2
 
 
 def test_fish_reference_path_mutation_returns_but_does_not_cache(
