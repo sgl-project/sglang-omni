@@ -14,6 +14,7 @@ from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 
 from sglang_omni.models.auk.dit import AuKDit
+from sglang_omni.models.auk.seacache import SeaCacheConfig, SeaCacheState
 from sglang_omni.models.auk.step_cuda_graph import AuKStepCudaGraphRunner
 
 
@@ -102,6 +103,8 @@ class AuKFlowMatching(nn.Module):
         sway_sampling_coef: float | None = None,
         t_grid: Sequence[float] | None = None,
         step_graph: AuKStepCudaGraphRunner | None = None,
+        seacache_config: SeaCacheConfig | None = None,
+        seacache_stats: dict[str, object] | None = None,
     ) -> torch.Tensor:
         return self.sample_batch(
             [item],
@@ -110,6 +113,8 @@ class AuKFlowMatching(nn.Module):
             sway_sampling_coef=sway_sampling_coef,
             t_grid=t_grid,
             step_graph=step_graph,
+            seacache_config=seacache_config,
+            seacache_stats=seacache_stats,
         )[0]
 
     @torch.no_grad()
@@ -122,12 +127,12 @@ class AuKFlowMatching(nn.Module):
         sway_sampling_coef: float | None = None,
         t_grid: Sequence[float] | None = None,
         step_graph: AuKStepCudaGraphRunner | None = None,
+        seacache_config: SeaCacheConfig | None = None,
+        seacache_stats: dict[str, object] | None = None,
     ) -> list[torch.Tensor]:
-        """Integrate the velocity field for a batch of requests.
-
-        With a step graph the batch pads to one of that runner's declared
-        shapes, so one captured step can be replayed for every NFE step.
-        """
+        """Integrate the velocity field for a batch of requests."""
+        if step_graph is not None and seacache_config is not None:
+            raise ValueError("AuK SeaCache cannot be combined with step CUDA graphs")
         device = next(self.parameters()).device
         dim = self.transformer.latent_dim
         # Inputs follow the backbone dtype; y stays fp32 through type promotion.
@@ -239,6 +244,8 @@ class AuKFlowMatching(nn.Module):
 
         def step(inputs, t, x):
             kwargs = dict(inputs, x=x.to(weight_dtype), time=t)
+            if seacache is not None:
+                kwargs["seacache"] = seacache
             if cfg_strength < 1e-5:
                 return self.transformer(
                     **kwargs, drop_audio_cond=False, drop_text=False
@@ -250,6 +257,11 @@ class AuKFlowMatching(nn.Module):
             return v_cond + (v_cond - v_uncond) * cfg_strength
 
         t = build_time_grid(steps, sway_sampling_coef, t_grid, device=device)
+        seacache = (
+            SeaCacheState(config=seacache_config, total_steps=t.numel() - 1)
+            if seacache_config is not None
+            else None
+        )
         fn = None
         if padding is not None:
             fn = step_graph.bind(step, inputs, x=y0, time=t[0], baked=(cfg_strength,))
@@ -257,6 +269,16 @@ class AuKFlowMatching(nn.Module):
             pass
         try:
             result = integrate(fn or partial(step, inputs), y0, t)
+            if seacache is not None and seacache_stats is not None:
+                times = {"filter_ms": 0.0, "dit_ms": 0.0}
+                for name, start, end in seacache.timings:
+                    times[f"{name}_ms"] += start.elapsed_time(end)
+                seacache_stats.update(
+                    computed_steps=seacache.computed_steps,
+                    cached_steps=seacache.cached_steps,
+                    reasons=seacache.reasons.copy(),
+                    **times,
+                )
             return [latent[: item.target_frames] for item, latent in zip(items, result)]
         finally:
             self.transformer.clear_cache()
