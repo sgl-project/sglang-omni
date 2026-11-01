@@ -16,7 +16,7 @@ import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
-from sglang.srt.models.llama import LlamaForCausalLM
+from sglang.srt.models.llama import LlamaForCausalLM, LlamaModel
 from sglang.srt.runtime_context import get_schedule
 from sglang.srt.utils import add_prefix
 from torch import nn
@@ -94,6 +94,11 @@ class PersonaPlexForCausalLM(nn.Module):
         device = self.text_emb.weight.device
         self.fusion_buffer = torch.zeros(max_batch, dim, dtype=dtype, device=device)
         self.hidden_out = torch.zeros(max_batch, dim, dtype=dtype, device=device)
+
+    @property
+    def model(self) -> LlamaModel:
+        """Expose the temporal backbone to SGLang's prefill graph runner."""
+        return self.llm.model
 
     def get_attention_sliding_window_size(self) -> int:
         # note (LinzeShi): The full ring masks its oldest slot; the left window
