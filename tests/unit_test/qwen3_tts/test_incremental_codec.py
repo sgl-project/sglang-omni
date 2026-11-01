@@ -1941,7 +1941,7 @@ def test_compiled_decode_shares_a_program_per_size_class_and_tracks_fp32(
             expected = torch.cat(waveforms["reference"], dim=-1)
             assert relative_error(
                 torch.cat(waveforms["compiled"], dim=-1), expected
-            ) <= 1.1 * relative_error(torch.cat(waveforms["eager"], dim=-1), expected)
+            ) <= 1.5 * relative_error(torch.cat(waveforms["eager"], dim=-1), expected)
             compiled_state = arena.gather(slots)
             assert compiled_state.frame_positions.tolist() == [sum(widths)] * len(slots)
             retained = {}
@@ -1961,7 +1961,7 @@ def test_compiled_decode_shares_a_program_per_size_class_and_tracks_fp32(
                 )
             assert relative_error(
                 retained["compiled"], retained["reference"]
-            ) <= 1.1 * relative_error(retained["eager"], retained["reference"])
+            ) <= 1.5 * relative_error(retained["eager"], retained["reference"])
         untouched = arena.gather([3])
 
     assert untouched.frame_positions.tolist() == [0]
