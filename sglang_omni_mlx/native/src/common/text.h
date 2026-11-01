@@ -12,6 +12,10 @@ namespace omni_common {
 
 bool IsUnicodeSpace(uint32_t code_point);
 std::vector<uint32_t> CodePoints(const std::string &text);
+// Appends code_point to out as UTF-8.
+void AppendUtf8(uint32_t code_point, std::string &out);
+// Code points of UTF-8 text, counted without decoding it.
+size_t CodePointCount(const std::string &text);
 // Strips every Unicode space from both ends.
 std::string StripUnicodeWhitespace(const std::string &text);
 // Greedy loop guard: the last 24 tokens use at most 3 distinct ids.
