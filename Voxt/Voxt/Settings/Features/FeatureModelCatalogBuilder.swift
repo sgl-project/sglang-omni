@@ -11,7 +11,6 @@ private func localized(_ key: String) -> String {
 struct FeatureModelCatalogBuilder {
     let mlxModelManager: MLXModelManager
     let customLLMManager: CustomLLMModelManager
-    let ggufTranslationModelManager: GGUFTranslationModelManager
     let featureSettings: FeatureSettings
     let remoteASRProviderConfigurationsRaw: String
     let remoteLLMProviderConfigurationsRaw: String
@@ -23,7 +22,7 @@ struct FeatureModelCatalogBuilder {
         case .transcriptionASR, .translationASR, .rewriteASR, .meetingASR:
             return asrEntries(for: sheet)
         case .transcriptionLLM, .transcriptionNoteTitle, .rewriteLLM, .meetingSummary:
-            return llmEntries(includeAppleIntelligence: true)
+            return llmEntries(includeAppleIntelligence: true, includeTranslationOnlyModels: false)
         case .translationModel:
             return translationEntries(
                 selectedASR: featureSettings.translation.asrSelectionID,
@@ -128,8 +127,6 @@ struct FeatureModelCatalogBuilder {
 
     func translationSelectionSummary(_ selectionID: FeatureModelSelectionID) -> String {
         switch selectionID.translationSelection {
-        case .localGGUF(let modelID):
-            return ggufTranslationModelManager.displayTitle(for: modelID)
         case .localLLM, .remoteLLM:
             return llmSelectionSummary(selectionID)
         case .none:
@@ -139,8 +136,6 @@ struct FeatureModelCatalogBuilder {
 
     func translationSelectionBadgeTitle(_ selectionID: FeatureModelSelectionID) -> String {
         switch selectionID.translationSelection {
-        case .localGGUF(let modelID):
-            return Self.compactModelBadgeTitle(from: ggufTranslationModelManager.displayTitle(for: modelID))
         case .localLLM, .remoteLLM:
             return llmSelectionBadgeTitle(selectionID)
         case .none:
@@ -150,11 +145,6 @@ struct FeatureModelCatalogBuilder {
 
     func translationSelectionLogoKey(_ selectionID: FeatureModelSelectionID) -> ModelLogoKey {
         switch selectionID.translationSelection {
-        case .localGGUF(let modelID):
-            return ModelLogoKey.resolve(
-                title: ggufTranslationModelManager.displayTitle(for: modelID),
-                engine: "Local GGUF"
-            )
         case .localLLM, .remoteLLM:
             return llmSelectionLogoKey(selectionID)
         case .none:
@@ -341,7 +331,10 @@ struct FeatureModelCatalogBuilder {
         )
     }
 
-    private func llmEntries(includeAppleIntelligence: Bool) -> [FeatureModelSelectorEntry] {
+    private func llmEntries(
+        includeAppleIntelligence: Bool,
+        includeTranslationOnlyModels: Bool
+    ) -> [FeatureModelSelectorEntry] {
         var entries = [FeatureModelSelectorEntry]()
         if includeAppleIntelligence, appleIntelligenceAvailability != .unsupportedOS {
             let isAvailable = appleIntelligenceAvailability.isAvailable
@@ -370,7 +363,10 @@ struct FeatureModelCatalogBuilder {
             )
         }
 
-        entries.append(contentsOf: customLLMDisplayModelsIncludingFeatureSelections().map { model in
+        let localModels = customLLMDisplayModelsIncludingFeatureSelections().filter { model in
+            includeTranslationOnlyModels || !CustomLLMModelCatalog.isTranslationOnlyModel(model.id)
+        }
+        entries.append(contentsOf: localModels.map { model in
             let selectionID = FeatureModelSelectionID.localLLM(model.id)
             let isInstalled = customLLMManager.isModelDownloaded(repo: model.id)
             let isChecking = customLLMManager.isCheckingInstallation(repo: model.id)
@@ -474,39 +470,7 @@ struct FeatureModelCatalogBuilder {
         selectedASR: FeatureModelSelectionID,
         targetLanguage: TranslationTargetLanguage
     ) -> [FeatureModelSelectorEntry] {
-        var entries = llmEntries(includeAppleIntelligence: false)
-        entries.append(contentsOf: GGUFTranslationModelCatalog.allModels.compactMap { model in
-            guard ggufTranslationModelManager.isModelDownloaded(id: model.id) else {
-                return nil
-            }
-            let selectionID = FeatureModelSelectionID.localGGUFTranslation(model.id)
-            return FeatureModelSelectorEntry(
-                selectionID: selectionID,
-                title: model.title,
-                engine: localized("Local GGUF"),
-                sizeText: model.sizeText,
-                ratingText: model.ratingText,
-                filterTags: featureFilterTags(
-                    base: model.tags,
-                    installed: true,
-                    requiresConfiguration: false,
-                    configured: true,
-                    usageLabels: usageLabels(for: selectionID)
-                ),
-                displayTags: featureDisplayTags(
-                    base: model.tags,
-                    requiresConfiguration: false,
-                    configured: true,
-                    selectionID: selectionID
-                ),
-                statusText: localized("Installed"),
-                usageLocations: usageLabels(for: selectionID),
-                badgeText: model.badgeText,
-                isSelectable: true,
-                disabledReason: nil
-            )
-        })
-        return entries
+        llmEntries(includeAppleIntelligence: false, includeTranslationOnlyModels: true)
     }
 
     private func usageLabels(for selectionID: FeatureModelSelectionID) -> [String] {

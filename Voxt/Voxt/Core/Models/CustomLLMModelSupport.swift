@@ -477,8 +477,8 @@ struct CustomLLMModelCatalog {
         "mlx-community/LFM2-1.2B-4bit": PresentationMetadata(ratingText: "4.0", tagKeys: ["Fast"]),
         "mlx-community/LFM2-8B-A1B-3bit-MLX": PresentationMetadata(ratingText: "4.4", tagKeys: ["Balanced"]),
         "mlx-community/Qwen3.6-27B-4bit": PresentationMetadata(ratingText: "4.9", tagKeys: ["Accurate"]),
-        "mlx-community/Hy-MT2-1.8B-4bit": PresentationMetadata(ratingText: "4.5", tagKeys: ["Fast"]),
-        "mlx-community/Hy-MT2-1.8B-8bit": PresentationMetadata(ratingText: "4.8", tagKeys: ["Accurate"]),
+        "mlx-community/Hy-MT2-1.8B-4bit": PresentationMetadata(ratingText: "4.5", tagKeys: ["Fast", "Translation"]),
+        "mlx-community/Hy-MT2-1.8B-8bit": PresentationMetadata(ratingText: "4.8", tagKeys: ["Accurate", "Translation"]),
     ]
 
     nonisolated private static let knownRemoteSizeBytesByRepo: [String: Int64] = [

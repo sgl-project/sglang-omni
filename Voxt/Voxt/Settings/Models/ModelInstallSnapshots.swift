@@ -118,60 +118,6 @@ extension ModelSettingsView {
         )
     }
 
-    func ggufTranslationInstallSnapshot(for modelID: GGUFTranslationModelID) -> LocalModelInstallSnapshot {
-        let modelState = ggufTranslationModelManager.state(for: modelID)
-        let isInstalled = ggufTranslationModelManager.isModelDownloaded(id: modelID)
-        let isUninstalling = isUninstallingGGUFTranslationModel(modelID)
-        let target = LocalModelInstallTarget.ggufTranslation(modelID)
-        let pauseMessage = ggufTranslationModelManager.pausedStatusMessage(for: modelID)
-            ?? (ggufTranslationModelManager.hasResumableDownload(id: modelID)
-                ? AppLocalization.localizedString("Paused. Ready to continue.")
-                : nil)
-
-        let state: LocalModelInstallState
-        if isUninstalling {
-            state = .uninstalling
-        } else if isCancellationPending(for: target) {
-            state = .cancelling
-        } else {
-            switch modelState {
-            case .downloading:
-                state = .downloading
-            case .paused:
-                state = .paused
-            case .downloaded:
-                state = .installed
-            case .notDownloaded, .error:
-                state = ggufTranslationModelManager.isCheckingInstallation(id: modelID)
-                    ? .checking
-                    : .installable(isEnabled: ggufTranslationModelManager.activeDownloadModelID == nil)
-            }
-        }
-
-        return LocalModelInstallSnapshot(
-            target: target,
-            state: state,
-            isInstalled: isInstalled,
-            isCurrentSelection: ggufTranslationModelManager.selectedModelID == modelID,
-            statusText: ggufTranslationInstallStatusText(
-                state: modelState,
-                pauseMessage: pauseMessage,
-                isUninstalling: isUninstalling,
-                isCancelling: isCancellationPending(for: target)
-            ),
-            badgeText: ggufTranslationModelManager.option(for: modelID).badgeText,
-            downloadStatus: isCancellationPending(for: target)
-                ? nil
-                : ModelDownloadStatusSnapshot.fromGGUFState(
-                    modelState,
-                    pauseMessage: pauseMessage
-                ),
-            canOpenLocation: isInstalled && !isUninstalling && !isCancellationPending(for: target),
-            canConfigure: false,
-            configureActionTitle: nil
-        )
-    }
-
     func performInstallAction(_ target: LocalModelInstallTarget, kind: LocalModelInstallActionKind) {
         switch (target, kind) {
         case (.mlx(let repo), .use):
@@ -210,24 +156,6 @@ extension ModelSettingsView {
         case (.customLLM(let repo), .configure):
             customLLMConfigurationRepo = repo
             isCustomLLMConfigurationPresented = true
-
-        case (.ggufTranslation(let modelID), .use):
-            useGGUFTranslationModel(modelID)
-        case (.ggufTranslation(let modelID), .install), (.ggufTranslation(let modelID), .resume):
-            downloadGGUFTranslationModel(modelID)
-        case (.ggufTranslation(let modelID), .pause):
-            ggufTranslationModelManager.pauseDownload(id: modelID)
-            refreshCatalogSnapshot()
-        case (.ggufTranslation(let modelID), .cancel):
-            cancellingInstallTargets.insert(.ggufTranslation(modelID))
-            ggufTranslationModelManager.cancelDownload(id: modelID)
-            refreshCatalogSnapshot()
-        case (.ggufTranslation(let modelID), .uninstall):
-            requestDeleteGGUFTranslationModel(modelID)
-        case (.ggufTranslation(let modelID), .openLocation):
-            openGGUFTranslationModelDirectory(modelID)
-        case (.ggufTranslation, .configure):
-            break
 
         case (_, .inactive):
             break
@@ -344,53 +272,6 @@ extension ModelSettingsView {
         case .customLLM(let repo):
             let snapshot = customLLMManager.catalogSnapshot(for: repo)
             return snapshot.isDownloading || snapshot.isPaused
-        case .ggufTranslation(let modelID):
-            let state = ggufTranslationModelManager.state(for: modelID)
-            if case .downloading = state {
-                return true
-            }
-            if case .paused = state {
-                return true
-            }
-            return false
         }
     }
-
-    private func ggufTranslationInstallStatusText(
-        state: GGUFTranslationModelManager.ModelState,
-        pauseMessage: String?,
-        isUninstalling: Bool,
-        isCancelling: Bool
-    ) -> String {
-        if isUninstalling {
-            return AppLocalization.localizedString("Uninstalling…")
-        }
-
-        if isCancelling {
-            return AppLocalization.localizedString("Cancelling…")
-        }
-
-        switch state {
-        case .downloading(_, let completed, let total, _, _, _):
-            return ModelDownloadPresentationSupport.statusText(
-                downloadState: .downloading(completed: completed, total: total)
-            )
-        case .paused(_, let completed, let total, _, _, _):
-            return ModelDownloadPresentationSupport.statusText(
-                downloadState: .paused(
-                    completed: completed,
-                    total: total,
-                    pauseMessage: pauseMessage
-                )
-            )
-        case .error(let message):
-            return ModelDownloadPresentationSupport.statusText(
-                downloadState: .idle,
-                errorMessage: message
-            )
-        case .notDownloaded, .downloaded:
-            return ""
-        }
-    }
-
 }

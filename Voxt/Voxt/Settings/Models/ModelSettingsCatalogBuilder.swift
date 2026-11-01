@@ -17,7 +17,6 @@ struct ModelCatalogBuilder {
 
     let mlxModelManager: MLXModelManager
     let customLLMManager: CustomLLMModelManager
-    let ggufTranslationModelManager: GGUFTranslationModelManager
     let remoteASRConfigurations: [String: RemoteProviderConfiguration]
     let remoteLLMConfigurations: [String: RemoteProviderConfiguration]
     let featureSettings: FeatureSettings
@@ -29,7 +28,6 @@ struct ModelCatalogBuilder {
     let appleIntelligenceAvailability: AppleIntelligenceAvailability
     let mlxInstallSnapshot: (String) -> LocalModelInstallSnapshot
     let customLLMInstallSnapshot: (String) -> LocalModelInstallSnapshot
-    let ggufTranslationInstallSnapshot: (GGUFTranslationModelID) -> LocalModelInstallSnapshot
     let catalogPrimaryAction: (LocalModelInstallSnapshot) -> ModelTableAction?
     let catalogSecondaryActions: (LocalModelInstallSnapshot) -> [ModelTableAction]
     let configureASRProvider: (RemoteASRProvider) -> Void
@@ -144,34 +142,6 @@ struct ModelCatalogBuilder {
             )
         })
 
-        entries.append(contentsOf: ggufTranslationDisplayModelsIncludingInstalled().map { model in
-            let selectionID = FeatureModelSelectionID.localGGUFTranslation(model.id)
-            let snapshot = ggufTranslationInstallSnapshot(model.id)
-
-            let decoration = catalogDecoration(
-                base: model.tags,
-                installed: snapshot.isInstalled,
-                requiresConfiguration: false,
-                configured: true,
-                selectionID: selectionID
-            )
-
-            return ModelCatalogEntry(
-                id: "local-gguf-translation:\(model.id.rawValue)",
-                title: model.title,
-                engine: localizedModelCatalog("Local GGUF"),
-                sizeText: model.sizeText,
-                ratingText: model.ratingText,
-                filterTags: decoration.filterTags,
-                displayTags: decoration.displayTags,
-                statusText: snapshot.statusText,
-                usageLocations: decoration.usageLocations,
-                badgeText: snapshot.badgeText,
-                primaryAction: catalogPrimaryAction(snapshot),
-                secondaryActions: catalogSecondaryActions(snapshot)
-            )
-        })
-
         entries.append(contentsOf: RemoteLLMProvider.allCases.map { provider in
             let selectionID = FeatureModelSelectionID.remoteLLM(provider)
             let configured = RemoteModelConfigurationStore.isStoredLLMConfigurationConfigured(
@@ -241,25 +211,6 @@ struct ModelCatalogBuilder {
         }
 
         return CustomLLMModelManager.displayModels(includingInstalled: includedRepos)
-    }
-
-    private func ggufTranslationDisplayModelsIncludingInstalled() -> [GGUFTranslationModelOption] {
-        var includedIDs = Set(GGUFTranslationModelCatalog.allModels.compactMap { model -> GGUFTranslationModelID? in
-            let snapshot = ggufTranslationInstallSnapshot(model.id)
-            switch snapshot.state {
-            case .installed, .downloading, .paused:
-                return model.id
-            case .checking, .installable, .cancelling, .uninstalling:
-                return nil
-            }
-        })
-        includedIDs.insert(ggufTranslationModelManager.selectedModelID)
-
-        if case .localGGUF(let modelID)? = featureSettings.translation.modelSelectionID.translationSelection {
-            includedIDs.insert(modelID)
-        }
-
-        return GGUFTranslationModelCatalog.displayModels(includingInstalled: includedIDs)
     }
 
     func usageLocations(for selectionID: FeatureModelSelectionID) -> [String] {

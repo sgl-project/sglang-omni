@@ -193,9 +193,6 @@ run_refactor() {
     -only-testing:VoxtTests/VoxtLogRedactorTests
     -only-testing:VoxtTests/MLXModelSupportTests
     -only-testing:VoxtTests/MLXModelPerRepoStateSupportTests
-    -only-testing:VoxtTests/GGUFUTF8OutputAccumulatorTests/testWaitsForCompleteMultibyteSequenceBeforeDecoding
-    -only-testing:VoxtTests/GGUFUTF8OutputAccumulatorTests/testFinalizesInvalidUTF8WithReplacementFlag
-    -only-testing:VoxtTests/GGUFUTF8OutputAccumulatorTests/testApplicationTerminationShutdownRejectsNewGGUFInference
     -only-testing:VoxtTests/SQLiteStorageRepositoryTests
     -only-testing:VoxtTests/AutomaticDictionaryLearningMonitorTests
     -only-testing:VoxtTests/DictionaryEntryCollectionTests
@@ -236,11 +233,6 @@ run_mlx() {
     -only-testing:VoxtTests/MLXPipelineMetricsIntegrationTests
 }
 
-run_gguf() {
-  run_tests_with_model_gate "GGUF native termination regression" \
-    -only-testing:VoxtTests/GGUFUTF8OutputAccumulatorTests/testInstalledGGUFModelIsExplicitlyReleasedDuringApplicationTermination
-}
-
 run_vad() {
   run_tests "local VAD planning regression" \
     -only-testing:VoxtTests/ASRVoiceActivityPlanningTests \
@@ -263,9 +255,6 @@ case "$GROUP" in
   mlx)
     run_mlx
     ;;
-  gguf)
-    run_gguf
-    ;;
   vad)
     run_vad
     ;;
@@ -277,11 +266,11 @@ case "$GROUP" in
     run_group_collecting_failures run_core run_refactor run_mlx
     ;;
   full)
-    run_group_collecting_failures run_core run_refactor run_mlx run_gguf run_installed_matrix
+    run_group_collecting_failures run_core run_refactor run_mlx run_installed_matrix
     ;;
   *)
     echo "Unknown group: $GROUP" >&2
-    echo "Usage: $0 [core|refactor|mlx|gguf|vad|installed|all|full]" >&2
+    echo "Usage: $0 [core|refactor|mlx|vad|installed|all|full]" >&2
     exit 2
     ;;
 esac

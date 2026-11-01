@@ -174,12 +174,6 @@ extension AppDelegate {
             ?? CustomLLMModelManager.defaultModelRepo
     }
 
-    var translationGGUFModelID: GGUFTranslationModelID {
-        GGUFTranslationModelCatalog.resolvedModelID(
-            defaults.string(forKey: AppPreferenceKey.translationGGUFModelID)
-        )
-    }
-
     var translationModelProvider: TranslationModelProvider {
         enumValue(forKey: AppPreferenceKey.translationModelProvider, default: .customLLM)
     }
@@ -605,15 +599,6 @@ extension AppDelegate {
             return HistoryTextModelMetadata(
                 modeTitle: TranslationModelProvider.customLLM.title,
                 modelTitle: "\(customLLMManager.displayTitle(for: repo)) (\(repo))",
-                remoteProviderTitle: nil,
-                remoteModelTitle: nil,
-                remoteEndpoint: nil
-            )
-        case .localGGUF(let modelID):
-            let option = ggufTranslationModelManager.option(for: modelID)
-            return HistoryTextModelMetadata(
-                modeTitle: TranslationModelProvider.localGGUF.title,
-                modelTitle: option.title,
                 remoteProviderTitle: nil,
                 remoteModelTitle: nil,
                 remoteEndpoint: nil

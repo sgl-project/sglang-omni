@@ -113,7 +113,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let remoteASRTranscriber = RemoteASRTranscriber()
     let mlxModelManager: MLXModelManager
     let customLLMManager: CustomLLMModelManager
-    let ggufTranslationModelManager: GGUFTranslationModelManager
     let historyStore = TranscriptionHistoryStore()
     lazy var noteStore = VoxtNoteStore(inMemory: VoxtRuntimeEnvironment.isRunningUnitTests)
     let noteObsidianExportStore = VoxtNoteObsidianExportStore()
@@ -316,10 +315,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let llmRepo = UserDefaults.standard.string(forKey: AppPreferenceKey.customLLMModelRepo)
             ?? CustomLLMModelManager.defaultModelRepo
         customLLMManager = CustomLLMModelManager(modelRepo: llmRepo, hubBaseURL: CustomLLMModelManager.defaultHubBaseURL)
-        let ggufModelID = GGUFTranslationModelCatalog.resolvedModelID(
-            UserDefaults.standard.string(forKey: AppPreferenceKey.translationGGUFModelID)
-        )
-        ggufTranslationModelManager = GGUFTranslationModelManager(modelID: ggufModelID)
         UserDefaults.standard.register(defaults: [
             AppPreferenceKey.interactionSoundsEnabled: true,
             AppPreferenceKey.interactionSoundPreset: InteractionSoundPreset.soft.rawValue,
@@ -332,7 +327,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             AppPreferenceKey.translationTargetLanguage: TranslationTargetLanguage.english.rawValue,
             AppPreferenceKey.userMainLanguageCodes: UserMainLanguageOption.defaultStoredSelectionValue,
             AppPreferenceKey.translationModelProvider: TranslationModelProvider.customLLM.rawValue,
-            AppPreferenceKey.translationGGUFModelID: GGUFTranslationModelCatalog.defaultModelID.rawValue,
             AppPreferenceKey.rewriteModelProvider: RewriteModelProvider.customLLM.rawValue,
             AppPreferenceKey.escapeKeyCancelsOverlaySession: true,
             AppPreferenceKey.translateSelectedTextOnTranslationHotkey: true,
@@ -386,6 +380,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             AppPreferenceKey.customProxyPassword: "",
         ])
         FeatureSettingsStore.migrateIfNeeded(defaults: .standard)
+        LegacyGGUFTranslationMigration.removeRetiredArtifacts()
         Self.migrateLegacyWhisperSelectionIfNeeded()
         HotkeyPreference.registerDefaults()
         HotkeyPreference.migrateDefaultsIfNeeded()
@@ -832,7 +827,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             await task.value
         }
 
-        await ggufTranslationModelManager.shutdownForApplicationTermination()
         await customLLMManager.shutdownForApplicationTermination()
         await mlxModelManager.shutdownForApplicationTermination()
         await SileroVADModelProvisioner.shared.shutdownForApplicationTermination()

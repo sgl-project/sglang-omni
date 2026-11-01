@@ -118,7 +118,15 @@ final class FeatureSettingsStoreTests: XCTestCase {
         )
         XCTAssertEqual(
             removedGGUFSelection.translationSelection,
-            .localGGUF(modelID: .hyMT2Q4KM)
+            .localLLM(repo: "mlx-community/Hy-MT2-1.8B-4bit")
+        )
+
+        let q8Selection = FeatureModelSelectionID(
+            rawValue: "local-gguf-translation:tencent/Hy-MT2-1.8B-GGUF#Hy-MT2-1.8B-Q8_0.gguf"
+        )
+        XCTAssertEqual(
+            q8Selection.translationSelection,
+            .localLLM(repo: "mlx-community/Hy-MT2-1.8B-8bit")
         )
     }
 
@@ -138,9 +146,61 @@ final class FeatureSettingsStoreTests: XCTestCase {
             let stored = try JSONDecoder().decode(FeatureSettings.self, from: XCTUnwrap(storedRaw.data(using: .utf8)))
 
             XCTAssertEqual(loaded.transcription.asrSelectionID, .mlx(MLXModelManager.defaultModelRepo))
-            XCTAssertEqual(loaded.translation.modelSelectionID, .localGGUFTranslation(.hyMT2Q4KM))
+            XCTAssertEqual(loaded.translation.modelSelectionID, .localLLM("mlx-community/Hy-MT2-1.8B-4bit"))
             XCTAssertEqual(stored.transcription.asrSelectionID, .mlx(MLXModelManager.defaultModelRepo))
-            XCTAssertEqual(stored.translation.modelSelectionID, .localGGUFTranslation(.hyMT2Q4KM))
+            XCTAssertEqual(stored.translation.modelSelectionID, .localLLM("mlx-community/Hy-MT2-1.8B-4bit"))
+            XCTAssertEqual(
+                defaults.string(forKey: AppPreferenceKey.translationModelProvider),
+                TranslationModelProvider.customLLM.rawValue
+            )
+            XCTAssertEqual(
+                defaults.string(forKey: AppPreferenceKey.translationCustomLLMModelRepo),
+                "mlx-community/Hy-MT2-1.8B-4bit"
+            )
+        }
+    }
+
+    func testLegacyGGUFProviderMigratesToMatchingMLXHyMT2Checkpoint() {
+        let cases = [
+            ("tencent/Hy-MT2-1.8B-GGUF#Hy-MT2-1.8B-Q8_0.gguf", "mlx-community/Hy-MT2-1.8B-8bit"),
+            ("tencent/Hy-MT2-1.8B-GGUF#Hy-MT2-1.8B-Q4_K_M.gguf", "mlx-community/Hy-MT2-1.8B-4bit"),
+            (nil, "mlx-community/Hy-MT2-1.8B-4bit"),
+        ]
+        for (legacyModelID, expectedRepo) in cases {
+            withEphemeralDefaults { defaults in
+                defaults.set("localGGUF", forKey: AppPreferenceKey.translationModelProvider)
+                defaults.set(legacyModelID, forKey: AppPreferenceKey.legacyTranslationGGUFModelID)
+
+                let settings = FeatureSettingsStore.deriveFromLegacy(defaults: defaults)
+
+                XCTAssertEqual(settings.translation.modelSelectionID, .localLLM(expectedRepo), "\(legacyModelID ?? "nil")")
+            }
+        }
+    }
+
+    func testRemoveRetiredGGUFArtifactsDeletesOnlyGGUFStorageAndLegacyKey() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LegacyGGUFTranslationMigrationTests.\(UUID().uuidString)", isDirectory: true)
+        let ggufDirectory = root.appendingPathComponent("gguf-translation/tencent_Hy-MT2-1.8B-GGUF", isDirectory: true)
+        let mlxDirectory = root.appendingPathComponent("mlx-llm", isDirectory: true)
+        try FileManager.default.createDirectory(at: ggufDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: mlxDirectory, withIntermediateDirectories: true)
+        try Data("gguf".utf8).write(to: ggufDirectory.appendingPathComponent("Hy-MT2-1.8B-Q4_K_M.gguf"))
+        ModelStorageDirectoryManager.resetForTesting()
+        ModelStorageDirectoryManager.setAuthorizedRootURLForTesting(root)
+        defer {
+            ModelStorageDirectoryManager.resetForTesting()
+            try? FileManager.default.removeItem(at: root)
+        }
+
+        try withEphemeralDefaults { defaults in
+            defaults.set("tencent/Hy-MT2-1.8B-GGUF#Hy-MT2-1.8B-Q4_K_M.gguf", forKey: AppPreferenceKey.legacyTranslationGGUFModelID)
+
+            LegacyGGUFTranslationMigration.removeRetiredArtifacts(defaults: defaults)
+
+            XCTAssertNil(defaults.object(forKey: AppPreferenceKey.legacyTranslationGGUFModelID))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("gguf-translation").path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: mlxDirectory.path))
         }
     }
 

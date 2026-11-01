@@ -14,7 +14,6 @@ struct SettingsView: View {
     let onCancelDictionarySuggestionsFromHistory: () -> Void
     let mlxModelManager: MLXModelManager
     let customLLMManager: CustomLLMModelManager
-    let ggufTranslationModelManager: GGUFTranslationModelManager
     @ObservedObject var historyStore: TranscriptionHistoryStore
     @ObservedObject var meetingFileTaskQueue: MeetingFileTaskQueue
     @ObservedObject var noteStore: VoxtNoteStore
@@ -65,7 +64,6 @@ struct SettingsView: View {
         onCancelDictionarySuggestionsFromHistory: @escaping () -> Void,
         mlxModelManager: MLXModelManager,
         customLLMManager: CustomLLMModelManager,
-        ggufTranslationModelManager: GGUFTranslationModelManager,
         historyStore: TranscriptionHistoryStore,
         meetingFileTaskQueue: MeetingFileTaskQueue,
         noteStore: VoxtNoteStore,
@@ -81,7 +79,6 @@ struct SettingsView: View {
         self.onCancelDictionarySuggestionsFromHistory = onCancelDictionarySuggestionsFromHistory
         self.mlxModelManager = mlxModelManager
         self.customLLMManager = customLLMManager
-        self.ggufTranslationModelManager = ggufTranslationModelManager
         self.historyStore = historyStore
         self.meetingFileTaskQueue = meetingFileTaskQueue
         self.noteStore = noteStore
@@ -99,8 +96,7 @@ struct SettingsView: View {
         _activeModelDownloadCount = State(
             initialValue: SettingsModelDownloadBadgeSupport.activeDownloadCount(
                 mlxActiveDownloadRepos: mlxModelManager.activeDownloadRepos,
-                customLLMActiveDownloadRepos: customLLMManager.activeDownloadRepos,
-                ggufActiveDownloadModelID: ggufTranslationModelManager.activeDownloadModelID
+                customLLMActiveDownloadRepos: customLLMManager.activeDownloadRepos
             )
         )
     }
@@ -469,16 +465,14 @@ struct SettingsView: View {
     }
 
     private var modelDownloadBadgeCountPublisher: AnyPublisher<Int, Never> {
-        Publishers.CombineLatest3(
+        Publishers.CombineLatest(
             mlxModelManager.$activeDownloadRepos,
-            customLLMManager.$activeDownloadRepos,
-            ggufTranslationModelManager.$activeDownloadModelID
+            customLLMManager.$activeDownloadRepos
         )
-        .map { mlxActiveDownloadRepos, customLLMActiveDownloadRepos, ggufActiveDownloadModelID in
+        .map { mlxActiveDownloadRepos, customLLMActiveDownloadRepos in
             SettingsModelDownloadBadgeSupport.activeDownloadCount(
                 mlxActiveDownloadRepos: mlxActiveDownloadRepos,
-                customLLMActiveDownloadRepos: customLLMActiveDownloadRepos,
-                ggufActiveDownloadModelID: ggufActiveDownloadModelID
+                customLLMActiveDownloadRepos: customLLMActiveDownloadRepos
             )
         }
         .removeDuplicates()
@@ -544,7 +538,6 @@ struct SettingsView: View {
                         },
                         mlxModelManager: mlxModelManager,
                         customLLMManager: customLLMManager,
-                        ggufTranslationModelManager: ggufTranslationModelManager,
                         noteStore: noteStore,
                         meetingFileTaskQueue: meetingFileTaskQueue
                     )
@@ -556,7 +549,6 @@ struct SettingsView: View {
                     ModelSettingsView(
                         mlxModelManager: mlxModelManager,
                         customLLMManager: customLLMManager,
-                        ggufTranslationModelManager: ggufTranslationModelManager,
                         mainWindowState: mainWindowState,
                         missingConfigurationIssues: missingModelConfigurationIssues,
                         navigationRequest: navigationRequest,
@@ -603,7 +595,6 @@ struct SettingsView: View {
                             ModelSettingsView(
                                 mlxModelManager: mlxModelManager,
                                 customLLMManager: customLLMManager,
-                                ggufTranslationModelManager: ggufTranslationModelManager,
                                 mainWindowState: mainWindowState,
                                 missingConfigurationIssues: missingModelConfigurationIssues,
                                 navigationRequest: navigationRequest,

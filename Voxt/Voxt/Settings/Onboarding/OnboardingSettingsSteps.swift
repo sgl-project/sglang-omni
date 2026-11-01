@@ -261,9 +261,11 @@ extension OnboardingSettingsView {
                                 rewriteCustomLLMRepo = newValue
                             }
                         ),
-                        options: CustomLLMModelManager.displayModels(including: customLLMRepo).map { model in
-                            SettingsMenuOption(value: model.id, title: model.title)
-                        },
+                        options: CustomLLMModelManager.displayModels(including: customLLMRepo)
+                            .filter { !CustomLLMModelCatalog.isTranslationOnlyModel($0.id) }
+                            .map { model in
+                                SettingsMenuOption(value: model.id, title: model.title)
+                            },
                         selectedTitle: customLLMManager.displayTitle(for: customLLMRepo),
                         width: 280
                     )

@@ -1,12 +1,11 @@
 // HyMT2TranslationBenchmarkTests.swift
-// Measures Hy-MT2 translation through the app's local translation managers.
+// Measures Hy-MT2 translation through CustomLLMModelManager, the app's MLX path.
 //
 // Opt-in: runs only with VOXT_RUN_MODEL_TESTS=1 and VOXT_BENCH_OUT set. Run one
-// backend per process so load time and peak memory are not shared between arms.
+// model per process so load time and peak memory are not shared between runs.
 //
-//   VOXT_MODEL_STORAGE_ROOT   model storage root holding gguf-translation/ or mlx-llm/
-//   VOXT_BENCH_BACKEND        gguf or mlx
-//   VOXT_BENCH_MODEL          GGUF model ID or MLX repo
+//   VOXT_MODEL_STORAGE_ROOT   model storage root holding mlx-llm/
+//   VOXT_BENCH_MODEL          MLX repo, e.g. mlx-community/Hy-MT2-1.8B-4bit
 //   VOXT_BENCH_INPUT          JSONL of {id, target, source}
 //   VOXT_BENCH_OUT            output directory
 //   VOXT_BENCH_RUN            run label, e.g. mlx-4bit-r1
@@ -43,7 +42,6 @@ final class HyMT2TranslationBenchmarkTests: XCTestCase {
 
     private struct Summary: Encodable {
         let run: String
-        let backend: String
         let model: String
         let items: Int
         let coldFirstRequestMs: Double
@@ -81,12 +79,11 @@ final class HyMT2TranslationBenchmarkTests: XCTestCase {
             let trimmed = environment[key]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             return trimmed.isEmpty ? nil : trimmed
         }
-        guard let backend = value("VOXT_BENCH_BACKEND"),
-              let model = value("VOXT_BENCH_MODEL"),
+        guard let model = value("VOXT_BENCH_MODEL"),
               let input = value("VOXT_BENCH_INPUT"),
               let output = value("VOXT_BENCH_OUT"),
               let run = value("VOXT_BENCH_RUN") else {
-            throw XCTSkip("Set VOXT_BENCH_BACKEND, VOXT_BENCH_MODEL, VOXT_BENCH_INPUT, VOXT_BENCH_OUT and VOXT_BENCH_RUN.")
+            throw XCTSkip("Set VOXT_BENCH_MODEL, VOXT_BENCH_INPUT, VOXT_BENCH_OUT and VOXT_BENCH_RUN.")
         }
         ModelTestGate.configureStorageRoot(for: self)
 
@@ -96,7 +93,7 @@ final class HyMT2TranslationBenchmarkTests: XCTestCase {
             .map { try decoder.decode(Item.self, from: Data($0.utf8)) }
         XCTAssertFalse(items.isEmpty)
 
-        let translate = try await translator(backend: backend, model: model)
+        let translate = try await translator(model: model)
         let baseline = Self.memory()
 
         // The second warm-up isolates model load from the first request.
@@ -111,7 +108,6 @@ final class HyMT2TranslationBenchmarkTests: XCTestCase {
 
         let summary = Summary(
             run: run,
-            backend: backend,
             model: model,
             items: results.count,
             coldFirstRequestMs: cold.totalMs,
@@ -120,7 +116,7 @@ final class HyMT2TranslationBenchmarkTests: XCTestCase {
             peakFootprintBytes: Self.memory().peakFootprint,
             baselineResidentBytes: baseline.resident,
             peakResidentBytes: Self.memory().peakResident,
-            mlxPeakBytes: backend == "mlx" ? Memory.peakMemory : 0
+            mlxPeakBytes: Memory.peakMemory
         )
 
         let outputURL = URL(fileURLWithPath: output, isDirectory: true)
@@ -138,42 +134,24 @@ final class HyMT2TranslationBenchmarkTests: XCTestCase {
 
     private typealias Translate = (LLMCompiledRequest, @escaping @Sendable (String) -> Void) async throws -> (output: String, mlx: MLXTimings?)
 
-    private func translator(backend: String, model: String) async throws -> Translate {
-        switch backend {
-        case "gguf":
-            guard let id = GGUFTranslationModelID(rawValue: model) else {
-                throw XCTSkip("Unknown GGUF model ID: \(model)")
-            }
-            let manager = GGUFTranslationModelManager(modelID: id)
-            guard try await manager.refreshInstallation(id: id).isInstalled else {
-                throw XCTSkip("GGUF model is not installed: \(model)")
-            }
-            addTeardownBlock { await manager.shutdownForApplicationTermination() }
-            return { request, onPartial in
-                (try await manager.executeCompiledRequest(request, modelID: id, onPartialText: onPartial), nil)
-            }
-        case "mlx":
-            let manager = CustomLLMModelManager(modelRepo: model)
-            guard try await manager.refreshInstallation(repo: model).isInstalled else {
-                throw XCTSkip("MLX model is not installed: \(model)")
-            }
-            addTeardownBlock { await manager.shutdownForApplicationTermination() }
-            return { request, onPartial in
-                let output = try await manager.executeCompiledRequest(request, repo: model, onPartialText: onPartial)
-                let diagnostics = manager.lastRunDiagnostics
-                return (output, diagnostics.map {
-                    MLXTimings(
-                        setupMs: $0.setupMs,
-                        promptTokens: $0.promptTokens,
-                        completionTokens: $0.completionTokens,
-                        prefillMs: $0.prefillMs,
-                        generationMs: $0.generationMs,
-                        modelOverheadMs: $0.modelOverheadMs
-                    )
-                })
-            }
-        default:
-            throw XCTSkip("Unknown backend: \(backend)")
+    private func translator(model: String) async throws -> Translate {
+        let manager = CustomLLMModelManager(modelRepo: model)
+        guard try await manager.refreshInstallation(repo: model).isInstalled else {
+            throw XCTSkip("MLX model is not installed: \(model)")
+        }
+        addTeardownBlock { await manager.shutdownForApplicationTermination() }
+        return { request, onPartial in
+            let output = try await manager.executeCompiledRequest(request, repo: model, onPartialText: onPartial)
+            return (output, manager.lastRunDiagnostics.map {
+                MLXTimings(
+                    setupMs: $0.setupMs,
+                    promptTokens: $0.promptTokens,
+                    completionTokens: $0.completionTokens,
+                    prefillMs: $0.prefillMs,
+                    generationMs: $0.generationMs,
+                    modelOverheadMs: $0.modelOverheadMs
+                )
+            })
         }
     }
 
@@ -243,8 +221,8 @@ final class HyMT2TranslationBenchmarkTests: XCTestCase {
         return LLMExecutionPlanCompiler.compile(plan)
     }
 
-    // llama.cpp maps GGUF weights from disk; clean file-backed pages count toward
-    // resident size but not toward the physical footprint.
+    // Report both: MLX's Metal buffers count toward the physical footprint, while
+    // runtimes that map weights from disk show them mainly as resident size.
     private static func memory() -> (footprint: UInt64, peakFootprint: UInt64, resident: UInt64, peakResident: UInt64) {
         var info = task_vm_info_data_t()
         var count = mach_msg_type_number_t(

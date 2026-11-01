@@ -50,7 +50,7 @@ enum ModelCatalogBadgeSupport {
         if descriptor.engine == localized("Local LLM") && descriptor.title == "Qwen" {
             return localized("Recommended")
         }
-        if descriptor.engine == localized("Local GGUF") && descriptor.title == "Hy-MT2" {
+        if descriptor.engine == localized("Local LLM") && descriptor.title == "Hy-MT2" {
             return localized("Recommended")
         }
         return nil
@@ -332,9 +332,6 @@ enum LocalModelSeriesClassifier {
             if let family = prefixedFamily(title: title, prefix: "LFM2 ", family: "LFM2") {
                 return family
             }
-        }
-
-        if engine == localized("Local GGUF") {
             if let family = prefixedFamily(title: title, prefix: "Hy-MT2 ", family: "Hy-MT2") {
                 return family
             }

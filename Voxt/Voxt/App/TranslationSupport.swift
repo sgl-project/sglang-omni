@@ -136,8 +136,6 @@ extension AppDelegate {
         switch modelProvider {
         case .customLLM:
             providerOverride = .customLLM(repo: translationCustomLLMRepo)
-        case .localGGUF:
-            providerOverride = .localGGUF(modelID: translationGGUFModelID)
         case .remoteLLM:
             let context = resolvedRemoteLLMContext(forTranslation: true)
             providerOverride = .remote(provider: context.provider, configuration: context.configuration)
@@ -177,16 +175,6 @@ extension AppDelegate {
             }
             if !strict {
                 VoxtLog.translation("Translation provider selected: customLLM")
-            }
-        } else if modelProvider == .localGGUF {
-            guard ggufTranslationModelManager.canAttemptInference(id: translationGGUFModelID) else {
-                if !strict {
-                    VoxtLog.translationWarning("Translation provider localGGUF unavailable: model not downloaded. modelID=\(translationGGUFModelID.rawValue)")
-                }
-                throw TextTransformFailure.translationModelNotInstalled
-            }
-            if !strict {
-                VoxtLog.translation("Translation provider selected: localGGUF(\(translationGGUFModelID.rawValue))")
             }
         } else if modelProvider == .remoteLLM {
             let context = resolvedRemoteLLMContext(forTranslation: true)
@@ -693,8 +681,6 @@ extension AppDelegate {
         switch provider {
         case .customLLM:
             return translationCustomLLMRepo
-        case .localGGUF:
-            return translationGGUFModelID.rawValue
         case .remoteLLM:
             let context = resolvedRemoteLLMContext(forTranslation: true)
             return "\(context.provider.rawValue):\(context.configuration.model)"

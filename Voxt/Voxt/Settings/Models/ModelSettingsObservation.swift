@@ -25,24 +25,10 @@ extension ModelSettingsView {
         .map { _ in () }
         .eraseToAnyPublisher()
 
-        let gguf = Publishers.CombineLatest(
-            ggufTranslationModelManager.$activeDownloadModelID
-                .map { $0?.rawValue }
-                .removeDuplicates(),
-            ggufTranslationModelManager.$stateByID
-                .map(ModelSettingsManagerRefreshSupport.phase(for:))
-                .removeDuplicates()
-        )
-        .map { _, _ in () }
-        .eraseToAnyPublisher()
-
-        return Publishers.Merge(
-            Publishers.Merge(mlx, customLLM),
-            gguf
-        )
-        .dropFirst()
-        .debounce(for: .milliseconds(100), scheduler: RunLoop.main)
-        .eraseToAnyPublisher()
+        return Publishers.Merge(mlx, customLLM)
+            .dropFirst()
+            .debounce(for: .milliseconds(100), scheduler: RunLoop.main)
+            .eraseToAnyPublisher()
     }
 
     private var downloadMetadataRefreshPublisher: AnyPublisher<Void, Never> {
@@ -73,23 +59,12 @@ extension ModelSettingsView {
         )
         .eraseToAnyPublisher()
 
-        let ggufPauseMessage = ggufTranslationModelManager.$pausedStatusMessageByID
-            .removeDuplicates()
-            .map { _ in () }
-            .eraseToAnyPublisher()
-
         // Download progress is refreshed by the two-second state timer. Rebuilding
         // the whole catalog for every progress sample causes layout churn.
-        return Publishers.Merge(
-            Publishers.Merge(
-                Publishers.Merge(mlx, mlxPauseMessage),
-                customLLM
-            ),
-            Publishers.Merge(customLLMPauseMessage, ggufPauseMessage)
-        )
-        .dropFirst()
-        .debounce(for: .milliseconds(150), scheduler: RunLoop.main)
-        .eraseToAnyPublisher()
+        return Publishers.Merge4(mlx, mlxPauseMessage, customLLM, customLLMPauseMessage)
+            .dropFirst()
+            .debounce(for: .milliseconds(150), scheduler: RunLoop.main)
+            .eraseToAnyPublisher()
     }
 
     private var appearanceObservedContent: some View {
@@ -274,9 +249,7 @@ extension ModelSettingsView {
             mlxActiveDownloadRepos: mlxModelManager.activeDownloadRepos,
             customLLMState: customLLMManager.state,
             customLLMStateByRepo: customLLMManager.stateByRepo,
-            customLLMActiveDownloadRepos: customLLMManager.activeDownloadRepos,
-            ggufStateByID: ggufTranslationModelManager.stateByID,
-            ggufActiveDownloadModelID: ggufTranslationModelManager.activeDownloadModelID
+            customLLMActiveDownloadRepos: customLLMManager.activeDownloadRepos
         )
         guard lastHandledDownloadLifecycleToken != token else {
             return

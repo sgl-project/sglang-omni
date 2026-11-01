@@ -32,10 +32,6 @@ struct FeatureModelSelectionID: RawRepresentable, Codable, Hashable, Sendable, I
         Self(rawValue: "local-llm:\(CustomLLMModelCatalog.canonicalModelRepo(repo))")
     }
 
-    static func localGGUFTranslation(_ modelID: GGUFTranslationModelID) -> Self {
-        Self(rawValue: "local-gguf-translation:\(modelID.rawValue)")
-    }
-
     static func remoteLLM(_ provider: RemoteLLMProvider) -> Self {
         Self(rawValue: "remote-llm:\(provider.rawValue)")
     }
@@ -54,7 +50,6 @@ struct FeatureModelSelectionID: RawRepresentable, Codable, Hashable, Sendable, I
 
     enum TranslationSelection: Hashable, Sendable {
         case localLLM(repo: String)
-        case localGGUF(modelID: GGUFTranslationModelID)
         case remoteLLM(provider: RemoteLLMProvider)
     }
 
@@ -100,10 +95,8 @@ struct FeatureModelSelectionID: RawRepresentable, Codable, Hashable, Sendable, I
         if let repo = payload(after: "local-llm:") {
             return .localLLM(repo: repo)
         }
-        if let value = payload(after: "local-gguf-translation:") {
-            // Resolve removed/unknown GGUF variants to the supported default instead of
-            // leaving a persisted selection unusable.
-            return .localGGUF(modelID: GGUFTranslationModelCatalog.resolvedModelID(value))
+        if let modelID = payload(after: LegacyGGUFTranslationMigration.selectionPrefix) {
+            return .localLLM(repo: LegacyGGUFTranslationMigration.repo(forLegacyModelID: modelID))
         }
         if let value = payload(after: "remote-llm:"),
            let provider = RemoteLLMProvider(rawValue: value) {
