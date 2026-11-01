@@ -132,8 +132,11 @@ class MiniCPMOCode2Wav(nn.Module):
             pass
         with self.device_context:
             device_module = torch.get_device_module(self.token2wav.device)
+            # note (siju-samuel): torch 2.14.0+xpu segfaults convolutions on a high-priority stream.
             self.decode_stream: torch.Stream = device_module.Stream(
-                priority=decode_stream_priority,
+                priority=(
+                    decode_stream_priority if resolved_device.type == "cuda" else 0
+                ),
             )
             # note (zhaochenyang20): weights are published on the load stream.
             self.decode_stream.wait_stream(device_module.current_stream())
