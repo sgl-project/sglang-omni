@@ -54,6 +54,7 @@ def test_flow_graph_fit_uses_nearest_mel_bucket() -> None:
         decoder.rand_noise,
         estimator=decoder.estimator,
         inference_cfg_rate=decoder.inference_cfg_rate,
+        time_span=torch.zeros(2),
     )
     runner.device = torch.device("cpu")
     runner.graphs = {(1, 64): MagicMock(), (1, 32): MagicMock(), (2, 32): MagicMock()}
@@ -65,6 +66,7 @@ def test_flow_graph_fit_uses_nearest_mel_bucket() -> None:
     assert (
         runner.fit(torch.zeros(1, 4, 31), torch.zeros(2, dtype=torch.float16)) is None
     )
+    assert runner.fit(torch.zeros(1, 4, 31), torch.zeros(3)) is None
 
 
 def test_right_padding_preserves_valid_flow_frames() -> None:
@@ -88,6 +90,7 @@ def test_packed_flow_prepares_state_and_orders_replays() -> None:
         decoder.rand_noise,
         estimator=decoder.estimator,
         inference_cfg_rate=decoder.inference_cfg_rate,
+        time_span=decoder.time_span(10, torch.device("cpu"), torch.float32),
     )
     runner.device = torch.device("cpu")
     inputs = runner.capture_inputs(2, 32, is_packed=True)
@@ -174,6 +177,7 @@ def test_flow_graph_replays_changed_inputs_and_falls_back(
         decoder.rand_noise,
         estimator=decoder.estimator,
         inference_cfg_rate=decoder.inference_cfg_rate,
+        time_span=decoder.time_span(10, torch.device("cuda"), torch.float32),
     )
     runner.capture(((batch_size, 16),))
     assert set(runner.graphs) == {(batch_size, 16)}
