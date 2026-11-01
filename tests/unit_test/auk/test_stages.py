@@ -6,10 +6,15 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 import torch
+from transformers import Qwen2_5OmniTextConfig
+from transformers.models.qwen2_5_omni.modeling_qwen2_5_omni import (
+    Qwen2_5OmniThinkerTextModel,
+)
 
 from sglang_omni.models.auk import constants as C
 from sglang_omni.models.auk.hf_config import AuKRuntimeConfig
 from sglang_omni.models.auk.payload_types import AuKState
+from sglang_omni.models.auk.reference_encode import AuKConditionEncoder, build_messages
 from sglang_omni.models.auk.stages import (
     condition_batch,
     create_auk_engine_executor,
@@ -17,9 +22,396 @@ from sglang_omni.models.auk.stages import (
     sample_batch,
     warmup_flow,
 )
-from sglang_omni.models.auk.vae import BigVGANFlowVAE
+from sglang_omni.models.auk.vae import (
+    AuKVAEConfig,
+    BigVGANFlowVAE,
+    LowPassFilter1d,
+    UpSample1d,
+)
+from sglang_omni.models.auk.vae_decode import AuKVaeDecoder
 from sglang_omni.pipeline.control_plane import deserialize_message, serialize_message
 from sglang_omni.proto import CompleteMessage, OmniRequest, StagePayload
+
+
+def reference_upsample(layer: UpSample1d, samples: torch.Tensor) -> torch.Tensor:
+    padded_samples = torch.nn.functional.pad(
+        samples, (layer.pad, layer.pad), mode="replicate"
+    )
+    output_samples = layer.ratio * torch.nn.functional.conv_transpose1d(
+        padded_samples,
+        layer.filter.expand(samples.shape[1], -1, -1),
+        stride=layer.stride,
+        groups=samples.shape[1],
+    )
+    if layer.causal:
+        return output_samples[..., : -(layer.kernel_size - layer.stride)]
+    else:
+        return output_samples[..., layer.pad_left : -layer.pad_right]
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="Upsampling kernel requires CUDA"
+)
+@pytest.mark.parametrize(
+    "shape",
+    [(1, 3, 1), (2, 7, 17), (1, 3, 127), (1, 3, 129), (1, 768, 750), (1, 24, 288000)],
+)
+@torch.inference_mode()
+def test_vae_upsampling_preserves_boundaries_strides_and_graph_replay(
+    shape: tuple[int, int, int],
+) -> None:
+    if torch.cuda.get_device_capability()[0] != 10:
+        pytest.skip("FP32 upsampling fast path is enabled on SM100 family")
+    else:
+        pass
+    torch.manual_seed(21)
+    layer = UpSample1d().cuda().eval()
+    batch_count, channel_count, sample_count = shape
+    samples = torch.randn(batch_count, channel_count, sample_count * 2, device="cuda")[
+        ..., ::2
+    ]
+    for _ in range(3):
+        layer(samples)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        actual = layer(samples)
+    for _ in range(3):
+        samples.normal_()
+        expected = reference_upsample(layer, samples)
+        graph.replay()
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("device_name", ["cpu", "cuda"])
+@pytest.mark.parametrize(
+    "ratio,kernel_size,causal,dtype",
+    [
+        (3, 18, False, torch.float32),
+        (2, 10, False, torch.float32),
+        (2, 12, True, torch.float32),
+        (2, 12, False, torch.float64),
+        (2, 12, False, torch.float16),
+        (2, 12, False, torch.bfloat16),
+    ],
+)
+@torch.inference_mode()
+def test_vae_upsampling_retains_other_parameter_and_dtype_paths(
+    device_name: str, ratio: int, kernel_size: int, causal: bool, dtype: torch.dtype
+) -> None:
+    if device_name == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    else:
+        pass
+    layer = (
+        UpSample1d(ratio, kernel_size, causal)
+        .to(device=device_name, dtype=dtype)
+        .eval()
+    )
+    samples = torch.randn(2, 3, 17, device=device_name, dtype=dtype)
+    torch.testing.assert_close(
+        layer(samples), reference_upsample(layer, samples), rtol=0, atol=0
+    )
+
+
+@pytest.mark.parametrize("device_name", ["cpu", "cuda"])
+@pytest.mark.parametrize("training", [False, True])
+def test_vae_upsampling_retains_input_and_filter_gradients(
+    device_name: str, training: bool
+) -> None:
+    if device_name == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    else:
+        pass
+    layer = UpSample1d().to(device_name).train(training)
+    layer.filter.requires_grad_(True)
+    samples = torch.randn(2, 3, 17, device=device_name, requires_grad=True)
+    actual = layer(samples)
+    expected = reference_upsample(layer, samples)
+    actual_gradients = torch.autograd.grad(actual.sum(), (samples, layer.filter))
+    expected_gradients = torch.autograd.grad(expected.sum(), (samples, layer.filter))
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    for actual_gradient, expected_gradient in zip(actual_gradients, expected_gradients):
+        torch.testing.assert_close(actual_gradient, expected_gradient, rtol=0, atol=0)
+
+
+def reference_downsample(layer: LowPassFilter1d, samples: torch.Tensor) -> torch.Tensor:
+    if layer.padding:
+        samples = torch.nn.functional.pad(
+            samples, (layer.pad_left, layer.pad_right), mode=layer.padding_mode
+        )
+    else:
+        pass
+    return torch.nn.functional.conv1d(
+        samples,
+        layer.filter.expand(samples.shape[1], -1, -1),
+        stride=layer.stride,
+        groups=samples.shape[1],
+    )
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="Downsampling kernel requires CUDA"
+)
+@pytest.mark.parametrize(
+    "shape",
+    [(1, 3, 1), (2, 7, 17), (1, 3, 255), (1, 3, 257), (1, 768, 1500), (1, 24, 576000)],
+)
+@torch.inference_mode()
+def test_vae_downsampling_preserves_boundaries_strides_and_graph_replay(
+    shape: tuple[int, int, int],
+) -> None:
+    if torch.cuda.get_device_capability()[0] != 10:
+        pytest.skip("FP32 downsampling fast path is enabled on SM100 family")
+    else:
+        pass
+    torch.manual_seed(21)
+    layer = LowPassFilter1d(0.25, 0.3, stride=2, causal=True).cuda().eval()
+    batch_count, channel_count, sample_count = shape
+    samples = torch.randn(batch_count, channel_count, sample_count * 2, device="cuda")[
+        ..., ::2
+    ]
+    for _ in range(3):
+        layer(samples)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        actual = layer(samples)
+    for _ in range(3):
+        samples.normal_()
+        expected = reference_downsample(layer, samples)
+        graph.replay()
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("device_name", ["cpu", "cuda"])
+@pytest.mark.parametrize(
+    "stride,kernel_size,causal,padding,padding_mode,dtype",
+    [
+        (3, 18, True, True, "replicate", torch.float32),
+        (2, 10, True, True, "replicate", torch.float32),
+        (2, 12, False, True, "replicate", torch.float32),
+        (2, 12, True, False, "replicate", torch.float32),
+        (2, 12, True, True, "constant", torch.float32),
+        (2, 12, True, True, "replicate", torch.float64),
+        (2, 12, True, True, "replicate", torch.float16),
+        (2, 12, True, True, "replicate", torch.bfloat16),
+    ],
+)
+@torch.inference_mode()
+def test_vae_downsampling_retains_other_parameter_and_dtype_paths(
+    device_name: str,
+    stride: int,
+    kernel_size: int,
+    causal: bool,
+    padding: bool,
+    padding_mode: str,
+    dtype: torch.dtype,
+) -> None:
+    if device_name == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    else:
+        pass
+    layer = (
+        LowPassFilter1d(0.25, 0.3, stride, padding, padding_mode, kernel_size, causal)
+        .to(device=device_name, dtype=dtype)
+        .eval()
+    )
+    samples = torch.randn(2, 3, 33, device=device_name, dtype=dtype)
+    torch.testing.assert_close(
+        layer(samples), reference_downsample(layer, samples), rtol=0, atol=0
+    )
+
+
+@pytest.mark.parametrize("device_name", ["cpu", "cuda"])
+@pytest.mark.parametrize("training", [False, True])
+def test_vae_downsampling_retains_input_and_filter_gradients(
+    device_name: str, training: bool
+) -> None:
+    if device_name == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    else:
+        pass
+    layer = (
+        LowPassFilter1d(0.25, 0.3, stride=2, causal=True)
+        .to(device_name)
+        .train(training)
+    )
+    layer.filter.requires_grad_(True)
+    samples = torch.randn(2, 3, 17, device=device_name, requires_grad=True)
+    actual = layer(samples)
+    expected = reference_downsample(layer, samples)
+    actual_gradients = torch.autograd.grad(actual.sum(), (samples, layer.filter))
+    expected_gradients = torch.autograd.grad(expected.sum(), (samples, layer.filter))
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    for actual_gradient, expected_gradient in zip(actual_gradients, expected_gradients):
+        torch.testing.assert_close(actual_gradient, expected_gradient, rtol=0, atol=0)
+
+
+def tiny_vae(device: torch.device) -> BigVGANFlowVAE:
+    configuration = AuKVAEConfig(
+        upsample_rates=[2, 2],
+        upsample_kernel_sizes=[4, 4],
+        upsample_initial_channel=32,
+        resblock_kernel_sizes=[3],
+        resblock_dilation_sizes=[[1, 3, 5]],
+        downsample_rates=[2, 2],
+        downsample_channels=[2, 4, 8],
+        latent_dim=4,
+        flow_hidden_channels=8,
+    )
+    return BigVGANFlowVAE(configuration).to(device).eval().requires_grad_(False)
+
+
+@pytest.mark.parametrize("shape", [[0, 16], [1, -1], [16]])
+def test_vae_graph_refuses_invalid_shapes(shape: list[int]) -> None:
+    device = torch.device("cpu")
+    with pytest.raises(ValueError, match="positive batch and frame counts"):
+        AuKVaeDecoder(
+            tiny_vae(device), device, capture_shapes=[shape], compile_forward=False
+        )
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graph requires CUDA")
+@pytest.mark.parametrize("compile_forward", [False, True])
+@torch.inference_mode()
+def test_vae_decode_replays_changed_latents_without_padding(
+    compile_forward: bool,
+) -> None:
+    torch.manual_seed(21)
+    device = torch.device("cuda", torch.cuda.current_device())
+    vae = tiny_vae(device)
+    latents = torch.randn(1, 16, 4, device=device)
+    expected_before_removal = vae.inference_from_latents(
+        vae.denormalize(latents).permute(0, 2, 1)
+    )
+    vae.remove_weight_norm()
+    torch.testing.assert_close(
+        vae.inference_from_latents(vae.denormalize(latents).permute(0, 2, 1)),
+        expected_before_removal,
+        rtol=0,
+        atol=0,
+    )
+    decoder = AuKVaeDecoder(
+        vae,
+        device,
+        capture_shapes=[[1, 16], [2, 16], [1, 17]],
+        compile_forward=compile_forward,
+    )
+    for batch_size, frames in [(1, 16), (1, 17), (1, 16), (1, 18), (2, 16), (3, 16)]:
+        latents = torch.randn(batch_size, frames, 4, device=device)
+        expected = vae.inference_from_latents(vae.denormalize(latents).permute(0, 2, 1))
+        actual = decoder.decode(latents)
+        assert actual.shape == (batch_size, 1, frames * 4)
+        if compile_forward and (batch_size, frames) in [(1, 16), (2, 16), (1, 17)]:
+            torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-5)
+        else:
+            torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("token_lengths", [[0], [-1, 32]])
+def test_conditioning_graph_refuses_nonpositive_lengths(
+    token_lengths: list[int],
+) -> None:
+    encoder = AuKConditionEncoder.__new__(AuKConditionEncoder)
+    with pytest.raises(ValueError, match="must be positive"):
+        encoder.capture_text_graphs(token_lengths, compute_dtype=torch.bfloat16)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graph requires CUDA")
+@pytest.mark.parametrize("weight_dtype", [torch.bfloat16, torch.float32])
+@torch.inference_mode()
+def test_conditioning_graph_preserves_changed_requests_and_fallbacks(
+    weight_dtype: torch.dtype,
+) -> None:
+    torch.manual_seed(21)
+    configuration = Qwen2_5OmniTextConfig(
+        vocab_size=128,
+        hidden_size=128,
+        intermediate_size=256,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        rope_parameters={
+            "rope_type": "default",
+            "rope_theta": 1000000.0,
+            "mrope_section": [4, 6, 6],
+        },
+    )
+    encoder = AuKConditionEncoder.__new__(AuKConditionEncoder)
+    encoder.device = torch.device("cuda", torch.cuda.current_device())
+    encoder.model = (
+        Qwen2_5OmniThinkerTextModel(configuration)
+        .to(device=encoder.device, dtype=weight_dtype)
+        .eval()
+        .requires_grad_(False)
+    )
+    encoder.processor = Mock()
+    encoder.processor.apply_chat_template.return_value = ["unused"]
+    encoder.text_graphs = {}
+    encoder.capture_text_graphs([31, 32], compute_dtype=torch.bfloat16)
+    previous_hidden = previous_snapshot = None
+    for batch_size, token_length in [(1, 31), (1, 32), (1, 31), (1, 33), (2, 32)]:
+        token_ids = torch.randint(
+            1,
+            configuration.vocab_size,
+            (batch_size, token_length),
+            device=encoder.device,
+        )
+        attention_mask = torch.ones_like(token_ids)
+        if batch_size > 1:
+            attention_mask[-1, -3:] = 0
+        else:
+            pass
+        encoder.processor.return_value = {
+            "input_ids": token_ids,
+            "attention_mask": attention_mask,
+        }
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            expected = torch.stack(
+                encoder.model(
+                    input_ids=token_ids,
+                    attention_mask=attention_mask,
+                    output_hidden_states=True,
+                    use_cache=False,
+                ).hidden_states,
+                dim=1,
+            )
+            actual = encoder.encode_batch(
+                [build_messages("Read this text.", False)] * batch_size,
+                [None] * batch_size,
+            )
+        for index, (hidden, mask) in enumerate(actual):
+            valid_tokens = attention_mask[index].bool()
+            torch.testing.assert_close(
+                hidden, expected[index, :, valid_tokens], rtol=0, atol=0
+            )
+            assert mask.all()
+        if previous_hidden is not None:
+            torch.testing.assert_close(
+                previous_hidden, previous_snapshot, rtol=0, atol=0
+            )
+        else:
+            pass
+        previous_hidden = actual[0][0]
+        previous_snapshot = previous_hidden.clone()
+    with torch.autocast("cuda", enabled=False):
+        expected = torch.stack(
+            encoder.model(
+                input_ids=token_ids,
+                attention_mask=attention_mask,
+                output_hidden_states=True,
+                use_cache=False,
+            ).hidden_states,
+            dim=1,
+        )
+        actual = encoder.encode_batch(
+            [build_messages("Read this text.", False)] * batch_size,
+            [None] * batch_size,
+        )
+    torch.testing.assert_close(actual[0][0], expected[0], rtol=0, atol=0)
 
 
 def test_batched_generation_preserves_request_boundaries_and_serializes_audio():
