@@ -321,6 +321,7 @@ def create_app(
     app.state.supports_audio_translation = supports_audio_translation
     app.state.audio_chunking = audio_chunking or ResolvedAudioChunking.disabled()
     app.state.interleaved_output = interleaved_output
+    app.state.supports_image_api = supports_image_api
     app.state.long_audio_admission = LongAudioAdmission(
         app.state.audio_chunking.max_concurrent_long_audio_requests
     )
@@ -1041,6 +1042,19 @@ def register_chat_completions(app: FastAPI) -> None:
         created = int(time.time())
         model = req.model or default_model
 
+        if "image" in (req.modalities or []) and not app.state.interleaved_output:
+            # Only interleaved pipelines return images from chat.
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "This pipeline's chat returns no images. Use "
+                    "POST /v1/images/generations or /v1/images/edits for image output"
+                    if app.state.supports_image_api
+                    else "This pipeline's chat returns no images"
+                ),
+            )
+        else:
+            pass
         gen_req = build_chat_generate_request(req)
 
         # Determine audio format from request
