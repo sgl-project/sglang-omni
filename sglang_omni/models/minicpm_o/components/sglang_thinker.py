@@ -95,7 +95,11 @@ class MiniCPMOThinkerForCausalLM(nn.Module):
         self.keep_hidden_rows_for_talker()
 
     def keep_hidden_rows_for_talker(self) -> None:
-        if not self.capture_hidden_for_talker:
+        # A draft setting its capture layers twice must not add a second hook.
+        if (
+            not self.capture_hidden_for_talker
+            or self.speculative_hidden_rows is not None
+        ):
             return
         else:
             pass

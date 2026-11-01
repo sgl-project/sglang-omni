@@ -429,6 +429,9 @@ def test_speech_capture_copies_the_prefill_ceiling_and_text_capture_stays_empty(
     hidden = torch.arange(prefill_rows * 2, dtype=torch.float32).reshape(-1, 2)
 
     model.keep_hidden_rows_for_talker()
+    buffer = model.speculative_hidden_rows
+    model.keep_hidden_rows_for_talker()
+    assert model.speculative_hidden_rows is buffer, "buffers and hook are set once"
     if capture_speech:
         model.keep_speculative_hidden_rows(
             model.language_model.model,
