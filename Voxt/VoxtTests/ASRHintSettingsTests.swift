@@ -163,7 +163,7 @@ final class ASRHintSettingsTests: XCTestCase {
         XCTAssertEqual(payload.language, "Traditional Chinese")
     }
 
-    func testResolveMLXKeepsQwenPrimaryLanguageWhenSecondaryLanguagesAreConfigured() {
+    func testResolveMLXUsesQwenAutomaticLanguageWhenSecondaryLanguagesAreConfigured() {
         let payload = ASRHintResolver.resolve(
             target: .mlxAudio,
             settings: ASRHintSettings(),
@@ -171,8 +171,34 @@ final class ASRHintSettingsTests: XCTestCase {
             mlxModelRepo: "mlx-community/Qwen3-ASR-0.6B-4bit"
         )
 
-        XCTAssertEqual(payload.language, "Simplified Chinese")
+        XCTAssertNil(payload.language)
         XCTAssertEqual(payload.otherLanguages, ["English"])
+    }
+
+    /// A forced English prompt makes Qwen3-ASR translate some Chinese speech (#3398).
+    func testResolveMLXDoesNotForceEnglishOnQwenForEnglishAndChineseUsers() {
+        for repo in ["mlx-community/Qwen3-ASR-0.6B-4bit", "mlx-community/Qwen3-ASR-1.7B-8bit"] {
+            let payload = ASRHintResolver.resolve(
+                target: .mlxAudio,
+                settings: ASRHintSettingsStore.resolvedSettings(for: .mlxAudio, rawValue: nil),
+                userLanguageCodes: ["en", "zh-Hans"],
+                mlxModelRepo: repo
+            )
+            let request = OmniASRRuntime.qwenFinalRequest(
+                samples: [0, 0.1],
+                sampleRate: 16000,
+                language: payload.language,
+                context: nil,
+                maxNewTokens: 64
+            )
+            let body = String(
+                decoding: OmniMultipartBody.transcription(request, modelName: "m", boundary: "b"),
+                as: UTF8.self
+            )
+
+            XCTAssertNil(payload.language, repo)
+            XCTAssertFalse(body.contains("name=\"language\""), repo)
+        }
     }
 
     func testResolveMLXAllowsQwenAutomaticLanguageWhenFollowingMainLanguageIsDisabled() {
