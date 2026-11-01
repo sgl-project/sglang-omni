@@ -24,6 +24,9 @@ namespace {
 constexpr const char *kQwen2SplitPattern =
     R"((?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N})"
     R"(| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+)";
+// GPT-2's byte-level split, which GPT-2 vocabularies such as Chatterbox's keep.
+constexpr const char *kGpt2SplitPattern =
+    R"('s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+)";
 
 std::string ReadFile(const std::filesystem::path &path) {
   std::ifstream stream(path, std::ios::binary);
@@ -197,7 +200,8 @@ struct Tokenizer::Pcre2Regex {
   }
 };
 
-Tokenizer::Tokenizer(const std::filesystem::path &model_directory)
+Tokenizer::Tokenizer(const std::filesystem::path &model_directory,
+                     SplitPattern split_pattern)
     : split_pattern_(std::make_unique<Pcre2Regex>()) {
   if (!std::filesystem::exists(model_directory / "vocab.json")) {
     LoadJson(
@@ -242,7 +246,10 @@ Tokenizer::Tokenizer(const std::filesystem::path &model_directory)
                                token.at("special").get<bool>()});
     }
   }
-  Initialize(kQwen2SplitPattern);
+  // Note (Jiaxin Deng): GPT-2 vocabularies have no normalizer.
+  normalizes_nfc_ = split_pattern == SplitPattern::kQwen2;
+  Initialize(split_pattern == SplitPattern::kGpt2 ? kGpt2SplitPattern
+                                                  : kQwen2SplitPattern);
 }
 
 Tokenizer Tokenizer::FromJson(const nlohmann::json &tokenizer) {
@@ -383,7 +390,7 @@ void Tokenizer::EncodeOrdinary(const std::string &raw_text,
     return;
   } else {
   }
-  const std::string text = NormalizeNfc(raw_text);
+  const std::string text = normalizes_nfc_ ? NormalizeNfc(raw_text) : raw_text;
   pcre2_match_data *match_data =
       pcre2_match_data_create_from_pattern(split_pattern_->code, nullptr);
   const auto subject = reinterpret_cast<PCRE2_SPTR>(text.data());

@@ -137,6 +137,7 @@ Supported Models
    cookbook/companies/autoark_ai.md
    cookbook/companies/mistral_ai.md
    cookbook/companies/dots_studio.md
+   cookbook/companies/resemble_ai.md
 
 .. toctree::
    :maxdepth: 1
