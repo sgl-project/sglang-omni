@@ -6,6 +6,7 @@ import math
 import os
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterable
+from dataclasses import asdict, dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Literal, Protocol
 
@@ -109,15 +110,33 @@ def with_language(
         return {**payload, "language": language}
 
 
+@dataclass(frozen=True, kw_only=True)
+class SpeakerSegment:
+    """Words of one speaker in an utterance, from start_ms to end_ms."""
+
+    speaker: str
+    start_ms: float
+    end_ms: float
+    text: str
+
+
 def transcript_chunk(
-    text: str, is_final: bool, language: str | None = None
+    text: str,
+    is_final: bool,
+    language: str | None = None,
+    segments: list[SpeakerSegment] | None = None,
 ) -> TimedChunk:
+    payload = with_language({"text": text, "is_final": is_final}, language)
     return TimedChunk(
         TRANSCRIPT,
         0,
         0,
         0,
-        with_language({"text": text, "is_final": is_final}, language),
+        (
+            payload
+            if segments is None
+            else {**payload, "segments": [asdict(segment) for segment in segments]}
+        ),
         format=TRANSCRIPT_FORMAT,
     )
 
