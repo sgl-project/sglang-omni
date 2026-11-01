@@ -572,6 +572,10 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#audio-decoding-fails-with-libtorchcodec-core-so">Audio decoding fails with <code class="docutils literal notranslate"><span class="pre">libtorchcodec_core*.so</span></code></a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#serve">Serve</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#whisper-asr-speech-to-text-intel-xeon-cpu">Whisper ASR (speech-to-text, Intel Xeon CPU)</a></li>
+</ul>
+</li>
 </ul>
             </nav>
         </div>
@@ -682,6 +686,21 @@ of them. Pin an older major if needed. Docker users get a supported major from
 <code class="docutils literal notranslate"><span class="pre">apt</span></code>.</p>
 </section>
 </section>
+<section id="serve">
+<h2>Serve<a class="headerlink" href="#serve" title="Link to this heading">#</a></h2>
+<section id="whisper-asr-speech-to-text-intel-xeon-cpu">
+<h3>Whisper ASR (speech-to-text, Intel Xeon CPU)<a class="headerlink" href="#whisper-asr-speech-to-text-intel-xeon-cpu" title="Link to this heading">#</a></h3>
+<p>Whisper-base and Whisper-large-v3 have been validated on an AMX-capable Intel Xeon CPU. SGLang selects <code class="docutils literal notranslate"><span class="pre">intel_amx</span></code> by default on x86 CPUs and automatically falls back to <code class="docutils literal notranslate"><span class="pre">torch_native</span></code> when AMX is unavailable; graph capture, torch.compile, and async decode are disabled by default on CPU.</p>
+<p>Run inside the CPU environment installed above:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">SGLANG_USE_CPU_ENGINE</span><span class="o">=</span><span class="m">1</span><span class="w"> </span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>openai/whisper-large-v3<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>To explicitly select PyTorch native attention, including on AMX-capable Xeon CPUs, append <code class="docutils literal notranslate"><span class="pre">--asr.engine.attention_backend</span> <span class="pre">torch_native</span></code> to the server command.</p>
+<p>See the <a class="reference internal" href="../cookbook/whisper_asr.html"><span class="std std-doc">Whisper cookbook</span></a> for request parameters, supported response formats, and the SeedTTS WER benchmark.</p>
+</section>
+</section>
 </section>
 
 
@@ -737,6 +756,10 @@ of them. Pin an older major if needed. Docker users get a supported major from
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#option-b-manual-install">Option B: Manual install</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#verify">Verify</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#audio-decoding-fails-with-libtorchcodec-core-so">Audio decoding fails with <code class="docutils literal notranslate"><span class="pre">libtorchcodec_core*.so</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#serve">Serve</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#whisper-asr-speech-to-text-intel-xeon-cpu">Whisper ASR (speech-to-text, Intel Xeon CPU)</a></li>
 </ul>
 </li>
 </ul>
