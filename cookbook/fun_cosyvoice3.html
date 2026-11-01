@@ -565,7 +565,10 @@
             <nav aria-label="Page">
                 <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#apple-silicon">Apple Silicon</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#apple-silicon">Apple Silicon</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#native-mlx-runtime">Native MLX runtime</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#synthesizing-speech">Synthesizing Speech</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#zero-shot-voice-cloning">Zero-shot Voice Cloning</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#cross-lingual-synthesis">Cross-lingual Synthesis</a></li>
@@ -658,7 +661,45 @@ keg-only FFmpeg libraries to TorchCodec:</p>
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
+<section id="native-mlx-runtime">
+<h3>Native MLX runtime<a class="headerlink" href="#native-mlx-runtime" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">cosyvoice3_server</span></code> from the native MLX runtime (<code class="docutils literal notranslate"><span class="pre">sglang_omni_mlx/native</span></code>) serves the same <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code> API on an Apple Silicon Mac from the float16 <a class="reference external" href="https://huggingface.co/mlx-community/Fun-CosyVoice3-0.5B-2512-fp16"><code class="docutils literal notranslate"><span class="pre">mlx-community/Fun-CosyVoice3-0.5B-2512-fp16</span></code></a> checkpoint, as one C++ process without PyTorch, ONNX Runtime or Python. Voice cloning runs the reference-audio front end natively too: the checkpoint’s CAMPPlus speaker encoder, and the S3 speech tokenizer v3 from <a class="reference external" href="https://huggingface.co/mlx-community/S3TokenizerV3"><code class="docutils literal notranslate"><span class="pre">mlx-community/S3TokenizerV3</span></code></a> in the model directory’s <code class="docutils literal notranslate"><span class="pre">speech_tokenizer/</span></code>.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sglang_omni_mlx/native/scripts/build_runtime.sh<span class="w"> </span>~/omni-runtime
+
+hf<span class="w"> </span>download<span class="w"> </span>mlx-community/Fun-CosyVoice3-0.5B-2512-fp16<span class="w"> </span>config.json<span class="w"> </span>model.safetensors<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>tokenizer.json<span class="w"> </span>tokenizer_config.json<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--revision<span class="w"> </span>18ccb7fbd7246e8cd3420d02f5dd28595cc0fcd9<span class="w"> </span>--local-dir<span class="w"> </span>fun-cosyvoice3-mlx-fp16
+hf<span class="w"> </span>download<span class="w"> </span>mlx-community/S3TokenizerV3<span class="w"> </span>config.json<span class="w"> </span>model.safetensors<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--revision<span class="w"> </span>b143914b3e912278104824da706edc9c2d317c4e<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--local-dir<span class="w"> </span>fun-cosyvoice3-mlx-fp16/speech_tokenizer
+
+~/omni-runtime/bin/cosyvoice3_server<span class="w"> </span>--model-path<span class="w"> </span>fun-cosyvoice3-mlx-fp16<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-name<span class="w"> </span>FunAudioLLM/Fun-CosyVoice3-0.5B-2512<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--allowed-local-media-path<span class="w"> </span><span class="s2">"</span><span class="nv">$PWD</span><span class="s2">"</span>
+</pre></div>
+</div>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-s<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{"input": "Hello from Apple Silicon.", "seed": 1}'</span><span class="w"> </span>-o<span class="w"> </span>hello.wav
+
+curl<span class="w"> </span>-s<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s2">"{\"input\": \"Hello from Apple Silicon.\", \"ref_audio\": \"</span><span class="nv">$PWD</span><span class="s2">/reference.wav\",</span>
+<span class="s2">       \"ref_text\": \"What the reference recording says.\", \"seed\": 1}"</span><span class="w"> </span>-o<span class="w"> </span>cloned.wav
+</pre></div>
+</div>
+<p>The native server differs from the CUDA server in that:</p>
+<ul class="simple">
+<li><p>Reference audio is a WAV file of 0.5 to 30 seconds, sent as a base64 data URL (<code class="docutils literal notranslate"><span class="pre">ref_audio</span></code> or <code class="docutils literal notranslate"><span class="pre">references[0].data</span></code>), or as a path or <code class="docutils literal notranslate"><span class="pre">file://</span></code> URL inside <code class="docutils literal notranslate"><span class="pre">--allowed-local-media-path</span></code>; http(s) URLs and other containers return 400. <code class="docutils literal notranslate"><span class="pre">ref_audio</span></code> with <code class="docutils literal notranslate"><span class="pre">ref_text</span></code>, or one <code class="docutils literal notranslate"><span class="pre">references</span></code> item with <code class="docutils literal notranslate"><span class="pre">text</span></code>, clones the voice as on CUDA; without a transcript the reference conditions only the flow (cross-lingual). Giving both <code class="docutils literal notranslate"><span class="pre">ref_audio</span></code> and <code class="docutils literal notranslate"><span class="pre">references</span></code> returns 400. Uploaded voices (<code class="docutils literal notranslate"><span class="pre">/v1/audio/voices</span></code>) are not served.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">voice</span></code> must be <code class="docutils literal notranslate"><span class="pre">default</span></code>; <code class="docutils literal notranslate"><span class="pre">language</span></code> is accepted and unused, as on CUDA.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">response_format</span></code> is <code class="docutils literal notranslate"><span class="pre">wav</span></code> or <code class="docutils literal notranslate"><span class="pre">pcm</span></code>; <code class="docutils literal notranslate"><span class="pre">speed</span></code> must be <code class="docutils literal notranslate"><span class="pre">1.0</span></code>; <code class="docutils literal notranslate"><span class="pre">stream_format</span></code> must be <code class="docutils literal notranslate"><span class="pre">audio</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">stream:</span> <span class="pre">true</span></code> sends the whole utterance’s PCM once it is vocoded, since the flow decodes the utterance at once.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code> is at most <code class="docutils literal notranslate"><span class="pre">2048</span></code> speech tokens (25 per second, about 82 seconds), where CUDA takes any value; without it the limit is 20 per target text token, as on CUDA. Integer fields take integral floats such as <code class="docutils literal notranslate"><span class="pre">5.0</span></code>, as CUDA’s request model does.</p></li>
+<li><p>Sampling defaults match the CUDA server (<code class="docutils literal notranslate"><span class="pre">temperature</span></code> 0.7, <code class="docutils literal notranslate"><span class="pre">top_p</span></code> 0.8, <code class="docutils literal notranslate"><span class="pre">top_k</span></code> 20, <code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code> 1.21, with the repetition-aware redraw); a request without <code class="docutils literal notranslate"><span class="pre">seed</span></code> gets a random one.</p></li>
+<li><p>Started with <code class="docutils literal notranslate"><span class="pre">--model-name</span></code>, it returns 404 for any other <code class="docutils literal notranslate"><span class="pre">model</span></code>; without that flag, <code class="docutils literal notranslate"><span class="pre">model</span></code> is ignored, as on CUDA.</p></li>
+<li><p>Errors are <code class="docutils literal notranslate"><span class="pre">{&quot;detail&quot;:</span> <span class="pre">&quot;...&quot;}</span></code>. Requests run one at a time and <code class="docutils literal notranslate"><span class="pre">--max-queued-requests</span></code> (default 2) more wait; the rest get 503. A request not finished <code class="docutils literal notranslate"><span class="pre">--request-timeout-s</span></code> (default 600) seconds after it arrives is cancelled with 504, or its stream ends early, and so is one whose client disconnects. A request body over 32 MiB returns 413.</p></li>
+</ul>
+<p>Measured on an Apple M5 (24 GB, macOS 26.3.1), warm, over 8 utterances (76 s of audio): 0.2 s load, real-time factor 0.33, about 2.4 GB peak MLX memory (3.2 GB with a reference). With the same speech tokens, the legacy Python MLX implementation from <a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/1964">#1964</a> takes RTF 0.36 on the same MLX build. Transcribed back with Qwen3-ASR-1.7B-8bit, 16 English corpus sentences give 0.62% WER and 16 Chinese ones 0.97% CER. Against the official ONNX front end, the native one gives identical reference speech tokens on 20 of 20 corpus clips (speaker embedding cosine 0.99999, prompt mel within 7e-4), and with the same seed identical cloned speech tokens; cloned output transcribes at 1.03% WER (English) and 5.83% CER (Chinese, mostly digits and Latin names), the same with either front end. Mac CI checks seven seeded requests’ speech tokens (English, Chinese, Chinese with instructions, a <code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code> cap, the default length limit, an English clone and a cross-lingual clone) against <code class="docutils literal notranslate"><span class="pre">sglang_omni_mlx/native/ci/model_golden/fun-cosyvoice3-0.5b-2512.json</span></code>, and on every chip the mel of two of them vocoded from the recorded tokens, within a tolerance.</p>
 <p>For Intel GPUs, follow the <a class="reference internal" href="../get_started/installation_xpu.html#fun-cosyvoice3-text-to-speech-single-xpu"><span class="std std-ref">Fun-CosyVoice3 XPU recipe</span></a>.</p>
+</section>
 </section>
 <section id="synthesizing-speech">
 <h2>Synthesizing Speech<a class="headerlink" href="#synthesizing-speech" title="Link to this heading">#</a></h2>
@@ -1405,7 +1446,10 @@ in sync if you change the hop):</p>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#apple-silicon">Apple Silicon</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#apple-silicon">Apple Silicon</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#native-mlx-runtime">Native MLX runtime</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#synthesizing-speech">Synthesizing Speech</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#zero-shot-voice-cloning">Zero-shot Voice Cloning</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#cross-lingual-synthesis">Cross-lingual Synthesis</a></li>
