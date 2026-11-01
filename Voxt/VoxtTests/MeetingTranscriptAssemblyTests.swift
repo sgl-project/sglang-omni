@@ -470,6 +470,98 @@ final class MeetingTranscriptAssemblyTests: XCTestCase {
         )
     }
 
+    func testMeetingTranscriptSanitizerNormalizesChineseScriptAndMatchesHintsAcrossScripts() {
+        let simplifiedLanguage = UserMainLanguageOption.option(for: "zh-Hans")!
+        let traditionalLanguage = UserMainLanguageOption.option(for: "zh-Hant")!
+        let simplifiedEntries = [
+            DictionaryEntry(
+                term: "语音识别",
+                normalizedTerm: "语音识别",
+                source: .manual,
+                status: .active
+            ),
+            DictionaryEntry(
+                term: "会议转写",
+                normalizedTerm: "会议转写",
+                source: .manual,
+                status: .active
+            )
+        ]
+
+        XCTAssertEqual(
+            MeetingTranscriptSanitizer.sanitizedText(
+                "我們今天討論 Qwen 的會議轉寫效果。",
+                preferredMainLanguage: simplifiedLanguage
+            ),
+            "我们今天讨论 Qwen 的会议转写效果。"
+        )
+        XCTAssertEqual(
+            MeetingTranscriptSanitizer.sanitizedText(
+                "我们今天讨论 Qwen 的会议转写效果。",
+                preferredMainLanguage: traditionalLanguage
+            ),
+            "我們今天討論 Qwen 的會議轉寫效果。"
+        )
+        XCTAssertEqual(
+            MeetingTranscriptSanitizer.sanitizedText(
+                "語音識別，會議轉寫",
+                dictionaryEntries: simplifiedEntries,
+                preferredMainLanguage: simplifiedLanguage
+            ),
+            ""
+        )
+        XCTAssertEqual(
+            MeetingTranscriptSanitizer.sanitizedText(
+                "语音识别，会议转写",
+                dictionaryEntries: simplifiedEntries,
+                preferredMainLanguage: traditionalLanguage
+            ),
+            ""
+        )
+        XCTAssertEqual(
+            MeetingTranscriptSanitizer.sanitizedText(
+                "語音識別，會議轉寫",
+                contextualPhrases: ["語音識別", "會議轉寫"],
+                preferredMainLanguage: simplifiedLanguage
+            ),
+            ""
+        )
+
+        let chinesePrompt = "请准确记录会议中的完整发言内容，保留技术名词和产品名称，并按照用户实际表达输出，不要自行补充任何解释或摘要。"
+        XCTAssertEqual(
+            MeetingTranscriptSanitizer.sanitizedText(
+                chinesePrompt,
+                prompt: chinesePrompt,
+                preferredMainLanguage: traditionalLanguage
+            ),
+            ""
+        )
+        XCTAssertEqual(
+            MeetingTranscriptSanitizer.sanitizedText(
+                "請準確記錄會議中的完整發言內容，保留技術名詞和產品名稱，並按照用戶實際表達輸出，不要自行補充任何解釋或摘要。",
+                prompt: chinesePrompt,
+                preferredMainLanguage: simplifiedLanguage
+            ),
+            ""
+        )
+
+        let mappedSegments = MeetingMLXSegmentMapping.meetingSegments(
+            from: MLXBufferedTranscriptionResult(text: "哈哈，你沒事吧？", structuredSegments: []),
+            segmentID: UUID(),
+            speaker: .them,
+            audioSource: .systemAudio,
+            startSeconds: 0,
+            endSeconds: 2,
+            usesStructuredOutput: false,
+            modelFamily: .qwen3ASR,
+            preventsAdjacentMerge: true,
+            dictionaryEntries: [],
+            preferredMainLanguage: simplifiedLanguage,
+            speakerDisplayName: { _ in nil }
+        )
+        XCTAssertEqual(mappedSegments.map(\.text), ["哈哈，你没事吧？"])
+    }
+
     func testFinalPostProcessorKeepsCoherentShortTextTogetherEvenWhenDurationIsLong() {
         let segment = MeetingTranscriptSegment(
             speaker: .them,

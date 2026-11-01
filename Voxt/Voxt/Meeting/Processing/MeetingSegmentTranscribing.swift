@@ -29,26 +29,47 @@ extension MeetingSegmentTranscribing {
 }
 
 enum MeetingTranscriptSanitizer {
+    private nonisolated static let canonicalComparisonLanguage = UserMainLanguageOption.option(for: "zh-Hans")!
+
     nonisolated static func sanitizedText(
         _ rawText: String,
         prompt: String? = nil,
         contextualPhrases: [String] = [],
-        dictionaryEntries: [DictionaryEntry] = []
+        dictionaryEntries: [DictionaryEntry] = [],
+        preferredMainLanguage: UserMainLanguageOption? = nil
     ) -> String {
         let withoutContextLeakage = MLXTranscriptionPlanning.removingKnownASRContextLeakage(from: rawText)
-        let normalized = MeetingTranscriptTextPostProcessor.normalizedFinalText(withoutContextLeakage)
-        let withoutPromptEcho = RecordingSessionSupport.textAfterSuppressingPromptEcho(normalized, prompt: prompt)
-        guard !withoutPromptEcho.isEmpty else { return "" }
+        let scriptNormalizedText = if let preferredMainLanguage {
+            ChineseScriptNormalizer.normalize(
+                withoutContextLeakage,
+                preferredMainLanguage: preferredMainLanguage
+            )
+        } else {
+            withoutContextLeakage
+        }
+        let normalizedText = MeetingTranscriptTextPostProcessor.normalizedFinalText(scriptNormalizedText)
+        guard !normalizedText.isEmpty else { return "" }
+
+        let canonicalText = ChineseScriptNormalizer.normalize(
+            normalizedText,
+            preferredMainLanguage: canonicalComparisonLanguage
+        )
+        let canonicalPrompt = prompt.map {
+            ChineseScriptNormalizer.normalize($0, preferredMainLanguage: canonicalComparisonLanguage)
+        }
+        guard !RecordingSessionSupport.isLikelyPromptEcho(canonicalText, prompt: canonicalPrompt) else {
+            return ""
+        }
 
         if isLikelyHintOnlyEcho(
-            withoutPromptEcho,
+            canonicalText,
             contextualPhrases: contextualPhrases,
             dictionaryEntries: dictionaryEntries
         ) {
             return ""
         }
 
-        return withoutPromptEcho
+        return normalizedText
     }
 
     private nonisolated static func isLikelyHintOnlyEcho(
@@ -108,13 +129,16 @@ enum MeetingTranscriptSanitizer {
     }
 
     private nonisolated static func normalizedHintEchoKey(_ text: String) -> String {
-        let normalized = text
+        let normalizedText = ChineseScriptNormalizer.normalize(
+            text,
+            preferredMainLanguage: canonicalComparisonLanguage
+        )
             .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
             .lowercased()
         let dropped = CharacterSet.whitespacesAndNewlines
             .union(.punctuationCharacters)
             .union(.symbols)
-        return String(normalized.unicodeScalars.filter { !dropped.contains($0) })
+        return String(normalizedText.unicodeScalars.filter { !dropped.contains($0) })
     }
 }
 
@@ -170,13 +194,15 @@ enum MeetingMLXSegmentMapping {
         modelFamily: MLXModelFamily,
         preventsAdjacentMerge: Bool,
         dictionaryEntries: [DictionaryEntry],
+        preferredMainLanguage: UserMainLanguageOption? = nil,
         speakerDisplayName: (String) -> String?
     ) -> [MeetingTranscriptSegment] {
         if usesStructuredOutput, !result.structuredSegments.isEmpty {
             return result.structuredSegments.enumerated().compactMap { index, segment in
                 let text = MeetingTranscriptSanitizer.sanitizedText(
                     segment.text,
-                    dictionaryEntries: dictionaryEntries
+                    dictionaryEntries: dictionaryEntries,
+                    preferredMainLanguage: preferredMainLanguage
                 )
                 guard !text.isEmpty else { return nil }
                 let boundedStart = min(max(startSeconds + segment.startSeconds, startSeconds), endSeconds)
@@ -214,7 +240,8 @@ enum MeetingMLXSegmentMapping {
             : result.structuredSegments.map(\.text).joined(separator: " ")
         let sanitizedText = MeetingTranscriptSanitizer.sanitizedText(
             previewText,
-            dictionaryEntries: dictionaryEntries
+            dictionaryEntries: dictionaryEntries,
+            preferredMainLanguage: preferredMainLanguage
         )
         guard !sanitizedText.isEmpty else {
             VoxtLog.meetingWarning("Meeting MLX transcription suppressed because it matched ASR prompt or hint guidance.")
@@ -383,6 +410,7 @@ final class MeetingMLXSegmentTranscriber: MeetingSegmentTranscribing {
             modelFamily: modelFamily,
             preventsAdjacentMerge: preventsAdjacentMerge,
             dictionaryEntries: activeMeetingDictionaryEntries(),
+            preferredMainLanguage: activeMeetingMainLanguage(),
             speakerDisplayName: { speakerID in
                 self.speakerDisplayName(for: speakerID, source: audioSource)
             }
@@ -464,7 +492,8 @@ final class MeetingRemoteASRSegmentTranscriber: MeetingSegmentTranscribing {
             text,
             prompt: hintPayload.prompt,
             contextualPhrases: hintPayload.contextualPhrases,
-            dictionaryEntries: activeMeetingDictionaryEntries()
+            dictionaryEntries: activeMeetingDictionaryEntries(),
+            preferredMainLanguage: activeMeetingMainLanguage()
         )
         guard !sanitizedText.isEmpty else {
             VoxtLog.meetingWarning("Meeting Remote ASR transcription suppressed because it matched ASR prompt or hint guidance.")
@@ -564,4 +593,15 @@ private func activeMeetingDictionaryEntries() -> [DictionaryEntry] {
     return appDelegate.dictionaryStore.activeEntriesForRemoteRequest(
         activeGroupID: appDelegate.activeDictionaryGroupID()
     )
+}
+
+@MainActor
+private func activeMeetingMainLanguage() -> UserMainLanguageOption {
+    guard let appDelegate = AppDelegate.shared else {
+        let selectedLanguageCodes = UserMainLanguageOption.storedSelection(
+            from: UserDefaults.standard.string(forKey: AppPreferenceKey.userMainLanguageCodes)
+        )
+        return UserMainLanguageOption.option(for: selectedLanguageCodes[0])!
+    }
+    return appDelegate.userMainLanguage
 }
