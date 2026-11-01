@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import torch
 from sglang.srt.managers.schedule_batch import ScheduleBatch
-from sglang.srt.managers.scheduler import GenerationBatchResult
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
 from sglang_omni.model_runner.base import ModelRunner
@@ -18,17 +17,39 @@ from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputP
 from sglang_omni.scheduling.types import SchedulerRequest
 
 
-class NemotronVoiceChatModelRunner(ModelRunner[NemotronVoiceChatRequestData]):
+class VoiceChatModelRunner(ModelRunner):
+    def record_function_ids(self, requests) -> None:
+        sampled = self.model.function_ids[: len(requests)].tolist()
+        for request, token in zip(requests, sampled):
+            request.data.function_ids.append(token)
+
+    @staticmethod
+    def record_stream_tokens(result, requests) -> None:
+        # note (Junnan Li): the post hooks run before sampling; the thinker decodes greedily, so the argmax is the sampled token.
+        logits = result.logits_output.next_token_logits
+        sampled = logits[: len(requests)].argmax(dim=-1).tolist()
+        for request, token in zip(requests, sampled):
+            request.data.pending_stream_tokens.append(int(token))
+
+    def post_prefill(self, result, forward_batch, schedule_batch, requests) -> None:
+        del forward_batch, schedule_batch
+        self.record_function_ids(requests)
+        self.record_stream_tokens(result, requests)
+
+    def post_decode(self, result, forward_batch, schedule_batch, requests) -> None:
+        del forward_batch, schedule_batch
+        self.record_function_ids(requests)
+        self.record_stream_tokens(result, requests)
+
+
+class NemotronVoiceChatModelRunner(VoiceChatModelRunner):
     def __init__(
         self, tp_worker: ModelWorker, output_processor: SGLangOutputProcessor
     ) -> None:
         super().__init__(tp_worker, output_processor)
         token_id_buffer = self.model.fusion_token_ids
-        self.decode_token_ids_host: torch.Tensor = torch.empty(
-            token_id_buffer.shape,
-            dtype=token_id_buffer.dtype,
-            device="cpu",
-            pin_memory=token_id_buffer.device.type == "cuda",
+        self.decode_token_ids_host = torch.empty(
+            token_id_buffer.shape, dtype=token_id_buffer.dtype
         )
 
     def device_acoustic_frames(
@@ -100,13 +121,9 @@ class NemotronVoiceChatModelRunner(ModelRunner[NemotronVoiceChatRequestData]):
         else:
             pass
 
-        fusion = self.model.fusion
-        channel_embeddings[:, 1].mul_(fusion.text_weight)
-        channel_embeddings[:, 0].mul_(fusion.user_weight)
-        fused_rows = channel_embeddings[:, 1].add_(channel_embeddings[:, 0])
-        channel_embeddings[:, 2].mul_(fusion.function_weight)
-        fused_rows.add_(channel_embeddings[:, 2])
-        return fused_rows
+        return self.model.fusion(
+            channel_embeddings[:, 0], channel_embeddings[:, 1], channel_embeddings[:, 2]
+        )
 
     def before_prefill(
         self,
@@ -146,49 +163,10 @@ class NemotronVoiceChatModelRunner(ModelRunner[NemotronVoiceChatRequestData]):
 
         model = self.model
         device_token_ids = model.fusion_token_ids[:batch_size]
-        device_token_ids.copy_(host_token_ids[:batch_size], non_blocking=True)
+        device_token_ids.copy_(host_token_ids[:batch_size])
         token_embeddings = model.llm.get_input_embeddings()(device_token_ids)
-        fusion_buffer = model.fusion_buffer[:batch_size]
-        torch.stack(acoustic_rows, dim=0, out=fusion_buffer)
-        fusion_buffer.mul_(model.fusion.user_weight)
-        token_embeddings[:, 0].mul_(model.fusion.text_weight)
-        fusion_buffer.add_(token_embeddings[:, 0])
-        token_embeddings[:, 1].mul_(model.fusion.function_weight)
-        fusion_buffer.add_(token_embeddings[:, 1])
-
-    def record_function_ids(self, requests: list[SchedulerRequest]) -> None:
-        sampled_function_ids = self.model.function_ids[: len(requests)].tolist()
-        for request, function_id in zip(requests, sampled_function_ids, strict=True):
-            request.data.function_ids.append(int(function_id))
-
-    def record_stream_tokens(
-        self, result: GenerationBatchResult, requests: list[SchedulerRequest]
-    ) -> None:
-        # Sampling has not happened yet in the post hooks; the Thinker is greedy,
-        # so this argmax is the token that the sampler will record.
-        logits = result.logits_output.next_token_logits
-        sampled_token_ids = logits[: len(requests)].argmax(dim=-1).tolist()
-        for request, token_id in zip(requests, sampled_token_ids, strict=True):
-            request.data.pending_stream_tokens.append(int(token_id))
-
-    def post_prefill(
-        self,
-        result: GenerationBatchResult,
-        forward_batch: ForwardBatch | None,
-        schedule_batch: ScheduleBatch,
-        requests: list[SchedulerRequest],
-    ) -> None:
-        del forward_batch, schedule_batch
-        self.record_function_ids(requests)
-        self.record_stream_tokens(result, requests)
-
-    def post_decode(
-        self,
-        result: GenerationBatchResult,
-        forward_batch: ForwardBatch | None,
-        schedule_batch: ScheduleBatch,
-        requests: list[SchedulerRequest],
-    ) -> None:
-        del forward_batch, schedule_batch
-        self.record_function_ids(requests)
-        self.record_stream_tokens(result, requests)
+        model.fusion_buffer[:batch_size] = model.fusion(
+            torch.stack(acoustic_rows, dim=0),
+            token_embeddings[:, 0],
+            token_embeddings[:, 1],
+        )

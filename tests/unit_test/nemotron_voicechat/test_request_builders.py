@@ -7,6 +7,7 @@ from unittest.mock import Mock
 import pytest
 import torch
 
+from sglang_omni.models.nemotron_voicechat.fusion import AddFusion
 from sglang_omni.models.nemotron_voicechat.model_runner import (
     NemotronVoiceChatModelRunner,
 )
@@ -75,7 +76,13 @@ def test_thinker_runner_uses_current_request_prefill_span() -> None:
     embedding = torch.nn.Embedding(8, 4)
     model = Mock(
         fusion_buffer=torch.empty(1, 4),
-        fusion=Mock(user_weight=1.0, text_weight=1.0, function_weight=2.0),
+        fusion=AddFusion(
+            {
+                "duplex_user_channel_weight": 1.0,
+                "duplex_text_channel_weight": 1.0,
+                "duplex_function_channel_weight": 2.0,
+            }
+        ),
     )
     model.llm.get_input_embeddings.return_value = embedding
     runner = object.__new__(NemotronVoiceChatModelRunner)

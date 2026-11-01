@@ -19,9 +19,7 @@ from sglang_omni.model_runner.prefill_inputs import (
     attach_omni_prefill_inputs,
 )
 from sglang_omni.models.nemotron_voicechat.cuda_graph import capture_cuda_graph
-from sglang_omni.models.nemotron_voicechat.model_runner import (
-    NemotronVoiceChatModelRunner,
-)
+from sglang_omni.models.nemotron_voicechat.model_runner import VoiceChatModelRunner
 from sglang_omni.models.nemotron_voicechat.payload_types import TOOL_CALLS
 from sglang_omni.models.nemotron_voicechat.request_builders import (
     NemotronVoiceChatRequestData,
@@ -117,16 +115,6 @@ class UnitDecodeRunner(ModelRunner):
         batch.forward_mode = ForwardMode.EXTEND
         return forward_batch, schedule_batch, False
 
-
-class DuplexThinkerRunner(UnitDecodeRunner, NemotronVoiceChatModelRunner):
-    def before_prefill(
-        self,
-        forward_batch: ForwardBatch,
-        schedule_batch: ScheduleBatch,
-        requests: list[SchedulerRequest],
-    ) -> None:
-        attach_fusion_rows(forward_batch, requests)
-
     def before_decode(
         self,
         forward_batch: ForwardBatch,
@@ -140,6 +128,16 @@ class DuplexThinkerRunner(UnitDecodeRunner, NemotronVoiceChatModelRunner):
             for request in requests
         ]
         self.model.fusion_buffer[: len(rows)] = torch.stack(rows)
+
+
+class DuplexThinkerRunner(UnitDecodeRunner, VoiceChatModelRunner):
+    def before_prefill(
+        self,
+        forward_batch: ForwardBatch,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
+    ) -> None:
+        attach_fusion_rows(forward_batch, requests)
 
 
 class DuplexTalkerRunner(UnitDecodeRunner, VoiceChatTalkerModelRunner):
@@ -195,12 +193,8 @@ class DuplexTalkerRunner(UnitDecodeRunner, VoiceChatTalkerModelRunner):
         *,
         is_lookahead: bool = False,
     ) -> None:
-        rows = [
-            request.data.talker_model_inputs["duplex_history"].fusion_rows[-1][-1]
-            for request in requests
-        ]
-        self.model.fusion_buffer[: len(rows)] = torch.stack(rows)
-        self.model.fusion_mask[: len(rows)] = True
+        super().before_decode(forward_batch, schedule_batch, requests)
+        self.model.fusion_mask[: len(requests)] = True
 
     def post_prefill(
         self,
