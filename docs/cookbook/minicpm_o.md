@@ -93,3 +93,15 @@ audio = client.audio.speech.create(
 ```
 
 The speech output is non-streaming. The sampling fields you set, such as `temperature`, `top_p` and `max_new_tokens`, apply to the Talker, which generates the speech; the rest keep the Talker's defaults.
+
+## Talker speculative decoding
+
+Use a DSpark draft to propose several codec tokens per Talker step:
+
+```bash
+sgl-omni serve --model-path openbmb/MiniCPM-o-4_5 --variant speech \
+  --talker.engine.speculative_algorithm DSPARK \
+  --talker.engine.speculative_draft_model_path Qun1023/MiniCPM-o-4_5-talker-DSpark
+```
+
+Rejection sampling preserves the target's codec mask, sliding repetition penalty, minimum output length, temperature, top-k and top-p. The block size comes from the draft checkpoint. Sampled verification does not support a request seed. This path supports non-streaming speech requests, not native full-duplex sessions.
