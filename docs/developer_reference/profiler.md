@@ -265,6 +265,8 @@ The torch profiler runs alongside the event recorder when
 `enable_torch=true` (the default for `/start_profile`). It records
 continuously between `start()` and `stop()` — no `schedule(...)`, no
 `step()` requirement — and exports a Chrome trace `*.trace.json.gz` on stop.
+CPU ops are recorded from every thread in the process, including scheduler
+threads that existed before `start()`.
 
 The expensive introspection flags are opt-in via env vars so the default
 trace stays small enough to load in `chrome://tracing` or
@@ -273,7 +275,7 @@ trace stays small enough to load in `chrome://tracing` or
 | Env var | Effect |
 |---|---|
 | `SGLANG_TORCH_PROFILER_RECORD_SHAPES=1` | Record input tensor shapes per op |
-| `SGLANG_TORCH_PROFILER_PROFILE_MEMORY=1` | Record tensor memory allocation / free events |
+| `SGLANG_TORCH_PROFILER_PROFILE_MEMORY=1` | Record tensor memory allocation / free events. Only the thread that starts the profiler is recorded, so worker thread CPU ops are excluded |
 | `SGLANG_TORCH_PROFILER_WITH_STACK=1` | Record the Python (and C++) call stack per op |
 | `SGLANG_TORCH_PROFILER_WITH_FLOPS=1` | Estimate FLOPs per op |
 
