@@ -1892,6 +1892,31 @@
 "Compiling model..." = "正在编译模型...";
 "Compiling %@" = "正在编译 %@";
 
+/* Local API */
+"Local API" = "本地 API";
+"Allow other apps to dictate through Voxt" = "允许其他应用通过 Voxt 语音输入";
+"Scripts, shortcuts and tools on this Mac send audio over HTTP. Voxt transcribes it with your current model, enhancement and dictionary, and returns the text." = "这台 Mac 上的脚本、快捷指令和工具通过 HTTP 发送音频。Voxt 用当前的模型、润色和词典转写，并返回文字。";
+"Voxt listens on 127.0.0.1 only." = "Voxt 只监听 127.0.0.1。";
+"Access token" = "访问令牌";
+"Send it as a Bearer token with every request. Regenerating it disconnects existing clients." = "每次请求都以 Bearer 令牌发送。重新生成后，现有客户端需要更新令牌。";
+"Stopped" = "已停止";
+"Starting…" = "正在启动…";
+"Listening on 127.0.0.1:%d" = "正在监听 127.0.0.1:%d";
+"Couldn't start: %@" = "无法启动：%@";
+"Voxt is recording on the Mac. Try again in a moment." = "Mac 上的 Voxt 正在录音，请稍后再试。";
+"Voxt is recording a meeting on the Mac." = "Mac 上的 Voxt 正在录制会议。";
+"Apple Speech can't transcribe recorded audio. Choose a local or remote model in Voxt Settings > Transcription." = "Apple 语音识别不能转写录好的音频。请在 Voxt 设置 > 转写 中选择本地或远程模型。";
+"No text model is available. Choose one in Voxt Settings > Transcription." = "没有可用的文本模型。请在 Voxt 设置 > 转写 中选择一个。";
+"The selected text model is configured to skip enhancement." = "所选文本模型设置为跳过增强。";
+"The selected text model cannot run this operation." = "所选文本模型无法执行此操作。";
+"Allow Voxt Connector to use Voxt?" = "允许 Voxt Connector 使用 Voxt？";
+"It will forward dictations from your paired iPhone to Voxt on this Mac." = "它会把已配对 iPhone 上的听写转交给这台 Mac 上的 Voxt。";
+"Always Allow" = "始终允许";
+"Allow Once" = "允许一次";
+"Don't Allow" = "不允许";
+"Sync history with Voxt Mobile" = "与 Voxt Mobile 同步历史";
+"Paired phones exchange text history when this and History are both on. Audio and meeting transcripts stay on this Mac." = "此项和历史都开启时，已配对的手机会交换文字历史。音频和会议转写留在这台 Mac 上。";
+
 /* Onboarding guide window */
 "Add punctuation and paragraph flow. Example: spoken pauses become readable sentences." = "补全标点和段落节奏。例如：口语停顿会整理成可读句子。";
 "Allow" = "授权";

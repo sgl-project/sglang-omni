@@ -1,0 +1,5 @@
+exit 0
+DictationFlowUITests.testInAppDictationGoesThroughMac passed 82.378 s
+TryItEndToEndUITests.testTryItPointsAtTheMicThenFinishesAfterARealDictation passed 51.599 s
+2 tests: 2 passed, 0 failed, 134.0 s
+UI E2E in-app text: And so, my fellow Americans, ask not what your country can do for you; ask what you can do for your country.

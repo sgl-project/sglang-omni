@@ -8,7 +8,7 @@ repos:
     hooks:
     -   id: autoflake
         args: [--remove-all-unused-imports, --in-place]
-        exclude: (^\.claude/skills/|^Voxt/(?!backend/|Config/OmniDev\.xcconfig$|Voxt/VoxtOmniDev\.entitlements$|Voxt/Transcription/Omni))
+        exclude: (^\.claude/skills/|^Voxt/(?!backend/|Config/OmniDev\.xcconfig$|Voxt/VoxtOmniDev\.entitlements$|Voxt/Transcription/Omni|Mobile/(?!ios/InputMethods/(?:McBopomofoEngine/|[^/]+/Sources/[^/]+/Resources/))|Voxt/Core/LocalAPI/))
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
@@ -17,9 +17,9 @@ repos:
       # The Voxt/ import stays byte-identical to upstream; Voxt files added
       # here (backend, Omni bridge, dev build settings) are checked normally.
       - id: trailing-whitespace
-        exclude: ^Voxt/(?!backend/|Config/OmniDev\.xcconfig$|Voxt/VoxtOmniDev\.entitlements$|Voxt/Transcription/Omni)
+        exclude: ^Voxt/(?!backend/|Config/OmniDev\.xcconfig$|Voxt/VoxtOmniDev\.entitlements$|Voxt/Transcription/Omni|Mobile/(?!ios/InputMethods/(?:McBopomofoEngine/|[^/]+/Sources/[^/]+/Resources/))|Voxt/Core/LocalAPI/)
       - id: end-of-file-fixer
-        exclude: ^Voxt/(?!backend/|Config/OmniDev\.xcconfig$|Voxt/VoxtOmniDev\.entitlements$|Voxt/Transcription/Omni)
+        exclude: ^Voxt/(?!backend/|Config/OmniDev\.xcconfig$|Voxt/VoxtOmniDev\.entitlements$|Voxt/Transcription/Omni|Mobile/(?!ios/InputMethods/(?:McBopomofoEngine/|[^/]+/Sources/[^/]+/Resources/))|Voxt/Core/LocalAPI/)
       - id: check-yaml
         args: [--allow-multiple-documents]
       - id: check-toml
@@ -27,7 +27,7 @@ repos:
       - id: check-added-large-files
       - id: check-merge-conflict
       - id: check-shebang-scripts-are-executable
-        exclude: (?:^\.claude/skills/|^sglang_omni_router/tests/.*\.rs$|^Voxt/(?!backend/|Config/OmniDev\.xcconfig$|Voxt/VoxtOmniDev\.entitlements$|Voxt/Transcription/Omni))
+        exclude: (?:^\.claude/skills/|^sglang_omni_router/tests/.*\.rs$|^Voxt/(?!backend/|Config/OmniDev\.xcconfig$|Voxt/VoxtOmniDev\.entitlements$|Voxt/Transcription/Omni|Mobile/(?!ios/InputMethods/(?:McBopomofoEngine/|[^/]+/Sources/[^/]+/Resources/))|Voxt/Core/LocalAPI/))
       - id: detect-private-key
       - id: debug-statements
       - id: no-commit-to-branch
@@ -35,7 +35,7 @@ repos:
     rev: 5.13.2
     hooks:
       - id: isort
-        exclude: (^\.claude/skills/|^Voxt/(?!backend/|Config/OmniDev\.xcconfig$|Voxt/VoxtOmniDev\.entitlements$|Voxt/Transcription/Omni))
+        exclude: (^\.claude/skills/|^Voxt/(?!backend/|Config/OmniDev\.xcconfig$|Voxt/VoxtOmniDev\.entitlements$|Voxt/Transcription/Omni|Mobile/(?!ios/InputMethods/(?:McBopomofoEngine/|[^/]+/Sources/[^/]+/Resources/))|Voxt/Core/LocalAPI/))
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.11.10
     hooks:
@@ -48,12 +48,14 @@ repos:
     rev: 24.10.0
     hooks:
       - id: black-jupyter
-        exclude: (^\.claude/skills/|^Voxt/(?!backend/|Config/OmniDev\.xcconfig$|Voxt/VoxtOmniDev\.entitlements$|Voxt/Transcription/Omni))
+        exclude: (^\.claude/skills/|^Voxt/(?!backend/|Config/OmniDev\.xcconfig$|Voxt/VoxtOmniDev\.entitlements$|Voxt/Transcription/Omni|Mobile/(?!ios/InputMethods/(?:McBopomofoEngine/|[^/]+/Sources/[^/]+/Resources/))|Voxt/Core/LocalAPI/))
   - repo: https://github.com/pre-commit/mirrors-clang-format
     rev: v18.1.8
     hooks:
     - id: clang-format
       types_or: [c++, cuda]
+      # The McBopomofo engine is vendored as published (MIT).
+      exclude: ^Voxt/Mobile/ios/InputMethods/McBopomofoEngine/
       args: [--style=file, --verbose]
   - repo: https://github.com/kynan/nbstripout
     rev: 0.8.1

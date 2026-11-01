@@ -1,0 +1,23 @@
+clone of an earlier build of this change, untracked+ignored: 0
+go-tests exit=0 91s
+xcframework exit=0 90s
+swift-packages exit=0 271s
+connection-kit exit=0 45s
+connector-build exit=0 46s
+paused before ios-unit: waiting for the simulator
+voxt-build exit=0 317s
+voxt-unit exit=0 45s
+voxt done status=0
+swift-voxtmobilekit exit=0 15s
+swift-packages-rest exit=0 45s
+packages done status=0
+clone of an earlier build of this change, untracked+ignored: 10
+resumed at ios-unit
+ios-unit exit=0 304s
+python exit=0 15s
+without-input-methods exit=0 45s
+connector-script-adhoc exit=0 45s
+neg-no-xcodegen exit=1 15s
+neg-no-simulator exit=70 75s
+bootstrap-test exit=0 60s
+done status=1 (neg-* steps are expected to fail; read their messages)

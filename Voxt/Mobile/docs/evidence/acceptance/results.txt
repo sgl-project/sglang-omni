@@ -1,0 +1,146 @@
+== voxt-build
+** TEST BUILD SUCCEEDED **
+== voxt-unit
+classes: 30
+Executed 45 tests, with 0 failures (0 unexpected) in 0.042 (0.056) seconds
+Executed 16 tests, with 0 failures (0 unexpected) in 0.012 (0.015) seconds
+Executed 27 tests, with 0 failures (0 unexpected) in 1.727 (1.733) seconds
+Executed 4 tests, with 0 failures (0 unexpected) in 0.006 (0.008) seconds
+Executed 12 tests, with 0 failures (0 unexpected) in 1.157 (1.161) seconds
+Executed 79 tests, with 0 failures (0 unexpected) in 0.108 (0.124) seconds
+Executed 9 tests, with 0 failures (0 unexpected) in 0.010 (0.012) seconds
+Executed 8 tests, with 0 failures (0 unexpected) in 2.169 (2.172) seconds
+Executed 10 tests, with 0 failures (0 unexpected) in 0.010 (0.013) seconds
+Executed 27 tests, with 0 failures (0 unexpected) in 8.704 (8.719) seconds
+Executed 7 tests, with 0 failures (0 unexpected) in 0.010 (0.013) seconds
+Executed 1 test, with 0 failures (0 unexpected) in 0.047 (0.047) seconds
+Executed 9 tests, with 0 failures (0 unexpected) in 1.878 (1.882) seconds
+Executed 25 tests, with 0 failures (0 unexpected) in 0.030 (0.038) seconds
+Executed 3 tests, with 0 failures (0 unexpected) in 0.395 (0.396) seconds
+Executed 5 tests, with 0 failures (0 unexpected) in 0.012 (0.014) seconds
+Executed 10 tests, with 0 failures (0 unexpected) in 0.218 (0.222) seconds
+Executed 7 tests, with 0 failures (0 unexpected) in 0.314 (0.317) seconds
+Executed 1 test, with 0 failures (0 unexpected) in 0.003 (0.003) seconds
+Executed 55 tests, with 0 failures (0 unexpected) in 0.050 (0.066) seconds
+Executed 9 tests, with 0 failures (0 unexpected) in 1.259 (1.264) seconds
+Executed 5 tests, with 0 failures (0 unexpected) in 5.952 (5.954) seconds
+Executed 1 test, with 0 failures (0 unexpected) in 0.002 (0.003) seconds
+Executed 7 tests, with 0 failures (0 unexpected) in 0.005 (0.006) seconds
+Executed 3 tests, with 0 failures (0 unexpected) in 0.002 (0.003) seconds
+Executed 11 tests, with 0 failures (0 unexpected) in 0.007 (0.009) seconds
+Executed 9 tests, with 0 failures (0 unexpected) in 7.189 (7.192) seconds
+Executed 10 tests, with 0 failures (0 unexpected) in 0.006 (0.008) seconds
+Executed 16 tests, with 0 failures (0 unexpected) in 0.011 (0.014) seconds
+Executed 14 tests, with 0 failures (0 unexpected) in 0.008 (0.012) seconds
+Executed 445 tests, with 0 failures (0 unexpected) in 31.340 (31.484) seconds
+Executed 445 tests, with 0 failures (0 unexpected) in 31.340 (31.485) seconds
+** TEST EXECUTE SUCCEEDED **
+== go-tests
+ok  	github.com/sgl-project/sglang-omni/Voxt/Mobile/tailcat/native	1.096s
+ok  	github.com/sgl-project/sglang-omni/Voxt/Mobile/tailcat/host	0.392s
+== xcframework
+== swift-packages
+== ios/VoxtMobileKit
+Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.003) seconds
+➜ Test keychainRoundTripUpdatesAndDeletesOnlyItsOwnItem() skipped: "Set VOXT_KEYCHAIN_TESTS=1 to use the login Keychain"
+✔ Test run with 347 tests in 70 suites passed after 2.281 seconds.
+== ios/VoxtTailcat
+Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.003) seconds
+✔ Test run with 12 tests in 5 suites passed after 0.002 seconds.
+== ios/TypingInput
+Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.002) seconds
+Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.002) seconds
+✔ Test run with 8 tests in 3 suites passed after 0.006 seconds.
+✔ Test run with 14 tests in 4 suites passed after 0.001 seconds.
+== ios/KoreanInput
+Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.005) seconds
+✔ Test run with 7 tests in 2 suites passed after 0.002 seconds.
+== ios/SpanishInput
+Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.002) seconds
+✔ Test run with 5 tests in 1 suite passed after 0.001 seconds.
+== ios/InputMethods/JapaneseInput
+Executed 12 tests, with 0 failures (0 unexpected) in 1.740 (1.742) seconds
+Executed 12 tests, with 0 failures (0 unexpected) in 1.740 (1.743) seconds
+Executed 12 tests, with 0 failures (0 unexpected) in 1.740 (1.747) seconds
+✔ Test run with 15 tests in 2 suites passed after 0.122 seconds.
+== ios/InputMethods/PinyinInput
+Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.004) seconds
+✔ Test run with 51 tests in 9 suites passed after 2.443 seconds.
+== ios/InputMethods/ZhuyinInput
+Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.004) seconds
+✔ Test run with 24 tests in 3 suites passed after 0.066 seconds.
+== connection-kit
+Executed 10 tests, with 0 failures (0 unexpected) in 5.774 (5.776) seconds
+Executed 3 tests, with 0 failures (0 unexpected) in 0.002 (0.002) seconds
+Executed 13 tests, with 0 failures (0 unexpected) in 5.776 (5.778) seconds
+Executed 13 tests, with 0 failures (0 unexpected) in 5.776 (5.782) seconds
+➜ Test swiftConsumesProductionGoPairingQRAndCancelsTemporaryNode() skipped: "Requires an explicitly supplied owned helper"
+✔ Test run with 82 tests in 3 suites passed after 4.019 seconds.
+== connector-build
+** BUILD SUCCEEDED **
+== ios-unit
+simulator: iPhone 17 Pro
+Executed 6 tests, with 0 failures (0 unexpected) in 18.841 (18.845) seconds
+Executed 1 test, with 0 failures (0 unexpected) in 0.019 (0.019) seconds
+Executed 3 tests, with 0 failures (0 unexpected) in 0.026 (0.028) seconds
+Executed 2 tests, with 0 failures (0 unexpected) in 0.057 (0.058) seconds
+Executed 4 tests, with 0 failures (0 unexpected) in 0.039 (0.041) seconds
+Executed 3 tests, with 0 failures (0 unexpected) in 0.025 (0.026) seconds
+Executed 4 tests, with 4 tests skipped and 0 failures (0 unexpected) in 0.020 (0.022) seconds
+Executed 5 tests, with 0 failures (0 unexpected) in 0.058 (0.060) seconds
+Executed 4 tests, with 0 failures (0 unexpected) in 6.358 (6.359) seconds
+Executed 14 tests, with 0 failures (0 unexpected) in 0.208 (0.213) seconds
+Executed 1 test, with 0 failures (0 unexpected) in 0.005 (0.006) seconds
+Executed 2 tests, with 0 failures (0 unexpected) in 0.012 (0.013) seconds
+Executed 3 tests, with 0 failures (0 unexpected) in 0.031 (0.033) seconds
+Executed 22 tests, with 0 failures (0 unexpected) in 0.216 (0.223) seconds
+Executed 3 tests, with 0 failures (0 unexpected) in 0.123 (0.124) seconds
+Executed 15 tests, with 0 failures (0 unexpected) in 2.813 (2.818) seconds
+Executed 3 tests, with 0 failures (0 unexpected) in 0.056 (0.057) seconds
+Executed 3 tests, with 0 failures (0 unexpected) in 0.035 (0.036) seconds
+Executed 2 tests, with 0 failures (0 unexpected) in 0.004 (0.004) seconds
+Executed 3 tests, with 0 failures (0 unexpected) in 0.013 (0.014) seconds
+Executed 12 tests, with 0 failures (0 unexpected) in 0.027 (0.029) seconds
+Executed 9 tests, with 0 failures (0 unexpected) in 0.049 (0.052) seconds
+Executed 14 tests, with 0 failures (0 unexpected) in 0.051 (0.054) seconds
+Executed 2 tests, with 0 failures (0 unexpected) in 0.006 (0.006) seconds
+Executed 1 test, with 0 failures (0 unexpected) in 0.004 (0.004) seconds
+Executed 2 tests, with 0 failures (0 unexpected) in 0.006 (0.006) seconds
+Executed 4 tests, with 0 failures (0 unexpected) in 0.012 (0.013) seconds
+Executed 147 tests, with 4 tests skipped and 0 failures (0 unexpected) in 29.114 (29.168) seconds
+Executed 147 tests, with 4 tests skipped and 0 failures (0 unexpected) in 29.114 (29.171) seconds
+** TEST SUCCEEDED **
+== python
+== tools/test_connector_build.py
+Ran 13 tests in 0.020s
+OK
+== tools/test_connector_health_fixture.py
+Ran 2 tests in 0.170s
+OK
+== tools/test_stage_runtime.py
+Ran 4 tests in 0.235s
+OK
+== tools/test-design-tour-fixture.py
+PASS contract folder copy -> <run-temp>/tmp7ikuyoaw/Voxt/Mobile/ios/VoxtMobileKit/Tests/VoxtMobileKitTests/Fixtures/contract
+PASS contract folder shared -> <run-temp>/tmp7ikuyoaw/Voxt/Mobile/contract
+PASS contract folder environment -> /elsewhere
+PASS [] health -> {'app': 'Voxt', 'ok': True, 'version': 'design-fixture'}
+PASS ['--version', '1.16.0'] health -> {'app': 'Voxt', 'ok': True, 'version': '1.16.0'}
+PASS capabilities -> {'api': {'major': 1, 'minor': 0}, 'app': 'Voxt', 'audio': {'contentTypes': ['audio/aac', 'audio/m4a', 'audio/mp4', 'audio/mpeg', 'audio/wav', 'audio/wave', 'audio/x-caf', 'audio/x-m4a', 'audio/x-wav'], 'maxBodyBytes': 26214400}, 'endpoints': ['health', 'capabilities', 'dictations', 'compose', 'compose/prompts'], 'locations': {'text': 'local', 'transcription': 'local'}, 'models': {'text': 'ready', 'transcription': 'ready'}, 'version': '1.16.0'}
+== without-input-methods
+ok   no input method package in the project
+ok   builds without the input method packages
+ok   Info.plist lists no optional layout
+ok   PlugIns/VoxtKeyboard.appex/Info.plist lists no optional layout
+== connector-script-adhoc
+helper ready
+** BUILD SUCCEEDED **
+build: <clone>/Voxt/Mobile/build/connector-derived/Build/Products/Release/Voxt Connector.app
+== bootstrap-test
+helper ready
+host clean cache build ready (go version go1.27.1 darwin/arm64)
+== neg-no-xcodegen
+xcodegen is needed to build Voxt Connector: brew install xcodegen
+== neg-no-simulator
+xcodebuild: error: Unable to find a device matching the provided destination specifier:
+		{ platform:iOS Simulator, id:dvtdevice-DVTiOSDeviceSimulatorPlaceholder-iphonesimulator:placeholder, name:Any iOS Simulator Device }

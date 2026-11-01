@@ -1,0 +1,455 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		6FDD6C1A4ECCA2823A7A0DDA /* ConnectorOnboardingUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F0833E4C56ED17D35C9E0E7 /* ConnectorOnboardingUITests.swift */; };
+		78AE50CF576B0C15F548759F /* VoxtConnectionKit in Frameworks */ = {isa = PBXBuildFile; productRef = 900C8C0B9C9E5928587AC269 /* VoxtConnectionKit */; };
+		CC9A0DC8B1A64008C9FE511F /* VoxtConnectorApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63929ACFB8B85FE78FB5E9D6 /* VoxtConnectorApp.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		028CC598F9343D2BE3D484D5 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 048233ADBD3E64B625E3CCC4 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 7CC28EB0B8613A708BDE54BC;
+			remoteInfo = VoxtConnector;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		460C944E06823B373617C4FD /* Signing.shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.shared.xcconfig; sourceTree = "<group>"; };
+		63929ACFB8B85FE78FB5E9D6 /* VoxtConnectorApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoxtConnectorApp.swift; sourceTree = "<group>"; };
+		7F0833E4C56ED17D35C9E0E7 /* ConnectorOnboardingUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectorOnboardingUITests.swift; sourceTree = "<group>"; };
+		8F37AA716DC3BA91780ED1AB /* VoxtConnectionKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = VoxtConnectionKit; path = ../VoxtConnectionKit; sourceTree = SOURCE_ROOT; };
+		DFC9DD547DB81F8E7530A04F /* VoxtConnector.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VoxtConnector.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FCFE82BA41EC5F07B3CEF49B /* VoxtConnectorUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VoxtConnectorUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		BA5453A9D5D34B4139A0A07F /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				78AE50CF576B0C15F548759F /* VoxtConnectionKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		181CEAD689FCD71BA121631C = {
+			isa = PBXGroup;
+			children = (
+				F63D509BCCEC6F7E7580706D /* Config */,
+				910996B2DBC3F4E2A3CD6C9D /* Packages */,
+				FBE5C5C7C681E759F3B3BF4D /* Sources */,
+				9DEB4AB9FBD1CD9CE0C7FB37 /* UITests */,
+				5D1E5FC589D326D192203956 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		5D1E5FC589D326D192203956 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				DFC9DD547DB81F8E7530A04F /* VoxtConnector.app */,
+				FCFE82BA41EC5F07B3CEF49B /* VoxtConnectorUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		910996B2DBC3F4E2A3CD6C9D /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				8F37AA716DC3BA91780ED1AB /* VoxtConnectionKit */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		9DEB4AB9FBD1CD9CE0C7FB37 /* UITests */ = {
+			isa = PBXGroup;
+			children = (
+				7F0833E4C56ED17D35C9E0E7 /* ConnectorOnboardingUITests.swift */,
+			);
+			path = UITests;
+			sourceTree = "<group>";
+		};
+		F63D509BCCEC6F7E7580706D /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				460C944E06823B373617C4FD /* Signing.shared.xcconfig */,
+			);
+			path = Config;
+			sourceTree = "<group>";
+		};
+		FBE5C5C7C681E759F3B3BF4D /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				63929ACFB8B85FE78FB5E9D6 /* VoxtConnectorApp.swift */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		7CC28EB0B8613A708BDE54BC /* VoxtConnector */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C5E4856CF537FE8311EE7D77 /* Build configuration list for PBXNativeTarget "VoxtConnector" */;
+			buildPhases = (
+				C728D9DD3AD38C99A04E5A99 /* Sources */,
+				BA5453A9D5D34B4139A0A07F /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = VoxtConnector;
+			packageProductDependencies = (
+				900C8C0B9C9E5928587AC269 /* VoxtConnectionKit */,
+			);
+			productName = VoxtConnector;
+			productReference = DFC9DD547DB81F8E7530A04F /* VoxtConnector.app */;
+			productType = "com.apple.product-type.application";
+		};
+		AA8F21056BEB81CF862152EB /* VoxtConnectorUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 9243AAB13181C9EB9D9FCE1F /* Build configuration list for PBXNativeTarget "VoxtConnectorUITests" */;
+			buildPhases = (
+				249E5DA1A4633478490894B2 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				4EC5149B40F39754A86B1230 /* PBXTargetDependency */,
+			);
+			name = VoxtConnectorUITests;
+			packageProductDependencies = (
+			);
+			productName = VoxtConnectorUITests;
+			productReference = FCFE82BA41EC5F07B3CEF49B /* VoxtConnectorUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		048233ADBD3E64B625E3CCC4 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					AA8F21056BEB81CF862152EB = {
+						TestTargetID = 7CC28EB0B8613A708BDE54BC;
+					};
+				};
+			};
+			buildConfigurationList = 34A1F44077E920C30F5B232B /* Build configuration list for PBXProject "VoxtConnector" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 181CEAD689FCD71BA121631C;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				31968D95B73947B174AC40AD /* XCLocalSwiftPackageReference "../VoxtConnectionKit" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 5D1E5FC589D326D192203956 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				7CC28EB0B8613A708BDE54BC /* VoxtConnector */,
+				AA8F21056BEB81CF862152EB /* VoxtConnectorUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		249E5DA1A4633478490894B2 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				6FDD6C1A4ECCA2823A7A0DDA /* ConnectorOnboardingUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C728D9DD3AD38C99A04E5A99 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CC9A0DC8B1A64008C9FE511F /* VoxtConnectorApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		4EC5149B40F39754A86B1230 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 7CC28EB0B8613A708BDE54BC /* VoxtConnector */;
+			targetProxy = 028CC598F9343D2BE3D484D5 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		06DBFC3F11B9B0ECF2B3F184 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 460C944E06823B373617C4FD /* Signing.shared.xcconfig */;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGNING_ALLOWED = NO;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(VOXT_CONNECTOR_BUNDLE_ID).uitests";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+				TEST_TARGET_NAME = VoxtConnector;
+			};
+			name = Release;
+		};
+		407EB7EFFBA77C4729ED522B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		79728D696D79B98FEC58D603 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		9443088B9AFB362AD3DCF588 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 460C944E06823B373617C4FD /* Signing.shared.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGNING_ALLOWED = NO;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_LSUIElement = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.2;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(VOXT_CONNECTOR_BUNDLE_ID)";
+				PRODUCT_NAME = "Voxt Connector";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		B4F6CE81BFDB17708B3E51DD /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 460C944E06823B373617C4FD /* Signing.shared.xcconfig */;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGNING_ALLOWED = NO;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(VOXT_CONNECTOR_BUNDLE_ID).uitests";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+				TEST_TARGET_NAME = VoxtConnector;
+			};
+			name = Debug;
+		};
+		CE4E409546AC9778442E9A59 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 460C944E06823B373617C4FD /* Signing.shared.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGNING_ALLOWED = NO;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_HARDENED_RUNTIME = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_LSUIElement = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.2;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(VOXT_CONNECTOR_BUNDLE_ID)";
+				PRODUCT_NAME = "Voxt Connector";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		34A1F44077E920C30F5B232B /* Build configuration list for PBXProject "VoxtConnector" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				79728D696D79B98FEC58D603 /* Debug */,
+				407EB7EFFBA77C4729ED522B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		9243AAB13181C9EB9D9FCE1F /* Build configuration list for PBXNativeTarget "VoxtConnectorUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B4F6CE81BFDB17708B3E51DD /* Debug */,
+				06DBFC3F11B9B0ECF2B3F184 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		C5E4856CF537FE8311EE7D77 /* Build configuration list for PBXNativeTarget "VoxtConnector" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				9443088B9AFB362AD3DCF588 /* Debug */,
+				CE4E409546AC9778442E9A59 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		31968D95B73947B174AC40AD /* XCLocalSwiftPackageReference "../VoxtConnectionKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../VoxtConnectionKit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		900C8C0B9C9E5928587AC269 /* VoxtConnectionKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = VoxtConnectionKit;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 048233ADBD3E64B625E3CCC4 /* Project object */;
+}

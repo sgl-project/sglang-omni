@@ -431,12 +431,28 @@ jobs:
             -only-testing:VoxtTests/MeetingSpeakerFeedPolicyTests \
             -only-testing:VoxtTests/OmniModelManagerRecoveryTests \
             -only-testing:VoxtTests/OmniFailurePathTests \
+            -only-testing:VoxtTests/ASRHintSettingsTests \
+            -only-testing:VoxtTests/MLXTranscriptionPlanningTests \
             -only-testing:VoxtTests/MLXModelManagerLifecycleTests \
+            -only-testing:VoxtTests/MLXTranscriberIdleReleaseTests \
             -only-testing:VoxtTests/MLXNativeLiveRuntimeTests \
+            -only-testing:VoxtTests/EnhancementLanguageGuardTests \
             -only-testing:VoxtTests/HotkeyEventTapInstallationTests \
+            -only-testing:VoxtTests/HistorySyncTests \
             -only-testing:VoxtTests/HotkeyManagerTests \
             -only-testing:VoxtTests/RecordingSessionLifecycleTests \
             -only-testing:VoxtTests/RemoteLLMRuntimeClientGenerationSettingsTests \
+            -only-testing:VoxtTests/LocalAPIComposePromptTests \
+            -only-testing:VoxtTests/LocalAPIConnectorLinkTests \
+            -only-testing:VoxtTests/LocalAPIContractTests \
+            -only-testing:VoxtTests/LocalAPICorrectionTests \
+            -only-testing:VoxtTests/LocalAPIDictationPipelineTests \
+            -only-testing:VoxtTests/LocalAPIHTTPTests \
+            -only-testing:VoxtTests/LocalAPIModelStatusTests \
+            -only-testing:VoxtTests/LocalAPIRequestHandlerTests \
+            -only-testing:VoxtTests/LocalAPIRouterTests \
+            -only-testing:VoxtTests/LocalAPIServerTests \
+            -only-testing:VoxtTests/LocalAPISettingsTests \
             -only-testing:VoxtTests/RemoteLLMRuntimeClientResponsesRequestTests
 
   package:
@@ -537,3 +553,132 @@ jobs:
             ${{ runner.temp }}/voxt-package/*/Voxt-*.pkg
             ${{ runner.temp }}/voxt-package/*/*.sha256
           if-no-files-found: error
+
+  # Voxt Mobile (Voxt/Mobile/): the Tailcat node in Go, the Swift packages, the
+  # iPhone app's unit tests on a simulator and a Voxt Connector build. Nothing
+  # is signed; UI tests need a booted simulator with the keyboard enabled and
+  # are run by hand (Voxt/Mobile/README.md).
+  voxt-mobile:
+    name: Voxt Mobile and Connector tests
+    needs: [preflight]
+    if: needs.preflight.outputs.run_mac == 'true'
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      # Same threshold as the other jobs: builds and the simulator need several
+      # GB; say so plainly instead of failing midway.
+      - name: Check free disk space
+        run: |
+          mkdir -p "$VOXT_CI_ROOT"
+          free_gb=$(df -g "$VOXT_CI_ROOT" | awk 'NR == 2 {print $4}')
+          echo "Free under $VOXT_CI_ROOT: ${free_gb} GB"
+          if [ "$free_gb" -lt 17 ]; then
+            echo "::error::Only ${free_gb} GB free on the runner; the Voxt Mac CI needs at least 17 GB."
+            exit 1
+          else
+            :
+          fi
+
+      # The runner's active developer directory may be the Command Line Tools,
+      # which have no xcodebuild: use the newest Xcode installed anywhere the
+      # runner's user can read (Spotlight, /Applications, ~/Applications).
+      - name: Select Xcode
+        run: |
+          if /usr/bin/xcrun --find xcodebuild >/dev/null 2>&1 && xcodebuild -version >/dev/null 2>&1; then
+            :
+          else
+            candidates="$( { mdfind "kMDItemCFBundleIdentifier == 'com.apple.dt.Xcode'" 2>/dev/null; \
+              ls -d /Applications/Xcode*.app "$HOME"/Applications/Xcode*.app 2>/dev/null; } | sort -u )"
+            xcode=""
+            while IFS= read -r app; do
+              if [ -n "$app" ] && [ -x "$app/Contents/Developer/usr/bin/xcodebuild" ]; then
+                xcode="$app"
+              else
+                :
+              fi
+            done <<< "$(echo "$candidates" | sort -V)"
+            if [ -z "$xcode" ]; then
+              echo "runner user: $(whoami); xcode-select -p: $(xcode-select -p 2>&1)"
+              echo "Xcode bundles found: ${candidates:-none}"
+              echo "::error::No usable Xcode for the runner's user; install Xcode in /Applications or run sudo xcode-select -s <Xcode.app> on the runner."
+              exit 1
+            else
+              echo "DEVELOPER_DIR=$xcode/Contents/Developer" >> "$GITHUB_ENV"
+              export DEVELOPER_DIR="$xcode/Contents/Developer"
+            fi
+          fi
+          xcodebuild -version
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: Voxt/Mobile/tailcat/native/go.mod
+          cache: false
+
+      - name: Tailcat node tests (phone and Mac)
+        working-directory: Voxt/Mobile
+        run: |
+          source tools/tailcat-go-env.sh
+          for module in tailcat/native tailcat/host; do
+            tailcat_prepare_go "$module"
+            (cd "$module" && "$GO_BIN" test ./...)
+          done
+
+      - name: Build the Tailcat xcframework
+        working-directory: Voxt/Mobile
+        run: tools/build-tailcat-native.sh
+
+      # --disable-keychain, --disable-netrc and -packageAuthorizationProvider netrc keep SwiftPM from
+      # looking up github.com credentials in the login Keychain, which can stop on an authorization
+      # dialog on an unattended runner. Every package here is public.
+      - name: Swift package tests
+        working-directory: Voxt/Mobile
+        run: |
+          for package in ios/VoxtMobileKit ios/VoxtTailcat ios/TypingInput ios/KoreanInput ios/SpanishInput \
+            ios/InputMethods/JapaneseInput ios/InputMethods/PinyinInput ios/InputMethods/ZhuyinInput; do
+            swift test --package-path "$package" --scratch-path "$RUNNER_TEMP/spm/$package" \
+              --disable-keychain --disable-netrc
+          done
+          tools/test-package.sh
+
+      - name: Build Voxt Connector
+        working-directory: Voxt/Mobile
+        run: |
+          xcodebuild build -project connector/VoxtConnector/VoxtConnector.xcodeproj -scheme VoxtConnector \
+            -destination platform=macOS -derivedDataPath "$RUNNER_TEMP/connector-derived" \
+            CODE_SIGNING_ALLOWED=NO > "$RUNNER_TEMP/connector-build.log" 2>&1 \
+            || { tail -100 "$RUNNER_TEMP/connector-build.log"; exit 1; }
+
+      # The Tailcat library is built for arm64 only.
+      - name: iPhone app unit tests
+        working-directory: Voxt/Mobile
+        run: |
+          simulator="$(xcrun simctl list devices available -j | python3 -c 'import json, sys
+          devices = json.load(sys.stdin)["devices"].values()
+          print(next((d["udid"] for group in devices for d in group if d["name"].startswith("iPhone")), ""))')"
+          if [ -z "$simulator" ]; then
+            echo "::error::No iPhone simulator on the runner; install one with: xcodebuild -downloadPlatform iOS"
+            exit 1
+          else
+            :
+          fi
+          xcodebuild build-for-testing -project ios/VoxtMobile.xcodeproj -scheme VoxtMobile \
+            -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/mobile-derived" \
+            -packageAuthorizationProvider netrc \
+            CODE_SIGNING_ALLOWED=NO ARCHS=arm64 > "$RUNNER_TEMP/mobile-build.log" 2>&1 \
+            || { tail -100 "$RUNNER_TEMP/mobile-build.log"; exit 1; }
+          xcodebuild test-without-building -project ios/VoxtMobile.xcodeproj -scheme VoxtMobile \
+            -destination "id=$simulator" -derivedDataPath "$RUNNER_TEMP/mobile-derived" \
+            -packageAuthorizationProvider netrc \
+            -only-testing:VoxtMobileTests CODE_SIGNING_ALLOWED=NO
+
+      - name: Build and fixture script tests
+        working-directory: Voxt/Mobile
+        run: |
+          for test in tools/test_*.py tools/test-design-tour-fixture.py; do
+            python3 -I "$test"
+          done
+          python3 ios/InputMethods/PinyinInput/Tools/test_make_data.py

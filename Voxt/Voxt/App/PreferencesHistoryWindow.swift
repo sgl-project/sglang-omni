@@ -6,7 +6,7 @@ import AppKit
 import CoreAudio
 
 extension AppDelegate {
-    private struct HistoryTextModelMetadata {
+    struct HistoryTextModelMetadata {
         let modeTitle: String
         let modelTitle: String
         let remoteProviderTitle: String?
@@ -571,7 +571,7 @@ extension AppDelegate {
         HistoryValueResolver.resolvedKind(for: outputMode)
     }
 
-    private func resolvedHistoryTextModelMetadata(for kind: TranscriptionHistoryKind) -> HistoryTextModelMetadata {
+    func resolvedHistoryTextModelMetadata(for kind: TranscriptionHistoryKind) -> HistoryTextModelMetadata {
         switch kind {
         case .normal:
             guard transcriptionFeatureSettings.llmEnabled else {

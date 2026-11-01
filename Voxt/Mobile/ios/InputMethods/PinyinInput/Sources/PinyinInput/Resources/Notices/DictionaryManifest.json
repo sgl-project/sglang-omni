@@ -1,0 +1,17 @@
+{
+  "source": "https://github.com/amzxyz/rime-wanxiang (CC-BY-4.0), dicts/zi.dict.yaml + dicts/jichu.dict.yaml, modified",
+  "revision": "2d62adc58635968c94522cfdc4103cef139e58dc",
+  "inputs": {
+    "zi.dict.yaml": "dbb68f8b4ef93e48bf3632b3c4bc00b810c6bbb2e101635d6e14752444abe7c9",
+    "jichu.dict.yaml": "ea89860d41f229086a01d86ab2587fc6d8a1790723a30975a2d1dc9b535431f3",
+    "LICENSE": "9e5f1b3c610b9c2da5c313bf81d577a7d1acec686bdb0384edefa6df0f90cd94"
+  },
+  "generator_sha256": "f216f515a11cc80d5a79f652a5c5c41fb6c8425ca11c5ef7c2540adf2002534f",
+  "characters": 49353,
+  "words": 250000,
+  "two_char_quota": 162000,
+  "dropped": null,
+  "rows": 299353,
+  "bytes": 8059707,
+  "output_sha256": "1af22acc9b2f80aa15a4f778927403d61df3f9b0b7c3f94cc868a5e3d28f37e5"
+}

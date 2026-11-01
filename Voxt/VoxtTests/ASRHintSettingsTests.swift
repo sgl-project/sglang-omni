@@ -6,6 +6,35 @@ import XCTest
 
 @MainActor
 final class ASRHintSettingsTests: XCTestCase {
+    // Given an English hint, the native server translated Chinese speech into English.
+    func testLocalAPIAutoDoesNotInheritEnglishMainLanguage() {
+        let macHint = ASRHintResolver.resolve(
+            target: .mlxAudio, settings: ASRHintSettings(),
+            userLanguageCodes: ["en"], mlxModelRepo: "mlx-community/Qwen3-ASR-0.6B-4bit"
+        )
+        XCTAssertNotNil(macHint.language)
+        let automatic = macHint.selectingLanguage(.request(nil))
+        XCTAssertNil(automatic.language)
+        XCTAssertTrue(automatic.languageHints.isEmpty)
+        XCTAssertEqual(macHint.selectingLanguage(.userSettings).language, macHint.language)
+    }
+
+    func testLocalAPIExplicitLanguageOverridesMacAndKeepsVocabulary() {
+        let original = ResolvedASRHintPayload(
+            language: "en", languageHints: ["en"], prompt: "Voxt",
+            otherLanguages: ["English"], multilingualContext: "English",
+            contextualPhrases: ["Voxt"]
+        )
+        let explicit = original.selectingLanguage(.request("Chinese"))
+        XCTAssertEqual(explicit.language, "Chinese")
+        XCTAssertEqual(explicit.languageHints, ["Chinese"])
+        XCTAssertEqual(explicit.contextualPhrases, ["Voxt"])
+        XCTAssertEqual(explicit.prompt, "Voxt")
+        XCTAssertTrue(explicit.otherLanguages.isEmpty)
+        XCTAssertNil(explicit.multilingualContext)
+        XCTAssertNil(original.selectingLanguage(.request("  ")).language)
+    }
+
     func testLoadSanitizesUnsupportedPromptEditors() {
         let raw = """
         {"mlxAudio":{"followsUserMainLanguage":true,"promptTemplate":"  should be removed  "},"openAIWhisper":{"followsUserMainLanguage":false,"promptTemplate":"  Bias {{USER_MAIN_LANGUAGE}}  "}}
@@ -356,6 +385,25 @@ final class ASRHintSettingsTests: XCTestCase {
         XCTAssertEqual(
             MLXTranscriptionPlanning.removingKnownASRContextLeakage(from: mixed),
             "今天要整理 Codex 体验。"
+        )
+    }
+
+    func testQwenLanguageHeaderIsRemovedFromASROutput() {
+        XCTAssertEqual(
+            MLXTranscriptionPlanning.removingKnownASRContextLeakage(
+                from: "<|im_start|>language English<asr_text>The new laptop is faster, but the battery is worse."
+            ),
+            "The new laptop is faster, but the battery is worse."
+        )
+        XCTAssertEqual(
+            MLXTranscriptionPlanning.removingKnownASRContextLeakage(
+                from: "今天开会。 language Chinese<asr_text>明天继续。<|im_end|>"
+            ),
+            "今天开会。 明天继续。"
+        )
+        XCTAssertEqual(
+            MLXTranscriptionPlanning.removingKnownASRContextLeakage(from: "Pick a language English speakers know."),
+            "Pick a language English speakers know."
         )
     }
 
