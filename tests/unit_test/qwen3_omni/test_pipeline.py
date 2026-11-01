@@ -246,7 +246,9 @@ def test_qwen_thinker_to_decode_projection_drops_multimodal_tensors() -> None:
         request_id="req-1",
         request=OmniRequest(inputs="hi"),
         data={
+            "raw_inputs": [{"role": "user", "content": "hi"}],
             "prompt": {"input_ids": torch.tensor([1, 2]), "prompt_text": "hi"},
+            "mm_inputs": {"audio": {"audio_feature_lengths": torch.tensor([2])}},
             "thinker_inputs": {
                 "model_inputs": {
                     "audio_embeds": audio_embeds,
@@ -271,6 +273,8 @@ def test_qwen_thinker_to_decode_projection_drops_multimodal_tensors() -> None:
     projected = project_thinker_to_decode(payload)
     state = Qwen3OmniPipelineState.from_dict(projected.data)
 
+    assert set(projected.data) == {"prompt", "thinker_out", "engine_outputs"}
+    assert torch.equal(state.prompt["input_ids"], torch.tensor([1, 2]))
     assert state.thinker_inputs == {}
     assert state.thinker_out["output_ids"] == [3]
     assert state.thinker_out["extra_model_outputs"] == {}

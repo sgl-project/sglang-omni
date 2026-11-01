@@ -34,6 +34,8 @@ _QWEN3_TTS_CUSTOM_VARIANT_MARKERS = (
     "voice_design",
     "voicedesign",
 )
+QWEN3_TTS_MAX_RUNNING_REQUESTS = 64
+QWEN3_TTS_MAX_QUEUED_REQUESTS = 64
 
 
 class Qwen3TTSStageFactoryKwargs(TypedDict, total=False):
@@ -63,10 +65,11 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
 
     @classmethod
     def generation_admission_defaults(cls) -> dict[str, int]:
-        from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
-
-        defaults = Qwen3TtsEngineBuilder().generation_defaults(dtype="bfloat16")
-        return {k: defaults[k] for k in ("max_running_requests", "max_queued_requests")}
+        # note (ratish): constants here, so the launcher reads them without importing the engine.
+        return {
+            "max_running_requests": QWEN3_TTS_MAX_RUNNING_REQUESTS,
+            "max_queued_requests": QWEN3_TTS_MAX_QUEUED_REQUESTS,
+        }
 
     model_path: str
     # note (0xtoward): Keep deterministic inference opt-in because it serializes
