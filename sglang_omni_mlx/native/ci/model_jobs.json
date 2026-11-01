@@ -132,7 +132,7 @@
     {
       "name": "voxtral-tts",
       "paths": [
-        "^sglang_omni_mlx/native/(src/voxtral_tts/|tools/voxtral_tts_|ci/(voxtral_golden\\.py|test_voxtral_tts_api\\.py|model_golden/voxtral-))"
+        "^sglang_omni_mlx/native/(src/voxtral_tts/|tools/voxtral_tts_|ci/(voxtral_golden\\.py|speech_api\\.py|test_voxtral_tts_api\\.py|model_golden/voxtral-))"
       ],
       "pins": [
         "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",

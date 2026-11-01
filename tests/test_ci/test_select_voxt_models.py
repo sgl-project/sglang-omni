@@ -34,6 +34,7 @@ def selected_names(
         ("sglang_omni_mlx/native/src/music3/music3_service.cpp", ["music3"]),
         ("sglang_omni_mlx/native/ci/model_golden/whisper-small.json", ["whisper"]),
         ("sglang_omni_mlx/native/ci/test_voxtral_tts_api.py", ["voxtral-tts"]),
+        ("sglang_omni_mlx/native/ci/speech_api.py", ["voxtral-tts"]),
         ("sglang_omni_mlx/native/src/qwen3_tts/qwen3_tts_server.cpp", ["qwen3-tts"]),
         ("sglang_omni_mlx/native/ci/test_qwen3_tts_api.py", ["qwen3-tts"]),
         ("sglang_omni_mlx/native/ci/test_cosyvoice3_api.py", ["cosyvoice3"]),
