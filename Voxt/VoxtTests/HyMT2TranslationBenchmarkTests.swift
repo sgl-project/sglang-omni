@@ -29,6 +29,16 @@ final class HyMT2TranslationBenchmarkTests: XCTestCase {
         let output: String
         let totalMs: Double
         let firstPartialMs: Double?
+        let mlx: MLXTimings?
+    }
+
+    private struct MLXTimings: Encodable {
+        let setupMs: Int
+        let promptTokens: Int?
+        let completionTokens: Int?
+        let prefillMs: Int?
+        let generationMs: Int?
+        let modelOverheadMs: Int?
     }
 
     private struct Summary: Encodable {
@@ -126,7 +136,7 @@ final class HyMT2TranslationBenchmarkTests: XCTestCase {
         try encoder.encode(summary).write(to: outputURL.appendingPathComponent("\(run).summary.json"))
     }
 
-    private typealias Translate = (LLMCompiledRequest, @escaping @Sendable (String) -> Void) async throws -> String
+    private typealias Translate = (LLMCompiledRequest, @escaping @Sendable (String) -> Void) async throws -> (output: String, mlx: MLXTimings?)
 
     private func translator(backend: String, model: String) async throws -> Translate {
         switch backend {
@@ -140,7 +150,7 @@ final class HyMT2TranslationBenchmarkTests: XCTestCase {
             }
             addTeardownBlock { await manager.shutdownForApplicationTermination() }
             return { request, onPartial in
-                try await manager.executeCompiledRequest(request, modelID: id, onPartialText: onPartial)
+                (try await manager.executeCompiledRequest(request, modelID: id, onPartialText: onPartial), nil)
             }
         case "mlx":
             let manager = CustomLLMModelManager(modelRepo: model)
@@ -149,7 +159,18 @@ final class HyMT2TranslationBenchmarkTests: XCTestCase {
             }
             addTeardownBlock { await manager.shutdownForApplicationTermination() }
             return { request, onPartial in
-                try await manager.executeCompiledRequest(request, repo: model, onPartialText: onPartial)
+                let output = try await manager.executeCompiledRequest(request, repo: model, onPartialText: onPartial)
+                let diagnostics = manager.lastRunDiagnostics
+                return (output, diagnostics.map {
+                    MLXTimings(
+                        setupMs: $0.setupMs,
+                        promptTokens: $0.promptTokens,
+                        completionTokens: $0.completionTokens,
+                        prefillMs: $0.prefillMs,
+                        generationMs: $0.generationMs,
+                        modelOverheadMs: $0.modelOverheadMs
+                    )
+                })
             }
         default:
             throw XCTSkip("Unknown backend: \(backend)")
@@ -163,10 +184,10 @@ final class HyMT2TranslationBenchmarkTests: XCTestCase {
         let request = compiledTranslationRequest(source: item.source, target: target)
         let clock = PartialClock()
         let startedAt = ProcessInfo.processInfo.systemUptime
-        let raw = try await translate(request) { _ in clock.mark() }
+        let translation = try await translate(request) { _ in clock.mark() }
         let finishedAt = ProcessInfo.processInfo.systemUptime
         let visible = LLMVisibleOutputSanitizer.sanitize(
-            raw,
+            translation.output,
             fallbackText: item.source,
             taskKind: .translation
         ).text
@@ -174,7 +195,8 @@ final class HyMT2TranslationBenchmarkTests: XCTestCase {
             id: item.id,
             output: visible,
             totalMs: (finishedAt - startedAt) * 1000,
-            firstPartialMs: clock.value.map { ($0 - startedAt) * 1000 }
+            firstPartialMs: clock.value.map { ($0 - startedAt) * 1000 },
+            mlx: translation.mlx
         )
     }
 
