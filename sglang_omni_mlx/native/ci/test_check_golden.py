@@ -13,6 +13,7 @@ from typing import Literal
 import check_golden
 import music3_golden
 import pytest
+import qwen3_tts_golden
 import voxtral_golden
 
 CLIP = {
@@ -252,3 +253,16 @@ def test_a_voxtral_case_without_golden_outputs_fails(device: str) -> None:
     assert voxtral_golden.check(empty, "Apple M5", results)[1] == [
         "the golden file has no outputs"
     ]
+
+
+def test_a_recorded_chip_requires_every_qwen3_tts_pcm_sample() -> None:
+    recorded = {**SPEECH, "pcm_sha256": "a"}
+    golden = speech_golden()
+    golden["devices"]["Apple M5"]["clips"] = {"en": recorded, "fr": recorded}
+    same = {"en": recorded, "fr": recorded}
+    assert qwen3_tts_golden.check(golden, "Apple M5", same)[1] == []
+    changed = {"en": {**recorded, "pcm_sha256": "b"}, "fr": recorded}
+    failures = qwen3_tts_golden.check(golden, "Apple M5", changed)[1]
+    assert failures == ["`en` has other PCM"]
+    # Another chip is held to the prompt ids only.
+    assert qwen3_tts_golden.check(golden, "Apple M4 Pro", changed)[1] == []
