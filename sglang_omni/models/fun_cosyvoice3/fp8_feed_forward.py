@@ -42,6 +42,8 @@ def copy_A_tile(
                     tAgA_tile[None, copy_row, None],
                     tAsA_stage[None, copy_row, None],
                 )
+            else:
+                pass
 
 
 @cute.kernel
@@ -181,6 +183,8 @@ def gemm3_kernel(
             mA.shape[0],
         )
         cute.copy(tiled_copy_B, tBgB[None, None, None, 1], tBsB[None, None, None, 1])
+    else:
+        pass
     cute.arch.cp_async_commit_group()
 
     cute.arch.cp_async_wait_group(1)
@@ -228,6 +232,8 @@ def gemm3_kernel(
                 tBgB[None, None, None, k_tile + 2],
                 tBsB[None, None, None, slot],
             )
+        else:
+            pass
         cute.arch.cp_async_commit_group()
 
         cute.arch.cp_async_wait_group(1)
@@ -255,6 +261,8 @@ def gemm3_kernel(
             row = block_first_row + tCgCoord[index][0]
             if row < mA.shape[0]:
                 tCgC[index] = tCrD[index]
+            else:
+                pass
 
 
 ATOM_LAYOUT_MNK = (2, 2, 1)
@@ -413,7 +421,7 @@ def fp8_feed_forward(
     stream = cuda.CUstream(torch.cuda.current_stream(x.device).cuda_stream)
     compiled_kernels[key](*tensors, stream)
     with torch.autocast(device_type="cuda", enabled=False):
-        out = torch._scaled_mm(
+        out = torch._scaled_mm(  # noqa: leading-underscore
             hidden[0],
             out_weight_fp8,
             gelu_scale,
