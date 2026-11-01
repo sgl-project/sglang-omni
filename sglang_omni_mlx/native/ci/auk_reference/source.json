@@ -1,0 +1,41 @@
+{
+  "name": "SGLang Omni AuK Python MLX migration reference",
+  "repository": "https://github.com/xuchen-w/sglang-omni",
+  "revision": "ca1e2f2332db9a03c31cf3a766c8bd4f3fecaf56",
+  "files": {
+    "sglang_omni/models/auk/constants.py": "ff9935a7aa0020617f554b811897ccb89b5fcb41b3eede12a4ee21387d735142",
+    "sglang_omni/models/auk/hf_config.py": "707a573080b03172bd59ef0466d755171257b3570431e71f99892a39a9df7a78",
+    "sglang_omni/models/auk/weight_loader.py": "b27e9d3c2c11389f0a42c66c1a38726ea920b6405c9d62a19695e175e6dc9ca6",
+    "sglang_omni/models/auk/reference_encode.py": "8dad939a63364b2cc5d7c3b46fdecb556a2ee698efc9745d95d2a98408f7840a",
+    "sglang_omni/models/auk/mlx/__init__.py": "277321244eb088b1cda4a24e047d5d070bf3fe5591999e6a4537346af0ab14fb",
+    "sglang_omni/models/auk/mlx/blocks.py": "22d66d8c7360fea1b938a525800eddfad24ce522f45af528fb8ad6d8ba63fda2",
+    "sglang_omni/models/auk/mlx/conditioning.py": "e7114dda3dc834cd8b4685941cc825235dd86590f7afea2df03d6f4e59999430",
+    "sglang_omni/models/auk/mlx/conditioning_audio.py": "daed03c13c3d2036a32371b96b56d9dc132351e95b894d8316e1c25ce6968a7a",
+    "sglang_omni/models/auk/mlx/dit.py": "ce9fd34431415d8abbfb4bf7f524ac9f4e614abfb134191391361badfeb1528f",
+    "sglang_omni/models/auk/mlx/flow_matching.py": "4b6f078955355e3cf4782d743437f120fe8fbed989835a00594004c7fa9eb871",
+    "sglang_omni/models/auk/mlx/loader.py": "0b54c8fe3cb1547a01da6ac16f3feb6c0c8839b72dd3e7a55d526663d859c659",
+    "sglang_omni/models/auk/mlx/stages.py": "8ecfd1b2ed68dc6d15cd8406754be784a18708e1e5dbfc1ddbde904c597a7e1e",
+    "sglang_omni/models/auk/mlx/vae.py": "e0e908487f921f92834668e26658375660d15c1811da7bc040c1cfd23f5e2bd3",
+    "sglang_omni/models/auk/mlx/vae_layers.py": "732b0ca13e11567fd1828161edd66cdb252a68abea577bbb9c7c517e10d2e6b0",
+    "sglang_omni/utils/audio.py": "6c252828c9daa28f76036a49388e37c8784d6c0496f2f673236e9550917295d8",
+    "sglang_omni/utils/checkpoint.py": "c0edd004bdc50caf24e19048b7f8f811c9675036d0db3715b7ee965b12ae09cd"
+  },
+  "dataset": {
+    "repo": "zhaochenyang20/seed-tts-eval",
+    "revision": "8f5e1aa2a35d42f42e940074c1983358b9491f89",
+    "subsets": [
+      {
+        "lang": "en",
+        "samples": 20,
+        "selection": "first 20 lines in original meta.lst order",
+        "sha256": "294a05a3f251a20e81aed5f34649f78c5180eb02c8a672424998612681003a3e"
+      },
+      {
+        "lang": "zh",
+        "samples": 20,
+        "selection": "first 20 lines in original meta.lst order",
+        "sha256": "63899ff0c6f10f6905211dd852309c78aae47f8767208c8426f604869576b908"
+      }
+    ]
+  }
+}

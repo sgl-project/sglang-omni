@@ -9,6 +9,8 @@ To add or change a model here, read the
 [MLX path policy and contribution requirements](../../docs/mlx/index.md)
 first.
 
+The runtime also includes `auk_server` for AuK and AuK-Flash speech generation, voice cloning and editing. It uses the same supervisor protocol, `/health` and `/v1/models`, with `/v1/audio/speech` and `/generate` for synthesis. It is a standalone server; Voxt's ASR model selection does not launch it. See the [AuK cookbook](../../docs/cookbook/auk.md#apple-silicon) for checkpoint preparation and launch commands.
+
 | Checkpoint | Runtime | Voxt behavior kept |
 | --- | --- | --- |
 | `mlx-community/Qwen3-ASR-0.6B-4bit`, `mlx-community/Qwen3-ASR-1.7B-6bit`, `mlx-community/Qwen3-ASR-1.7B-8bit` | `qwen3_asr_server` | Final with context bias and language hint, Swift's audio layout and stop rules, 1200 s energy-cut chunks sharing one token budget, first detected language carried forward; live preview over the realtime socket, first decode after 100 ms of audio, then once a second |

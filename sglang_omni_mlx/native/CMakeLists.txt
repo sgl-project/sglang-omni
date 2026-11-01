@@ -7,9 +7,15 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Note (Jiaxin Deng): exactly the MLX build the Python reference server runs
-# on, so both produce bit-identical outputs.
-set(SGLANG_OMNI_MLX_VERSION 0.32.3)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/scripts/build-tools.lock")
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/build-tools.lock" mlx_pins
+  REGEX "^mlx==")
+list(LENGTH mlx_pins mlx_pin_count)
+if(NOT mlx_pin_count EQUAL 1 OR NOT mlx_pins MATCHES "^mlx==([0-9]+\\.[0-9]+\\.[0-9]+)$")
+  message(FATAL_ERROR "build-tools.lock must contain exactly one mlx==X.Y.Z pin")
+endif()
+set(SGLANG_OMNI_MLX_VERSION "${CMAKE_MATCH_1}")
 if(NOT MLX_DIR OR NOT EXISTS "${MLX_DIR}/MLXConfig.cmake")
   message(FATAL_ERROR "Set MLX_DIR to <mlx ${SGLANG_OMNI_MLX_VERSION} wheel>/share/cmake/MLX")
 endif()
@@ -46,6 +52,9 @@ FetchContent_Declare(
   EXCLUDE_FROM_ALL)
 set(BUILD_SHARED_LIBS OFF)
 FetchContent_MakeAvailable(nlohmann_json pcre2 civetweb)
+set_property(TARGET civetweb-c-library PROPERTY SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/common/civetweb_connection.c")
+target_include_directories(civetweb-c-library PRIVATE src "${civetweb_SOURCE_DIR}/src")
 
 add_library(common STATIC
   src/common/audio.cpp
@@ -92,10 +101,16 @@ target_compile_options(sortformer PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 add_library(omni_service STATIC src/common/service.cpp src/common/http.cpp)
 target_link_libraries(omni_service PUBLIC common civetweb-c-library)
 target_compile_options(omni_service PRIVATE -Wall -Wextra)
-
+add_library(tts_service STATIC src/common/tts_service.cpp)
+target_link_libraries(tts_service PUBLIC omni_service)
+target_compile_options(tts_service PRIVATE -Wall -Wextra)
 add_library(asr_service STATIC src/qwen3_asr/asr_service.cpp)
 target_link_libraries(asr_service PUBLIC qwen3_asr omni_service)
 target_compile_options(asr_service PRIVATE -Wall -Wextra)
+
+add_executable(asr_service_probe EXCLUDE_FROM_ALL ci/asr_service_probe.cpp)
+target_link_libraries(asr_service_probe PRIVATE asr_service)
+target_compile_options(asr_service_probe PRIVATE -Wall -Wextra)
 
 # The /v1/audio/speech API the TTS servers share.
 add_library(speech_service STATIC src/qwen3_asr/speech_service.cpp)
@@ -225,6 +240,49 @@ set_target_properties(sensevoice_server sensevoice_transcribe PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
   INSTALL_RPATH "@loader_path")
 install(TARGETS sensevoice_server sensevoice_transcribe RUNTIME DESTINATION bin)
+
+# AuK's reference front end uses the same SoX resampler revision as python-soxr.
+FetchContent_Declare(
+  soxr
+  URL https://codeload.github.com/chirlu/soxr/tar.gz/a66f3eeeeb62a32403ff143b756eed92b1ec6b62
+  URL_HASH SHA256=d72cf79f82b4bc56d853c8e166bef994f0bbf9a1ca90ae6f81a3847081f48b96
+  SOURCE_SUBDIR no_automatic_build)
+FetchContent_MakeAvailable(soxr)
+list(APPEND CMAKE_MODULE_PATH "${soxr_SOURCE_DIR}/cmake/Modules")
+set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(WITH_OPENMP OFF CACHE BOOL "" FORCE)
+set(WITH_LSR_BINDINGS OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS ON)
+add_subdirectory("${soxr_SOURCE_DIR}" "${soxr_BINARY_DIR}" EXCLUDE_FROM_ALL)
+set(BUILD_SHARED_LIBS OFF)
+set_target_properties(soxr PROPERTIES INSTALL_NAME_DIR "@rpath")
+
+add_library(audio_resample STATIC src/common/audio_resample.cpp)
+target_include_directories(audio_resample PUBLIC src PRIVATE "${soxr_SOURCE_DIR}/src")
+target_link_libraries(audio_resample PUBLIC soxr)
+target_compile_options(audio_resample PRIVATE -Wall -Wextra)
+
+add_library(auk_model STATIC src/auk/auk_conditioner.cpp src/auk/auk_conditioner_audio.cpp
+  src/auk/auk_dit.cpp src/auk/auk_dit_checkpoint.cpp src/auk/auk_vae.cpp src/auk/auk_model.cpp)
+target_link_libraries(auk_model PUBLIC qwen3_asr audio_resample)
+target_compile_options(auk_model PRIVATE -Wall -Wextra)
+add_executable(auk_server src/auk/auk_server.cpp src/auk/auk_tts_service.cpp
+  src/auk/auk_request.cpp)
+target_link_libraries(auk_server PRIVATE auk_model tts_service)
+add_executable(auk_probe tools/auk_probe.cpp)
+target_link_libraries(auk_probe PRIVATE auk_model)
+add_executable(auk_synthesize tools/auk_synthesize.cpp)
+target_link_libraries(auk_synthesize PRIVATE auk_model)
+set_target_properties(auk_server auk_probe auk_synthesize PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS auk_server auk_probe auk_synthesize RUNTIME DESTINATION bin)
+install(TARGETS soxr LIBRARY DESTINATION bin)
+install(FILES "${soxr_SOURCE_DIR}/LICENCE" DESTINATION share/licenses/soxr)
+install(FILES licenses/auk.txt licenses/Apache-2.0.txt licenses/qwen-research.txt
+  licenses/NOTICE
+  DESTINATION share/licenses/auk)
 
 # Note (Minyi Tang): Voxtral 4B TTS: voxtral_tts_server, with the CUDA server's
 # /v1/audio/speech API, and its parity tool; the text decoder reuses Qwen3's.

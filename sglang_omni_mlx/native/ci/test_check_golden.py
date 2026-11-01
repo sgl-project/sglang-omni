@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for check_golden.py's per-chip gate (no runtime needed)."""
+"""Unit tests for native golden gates."""
 
 from __future__ import annotations
 
