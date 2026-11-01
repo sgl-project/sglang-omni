@@ -105,10 +105,14 @@ def test_local_model_path_skips_snapshot_resolution(monkeypatch, tmp_path) -> No
         raise AssertionError("local paths must not resolve a snapshot")
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", fail_snapshot)
+    prompts = []
+    monkeypatch.setattr("builtins.input", lambda *args: prompts.append(args) or "n")
     (tmp_path / "config.json").write_text(
-        '{"architectures": ["DotsTTSForConditionalGeneration"]}'
+        '{"architectures": ["DotsTTSForConditionalGeneration"], "model_type": "custom",'
+        ' "auto_map": {"AutoConfig": "configuration_custom.CustomConfig"}}'
     )
 
     config_cls = manager.resolve_config_cls_for_model_path(str(tmp_path))
 
     assert config_cls is DotsTTSPipelineConfig
+    assert prompts == []

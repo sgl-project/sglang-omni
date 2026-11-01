@@ -21,17 +21,15 @@ from scipy.signal import resample_poly
 ROOT = Path(__file__).parent
 FRONTEND = ROOT / "frontend"
 logger = logging.getLogger(__name__)
+REFERENCE_SAMPLE_RATE_HZ = 16000
+# Note (ruoyu): Deterministic and quick on MiniCPM-o, sent only where declared.
+WARMUP_SAMPLING = {"greedy": True, "force_listen_count": 0}
 
 
 async def warmup(api_base: str) -> None:
     """Exercise audio, vision and speech before accepting browser sessions."""
     reference = load_reference("assets/minicpmo/ref_audio/ref_en_dlc_1.wav")
-    samples = np.frombuffer(base64.b64decode(reference["data"]), dtype="<f4")
-    reference_wav = io.BytesIO()
-    sf.write(reference_wav, samples, 16000, format="WAV", subtype="PCM_16")
-    audio = np.zeros(8 * 16000, dtype="<i2")
-    length = min(len(samples), 4 * 16000)
-    audio[:length] = np.clip(samples[:length] * 32767, -32768, 32767).astype("<i2")
+    reference_samples = np.frombuffer(base64.b64decode(reference["data"]), dtype="<f4")
     image = io.BytesIO()
     Image.new("RGB", (448, 448), "white").save(image, format="JPEG")
     async with ClientSession() as client:
@@ -44,6 +42,40 @@ async def warmup(api_base: str) -> None:
                 "generate through their own services"
             )
             return
+        else:
+            pass
+        input_rate_hz = capabilities["input_audio_format"]["rate"]
+        divisor = math.gcd(REFERENCE_SAMPLE_RATE_HZ, input_rate_hz)
+        input_rate_samples = resample_poly(
+            reference_samples,
+            input_rate_hz // divisor,
+            REFERENCE_SAMPLE_RATE_HZ // divisor,
+        )
+        audio = np.zeros(8 * input_rate_hz, dtype="<i2")
+        speech_sample_count = min(len(input_rate_samples), 4 * input_rate_hz)
+        audio[:speech_sample_count] = np.clip(
+            input_rate_samples[:speech_sample_count] * 32767, -32768, 32767
+        ).astype("<i2")
+        extension = {
+            "sampling": {
+                name: value
+                for name, value in WARMUP_SAMPLING.items()
+                if name in capabilities["sampling_parameters"]
+            }
+        }
+        if capabilities["supports_reference_audio"]:
+            reference_wav = io.BytesIO()
+            sf.write(
+                reference_wav,
+                reference_samples,
+                REFERENCE_SAMPLE_RATE_HZ,
+                format="WAV",
+                subtype="PCM_16",
+            )
+            extension["reference_audio"] = {
+                "media_type": "audio/wav",
+                "data": base64.b64encode(reference_wav.getvalue()).decode(),
+            }
         else:
             pass
         modes = (
@@ -74,18 +106,7 @@ async def warmup(api_base: str) -> None:
                                     "session": {
                                         "instructions": "You are a helpful voice assistant. Reply briefly to what you hear.",
                                         "output_modalities": ["audio"],
-                                        "sglang": {
-                                            "sampling": {
-                                                "greedy": True,
-                                                "force_listen_count": 0,
-                                            },
-                                            "reference_audio": {
-                                                "media_type": "audio/wav",
-                                                "data": base64.b64encode(
-                                                    reference_wav.getvalue()
-                                                ).decode(),
-                                            },
-                                        },
+                                        "sglang": extension,
                                     },
                                 }
                             )
@@ -115,7 +136,7 @@ async def warmup(api_base: str) -> None:
                                         ).decode(),
                                         "sglang": {
                                             "seq": sequence,
-                                            "t_start_ms": offset / 16,
+                                            "t_start_ms": offset * 1000 / input_rate_hz,
                                         },
                                     }
                                 )
@@ -147,12 +168,14 @@ async def warmup(api_base: str) -> None:
 @lru_cache(maxsize=16)
 def load_reference(relative_path: str) -> dict:
     audio, rate = sf.read(ROOT / relative_path, dtype="float32", always_2d=True)
-    divisor = math.gcd(rate, 16000)
-    samples = resample_poly(audio.mean(axis=1), 16000 // divisor, rate // divisor)
+    divisor = math.gcd(rate, REFERENCE_SAMPLE_RATE_HZ)
+    samples = resample_poly(
+        audio.mean(axis=1), REFERENCE_SAMPLE_RATE_HZ // divisor, rate // divisor
+    )
     return {
         "data": base64.b64encode(samples.astype("<f4").tobytes()).decode(),
         "name": Path(relative_path).name,
-        "duration": len(samples) / 16000,
+        "duration": len(samples) / REFERENCE_SAMPLE_RATE_HZ,
     }
 
 

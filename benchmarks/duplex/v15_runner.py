@@ -4,9 +4,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import gc
 import hashlib
 import logging
+import multiprocessing
+import os
+import pickle
 import time
+from concurrent.futures import Executor, ProcessPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
 from typing import Literal, Protocol
@@ -51,6 +57,11 @@ RUNNER_FILES = (
     "benchmarks/duplex/v15_runner.py",
 )
 VARIANT_STATUSES = ("pending", "invalid", "error", "fail", "not_exercised", "pass")
+# Post-processing parses the whole trace and encodes reports in pure Python; it gets
+# at most a quarter of the host so the recorder and the server keep their CPUs.
+MAX_POSTPROCESS_WORKERS = 4
+POSTPROCESS_NICE = 10
+LOOP_LAG_INTERVAL_S = 0.01
 
 
 class DuplexDataset(Protocol):
@@ -62,6 +73,57 @@ class DuplexDataset(Protocol):
     ) -> list[V10Sample] | list[V15Sample]: ...
 
     def inventory(self, root: Path) -> dict[str, dict[str, int] | list[str]]: ...
+
+
+def lower_priority() -> None:
+    os.nice(POSTPROCESS_NICE)
+
+
+def default_postprocess_workers() -> int:
+    usable_cpus = (
+        len(os.sched_getaffinity(0))
+        if hasattr(os, "sched_getaffinity")
+        else os.cpu_count() or 1
+    )
+    return max(1, min(MAX_POSTPROCESS_WORKERS, usable_cpus // 4))
+
+
+# note (edwingao28): Replay and reconstruction hold the GIL for 100 ms and more in long
+# C calls and full collections, so they run in other processes, off the pacing loop.
+def postprocess_executor(workers: int) -> Executor:
+    return ProcessPoolExecutor(
+        max_workers=workers,
+        mp_context=multiprocessing.get_context("spawn"),
+        initializer=lower_priority,
+    )
+
+
+def postprocess_variant(
+    variant_dir: Path, profile: ProfileName
+) -> dict[str, JsonValue]:
+    protocol_report = replay_run(variant_dir)
+    write_json(variant_dir / "report.json", protocol_report)
+    (case_report,) = protocol_report["cases"]
+    playout_report = reconstruct_output(variant_dir, profile=profile)
+    return {
+        "case": {
+            "status": case_report["status"],
+            "violations": case_report["violations"],
+            "admission_denials": case_report["metrics"]["admission_denials"],
+        },
+        "playout": {
+            key: playout_report[key]
+            for key in (
+                "errors",
+                "input_timing",
+                "media_samples",
+                "playout_samples",
+                "sample_rate",
+                "initial_delay_s",
+            )
+        }
+        | {"media_pcm_sha256": playout_report["pcm_sha256"].get("output-media.wav")},
+    }
 
 
 def summarize(samples: list[dict[str, JsonValue]]) -> dict[str, JsonValue]:
@@ -159,11 +221,14 @@ async def run_samples(
     concurrency: int = 1,
     turn_detection: TurnDetection | None = None,
     legacy_tail_s: float = LEGACY_TAIL_S,
+    postprocess: Executor | None = None,
 ) -> dict[str, JsonValue]:
     """Run selected sample variants, retaining failures in the selected denominator.
 
     turn_detection configures legacy-protocol and turn-based sessions and
     legacy_tail_s legacy-protocol ones; see benchmarks.duplex.client.run_session.
+    postprocess runs replay and reconstruction; by default a pool of lower-priority
+    processes, owned and shut down by this call.
     """
     if not dataset_revision:
         raise ValueError("dataset_revision must be nonempty")
@@ -288,16 +353,28 @@ async def run_samples(
         },
     )
 
-    def save(
+    client_loop: dict[str, JsonValue] = {
+        "interval_s": LOOP_LAG_INTERVAL_S,
+        "max_lag_s": None,
+        "lags_over_tolerance": 0,
+    }
+
+    def run_state(
         status: Literal["preparing", "running", "complete"]
     ) -> dict[str, JsonValue]:
-        result = {
+        return {
             "schema_version": 1,
             "status": status,
             "summary": summarize(sample_records),
-            "load": summarize_load(sample_records, concurrency),
+            "load": summarize_load(sample_records, concurrency)
+            | {"client_loop": client_loop},
             "samples": sample_records,
         }
+
+    def save(
+        status: Literal["preparing", "running", "complete"]
+    ) -> dict[str, JsonValue]:
+        result = run_state(status)
         write_json(output / "run.json", result)
         return result
 
@@ -381,85 +458,140 @@ async def run_samples(
                 )
                 save("preparing")
 
-    save("running")
-    pending = [
-        (sample_record, variant, variant_state)
-        for sample_record in sample_records
-        for variant, variant_state in sample_record["variants"].items()
-        if variant_state["status"] == "pending"
-    ]
-    session_slots = asyncio.Semaphore(concurrency)
-    open_sessions = 0
-    recording_started_s = time.perf_counter()
-
-    async def record_variant(
-        sample_record: dict[str, JsonValue],
-        variant: str,
-        variant_state: dict[str, JsonValue],
-    ) -> None:
-        nonlocal open_sessions
-        async with session_slots:
-            variant_dir = output / variant_state["directory"]
-            variant_state["session"] = {
-                "started_s": time.perf_counter() - recording_started_s,
-                "finished_s": None,
-                "open_sessions_at_start": open_sessions,
-            }
-            open_sessions += 1
-            try:
-                await run_session(
-                    url,
-                    (variant_dir / "input.pcm").read_bytes(),
-                    trace_path=variant_dir / "continuous.jsonl",
-                    timeout_s=timeout_s,
-                    profile=profile,
-                    turn_detection=turn_detection,
-                    tail_s=legacy_tail_s,
-                )
-                # note (wenyao): trace parsing and WAV writes run off the loop so
-                # they do not stall the 80 ms pacing of the other open sessions.
-                protocol_report = await asyncio.to_thread(replay_run, variant_dir)
-                await asyncio.to_thread(
-                    write_json, variant_dir / "report.json", protocol_report
-                )
-                (case_report,) = protocol_report["cases"]
-                playout_report = await asyncio.to_thread(
-                    reconstruct_output, variant_dir, profile=profile
-                )
-            except Exception as exc:
-                logger.exception(f"variant {sample_record['id']}/{variant} failed")
-                variant_state["status"] = "error"
-                variant_state["errors"].append(f"{type(exc).__name__}: {exc}")
-            else:
-                variant_state["protocol_verdict"] = case_report["status"]
-                variant_state["violations"] = case_report["violations"]
-                variant_state["errors"].extend(playout_report["errors"])
-                variant_state["status"] = (
-                    "fail" if playout_report["errors"] else case_report["status"]
-                )
-                variant_state["qualified"] = variant_state["status"] == "pass"
-                variant_state["input_timing"] = playout_report["input_timing"]
-                variant_state["output"] = {
-                    "media_pcm_sha256": playout_report["pcm_sha256"].get(
-                        "output-media.wav"
-                    ),
-                    "media_duration_s": playout_report["media_samples"]
-                    / playout_report["sample_rate"],
-                    "playout_duration_s": playout_report["playout_samples"]
-                    / playout_report["sample_rate"],
-                    "initial_delay_s": playout_report["initial_delay_s"],
-                    "admission_denials": case_report["metrics"]["admission_denials"],
-                }
-            open_sessions -= 1
-            variant_state["session"]["finished_s"] = (
-                time.perf_counter() - recording_started_s
+    loop = asyncio.get_running_loop()
+    with contextlib.ExitStack() as exit_stack:
+        if postprocess is None:
+            workers = default_postprocess_workers()
+            postprocess = postprocess_executor(workers)
+            exit_stack.callback(postprocess.shutdown, wait=True, cancel_futures=True)
+            # note (edwingao28): Workers start and import before any session paces.
+            await asyncio.gather(
+                *(loop.run_in_executor(postprocess, os.getpid) for _ in range(workers))
             )
-            variant_state["files"] = {
-                path.name: str(path.relative_to(output))
-                for path in sorted(variant_dir.iterdir())
-                if not path.name.startswith(".")
-            }
-            save("running")
+        else:
+            pass
 
-    await asyncio.gather(*(record_variant(*entry) for entry in pending))
-    return save("complete")
+        # note (edwingao28): The indented encode grows with the run, so a thread writes
+        # checkpoints, one at a time since every write goes through one partial file.
+        checkpoint_dirty = False
+        checkpoint_task: asyncio.Task[None] | None = None
+
+        async def write_checkpoints() -> None:
+            nonlocal checkpoint_dirty
+            while checkpoint_dirty:
+                checkpoint_dirty = False
+                snapshot = pickle.loads(pickle.dumps(run_state("running")))
+                await asyncio.to_thread(write_json, output / "run.json", snapshot)
+
+        def checkpoint() -> None:
+            nonlocal checkpoint_dirty, checkpoint_task
+            checkpoint_dirty = True
+            if checkpoint_task is None:
+                checkpoint_task = asyncio.create_task(write_checkpoints())
+            elif checkpoint_task.done():
+                # note (edwingao28): A failed write raises here, not lost with its task.
+                checkpoint_task.result()
+                checkpoint_task = asyncio.create_task(write_checkpoints())
+            else:
+                pass
+
+        save("running")
+        pending = [
+            (sample_record, variant, variant_state)
+            for sample_record in sample_records
+            for variant, variant_state in sample_record["variants"].items()
+            if variant_state["status"] == "pending"
+        ]
+        session_slots = asyncio.Semaphore(concurrency)
+        open_sessions = 0
+        recording_started_s = time.perf_counter()
+
+        async def record_variant(
+            sample_record: dict[str, JsonValue],
+            variant: str,
+            variant_state: dict[str, JsonValue],
+        ) -> None:
+            nonlocal open_sessions
+            async with session_slots:
+                variant_dir = output / variant_state["directory"]
+                variant_state["session"] = {
+                    "started_s": time.perf_counter() - recording_started_s,
+                    "finished_s": None,
+                    "open_sessions_at_start": open_sessions,
+                }
+                open_sessions += 1
+                try:
+                    await run_session(
+                        url,
+                        await asyncio.to_thread((variant_dir / "input.pcm").read_bytes),
+                        trace_path=variant_dir / "continuous.jsonl",
+                        timeout_s=timeout_s,
+                        profile=profile,
+                        turn_detection=turn_detection,
+                        tail_s=legacy_tail_s,
+                    )
+                    report = await loop.run_in_executor(
+                        postprocess, postprocess_variant, variant_dir, profile
+                    )
+                except Exception as exc:
+                    logger.exception(f"variant {sample_record['id']}/{variant} failed")
+                    variant_state["status"] = "error"
+                    variant_state["errors"].append(f"{type(exc).__name__}: {exc}")
+                else:
+                    case_report, playout_report = report["case"], report["playout"]
+                    variant_state["protocol_verdict"] = case_report["status"]
+                    variant_state["violations"] = case_report["violations"]
+                    variant_state["errors"].extend(playout_report["errors"])
+                    variant_state["status"] = (
+                        "fail" if playout_report["errors"] else case_report["status"]
+                    )
+                    variant_state["qualified"] = variant_state["status"] == "pass"
+                    variant_state["input_timing"] = playout_report["input_timing"]
+                    variant_state["output"] = {
+                        "media_pcm_sha256": playout_report["media_pcm_sha256"],
+                        "media_duration_s": playout_report["media_samples"]
+                        / playout_report["sample_rate"],
+                        "playout_duration_s": playout_report["playout_samples"]
+                        / playout_report["sample_rate"],
+                        "initial_delay_s": playout_report["initial_delay_s"],
+                        "admission_denials": case_report["admission_denials"],
+                    }
+                open_sessions -= 1
+                variant_state["session"]["finished_s"] = (
+                    time.perf_counter() - recording_started_s
+                )
+                variant_state["files"] = {
+                    path.name: str(path.relative_to(output))
+                    for path in sorted(variant_dir.iterdir())
+                    if not path.name.startswith(".")
+                }
+                checkpoint()
+
+        # note (edwingao28): Objects alive before the first session never become garbage
+        # mid-run; frozen, they leave the full collections that land on the pacing loop.
+        gc.collect()
+        gc.freeze()
+        monitor = asyncio.create_task(watch_loop(client_loop))
+        try:
+            await asyncio.gather(*(record_variant(*entry) for entry in pending))
+        finally:
+            monitor.cancel()
+            await asyncio.gather(monitor, return_exceptions=True)
+            gc.unfreeze()
+        if checkpoint_task is not None:
+            await checkpoint_task
+        else:
+            pass
+        return save("complete")
+
+
+# note (edwingao28): A pacing violation while this loop stays punctual points at the
+# send path or the host, not at the recorder's loop.
+async def watch_loop(client_loop: dict[str, JsonValue]) -> None:
+    expected_s = time.perf_counter() + LOOP_LAG_INTERVAL_S
+    while True:
+        await asyncio.sleep(max(0.0, expected_s - time.perf_counter()))
+        lag_s = time.perf_counter() - expected_s
+        client_loop["max_lag_s"] = max(client_loop["max_lag_s"] or 0.0, lag_s)
+        client_loop["lags_over_tolerance"] += lag_s > PACING_TOLERANCE_S
+        expected_s = max(expected_s + LOOP_LAG_INTERVAL_S, time.perf_counter())

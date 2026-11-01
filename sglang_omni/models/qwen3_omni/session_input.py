@@ -20,6 +20,7 @@ from sglang_omni.proto.session import ResourceUsage, SessionIdentity, TimedChunk
 from sglang_omni.proto.streams import (
     AUDIO,
     COMMIT,
+    CONFIGURE,
     CONTROL,
     IMAGE_FRAME,
     INTERRUPT,
@@ -60,7 +61,7 @@ class QwenInputState:
     carried: list[PendingUtterance] = field(default_factory=list)
     # note (luojiaxuan): An utterance whose reply was interrupted after its turn.started, until the model node reports how much of its audio reached the client.
     interrupted: PendingUtterance | None = None
-    # The reply a truncate refers to: the latest one whose turn.started the model node published.
+    # note (luojiaxuan): The reply a truncate that names no turn refers to: the latest one whose turn.started the model node published.
     reply_turn: int | None = None
     input_end_ms: float = 0
     emit: ChunkEmitter | None = None
@@ -230,12 +231,24 @@ class QwenInputHooks(SessionHooks):
             state.reply_turn = chunk.turn
             return payload
         elif event_type == TRUNCATE:
-            if state.reply_turn is not None:
-                self.emit_truncate(
-                    state, state.reply_turn, float(chunk.payload["t_ms"])
-                )
+            turn = state.reply_turn if chunk.turn is None else chunk.turn
+            if turn is not None:
+                self.emit_truncate(state, turn, float(chunk.payload["t_ms"]))
             else:
                 pass
+            return payload
+        elif event_type == CONFIGURE:
+            # Note (ruoyu): A client's appended configure reaches only the readers of input:session, so the dialog hands it to the model node's control edge.
+            state.emit(
+                TimedChunk(
+                    CONTROL,
+                    state.input_end_ms,
+                    0,
+                    0,
+                    chunk.payload,
+                    format=SESSION_CONTROL,
+                )
+            )
             return payload
         elif event_type == REPLY_DELIVERED:
             # Note (ruoyu): The thinker keeps the smaller cut, so the delivered and the client truncate combine in either order.

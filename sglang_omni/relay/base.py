@@ -110,6 +110,9 @@ class RelayOperation(ABC):
             f"{type(self).__name__} does not support receiver ack"
         )
 
+    def record_sender_cancellation(self, error: BaseException) -> None:
+        """Record cancellation idempotently without changing resource lifecycle."""
+
 
 class Relay(ABC):
     """Abstract interface for data transfer backends (SHM, RDMA, etc.)."""

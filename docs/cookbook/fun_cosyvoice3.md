@@ -247,9 +247,11 @@ On the other hand, decrease the admission budget to reduce latency and lower pea
 
 ### Vocoder Configuration
 
-Vocoder configuration controls batching, precision, and acceleration. The scheduler accepts `max_batch_size` (16) and `max_batch_wait_ms` (30) to tune batch assembly. Flow uses `dtype` (bfloat16) for autocast, while HiFT uses `hift_dtype` (float32), independent of Flow; bfloat16 shows no speedup on H200 and reduces fidelity. Buffered Flow CUDA Graphs and DiT `torch.compile` are on by default. Streaming hops over the Flow prefix cache replay their Euler solve from CUDA graphs captured per frame tier (`max_batch_size` rows of the longest hop, on the decode batch ladder); a step above the largest tier runs eagerly, and `enable_flow_prefix_cuda_graph=false` turns the graphs off. A stream's final step replays its whole-history Euler solve from CUDA graphs captured per frame tier with `max_batch_size` row slots, on SGLang's prefill graph ladder up to `flow_batch_admission_frames`. A final step above the largest tier runs eagerly, and `enable_flow_whole_history_cuda_graph=false` turns these graphs off. HiFT's decode replays from CUDA graphs captured per row tier, up to `max_batch_size`, and per frame tier, from a first hop's window to a final's. F0 and the sine source stay eager, and a step wider than the largest frame tier decodes eagerly. The graphs need a float32 HiFT on CUDA with Triton, and `enable_hift_cuda_graph=false` turns them off. `enable_flow_estimator_trt` stays opt-in; enabling it turns the DiT compile default off, and enabling both explicitly is rejected.
+Vocoder configuration controls batching, precision, and acceleration. The scheduler accepts `max_batch_size` (16) and `max_batch_wait_ms` (30) to tune batch assembly. Flow uses `dtype` (bfloat16) for autocast, while HiFT uses `hift_dtype` (float32), independent of Flow; bfloat16 shows no speedup on H200 and reduces fidelity. Buffered Flow CUDA Graphs and DiT `torch.compile` are on by default. The Flow prefix cache keeps the keys and values of each stream's completed frames for its later hops. It takes the GPU memory left after the TTS engine and the vocoder's other allocations, within the stage's `gpu_memory_fraction` or `total_reserve_bytes` when one is declared. It leaves free the prefix graphs and the largest step the vocoder admits, both measured at startup (the larger of `max_batch_size` streams, each a 30 s reference prompt and the TTS engine's context length of generated tokens, and the largest non-streaming batch that `flow_batch_admission_frames` lets through), and the runtime headroom (`1 - mem_fraction_static` of the GPU memory free before the TTS engine loaded, or before the vocoder loaded in a process without the engine). The cache's size counts its padding block, each stream's convolution context and the allocator's rounding. `flow_prefix_cache_gb` caps that size, a larger value falls back to it with a warning, and `0` turns the cache off. Streaming hops over the Flow prefix cache replay their Euler solve from CUDA graphs captured per frame tier (one at every whole DiT chunk, from a tier holding the shortest hop up to `max_batch_size` rows of the longest hop). A step above the largest tier runs in eager mode, and `enable_flow_prefix_cuda_graph=false` turns the graphs off. A stream's final step replays its whole-history Euler solve from CUDA graphs captured per frame tier with `max_batch_size` row slots, on the prefill graph ladder up to `flow_batch_admission_frames`. A final step above the largest tier runs eagerly, and `enable_flow_whole_history_cuda_graph=false` turns these graphs off. HiFT's decode replays from CUDA graphs captured per row tier, up to `max_batch_size`, and per frame tier, from a first hop's window to a final's. F0 and the sine source stay eager, and a step wider than the largest frame tier decodes eagerly. The graphs need a float32 HiFT on CUDA with Triton, and `enable_hift_cuda_graph=false` turns them off. `enable_flow_estimator_trt` stays opt-in; enabling it turns the DiT compile default off, and enabling both explicitly is rejected.
 
 The TTS engine stage accepts `onnx_intra_op_threads` (16) for the speech tokenizer and speaker encoder ONNX sessions. Preprocessing takes `max_concurrency` (8) to limit concurrent reference conditioning requests.
+
+On CUDA the TTS engine replays prompt prefills from full CUDA graphs captured on the prefill batch ladder, which starts at `1` because a prompt that is already cached prefills a single token. The graphs need the `fa3`, `fa4` or `flashinfer` attention backend, and with any other backend the default prefill runs in eager mode. Opt out with `--tts_engine.engine.cuda_graph_backend_prefill disabled`. Declaring `cuda_graph_bs_prefill` keeps the declared list as is.
 
 ### torch.compile for the DiT backbone
 
@@ -305,6 +307,40 @@ Full SeedTTS EN set (1088 samples) on buffered `/v1/audio/speech`, one H200:
 | TensorRT | 16 | 2.549 s | 0.570 | 6.243 req/s |
 
 This result is only demonstrative, since we have further optimization after the evluation of TensorRT is done.
+
+### Speculative Decoding
+
+SpeechSpec's DSpark draft [`yuekai/cosyvoice3_llm_dspark`](https://huggingface.co/yuekai/cosyvoice3_llm_dspark) proposes 7 speech tokens per step from three of the LLM's hidden layers, and the LLM verifies them in one forward pass.
+
+```bash
+sgl-omni serve \
+  --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+  --tts_engine.engine.speculative_draft_model_path yuekai/cosyvoice3_llm_dspark \
+  --port 8000
+```
+
+Verification reproduces CosyVoice3's sampler exactly: temperature, top-k/top-p, the repetition penalty, the minimum-length stop mask and the repetition-aware redraw. The speech tokens therefore follow the same distribution as without the draft. A request's `seed` fixes only its first token, because the draft and verify draws come from the process's random generator, so seeded output is not reproducible while the draft is on.
+
+LLM speech-token throughput without the vocoder (Seed-TTS zh, 2,020 utterances, one H200 141GB with SGLang 0.5.22, target and draft on FA3, each batch run to completion), with the default sampling and about 3.0 tokens accepted per verify:
+
+| Batch | Baseline | DSpark | Speedup |
+|---|---|---|---|
+| 1 | 434 tok/s | 711 tok/s | 1.64x |
+| 8 | 2,421 tok/s | 3,794 tok/s | 1.57x |
+| 16 | 4,260 tok/s | 6,388 tok/s | 1.50x |
+| 64 | 11,030 tok/s | 15,027 tok/s | 1.36x |
+
+With SpeechSpec's benchmark sampling (`temperature 0.8`, `top_p 0.95`, `top_k 15`, `repetition_penalty 1.1`), the speedups are 1.64x, 1.61x, 1.57x and 1.42x.
+
+End-to-end streaming on the same GPU (`benchmark_tts_seedtts --stream`, all 2,020 Seed-TTS zh utterances, default sampling), baseline → DSpark:
+
+| Concurrency | Throughput | RTF mean | TTFC mean | WER (Qwen3-ASR) |
+|---|---|---|---|---|
+| 1 | 2.68 → 3.77 req/s | 0.071 → 0.051 | 0.140 → 0.122 s | 0.77% → 0.71% |
+| 8 | 12.37 → 15.59 req/s | 0.123 → 0.098 | 0.230 → 0.227 s | 0.75% → 0.79% |
+| 16 | 18.02 → 21.08 req/s | 0.169 → 0.146 | 0.306 → 0.333 s | 0.76% → 0.73% |
+
+The vocoder takes a growing share of each request as concurrency rises, so the end-to-end gain is largest at low concurrency.
 
 ### Zero-shot Voice Cloning
 
@@ -487,4 +523,5 @@ Use `--lang zh --no-ref-text` for the Chinese cross-lingual split. See
 - **Voice conversion.** Voice conversion is outside the current zero-shot TTS scope.
 - **Streaming decode.** Causal Flow + HiFT emit PCM after each hop (hop grows 25 → 50 → 100 by default). Quality can differ slightly from the buffered whole-utterance path. Opt-in TensorRT (`enable_flow_estimator_trt`) also accelerates streaming hops; it turns the `enable_dit_torch_compile` default off. TRT freezes DiT attention, so streaming+TRT is not bit-exact with PyTorch streaming. Keep the Module TRT wrapper when streaming: CosyVoice's raw TRT enqueue is incompatible with packed hop-batch CFG shapes.
 - **Flow batch scope.** Flow batching supports the CosyVoice PyTorch estimator and the opt-in TensorRT estimator. Buffered HiFT grouping is independent and uses `hift_max_padding_waste`. Streaming coalesces first/follow-up hops across requests (`_can_batch_stream_chunks`, short peer wait) so TTFP stays low under load.
+- **Speculative decoding.** The DSpark draft runs on CUDA with TP 1, the TTS engine's scheduler steps synchronously while it is on, weight updates are refused while it is loaded, and `seed` does not make output reproducible.
 - **cosyvoice dependency.** The `cosyvoice` package has no PyPI release and must be installed from GitHub. Matcha-TTS is a required submodule and must also be importable; only the CosyVoice Flow and HiFT paths are used by the vocoder.
