@@ -122,6 +122,15 @@ class TalkerBuilder(DuplexSessionBuilderMixin, NemotronVoiceChatTalkerEngineBuil
     runner: DuplexTalkerRunner
     adapter: TalkerAdapter
 
+    def __init__(
+        self, *, max_running_requests: int = 1, context_length: int | None = None
+    ) -> None:
+        super().__init__(
+            enable_cuda_graph=False,
+            max_running_requests=max_running_requests,
+            context_length=context_length,
+        )
+
     def make_model_runner(
         self, model_worker: ModelWorker, output_proc: SGLangOutputProcessor
     ) -> DuplexTalkerRunner:

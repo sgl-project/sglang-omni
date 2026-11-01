@@ -8,6 +8,8 @@ from sglang_omni.model_runner.prefill_inputs import (
     OmniPrefillInputs,
     attach_omni_prefill_inputs,
 )
+from sglang_omni.models.nemotron_voicechat.talker import GraphCodeGenerator
+from sglang_omni.platforms import current_platform
 
 NUM_ITER = 8
 
@@ -152,6 +154,23 @@ class VoiceChatTalkerModelRunner(ModelRunner):
 
 
 class NemotronVoiceChatTalkerModelRunner(VoiceChatTalkerModelRunner):
+    def __init__(self, tp_worker, output_processor, *, enable_cuda_graph: bool):
+        super().__init__(tp_worker, output_processor)
+        backend = current_platform.get_device_graph_backend(
+            self.model.hidden_out.device
+        )
+        if enable_cuda_graph and backend is not None:
+            self.graph_code_generator = GraphCodeGenerator(
+                self.model.talker,
+                self.model.mog_head,
+                backend=backend,
+                level_schedule=self.level_schedule,
+                top_p=self.top_p,
+                noise_scale=self.noise_scale,
+            )
+        else:
+            self.graph_code_generator = None
+
     def before_prefill(self, forward_batch, schedule_batch, requests) -> None:
         del schedule_batch
         rows = [self.warmup() for _ in requests]
@@ -217,6 +236,20 @@ class NemotronVoiceChatTalkerModelRunner(VoiceChatTalkerModelRunner):
         batch = len(rows)
         model.fusion_buffer[:batch] = torch.cat(rows, dim=0)
         model.fusion_mask[:batch] = True
+
+    def generate_codes(self, index: int) -> torch.Tensor:
+        model = self.model
+        if self.graph_code_generator is not None:
+            return self.graph_code_generator(model.hidden_out[index : index + 1])
+        else:
+            pass
+        return model.talker.generate_codes(
+            model.hidden_out[index : index + 1].float(),
+            model.mog_head,
+            level_schedule=self.level_schedule,
+            top_p=self.top_p,
+            noise_scale=self.noise_scale,
+        )
 
     def post_decode(self, result, forward_batch, schedule_batch, requests) -> None:
         del result, forward_batch, schedule_batch

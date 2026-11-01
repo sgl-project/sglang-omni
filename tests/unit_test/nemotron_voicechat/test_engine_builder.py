@@ -42,7 +42,9 @@ def test_talker_default_attention_backend(
     sm_version: int | None,
     expected_backend: str | None,
 ) -> None:
-    builder = engine_builder.NemotronVoiceChatTalkerEngineBuilder()
+    builder = engine_builder.NemotronVoiceChatTalkerEngineBuilder(
+        enable_cuda_graph=True
+    )
     defaults = generation_defaults_on(
         monkeypatch, builder, is_cuda=is_cuda, sm_version=sm_version
     )
@@ -53,7 +55,9 @@ def test_talker_default_attention_backend(
 def test_operator_attention_backend_overrides_talker_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    builder = engine_builder.NemotronVoiceChatTalkerEngineBuilder()
+    builder = engine_builder.NemotronVoiceChatTalkerEngineBuilder(
+        enable_cuda_graph=True
+    )
     defaults = generation_defaults_on(
         monkeypatch, builder, is_cuda=True, sm_version=120
     )
@@ -87,7 +91,7 @@ def test_only_the_talker_captures_decode_graphs_on_cuda(
     )
     talker = generation_defaults_on(
         monkeypatch,
-        engine_builder.NemotronVoiceChatTalkerEngineBuilder(),
+        engine_builder.NemotronVoiceChatTalkerEngineBuilder(enable_cuda_graph=True),
         is_cuda=True,
         sm_version=sm_version,
     )
@@ -99,7 +103,7 @@ def test_only_the_talker_captures_decode_graphs_on_cuda(
 def test_talker_decodes_eagerly_off_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
     talker = generation_defaults_on(
         monkeypatch,
-        engine_builder.NemotronVoiceChatTalkerEngineBuilder(),
+        engine_builder.NemotronVoiceChatTalkerEngineBuilder(enable_cuda_graph=True),
         is_cuda=False,
         sm_version=None,
     )
