@@ -1,29 +1,26 @@
 # Pipeline Overview
 
+## Prerequisites
+
+Read [Architecture](./main.md) for runtime layers.
+
 ## Coordinator
 
-`Coordinator` is the global request router. It registers stage endpoints, sends
-new requests to the entry stage, receives `CompleteMessage` and `StreamMessage`
-events, and resolves client futures or streams.
+`Coordinator` is the global request router. It registers stage endpoints, sends new requests to the entry stage, receives `CompleteMessage` and `StreamMessage` events, and resolves client futures or streams.
 
 Key responsibilities:
 
 - route new requests to `entry_stage`
 - track request state: pending, running, completed, failed, aborted
 - collect terminal stage completions
-- merge results when a pipeline has multiple terminal stages, such as `decode`
-  and `code2wav`
+- merge results when a pipeline has multiple terminal stages, such as `decode` and `code2wav`
 - broadcast abort messages to all stages
 
-The coordinator is stage-implementation agnostic. In a tensor
-parallel stage group, it only talks to rank 0. Peer ranks stay internal to the
-stage group.
+The coordinator is stage-implementation agnostic. In a tensor parallel stage group, it only talks to rank 0. Peer ranks stay internal to the stage group.
 
 ## Stage
 
-`Stage` is an IO shell. It handles all inter-stage communication. It receives control messages, reads
-and writes relay payloads, performs fan-in when needed, and pushes all executable
-work into `scheduler.inbox`.
+`Stage` is an IO shell. It handles all inter-stage communication. It receives control messages, reads and writes relay payloads, performs fan-in when needed, and pushes all executable work into `scheduler.inbox`.
 
 ```python
 class Stage:
@@ -43,30 +40,17 @@ class Stage:
 
 Stage responsibilities:
 
-- receive `SubmitMessage`, `DataReadyMessage`, `ShutdownMessage`, and profiler
-  control messages over ZMQ
+- receive `SubmitMessage`, `DataReadyMessage`, `ShutdownMessage`, and profiler control messages over ZMQ
 - receive `AbortMessage` over the coordinator broadcast channel
 - read and write full `StagePayload` objects through relay
 - aggregate inputs with `AggregatedInput` for fan-in stages
 - route normal results to downstream stages or the coordinator
 - route streaming chunks, including same-GPU CUDA IPC and cross-GPU relay
-- drain `scheduler.outbox` and convert scheduler output into control-plane
-  messages
+- drain `scheduler.outbox` and convert scheduler output into control-plane messages
 
-A stage whose config lists `http_routes` also serves the ASGI app its
-scheduler returns from `http_app()`, on a Unix socket in the pipeline's IPC
-runtime directory, from a thread with its own event loop. The app's lifespan
-starts before the stage reports ready and ends when the stage stops, and the
-Omni HTTP server relays every request under those path prefixes to the
-socket as ASGI messages, streaming bodies both ways and passing a client
-disconnect on. A runtime that already lives in the stage process, such as a
-native engine with its own HTTP API, therefore serves that API without being
-imported into the HTTP process, and its routes answer 503 with the cause when
-the stage stops serving.
+A stage whose config lists `http_routes` also serves the ASGI app its scheduler returns from `http_app()`, on a Unix socket in the pipeline's IPC runtime directory, from a thread with its own event loop. The app's lifespan starts before the stage reports ready and ends when the stage stops, and the Omni HTTP server relays every request under those path prefixes to the socket as ASGI messages, streaming bodies both ways and passing a client disconnect on. A runtime that already lives in the stage process, such as a native engine with its own HTTP API, therefore serves that API without being imported into the HTTP process, and its routes answer 503 with the cause when the stage stops serving.
 
-The important invariant is that `Stage` does not branch on scheduler type.
-`SimpleScheduler`, `OmniScheduler`, `SessionScheduler` (stages that keep state
-per session), and streaming schedulers all present the same surface.
+The important invariant is that `Stage` does not branch on scheduler type. `SimpleScheduler`, `OmniScheduler`, `SessionScheduler` (stages that keep state per session), and streaming schedulers all present the same surface.
 
 ## Scheduler
 
@@ -77,6 +61,7 @@ class Scheduler:
     inbox: Queue[IncomingMessage]
     outbox: Queue[OutgoingMessage]
 
+    def warm_up_serving_thread(self) -> None: ...
     def start(self) -> None: ...
     def stop(self) -> None: ...
     def abort(self, request_id: str) -> None: ...
@@ -100,87 +85,39 @@ class OutgoingMessage:
 
 ### OmniScheduler
 
-`OmniScheduler` is used by autoregressive stages. It composes with SGLang's
-upstream scheduler. The goal is to reuse SGLang's
-batch selection, KV cache management, prefill/decode scheduling, and tree cache
-while keeping SGLang-Omni's transport, request objects, and streaming behavior
-outside the upstream scheduler. (Overlap scheduling is explicitly unsupported:
-`OmniScheduler._event_loop_overlap` refuses to run because the
-`Req.inflight_middle_chunks` decrement would lag one iteration on that loop.)
+`OmniScheduler` is used by autoregressive stages. It composes with SGLang's upstream scheduler. The goal is to reuse SGLang's batch selection, KV cache management, prefill/decode scheduling, and tree cache while keeping SGLang-Omni's transport, request objects, and streaming behavior outside the upstream scheduler. (Overlap scheduling is explicitly unsupported: `OmniScheduler.event_loop_overlap` refuses to run because the `Req.inflight_middle_chunks` decrement would lag one iteration on that loop.)
 
 ### SimpleScheduler
 
-`SimpleScheduler` is for non-AR stages such as preprocessing, encoders,
-aggregation, and decode. It has no KV cache and no SGLang batching. The loop is:
+`SimpleScheduler` is for non-AR stages such as preprocessing, encoders, aggregation, and decode. It has no KV cache and no SGLang batching. The loop is:
 
 ```text
 inbox.get() -> compute function -> outbox.put(result or error)
 ```
 
-It supports a batch compute function for stages where local batching is
-useful.
+It supports a batch compute function for stages where local batching is useful.
 
 ### SessionScheduler
 
-`SessionScheduler` serves stages that keep state per session. Each request is
-one session operation: open, append, or close. The stage keeps one cursor per
-session, so a session's operations run in arrival order.
+`SessionScheduler` serves stages that keep state per session. Each request is one session operation: open, append, or close. The stage keeps one cursor per session, so a session's operations run in arrival order.
 
-With `SessionHooks`, each call runs one unit and concurrent workers serve
-different sessions. With `BatchedSessionHooks`, `append_batch` runs the
-earliest ready unit of every ready session in one call; that one hook call
-replaces the concurrent workers. When fewer sessions are ready than open, an
-idle stage waits up to `gather_window_ms` for more appends; each stage derives
-that window from its own per-call floor, and 0 runs with what is ready.
+With `SessionHooks`, each call runs one unit and concurrent workers serve different sessions. With `BatchedSessionHooks`, `append_batch` runs the earliest ready unit of every ready session in one call; that one hook call replaces the concurrent workers. When fewer sessions are ready than open, an idle stage waits up to `gather_window_ms` for more appends; each stage derives that window from its own per-call floor, and 0 runs with what is ready.
 
-A session whose state exceeds `max_state_bytes_per_session` after an append
-is ended alone. An exception raised by `append_batch` ends every session in
-that call. Sessions outside the failed call continue.
+A session whose state exceeds `max_state_bytes_per_session` after an append is ended alone. An exception raised by `append_batch` ends every session in that call. Sessions outside the failed call continue.
 
 ### UMMController
 
-`UMMController` serves interleaved (UMM) requests that alternate between model
-phases, such as understanding, generation, and inspection of the generated
-media, until the model's adapter completes them. It is the scheduler of the
-entry stage, which loops through ordinary phase stages on main's stage graph:
+`UMMController` serves interleaved (UMM) requests that alternate between model phases, such as understanding, generation, and inspection of the generated media, until the model's adapter completes them. It is the scheduler of the entry stage, which loops through ordinary phase stages on main's stage graph:
 
 ```text
 orchestrator -> reasoner -> orchestrator -> generator -> ... -> output
 ```
 
-A model supplies a `UMMAdapter` with four callbacks. `start` and `advance`
-return a `UMMStep` that names the next phase and its request, or completes the
-request, together with the outputs accepted by that step. `usage` reports the
-bytes of the adapter's retained state, and `close` releases that state once
-per request. Phase names are the model's own: the orchestrator's
-`factory.phases` maps each one to a stage, and two phases may share a stage.
-Each dispatch carries a continuation in its request metadata, so phase stages
-only need to return the request they received. Every callback receives the
-request's `UMMContext`, whose `execution_id`, `request`, `deadline`,
-`remaining_dispatches`, `outputs`, and `shedding` the adapter only reads. An
-adapter that finds a request it cannot finish before its deadline, usually
-while it plans another one, calls `shed()` on that request's context. The
-controller's deadline sweep then fails it with the capacity error (HTTP 503,
-which tells the client to retry later), the pipeline aborts its queued and
-running phase work, and the request closes once with reason `shed`, just as a
-request that reaches its deadline fails with the `timeout_s` error (HTTP 500)
-and closes with reason `expired`.
+A model supplies a `UMMAdapter` with four callbacks. `start` and `advance` return a `UMMStep` that names the next phase and its request, or completes the request, together with the outputs accepted by that step. `usage` reports the bytes of the adapter's retained state, and `close` releases that state once per request. Phase names are the model's own: the orchestrator's `factory.phases` maps each one to a stage, and two phases may share a stage. Each dispatch carries a continuation in its request metadata, so phase stages only need to return the request they received. Every callback receives the request's `UMMContext`, whose `execution_id`, `request`, `deadline`, `remaining_dispatches`, `outputs`, and `shedding` the adapter only reads. An adapter that finds a request it cannot finish before its deadline, usually while it plans another one, calls `shed()` on that request's context. The controller's deadline sweep then fails it with the capacity error (HTTP 503, which tells the client to retry later), the pipeline aborts its queued and running phase work, and the request closes once with reason `shed`, just as a request that reaches its deadline fails with the `timeout_s` error (HTTP 500) and closes with reason `expired`.
 
 A step can also list phases in `dispatches` to run them at once, at most one per stage of a request. A step that starts no phase waits while others run, and `advance` reports each result as it returns, so an adapter whose phases finish out of order holds its outputs to publish them in model order.
 
-A pipeline config subclasses `UMMPipelineConfig` and declares an
-`orchestrator` stage (factory `create_umm_controller`, route_fn `route_umm`,
-stream_done_to_fn `umm_stream_done_targets`, `stream_to` and `next` naming
-`output`), an `output` stage in the same process (factory
-`create_umm_output_stage`, terminal, accepting streams before its payload),
-and the phase stages, each routing back to `orchestrator` without a
-`stream_to`. The orchestrator's factory arguments set the adapter factory
-path, the phase map, and the required bounds: `max_dispatches`,
-`max_outputs`, `max_active` (which also caps the coordinator, never above the
-running+queued capacity of an engine phase stage), `max_retained_bytes`, and
-`timeout_s`. The config rejects any other wiring, and a missing or
-non-positive bound, at load time. Accepted segments stream to the client in
-order through the output stage when the request streams.
+A pipeline config subclasses `UMMPipelineConfig` and declares an `orchestrator` stage (factory `create_umm_controller`, route_fn `route_umm`, stream_done_to_fn `umm_stream_done_targets`, `stream_to` and `next` naming `output`), an `output` stage in the same process (factory `create_umm_output_stage`, terminal, accepting streams before its payload), and the phase stages, each routing back to `orchestrator` without a `stream_to`. The orchestrator's factory arguments set the adapter factory path, the phase map, and the required bounds: `max_dispatches`, `max_outputs`, `max_active` (which also caps the coordinator, never above the running+queued capacity of an engine phase stage), `max_retained_bytes`, and `timeout_s`. The config rejects any other wiring, and a missing or non-positive bound, at load time. Accepted segments stream to the client in order through the output stage when the request streams.
 
 ### Code2WavScheduler
 
@@ -198,22 +135,15 @@ The model runner layer owns the AR forward path. The design target is:
 ForwardBatch -> before/custom forward hooks -> model forward -> post hook -> output processing
 ```
 
-The shared base runner owns common mechanics: `ForwardBatch` construction,
-sampling, logit processing, repetition penalty handling, output processing, and
-conversion into scheduler output.
+The shared base runner owns common mechanics: `ForwardBatch` construction, sampling, logit processing, repetition penalty handling, output processing, and conversion into scheduler output.
 
 ### ThinkerModelRunner
 
-`ThinkerModelRunner` is for Qwen-omni thinker-style AR models. Its model-specific job is
-to prepare the forward batch by injecting multimodal embeddings such as image,
-video, audio, and deepstack inputs before the model forward.
+`ThinkerModelRunner` is for Qwen-omni thinker-style AR models. Its model-specific job is to prepare the forward batch by injecting multimodal embeddings such as image, video, audio, and deepstack inputs before the model forward.
 
 ### FeedbackARModelRunner
 
-The refactor design identifies a shared `FeedbackARModelRunner` role for AR
-models whose next decode step depends on feedback produced by the previous step
-inside the same model runner. Qwen3-Omni talker and Fish Audio S2-Pro both fit
-this shape; Qwen3 currently implements the pattern in its talker runner.
+The refactor design identifies a shared `FeedbackARModelRunner` role for AR models whose next decode step depends on feedback produced by the previous step inside the same model runner. Qwen3-Omni talker and Fish Audio S2-Pro both fit this shape; Qwen3 currently implements the pattern in its talker runner.
 
 The abstraction covers self-contained feedback loops only:
 
@@ -222,8 +152,7 @@ The abstraction covers self-contained feedback loops only:
 - extract codebook outputs and feedback tensors after forward
 - push stream or result output to the scheduler outbox
 
-Cross-stage feedback, where the producer and consumer live in different
-schedulers and communicate through relay, is out of scope for this runner.
+Cross-stage feedback, where the producer and consumer live in different schedulers and communicate through relay, is out of scope for this runner.
 
 The design groups model-specific feedback behavior into a small strategy:
 
@@ -233,3 +162,11 @@ class FeedbackStrategy:
     def extract_output(self, model, schedule_batch, requests, outbox) -> None: ...
     def prefill_forward(self, tp_worker, forward_batch, ...) -> object | None: ...
 ```
+
+## Further Reading
+
+See [Communication](./communication.md) for payload transfer and streaming.
+
+## Resources
+
+[Scheduler interface and messages](https://github.com/sgl-project/sglang-omni/blob/main/sglang_omni/scheduling/message.py).
