@@ -17,6 +17,7 @@ from sglang_omni.models.nemotron3_5_asr.encoder_state_pool import (
     PooledAttentionCache,
     PooledPaddingCache,
 )
+from sglang_omni.platforms.device_graph import DeviceGraphBackend, ReplayableGraph
 from sglang_omni.vendor.nemotron3_5_asr.modeling_nemotron3_5_asr import (
     Nemotron3_5AsrForRNNT,
 )
@@ -132,7 +133,7 @@ class CapturedEncoderBatch:
     prompt_ids: torch.Tensor
     slot_ids: torch.Tensor
     encoded_frames: torch.Tensor
-    graph: torch.cuda.CUDAGraph
+    graph: ReplayableGraph
 
 
 class NemotronStreamingEncoderGraphRunner:
@@ -144,15 +145,17 @@ class NemotronStreamingEncoderGraphRunner:
         model: Nemotron3_5AsrForRNNT,
         pool: NemotronEncoderStatePool,
         *,
+        graph_backend: DeviceGraphBackend,
         subsequent_mel_frames: int,
         num_lookahead_tokens: int,
         max_batch_size: int,
     ) -> None:
         self.device: torch.device = pool.layout.device
+        self.device_module = torch.get_device_module(self.device)
         self.subsequent_mel_frames: int = subsequent_mel_frames
         self.captured_batches: dict[int, CapturedEncoderBatch] = {}
-        graph_pool = torch.cuda.graph_pool_handle()
-        capture_stream = torch.cuda.Stream(device=self.device)
+        graph_pool = graph_backend.graph_pool_handle()
+        capture_stream = self.device_module.Stream(device=self.device)
         max_batch_size = min(max_batch_size, pool.capacity_slots)
         capture_slots = [pool.acquire() for _ in range(max_batch_size)]
         try:
@@ -171,9 +174,9 @@ class NemotronStreamingEncoderGraphRunner:
                     [slot.slot_id for slot in capture_slots[:batch_size]],
                     device=self.device,
                 )
-                current_stream = torch.cuda.current_stream(self.device)
+                current_stream = self.device_module.current_stream(self.device)
                 capture_stream.wait_stream(current_stream)
-                with torch.cuda.stream(capture_stream):
+                with self.device_module.stream(capture_stream):
                     for _ in range(CAPTURE_WARMUP_STEPS):
                         encode_pooled_windows(
                             model,
@@ -185,14 +188,12 @@ class NemotronStreamingEncoderGraphRunner:
                             num_lookahead_tokens=num_lookahead_tokens,
                         )
                 current_stream.wait_stream(capture_stream)
-                torch.cuda.synchronize(self.device)
-                graph = torch.cuda.CUDAGraph()
-                with torch.cuda.graph(
-                    graph,
+                self.device_module.synchronize(self.device)
+                with graph_backend.capture(
                     pool=graph_pool,
                     stream=capture_stream,
-                    capture_error_mode="thread_local",
-                ):
+                    thread_local_errors=True,
+                ) as graph:
                     encoded_frames = encode_pooled_windows(
                         model,
                         input_features,
@@ -211,10 +212,10 @@ class NemotronStreamingEncoderGraphRunner:
                 )
                 logger.info(f"Captured Nemotron streaming encoder batch={batch_size}")
         finally:
-            torch.cuda.synchronize(self.device)
+            self.device_module.synchronize(self.device)
             for slot in capture_slots:
                 slot.release()
 
     def close(self) -> None:
-        torch.cuda.synchronize(self.device)
+        self.device_module.synchronize(self.device)
         self.captured_batches.clear()

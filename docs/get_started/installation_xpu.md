@@ -183,7 +183,9 @@ curl -s -X POST http://localhost:8000/v1/audio/transcriptions \
   -F "response_format=verbose_json"
 ```
 
-See the [Nemotron cookbook](../cookbook/nemotron3_5_asr.md) for request parameters.
+Add `--enable-realtime` to accept native 16 kHz mono PCM16 over `/v1/realtime`.
+
+The streaming encoder captures its subsequent-window batch sizes at startup on XPU as on CUDA, which roughly halves the steady-state streaming window; pass `--asr.factory.enable_encoder_cuda_graph false` to run entirely eager. See the [Nemotron cookbook](../cookbook/nemotron3_5_asr.md) for request parameters.
 
 ### Qwen3-TTS (text-to-speech, single XPU)
 
