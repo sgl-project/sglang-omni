@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -26,12 +28,17 @@ from sglang_omni.models.moss_transcribe_diarize.stages import (
     missing_additional_chat_templates_compat,
 )
 from sglang_omni.preprocessing.audio import decode_audio_bytes
+from sglang_omni.scheduling import bootstrap, engine_factory, sglang_backend
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphConfig,
     build_default_prefill_cuda_graph_bs,
     build_generation_batch_overrides,
 )
 from sglang_omni.serve.server_warmup import TranscriptionWarmupRequest
+from sglang_omni.speculative.dflash_draft import (
+    DRAFT_ARCHITECTURE,
+    ReducedVocabularyDFlashWorker,
+)
 from sglang_omni.utils.imports import import_string
 
 
@@ -464,6 +471,190 @@ def test_factory_context_length_override_uses_final_server_value(
 
     assert server_args_kwargs["context_length"] == 8192
     assert adapter_kwargs["context_length"] == final_context_length
+    assert adapter_kwargs["speculative_reserve_tokens"] == 0
+
+
+def write_speculators_config(directory: Path) -> None:
+    (directory / "config.json").write_text(
+        json.dumps(
+            {
+                "speculators_model_type": "dflash",
+                "sample_from_anchor": False,
+                "sliding_window_non_causal": False,
+                "dtype": "bfloat16",
+                "draft_vocab_size": 48000,
+                "aux_hidden_state_layer_ids": [2, 14, 25],
+                "mask_token_id": 151705,
+                "block_size": 8,
+                "transformer_layer_config": {"hidden_size": 1024},
+            }
+        )
+    )
+
+
+def test_factory_serves_a_draft_on_the_synchronous_verify_loop(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Async decode under a draft needs an overlap opt-in this runner lacks, and SGLang
+    cannot read the speculators config, so the worker class and the flat copy must both
+    reach the build, and the copy must not outlive it.
+    """
+    calls = stub_factory_env(monkeypatch, want_cuda_graph=False)
+    monkeypatch.setattr(engine_builder.current_platform, "is_cuda", lambda: True)
+    monkeypatch.setattr(engine_builder, "get_alloc_reserve_per_decode", lambda: 16)
+    monkeypatch.setattr(
+        engine_factory,
+        "build_generation_batch_overrides",
+        build_generation_batch_overrides,
+    )
+    server_args_kwargs: dict[str, object] = {}
+    infrastructure_kwargs: dict[str, object] = {}
+    adapter_kwargs: dict[str, object] = {}
+    draft_configs: list[dict[str, object]] = []
+    server_args = SimpleNamespace(
+        context_length=4096,
+        cuda_graph_config=SimpleNamespace(prefill=SimpleNamespace(backend="disabled")),
+    )
+    original_infrastructure = bootstrap.create_sglang_infrastructure_defer_cuda_graph
+
+    def capture_server_args(model_path, **kwargs):
+        del model_path
+        server_args_kwargs.update(kwargs)
+        draft_dir = Path(str(kwargs["speculative_draft_model_path"]))
+        draft_configs.append(json.loads((draft_dir / "config.json").read_text()))
+        return server_args
+
+    def capture_infrastructure(*args, **kwargs):
+        infrastructure_kwargs.update(kwargs)
+        return original_infrastructure(*args, **kwargs)
+
+    def capture_adapters(**kwargs):
+        adapter_kwargs.update(kwargs)
+        return (object(), object())
+
+    monkeypatch.setattr(sglang_backend, "build_sglang_server_args", capture_server_args)
+    monkeypatch.setattr(
+        bootstrap,
+        "create_sglang_infrastructure_defer_cuda_graph",
+        capture_infrastructure,
+    )
+    monkeypatch.setattr(
+        engine_builder.request_builders,
+        "make_moss_transcribe_diarize_scheduler_adapters",
+        capture_adapters,
+    )
+    write_speculators_config(tmp_path)
+
+    create_sglang_moss_transcribe_diarize_executor(
+        "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        server_args_overrides={
+            "speculative_algorithm": "DFLASH",
+            "speculative_draft_model_path": str(tmp_path),
+            "speculative_draft_model_revision": "pinned",
+        },
+    )
+
+    assert draft_configs[0]["architectures"] == [DRAFT_ARCHITECTURE]
+    assert not Path(str(server_args_kwargs["speculative_draft_model_path"])).exists()
+    assert server_args_kwargs["speculative_draft_model_revision"] is None
+    assert infrastructure_kwargs["supports_speculative_decoding"] is True
+    assert (
+        infrastructure_kwargs["speculative_worker_class"]
+        is ReducedVocabularyDFlashWorker
+    )
+    assert adapter_kwargs["speculative_reserve_tokens"] == 16
+    scheduler_kwargs = calls["scheduler_kwargs"][0]
+    assert scheduler_kwargs["enable_async_decode"] is False
+    assert scheduler_kwargs["async_prefill"] is False
+
+
+def test_a_failed_build_leaves_no_draft_copy_behind(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Every failed start would otherwise leave another copy in the temp directory."""
+    monkeypatch.setattr(engine_builder.current_platform, "is_cuda", lambda: True)
+    write_speculators_config(tmp_path)
+    draft_paths: list[Path] = []
+
+    def fail_after_materializing(
+        builder: MossTranscribeDiarizeEngineBuilder,
+        model_path: str,
+        *,
+        server_args_overrides: dict[str, object],
+        **build_options: object,
+    ) -> None:
+        del model_path, build_options
+        builder.adjust_overrides(server_args_overrides)
+        draft_paths.append(
+            Path(str(server_args_overrides["speculative_draft_model_path"]))
+        )
+        assert draft_paths[0].is_dir()
+        raise RuntimeError("engine failed")
+
+    monkeypatch.setattr(
+        MossTranscribeDiarizeEngineBuilder, "build", fail_after_materializing
+    )
+
+    with pytest.raises(RuntimeError, match="engine failed"):
+        create_sglang_moss_transcribe_diarize_executor(
+            "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+            server_args_overrides={
+                "speculative_algorithm": "DFLASH",
+                "speculative_draft_model_path": str(tmp_path),
+            },
+        )
+
+    assert not draft_paths[0].exists()
+
+
+@pytest.mark.parametrize(
+    ("overrides", "is_cuda", "message"),
+    [
+        ({"speculative_algorithm": "EAGLE3"}, True, "supports DFLASH"),
+        ({"speculative_algorithm": "DFLASH"}, True, "needs speculative_draft"),
+        (
+            {"speculative_draft_model_path": "draft"},
+            True,
+            "needs a speculative_algorithm",
+        ),
+        (
+            {
+                "speculative_algorithm": "DFLASH",
+                "speculative_draft_model_path": "draft",
+            },
+            False,
+            "needs a CUDA GPU",
+        ),
+    ],
+)
+def test_unservable_speculative_settings_are_refused_before_the_engine_starts(
+    monkeypatch: pytest.MonkeyPatch,
+    overrides: dict[str, object],
+    is_cuda: bool,
+    message: str,
+) -> None:
+    """Each of these otherwise fails deep in startup or silently serves no draft."""
+    monkeypatch.setattr(engine_builder.current_platform, "is_cuda", lambda: is_cuda)
+
+    with pytest.raises(ValueError, match=message):
+        make_moss_engine_builder().adjust_overrides(dict(overrides))
+
+
+def test_dflash_worker_reaches_the_decoder_through_the_outer_model() -> None:
+    """The worker addresses the outer model; its decoder owns the head and the capture."""
+    captured_layer_ids: list[list[int]] = []
+    decoder_head = object()
+    model = object.__new__(sglang_model.MossTranscribeDiarizeForConditionalGeneration)
+    torch.nn.Module.__init__(model)
+    model.language_model = SimpleNamespace(
+        lm_head=decoder_head,
+        set_dflash_layers_to_capture=captured_layer_ids.append,
+    )
+
+    model.set_dflash_layers_to_capture([1, 13, 24])
+
+    assert model.lm_head is decoder_head
+    assert captured_layer_ids == [[1, 13, 24]]
 
 
 def repo_not_found(url: str) -> RepositoryNotFoundError:
