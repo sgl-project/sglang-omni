@@ -63,7 +63,6 @@ from tests.test_model.test_tts_ci import (
     assert_full_seedtts_en_speed_results,
     assert_full_seedtts_en_wer_results,
     assert_similarity_results,
-    assert_tts_audio_result_integrity,
     assert_utmos_results,
     run_benchmark,
     run_similarity,
@@ -74,6 +73,7 @@ from tests.utils import (
     QWEN3_ASR_ROUTER_STARTUP_TIMEOUT,
     QWEN3_ASR_WER_MODEL_PATH,
     MetricCheckCollector,
+    assert_tts_audio_result_integrity,
     assert_wer_results,
     wait_for_gpu_memory_release,
 )

@@ -1,0 +1,300 @@
+name: NPU Model CI
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, labeled, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+  schedule:
+    - cron: '0 16 * * *'
+
+concurrency:
+  group: npu-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: read
+  pull-requests: read
+
+env:
+  NPU_CI_IMAGE: swr.cn-southwest-2.myhuaweicloud.com/base_image/dockerhub/lmsysorg/sglang-omni:main-cann9.0.0-910b
+
+jobs:
+  check-changes:
+    name: npu-ci-changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      npu: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.npu }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dorny/paths-filter@v3
+        if: github.event_name == 'pull_request'
+        id: filter
+        with:
+          filters: |
+            npu:
+              - 'sglang_omni/**'
+              - 'tests/**'
+              - 'benchmarks/**'
+              - 'examples/configs/**'
+              - 'pyproject_npu.toml'
+              - 'scripts/npu/**'
+              - '.dockerignore'
+              - 'docker/npu.Dockerfile'
+              - '.github/scripts/resolve_ci_labels.py'
+              - '.github/scripts/pr_ci_gate.py'
+              - '.github/workflows/omni-npu-ci.yaml'
+
+  preflight:
+    name: npu-ci-gate
+    needs: check-changes
+    if: needs.check-changes.outputs.npu == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      exact_sha: ${{ steps.meta.outputs.exact_sha }}
+      run_npu: ${{ github.event_name != 'pull_request' && 'true' || steps.plan.outputs.run_npu }}
+      image: ${{ steps.image.outputs.image }}
+    steps:
+      - name: Fetch latest PR gate state
+        if: github.event_name == 'pull_request'
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const {data: pr} = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            core.setOutput('labels', JSON.stringify(pr.labels.map(label => label.name)));
+            core.setOutput('draft', pr.draft ? 'true' : 'false');
+            if (pr.head.sha !== context.payload.pull_request.head.sha) {
+              core.setFailed('This run is stale; run CI for the latest PR commit.');
+            }
+
+      - name: Log PR gate state
+        if: github.event_name == 'pull_request'
+        env:
+          LABELS_JSON: ${{ steps.pr.outputs.labels }}
+          PR_DRAFT: ${{ steps.pr.outputs.draft }}
+        run: |
+          echo "PR labels: $LABELS_JSON"
+          echo "PR draft: $PR_DRAFT"
+
+      - name: Block draft PR
+        if: github.event_name == 'pull_request' && fromJson(steps.pr.outputs.draft)
+        run: |
+          echo 'PR is draft. Blocking NPU CI.'
+          exit 1
+
+      - name: Checkout workflow scripts
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Resolve CI stages
+        if: github.event_name == 'pull_request'
+        id: plan
+        env:
+          LABELS_JSON: ${{ steps.pr.outputs.labels }}
+        run: |
+          python .github/scripts/resolve_ci_labels.py resolve \
+            --labels-json "$LABELS_JSON" \
+            --seed "$GITHUB_RUN_ID" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Resolve exact SHA
+        id: meta
+        env:
+          EXACT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: echo "exact_sha=$EXACT_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Check PR lint and mergeability
+        if: github.event_name == 'pull_request' && steps.plan.outputs.run_self_hosted == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python .github/scripts/pr_ci_gate.py
+
+      - name: Manual or scheduled preflight
+        if: github.event_name != 'pull_request'
+        run: echo 'Manual and scheduled runs bypass the PR lint/mergeability gate.'
+
+      - uses: docker/setup-buildx-action@v3
+        if: github.event_name != 'pull_request' || steps.plan.outputs.run_npu == 'true'
+
+      - name: Resolve and validate NPU image
+        if: github.event_name != 'pull_request' || steps.plan.outputs.run_npu == 'true'
+        id: image
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          manifest=$(docker buildx imagetools inspect "$NPU_CI_IMAGE" --format '{{json .Manifest}}')
+          digest=$(jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))' <<< "$manifest")
+          image="${NPU_CI_IMAGE%%@*}@$digest"
+          image_config=$(docker buildx imagetools inspect "$image" --format '{{json .Image}}')
+          if ! jq -e '
+            .os == "linux" and .architecture == "arm64" and
+            ((.config.Labels["org.opencontainers.image.version"] // "") | endswith("-910b"))
+          ' <<< "$image_config" > /dev/null; then
+            echo '::error::NPU_CI_IMAGE must be an ARM64/910B image produced by Release Docker Images (NPU).'
+            exit 1
+          fi
+          image_revision=$(jq -r '.config.Labels["org.opencontainers.image.revision"] // ""' <<< "$image_config")
+          if [[ ! "$image_revision" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::NPU_CI_IMAGE must record its source commit in org.opencontainers.image.revision.'
+            exit 1
+          fi
+          git fetch --no-tags --depth=1 origin "$image_revision"
+          image_inputs=(.dockerignore docker/npu.Dockerfile pyproject_npu.toml scripts/npu)
+          if ! git diff --quiet "$image_revision" HEAD -- "${image_inputs[@]}"; then
+            git diff --name-only "$image_revision" HEAD -- "${image_inputs[@]}"
+            echo '::error::NPU image inputs differ from this checkout. Build and publish a matching 910B test image with Release Docker Images (NPU), then update NPU_CI_IMAGE in this workflow. The model jobs do not upgrade the NPU runtime.'
+            exit 1
+          fi
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          {
+            echo "NPU test image: $image"
+            echo "Image source commit: $image_revision"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  models:
+    name: ${{ matrix.model }} (NPU)
+    needs: [check-changes, preflight]
+    if: >-
+      needs.check-changes.outputs.npu == 'true' &&
+      needs.preflight.result == 'success' &&
+      needs.preflight.outputs.run_npu == 'true'
+    environment: npu-ci
+    runs-on: linux-aarch64-a2-2
+    container:
+      image: ${{ needs.preflight.outputs.image }}
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - model: qwen3-tts
+            suite: tests/test_model/test_npu_tts.py
+            config: examples/configs/qwen3_tts_0_6b_customvoice_npu.yaml
+            timeout_minutes: 240
+          - model: qwen3-asr
+            suite: tests/test_model/test_npu_asr.py
+            config: examples/configs/qwen3_asr_npu.yaml
+            timeout_minutes: 60
+    # The runner pool shares devices; different PRs must not use them together.
+    concurrency:
+      group: omni-npu-model-linux-aarch64-a2-2
+      queue: max
+      cancel-in-progress: false
+    env:
+      NPU_CI_IMAGE: ${{ needs.preflight.outputs.image }}
+      OMNI_RUN_NPU_TESTS: '1'
+      OMP_NUM_THREADS: '8'
+      HF_HUB_OFFLINE: '1'
+      OMNI_NPU_TTS_MODEL: /root/.cache/modelscope/hub/models/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice
+      OMNI_NPU_TTS_CONFIG: examples/configs/qwen3_tts_0_6b_customvoice_npu.yaml
+      OMNI_NPU_TTS_OUTPUT: ${{ github.workspace }}/npu-ci-results/tts
+      OMNI_NPU_ASR_MODEL: /root/.cache/modelscope/hub/models/Qwen/Qwen3-ASR-1.7B
+      OMNI_NPU_ASR_CONFIG: examples/configs/qwen3_asr_npu.yaml
+      OMNI_NPU_ASR_CASES: tests/data/npu_asr/cases.json
+      OMNI_NPU_ASR_OUTPUT: ${{ github.workspace }}/npu-ci-results/asr
+    steps:
+      - name: Checkout PR code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.exact_sha }}
+          persist-credentials: false
+
+      - name: Check NPU runtime
+        run: |
+          mkdir -p npu-ci-results
+          printf '%s\n' "$NPU_CI_IMAGE" > npu-ci-results/image.txt
+          git rev-parse HEAD > npu-ci-results/source-sha.txt
+          git status --short > npu-ci-results/source-status.txt
+          source "${ASCEND_HOME_PATH:-/usr/local/Ascend/ascend-toolkit}/set_env.sh"
+          npu-smi info > npu-ci-results/npu-smi.txt
+          bash scripts/npu/install_npu.sh --check 2>&1 | tee npu-ci-results/environment-check.log
+
+      - name: Refresh Omni editable install from PR source
+        run: |
+          source "${ASCEND_HOME_PATH:-/usr/local/Ascend/ascend-toolkit}/set_env.sh"
+          cp pyproject_npu.toml pyproject.toml
+          python -m pip install --no-deps --no-build-isolation -e .
+          python -m pip install pytest==8.3.2 jiwer==4.0.0 rapidfuzz==3.14.1 zhon==2.0.2 more-itertools==10.8.0
+          # Use Whisper's text normalizer without pulling its CUDA Triton dependency.
+          python -m pip install --no-deps openai-whisper==20250625
+          python -c 'from benchmarks.tasks.asr import normalize_text; normalize_text("hello", "en"); normalize_text("你好", "zh")'
+          python -m pip freeze > npu-ci-results/packages.txt
+
+      - name: Prepare full SeedTTS dataset
+        timeout-minutes: 20
+        env:
+          HF_HUB_OFFLINE: '0'
+        run: python -m benchmarks.dataset.prepare --dataset seedtts
+
+      - name: Prepare TTS quality evaluator
+        if: matrix.model == 'qwen3-tts'
+        timeout-minutes: 20
+        env:
+          HF_HUB_OFFLINE: '0'
+        run: |
+          source "${ASCEND_HOME_PATH:-/usr/local/Ascend/ascend-toolkit}/set_env.sh"
+          python -m benchmarks.metrics.utmos --warm-cache
+
+      - name: Run model tests
+        env:
+          TEST_SUITE: ${{ matrix.suite }}
+          SERVING_CONFIG: ${{ matrix.config }}
+        run: |
+          source "${ASCEND_HOME_PATH:-/usr/local/Ascend/ascend-toolkit}/set_env.sh"
+          export PYTHONPATH="$GITHUB_WORKSPACE${PYTHONPATH:+:$PYTHONPATH}"
+          cp "$SERVING_CONFIG" npu-ci-results/serving-config.yaml
+          python -m pytest "$TEST_SUITE" -v -s --junitxml=npu-ci-results/junit.xml 2>&1 | tee npu-ci-results/pytest.log
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: npu-${{ matrix.model }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            npu-ci-results/
+            !npu-ci-results/tts/**/audio/**
+          if-no-files-found: warn
+          retention-days: 7
+
+  status:
+    name: NPU Model CI Status
+    if: always()
+    needs: [check-changes, preflight, models]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Aggregate result
+        env:
+          CHANGES: ${{ needs.check-changes.result }}
+          PREFLIGHT: ${{ needs.preflight.result }}
+          MODELS: ${{ needs.models.result }}
+        run: |
+          echo "check-changes: $CHANGES"
+          echo "preflight: $PREFLIGHT"
+          echo "models: $MODELS"
+          if ${{ contains(needs.*.result, 'failure') }}; then
+            echo 'A required NPU CI job failed.'
+            exit 1
+          fi
+          if ${{ contains(needs.*.result, 'cancelled') }}; then
+            echo 'A required NPU CI job was cancelled.'
+            exit 1
+          fi
+          echo 'NPU CI passed (ran, or skipped as not selected).'
