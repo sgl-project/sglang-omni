@@ -32,6 +32,7 @@ std::string WavBytes(const std::string &pcm, int sample_rate);
 // float32 in the same order as Voxt's Swift front end.
 const std::vector<float> &MelFilterBank(int mel_bin_count = kMelBinCount);
 const std::vector<float> &PeriodicHannWindow();
+mlx::core::array SwiftPeriodicHannWindow();
 
 // Whisper's fixed 30 s encoder window.
 inline constexpr int kWhisperWindowSampleCount = 30 * kSampleRate;

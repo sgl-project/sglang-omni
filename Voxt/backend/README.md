@@ -71,6 +71,21 @@ Sortformer likewise gets its own server the first time a meeting is analyzed;
 a file analysis returns it when done, as the Swift engine dropped its model,
 and quitting stops it.
 
+### Qwen3-Omni chat server
+
+Qwen3-Omni is a standalone native chat server, not a Voxt ASR selection. It accepts text, images, audio, video, and combined audio/video through `/v1/chat/completions`, with JSON or SSE output and optional mono 24 kHz WAV speech. The CLI accepts the same request JSON. Local media requires `--allowed-local-media-path`; inline data URLs and HTTP(S) media are also supported.
+
+The full 30B-A3B 4-bit model is opt-in and was tested on a 48 GiB Apple Silicon Mac. Supply FFmpeg 7 development headers and libraries (for example, Homebrew `ffmpeg@7`) and enable `SGLANG_BUILD_QWEN3_OMNI`. FFmpeg is not bundled; its licensing and minimum macOS requirements depend on the supplied build.
+
+```bash
+SGLANG_BUILD_QWEN3_OMNI=ON sglang_omni_mlx/native/scripts/build_runtime.sh build/omni-runtime build/omni-work
+build/omni-runtime/bin/qwen3_omni_server --model-path "$MODEL" \
+  --model-name qwen3-omni-mlx --host 127.0.0.1 --port 8000 \
+  --allowed-local-media-path "$MEDIA_ROOT"
+```
+
+For CLI inference, use `qwen3_omni_generate --model-path "$MODEL" --request request.json --allowed-local-media-path "$MEDIA_ROOT"` from the same `bin/` directory. Both executables expose their linked MLX and FFmpeg versions through `--version`. Component tests run with `ctest --test-dir build/omni-work/cmake -R '^qwen3_omni_components$' --output-on-failure`.
+
 ## How it fits together
 
 - `qwen3_asr_server --supervised` speaks the launch protocol Voxt expects:
