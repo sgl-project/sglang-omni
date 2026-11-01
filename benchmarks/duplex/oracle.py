@@ -19,6 +19,7 @@ from benchmarks.duplex.oracle_models import (
     StatusDetails,
     TraceRecord,
     WireEvent,
+    is_admission_rejection,
     turn_detection_type,
 )
 from benchmarks.duplex.profiles import (
@@ -127,6 +128,24 @@ def pcm_bytes(value: str | None) -> bytes:
             return pcm_data
 
 
+def admission_rejection_result(
+    admission_denials: int, admission_rejections: int
+) -> dict[str, JsonValue]:
+    """A recording rejected before audio input, without a separate runtime failure."""
+    return {
+        "status": "fail",
+        "failure_kind": "admission_rejected",
+        "violations": ["session admission rejected before audio input"],
+        "coverage": {"input_output_overlap": False},
+        "metrics": {
+            "input_audio_s": 0.0,
+            "output_audio_s": 0.0,
+            "admission_denials": admission_denials,
+            "admission_rejections": admission_rejections,
+        },
+    }
+
+
 def evaluate_trace(
     records: list[dict[str, JsonValue]],
     *,
@@ -135,8 +154,8 @@ def evaluate_trace(
 ) -> dict[str, JsonValue]:
     """Report protocol failures separately from an unexercised duplex scenario.
 
-    max_admission_attempts is the retry limit the recording client used, read from
-    its manifest; None checks only that denials count up from one.
+    max_admission_attempts is the shared retry limit from the recording manifest;
+    the initial attempt is additional. None leaves the budget unchecked.
     """
     profile_contract = PROFILES[profile]
     if profile_contract.protocol == "legacy":
@@ -175,7 +194,7 @@ def evaluate_trace(
     audio_times: list[float] = []
     units: list[tuple[int, float]] = []
     input_byte_count = output_byte_count = next_sequence = admissions = 0
-    speech_starts = interruptions = 0
+    admission_rejections = speech_starts = interruptions = 0
     session_id = requested_type = None
     updated = ended = drained = closed = False
     previous_time = -math.inf
@@ -205,7 +224,7 @@ def evaluate_trace(
                 )
                 check(
                     max_admission_attempts is None
-                    or admission.attempt <= max_admission_attempts,
+                    or admission.attempt <= max_admission_attempts + 1,
                     f"admission attempt {admission.attempt} exceeds the recorded "
                     f"limit {max_admission_attempts}",
                 )
@@ -233,6 +252,11 @@ def evaluate_trace(
             check(not closed, f"{event_type} after session.closed")
             if direction == "send":
                 if event_type == "session.update":
+                    check(
+                        max_admission_attempts is None
+                        or admissions + admission_rejections <= max_admission_attempts,
+                        f"admission retry exceeds the recorded limit {max_admission_attempts}",
+                    )
                     check(
                         session_id is not None, "session.update before session.created"
                     )
@@ -271,7 +295,10 @@ def evaluate_trace(
                 elif event_type == "sglang.input_audio.end":
                     check(updated, "EOS before session.updated")
                 elif event_type == "session.close":
-                    check(drained, "session.close before input drained")
+                    check(
+                        drained or (not updated and admission_rejections > 0),
+                        "session.close before input drained",
+                    )
                 else:
                     violations.append(
                         f"client command outside this scenario: {event_type}"
@@ -574,7 +601,10 @@ def evaluate_trace(
                 else:
                     pass
             elif event_type == "session.closed":
-                check(drained, "session.closed before input drained")
+                check(
+                    drained or (not updated and admission_rejections > 0),
+                    "session.closed before input drained",
+                )
                 check(
                     event.reason == "client_closed", "unexpected session close reason"
                 )
@@ -585,14 +615,47 @@ def evaluate_trace(
                     pass
             elif event_type == "error":
                 error = event.error or {}
-                violations.append(
-                    f"server error: code={error.get('code')} "
-                    f"fatal={event.sglang.fatal}: {error.get('message')}"
-                )
+                rejected_command = sent_commands.get(error.get("event_id"))
+                if (
+                    is_admission_rejection(record.event)
+                    and not updated
+                    and rejected_command is not None
+                    and rejected_command.event.type == "session.update"
+                ):
+                    admission_rejections += 1
+                    # note (Yucheng Hu): The client re-sends a rejected update, so only the admitted one counts as the session's update and may be acknowledged.
+                    counts["send", "session.update"] -= 1
+                    sent_commands.pop(rejected_command.event.event_id)
+                else:
+                    violations.append(
+                        f"server error: code={error.get('code')} "
+                        f"fatal={event.sglang.fatal}: {error.get('message')}"
+                    )
             else:
                 violations.append(f"unsupported server event: {event_type}")
         except (ValidationError, ValueError, binascii.Error) as exc:
             violations.append(f"record {index}: {exc}")
+
+    if (
+        not updated
+        and admissions + admission_rejections > 0
+        and not violations
+        and (
+            max_admission_attempts is None
+            or admissions + admission_rejections == max_admission_attempts + 1
+        )
+        and (closed or not event_ids["receive"])
+        and counts["send", "session.update"] == 0
+        and (
+            not closed
+            or counts["send", "session.close"]
+            == counts["receive", "session.closed"]
+            == 1
+        )
+    ):
+        return admission_rejection_result(admissions, admission_rejections)
+    else:
+        pass
 
     for direction, event_type in (
         ("receive", "session.created"),
@@ -683,6 +746,7 @@ def evaluate_trace(
         "input_audio_s": input_byte_count / INPUT_BYTES_PER_S,
         "output_audio_s": output_byte_count / (profile_contract.output_sample_rate * 2),
         "admission_denials": admissions,
+        "admission_rejections": admission_rejections,
         "first_audio_packet_s": (
             audio_times[0] - input_times[0] if audio_times and input_times else None
         ),
@@ -703,6 +767,7 @@ def evaluate_trace(
         ),
     }
     return {
+        "failure_kind": "runtime" if violations else None,
         "status": (
             "fail"
             if violations
@@ -768,7 +833,7 @@ def evaluate_legacy_trace(
                 )
                 check(
                     max_admission_attempts is None
-                    or admission.attempt <= max_admission_attempts,
+                    or admission.attempt <= max_admission_attempts + 1,
                     f"admission attempt {admission.attempt} exceeds the recorded "
                     f"limit {max_admission_attempts}",
                 )
@@ -800,6 +865,11 @@ def evaluate_legacy_trace(
                         session_id is not None, "session.update before session.created"
                     )
                     if updates_sent == 0:
+                        check(
+                            max_admission_attempts is None
+                            or admissions <= max_admission_attempts,
+                            f"admission retry exceeds the recorded limit {max_admission_attempts}",
+                        )
                         turn = session_fields.get("turn_detection")
                         requested_type = (
                             turn.get("type") if isinstance(turn, dict) else None
@@ -985,6 +1055,17 @@ def evaluate_legacy_trace(
         except (ValidationError, ValueError, binascii.Error) as exc:
             violations.append(f"record {index}: {exc}")
 
+    if (
+        admissions > 0
+        and not event_ids["send"]
+        and not event_ids["receive"]
+        and not violations
+        and (max_admission_attempts is None or admissions == max_admission_attempts + 1)
+    ):
+        return admission_rejection_result(admissions, 0)
+    else:
+        pass
+
     check(
         counts["receive", "session.created"] == 1,
         "expected exactly one receive session.created",
@@ -1018,6 +1099,7 @@ def evaluate_legacy_trace(
         ),
         "input_output_overlap": coverage["input_output_overlap"],
         "probe_ack_s": probe_ack_s,
+        "admission_rejections": 0,
         "responses_created": len(response_states),
         "responses_overlapped_by_speech": len(interrupted),
         "responses_open_at_close": sum(
@@ -1026,6 +1108,7 @@ def evaluate_legacy_trace(
         ),
     }
     return {
+        "failure_kind": "runtime" if violations else None,
         "status": "fail" if violations else "pass",
         "violations": violations,
         "coverage": coverage,

@@ -174,6 +174,32 @@ class WindowEligibility(AudioFixture):
             self.assertIn(expect, " ".join(record["window"]["reasons"]))
             self.assertIsNone(out)
 
+    def test_only_a_nonfatal_admission_rejection_before_admission_keeps_the_window(
+        self,
+    ) -> None:
+        """A session the recorder admitted on a re-sent session.update used to lose its window to the earlier admission_rejected."""
+        rejection = {
+            "direction": "receive",
+            "time_s": TRACE_ORIGIN_S - 0.02,
+            "event": {
+                "type": "error",
+                "sglang": {"fatal": False},
+                "error": {"code": "admission_rejected", "message": "queue full"},
+            },
+        }
+        trace = "".join(
+            sorted(
+                make_session_trace(self.pcm).splitlines(keepends=True)
+                + [json.dumps(rejection) + "\n"],
+                key=lambda line: json.loads(line)["time_s"],
+            )
+        )
+        record, _, _ = self.analyze(self.pcm, trace)
+        self.assertTrue(record["window"]["valid"], record["window"]["reasons"])
+        self.assertIn(
+            "admission_rejected", json.dumps(record["lifecycle"]["protocol_anomalies"])
+        )
+
     def test_liveness_after_window_must_be_proven(self) -> None:
         record, _, _ = self.analyze(
             self.pcm, make_session_trace(self.pcm, close_offset_s=False)
@@ -458,6 +484,15 @@ class ReferenceExport(AudioFixture):
 
         output = self.root / "export"
         result = export_runs([run], output, "sglang")
+
+        self.assertEqual(
+            result["builder_sha256"]["oracle_models.py"],
+            hashlib.sha256(
+                Path(reference_audio.__file__)
+                .with_name("oracle_models.py")
+                .read_bytes()
+            ).hexdigest(),
+        )
 
         self.assertEqual(result["counts"]["eligible_variants"], 2)
         for variant in result["samples"][0]["variants"].values():
