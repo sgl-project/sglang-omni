@@ -119,6 +119,8 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
+      # Checkpoints, corpus and builds need about 27 GB under VOXT_CI_ROOT and
+      # the runner's work directory; say so plainly instead of failing midway.
       - name: Check free disk space
         # id: capacity
         env:
@@ -129,7 +131,7 @@ jobs:
           mkdir -p "$VOXT_CI_ROOT"
           free_gb=$(df -g "$VOXT_CI_ROOT" | awk 'NR == 2 {print $4}')
           echo "Free under $VOXT_CI_ROOT: ${free_gb} GB"
-          required_gb=23
+          required_gb=33
           music3_cache="$VOXT_CI_ROOT/data/models/mlx-community_MiniMax-Music3-mxfp8"
           if [ "$RUN_MUSIC3" = true ]; then
             cached_gb=0
@@ -321,7 +323,7 @@ jobs:
         run: |
           "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_model_servers.py \
             sglang_omni_mlx/native/ci/test_voxtral_tts_api.py sglang_omni_mlx/native/ci/test_qwen3_tts_api.py \
-            sglang_omni_mlx/native/ci/test_cosyvoice3_api.py -k 'not music3'
+            sglang_omni_mlx/native/ci/test_cosyvoice3_api.py sglang_omni_mlx/native/ci/test_higgs_tts_api.py -k 'not music3'
 
       - name: Archive tested native runtime
         if: success()
@@ -348,15 +350,15 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      # Checkpoints, corpus and builds need about 17 GB under VOXT_CI_ROOT and
+      # Checkpoints, corpus and builds need about 27 GB under VOXT_CI_ROOT and
       # the runner's work directory; say so plainly instead of failing midway.
       - name: Check free disk space
         run: |
           mkdir -p "$VOXT_CI_ROOT"
           free_gb=$(df -g "$VOXT_CI_ROOT" | awk 'NR == 2 {print $4}')
           echo "Free under $VOXT_CI_ROOT: ${free_gb} GB"
-          if [ "$free_gb" -lt 20 ]; then
-            echo "::error::Only ${free_gb} GB free on the runner; the Voxt Mac CI needs at least 20 GB."
+          if [ "$free_gb" -lt 30 ]; then
+            echo "::error::Only ${free_gb} GB free on the runner; the Voxt Mac CI needs at least 30 GB."
             exit 1
           else
             :

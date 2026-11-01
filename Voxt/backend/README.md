@@ -53,7 +53,7 @@ Voxt/backend/run_omni_dev.sh run
 `nemotron_transcribe`, `parakeet_server`, `parakeet_transcribe`,
 `sensevoice_server`, `sensevoice_transcribe`, `voxtral_tts_server`,
 `voxtral_tts_synthesize`, `qwen3_tts_server`, `qwen3_tts_synthesize`,
-`cosyvoice3_server`, `cosyvoice3_synthesize`, `music3_server`, `music3_synthesize`, `fishaudio_drama3_server`, `fishaudio_drama3_synthesize`, and the pinned MLX library and Metal kernels next to them.
+`cosyvoice3_server`, `cosyvoice3_synthesize`, `music3_server`, `music3_synthesize`, `fishaudio_drama3_server`, `fishaudio_drama3_synthesize`, `higgs_tts_server`, `higgs_tts_synthesize`, and the pinned MLX library and Metal kernels next to them.
 
 "Voxt Omni Dev" has its own bundle identifier. It runs without the sandbox so it
 can start the runtime, and it sees `~/.voxt-omni-dev` as its home, so its
