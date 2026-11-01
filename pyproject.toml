@@ -166,7 +166,6 @@ markers = [
 ]
 
 [tool.ruff.lint]
-exclude = ["tests/**"]
 select = [
     "ANN401",
     "B006",     # Mutable argument defaults
