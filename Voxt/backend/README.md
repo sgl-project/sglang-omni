@@ -30,6 +30,12 @@ see the [Music3 cookbook](../../docs/cookbook/minimax_music3.md#apple-silicon-na
 for checkpoint provisioning, request fields, reference parity and waveform
 goldens. Voxt's ASR model selection is unchanged.
 
+It also builds `fishaudio_drama3_server` and `fishaudio_drama3_synthesize` for Fish
+Audio Drama 3 text-to-speech, served through `/v1/audio/speech` with the speech
+API `voxtral_tts_server` uses (`qwen3_asr/speech_service`); see the
+[Drama 3 cookbook](../../docs/cookbook/fishaudio_drama3.md#apple-silicon-native-mlx).
+Voxt does not start it.
+
 ## Build and run
 
 Requirements: an Apple Silicon Mac, Xcode and [uv](https://docs.astral.sh/uv/).
@@ -47,8 +53,7 @@ Voxt/backend/run_omni_dev.sh run
 `nemotron_transcribe`, `parakeet_server`, `parakeet_transcribe`,
 `sensevoice_server`, `sensevoice_transcribe`, `voxtral_tts_server`,
 `voxtral_tts_synthesize`, `qwen3_tts_server`, `qwen3_tts_synthesize`,
-`moss_tts_local_server`, `moss_tts_local_synthesize`, and the pinned MLX library
-and Metal kernels next to them.
+`cosyvoice3_server`, `cosyvoice3_synthesize`, `music3_server`, `music3_synthesize`, `fishaudio_drama3_server`, `fishaudio_drama3_synthesize`, `moss_tts_local_server`, `moss_tts_local_synthesize`, and the pinned MLX library and Metal kernels next to them.
 
 "Voxt Omni Dev" has its own bundle identifier. It runs without the sandbox so it
 can start the runtime, and it sees `~/.voxt-omni-dev` as its home, so its

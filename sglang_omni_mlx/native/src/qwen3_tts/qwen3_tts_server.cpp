@@ -45,12 +45,12 @@
 #include <vector>
 
 #include "civetweb.h"
+#include "common/audio.h"
 #include "common/http.h"
 #include "common/text.h"
 #include "qwen3_asr/asr_service.h"
 #include "qwen3_asr/qwen3_asr_transcriber.h"
 #include "qwen3_tts/qwen3_tts_model.h"
-#include "voxtral_tts/voxtral_tts_codec.h"
 
 namespace {
 
@@ -803,7 +803,7 @@ private:
       lock.unlock();
       if (request.stream) {
         const std::string pcm =
-            voxtral_tts::Pcm16Bytes(ApplySpeed(chunk, request.speed));
+            omni_common::Pcm16Bytes(ApplySpeed(chunk, request.speed));
         // Note (Minyi Tang): a write fails once the peer is gone, which
         // cancels the generation that feeds it.
         if (mg_write(connection, pcm.data(), pcm.size()) <= 0) {
@@ -851,9 +851,9 @@ private:
     }
 
     const std::string pcm =
-        voxtral_tts::Pcm16Bytes(ApplySpeed(samples, request.speed));
+        omni_common::Pcm16Bytes(ApplySpeed(samples, request.speed));
     const std::string audio = request.response_format == "wav"
-                                  ? voxtral_tts::WavBytes(pcm, sample_rate)
+                                  ? omni_common::WavBytes(pcm, sample_rate)
                                   : pcm;
     // Note (Jiaxin Deng): CUDA counts a CustomVoice request's prompt as no
     // reference codes.

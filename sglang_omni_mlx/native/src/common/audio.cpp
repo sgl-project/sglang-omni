@@ -15,6 +15,8 @@ namespace mx = mlx::core;
 namespace {
 
 constexpr float kPcm16FullScale = 32768.0f;
+// The CUDA server's encode_pcm scales by 32767, not 32768.
+constexpr float kPcm16OutputScale = 32767.0f;
 constexpr uint16_t kWavFormatPcm = 1;
 constexpr uint16_t kWavFormatFloat = 3;
 
@@ -110,7 +112,7 @@ std::vector<float> BuildPeriodicHannWindow() {
 
 } // namespace
 
-std::vector<float> DecodeWav(std::string_view wav_bytes) {
+std::vector<float> DecodeWav(std::string_view wav_bytes, int sample_rate) {
   if (wav_bytes.size() < 12 || wav_bytes.substr(0, 4) != "RIFF" ||
       wav_bytes.substr(8, 4) != "WAVE") {
     throw std::invalid_argument("audio must be a RIFF/WAVE file");
@@ -120,7 +122,7 @@ std::vector<float> DecodeWav(std::string_view wav_bytes) {
   bool have_format = false;
   uint16_t audio_format = 0;
   uint16_t channel_count = 0;
-  uint32_t sample_rate = 0;
+  uint32_t file_sample_rate = 0;
   uint16_t bits_per_sample = 0;
   while (offset + 8 <= wav_bytes.size()) {
     const std::string_view chunk_id = wav_bytes.substr(offset, 4);
@@ -135,12 +137,18 @@ std::vector<float> DecodeWav(std::string_view wav_bytes) {
       }
       audio_format = ReadU16(wav_bytes, body_offset);
       channel_count = ReadU16(wav_bytes, body_offset + 2);
-      sample_rate = ReadU32(wav_bytes, body_offset + 4);
+      file_sample_rate = ReadU32(wav_bytes, body_offset + 4);
       bits_per_sample = ReadU16(wav_bytes, body_offset + 14);
       have_format = true;
     } else if (chunk_id == "data") {
-      if (!have_format || channel_count != 1 || sample_rate != kSampleRate) {
-        throw std::invalid_argument("audio must be 16 kHz mono");
+      if (!have_format || channel_count != 1 ||
+          file_sample_rate != static_cast<uint32_t>(sample_rate)) {
+        const std::string kilohertz =
+            sample_rate % 1000 == 0
+                ? std::to_string(sample_rate / 1000)
+                : std::to_string(sample_rate / 1000) + "." +
+                      std::to_string(sample_rate % 1000 / 100);
+        throw std::invalid_argument("audio must be " + kilohertz + " kHz mono");
       } else if (audio_format == kWavFormatPcm && bits_per_sample == 16) {
         std::vector<float> samples(body_size / 2);
         for (size_t i = 0; i < samples.size(); ++i) {
@@ -163,6 +171,44 @@ std::vector<float> DecodeWav(std::string_view wav_bytes) {
     offset = body_offset + chunk_size + (chunk_size & 1u);
   }
   throw std::invalid_argument("WAV file has no data chunk");
+}
+
+std::string Pcm16Bytes(const std::vector<float> &samples) {
+  std::string bytes;
+  bytes.reserve(samples.size() * 2);
+  for (const float sample : samples) {
+    // Note (Minyi Tang): NaN becomes silence, since std::clamp passes it
+    // through and casting NaN to an integer is undefined.
+    const float bounded =
+        std::isnan(sample) ? 0.0f : std::clamp(sample, -1.0f, 1.0f);
+    const auto value = static_cast<int16_t>(bounded * kPcm16OutputScale);
+    bytes.push_back(static_cast<char>(value & 0xff));
+    bytes.push_back(static_cast<char>((value >> 8) & 0xff));
+  }
+  return bytes;
+}
+
+std::string WavBytes(const std::string &pcm, int sample_rate) {
+  std::string bytes;
+  const auto append = [&](uint32_t value, int size) {
+    for (int index = 0; index < size; ++index) {
+      bytes.push_back(static_cast<char>((value >> (8 * index)) & 0xff));
+    }
+  };
+  const auto data_size = static_cast<uint32_t>(pcm.size());
+  bytes += "RIFF";
+  append(36 + data_size, 4);
+  bytes += "WAVEfmt ";
+  append(16, 4);              // fmt chunk size
+  append(1, 2);               // PCM
+  append(1, 2);               // mono
+  append(sample_rate, 4);     // samples per second
+  append(sample_rate * 2, 4); // bytes per second
+  append(2, 2);               // bytes per sample frame
+  append(16, 2);              // bits per sample
+  bytes += "data";
+  append(data_size, 4);
+  return bytes + pcm;
 }
 
 const std::vector<float> &MelFilterBank(int mel_bin_count) {

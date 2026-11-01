@@ -1,9 +1,7 @@
 {
  "model": "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
- "codec_model": "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2",
  "kind": "moss_tts_local",
  "tool": "moss_tts_local_synthesize",
- "quantization_bits": 8,
  "cases": {
   "en": {
    "text": "Please remember to bring your passport and boarding pass to the airport.",
