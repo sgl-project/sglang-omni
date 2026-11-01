@@ -69,6 +69,8 @@ SpeakerSegmentsJson(const std::vector<SpeakerSegment> &segments);
 // Voxt's Swift port, a name outside the table is used as given; blank is none.
 std::optional<std::string> NormalizeLanguage(const std::string &language);
 
+class StreamingEncoder;
+
 class Qwen3ASRTranscriber {
 public:
   explicit Qwen3ASRTranscriber(const std::filesystem::path &model_directory);
@@ -78,9 +80,12 @@ public:
   // Text already shown minus its last tokens, cut back to whole characters.
   std::pair<std::vector<int>, std::string>
   RetainedPrefix(const std::string &text, int rollback_token_count) const;
+  // With an encoder, samples extend the segment it was last updated with and
+  // its encoded windows are reused; it must use options.layout.
   TranscriptionResult Transcribe(const std::vector<float> &samples,
                                  const TranscriptionOptions &options,
-                                 const std::atomic<bool> &cancel) const;
+                                 const std::atomic<bool> &cancel,
+                                 StreamingEncoder *encoder = nullptr) const;
 
 private:
   std::pair<std::string, std::optional<std::string>>
@@ -93,6 +98,31 @@ private:
   int end_of_text_id_;
   int im_end_id_;
   std::vector<int> asr_text_ids_;
+  friend StreamingEncoder;
+};
+
+// Caches each full encoder window of a growing segment until the segment's
+// log-mel max changes. A window is cached only once all its mel frames are
+// final, none reaching into the end padding.
+class StreamingEncoder {
+public:
+  StreamingEncoder(const Qwen3ASRTranscriber &transcriber, AudioLayout layout);
+  // Takes the segment so far, which only grows; caches full settled windows
+  // and re-encodes them when the segment's log-mel max changes.
+  void Update(const std::vector<float> &segment_samples);
+  // [audio_tokens, output_dim] of the last segment; nullopt before any.
+  std::optional<mlx::core::array> Output() const;
+  int FrameCount() const { return frame_count_; }
+
+private:
+  const Qwen3ASRTranscriber &transcriber_;
+  AudioLayout layout_;
+  int window_frame_count_;
+  int frame_count_ = 0;
+  int cached_frame_count_ = 0;
+  std::optional<mlx::core::array> cached_rows_; // encoded full windows
+  std::optional<float> cached_max_;             // log-mel max they used
+  std::optional<mlx::core::array> tail_mel_;    // frames after them
 };
 
 } // namespace qwen3_asr

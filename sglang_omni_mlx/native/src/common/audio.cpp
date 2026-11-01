@@ -184,6 +184,50 @@ const std::vector<float> &PeriodicHannWindow() {
   return window;
 }
 
+mx::array LogMel(const std::vector<float> &samples, AudioLayout layout) {
+  const mx::array raw_log_mel = RawLogMel(samples, layout);
+  return ApplyFloor(raw_log_mel, mx::max(raw_log_mel));
+}
+
+mx::array RawLogMel(const std::vector<float> &samples, AudioLayout layout) {
+  std::vector<float> padded_samples = samples;
+  if (padded_samples.size() < static_cast<size_t>(kFftSize)) {
+    // Note (Jiaxin Deng): reflect padding needs more than half a window, so a
+    // tail this short (a realtime cut) is zero-filled to one window.
+    padded_samples.resize(kFftSize, 0.0f);
+  } else {
+  }
+  const int sample_count = static_cast<int>(padded_samples.size());
+  const mx::array audio(padded_samples.data(), {sample_count}, mx::float32);
+  constexpr int padding = kFftSize / 2;
+  const mx::array head = mx::slice(audio, {padding}, {0}, {-1});
+  const mx::array tail =
+      mx::slice(audio, {sample_count - 2}, {sample_count - padding - 2}, {-1});
+  const mx::array padded = mx::concatenate({head, audio, tail});
+  const int frame_count = 1 + (padded.shape(0) - kFftSize) / kHopLength;
+  const mx::array frames =
+      mx::as_strided(padded, {frame_count, kFftSize}, {kHopLength, 1}, 0);
+  const mx::array window(PeriodicHannWindow().data(), {kFftSize}, mx::float32);
+  mx::array power =
+      mx::square(mx::abs(mx::fft::rfft(mx::multiply(frames, window), 1)));
+  if (layout == AudioLayout::kReference) {
+    power = mx::slice(power, {0, 0}, {power.shape(0) - 1, power.shape(1)});
+  } else {
+  }
+  const mx::array filters(MelFilterBank().data(),
+                          {kFftSize / 2 + 1, kMelBinCount}, mx::float32);
+  return mx::log10(
+      mx::maximum(mx::matmul(power, filters), mx::array(kLogMelFloor)));
+}
+
+mx::array ApplyFloor(const mx::array &raw_log_mel,
+                     const mx::array &max_log_mel) {
+  const mx::array log_spectrum = mx::maximum(
+      raw_log_mel, mx::subtract(max_log_mel, mx::array(kLogMelDynamicRange)));
+  return mx::transpose(
+      mx::divide(mx::add(log_spectrum, mx::array(4.0f)), mx::array(4.0f)));
+}
+
 mx::array WhisperWindowFeatures(const float *samples, int sample_count,
                                 int mel_bin_count) {
   // Note (Dayuxiaoshui): the reference pads before the floor, so the floor

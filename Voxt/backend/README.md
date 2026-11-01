@@ -11,7 +11,7 @@ first.
 
 | Checkpoint | Runtime | Voxt behavior kept |
 | --- | --- | --- |
-| `mlx-community/Qwen3-ASR-0.6B-4bit`, `mlx-community/Qwen3-ASR-1.7B-6bit`, `mlx-community/Qwen3-ASR-1.7B-8bit` | `qwen3_asr_server` | Final with context bias and language hint, Swift's audio layout and stop rules, 1200 s energy-cut chunks sharing one token budget, first detected language carried forward; live preview over the realtime socket, first decode after 100 ms of audio, then once a second |
+| `mlx-community/Qwen3-ASR-0.6B-4bit`, `mlx-community/Qwen3-ASR-1.7B-6bit`, `mlx-community/Qwen3-ASR-1.7B-8bit` | `qwen3_asr_server` | Final with context bias and language hint, Swift's audio layout and stop rules, 1200 s energy-cut chunks sharing one token budget, first detected language carried forward; live preview over the realtime socket, first decode after 100 ms of audio, then once a second, reusing the 8 s encoder windows already encoded for the segment |
 | `mlx-community/whisper-large-v3-turbo` | `whisper_server` | Final and batch preview with Voxt's language, token budget, temperature, and 30 s audio windows |
 | `mlx-community/whisper-large-v3-mlx` | `whisper_server` | Final and batch preview with Voxt's language, token budget, temperature, and 30 s audio windows; weights load from `weights.npz` |
 | `mlx-community/whisper-small-mlx` | `whisper_server` | Final and batch preview with Voxt's language, token budget, temperature, and 30 s audio windows |

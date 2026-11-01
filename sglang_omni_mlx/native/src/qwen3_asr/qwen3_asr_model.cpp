@@ -86,8 +86,8 @@ mx::array Qwen3ASR::AudioEncoderLayer(const mx::array &x, int layer) const {
                   prefix + ".fc2"));
 }
 
-mx::array Qwen3ASR::EncodeAudio(const mx::array &mel,
-                                AudioLayout layout) const {
+mx::array Qwen3ASR::EncodeAudio(const mx::array &mel, AudioLayout layout,
+                                int min_chunk_frames) const {
   const int chunk_frame_count = audio_.n_window * 2;
   const int frame_count = mel.shape(-1);
   const int mel_bins = mel.shape(0);
@@ -98,7 +98,8 @@ mx::array Qwen3ASR::EncodeAudio(const mx::array &mel,
     chunk_lengths.push_back(std::min(chunk_frame_count, frame_count - start));
   }
   const int longest_chunk =
-      *std::max_element(chunk_lengths.begin(), chunk_lengths.end());
+      std::max(*std::max_element(chunk_lengths.begin(), chunk_lengths.end()),
+               min_chunk_frames);
   std::vector<mx::array> padded_chunks;
   for (size_t i = 0; i < chunk_starts.size(); ++i) {
     const mx::array chunk =
@@ -204,6 +205,12 @@ mx::array Qwen3ASR::EncodeAudio(const mx::array &mel,
   return checkpoint_.Linear(
       omni_common::Gelu(checkpoint_.Linear(hidden_states, "audio_tower.proj1")),
       "audio_tower.proj2");
+}
+
+int Qwen3ASR::EncoderWindowFrameCount() const {
+  const int chunk_frame_count = audio_.n_window * 2;
+  return std::max(1, audio_.n_window_infer / chunk_frame_count) *
+         chunk_frame_count;
 }
 
 mx::array Qwen3ASR::EmbedTokens(const mx::array &ids) const {
