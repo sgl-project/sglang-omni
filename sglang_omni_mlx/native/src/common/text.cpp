@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "common/text.h"
 
+#include <algorithm>
 #include <set>
 
 namespace omni_common {
@@ -47,6 +48,31 @@ std::vector<uint32_t> CodePoints(const std::string &text) {
     i += length;
   }
   return code_points;
+}
+
+void AppendUtf8(uint32_t code_point, std::string &out) {
+  if (code_point < 0x80) {
+    out.push_back(static_cast<char>(code_point));
+  } else if (code_point < 0x800) {
+    out.push_back(static_cast<char>(0xC0 | (code_point >> 6)));
+    out.push_back(static_cast<char>(0x80 | (code_point & 0x3F)));
+  } else if (code_point < 0x10000) {
+    out.push_back(static_cast<char>(0xE0 | (code_point >> 12)));
+    out.push_back(static_cast<char>(0x80 | ((code_point >> 6) & 0x3F)));
+    out.push_back(static_cast<char>(0x80 | (code_point & 0x3F)));
+  } else {
+    out.push_back(static_cast<char>(0xF0 | (code_point >> 18)));
+    out.push_back(static_cast<char>(0x80 | ((code_point >> 12) & 0x3F)));
+    out.push_back(static_cast<char>(0x80 | ((code_point >> 6) & 0x3F)));
+    out.push_back(static_cast<char>(0x80 | (code_point & 0x3F)));
+  }
+}
+
+size_t CodePointCount(const std::string &text) {
+  return static_cast<size_t>(
+      std::count_if(text.begin(), text.end(), [](char byte) {
+        return (static_cast<unsigned char>(byte) & 0xc0) != 0x80;
+      }));
 }
 
 std::string StripUnicodeWhitespace(const std::string &text) {

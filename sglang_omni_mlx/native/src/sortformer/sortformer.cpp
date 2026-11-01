@@ -14,11 +14,7 @@ namespace mx = mlx::core;
 
 namespace {
 
-// Note (Jiaxin Deng): mlx-swift casts a scalar operand to the array's dtype
-// (float16 stays float16); a C++ float32 scalar would promote it.
-mx::array Scalar(float value, const mx::array &like) {
-  return mx::array(value, like.dtype());
-}
+using omni_common::Scalar;
 
 std::vector<mx::array> ReluGraph(const std::vector<mx::array> &inputs) {
   return {mx::maximum(inputs[0], Scalar(0.0f, inputs[0]))};
