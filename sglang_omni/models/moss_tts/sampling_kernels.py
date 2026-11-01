@@ -10,7 +10,26 @@ from sglang.kernels.ops.sampling.murmur_hash import fmix32, murmur3_mix, murmur_
 from sglang.srt.layers.sampler import multinomial_with_seed
 from triton.language.extra import libdevice
 
+from sglang_omni.platforms import current_platform
+
+if current_platform.is_npu():
+    from sglang_omni.models.qwen3_tts.sampling_kernels import (
+        seeded_gumbel_argmax_float32,
+    )
+else:
+    pass
+
 _UINT32_MAX_F64 = tl.constexpr(float(torch.iinfo(torch.uint32).max))
+
+
+def sample_seeded_categorical(
+    logits: torch.Tensor, seeds: torch.Tensor, positions: torch.Tensor
+) -> torch.Tensor:
+    """Draw by request seed and position using graph-safe integer arithmetic."""
+    if current_platform.is_npu() and logits.device.type == current_platform.device_type:
+        return seeded_gumbel_argmax_float32(logits, seeds, positions)
+    else:
+        return multinomial_with_seed(logits, seeds, positions).view(-1)
 
 
 @triton.jit
@@ -392,7 +411,7 @@ def sample_seeded_branchless(
 
     probs = torch.softmax(scores, dim=-1)
     probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
-    sampled = multinomial_with_seed(scores, seeds, positions).view(-1)
+    sampled = sample_seeded_categorical(scores, seeds, positions)
     fallback = (~do_sample) | (probs.sum(dim=-1) <= 0)
     return torch.where(fallback, torch.argmax(logits, dim=-1), sampled)
 
@@ -401,6 +420,7 @@ __all__ = [
     "MAX_FUSED_SAMPLE_VOCAB",
     "multinomial_with_seed_and_token_ids",
     "sample_seeded_branchless",
+    "sample_seeded_categorical",
     "sample_seeded_fused",
     "seeded_gumbel_argmax",
 ]

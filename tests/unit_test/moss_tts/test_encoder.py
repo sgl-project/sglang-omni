@@ -24,6 +24,7 @@ from sglang_omni.models.moss_tts.audio_tokenizer import (
     resolve_moss_audio_dtype,
     resolve_moss_audio_sample_rate,
 )
+from sglang_omni.platforms import current_platform
 
 
 def tiny_config() -> dict:
@@ -321,6 +322,67 @@ def test_repository_encoder_materialized_bfloat16_does_not_use_autocast(
     )
 
     assert output.audio_codes_lengths.tolist() == [4, 3]
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not current_platform.is_npu(), reason="requires Ascend NPU")
+def test_npu_encoder_preserves_reference_codec_precision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BF16-only norms and smaller SDPA tiles changed reference codes and speech."""
+    config = tiny_config()
+    config["encoder_kwargs"][1].update(d_model=32, dim_feedforward=64)
+    model = MossAudioTokenizerEncoder(
+        config,
+        parameter_device=current_platform.device_type,
+        compute_dtype=torch.bfloat16,
+        attention_backend="sdpa",
+    ).eval()
+    norm_dtypes: list[torch.dtype] = []
+    quantizer_contexts: list[bool] = []
+    query_lengths: list[int] = []
+    original_attention = torch.nn.functional.scaled_dot_product_attention
+
+    def record_norm(
+        module: torch.nn.Module,
+        arguments: tuple[torch.Tensor, ...],
+        output: torch.Tensor,
+    ) -> None:
+        norm_dtypes.append(output.dtype)
+
+    def record_quantizer(
+        module: torch.nn.Module,
+        arguments: tuple[torch.Tensor | int | None, ...],
+    ) -> None:
+        quantizer_contexts.append(
+            torch.is_autocast_enabled(current_platform.device_type)
+        )
+
+    def record_attention(
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        attn_mask: torch.Tensor | None = None,
+        dropout_p: float = 0.0,
+    ) -> torch.Tensor:
+        query_lengths.append(query.shape[-2])
+        return original_attention(
+            query, key, value, attn_mask=attn_mask, dropout_p=dropout_p
+        )
+
+    model.encoder[1].transformer.layers[0].norm1.register_forward_hook(record_norm)
+    model.quantizer.register_forward_pre_hook(record_quantizer)
+    monkeypatch.setattr(
+        torch.nn.functional, "scaled_dot_product_attention", record_attention
+    )
+    waveform = torch.linspace(-1, 1, 3202, device=current_platform.device_type)
+    result = model.batch_encode([waveform.unsqueeze(0)], num_quantizers=2)
+
+    assert norm_dtypes == [torch.float32]
+    assert query_lengths == [1500, 101]
+    assert quantizer_contexts == [False]
+    assert result.audio_codes_lengths.tolist() == [1601]
+    assert torch.isfinite(result.encoder_hidden_states).all()
 
 
 def test_repository_encoder_skips_missing_decoder_shard(tmp_path) -> None:

@@ -7,6 +7,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from sglang_omni.platforms import current_platform
+
 try:
     import triton
     import triton.language as tl
@@ -226,6 +228,7 @@ class MossTTSLocalTransformer(nn.Module):
             key_cache, value_cache = self.kv_cache[layer_idx]
             if (
                 triton is not None
+                and not current_platform.is_npu()
                 and qkv.is_cuda
                 and qkv.dtype in (torch.float16, torch.bfloat16, torch.float32)
             ):

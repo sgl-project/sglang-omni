@@ -9,8 +9,31 @@ import pytest
 import torch
 
 from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.models.moss_tts import config as graph_policy
 from sglang_omni.models.moss_tts_local import config as config_module
+
+
+def test_npu_recipe_keeps_frame_graphs_without_backbone_graphs() -> None:
+    """The recipe must preserve local graphs while disabling backbone replay."""
+    example = (
+        Path(__file__).resolve().parents[3] / "examples/configs/moss_tts_local_npu.yaml"
+    )
+    config = ConfigManager.from_file(str(example)).config
+    engine = config.stage_named("tts_engine").engine.overrides()
+    assert engine["cuda_graph_backend_prefill"] == "disabled"
+    assert engine["disable_cuda_graph"] is True
+    factory = resolve_stage_factory_args(config.stage_named("tts_engine"), config)
+    assert factory["frame_graph_batch_sizes"] == [
+        1,
+        2,
+        4,
+        8,
+        12,
+        16,
+    ]
+    assert engine["attention_backend"] == "ascend"
+    assert config.stage_factory_kwargs("vocoder")["vocoder_cuda_graph"] is True
 
 
 @pytest.mark.parametrize(

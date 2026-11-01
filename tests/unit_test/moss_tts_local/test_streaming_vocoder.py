@@ -394,7 +394,9 @@ def test_compact_native_session_uses_active_batch_and_reuses_sparse_slots() -> N
     codes_b = make_rows(1, seed=102)[:, 1:].transpose(0, 1).contiguous()
     first = session.step({slot_a: codes_a})
     assert first[slot_a].shape[-1] == 2 * SAMPLES_PER_FRAME
+    assert session.slot_offsets[slot_a] == 2
     both = session.step({slot_a: codes_b, slot_b: codes_b})
+    assert session.slot_offsets[:2] == codec.offsets[:2].tolist()
     assert set(both) == {slot_a, slot_b}
     assert codec.batch_shapes == [
         (N_VQ, 1, 2),
@@ -403,6 +405,7 @@ def test_compact_native_session_uses_active_batch_and_reuses_sparse_slots() -> N
     assert [slots.tolist() for slots in codec.slot_ids] == [[1], [1, 0]]
 
     session.release(slot_a)
+    assert session.slot_offsets[slot_a] == 0
     reused = session.acquire()
     assert reused == slot_a
     reset_audio = session.step({reused: codes_b})[reused]

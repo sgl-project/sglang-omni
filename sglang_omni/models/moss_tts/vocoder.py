@@ -26,6 +26,7 @@ from sglang_omni.models.moss_tts.payload_types import (
     store_moss_tts_state,
 )
 from sglang_omni.models.moss_tts.vocoder_graphs import MossVocoderSegmentGraphs
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
@@ -64,9 +65,16 @@ def autocast_if_supported(
     device: torch.device,
     dtype: torch.dtype | None,
 ) -> Iterator[None]:
-    enabled = (device.type == "cuda" and dtype in (torch.float16, torch.bfloat16)) or (
-        device.type == "cpu" and dtype is torch.bfloat16
-    )
+    enabled = (
+        (
+            device.type == "cuda"
+            or (
+                current_platform.is_npu()
+                and device.type == current_platform.device_type
+            )
+        )
+        and dtype in (torch.float16, torch.bfloat16)
+    ) or (device.type == "cpu" and dtype is torch.bfloat16)
     if enabled:
         with torch.autocast(
             device_type=device.type,

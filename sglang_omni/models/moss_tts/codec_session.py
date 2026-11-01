@@ -9,8 +9,10 @@ from dataclasses import dataclass
 
 import torch
 
+from sglang_omni.models.moss_tts.attention import MossAudioTokenizerAttention
 from sglang_omni.models.moss_tts.audio_tokenizer import MossAudioTokenizerVocoder
 from sglang_omni.models.moss_tts.vocoder_cuda_graph import MossVocoderCudaGraphRunner
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.generation_batch_policy import build_default_cuda_graph_bs
 
 logger = logging.getLogger(__name__)
@@ -35,11 +37,25 @@ class CodecStreamSession:
         self.stream_slots: int = int(stream_slots)
         self.n_vq: int = int(n_vq)
         self.device: torch.device = next(codec.parameters()).device
+        self.is_npu: bool = (
+            current_platform.is_npu()
+            and self.device.type == current_platform.device_type
+        )
         codec.initialize_decoder_state_pool(
             self.stream_slots, scratch_capacity=self.stream_slots
         )
         self.free_stream_slots: list[int] = list(range(self.stream_slots))
         self.stream_slots_in_use: set[int] = set()
+        self.slot_offsets: list[int] = [0] * (2 * self.stream_slots)
+        self.streaming_max_positions: int = min(
+            (
+                int(module.packed_rope_cache.streaming_max_positions)
+                for module in self.codec.decoder.modules()
+                if isinstance(module, MossAudioTokenizerAttention)
+                and module.rope is not None
+            ),
+            default=0,
+        )
         self.closed: bool = False
         self.cg_runner: MossVocoderCudaGraphRunner | None = None
         # Capture is attempted at most once per session; a low-VRAM skip must not re-probe per step.
@@ -56,6 +72,14 @@ class CodecStreamSession:
         """Capture native vocoder graphs once; uncaptured shapes use eager decode."""
         self.warmup_attempted = True
         if self.closed:
+            return []
+        else:
+            pass
+        if self.is_npu and self.streaming_max_positions <= 0:
+            logger.warning(
+                "MOSS-Audio-Tokenizer vocoder NPU graphs require a finite "
+                "RoPE position capacity; using eager streaming decode"
+            )
             return []
         else:
             pass
@@ -76,7 +100,7 @@ class CodecStreamSession:
         except Exception:
             self.cg_runner = None
             raise
-        self.reset_slots(list(range(self.stream_slots)))
+        self.reset_slots(list(range(2 * self.stream_slots)))
         captured = self.cg_runner.captured_frames()
         if not captured:
             self.cg_runner = None
@@ -164,6 +188,8 @@ class CodecStreamSession:
         slot_ids = torch.as_tensor(slots, dtype=torch.long, device=self.device)
         with torch.no_grad():
             self.codec.reset_decoder_state_slots(slot_ids)
+        for slot in slots:
+            self.slot_offsets[slot] = 0
 
     def step(self, slot_codes: dict[int, torch.Tensor]) -> dict[int, torch.Tensor]:
         """Advance equal-length code rows and return each slot's CPU waveform."""
@@ -236,8 +262,11 @@ class CodecStreamSession:
             dtype=torch.long,
             device=self.device,
         )
+        execution_slot_ids = slots + list(
+            range(self.stream_slots, self.stream_slots + padding)
+        )
         state_slot_ids = torch.as_tensor(
-            slots + list(range(self.stream_slots, self.stream_slots + padding)),
+            execution_slot_ids,
             dtype=torch.long,
             device=self.device,
         )
@@ -246,6 +275,22 @@ class CodecStreamSession:
             dtype=torch.bool,
             device=self.device,
         )
+        if (
+            self.cg_runner is not None
+            and self.is_npu
+            and (batch_size, step_t) in self.cg_runner.graphs
+        ):
+            max_offset = max(self.slot_offsets[slot] for slot in execution_slot_ids)
+            if max_offset + step_t > self.streaming_max_positions:
+                raise ValueError(
+                    "streaming RoPE position exceeds the precomputed table: "
+                    f"required={max_offset + step_t}, "
+                    f"capacity={self.streaming_max_positions}"
+                )
+            else:
+                pass
+        else:
+            pass
         self.compact_batch_sizes[batch_size] += 1
         graphed = None
         graph_failed = False
@@ -289,6 +334,8 @@ class CodecStreamSession:
             else:
                 pass
             raise
+        for slot in slots:
+            self.slot_offsets[slot] += step_t
         if self.cg_runner is not None:
             if graphed is not None:
                 self.cg_graph_t[step_t] += 1

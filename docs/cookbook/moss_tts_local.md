@@ -46,6 +46,20 @@ Speech input admission follows the text backbone's context metadata rather than
 the generic 4,096-character precheck. Requests that exceed the effective model
 context are rejected with an OpenAI-compatible HTTP 400 error.
 
+### Ascend NPU
+
+Use the NPU installation described in [Installation](../get_started/installation.md) and the dedicated configuration:
+
+```bash
+ASCEND_RT_VISIBLE_DEVICES=0 sgl-omni serve \
+  --config examples/configs/moss_tts_local_npu.yaml \
+  --port 8000
+```
+
+This configuration places all three stages on one NPU, uses Ascend attention for the backbone and SDPA for the audio codec, and enables NPU graphs for frame-local generation and streaming vocoder steps of 1–7 frames. Backbone prefill/decode and other vocoder frame counts use eager execution. Codec decoding uses BF16 autocast while retaining FP32 quantization and LayerNorm computation.
+
+The engine factory's frame_graph_batch_sizes option controls local graphs independently: null follows the backbone graph setting, an empty list disables local graphs, and explicit buckets capture local graphs even when backbone graphs are disabled. The NPU recipe selects explicit local buckets because backbone graph replay produced incorrect speech in validation.
+
 ### Streaming vocoder CUDA graphs
 
 The `vocoder_cuda_graph` pipeline setting controls CUDA graphs for MOSS-Audio-Tokenizer streaming decode. AR engine graph settings are configured separately under `tts_engine.engine`.
