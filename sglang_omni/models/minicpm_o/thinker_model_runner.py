@@ -12,7 +12,10 @@ from sglang.srt.managers.scheduler import GenerationBatchResult
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
-from sglang_omni.models.minicpm_o.routing import THINKER_STAGE
+from sglang_omni.models.minicpm_o.routing import (
+    THINKER_STAGE,
+    should_generate_audio_output,
+)
 from sglang_omni.scheduling.types import (
     RequestOutput,
     SchedulerOutput,
@@ -177,7 +180,7 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         would have produced; emission trims the block to its committed tokens.
         """
         model = self.outer_model
-        if not self.hands_hidden_to_talker or model.speculative_hidden_rows is None:
+        if not self.hands_hidden_to_talker:
             return
         elif is_prefill:
             end_rows = list(accumulate(batch.extend_lens))
@@ -188,10 +191,11 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
             rows = model.prefill_hidden_rows[last_rows - 1]
             start = 0
             for index, (request, end) in enumerate(zip(batch.reqs, end_rows)):
-                prompt = (request.omni_data.stage_payload.data or {}).get(
-                    "prompt"
-                ) or {}
-                if prompt.get("known_tts_output_ids") is not None:
+                payload = request.omni_data.stage_payload
+                prompt = (payload.data or {}).get("prompt") or {}
+                if not should_generate_audio_output(payload.request):
+                    pass
+                elif prompt.get("known_tts_output_ids") is not None:
                     hidden = model.prefill_hidden_rows[start:end].detach().clone()
                     self.pending_hidden.setdefault(request.rid, []).extend(
                         hidden.unbind(0)
@@ -200,12 +204,21 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
                     self.speculative_hidden_queue[request.rid] = rows[index : index + 1]
                 start = end
         else:
+            speaking = [
+                index
+                for index, req in enumerate(batch.reqs)
+                if should_generate_audio_output(req.omni_data.stage_payload.request)
+            ]
+            if not speaking:
+                return
+            else:
+                pass
             block = model.speculative_hidden_rows[
                 : len(batch.reqs) * num_draft_tokens
             ].clone()
-            for index, req in enumerate(batch.reqs):
+            for index in speaking:
                 start = index * num_draft_tokens
-                self.speculative_hidden_queue[req.rid] = block[
+                self.speculative_hidden_queue[batch.reqs[index].rid] = block[
                     start : start + num_draft_tokens
                 ]
 
@@ -219,7 +232,8 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         else:
             pass
         seq = self.pending_hidden.setdefault(scheduler_request.request_id, [])
-        seq.extend(hidden[: len(token_ids)].unbind(0))
+        # Row views would keep this step's whole block alive until the request ends.
+        seq.extend(hidden[: len(token_ids)].clone().unbind(0))
 
     def finalize_skip_rids(self, scheduler_output: SchedulerOutput) -> set[str]:
         """Do not advance generation state for non-final prefill chunks."""

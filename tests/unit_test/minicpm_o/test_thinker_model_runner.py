@@ -268,6 +268,20 @@ def committed_rows(runner: MiniCPMOThinkerModelRunner, request_id: str) -> torch
     return torch.stack(runner.pending_hidden[request_id])
 
 
+def speculative_request(request_id: str, *, speaks: bool = True) -> SimpleNamespace:
+    return SimpleNamespace(
+        rid=request_id,
+        omni_data=SimpleNamespace(
+            stage_payload=SimpleNamespace(
+                data={},
+                request=SimpleNamespace(
+                    metadata=None if speaks else {"output_modalities": ["text"]}
+                ),
+            )
+        ),
+    )
+
+
 def test_committed_verify_tokens_take_the_leading_rows_of_their_request_block() -> None:
     num_draft_tokens = 4
     block_rows = torch.arange(3 * num_draft_tokens * 2, dtype=torch.float32).reshape(
@@ -276,7 +290,7 @@ def test_committed_verify_tokens_take_the_leading_rows_of_their_request_block() 
     hidden_rows = torch.zeros(16, 2)
     hidden_rows[: len(block_rows)] = block_rows
     runner = speculative_runner(hidden_rows, None)
-    batch = SimpleNamespace(reqs=[SimpleNamespace(rid=rid) for rid in "abc"])
+    batch = SimpleNamespace(reqs=[speculative_request(rid) for rid in "abc"])
 
     runner.after_speculative_step(
         batch, is_prefill=False, num_draft_tokens=num_draft_tokens
@@ -300,13 +314,7 @@ def test_prefill_commits_the_last_prompt_row_of_each_request() -> None:
     prefill_hidden_rows = torch.arange(16 * 2, dtype=torch.float32).reshape(16, 2)
     runner = speculative_runner(torch.zeros(16, 2), prefill_hidden_rows)
     batch = SimpleNamespace(
-        reqs=[
-            SimpleNamespace(
-                rid=request_id,
-                omni_data=SimpleNamespace(stage_payload=SimpleNamespace(data={})),
-            )
-            for request_id in ("a", "b")
-        ],
+        reqs=[speculative_request(request_id) for request_id in ("a", "b")],
         extend_lens=extend_lens,
     )
 
@@ -316,6 +324,26 @@ def test_prefill_commits_the_last_prompt_row_of_each_request() -> None:
 
     torch.testing.assert_close(committed_rows(runner, "a"), prefill_hidden_rows[1:2])
     torch.testing.assert_close(committed_rows(runner, "b"), prefill_hidden_rows[4:5])
+
+
+def test_a_text_request_on_a_speech_server_keeps_no_hidden_rows() -> None:
+    runner = speculative_runner(torch.zeros(8, 2), torch.zeros(8, 2))
+    request = speculative_request("text-only", speaks=False)
+
+    runner.after_speculative_step(
+        SimpleNamespace(reqs=[request], extend_lens=[3]),
+        is_prefill=True,
+        num_draft_tokens=4,
+    )
+    runner.after_speculative_step(
+        SimpleNamespace(reqs=[request]), is_prefill=False, num_draft_tokens=4
+    )
+    runner.on_speculative_tokens(
+        SimpleNamespace(request_id=request.rid), [PLAIN_TOKEN_ID]
+    )
+
+    assert not runner.speculative_hidden_queue
+    assert not runner.pending_hidden
 
 
 @pytest.mark.parametrize("chunk_lengths", [(5,), (3, 2)])
@@ -328,7 +356,8 @@ def test_speculative_known_text_keeps_prefill_rows_across_chunks(
     runner = speculative_runner(torch.empty_like(expected_rows), prefill_buffer)
     request_data = SimpleNamespace(
         stage_payload=SimpleNamespace(
-            data={"prompt": {"known_tts_output_ids": text_tokens}}
+            data={"prompt": {"known_tts_output_ids": text_tokens}},
+            request=SimpleNamespace(metadata=None),
         ),
         extra_model_outputs={},
     )
@@ -394,7 +423,7 @@ def test_speech_capture_copies_the_prefill_ceiling_and_text_capture_stays_empty(
     model.prefill_hidden_rows = None
     model.speculative_hidden_rows = None
     monkeypatch.setattr(
-        thinker_module, "max_prefill_buffer_tokens", lambda: prefill_rows, raising=False
+        thinker_module, "max_prefill_buffer_tokens", lambda: prefill_rows
     )
     hidden = torch.arange(prefill_rows * 2, dtype=torch.float32).reshape(-1, 2)
 
@@ -452,7 +481,6 @@ def test_speech_verify_capacity_is_checked_before_graph_capture(
         bootstrap_module,
         "max_speculative_num_draft_tokens",
         lambda: maximum_draft_tokens,
-        raising=False,
     )
     monkeypatch.setattr(
         "sglang_omni.scheduling.bootstrap.create_sglang_infrastructure",
