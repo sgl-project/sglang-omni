@@ -1905,8 +1905,8 @@ class Qwen3TTSIncrementalDecoder:
             return
         else:
             pass
-        # note (ratish): batch and width stay symbolic, so one program serves every size above
-        # one; Dynamo keeps a size of one apart, so a boot compiles at most four programs.
+        # note (ratish): batch and width stay symbolic, so sizes share programs; Dynamo keeps a size
+        # of one apart, and a width divisible by a dilated conv's 3 splits once more: five in all.
         batch_tensors = (
             codes,
             state.frame_positions,
