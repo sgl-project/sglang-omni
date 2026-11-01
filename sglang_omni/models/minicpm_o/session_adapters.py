@@ -9,7 +9,7 @@ from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.sampling.sampling_params import SamplingParams
 from transformers import PreTrainedTokenizerBase
 
-from sglang_omni.audio.vad import StatelessVAD
+from sglang_omni.audio.vad import SileroSpeechModel, StatelessVAD
 from sglang_omni.client.client import Client
 from sglang_omni.models.minicpm_o.components.code2wav import OUTPUT_SAMPLE_RATE
 from sglang_omni.models.minicpm_o.components.streaming_perception import (
@@ -83,6 +83,9 @@ class ThinkerAdapter(ARSessionAdapter):
         self.special: MiniCPMOSpecialTokenIds = resolve_special_token_ids(
             tokenizer, bad_token_ids=tuple(tokenizer.bad_token_ids)
         )
+        # Note (wenyao): loading silero in open() stalled the scheduler thread ~30 ms
+        # per session, which dropped units when 32 sessions opened together.
+        self.speech_model: SileroSpeechModel = SileroSpeechModel()
         self.states: dict[SessionIdentity, MiniCPMOThinkerSessionState] = {}
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
@@ -93,7 +96,7 @@ class ThinkerAdapter(ARSessionAdapter):
                     for key in MiniCPMODuplexSampling.model_fields
                 }
             ),
-            speech_detector=StatelessVAD(),
+            speech_detector=StatelessVAD(model=self.speech_model.fork()),
         )
 
     def close(self, session_identity: SessionIdentity) -> None:

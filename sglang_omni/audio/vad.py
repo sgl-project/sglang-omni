@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -56,6 +57,14 @@ class SileroSpeechModel:
         import silero_vad
 
         self.model = silero_vad.load_silero_vad(onnx=True)
+
+    def fork(self) -> SileroSpeechModel:
+        # Note (wenyao): silero's wrapper rebinds its state tensors on every call and
+        # reset, so a shallow copy shares only the ONNX session.
+        forked = copy.copy(self)
+        forked.model = copy.copy(self.model)
+        forked.reset()
+        return forked
 
     def predict(self, frame: np.ndarray, sample_rate: int) -> float:
         with torch.inference_mode():
