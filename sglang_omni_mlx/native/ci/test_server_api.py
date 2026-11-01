@@ -202,17 +202,22 @@ def test_invalid_requests_are_rejected(server: Server, fields: dict, wav) -> Non
     assert all(name in detail for name in fields)
 
 
-def long_wav(seconds: int) -> bytes:
-    """A clip repeated to about seconds long, so a full decode takes several seconds."""
-    pcm = pcm16("0344_en_long")
-    repeated = pcm * (seconds * 32000 // len(pcm) + 1)
+def wav_bytes(pcm: bytes) -> bytes:
+    """16 kHz mono 16-bit PCM wrapped in a WAV header."""
     out = io.BytesIO()
     with wave.open(out, "wb") as writer:
         writer.setnchannels(1)
         writer.setsampwidth(2)
         writer.setframerate(16000)
-        writer.writeframes(repeated[: seconds * 32000])
+        writer.writeframes(pcm)
     return out.getvalue()
+
+
+def long_wav(seconds: int) -> bytes:
+    """A clip repeated to about seconds long, so a full decode takes several seconds."""
+    pcm = pcm16("0344_en_long")
+    repeated = pcm * (seconds * 32000 // len(pcm) + 1)
+    return wav_bytes(repeated[: seconds * 32000])
 
 
 def test_a_disconnected_stream_stops_its_decode(server: Server) -> None:
@@ -305,6 +310,38 @@ def test_realtime_manual_session(server: Server) -> None:
     assert events[-1]["text"].startswith("Surely you are not thinking")
     indexes = [event["event_index"] for event in events]
     assert indexes == sorted(indexes)
+
+
+@pytest.mark.parametrize(
+    "fields, finish_reason, is_collapsed",
+    [
+        ({}, "stop", True),
+        ({"stop_on_token_loop": "true"}, "stop", True),
+        ({"stop_on_token_loop": "false"}, "length", False),
+    ],
+)
+def test_a_token_loop_stops_with_one_copy_of_its_unit(
+    server: Server, fields: dict[str, str], finish_reason: str, is_collapsed: bool
+) -> None:
+    """A request without stop_on_token_loop repeated 我覺得 to the 128-token budget, and one that sent it still kept about 12 copies."""
+    # Note (Minyi Tang): 30.0 s to 31.1 s of this clip is the public loop trigger from issue 2150.
+    status, body = server.post_form(
+        {
+            "stream": "true",
+            "language": "zh",
+            "include_generation_metadata": "true",
+            **fields,
+        },
+        wav_bytes(pcm16("0366_zh_long")[int(30.0 * 32000) : int(31.1 * 32000)]),
+    )
+    assert status == 200
+    done = sse_events(body)[0]
+    metadata = done["generation_metadata"]
+    assert (
+        metadata["finish_reason"],
+        metadata["generated_token_count"] < 128,
+        done["text"].count("我覺得") == 1,
+    ) == (finish_reason, is_collapsed, is_collapsed)
 
 
 def test_end_of_stdin_stops_the_server() -> None:
