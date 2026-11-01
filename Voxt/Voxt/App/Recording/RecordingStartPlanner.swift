@@ -190,7 +190,8 @@ enum RecordingStartPlanner {
             }
             return isSelectedModelDownloaded ? .ready : .notDownloaded
         case .unavailable:
-            return .unavailable(unavailableDetail)
+            // A load error is per-attempt; an installed model must stay startable without an app restart.
+            return isSelectedModelDownloaded ? .ready : .unavailable(unavailableDetail)
         }
     }
 

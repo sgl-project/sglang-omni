@@ -43,11 +43,11 @@ final class MLXNativeLiveRuntimeTests: XCTestCase {
         let current = RuntimeTestStreamingSession()
         let delivered = expectation(description: "current event")
         var texts: [String] = []
-        runtime.install(old, pollInterval: .seconds(60), nextSamples: { [] }, shouldContinue: { false }, onEvent: { _ in
+        runtime.install(old, pollInterval: .seconds(60), nextSamples: { _ in [] }, shouldContinue: { false }, onEvent: { _ in
             XCTFail("Old session delivered an event")
         }, releaseModel: {})
         old.emit("old")
-        runtime.install(current, pollInterval: .seconds(60), nextSamples: { [] }, shouldContinue: { false }, onEvent: { event in
+        runtime.install(current, pollInterval: .seconds(60), nextSamples: { _ in [] }, shouldContinue: { false }, onEvent: { event in
             if case .displayUpdate(let text, _) = event {
                 texts.append(text)
                 delivered.fulfill()
@@ -65,7 +65,7 @@ final class MLXNativeLiveRuntimeTests: XCTestCase {
         let session = RuntimeTestStreamingSession()
         let delivered = expectation(description: "event released stream")
         var releases = 0
-        runtime.install(session, pollInterval: .seconds(60), nextSamples: { [] }, shouldContinue: { false }, onEvent: { _ in
+        runtime.install(session, pollInterval: .seconds(60), nextSamples: { _ in [] }, shouldContinue: { false }, onEvent: { _ in
             runtime.release(cancelSession: false)
             delivered.fulfill()
         }, releaseModel: { releases += 1 })
@@ -81,7 +81,7 @@ final class MLXNativeLiveRuntimeTests: XCTestCase {
         let runtime = MLXNativeLiveRuntime()
         let session = RuntimeTestStreamingSession()
         var samplesRequested = 0
-        runtime.install(session, pollInterval: .seconds(60), nextSamples: {
+        runtime.install(session, pollInterval: .seconds(60), nextSamples: { _ in
             samplesRequested += 1
             return [0.1]
         }, shouldContinue: { true }, onEvent: { _ in }, releaseModel: {})
@@ -117,7 +117,7 @@ final class MLXNativeLiveRuntimeTests: XCTestCase {
     }
 
     private func install(_ session: RuntimeTestStreamingSession, in runtime: MLXNativeLiveRuntime, release: @escaping @MainActor () -> Void) {
-        runtime.install(session, pollInterval: .seconds(60), nextSamples: { [] }, shouldContinue: { false }, onEvent: { _ in }, releaseModel: release)
+        runtime.install(session, pollInterval: .seconds(60), nextSamples: { _ in [] }, shouldContinue: { false }, onEvent: { _ in }, releaseModel: release)
     }
 }
 

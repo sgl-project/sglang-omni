@@ -69,6 +69,8 @@ nonisolated final class OmniNativeStreamingSession: ASRStreamingSession, @unchec
         }
     }
 
+    var queueCapacitySamples: Int { session.queueCapacitySamples }
+
     func feedAudio(samples: [Float]) {
         session.feedAudio(samples: samples)
     }

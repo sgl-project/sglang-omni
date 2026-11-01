@@ -57,6 +57,17 @@ final class RecordingStartPlannerTests: XCTestCase {
         XCTAssertEqual(decision, .blocked(.mlxModelUnavailable(detail: "broken")))
     }
 
+    /// One failed runtime load used to block every later activation until Voxt restarted.
+    func testInstalledMLXModelCanStartAgainAfterRuntimeLoadFailure() {
+        let decision = RecordingStartPlanner.resolve(
+            selectedEngine: .mlxAudio,
+            isSelectedMLXModelDownloaded: true,
+            mlxModelState: .error("Model load failed: server exited")
+        )
+
+        XCTAssertEqual(decision, .start(.mlxAudio))
+    }
+
     func testMLXAudioDownloadedStartsWithMLXAudio() {
         let decision = RecordingStartPlanner.resolve(
             selectedEngine: .mlxAudio,

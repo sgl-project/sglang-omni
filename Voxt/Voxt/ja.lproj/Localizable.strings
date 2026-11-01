@@ -2376,3 +2376,5 @@
 "API Format" = "API 形式";
 
 "Automatic keeps OpenAI on Responses and respects explicit Chat Completions URLs for custom endpoints." = "自動では OpenAI に Responses を使用し、カスタムエンドポイントに明示した Chat Completions URL を維持します。";
+
+"Live transcription failed. Stop recording and try again." = "リアルタイム文字起こしに失敗しました。録音を停止して再試行してください。";

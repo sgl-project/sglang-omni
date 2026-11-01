@@ -173,13 +173,13 @@ extension MLXTranscriber {
             return samples.count
         }
 
-        func samples(from startIndex: Int) -> (samples: [Float], nextIndex: Int) {
+        func samples(from startIndex: Int, maximumCount: Int = .max) -> (samples: [Float], nextIndex: Int) {
             lock.lock()
             defer { lock.unlock() }
 
             let clampedStart = max(0, min(startIndex, samples.count))
-            guard clampedStart < samples.count else { return ([], samples.count) }
-            return (Array(samples[clampedStart...]), samples.count)
+            let endIndex = clampedStart + min(max(0, maximumCount), samples.count - clampedStart)
+            return (Array(samples[clampedStart..<endIndex]), endIndex)
         }
 
         func callbacksReceived() -> Int {

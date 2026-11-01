@@ -2,9 +2,15 @@ import Foundation
 
 nonisolated protocol ASRStreamingSession: AnyObject, Sendable {
     var events: AsyncStream<ASRStreamingEvent> { get }
+    /// How many more 16 kHz samples feedAudio accepts before the session fails for falling behind.
+    var queueCapacitySamples: Int { get }
     func feedAudio(samples: [Float])
     func stop()
     func cancel()
+}
+
+extension ASRStreamingSession {
+    var queueCapacitySamples: Int { .max }
 }
 
 nonisolated struct MLXMeetingNativeStreamingConfiguration: Sendable {
@@ -36,7 +42,7 @@ final class MLXNativeLiveRuntime {
     func install(
         _ session: any ASRStreamingSession,
         pollInterval: Duration,
-        nextSamples: @escaping @MainActor () -> [Float],
+        nextSamples: @escaping @MainActor (_ queueCapacitySamples: Int) -> [Float],
         shouldContinue: @escaping @MainActor () -> Bool,
         onEvent: @escaping @MainActor (ASRStreamingEvent) -> Void,
         releaseModel: @escaping @MainActor () -> Void
@@ -51,7 +57,7 @@ final class MLXNativeLiveRuntime {
         }
         let feed = Task { @MainActor [weak self, session] in
             while !Task.isCancelled, self?.active?.id == id {
-                let samples = nextSamples()
+                let samples = nextSamples(session.queueCapacitySamples)
                 if !samples.isEmpty { session.feedAudio(samples: samples) }
                 guard shouldContinue() else { return }
                 do { try await Task.sleep(for: pollInterval) } catch { return }

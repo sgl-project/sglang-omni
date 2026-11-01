@@ -203,6 +203,10 @@ nonisolated final class OmniRealtimeTranscriptionSession: @unchecked Sendable {
         }
     }
 
+    var queueCapacitySamples: Int {
+        shared.withLock { max(0, Self.maximumQueuedSamples - $0.queuedSamples) }
+    }
+
     /// Queues 16 kHz mono samples; overflowing the bounded queue fails the session.
     func feedAudio(samples: [Float]) {
         guard !samples.isEmpty else { return }
