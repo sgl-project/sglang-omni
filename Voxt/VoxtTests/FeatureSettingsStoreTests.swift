@@ -178,32 +178,6 @@ final class FeatureSettingsStoreTests: XCTestCase {
         }
     }
 
-    func testRemoveRetiredGGUFArtifactsDeletesOnlyGGUFStorageAndLegacyKey() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("LegacyGGUFTranslationMigrationTests.\(UUID().uuidString)", isDirectory: true)
-        let ggufDirectory = root.appendingPathComponent("gguf-translation/tencent_Hy-MT2-1.8B-GGUF", isDirectory: true)
-        let mlxDirectory = root.appendingPathComponent("mlx-llm", isDirectory: true)
-        try FileManager.default.createDirectory(at: ggufDirectory, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: mlxDirectory, withIntermediateDirectories: true)
-        try Data("gguf".utf8).write(to: ggufDirectory.appendingPathComponent("Hy-MT2-1.8B-Q4_K_M.gguf"))
-        ModelStorageDirectoryManager.resetForTesting()
-        ModelStorageDirectoryManager.setAuthorizedRootURLForTesting(root)
-        defer {
-            ModelStorageDirectoryManager.resetForTesting()
-            try? FileManager.default.removeItem(at: root)
-        }
-
-        try withEphemeralDefaults { defaults in
-            defaults.set("tencent/Hy-MT2-1.8B-GGUF#Hy-MT2-1.8B-Q4_K_M.gguf", forKey: AppPreferenceKey.legacyTranslationGGUFModelID)
-
-            LegacyGGUFTranslationMigration.removeRetiredArtifacts(defaults: defaults)
-
-            XCTAssertNil(defaults.object(forKey: AppPreferenceKey.legacyTranslationGGUFModelID))
-            XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("gguf-translation").path))
-            XCTAssertTrue(FileManager.default.fileExists(atPath: mlxDirectory.path))
-        }
-    }
-
     func testSaveRemovesObsoleteLatencyProfileKeysWithoutAffectingStoredSettings() throws {
         try withEphemeralDefaults { defaults in
             defaults.set("instant", forKey: "enhancementLatencyProfile")

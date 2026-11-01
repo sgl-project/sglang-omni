@@ -18,7 +18,7 @@ ASR and Custom LLM managers share one complete shutdown task per instance, so re
 - `CustomLLMRequestRuntime`: generation policy, text-only chat inputs, output parsing and diagnostics formatting. Mutable container lifetime and diagnostic publication remain in the manager. Image inputs and screenshot debug payloads have been removed.
 - `CustomLLMModelCatalog.requiresVLMFactory`: selects the loading architecture, not an exposed image capability. MLXVLM remains necessary for existing Qwen3-VL, Ministral-3 and Gemma-4 checkpoints even when requests contain only text.
 - `LocalTokenizerLoader`: adapter between Tokenizers and MLXLMCommon tokenizer contracts.
-- `LegacyGGUFTranslationMigration`: maps saved llama.cpp Hy-MT2 selections to the MLX Hy-MT2 checkpoints and deletes the retired `gguf-translation` directory at launch.
+- `LegacyGGUFTranslationMigration`: maps saved llama.cpp Hy-MT2 selections to the MLX Hy-MT2 checkpoints. After launch, outside XCTest, it deletes the retired `gguf-translation` directory on the `ModelDiskOperations` queue once the mapped checkpoint is installed.
 - `ResumableDownloadTypes`, `ResumableDownloadAttemptDelegate`, `ResumableModelDownloadSupport`: shared resumable transport, delegate synchronization, sidecar and retry handling for ASR and LLM downloads.
 - `ModelDownloadSourceSelection.attemptCandidates`: shared retry-source ordering; resumed downloads stay on the saved source.
 - `ModelDownloadProgress`: shared display estimates, clamped before integer conversion. ASR validation size comes from the downloaded repo, not whichever model the UI selects; Custom LLM captures its destination before suspending for metadata.

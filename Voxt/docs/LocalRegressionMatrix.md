@@ -20,7 +20,7 @@ The `refactor` group also includes the stage-4 ASR framing/response/completion a
 
 Stage 6A adds existing dictionary learning/matcher/store, history serialization/store/correction, and meeting-detail formatting/virtual-list/cache coverage to `refactor`. Playback controls, scrolling and accessibility still need UI acceptance on macOS.
 
-Stage 6B includes current local-LLM request policy, source selection, resumable URLProtocol, installation/cache and catalog contracts. Hy-MT2 translation now runs on the MLX local-LLM path, so the retired GGUF group and its suite are gone. Tooling validates both suite and method names to detect stale selectors.
+Stage 6B includes current local-LLM request policy, source selection, resumable URLProtocol, installation/cache and catalog contracts. Hy-MT2 translation now runs on the MLX local-LLM path, so the retired GGUF group and its suite are gone; `HyMT2MigrationTests` covers the GGUF selection migration, the deferred weight cleanup and the translation-only exclusions. Tooling validates both suite and method names to detect stale selectors.
 
 Stage 6C adds queued-injection and pasteboard-ownership tests, lifecycle output-generation cases, and the existing connectivity tester suite. Pasteboard tests use unique named boards, never the general clipboard. They do not post real keys or validate editor/focus behavior; manual acceptance must cover cancel/restart during paste, overlay dismissal, follow-up keys, window switching and concurrent user copies.
 

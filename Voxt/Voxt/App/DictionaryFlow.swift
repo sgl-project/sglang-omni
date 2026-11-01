@@ -95,7 +95,7 @@ extension AppDelegate {
             customLLMManager.displayTitle(for: $0).localizedCaseInsensitiveCompare(customLLMManager.displayTitle(for: $1)) == .orderedAscending
         }
 
-        for repo in uniqueLocalRepos where customLLMManager.canAttemptInference(repo: repo) {
+        for repo in uniqueLocalRepos where Self.canRunDictionaryHistoryScan(repo: repo, customLLMManager: customLLMManager) {
             options.append(
                 DictionaryHistoryScanModelOption(
                     id: "local:\(repo)",
@@ -353,8 +353,13 @@ extension AppDelegate {
         return .appleIntelligence
     }
 
+    /// Translation-only checkpoints such as Hy-MT2 cannot follow the term-extraction prompt.
+    static func canRunDictionaryHistoryScan(repo: String, customLLMManager: CustomLLMModelManager) -> Bool {
+        !CustomLLMModelCatalog.isTranslationOnlyModel(repo) && customLLMManager.canAttemptInference(repo: repo)
+    }
+
     private func customLLMDictionaryHistoryScanModel() -> DictionaryHistoryScanModel? {
-        guard customLLMManager.canAttemptInference(repo: customLLMManager.currentModelRepo) else {
+        guard Self.canRunDictionaryHistoryScan(repo: customLLMManager.currentModelRepo, customLLMManager: customLLMManager) else {
             return nil
         }
         return .customLLM(repo: customLLMManager.currentModelRepo)
@@ -369,7 +374,7 @@ extension AppDelegate {
     private func dictionaryHistoryScanModel(for optionID: String) throws -> DictionaryHistoryScanModel {
         if optionID.hasPrefix("local:") {
             let repo = String(optionID.dropFirst("local:".count))
-            guard customLLMManager.canAttemptInference(repo: repo) else {
+            guard Self.canRunDictionaryHistoryScan(repo: repo, customLLMManager: customLLMManager) else {
                 throw NSError(
                     domain: "Voxt.DictionaryHistoryScan",
                     code: -5,

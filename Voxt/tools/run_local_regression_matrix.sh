@@ -190,6 +190,7 @@ run_refactor() {
     -only-testing:VoxtTests/ModelDownloadSourceSupportTests
     -only-testing:VoxtTests/ModelInstallationCacheTests
     -only-testing:VoxtTests/ModelConfigurationIssueResolverTests
+    -only-testing:VoxtTests/HyMT2MigrationTests
     -only-testing:VoxtTests/VoxtLogRedactorTests
     -only-testing:VoxtTests/MLXModelSupportTests
     -only-testing:VoxtTests/MLXModelPerRepoStateSupportTests

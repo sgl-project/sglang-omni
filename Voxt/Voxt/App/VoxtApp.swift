@@ -380,7 +380,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             AppPreferenceKey.customProxyPassword: "",
         ])
         FeatureSettingsStore.migrateIfNeeded(defaults: .standard)
-        LegacyGGUFTranslationMigration.removeRetiredArtifacts()
         Self.migrateLegacyWhisperSelectionIfNeeded()
         HotkeyPreference.registerDefaults()
         HotkeyPreference.migrateDefaultsIfNeeded()
@@ -510,6 +509,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         VoxtLog.info("Runtime system version: \(currentSystemVersionLogDescription)")
         UserDefaults.standard.set(false, forKey: "NSQuitAlwaysKeepsWindows")
         migrateLegacyPreferences()
+        LegacyGGUFTranslationMigration.reclaimRetiredArtifactsAfterLaunch()
         remoteASRTranscriber.doubaoDictionaryEntryProvider = { [weak self] in
             guard let self else { return [] }
             return self.dictionaryStore.activeEntriesForRemoteRequest(

@@ -66,7 +66,7 @@ These readers do not protect hostile namespace changes, external blob writes, po
 | mlx-swift-lm | MLXLLM, MLXLMCommon | `Core/Models/CustomLLM*`, `MemoryEfficientModelContainerLoader`, `PrequantizedModelLoading`, `LocalTokenizerLoader` | Local LLM for enhancement, translation, rewrite and note/transcript titles; Hy-MT2 1.8B translation (4-bit, 8-bit) through the `hunyuan_v1_dense` loader | Local LLM requests run on a Native server, or Voxt keeps only Remote LLM |
 | mlx-swift-lm | MLXVLM | `MemoryEfficientModelContainerLoader`, `CustomLLMModelManager` | Loading factory for the Qwen3-VL 4B, Ministral-3 3B and Gemma-4 checkpoints; requests stay text-only | Qwen3-VL 4B is retired, and Gemma-4 and Ministral-3 pass real-weight checks through the MLXLLM `gemma4` and `mistral3` loaders |
 | mlx-swift | MLX | LLM loaders, `IdleMemoryReclamation`, `MeetingFileInferenceCache`, `MLXModelManager` | MLX cache limits and release for in-process models | No in-process MLX model remains |
-| swift-transformers | Tokenizers | `LocalTokenizerLoader` | Tokenizers for local LLMs | MLXLLM is removed |
+| swift-transformers | Tokenizers | `LocalTokenizerLoader` | Tokenizers for local LLMs on both the MLXLLM and MLXVLM loading paths | No in-process LLM or VLM remains |
 | swift-huggingface | HuggingFace | ASR, local LLM, Silero and Sortformer download support | Hugging Face Hub downloads | Not MLX-specific; Native model downloads use it too |
 | OmniModelArtifacts (local) | OmniModelArtifacts | ASR, Silero and Sortformer storage, `ModelDiskOperations` | Artifact validation, directory leases and atomic publication for Native model directories | Not MLX-specific |
 | GRDB.swift | GRDB | `VoxtDatabase`, history and dictionary repositories | SQLite persistence | Not MLX-specific |
@@ -77,7 +77,7 @@ These readers do not protect hostile namespace changes, external blob writes, po
 
 mlx-audio-swift (MLXAudioCore, MLXAudioSTT and MLXAudioVAD) is no longer linked: local ASR, Silero and Sortformer run on the Native HTTP servers, and `tools/audit_model_stack.py` rejects its products and pin.
 
-llama.swift (LlamaSwift) is no longer linked either: Hy-MT2 translation runs on the `mlx-community/Hy-MT2-1.8B-4bit` and `-8bit` checkpoints through MLXLLM. At launch, `LegacyGGUFTranslationMigration` moves saved GGUF selections to the matching checkpoint (Q8_0 to 8-bit, everything else to 4-bit) and deletes the unused `gguf-translation` model directory.
+llama.swift (LlamaSwift) is no longer linked either: Hy-MT2 translation runs on the `mlx-community/Hy-MT2-1.8B-4bit` and `-8bit` checkpoints through MLXLLM. `LegacyGGUFTranslationMigration` moves saved GGUF selections to the matching checkpoint (Q8_0 to 8-bit, everything else to 4-bit) without downloading it, so an upgraded user sees the usual "Model needs to be installed" state until they install it. After each launch, on the `ModelDiskOperations` queue, it deletes the unused `gguf-translation` model directory only once that checkpoint is installed. The XCTest host never runs this cleanup.
 
 ## Permission and input boundaries
 
