@@ -59,6 +59,7 @@ from sglang_omni.models.qwen3_tts import streaming_vocoder as qwen3_streaming_vo
 from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
 from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
 from sglang_omni.models.qwen3_tts.incremental_codec import (
+    PointwiseConv,
     Qwen3TTSIncrementalCodecState,
     Qwen3TTSIncrementalCodecStateSpec,
 )
@@ -3403,8 +3404,15 @@ class FakeQwen3TTSSpeechTokenizer:
 
 
 class FakeIncrementalQwen3TTSDecoder:
-    def __init__(self, decoder, *, fail_on_call: int | None = None) -> None:
+    def __init__(
+        self,
+        decoder,
+        *,
+        fail_on_call: int | None = None,
+        pointwise_conv: PointwiseConv | None = None,
+    ) -> None:
         self.decoder = decoder
+        self.pointwise_conv = pointwise_conv
         self.channels_last_weights = None
         self.fused_transformer = None
         self.fail_on_call = fail_on_call
@@ -3496,8 +3504,10 @@ def stateful_qwen3_tts_scheduler(
 ) -> tuple[Qwen3TTSStreamingVocoderScheduler, FakeIncrementalQwen3TTSDecoder]:
     created = []
 
-    def make_incremental(decoder):
-        incremental = FakeIncrementalQwen3TTSDecoder(decoder, fail_on_call=fail_on_call)
+    def make_incremental(decoder, *, pointwise_conv: PointwiseConv | None = None):
+        incremental = FakeIncrementalQwen3TTSDecoder(
+            decoder, fail_on_call=fail_on_call, pointwise_conv=pointwise_conv
+        )
         created.append(incremental)
         return incremental
 
@@ -8957,6 +8967,7 @@ def layerless_qwen3_tts_text_model(decode_rows: int) -> torch.nn.Module:
     torch.nn.Module.__init__(model)
     model.codec_embedding = torch.nn.Embedding(8, 4)
     model.layers = torch.nn.ModuleList([])
+    model.cutedsl_layers = None
     model.start_layer = 0
     model.end_layer = 0
     model.norm = IdentityNorm()

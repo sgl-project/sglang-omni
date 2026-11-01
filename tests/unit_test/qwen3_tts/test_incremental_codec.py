@@ -5,7 +5,9 @@ from __future__ import annotations
 import copy
 import os
 import random
+from importlib.util import find_spec
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -36,6 +38,64 @@ from sglang_omni.models.qwen3_tts.incremental_codec_cuda_graph import (
 from sglang_omni.platforms import current_platform
 from sglang_omni.utils import channels_last_conv, snake_beta
 from sglang_omni.utils.channels_last_conv import channels_last_weight
+
+if find_spec("cutlass") is not None:
+    from sglang_omni.models.qwen3_tts.cutedsl.conv1d import pointwise_conv
+    from sglang_omni.models.qwen3_tts.cutedsl.state_copy import (
+        CuTeDSLCodecStateArena,
+        copy_state_rows,
+    )
+    from sglang_omni.models.qwen3_tts.cutedsl.vocoder import ChannelsLastUpsample
+else:
+    pointwise_conv = None
+    CuTeDSLCodecStateArena = None
+    copy_state_rows = None
+    ChannelsLastUpsample = None
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or copy_state_rows is None,
+    reason="requires CUDA and CUTLASS DSL",
+)
+@pytest.mark.parametrize("scatter", [False, True])
+@torch.inference_mode()
+def test_cutedsl_state_copies_preserve_rows_on_graph_replay(scatter: bool) -> None:
+    """Repeated scratch slots across the 32-row scan boundary retain their first writer on replay."""
+    if torch.cuda.get_device_capability() not in ((9, 0), (10, 0), (10, 3)):
+        pytest.skip("requires Hopper or datacenter Blackwell")
+    else:
+        pass
+    torch.manual_seed(42)
+    storage = tuple(
+        torch.randn(40, width, device="cuda", dtype=torch.bfloat16)
+        for width in (8, 288, 72704)
+    )
+    initial_slots = [*range(33), 0, 32]
+    rows = tuple(
+        buffer.new_empty(len(initial_slots), buffer.shape[1]) for buffer in storage
+    )
+    indices = torch.tensor(initial_slots, device="cuda")
+    for buffer in rows:
+        buffer.normal_()
+    copy_state_rows(storage, rows, indices, scatter=scatter)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        copy_state_rows(storage, rows, indices, scatter=scatter)
+    for slots in (initial_slots, list(range(1, 36))):
+        indices.copy_(torch.tensor(slots, device="cuda"))
+        for buffer in (*storage, *rows):
+            buffer.normal_()
+        if scatter:
+            expected = tuple(buffer.clone() for buffer in storage)
+            for target, source in zip(expected, rows):
+                for row in reversed(range(len(slots))):
+                    target[slots[row]].copy_(source[row])
+        else:
+            expected = tuple(buffer.index_select(0, indices) for buffer in storage)
+        graph.replay()
+        for actual, reference in zip(storage if scatter else rows, expected):
+            torch.testing.assert_close(actual, reference, atol=0, rtol=0)
 
 
 def random_partitions(total: int, seed: int) -> list[int]:
@@ -609,6 +669,49 @@ def test_compiled_slot_ops_keep_their_view_writes_and_slot_state(
     for output in compiled_inputs[8]:
         assert bool((output[:, :2] == 7).all())
         assert bool((output[:, 2 + fresh_frames :] == 7).all())
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or ChannelsLastUpsample is None,
+    reason="requires CUDA and CUTLASS DSL",
+)
+@torch.inference_mode()
+def test_cutedsl_upsample_shared_compile_cache() -> None:
+    """Four upsamplers must tolerate singleton/batched inputs and worker thread states."""
+    original_threads = torch.get_num_threads()
+    torch._dynamo.reset()  # noqa: leading-underscore - PyTorch compiler API
+    try:
+        with torch._dynamo.config.patch(  # noqa: leading-underscore - PyTorch compiler API
+            recompile_limit=8
+        ):
+            upsamplers = []
+            for index, stride in enumerate((8, 5, 4, 3)):
+                conv = nn.ConvTranspose1d(
+                    1536 >> index, 768 >> index, 2 * stride, stride=stride
+                ).to("cuda", torch.bfloat16)
+                upsamplers.append(
+                    ChannelsLastUpsample(
+                        SimpleNamespace(conv=conv, left_pad=0, right_pad=stride)
+                    )
+                )
+            for threads in (1, 2):
+                torch.set_num_threads(threads)
+                for batch_size in (16, 1):
+                    for upsampler in upsamplers:
+                        inputs = torch.randn(
+                            batch_size,
+                            8,
+                            upsampler.conv.in_channels,
+                            device="cuda",
+                            dtype=torch.bfloat16,
+                        )
+                        actual = upsampler(inputs.transpose(1, 2)).transpose(1, 2)
+                        expected = upsampler.channels_last_forward(inputs)
+                        torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+    finally:
+        torch.set_num_threads(original_threads)
+        torch._dynamo.reset()  # noqa: leading-underscore - PyTorch compiler API
 
 
 @pytest.mark.accelerator
@@ -1742,7 +1845,10 @@ def test_arena_bound_graph_replays_match_eager_and_advance_the_arena() -> None:
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
-def test_arena_rings_keep_each_slot_apart_across_cohorts_and_graph_replays() -> None:
+@pytest.mark.parametrize("use_cutedsl", [False, True])
+def test_arena_rings_keep_each_slot_apart_across_cohorts_and_graph_replays(
+    use_cutedsl: bool,
+) -> None:
     """A stream continues exactly as it would alone while other cohorts decode at other slots, eagerly and through padded graph replays."""
     apply_qwen_tts_transformers_compatibility_patches()
     from qwen_tts.core.tokenizer_12hz.configuration_qwen3_tts_tokenizer_v2 import (
@@ -1754,7 +1860,14 @@ def test_arena_rings_keep_each_slot_apart_across_cohorts_and_graph_replays() -> 
 
     torch.manual_seed(31)
     device = torch.device("cuda", torch.cuda.current_device())
-    decoder = Decoder(block_channels=(16, 8))
+    if use_cutedsl and (
+        pointwise_conv is None
+        or torch.cuda.get_device_capability() not in ((9, 0), (10, 0), (10, 3))
+    ):
+        pytest.skip("requires CUTLASS DSL on Hopper or datacenter Blackwell")
+    else:
+        pass
+    decoder = Decoder(block_channels=(96, 96) if use_cutedsl else (16, 8))
     decoder.pre_transformer = Qwen3TTSTokenizerV2DecoderTransformerModel(
         Qwen3TTSTokenizerV2DecoderConfig(
             hidden_size=512,
@@ -1766,11 +1879,15 @@ def test_arena_rings_keep_each_slot_apart_across_cohorts_and_graph_replays() -> 
             num_hidden_layers=2,
         )
     )
-    incremental = Qwen3TTSIncrementalDecoder(decoder.to(device).bfloat16().eval())
+    incremental = Qwen3TTSIncrementalDecoder(
+        decoder.to(device).bfloat16().eval(),
+        pointwise_conv=pointwise_conv if use_cutedsl else None,
+    )
+    arena_type = CuTeDSLCodecStateArena if use_cutedsl else Qwen3TTSCodecStateArena
     arenas = []
     runners = []
     for _ in range(2):
-        arena = Qwen3TTSCodecStateArena(
+        arena = arena_type(
             incremental,
             num_slots=4,
             device=device,

@@ -14,6 +14,7 @@ import copy
 import gc
 import weakref
 from collections.abc import Iterator
+from importlib.util import find_spec
 from types import SimpleNamespace
 
 import pytest
@@ -42,6 +43,21 @@ from sglang_omni.models.qwen3_tts.sglang_model import (
 from sglang_omni.utils.predictor_layers import resolve_fused_predictor_layers
 from sglang_omni.vendor.sglang.layers import RMSNorm
 from sglang_omni.vendor.sglang.models import apply_qk_norm
+
+if find_spec("cutlass") is not None:
+    from sglang_omni.models.qwen3_tts.cutedsl.argmax_embedding import argmax_embedding
+    from sglang_omni.models.qwen3_tts.cutedsl.embedding_update import embedding_update
+    from sglang_omni.models.qwen3_tts.cutedsl.runtime import supports_auxiliary
+    from sglang_omni.models.qwen3_tts.cutedsl.sampling import (
+        sample_logits,
+        sample_sorted,
+    )
+    from sglang_omni.models.qwen3_tts.cutedsl_backend import (
+        MIN_DECODE_SM_COUNT,
+        CuTeDSLDecoderLayer,
+    )
+else:
+    argmax_embedding = None
 
 
 @pytest.fixture(autouse=True)
@@ -145,6 +161,7 @@ def build_talker(device: torch.device) -> Qwen3TTSTalker:
     )
     talker.predictor_rope_stores_kv = False
     talker.predictor_fused_layers = None
+    talker.predictor_cutedsl_layers = None
     talker.output_codes = torch.zeros(
         MAX_BS, NUM_CODE_GROUPS, dtype=torch.long, device=device
     )
@@ -311,6 +328,109 @@ def test_greedy_prediction_reads_no_seed_state():
     assert torch.equal(eager_embeds, expected_embeds)
     assert torch.equal(graph_codes, expected_codes)
     assert torch.equal(graph_embeds, expected_embeds)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(argmax_embedding is None, reason="requires CUTLASS DSL")
+@pytest.mark.parametrize(
+    "batch_size,width,top_k,mixed",
+    [
+        (1, 1024, 0, False),
+        (16, 2048, 50, False),
+        (16, 1024, 64, False),
+        (7, 1024, 128, False),
+        (7, 2048, 16, False),
+        (7, 2048, 50, True),
+        (7, 1024, 256, False),
+        (7, 1024, -1, False),
+    ],
+)
+@torch.inference_mode()
+def test_cutedsl_codec_replay_matches_default(
+    monkeypatch: pytest.MonkeyPatch,
+    batch_size: int,
+    width: int,
+    top_k: int,
+    mixed: bool,
+) -> None:
+    """Fusion preserves seeded choices, code-buffer neighbours and BF16 accumulation on replay."""
+    if torch.cuda.get_device_capability() not in ((9, 0), (10, 0), (10, 3)):
+        pytest.skip("requires Hopper or datacenter Blackwell")
+    for function in (
+        argmax_embedding,
+        embedding_update,
+        supports_auxiliary,
+        sample_logits,
+        sample_sorted,
+    ):
+        monkeypatch.setattr(
+            sglang_model_module, function.__name__, function, raising=False
+        )
+    talker = build_talker(torch.device("cuda"))
+    talker.config.code_predictor_config.vocab_size = 2048
+    requests = uniform_requests(
+        batch_size, dosample=top_k != 0, top_k=top_k or 50, top_p=0.9
+    )
+    if mixed:
+        requests[0].data.subtalker_dosample = False
+    talker.prepare_decode_buffers(requests)
+    torch.manual_seed(81)
+    logits = torch.randn(batch_size, 2048, device="cuda", dtype=DTYPE)
+    table = torch.randn(2048, width, device="cuda", dtype=DTYPE)
+    projection = (
+        torch.randn(2048, 1024, device="cuda", dtype=DTYPE) if width == 2048 else None
+    )
+    accumulated = torch.zeros(batch_size, width, device="cuda", dtype=DTYPE)
+    code_buffer = torch.full((batch_size, 16), -1, device="cuda", dtype=torch.long)
+    positions = torch.arange(batch_size, device="cuda")
+    gathered_buffer = torch.empty_like(accumulated)
+    projected_buffer = (
+        torch.empty(batch_size, 1024, device="cuda", dtype=DTYPE)
+        if projection is not None
+        else None
+    )
+    arguments = (
+        logits,
+        table,
+        accumulated,
+        code_buffer[:, 3],
+        projection,
+        gathered_buffer,
+        projected_buffer,
+        positions,
+    )
+    monkeypatch.setattr(sglang_model_module, "QTTS_BACKEND", "cutedsl")
+    talker.sample_subtalker_embedding(*arguments)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        actual_embedding, actual_projection = talker.sample_subtalker_embedding(
+            *arguments
+        )
+    for step in range(3):
+        logits.normal_()
+        # BF16 ties exercise the default path's candidate-order contract.
+        logits[:, 12:16] = 4
+        if step == 2:
+            logits.zero_()
+            logits[:, ::2] = -0.0
+        positions.add_(11)
+        talker.sub_sampling_seed_tensor[:batch_size].add_(17)
+        accumulated.normal_()
+        previous = accumulated.clone()
+        monkeypatch.setattr(sglang_model_module, "QTTS_BACKEND", "default")
+        expected_codes = talker.sample_subtalker_token(logits, sub_positions=positions)
+        expected_embedding = torch.nn.functional.embedding(expected_codes, table)
+        graph.replay()
+        assert torch.equal(code_buffer[:, 3], expected_codes)
+        assert torch.all(code_buffer[:, :3] == -1)
+        assert torch.all(code_buffer[:, 4:] == -1)
+        assert torch.equal(actual_embedding, expected_embedding)
+        assert torch.equal(accumulated, previous + expected_embedding)
+        if projection is not None:
+            assert torch.equal(
+                actual_projection,
+                torch.nn.functional.embedding(expected_codes, projection),
+            )
 
 
 @pytest.mark.accelerator
@@ -2147,6 +2267,7 @@ def real_shape_talker(
     """A predictor at the checkpoint's shapes; fused runs the Triton layer launches."""
     talker = object.__new__(Qwen3TTSTalker)
     talker.training = False
+    talker.predictor_cutedsl_layers = None
     positions = torch.arange(FUSED_PREDICTOR_LEN, device=device, dtype=torch.long)
     talker.predictor_position_rows = (
         positions[:, None].expand(FUSED_PREDICTOR_LEN, FUSED_MAX_BS).contiguous()
@@ -2184,6 +2305,89 @@ def real_shape_talker(
 
 def relative_error(actual: torch.Tensor, expected: torch.Tensor) -> float:
     return float((actual.float() - expected.float()).norm() / expected.float().norm())
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(find_spec("cutlass") is None, reason="requires CUTLASS DSL")
+@pytest.mark.parametrize("batch_size", [1, 16])
+@torch.inference_mode()
+def test_cutedsl_pair_matches_serial_decode_and_graph_replay(batch_size: int) -> None:
+    """Predictor rounding must match the default path while pair replay preserves causal cache writes."""
+    if (
+        torch.cuda.get_device_capability() not in ((9, 0), (10, 0), (10, 3))
+        or torch.cuda.get_device_properties("cuda").multi_processor_count
+        < MIN_DECODE_SM_COUNT
+    ):
+        pytest.skip("requires Hopper or datacenter Blackwell with at least 96 SMs")
+    else:
+        pass
+    torch.manual_seed(42)
+    device = torch.device("cuda")
+    layers = [real_shape_layer(device)]
+    final_norm = real_shape_norm(FUSED_HIDDEN, device)
+    pair = real_shape_talker(device, layers, final_norm, fused=False)
+    serial = real_shape_talker(device, layers, final_norm, fused=False)
+    with get_context().override_server_args(
+        cuda_graph_config=CudaGraphConfig(
+            prefill=PhaseConfig(backend=Backend.DISABLED)
+        ),
+    ):
+        reference = real_shape_talker(device, layers, final_norm, fused=True)
+    for talker in (pair, serial):
+        talker.predictor_cutedsl_layers = [
+            CuTeDSLDecoderLayer(layer, is_predictor=True) for layer in layers
+        ]
+        talker.predictor_k_rows = [
+            layer.flatten(0, 1) for layer in talker.predictor_k_cache
+        ]
+        talker.predictor_v_rows = [
+            layer.flatten(0, 1) for layer in talker.predictor_v_cache
+        ]
+    embeddings = torch.randn(batch_size, 2, FUSED_HIDDEN, device=device, dtype=DTYPE)
+    pair.predictor_forward_tokens(
+        token_embeds=embeddings, batch_size=batch_size, cache_len=0
+    )
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        actual = pair.predictor_forward_tokens(
+            token_embeds=embeddings, batch_size=batch_size, cache_len=0
+        )
+    for _ in range(2):
+        embeddings.normal_()
+        graph.replay()
+        expected = reference.predictor_forward_tokens(
+            token_embeds=embeddings, batch_size=batch_size, cache_len=0
+        )
+        torch.testing.assert_close(actual, expected, **BF16_GEMM_ROUNDING)
+        torch.testing.assert_close(
+            pair.predictor_k_cache, reference.predictor_k_cache, **BF16_GEMM_ROUNDING
+        )
+        torch.testing.assert_close(
+            pair.predictor_v_cache, reference.predictor_v_cache, **BF16_GEMM_ROUNDING
+        )
+        first = serial.predictor_forward_tokens(
+            token_embeds=embeddings[:, :1].contiguous(),
+            batch_size=batch_size,
+            cache_len=0,
+        )
+        second = serial.predictor_forward_tokens(
+            token_embeds=embeddings[:, 1:].contiguous(),
+            batch_size=batch_size,
+            cache_len=1,
+        )
+        torch.testing.assert_close(
+            actual, torch.cat((first, second), dim=1), **BF16_GEMM_ROUNDING
+        )
+        torch.testing.assert_close(
+            pair.predictor_k_cache, serial.predictor_k_cache, **BF16_GEMM_ROUNDING
+        )
+        torch.testing.assert_close(
+            pair.predictor_v_cache, serial.predictor_v_cache, **BF16_GEMM_ROUNDING
+        )
+    first = actual[:, 0].clone()
+    embeddings[:, 1].normal_()
+    graph.replay()
+    torch.testing.assert_close(actual[:, 0], first, atol=0, rtol=0)
 
 
 def fp32_rmsnorm(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
