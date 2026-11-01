@@ -203,10 +203,13 @@ def resolve_mm_aggregate_wait_sources(
 
 
 def project_thinker_to_decode(payload: StagePayload) -> StagePayload:
-    """Keep decode payload focused on text detokenization state."""
+    """Keep decode payload to the text detokenization state decode reads: the prompt, the thinker's output and the stream state."""
     state = Qwen3OmniPipelineState.from_dict(payload.data)
-    state.thinker_inputs = {}
-    state.stream_state = copy_mutable_containers(state.stream_state)
+    # note (ratish): the multimodal inputs hold the audio encoder's lengths on the device when they came by CUDA IPC, and the send would copy them to the host.
+    decode_state = Qwen3OmniPipelineState(
+        prompt=state.prompt,
+        stream_state=copy_mutable_containers(state.stream_state),
+    )
 
     if isinstance(state.thinker_out, dict):
         thinker_out = dict(state.thinker_out)
@@ -214,30 +217,25 @@ def project_thinker_to_decode(payload: StagePayload) -> StagePayload:
             thinker_out["extra_model_outputs"] = {}
         else:
             pass
-        state.thinker_out = thinker_out
+        decode_state.thinker_out = thinker_out
     else:
         pass
 
-    if state.engine_outputs:
-        engine_outputs = dict(state.engine_outputs)
-        thinker_engine_out = engine_outputs.get(THINKER_STAGE)
-        if isinstance(thinker_engine_out, dict):
-            thinker_engine_out = dict(thinker_engine_out)
-            if "extra_model_outputs" in thinker_engine_out:
-                thinker_engine_out["extra_model_outputs"] = {}
-            else:
-                pass
-            engine_outputs[THINKER_STAGE] = thinker_engine_out
+    thinker_engine_out = state.engine_outputs.get(THINKER_STAGE)
+    if isinstance(thinker_engine_out, dict):
+        thinker_engine_out = dict(thinker_engine_out)
+        if "extra_model_outputs" in thinker_engine_out:
+            thinker_engine_out["extra_model_outputs"] = {}
         else:
             pass
-        state.engine_outputs = engine_outputs
+        decode_state.engine_outputs = {THINKER_STAGE: thinker_engine_out}
     else:
         pass
 
     return StagePayload(
         request_id=payload.request_id,
         request=payload.request,
-        data=state.to_dict(),
+        data=decode_state.to_dict(),
     )
 
 
