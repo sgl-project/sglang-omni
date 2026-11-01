@@ -115,6 +115,28 @@ class MossTTSLocalDecodeStatePool:
         # free list so it is never handed to a request.
         self.free_rows: list[int] = list(range(self.padding_row))
 
+    def _pinned_pool_row_bufs(self, n: int) -> list[torch.Tensor]:
+        """Pinned ping-pong staging buffers for the per-step row-index H2D.
+
+        ``torch.tensor(list, device="cuda")`` is a pageable H2D copy: it waits
+        for the current stream to drain, so on the async-decode path (where
+        launch N overlaps forward N-1) it serialized the scheduler thread
+        against the in-flight forward. Pinned ``copy_(non_blocking=True)``
+        returns immediately and the copy overlaps the forward.
+        """
+        bufs = getattr(self, "_pool_row_pinned", None)
+        if bufs is None or bufs[0].numel() < n:
+            size = max(n, 128)
+            bufs = [
+                torch.empty(size, dtype=torch.long, pin_memory=True),
+                torch.empty(size, dtype=torch.long, pin_memory=True),
+            ]
+            self._pool_row_pinned = bufs
+            self._pool_row_slot = 0
+        else:
+            pass
+        return bufs
+
     def acquire_row(self, rid: str) -> int:
         """Assign (or return the existing) row for ``rid``.
 
@@ -321,8 +343,17 @@ class MossTTSLocalDecodeStatePool:
                 has_audio_repetition_penalty = True
             else:
                 pass
+        bufs = self._pinned_pool_row_bufs(len(pool_rows))
+        slot = self._pool_row_slot
+        self._pool_row_slot = slot ^ 1
+        buf = bufs[slot]
+        buf[: len(pool_rows)] = torch.tensor(pool_rows, dtype=torch.long)
+        row_tensor = torch.empty(
+            len(pool_rows), dtype=torch.long, device=self.device
+        )
+        row_tensor.copy_(buf[: len(pool_rows)], non_blocking=True)
         return (
-            torch.tensor(pool_rows, dtype=torch.long, device=self.device),
+            row_tensor,
             pool_rows,
             has_audio_repetition_penalty,
         )
