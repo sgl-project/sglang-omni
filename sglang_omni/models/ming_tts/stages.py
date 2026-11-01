@@ -351,12 +351,16 @@ def create_audio_decode_executor(
 
     resolved_device = resolve_concrete_device(device, gpu_id)
     if (
+<<<<<<< HEAD
+        resolved_device.type not in ("cuda", "xpu", "npu")
+=======
         resolved_device.type not in ("cuda", "musa", "xpu")
+>>>>>>> dad92f571063541efa839b298167a40b359a796e
         or not torch.get_device_module(resolved_device).is_available()
     ):
         raise ValueError(
             "Ming-Omni-TTS fixed AudioVAE serving requires an available "
-            "CUDA, MUSA, or XPU device"
+            "CUDA, MUSA, XPU or NPU device"
         )
     else:
         pass

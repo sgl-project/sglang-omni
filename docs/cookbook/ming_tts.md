@@ -42,9 +42,7 @@ sgl-omni serve \
   --port 8000
 ```
 
-The provided configuration enables the AR and acoustic-tail CUDA graphs and a fixed-width CUDA
-graph for streaming AudioVAE transitions. Non-streaming full-sequence AudioVAE decode remains
-compact eager, and requests are non-streaming unless `stream` is set.
+Requests are non-streaming unless `stream` is set.
 
 For non-streaming requests, `audio_decode` sends the complete generated latent sequence through
 one full-sequence AudioVAE decode. Streaming requests use the separate incremental AudioVAE path
@@ -118,8 +116,6 @@ later call supplies the right-hand context needed to emit that initial group. Su
 consume `steady_chunk_patches` at a time. The provided configuration uses two initial patches and
 four steady patches, and the terminal step flushes any remainder. Pipe the response to `ffplay`
 to play it during generation:
-
-Streaming AudioVAE automatically uses Triton BTH upsampling when Triton is available and the input is a non-empty CUDA BF16 BTH tensor with non-negative strides; other streaming inputs use the existing PyTorch upsampler, and non-streaming AudioVAE decode is unchanged.
 
 ```bash
 curl -sS --fail --no-buffer -X POST http://localhost:8000/v1/audio/speech \
@@ -257,6 +253,8 @@ Streaming playback continuity:
 
 ## Known Limitations
 
+### All platforms
+
 - **Serving optimizations.** Prefix/radix cache and `torch.compile` are not supported and remain
   disabled in the provided configuration.
 - **Reference inputs.** The current request adapter accepts one local reference audio file with a
@@ -268,3 +266,32 @@ Streaming playback continuity:
   is a pipeline-level setting.
 - **Checkpoint coverage.** The current serving implementation supports only the 16.8B-A3B MoE
   checkpoint; the dense 0.5B checkpoint is not supported.
+
+### CUDA
+
+- The provided configuration enables the AR and acoustic-tail CUDA graphs and a fixed-width CUDA
+  graph for streaming AudioVAE transitions. Non-streaming full-sequence AudioVAE decode remains
+  compact eager.
+- Streaming AudioVAE automatically uses Triton BTH upsampling when Triton is available and the
+  input is a non-empty CUDA BF16 BTH tensor with non-negative strides; other streaming inputs use
+  the existing PyTorch upsampler, and non-streaming AudioVAE decode is unchanged.
+
+### Ascend NPU
+
+Start the server with the NPU pipeline configuration:
+
+```bash
+sgl-omni serve \
+  --model-path inclusionAI/Ming-omni-tts-16.8B-A3B \
+  --config examples/configs/ming_omni_tts_npu.yaml \
+  --port 8000
+```
+
+- `preprocessing` stays on CPU, and `reference_encode`, `tts_engine` and `audio_decode` co-locate
+  on one NPU device with declared memory fractions (0.08 / 0.72 / 0.12). `tts_engine` uses
+  SGLang's `ascend` attention backend and keeps AR decode graphs enabled.
+- The acoustic tail runs native RoPE because the platform provides no joint in-place RoPE kernel.
+- Streaming `audio_decode` resolves to eager: the AudioVAE overlap-add runs on CPU, and copying
+  its result back to the device inside a capture raises `107027 stream is captured`.
+- Reference audio is decoded through the soundfile fallback when TorchCodec is unavailable.
+- Validated on Ascend 910 / CANN 9.1.0 / torch 2.10 / torch_npu 2.10.0.post6 / SGLang 0.5.22.
