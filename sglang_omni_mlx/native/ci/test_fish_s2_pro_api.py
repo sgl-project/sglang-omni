@@ -35,7 +35,9 @@ FRAME_BYTES = 2048 * 2
 # A corpus clip to clone and its transcript.
 REFERENCE_CLIP = "0066_en_mid"
 SENTENCE = "Please remember to bring your passport and boarding pass to the airport."
-TWO_SENTENCES = SENTENCE + " The museum opens at nine in the morning and closes at six."
+# Note (Jiaxin Deng): with seed 3 this is 129 frames, about 11 s to generate
+# on an M5, well inside REQUEST_TIMEOUT_SECONDS.
+TWO_SENTENCES = SENTENCE + " The museum opens at nine."
 LONG_SENTENCE = " ".join([SENTENCE] * 8)
 # Minutes of speech: no Mac generates it within REQUEST_TIMEOUT_SECONDS.
 PASSAGE = " ".join([SENTENCE] * 50)
@@ -276,8 +278,7 @@ def test_fish_streams_pcm_while_it_speaks(
     finished_at = time.monotonic()
     pcm = b"".join(chunks)
     assert pcm and len(pcm) % FRAME_BYTES == 0
-    # The first chunk is 40 frames of about 170: it arrives well before the
-    # last.
+    # The first chunk is 40 frames of 129: it arrives well before the last.
     assert first_audio_at - started_at < (finished_at - started_at) / 2
     heard = transcript_words(asr_server, pcm)
     assert word_errors(words(TWO_SENTENCES), heard) <= MAX_WORD_ERRORS, heard
