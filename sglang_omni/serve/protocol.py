@@ -126,7 +126,7 @@ class ChatCompletionRequest(BaseModel):
     use_audio_in_video: bool | None = None
 
     # Per-stage sampling overrides (sglang-omni specific)
-    stage_sampling: dict[str, dict[str, object]] | None = None
+    stage_sampling: dict[str, RolloutSamplingParams] | None = None
     stage_params: dict[str, dict[str, object]] | None = None
 
     # Talker-specific overrides for Qwen3-Omni speech output

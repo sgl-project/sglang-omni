@@ -1388,9 +1388,10 @@ def build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
     # Build per-stage sampling overrides
     stage_sampling: dict[str, SamplingParams] | None = None
     if req.stage_sampling:
-        stage_sampling = {}
-        for stage_name, params_dict in req.stage_sampling.items():
-            stage_sampling[stage_name] = SamplingParams(**params_dict)
+        stage_sampling = {
+            name: rollout_sampling_to_client(params)
+            for name, params in req.stage_sampling.items()
+        }
     else:
         pass
 
