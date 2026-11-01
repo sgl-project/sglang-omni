@@ -1,5 +1,3 @@
-"""Batched acoustic fusion for Nemotron VoiceChat Thinker requests."""
-
 from __future__ import annotations
 
 import torch
@@ -33,25 +31,10 @@ class NemotronVoiceChatModelRunner(ModelRunner[NemotronVoiceChatRequestData]):
             pin_memory=token_id_buffer.device.type == "cuda",
         )
 
-    @staticmethod
-    def request_data(request: SchedulerRequest) -> NemotronVoiceChatRequestData:
-        data = request.data
-        if not isinstance(data, NemotronVoiceChatRequestData):
-            raise TypeError(
-                "Nemotron VoiceChat runner received incompatible request data"
-            )
-        else:
-            pass
-        return data
-
     def device_acoustic_frames(
         self, data: NemotronVoiceChatRequestData
     ) -> torch.Tensor:
         acoustic_frames = data.acoustic_frames
-        if acoustic_frames is None:
-            raise RuntimeError("Nemotron VoiceChat request has no acoustic frames")
-        else:
-            pass
         buffer = self.model.fusion_buffer
         if (
             acoustic_frames.device != buffer.device
@@ -71,36 +54,12 @@ class NemotronVoiceChatModelRunner(ModelRunner[NemotronVoiceChatRequestData]):
         acoustic_rows: list[torch.Tensor] = []
 
         for request in requests:
-            data = self.request_data(request)
+            data = request.data
             req = data.req
-            if req is None:
-                raise RuntimeError(
-                    f"Nemotron VoiceChat request {request.request_id} has no prompt"
-                )
-            else:
-                pass
             prompt_token_ids = [int(token_id) for token_id in req.origin_input_ids]
             prompt_length = len(prompt_token_ids)
             prefix_length = int(req.prefix_len)
             extend_end = int(req.extend_end)
-            generated_length = len(req.output_ids)
-            logical_length = prompt_length + generated_length
-            if extend_end > logical_length:
-                raise RuntimeError(
-                    f"Nemotron VoiceChat request {request.request_id} needs "
-                    f"{extend_end} prefill rows but owns {logical_length}"
-                )
-            else:
-                pass
-            if len(data.function_ids) < generated_length:
-                raise RuntimeError(
-                    f"Nemotron VoiceChat request {request.request_id} has "
-                    f"{len(data.function_ids)} function ids for "
-                    f"{generated_length} generated tokens"
-                )
-            else:
-                pass
-
             acoustic_frames = self.device_acoustic_frames(data)
             pad_token_id = prompt_token_ids[-1]
             for position in range(prefix_length, extend_end):
@@ -156,10 +115,6 @@ class NemotronVoiceChatModelRunner(ModelRunner[NemotronVoiceChatRequestData]):
         requests: list[SchedulerRequest],
     ) -> None:
         del schedule_batch
-        if forward_batch is None:
-            raise RuntimeError("Nemotron VoiceChat prefill has no forward batch")
-        else:
-            pass
         attach_omni_prefill_inputs(
             forward_batch,
             OmniPrefillInputs(
@@ -181,24 +136,10 @@ class NemotronVoiceChatModelRunner(ModelRunner[NemotronVoiceChatRequestData]):
         host_token_ids = self.decode_token_ids_host
         acoustic_rows: list[torch.Tensor] = []
         for row_index, request in enumerate(requests):
-            data = self.request_data(request)
+            data = request.data
             req = data.req
-            if req is None or not req.output_ids or not data.function_ids:
-                raise RuntimeError(
-                    f"Nemotron VoiceChat request {request.request_id} has no "
-                    "decode history"
-                )
-            else:
-                pass
             frame_index = len(req.output_ids)
             acoustic_frames = self.device_acoustic_frames(data)
-            if frame_index >= acoustic_frames.shape[0]:
-                raise RuntimeError(
-                    f"Nemotron VoiceChat request {request.request_id} needs acoustic "
-                    f"frame {frame_index}, but owns {acoustic_frames.shape[0]} rows"
-                )
-            else:
-                pass
             host_token_ids[row_index, 0] = int(req.output_ids[-1])
             host_token_ids[row_index, 1] = data.function_ids[-1]
             acoustic_rows.append(acoustic_frames[frame_index])
@@ -218,7 +159,7 @@ class NemotronVoiceChatModelRunner(ModelRunner[NemotronVoiceChatRequestData]):
     def record_function_ids(self, requests: list[SchedulerRequest]) -> None:
         sampled_function_ids = self.model.function_ids[: len(requests)].tolist()
         for request, function_id in zip(requests, sampled_function_ids, strict=True):
-            self.request_data(request).function_ids.append(int(function_id))
+            request.data.function_ids.append(int(function_id))
 
     def record_stream_tokens(
         self, result: GenerationBatchResult, requests: list[SchedulerRequest]
@@ -228,7 +169,7 @@ class NemotronVoiceChatModelRunner(ModelRunner[NemotronVoiceChatRequestData]):
         logits = result.logits_output.next_token_logits
         sampled_token_ids = logits[: len(requests)].argmax(dim=-1).tolist()
         for request, token_id in zip(requests, sampled_token_ids, strict=True):
-            self.request_data(request).pending_stream_tokens.append(int(token_id))
+            request.data.pending_stream_tokens.append(int(token_id))
 
     def post_prefill(
         self,

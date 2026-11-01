@@ -25,7 +25,7 @@ from sglang_omni.models.nemotron_voicechat.model_runner import (
 from sglang_omni.models.nemotron_voicechat.payload_types import TOOL_CALLS
 from sglang_omni.models.nemotron_voicechat.request_builders import (
     NemotronVoiceChatRequestData,
-    build_autoregressive_request,
+    ar_request,
 )
 from sglang_omni.models.nemotron_voicechat.talker_model_runner import (
     VoiceChatTalkerModelRunner,
@@ -273,18 +273,12 @@ class FrameAdapter(ARSessionAdapter):
         # The next unit forwards the previous sampled token with new fusion input.
         state.fusion_rows.append(fusion_rows.detach())
         state.position_count += new_position_count
-        request = build_autoregressive_request(
+        request_data = ar_request(
             payload,
             input_ids=opening_token_ids,
             max_new_tokens=1,
             vocab_size=vocab_size,
-        )
-        request_data = NemotronVoiceChatRequestData(
-            req=request,
-            input_ids=torch.tensor(opening_token_ids, dtype=torch.long),
-            stage_payload=payload,
-            max_new_tokens=1,
-            temperature=0.0,
+            data_type=NemotronVoiceChatRequestData,
         )
         request_data.talker_model_inputs["duplex_history"] = state
         return request_data
@@ -384,14 +378,8 @@ class ThinkerAdapter(FrameAdapter):
         )
 
     def result(
-        self,
-        session_identity: SessionIdentity,
-        request_data: SGLangARRequestData,
+        self, session_identity: SessionIdentity, request_data: SGLangARRequestData
     ) -> StagePayload:
-        if not isinstance(request_data, NemotronVoiceChatRequestData):
-            raise TypeError("VoiceChat thinker received incompatible request data")
-        else:
-            pass
         state = self.states[session_identity]
         state.previous_text_token_id = int(request_data.output_ids[-1])
         state.previous_function_token_id = request_data.function_ids[-1]

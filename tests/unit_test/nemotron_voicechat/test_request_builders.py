@@ -25,9 +25,7 @@ from sglang_omni.scheduling.types import SchedulerRequest
 PROMPT_FRAMES = 37
 
 
-def make_payload(
-    num_frames: int, params: dict[str, float] | None = None
-) -> StagePayload:
+def make_payload(num_frames, params=None):
     return StagePayload(
         "r",
         request=OmniRequest(inputs={}, params=params or {}),
@@ -54,7 +52,7 @@ def test_talker_decode_steps_match_thinker_tokens(num_frames: int) -> None:
     assert len(talker.input_ids) == PROMPT_FRAMES
 
 
-def test_thinker_prefill_carries_prompt_then_one_pad_position() -> None:
+def test_thinker_prefill_carries_prompt_then_one_pad_position():
     data = build_thinker_request(
         make_payload(4), vocab_size=8, prompt_token_ids=[1, 2, 5], pad_token_id=3
     )
@@ -127,9 +125,7 @@ def test_thinker_decode_always_consumes_staged_fusion_rows() -> None:
     llm.get_input_embeddings.assert_not_called()
 
 
-def test_thinker_is_greedy_and_warns_on_ignored_temperature(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+def test_thinker_is_greedy_and_warns_on_ignored_temperature(caplog):
     with caplog.at_level(logging.WARNING):
         data = build_thinker_request(
             make_payload(4, {"temperature": 0.7}),
@@ -155,7 +151,7 @@ def test_thinker_result_releases_acoustic_frames() -> None:
     assert NemotronVoiceChatState.from_dict(payload.data).text_ids == [5, 6]
 
 
-def test_merge_for_talker_keeps_only_the_frame_count() -> None:
+def test_merge_for_talker_keeps_only_the_frame_count():
     perception = make_payload(9)
     state = NemotronVoiceChatState.from_dict(perception.data)
     state.text_ids = [1, 2, 3]
