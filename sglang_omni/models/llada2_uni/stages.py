@@ -7,7 +7,6 @@ import base64
 import hashlib
 import io
 import logging
-from collections.abc import Mapping
 from contextlib import nullcontext
 
 import torch
@@ -117,64 +116,6 @@ def create_image_encoder_executor(
         return payload
 
     return SimpleScheduler(_encode)
-
-
-def create_sglang_dllm_thinker_executor_from_config(
-    model_path: str,
-    *,
-    device: str | None = None,
-    gpu_id: int | None = None,
-    max_seq_len: int = 8192,
-    dllm_algorithm: str = "LowConfidence",
-    dllm_algorithm_config: str | None = None,
-    server_args_overrides: Mapping[str, object] | None = None,
-):
-    """Create an DllmScheduler for the LLaDA2-Uni thinker."""
-    from sglang_omni.models.llada2_uni.bootstrap import create_dllm_thinker_scheduler
-    from sglang_omni.scheduling.sglang_backend import (
-        build_sglang_server_args,
-        pin_resolved_device_type,
-    )
-
-    concrete_device = resolve_concrete_device(device, gpu_id)
-    resolved_gpu_id = concrete_device.index or 0
-
-    overrides: dict[str, object] = {
-        "attention_backend": "flashinfer",
-        "disable_cuda_graph": True,
-        "sampling_backend": "pytorch",
-    }
-    if dllm_algorithm == "LowConfidenceCFG":
-        from sglang_omni.models.llada2_uni.bootstrap import register_llada2_uni_cfg
-        from sglang_omni.models.llada2_uni.cfg_attention_backend import (
-            CFG_ATTENTION_BACKEND,
-        )
-
-        register_llada2_uni_cfg()
-        overrides["attention_backend"] = CFG_ATTENTION_BACKEND
-        overrides["dllm_fdfo"] = False
-    else:
-        pass
-    overrides.update(server_args_overrides or {})
-    pin_resolved_device_type(overrides, concrete_device.type)
-
-    server_args = build_sglang_server_args(
-        model_path,
-        context_length=max_seq_len,
-        dllm_algorithm=dllm_algorithm,
-        dllm_algorithm_config=dllm_algorithm_config,
-        **overrides,
-    )
-    from sglang.srt.arg_groups.model_override_base import resolved_view
-
-    cfg = resolved_view(server_args)
-    logger.info(
-        "create_sglang_dllm_thinker_executor_from_config: "
-        "dllm_algorithm=%s, mem_fraction_static=%s",
-        cfg.dllm_algorithm,
-        cfg.mem_fraction_static,
-    )
-    return create_dllm_thinker_scheduler(server_args, resolved_gpu_id)
 
 
 def create_decode_executor(model_path: str):

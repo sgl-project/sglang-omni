@@ -75,8 +75,9 @@ class LLaDA2UniPipelineConfig(PipelineConfig):
         EngineStageConfig(
             name=THINKER_STAGE,
             process="pipeline",
-            factory_path=f"{_PKG}.stages.create_sglang_dllm_thinker_executor_from_config",
+            factory_path=f"{_PKG}.bootstrap.create_sglang_dllm_thinker_executor_from_config",
             factory=FactoryArgs(max_seq_len=8192, dllm_algorithm="LowConfidenceCFG"),
+            env={"SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "false"},
             gpu=0,
             next=DECODE_STAGE,
         ),
@@ -128,8 +129,9 @@ class LLaDA2UniOmniPipelineConfig(LLaDA2UniPipelineConfig):
         EngineStageConfig(
             name=THINKER_STAGE,
             process="pipeline",
-            factory_path=f"{_PKG}.stages.create_sglang_dllm_thinker_executor_from_config",
+            factory_path=f"{_PKG}.bootstrap.create_sglang_dllm_thinker_executor_from_config",
             factory=FactoryArgs(max_seq_len=8192, dllm_algorithm="LowConfidenceCFG"),
+            env={"SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "false"},
             engine=EngineArgs(mem_fraction_static=0.75),
             gpu=0,
             gpu_memory_fraction=0.75,
@@ -214,9 +216,14 @@ class LLaDA2UniInterleavedPipelineConfig(UMMPipelineConfig, LLaDA2UniPipelineCon
         EngineStageConfig(
             name=THINKER_STAGE,
             process="pipeline",
-            factory_path=f"{_PKG}.stages.create_sglang_dllm_thinker_executor_from_config",
+            factory_path=f"{_PKG}.bootstrap.create_sglang_dllm_thinker_executor_from_config",
             factory=FactoryArgs(max_seq_len=8192, dllm_algorithm="LowConfidenceCFG"),
-            engine=EngineArgs(mem_fraction_static=0.75),
+            env={"SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "false"},
+            engine=EngineArgs(
+                mem_fraction_static=0.75,
+                max_running_requests=3,
+                cuda_graph_bs=[1, 2, 3, 4],
+            ),
             gpu=0,
             gpu_memory_fraction=0.75,
             next="orchestrator",

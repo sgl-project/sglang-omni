@@ -430,7 +430,7 @@ def test_engine_factories_bind_the_placed_gpu(monkeypatch, model):
 # through SGLangGenerationEngineBuilder.build(), so the builder-level test above
 # cannot see whether they pin the resolved device type into ServerArgs.
 SELF_BUILT_SERVER_ARGS_FACTORIES = [
-    "sglang_omni.models.llada2_uni.stages.create_sglang_dllm_thinker_executor_from_config",
+    "sglang_omni.models.llada2_uni.bootstrap.create_sglang_dllm_thinker_executor_from_config",
     "sglang_omni.models.ming_omni.stages.create_sglang_thinker_executor_from_config",
     "sglang_omni.models.qwen3_omni.stages.create_sglang_thinker_executor_from_config",
     "sglang_omni.models.qwen3_omni.stages.create_talker_ar_executor_from_config",
