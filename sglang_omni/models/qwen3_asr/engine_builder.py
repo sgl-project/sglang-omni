@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import os
+from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Callable
 
 from sglang.srt.environ import envs
@@ -36,6 +37,7 @@ from sglang_omni.models.qwen3_asr.encoder_service import (
 from sglang_omni.models.qwen3_asr.request_builders import Qwen3ASRRequestData
 from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
+from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 from sglang_omni.scheduling.engine_factory import (
     AsrEngineBuilder,
     GenerationDefaults,
@@ -118,6 +120,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         else:
             pass
         self.max_running_requests = max_running_requests
+        self.draft_checkpoint: TemporaryDirectory[str] | None = None
         self.max_new_tokens = max_new_tokens
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
@@ -377,6 +380,37 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         self.log_memory_checkpoint("post_static_allocation")
 
     def adjust_overrides(self, overrides: dict[str, object]) -> None:
+        algorithm = overrides.get("speculative_algorithm")
+        if algorithm is None:
+            pass
+        elif algorithm != "DFLASH":
+            raise ValueError(
+                "Qwen3-ASR speculative decoding currently supports DFLASH only"
+            )
+        elif not current_platform.is_cuda() or overrides.get("tp_size", 1) != 1:
+            raise ValueError("Qwen3-ASR DFlash currently requires one CUDA GPU")
+        else:
+            # note (WilsonZheng0327): Draft modules import Triton kernels unavailable on Torch MPS hosts.
+            from sglang_omni.models.qwen3_asr.dflash import materialize_draft_checkpoint
+
+            draft_model_path = overrides.get("speculative_draft_model_path")
+            draft_revision = overrides.get("speculative_draft_model_revision")
+            if not isinstance(draft_model_path, str) or not draft_model_path:
+                raise ValueError(
+                    "Qwen3-ASR DFlash requires speculative_draft_model_path"
+                )
+            elif draft_revision is not None and not isinstance(draft_revision, str):
+                raise ValueError("speculative_draft_model_revision must be a string")
+            else:
+                pass
+            self.draft_checkpoint = materialize_draft_checkpoint(
+                draft_model_path, draft_revision
+            )
+            overrides["speculative_draft_model_path"] = self.draft_checkpoint.name
+            overrides["speculative_draft_model_revision"] = None
+            overrides["disable_overlap_schedule"] = True
+            overrides["enable_mixed_chunk"] = False
+            self.enable_async_decode = False
         if "context_length" in overrides:
             self.context_length = int(overrides.pop("context_length"))
         else:
@@ -415,6 +449,18 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
 
     def customize_server_args(self, server_args: ServerArgs) -> None:
         self.context_length = int(server_args.context_length)
+
+    def infra_kwargs(self) -> InfrastructureOptions:
+        if self.draft_checkpoint is None:
+            return {}
+        else:
+            # note (WilsonZheng0327): Draft modules import Triton kernels unavailable on Torch MPS hosts.
+            from sglang_omni.models.qwen3_asr.dflash import Qwen3ASRDFlashWorker
+
+            return {
+                "supports_speculative_decoding": True,
+                "speculative_worker_class": Qwen3ASRDFlashWorker,
+            }
 
     def setup_model_resources(
         self,
@@ -497,7 +543,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             context_length=self.context_length,
             audio_encoder_service=self.audio_encoder_service,
             should_wait_for_encode=self.should_wait_for_encode,
-            greedy_only=self.uses_torch_mps(),
+            greedy_only=self.uses_torch_mps() or self.draft_checkpoint is not None,
         )
 
     def make_abort_callback(self) -> Callable[[str], None] | None:
@@ -519,8 +565,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         if self.audio_encoder_service is None:
             return {}
         else:
-            pass
-        return {"shutdown_callback": self.audio_encoder_service.close}
+            return {"shutdown_callback": self.audio_encoder_service.close}
 
     def cleanup_build_failure(self) -> None:
         if self.audio_encoder_service is not None:
@@ -542,7 +587,8 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
             # note (rsi): ASR prompts fit one chunk, so a prefill's first
             # tokens can be resolved after the next decode launches.
-            "async_prefill": current_platform.is_cuda(),
+            "async_prefill": current_platform.is_cuda()
+            and self.draft_checkpoint is None,
             "request_build_max_workers": (
                 1 if use_torch_mps else self.request_build_max_workers
             ),

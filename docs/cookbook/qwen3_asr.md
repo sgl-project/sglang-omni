@@ -159,6 +159,19 @@ sgl-omni serve \
   --port 8000
 ```
 
+## DFlash speculative decoding
+
+Enable experimental DFlash decoding for Qwen3-ASR-1.7B on one CUDA GPU with the pinned draft model:
+
+```bash
+sgl-omni serve \
+  --config examples/configs/qwen3_asr_1_7b_dflash.yaml \
+  --asr.engine.max_running_requests 8 \
+  --port 8000
+```
+
+DFlash requires greedy decoding (`temperature=0`), uses synchronous scheduling, and retains CUDA graphs. Realtime sessions are not validated.
+
 ## Transcribe Audio
 
 ```bash

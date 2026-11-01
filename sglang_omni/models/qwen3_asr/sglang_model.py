@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 from sglang.srt.configs.qwen3_omni import Qwen3OmniMoeAudioEncoderConfig
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
+from sglang.srt.layers.vocab_parallel_embedding import VocabParallelEmbedding
 from sglang.srt.managers.mm_utils import (
     MultiModalityDataPaddingPatternMultimodalTokens,
     general_mm_embed_routine,
@@ -353,6 +354,16 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
             return None
         else:
             return graphed.unsqueeze(0)
+
+    @property
+    def lm_head(self) -> VocabParallelEmbedding:
+        return self.language_model.lm_head
+
+    def get_input_embeddings(self) -> VocabParallelEmbedding:
+        return self.language_model.get_input_embeddings()
+
+    def set_dflash_layers_to_capture(self, layer_ids: list[int]) -> None:
+        self.language_model.set_dflash_layers_to_capture(layer_ids)
 
     def forward(
         self,

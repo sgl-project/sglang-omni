@@ -1,0 +1,12 @@
+# DFlash speculative decoding validated on one H100 (80 GB).
+config_cls: Qwen3ASRPipelineConfig
+name: qwen3-asr-1.7b-dflash
+model_path: Qwen/Qwen3-ASR-1.7B
+
+stages:
+  asr:
+    engine:
+      speculative_algorithm: DFLASH
+      speculative_draft_model_path: wilsonzheng0327/Qwen3-ASR-1.7B-dflash
+      speculative_draft_model_revision: d62bd4051e68282e02f93de774036a35f22f1373
+      speculative_num_draft_tokens: 8

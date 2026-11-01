@@ -2,9 +2,15 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.environ import envs
 from torch import nn
 
 from sglang_omni.models.qwen3_asr import sglang_model
+from sglang_omni.models.qwen3_asr.dflash import (
+    DraftBlockSampler,
+    Qwen3ASRDFlashDraftModel,
+    Qwen3ASRDFlashWorker,
+)
 from sglang_omni.models.qwen3_asr.sglang_model import Qwen3ASRForConditionalGeneration
 
 
@@ -33,6 +39,51 @@ class AudioFeatureModel(Qwen3ASRForConditionalGeneration):
         nn.Module.__init__(self)
         self.audio_tower = audio_tower
         self.encoder_graph_runner = None
+
+
+def test_dflash_proposals_use_checkpoint_head_and_target_token_mapping() -> None:
+    """Using the target head or treating draft vocabulary ids as target ids changes proposals."""
+    model = Qwen3ASRDFlashDraftModel.__new__(Qwen3ASRDFlashDraftModel)
+    nn.Module.__init__(model)
+    model.projector_type = None
+    model.is_nemotron_35_draft = False
+    model.fc = nn.Linear(2, 2, bias=False)
+    model.lm_head = nn.Linear(2, 3, bias=False)
+    model.register_buffer("draft_to_target", torch.empty(3, dtype=torch.long))
+    projection_weights = torch.tensor([[2.0, 3.0], [5.0, 7.0]])
+    model.load_weights(
+        [
+            ("fc.weight", projection_weights),
+            ("lm_head.weight", torch.tensor([[1.0, 0.0], [0.0, 1.0], [-1.0, -1.0]])),
+            ("d2t", torch.tensor([2, 4, 7])),
+            ("t2d", torch.zeros(12, dtype=torch.bool)),
+        ]
+    )
+    assert torch.equal(model.fc.weight, projection_weights)
+    worker = Qwen3ASRDFlashWorker.__new__(Qwen3ASRDFlashWorker)
+    worker.draft_model = model
+    hidden_states = torch.tensor([[[-1.0, -1.0], [2.0, 0.0], [0.0, 2.0]]])
+    target_head = nn.Linear(2, 12, bias=False)
+    with torch.no_grad():
+        target_head.weight.zero_()
+    eager_tokens = worker._greedy_sample_from_vocab_parallel_head(  # noqa: leading-underscore  # SGLang override
+        hidden_states=hidden_states[:, 1:].reshape(-1, 2),
+        lm_head=target_head,
+    )
+    sampler = DraftBlockSampler(model, block_size=3, max_batch_size=2)
+    sampler(hidden_states.reshape(-1, 2))
+    assert eager_tokens.tolist() == [2, 5]
+    assert sampler.out[:2].tolist() == eager_tokens.tolist()
+
+
+def test_dflash_respects_eager_draft_sampler_override() -> None:
+    """The eager-sampler setting must bypass the custom CUDA graph sampler."""
+    worker = Qwen3ASRDFlashWorker.__new__(Qwen3ASRDFlashWorker)
+    worker.block_size = 8
+    with envs.SGLANG_DFLASH_EAGER_DRAFT_SAMPLER.override(True):
+        assert (
+            worker._maybe_build_draft_sampler() is None
+        )  # noqa: leading-underscore  # inherited hook
 
 
 @pytest.mark.parametrize("use_mrope_positions", [True, False])

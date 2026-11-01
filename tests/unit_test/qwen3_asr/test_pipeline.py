@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import subprocess
+import sys
 from contextlib import nullcontext
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from sglang.srt.arg_groups.cuda_graph_hook import (
@@ -21,8 +26,10 @@ import sglang_omni.utils.cuda_graph_batch_validator as cuda_graph_batch_validato
 import sglang_omni.utils.device as device_utils
 from sglang_omni.models.qwen3_asr import request_builders
 from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
+from sglang_omni.models.qwen3_asr.engine_builder import Qwen3ASREngineBuilder
 from sglang_omni.models.qwen3_asr.stages import create_sglang_qwen3_asr_executor
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_cuda_graph_bs,
@@ -468,7 +475,10 @@ def patch_engine_dependencies(
         infra_kwargs=[],
         attest_calls=[],
         graph_init_calls=[],
-        encoder_service=SimpleNamespace(close=lambda: None),
+        encoder_service=SimpleNamespace(
+            close=lambda: recorded.encoder_service_close_calls.append(True)
+        ),
+        encoder_service_close_calls=[],
         encoder_service_kwargs={},
         tokenizer=object(),
         stream_output_builder=object(),
@@ -629,7 +639,8 @@ def test_qwen3_asr_threads_explicit_cuda_graph_bs(monkeypatch, caplog) -> None:
     assert scheduler.prefill_coalesce_when_idle is True
     assert scheduler.prefill_coalesce_requires_pending_builds is True
     assert scheduler.prefill_coalesce_after_builds_during_decode is True
-    assert scheduler.shutdown_callback is recorded.encoder_service.close
+    scheduler.shutdown_callback()
+    assert recorded.encoder_service_close_calls == [True]
     assert scheduler.stream_output_builder is recorded.stream_output_builder
     assert recorded.stream_builder_calls == [
         {"tokenizer": recorded.tokenizer, "min_emit_interval_s": 0.125}
@@ -661,6 +672,116 @@ def test_qwen3_asr_build_initializes_and_attests_prefill_graphs(monkeypatch) -> 
     assert recorded.infra_kwargs[-1]["enable_prefill_input_embeds"] is True
     assert len(recorded.graph_init_calls) == 1
     assert len(recorded.attest_calls) == 1
+
+
+def test_qwen3_asr_stage_import_without_dflash() -> None:
+    """Ordinary ASR stage loading must not require the Triton-dependent draft module."""
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; "
+            "sys.modules['sglang_omni.models.qwen3_asr.dflash'] = None; "
+            "from sglang_omni.models.qwen3_asr.stages import "
+            "create_sglang_qwen3_asr_executor",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_qwen3_asr_dflash_build_uses_sync_runtime_and_cleans_resources(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """DFlash must release its temporary checkpoint after both successful and failed builds."""
+    # note (WilsonZheng0327): Only DFlash tests require the Triton-dependent worker.
+    from sglang_omni.models.qwen3_asr.dflash import Qwen3ASRDFlashWorker
+
+    recorded = patch_engine_dependencies(monkeypatch, want_cuda_graph=True)
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: True)
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cpu", lambda: False)
+    source_config = {
+        "speculators_model_type": "dflash",
+        "sample_from_anchor": False,
+        "sliding_window_non_causal": False,
+        "dtype": "bfloat16",
+        "draft_vocab_size": 32000,
+        "aux_hidden_state_layer_ids": [2, 14, 25],
+        "mask_token_id": 151705,
+        "block_size": 8,
+        "transformer_layer_config": {
+            "hidden_size": 2048,
+            "vocab_size": 151936,
+        },
+    }
+    (tmp_path / "config.json").write_text(json.dumps(source_config))
+    (tmp_path / "model.safetensors").touch()
+
+    infra_kwargs = Qwen3ASREngineBuilder.infra_kwargs
+
+    def inspect_draft_checkpoint(
+        builder: Qwen3ASREngineBuilder,
+    ) -> InfrastructureOptions:
+        draft_path = Path(builder.draft_checkpoint.name)
+        config = json.loads((draft_path / "config.json").read_text())
+        assert config["dflash_config"] == {
+            "target_layer_ids": [1, 13, 24],
+            "mask_token_id": 151705,
+            "block_size": 8,
+            "sample_from_anchor": False,
+        }
+        assert config["draft_vocab_size"] == 32000
+        assert (
+            draft_path / "model.safetensors"
+        ).resolve() == tmp_path / "model.safetensors"
+        return infra_kwargs(builder)
+
+    monkeypatch.setattr(
+        Qwen3ASREngineBuilder,
+        "infra_kwargs",
+        inspect_draft_checkpoint,
+    )
+    scheduler = qwen3_asr_stages.create_sglang_qwen3_asr_executor(
+        "dummy",
+        enable_async_decode=True,
+        server_args_overrides={
+            "speculative_algorithm": "DFLASH",
+            "speculative_draft_model_path": str(tmp_path),
+        },
+    )
+    draft_path = Path(recorded.build_kwargs["speculative_draft_model_path"])
+    assert not draft_path.exists()
+    assert recorded.infra_kwargs[-1]["supports_speculative_decoding"] is True
+    assert recorded.infra_kwargs[-1]["speculative_worker_class"] is Qwen3ASRDFlashWorker
+    assert scheduler.enable_async_decode is False
+    assert scheduler.async_prefill is False
+    assert recorded.adapter_kwargs["greedy_only"] is True
+    assert recorded.build_kwargs["enable_mixed_chunk"] is False
+    assert recorded.build_kwargs["disable_overlap_schedule"] is True
+    assert not recorded.build_kwargs.get("disable_cuda_graph", False)
+    assert len(recorded.graph_init_calls) == 1
+    assert len(recorded.attest_calls) == 1
+    scheduler.shutdown_callback()
+    assert recorded.encoder_service_close_calls == [True]
+    assert (tmp_path / "config.json").exists()
+
+    startup_error = RuntimeError("draft load failed")
+    monkeypatch.setattr(
+        bootstrap,
+        "create_sglang_infrastructure_defer_cuda_graph",
+        Mock(side_effect=startup_error),
+    )
+    with pytest.raises(RuntimeError) as failure:
+        qwen3_asr_stages.create_sglang_qwen3_asr_executor(
+            "dummy",
+            server_args_overrides={
+                "speculative_algorithm": "DFLASH",
+                "speculative_draft_model_path": str(tmp_path),
+            },
+        )
+    assert failure.value is startup_error
+    assert not Path(recorded.build_kwargs["speculative_draft_model_path"]).exists()
 
 
 @pytest.mark.parametrize("resolved_chunked_prefill_size", [2048, 8192])
