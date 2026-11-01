@@ -96,7 +96,10 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
             "disable_cuda_graph": False,
             "cuda_graph_backend_prefill": CudaGraphBackend.FULL,
             # note (Zhang Yiyang): Keep the measured buckets to bound prefill capture time and memory.
-            "cuda_graph_bs_prefill": [64, 128, 256, 512],
+            # 160/192/320 cover the common short/medium prompt lengths (a
+            # 157-token prompt otherwise replays the 256 bucket, wasting ~40%
+            # of the prefill replay on padding).
+            "cuda_graph_bs_prefill": [64, 128, 160, 192, 256, 320, 512],
             "disable_overlap_schedule": True,
             # note: the slot-pool decode state is per (rid -> row) and a radix
             # prefix hit replays prompt KV without the pool's prepare/reset

@@ -851,7 +851,15 @@ def test_moss_tts_local_generation_defaults(disable_prefill: bool) -> None:
         assert overrides["cuda_graph_backend_prefill"] == "disabled"
     else:
         assert overrides["cuda_graph_backend_prefill"] == "full"
-        assert overrides["cuda_graph_bs_prefill"] == [64, 128, 256, 512]
+        assert overrides["cuda_graph_bs_prefill"] == [
+            64,
+            128,
+            160,
+            192,
+            256,
+            320,
+            512,
+        ]
 
 
 def test_moss_tts_local_prefill_lookahead_follows_async_decode() -> None:
