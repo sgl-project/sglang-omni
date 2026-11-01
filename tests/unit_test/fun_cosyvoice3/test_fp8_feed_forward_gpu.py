@@ -59,9 +59,7 @@ def run_op(fp8_module, inputs: dict[str, torch.Tensor]) -> torch.Tensor:
 
 
 @pytest.mark.parametrize("rows", [1, 63, 65, 840, 1300])
-def test_fp8_matches_bf16_at_every_row_count(
-    fp8_module, rows: int
-) -> None:
+def test_fp8_matches_bf16_at_every_row_count(fp8_module, rows: int) -> None:
     inputs = make_inputs(rows)
     with torch.inference_mode():
         hidden = F.gelu(
