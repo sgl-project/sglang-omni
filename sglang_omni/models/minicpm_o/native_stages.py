@@ -38,6 +38,9 @@ from sglang_omni.models.minicpm_o.components.tts_runtime import (
     MiniCPMOVocoderRuntime,
     SynthesisRequest,
 )
+from sglang_omni.models.minicpm_o.components.whisper_encoder import (
+    supports_history_rows,
+)
 from sglang_omni.models.minicpm_o.config import CODE2WAV_DECODE_STREAM_PRIORITY
 from sglang_omni.models.minicpm_o.engine_builder import MiniCPMOThinkerEngineBuilder
 from sglang_omni.models.minicpm_o.hf_config import (
@@ -251,8 +254,10 @@ class PerceptionHooks(BatchedSessionHooks):
                     strict=True,
                 ):
                     state.finish_audio(audio_encoder_state)
+            self.audio_encoder.release_all_history_rows()
             # note (Junnan Li): The forward took the histories, so the same chunks now run without one.
             self.audio_encoder.forward_streaming_batch(chunks)
+            self.audio_encoder.release_all_history_rows()
 
     def close(self, session_identity: SessionIdentity) -> None:
         self.states.pop(session_identity).close()
@@ -444,6 +449,10 @@ def create_perception_scheduler(
     device = str(resolve_concrete_device(device, gpu_id))
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     encoder = MiniCPMOAudioEncoder(model_path, device=device, dtype=dtype)
+    if supports_history_rows(encoder.device, encoder.dtype):
+        encoder.reserve_history_rows(max_open_sessions)
+    else:
+        pass
     image_encoder = MiniCPMOImageEncoder(model_path, device=device, dtype=dtype)
     processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
     hooks = PerceptionHooks(
