@@ -2901,6 +2901,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                 result = exc
             self.finish_whole_request(entry, result)
 
+    @torch.inference_mode()
     def replay_whole_cohort(
         self, cohort: list[tuple[str, WholeDecodeRequest]]
     ) -> list[StagePayload | BaseException]:

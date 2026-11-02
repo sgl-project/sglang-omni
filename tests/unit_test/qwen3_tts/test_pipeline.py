@@ -3709,6 +3709,7 @@ class FakeWindowRunner:
         }
 
     def decode_slots(self, codes: torch.Tensor, slots) -> torch.Tensor | None:
+        assert torch.is_inference_mode_enabled()
         self.calls.append((tuple(codes.shape), list(slots)))
         if len(self.calls) == self.miss_on_call:
             return None
