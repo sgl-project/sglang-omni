@@ -970,7 +970,6 @@ class FusedIncrementalTransformer:
         query_positions = start_positions.unsqueeze(1) + torch.arange(
             fresh_frames, device=device
         )
-        slot_rows = rings.slot_rows.unsqueeze(1)
         cos_sin = self.cos_sin(query_positions)
         is_in_place = (
             valid_frames is None
@@ -993,6 +992,7 @@ class FusedIncrementalTransformer:
             )
         elif is_in_place:
             rotary_rows = torch.arange(rows, device=device)
+            slot_rows = rings.slot_rows.unsqueeze(1)
             write_rows = (slot_rows + query_positions % rings.ring_frames).reshape(rows)
             window_starts = (start_positions - retained_context).clamp(min=0)
             window_rows = (
@@ -1013,6 +1013,7 @@ class FusedIncrementalTransformer:
             attention_mask = ((distances >= 0) & (distances < window_size)).unsqueeze(1)
         else:
             rotary_rows = torch.arange(rows, device=device)
+            slot_rows = rings.slot_rows.unsqueeze(1)
             frame_rows = slot_rows + query_positions % rings.ring_frames
             key_positions = start_positions.unsqueeze(1) + torch.arange(
                 -retained_context, fresh_frames, device=device
