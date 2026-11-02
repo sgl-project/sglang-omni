@@ -2,7 +2,7 @@ name: Voxt Mac CI
 
 # Builds Voxt's native MLX runtime (sglang_omni_mlx/native) and Voxt on GitHub's
 # macOS runners, then checks what Voxt relies on without running a model: the
-# supervisor protocol, the transcription, speech and realtime APIs (served by
+# supervisor protocol, the transcription, speech, chat and realtime APIs (served by
 # the stub server around stand-in models), each server's startup checks, and
 # Voxt's Omni unit tests. No checkpoint is downloaded. Model outputs are checked
 # by hand per model PR with the tools in sglang_omni_mlx/native/ci.

@@ -2,7 +2,7 @@
 // The servers' shared protocol around stand-in models, for the protocol tests:
 // no checkpoint is read and no model runs.
 //
-//   stub_server --supervised --model-kind stub_asr|stub_speech
+//   stub_server --supervised --model-kind stub_asr|stub_speech|stub_chat
 //       --model-directory DIR [--load-delay-ms N] [--max-queued-requests N]
 //       [--request-timeout-s S]
 //
@@ -12,14 +12,21 @@
 // stub_speech answers chunks chunks of chunk_samples silent samples. Both
 // read an outcome field: "fail" throws, "block" runs until it is cancelled or
 // its deadline passes, and stub_asr's "segments" returns one speaker segment.
+#include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "common/http.h"
+#include "common/service.h"
+#include "ming3_audio/ming3_audio_service.h"
 #include "qwen3_asr/asr_service.h"
 #include "qwen3_asr/realtime.h"
 #include "qwen3_asr/speech_service.h"
@@ -33,6 +40,8 @@ constexpr auto kBlockPollInterval = std::chrono::milliseconds(10);
 // Unlike Voxt's 16 kHz input, so a test sees which rate a header reports.
 constexpr int kSpeechSampleRate = 24000;
 constexpr size_t kMaxRequestBodyBytes = 64 * 1024;
+constexpr int kChatPromptTokenCount = 17;
+constexpr int kChatCompletionTokenCount = 3;
 
 class StubRealtimeConnection : public qwen3_asr::RealtimeConnection {
 public:
@@ -157,6 +166,88 @@ protected:
   int SampleRate() const override { return kSpeechSampleRate; }
 };
 
+class StubChatService : public omni_server::Service {
+public:
+  StubChatService()
+      : service_(ming3_audio::CreateChatService(
+            [this](const ming3_audio::ChatRequest &request,
+                   const ming3_audio::Cancellation &cancelled) {
+              if (request.system_prompt == "fail") {
+                throw std::runtime_error("stub chat failed");
+              } else if (request.system_prompt == "cancel") {
+                throw ming3_audio::Cancelled();
+              } else if (request.system_prompt == "block") {
+                std::unique_lock lock(generation_mutex_);
+                is_blocked_ = true;
+                is_released_ = false;
+                generation_ready_.notify_all();
+                while (!is_released_) {
+                  if (cancelled()) {
+                    is_blocked_ = false;
+                    throw ming3_audio::Cancelled();
+                  } else {
+                    generation_ready_.wait_for(lock, kBlockPollInterval);
+                  }
+                }
+                is_blocked_ = false;
+              } else {
+              }
+              const int completion_tokens =
+                  std::min(request.max_new_tokens, kChatCompletionTokenCount);
+              return ming3_audio::ChatResult{
+                  .text = Json({{"system_prompt", request.system_prompt},
+                                {"before_audio", request.before_audio},
+                                {"after_audio", request.after_audio},
+                                {"samples", request.samples},
+                                {"max_new_tokens", request.max_new_tokens}})
+                              .dump(),
+                  .finish_reason = completion_tokens < kChatCompletionTokenCount
+                                       ? "length"
+                                       : "stop",
+                  .prompt_tokens = kChatPromptTokenCount,
+                  .completion_tokens = completion_tokens};
+            })) {}
+
+  void Register(mg_context *context, const std::string &model_name) override {
+    service_->Register(context, model_name);
+    mg_set_request_handler(
+        context, "/stub/chat/started$",
+        [](mg_connection *connection, void *instance) {
+          auto &service = *static_cast<StubChatService *>(instance);
+          std::unique_lock lock(service.generation_mutex_);
+          service.generation_ready_.wait(lock,
+                                         [&] { return service.is_blocked_; });
+          return omni_server::WriteJson(connection, 200, Json::object());
+        },
+        this);
+    mg_set_request_handler(
+        context, "/stub/chat/release$",
+        [](mg_connection *connection, void *instance) {
+          auto &service = *static_cast<StubChatService *>(instance);
+          {
+            std::lock_guard lock(service.generation_mutex_);
+            service.is_released_ = true;
+          }
+          service.generation_ready_.notify_all();
+          return omni_server::WriteJson(connection, 200, Json::object());
+        },
+        this);
+  }
+
+  std::map<std::string, int> RequestStates() const override {
+    return service_->RequestStates();
+  }
+
+  void CancelAll() override { service_->CancelAll(); }
+
+private:
+  std::mutex generation_mutex_;
+  std::condition_variable generation_ready_;
+  bool is_blocked_ = false;
+  bool is_released_ = false;
+  std::unique_ptr<omni_server::Service> service_;
+};
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -181,5 +272,14 @@ int main(int argc, char **argv) {
         kMaxRequestBodyBytes, max_queued_requests, request_timeout_seconds);
   });
   speech.flags["--load-delay-ms"] = set_load_delay;
-  return asr_service::Serve(argc, argv, {asr, speech});
+  const omni_server::ServedKind chat{
+      "stub_chat",
+      [](const std::filesystem::path &) {
+        return std::make_unique<StubChatService>();
+      },
+      {},
+      {}};
+  return omni_server::Serve(argc, argv,
+                            {asr_service::CreateServedKind(asr),
+                             asr_service::CreateServedKind(speech), chat});
 }
