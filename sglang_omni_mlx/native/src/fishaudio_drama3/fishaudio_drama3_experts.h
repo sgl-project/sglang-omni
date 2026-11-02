@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <list>
 #include <map>
 #include <memory>
 #include <string>
@@ -28,6 +29,8 @@ public:
   using ExpertWeights = omni_common::WeightMap;
   explicit ExpertCache(const std::filesystem::path &model_directory,
                        size_t capacity_bytes = kExpertCacheBytes);
+  ExpertCache(const ExpertCache &) = delete;
+  ExpertCache &operator=(const ExpertCache &) = delete;
   std::shared_ptr<const ExpertWeights> Acquire(const std::string &prefix,
                                                int expert_id);
   mlx::core::array Routed(const mlx::core::array &input,
@@ -60,17 +63,18 @@ private:
     size_t offset_bytes;
     size_t expert_bytes;
   };
+  using Recency = std::list<std::pair<std::string, int>>;
   struct Entry {
     std::shared_ptr<ExpertWeights> weights;
     size_t packed_bytes;
-    size_t age;
+    Recency::iterator recency;
   };
   std::map<std::string, TensorSlice> slices_;
   std::map<std::pair<std::string, int>, Entry> entries_;
   size_t capacity_bytes_;
   size_t resident_bytes_ = 0;
   size_t peak_bytes_ = 0;
-  size_t clock_ = 0;
+  Recency recency_;
   size_t misses_ = 0;
   size_t hits_ = 0;
   size_t evictions_ = 0;

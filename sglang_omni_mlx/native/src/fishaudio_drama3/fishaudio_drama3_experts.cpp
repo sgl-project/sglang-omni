@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <stdexcept>
 #include <sys/stat.h>
@@ -284,6 +285,7 @@ void ExpertCache::Release() {
   }
   released_entries_ += entries_.size();
   entries_.clear();
+  recency_.clear();
   resident_bytes_ = 0;
 }
 
@@ -293,7 +295,7 @@ ExpertCache::Acquire(const std::string &prefix, int expert_id) {
   const auto found = entries_.find(identity);
   if (found != entries_.end()) {
     ++hits_;
-    found->second.age = ++clock_;
+    recency_.splice(recency_.end(), recency_, found->second.recency);
     return found->second.weights;
   } else {
   }
@@ -320,11 +322,12 @@ ExpertCache::Acquire(const std::string &prefix, int expert_id) {
   }
   while (resident_bytes_ > capacity_bytes_ - packed_bytes) {
     auto victim = entries_.end();
-    for (auto entry = entries_.begin(); entry != entries_.end(); ++entry) {
-      if (entry->second.weights.use_count() == 1 &&
-          (victim == entries_.end() ||
-           entry->second.age < victim->second.age)) {
+    for (auto recency = recency_.begin(); recency != recency_.end();
+         ++recency) {
+      const auto entry = entries_.find(*recency);
+      if (entry->second.weights.use_count() == 1) {
         victim = entry;
+        break;
       } else {
       }
     }
@@ -333,6 +336,7 @@ ExpertCache::Acquire(const std::string &prefix, int expert_id) {
     } else {
     }
     resident_bytes_ -= victim->second.packed_bytes;
+    recency_.erase(victim->second.recency);
     entries_.erase(victim);
     ++evictions_;
   }
@@ -364,7 +368,14 @@ ExpertCache::Acquire(const std::string &prefix, int expert_id) {
   // Note (Codex): completed loads own MLX arrays, without a second host payload
   // cache.
   mx::eval(parameters);
-  entries_.emplace(identity, Entry{weights, packed_bytes, ++clock_});
+  recency_.push_back(identity);
+  try {
+    entries_.emplace(identity,
+                     Entry{weights, packed_bytes, std::prev(recency_.end())});
+  } catch (...) {
+    recency_.pop_back();
+    throw;
+  }
   resident_bytes_ += packed_bytes;
   ++misses_;
   if (profile_) {

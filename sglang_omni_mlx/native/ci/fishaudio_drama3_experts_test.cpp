@@ -6,9 +6,13 @@
 #include <iostream>
 #include <mutex>
 #include <stdexcept>
+#include <type_traits>
 
 namespace mx = mlx::core;
 namespace drama = fishaudio_drama3;
+
+static_assert(!std::is_copy_constructible_v<drama::ExpertCache>);
+static_assert(!std::is_copy_assignable_v<drama::ExpertCache>);
 
 namespace {
 
@@ -223,6 +227,20 @@ void Verify(const std::filesystem::path &directory, int bits, mx::Dtype dtype) {
               lru.payload_read_bytes() == 4 * expert_bytes &&
               lru.misses() == 4 && lru.peak_bytes() == 2 * expert_bytes,
           "LRU victim was incorrect");
+  drama::ExpertCache pinned_oldest(directory, 2 * expert_bytes);
+  auto oldest = pinned_oldest.Acquire(kPrefix, 0);
+  pinned_oldest.Acquire(kPrefix, 1);
+  pinned_oldest.Acquire(other_prefix, 0);
+  Require(pinned_oldest.Acquire(kPrefix, 0) == oldest &&
+              pinned_oldest.misses() == 3 && pinned_oldest.evictions() == 1,
+          "pinned oldest was not skipped");
+  oldest.reset();
+  pinned_oldest.Acquire(other_prefix, 0);
+  pinned_oldest.Acquire(kPrefix, 1);
+  const size_t misses_after_unpin = pinned_oldest.misses();
+  pinned_oldest.Acquire(kPrefix, 0);
+  Require(pinned_oldest.misses() == misses_after_unpin + 1,
+          "unpinned oldest lost its hit recency");
   rejected = false;
   try {
     cache.Acquire(kPrefix, -1);
@@ -256,6 +274,10 @@ void Verify(const std::filesystem::path &directory, int bits, mx::Dtype dtype) {
               release_cache.payload_read_bytes() == 3 * expert_bytes &&
               release_cache.resident_bytes() == expert_bytes,
           "released metadata could not reload an expert");
+  release_cache.Acquire(kPrefix, 1);
+  release_cache.Acquire(kPrefix, 2);
+  Require(release_cache.evictions() == 1 && release_cache.misses() == 5,
+          "release/reload retained stale recency");
   drama::ExpertCache too_small(directory, expert_bytes - 1);
   rejected = false;
   try {
@@ -278,6 +300,10 @@ void Verify(const std::filesystem::path &directory, int bits, mx::Dtype dtype) {
   mx::save_safetensors(path.string(), weights);
   Require(failing.Acquire(kPrefix, 0)->size() == 9,
           "failed read prevented retry");
+  failing.Acquire(kPrefix, 1);
+  Require(failing.misses() == 2 && failing.evictions() == 1 &&
+              failing.resident_bytes() == expert_bytes,
+          "failed read left stale recency during eviction");
 }
 
 } // namespace
