@@ -91,11 +91,11 @@ and quitting stops it.
 
 ## Tests and CI
 
-- Runtime correctness is checked by `sglang_omni_mlx/native/ci`:
+- Runtime correctness is checked by hand with `sglang_omni_mlx/native/ci`:
   - `provision.py` fetches the pinned checkpoint and rebuilds the frozen corpus from its public sources, checking every file's SHA-256.
   - `check_golden.py` runs the runtime over the 392-clip corpus with Voxt's Final request and requires every clip to match the golden output. It reports error rates next to the original Swift backend's.
   - Silero VAD and Sortformer golden files hold the original Swift outputs; `vad_golden.py` and `sortformer_golden.py` check them with tolerances for MLX kernel differences.
-- The `Voxt Mac CI` workflow runs these on the repository's Apple Silicon runner, together with the server API tests and Voxt's Omni unit tests.
+- The `Voxt Mac CI` workflow runs none of these and no model. On GitHub's macOS runners it builds the runtime and runs `sglang_omni_mlx/native/tests`: the protocol every server shares, on `stub_server` with stand-in models; each server's model kinds and startup checks; and that the installed runtime links only the system and itself. It also runs Voxt's Omni unit tests.
 - The Whisper check pins its checkpoint and tokenizer, runs all 392 frozen clips through `check_model_golden.py`, and tests the transcription server. Its golden keeps per-chip outputs with `check_golden.py`'s tolerance, and records the original Swift backend's error rates as its baseline.
 - The Cohere check pins its checkpoint and Silero VAD v6, runs the same frozen corpus through `check_model_golden.py`, and tests the server. Its golden keeps per-chip outputs with the same tolerance, and records the original Swift backend's error rates as its baseline; a second golden freezes the energy cut's multi-chunk path on the long clips.
 - Voxt's opt-in suites need the installed model and `VOXT_RUN_MODEL_TESTS=1`:
