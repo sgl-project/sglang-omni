@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "common/audio.h"
 #include "nlohmann/json.hpp"
 #include "voxtral_tts/voxtral_tts_model.h"
 
@@ -103,8 +104,8 @@ int main(int argc, char **argv) {
       static_cast<double>(samples.size()) / model.codec().sample_rate();
 
   if (!output_path.empty()) {
-    std::ofstream(output_path, std::ios::binary) << voxtral_tts::WavBytes(
-        voxtral_tts::Pcm16Bytes(samples), model.codec().sample_rate());
+    std::ofstream(output_path, std::ios::binary) << omni_common::WavBytes(
+        omni_common::Pcm16Bytes(samples), model.codec().sample_rate());
   } else {
   }
   if (!codes_output_path.empty()) {

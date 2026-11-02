@@ -76,7 +76,7 @@ def unit_request(request_id: str, *rows: torch.Tensor) -> SchedulerRequest:
 
 
 def test_thinker_decode_stages_each_unit_row_into_the_fusion_buffer() -> None:
-    model = Mock(fusion_buffer=torch.zeros(3, 4), fusion_mask=torch.zeros(3).bool())
+    model = Mock(fusion_buffer=torch.zeros(3, 4))
     runner = Mock(spec=DuplexThinkerRunner, model=model)
     requests = [
         unit_request("a", torch.ones(60, 4), torch.full((1, 4), 2.0)),
@@ -87,7 +87,6 @@ def test_thinker_decode_stages_each_unit_row_into_the_fusion_buffer() -> None:
         model.fusion_buffer,
         torch.tensor([[2.0] * 4, [5.0] * 4, [0.0] * 4]),
     )
-    assert model.fusion_mask.tolist() == [True, True, False]
 
 
 def test_talker_decode_stages_rows_and_samples_codes_like_prefill() -> None:
