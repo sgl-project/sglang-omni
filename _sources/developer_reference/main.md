@@ -129,6 +129,16 @@ Opening code fences must have a non-empty info string, such as `python`, `bash`,
 
 Markdown basenames in `docs/**/*.md` must match `[a-z0-9_]+\.md`, using lowercase ASCII letters, digits, and underscores. Only `docs/README.md` is exempt; `docs/nested/README.md` is rejected. Directory names are unrestricted. For example, `guide.md`, `model_v2.md`, and `123.md` are valid, while `Guide.md`, `model-v2.md`, and names containing spaces or non-ASCII characters are rejected. The checker reports the file path and line 1 without renaming or rewriting files.
 
+Markdown pages must appear in a toctree in `docs/**/*.rst` or a fenced MyST `{toctree}` directive in `docs/**/*.md`. Entries may use `guide.md`, extensionless `guide`, or a title such as `Guide title <guide>`. Paths beginning with `/` resolve from `docs/`; other paths resolve from the containing document's directory. With `:glob:` (or `glob: true` in MyST YAML options), patterns match extensionless document names: `*` stays within one directory and `**` can cross directories. External URLs, `self`, option values, and examples inside code blocks or comments do not count as page entries. Missing entries are reported at the Markdown file's line 1 as `missing-toctree`. Editing a navigation file triggers the existing `doc-style` hook, alongside Markdown, checker, and test changes.
+
+Only these pages are exempt from navigation inclusion; emoji, fence-label, and filename checks still apply:
+
+- `README.md`: repository overview, separate from the published manual.
+- `design/gpu_radix_hash.md` and `design/refactor_rfc.md`: internal notes outside the user manual.
+- `developer_reference/mlx.md`: excluded redirect; the published page is `mlx/index.md`.
+- `get_started/apiserver_quickstart.md`: linked from other pages, outside the sidebar.
+- `basic_usage/python_router.md`: retained until the Python router is removed separately.
+
 ```bash
 python -m pip install -r scripts/requirements-doc-lint.txt
 python scripts/check_doc_style.py
