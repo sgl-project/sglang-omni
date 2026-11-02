@@ -64,10 +64,11 @@ xcodebuild test \
 
 ## Local packages and release automation
 
-The root `Voxt Mac CI` workflow runs the native runtime goldens, the server
-API tests, Voxt's Omni unit tests and the tooling tests on the Apple Silicon
-runner for pull requests that touch Voxt or `sglang_omni_mlx`. Its package job
-additionally requires the repository variable `VOXT_ENABLE_CI_PACKAGE=true`.
+The root `Voxt Mac CI` workflow builds the native runtime and tests its
+protocol and startup checks without a model, and runs Voxt's Omni unit tests
+and the tooling tests on GitHub's macOS runners for pull requests that touch
+Voxt or `sglang_omni_mlx`. Its package job additionally requires the
+repository variable `VOXT_ENABLE_CI_PACKAGE=true`.
 
 For local development, build the Native Omni runtime and package the app with:
 
