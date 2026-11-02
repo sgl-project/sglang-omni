@@ -20,21 +20,40 @@ def main() -> None:
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--shapes", default="1:64,1:100,1:237,1:400,2:100,4:100")
+    parser.add_argument("--capture-shapes", default=None)
     parser.add_argument("--iterations", type=int, default=30)
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--reverse", action="store_true")
+    parser.add_argument("--disable-tf32", action="store_true")
+    parser.add_argument("--emulate-precision-casts", action="store_true")
     arguments = parser.parse_args()
     shapes = tuple(
         tuple(int(dimension) for dimension in shape.split(":"))
         for shape in arguments.shapes.split(",")
     )
-    if arguments.iterations < 2 or any(len(shape) != 2 for shape in shapes):
+    capture_shapes = (
+        shapes
+        if arguments.capture_shapes is None
+        else tuple(
+            tuple(int(dimension) for dimension in shape.split(":"))
+            for shape in arguments.capture_shapes.split(",")
+        )
+    )
+    if arguments.iterations < 2 or any(
+        len(shape) != 2 or any(dimension <= 0 for dimension in shape)
+        for shape in (*shapes, *capture_shapes)
+    ):
         raise ValueError("Use at least two iterations and batch:frames shape pairs")
     else:
         pass
     torch.manual_seed(7)
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = arguments.deterministic
+    if arguments.disable_tf32:
+        torch.backends.cudnn.allow_tf32 = False
+        torch.backends.cuda.matmul.allow_tf32 = False
+    else:
+        pass
     device = torch.device("cuda", 0)
     hift = HiFTGenerator().to(device).eval()
     weights = torch.load(arguments.checkpoint, map_location="cpu", weights_only=True)
@@ -47,7 +66,10 @@ def main() -> None:
         eager_body,
         dynamic=True,
         fullgraph=True,
-        options={"triton.cudagraphs": False},
+        options={
+            "triton.cudagraphs": False,
+            "emulate_precision_casts": arguments.emulate_precision_casts,
+        },
     )
     inputs = {
         shape: (
@@ -69,7 +91,7 @@ def main() -> None:
         started = time.perf_counter()
         memory_before = torch.cuda.memory_reserved()
         runner.capture(
-            shapes,
+            capture_shapes,
             device=device,
             mel_channels=80,
             samples_per_frame=int(hift.f0_upsamp.scale_factor),
@@ -98,7 +120,6 @@ def main() -> None:
                     expected,
                     rtol=1e-4,
                     atol=1e-5,
-                    msg=f"{mode}, batch={batch_size}, frames={mel_frames}",
                 )
                 relative_error = (
                     (actual - reference).norm() / reference.norm().clamp_min(1e-12)
@@ -144,6 +165,9 @@ def main() -> None:
                 "iterations": arguments.iterations,
                 "deterministic": arguments.deterministic,
                 "reverse": arguments.reverse,
+                "cudnn_allow_tf32": torch.backends.cudnn.allow_tf32,
+                "emulate_precision_casts": arguments.emulate_precision_casts,
+                "capture_shapes": capture_shapes,
                 "capture_seconds": startup_seconds,
                 "additional_reserved_bytes": reserved_bytes,
                 "input_kind": "seeded synthetic mel and shared excitation; checkpoint weights",

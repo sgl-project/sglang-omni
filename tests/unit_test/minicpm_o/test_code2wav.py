@@ -688,8 +688,17 @@ def test_hift_graph_matches_decode_across_shapes_and_replays(
     runner.decode_body = fallback
     saved_outputs: list[tuple[torch.Tensor, torch.Tensor]] = []
     with torch.inference_mode():
-        # The middle shapes miss capture, including a length that could be padded.
-        for batch_size, mel_frames in ((1, 4), (2, 6), (1, 3), (3, 4), (1, 4)):
+        # Alternate tails in one bucket to expose stale padding and missing masks.
+        for batch_size, mel_frames in (
+            (1, 4),
+            (2, 6),
+            (1, 3),
+            (1, 5),
+            (1, 1),
+            (3, 4),
+            (1, 7),
+            (1, 4),
+        ):
             mel = torch.randn(batch_size, 80, mel_frames, device=device)
             source = (
                 torch.randn(
