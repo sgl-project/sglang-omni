@@ -17,7 +17,7 @@ mkdir -p "$work"
 uv venv -q -p 3.12 --allow-existing "$work/venv"
 MACOSX_DEPLOYMENT_TARGET="$deployment_target" VIRTUAL_ENV="$work/venv" uv pip install -q \
   --python-platform aarch64-apple-darwin -r "$native_dir/scripts/build-tools.lock"
-mlx_dir="$("$work/venv/bin/python" -c 'import mlx.core, os; print(os.path.join(os.path.dirname(mlx.core.__file__), "share/cmake/MLX"))')"
+mlx_dir="$("$work/venv/bin/python" -c 'from importlib.metadata import distribution; print(distribution("mlx").locate_file("mlx/share/cmake/MLX"))')"
 export PATH="$work/venv/bin:$PATH"
 cmake -S "$native_dir" -B "$work/cmake" -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DMLX_DIR="$mlx_dir" -DCMAKE_INSTALL_PREFIX="$output" \
