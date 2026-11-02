@@ -46,6 +46,8 @@ OUTPUT_SAMPLE_RATE = 24000
 MIN_REFERENCE_SECONDS = 5.0
 MAX_REFERENCE_SECONDS = 15.0
 XPU_WARMUP_PROMPT_TOKENS = 256  # measured on Arc Pro B60
+CODEC_HOP_LENGTH = 480
+_local_codec_construction_lock = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -63,7 +65,70 @@ def load_codec(model: str, revision: str, device: str) -> "NeuCodec":
         raise RuntimeError(
             "Audar-TTS requires the 'audar-tts' optional dependencies"
         ) from exc
-    return NeuCodec.from_pretrained(model, revision=revision).eval().to(device)
+    local_codec_dir = Path(model).expanduser()
+    if not local_codec_dir.is_dir():
+        return NeuCodec.from_pretrained(model, revision=revision).eval().to(device)
+    else:
+        pass
+    weights_path = local_codec_dir / "pytorch_model.bin"
+    w2v_path = local_codec_dir.parent / "facebook_w2v_bert_2_0"
+    if not weights_path.is_file() or not w2v_path.is_dir():
+        raise FileNotFoundError(
+            "A local NeuCodec directory needs pytorch_model.bin and "
+            f"a sibling facebook_w2v_bert_2_0 directory: {local_codec_dir}"
+        )
+    else:
+        pass
+    import neucodec.model as neucodec_model
+    from transformers import AutoFeatureExtractor, Wav2Vec2BertModel
+
+    original_feature_extractor = neucodec_model.AutoFeatureExtractor.from_pretrained
+    original_w2v_model = neucodec_model.Wav2Vec2BertModel.from_pretrained
+
+    def local_feature_extractor(
+        pretrained_model_name_or_path: str,
+        *args: object,
+        **kwargs: object,
+    ) -> AutoFeatureExtractor:
+        if pretrained_model_name_or_path == "facebook/w2v-bert-2.0":
+            return original_feature_extractor(
+                w2v_path, *args, local_files_only=True, **kwargs
+            )
+        else:
+            pass
+        return original_feature_extractor(
+            pretrained_model_name_or_path, *args, **kwargs
+        )
+
+    def local_w2v_model(
+        pretrained_model_name_or_path: str,
+        *args: object,
+        **kwargs: object,
+    ) -> Wav2Vec2BertModel:
+        if pretrained_model_name_or_path == "facebook/w2v-bert-2.0":
+            return original_w2v_model(w2v_path, *args, local_files_only=True, **kwargs)
+        else:
+            pass
+        return original_w2v_model(pretrained_model_name_or_path, *args, **kwargs)
+
+    with _local_codec_construction_lock:
+        neucodec_model.AutoFeatureExtractor.from_pretrained = local_feature_extractor
+        neucodec_model.Wav2Vec2BertModel.from_pretrained = local_w2v_model
+        try:
+            codec = NeuCodec(OUTPUT_SAMPLE_RATE, CODEC_HOP_LENGTH)
+        finally:
+            neucodec_model.AutoFeatureExtractor.from_pretrained = (
+                original_feature_extractor
+            )
+            neucodec_model.Wav2Vec2BertModel.from_pretrained = original_w2v_model
+    state_dict = torch.load(weights_path, map_location="cpu", weights_only=True)
+    state_dict = {
+        key: value
+        for key, value in state_dict.items()
+        if "fc_post_s" not in key and "SemanticDecoder" not in key
+    }
+    codec.load_state_dict(state_dict, strict=False)
+    return codec.eval().to(device)
 
 
 @lru_cache(maxsize=None)
