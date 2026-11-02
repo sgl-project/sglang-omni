@@ -176,7 +176,7 @@ def test_preprocessing_reads_the_checkpoint_and_loads_the_codec_on_cpu(
     )
     assert preprocessor.reference_encoder.batching_enabled
     assert preprocessor.reference_encoder.max_batch_size == 8
-    assert preprocessor.reference_encoder.max_batch_wait_ms == 0.002
+    assert preprocessor.reference_encoder.max_batch_wait_s == 0.002
     assert torch.equal(
         generation_input_of(preprocessor(lowered({"input": "hello"}))).prompt_rows,
         rows,
