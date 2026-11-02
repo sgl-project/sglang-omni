@@ -1,7 +1,6 @@
 # Request-level profiler
 
-`sglang-omni` ships two complementary profilers that share the same `run_id`
-and are controlled by the same HTTP surface:
+`sglang-omni` ships two complementary profilers that share the same `run_id` and are controlled by the same HTTP surface:
 
 - a **request-level event recorder** that writes a JSONL stream of
   per-request milestones (admission, preprocess, encoder, prefill, first
@@ -20,9 +19,7 @@ deeper kernel investigation.
 
 ## Event model
 
-Every instrumentation point records one logical event. After the run is
-deactivated, each retained event is serialized as one line of JSON in a
-per-process JSONL file. The shape is:
+Every instrumentation point records one logical event. After the run is deactivated, each retained event is serialized as one line of JSON in a per-process JSONL file. The shape is:
 
 ```jsonc
 {
@@ -36,13 +33,7 @@ per-process JSONL file. The shape is:
 }
 ```
 
-Files are written under
-`<event_dir>/events_<stage>_<pid>.jsonl`. Multiple co-located
-stages in the same OS process share **one** JSONL file — the filename uses the
-first stage to start, and the per-event `stage` field identifies the owner. The
-views layer merges files from every process by `request_id`. The writer creates
-each JSONL file exclusively; an existing file is a storage failure rather than
-an append target.
+Files are written under `<event_dir>/events_<stage>_<pid>.jsonl`. Multiple co-located stages in the same OS process share **one** JSONL file — the filename uses the first stage to start, and the per-event `stage` field identifies the owner. The views layer merges files from every process by `request_id`. The writer creates each JSONL file exclusively; an existing file is a storage failure rather than an append target.
 
 The recorder uses one bounded producer-private buffer per OS thread and one low-priority writer thread per process, created only after the run stops. Each producer can retain 1024 events by default; the `queue_capacity` constructor argument sets this per-producer limit. The recorder accepts at most 16 producer threads per process, for a maximum of 16,384 retained events. Each event's metadata snapshot is limited to 512 characters and 32 values, for about 8 Mi characters total (up to about 32 MiB of raw Unicode character storage), plus Python event and container overhead.
 
