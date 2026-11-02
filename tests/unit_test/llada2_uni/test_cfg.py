@@ -99,9 +99,7 @@ def test_cfg_graph_waits_for_padding_to_enter_cached_prefix(
 
 @pytest.mark.parametrize("size", [1, 2, 3])
 @pytest.mark.parametrize("rescale", [0.0, 0.7])
-def test_guidance_updates_all_cfg_branches(
-    size: int, rescale: float
-) -> None:
+def test_guidance_updates_all_cfg_branches(size: int, rescale: float) -> None:
     algorithm = LowConfidenceCFG(make_config())
     algorithm.threshold = 0.94 if size == 3 else 0.8
     requests = make_cfg_group(size)
