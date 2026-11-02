@@ -66,6 +66,7 @@ add_library(qwen3_asr STATIC
   src/qwen3_asr/qwen3_audio.cpp
   src/qwen3_asr/qwen3_asr_model.cpp
   src/qwen3_asr/qwen3_decoder.cpp
+  src/qwen3_asr/dflash_draft.cpp
   src/qwen3_asr/qwen3_asr_transcriber.cpp
   src/qwen3_asr/worker.cpp
   src/qwen3_asr/realtime.cpp)
@@ -271,6 +272,25 @@ set_target_properties(qwen3_tts_server qwen3_tts_synthesize PROPERTIES
   INSTALL_RPATH "@loader_path")
 install(TARGETS qwen3_tts_server qwen3_tts_synthesize RUNTIME DESTINATION bin)
 
+# Note (Jiaxin Deng): Fun-CosyVoice3 0.5B: cosyvoice3_server, with the CUDA
+# server's /v1/audio/speech API, and its parity tool; the Qwen2 decoder reuses
+# Qwen3's, and the WAV and PCM writers are shared in common/audio.
+add_library(cosyvoice3 STATIC src/cosyvoice3/cosyvoice3_vocoder.cpp
+  src/cosyvoice3/cosyvoice3_audio.cpp src/cosyvoice3/cosyvoice3_speaker.cpp
+  src/cosyvoice3/cosyvoice3_speech_tokenizer.cpp
+  src/cosyvoice3/cosyvoice3_model.cpp)
+target_link_libraries(cosyvoice3 PUBLIC qwen3_asr)
+target_compile_options(cosyvoice3 PRIVATE -Wall -Wextra -ffp-contract=off)
+add_executable(cosyvoice3_server src/cosyvoice3/cosyvoice3_server.cpp)
+target_link_libraries(cosyvoice3_server PRIVATE cosyvoice3 asr_service)
+target_compile_options(cosyvoice3_server PRIVATE -Wall -Wextra)
+add_executable(cosyvoice3_synthesize tools/cosyvoice3_synthesize.cpp)
+target_link_libraries(cosyvoice3_synthesize PRIVATE cosyvoice3)
+set_target_properties(cosyvoice3_server cosyvoice3_synthesize PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS cosyvoice3_server cosyvoice3_synthesize RUNTIME DESTINATION bin)
+
 # Note (Yitong Li): Fish Audio Drama 3: fishaudio_drama3_server, with the CUDA
 # server's /v1/audio/speech API, and its parity tool; attention layers keep
 # Qwen3's KV cache.
@@ -297,3 +317,11 @@ install(TARGETS fishaudio_drama3_server fishaudio_drama3_synthesize RUNTIME DEST
 
 install(FILES licenses/music3-MIT.txt licenses/fishaudio_drama3-MIT.txt
   DESTINATION licenses)
+
+# The protocol tests' stand-in server (tests/stub_server.cpp); built only on
+# request and never installed.
+add_executable(stub_server EXCLUDE_FROM_ALL tests/stub_server.cpp)
+target_link_libraries(stub_server PRIVATE speech_service)
+target_compile_options(stub_server PRIVATE -Wall -Wextra)
+set_target_properties(stub_server PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")

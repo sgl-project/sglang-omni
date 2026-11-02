@@ -7,10 +7,12 @@ import hashlib
 import json
 import subprocess
 import wave
+from copy import deepcopy
 from pathlib import Path
 from typing import Literal
 
 import check_golden
+import cosyvoice3_golden
 import music3_golden
 import pytest
 import speech_golden
@@ -269,3 +271,87 @@ def test_a_voxtral_case_without_golden_outputs_fails(device: str) -> None:
     assert speech_golden.check(empty, "Apple M5", results)[1] == [
         "the golden file has no outputs"
     ]
+
+
+@pytest.mark.parametrize("device", ["Apple M5", "Apple M4 Pro"])
+@pytest.mark.parametrize("field", ["mel_band_means", "mel_frame_means"])
+@pytest.mark.parametrize(
+    "source,mel_value,should_fail",
+    [
+        ("actual", float("nan"), True),
+        ("expected", float("nan"), True),
+        ("both", float("nan"), True),
+        ("actual", float("inf"), True),
+        ("expected", float("inf"), True),
+        ("both", float("inf"), True),
+        ("actual", -float("inf"), True),
+        ("expected", -float("inf"), True),
+        ("both", -float("inf"), True),
+        ("actual", -2.0, False),
+        ("actual", -1.975, False),
+        ("actual", -1.0, True),
+    ],
+)
+def test_cosyvoice3_golden_rejects_nonfinite_mel_means(
+    device: str,
+    field: Literal["mel_band_means", "mel_frame_means"],
+    source: Literal["actual", "expected", "both"],
+    mel_value: float,
+    should_fail: bool,
+) -> None:
+    """NaN and matching infinities previously passed the mel tolerance gate."""
+    expected = {
+        **SPEECH,
+        "mel_band_means": [-2.0, -3.0],
+        "mel_frame_means": [-2.0, -3.0],
+        "pcm_sha256": "same-waveform",
+    }
+    actual = deepcopy(expected)
+    if source in ("actual", "both"):
+        actual[field][0] = mel_value
+    else:
+        pass
+    if source in ("expected", "both"):
+        expected[field][0] = mel_value
+    else:
+        pass
+    golden = {
+        "model": "cosyvoice3",
+        "kind": "cosyvoice3",
+        "cases": {"vocode": {"vocode_tokens_from": "speech"}},
+        "devices": {"Apple M5": {"clips": {"vocode": expected}}},
+    }
+    _, failures = cosyvoice3_golden.check(golden, device, {"vocode": actual})
+    if should_fail:
+        assert len(failures) == 1
+        assert field in failures[0]
+    else:
+        assert failures == []
+
+
+@pytest.mark.parametrize(
+    "device,should_fail", [("Apple M5", True), ("Apple M4 Pro", False)]
+)
+def test_cosyvoice3_keeps_the_shared_per_chip_pcm_gate(
+    device: str, should_fail: bool
+) -> None:
+    """The shared checker must preserve the recorded chip's CosyVoice3 PCM gate."""
+    recorded = {
+        **SPEECH,
+        "pcm_sha256": "original",
+        "mel_band_means": [-2.0],
+        "mel_frame_means": [-2.0],
+    }
+    golden = {
+        "model": "cosyvoice3",
+        "kind": "cosyvoice3",
+        "cases": {"vocode": {"vocode_tokens_from": "speech"}},
+        "devices": {"Apple M5": {"clips": {"vocode": recorded}}},
+    }
+    _, failures = cosyvoice3_golden.check(
+        golden, device, {"vocode": {**recorded, "pcm_sha256": "changed"}}
+    )
+    if should_fail:
+        assert failures == ["`vocode` decodes to other audio"]
+    else:
+        assert failures == []
