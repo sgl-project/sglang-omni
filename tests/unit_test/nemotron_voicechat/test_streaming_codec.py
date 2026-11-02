@@ -122,6 +122,22 @@ def test_multi_row_push_and_empty_flush():
     assert codec.emitted_samples == out.numel()
 
 
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graph requires a GPU")
+def test_ramp_through_graph_runner_matches_eager_streaming():
+    decoder, runner = make_graph_runner()
+    chunk_frames = (1, 1, 1, 1, 2, 2, 4)
+    NemotronCode2WavScheduler(
+        runner, "cuda", chunk_frames=chunk_frames, compute_fn=None, max_batch_size=1
+    )
+    codes_TQ = make_random_codes(37)
+    eager = StreamingCodec(decoder, "cuda", chunk_frames=chunk_frames)
+    graphed = StreamingCodec(runner, "cuda", chunk_frames=chunk_frames)
+    expected = torch.cat([eager.push(codes_TQ), eager.flush()])
+    actual = torch.cat([graphed.push(codes_TQ), graphed.flush()])
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
 @pytest.mark.parametrize("rows_per_push", [1, DECODE_WINDOW_FRAMES + 1])
 def test_retained_codes_stay_within_the_decode_window(rows_per_push):
     codec = StreamingCodec(FrameLocalDecoder(), "cpu", chunk_frames=(1,))
