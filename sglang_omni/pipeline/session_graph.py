@@ -22,6 +22,7 @@ from sglang_omni.pipeline.sessions import (
     output_chunk,
 )
 from sglang_omni.pipeline.types import SessionOutputBudgetError
+from sglang_omni.profiler.duplex_events import clear_session_sampling
 from sglang_omni.proto import OmniRequest
 from sglang_omni.proto.session import (
     GRAPH_INPUT,
@@ -975,4 +976,5 @@ class SessionGraphRunner(CoordinatorSessions):
         graph.output_bytes = 0
         graph.outputs.put_nowait(None)
         self.graphs.pop(graph.session_identity.id, None)
+        clear_session_sampling(graph.session_identity)
         self.notify_session_closed()

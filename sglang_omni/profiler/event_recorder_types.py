@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import contextvars
 import threading
+from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from sglang_omni.utils.json import JsonValue
 
@@ -20,7 +22,13 @@ MAX_METADATA_SNAPSHOT_ITEMS = 32
 MAX_METADATA_SNAPSHOT_CHARACTERS = 512
 MAX_METADATA_STRING_LENGTH = 256
 WRITER_POLL_INTERVAL_SECONDS = 0.01
+RUNTIME_WRITER_MAX_EVENTS_PER_ROUND = 32
+RUNTIME_WRITER_POLL_INTERVAL_SECONDS = 0.1
 DEFAULT_FINALIZATION_TIMEOUT_SECONDS = 5.0
+DEFAULT_MAX_EVENT_FILE_BYTES = 256 * 1024 * 1024
+
+ProfileMode = Literal["performance", "runtime"]
+SamplingUnit = Literal["request", "session"]
 
 
 thread_active_stage = threading.local()
@@ -121,8 +129,24 @@ class RecorderRunState:
     status_path: Path
     finalization: RequestEventFinalization
     event_buffer_capacity: int = DEFAULT_EVENT_BUFFER_CAPACITY
+    mode: ProfileMode = "performance"
+    sampling_unit: SamplingUnit | None = None
+    sample_rate: float | None = None
+    max_event_file_bytes: int | None = None
     producer_buffers: list[ProducerBuffer] = field(default_factory=list)
     producer_drop_counters: list[ProducerDropCounter] = field(default_factory=list)
+    request_sampling_decisions: dict[str, bool] = field(default_factory=dict)
+    request_sampling_stage_names: dict[str, set[str]] = field(default_factory=dict)
+    request_session_identities: dict[str, tuple[str, int]] = field(default_factory=dict)
+    request_session_operations: dict[str, str] = field(default_factory=dict)
+    session_sampling_decisions: dict[tuple[str, int], bool] = field(
+        default_factory=dict
+    )
+    stop_requested: threading.Event = field(default_factory=threading.Event)
+    writer_buffer_index: int = 0
+    event_file_bytes_written: int = 0
+    file_size_limit_reached: bool = False
+    writer_failed: bool = False
     accepted_events: int = 0
     processed_events: int = 0
     written_events: int = 0
@@ -144,7 +168,7 @@ class ProducerBuffer:
 
     run_state: RecorderRunState
     capacity: int
-    events: list[RequestEvent] = field(default_factory=list)
+    events: list[RequestEvent] | deque[RequestEvent] = field(default_factory=list)
     deferred_event_buffers: list[list[PendingRequestEvent]] = field(
         default_factory=list
     )

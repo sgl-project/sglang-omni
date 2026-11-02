@@ -7,6 +7,7 @@ import functools
 import threading
 import time
 from collections.abc import Iterable, Mapping
+from itertools import chain
 from pathlib import Path
 
 from sglang_omni.profiler.event_recorder_types import (
@@ -14,6 +15,7 @@ from sglang_omni.profiler.event_recorder_types import (
     MAX_EVENT_TEXT_LENGTH,
     PendingRequestEvent,
     ProducerBuffer,
+    RecorderRunState,
     RequestEvent,
     RequestEventFinalization,
     RequestEventSnapshot,
@@ -68,8 +70,51 @@ class RequestEventBuffer(threading.local):
     ) -> None:
         """Snapshot one cohort once into the current producer's buffer."""
         recorder = get_recorder()
+        observed_state = recorder.active_state
+        if observed_state is None:
+            return
+        else:
+            pass
+        expected_run_state: RecorderRunState | None = None
+        if observed_state.mode == "runtime":
+            expected_run_state = observed_state
+            snapshot_iterator = iter(snapshots)
+            selected_snapshot: RequestEventSnapshot | None = None
+            for snapshot in snapshot_iterator:
+                if recorder.should_sample_request(
+                    observed_state,
+                    snapshot.request_id,
+                    event_metadata=metadata,
+                    request_metadata=snapshot.metadata,
+                ):
+                    selected_snapshot = snapshot
+                    break
+                else:
+                    pass
+            else:
+                return
+            if selected_snapshot is None:
+                return
+            else:
+                snapshots = chain(
+                    (selected_snapshot,),
+                    (
+                        snapshot
+                        for snapshot in snapshot_iterator
+                        if recorder.should_sample_request(
+                            observed_state,
+                            snapshot.request_id,
+                            event_metadata=metadata,
+                            request_metadata=snapshot.metadata,
+                        )
+                    ),
+                )
+        else:
+            pass
         try:
-            producer_buffer = recorder.begin_buffer_operation()
+            producer_buffer = recorder.begin_buffer_operation(
+                expected_run_state=expected_run_state
+            )
         except Exception:
             return
         else:

@@ -1204,6 +1204,10 @@ def test_profiler_start_routes_pass_event_buffer_capacity(
             stage: str,
             *,
             event_buffer_capacity: int | None = None,
+            mode: str = "performance",
+            sampling_unit: str | None = None,
+            sample_rate: float | None = None,
+            max_event_file_bytes: int | None = None,
         ) -> str:
             self.capacities.append(event_buffer_capacity)
             return "/tmp/events.jsonl"
@@ -1221,6 +1225,10 @@ def test_profiler_start_routes_pass_event_buffer_capacity(
             event_dir: str | None = None,
             enable_torch: bool = True,
             event_buffer_capacity: int | None = None,
+            mode: str = "performance",
+            sampling_unit: str | None = None,
+            sample_rate: float | None = None,
+            max_event_file_bytes: int | None = None,
         ) -> None:
             self.capacities.append(event_buffer_capacity)
 
@@ -1246,6 +1254,10 @@ def test_profiler_start_routes_pass_event_buffer_capacity(
     assert response.status_code == 200
     assert recorder.capacities == [1500]
     assert control.capacities == [1500]
+    if endpoint == "/start_request_profile":
+        assert response.json() == {"run_id": "capacity-test", "event_dir": event_dir}
+    else:
+        pass
 
 
 @pytest.mark.parametrize("invalid_capacity", [0, -1, True, 1.5, "1500"])
@@ -1303,6 +1315,124 @@ def test_profiler_start_routes_reject_invalid_event_buffer_capacity(
             response = client.post(endpoint, json=request_body)
             assert response.status_code == 422
 
+    assert recorder.starts == 0
+    assert control.starts == 0
+
+
+def test_runtime_profile_route_forwards_runtime_configuration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.serve import launcher
+
+    class FakeRecorder:
+        def __init__(self) -> None:
+            self.configurations: list[dict[str, object]] = []
+
+        def start(self, **configuration: object) -> str:
+            self.configurations.append(configuration)
+            return "/tmp/events.jsonl"
+
+    class FakeProfilerControl:
+        def __init__(self) -> None:
+            self.configurations: list[dict[str, object]] = []
+
+        async def broadcast_start(self, **configuration: object) -> None:
+            self.configurations.append(configuration)
+
+    recorder = FakeRecorder()
+    control = FakeProfilerControl()
+    monkeypatch.setattr(launcher, "_get_event_recorder", lambda: recorder)
+    app = FastAPI()
+    launcher.mount_profiler_routes(app, control, profiler_dir=str(tmp_path))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/start_request_profile",
+            json={
+                "run_id": "runtime-test",
+                "event_dir": str(tmp_path / "events"),
+                "mode": "runtime",
+                "sampling_unit": "session",
+                "sample_rate": 0.01,
+                "event_buffer_capacity": 1024,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["mode"] == "runtime"
+    assert response.json()["max_event_file_bytes"] == 268435456
+    assert recorder.configurations[0]["mode"] == "runtime"
+    assert recorder.configurations[0]["sampling_unit"] == "session"
+    assert recorder.configurations[0]["sample_rate"] == 0.01
+    assert recorder.configurations[0]["max_event_file_bytes"] == 268435456
+    assert control.configurations[0]["enable_torch"] is False
+    assert control.configurations[0]["mode"] == "runtime"
+
+
+@pytest.mark.parametrize(
+    "configuration",
+    [
+        {"mode": "runtime"},
+        {"mode": "runtime", "sampling_unit": "request"},
+        {"mode": "runtime", "sample_rate": 0.1},
+        {"mode": "runtime", "sampling_unit": "other", "sample_rate": 0.1},
+        {"mode": "runtime", "sampling_unit": "request", "sample_rate": 0},
+        {"mode": "runtime", "sampling_unit": "request", "sample_rate": 1.01},
+        {"mode": "runtime", "sampling_unit": "session", "sample_rate": True},
+        {"mode": "runtime", "sampling_unit": "session", "sample_rate": float("inf")},
+        {
+            "mode": "performance",
+            "sampling_unit": "request",
+            "sample_rate": 0.1,
+        },
+        {
+            "mode": "runtime",
+            "sampling_unit": "session",
+            "sample_rate": 0.1,
+            "max_event_file_bytes": 0,
+        },
+    ],
+)
+def test_runtime_profile_route_rejects_invalid_configuration(
+    configuration: dict[str, object],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sglang_omni.serve import launcher
+
+    class FakeRecorder:
+        def __init__(self) -> None:
+            self.starts = 0
+
+        def start(self, **configuration: object) -> str:
+            self.starts += 1
+            return "/tmp/events.jsonl"
+
+    class FakeProfilerControl:
+        def __init__(self) -> None:
+            self.starts = 0
+
+        async def broadcast_start(self, **configuration: object) -> None:
+            self.starts += 1
+
+    recorder = FakeRecorder()
+    control = FakeProfilerControl()
+    monkeypatch.setattr(launcher, "_get_event_recorder", lambda: recorder)
+    app = FastAPI()
+    launcher.mount_profiler_routes(app, control, profiler_dir=str(tmp_path))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/start_request_profile",
+            json={
+                "run_id": "invalid-runtime-test",
+                "event_dir": str(tmp_path / "events"),
+                **configuration,
+            },
+        )
+
+    assert response.status_code == 422
     assert recorder.starts == 0
     assert control.starts == 0
 

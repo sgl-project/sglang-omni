@@ -37,12 +37,12 @@ from collections.abc import Awaitable, Callable, Generator
 from contextlib import contextmanager, suppress
 from dataclasses import replace
 from types import FrameType
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 import httpx
 import uvicorn
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sglang.srt.utils.network import NetworkAddress
 
 from sglang_omni.client import Client
@@ -55,6 +55,7 @@ from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
 from sglang_omni.preprocessing.resource_connector import export_media_policy
 from sglang_omni.profiler.event_recorder import DEFAULT_FINALIZATION_TIMEOUT_SECONDS
 from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
+from sglang_omni.profiler.event_recorder_types import DEFAULT_MAX_EVENT_FILE_BYTES
 from sglang_omni.profiler.profiler_control import ProfilerControlClient
 from sglang_omni.proto.messages import StreamMessage
 from sglang_omni.serve.openai_api import ServerStatus, create_app
@@ -379,6 +380,35 @@ class StartRequestProfileReq(BaseModel):
     run_id: str | None = None
     event_dir: str | None = None
     event_buffer_capacity: int | None = Field(default=None, gt=0, strict=True)
+    mode: Literal["performance", "runtime"] = "performance"
+    sampling_unit: Literal["request", "session"] | None = None
+    sample_rate: float | None = Field(
+        default=None,
+        gt=0,
+        le=1,
+        allow_inf_nan=False,
+        strict=True,
+    )
+    max_event_file_bytes: int | None = Field(default=None, gt=0, strict=True)
+
+    @model_validator(mode="after")
+    def validate_runtime_configuration(self) -> StartRequestProfileReq:
+        if self.mode == "runtime":
+            if self.sampling_unit is None or self.sample_rate is None:
+                raise ValueError(
+                    "runtime mode requires sampling_unit and sample_rate"
+                )
+            else:
+                pass
+        elif (
+            self.sampling_unit is not None
+            or self.sample_rate is not None
+            or self.max_event_file_bytes is not None
+        ):
+            raise ValueError("runtime options require mode='runtime'")
+        else:
+            pass
+        return self
 
 
 def default_event_dir(profiler_dir: str, run_id: str) -> str:
@@ -483,11 +513,20 @@ def mount_profiler_routes(
         else:
             pass
         try:
+            max_event_file_bytes = req.max_event_file_bytes
+            if req.mode == "runtime" and max_event_file_bytes is None:
+                max_event_file_bytes = DEFAULT_MAX_EVENT_FILE_BYTES
+            else:
+                pass
             _get_event_recorder().start(
                 run_id=run_id,
                 event_dir=event_dir,
                 stage="coordinator",
                 event_buffer_capacity=req.event_buffer_capacity,
+                mode=req.mode,
+                sampling_unit=req.sampling_unit,
+                sample_rate=req.sample_rate,
+                max_event_file_bytes=max_event_file_bytes,
             )
         except RuntimeError as exc:
             logger.warning(
@@ -507,8 +546,27 @@ def mount_profiler_routes(
             event_dir=event_dir,
             enable_torch=False,
             event_buffer_capacity=req.event_buffer_capacity,
+            mode=req.mode,
+            sampling_unit=req.sampling_unit,
+            sample_rate=req.sample_rate,
+            max_event_file_bytes=max_event_file_bytes,
         )
-        return {"run_id": run_id, "event_dir": event_dir}
+        response: dict[str, str | float | int | None] = {
+            "run_id": run_id,
+            "event_dir": event_dir,
+        }
+        if req.mode == "runtime":
+            response.update(
+                {
+                    "mode": req.mode,
+                    "sampling_unit": req.sampling_unit,
+                    "sample_rate": req.sample_rate,
+                    "max_event_file_bytes": max_event_file_bytes,
+                }
+            )
+        else:
+            pass
+        return response
 
     @router.post("/stop_profile")
     async def stop(req: StopReq):

@@ -742,6 +742,19 @@ class Stage:
         else:
             pass
         self.record_replica_bindings(request_id, msg.replica_bindings)
+        payload = msg.data
+        recorder = _get_recorder()
+        if recorder.is_runtime_active():
+            request_metadata = (
+                payload.request.metadata if isinstance(payload, StagePayload) else None
+            )
+            recorder.record_request_admission(
+                request_id,
+                request_metadata,
+                stage_name=self.name,
+            )
+        else:
+            pass
         self.active_requests.add(request_id)
         if self.stream_queue is not None and not self.stream_queue.has(request_id):
             self.stream_queue.open(request_id)
@@ -754,7 +767,6 @@ class Stage:
             metadata={"from_stage": "coordinator", "kind": "submit"},
         )
 
-        payload = msg.data  # StagePayload from coordinator
         await self.execute(payload)
 
     async def on_data_ready(
@@ -875,6 +887,15 @@ class Stage:
     ) -> None:
         if request_id in self.aborted:
             return
+        else:
+            pass
+        recorder = _get_recorder()
+        if recorder.is_runtime_active():
+            recorder.record_request_admission(
+                request_id,
+                payload.request.metadata,
+                stage_name=self.name,
+            )
         else:
             pass
         self.active_requests.add(request_id)
@@ -2615,6 +2636,11 @@ class Stage:
         self.nonlocal_stream_targets.pop(request_id, None)
         if not keep_replica_bindings:
             self.replica_bindings.pop(request_id, None)
+            recorder = _get_recorder()
+            if recorder.is_runtime_active():
+                recorder.clear_request_sampling(request_id, stage_name=self.name)
+            else:
+                pass
         else:
             pass
 
@@ -2677,6 +2703,15 @@ class Stage:
     def on_abort(self, request_id: str) -> None:
         self.record_aborted_request_id(request_id)
         self.comm.cleanup(request_id)
+        recorder = _get_recorder()
+        if recorder.is_runtime_active():
+            recorder.clear_request_sampling(
+                request_id,
+                stage_name=self.name,
+                clear_session=True,
+            )
+        else:
+            pass
         self.clear_request_state(request_id)
         # note (Richard Wang): TP ranks run fanned-out work to completion, since a skip on one rank pairs different requests in one collective.
         if self.role == "single" or not getattr(
@@ -2688,7 +2723,11 @@ class Stage:
 
     def on_profiler_start(self, msg: ProfilerStartMessage) -> None:
         run_id = msg.run_id
-        if msg.enable_torch and not TorchProfiler.is_active():
+        if (
+            msg.enable_torch
+            and msg.mode != "runtime"
+            and not TorchProfiler.is_active()
+        ):
             base_tpl = msg.trace_path_template.format(run_id=run_id, stage=self.name)
             template = f"{base_tpl}_pid{os.getpid()}"
             prof_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")
@@ -2706,6 +2745,10 @@ class Stage:
                     event_dir=msg.event_dir,
                     stage=self.name,
                     event_buffer_capacity=msg.event_buffer_capacity,
+                    mode=msg.mode,
+                    sampling_unit=msg.sampling_unit,
+                    sample_rate=msg.sample_rate,
+                    max_event_file_bytes=msg.max_event_file_bytes,
                 )
             except Exception:
                 logger.warning(

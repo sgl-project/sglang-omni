@@ -35,7 +35,7 @@ Every instrumentation point records one logical event. After the run is deactiva
 
 Files are written under `<event_dir>/events_<stage>_<pid>.jsonl`. Multiple co-located stages in the same OS process share **one** JSONL file — the filename uses the first stage to start, and the per-event `stage` field identifies the owner. The views layer merges files from every process by `request_id`. The writer creates each JSONL file exclusively; an existing file is a storage failure rather than an append target.
 
-The recorder uses one bounded producer-private buffer per OS thread and one low-priority writer thread per process, created only after the run stops. Each producer can retain 1024 events by default. `event_buffer_capacity` overrides that per-producer limit for one recording; any positive integer is accepted, with no hard-coded maximum. The number of producer buffers remains separately bounded at 16 per process. An omitted value uses the recorder's constructor default on each new run, and capacity cannot change during an active run. Buffers grow dynamically as events are retained; event objects are not preallocated.
+Performance mode uses one bounded producer-private list buffer per OS thread and starts its one low-priority writer thread per process only after the run stops. Runtime mode uses producer-private deques and starts the same process-local writer when profiling starts; that writer polls and drains a bounded number of records per round while serving continues. In both modes, each producer can retain 1024 events by default. `event_buffer_capacity` overrides that per-producer limit for one recording; any positive integer is accepted, with no hard-coded maximum. The number of producer buffers remains separately bounded at 16 per process. An omitted value uses the recorder's constructor default on each new run, and capacity cannot change during an active run. Buffers grow dynamically as events are retained; event objects are not preallocated.
 
 To estimate memory, multiply the per-recording event capacity by each process's producer-buffer count and sum the results:
 
@@ -46,11 +46,45 @@ approximate_memory = retained_events * estimated_bytes_per_event
 
 Bytes per event depends on the workload and Python object contents; measure it when accurate memory budgeting matters. A larger capacity can increase post-stop serialization and flush time. Overflow still drops events and marks the trace incomplete. Linux `SCHED_IDLE` is best effort and cannot guarantee zero Python GIL or CPU interference.
 
-Each OS thread registers its buffer once under a small control lock. Cached producers then capture timestamps, stage attribution, and bounded metadata without acquiring that lock. Buffer admission is the stop cutoff: the post-stop writer waits for admitted operations, while a capture that has not reserved a buffer before stop is ignored and does not consume its snapshots. `RequestEventBuffer` uses the same producer buffer: deferred records count against the same event limit and are snapshotted once. During capture, producers do not start a writer, open files, serialize JSON, flush, or enqueue into a shared queue. JSON serialization, file operations, and flushes run only after deactivation.
+Each OS thread registers its buffer once under a small control lock. Cached producers then capture timestamps, stage attribution, and bounded metadata without acquiring that lock. Buffer admission is the stop cutoff: the writer waits asynchronously for admitted operations, while a capture that has not reserved a buffer before stop is ignored and does not consume its snapshots. `RequestEventBuffer` uses the same producer buffer: deferred records count against the same event limit and are snapshotted once. In both modes, producers do not start writers, open files, serialize JSON, flush, or enqueue into a shared queue. Performance mode performs JSON serialization, file operations, and flushes only after deactivation; Runtime mode performs them on its separate writer while profiling is active.
 
-Events do not exist on disk until the run has stopped. Consumers must treat a missing sidecar, or a sidecar with `complete: false`, as incomplete.
+Performance-mode events do not exist on disk until the run has stopped; Runtime mode writes its JSONL file while active. Consumers must treat a missing sidecar, or a sidecar with `complete: false`, as incomplete.
 
-Each finalized run also attempts to write `run_status_<pid>.json` beside the JSONL file. When publication succeeds, it records `run_id`, `pid`, `stages`, the effective `event_buffer_capacity`, `producer_buffer_count`, and `producer_buffer_event_counts` (accepted plus dropped records per registered buffer), followed by event counters, metadata snapshot and truncation counts, serialization/write/finalization failures, `incomplete_reasons`, and `complete`; that flag has `completeness_scope` set to `event_storage` and does not claim semantic timing or cross-process coverage. The sidecar also records whether the writer obtained `SCHED_IDLE` or used the default scheduling policy. `RequestEventFinalization.wait()` reports whether the status sidecar was published; inspect `complete` separately to determine whether the trace is complete. Producer-buffer overflow, writer failure, metadata snapshot failure, metadata truncation, and a missing or failed drain mark the run incomplete. Consumers must not treat a missing sidecar, or a sidecar with `complete: false`, as a complete trace.
+Each finalized run also attempts to write `run_status_<pid>.json` beside the JSONL file. When publication succeeds, it records `run_id`, `pid`, `stages`, the effective `event_buffer_capacity`, `producer_buffer_count`, and `producer_buffer_event_counts` (accepted plus dropped records per registered buffer), followed by event counters, metadata snapshot and truncation counts, serialization/write/finalization failures, `incomplete_reasons`, and `complete`; Performance mode uses `completeness_scope: "event_storage"`, while Runtime mode uses `completeness_scope: "sampled_event_storage"`. Neither scope claims semantic timing or cross-process coverage. Runtime status also records the sampling unit, sample rate, and per-process event-file byte limit and bytes written. The sidecar records whether the writer obtained `SCHED_IDLE` or used the default scheduling policy. `RequestEventFinalization.wait()` reports whether the status sidecar was published; inspect `complete` separately to determine whether the trace is complete. Producer-buffer overflow, writer failure, metadata snapshot failure, metadata truncation, a missing or failed drain, and Runtime file-size exhaustion mark the run incomplete. Consumers must not treat a missing sidecar, or a sidecar with `complete: false`, as a complete trace.
+
+## Performance and Runtime profiles
+
+`POST /start_request_profile` defaults to Performance mode and preserves the existing post-stop writer behavior. Runtime mode is opt-in, starts its process-local writer with the run, and requires both `sampling_unit` and `sample_rate`; configuration cannot change until that run is finalized. Runtime mode does not enable Torch profiling, and `/stop_request_profile` stops either mode.
+
+Request sampling hashes `request_id`; session sampling hashes `(session_id, session_open_index)`, so independent coordinator, Stage, and TP processes make the same decision for a given run. The run ID is part of the stable BLAKE2b sampling key. Session sampling keeps every operation and audio Unit for a selected session eligible, including a `session_unit_ready` event recorded before its operation is submitted. Intentionally unsampled requests are not counted as drops.
+
+Start a 1% request-sampled profile with a 1024-event per-producer limit and the default 256 MiB per-process event-file limit:
+
+```bash
+curl -X POST http://127.0.0.1:8000/start_request_profile \
+  -H 'Content-Type: application/json' \
+  -d '{"run_id":"runtime_request_1pct","event_dir":"/tmp/runtime_request_1pct/events","mode":"runtime","sampling_unit":"request","sample_rate":0.01,"event_buffer_capacity":1024}'
+curl -X POST http://127.0.0.1:8000/stop_request_profile \
+  -H 'Content-Type: application/json' \
+  -d '{"run_id":"runtime_request_1pct"}'
+```
+
+Use `sampling_unit: "session"` to sample whole sessions, and set `max_event_file_bytes` to override the default per-process disk budget:
+
+```bash
+curl -X POST http://127.0.0.1:8000/start_request_profile \
+  -H 'Content-Type: application/json' \
+  -d '{"run_id":"runtime_session_1pct","event_dir":"/tmp/runtime_session_1pct/events","mode":"runtime","sampling_unit":"session","sample_rate":0.01,"event_buffer_capacity":1024,"max_event_file_bytes":268435456}'
+curl -X POST http://127.0.0.1:8000/stop_request_profile \
+  -H 'Content-Type: application/json' \
+  -d '{"run_id":"runtime_session_1pct"}'
+```
+
+The memory ceiling is at most `16 × event_buffer_capacity` retained records per process, including deferred records; actual memory depends on Python object overhead and bounded metadata size. A larger capacity increases possible memory use. Runtime mode writes at most `max_event_file_bytes` of serialized JSONL per process and never splits a record; the default is 256 MiB. Each process produces one JSONL file and one status file, so the aggregate event-file ceiling is the per-process limit multiplied by the number of profiling processes. Use a fresh, empty event directory for each run.
+
+Sampling controls which requests or sessions are intentionally recorded. Overflow and persistence failures concern selected events: selected records rejected at producer capacity increment `dropped_events`, and accepted records that cannot be written increment `unwritten_events`. Reaching the Runtime file-size limit stops further writes and adds `file_size_limit_reached`; it does not rotate or delete files. `complete: true` means sampled-event storage completed according to that process's counters. It does not mean every request was sampled, establish end-to-end completeness across TP ranks, or cover requests crossing profile start/stop boundaries.
+
+The writer requests Linux `SCHED_IDLE` as a best effort. That scheduling policy does not eliminate Python GIL contention or guarantee zero CPU interference. Each OS process owns its own recorder, writer, JSONL file, buffer budget, and disk limit. Colocated stages in one process share them; coordinator and TP-rank processes each have their own. Multiple MPS clients likewise create separate process-local writers and files. Deterministic sampling aligns their selected request/session identities but does not prove that every process emitted or persisted every event.
 
 Metadata is intentionally limited to scalars, JSON-like mappings/sequences, and tensor-like values represented by shape/dtype/device summaries. Tensor contents are never materialized by the producer. Unsupported values are rejected without calling arbitrary `repr`; the serving path records a metadata snapshot failure and continues. Strings are bounded, and bytes are unsupported rather than copied into the trace. Bounded depth/item truncation is recorded in the event metadata and in the status sidecar rather than reported as complete.
 

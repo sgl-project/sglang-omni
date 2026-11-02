@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Control plane messages."""
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal, TypeAlias, TypedDict
@@ -451,9 +452,13 @@ class ProfilerStartMessage:
     event_dir: str | None = None  # Per-stage JSONL event sink dir for request profiling
     enable_torch: bool = True  # When False, only request-level events are captured
     event_buffer_capacity: int | None = None
+    mode: Literal["performance", "runtime"] = "performance"
+    sampling_unit: Literal["request", "session"] | None = None
+    sample_rate: float | None = None
+    max_event_file_bytes: int | None = None
 
-    def to_dict(self) -> dict[str, str | bool | int | None]:
-        message: dict[str, str | bool | int | None] = {
+    def to_dict(self) -> dict[str, str | bool | int | float | None]:
+        message: dict[str, str | bool | int | float | None] = {
             "type": "profiler_start",
             "run_id": self.run_id,
             "trace_path_template": self.trace_path_template,
@@ -462,6 +467,13 @@ class ProfilerStartMessage:
         }
         if self.event_buffer_capacity is not None:
             message["event_buffer_capacity"] = self.event_buffer_capacity
+        else:
+            pass
+        if self.mode == "runtime":
+            message["mode"] = self.mode
+            message["sampling_unit"] = self.sampling_unit
+            message["sample_rate"] = self.sample_rate
+            message["max_event_file_bytes"] = self.max_event_file_bytes
         else:
             pass
         return message
@@ -475,12 +487,61 @@ class ProfilerStartMessage:
             raise TypeError("event_buffer_capacity must be a positive integer")
         else:
             pass
+        mode = d.get("mode", "performance")
+        if mode not in ("performance", "runtime"):
+            raise TypeError("mode must be 'performance' or 'runtime'")
+        else:
+            pass
+        sampling_unit = d.get("sampling_unit")
+        if sampling_unit is not None and sampling_unit not in ("request", "session"):
+            raise TypeError("sampling_unit must be 'request' or 'session'")
+        else:
+            pass
+        raw_sample_rate = d.get("sample_rate")
+        if raw_sample_rate is not None and (
+            type(raw_sample_rate) not in (int, float)
+            or not math.isfinite(raw_sample_rate)
+            or not 0 < raw_sample_rate <= 1
+        ):
+            raise TypeError(
+                "sample_rate must be finite and satisfy 0 < sample_rate <= 1"
+            )
+        else:
+            pass
+        max_event_file_bytes = d.get("max_event_file_bytes")
+        if max_event_file_bytes is not None and (
+            type(max_event_file_bytes) is not int or max_event_file_bytes <= 0
+        ):
+            raise TypeError("max_event_file_bytes must be a positive integer")
+        else:
+            pass
+        if mode == "runtime":
+            if sampling_unit is None or raw_sample_rate is None:
+                raise TypeError("runtime mode requires sampling_unit and sample_rate")
+            elif bool(d.get("enable_torch", True)):
+                raise TypeError("runtime mode cannot enable torch profiling")
+            else:
+                pass
+        elif (
+            sampling_unit is not None
+            or raw_sample_rate is not None
+            or max_event_file_bytes is not None
+        ):
+            raise TypeError("runtime sampling and file limits require runtime mode")
+        else:
+            pass
         return cls(
             run_id=d["run_id"],
             trace_path_template=d["trace_path_template"],
             event_dir=d.get("event_dir"),
             enable_torch=bool(d.get("enable_torch", True)),
             event_buffer_capacity=event_buffer_capacity,
+            mode=mode,
+            sampling_unit=sampling_unit,
+            sample_rate=(
+                float(raw_sample_rate) if raw_sample_rate is not None else None
+            ),
+            max_event_file_bytes=max_event_file_bytes,
         )
 
 
