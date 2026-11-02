@@ -691,11 +691,15 @@ class RequestEventRecorder:
                         run_state.stop_requested.wait()
                     else:
                         file_handle = self.open_event_file(run_state)
-                        while not run_state.stop_requested.is_set():
-                            self.drain_runtime_buffers(run_state, file_handle)
-                            run_state.stop_requested.wait(
-                                RUNTIME_WRITER_POLL_INTERVAL_SECONDS
-                            )
+                        if file_handle is None:
+                            run_state.writer_failed = True
+                            run_state.stop_requested.wait()
+                        else:
+                            while not run_state.stop_requested.is_set():
+                                self.drain_runtime_buffers(run_state, file_handle)
+                                run_state.stop_requested.wait(
+                                    RUNTIME_WRITER_POLL_INTERVAL_SECONDS
+                                )
                 except Exception:
                     run_state.writer_failed = True
                     run_state.finalization_failures += 1

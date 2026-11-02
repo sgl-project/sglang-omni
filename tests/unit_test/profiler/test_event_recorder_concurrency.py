@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import ItemsView
 from io import TextIOWrapper
 from pathlib import Path
@@ -856,7 +857,7 @@ def test_runtime_priority_failure_disables_capture_and_finalizes_incomplete(
     recorder = RequestEventRecorder(queue_capacity=8)
     scheduling_started = threading.Event()
     release_scheduling = threading.Event()
-    scheduling_failed = threading.Event()
+    scheduling_outcome_set = threading.Event()
     open_calls = 0
     original_open_event_file = recorder.open_event_file
 
@@ -865,8 +866,7 @@ def test_runtime_priority_failure_disables_capture_and_finalizes_incomplete(
         if not release_scheduling.wait(timeout=5):
             raise AssertionError("test did not release scheduling setup")
         run_state.writer_scheduling = "default"
-        run_state.writer_failed = True
-        scheduling_failed.set()
+        scheduling_outcome_set.set()
 
     def track_open_event_file(
         run_state: RecorderRunState,
@@ -892,15 +892,20 @@ def test_runtime_priority_failure_disables_capture_and_finalizes_incomplete(
         event_name="event",
     )
     release_scheduling.set()
-    assert scheduling_failed.wait(timeout=5)
+    assert scheduling_outcome_set.wait(timeout=5)
+    run_state = recorder.active_state
+    assert run_state is not None
+    writer_failure_deadline = time.monotonic() + 5
+    while not run_state.writer_failed and time.monotonic() < writer_failure_deadline:
+        threading.Event().wait(timeout=0.001)
+    assert run_state.writer_failed is True
     recorder.record_request_admission("after-failure", {}, stage_name="stage")
     recorder.emit(
         request_id="after-failure",
         stage="stage",
         event_name="event",
     )
-    assert recorder.active_state is not None
-    assert "after-failure" not in recorder.active_state.request_sampling_decisions
+    assert "after-failure" not in run_state.request_sampling_decisions
     assert recorder.stop(wait=False) == path
     assert recorder.wait_for_finalizations(timeout_seconds=5) is True
 
@@ -912,6 +917,89 @@ def test_runtime_priority_failure_disables_capture_and_finalizes_incomplete(
     assert status["unwritten_events"] == 1
     assert status["complete"] is False
     assert "writer_priority_unavailable" in status["incomplete_reasons"]
+
+
+def test_runtime_event_file_open_failure_disables_capture_and_finalizes_incomplete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = RequestEventRecorder(queue_capacity=8)
+    scheduling_started = threading.Event()
+    release_scheduling = threading.Event()
+    open_attempted = threading.Event()
+    drain_calls = 0
+    original_open_event_file = recorder.open_event_file
+    original_drain_runtime_buffers = recorder.drain_runtime_buffers
+
+    def pause_scheduling(run_state: RecorderRunState) -> None:
+        scheduling_started.set()
+        if not release_scheduling.wait(timeout=5):
+            raise AssertionError("test did not release scheduling setup")
+        run_state.writer_scheduling = "SCHED_IDLE"
+
+    def fail_event_file_open(
+        run_state: RecorderRunState,
+    ) -> TextIOWrapper | None:
+        run_state.path.touch()
+        open_attempted.set()
+        return original_open_event_file(run_state)
+
+    def count_runtime_drains(
+        run_state: RecorderRunState,
+        file_handle: TextIOWrapper | None,
+    ) -> int:
+        nonlocal drain_calls
+        drain_calls += 1
+        return original_drain_runtime_buffers(run_state, file_handle)
+
+    monkeypatch.setattr(recorder, "set_writer_scheduling", pause_scheduling)
+    monkeypatch.setattr(recorder, "open_event_file", fail_event_file_open)
+    monkeypatch.setattr(recorder, "drain_runtime_buffers", count_runtime_drains)
+    path = recorder.start(
+        "event-file-open-failure",
+        str(tmp_path),
+        "stage",
+        mode="runtime",
+        sampling_unit="request",
+        sample_rate=1.0,
+    )
+    assert scheduling_started.wait(timeout=5)
+    recorder.emit(
+        request_id="before-failure",
+        stage="stage",
+        event_name="event",
+    )
+    release_scheduling.set()
+    assert open_attempted.wait(timeout=5)
+    run_state = recorder.active_state
+    assert run_state is not None
+    writer_failure_deadline = time.monotonic() + 5
+    while not run_state.writer_failed and time.monotonic() < writer_failure_deadline:
+        threading.Event().wait(timeout=0.001)
+    assert run_state.writer_failed is True
+    assert run_state.event_file_open_failures == 1
+    assert drain_calls == 0
+
+    recorder.record_request_admission("after-failure", {}, stage_name="stage")
+    recorder.emit(
+        request_id="after-failure",
+        stage="stage",
+        event_name="event",
+    )
+    assert "after-failure" not in run_state.request_sampling_decisions
+    assert sum(buffer.accepted_events for buffer in run_state.producer_buffers) == 1
+    assert recorder.stop(wait=False) == path
+    assert recorder.wait_for_finalizations(timeout_seconds=5) is True
+
+    status = read_status(path)
+    assert Path(path).read_text(encoding="utf-8") == ""
+    assert status["event_file_open_failures"] == 1
+    assert status["accepted_events"] == 1
+    assert status["processed_events"] == 1
+    assert status["written_events"] == 0
+    assert status["unwritten_events"] == 1
+    assert status["complete"] is False
+    assert "event_file_open_failure" in status["incomplete_reasons"]
 
 
 def test_runtime_deferred_sampling_and_colocated_cleanup(

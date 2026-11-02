@@ -1567,8 +1567,17 @@ def test_local_pre_payload_stream_uses_transported_session_identity(
                 event_name="after_cleanup",
             )
 
+        assert all(
+            recorder.active_state is not None
+            and recorder.active_state.request_sampling_decisions == {}
+            and recorder.active_state.request_session_identities == {}
+            for recorder in recorder_by_stage.values()
+        )
         for recorder in recorder_by_stage.values():
             recorder.stop(wait=True)
+        assert all(
+            recorder.active_state is None for recorder in recorder_by_stage.values()
+        )
 
         def read_event_file(path: str) -> list[dict[str, object]]:
             with open(path, encoding="utf-8") as event_file:
@@ -1601,12 +1610,6 @@ def test_local_pre_payload_stream_uses_transported_session_identity(
             event["event_name"] != "after_cleanup"
             for events in events_by_stage.values()
             for event in events
-        )
-        assert all(
-            recorder.active_state is not None
-            and recorder.active_state.request_sampling_decisions == {}
-            and recorder.active_state.request_session_identities == {}
-            for recorder in recorder_by_stage.values()
         )
         statuses = [read_status(path) for path in event_paths.values()]
         assert all(
