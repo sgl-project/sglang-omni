@@ -442,6 +442,10 @@ class Qwen3OmniMoeThinkerTextSparseMoeBlock(nn.Module):
             prefix=add_prefix("experts", prefix),
             routing_method_type=RoutingMethodType.Renormalize,
         )
+        self.topk.bind_runner_backend(
+            self.experts.runner_backend,
+            routing_method_type=self.experts.routing_method_type,
+        )
 
         self.gate = ReplicatedLinear(
             config.hidden_size,
