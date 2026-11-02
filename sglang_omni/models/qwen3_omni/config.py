@@ -153,11 +153,9 @@ def aggregate_stage(*, process: str, gpu: int) -> StageConfig:
 
 
 def thinker_stage(*, gpu: int, speech_enabled: bool, process: str) -> StageConfig:
-    # note (jiaxin deng): async decode defaults on;
-    # --thinker.factory.enable_async_decode false overrides it.
-    factory_group = FactoryArgs(enable_async_decode=True)
+    factory_group = FactoryArgs()
     if speech_enabled:
-        factory_group = FactoryArgs(enable_async_decode=True, speech_enabled=True)
+        factory_group = FactoryArgs(speech_enabled=True)
     else:
         pass
     join_kwargs: dict = {}

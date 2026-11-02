@@ -25,7 +25,6 @@ constexpr int kInitialChunkFrames = 5;
 constexpr int kChunkFrames = 25;
 constexpr int kLeftContextFrames = 25;
 constexpr int kFadeInMilliseconds = 10;
-constexpr float kPcm16FullScale = 32767.0f;
 
 std::vector<int> ParseIntegers(const std::string &text) {
   std::vector<int> values;
@@ -333,44 +332,6 @@ std::vector<float> CodecStream::DecodeWindow() {
   emitted_frames_ = total_frames;
   return std::vector<float>(audio.data<float>(),
                             audio.data<float>() + audio.size());
-}
-
-std::string Pcm16Bytes(const std::vector<float> &samples) {
-  std::string bytes;
-  bytes.reserve(samples.size() * 2);
-  for (const float sample : samples) {
-    // Note (Minyi Tang): NaN becomes silence, since std::clamp passes it
-    // through and casting NaN to an integer is undefined.
-    const float bounded =
-        std::isnan(sample) ? 0.0f : std::clamp(sample, -1.0f, 1.0f);
-    const auto value = static_cast<int16_t>(bounded * kPcm16FullScale);
-    bytes.push_back(static_cast<char>(value & 0xff));
-    bytes.push_back(static_cast<char>((value >> 8) & 0xff));
-  }
-  return bytes;
-}
-
-std::string WavBytes(const std::string &pcm, int sample_rate) {
-  std::string bytes;
-  const auto append = [&](uint32_t value, int size) {
-    for (int index = 0; index < size; ++index) {
-      bytes.push_back(static_cast<char>((value >> (8 * index)) & 0xff));
-    }
-  };
-  const auto data_size = static_cast<uint32_t>(pcm.size());
-  bytes += "RIFF";
-  append(36 + data_size, 4);
-  bytes += "WAVEfmt ";
-  append(16, 4);              // fmt chunk size
-  append(1, 2);               // PCM
-  append(1, 2);               // mono
-  append(sample_rate, 4);     // samples per second
-  append(sample_rate * 2, 4); // bytes per second
-  append(2, 2);               // bytes per sample frame
-  append(16, 2);              // bits per sample
-  bytes += "data";
-  append(data_size, 4);
-  return bytes + pcm;
 }
 
 } // namespace voxtral_tts

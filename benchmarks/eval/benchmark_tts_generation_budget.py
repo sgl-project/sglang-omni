@@ -196,11 +196,15 @@ async def synthesize_probe(
         result.errors.append("No decodable audio")
     else:
         pass
+    # note (ratish): only a limit the request sets is known here; the server default is per task, the text budget on Base and the checkpoint's limit on CustomVoice and VoiceDesign.
     if result.completion_frames is None:
         result.errors.append("Missing completion frame count")
-    elif result.completion_frames > DEFAULT_MAX_NEW_TOKENS:
+    elif (
+        result.request.max_new_tokens is not None
+        and result.completion_frames > result.request.max_new_tokens
+    ):
         result.errors.append(
-            f"Generation exceeded the {DEFAULT_MAX_NEW_TOKENS}-frame limit"
+            f"Generation exceeded the request's {result.request.max_new_tokens}-frame limit"
         )
     else:
         pass
