@@ -522,6 +522,8 @@ def create_vocoder_executor(
         tokenizer,
         device=device,
         tts_model_size=tts_model_size,
+        # note (ratish): every 1.7B checkpoint shares this decoder, and 0.6B keeps its exact shapes.
+        whole_requests_on_codec_state=configured_model_size == "1b7",
         stream_stride=stream_stride,
         stream_followup_stride=stream_followup_stride,
         stream_initial_followup_stride=stream_initial_followup_stride,

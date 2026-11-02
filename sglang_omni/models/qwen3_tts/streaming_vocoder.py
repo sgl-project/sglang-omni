@@ -619,6 +619,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         *,
         device: str,
         tts_model_size: Literal["0b6", "1b7"] | None = None,
+        whole_requests_on_codec_state: bool = False,
         stream_stride: int = DEFAULT_QWEN3_TTS_STREAM_STRIDE,
         stream_followup_stride: int = DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE,
         stream_initial_followup_stride: int | None = None,
@@ -890,7 +891,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             and self.whole_request_widths
             and self.device.type == "cuda"
             and num_quantizers > 0
-            and tts_model_size == "1b7"
+            and whole_requests_on_codec_state
         )
         full_decode_graphs_enabled = bool(
             initial_cuda_graph
