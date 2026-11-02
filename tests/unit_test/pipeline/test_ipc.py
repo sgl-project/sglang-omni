@@ -6,7 +6,7 @@ import asyncio
 import gc
 import signal
 import weakref
-from collections.abc import Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from pathlib import Path
 from traceback import format_exception
 from types import FrameType, SimpleNamespace
@@ -39,6 +39,7 @@ from sglang_omni.serve.protocol import (
     ChatMessage,
     CreateSpeechRequest,
 )
+from sglang_omni.serve.realtime.types import ProtocolError
 from sglang_omni.serve.server_warmup import (
     TranscriptionWarmupRequest,
     warmup_tone_wav_bytes,
@@ -926,6 +927,7 @@ async def test_launcher_sends_one_warmup_request_per_replica_of_the_most_replica
         base_url: str,
         requests: list[ChatCompletionRequest],
         timeout_s: float,
+        realtime_warmup: Callable[[float], Awaitable[None]] | None,
     ) -> Coroutine[None, None, None]:
         warmup_requests.append(requests)
         return asyncio.sleep(0)
@@ -968,6 +970,7 @@ async def test_launcher_warms_up_through_the_bind_host_or_loopback_for_a_wildcar
         base_url: str,
         requests: list[ChatCompletionRequest],
         timeout_s: float,
+        realtime_warmup: Callable[[float], Awaitable[None]] | None,
     ) -> Coroutine[None, None, None]:
         warmup_base_urls.append(base_url)
         return asyncio.sleep(0)
@@ -1001,6 +1004,100 @@ async def test_failed_warmup_stops_the_server_before_it_reports_up(
             base_url="http://127.0.0.1:8000",
             requests=[request],
             timeout_s=5,
+        )
+
+    assert app.state.server_status is ServerStatus.STARTING
+    assert server.should_exit is True
+
+
+@pytest.mark.asyncio
+async def test_realtime_warmup_runs_before_the_server_reports_up() -> None:
+    server = make_started_server()
+    app = FastAPI()
+    app.state.server_status = ServerStatus.STARTING
+    warmup_calls: list[tuple[ServerStatus, float]] = []
+
+    async def warm_up_realtime(timeout_s: float) -> None:
+        warmup_calls.append((app.state.server_status, timeout_s))
+
+    await launcher.warm_up_server(
+        server,
+        app,
+        StubCoordinator(),
+        base_url="http://127.0.0.1:8000",
+        requests=[],
+        timeout_s=5,
+        realtime_warmup=warm_up_realtime,
+    )
+
+    assert warmup_calls == [(ServerStatus.STARTING, 5)]
+    assert app.state.server_status is ServerStatus.UP
+
+
+@pytest.mark.asyncio
+async def test_cancelled_server_warmup_cancels_the_realtime_warmup() -> None:
+    server = make_started_server()
+    app = FastAPI()
+    app.state.server_status = ServerStatus.STARTING
+    started = asyncio.Event()
+    cancelled: list[bool] = []
+
+    async def warm_up_realtime(timeout_s: float) -> None:
+        started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+
+    warmup = asyncio.create_task(
+        launcher.warm_up_server(
+            server,
+            app,
+            StubCoordinator(),
+            base_url="http://127.0.0.1:8000",
+            requests=[],
+            timeout_s=30,
+            realtime_warmup=warm_up_realtime,
+        )
+    )
+    await started.wait()
+
+    warmup.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await warmup
+
+    assert cancelled == [True]
+    assert app.state.server_status is ServerStatus.STARTING
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError("warmup session failed"),
+        ProtocolError("admission_rejected", "warmup session refused"),
+    ],
+)
+async def test_failed_realtime_warmup_stops_the_server_before_it_reports_up(
+    error: Exception,
+) -> None:
+    server = make_started_server()
+    app = FastAPI()
+    app.state.server_status = ServerStatus.STARTING
+
+    async def warm_up_realtime(timeout_s: float) -> None:
+        raise error
+
+    with pytest.raises(type(error), match=str(error)):
+        await launcher.warm_up_server(
+            server,
+            app,
+            StubCoordinator(),
+            base_url="http://127.0.0.1:8000",
+            requests=[],
+            timeout_s=5,
+            realtime_warmup=warm_up_realtime,
         )
 
     assert app.state.server_status is ServerStatus.STARTING

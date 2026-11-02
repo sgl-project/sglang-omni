@@ -33,7 +33,7 @@ import signal
 import socket
 import threading
 import time
-from collections.abc import Callable, Generator
+from collections.abc import Awaitable, Callable, Generator
 from contextlib import contextmanager, suppress
 from dataclasses import replace
 from types import FrameType
@@ -63,7 +63,7 @@ from sglang_omni.serve.protocol import (
     CreateSpeechRequest,
 )
 from sglang_omni.serve.realtime.manager import RealtimeDeployment
-from sglang_omni.serve.realtime.types import RuntimeLimits
+from sglang_omni.serve.realtime.types import ProtocolError, RuntimeLimits
 from sglang_omni.serve.server_warmup import TranscriptionWarmupRequest
 from sglang_omni.serve.services import ServiceProcesses
 from sglang_omni.serve.stage_routes import (
@@ -588,17 +588,19 @@ async def warm_up_server(
         ChatCompletionRequest | CreateSpeechRequest | TranscriptionWarmupRequest
     ],
     timeout_s: float,
+    realtime_warmup: Callable[[float], Awaitable[None]] | None = None,
 ) -> None:
     """Mark the server up once its warmup requests have crossed every stage.
 
     A fresh process builds kernels on its first request; this keeps that cost
-    off user requests. Every process then freezes the heap warmup built. A failed
-    warmup stops the server and raises; a shutdown that starts first drops the
-    request in flight and leaves the server down.
+    off user requests. The realtime deployment's warmup, when it has one, runs
+    after the requests. Every process then freezes the heap warmup built. A
+    failed warmup stops the server and raises; a shutdown that starts first
+    drops the work in flight and leaves the server down.
     """
     while not server.started:
         await asyncio.sleep(SERVER_START_POLL_S)
-    if not requests:
+    if not requests and realtime_warmup is None:
         app.state.server_status = ServerStatus.UP
         await freeze_serving_gc(server, coordinator)
         return
@@ -609,7 +611,28 @@ async def warm_up_server(
         is_warmed_up = await send_warmup_requests(
             server, base_url=base_url, requests=requests, timeout_s=timeout_s
         )
-    except (httpx.HTTPError, RuntimeError) as exc:
+        if is_warmed_up and realtime_warmup is not None:
+            warmup_task = asyncio.create_task(
+                asyncio.wait_for(realtime_warmup(timeout_s), timeout_s)
+            )
+            try:
+                while not warmup_task.done() and not server.should_exit:
+                    await asyncio.wait({warmup_task}, timeout=SERVER_START_POLL_S)
+                if warmup_task.done():
+                    warmup_task.result()
+                else:
+                    is_warmed_up = False
+            finally:
+                # note (Junnan Li): run_server cancels this coroutine on shutdown, and the warmup session must not outlive the pipeline.
+                if not warmup_task.done():
+                    warmup_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await warmup_task
+                else:
+                    pass
+        else:
+            pass
+    except (httpx.HTTPError, ProtocolError, RuntimeError, TimeoutError) as exc:
         logger.error(f"Server warmup failed, stopping the server: {exc!r}")
         server.should_exit = True
         raise
@@ -623,8 +646,9 @@ async def warm_up_server(
     gc.collect()
     app.state.server_status = ServerStatus.UP
     await freeze_serving_gc(server, coordinator)
+    realtime_note = "" if realtime_warmup is None else " and a realtime session"
     logger.info(
-        f"Server warmup of {len(requests)} request(s) finished in "
+        f"Server warmup of {len(requests)} request(s){realtime_note} finished in "
         f"{time.perf_counter() - start:.1f} s; the server is ready"
     )
 
@@ -819,6 +843,11 @@ async def run_server(
                     timeout_s=float(
                         os.environ.get("SGLANG_OMNI_WARMUP_TIMEOUT", "600")
                     ),
+                    realtime_warmup=(
+                        None
+                        if skip_server_warmup or realtime_deployment is None
+                        else realtime_deployment.warmup
+                    ),
                 )
             )
             try:
@@ -927,8 +956,8 @@ def launch_server(
         allowed_media_domains: Domains allowed for remote TTS reference audio.
         tts_batch_max_items: Maximum items accepted by
             ``/v1/audio/speech/batch``.
-        skip_server_warmup: Report ready without sending the pipeline's
-            warmup requests first.
+        skip_server_warmup: Report ready without running the pipeline's
+            warmup requests or its realtime deployment's warmup first.
     """
     apply_gpu_compat_env_defaults()
     sigterm_received = False

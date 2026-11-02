@@ -574,17 +574,17 @@ def test_frame_streamer_sends_the_first_window_by_frame_then_whole_windows() -> 
         for message in frame_streamer("request-a", request_data, request_output):
             sent.append((frame_index + 1, message))
 
-    first_window = [(frame_index, frame_index + 1) for frame_index in range(10)]
+    first_window = [(frame_index, frame_index + 1) for frame_index in range(4)]
     assert request_data.prompt_row_count == 3
     assert [frame_count for frame_count, _ in sent] == [
-        *range(2, 11),
-        20,
-        32,
-        64,
-        128,
+        *range(2, 5),
+        14,
+        26,
+        58,
+        122,
     ]
     for (start, end), (_, message) in zip(
-        [(0, 2), *first_window[2:], (10, 20), (20, 32), (32, 64), (64, 128)], sent
+        [(0, 2), *first_window[2:], (4, 14), (14, 26), (26, 58), (58, 122)], sent
     ):
         assert (message.request_id, message.type, message.target) == (
             "request-a",
@@ -604,16 +604,16 @@ def test_frame_streamer_sends_the_window_a_multi_frame_step_completes() -> None:
     frame_streamer = window_frame_streamer()
     request_output = RequestOutput(request_id="request-a")
     sent: list[list[list[int]]] = []
-    for frame_indices in (range(0, 9), range(9, 11), range(11, 20), range(20, 21)):
+    for frame_indices in (range(0, 3), range(3, 5), range(5, 14), range(14, 15)):
         request_data.frame_rows.extend(map(sampled_row, frame_indices))
         for message in frame_streamer("request-a", request_data, request_output):
             assert isinstance(message.data, torch.Tensor)
             sent.append(message.data.T.tolist())
 
     assert sent == [
-        [sampled_row(frame_index) for frame_index in range(0, 9)],
-        [sampled_row(9)],
-        [sampled_row(frame_index) for frame_index in range(10, 20)],
+        [sampled_row(frame_index) for frame_index in range(0, 3)],
+        [sampled_row(3)],
+        [sampled_row(frame_index) for frame_index in range(4, 14)],
     ]
 
 
@@ -622,20 +622,20 @@ def test_frame_streamer_leaves_an_eos_on_a_window_end_to_the_result() -> None:
     frame_streamer = window_frame_streamer()
     request_output = RequestOutput(request_id="request-a")
     sent: list[OutgoingMessage] = []
-    for frame_index in range(19):
+    for frame_index in range(13):
         request_data.frame_rows.append(sampled_row(frame_index))
         sent += frame_streamer("request-a", request_data, request_output)
     request_data.frame_rows.append([EOS_TOKEN_ID, 0, 0, 0, 0])
     eos_step_messages = frame_streamer("request-a", request_data, request_output)
 
-    assert len(sent) == 10
+    assert len(sent) == 4
     assert eos_step_messages == []
-    assert request_data.streamed_frame_count == 10
+    assert request_data.streamed_frame_count == 4
 
 
 def test_streamed_and_result_frames_stay_on_cpu_under_another_default_device() -> None:
     request_data = streaming_request()
-    request_data.frame_rows.extend(map(sampled_row, range(10)))
+    request_data.frame_rows.extend(map(sampled_row, range(4)))
     request_data.finish_reason = "length"
 
     with torch.device("meta"):
@@ -648,9 +648,7 @@ def test_streamed_and_result_frames_stay_on_cpu_under_another_default_device() -
     assert isinstance(result, Drama3GenerationResult)
     for frames in (message.data.T, result.frames):
         assert (frames.device.type, frames.dtype) == ("cpu", torch.int64)
-        assert frames.tolist() == [
-            sampled_row(frame_index) for frame_index in range(10)
-        ]
+        assert frames.tolist() == [sampled_row(frame_index) for frame_index in range(4)]
 
 
 def admitted_for_prefill(data: Drama3RequestData, start: int, end: int) -> None:
