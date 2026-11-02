@@ -62,6 +62,37 @@ def test_empty_update_grants_deployment_defaults() -> None:
     assert granted["rejections"] == []
 
 
+def test_natural_finish_is_granted_with_a_bounded_default() -> None:
+    """A native session that opts into natural finish gets an echoed mode and a bounded reply tail."""
+    negotiation = build_negotiation(Capabilities(supports_natural_finish=True))
+
+    config, granted = negotiation.negotiate(
+        {}, "CREATED", {"sglang": {"finish_mode": "natural"}}
+    )
+
+    assert config["sglang"] == {"finish_mode": "natural", "max_tail_units": 60}
+    assert granted["supports_natural_finish"] is True
+
+
+@pytest.mark.parametrize(
+    ("extension", "code"),
+    [
+        ({"finish_mode": "natural"}, "not_applicable"),
+        ({"finish_mode": "input_end", "max_tail_units": 2}, "invalid_request"),
+        ({"finish_mode": "natural", "max_tail_units": 0}, "invalid_request"),
+        ({"finish_mode": "natural", "max_tail_units": 121}, "invalid_request"),
+    ],
+)
+def test_natural_finish_requires_support_and_a_valid_cap(
+    extension: JsonObject, code: str
+) -> None:
+    """Unsupported natural finish and an unbounded or unused reply tail are rejected before opening a session."""
+    capabilities = Capabilities(supports_natural_finish="max_tail_units" in extension)
+    with pytest.raises(ProtocolError) as exc_info:
+        build_negotiation(capabilities).negotiate({}, "CREATED", {"sglang": extension})
+    assert exc_info.value.code == code
+
+
 def test_unsupported_modality_combination_is_narrowed_and_reported() -> None:
     negotiation = build_negotiation(Capabilities(output_modalities=("text", "audio")))
 

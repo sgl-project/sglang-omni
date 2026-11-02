@@ -3,6 +3,7 @@
 
 import asyncio
 import base64
+from dataclasses import replace
 from typing import Literal
 from unittest.mock import AsyncMock, Mock
 
@@ -22,7 +23,7 @@ from sglang_omni.models.minicpm_o.native_config import (
 from sglang_omni.models.minicpm_o.native_stages import PerceptionHooks, SpeechHooks
 from sglang_omni.models.minicpm_o.session_adapters import build_realtime_deployment
 from sglang_omni.proto.request import OmniRequest
-from sglang_omni.proto.session import SessionIdentity, TimedChunk
+from sglang_omni.proto.session import OutputChunk, SessionIdentity, TimedChunk
 from sglang_omni.proto.streams import CONTROL, INTERRUPT, SESSION_CONTROL, TRUNCATE
 from sglang_omni.serve.realtime.negotiation import SessionNegotiation
 from sglang_omni.serve.realtime.output import (
@@ -128,6 +129,41 @@ class VoiceCoordinator(FakeSessionClient):
         self.emit("voice", None, payload, input_seq=input_seq, turn=turn)
 
 
+class TailCoordinator(FakeSessionClient):
+    """Answers every append, with a model turn ending at the chosen unit."""
+
+    def __init__(self, end_on_unit: int | None) -> None:
+        super().__init__()
+        self.end_on_unit = end_on_unit
+
+    async def append_session(
+        self,
+        session_identity: SessionIdentity,
+        chunk: TimedChunk,
+        *,
+        ready_timestamp_ns: int | None = None,
+        ready_run_id: str | None = None,
+    ) -> int:
+        return await super().append_session(session_identity, chunk)
+
+    def answer(self, chunk: TimedChunk) -> None:
+        end_of_turn = chunk.seq == self.end_on_unit or chunk.eos
+        payload = voice(b"" if chunk.eos else HEARD_PCM, end_of_turn=end_of_turn)
+        self.outputs.put_nowait(
+            OutputChunk(
+                self.identity,
+                0,
+                chunk.seq,
+                "voice",
+                0,
+                0,
+                payload,
+                eos=chunk.eos,
+                turn=1,
+            )
+        )
+
+
 async def open_adapter(
     coordinator: VoiceCoordinator,
 ) -> tuple[InteractionAdapter, list[OutputEvent]]:
@@ -174,6 +210,56 @@ async def run_unit(
         pass
     coordinator.done(input_seq)
     await processing
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("end_on_unit", "expected_reason", "expected_unit_eos"),
+    [
+        (0, "stop", [False, True]),
+        (2, "stop", [False, False, False, True]),
+        (None, "max_output_tokens", [False, False, False, True]),
+    ],
+)
+async def test_natural_tail_generates_bounded_silence_then_ends_the_session_input(
+    end_on_unit: int | None, expected_reason: str, expected_unit_eos: list[bool]
+) -> None:
+    """After client input ends, the native model continues on server silence until its turn ends or the tail cap stops it."""
+    coordinator = TailCoordinator(end_on_unit)
+    adapter, events = await open_adapter(coordinator)
+    last_unit = replace(unit(0), eos=True)
+
+    await adapter.process(replace(last_unit, eos=False))
+    await adapter.finish_tail(last_unit, 2)
+    await adapter.close()
+
+    assert [chunk.eos for chunk in coordinator.appended] == expected_unit_eos
+    assert all(
+        chunk.payload == b"\0\0" * UNIT_SAMPLES for chunk in coordinator.appended[1:-1]
+    )
+    (finished,) = [event for event in events if isinstance(event, ResponseFinished)]
+    assert finished.reason == expected_reason
+    assert finished.status == (
+        "completed" if expected_reason == "stop" else "incomplete"
+    )
+
+
+@pytest.mark.asyncio
+async def test_natural_tail_starts_after_a_padded_final_input_unit() -> None:
+    """A partial client unit occupies a full native unit after padding, so silence starts at its end."""
+    coordinator = TailCoordinator(end_on_unit=1)
+    adapter, _ = await open_adapter(coordinator)
+    last_unit = replace(unit(0), real_samples=UNIT_SAMPLES // 2, eos=True)
+
+    await adapter.process(replace(last_unit, eos=False))
+    await adapter.finish_tail(last_unit, 2)
+    await adapter.close()
+
+    assert [chunk.t_start_ms for chunk in coordinator.appended] == [
+        0.0,
+        1000.0,
+        2000.0,
+    ]
 
 
 @pytest.mark.asyncio

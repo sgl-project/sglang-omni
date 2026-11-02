@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import logging
+from dataclasses import dataclass, field
 from typing import Literal
 
 import pytest
@@ -27,7 +28,7 @@ from sglang_omni.serve.realtime.output import (
     TurnFailure,
 )
 from sglang_omni.serve.realtime.schema import JsonObject, JsonValue
-from sglang_omni.serve.realtime.types import Capabilities, RuntimeLimits
+from sglang_omni.serve.realtime.types import Capabilities, RuntimeLimits, Unit
 from tests.unit_test.fixtures.realtime_fakes import (
     MODEL_NAME,
     HealthCoordinator,
@@ -50,6 +51,20 @@ AUDIO_REPLY: list[OutputEvent] = [
     TextFinished("resp", "item", "hi"),
     ResponseFinished("resp", "item", "hi", True, "completed", "turn_complete"),
 ]
+
+
+@dataclass(kw_only=True)
+class NaturalTailAdapter(ScriptedAdapter):
+    """A native adapter that completes its open reply after input has drained."""
+
+    tail_calls: list[tuple[Unit, int]] = field(default_factory=list)
+
+    async def finish_tail(self, last_unit: Unit, max_tail_units: int) -> None:
+        assert self.output_sink is not None
+        self.tail_calls.append((last_unit, max_tail_units))
+        await self.output_sink(
+            ResponseFinished("resp", "item", "partial", False, "completed", "stop")
+        )
 
 
 def text_reply(text: str, *, is_finished: bool) -> list[OutputEvent]:
@@ -254,6 +269,37 @@ def test_end_of_input_flushes_tail_and_reports_drained_media() -> None:
     ended = events_of_type(events, "sglang.input_audio.ended")[0]
     assert ended["tail_policy"] == "flush"
     assert drained_media(events[-1]) == (30.0, 30.0, 0.0, 0.0)
+
+
+def test_natural_finish_drains_client_audio_before_the_reply_finishes() -> None:
+    """Input end used to close a native reply; natural mode keeps the final real unit nonterminal and finishes after the input drain."""
+    adapter = NaturalTailAdapter(reply=text_reply("partial", is_finished=False))
+    capabilities = Capabilities(supports_natural_finish=True)
+    with build_test_client(adapter, capabilities=capabilities).websocket_connect(
+        "/v1/realtime"
+    ) as websocket:
+        assert websocket.receive_json()["type"] == "session.created"
+        send_event(
+            websocket,
+            "session.update",
+            session={"sglang": {"finish_mode": "natural", "max_tail_units": 2}},
+        )
+        updated = websocket.receive_json()
+        append_audio(websocket, b"\1" * UNIT_BYTES, 0)
+        receive_until(websocket, "sglang.unit.done")
+        send_event(websocket, "sglang.input_audio.end")
+        events = receive_until(websocket, "response.done")
+
+    assert updated["session"]["sglang"]["finish_mode"] == "natural"
+    assert updated["session"]["sglang"]["max_tail_units"] == 2
+    assert [event["type"] for event in events][-2:] == [
+        "sglang.input_audio.drained",
+        "response.done",
+    ]
+    assert events[-1]["response"]["status_details"] == {"reason": "stop"}
+    assert len(adapter.tail_calls) == 1
+    assert adapter.tail_calls[0][1] == 2
+    assert adapter.units[-1].eos is False
 
 
 def test_input_is_final_after_end() -> None:

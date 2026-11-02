@@ -125,6 +125,7 @@ class Capabilities:
     supports_truncate: bool = False
     supports_cancel: bool = False
     supports_client_commit: bool = False
+    supports_natural_finish: bool = False
     # note (Junnan Li): Frame cap per unit, indexed by the session's max_slice_nums minus one.
     image_frames_per_unit: tuple[int, ...] = (1,)
     default_max_slice_nums: int = 1
@@ -193,6 +194,11 @@ class Capabilities:
             supports_instruction_updates=self.supports_instruction_updates,
             supports_sampling_updates=self.supports_sampling_updates,
         )
+
+        if self.supports_natural_finish:
+            granted["supports_natural_finish"] = True
+        else:
+            pass
 
         if self.voices:
             granted["voices"] = list(self.voices)
@@ -274,6 +280,10 @@ class InteractionAdapter:
 
     async def update(self, config: SessionConfiguration) -> None:
         """A hot update of an OPEN session; admission fields never change here."""
+
+    async def finish_tail(self, last_unit: Unit, max_tail_units: int) -> None:
+        """Finish a native reply after the client's final input unit."""
+        raise ProtocolError("not_supported", "natural finish is unavailable")
 
     async def close(self) -> None:
         raise NotImplementedError
