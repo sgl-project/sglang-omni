@@ -100,6 +100,8 @@ version-compatibility shims. A VCS requirement (`pip install "sglang @ git+…"`
 pip reads the checkout's `python/pyproject.toml`, which pins CUDA torch; only the swap above
 selects `+xpu`.
 
+The Qwen3-TTS and Qwen3-Omni codecs import RMSNorm directly from `sgl_kernel`, not the removed `sglang.kernels.ops.layernorm.rmsnorm` dispatcher. Install the XPU kernel package for XPU; CUDA environments use the CUDA kernel package exposing the same Python entry point.
+
 ## Verify
 
 ```bash

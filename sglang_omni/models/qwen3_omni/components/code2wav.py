@@ -6,11 +6,11 @@ from __future__ import annotations
 
 import torch
 import torch.nn.functional as F
+from sgl_kernel import rmsnorm
 from sglang.kernels.ops.activation import silu_and_mul
 from sglang.kernels.ops.attention.flash_attention import flash_attn_with_kvcache
 from sglang.kernels.ops.attention.flash_attention_v3 import _is_fa3_supported
 from sglang.kernels.ops.attention.rope import apply_rope_inplace_with_kvcache
-from sglang.kernels.ops.layernorm import rmsnorm
 from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
     Qwen3OmniMoeCode2WavConfig,

@@ -9,12 +9,12 @@ from typing import TYPE_CHECKING
 
 import torch
 import torch.nn.functional as F
+from sgl_kernel import rmsnorm
 from sglang.kernels.ops.activation import silu_and_mul
 from sglang.kernels.ops.attention.rope import (
     apply_rope_inplace,
     apply_rope_inplace_with_kvcache,
 )
-from sglang.kernels.ops.layernorm import rmsnorm
 from sglang.srt.utils.custom_op import register_custom_op
 
 from sglang_omni.platforms import current_platform
