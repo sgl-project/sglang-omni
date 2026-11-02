@@ -228,6 +228,7 @@ class Qwen3ASREncoderNpuGraphRunner(Qwen3ASREncoderLayerStackGraphRunner):
                         self.device_module, self.update_stream, cumulative_window_lens
                     )
 
+        # Note (wangyao-i): The replay waits on events this update records, so the update must be submitted first.
         update = self.update_executor.submit(update_attention_tasks)
-        entry.graph.replay()
         update.result()
+        entry.graph.replay()

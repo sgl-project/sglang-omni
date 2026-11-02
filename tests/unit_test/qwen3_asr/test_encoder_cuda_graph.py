@@ -285,8 +285,8 @@ def test_init_encoder_graphs_declines_a_device_that_cannot_capture():
     assert model.encoder_graph_runner == "untouched"
 
 
-@pytest.mark.parametrize("update_fails", [False, True])
-def test_npu_replay_updates_reused_bucket_without_waiting_on_replay(update_fails):
+def test_npu_replay_finishes_graph_update_before_replaying():
+    """A replay that starts before its update resolves reads the previous boundaries."""
     runner = object.__new__(Qwen3ASREncoderNpuGraphRunner)
     runner.device = torch.device("cpu")
     runner.max_seqlen = 8
@@ -294,33 +294,47 @@ def test_npu_replay_updates_reused_bucket_without_waiting_on_replay(update_fails
     runner.graphs = {}
     runner.failed = set()
     runner.plan = lambda total, windows: (8, [8 - total])
+    runner.update_tasks = {}
     caller = threading.get_ident()
+    compute_stream = SimpleNamespace()
     waits = []
     updates = []
-    captures = []
-    runner.update_tasks = {}
-    replay_started = threading.Event()
+    replays = []
+    futures = []
+
+    class UpdateFuture:
+        def __init__(self):
+            self.is_resolved = False
+
+        def result(self):
+            self.is_resolved = True
+
+    class RecordingExecutor:
+        def submit(self, update):
+            update()
+            future = UpdateFuture()
+            futures.append(future)
+            return future
+
+    runner.update_executor = RecordingExecutor()
     runner.update_stream = SimpleNamespace(
-        wait_stream=lambda stream: waits.append(threading.get_ident())
+        wait_stream=lambda stream: waits.append((threading.get_ident(), stream))
     )
     runner.device_module = SimpleNamespace(
-        current_stream=lambda: "compute", stream=lambda stream: nullcontext()
+        current_stream=lambda: compute_stream, stream=lambda stream: nullcontext()
     )
 
     def apply(device_module, stream, boundaries):
-        # Force update to start after replay: the dependency must already exist.
-        assert replay_started.wait(timeout=2)
+        assert waits == [(caller, compute_stream)] * (len(updates) + 1)
         updates.append((threading.get_ident(), boundaries))
-        if update_fails:
-            raise RuntimeError("update failed")
 
     def replay():
-        assert waits == [caller] * (len(updates) + 1)
-        replay_started.set()
+        future = futures[-1]
+        assert future.is_resolved, "replay started before its graph update resolved"
+        replays.append(threading.get_ident())
 
     def capture(bucket_size):
         cu, metadata = runner.capture_boundaries(bucket_size)
-        captures.append(cu.tolist())
         runner.update_tasks[bucket_size] = (SimpleNamespace(apply=apply),)
         return SimpleNamespace(
             hidden_states=torch.zeros(8, 2),
@@ -329,24 +343,56 @@ def test_npu_replay_updates_reused_bucket_without_waiting_on_replay(update_fails
         )
 
     runner.capture = capture
-
-    def initialize_worker():
-        assert replay_started.wait(timeout=2)
-
-    with ThreadPoolExecutor(max_workers=1, initializer=initialize_worker) as executor:
-        runner.update_executor = executor
-        runner.capture_all()
-        assert not runner.graphs
-        for length in (3, 2):
-            replay_started.clear()
-            if update_fails:
-                with pytest.raises(RuntimeError, match="update failed"):
-                    runner.run(torch.ones(length, 2), [length])
-            else:
-                assert runner.run(torch.ones(length, 2), [length]) is not None
-    assert captures == [[0, 4, 8]]
+    runner.capture_all()
+    assert not runner.graphs
+    for length in (3, 2):
+        assert runner.run(torch.ones(length, 2), [length]) is not None
     assert [bounds for _, bounds in updates] == [[3, 8], [2, 8]]
-    assert updates[0][0] == updates[1][0] != caller
+    assert waits == [(caller, compute_stream)] * 2
+    assert replays == [caller, caller]
+
+
+def test_npu_replay_skips_replay_when_the_graph_update_fails():
+    """A failed update must surface before the replay consumes its events."""
+    runner = object.__new__(Qwen3ASREncoderNpuGraphRunner)
+    runner.device = torch.device("cpu")
+    runner.max_seqlen = 8
+    runner.max_windows_for = lambda bucket: 2
+    runner.graphs = {}
+    runner.failed = set()
+    runner.plan = lambda total, windows: (8, [8 - total])
+    runner.update_tasks = {}
+    caller = threading.get_ident()
+    updates = []
+    runner.update_stream = SimpleNamespace(wait_stream=lambda stream: None)
+    runner.device_module = SimpleNamespace(
+        current_stream=lambda: "compute", stream=lambda stream: nullcontext()
+    )
+
+    def apply(device_module, stream, boundaries):
+        updates.append((threading.get_ident(), boundaries))
+        raise RuntimeError("update failed")
+
+    def replay():
+        pytest.fail("replay must not run after its graph update failed")
+
+    def capture(bucket_size):
+        cu, metadata = runner.capture_boundaries(bucket_size)
+        runner.update_tasks[bucket_size] = (SimpleNamespace(apply=apply),)
+        return SimpleNamespace(
+            hidden_states=torch.zeros(8, 2),
+            output=torch.zeros(8, 2),
+            graph=SimpleNamespace(replay=replay),
+        )
+
+    runner.capture = capture
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        runner.update_executor = executor
+        with pytest.raises(RuntimeError, match="update failed"):
+            runner.run(torch.ones(3, 2), [3])
+    (update,) = updates
+    assert update[1] == [3, 8]
+    assert update[0] != caller
 
 
 def test_npu_attention_capture_restores_partial_setup():
