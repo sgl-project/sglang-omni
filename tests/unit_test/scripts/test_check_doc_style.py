@@ -265,6 +265,9 @@ def test_check_docs_scans_all_markdown_files_recursively(tmp_path: Path) -> None
     (docs_root / "clean.md").write_text("# Clean\n", encoding="utf-8")
     nested_path = nested_root / "guide.md"
     nested_path.write_text("# Guide\n\nNested 😀.\n", encoding="utf-8")
+    (docs_root / "index.rst").write_text(
+        ".. toctree::\n\n   clean\n   nested/deeper/guide\n", encoding="utf-8"
+    )
     (docs_root / "ignored.txt").write_text("😀\n", encoding="utf-8")
 
     violations = check_docs(docs_root)
@@ -302,6 +305,9 @@ def test_check_docs_validates_only_markdown_basenames(
     path.parent.mkdir(parents=True)
     source = "# Guide\n"
     path.write_text(source, encoding="utf-8")
+    (docs_root / "index.rst").write_text(
+        f".. toctree::\n\n   {relative_path}\n", encoding="utf-8"
+    )
 
     violations = check_docs(docs_root)
 
@@ -333,6 +339,9 @@ def copy_script_fixture(tmp_path: Path, document_text: str) -> tuple[Path, Path]
     document_path.parent.mkdir(parents=True)
     shutil.copy2(SCRIPT, script_path)
     document_path.write_text(document_text, encoding="utf-8")
+    (repository_root / "docs" / "index.rst").write_text(
+        ".. toctree::\n\n   guide\n", encoding="utf-8"
+    )
     return repository_root, document_path
 
 
