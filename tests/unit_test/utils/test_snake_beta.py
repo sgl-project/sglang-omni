@@ -198,29 +198,40 @@ StubSnakeBeta.__name__ = "SnakeBeta"
     not torch.cuda.is_available() or fuse_cutedsl_vocoder is None,
     reason="requires CUDA and CUTLASS DSL",
 )
-@pytest.mark.parametrize("channels_last", [False, True])
 @torch.inference_mode()
-def test_cutedsl_snake_native_lengths_do_not_compile(channels_last: bool) -> None:
-    """Uncaptured audio lengths must not compile new SnakeBeta variants during requests."""
+def test_cutedsl_snake_native_shapes_do_not_compile() -> None:
+    """Changing native-decoder channels or audio lengths must reuse the warmed kernels."""
     if torch.cuda.get_device_capability() not in ((9, 0), (10, 0), (10, 3)):
         pytest.skip("requires Hopper or datacenter Blackwell")
     else:
         pass
-    original = StubSnakeBeta(64).cuda().bfloat16().eval()
-    decoder = torch.nn.Sequential(original)
+    torch.manual_seed(42)
     compile_snake_kernel.cache_clear()
-    assert fuse_cutedsl_vocoder(decoder) == 1
-    compiled_variants = compile_snake_kernel.cache_info().misses
-    for length in (33, 34, 36, 40, 65537, 65538, 65540, 65536):
-        hidden_states = torch.randn(1, 64, length, device="cuda", dtype=torch.bfloat16)
-        if channels_last:
-            hidden_states = hidden_states.transpose(1, 2).contiguous().transpose(1, 2)
+    compiled_variants = None
+    for channels, length in (
+        (96, 33),
+        (192, 257),
+        (384, 513),
+        (768, 8192),
+        (1536, 4097),
+    ):
+        original = StubSnakeBeta(channels).cuda().bfloat16().eval()
+        decoder = torch.nn.Sequential(original)
+        assert fuse_cutedsl_vocoder(decoder) == 1
+        if compiled_variants is None:
+            compiled_variants = compile_snake_kernel.cache_info().misses
         else:
             pass
-        torch.testing.assert_close(
-            decoder(hidden_states), original(hidden_states), atol=0, rtol=0
-        )
-    assert compile_snake_kernel.cache_info().misses == compiled_variants
+        hidden_states = torch.randn(
+            1, length, channels, device="cuda", dtype=torch.bfloat16
+        ).transpose(1, 2)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            actual = decoder(hidden_states)
+        hidden_states.normal_()
+        graph.replay()
+        torch.testing.assert_close(actual, original(hidden_states), atol=0, rtol=0)
+        assert compile_snake_kernel.cache_info().misses == compiled_variants
 
 
 @pytest.mark.accelerator
@@ -228,8 +239,9 @@ def test_cutedsl_snake_native_lengths_do_not_compile(channels_last: bool) -> Non
     not torch.cuda.is_available() or fuse_cutedsl_vocoder is None,
     reason="requires CUDA and CUTLASS DSL",
 )
+@pytest.mark.parametrize("channels_last", [False, True])
 @torch.inference_mode()
-def test_cutedsl_snake_large_offsets() -> None:
+def test_cutedsl_snake_large_offsets(channels_last: bool) -> None:
     """Buffers above 2**31 elements must not overflow launch dimensions or element offsets."""
     if torch.cuda.get_device_capability() not in ((9, 0), (10, 0), (10, 3)):
         pytest.skip("requires Hopper or datacenter Blackwell")
@@ -243,7 +255,12 @@ def test_cutedsl_snake_large_offsets() -> None:
     original = StubSnakeBeta(96).to(device="cuda", dtype=torch.bfloat16).eval()
     decoder = torch.nn.Sequential(original)
     assert fuse_cutedsl_vocoder(decoder) == 1
-    hidden_states = torch.ones(32, 96, 699056, device="cuda", dtype=torch.bfloat16)
+    if channels_last:
+        hidden_states = torch.ones(
+            32, 699056, 96, device="cuda", dtype=torch.bfloat16
+        ).transpose(1, 2)
+    else:
+        hidden_states = torch.ones(32, 96, 699056, device="cuda", dtype=torch.bfloat16)
     actual = decoder(hidden_states)
     expected = original(hidden_states[:, :, :8])
     torch.testing.assert_close(actual[:, :, :8], expected, atol=0, rtol=0)
@@ -418,7 +435,7 @@ def test_cutedsl_fallback_serving_thread_warmup(upsample: bool) -> None:
 @pytest.mark.parametrize("channels,kernel_size", [(96, 7), (768, 1)])
 @torch.inference_mode()
 def test_cutedsl_convolution_dynamic_sizes(channels: int, kernel_size: int) -> None:
-    """Uncaptured batch/length combinations must not JIT-compile convolution variants during requests."""
+    """Batch, length, and dilation changes reuse prepared kernels, including partial output tiles."""
     if torch.cuda.get_device_capability() not in ((9, 0), (10, 0), (10, 3)):
         pytest.skip("requires Hopper or datacenter Blackwell")
     else:
@@ -431,29 +448,38 @@ def test_cutedsl_convolution_dynamic_sizes(channels: int, kernel_size: int) -> N
         / (kernel_size * channels) ** 0.5
     )
     compile_kernel.cache_clear()
-    warmup_conv1d(weight, 3, has_bias=False)
+    warmup_conv1d(weight, has_bias=False, has_residual=kernel_size == 1)
     compiled_convolutions = compile_kernel.cache_info().misses
-    for batch_size, length in (
-        (1, 1),
-        (2, 65),
-        (3, 257),
-        (5, 33),
-        (2, 128),
-        (32, 128),
-        (1, 384),
+    for batch_size, length, dilation in (
+        (1, 1, 1),
+        (2, 65, 3),
+        (3, 257, 9),
+        (5, 33, 3),
+        (2, 128, 1),
+        (32, 128, 9),
+        (1, 384, 3),
     ):
         hidden_states = torch.randn(
             batch_size, length, channels, device="cuda", dtype=weight.dtype
         )
         expected = torch.nn.functional.conv1d(
             torch.nn.functional.pad(
-                hidden_states.transpose(1, 2).contiguous(), (3 * (kernel_size - 1), 0)
+                hidden_states.transpose(1, 2).contiguous(),
+                (dilation * (kernel_size - 1), 0),
             ),
             weight.transpose(1, 2).contiguous(),
-            dilation=3,
+            dilation=dilation,
         ).transpose(1, 2)
+        if kernel_size == 1:
+            residual = torch.randn_like(expected).contiguous()
+            expected = expected + residual
+        else:
+            residual = None
         torch.testing.assert_close(
-            conv1d(hidden_states, weight, None, 3), expected, atol=0.03125, rtol=0.02
+            conv1d(hidden_states, weight, None, dilation, residual=residual),
+            expected,
+            atol=0.03125,
+            rtol=0.02,
         )
     assert compile_kernel.cache_info().misses == compiled_convolutions
 

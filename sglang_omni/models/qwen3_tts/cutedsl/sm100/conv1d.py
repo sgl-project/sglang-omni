@@ -25,12 +25,11 @@ def conv1d_kernel(
     input_channels: cutlass.Constexpr,
     output_channels: cutlass.Constexpr,
     kernel_size: cutlass.Constexpr,
-    dilation: cutlass.Constexpr,
+    dilation: cutlass.Int32,
     channel_tile: cutlass.Constexpr,
     stages: cutlass.Constexpr,
     reduction_tile: cutlass.Constexpr,
     store_channels: cutlass.Constexpr,
-    full_rows: cutlass.Constexpr,
 ) -> None:
     """Warps 0-3 store results, warp 4 issues MMA, warp 5 loads operands."""
     thread_index, _, _ = cute.arch.thread_idx()
@@ -238,12 +237,12 @@ def conv1d_kernel(
                     for v in cutlass.range_constexpr(load_channels // 8):
                         channel = col + column + v * 8
                         rounded = cutlass.full((8,), 0, cutlass.BFloat16)
-                        if (
-                            full_rows or row < sequence_length
-                        ) and channel < output_channels:
+                        # note (Hao Wang): TMA discards tail rows; clamp their residual addresses to retain vector loads.
+                        if channel < output_channels:
                             result = values[v * 8 : v * 8 + 8]
                             offset = (
-                                cutlass.Int64(batch_index) * sequence_length + row
+                                cutlass.Int64(batch_index) * sequence_length
+                                + cute.math.min(row, sequence_length - 1)
                             ) * output_channels + channel
                             if cutlass.const_expr(bias is not None):
                                 result = result.to(cutlass.BFloat16).to(
@@ -352,16 +351,12 @@ class Conv1dLaunch:
     def __init__(
         self,
         weight_shape: tuple[int, int, int],
-        dilation: int,
         channel_tile: int,
         stages: int,
         reduction_tile: int,
         store_channels: int,
-        full_rows: bool,
     ) -> None:
         self.weight_shape = weight_shape
-        self.full_rows = full_rows
-        self.dilation = dilation
         self.channel_tile = channel_tile
         self.stages = stages
         self.reduction_tile, self.store_channels = reduction_tile, store_channels
@@ -381,6 +376,7 @@ class Conv1dLaunch:
         batch_size: cutlass.Int32,
         sequence_length: cutlass.Int32,
         thread_blocks: cutlass.Int32,
+        dilation: cutlass.Int32,
     ) -> None:
         input_channels = self.weight_shape[2]
         reduction_tile, store_channels = self.reduction_tile, self.store_channels
@@ -433,7 +429,7 @@ class Conv1dLaunch:
             ),
         )
         conv1d_kernel(
-            f"c{input_channels}_c{output_channels}_k{kernel_size}_d{self.dilation}_"
+            f"c{input_channels}_c{output_channels}_k{kernel_size}_"
             f"{'residual' if residual is not None else 'bias'}_{'snake' if alpha is not None else 'raw'}",
             a,
             b,
@@ -448,10 +444,9 @@ class Conv1dLaunch:
             input_channels,
             output_channels,
             kernel_size,
-            self.dilation,
+            dilation,
             self.channel_tile,
             self.stages,
             reduction_tile,
             store_channels,
-            self.full_rows,
         ).launch(grid=(thread_blocks, 1, 1), block=(192, 1, 1), stream=stream)

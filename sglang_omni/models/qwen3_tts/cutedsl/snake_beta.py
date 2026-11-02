@@ -35,7 +35,8 @@ def snake_beta_kernel(
     sine_table: cute.Tensor,
     output: cute.Tensor,
     elements: cutlass.Int64,
-    channels: cutlass.Constexpr,
+    channels: cutlass.Int32,
+    channel_divisor: cute.FastDivmodDivisorV2,
     length: cutlass.Int32,
     channels_last: cutlass.Constexpr,
     threads: cutlass.Constexpr,
@@ -49,7 +50,12 @@ def snake_beta_kernel(
             count=vector, alignment=vector * 2
         )
         if cutlass.const_expr(channels_last):
-            channel = offset % channels
+            # note (Hao Wang): Precomputed division avoids dynamic 64-bit remainder on ordinary audio buffers.
+            channel = cutlass.Int64(0)
+            if elements <= 0x7FFFFFFF:
+                channel = cutlass.Int64(cutlass.Int32(offset) % channel_divisor)
+            else:
+                channel = offset % channels
             a = (alpha.iterator.raw_ptr() + channel).load(
                 count=vector, alignment=vector * 2
             )
@@ -86,7 +92,7 @@ def snake_beta_host(
     sine_table: cute.Tensor,
     output: cute.Tensor,
     stream: cuda.CUstream,
-    channels: cutlass.Constexpr,
+    channels: cutlass.Int32,
     length: cutlass.Int32,
     elements: cutlass.Int64,
     channels_last: cutlass.Constexpr,
@@ -103,6 +109,7 @@ def snake_beta_host(
         output,
         elements,
         channels,
+        cute.fast_divmod_create_divisor_v2(channels),
         length,
         channels_last,
         threads,
@@ -116,7 +123,6 @@ def snake_beta_host(
 
 @cache
 def compile_kernel(
-    channels: int,
     channels_last: bool,
     threads: int,
     vector: int,
@@ -130,15 +136,20 @@ def compile_kernel(
     activation = make_fake_compact_tensor(
         cutlass.BFloat16, (cutlass.sym_int64(divisibility=vector),), stride_order=(0,)
     )
+    coefficients = make_fake_compact_tensor(
+        cutlass.BFloat16,
+        (cutlass.sym_int64(divisibility=vector if channels_last else 1),),
+        stride_order=(0,),
+    )
     return cute.compile(
         snake_beta_host,
         activation,
-        fake(channels),
-        fake(channels),
+        coefficients,
+        coefficients,
         fake(65536) if lookup else None,
         activation,
         make_fake_stream(),
-        channels,
+        cutlass.Int32(0),
         cutlass.Int32(0),
         cutlass.Int64(0),
         channels_last,
@@ -166,7 +177,6 @@ def launch(
     table = sine_lookup if x.numel() >= 4 * 1024**2 else None
     if x.numel():
         compile_kernel(
-            x.shape[1],
             channels_last,
             128,
             vector,
@@ -179,6 +189,7 @@ def launch(
             table,
             output.view(-1),
             cuda.CUstream(torch.cuda.current_stream(x.device).cuda_stream),
+            x.shape[1],
             x.shape[2],
             x.numel(),
         )
@@ -203,19 +214,16 @@ class CuTeDSLSnakeBeta(FusedSnakeBeta):
         self.register_buffer(
             "sine_lookup", sine_table(self.alpha.device), persistent=False
         )
-        # note (Hao Wang): CUDA graph buckets do not cover every native-decoder length or layout.
+        # note (Hao Wang): Native fused convolutions preserve channels-last storage across audio lengths.
         channels = self.alpha.numel()
         arch = device_arch(self.alpha.device)
-        for vector in (1, 2, 4, 8):
-            for lookup in (False, True):
-                compile_kernel(channels, False, 128, vector, arch, lookup)
         for maximum_vector in (4, 8):
             vector = maximum_vector
             while channels % vector:
                 vector //= 2
-            compile_kernel(channels, True, 128, vector, arch, False)
+            compile_kernel(True, 128, vector, arch, False)
             if maximum_vector == 8:
-                compile_kernel(channels, True, 128, vector, arch, True)
+                compile_kernel(True, 128, vector, arch, True)
             else:
                 pass
 

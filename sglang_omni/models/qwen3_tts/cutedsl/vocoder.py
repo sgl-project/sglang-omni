@@ -79,7 +79,6 @@ class CuTeDSLCausalConv1d(nn.Module):
         if self.has_custom_kernel:
             warmup_conv1d(
                 self.packed_weight.transpose(1, 2),
-                self.conv.dilation[0],
                 self.conv.bias is not None,
                 has_residual=has_residual,
                 has_activation=has_activation,

@@ -37,13 +37,11 @@ def pointwise_conv(
 @cache
 def compile_kernel(
     weight_shape: tuple[int, int, int],
-    dilation: int,
     channel_tile: int,
     stages: int,
     has_bias: bool,
     has_residual: bool,
     has_activation: bool,
-    full_rows: bool,
     architecture: str,
 ) -> JitCompiledFunction:
     output_channels, kernel_size, input_channels = weight_shape
@@ -55,19 +53,17 @@ def compile_kernel(
             cutlass.BFloat16, (elements,), stride_order=(0,), assumed_align=16
         )
 
-    # note (Hao Wang): Reuse binaries across audio lengths, retaining a tail-mask specialization.
+    # note (Hao Wang): Audio lengths and dilation share binaries within each tile configuration.
     activation = fake(cutlass.sym_int64(divisibility=8))
     output = fake(cutlass.sym_int64(divisibility=8))
     launch = Conv1dSm90 if architecture == "sm_90a" else Conv1dSm100
     return cute.compile(
         launch(
             weight_shape,
-            dilation,
             channel_tile,
             stages,
             reduction_tile,
             store_channels,
-            full_rows,
         ),
         activation,
         fake(math.prod(weight_shape)),
@@ -78,6 +74,7 @@ def compile_kernel(
         fake(output_channels) if has_activation else None,
         fake(65536) if has_activation else None,
         make_fake_stream(use_tvm_ffi_env_stream=False),
+        cutlass.Int32(1),
         cutlass.Int32(1),
         cutlass.Int32(1),
         cutlass.Int32(1),
@@ -148,7 +145,6 @@ def launch_configuration(
 
 def warmup_conv1d(
     weight: torch.Tensor,
-    dilation: int,
     has_bias: bool,
     has_residual: bool = False,
     has_activation: bool = False,
@@ -172,18 +168,15 @@ def warmup_conv1d(
         for row_tiles in range(1, multiprocessors + 2)
     }
     for channel_tile, stages in sorted(configurations):
-        for full_rows in (False, True):
-            compile_kernel(
-                tuple(weight.shape),
-                dilation,
-                channel_tile,
-                stages,
-                has_bias,
-                has_residual,
-                has_activation,
-                full_rows,
-                architecture,
-            )
+        compile_kernel(
+            tuple(weight.shape),
+            channel_tile,
+            stages,
+            has_bias,
+            has_residual,
+            has_activation,
+            architecture,
+        )
 
 
 def conv1d(
@@ -218,13 +211,11 @@ def conv1d(
     output = hidden_states.new_empty((batch_size, sequence_length, output_channels))
     compile_kernel(
         tuple(weight.shape),
-        dilation,
         channel_tile,
         stages,
         bias is not None,
         residual is not None,
         activation is not None,
-        sequence_length % row_tile == 0,
         architecture,
     )(
         hidden_states.view(-1),
@@ -239,5 +230,6 @@ def conv1d(
         batch_size,
         sequence_length,
         min(tiles, blocks_per_multiprocessor * multiprocessors),
+        dilation,
     )
     return output
