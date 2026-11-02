@@ -664,6 +664,8 @@ class OmniScheduler(Generic[RequestDataT]):
             self.spec_algorithm = SpeculativeAlgorithm.from_string(
                 get_spec().speculative_algorithm
             )
+        # note (ratish): the borrowed init_overlap starts this copy thread under confidential compute; shutdown_resources stops it.
+        self.async_d2h_worker = None
         if self.enable_overlap:
             if not current_platform.is_cuda():
                 raise ValueError("Speculative async decode requires CUDA")
@@ -3060,6 +3062,12 @@ class OmniScheduler(Generic[RequestDataT]):
         with self.shutdown_lock:
             callback = self.shutdown_callback
             self.shutdown_callback = None
+            worker = self.async_d2h_worker
+            self.async_d2h_worker = None
+        if worker is not None:
+            worker.shutdown()
+        else:
+            pass
         if callback is not None:
             callback()
         else:
