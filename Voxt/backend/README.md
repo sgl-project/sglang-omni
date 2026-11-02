@@ -85,7 +85,7 @@ and quitting stops it.
   - `/v1/models`;
   - `/v1/audio/transcriptions` (JSON or SSE);
   - the `/v1/realtime` manual-turn socket.
-- Qwen3-ASR's `/v1/audio/transcriptions` stops greedy decoding at a token loop (the last 24 tokens use at most 3 distinct ids) unless the request sends `stop_on_token_loop=false`, and the text keeps one copy of the repeated unit. `qwen3_asr_transcribe` does the same unless given `--no-stop-on-token-loop`. Realtime refreshes run without the guard.
+- Qwen3-ASR's `/v1/audio/transcriptions` stops greedy decoding at a token loop (the last 24 tokens use at most 3 distinct ids) unless the request sends `stop_on_token_loop=false`, and the text keeps one copy of the repeated unit. `qwen3_asr_transcribe` does so only with `--stop-on-token-loop`. Realtime refreshes run without the guard.
 - `Voxt/Transcription/Omni*.swift` is the client:
   - `OmniASRRuntime` handles launch, requests, and an awaitable retire that drains in-flight work.
   - It also contains the request planning, the live session and its adapter to Voxt's streaming session interface.
