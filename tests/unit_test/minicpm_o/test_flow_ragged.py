@@ -23,6 +23,7 @@ from sglang_omni.models.minicpm_o.components.token2wav.vocoder import (
 )
 from sglang_omni.models.minicpm_o.components.tts_runtime import (
     CODEC_CHUNK_SIZE,
+    SILENCE_PREFIX_LENGTH,
     MiniCPMOVocoderRuntime,
     SynthesisRequest,
 )
@@ -339,6 +340,37 @@ def run_sessions(
         for final_unit in final_units:
             synthesize([final_unit])
     return runtime, waveforms
+
+
+def test_reply_audio_holds_each_decoded_frame_once_from_its_first_sample() -> None:
+    """A reply plays each decoded frame once, at full level from its first sample; leading padding or audio held back in the first unit would delay every reply's onset, and a fade-in would soften it."""
+    runtime = MiniCPMOVocoderRuntime(
+        TinyCode2Wav(tiny_token2wav()),
+        max_state_bytes_per_session=DEFAULT_SPEECH_STATE_BYTES_PER_SESSION,
+        max_open_sessions=1,
+    )
+    runtime.open_session("0", reference_audio=b"0")
+    lookahead_tokens = runtime.token2wav.flow.pre_lookahead_len
+    # note (wenyao): The last unit's 30 tokens decode one non-last window before its last chunk, so a chunk after the first must trim its crossfade tail too.
+    first_unit_tokens, last_unit_tokens = 10, 30
+
+    ((_, first_unit),) = runtime.synthesize_batch(
+        [unit(0, 0, first_unit_tokens, True, False)]
+    )
+    ((_, last_unit),) = runtime.synthesize_batch(
+        [unit(0, 1, last_unit_tokens, False, True)]
+    )
+
+    first_frame = first_unit[:SAMPLES_PER_MEL_FRAME]
+    assert first_frame[0] != 0
+    assert np.all(first_frame == first_frame[0])
+    assert first_unit.size == SAMPLES_PER_MEL_FRAME * (
+        (SILENCE_PREFIX_LENGTH + first_unit_tokens - lookahead_tokens) * UP_RATE
+        - MEL_CACHE_FRAMES
+    )
+    assert first_unit.size + last_unit.size == SAMPLES_PER_MEL_FRAME * UP_RATE * (
+        SILENCE_PREFIX_LENGTH + first_unit_tokens + last_unit_tokens
+    )
 
 
 def test_sessions_decoded_together_match_each_session_alone() -> None:

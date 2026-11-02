@@ -3,11 +3,12 @@
 
 namespace qwen3_asr {
 
-TranscriptionWorker::TranscriptionWorker(std::function<void()> load) {
+TranscriptionWorker::TranscriptionWorker(
+    std::function<void()> load, std::function<void()> release_idle_memory) {
   std::promise<void> loaded;
   std::future<void> loaded_future = loaded.get_future();
   thread_ = std::thread(&TranscriptionWorker::Run, this, std::move(loaded),
-                        std::move(load));
+                        std::move(load), std::move(release_idle_memory));
   try {
     loaded_future.get();
   } catch (...) {
@@ -35,7 +36,8 @@ TranscriptionWorker::~TranscriptionWorker() {
 }
 
 void TranscriptionWorker::Run(std::promise<void> loaded,
-                              std::function<void()> load) {
+                              std::function<void()> load,
+                              std::function<void()> release_idle_memory) {
   try {
     load();
     loaded.set_value();
@@ -47,14 +49,9 @@ void TranscriptionWorker::Run(std::promise<void> loaded,
     Job job;
     {
       std::unique_lock<std::mutex> lock(mutex_);
-      // Note (khazic): a decode keeps MLX's buffer cache, since freeing every
-      // step's buffers slows each token; an idle server returns it, so it
-      // holds only the model. The synchronize lets the step a decode queued
-      // before it stopped return its buffers first.
       if (queue_.empty()) {
         lock.unlock();
-        mlx::core::synchronize();
-        mlx::core::clear_cache();
+        release_idle_memory();
         lock.lock();
       } else {
       }

@@ -113,6 +113,7 @@ def encode_pooled_windows(
             past_key_values=attention_cache,
             padding_cache=padding_cache,
             use_cache=True,
+            use_linear_pointwise=True,
         )
 
     one_hot = F.one_hot(

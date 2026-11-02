@@ -40,6 +40,7 @@ from sglang_omni.models.streaming_cascade.config import (
 )
 from sglang_omni.models.streaming_cascade.dialog import (
     CUT_REPLY_NOTE,
+    SHORT_UTTERANCE_NOTE,
     Dialog,
     DialogConfig,
     heard_prefix,
@@ -66,6 +67,7 @@ from sglang_omni.proto.streams import (
     REPLY_DELIVERED,
     REPLY_HEARD,
     REPLY_PROGRESS,
+    REPLY_SENTENCE,
     SESSION_CONTROL,
     SPEECH_STARTED,
     SPEECH_STOPPED,
@@ -1359,7 +1361,9 @@ async def test_openai_speech_flushes_each_reply_before_turn_done(backends):
         control_chunk(TURN_DONE, turn=2),
     ]
     outputs = await drain(build({**tts, "max_sentence_words": 24}), inputs)
-    outputs = [o for o in outputs if control_type(o) != REPLY_PROGRESS]
+    outputs = [
+        o for o in outputs if control_type(o) not in (REPLY_PROGRESS, REPLY_SENTENCE)
+    ]
     assert spoken == ["Hello world.", "Second sentence here", "Again"]
     labels = [control_type(o) or o.format for o in outputs]
     runs = [label for i, label in enumerate(labels) if i == 0 or labels[i - 1] != label]
@@ -2057,6 +2061,36 @@ async def test_the_forced_method_sends_the_language_of_the_reply_deltas(language
         assert [body["language"] for body in bodies] == [language, language]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "session_language, reply, languages",
+    [
+        ("Chinese", "今年是2024年。 The year is 2024.", ["Chinese", "English"]),
+        (None, "今年是2024年。 The year is 2024.", ["Chinese", "English"]),
+        (
+            "English",
+            "请看 https://example.com/a/very/long/path/name 这个网页的说明。",
+            ["Chinese"],
+        ),
+    ],
+)
+async def test_the_forced_method_aligns_each_sentence_in_the_language_the_synthesizer_spoke_it_in(
+    session_language, reply, languages
+):
+    """The worker aligned a sentence in another language than the speech service spoke it in: "The year is 2024." of a Chinese session in Chinese, reading 2024 as 二千零二十四, every sentence before the session language was known in none, and a Chinese sentence of an English session in English for the URL the speech service never read."""
+    deltas = [text_chunk(reply, 1, session_language)]
+    speech_requests, speech = await synthesized({"language": "auto"}, deltas)
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return worker_reply(request)
+
+    await drain(await forced_aligner(handler), [*deltas, *speech])
+    assert [body["language"] for body in speech_requests] == languages
+    assert [body.get("language") for body in bodies] == languages
+
+
 HEARD_ASR_URL = "http://asr:8002/v1"
 
 
@@ -2175,6 +2209,61 @@ async def test_asr_normalization_preserves_complete_original_units(
         (len(earlier_text), 2000),
         (len(earlier_text) + 1 + len(prefix), 2600),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "requests_heard, cuts, languages, progress",
+    [
+        (
+            1,
+            [control_chunk(REPLY_DELIVERED, turn=1, audio_ms=500)],
+            ["English"],
+            [(11, 500)],
+        ),
+        (
+            2,
+            [
+                control_chunk(REPLY_DELIVERED, turn=1, audio_ms=1500),
+                control_chunk(TRUNCATE, t_ms=500),
+            ],
+            ["Chinese", "English"],
+            [(19, 1000), (11, 500)],
+        ),
+    ],
+)
+async def test_a_cut_in_a_long_sentence_is_heard_in_the_language_its_request_was_spoken_in(
+    requests_heard, cuts, languages, progress
+):
+    """In a Chinese session the first request of a long sentence, English up to a Chinese clause, was spoken in English, but a cut inside it was transcribed in Chinese, the language of the whole sentence."""
+    deltas = [text_chunk("Please call me back tomorrow, 我们明天再聊。", 1, "Chinese")]
+    speech_requests, speech = await synthesized(
+        {"language": "auto", "max_sentence_words": 4}, deltas
+    )
+    request_ends = [
+        index
+        for index, chunk in enumerate(speech)
+        if control_type(chunk) == REPLY_PROGRESS
+    ]
+    requests = []
+    outputs = await drain(
+        await hearing_aligner("asr", transcribing("Please call", requests)),
+        [
+            *deltas,
+            *speech[: request_ends[requests_heard - 1]],
+            control_chunk(TURN_INTERRUPTED, turn=1),
+            *cuts,
+        ],
+    )
+    assert [(body["input"], body["language"]) for body in speech_requests] == [
+        ("Please call me back", "English"),
+        ("tomorrow, 我们明天再聊。", "Chinese"),
+    ]
+    assert [
+        re.search(rb'name="language"\r\n\r\n(\w+)', request.content).group(1).decode()
+        for request in requests
+    ] == languages
+    assert spoken_progress(outputs) == progress
 
 
 @pytest.mark.asyncio
@@ -2370,27 +2459,78 @@ async def test_openai_transcription_leaves_the_language_out_when_the_service_nam
 
 
 @pytest.mark.asyncio
-async def test_the_dialog_keeps_the_language_of_the_last_answered_turn():
+async def test_a_short_utterance_in_another_language_keeps_the_session_language():
+    """A noise recognized as Chinese ("嗯。") switched an English session to Chinese, and the next reply came in Chinese."""
+    dialog = build({"kind": "dialog"})
+    turns = [
+        transcript_chunk("Count to three.", True, "English"),
+        transcript_chunk("Okay.", True, "English"),
+        transcript_chunk("嗯。", True, "Chinese"),
+        transcript_chunk("我们换个话题吧。", True, "Chinese"),
+        transcript_chunk("ありがとうございました。", True, "Japanese"),
+    ]
+    inputs = []
+    for turn, utterance in enumerate(turns, 1):
+        inputs += [
+            utterance,
+            text_chunk("Sure.", turn),
+            control_chunk(TURN_DONE, turn=turn),
+            control_chunk(COMMIT),
+        ]
+    outputs = await drain(dialog, inputs)
+    chunks = [o for o in outputs if o.format == MESSAGES]
+    assert [o.payload.get("language") for o in chunks] == [
+        "English",
+        "English",
+        "English",
+        "Chinese",
+        "Japanese",
+    ]
+    note = SHORT_UTTERANCE_NOTE.format(language="English")
+    assert [messages_of(o)[0].content for o in chunks] == [
+        dialog.config.system_prompt
+    ] * 5
+    assert [messages_of(o)[-1].content for o in chunks] == [
+        "Count to three.",
+        "Okay.",
+        f"嗯。\n\n[{note}]",
+        "我们换个话题吧。",
+        "ありがとうございました。",
+    ]
+    replacement = build({"kind": "dialog"})
+    replacement.adopt(dialog)
+    assert replacement.language == "Japanese"
+
+
+@pytest.mark.asyncio
+async def test_a_short_first_utterance_names_no_language_and_adds_no_note():
     dialog = build({"kind": "dialog"})
     outputs = await drain(
         dialog,
         [
-            transcript_chunk("数到三。", True, "Chinese"),
-            text_chunk("1,2,3.", 1),
+            transcript_chunk("嗯。", True, "Chinese"),
+            text_chunk("Hi.", 1),
             control_chunk(TURN_DONE, turn=1),
             control_chunk(COMMIT),
-            transcript_chunk("Again.", True),
-            text_chunk("1,2,3.", 2),
-            control_chunk(TURN_DONE, turn=2),
-            control_chunk(COMMIT),
-            transcript_chunk("Now in English.", True, "English"),
         ],
     )
-    languages = [o.payload.get("language") for o in outputs if o.format == MESSAGES]
-    assert languages == ["Chinese", "Chinese", "English"]
-    replacement = build({"kind": "dialog"})
-    replacement.adopt(dialog)
-    assert replacement.language == "English"
+    chunk = next(o for o in outputs if o.format == MESSAGES)
+    assert chunk.payload.get("language") is None
+    assert messages_of(chunk)[0].content == dialog.config.system_prompt
+
+
+def test_a_short_switch_after_a_cut_reply_adds_both_notes():
+    dialog = build({"kind": "dialog"})
+    dialog.language = "English"
+    dialog.messages += [
+        ChatMessage(role="user", content="Tell me a story."),
+        ChatMessage(role="assistant", content="Once upon a time", is_cut=True),
+    ]
+    note = SHORT_UTTERANCE_NOTE.format(language="English")
+    _, chunk = dialog.respond(1, "嗯。", "Chinese")
+    messages = messages_of(chunk)
+    assert messages[0].content == f"{dialog.config.system_prompt} {CUT_REPLY_NOTE}"
+    assert messages[-1].content == f"嗯。\n\n[{note}]"
 
 
 @pytest.mark.asyncio
@@ -2418,21 +2558,29 @@ async def test_chat_deltas_carry_the_language_of_their_messages():
     ]
 
 
-async def spoken_requests(
+async def synthesized(
     spec: dict, deltas: list[TimedChunk]
-) -> list[tuple[str, str]]:
-    """The language tag and the input of each sentence the synthesizer speaks for the deltas of turn 1."""
+) -> tuple[list[dict], list[TimedChunk]]:
+    """The speech requests and the outputs of a synthesizer speaking the deltas of turn 1, one second of audio per request."""
     bodies = []
 
     def answer(request: httpx.Request) -> httpx.Response:
         bodies.append(json.loads(request.content))
         return httpx.Response(
-            200, content=b"\x00\x00" * 4, headers={"X-Sample-Rate": "24000"}
+            200, content=b"\x00\x00" * 24000, headers={"X-Sample-Rate": "24000"}
         )
 
     tts = build({"kind": "openai_speech", **HTTP_SERVICE, **spec})
     tts.client = httpx.AsyncClient(transport=httpx.MockTransport(answer))
-    await drain(tts, [*deltas, control_chunk(TURN_DONE, turn=1)])
+    outputs = await drain(tts, [*deltas, control_chunk(TURN_DONE, turn=1)])
+    return bodies, outputs
+
+
+async def spoken_requests(
+    spec: dict, deltas: list[TimedChunk]
+) -> list[tuple[str, str]]:
+    """The language tag and the input of each sentence the synthesizer speaks for the deltas of turn 1."""
+    bodies, _ = await synthesized(spec, deltas)
     return [(body["language"], body["input"]) for body in bodies]
 
 
@@ -2441,14 +2589,16 @@ async def spoken_languages(spec: dict, deltas: list[TimedChunk]) -> list[str]:
 
 
 @pytest.mark.asyncio
-async def test_openai_speech_keeps_the_digits_of_a_chinese_script_sentence_tagged_english():
+async def test_openai_speech_keeps_the_digits_of_a_chinese_sentence_in_an_english_session():
     deltas = [
         text_chunk("This year is 2024. ", 1, "English"),
+        text_chunk("We said 谢谢 in 2024. ", 1, "English"),
         text_chunk("今年是2024年。", 1, "English"),
     ]
     assert await spoken_requests({"language": "auto"}, deltas) == [
         ("English", "This year is twenty twenty four."),
-        ("English", "今年是2024年。"),
+        ("English", "We said 谢谢 in twenty twenty four."),
+        ("Chinese", "今年是2024年。"),
     ]
 
 
@@ -2470,6 +2620,30 @@ async def test_openai_speech_auto_language_follows_the_user(
         text_chunk("你好。", 1, user_language),
     ]
     assert await spoken_languages({"language": language}, deltas) == tags
+
+
+@pytest.mark.parametrize(
+    "session_language, sentence, tag",
+    [
+        ("French", "Bonjour.", "French"),
+        ("English", "你好。", "Chinese"),
+        ("English", "In Chinese, thank you is 谢谢.", "English"),
+        ("English", "In Japanese, hello is こんにちは.", "English"),
+        ("English", "In Korean, hello is 안녕하세요.", "English"),
+        ("English", "東京へ行きたいです。", "Japanese"),
+        ("Chinese", "Hello there.", "English"),
+        ("Chinese", "안녕하세요.", "Korean"),
+        ("Japanese", "こんにちは、東京。", "Japanese"),
+        ("Japanese", "東京大学。", "Japanese"),
+        ("Japanese", "Hello there.", "English"),
+    ],
+)
+def test_a_sentence_whose_script_contradicts_the_session_is_tagged_by_its_script(
+    session_language, sentence, tag
+):
+    synthesizer = build({"kind": "openai_speech", **HTTP_SERVICE, "language": "auto"})
+    synthesizer.session_language = session_language
+    assert synthesizer.sentence_language(sentence) == tag
 
 
 def test_openai_speech_keeps_the_user_language_across_a_replacement():

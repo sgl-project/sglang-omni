@@ -98,6 +98,7 @@ class SamplingParams:
     top_p: float | None = None
     top_k: int | None = None
     min_p: float | None = None
+    epsilon_cutoff: float | None = None
     repetition_penalty: float | None = None
     stop: list[str] = field(default_factory=list)
     stop_token_ids: list[int] = field(default_factory=list)
@@ -112,6 +113,7 @@ class SamplingParams:
             "top_p": self.top_p,
             "top_k": self.top_k,
             "min_p": self.min_p,
+            "epsilon_cutoff": self.epsilon_cutoff,
             "repetition_penalty": self.repetition_penalty,
             "seed": self.seed,
             "max_new_tokens": self.max_new_tokens,

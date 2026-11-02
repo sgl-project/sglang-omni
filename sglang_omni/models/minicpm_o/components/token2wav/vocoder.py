@@ -487,22 +487,13 @@ class Token2Wav(torch.nn.Module):
                 )
             else:
                 pass
-            is_first_chunk = hift_cache_speech.shape[-1] == 0
             next_hift_cache = dict(
                 mel=mel[..., -self.mel_cache_len :],
                 source=source[:, :, -self.source_cache_len :],
                 speech=speech[:, -self.source_cache_len :],
             )
             if not is_last_chunk:
-                if is_first_chunk:
-                    silence_padding = torch.zeros(
-                        len(indices), self.source_cache_len, device=speech.device
-                    )
-                    speech = torch.cat(
-                        [silence_padding, speech[:, : -self.source_cache_len]], dim=1
-                    )
-                else:
-                    speech = speech[:, : -self.source_cache_len]
+                speech = speech[:, : -self.source_cache_len]
             else:
                 pass
             waveform = np.clip(speech.cpu().numpy(), -1.0, 1.0)

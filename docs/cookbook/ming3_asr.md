@@ -6,7 +6,7 @@
 
 Install SGLang-Omni by following [Installation](../get_started/installation.md).
 
-Startup uses one GPU. Preprocessing runs on the CPU. The audio encoder and the language model share that GPU.
+Startup uses one GPU. Preprocessing runs on the CPU. The audio encoder and the language model share that GPU. The pipeline is preprocessing, then thinker.
 
 ```bash
 sgl-omni serve --model-path inclusionAI/Ming-3.0-asr-tiny

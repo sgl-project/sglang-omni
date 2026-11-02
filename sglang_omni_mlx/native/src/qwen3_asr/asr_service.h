@@ -27,6 +27,7 @@ using qwen3_asr::Transcription;
 class ServedModel {
 public:
   virtual ~ServedModel() = default;
+  virtual void ReleaseIdleMemory();
   // Binds one request's form fields to its samples; throws
   // std::invalid_argument for a field it does not accept.
   virtual Transcription Prepare(std::vector<float> samples,
