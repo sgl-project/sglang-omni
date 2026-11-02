@@ -125,6 +125,14 @@ def check_docs(docs_root: Path = DOCS_ROOT) -> list[Violation]:
     """Scan all Markdown documentation without rewriting files."""
     violations: list[Violation] = []
     for path in sorted(docs_root.rglob("*.md")):
+        if path.name.startswith("._"):
+            with path.open("rb") as source:
+                if source.read(8) == bytes.fromhex("0005160700020000"):
+                    continue
+                else:
+                    pass
+        else:
+            pass
         if path != docs_root / "README.md" and not re.fullmatch(
             r"[a-z0-9_]+\.md", path.name
         ):
