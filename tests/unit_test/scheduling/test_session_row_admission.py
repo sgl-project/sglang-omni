@@ -101,7 +101,12 @@ class AdmissionScheduler:
         admitted_requests: list[Req] = []
         for request in self.waiting_queue:
             if len(admitted_requests) >= self.get_num_allocatable_reqs(
-                0, None, running_batch=self.running_batch
+                0,
+                None,
+                running_batch=self.running_batch,
+                num_held_rows=sum(
+                    admitted.kv.holds_kv for admitted in admitted_requests
+                ),
             ):
                 break
             else:

@@ -2088,18 +2088,26 @@ class OmniScheduler(Generic[RequestDataT]):
         running_bs: int,
         beam_width: int | None = None,
         running_batch: ScheduleBatch | None = None,
+        num_held_rows: int = 0,
     ) -> int:
-        free_request_rows = _Upstream.get_num_allocatable_reqs(
-            self, running_bs, beam_width=beam_width, running_batch=running_batch
-        )
         bridge = self.session_bridge
         if (
             bridge is None
             or beam_width is not None
             or not self.continuation_aware_admission
         ):
-            return free_request_rows
+            return _Upstream.get_num_allocatable_reqs(
+                self,
+                running_bs,
+                beam_width=beam_width,
+                running_batch=running_batch,
+                num_held_rows=num_held_rows,
+            )
         else:
+            # note (ratish): the bridge counts every queued borrower below, so the rows admitted borrowers already hold stay out of the free count.
+            free_request_rows = _Upstream.get_num_allocatable_reqs(
+                self, running_bs, beam_width=beam_width, running_batch=running_batch
+            )
             # note (Junnan Li): A unit whose session slot holds a request row reuses that row, so it does not count against the free rows.
             per_batch_limit = get_parallel().pp_max_micro_batch_size - running_bs
             return min(
