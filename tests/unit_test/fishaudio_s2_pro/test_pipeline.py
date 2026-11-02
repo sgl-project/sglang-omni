@@ -950,6 +950,7 @@ def run_s2pro_engine_with_fake_buffers(
         def __init__(self, server_args: SimpleNamespace) -> None:
             self.model_runner = FakeSGLangRunner(server_args)
             self.enable_prefill_input_embeds = False
+            self.speculative_worker = None
 
     monkeypatch.setattr(fish_bootstrap, "patch_fish_config_for_sglang", lambda: None)
     monkeypatch.setattr(fish_bootstrap, "truncate_rope_to_bf16", lambda model: None)
