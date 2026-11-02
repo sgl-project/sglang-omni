@@ -61,7 +61,7 @@ from sglang_omni.models.fun_cosyvoice3.dspark_sampling import (
 )
 from sglang_omni.models.fun_cosyvoice3.model_runner import COSYVOICE3_RAS_WINDOW_SIZE
 from sglang_omni.models.fun_cosyvoice3.sglang_model import TOTAL_VOCAB_SIZE
-from sglang_omni.sampling.seed import derive_sampling_seed
+from sglang_omni.sampling.seed import SAMPLING_SEED_MASK, derive_sampling_seed
 from sglang_omni.speculative.target_worker import SpeculativeTargetWorker
 
 
@@ -151,21 +151,22 @@ def build_step_sampling_state(
         if request.sampling_params.sampling_seed is not None:
             row_seeds.append(request.sampling_params.sampling_seed)
         elif is_seeded:
-            # As in plain decode, an unseeded request in a seeded batch hashes its id.
+            # note (YifanLi3): as in plain decode, an unseeded request in a seeded
+            # batch hashes its id.
             row_seeds.append(
                 derive_sampling_seed("sglang-omni-unseeded-row", request.rid)
             )
         else:
             row_seeds.append(0)
-    # One host-to-device copy carries the four per-request values; a seed fits in
-    # 31 bits, so float64 holds it exactly.
+    # note (YifanLi3): one host-to-device copy carries the four per-request values;
+    # a masked seed fits in 31 bits, so float64 holds it exactly.
     request_values = torch.tensor(
         [
             [
                 request.sampling_params.repetition_penalty,
                 len(request.output_ids),
                 request.sampling_params.min_new_tokens,
-                seed,
+                seed & SAMPLING_SEED_MASK,
             ]
             for request, seed in zip(batch.reqs, row_seeds, strict=True)
         ],
@@ -226,12 +227,16 @@ class ExactVerifyExecutor(TargetVerifyExecutor):
                 (bs, TOTAL_VOCAB_SIZE), device=draft_tokens.device
             ).exponential_()
         else:
-            uniform_noise = seeded_uniform_noise(
-                draft_state.seeds,
-                draft_state.output_lengths,
-                salt=ACCEPTANCE_NOISE_SEED_SALT,
-                column_count=draft_tokens.shape[1],
-            ).float()
+            uniform_noise = (
+                seeded_uniform_noise(
+                    draft_state.seeds,
+                    draft_state.output_lengths,
+                    salt=ACCEPTANCE_NOISE_SEED_SALT,
+                    column_count=draft_tokens.shape[1],
+                )
+                .float()
+                .clamp_(max=1.0 - 2**-24)
+            )
             exponential_noise = seeded_exponential_noise(
                 draft_state.seeds,
                 draft_state.output_lengths,
