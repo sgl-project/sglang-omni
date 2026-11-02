@@ -12,19 +12,27 @@ import random
 import re
 import statistics
 from pathlib import Path
+from typing import Literal, get_args
 
-from benchmarks.cascade_replies.judge import AXES, JudgedReply, LengthVerdict, Verdicts
+from benchmarks.cascade_replies.judge import (
+    Axis,
+    AxisVerdict,
+    JudgedReply,
+    LengthVerdict,
+    Verdicts,
+)
 from benchmarks.cascade_replies.live import SpokenTurn
 from benchmarks.cascade_replies.replies import (
     CONVERSATIONS_PATH,
     ConversationSet,
     Language,
+    PromptName,
     ReplyRow,
     read_reply_rows,
 )
 
-LANGUAGES: tuple[Language, ...] = ("en", "zh")
-LENGTH_VERDICTS: tuple[LengthVerdict, ...] = ("too_short", "right", "too_long")
+LANGUAGES: tuple[Language, ...] = get_args(Language)
+LENGTH_VERDICTS: tuple[LengthVerdict, ...] = get_args(LengthVerdict)
 BOOTSTRAP_RESAMPLES = 2000
 BOOTSTRAP_SEED = 0
 
@@ -37,6 +45,8 @@ SYMBOLS = re.compile(
     r"|[\U0001f000-\U0001faff☀-➿]|[=^×÷√²³]|[{};]|\bdef |\bimport |\w\(\)",
     re.MULTILINE,
 )
+
+LengthBand = Literal["under", "in", "over"]
 
 
 def length_units(text: str, language: Language) -> int:
@@ -61,14 +71,14 @@ def table(header: list[str], rows: list[list[str | int | float]]) -> str:
     return "\n".join(lines)
 
 
-def axis_cell(verdicts: list[str]) -> str:
+def axis_cell(verdicts: list[AxisVerdict]) -> str:
     """Accepted over resolved, with resolved over all in brackets."""
     accepted = verdicts.count("accept")
     resolved = accepted + verdicts.count("fail")
     return f"{share(accepted, resolved)} ({share(resolved, len(verdicts))})"
 
 
-def length_band(row: ReplyRow, conversation_set: ConversationSet) -> str:
+def length_band(row: ReplyRow, conversation_set: ConversationSet) -> LengthBand:
     low, high = conversation_set.bands[row.language][row.category]
     units = length_units(row.reply, row.language)
     if units < low:
@@ -79,10 +89,12 @@ def length_band(row: ReplyRow, conversation_set: ConversationSet) -> str:
         return "in"
 
 
-def grouped(rows: list[ReplyRow]) -> dict[tuple[str, str, Language], list[ReplyRow]]:
+def grouped(
+    rows: list[ReplyRow],
+) -> dict[tuple[str, PromptName, Language], list[ReplyRow]]:
     """Rows by llm, prompt and language: llms and prompts in the order each first appears, then English before Chinese."""
-    groups: dict[tuple[str, str, Language], list[ReplyRow]] = collections.defaultdict(
-        list
+    groups: dict[tuple[str, PromptName, Language], list[ReplyRow]] = (
+        collections.defaultdict(list)
     )
     for row in rows:
         groups[(row.llm, row.prompt, row.language)].append(row)
@@ -140,8 +152,8 @@ def judge_rows(
                 language,
                 f"{len(verdicts)}/{len(group)}",
                 *(
-                    axis_cell([verdict.model_dump()[axis] for verdict in verdicts])
-                    for axis in AXES
+                    axis_cell([verdict.by_axis()[axis] for verdict in verdicts])
+                    for axis in get_args(Axis)
                 ),
                 axis_cell([verdict.joint() for verdict in verdicts]),
                 *(share(lengths.count(name), len(lengths)) for name in LENGTH_VERDICTS),
@@ -165,24 +177,25 @@ def joint_and_too_short(
 
 
 def baseline_rows(
-    rows: list[ReplyRow], judged: dict[str, JudgedReply], baseline: str
+    rows: list[ReplyRow], judged: dict[str, JudgedReply], baseline: PromptName
 ) -> list[list[str | int | float]]:
     """Each prompt's joint accept and too_short minus the baseline's, in points, with a 95% cluster bootstrap interval over conversations."""
     chooser = random.Random(BOOTSTRAP_SEED)
-    groups: dict[tuple[str, str], dict[str, list[ReplyRow]]] = collections.defaultdict(
-        lambda: collections.defaultdict(list)
+    groups: dict[tuple[str, PromptName], dict[str, list[ReplyRow]]] = (
+        collections.defaultdict(lambda: collections.defaultdict(list))
     )
     for row in rows:
         if row.reply_id in judged:
             groups[(row.llm, row.prompt)][row.conversation].append(row)
         else:
             pass
+    compared = {
+        (llm, prompt): by_conversation
+        for (llm, prompt), by_conversation in groups.items()
+        if prompt != baseline and (llm, baseline) in groups
+    }
     table_rows: list[list[str | int | float]] = []
-    for (llm, prompt), by_conversation in groups.items():
-        if prompt == baseline or (llm, baseline) not in groups:
-            continue
-        else:
-            pass
+    for (llm, prompt), by_conversation in compared.items():
         baseline_by_conversation = groups[(llm, baseline)]
         conversations = list(by_conversation)
         joint_deltas = []
@@ -192,15 +205,15 @@ def baseline_rows(
                 picked = conversations
             else:
                 picked = chooser.choices(conversations, k=len(conversations))
-            candidate = joint_and_too_short(
+            candidate_joint, candidate_too_short = joint_and_too_short(
                 [row for name in picked for row in by_conversation[name]], judged
             )
-            reference = joint_and_too_short(
+            baseline_joint, baseline_too_short = joint_and_too_short(
                 [row for name in picked for row in baseline_by_conversation[name]],
                 judged,
             )
-            joint_deltas.append(100 * (candidate[0] - reference[0]))
-            too_short_deltas.append(100 * (candidate[1] - reference[1]))
+            joint_deltas.append(100 * (candidate_joint - baseline_joint))
+            too_short_deltas.append(100 * (candidate_too_short - baseline_too_short))
         cells: list[str | int | float] = [llm, prompt, len(conversations)]
         for deltas in (joint_deltas, too_short_deltas):
             spread = sorted(deltas[1:])
@@ -215,7 +228,7 @@ def category_rows(
     group: list[ReplyRow],
     judged: dict[str, JudgedReply],
     conversation_set: ConversationSet,
-    prompts: list[str],
+    prompts: list[PromptName],
 ) -> list[list[str | int | float]]:
     table_rows: list[list[str | int | float]] = []
     for category in conversation_set.categories:
@@ -251,7 +264,7 @@ def category_rows(
 def expand_rows(
     rows: list[ReplyRow], conversation_set: ConversationSet
 ) -> list[list[str | int | float]]:
-    specs = {
+    turns_by_conversation = {
         conversation.id: conversation.turns
         for conversation in conversation_set.conversations
     }
@@ -260,7 +273,7 @@ def expand_rows(
     for (llm, prompt, language), group in grouped(rows).items():
         ratios = []
         for row in group:
-            expands = specs[row.conversation][row.turn].expands
+            expands = turns_by_conversation[row.conversation][row.turn].expands
             if expands is not None:
                 expanded = by_id[
                     f"{row.llm}/{row.prompt}/{row.conversation}/{row.sample}/{expands}"
@@ -341,16 +354,16 @@ def live_category_rows(
 
 
 def write_summary(
-    replies: list[Path],
+    reply_paths: list[Path],
     judged_path: Path,
-    out: Path,
-    baseline: str | None,
+    report_path: Path,
+    baseline: PromptName | None,
     live_dirs: list[Path],
 ) -> None:
     conversation_set = ConversationSet.model_validate_json(
         CONVERSATIONS_PATH.read_text()
     )
-    rows = read_reply_rows(replies)
+    rows = read_reply_rows(reply_paths)
     judged = {
         judged_reply.id: judged_reply
         for judged_reply in map(
@@ -387,7 +400,15 @@ def write_summary(
         "Each axis is accepted over resolved, with resolved over all in brackets; joint accepts when all four axes accept and fails when any fails.",
         "",
         table(
-            ["llm", "prompt", "lang", "judged", *AXES, "joint", *LENGTH_VERDICTS],
+            [
+                "llm",
+                "prompt",
+                "lang",
+                "judged",
+                *get_args(Axis),
+                "joint",
+                *LENGTH_VERDICTS,
+            ],
             judge_rows(rows, judged),
         ),
         "",
@@ -484,5 +505,5 @@ def write_summary(
         ]
     else:
         pass
-    out.write_text("\n".join(parts) + "\n")
-    print(f"wrote {out}")
+    report_path.write_text("\n".join(parts) + "\n")
+    print(f"wrote {report_path}")

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Replay the reply conversations through one chat server under named system prompts.
 
-The history is the cascade dialog's: each user turn is appended as said and each reply in full, prompt_messages gives what the model reads, and an empty reply is dropped with the user turns around it joined, as the dialog does. The request is the profile's openai_chat request, unstreamed. A conversation sample is a chain of requests whose rows are appended once it ends, so a rerun skips the chains already done.
+The history is the cascade dialog's: each user turn is appended as said and each reply in full, prompt_messages gives what the model reads, and an empty reply is dropped with the user turns around it joined, as the dialog does. The request body is the one the profile's openai_chat generator builds, sent unstreamed. A conversation sample is a chain of requests whose rows are appended once it ends, so a rerun skips the chains already done.
 """
 
 from __future__ import annotations
@@ -14,13 +14,16 @@ import time
 from pathlib import Path
 from typing import Literal
 
-import httpx
-import yaml
 from pydantic import BaseModel, ConfigDict, JsonValue
 
+from sglang_omni.config.manager import ConfigManager
 from sglang_omni.models.streaming_cascade.base import ChatMessage
+from sglang_omni.models.streaming_cascade.config import StreamingCascadePipelineConfig
 from sglang_omni.models.streaming_cascade.dialog import DialogConfig, prompt_messages
-from sglang_omni.models.streaming_cascade.generators import OpenAIChatGeneratorConfig
+from sglang_omni.models.streaming_cascade.generators import (
+    OpenAIChatGenerator,
+    OpenAIChatGeneratorConfig,
+)
 
 CONVERSATIONS_PATH = Path(__file__).with_name("conversations.json")
 NO_LENGTH_RULE_PROMPT = "You are a helpful voice assistant. Answer in the language the user speaks. Do not use markdown or emoji."
@@ -99,7 +102,7 @@ class Completion(BaseModel):
 class ReplyRow(BaseModel):
     llm: str
     served_model: str
-    prompt: str
+    prompt: PromptName
     conversation: str
     language: Language
     sample: int
@@ -125,59 +128,35 @@ def read_reply_rows(paths: list[Path]) -> list[ReplyRow]:
     ]
 
 
-def system_prompts(profile_dialog: DialogConfig) -> dict[PromptName, str]:
-    return {
-        "profile": profile_dialog.system_prompt,
-        "dialog_default": DialogConfig().system_prompt,
-        "no_length_rule": NO_LENGTH_RULE_PROMPT,
-        "one_sentence": ONE_SENTENCE_PROMPT,
-        "cap_with_exceptions": CAP_WITH_EXCEPTIONS_PROMPT,
-        "fitted_length_small_talk": FITTED_LENGTH_SMALL_TALK_PROMPT,
-    }
-
-
 async def replay_conversation(
-    client: httpx.AsyncClient,
-    llm: OpenAIChatGeneratorConfig,
-    base_url: str,
+    generator: OpenAIChatGenerator,
     llm_label: str,
     prompt_name: PromptName,
     system_prompt: str,
     conversation: Conversation,
     sample: int,
 ) -> list[ReplyRow]:
-    messages = [ChatMessage(role="system", content=system_prompt)]
+    history = [ChatMessage(role="system", content=system_prompt)]
     rows = []
-    for turn, spec in enumerate(conversation.turns):
-        messages.append(ChatMessage(role="user", content=spec.user.strip()))
-        if messages[-2].role == "assistant" and not messages[-2].content:
-            joined = f"{messages[-3].content} {messages[-1].content}"
-            messages = [*messages[:-3], ChatMessage(role="user", content=joined)]
+    for turn, conversation_turn in enumerate(conversation.turns):
+        history.append(ChatMessage(role="user", content=conversation_turn.user.strip()))
+        if history[-2].role == "assistant" and not history[-2].content:
+            joined = f"{history[-3].content} {history[-1].content}"
+            history = [*history[:-3], ChatMessage(role="user", content=joined)]
         else:
             pass
-        prompt = [
-            PromptMessage(role=message.role, content=message.content)
-            for message in prompt_messages(messages)
-        ]
-        body: dict[str, JsonValue] = {
-            "model": llm.model,
-            "messages": [message.model_dump() for message in prompt],
-            "stream": False,
-            "max_tokens": llm.max_tokens,
-        }
-        if llm.temperature is not None:
-            body["temperature"] = llm.temperature
-        else:
-            pass
-        body.update(llm.extra_body)
-        started = time.perf_counter()
-        response = await client.post(f"{base_url}/chat/completions", json=body)
+        messages = prompt_messages(history)
+        started_at = time.perf_counter()
+        response = await generator.client.post(
+            f"{generator.config.base_url.rstrip('/')}/chat/completions",
+            json={**generator.request_body(messages), "stream": False},
+        )
         response.raise_for_status()
-        latency_s = time.perf_counter() - started
+        latency_s = time.perf_counter() - started_at
         completion = Completion.model_validate_json(response.content)
         choice = completion.choices[0]
         reply = choice.message.content or ""
-        messages.append(ChatMessage(role="assistant", content=reply))
+        history.append(ChatMessage(role="assistant", content=reply))
         rows.append(
             ReplyRow(
                 llm=llm_label,
@@ -187,9 +166,12 @@ async def replay_conversation(
                 language=conversation.language,
                 sample=sample,
                 turn=turn,
-                category=spec.category,
-                user=spec.user,
-                messages=prompt,
+                category=conversation_turn.category,
+                user=conversation_turn.user,
+                messages=[
+                    PromptMessage(role=message.role, content=message.content)
+                    for message in messages
+                ],
                 reply=reply,
                 finish_reason=choice.finish_reason,
                 completion_tokens=completion.usage.completion_tokens,
@@ -199,9 +181,9 @@ async def replay_conversation(
     return rows
 
 
-def check_run_settings(out: Path, settings: dict[str, JsonValue]) -> None:
+def check_run_settings(output_path: Path, settings: dict[str, JsonValue]) -> None:
     """Record a run's settings beside its output, and refuse to append a run with other settings."""
-    settings_path = out.with_suffix(".meta.json")
+    settings_path = output_path.with_suffix(".meta.json")
     if not settings_path.is_file():
         settings_path.write_text(
             json.dumps(settings, ensure_ascii=False, indent=2) + "\n"
@@ -217,7 +199,7 @@ def check_run_settings(out: Path, settings: dict[str, JsonValue]) -> None:
 async def run_replies(
     profile_path: Path,
     llm_label: str,
-    out: Path,
+    output_path: Path,
     base_url: str | None,
     served_model: str | None,
     prompt_names: list[PromptName],
@@ -225,30 +207,36 @@ async def run_replies(
     samples: int,
     concurrency: int,
 ) -> None:
-    profile = yaml.safe_load(profile_path.read_text())
-    session_nodes = profile["session_nodes"]
-    llm = OpenAIChatGeneratorConfig.model_validate(
+    profile = ConfigManager.from_file(str(profile_path)).config
+    if not isinstance(profile, StreamingCascadePipelineConfig):
+        raise SystemExit(f"{profile_path} is not a streaming cascade profile")
+    else:
+        pass
+    graph = profile.component_graph()
+    profile_llm_config = graph.node("llm").component
+    profile_dialog = graph.node("dialog").component
+    if not isinstance(profile_llm_config, OpenAIChatGeneratorConfig):
+        raise SystemExit(f"{profile_path}: the llm node is not openai_chat")
+    elif not isinstance(profile_dialog, DialogConfig):
+        raise SystemExit(f"{profile_path}: the dialog node is not a dialog")
+    else:
+        pass
+    llm_config = OpenAIChatGeneratorConfig.model_validate(
         {
-            name: value
-            for name, value in session_nodes["llm"].items()
-            if name != "inputs"
+            **profile_llm_config.model_dump(),
+            "base_url": base_url or profile_llm_config.base_url,
+            "model": served_model or profile_llm_config.model,
+            "extra_body": {**profile_llm_config.extra_body, **extra_body},
         }
     )
-    profile_dialog = DialogConfig.model_validate(
-        {
-            name: value
-            for name, value in session_nodes["dialog"].items()
-            if name != "inputs"
-        }
-    )
-    llm = llm.model_copy(
-        update={
-            "model": served_model or llm.model,
-            "extra_body": {**llm.extra_body, **extra_body},
-        }
-    )
-    resolved_base_url = (base_url or llm.base_url).rstrip("/")
-    prompts = system_prompts(profile_dialog)
+    system_prompts: dict[PromptName, str] = {
+        "profile": profile_dialog.system_prompt,
+        "dialog_default": DialogConfig().system_prompt,
+        "no_length_rule": NO_LENGTH_RULE_PROMPT,
+        "one_sentence": ONE_SENTENCE_PROMPT,
+        "cap_with_exceptions": CAP_WITH_EXCEPTIONS_PROMPT,
+        "fitted_length_small_talk": FITTED_LENGTH_SMALL_TALK_PROMPT,
+    }
     conversations = ConversationSet.model_validate_json(
         CONVERSATIONS_PATH.read_text()
     ).conversations
@@ -257,25 +245,19 @@ async def run_replies(
         ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True
     ).stdout.strip()
     check_run_settings(
-        out,
+        output_path,
         {
             "llm": llm_label,
             "profile": str(profile_path),
             "commit": commit,
-            "base_url": resolved_base_url,
-            "request": {
-                "model": llm.model,
-                "max_tokens": llm.max_tokens,
-                "temperature": llm.temperature,
-                **llm.extra_body,
-            },
-            "prompts": dict(prompts),
+            "llm_config": llm_config.model_dump(mode="json"),
+            "system_prompts": dict(system_prompts),
             "conversations_sha256": hashlib.sha256(
                 CONVERSATIONS_PATH.read_bytes()
             ).hexdigest(),
         },
     )
-    lines = out.read_text().splitlines() if out.is_file() else []
+    lines = output_path.read_text().splitlines() if output_path.is_file() else []
     done = {
         (row.prompt, row.conversation, row.sample)
         for row in map(ReplyRow.model_validate_json, lines)
@@ -290,7 +272,8 @@ async def run_replies(
     print(f"{len(chains)} chains to run, {len(done)} already done")
     limit = asyncio.Semaphore(concurrency)
     finished = 0
-    async with httpx.AsyncClient(timeout=llm.timeout_s) as client:
+    generator = OpenAIChatGenerator(llm_config)
+    async with generator.client:
 
         async def run_chain(
             prompt_name: PromptName, conversation: Conversation, sample: int
@@ -298,16 +281,14 @@ async def run_replies(
             nonlocal finished
             async with limit:
                 rows = await replay_conversation(
-                    client,
-                    llm,
-                    resolved_base_url,
+                    generator,
                     llm_label,
                     prompt_name,
-                    prompts[prompt_name],
+                    system_prompts[prompt_name],
                     conversation,
                     sample,
                 )
-            with out.open("a") as stream:
+            with output_path.open("a") as stream:
                 stream.write("".join(row.model_dump_json() + "\n" for row in rows))
             finished += 1
             if finished % 20 == 0 or finished == len(chains):

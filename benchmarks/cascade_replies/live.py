@@ -13,6 +13,7 @@ import time
 import uuid
 import wave
 from pathlib import Path
+from typing import Literal
 
 import websockets
 from pydantic import BaseModel, JsonValue
@@ -26,9 +27,10 @@ from benchmarks.cascade_replies.replies import (
 
 INPUT_SAMPLE_RATE = 16000
 OUTPUT_SAMPLE_RATE = 24000
+PCM16_SAMPLE_BYTES = 2
 PACKET_MS = 100
-PACKET_BYTES = INPUT_SAMPLE_RATE * PACKET_MS // 1000 * 2
-OUTPUT_BYTES_PER_SECOND = OUTPUT_SAMPLE_RATE * 2
+PACKET_BYTES = INPUT_SAMPLE_RATE * PACKET_MS // 1000 * PCM16_SAMPLE_BYTES
+OUTPUT_BYTES_PER_SECOND = OUTPUT_SAMPLE_RATE * PCM16_SAMPLE_BYTES
 EVENT_TIMEOUT_S = 240
 MAX_FRAME_BYTES = 64 * 1024 * 1024
 # note (Haoling Pu): four conversations per language that together cover every category.
@@ -44,23 +46,38 @@ LIVE_CONVERSATIONS = (
 )
 
 
-class ResponseStatusDetails(BaseModel):
-    reason: str | None = None
-
-
-class ResponseState(BaseModel):
-    status: str | None = None
-    status_details: ResponseStatusDetails | None = None
+TurnMark = Literal["speech_stopped", "speech_end", "first_text", "first_audio", "done"]
 
 
 class ServerEvent(BaseModel):
-    """The fields read from a realtime server event."""
+    """The type of a realtime server event; the events read further have their own models below."""
 
     type: str
-    audio_end_ms: int | None = None
-    transcript: str | None = None
-    delta: str | None = None
-    response: ResponseState | None = None
+
+
+class SpeechStopped(BaseModel):
+    audio_end_ms: int
+
+
+class TranscriptionCompleted(BaseModel):
+    transcript: str
+
+
+class OutputDelta(BaseModel):
+    delta: str
+
+
+class ResponseStatusDetails(BaseModel):
+    reason: str
+
+
+class ResponseState(BaseModel):
+    status: str
+    status_details: ResponseStatusDetails
+
+
+class ResponseDone(BaseModel):
+    response: ResponseState
 
 
 class SpokenTurn(BaseModel):
@@ -71,8 +88,8 @@ class SpokenTurn(BaseModel):
     said: str
     transcript: str
     reply: str
-    status: str | None
-    reason: str | None
+    status: str
+    reason: str
     audio_s: float
     speech_stopped_ms: int | None
     first_text_ms: int | None
@@ -84,13 +101,13 @@ async def talk(
     url: str,
     conversation: Conversation,
     audio_dir: Path,
-    output: Path,
+    output_dir: Path,
     pause_s: float,
     session: dict[str, JsonValue],
 ) -> list[SpokenTurn]:
     microphone_queue: list[bytes] = []
     sent_at: list[tuple[int, float]] = []
-    events: asyncio.Queue[tuple[float, ServerEvent]] = asyncio.Queue()
+    events: asyncio.Queue[tuple[float, str | bytes]] = asyncio.Queue()
     spoken_turns = []
     async with websockets.connect(url, max_size=MAX_FRAME_BYTES) as websocket:
 
@@ -101,48 +118,50 @@ async def talk(
 
         async def receive() -> None:
             async for message in websocket:
-                await events.put(
-                    (time.perf_counter(), ServerEvent.model_validate_json(message))
-                )
+                await events.put((time.perf_counter(), message))
 
-        async def next_event() -> tuple[float, ServerEvent]:
-            received_at, event = await asyncio.wait_for(events.get(), EVENT_TIMEOUT_S)
-            if event.type == "error":
+        async def next_event() -> tuple[float, str, str | bytes]:
+            received_at, message = await asyncio.wait_for(events.get(), EVENT_TIMEOUT_S)
+            event_type = ServerEvent.model_validate_json(message).type
+            if event_type == "error":
                 raise RuntimeError(f"server error in {conversation.id}")
             else:
-                return received_at, event
+                return received_at, event_type, message
 
         async def microphone() -> None:
             sequence = 0
-            start = time.perf_counter()
+            started_at = time.perf_counter()
             while True:
                 await asyncio.sleep(
-                    max(0.0, start + sequence * PACKET_MS / 1000 - time.perf_counter())
+                    max(
+                        0.0,
+                        started_at + sequence * PACKET_MS / 1000 - time.perf_counter(),
+                    )
                 )
-                piece = (
+                packet = (
                     microphone_queue.pop(0) if microphone_queue else bytes(PACKET_BYTES)
                 )
                 sent_at.append((sequence * PACKET_MS, time.perf_counter()))
                 await send(
                     "input_audio_buffer.append",
                     {
-                        "audio": base64.b64encode(piece).decode("ascii"),
+                        "audio": base64.b64encode(packet).decode("ascii"),
                         "sglang": {"seq": sequence, "t_start_ms": sequence * PACKET_MS},
                     },
                 )
                 sequence += 1
 
         receiver = asyncio.create_task(receive())
-        _, created = await next_event()
-        if created.type != "session.created":
-            raise RuntimeError(f"expected session.created, got {created.type}")
+        _, event_type, _ = await next_event()
+        if event_type != "session.created":
+            raise RuntimeError(f"expected session.created, got {event_type}")
         else:
             pass
         await send("session.update", {"session": session})
-        while (await next_event())[1].type != "session.updated":
-            pass
+        while event_type != "session.updated":
+            _, event_type, _ = await next_event()
         sender = asyncio.create_task(microphone())
-        for turn, spec in enumerate(conversation.turns):
+        for turn, conversation_turn in enumerate(conversation.turns):
             with wave.open(str(audio_dir / f"{conversation.id}_{turn}.wav")) as source:
                 pcm = source.readframes(source.getnframes())
             pcm += bytes((-len(pcm)) % PACKET_BYTES)
@@ -150,42 +169,53 @@ async def talk(
                 pcm[offset : offset + PACKET_BYTES]
                 for offset in range(0, len(pcm), PACKET_BYTES)
             )
-            marks: dict[str, float] = {}
-            text = ""
+            marks: dict[TurnMark, float] = {}
+            reply = ""
             transcript = ""
             audio = bytearray()
-            response = ResponseState()
-            while "done" not in marks:
-                received_at, event = await next_event()
-                if event.type == "input_audio_buffer.speech_stopped":
+            response: ResponseState | None = None
+            while response is None:
+                received_at, event_type, message = await next_event()
+                if event_type == "input_audio_buffer.speech_stopped":
+                    audio_end_ms = SpeechStopped.model_validate_json(
+                        message
+                    ).audio_end_ms
                     marks["speech_stopped"] = received_at
                     marks["speech_end"] = next(
                         sent
                         for start_ms, sent in reversed(sent_at)
-                        if start_ms <= event.audio_end_ms
+                        if start_ms <= audio_end_ms
                     )
                 elif (
-                    event.type
+                    event_type
                     == "conversation.item.input_audio_transcription.completed"
                 ):
-                    transcript = event.transcript
-                elif event.type == "response.output_text.delta":
+                    transcript = TranscriptionCompleted.model_validate_json(
+                        message
+                    ).transcript
+                elif event_type == "response.output_text.delta":
                     marks.setdefault("first_text", received_at)
-                    text += event.delta
-                elif event.type == "response.output_audio.delta":
+                    reply += OutputDelta.model_validate_json(message).delta
+                elif event_type == "response.output_audio.delta":
                     marks.setdefault("first_audio", received_at)
-                    audio += base64.b64decode(event.delta)
-                elif event.type == "response.done":
+                    audio += base64.b64decode(
+                        OutputDelta.model_validate_json(message).delta
+                    )
+                elif event_type == "response.done":
                     marks["done"] = received_at
-                    response = event.response
+                    response = ResponseDone.model_validate_json(message).response
                 else:
                     pass
-            with wave.open(str(output / f"{conversation.id}_{turn}.wav"), "wb") as sink:
-                sink.setparams((1, 2, OUTPUT_SAMPLE_RATE, 0, "NONE", "not compressed"))
+            with wave.open(
+                str(output_dir / f"{conversation.id}_{turn}.wav"), "wb"
+            ) as sink:
+                sink.setnchannels(1)
+                sink.setsampwidth(PCM16_SAMPLE_BYTES)
+                sink.setframerate(OUTPUT_SAMPLE_RATE)
                 sink.writeframes(bytes(audio))
             audio_s = len(audio) / OUTPUT_BYTES_PER_SECOND
             speech_end = marks.get("speech_end")
-            since_speech_end_ms = {
+            since_speech_end_ms: dict[TurnMark, int | None] = {
                 mark: (
                     round((marks[mark] - speech_end) * 1000)
                     if speech_end is not None and mark in marks
@@ -197,14 +227,12 @@ async def talk(
                 conversation=conversation.id,
                 language=conversation.language,
                 turn=turn,
-                category=spec.category,
-                said=spec.user,
+                category=conversation_turn.category,
+                said=conversation_turn.user,
                 transcript=transcript,
-                reply=text,
+                reply=reply,
                 status=response.status,
-                reason=(
-                    response.status_details.reason if response.status_details else None
-                ),
+                reason=response.status_details.reason,
                 audio_s=round(audio_s, 2),
                 speech_stopped_ms=since_speech_end_ms["speech_stopped"],
                 first_text_ms=since_speech_end_ms["first_text"],
@@ -224,7 +252,7 @@ async def talk(
 async def run_live(
     url: str,
     audio_dir: Path,
-    output: Path,
+    output_dir: Path,
     pause_s: float,
     server_vad_silence_ms: int | None,
 ) -> None:
@@ -234,7 +262,7 @@ async def run_live(
             CONVERSATIONS_PATH.read_text()
         ).conversations
     }
-    output.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
     session: dict[str, JsonValue] = {"output_modalities": ["text", "audio"]}
     if server_vad_silence_ms is not None:
         session["audio"] = {
@@ -250,8 +278,8 @@ async def run_live(
     spoken_turns = []
     for conversation_id in LIVE_CONVERSATIONS:
         spoken_turns += await talk(
-            url, conversations[conversation_id], audio_dir, output, pause_s, session
+            url, conversations[conversation_id], audio_dir, output_dir, pause_s, session
         )
-    (output / "turns.jsonl").write_text(
+    (output_dir / "turns.jsonl").write_text(
         "".join(spoken_turn.model_dump_json() + "\n" for spoken_turn in spoken_turns)
     )

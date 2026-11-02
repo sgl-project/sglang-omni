@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 from pathlib import Path
 from typing import get_args
+
+from pydantic import JsonValue, TypeAdapter
 
 from benchmarks.cascade_replies.judge import judge_controls, judge_replies
 from benchmarks.cascade_replies.live import run_live
@@ -48,6 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     replies.add_argument(
         "--extra-body",
+        type=TypeAdapter(dict[str, JsonValue]).validate_json,
         default="{}",
         help='JSON merged into the profile\'s extra_body, such as {"min_tokens": 1}',
     )
@@ -105,7 +107,9 @@ def build_parser() -> argparse.ArgumentParser:
     summary.add_argument("--judged", type=Path, required=True)
     summary.add_argument("--out", type=Path, required=True)
     summary.add_argument(
-        "--baseline", help="Prompt the other prompts are compared against"
+        "--baseline",
+        choices=get_args(PromptName),
+        help="Prompt the other prompts are compared against",
     )
     summary.add_argument(
         "--live",
@@ -122,43 +126,60 @@ def main() -> None:
     if args.command == "replies":
         asyncio.run(
             run_replies(
-                args.profile,
-                args.llm,
-                args.out,
-                args.base_url,
-                args.served_model,
-                args.prompts,
-                json.loads(args.extra_body),
-                args.samples,
-                args.concurrency,
+                profile_path=args.profile,
+                llm_label=args.llm,
+                output_path=args.out,
+                base_url=args.base_url,
+                served_model=args.served_model,
+                prompt_names=args.prompts,
+                extra_body=args.extra_body,
+                samples=args.samples,
+                concurrency=args.concurrency,
             )
         )
-    elif args.command in ("judge", "controls"):
-        judge_settings = (
-            args.out,
-            args.base_url,
-            args.served_model,
-            args.enable_thinking,
-            args.max_tokens,
-            args.concurrency,
-            args.timeout_s,
+    elif args.command == "judge":
+        asyncio.run(
+            judge_replies(
+                reply_paths=args.replies,
+                output_path=args.out,
+                base_url=args.base_url,
+                served_model=args.served_model,
+                enable_thinking=args.enable_thinking,
+                max_tokens=args.max_tokens,
+                concurrency=args.concurrency,
+                timeout_s=args.timeout_s,
+            )
         )
-        if args.command == "judge":
-            asyncio.run(judge_replies(args.replies, *judge_settings))
-        else:
-            asyncio.run(judge_controls(*judge_settings))
+    elif args.command == "controls":
+        asyncio.run(
+            judge_controls(
+                output_path=args.out,
+                base_url=args.base_url,
+                served_model=args.served_model,
+                enable_thinking=args.enable_thinking,
+                max_tokens=args.max_tokens,
+                concurrency=args.concurrency,
+                timeout_s=args.timeout_s,
+            )
+        )
     elif args.command == "live":
         asyncio.run(
             run_live(
-                args.url,
-                args.audio_dir,
-                args.output,
-                args.pause_s,
-                args.server_vad_silence_ms,
+                url=args.url,
+                audio_dir=args.audio_dir,
+                output_dir=args.output,
+                pause_s=args.pause_s,
+                server_vad_silence_ms=args.server_vad_silence_ms,
             )
         )
     elif args.command == "summary":
-        write_summary(args.replies, args.judged, args.out, args.baseline, args.live)
+        write_summary(
+            reply_paths=args.replies,
+            judged_path=args.judged,
+            report_path=args.out,
+            baseline=args.baseline,
+            live_dirs=args.live,
+        )
     else:
         raise AssertionError(f"unhandled command {args.command}")
 

@@ -22,7 +22,6 @@ from benchmarks.cascade_replies.replies import (
     ConversationSet,
     Language,
     PromptMessage,
-    ReplyRow,
     check_run_settings,
     read_reply_rows,
 )
@@ -31,7 +30,6 @@ ASSETS = Path(__file__).parent
 PROMPT_PATH = ASSETS / "judge-prompt.txt"
 SCHEMA_PATH = ASSETS / "judge-response.schema.json"
 CONTROLS_PATH = ASSETS / "judge-controls.jsonl"
-AXES = ("relevance", "completeness", "directness", "listenability")
 JUDGE_SEED = 1
 
 AxisVerdict = Literal["accept", "fail", "unresolved"]
@@ -71,12 +69,17 @@ class Verdicts(BaseModel):
     listenability: AxisVerdict
     length_fit: LengthVerdict | None
 
-    def axis_verdicts(self) -> list[AxisVerdict]:
-        return [self.relevance, self.completeness, self.directness, self.listenability]
+    def by_axis(self) -> dict[Axis, AxisVerdict]:
+        return {
+            "relevance": self.relevance,
+            "completeness": self.completeness,
+            "directness": self.directness,
+            "listenability": self.listenability,
+        }
 
     def joint(self) -> AxisVerdict:
         """Accepts when all four axes accept and fails when any fails."""
-        axis_verdicts = self.axis_verdicts()
+        axis_verdicts = list(self.by_axis().values())
         if "fail" in axis_verdicts:
             return "fail"
         elif all(verdict == "accept" for verdict in axis_verdicts):
@@ -89,7 +92,7 @@ class JudgedReply(BaseModel):
     id: str
     status: Literal["judged", "empty_reply", "truncated"]
     verdicts: Verdicts
-    converted: list[Axis] = Field(default_factory=list)
+    unquoted_axes: list[Axis] = Field(default_factory=list)
     judgment: Judgment | None = None
     completion_tokens: int | None = None
 
@@ -125,62 +128,11 @@ class JudgeControl(BaseModel):
     expected: dict[Axis | Literal["length_fit"], AxisVerdict | LengthVerdict]
 
 
-def reply_cases(
-    rows: list[ReplyRow], conversation_set: ConversationSet
-) -> dict[str, JudgeCase]:
-    specs = {
-        conversation.id: conversation.turns
-        for conversation in conversation_set.conversations
-    }
-    replies = {row.reply_id: row.reply for row in rows}
-    cases = {}
-    for row in rows:
-        spec = specs[row.conversation][row.turn]
-        if spec.expands is not None:
-            expanded_id = (
-                f"{row.llm}/{row.prompt}/{row.conversation}/{row.sample}/{spec.expands}"
-            )
-            expanded_reply = replies[expanded_id]
-        else:
-            expanded_reply = None
-        cases[row.reply_id] = JudgeCase(
-            language=row.language,
-            category=row.category,
-            category_expectation=conversation_set.categories[row.category],
-            key_points=spec.points,
-            conversation=row.messages[1:-1],
-            user_turn=row.messages[-1].content,
-            reply=row.reply,
-            note=spec.note,
-            expanded_reply=expanded_reply,
-        )
-    return cases
-
-
-def control_cases(
-    controls: list[JudgeControl], conversation_set: ConversationSet
-) -> dict[str, JudgeCase]:
-    return {
-        control.id: JudgeCase(
-            language=control.language,
-            category=control.category,
-            category_expectation=conversation_set.categories[control.category],
-            key_points=control.points,
-            conversation=control.conversation,
-            user_turn=control.user,
-            reply=control.reply,
-            note=control.note,
-            expanded_reply=control.expanded_reply,
-        )
-        for control in controls
-    }
-
-
 def verdicts_of(judgment: Judgment, reply: str) -> tuple[Verdicts, list[Axis]]:
     """The verdict of every axis, and the axes whose quote was not found in the reply."""
     spaced_reply = " ".join(reply.split())
     axis_verdicts: dict[Axis, AxisVerdict] = {}
-    converted: list[Axis] = []
+    unquoted_axes: list[Axis] = []
     for axis, axis_judgment in (
         ("relevance", judgment.relevance),
         ("completeness", judgment.completeness),
@@ -194,10 +146,10 @@ def verdicts_of(judgment: Judgment, reply: str) -> tuple[Verdicts, list[Axis]]:
             axis_verdicts[axis] = axis_judgment.verdict
         else:
             axis_verdicts[axis] = "unresolved"
-            converted.append(axis)
+            unquoted_axes.append(axis)
     return (
         Verdicts(**axis_verdicts, length_fit=judgment.length_fit.verdict),
-        converted,
+        unquoted_axes,
     )
 
 
@@ -205,8 +157,7 @@ async def judge_case(
     client: httpx.AsyncClient,
     base_url: str,
     served_model: str,
-    enable_thinking: bool,
-    max_tokens: int,
+    decoding: dict[str, JsonValue],
     judge_prompt: str,
     schema: dict[str, JsonValue],
     case_id: str,
@@ -238,15 +189,11 @@ async def judge_case(
                 "content": f"Response JSON schema:\n{json.dumps(schema)}\n\nCase:\n{case_text}",
             },
         ],
-        "temperature": 0.0,
-        "top_p": 1.0,
-        "max_tokens": max_tokens,
-        "seed": JUDGE_SEED,
+        **decoding,
         "response_format": {
             "type": "json_schema",
             "json_schema": {"name": "cascade_reply_judgment", "schema": schema},
         },
-        "chat_template_kwargs": {"enable_thinking": enable_thinking},
     }
     response = await client.post(f"{base_url}/chat/completions", json=body)
     response.raise_for_status()
@@ -267,12 +214,12 @@ async def judge_case(
         )
     else:
         judgment = Judgment.model_validate_json(choice.message.content or "")
-        verdicts, converted = verdicts_of(judgment, case.reply)
+        verdicts, unquoted_axes = verdicts_of(judgment, case.reply)
         return JudgedReply(
             id=case_id,
             status="judged",
             verdicts=verdicts,
-            converted=converted,
+            unquoted_axes=unquoted_axes,
             judgment=judgment,
             completion_tokens=completion.usage.completion_tokens,
         )
@@ -280,7 +227,7 @@ async def judge_case(
 
 async def judge_all(
     cases: dict[str, JudgeCase],
-    out: Path,
+    output_path: Path,
     base_url: str,
     served_model: str,
     enable_thinking: bool,
@@ -288,27 +235,28 @@ async def judge_all(
     concurrency: int,
     timeout_s: float,
 ) -> dict[str, JudgedReply]:
-    """Judge the cases not yet in out, appending each judgment as it arrives."""
+    """Judge the cases not yet in output_path, appending each judgment as it arrives."""
     judge_prompt = PROMPT_PATH.read_text()
     schema = json.loads(SCHEMA_PATH.read_text())
     resolved_base_url = base_url.rstrip("/")
+    decoding: dict[str, JsonValue] = {
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "max_tokens": max_tokens,
+        "seed": JUDGE_SEED,
+        "chat_template_kwargs": {"enable_thinking": enable_thinking},
+    }
     check_run_settings(
-        out,
+        output_path,
         {
             "served_model": served_model,
             "base_url": resolved_base_url,
-            "enable_thinking": enable_thinking,
-            "decoding": {
-                "temperature": 0.0,
-                "top_p": 1.0,
-                "max_tokens": max_tokens,
-                "seed": JUDGE_SEED,
-            },
+            "decoding": decoding,
             "prompt_sha256": hashlib.sha256(PROMPT_PATH.read_bytes()).hexdigest(),
             "schema_sha256": hashlib.sha256(SCHEMA_PATH.read_bytes()).hexdigest(),
         },
     )
-    lines = out.read_text().splitlines() if out.is_file() else []
+    lines = output_path.read_text().splitlines() if output_path.is_file() else []
     results = {
         judged.id: judged for judged in map(JudgedReply.model_validate_json, lines)
     }
@@ -323,15 +271,14 @@ async def judge_all(
                     client,
                     resolved_base_url,
                     served_model,
-                    enable_thinking,
-                    max_tokens,
+                    decoding,
                     judge_prompt,
                     schema,
                     case_id,
                     cases[case_id],
                 )
             results[case_id] = judged
-            with out.open("a") as stream:
+            with output_path.open("a") as stream:
                 stream.write(judged.model_dump_json() + "\n")
             if len(results) % 100 == 0:
                 print(f"{len(results)}/{len(cases)} judged")
@@ -343,8 +290,8 @@ async def judge_all(
 
 
 async def judge_replies(
-    replies: list[Path],
-    out: Path,
+    reply_paths: list[Path],
+    output_path: Path,
     base_url: str,
     served_model: str,
     enable_thinking: bool,
@@ -355,10 +302,35 @@ async def judge_replies(
     conversation_set = ConversationSet.model_validate_json(
         CONVERSATIONS_PATH.read_text()
     )
-    cases = reply_cases(read_reply_rows(replies), conversation_set)
+    rows = read_reply_rows(reply_paths)
+    turns_by_conversation = {
+        conversation.id: conversation.turns
+        for conversation in conversation_set.conversations
+    }
+    reply_by_id = {row.reply_id: row.reply for row in rows}
+    cases = {}
+    for row in rows:
+        conversation_turn = turns_by_conversation[row.conversation][row.turn]
+        if conversation_turn.expands is not None:
+            expanded_reply = reply_by_id[
+                f"{row.llm}/{row.prompt}/{row.conversation}/{row.sample}/{conversation_turn.expands}"
+            ]
+        else:
+            expanded_reply = None
+        cases[row.reply_id] = JudgeCase(
+            language=row.language,
+            category=row.category,
+            category_expectation=conversation_set.categories[row.category],
+            key_points=conversation_turn.points,
+            conversation=row.messages[1:-1],
+            user_turn=row.messages[-1].content,
+            reply=row.reply,
+            note=conversation_turn.note,
+            expanded_reply=expanded_reply,
+        )
     results = await judge_all(
         cases,
-        out,
+        output_path,
         base_url,
         served_model,
         enable_thinking,
@@ -370,7 +342,7 @@ async def judge_replies(
 
 
 async def judge_controls(
-    out: Path,
+    output_path: Path,
     base_url: str,
     served_model: str,
     enable_thinking: bool,
@@ -386,9 +358,23 @@ async def judge_controls(
         JudgeControl.model_validate_json(line)
         for line in CONTROLS_PATH.read_text().splitlines()
     ]
+    cases = {
+        control.id: JudgeCase(
+            language=control.language,
+            category=control.category,
+            category_expectation=conversation_set.categories[control.category],
+            key_points=control.points,
+            conversation=control.conversation,
+            user_turn=control.user,
+            reply=control.reply,
+            note=control.note,
+            expanded_reply=control.expanded_reply,
+        )
+        for control in controls
+    }
     results = await judge_all(
-        control_cases(controls, conversation_set),
-        out,
+        cases,
+        output_path,
         base_url,
         served_model,
         enable_thinking,
@@ -399,11 +385,12 @@ async def judge_controls(
     matched = 0
     expected_count = 0
     for control in controls:
-        verdicts = results[control.id].verdicts.model_dump()
+        verdicts = results[control.id].verdicts
+        judged_verdicts = {**verdicts.by_axis(), "length_fit": verdicts.length_fit}
         misses = {
-            axis: (expected, verdicts[axis])
+            axis: (expected, judged_verdicts[axis])
             for axis, expected in control.expected.items()
-            if verdicts[axis] != expected
+            if judged_verdicts[axis] != expected
         }
         matched += len(control.expected) - len(misses)
         expected_count += len(control.expected)
