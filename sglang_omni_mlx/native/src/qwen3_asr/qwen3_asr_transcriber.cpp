@@ -9,6 +9,7 @@
 
 namespace qwen3_asr {
 
+using omni_common::CollapseTokenLoop;
 using omni_common::IsTokenLoop;
 using omni_common::IsUnicodeSpace;
 
@@ -225,6 +226,7 @@ Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
   mx::array penalty_by_token_id = mx::ones(prefill_logits.shape(), mx::float32);
   std::vector<int> output_ids;
   FinishReason finish_reason = FinishReason::kLength;
+  bool stopped_on_token_loop = false;
   while (static_cast<int>(output_ids.size()) < max_new_tokens) {
     if (cancel.load()) {
       throw TranscriptionCancelled();
@@ -254,15 +256,22 @@ Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
       break;
     } else if (options.stop_on_token_loop && IsTokenLoop(output_ids)) {
       finish_reason = FinishReason::kStop;
+      stopped_on_token_loop = true;
       break;
     } else {
     }
   }
-  auto [text, language] = SplitOutput(output_ids, options);
   const bool ended_on_stop = !output_ids.empty() && is_stop(output_ids.back());
+  const int generated_token_count =
+      static_cast<int>(output_ids.size()) - (ended_on_stop ? 1 : 0);
+  // Note (Minyi Tang): the repeats are the model feeding on its own output,
+  // not speech, so the transcript keeps one copy of the looping unit.
+  auto [text, language] = SplitOutput(
+      stopped_on_token_loop ? CollapseTokenLoop(output_ids) : output_ids,
+      options);
   return {options.prefix_text + text,
           language,
-          static_cast<int>(output_ids.size()) - (ended_on_stop ? 1 : 0),
+          generated_token_count,
           finish_reason,
           {}};
 }
