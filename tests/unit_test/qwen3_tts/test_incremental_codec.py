@@ -5,12 +5,15 @@ from __future__ import annotations
 import copy
 import os
 import random
+from pathlib import Path
 
 import pytest
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch._dynamo.utils import counters
 
+from sglang_omni.models.qwen3_tts import incremental_codec
 from sglang_omni.models.qwen3_tts.codec_state_arena import Qwen3TTSCodecStateArena
 from sglang_omni.models.qwen3_tts.compat import (
     apply_qwen_tts_transformers_compatibility_patches,
@@ -447,6 +450,166 @@ def test_slot_causal_transconv_matches_whole(
 
     torch.testing.assert_close(torch.cat(actual, dim=1), expected)
     assert torch.count_nonzero(overlap_pool[:2]).item() == 0
+
+
+def slot_ops_step(
+    padded: torch.Tensor,
+    history_pool: torch.Tensor,
+    slot_index: torch.Tensor,
+    bias: torch.Tensor,
+    alpha_scale: torch.Tensor,
+    inverse_beta: torch.Tensor,
+    residual: torch.Tensor,
+    sum_out: torch.Tensor,
+    outputs: list[torch.Tensor],
+    overlap: torch.Tensor,
+    overlap_pool: torch.Tensor,
+    fresh_frames: int,
+) -> tuple[torch.Tensor, ...]:
+    incremental_codec.slot_history_exchange(
+        padded, history_pool, slot_index, fresh_frames, 4
+    )
+    frames = padded[:, 6 : 6 + fresh_frames].contiguous()
+    coefficients = incremental_codec.SnakeBetaCoefficients(
+        alpha_scale=alpha_scale, inverse_beta=inverse_beta
+    )
+    views = [output[:, 2 : 2 + fresh_frames] for output in outputs]
+    incremental_codec.slot_bias_snake_beta(frames, bias, coefficients, views[0])
+    incremental_codec.slot_bias_snake_beta(
+        frames, bias, coefficients, views[1], residual=residual
+    )
+    incremental_codec.slot_bias_snake_beta(
+        frames, bias, coefficients, views[2], sum_out=sum_out
+    )
+    incremental_codec.slot_bias_snake_beta(
+        frames, bias, coefficients, views[3], residual=sum_out, sum_out=sum_out
+    )
+    exchange = (
+        incremental_codec.compiled_overlap_exchange
+        if torch.compiler.is_dynamo_compiling()
+        else incremental_codec.overlap_exchange
+    )
+    exchange(overlap, overlap_pool, slot_index, 8, False, 4)
+    return (
+        padded.clone(),
+        history_pool.clone(),
+        sum_out.clone(),
+        *(output.clone() for output in outputs),
+        overlap.clone(),
+        overlap_pool.clone(),
+        views[3].clone(),
+    )
+
+
+def slot_ops_inputs(fresh_frames: int) -> list:
+    torch.manual_seed(3403)
+    device = torch.device("cuda", torch.cuda.current_device())
+    rows, channels = 4, 16
+    values = {
+        "padded": torch.randn(
+            rows, channels, 6 + fresh_frames + 2, device=device, dtype=torch.bfloat16
+        ).transpose(1, 2),
+        "history_pool": torch.randn(
+            5, 6, channels, device=device, dtype=torch.bfloat16
+        ),
+        "slot_index": torch.tensor([3, 1, 4, 4], device=device),
+        "bias": torch.randn(channels, device=device, dtype=torch.bfloat16),
+        "alpha_scale": torch.randn(channels, device=device, dtype=torch.bfloat16).exp(),
+        "inverse_beta": torch.rand(channels, device=device, dtype=torch.bfloat16),
+        "residual": torch.randn(
+            rows, fresh_frames, channels, device=device, dtype=torch.bfloat16
+        ),
+        "sum_out": torch.randn(
+            rows, fresh_frames, channels, device=device, dtype=torch.bfloat16
+        ),
+        "outputs": [
+            torch.full(
+                (rows, fresh_frames + 5, channels),
+                7,
+                device=device,
+                dtype=torch.bfloat16,
+            )
+            for _ in range(4)
+        ],
+        "overlap": torch.randn(rows, 11, channels, device=device, dtype=torch.bfloat16),
+        "overlap_pool": torch.randn(
+            5, 3, channels, device=device, dtype=torch.bfloat16
+        ),
+    }
+    return [*values.values(), fresh_frames]
+
+
+def clone_slot_ops_inputs(values: list) -> list:
+    return [
+        (
+            [item.clone() for item in value]
+            if isinstance(value, list)
+            else (
+                value.clone(memory_format=torch.preserve_format)
+                if isinstance(value, torch.Tensor)
+                else value
+            )
+        )
+        for value in values
+    ]
+
+
+def copy_slot_ops_inputs(targets: list, sources: list) -> None:
+    for target, source in zip(targets, sources):
+        if isinstance(target, list):
+            for item, item_source in zip(target, source):
+                item.copy_(item_source)
+        elif isinstance(target, torch.Tensor):
+            target.copy_(source)
+        else:
+            pass
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(
+    not current_platform.is_cuda(), reason="the slot convs run on NVIDIA CUDA only"
+)
+@pytest.mark.parametrize("fresh_frames", [1, 8])
+def test_compiled_slot_ops_keep_their_view_writes_and_slot_state(
+    fresh_frames: int, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(tmp_path))
+    initial = slot_ops_inputs(fresh_frames)
+    eager_inputs = clone_slot_ops_inputs(initial)
+    compiled_inputs = clone_slot_ops_inputs(initial)
+    compiled = torch.compile(slot_ops_step, fullgraph=True, dynamic=False)
+
+    with torch.inference_mode():
+        for _ in range(2):
+            expected = slot_ops_step(*eager_inputs)
+            actual = compiled(*compiled_inputs)
+            assert all(
+                torch.equal(first, second) for first, second in zip(actual, expected)
+            )
+
+        stream = torch.cuda.Stream()
+        captured_inputs = clone_slot_ops_inputs(initial)
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            compiled(*captured_inputs)
+        stream.synchronize()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, stream=stream):
+            captured = compiled(*captured_inputs)
+        copy_slot_ops_inputs(captured_inputs, initial)
+        graph.replay()
+        torch.cuda.synchronize()
+        expected = slot_ops_step(*clone_slot_ops_inputs(initial))
+
+    assert all(torch.equal(first, second) for first, second in zip(captured, expected))
+    untouched_slots = [0, 2, 4]
+    assert torch.equal(compiled_inputs[1][untouched_slots], initial[1][untouched_slots])
+    assert torch.equal(
+        compiled_inputs[10][untouched_slots], initial[10][untouched_slots]
+    )
+    for output in compiled_inputs[8]:
+        assert bool((output[:, :2] == 7).all())
+        assert bool((output[:, 2 + fresh_frames :] == 7).all())
 
 
 @pytest.mark.accelerator
@@ -1677,6 +1840,138 @@ def test_arena_rings_keep_each_slot_apart_across_cohorts_and_graph_replays() -> 
         for ring in (*shared_arena.key_rings, *shared_arena.value_rings)
     ]
     assert not any(rows.any() for rows in untouched_ring_rows)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(
+    not current_platform.is_cuda(), reason="channels-last convs run on NVIDIA CUDA only"
+)
+def test_compiled_decode_shares_a_program_per_size_class_and_tracks_fp32(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
+    apply_qwen_tts_transformers_compatibility_patches()
+    from qwen_tts.core.tokenizer_12hz.configuration_qwen3_tts_tokenizer_v2 import (
+        Qwen3TTSTokenizerV2DecoderConfig,
+    )
+    from qwen_tts.core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2 import (
+        Qwen3TTSTokenizerV2DecoderTransformerModel,
+    )
+
+    torch.manual_seed(33)
+    device = torch.device("cuda", torch.cuda.current_device())
+    decoder = Decoder(block_channels=(16, 8))
+    decoder.pre_transformer = Qwen3TTSTokenizerV2DecoderTransformerModel(
+        Qwen3TTSTokenizerV2DecoderConfig(
+            hidden_size=512,
+            latent_dim=2,
+            num_attention_heads=16,
+            num_key_value_heads=16,
+            head_dim=64,
+            intermediate_size=1024,
+            num_hidden_layers=2,
+        )
+    )
+    decoder = decoder.to(device).eval()
+    reference = Qwen3TTSIncrementalDecoder(copy.deepcopy(decoder))
+    incremental = Qwen3TTSIncrementalDecoder(decoder.bfloat16())
+    arena = Qwen3TTSCodecStateArena(
+        incremental,
+        num_slots=4,
+        device=device,
+        dtype=torch.bfloat16,
+        in_place_frames=8,
+    )
+
+    def compiled_runner(
+        fresh_frames: tuple[int, ...], batch_sizes: tuple[int, ...]
+    ) -> Qwen3TTSIncrementalCodecCudaGraphRunner:
+        return Qwen3TTSIncrementalCodecCudaGraphRunner(
+            incremental,
+            device=device,
+            dtype=torch.bfloat16,
+            num_quantizers=2,
+            mode="warm",
+            fresh_frames=fresh_frames,
+            batch_sizes=batch_sizes,
+            min_free_gb=0.0,
+            compile_fresh_frames=fresh_frames,
+            arena=arena,
+            graph_pool=IncrementalCodecGraphPool(stream_priority=0),
+        )
+
+    shared_runner = compiled_runner((4, 8), (2, 4))
+    torch.compiler.reset()
+    programs = counters["stats"]["unique_graphs"]
+    shared_runner.capture()
+    assert sorted(incremental.compiled_shapes) == [(2, 4), (2, 8), (4, 4), (4, 8)]
+    assert len(shared_runner.graphs) == 4
+    assert counters["stats"]["unique_graphs"] == programs + 1
+
+    other_runner = compiled_runner((3,), (1, 2))
+    other_runner.capture()
+    assert {(1, 3), (2, 3)} <= incremental.compiled_shapes
+    assert [arena.acquire() for _ in range(4)] == [0, 1, 2, 3]
+
+    with torch.inference_mode():
+        for slots, widths in (([0, 1], (8, 4, 3, 8, 4)), ([2], (3, 3, 3))):
+            codes = torch.randint(0, 16, (len(slots), 2, sum(widths)), device=device)
+            states = {
+                name: Qwen3TTSIncrementalCodecState(
+                    frame_positions=torch.zeros(
+                        len(slots), dtype=torch.long, device=device
+                    )
+                )
+                for name in ("eager", "reference")
+            }
+            waveforms = {"compiled": [], "eager": [], "reference": []}
+            offset = 0
+            for width in widths:
+                chunk = codes[..., offset : offset + width]
+                runner = other_runner if width == 3 else shared_runner
+                waveform = runner.decode_slots(chunk, slots)
+                assert waveform is not None
+                waveforms["compiled"].append(waveform.clone())
+                waveforms["eager"].append(incremental.decode(chunk, states["eager"]))
+                waveforms["reference"].append(
+                    reference.decode(chunk, states["reference"])
+                )
+                offset += width
+            torch.cuda.synchronize()
+            expected = torch.cat(waveforms["reference"], dim=-1)
+            assert relative_error(
+                torch.cat(waveforms["compiled"], dim=-1), expected
+            ) <= 1.5 * relative_error(torch.cat(waveforms["eager"], dim=-1), expected)
+            compiled_state = arena.gather(slots)
+            assert compiled_state.frame_positions.tolist() == [sum(widths)] * len(slots)
+            retained = {}
+            for name, state in (
+                ("compiled", compiled_state),
+                ("eager", states["eager"]),
+                ("reference", states["reference"]),
+            ):
+                histories, overlaps = state_rows(state)[2:]
+                assert histories.keys() == state_rows(states["reference"])[2].keys()
+                retained[name] = torch.cat(
+                    [
+                        rows[key].flatten().float()
+                        for rows in (histories, overlaps)
+                        for key in sorted(rows)
+                    ]
+                )
+            assert relative_error(
+                retained["compiled"], retained["reference"]
+            ) <= 1.5 * relative_error(retained["eager"], retained["reference"])
+        untouched = arena.gather([3])
+
+    assert untouched.frame_positions.tolist() == [0]
+    assert not any(
+        rows.any() for mapping in state_rows(untouched)[2:] for rows in mapping.values()
+    )
+    assert not any(
+        ring.view(-1, arena.ring_frames, ring.shape[1])[3].any()
+        for ring in (*arena.key_rings, *arena.value_rings)
+    )
 
 
 @pytest.mark.accelerator

@@ -1,4 +1,4 @@
-# Installation — Ascend NPU
+# Installation — NPU
 
 ## Prerequisites
 

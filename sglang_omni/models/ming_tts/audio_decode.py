@@ -14,6 +14,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers.cache_utils import Cache, CacheLayerMixin
 
+from sglang_omni.models.ming_tts.audio_upsample import (
+    can_upsample_linear_bth,
+    upsample_linear_bth,
+)
 from sglang_omni.models.ming_tts.payload_types import (
     load_ming_tts_state,
     store_ming_tts_state,
@@ -189,7 +193,11 @@ class FixedQwenCacheLayer(CacheLayerMixin):
 class AudioVAEFixedStreamingTransition:
 
     def __init__(
-        self, decoder: Decoder, *, capacity: int, max_step_latents: int
+        self,
+        decoder: Decoder,
+        *,
+        capacity: int,
+        max_step_latents: int,
     ) -> None:
         if (
             isinstance(capacity, bool)
@@ -553,7 +561,10 @@ class AudioVAEFixedStreamingTransition:
             ),
             current_last,
         )
-        upsampled = self.upsampler(timeline.transpose(1, 2)).transpose(1, 2)
+        if can_upsample_linear_bth(timeline):
+            upsampled = upsample_linear_bth(timeline, scale_factor=self.scale_factor)
+        else:
+            upsampled = self.upsampler(timeline.transpose(1, 2)).transpose(1, 2)
         frames = upsampled[
             :, self.scale_factor : self.scale_factor + self.max_frames
         ].to(torch.float32)

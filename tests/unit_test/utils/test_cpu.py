@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -121,3 +122,38 @@ def test_gpu_local_affinity(
     monkeypatch.setenv(cpu.GPU_LOCAL_CPUS_ENV, switch)
 
     assert cpu.gpu_local_affinity([0]) == expected
+
+
+@pytest.mark.parametrize("local_cpu_text", ["0-3,8,10-11", None, "invalid"])
+@pytest.mark.parametrize("domain", [0, 0x10000])
+def test_gpu_cpu_locality_uses_sysfs_without_changing_thread_affinity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    local_cpu_text: str | None,
+    domain: int,
+) -> None:
+    """A truncated PCI domain can select another device's CPU locality."""
+    local_cpu_file = tmp_path / f"{domain:04x}:01:00.0" / "local_cpulist"
+    if local_cpu_text is not None:
+        write(local_cpu_file, local_cpu_text)
+    else:
+        pass
+
+    def nvml_affinity(handle: int, words: int) -> list[int]:
+        assert local_cpu_text != "0-3,8,10-11"
+        return [0b110]
+
+    nvml = SimpleNamespace(
+        nvmlInit=lambda: None,
+        nvmlShutdown=lambda: None,
+        nvmlDeviceGetPciInfo=lambda handle: SimpleNamespace(
+            busId=f"{domain:08x}:01:00.0".encode()
+        ),
+        nvmlDeviceGetCpuAffinity=nvml_affinity,
+    )
+    monkeypatch.setattr(cpu, "PCI_DEVICES_ROOT", tmp_path)
+    monkeypatch.setattr(cpu, "try_import_pynvml", lambda: nvml)
+    monkeypatch.setattr(cpu, "get_device_handle", lambda api, visible_id: 0)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    expected = {0, 1, 2, 3, 8, 10, 11} if local_cpu_text == "0-3,8,10-11" else {1, 2}
+    assert cpu.gpu_local_cpus([0]) == expected

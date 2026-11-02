@@ -21,6 +21,7 @@ from sglang_omni.model_runner.prefill_inputs import (
     OmniPrefillInputs,
     attach_omni_prefill_inputs,
 )
+from sglang_omni.models.minicpm_o.components.tts_runtime import CODEC_CHUNK_SIZE
 from sglang_omni.models.minicpm_o.talker_session import TalkerUnitRequestData
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.device_graph import DeviceGraphBackend, ReplayableGraph
@@ -41,6 +42,8 @@ logger = logging.getLogger(__name__)
 
 # note (MayDomine): the checkpoint penalizes only the most recent 16 codec tokens.
 REP_PENALTY_WINDOW = 16
+# note (wenyao): The talker samples its codec EOS within a few steps of every full chunk whether or not text is left, so a multi-chunk request masks it there.
+CHUNK_BOUNDARY_EOS_MASK_STEPS = 5
 
 
 @dataclass(kw_only=True)
@@ -472,6 +475,18 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
         logits = logits_output.next_token_logits
         if logits is None or logits.ndim != 2:
             return
+        else:
+            pass
+        boundary_rows = [
+            row_idx
+            for row_idx, sched_req in enumerate(requests)
+            if sched_req.data.talker_model_inputs.get("masks_chunk_boundary_eos", False)
+            and len(sched_req.data.req.output_ids) >= CODEC_CHUNK_SIZE
+            and len(sched_req.data.req.output_ids) % CODEC_CHUNK_SIZE
+            < CHUNK_BOUNDARY_EOS_MASK_STEPS
+        ]
+        if boundary_rows:
+            logits[boundary_rows, self.model.codec_eos_id] = float("-inf")
         else:
             pass
         vocab = logits.shape[1]

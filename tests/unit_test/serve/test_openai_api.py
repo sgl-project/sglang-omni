@@ -2795,8 +2795,9 @@ def run_chunks(
 
     if adapter is None:
         adapter = DefaultTranscriptionAdapter()
-    return asyncio.wait_for(
-        transcribe_audio_chunks(
+
+    async def texts_only() -> list[str]:
+        texts, _finish_reason = await transcribe_audio_chunks(
             client,
             plan,
             request_id="req",
@@ -2810,9 +2811,10 @@ def run_chunks(
             max_concurrent=max_concurrent,
             condition_on_previous_text=condition_on_previous_text,
             adapter=adapter,
-        ),
-        timeout=10.0,
-    )
+        )
+        return texts
+
+    return asyncio.wait_for(texts_only(), timeout=10.0)
 
 
 class ScriptedChunkClient:
@@ -2826,6 +2828,120 @@ class ScriptedChunkClient:
         response = self.responses[len(self.requests)]
         self.requests.append((request_id, request.extra_params.get("prompt")))
         return CompletionResult(request_id=request_id, text=response)
+
+
+def test_chunked_transcription_reports_length_when_any_chunk_stops_there() -> None:
+    class ReasonClient:
+        def __init__(self, reasons: list[str]) -> None:
+            self.reasons = reasons
+            self.calls = 0
+
+        async def completion(self, request, *, request_id, **kwargs):
+            from sglang_omni.client.types import CompletionResult
+
+            reason = self.reasons[self.calls]
+            self.calls += 1
+            index = request_id.rsplit("-chunk-", 1)[-1]
+            return CompletionResult(
+                request_id=request_id, text=f"part{index}", finish_reason=reason
+            )
+
+    async def scenario() -> None:
+        from sglang_omni.serve.transcription_adapters.base import (
+            DefaultTranscriptionAdapter,
+        )
+        from sglang_omni.serve.transcriptions import (
+            assemble_chunked_response,
+            transcribe_audio_chunks,
+        )
+
+        plan = tiny_plan(3)
+        texts, finish_reason = await asyncio.wait_for(
+            transcribe_audio_chunks(
+                ReasonClient(["stop", "length", "stop"]),
+                plan,
+                request_id="req",
+                model="asr",
+                filename=None,
+                language=None,
+                prompt=None,
+                temperature=None,
+                repetition_penalty=None,
+                max_new_tokens=None,
+                max_concurrent=3,
+                condition_on_previous_text=False,
+                adapter=DefaultTranscriptionAdapter(),
+            ),
+            timeout=10.0,
+        )
+        assert texts == ["part0", "part1", "part2"]
+        assert finish_reason == "length"
+        response = assemble_chunked_response(
+            text="part0 part1 part2",
+            response_format="json",
+            language="en",
+            plan=plan,
+            chunk_texts=texts,
+            architectures=["WhisperForConditionalGeneration"],
+            finish_reason=finish_reason,
+        )
+        assert json.loads(response.body)["finish_reason"] == "length"
+        assert response.headers["x-finish-reason"] == "length"
+        verbose = assemble_chunked_response(
+            text="part0 part1 part2",
+            response_format="verbose_json",
+            language="en",
+            plan=plan,
+            chunk_texts=texts,
+            architectures=["Qwen3ASRForConditionalGeneration"],
+            finish_reason=finish_reason,
+        )
+        assert json.loads(verbose.body)["finish_reason"] == "length"
+        text_response = assemble_chunked_response(
+            text="part0 part1 part2",
+            response_format="text",
+            language="en",
+            plan=plan,
+            chunk_texts=texts,
+            architectures=None,
+            finish_reason=finish_reason,
+        )
+        assert text_response.body == b"part0 part1 part2"
+        assert text_response.headers["x-finish-reason"] == "length"
+
+        quiet_texts, quiet_reason = await asyncio.wait_for(
+            transcribe_audio_chunks(
+                ReasonClient(["stop", "stop"]),
+                tiny_plan(2),
+                request_id="req",
+                model="asr",
+                filename=None,
+                language=None,
+                prompt=None,
+                temperature=None,
+                repetition_penalty=None,
+                max_new_tokens=None,
+                max_concurrent=2,
+                condition_on_previous_text=False,
+                adapter=DefaultTranscriptionAdapter(),
+            ),
+            timeout=10.0,
+        )
+        assert quiet_texts == ["part0", "part1"]
+        assert quiet_reason is None
+        quiet = assemble_chunked_response(
+            text="part0 part1",
+            response_format="json",
+            language="en",
+            plan=tiny_plan(2),
+            chunk_texts=quiet_texts,
+            architectures=None,
+            finish_reason=quiet_reason,
+        )
+        assert "finish_reason" not in json.loads(quiet.body)
+        assert "x-finish-reason" not in {name.lower() for name in quiet.headers}
+
+    asyncio.run(scenario())
 
 
 def test_chunks_run_concurrently() -> None:
