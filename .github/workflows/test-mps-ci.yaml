@@ -26,7 +26,9 @@ env:
         && inputs.omni_ci_home
         || format('/data/omni-ci/run-{0}', github.run_id) }}
 
-# Invoked by omni-ci.yaml after TTS CI. Restores omni only.
+# Invoked by omni-ci.yaml after every other selected suite, because this job
+# checks out the PR head and may rebuild the shared PR home (see the DAG note in
+# omni-ci.yaml). Restores omni only.
 
 jobs:
   stage-1-mps-nonstream:
