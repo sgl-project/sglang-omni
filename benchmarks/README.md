@@ -191,6 +191,7 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
 
 | Script | Task | Model | API |
 |--------|------|-------|-----|
+| `offload/run_offload_bench.py` | Offload run record: memory, TTFA, output intervals, throughput | any served speech model | `/v1/audio/speech` (streaming PCM) |
 | `offload/offload_record.py` | Offload before/after record and comparison | any served model | `compare --baseline --candidate` on two recorded runs |\n| `eval/benchmark_tts_seedtts.py` | TTS speed + WER (unified) | e.g. S2-Pro, Voxtral, Higgs TTS | `/v1/audio/speech` |
 | `eval/benchmark_tts_serving.py` | TTS serving contract | OpenAI-compatible TTS models | `/v1/audio/speech`, raw PCM streaming, WebSocket, voice and batch contracts |
 | `eval/benchmark_omni_seedtts.py` | TTS speed + WER (unified) | Qwen3-Omni, MiniCPM-o | `/v1/chat/completions` |
