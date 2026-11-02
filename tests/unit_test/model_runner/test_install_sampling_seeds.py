@@ -30,6 +30,13 @@ def req(seed, request_id="req"):
     )
 
 
+def seed_runner() -> ModelRunner:
+    runner = object.__new__(ModelRunner)
+    runner.sampling_seed_batch_key = ()
+    runner.sampling_seed_batch_tensor = None
+    return runner
+
+
 def make_fb(sampling_seed=None, *, top_p=False, top_k=False, min_p=False, device="cpu"):
     return SimpleNamespace(
         sampling_info=SimpleNamespace(
@@ -43,7 +50,7 @@ def make_fb(sampling_seed=None, *, top_p=False, top_k=False, min_p=False, device
 
 
 def test_installs_per_row_seeds_and_noops_without_one():
-    runner = object.__new__(ModelRunner)
+    runner = seed_runner()
     # seeded rows -> per-row int64 seed tensor; mixed unseeded rows get a
     # rank-shared fallback derived from the request id.
     fb = make_fb()
@@ -61,7 +68,7 @@ def test_installs_per_row_seeds_and_noops_without_one():
 
 
 def test_does_not_clobber_subclass_installed_seed():
-    runner = object.__new__(ModelRunner)
+    runner = seed_runner()
     preset = torch.tensor([1, 2, 3])
     fb = make_fb(sampling_seed=preset)
     runner.install_sampling_seeds(fb, [req(42), req(42), req(42)])
@@ -69,7 +76,7 @@ def test_does_not_clobber_subclass_installed_seed():
 
 
 def test_preinstalled_seed_requires_sampling_mode_contract():
-    runner = object.__new__(ModelRunner)
+    runner = seed_runner()
     preset = torch.tensor([1, 2])
     fb = make_fb(sampling_seed=preset, min_p=True)
     with pytest.raises(ValueError, match="min_p"):
@@ -77,23 +84,42 @@ def test_preinstalled_seed_requires_sampling_mode_contract():
 
 
 def test_rejects_seeded_min_p_before_upstream_sampler():
-    runner = object.__new__(ModelRunner)
+    runner = seed_runner()
     with pytest.raises(ValueError, match="min_p"):
         runner.install_sampling_seeds(make_fb(min_p=True), [req(42)])
 
 
 def test_installs_seeded_top_k_and_top_p_on_flashinfer() -> None:
-    runner = object.__new__(ModelRunner)
+    runner = seed_runner()
     fb = make_fb(top_p=True, top_k=True)
     with get_context().override_server_args(sampling_backend="flashinfer"):
         runner.install_sampling_seeds(fb, [req(42)])
     assert int(fb.sampling_info.sampling_seed[0]) == 42
 
 
+def test_reuses_seed_tensor_while_batch_is_unchanged():
+    runner = seed_runner()
+    requests = [req(42, "first"), req(7, "second")]
+    fb = make_fb()
+    runner.install_sampling_seeds(fb, requests)
+    fb_next = make_fb()
+    runner.install_sampling_seeds(fb_next, requests)
+    assert fb_next.sampling_info.sampling_seed is fb.sampling_info.sampling_seed
+
+
+def test_rebuilds_seed_tensor_when_batch_changes():
+    runner = seed_runner()
+    first, second = req(42, "first"), req(7, "second")
+    runner.install_sampling_seeds(make_fb(), [first, second])
+    fb = make_fb()
+    runner.install_sampling_seeds(fb, [second])
+    assert fb.sampling_info.sampling_seed.tolist() == [7]
+
+
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_installs_cuda_seeds_without_a_host_wait() -> None:
-    runner = object.__new__(ModelRunner)
+    runner = seed_runner()
     fb = make_fb(device="cuda")
     torch.cuda._sleep(1_000_000_000)  # noqa: leading-underscore  # upstream name
     runner.install_sampling_seeds(fb, [req(42, "seeded"), req(None, "unseeded")])
