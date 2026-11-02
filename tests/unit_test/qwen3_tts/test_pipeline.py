@@ -95,7 +95,6 @@ from sglang_omni.models.qwen3_tts.streaming_vocoder import (
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.preprocessing.cache_key import PromptRowCacheKeys
-from sglang_omni.profiler import event_recorder
 from sglang_omni.profiler.event_recorder import (
     RequestEventBuffer,
     RequestEventSnapshot,
@@ -10189,28 +10188,19 @@ def test_qwen3_tts_incremental_failure_requeues_instead_of_aborting(
     scheduler, _ = stateful_qwen3_tts_scheduler(monkeypatch)
     state_lock = TrackedStateLock()
     scheduler.state_lock = state_lock
-    written_under_state_lock: list[bool] = []
+    flush_under_state_lock: list[bool] = []
     recorder = get_recorder()
-    original_emit = event_recorder.emit
+    original_flush = RequestEventBuffer.flush
 
-    def record_event(
+    def flush_events(
+        event_buffer: RequestEventBuffer,
         *,
-        request_id: str,
         stage: str | None,
-        event_name: str,
-        metadata: dict[str, int | float | str],
-        timestamp_ns: int | None,
     ) -> None:
-        written_under_state_lock.append(state_lock.is_held_by_current_thread())
-        original_emit(
-            request_id=request_id,
-            stage=stage,
-            event_name=event_name,
-            metadata=metadata,
-            timestamp_ns=timestamp_ns,
-        )
+        flush_under_state_lock.append(state_lock.is_held_by_current_thread())
+        original_flush(event_buffer, stage=stage)
 
-    monkeypatch.setattr(event_recorder, "emit", record_event)
+    monkeypatch.setattr(RequestEventBuffer, "flush", flush_events)
     arena = scheduler.codec_arena
     assert arena is not None
     state = scheduler.create_stream_state("request")
@@ -10235,7 +10225,7 @@ def test_qwen3_tts_incremental_failure_requeues_instead_of_aborting(
     assert state.followup_pending is True
     assert scheduler.followup_queue.qsize() == 1
     assert scheduler.codec_state_stats()["left_context_fallbacks"] == 1
-    assert written_under_state_lock == [False]
+    assert flush_under_state_lock == [False]
     events = [json.loads(line) for line in Path(path).read_text().splitlines()]
     assert [event["event_name"] for event in events] == [
         "qwen3_tts_vocoder_decode_enqueued"
