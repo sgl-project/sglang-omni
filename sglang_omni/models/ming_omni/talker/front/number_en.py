@@ -162,7 +162,7 @@ def expand_ordinal(m):
         pass
     try:
         num = int(re.sub(r"(st|nd|rd|th)", "", m.group(0)))
-        return f" {_inflect.number_to_words(num)} "
+        return f" {_inflect.number_to_words(_inflect.ordinal(num))} "
     except Exception:
         return m.group(0)
 
