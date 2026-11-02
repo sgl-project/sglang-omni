@@ -128,3 +128,17 @@ SGLANG_USE_CPU_ENGINE=1 sgl-omni serve \
 To explicitly select PyTorch native attention, including on AMX-capable Xeon CPUs, append `--asr.engine.attention_backend torch_native` to the server command.
 
 See the [Whisper cookbook](../cookbook/whisper_asr.md) for request parameters, supported response formats, and the SeedTTS WER benchmark.
+
+### Qwen3-TTS (text-to-speech, Intel Xeon CPU)
+
+Qwen3-TTS Base have been validated on an AMX-capable Intel Xeon CPU. Qwen3-TTS does not support `torch.compile`, and it is disabled by default. Install the `qwen-tts` runtime dependency as described in the [Qwen3-TTS cookbook](../cookbook/qwen3_tts.md#prerequisites).
+
+Run inside the CPU environment installed above:
+
+```bash
+SGLANG_USE_CPU_ENGINE=1 sgl-omni serve \
+  --model-path Qwen/Qwen3-TTS-12Hz-0.6B-Base \
+  --port 8000
+```
+
+The Base checkpoint requires reference audio and its transcript in synthesis requests. See the [Qwen3-TTS cookbook](../cookbook/qwen3_tts.md) for request examples and other checkpoints.
