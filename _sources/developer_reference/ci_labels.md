@@ -18,7 +18,7 @@ In this sense, two kinds of labels exist and they combine: a stage label decides
 | Omni CI: PR Test | H100 | The unit test suite twice: once with CUDA hidden, once for the tests that need a GPU | Any stage label |
 | Omni CI: ASR | H100 | Multi-speaker transcription and diarization with MOSS-Transcribe-Diarize, then SeedTTS English and Chinese word error rate and speed on Fun-ASR-Nano-2512, Qwen3-ASR-1.7B or Whisper-large-v3 | `run-asr-ci` or `run-all-ci` |
 | Omni CI: TTS | H100 | Voice cloning on SeedTTS with Higgs-TTS, MOSS-TTS, Qwen3-TTS or Fun-CosyVoice3: non-streaming and streaming speed, word error rate, speaker similarity and UTMOS, streaming consistency, first-audio latency for Qwen3-TTS, and a serving stress test on Higgs-TTS | `run-tts-ci` or `run-all-ci` |
-| Omni CI: MPS | H100 | Two Higgs-TTS or MOSS-TTS workers sharing one H100 through CUDA MPS, with the TTS quality assertions | `run-mps-ci` or `run-all-ci` |
+| Omni CI: MPS | H100 | External CUDA MPS DP2 non-streaming validation, native MPS lifecycle validation, and native CUDA IPC weight-sharing lifecycle validation | `run-mps-ci` or `run-all-ci` |
 | Omni CI: Omni | H100 | Qwen3-Omni or MiniCPM-o 4.5: thinker length limits, SeedTTS voice cloning, accuracy and speed on MMMU, MMSU, Video-MME and Video-AMME with text and spoken answers, a tensor parallel thinker, and Qwen3-Omni process replicas | `run-omni-ci` or `run-all-ci` |
 | CPU CI | Intel Xeon (`intel-omni-spr`) | Job `intel-cpu-ci (unit_test/cpu)`: `pytest tests/unit_test/cpu/` | `run-intel-cpu-ci` or `run-all-ci` |
 | XPU CI | Intel GPU (`intel-omni-bmg`) | Intel GPU device layer tests | `run-intel-xpu-ci` or `run-all-ci` |
@@ -101,9 +101,13 @@ Qwen3-TTS CustomVoice uses a named voice instead of a reference clip, and its th
 
 ### MPS
 
-MPS has one job, stage 1 - MPS non-streaming. It runs two TTS router workers on a single H100 that share the GPU through CUDA MPS, and checks three things: the two workers are separate MPS clients on the intended GPU, they actually execute at the same time, and the non-streaming word error rate, speaker similarity, UTMOS and audio integrity match the TTS stage's assertions.
+`run-mps-ci` runs three sequential validations on H100:
 
-The stage label is `run-mps-ci`. MPS has no model labels of its own. It accepts `run-higgs-tts-3-4b` and `run-moss-tts-local-transformer-v1.5`. A model label does not run MPS. With `run-tts-ci` and `run-mps-ci`, one of these labels selects that model for both stages. With only `run-tts-ci`, MPS does not run. With no Higgs or MOSS label, MPS draws from its own pool.
+1. External CUDA MPS DP2 non-streaming validation checks that two TTS router workers share one H100 through CUDA MPS and meet the TTS word error rate, speaker similarity, UTMOS and audio integrity assertions.
+2. Native MPS lifecycle validation uses Higgs-TTS to check daemon sharing, recovery behavior and clean teardown.
+3. Native CUDA IPC weight-sharing lifecycle validation uses MOSS-TTS Local to check shared-weight memory savings, process startup order and leader failure handling.
+
+All three validations run under the existing `run-mps-ci` label. The label accepts `run-higgs-tts-3-4b` and `run-moss-tts-local-transformer-v1.5` for the external CUDA MPS DP2 validation; those labels do not change the fixed models used by the native lifecycle validations. A model label does not run MPS. With `run-tts-ci` and `run-mps-ci`, one of these labels selects the external MPS model and the TTS model. With only `run-tts-ci`, MPS does not run. With no Higgs or MOSS label, the external MPS validation draws from its own pool.
 
 | Model label | Checkpoint | MPS config | In the random pool |
 | --- | --- | --- | --- |
