@@ -14,9 +14,12 @@ from sglang_omni.models.nemotron_voicechat.conformer import (
 from sglang_omni.models.nemotron_voicechat.payload_types import NemotronVoiceChatState
 from sglang_omni.proto.request import OmniRequest, StagePayload
 
-REQUIRES_CUDA = pytest.mark.skipif(
-    not torch.cuda.is_available(), reason="CUDA graph requires a GPU"
-)
+REQUIRES_CUDA = [
+    pytest.mark.accelerator,
+    pytest.mark.skipif(
+        not torch.cuda.is_available(), reason="CUDA graph requires a GPU"
+    ),
+]
 STREAM_CASES = [
     pytest.param("cpu", StreamingPerception, id="cpu-StreamingPerception"),
     pytest.param(
