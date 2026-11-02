@@ -3505,7 +3505,7 @@ def test_unset_prefill_decode_interval_never_defers_prefill(monkeypatch) -> None
     )  # noqa: leading-underscore  # upstream name
 
     assert (
-        scheduler._should_defer_prefill() is False
+        scheduler._should_defer_prefill(scheduler.running_batch) is False
     )  # noqa: leading-underscore  # upstream name
 
 

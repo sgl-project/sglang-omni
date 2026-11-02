@@ -1309,6 +1309,9 @@ class RunningBatch:
     def is_empty(self) -> bool:
         return not self.reqs
 
+    def batch_size(self) -> int:
+        return len(self.reqs)
+
 
 def scaffold_resolve_before_prefill(
     events: list[str], *, async_pending: PendingDecode | None
@@ -1606,11 +1609,12 @@ def test_the_prediction_defers_exactly_when_upstream_defers(
         interval_remaining  # noqa: leading-underscore  # production name
     )
     upstream_state = types.SimpleNamespace(
-        _prefill_decode_interval_remaining=interval_remaining  # noqa: leading-underscore  # production name
+        _prefill_decode_interval_remaining=interval_remaining,  # noqa: leading-underscore  # production name
+        prefill_decode_interval_min_bs=0,
     )
 
     expected = not Scheduler._should_defer_prefill(  # noqa: leading-underscore  # production name
-        upstream_state
+        upstream_state, s.running_batch
     )
 
     assert s.is_prefill_expected() is expected

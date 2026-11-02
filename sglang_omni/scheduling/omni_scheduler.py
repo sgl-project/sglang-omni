@@ -45,6 +45,7 @@ from sglang.srt.managers.schedule_batch import (
     retract_all,
 )
 from sglang.srt.managers.scheduler import (
+    PAUSE_WINDOWS_MAX,
     TEST_RETRACT,
     TEST_RETRACT_NO_PREFILL_BS,
     GenerationBatchResult,
@@ -595,6 +596,9 @@ class OmniScheduler(Generic[RequestDataT]):
         )
         self.dynamic_chunk_sizer = None
         self.prefill_decode_interval = get_schedule().prefill_decode_interval or 0
+        self.prefill_decode_interval_min_bs = (
+            get_schedule().prefill_decode_interval_min_bs
+        )
         self._prefill_decode_interval_remaining = 0  # noqa: leading-underscore
         self.processed_tokens_counter = 0
 
@@ -816,6 +820,7 @@ class OmniScheduler(Generic[RequestDataT]):
         self.max_prefill_bs = 0
         self.use_ngram_embedding = False
         self.return_health_check_ipcs = []
+        self.rust_server = None
         self.enable_overlap_mlx = False
 
         # Instance state upstream's Scheduler.__init__ sets. We
@@ -902,6 +907,12 @@ class OmniScheduler(Generic[RequestDataT]):
         self._prev_step = None  # noqa: leading-underscore
         self._prev_prefill_end_ts = None  # noqa: leading-underscore
         self._sched_idled = False  # noqa: leading-underscore
+        self._pause_intervals: deque[tuple[float, float]] = deque(
+            maxlen=PAUSE_WINDOWS_MAX
+        )  # noqa: leading-underscore  # upstream name
+        self._pause_started_at: float | None = (
+            None  # noqa: leading-underscore  # upstream name
+        )
         self.init_load_publisher()
         self.load_inquirer = SchedulerLoadInquirer(
             disaggregation_mode=self.disaggregation_mode,
