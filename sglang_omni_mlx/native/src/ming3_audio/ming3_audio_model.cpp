@@ -320,7 +320,7 @@ std::vector<LayerCache> Model::NewCaches() const {
 }
 
 ChatResult Model::Generate(const ChatRequest &request,
-                           const chat_service::Cancellation &cancel,
+                           const Cancellation &cancel,
                            omni_common::WeightMap *trace) const {
   if (request.samples.size() < omni_common::kFftSize ||
       request.samples.size() > omni_common::kWhisperWindowSampleCount ||
@@ -346,7 +346,7 @@ ChatResult Model::Generate(const ChatRequest &request,
              audio_tokens) {
     throw std::invalid_argument("text must not contain audio placeholders");
   } else if (cancel()) {
-    throw chat_service::Cancelled();
+    throw Cancelled();
   } else {
   }
   const auto mel = mx::transpose(
@@ -370,7 +370,7 @@ ChatResult Model::Generate(const ChatRequest &request,
   }
   for (int step = 0; step < request.max_new_tokens; ++step) {
     if (cancel()) {
-      throw chat_service::Cancelled();
+      throw Cancelled();
     } else {
     }
     const auto logits =

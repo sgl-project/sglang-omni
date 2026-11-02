@@ -94,10 +94,6 @@ add_library(omni_service STATIC src/common/service.cpp src/common/http.cpp)
 target_link_libraries(omni_service PUBLIC common civetweb-c-library)
 target_compile_options(omni_service PRIVATE -Wall -Wextra)
 
-add_library(chat_service STATIC src/common/chat_service.cpp)
-target_link_libraries(chat_service PUBLIC omni_service)
-target_compile_options(chat_service PRIVATE -Wall -Wextra)
-
 add_library(asr_service STATIC src/qwen3_asr/asr_service.cpp)
 target_link_libraries(asr_service PUBLIC qwen3_asr omni_service)
 target_compile_options(asr_service PRIVATE -Wall -Wextra)
@@ -326,7 +322,7 @@ target_compile_options(ming3_audio PRIVATE -Wall -Wextra)
 add_executable(ming3_audio_chat tools/ming3_audio_chat.cpp)
 target_link_libraries(ming3_audio_chat PRIVATE ming3_audio)
 add_executable(ming3_audio_server src/ming3_audio/ming3_audio_server.cpp)
-target_link_libraries(ming3_audio_server PRIVATE ming3_audio chat_service)
+target_link_libraries(ming3_audio_server PRIVATE ming3_audio omni_service)
 set_target_properties(ming3_audio_chat ming3_audio_server PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
   INSTALL_RPATH "@loader_path")

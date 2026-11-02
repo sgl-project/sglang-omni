@@ -3,15 +3,23 @@
 
 #include <array>
 #include <filesystem>
+#include <functional>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
-#include "common/chat_service.h"
 #include "common/layers.h"
 #include "common/tokenizer.h"
 
 namespace ming3_audio {
+
+using Cancellation = std::function<bool()>;
+
+class Cancelled : public std::runtime_error {
+public:
+  Cancelled() : std::runtime_error("chat generation cancelled") {}
+};
 
 struct ChatRequest {
   std::string system_prompt;
@@ -42,8 +50,7 @@ struct LayerCache {
 class Model {
 public:
   explicit Model(const std::filesystem::path &directory);
-  ChatResult Generate(const ChatRequest &request,
-                      const chat_service::Cancellation &cancel,
+  ChatResult Generate(const ChatRequest &request, const Cancellation &cancel,
                       omni_common::WeightMap *trace = nullptr) const;
   mlx::core::array Encode(const mlx::core::array &mel,
                           omni_common::WeightMap *trace = nullptr) const;

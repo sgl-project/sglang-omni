@@ -1,11 +1,36 @@
 // SPDX-License-Identifier: Apache-2.0
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <iostream>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <vector>
+
 #include "common/audio.h"
-#include "common/chat_service.h"
+#include "common/http.h"
+#include "common/service.h"
 #include "common/text.h"
 #include "ming3_audio/ming3_audio_model.h"
 
 namespace ming3_audio {
 namespace {
+using omni_server::Json;
+
+constexpr size_t kMaxRequestBodyBytes = 4 * 1024 * 1024;
+
+Json ErrorBody(int status, const std::string &message) {
+  return {{"error",
+           {{"message", message},
+            {"type", status == 400 || status == 405 ? "invalid_request_error"
+                     : status == 429                ? "rate_limit_error"
+                                                    : "server_error"},
+            {"param", nullptr},
+            {"code", nullptr}}}};
+}
+
 ChatRequest ParseRequest(const nlohmann::json &request,
                          const std::string &model_name) {
   if (request.value("stream", false) ||
@@ -88,29 +113,115 @@ ChatRequest ParseRequest(const nlohmann::json &request,
   }
 }
 
-class ServedModel : public chat_service::ServedModel {
+class Ming3AudioService : public omni_server::Service {
 public:
-  explicit ServedModel(const std::filesystem::path &directory)
+  explicit Ming3AudioService(const std::filesystem::path &directory)
       : model_(directory) {}
 
-  chat_service::Generation
-  Prepare(const nlohmann::json &body,
-          const std::string &model_name) const override {
-    const auto request = ParseRequest(body, model_name);
-    return [this, request](const chat_service::ChunkEmitter &,
-                           const chat_service::Cancellation &cancelled) {
-      const auto result = model_.Generate(request, cancelled);
-      return chat_service::Result{result.text,
-                                  {},
-                                  result.finish_reason,
-                                  result.prompt_tokens,
-                                  result.completion_tokens};
-    };
+  void Register(mg_context *context, const std::string &model_name) override {
+    model_name_ = model_name;
+    mg_set_request_handler(
+        context, "/v1/chat/completions$",
+        [](mg_connection *connection, void *service) {
+          return static_cast<Ming3AudioService *>(service)->Handle(connection);
+        },
+        this);
   }
 
+  std::map<std::string, int> RequestStates() const override {
+    return running_.load() ? std::map<std::string, int>{{"running", 1}}
+                           : std::map<std::string, int>{};
+  }
+
+  void CancelAll() override { stopping_.store(true); }
+
 private:
+  int Handle(mg_connection *connection);
+
   Model model_;
+  std::string model_name_;
+  std::mutex inference_;
+  std::atomic<bool> running_{false};
+  std::atomic<bool> stopping_{false};
+  std::atomic<uint64_t> request_count_{0};
 };
+
+int Ming3AudioService::Handle(mg_connection *connection) {
+  if (!omni_server::IsPost(connection)) {
+    return omni_server::WriteJson(connection, 405,
+                                  ErrorBody(405, "POST required"));
+  } else {
+  }
+  const auto body = omni_server::ReadBody(connection, kMaxRequestBodyBytes);
+  if (!body.has_value()) {
+    return 413;
+  } else {
+  }
+  const auto fail = [&](int status, const std::string &message) {
+    return omni_server::WriteJson(connection, status,
+                                  ErrorBody(status, message));
+  };
+  try {
+    const auto request =
+        ParseRequest(nlohmann::json::parse(*body), model_name_);
+    std::unique_lock lock(inference_, std::try_to_lock);
+    if (!lock.owns_lock()) {
+      return fail(429, "model busy");
+    } else if (stopping_.load()) {
+      return fail(503, "server stopping");
+    } else {
+    }
+    struct RunningGuard {
+      std::atomic<bool> &running;
+      explicit RunningGuard(std::atomic<bool> &running) : running(running) {
+        running.store(true);
+      }
+      ~RunningGuard() { running.store(false); }
+    } running(running_);
+    const int client_socket = omni_server::ClientSocket(connection);
+    const Cancellation cancelled = [&] {
+      return stopping_.load() || omni_server::ClientLeft(client_socket);
+    };
+    const auto now = std::chrono::system_clock::now().time_since_epoch();
+    const auto created =
+        std::chrono::duration_cast<std::chrono::seconds>(now).count();
+    const auto id =
+        "chatcmpl-" +
+        std::to_string(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(now).count()) +
+        "-" + std::to_string(++request_count_);
+    const auto result = model_.Generate(request, cancelled);
+    if (cancelled()) {
+      throw Cancelled();
+    } else {
+    }
+    return omni_server::WriteJson(
+        connection, 200,
+        {{"id", id},
+         {"object", "chat.completion"},
+         {"created", created},
+         {"model", model_name_},
+         {"choices",
+          Json::array(
+              {{{"index", 0},
+                {"message", {{"role", "assistant"}, {"content", result.text}}},
+                {"finish_reason", result.finish_reason}}})},
+         {"usage",
+          {{"prompt_tokens", result.prompt_tokens},
+           {"completion_tokens", result.completion_tokens},
+           {"total_tokens",
+            result.prompt_tokens + result.completion_tokens}}}});
+  } catch (const Cancelled &) {
+    return fail(503, "generation cancelled");
+  } catch (const nlohmann::json::exception &) {
+    return fail(400, "invalid JSON, missing field or incorrect field type");
+  } catch (const std::invalid_argument &error) {
+    return fail(400, error.what());
+  } catch (const std::exception &error) {
+    std::cerr << "chat generation failed: " << error.what() << '\n';
+    return fail(500, "generation failed");
+  }
+}
 } // namespace
 } // namespace ming3_audio
 
@@ -119,9 +230,7 @@ int main(int argc, char **argv) {
       argc, argv,
       {{"ming3_audio",
         [](const std::filesystem::path &directory) {
-          return std::make_unique<chat_service::ChatService>(
-              std::make_unique<ming3_audio::ServedModel>(directory),
-              4 * 1024 * 1024);
+          return std::make_unique<ming3_audio::Ming3AudioService>(directory);
         },
         {},
         {}}});
