@@ -2805,16 +2805,14 @@ class Qwen3TTSStreamingVocoderScheduler(
     def start_whole_request(
         self, request_id: str, payload: StagePayload, final_state: Qwen3TTSState
     ) -> None:
-        """Queue a finished request as one decode of all its frames, rounded up as a graph
-        runner rounds a shape up to its bucket, so that rows of different lengths share replays.
+        """Queue a finished request as one decode, rounded up to a width that rows of other lengths share.
 
-        The decoder is causal, so the zero frames leave the leading samples alone, and their
-        samples are dropped at the end. The widths double, so the frames stay under twice the
-        request's own.
+        The decoder is causal, so the zero frames leave the leading samples alone; their samples are dropped at the end.
         """
         codes = torch.as_tensor(final_state.audio_codes, dtype=torch.long)
         frames = int(codes.shape[0])
         widths = self.whole_request_widths
+        # note (ratish): the widths double, so a row decodes under twice its own frames.
         rounded_frames = (
             widths[bisect.bisect_left(widths, frames)]
             if frames <= widths[-1]
@@ -3659,7 +3657,7 @@ class Qwen3TTSStreamingVocoderScheduler(
 
     def final_result_data(
         self, request_id: str, payload: StagePayload, state: Qwen3TTSStreamState
-    ) -> dict[str, str | int | dict[str, int | float]]:
+    ) -> dict[str, bytes | list[int] | str | int | dict[str, int | float]]:
         del request_id
         final_state = Qwen3TTSState.from_dict(payload.data)
         if state.whole_audio is not None:
