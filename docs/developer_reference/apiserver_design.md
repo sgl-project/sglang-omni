@@ -2,6 +2,8 @@
 
 This page explains the API server at the level that is most useful for maintenance: where it sits in the system, which files matter, and how requests are mapped into the runtime.
 
+## Prerequisites
+
 If you only want to launch the server and call it, start with [API Server Quickstart](../get_started/apiserver_quickstart.md).
 
 ## Role in the System
@@ -18,9 +20,9 @@ After startup, the request path is:
 
 That split keeps responsibilities clean:
 
-- the pipeline runtime handles orchestration and execution
-- the `Client` layer submits requests and assembles results
-- the API server translates between HTTP/OpenAI-style payloads and those internal abstractions
+- the pipeline runtime handles orchestration and execution.
+- the `Client` layer submits requests and assembles results.
+- the API server translates between HTTP/OpenAI-style payloads and those internal abstractions.
 
 ## Key Files
 
@@ -61,10 +63,10 @@ Use it when you already have a live `Client` and want to embed the HTTP layer yo
 It:
 
 - compiles the pipeline config
-- starts the pipeline runtime
+- starts the pipeline runtime through `MultiProcessPipelineRunner`
 - creates the `Client`
 - creates the FastAPI app
-- mounts profiling routes on the single-process path
+- mounts profiling routes through the runner's profiler control client
 - runs Uvicorn
 - stops the runtime on shutdown
 
@@ -85,28 +87,7 @@ The current server exposes these main routes:
 | `POST` | `/start_request_profile` | Request-level event recorder only (no torch trace) |
 | `POST` | `/stop_request_profile` | Stops the request-level event recorder |
 
-The profiling routes are mounted by the single-process `launch_server()` path. The
-current multi-process launcher path does not mount them.
-
-`/start_profile` accepts:
-
-```jsonc
-{
-  "run_id": "demo-run",
-  "trace_path_template": "/tmp/profiles/demo-run/trace",  // torch trace template
-  "event_dir": "/tmp/profiles/demo-run/events",            // request-event JSONL dir (optional)
-  "enable_torch": true                                     // set false to skip torch trace
-}
-```
-
-`/stop_profile` and `/stop_request_profile` both accept an optional
-`run_id`. Omitting it is a wildcard: every stage stops whatever profiler
-session is currently active.
-
-Request-level events are emitted as JSON lines under
-`<event_dir>/events_<stage>_<pid>.jsonl`. Use `python -m sglang_omni.profiler
-<event_dir>` to derive the timeline / stage / hop reports described in
-`docs/developer_reference/profiler.md`.
+The built-in `launch_server()` mounts these routes for both single-process and multi-process topologies; `create_app()` alone does not. See [Profiler HTTP surface](./profiler.md#http-surface) for request bodies and profiling controls.
 
 ## Request Mapping
 
@@ -140,7 +121,7 @@ It also includes `sglang-omni` extensions such as:
 
 ### Conversion into `GenerateRequest`
 
-`_build_chat_generate_request()` in `openai_api.py` is the key translation point. It:
+`build_chat_generate_request()` in `openai_api.py` is the key translation point. It:
 
 - normalizes stop sequences
 - builds `SamplingParams`
@@ -151,8 +132,7 @@ It also includes `sglang-omni` extensions such as:
 - stores talker-specific generation overrides in `extra_params`
 - copies `modalities` into `output_modalities`
 
-The route hands that `GenerateRequest` to `Client`. The client then converts it
-to an `OmniRequest` before submitting it to the coordinator.
+The route hands that `GenerateRequest` to `Client`. The client then converts it to an `OmniRequest` before submitting it to the coordinator.
 
 ## Response Paths
 
@@ -177,11 +157,11 @@ For streaming chat, the server emits SSE events.
 
 The important current semantics are:
 
-- the first chunk may contain only `role="assistant"`
-- text and audio are emitted as separate deltas
-- the final completion chunk includes the `finish_reason`
-- the stream ends with `data: [DONE]`
-- `usage` is attached to the final completion chunk
+- the first chunk may contain only `role="assistant"`.
+- text and audio are emitted as separate deltas.
+- the final completion chunk includes the `finish_reason`.
+- the stream ends with `data: [DONE]`.
+- `usage` is attached to the final completion chunk.
 
 ### Speech / TTS
 
@@ -193,14 +173,14 @@ The speech route reuses the same internal request path rather than introducing a
 - `task="tts"` in metadata
 - TTS-specific parameters stored under `tts_params`
 
-For non-streaming requests, `Client.speech()` collects audio chunks, encodes
-them, and returns raw audio bytes to the HTTP layer.
+For non-streaming requests, `Client.speech()` collects audio chunks, encodes them, and returns raw audio bytes to the HTTP layer.
 
-For `stream=true`, the route emits `audio/pcm` bytes directly. The HTTP response
-headers are derived from the first audio chunk and subsequent chunks must keep
-the same sample rate. TTS chunk-timing knobs such as
-`initial_codec_chunk_frames` are forwarded as request params only when the
-client provides them, including an explicit `0`, so model schedulers can consume
-them without changing Stage, Coordinator, or Relay. When the field is omitted,
-the speech route leaves it unset and each model applies its own streaming
-default.
+For `stream=true`, the route emits `audio/pcm` bytes directly. The HTTP response headers are derived from the first audio chunk and subsequent chunks must keep the same sample rate. TTS chunk-timing knobs such as `initial_codec_chunk_frames` are forwarded as request params only when the client provides them, including an explicit `0`, so model schedulers can consume them without changing Stage, Coordinator, or Relay. When the field is omitted, the speech route leaves it unset and each model applies its own streaming default.
+
+## Further Reading
+
+See [Request-level Profiler](./profiler.md) for profiling controls and reports.
+
+## Resources
+
+[API implementation](https://github.com/sgl-project/sglang-omni/blob/main/sglang_omni/serve/openai_api.py).
