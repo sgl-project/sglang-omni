@@ -29,6 +29,11 @@ nonisolated enum SessionOutputMode {
 
 @main
 struct VoxtApp: App {
+    // Must stay above appDelegate: creating AppDelegate creates Application Support/Voxt (voxt.sqlite, logs),
+    // which would make a fresh install look like an existing user.
+    private let onboardingCompletedBeforeLaunch: Bool? = VoxtRuntimeEnvironment.isRunningUnitTests
+        ? nil
+        : OnboardingPreferenceManager.resolvedCompletionState()
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @AppStorage(AppPreferenceKey.interfaceLanguage) private var interfaceLanguageRaw = AppInterfaceLanguage.system.rawValue
 
