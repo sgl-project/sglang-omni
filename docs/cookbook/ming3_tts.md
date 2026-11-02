@@ -10,7 +10,7 @@ The 0.5B checkpoint uses a dense Qwen2.5-0.5B backbone. Leaving out `ref_audio` 
 
 Install SGLang-Omni by following [Installation](../get_started/installation.md).
 
-Startup uses one GPU. Preprocessing runs on the CPU. The backbone and the VAE decoder share that GPU. The two checkpoints differ only by the model path.
+Startup uses one GPU. Both checkpoints run the backbone and AudioVAE decoder on that GPU. Tiny uses CPU preprocessing with one worker, while dense 0.5B uses GPU preprocessing with four workers. Select the checkpoint with the model path.
 
 ```bash
 sgl-omni serve --model-path inclusionAI/Ming-3.0-tts-tiny
@@ -20,7 +20,7 @@ sgl-omni serve --model-path inclusionAI/Ming-3.0-tts-tiny
 sgl-omni serve --model-path inclusionAI/Ming-3.0-tts-0.5B
 ```
 
-The speech endpoint is `POST /v1/audio/speech`. The body is one complete waveform. `stream=true` still waits until that waveform is finished, then returns it as a single PCM body. The requests below are the same for both servers. Set `model` to the checkpoint id used at startup. The examples use `inclusionAI/Ming-3.0-tts-tiny`.
+The speech endpoint is `POST /v1/audio/speech`. With `stream=false`, the response is one complete waveform. With `stream=true` and `response_format="pcm"`, Tiny returns incremental PCM with a CUDA vocoder. The 0.5B checkpoint and CPU vocoders retain complete-waveform decoding. The default decoder group is eight latents. Buffering and lookahead delay the first non-empty chunk until latent 17; shorter utterances flush when synthesis finishes. This is a decoder grouping rule, not an elapsed-time first-packet guarantee. The requests below are the same for both servers. Set `model` to the checkpoint id used at startup. The examples use `inclusionAI/Ming-3.0-tts-tiny`.
 
 ## Zero-shot speech
 
