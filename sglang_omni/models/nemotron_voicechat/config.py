@@ -18,7 +18,7 @@ from sglang_omni.models.nemotron_voicechat.duplex_config import (
 # The ckpt is all saved in float32.
 MODEL_DTYPE = "float32"
 PREPROCESSING_MAX_CONCURRENCY = 4
-CODE2WAV_MAX_BATCH_SIZE = 64
+CODE2WAV_MAX_BATCH_SIZE = 16
 
 MODEL_STAGES_PREFIX = "sglang_omni.models.nemotron_voicechat.stages"
 
