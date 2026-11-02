@@ -453,32 +453,6 @@ The turn latency benchmark streams one WAV for several turns and prints, per tur
 python benchmarks/realtime_turn_latency.py --url ws://127.0.0.1:8765/v1/realtime --audio question.wav --turns 5
 ```
 
-The reply benchmark checks whether replies fit their request in length and read well aloud. benchmarks/cascade_replies/conversations.json holds 24 six-turn conversations, 12 in English and 12 in Chinese, over ten turn categories (factoid, howto, explain, recommend, social, expand, brief, visual, clarify, followup); each turn lists the key points a complete answer covers, and each category says what a good spoken reply does and has a length band per language. replies replays the conversations through the profile's chat server with the dialog's history and request, under the profile's prompt or a named one (one_sentence is the profiles' earlier prompt). The judge, an LLM that is not told the model or prompt behind a reply, gives relevance, completeness, directness and listenability as accept, fail or unresolved with a quote from the reply, and length_fit as too_short, right or too_long. controls judges twelve hand-written replies with known verdicts, so a judge setting is checked before its verdicts are used.
-
-```bash
-python -m benchmarks.eval.benchmark_cascade_replies replies --profile examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian/launch.yaml \
-  --llm qwen3.8-27b --prompts profile one_sentence --out results/replies-27b.jsonl
-python -m benchmarks.eval.benchmark_cascade_replies controls --base-url http://127.0.0.1:30000/v1 --out results/controls.jsonl
-python -m benchmarks.eval.benchmark_cascade_replies judge --replies results/replies-27b.jsonl --base-url http://127.0.0.1:30000/v1 --out results/judged.jsonl
-python -m benchmarks.eval.benchmark_cascade_replies summary --replies results/replies-27b.jsonl --judged results/judged.jsonl \
-  --baseline one_sentence --out results/report.md
-```
-
-live speaks eight of the conversations to a running cascade, one session per conversation, and records each reply's text, audio and time to first audio; summary --live adds those turns to the report. The spoken turns come from macOS say, one WAV per turn named by conversation and turn:
-
-```bash
-python - <<'EOF'
-import json, subprocess
-from pathlib import Path
-Path("spoken").mkdir(exist_ok=True)
-for conversation in json.loads(Path("benchmarks/cascade_replies/conversations.json").read_text())["conversations"]:
-    voice = "Samantha" if conversation["language"] == "en" else "Tingting"
-    for turn, spec in enumerate(conversation["turns"]):
-        subprocess.run(["say", "-v", voice, "-o", f"spoken/{conversation['id']}_{turn}.wav", "--file-format=WAVE", "--data-format=LEI16@16000", spec["user"]], check=True)
-EOF
-python -m benchmarks.eval.benchmark_cascade_replies live --url ws://127.0.0.1:8765/v1/realtime --audio-dir spoken --output results/live-27b
-```
-
 (configuration)=
 
 **Configuration**
