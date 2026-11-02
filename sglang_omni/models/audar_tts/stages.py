@@ -275,9 +275,9 @@ def create_tts_engine_executor(
     from sglang_omni.utils.device import resolve_concrete_device
 
     concrete_device = resolve_concrete_device(device, gpu_id)
-    if concrete_device.type not in ("cpu", "cuda", "xpu"):
+    if concrete_device.type not in ("cpu", "cuda", "xpu", "musa"):
         raise ValueError(
-            "Audar-TTS llama.cpp engine runs on cuda, xpu or cpu only; resolved "
+            "Audar-TTS llama.cpp engine runs on cuda, xpu, musa or cpu only; resolved "
             f"device={concrete_device}"
         )
     elif concrete_device.type == "xpu":
@@ -292,10 +292,10 @@ def create_tts_engine_executor(
             pass
     else:
         pass
-    main_gpu = 0 if concrete_device.type == "cpu" else concrete_device.index
-    if concrete_device.type == "cpu":
+    main_gpu = 0 if concrete_device.type in ("cpu", "musa") else concrete_device.index
+    if concrete_device.type in ("cpu", "musa"):
         # note (lennox): the n_gpu_layers default of -1 offloads every layer, so
-        # a cpu resolution would still run on GPU 0 without this.
+        # a cpu or musa resolution would still run on GPU 0 without this.
         n_gpu_layers = 0
     else:
         pass

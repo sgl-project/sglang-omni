@@ -622,11 +622,40 @@ def test_llama_cpp_stage_keeps_a_cpu_resolution_off_the_gpu(
     assert captured["main_gpu"] == 0
 
 
+def test_llama_cpp_stage_keeps_a_musa_resolution_off_the_gpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class StopAfterCapture(RuntimeError):
+        pass
+
+    def fake_llama(**kwargs: object) -> None:
+        captured.update(kwargs)
+        raise StopAfterCapture
+
+    monkeypatch.setitem(
+        sys.modules,
+        "llama_cpp",
+        types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=fake_llama),
+    )
+    monkeypatch.setattr(stages, "resolve_gguf", lambda *args: "/model.gguf")
+    monkeypatch.setattr(
+        "sglang_omni.utils.device.resolve_concrete_device",
+        lambda device, gpu_id: types.SimpleNamespace(type="musa", index=gpu_id),
+    )
+
+    with pytest.raises(StopAfterCapture):
+        stages.create_tts_engine_executor("unused", gpu_id=1)
+
+    assert captured["n_gpu_layers"] == 0
+    assert captured["main_gpu"] == 0
+
+
 def test_llama_cpp_stage_rejects_a_device_it_cannot_serve(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """llama.cpp binds a bare main_gpu index; a non-cuda/cpu device intent would
-    be silently mapped onto the wrong backend's card numbering."""
+    """llama.cpp must not silently map an unsupported device to another backend."""
     from sglang_omni.platforms import current_platform
 
     monkeypatch.setitem(
@@ -635,7 +664,7 @@ def test_llama_cpp_stage_rejects_a_device_it_cannot_serve(
         types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=object),
     )
     monkeypatch.setattr(current_platform, "device_type", "mps", raising=False)
-    with pytest.raises(ValueError, match="cuda, xpu or cpu"):
+    with pytest.raises(ValueError, match="cuda, xpu, musa or cpu"):
         stages.create_tts_engine_executor("unused", device="mps", gpu_id=1)
 
 
@@ -743,9 +772,10 @@ def test_llama_cpp_stage_matches_official_generation_loop(
         types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=FakeLlama),
     )
     monkeypatch.setattr(stages, "resolve_gguf", lambda *args: "/model.gguf")
-    from sglang_omni.platforms import current_platform
-
-    monkeypatch.setattr(current_platform, "device_type", "cuda", raising=False)
+    monkeypatch.setattr(
+        "sglang_omni.utils.device.resolve_concrete_device",
+        lambda device, gpu_id: types.SimpleNamespace(type="cuda", index=gpu_id),
+    )
     payload = make_payload(
         state=AudarTTSState(
             prompt="prompt",
