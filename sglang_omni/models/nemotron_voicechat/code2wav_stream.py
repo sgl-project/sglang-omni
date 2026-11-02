@@ -206,6 +206,10 @@ class NemotronCode2WavScheduler(StreamingSimpleScheduler):
             pass
         with self.state_lock:
             for request_id, exc in errors.items():
+                if self.is_aborted(request_id):
+                    continue
+                else:
+                    pass
                 logger.error(f"code2wav failed for {request_id}: {exc}")
                 self.emit_error(request_id, exc)
                 self.abort_state(request_id)
@@ -216,7 +220,8 @@ class NemotronCode2WavScheduler(StreamingSimpleScheduler):
                 else:
                     pass
                 # note (Xinhao Tan): a split view would pin the whole step's audio.
-                state.audio_parts.append(audio_S.clone())
+                audio_S = audio_S.clone()
+                state.audio_parts.append(audio_S)
                 self.outbox.put(self.audio_message(request_id, audio_S))
         for request_id in errors:
             self.cleanup_aborted_request(request_id)

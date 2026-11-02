@@ -378,6 +378,22 @@ def test_decode_runs_without_the_state_lock() -> None:
     assert lock_free_during_decode == [True]
 
 
+def test_a_request_aborted_during_decode_gets_no_audio() -> None:
+    class AbortingDecoder(FrameLocalDecoder):
+        def decode_batch(self, codes_BTQ: torch.Tensor) -> torch.Tensor:
+            scheduler.abort_state("b")
+            return super().decode_batch(codes_BTQ)
+
+    scheduler = NemotronCode2WavScheduler(
+        AbortingDecoder(), "cpu", compute_fn=None, max_batch_size=8
+    )
+    outputs = deliver(
+        scheduler,
+        [stream_chunk("a", 0, make_codes(1)), stream_chunk("b", 0, make_codes(1))],
+    )
+    assert [(output.request_id, output.type) for output in outputs] == [("a", "stream")]
+
+
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graph requires a GPU")
 def test_graph_runner_batches_match_each_request_decoded_alone(
