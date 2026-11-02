@@ -28,7 +28,7 @@ The processor ships with the checkpoint, so no extra TTS package is needed. Deco
 
 ### Ascend NPU
 
-The single-card NPU path uses BF16 MOSS-TTS-v1.5 with backbone decode and sampling/state-machine graphs. It uses the released SGLang dependency without a SGLang source patch.
+The single-card NPU path uses BF16 MOSS-TTS-v1.5 with backbone decode and sampling/state-machine graphs. Sampling capture uses the shared platform graph backend. It uses the released SGLang dependency without a SGLang source patch.
 
 Use the A3 runtime pinned by `base-image-a3` in `[tool.sglang-omni.npu]` in `pyproject_npu.toml`, rather than a rolling image tag. The current runtime selects SGLang 0.5.22, CANN 9.1.0, Python 3.12, PyTorch 2.10.0 and torch_npu 2.10.0.post6. The host driver and firmware must support this CANN release; see [Ascend prerequisites](../get_started/installation_npu.md#prerequisites). Install this checkout inside that prepared runtime:
 
@@ -327,9 +327,11 @@ The Ascend profile above completed all 1088 EN samples with BF16 MOSS-TTS-v1.5 o
 
 | Device | WER (all samples) | Auxiliary WER (excl. >50%) | Latency mean / p95 (s) | Throughput (qps) |
 | --- | --- | --- | --- | --- |
-| Ascend910_9362 | 204/11943 = 1.7081% | 185/11920 = 1.5520% (3 severe samples) | 7.479 / 9.773 | 1.068 |
+| Ascend910_9362 | 205/11943 = 1.7165% | 186/11920 = 1.5604% (3 severe samples) | 7.584 / 9.799 | 1.054 |
 
 All three severe samples remain in the primary WER; their cause is unresolved. Hardware, software revision and recorded seed conditions differ from the historical H200 reference, so these results are not a matched hardware comparison. Backbone decode and sampling/state-machine graphs remain enabled on the NPU.
+
+This single pass on the November 2 mainline integration records one more word error than the October 25 run (204/11943), with the same three severe sample IDs. It does not establish a stable accuracy or performance change. The earlier NPU throughput regression remains tracked in [#3296](https://github.com/sgl-project/sglang-omni/issues/3296).
 
 ## Known Limitations
 
