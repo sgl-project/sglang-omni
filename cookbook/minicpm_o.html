@@ -571,6 +571,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#video-chat-inputs">Video Chat Inputs</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#native-full-duplex-ability">Native Full-Duplex Ability</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#text-to-speech">Text to speech</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speculative-decoding">Speculative Decoding</a></li>
 </ul>
             </nav>
         </div>
@@ -680,6 +681,24 @@ Those pixel options do not bound the initial native-resolution allocation.</p>
 </div>
 <p>The speech output is non-streaming. The sampling fields you set, such as <code class="docutils literal notranslate"><span class="pre">temperature</span></code>, <code class="docutils literal notranslate"><span class="pre">top_p</span></code> and <code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code>, apply to the Talker, which generates the speech; the rest keep the Talker’s defaults.</p>
 </section>
+<section id="speculative-decoding">
+<h2>Speculative Decoding<a class="headerlink" href="#speculative-decoding" title="Link to this heading">#</a></h2>
+<p>The Thinker can verify tokens proposed by a DSpark draft trained on its own answers to text, audio, image and video prompts, <a class="reference external" href="https://huggingface.co/Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm"><code class="docutils literal notranslate"><span class="pre">Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm</span></code></a>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>sglang_omni.cli<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>openbmb/MiniCPM-o-4_5<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.engine.speculative_algorithm<span class="w"> </span>DSPARK<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.engine.speculative_draft_model_path<span class="w"> </span>Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.engine.speculative_dspark_block_size<span class="w"> </span><span class="m">7</span>
+</pre></div>
+</div>
+<p>An EAGLE3 draft for Qwen3-8B, such as <a class="reference external" href="https://huggingface.co/Tengyunw/qwen3_8b_eagle3"><code class="docutils literal notranslate"><span class="pre">Tengyunw/qwen3_8b_eagle3</span></code></a>, runs with <code class="docutils literal notranslate"><span class="pre">--thinker.engine.speculative_algorithm</span> <span class="pre">EAGLE3</span></code>, <code class="docutils literal notranslate"><span class="pre">speculative_num_steps</span> <span class="pre">3</span></code>, <code class="docutils literal notranslate"><span class="pre">speculative_eagle_topk</span> <span class="pre">1</span></code> and <code class="docutils literal notranslate"><span class="pre">speculative_num_draft_tokens</span> <span class="pre">4</span></code>.</p>
+<ul class="simple">
+<li><p><strong>Speech output.</strong> The Talker reads one Thinker hidden row per text token, and the draft’s layer capture keeps the row of every verified token, so a speech server accepts drafts that verify one linear block per request: a chain EAGLE3 draft (<code class="docutils literal notranslate"><span class="pre">speculative_eagle_topk</span> <span class="pre">1</span></code>), DFlash or DSpark. Qwen3-8B DFlash drafts mask with token 151669, which is <code class="docutils literal notranslate"><span class="pre">&lt;image&gt;</span></code> in MiniCPM-o, so they accept almost no tokens here.</p></li>
+<li><p><strong>Supported settings.</strong> DSpark uses static verification. DFlash and DSpark reject a request seed for sampled verification; greedy and prefill-only requests still accept a seed. Speech verification supports at most 8,192 hidden rows per batch, including graph padding. Prefill storage follows the configured token ceiling; text-only serving does not allocate speech hidden buffers.</p></li>
+<li><p><strong>Sampling.</strong> <code class="docutils literal notranslate"><span class="pre">length_penalty</span></code> applies to every verified token. Requests with <code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code>, <code class="docutils literal notranslate"><span class="pre">frequency_penalty</span></code>, <code class="docutils literal notranslate"><span class="pre">presence_penalty</span></code>, <code class="docutils literal notranslate"><span class="pre">min_p</span></code> or logprobs are rejected, because the draft workers cannot reproduce them. A prefill-only request keeps them, since the runner’s own sampler draws its single token on the target prefill and never reaches a verify.</p></li>
+<li><p><strong>Scheduling.</strong> Async decode is turned off, and so is the stage’s own mixed-chunk default. An explicit <code class="docutils literal notranslate"><span class="pre">enable_mixed_chunk</span></code> is refused rather than silently turned off.</p></li>
+<li><p><strong>Startup.</strong> The thinker serves EAGLE3, DFlash and DSpark only, and <code class="docutils literal notranslate"><span class="pre">speculative_algorithm</span></code> and <code class="docutils literal notranslate"><span class="pre">speculative_draft_model_path</span></code> are given together. <code class="docutils literal notranslate"><span class="pre">max_seq_len</span></code> stays within the draft’s own <code class="docutils literal notranslate"><span class="pre">max_position_embeddings</span></code>, so raising it for long video prompts needs a draft whose context reaches that far.</p></li>
+</ul>
+</section>
 </section>
 
 
@@ -735,6 +754,7 @@ Those pixel options do not bound the initial native-resolution allocation.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#video-chat-inputs">Video Chat Inputs</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#native-full-duplex-ability">Native Full-Duplex Ability</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#text-to-speech">Text to speech</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speculative-decoding">Speculative Decoding</a></li>
 </ul>
   </nav></div>
 
