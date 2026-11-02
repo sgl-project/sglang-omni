@@ -635,6 +635,7 @@ def test_context_exhaustion_releases_append_unit() -> None:
         session_request=request,
     )
     scheduler = Mock(spec=OmniScheduler)
+    scheduler.enable_overlap = False
     scheduler.scheduler_thread_id = None
     scheduler.request_admission_lock = threading.RLock()
     scheduler.deferred_request_payloads = {}

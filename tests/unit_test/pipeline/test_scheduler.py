@@ -20,9 +20,20 @@ from unittest.mock import Mock
 
 import pytest
 import sglang.srt.managers.scheduler as sglang_scheduler_module
+import sglang.srt.managers.scheduler_components.batch_result_processor as batch_result_processor_module
 import torch
+from sglang.srt.disaggregation.utils import DisaggregationMode
 from sglang.srt.environ import envs
-from sglang.srt.managers.schedule_batch import FINISH_LENGTH, Req, ReqKvInfo
+from sglang.srt.managers.schedule_batch import (
+    FINISH_LENGTH,
+    Req,
+    ReqKvInfo,
+    ScheduleBatch,
+)
+from sglang.srt.managers.scheduler import GenerationBatchResult
+from sglang.srt.managers.scheduler_components.batch_result_processor import (
+    SchedulerBatchResultProcessor,
+)
 from sglang.srt.mem_cache.allocator.paged import PagedTokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import (
     CacheRequestHandle,
@@ -30,8 +41,11 @@ from sglang.srt.mem_cache.base_prefix_cache import (
 )
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.runtime_context import get_context
+from sglang.srt.sampling.sampling_params import SamplingParams
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
 from sglang_omni.admission import QueueFullError
+from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
     SESSION_METADATA_KEY,
@@ -87,6 +101,8 @@ def req_to_token_pool() -> SimpleNamespace:
 
 
 def init_sync_request_build_state(scheduler: OmniScheduler) -> None:
+    scheduler.enable_overlap = False
+    scheduler.result_queue = deque()
     scheduler.request_admission_lock = threading.RLock()
     scheduler.request_build_executor = None
     scheduler.request_build_max_pending = 0
@@ -325,6 +341,7 @@ def test_event_loops_run_without_autograd(loop_name: str) -> None:
         pass
 
     scheduler = object.__new__(OmniScheduler)
+    scheduler.enable_overlap = False
     scheduler.running = True
     grad_modes: list[bool] = []
 
@@ -1416,6 +1433,7 @@ def test_immediate_finish_keeps_async_snapshot_aligned_until_resolve() -> None:
     live_batch = SimpleNamespace(reqs=list(reqs))
     snapshot = SimpleNamespace(reqs=list(reqs))
     scheduler = object.__new__(OmniScheduler)
+    scheduler.result_queue = deque()
     scheduler.running_batch = live_batch
     scheduler.cur_batch = live_batch
     scheduler.last_batch = None
@@ -3030,6 +3048,7 @@ def test_pending_stream_requests_are_bounded(monkeypatch, caplog) -> None:
     monkeypatch.setattr(omni_scheduler_module, "_PENDING_STREAM_REQUEST_LIMIT", 3)
     monkeypatch.setattr(omni_scheduler_module, "_PENDING_STREAM_REQUEST_RETAINED", 2)
     scheduler = object.__new__(OmniScheduler)
+    scheduler.result_queue = deque()
     scheduler.running_batch = None
     scheduler.cur_batch = None
     scheduler.last_batch = None
@@ -3557,7 +3576,6 @@ def test_request_build_backlog_honors_configured_queue_limit(monkeypatch) -> Non
     ("enable_overlap", "enable_async_decode", "bind_late"),
     [
         (False, True, False),
-        (True, False, False),
         (False, True, True),
     ],
 )
@@ -3708,9 +3726,8 @@ def test_omni_scheduler_binds_one_execution_bridge_to_any_runner(
     assert model_runner.async_enabled is enable_async_decode
 
 
-def test_omni_scheduler_refuses_overlap_with_async_decode(monkeypatch) -> None:
-    """The async loop reuses the overlap batch-result contract; enabling both
-    would leak KV for finished requests, so construction must refuse."""
+def test_omni_scheduler_refuses_spec_overlap_without_a_draft(monkeypatch) -> None:
+    """The speculative loop requires the draft worker's result and handoff contract."""
     monkeypatch.setattr(
         OmniScheduler,
         "init_parallel_state",
@@ -3778,7 +3795,7 @@ def test_omni_scheduler_refuses_overlap_with_async_decode(monkeypatch) -> None:
         ),
     )
 
-    with pytest.raises(ValueError, match="mutually exclusive"):
+    with pytest.raises(ValueError, match="requires a speculative worker"):
         OmniScheduler(
             tp_worker=tp_worker,
             tree_cache=None,
@@ -3789,6 +3806,350 @@ def test_omni_scheduler_refuses_overlap_with_async_decode(monkeypatch) -> None:
             enable_overlap=True,
             enable_async_decode=True,
         )
+
+
+@pytest.fixture
+def spec_overlap_scheduler(monkeypatch: pytest.MonkeyPatch) -> OmniScheduler:
+    monkeypatch.setenv("SGLANG_DISABLE_CONSECUTIVE_PREFILL_OVERLAP", "0")
+    monkeypatch.setenv("SGLANG_FORCE_COARSE_WAR_BARRIER", "0")
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.enable_overlap = True
+    scheduler.running = True
+    scheduler._engine_paused = (
+        False  # noqa: leading-underscore  # native scheduler contract
+    )
+    scheduler.require_mlp_sync = False
+    scheduler.last_batch = None
+    scheduler.result_queue = deque()
+    scheduler.process_admin_requests = lambda: None
+    scheduler.recv_requests = lambda: []
+    scheduler.take_deferred_request_payloads = lambda: []
+    scheduler.process_input_requests = lambda requests: None
+    scheduler.draft_worker = SimpleNamespace(
+        last_shared_read_runner=SimpleNamespace(shared_read_done_event=None)
+    )
+    scheduler.forward_stream = object()
+    scheduler.schedule_stream = SimpleNamespace(wait_stream=lambda stream: None)
+    scheduler.self_check_during_idle = lambda: None
+    scheduler.sleep_during_idle = lambda: setattr(scheduler, "running", False)
+    return scheduler
+
+
+@pytest.mark.parametrize("forward_mode", [ForwardMode.DECODE, ForwardMode.EXTEND])
+@pytest.mark.parametrize("resolve_before_prefill", [False, True])
+@pytest.mark.parametrize("fine_read_barrier", [False, True])
+def test_spec_overlap_orders_launch_consumption_and_shared_reads(
+    monkeypatch: pytest.MonkeyPatch,
+    spec_overlap_scheduler: OmniScheduler,
+    forward_mode: ForwardMode,
+    resolve_before_prefill: bool,
+    fine_read_barrier: bool,
+) -> None:
+    """A next launch may pass result consumption, but shared writes must wait for reads."""
+    monkeypatch.setenv(
+        "SGLANG_DISABLE_CONSECUTIVE_PREFILL_OVERLAP", str(int(resolve_before_prefill))
+    )
+    events: list[str] = []
+    batches = []
+    for index in range(2):
+        batch = SimpleNamespace(
+            index=index,
+            reqs=[SimpleNamespace(inflight_middle_chunks=0)],
+            forward_mode=forward_mode,
+            spec_algorithm=SpeculativeAlgorithm.DFLASH,
+            grammar_needs_sync=lambda: False,
+        )
+        batch.copy = lambda batch=batch: batch
+        batches.append(batch)
+    selected_batches = iter([*batches, None])
+    scheduler = spec_overlap_scheduler
+    scheduler.get_next_batch_to_run = lambda: next(selected_batches)
+    shared_reader = scheduler.draft_worker.last_shared_read_runner
+    scheduler.schedule_stream = SimpleNamespace(
+        wait_event=lambda event: events.append(f"read {event}"),
+        wait_stream=lambda stream: events.append("read stream"),
+    )
+
+    def launch(batch: SimpleNamespace) -> int:
+        events.append(f"launch {batch.index}")
+        shared_reader.shared_read_done_event = (
+            batch.index if fine_read_barrier else None
+        )
+        return batch.index
+
+    scheduler.run_batch = launch
+    scheduler.process_batch_result = lambda batch, result: events.append(
+        f"consume {result}"
+    )
+    scheduler.event_loop_spec_overlap()
+    scheduler.resolve_pending_async()
+
+    first = ["launch 0", "read 0" if fine_read_barrier else "read stream"]
+    second = ["launch 1", "read 1" if fine_read_barrier else "read stream"]
+    if forward_mode == ForwardMode.EXTEND and resolve_before_prefill:
+        expected = first + ["consume 0"] + second + ["consume 1"]
+    else:
+        expected = first + second + ["consume 0", "consume 1"]
+    assert events == expected
+    assert not scheduler.result_queue
+    assert shared_reader.shared_read_done_event is None
+
+
+@pytest.fixture
+def spec_prefill_scheduler(
+    spec_overlap_scheduler: OmniScheduler,
+    published_config: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> OmniScheduler:
+    scheduler = spec_overlap_scheduler
+    scheduler.is_generation = True
+    scheduler.token_to_kv_pool_allocator = Mock()
+    scheduler.tree_cache = Mock()
+    scheduler.output_streamer = Mock()
+    scheduler.batch_result_processor = SchedulerBatchResultProcessor(
+        is_generation=True,
+        disaggregation_mode=DisaggregationMode.NULL,
+        enable_overlap=True,
+        enable_overlap_mlx=False,
+        model_config=None,
+        token_to_kv_pool_allocator=scheduler.token_to_kv_pool_allocator,
+        tree_cache=scheduler.tree_cache,
+        hisparse_coordinator=None,
+        req_to_token_pool=None,
+        decode_offload_manager=None,
+        metrics_collector=None,
+        metrics_reporter=Mock(),
+        draft_worker=scheduler.draft_worker,
+        model_worker=None,
+        logprob_result_processor=None,
+        output_streamer=scheduler.output_streamer,
+        beam_coordinator=None,
+        abort_request=scheduler.abort,
+    )
+    scheduler.process_batch_result = (
+        scheduler.batch_result_processor.process_batch_result_prefill
+    )
+    monkeypatch.setattr(
+        batch_result_processor_module,
+        "checkpoint_kv_cache",
+        lambda request, cache: None,
+    )
+    return scheduler
+
+
+def multimodal_prefill_request(request_id: str, prompt_token_ids: list[int]) -> Req:
+    sampling_params = SamplingParams(max_new_tokens=8, ignore_eos=True)
+    sampling_params.normalize(None)
+    request = Req(
+        rid=request_id,
+        origin_input_text="",
+        origin_input_ids=array("q", prompt_token_ids),
+        sampling_params=sampling_params,
+    )
+    request.omni_model_inputs = {"image_embeds": torch.ones(1, 4)}
+    request._omni_consumed = None  # noqa: leading-underscore  # model cursor
+    request._omni_mm_positions = None  # noqa: leading-underscore  # model positions
+    request._omni_terminal_claimed = (
+        False  # noqa: leading-underscore  # terminal ownership
+    )
+    return request
+
+
+@pytest.mark.parametrize("chunk_count", [2, 3])
+def test_spec_overlap_final_prefill_chunk_releases_multimodal_inputs(
+    spec_prefill_scheduler: OmniScheduler, chunk_count: int
+) -> None:
+    """Pending chunk accounting must survive batch filtering and release only each request's final prompt inputs."""
+    runner = object.__new__(ThinkerModelRunner)
+    runner.embed_tokens = torch.nn.Embedding(16, 4)
+    runner.image_token_id = 8
+    runner.video_token_id = 9
+    runner.audio_token_id = 10
+    request = multimodal_prefill_request(
+        "chunked", [runner.image_token_id] + [1] * (chunk_count - 1)
+    )
+    complete_request = multimodal_prefill_request("complete", [runner.image_token_id])
+    batches = []
+    for index in range(chunk_count):
+        requests = [complete_request, request] if index == 0 else [request]
+        batch = ScheduleBatch(
+            reqs=requests,
+            forward_iter=index,
+            forward_mode=ForwardMode.EXTEND,
+            spec_algorithm=SpeculativeAlgorithm.DFLASH,
+            extend_lens=[1] * len(requests),
+            prefix_lens=[0] * len(requests) if index == 0 else [index],
+            enable_overlap=True,
+            device="cpu",
+        )
+        batches.append(batch)
+    selected_batches = iter([*batches, None])
+    scheduler = spec_prefill_scheduler
+
+    def select_batch() -> ScheduleBatch | None:
+        if scheduler.last_batch is not None:
+            # note (YzXiao): the next selection may filter the original batch while its result still owns a snapshot.
+            scheduler.last_batch.reqs.clear()
+        else:
+            pass
+        batch = next(selected_batches)
+        if batch is not None and batch.forward_iter < chunk_count - 1:
+            request.inflight_middle_chunks += 1
+        else:
+            pass
+        return batch
+
+    def launch(batch: ScheduleBatch) -> GenerationBatchResult:
+        is_middle_chunk = batch.forward_iter < chunk_count - 1
+        assert request.inflight_middle_chunks == int(is_middle_chunk)
+        forward_batch = SimpleNamespace(
+            input_ids=torch.tensor(
+                [
+                    batch_request.origin_input_ids[prefix]
+                    for batch_request, prefix in zip(batch.reqs, batch.prefix_lens)
+                ]
+            ),
+            extend_seq_lens_cpu=batch.extend_lens,
+            extend_prefix_lens_cpu=batch.prefix_lens,
+        )
+        runner.inject_multimodal_embeds(forward_batch, batch)
+        assert (request.omni_model_inputs is not None) == is_middle_chunk
+        assert complete_request.omni_model_inputs is None
+        if batch.forward_iter > 0:
+            assert list(complete_request.output_ids) == [7]
+        else:
+            pass
+        return GenerationBatchResult(next_token_ids=torch.tensor([7] * len(batch.reqs)))
+
+    scheduler.get_next_batch_to_run = select_batch
+    scheduler.run_batch = launch
+    scheduler.event_loop_spec_overlap()
+    scheduler.resolve_pending_async()
+    assert not scheduler.result_queue
+    assert request.inflight_middle_chunks == 0
+    assert list(request.output_ids) == [7]
+    assert list(complete_request.output_ids) == [7]
+    assert request.omni_model_inputs is None
+    assert request._omni_consumed is None  # noqa: leading-underscore  # model cursor
+    assert (
+        request._omni_mm_positions is None
+    )  # noqa: leading-underscore  # model positions
+
+
+def test_legacy_overlap_loop_refuses_direct_calls() -> None:
+    """Removing the guard would expose a loop that bypasses Omni's prefill boundary."""
+    scheduler = object.__new__(OmniScheduler)
+    with pytest.raises(NotImplementedError):
+        scheduler.event_loop_overlap()
+
+
+def test_spec_overlap_abort_finds_a_chunk_owned_only_by_the_pending_snapshot(
+    spec_prefill_scheduler: OmniScheduler,
+) -> None:
+    """Filtering the original batch must not hide an in-flight chunk from cancellation or lose its accounting."""
+    scheduler = spec_prefill_scheduler
+    request = multimodal_prefill_request("cancelled", [8, 1])
+    request.inflight_middle_chunks = 1
+    batch = ScheduleBatch(
+        reqs=[request],
+        forward_mode=ForwardMode.EXTEND,
+        spec_algorithm=SpeculativeAlgorithm.DFLASH,
+    )
+    scheduler.result_queue.append(
+        (batch.copy(), GenerationBatchResult(next_token_ids=torch.tensor([7])))
+    )
+    batch.reqs.clear()
+    scheduler.running_batch = batch
+    scheduler.cur_batch = None
+    scheduler.last_batch = None
+    scheduler.previous_pending_decode = None
+    scheduler.async_pending = None
+
+    assert scheduler.mark_running_request_aborted(request.rid)
+    assert request.to_finish.to_json()["type"] == "abort"
+    scheduler.resolve_pending_async()
+
+    assert not scheduler.result_queue
+    assert request.inflight_middle_chunks == 0
+    assert not request.output_ids
+    assert request.to_finish.to_json()["type"] == "abort"
+    scheduler.token_to_kv_pool_allocator.free.assert_not_called()
+
+
+def test_spec_overlap_pause_consumes_a_middle_chunk_before_resuming(
+    spec_prefill_scheduler: OmniScheduler,
+) -> None:
+    """Pausing between chunks must consume the pending result without committing its placeholder token."""
+    scheduler = spec_prefill_scheduler
+    scheduler.admin_lock = threading.Lock()
+    request = multimodal_prefill_request("paused", [8, 1])
+    request.inflight_middle_chunks = 1
+    batch = ScheduleBatch(
+        reqs=[request],
+        forward_mode=ForwardMode.EXTEND,
+        spec_algorithm=SpeculativeAlgorithm.DFLASH,
+    )
+    scheduler.result_queue.append(
+        (batch.copy(), GenerationBatchResult(next_token_ids=torch.tensor([7])))
+    )
+
+    assert scheduler.admin_pause_generation({"mode": "in_place"})["success"]
+    assert (
+        scheduler._engine_paused
+    )  # noqa: leading-underscore  # native scheduler contract
+    assert not scheduler.result_queue
+    assert request.inflight_middle_chunks == 0
+    assert not request.output_ids
+    assert request.omni_model_inputs is not None
+
+    assert scheduler.admin_continue_generation({"torch_empty_cache": False})["success"]
+    assert (
+        not scheduler._engine_paused
+    )  # noqa: leading-underscore  # native scheduler contract
+    assert scheduler.last_pause_mode is None
+
+
+@pytest.mark.parametrize("enable_overlap", [False, True])
+def test_partial_spec_launch_failure_does_not_reclaim_inflight_kv(
+    enable_overlap: bool,
+) -> None:
+    """An overlap failure can leave GPU work queued against the batch's KV slots."""
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.enable_overlap = enable_overlap
+    scheduler._run_batch = Mock(
+        side_effect=RuntimeError("partial launch")
+    )  # noqa: leading-underscore  # native runner entry point
+    scheduler.handle_batch_failure = Mock()
+    batch = SimpleNamespace()
+    if enable_overlap:
+        with pytest.raises(RuntimeError, match="partial launch"):
+            scheduler.run_batch(batch)
+        scheduler.handle_batch_failure.assert_not_called()
+    else:
+        scheduler.run_batch(batch)
+        assert scheduler.handle_batch_failure.call_args.args[0] is batch
+
+
+def test_spec_prefill_completion_precedes_host_result_processing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prefill lifecycle events and CPU consumption must wait for the result copy."""
+    events: list[str] = []
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.enable_overlap = True
+    scheduler.emit_prefill_end_for_batch = lambda batch: events.append("prefill end")
+    monkeypatch.setattr(
+        sglang_scheduler_module.Scheduler,
+        "process_batch_result",
+        lambda self, batch, result: events.append("consume"),
+    )
+    scheduler.process_batch_result(
+        SimpleNamespace(forward_mode=ForwardMode.EXTEND, reqs=[]),
+        SimpleNamespace(
+            copy_done=SimpleNamespace(synchronize=lambda: events.append("copy done"))
+        ),
+    )
+    assert events == ["copy done", "prefill end", "consume"]
 
 
 def test_omni_scheduler_normalizes_prefill_coalesce_args(monkeypatch) -> None:
@@ -3836,6 +4197,7 @@ def test_stage_output_cache_tracks_bytes_and_detaches() -> None:
 
 def test_omni_scheduler_stop_runs_shutdown_callback_once() -> None:
     scheduler = object.__new__(OmniScheduler)
+    scheduler.enable_overlap = False
     shutdowns: list[None] = []
     scheduler.running = True
     scheduler.request_admission_lock = threading.RLock()
@@ -4301,6 +4663,7 @@ def test_omni_scheduler_running_abort_does_not_leak_prefill_dedup_state(
     )
     scheduler = object.__new__(OmniScheduler)
     scheduler.mark_running_request_aborted = lambda _rid: True
+    scheduler.enable_overlap = False
     scheduler.request_admission_lock = threading.Lock()
     scheduler.aborted_request_ids = set()
     scheduler.aborted_request_id_order = collections.deque()

@@ -7,7 +7,7 @@ Rules for Apple Silicon work. They write down what the native runtime PRs under
 
 | Path | Contents |
 | --- | --- |
-| `sglang_omni_mlx/native/` | C++ runtime on MLX: one server binary per model, a parity CLI per model in `tools/`. Each model's code is in `src/<model>/`; code shared across models (`audio`, `form`, `layers`, `npz`, `tokenizer`, built as the `common` library, plus `swift_port` and `http`) is in `src/common/`. The shared ASR server code (`asr_service`, `worker`, `realtime`) is still in `src/qwen3_asr/`. |
+| `sglang_omni_mlx/native/` | C++ runtime on MLX: one server binary per model, a parity CLI per model in `tools/`. Each model's code is in `src/<model>/`; code shared across models (`audio`, `form`, `layers`, `npz`, `tokenizer`, built as the `common` library, plus `swift_port` and `http`) is in `src/common/`. The shared ASR server code (`asr_service`, `worker`, `realtime`) is still in `src/qwen3_asr/`, and so is the `/v1/audio/speech` API that `voxtral_tts_server` and `fishaudio_drama3_server` share (`speech_service`), built on `asr_service`. |
 | `sglang_omni_mlx/native/ci/` | Model pins, the 392-clip corpus, golden outputs, server API tests. |
 | `sglang_omni_mlx/<model>/` | Python MLX servers, e.g. the Qwen3-ASR reference server. |
 | `Voxt/` | The macOS app that runs the native servers. See [`Voxt/backend/README.md`](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/backend/README.md). |
@@ -40,12 +40,24 @@ The legacy MLX code in `sglang_omni` (`mlx_model_worker.py`,
 back. If a change really needs a cross-path abstraction, open an issue and
 agree on it with a maintainer first.
 
+## Speculative decoding
+
+`qwen3_asr_server` and `qwen3_asr_transcribe` take `--draft-model-path DIR` (and `--draft-bits 4|6|8` to quantize the draft at load). The Qwen3-ASR target then verifies a DFlash draft's block of proposals each step and keeps its own greedy transcript; the parity tool reports `verify_rounds` per clip. The draft is a Speculators-layout DFlash checkpoint (`aux_hidden_state_layer_ids`, `block_size`, `mask_token_id`, `transformer_layer_config`; weights `fc`, `hidden_norm`, `layers.*`, `norm`, `lm_head`, `d2t`) checked against the target at load: hidden size, the layers it reads (in order), the `fc`, `lm_head` and `d2t` shapes, `d2t` landing inside the target's vocabulary, and a causal block; one that does not fit is refused at load. A request that sets `repetition_penalty` decodes without the draft.
+
+| Target | Draft | Golden |
+| --- | --- | --- |
+| `mlx-community/Qwen3-ASR-0.6B-4bit` | `wilsonzheng0327/Qwen3-ASR-0.6B-dflash` | `ci/golden/qwen3-asr-0.6b-4bit-dflash.json` |
+| `mlx-community/Qwen3-ASR-1.7B-{6bit,8bit}` | `wilsonzheng0327/Qwen3-ASR-1.7B-dflash` | `ci/golden/qwen3-asr-1.7b-8bit-dflash.json` |
+
+Both drafts are pinned in `ci/models.json`. A draft for another target is one pin, one golden whose request names it under `draft_model_path`, and a row in Voxt's `OmniASRBackend.draftModelReposByRepo`. Verifying a block moves the target's low-precision logits slightly, so a few percent of clips differ from plain decoding in punctuation or a near-tie word; the goldens hold each chip's draft outputs like any other.
+
 ## Rule 2: Contribution requirements
 
 **Placement and reuse**
 
 - A native model adds `src/<model>/` with `<model>_model`, `<model>_transcriber`
-  and a server on the shared `asr_service`, a CLI in `tools/`, and CMake
+  and a server on the shared `asr_service` (a speech model's on
+  `speech_service`), a CLI in `tools/`, and CMake
   targets: a library for the model's own sources that links what it reuses
   (`common`, `swift_port`, `silero_vad`, `sortformer`). Shared code goes in
   `src/common/`, not in another model's directory or library. Include project
@@ -71,7 +83,7 @@ agree on it with a maintainer first.
 - Pin every checkpoint file by revision and SHA-256 in `ci/model_pins.json`.
 - Add a golden under `ci/model_golden/`. Import the Mac CI runner's outputs
   (`golden-outputs` artifact, `--import`) so the runner checks exactly. A
-  speech model's golden holds seeded requests' codes (`ci/voxtral_golden.py`).
+  speech model's golden holds seeded requests' codes (`ci/speech_golden.py`).
 - Add a second golden for paths the corpus misses (long-audio chunking, VAD).
 
 **Tests**

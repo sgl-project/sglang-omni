@@ -158,6 +158,9 @@ class ModelRunner(Generic[RequestDataInput]):
       - decode hooks for single-step autoregressive decode processing
     """
 
+    # note(YzXiao): opt in when next-round inputs are ready before CPU result collection and pending outputs retain their own storage.
+    supports_speculative_async_decode: bool = False
+
     # True when the model's own speculative verify applies repetition_penalty exactly.
     speculative_verifies_repetition_penalty: bool = False
     # An EAGLE draft extends on the embeddings the target prefilled with, which a

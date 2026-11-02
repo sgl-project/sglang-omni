@@ -94,6 +94,7 @@ def video_preprocessor(
     preprocessor._processor = video_processor  # noqa: leading-underscore  # Existing processor injection contract.
     preprocessor.speech_enabled = False
     preprocessor.tokenizer = PreTrainedTokenizerBase(chat_template=CHAT_TEMPLATE)
+    preprocessor.video_decode_threads = 16
     return preprocessor
 
 
@@ -437,7 +438,12 @@ def test_top_level_video_question_audio_retains_legacy_inputs(
     explicit_image = Image.new("RGB", (4, 4), "green")
     question_audio = np.full(1600, 0.25, dtype=np.float32)
     expected_video, _ = load_video_path(
-        encoded_video_path, fps=2, max_frames=128, min_pixels=3136, max_pixels=3136
+        encoded_video_path,
+        fps=2,
+        max_frames=128,
+        min_pixels=3136,
+        max_pixels=3136,
+        decode_threads=16,
     )
     expected_frames = video_to_images(expected_video)
     assert len(expected_frames) == 4

@@ -43,7 +43,7 @@ void RequireShape(const omni_common::Checkpoint &checkpoint,
   const std::string prefix =
       name.ends_with(".weight") ? name.substr(0, name.size() - 7) : name;
   if (name.ends_with(".weight") && checkpoint.Has(prefix + ".scales")) {
-    const auto &quantization = checkpoint.quantization();
+    const auto &quantization = checkpoint.Quantization(prefix);
     if (shape.size() < 2 || quantization.group_size <= 0 ||
         quantization.bits <= 0 || quantization.mode != "affine" ||
         shape.back() % quantization.group_size != 0 ||
@@ -376,7 +376,7 @@ mx::array MingBackbone::Moe(const mx::array &x,
                            const std::string &projection) {
     const auto name = prefix + ".experts." + projection;
     if (checkpoint_.Has(name + ".scales")) {
-      const auto &quantization = checkpoint_.quantization();
+      const auto &quantization = checkpoint_.Quantization(name);
       return mx::gather_qmm(input, checkpoint_.Weight(name + ".weight"),
                             checkpoint_.Weight(name + ".scales"),
                             checkpoint_.Weight(name + ".biases"), std::nullopt,

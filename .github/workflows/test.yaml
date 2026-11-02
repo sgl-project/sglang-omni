@@ -32,6 +32,8 @@ jobs:
             partition: 0
           - name: unit-test-b
             partition: 1
+          - name: unit-test-c
+            partition: 2
     container:
       image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
       options: >-
@@ -65,7 +67,7 @@ jobs:
             pytest tests/ -v -m "not benchmark and not accelerator" -x \
             -p scripts.ci.utils.pytest_partition \
             --auto-partition-id "${{ matrix.partition }}" \
-            --auto-partition-size 2 \
+            --auto-partition-size 3 \
             --partition-model-file .github/unit_test_durations.json
 
   unit-test-accelerator:

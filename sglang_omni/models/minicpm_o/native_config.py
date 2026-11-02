@@ -21,6 +21,8 @@ THINKER_GPU_MEMORY_FRACTION = 0.52
 TALKER_CONTEXT_LENGTH = 4096
 # note (Junnan Li): One vocoder forward with the chunk graphs costs about this much before its width adds to it.
 FORWARD_FLOOR_MS = 45
+# note (wenyao): The thinker writes text faster than the talker speaks it, so a turn the model ends can still owe speech; at most this many more units speak it.
+MAX_DRAIN_UNITS = 3
 
 
 def stages() -> list[StageConfig]:

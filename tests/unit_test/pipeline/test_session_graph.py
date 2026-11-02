@@ -758,6 +758,26 @@ async def test_a_report_reaches_the_client_only_from_a_node_no_node_reads():
     assert graph.outputs.empty()
 
 
+@pytest.mark.asyncio
+async def test_the_synthesizer_language_of_a_sentence_reaches_its_readers_but_never_the_client():
+    """reply.sentence is only for the aligner; as an ordinary control the client would get it before every sentence as an event the realtime API does not define."""
+    sentence = {"type": "reply.sentence", "language": "English"}
+    sessions = NodeOutputsRunner(
+        [
+            reply_output("session", sentence, 1),
+            reply_output("session", {"type": "turn.started"}, 1),
+        ]
+    )
+    graph = report_runtime(sessions)
+    await sessions.route_graph_outputs(graph, "tts")
+    assert graph.outputs.get_nowait()[0].payload == {"type": "turn.started"}
+    assert graph.outputs.empty()
+    assert [chunk.payload for _, chunk, _ in graph.inboxes["aligner"].queued] == [
+        sentence,
+        {"type": "turn.started"},
+    ]
+
+
 def input_runtime(
     nodes: dict[str, SessionNode], limits: SessionLimits
 ) -> SessionGraphRuntime:

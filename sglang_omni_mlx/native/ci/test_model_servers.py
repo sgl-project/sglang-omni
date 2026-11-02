@@ -296,6 +296,7 @@ def test_whisper_shutdown_reports_stopped() -> None:
         ("parakeet_server", "cohere_transcribe"),
         ("sensevoice_server", "cohere_transcribe"),
         ("music3_server", "qwen3_asr"),
+        ("fishaudio_drama3_server", "voxtral_tts"),
     ],
 )
 def test_server_serves_only_its_model_kind(binary: str, other_kind: str) -> None:
