@@ -7,7 +7,7 @@ Rules for Apple Silicon work. They write down what the native runtime PRs under
 
 | Path | Contents |
 | --- | --- |
-| `sglang_omni_mlx/native/` | C++ runtime on MLX: one server binary per model, a parity CLI per model in `tools/`. Each model's code is in `src/<model>/`; code shared across models (`audio`, `form`, `layers`, `npz`, `tokenizer`, built as the `common` library, plus `swift_port` and `http`) is in `src/common/`. The shared ASR server code (`asr_service`, `worker`, `realtime`) is still in `src/qwen3_asr/`, and so is the `/v1/audio/speech` API that `voxtral_tts_server` and `fishaudio_drama3_server` share (`speech_service`), built on `asr_service`. |
+| `sglang_omni_mlx/native/` | C++ runtime on MLX: one server binary per model, a parity CLI per model in `tools/`. Each model's code is in `src/<model>/`; code shared across models (`audio`, `form`, `layers`, `npz`, `tokenizer`, built as the `common` library, plus `swift_port` and `http`) is in `src/common/`. The shared ASR server code (`asr_service`, `worker`, `realtime`) is still in `src/qwen3_asr/`, and so is the `/v1/audio/speech` API that `voxtral_tts_server` and `fishaudio_drama3_server` share (`speech_service`), built on `asr_service`. `ming3_audio_server` serves `/v1/chat/completions` from its own service in `src/ming3_audio/`. |
 | `sglang_omni_mlx/native/ci/` | Model pins, the 392-clip corpus, golden outputs, server API tests. |
 | `sglang_omni_mlx/<model>/` | Python MLX servers, e.g. the Qwen3-ASR reference server. |
 | `Voxt/` | The macOS app that runs the native servers. See [`Voxt/backend/README.md`](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/backend/README.md). |
@@ -21,7 +21,7 @@ MLX code is not abstracted together with the CUDA path in `sglang_omni`.
 - No shared backend interface, base class or registry across the two paths.
   Share code freely inside the MLX path, not across paths.
 - The paths meet only at the OpenAI-style HTTP API (`/v1/audio/transcriptions`,
-  `/v1/audio/speech`, `/v1/realtime`, `/health`).
+  `/v1/audio/speech`, `/v1/chat/completions`, `/v1/realtime`, `/health`).
 
 Why:
 

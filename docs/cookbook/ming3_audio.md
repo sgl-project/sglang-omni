@@ -90,7 +90,7 @@ sglang_omni_mlx/native/scripts/build_runtime.sh "$MING3_AUDIO_RUNTIME" "$MING3_A
   --model-name inclusionAI/Ming-3.0-audio-tiny --port 8000
 ```
 
-Set `MING3_AUDIO_DATA`, `MING3_AUDIO_RUNTIME` and `MING3_AUDIO_BUILD` to separate local directories. Model provisioning uses the existing CI Python requirements and verifies the revision and hashes in `ci/model_pins.json`. The original BF16 weights occupy about 17.7 GB; allow additional unified memory for loading and inference. Quantized checkpoints are not supported.
+Set `MING3_AUDIO_DATA`, `MING3_AUDIO_RUNTIME` and `MING3_AUDIO_BUILD` to separate local directories. Model provisioning uses the existing CI Python requirements and verifies the revision and hashes in `ci/model_pins.json`. The BF16 weights occupy about 17.7 GB; on an M4 Pro with 48 GiB of memory, the server's peak memory footprint was 18.8 GB. Quantized checkpoints are not supported.
 
 Send the recording as base64 in an `input_audio` content part:
 
@@ -141,24 +141,10 @@ To convert another recording to the accepted WAV format:
 ffmpeg -i recording.mp3 -ar 16000 -ac 1 -c:a pcm_s16le input.wav
 ```
 
-For offline inference, `ming3_audio_chat` accepts the same checkpoint and WAV input and prints JSON containing the answer, finish reason and token counts:
+For offline inference, `ming3_audio_chat` accepts the same checkpoint and WAV input and prints JSON containing the answer, finish reason and token counts. `--prompt` is the text after the audio, and `--system` adds a system message:
 
 ```bash
 "$MING3_AUDIO_RUNTIME/bin/ming3_audio_chat" \
   --model-path "$MING3_AUDIO_DATA/models/inclusionAI_Ming-3.0-audio-tiny" \
   --audio input.wav --prompt 'What does the speaker say?' --max-new-tokens 64
 ```
-
-Validated on an M4 Pro with 48 GiB memory, macOS 26.6.1 and MLX 0.32.3, using checkpoint revision `3c9578f641b6745abf2d1239dc8419726f37c0e2`. A 2.256-second English clip and a 5.904-second Chinese clip produced identical prompt and generated token IDs to a reference using the official model classes with PyTorch CPU substitutes for FLA kernels. This checks two short greedy cases, not official CUDA parity or identical intermediate activations. Of three additional high-error corpus cases, two produced identical text and one differed by one Chinese character; that difference remains unresolved. The 28 non-corpus API tests in `native/ci/test_ming3_audio_api.py` passed against the real model, covering English and Chinese transcription, a question about the recording's content, busy-request rejection, disconnect cancellation and shutdown during generation.
-
-The same suite exercises all 392 frozen corpus clips: 359 inputs within 30 seconds are decoded, and 33 longer inputs must return HTTP 400. With greedy decoding and a 256-token output limit, the M4 Pro run measured 1.821% English WER (131 clips), 6.469% Chinese CER (156 clips) and 9.340% mixed-language MER (64 clips), using the native CI normalization. No speech clip was truncated. The remaining eight silence/noise clips all reached the token limit; their outputs are retained but excluded from these error rates under the existing corpus scoring rules. These are native measurements, not an official CUDA comparison or a validated accuracy threshold. CI uploads every response and the aggregate metrics.
-
-On the same machine and checkpoint, serial HTTP transcription of the first 3, 15 and 30 seconds of frozen corpus clip `0344_en_long` measured the following latencies. Each case used two warmup requests followed by five measured requests, greedy decoding and a 256-token output limit. All requests finished with stop rather than reaching the token limit.
-
-| Audio duration | Median HTTP latency | Completion tokens | RTF | RTFx |
-| --- | --- | --- | --- | --- |
-| 3 s | 1.191 s | 15 | 0.397 | 2.52 |
-| 15 s | 3.511 s | 57 | 0.234 | 4.27 |
-| 30 s | 6.237 s | 102 | 0.208 | 4.81 |
-
-Launch to the supervised ready event took 4.17 seconds. The server's peak memory footprint across all three cases was 18.84 GB (17.55 GiB), measured with macOS `/usr/bin/time -l`; maximum RSS was 2.30 GB and does not represent the full unified-memory footprint. These measurements cover one recording's prefixes, not a representative performance corpus, and do not establish a speedup over a reference implementation.
