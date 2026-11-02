@@ -690,19 +690,24 @@ differing clips diverge.</p></li>
 <p><strong>Golden and pins</strong></p>
 <ul class="simple">
 <li><p>Pin every checkpoint file by revision and SHA-256 in <code class="docutils literal notranslate"><span class="pre">ci/model_pins.json</span></code>.</p></li>
-<li><p>Add a golden under <code class="docutils literal notranslate"><span class="pre">ci/model_golden/</span></code>. Import the Mac CI runner’s outputs
-(<code class="docutils literal notranslate"><span class="pre">golden-outputs</span></code> artifact, <code class="docutils literal notranslate"><span class="pre">--import</span></code>) so the runner checks exactly. A
-speech model’s golden holds seeded requests’ codes (<code class="docutils literal notranslate"><span class="pre">ci/speech_golden.py</span></code>).</p></li>
+<li><p>Add a golden under <code class="docutils literal notranslate"><span class="pre">ci/model_golden/</span></code>: record a chip’s outputs with
+<code class="docutils literal notranslate"><span class="pre">check_model_golden.py</span> <span class="pre">--outputs</span></code> and add them with <code class="docutils literal notranslate"><span class="pre">--import</span></code>. Mac CI does
+not run it, so give its result on your Mac in the PR. A speech model’s
+golden holds seeded requests’ codes (<code class="docutils literal notranslate"><span class="pre">ci/speech_golden.py</span></code>).</p></li>
 <li><p>Add a second golden for paths the corpus misses (long-audio chunking, VAD).</p></li>
 </ul>
 <p><strong>Tests</strong></p>
 <ul class="simple">
-<li><p>Server tests in <code class="docutils literal notranslate"><span class="pre">ci/test_model_servers.py</span></code>, or in the model’s own
-<code class="docutils literal notranslate"><span class="pre">ci/test_&lt;model&gt;_api.py</span></code> added to the Mac CI job once that file would pass
-~400 lines: JSON, SSE and realtime success paths; every invalid input
-returns 400; session-state errors, cancel on disconnect, and wrong model
-kind.</p></li>
+<li><p>Real-model server tests in <code class="docutils literal notranslate"><span class="pre">ci/test_model_servers.py</span></code>, or in the model’s
+own <code class="docutils literal notranslate"><span class="pre">ci/test_&lt;model&gt;_api.py</span></code> once that file would pass ~400 lines, run by
+hand: JSON, SSE and realtime success paths; every invalid input returns 400;
+session-state errors and cancel on disconnect.</p></li>
 <li><p>Assert structure, not one chip’s exact text; exact text lives in the golden.</p></li>
+<li><p>Mac CI runs <code class="docutils literal notranslate"><span class="pre">tests/</span></code> with no checkpoint. List a new server and its model
+kinds in <code class="docutils literal notranslate"><span class="pre">tests/test_runtime_binaries.py</span></code>, with a row for each flag its
+startup rejects. A change to the shared protocol (<code class="docutils literal notranslate"><span class="pre">common/service.cpp</span></code>,
+<code class="docutils literal notranslate"><span class="pre">qwen3_asr/asr_service.cpp</span></code>, <code class="docutils literal notranslate"><span class="pre">speech_service.cpp</span></code>, <code class="docutils literal notranslate"><span class="pre">realtime.cpp</span></code>) gets a
+case against <code class="docutils literal notranslate"><span class="pre">tests/stub_server.cpp</span></code>.</p></li>
 <li><p>New Voxt Omni tests go into the <code class="docutils literal notranslate"><span class="pre">voxt-unit</span></code> job in <code class="docutils literal notranslate"><span class="pre">voxt-mac-ci.yaml</span></code>.</p></li>
 </ul>
 <p><strong>Robustness</strong></p>
@@ -715,8 +720,9 @@ length, clear the MLX cache.</p></li>
 </ul>
 <p><strong>Performance</strong></p>
 <ul class="simple">
-<li><p>Mac CI checks correctness only. Report total time, realtime factor, peak
-memory and load time against the reference, with the device stated.</p></li>
+<li><p>Mac CI checks neither outputs nor speed. Report total time, realtime
+factor, peak memory and load time against the reference, with the device
+stated.</p></li>
 </ul>
 <p><strong>CI and style</strong></p>
 <ul class="simple">
