@@ -269,7 +269,7 @@ To use services you already run, drop their `services` entries and point the nod
 **One command with a profile**
 
 
-The default CustomVoice cascade uses Qwen3.8-27B with thinking off on GPU 0 and Qwen3-ASR/Qwen3-TTS on GPU 1. The audio-file example in `examples/streaming_cascade/run.py` uses this profile when `--config` is omitted.
+The default Vivian cascade profile uses Qwen3.8-27B with thinking off on GPU 0 and Qwen3-ASR/Qwen3-TTS Base on GPU 1. The audio-file example in `examples/streaming_cascade/run.py` uses this profile when `--config` is omitted.
 
 ```bash
 sgl-omni serve --config examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-vivian/launch.yaml --enable-realtime --port 8765
@@ -383,6 +383,10 @@ Every profile is a `launch.yaml` under `examples/streaming_cascade/profiles/`.
 | `qwen3-asr-qwen3-tts-base-clone` | Qwen3-ASR-1.7B service on 8002 | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `reference_zh.wav` in the profile directory | 1 | `vad`, `turn_detection` (published), `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published) | Alignment worker on 8010 |
 | `nemotron-qwen3-tts` | Nemotron 3.5 streaming ASR service on 8001 (`realtime_transcription`) | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-0.6B-Base on 8004, cloning `reference.wav` | 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced) | Alignment worker on 8010; a recording at `reference.wav`, with `reference_text` set to its transcript |
 | `nemotron-stage-qwen3-tts` | Nemotron 3.5 ASR as the `asr` stage on GPU 0, with `running_transcript` | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-0.6B-Base on 8004, cloning `reference.wav` | 1 | `vad`, `asr` (stage), `transcript`, `dialog`, `llm`, `tts`, `aligner` (forced) | Alignment worker on 8010; a recording at `reference.wav`, with `reference_text` set to its transcript |
+
+**TTS speaking-rate and pause behavior (B7).** Earlier CustomVoice/Vivian configurations exhibited abnormal pauses and prolonged speech within a single TTS request. Similar symptoms were reproduced with official end-to-end CustomVoice generation and across multiple decoding paths for the same Omni-generated codec sequences, indicating that the observed behavior is not confined to streaming delivery or client playback.
+
+The bundled Vivian profiles now use Qwen3-TTS-12Hz-1.7B-Base with `voices/vivian.wav` and no reference transcript. A controlled, single-reviewer comparison supports this configuration as a mitigation: unacceptable timing-related anomalies decreased from 5/60 CustomVoice outputs to 0/60 Base outputs on the evaluated new-text set. This is profile-level evidence, not a complete fix or validation of every Base profile. See the [reproduction report, configurations, and audio/codec evidence](https://gist.github.com/swsqy/2ee1596e9d16f50153e2ba334ea276f3). The exact internal cause remains unresolved.
 
 `qwen3-asr-qwen3-tts-vivian` and `qwen3-asr-qwen3-tts-base-clone` publish their aligner's `session`, so their clients receive `sglang.response.progress`. Every profile cuts an interrupted reply at the word ends of the sentences whose audio was complete; the Qwen3-ASR profiles also send the delivered audio of the sentence at the cut to their own recognizer, so a sentence cut before its audio was complete keeps the part the listener heard.
 
