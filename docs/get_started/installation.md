@@ -49,7 +49,7 @@ uv pip install --prerelease=allow "sglang-omni==0.2.0"
 Build prerequisites first:
 
 - **UCX 1.20.x** with CUDA + verbs — [upstream](https://github.com/openucx/ucx), or reuse flags in [`docker/Dockerfile`](../../docker/Dockerfile).
-- **flash-attn-4** `>=4.0.0b18`, matching `torch==2.14.1` and SGLang 0.5.22's `nvidia-cutlass-dsl` 4.8.0 pin.
+- **flash-attn-4** `>=4.0.0b18`, matching `torch==2.14.1` and SGLang 0.5.23's `nvidia-cutlass-dsl` 4.8.0 pin.
 
 Then:
 
