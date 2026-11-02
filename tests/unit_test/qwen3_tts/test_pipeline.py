@@ -3893,6 +3893,27 @@ def test_qwen3_tts_whole_requests_that_round_to_one_width_share_replays(
         )
 
 
+def test_qwen3_tts_long_whole_request_lets_queued_first_chunks_in_between_pieces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        qwen3_streaming_vocoder, "QWEN3_TTS_FULL_DECODE_GRAPH_MAX_FRAMES", 4
+    )
+    scheduler, _, runner = whole_request_scheduler(monkeypatch)
+    message = whole_request_message("whole", 10)
+
+    scheduler.run_non_streaming_batch([message], asyncio.new_event_loop())
+    scheduler.run_initial_batch([scheduler.initial_queue.get_nowait()])
+
+    assert [call[0][2] for call in runner.calls] == [4]
+    assert scheduler.initial_queue.qsize() == 1
+    assert scheduler.outbox.empty()
+    results = run_whole_requests(scheduler)
+    assert [call[0][2] for call in runner.calls] == [4, 4, 4]
+    assert chunk_samples(results["whole"].data) == expected_whole_samples(scheduler, 10)
+    assert scheduler.codec_arena.active_slots() == 0
+
+
 def test_qwen3_tts_whole_request_long_reference_starts_at_its_reach(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -2874,9 +2874,8 @@ class Qwen3TTSStreamingVocoderScheduler(
         ] = []
         with self.state_lock:
             for request_id, state in batch:
-                if (
-                    self.stream_states.get(request_id) is not state
-                    or state.decoded_chunks
+                if self.stream_states.get(request_id) is not state or (
+                    state.decoded_chunks and state.whole_audio is None
                 ):
                     continue
                 else:
@@ -2886,7 +2885,8 @@ class Qwen3TTSStreamingVocoderScheduler(
                     state,
                     is_final=state.final_pending,
                     max_generated_frames=(
-                        None
+                        state.emitted_generated_frames
+                        + QWEN3_TTS_FULL_DECODE_GRAPH_MAX_FRAMES
                         if state.whole_audio is not None
                         else state.initial_chunk_frames or self.stream_stride
                     ),
@@ -3299,6 +3299,13 @@ class Qwen3TTSStreamingVocoderScheduler(
                 )
                 if state.final_pending and (not has_remainder):
                     self.finish_async_stream(request_id, state)
+                elif (
+                    state.whole_audio is not None
+                    and not state.incremental_codec_fallback
+                ):
+                    # note (ratish): this worker owes streams their first chunks, so a long
+                    # request holds it for one bounded piece at a time.
+                    self.schedule_initial(request_id, state)
                 elif state.final_pending or self.should_decode(state, is_final=False):
                     self.schedule_followup(request_id, state)
                 else:
