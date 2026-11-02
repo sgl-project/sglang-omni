@@ -330,7 +330,7 @@ async def test_eos_marks_only_the_last_unit_when_end_arrives_mid_backlog() -> No
 async def test_ready_before_profiler_start_is_not_retrofitted(tmp_path: Path) -> None:
     recorder = get_recorder()
     if recorder.is_active():
-        recorder.stop()
+        recorder.stop(wait=True)
     else:
         pass
     adapter = GatedAdapter([])
@@ -343,7 +343,7 @@ async def test_ready_before_profiler_start_is_not_retrofitted(tmp_path: Path) ->
         adapter.release.set()
         await receive_until(runtime, Drained)
         await runtime.close("client_closed")
-        recorder.stop()
+        recorder.stop(wait=True)
 
         assert [unit.ready_observation for unit in adapter.units] == [None, None]
 

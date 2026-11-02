@@ -53,6 +53,7 @@ from sglang_omni.models.model_capabilities import get_model_capabilities
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.pipeline.mp_runner import MultiProcessPipelineRunner
 from sglang_omni.preprocessing.resource_connector import export_media_policy
+from sglang_omni.profiler.event_recorder import DEFAULT_FINALIZATION_TIMEOUT_SECONDS
 from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
 from sglang_omni.profiler.profiler_control import ProfilerControlClient
 from sglang_omni.proto.messages import StreamMessage
@@ -426,11 +427,18 @@ def mount_profiler_routes(
                 _get_event_recorder().start(
                     run_id=run_id, event_dir=event_dir, stage="coordinator"
                 )
-            except Exception:
+            except RuntimeError as exc:
+                logger.warning(
+                    "Failed to start coordinator request event recorder",
+                    exc_info=False,
+                )
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            except Exception as exc:
                 logger.warning(
                     "Failed to start coordinator request event recorder",
                     exc_info=True,
                 )
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
         else:
             pass
         await profiler_ctl.broadcast_start(
@@ -470,11 +478,18 @@ def mount_profiler_routes(
             _get_event_recorder().start(
                 run_id=run_id, event_dir=event_dir, stage="coordinator"
             )
-        except Exception:
+        except RuntimeError as exc:
+            logger.warning(
+                "Failed to start coordinator request event recorder",
+                exc_info=False,
+            )
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
             logger.warning(
                 "Failed to start coordinator request event recorder",
                 exc_info=True,
             )
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
         await profiler_ctl.broadcast_start(
             run_id=run_id,
             trace_path_template="",
@@ -490,7 +505,7 @@ def mount_profiler_routes(
         recorder = _get_event_recorder()
         active = recorder.active_run_id() if recorder.is_active() else None
         if recorder.is_active() and (run_id is None or active == run_id):
-            recorder.stop(run_id=active)
+            recorder.stop(run_id=run_id, wait=False)
         else:
             pass
         await profiler_ctl.broadcast_stop(run_id=run_id)
@@ -503,7 +518,7 @@ def mount_profiler_routes(
         recorder = _get_event_recorder()
         active = recorder.active_run_id() if recorder.is_active() else None
         if recorder.is_active() and (run_id is None or active == run_id):
-            recorder.stop(run_id=active)
+            recorder.stop(run_id=run_id, wait=False)
         else:
             pass
         await profiler_ctl.broadcast_stop(run_id=run_id)
@@ -860,7 +875,28 @@ async def run_server(
                     await warmup_task
         finally:
             logger.info("Shutting down pipeline …")
-            await mp_runner.stop()
+            try:
+                await mp_runner.stop()
+            finally:
+                recorder = _get_event_recorder()
+                try:
+                    recorder.deactivate()
+                    finalization_complete = await asyncio.to_thread(
+                        recorder.wait_for_finalizations,
+                        DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
+                    )
+                    if not finalization_complete:
+                        logger.warning(
+                            f"Coordinator profiler event finalization did not finish "
+                            f"within {DEFAULT_FINALIZATION_TIMEOUT_SECONDS:g}s"
+                        )
+                    else:
+                        pass
+                except Exception:
+                    logger.warning(
+                        "Coordinator profiler cleanup failed during shutdown",
+                        exc_info=True,
+                    )
             logger.info("Pipeline stopped.")
 
 

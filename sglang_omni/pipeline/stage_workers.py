@@ -41,6 +41,10 @@ from sglang_omni.pipeline.tp_control import (
     TPWorkQueueMessage,
 )
 from sglang_omni.platforms import current_platform, get_platform_spec
+from sglang_omni.profiler.event_recorder import (
+    DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
+    get_recorder,
+)
 from sglang_omni.proto import AbortMessage, AdminResultMessage
 from sglang_omni.scheduling.message import StageScheduler
 from sglang_omni.utils.gpu_compat import (
@@ -656,6 +660,27 @@ class StageGroup:
 NATIVE_GPUS_NARROWED_ENV = "SGLANG_OMNI_NATIVE_GPUS_NARROWED"
 
 
+def finalize_stage_process_recorder(log: logging.Logger) -> None:
+    """Bound recorder finalization at the stage process shutdown boundary."""
+    try:
+        recorder = get_recorder()
+        recorder.deactivate()
+        finalization_complete = recorder.wait_for_finalizations(
+            timeout_seconds=DEFAULT_FINALIZATION_TIMEOUT_SECONDS
+        )
+        if not finalization_complete:
+            log.warning(
+                f"Stage process profiler event finalization did not finish within "
+                f"{DEFAULT_FINALIZATION_TIMEOUT_SECONDS:g}s"
+            )
+        else:
+            pass
+    except Exception:
+        log.warning(
+            "Stage process profiler cleanup failed during shutdown", exc_info=True
+        )
+
+
 def stage_process_main(
     spec: StageWorkerProcessSpec,
     ready_event: Event,
@@ -701,6 +726,7 @@ def stage_process_main(
             log,
             reason=f"stage process {spec.process_name} terminated during startup",
         )
+        finalize_stage_process_recorder(log)
         if isinstance(exc, SystemExit):
             raise
         else:
@@ -730,10 +756,12 @@ def stage_process_main(
             log,
             reason=f"stage process {spec.process_name} exit after failure",
         )
+        finalize_stage_process_recorder(log)
         sys.exit(1)
     # note (Richard Wang): tearing down every module and object of a stage that
     # held a model takes seconds after the stage stopped, and the server's stop
     # waits for it, while the operating system releases the process at exit.
+    finalize_stage_process_recorder(log)
     exit_without_teardown(0)
 
 

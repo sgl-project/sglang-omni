@@ -1,576 +1,274 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for sglang_omni.profiler.event_recorder."""
+"""Public API and co-located stage behavior for the request event recorder."""
 
 from __future__ import annotations
 
-import json
-import sys
+import asyncio
 import threading
-import time
-from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Iterator, Mapping
 from pathlib import Path
-from types import FrameType
 
 import pytest
 
 from sglang_omni.profiler import event_recorder
 from sglang_omni.profiler.event_recorder import (
+    RequestEvent,
     RequestEventBuffer,
+    RequestEventRecorder,
     RequestEventSnapshot,
     emit,
+    get_active_stage,
     get_recorder,
-    json_default,
     reset_active_stage,
     set_active_stage,
 )
 from sglang_omni.profiler.views import reconstruct_timelines
+from sglang_omni.utils.json import JsonValue
+from tests.unit_test.profiler.event_recorder_test_utils import read_events, read_status
 
 
 @pytest.fixture(autouse=True)
-def reset_recorder():
-    """Make sure the process-global recorder is closed before every test."""
-    rec = get_recorder()
-    if rec.is_active():
-        rec.stop()
-    # Clear any active-stage binding leaked from prior tests.
+def reset_recorder() -> Iterator[None]:
+    recorder = get_recorder()
+    if recorder.is_active():
+        recorder.stop(wait=True)
+    else:
+        pass
+    recorder.wait_for_finalizations(timeout_seconds=5)
     reset_active_stage(None)
     yield
-    if rec.is_active():
-        rec.stop()
-
-
-def read_events(path: str) -> list[dict]:
-    with open(path, "r", encoding="utf-8") as fp:
-        return [json.loads(line) for line in fp if line.strip()]
-
-
-def test_start_writes_jsonl_per_pid_stage(tmp_path: Path) -> None:
-    rec = get_recorder()
-    path = rec.start(run_id="r0", event_dir=str(tmp_path), stage="encoder")
-    try:
-        assert rec.is_active()
-        assert Path(path).parent == tmp_path
-        # Filename must encode stage + pid
-        name = Path(path).name
-        assert name.startswith("events_encoder_")
-        assert name.endswith(".jsonl")
-
-        rec.emit(request_id="r1", stage="encoder", event_name="encoder_start")
-        rec.emit(
-            request_id="r1",
-            stage="encoder",
-            event_name="encoder_end",
-            metadata={"items": 3},
-        )
-    finally:
-        rec.stop()
-
-    events = read_events(path)
-    assert len(events) == 2
-    assert events[0]["event_name"] == "encoder_start"
-    assert events[0]["run_id"] == "r0"
-    assert events[0]["pid"] is not None
-    assert events[1]["metadata"] == {"items": 3}
-
-
-def test_stop_with_mismatched_run_id_is_noop(tmp_path: Path) -> None:
-    rec = get_recorder()
-    rec.start(run_id="r0", event_dir=str(tmp_path), stage="s")
-    try:
-        rec.stop(run_id="other")  # should NOT close
-        assert rec.is_active()
-    finally:
-        rec.stop()
-    assert rec.is_active() is False
-
-
-def test_concurrent_emits_are_safe(tmp_path: Path) -> None:
-    rec = get_recorder()
-    path = rec.start(run_id="r0", event_dir=str(tmp_path), stage="thinker")
-    file_write = rec.fp.write
-    first_paused = threading.Event()
-    release_first = threading.Event()
-
-    def pause_after_json_body(frame: FrameType, event: str, argument: object) -> None:
-        if event == "c_return" and argument == file_write:
-            sys.setprofile(None)
-            first_paused.set()
-            assert release_first.wait(5)
-        else:
-            pass
-
-    def emit_event(request_id: str, should_pause: bool) -> None:
-        if should_pause:
-            sys.setprofile(pause_after_json_body)
-        else:
-            pass
-        try:
-            rec.emit(
-                request_id=request_id,
-                stage="thinker",
-                event_name="stage_dispatch",
-                metadata={"i": 0},
-            )
-        finally:
-            sys.setprofile(None)
-
-    first_thread = threading.Thread(target=emit_event, args=("req-0", True))
-    first_thread.start()
-    assert first_paused.wait(5)
-    second_thread = threading.Thread(target=emit_event, args=("req-1", False))
-    second_thread.start()
-    second_thread.join(timeout=0.5)
-    release_first.set()
-    first_thread.join(timeout=5)
-    second_thread.join(timeout=5)
-    rec.stop()
-
-    assert not first_thread.is_alive() and not second_thread.is_alive()
-    events = read_events(path)
-    assert len(events) == 2
-    for ev in events:
-        assert ev["event_name"] == "stage_dispatch"
-        assert ev["request_id"].startswith("req-")
-        assert ev["run_id"] == "r0"
-
-
-def test_buffer_flush_preserves_thread_ownership_and_capture_snapshot(
-    tmp_path: Path,
-) -> None:
-    recorder = get_recorder()
-    path = recorder.start(run_id="buffered", event_dir=str(tmp_path), stage="thinker")
-    buffer = RequestEventBuffer()
-    captured = threading.Event()
-    release = threading.Event()
-
-    def worker() -> tuple[int, int]:
-        metadata: dict[str, int | float | str] = {"frames": 3}
-        before_capture_ns = time.time_ns()
-        buffer.capture(
-            "decode_committed",
-            (
-                RequestEventSnapshot(request_id=request_id, metadata=metadata)
-                for request_id in ("worker-a", "worker-b")
-            ),
-            {"samples": 12},
-        )
-        after_capture_ns = time.time_ns()
-        metadata["frames"] = 7
-        captured.set()
-        assert release.wait(timeout=5)
-        buffer.flush(stage="vocoder")
-        buffer.flush(stage="vocoder")
-        return before_capture_ns, after_capture_ns
-
-    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="decode") as executor:
-        completion = executor.submit(worker)
-        try:
-            assert captured.wait(timeout=5)
-            buffer.capture(
-                "decode_enqueued",
-                (RequestEventSnapshot(request_id="ingest", metadata={"frames": 1}),),
-                {},
-            )
-            buffer.flush(stage="vocoder")
-            assert [event["request_id"] for event in read_events(path)] == ["ingest"]
-        finally:
-            release.set()
-        before_capture_ns, after_capture_ns = completion.result(timeout=5)
-
-    recorder.stop()
-    events = read_events(path)
-    assert [event["request_id"] for event in events] == [
-        "ingest",
-        "worker-a",
-        "worker-b",
-    ]
-    assert before_capture_ns <= events[1]["timestamp_ns"] <= after_capture_ns
-    assert events[1]["timestamp_ns"] == events[2]["timestamp_ns"]
-    assert events[1]["timestamp_ns"] <= events[0]["timestamp_ns"]
-    assert events[1]["metadata"]["monotonic_s"] == events[2]["metadata"]["monotonic_s"]
-    assert [event["metadata"]["frames"] for event in events] == [1, 3, 3]
-    assert [event["metadata"]["samples"] for event in events[1:]] == [12, 12]
-    assert events[0]["metadata"]["worker"] == threading.current_thread().name
-    assert all(event["metadata"]["worker"].startswith("decode") for event in events[1:])
-    assert {event["stage"] for event in events} == {"vocoder"}
-    assert {event["run_id"] for event in events} == {"buffered"}
-
-
-def test_buffer_checks_activity_before_consuming_snapshots(tmp_path: Path) -> None:
-    recorder = get_recorder()
-    buffer = RequestEventBuffer()
-    visited: list[str] = []
-
-    def snapshots(request_id: str) -> Iterator[RequestEventSnapshot]:
-        visited.append(request_id)
-        yield RequestEventSnapshot(request_id=request_id, metadata={"frames": 1})
-
-    buffer.capture("decode_enqueued", snapshots("inactive-capture"), {})
-    buffer.flush(stage="vocoder")
-    assert visited == []
-
-    path = recorder.start(run_id="buffered", event_dir=str(tmp_path), stage="thinker")
-    buffer.capture("decode_enqueued", snapshots("active"), {})
-    assert visited == ["active"]
-    assert read_events(path) == []
-    buffer.flush(stage="vocoder")
-    recorder.stop()
-
-    buffer.capture("decode_enqueued", snapshots("stopped"), {})
-    assert visited == ["active"]
-    events = read_events(path)
-    assert [event["request_id"] for event in events] == ["active"]
-
-
-def test_buffer_flush_after_stop_does_not_leak_into_next_run(tmp_path: Path) -> None:
-    recorder = get_recorder()
-    buffer = RequestEventBuffer()
-    first_path = recorder.start("first", str(tmp_path / "first"), "vocoder")
-    buffer.capture(
-        "decode_enqueued",
-        (RequestEventSnapshot(request_id="old", metadata={"frames": 1}),),
-        {},
-    )
-    recorder.stop()
-    buffer.flush(stage="vocoder")
-
-    second_path = recorder.start("second", str(tmp_path / "second"), "vocoder")
-    buffer.capture(
-        "decode_enqueued",
-        (RequestEventSnapshot(request_id="new", metadata={"frames": 2}),),
-        {},
-    )
-    buffer.flush(stage="vocoder")
-    recorder.stop()
-
-    assert read_events(first_path) == []
-    events = read_events(second_path)
-    assert [event["request_id"] for event in events] == ["new"]
-    assert events[0]["run_id"] == "second"
-    assert events[0]["metadata"]["frames"] == 2
-
-
-def test_multi_stage_same_process_share_one_file(tmp_path: Path) -> None:
-    """Stages sharing one process must write to ONE JSONL file.
-
-    The previous rotating-per-stage behavior caused data routing bugs
-    when declarative topology co-located multiple non-AR stages in one
-    OS process. The first stage to call ``start()`` wins the filename;
-    later stages join the same file and rely on each event's ``stage``
-    field for identity.
-    """
-    rec = get_recorder()
-    p1 = rec.start(run_id="r0", event_dir=str(tmp_path), stage="preprocessing")
-    p2 = rec.start(run_id="r0", event_dir=str(tmp_path), stage="image_encoder")
-    p3 = rec.start(run_id="r0", event_dir=str(tmp_path), stage="thinker")
-    assert p1 == p2 == p3, "shared-process stages must reuse one file"
-    assert Path(p1).name.startswith("events_preprocessing_")
-
-    rec.emit(request_id="r1", stage="preprocessing", event_name="preprocess_start")
-    rec.emit(request_id="r1", stage="image_encoder", event_name="encoder_start")
-    rec.emit(request_id="r1", stage="thinker", event_name="stage_dispatch")
-    rec.stop()
-
-    events = read_events(p1)
-    stages = {e["stage"] for e in events}
-    assert stages == {"preprocessing", "image_encoder", "thinker"}
-
-
-# ---------------------------------------------------------------------------
-# Active-stage attribution (review finding P1)
-# ---------------------------------------------------------------------------
-
-
-def test_emit_stage_none_uses_thread_local_active_stage(tmp_path: Path) -> None:
-    """``emit(stage=None)`` must pick up the per-thread active stage, not
-    the process-global ``_stage`` (which is the first stage to call start()
-    in a shared-process topology).
-
-    Regression for review finding P1: previously preprocessor / encoder /
-    OmniScheduler / code2wav all called ``emit(stage=None)`` and got
-    attributed to the first stage in the process.
-    """
-    rec = get_recorder()
-    p = rec.start(run_id="r0", event_dir=str(tmp_path), stage="preprocessing")
-    rec.start(run_id="r0", event_dir=str(tmp_path), stage="thinker")
-    rec.start(run_id="r0", event_dir=str(tmp_path), stage="decode")
-
-    # Main thread: no active stage → falls back to recorder's _stage
-    # ("preprocessing", first to call start()).
-    emit(request_id="r1", stage=None, event_name="from_main")
-
-    # Worker threads: each binds its own active stage, then emits.
-    def worker(stage_name: str) -> None:
-        set_active_stage(stage_name)
-        try:
-            emit(request_id="r1", stage=None, event_name=f"from_{stage_name}")
-        finally:
-            reset_active_stage(None)
-
-    t_thinker = threading.Thread(target=worker, args=("thinker",))
-    t_decode = threading.Thread(target=worker, args=("decode",))
-    t_thinker.start()
-    t_decode.start()
-    t_thinker.join()
-    t_decode.join()
-
-    rec.stop()
-
-    events = read_events(p)
-    by_event = {e["event_name"]: e["stage"] for e in events}
-    assert (
-        by_event["from_main"] == "preprocessing"
-    ), "main thread had no active stage; should fall back to recorder.stage"
-    assert (
-        by_event["from_thinker"] == "thinker"
-    ), "worker thread's set_active_stage('thinker') was ignored"
-    assert (
-        by_event["from_decode"] == "decode"
-    ), "worker thread's set_active_stage('decode') was ignored"
-
-
-def test_emit_stage_none_uses_contextvar_in_asyncio_executor(
-    tmp_path: Path,
-) -> None:
-    """The contextvar must propagate through asyncio.to_thread / executor.
-
-    SimpleScheduler in concurrent mode runs each compute_fn via
-    ``asyncio.to_thread``, which copies the context but NOT the parent
-    thread's threading.local. The contextvar variant is what makes
-    stage attribution work in that path.
-    """
-    import asyncio
-
-    rec = get_recorder()
-    p = rec.start(run_id="r0", event_dir=str(tmp_path), stage="first")
-    rec.start(run_id="r0", event_dir=str(tmp_path), stage="encoder")
-
-    seen: dict[str, str | None] = {}
-
-    def compute() -> None:
-        # Simulate what SimpleScheduler's worker does after stage binding.
-        emit(request_id="r1", stage=None, event_name="from_executor")
-
-    async def run() -> None:
-        set_active_stage("encoder")
-        try:
-            await asyncio.to_thread(compute)
-        finally:
-            reset_active_stage(None)
-
-    asyncio.run(run())
-    rec.stop()
-
-    events = read_events(p)
-    by_event = {e["event_name"]: e["stage"] for e in events}
-    seen.update(by_event)
-    assert (
-        seen["from_executor"] == "encoder"
-    ), "contextvar didn't propagate through asyncio.to_thread"
-
-
-# ---------------------------------------------------------------------------
-# Safe metadata serialization (review finding P2)
-# ---------------------------------------------------------------------------
-
-
-def test_json_default_summarizes_tensor_without_materializing() -> None:
-    """``_json_default`` must NOT call .tolist() on tensors / arrays.
-
-    Regression for review finding P2: previously any object with .tolist()
-    got fully expanded; on a GPU tensor this synchronizes, copies to CPU,
-    and serializes potentially MBs of data inline — violating the "large
-    blobs stay out of metadata" rule.
-    """
-
-    class FakeTensor:
-        shape = (32, 1024, 4096)
-        dtype = "torch.float16"
-        device = "cuda:0"
-
-        def tolist(self):  # pragma: no cover - must not be called
-            raise AssertionError(
-                "_json_default called tolist() on a tensor — this is the "
-                "exact bug we're regressing against"
-            )
-
-        def item(self):  # pragma: no cover
-            raise AssertionError("item() called on multi-dim tensor")
-
-    out = json_default(FakeTensor())
-    assert isinstance(out, dict)
-    assert out["__tensor_summary__"] is True
-    assert out["type"] == "FakeTensor"
-    assert out["shape"] == [32, 1024, 4096]
-    assert out["dtype"] == "torch.float16"
-    assert out["device"] == "cuda:0"
-
-
-def test_json_default_unwraps_zero_d_tensor_as_scalar() -> None:
-    """0-D tensors / numpy scalars should serialize as plain scalars."""
-
-    class FakeScalar:
-        shape = ()
-        dtype = "float32"
-
-        def item(self):
-            return 3.14
-
-    assert json_default(FakeScalar()) == 3.14
-
-
-def test_emit_with_tensor_metadata_does_not_materialize(tmp_path: Path) -> None:
-    """End-to-end: even if a caller hands us a tensor in metadata, the
-    JSONL line must stay small and never call .tolist()."""
-
-    rec = get_recorder()
-    p = rec.start(run_id="r0", event_dir=str(tmp_path), stage="encoder")
-
-    class HugeTensor:
-        shape = (1024, 4096)
-        dtype = "torch.bfloat16"
-        device = "cuda:0"
-
-        def tolist(self):  # pragma: no cover
-            raise AssertionError("hot-path emit called tolist()")
-
-    rec.emit(
-        request_id="r1",
-        stage="encoder",
-        event_name="encoder_end",
-        metadata={"hidden_states": HugeTensor()},
-    )
-    rec.stop()
-
-    events = read_events(p)
-    assert len(events) == 1
-    summary = events[0]["metadata"]["hidden_states"]
-    assert summary["__tensor_summary__"] is True
-    assert summary["shape"] == [1024, 4096]
-
-
-# ---------------------------------------------------------------------------
-# Active-stage lifecycle (review finding P3)
-# ---------------------------------------------------------------------------
-
-
-def test_reset_active_stage_without_token_clears_both_thread_local_and_contextvar() -> (
-    None
-):
-    """``reset_active_stage(None)`` must clear the contextvar too.
-
-    Regression for review finding P3: the previous implementation only
-    cleared the ``threading.local`` slot. The contextvar value persisted,
-    so anyone using the helper to scrub state (test fixtures, ad-hoc
-    cleanup) would silently leak the active stage into the next caller
-    in the same context.
-    """
-    from sglang_omni.profiler import event_recorder
-
-    set_active_stage("leaks")
-    # Sanity: both backends are bound.
-    assert (
-        event_recorder._active_stage_cv.get() == "leaks"
-    )  # noqa: leading-underscore  # production name
-    assert (
-        getattr(event_recorder._thread_active_stage, "stage", None) == "leaks"
-    )  # noqa: leading-underscore  # production name
-
+    if recorder.is_active():
+        recorder.stop(wait=True)
+    else:
+        pass
+    recorder.wait_for_finalizations(timeout_seconds=5)
     reset_active_stage(None)
 
-    # Both must now be empty.
-    assert (
-        event_recorder._active_stage_cv.get()
-        is None  # noqa: leading-underscore  # production name
-    ), "contextvar still bound after reset_active_stage(None)"
-    assert (
-        getattr(event_recorder._thread_active_stage, "stage", None) is None
-    )  # noqa: leading-underscore  # production name
-    # And the public accessor agrees.
-    from sglang_omni.profiler.event_recorder import get_active_stage
 
-    assert get_active_stage() is None
+def test_event_dataclass_roundtrip() -> None:
+    request_event = RequestEvent(
+        request_id="request-1",
+        stage="thinker",
+        event_name="first_token",
+        timestamp_ns=1234,
+        run_id="run-1",
+        pid=99,
+        metadata={"chunk_id": 7},
+    )
+
+    assert request_event.to_dict() == {
+        "request_id": "request-1",
+        "stage": "thinker",
+        "event_name": "first_token",
+        "timestamp_ns": 1234,
+        "run_id": "run-1",
+        "pid": 99,
+        "metadata": {"chunk_id": 7},
+    }
 
 
-def test_reset_active_stage_with_token_restores_previous_value() -> None:
-    """The ``Token`` form must still work — the standard ContextVar contract."""
-    from sglang_omni.profiler.event_recorder import get_active_stage
+def test_inactive_recorder_is_silent() -> None:
+    recorder = RequestEventRecorder()
+    recorder.emit(request_id="request", stage="stage", event_name="event")
 
+    assert recorder.is_active() is False
+
+
+def test_start_writes_one_process_file_and_status(tmp_path: Path) -> None:
+    recorder = RequestEventRecorder()
+    path = recorder.start("run-1", str(tmp_path), "encoder")
+    recorder.emit(
+        request_id="request",
+        stage="encoder",
+        event_name="encoder_start",
+        metadata={"items": 3},
+    )
+    finalization = recorder.deactivate()
+
+    assert finalization is not None
+    assert finalization.wait(timeout_seconds=5) is True
+    assert Path(path).name == f"events_encoder_{recorder.pid}.jsonl"
+    assert read_events(path)[0]["metadata"] == {"items": 3}
+    status = read_status(path)
+    assert status["complete"] is True
+    assert status["written_events"] == 1
+
+
+def test_module_emit_uses_process_singleton(tmp_path: Path) -> None:
+    recorder = get_recorder()
+    path = recorder.start("singleton", str(tmp_path), "coordinator")
+
+    emit(request_id="request", stage=None, event_name="request_admission")
+    recorder.stop(wait=True)
+
+    assert [event["event_name"] for event in read_events(path)] == ["request_admission"]
+
+
+def test_deferred_buffer_snapshots_metadata_once_before_flush(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorder = get_recorder()
+    path = recorder.start("deferred", str(tmp_path), "thinker")
+    buffer = RequestEventBuffer()
+    source_metadata: dict[str, JsonValue] = {"frames": [3]}
+    cohort_metadata: dict[str, JsonValue] = {"sample_count": 12}
+    original_snapshot = event_recorder.snapshot_metadata
+    snapshot_calls = 0
+
+    def count_snapshots(
+        metadata: Mapping[str, object] | None,
+    ) -> dict[str, JsonValue]:
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+        return original_snapshot(metadata)
+
+    monkeypatch.setattr(event_recorder, "snapshot_metadata", count_snapshots)
+    buffer.capture(
+        "decode_committed",
+        (RequestEventSnapshot(request_id="request", metadata=source_metadata),),
+        cohort_metadata,
+    )
+    source_metadata["frames"][0] = 99
+    cohort_metadata["sample_count"] = 0
+    buffer.flush(stage="vocoder")
+    recorder.stop(wait=True)
+
+    events = read_events(path)
+    assert snapshot_calls == 1
+    assert events[0]["stage"] == "vocoder"
+    assert events[0]["metadata"]["frames"] == [3]
+    assert events[0]["metadata"]["sample_count"] == 12
+
+
+def test_deferred_buffers_keep_per_instance_stage_and_timestamp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorder = get_recorder()
+    path = recorder.start("deferred-ownership", str(tmp_path), "coordinator")
+    buffer_a = RequestEventBuffer()
+    buffer_b = RequestEventBuffer()
+    timestamps = iter((101, 202))
+    monkeypatch.setattr(event_recorder.time, "time_ns", lambda: next(timestamps))
+
+    buffer_a.capture(
+        "event_a",
+        (RequestEventSnapshot(request_id="request_a", metadata={}),),
+        {},
+    )
+    buffer_b.capture(
+        "event_b",
+        (RequestEventSnapshot(request_id="request_b", metadata={}),),
+        {},
+    )
+    buffer_a.flush(stage="stage_a")
+    buffer_b.flush(stage="stage_b")
+    recorder.stop(wait=True)
+
+    events = {event["event_name"]: event for event in read_events(path)}
+    assert set(events) == {"event_a", "event_b"}
+    assert events["event_a"]["stage"] == "stage_a"
+    assert events["event_b"]["stage"] == "stage_b"
+    assert events["event_a"]["timestamp_ns"] == 101
+    assert events["event_b"]["timestamp_ns"] == 202
+    status = read_status(path)
+    assert status["complete"] is True
+    assert status["producer_buffer_count"] == 1
+    assert status["producer_buffer_event_counts"] == [2]
+
+
+def test_co_located_stages_share_file_and_release_independently(
+    tmp_path: Path,
+) -> None:
+    recorder = RequestEventRecorder()
+    path = recorder.start("shared", str(tmp_path), "preprocess")
+    assert recorder.start("shared", str(tmp_path), "encoder") == path
+    recorder.emit(
+        request_id="request", stage="preprocess", event_name="preprocess_start"
+    )
+
+    assert recorder.release_stage("preprocess") is None
+    assert recorder.is_active() is True
+    recorder.emit(request_id="request", stage="encoder", event_name="encoder_start")
+    finalization = recorder.release_stage("encoder")
+
+    assert finalization is not None
+    assert finalization.wait(timeout_seconds=5) is True
+    assert {event["stage"] for event in read_events(path)} == {
+        "preprocess",
+        "encoder",
+    }
+
+
+def test_active_stage_flows_through_threads_and_asyncio_executor(
+    tmp_path: Path,
+) -> None:
+    recorder = get_recorder()
+    path = recorder.start("stages", str(tmp_path), "coordinator")
+    recorder.start("stages", str(tmp_path), "encoder")
+
+    def worker() -> None:
+        token = set_active_stage("encoder")
+        try:
+            emit(request_id="thread", stage=None, event_name="thread_event")
+        finally:
+            reset_active_stage(token)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join(timeout=5)
+    assert thread.is_alive() is False
+
+    async def emit_from_executor() -> None:
+        token = set_active_stage("encoder")
+        try:
+            await asyncio.to_thread(
+                emit,
+                request_id="async",
+                stage=None,
+                event_name="async_event",
+            )
+        finally:
+            reset_active_stage(token)
+
+    asyncio.run(emit_from_executor())
+    recorder.stop(wait=True)
+
+    stages = {event["event_name"]: event["stage"] for event in read_events(path)}
+    assert stages == {"thread_event": "encoder", "async_event": "encoder"}
+
+
+def test_active_stage_reset_restores_outer_context() -> None:
     outer_token = set_active_stage("outer")
     try:
         inner_token = set_active_stage("inner")
         assert get_active_stage() == "inner"
         reset_active_stage(inner_token)
-        # Reset restores the contextvar to "outer"; thread-local was
-        # blanked, but the contextvar takes precedence in get_active_stage.
         assert get_active_stage() == "outer"
     finally:
         reset_active_stage(outer_token)
-        # After the outer reset, contextvar is back to its initial None.
-        assert get_active_stage() is None
+
+    assert get_active_stage() is None
 
 
-def test_scheduler_model_path_activity_is_monotonic_and_default_off(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+def test_model_path_events_keep_wall_and_monotonic_clocks_separate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    recorder = event_recorder.get_recorder()
-    recorder.stop()
-    event_recorder.emit_model_path_start("request-off")
-    assert recorder.is_active() is False
-
-    path = recorder.start("run-unit", str(tmp_path), "tts_engine")
+    recorder = get_recorder()
+    path = recorder.start("model-path", str(tmp_path), "tts_engine")
+    monkeypatch.setattr(event_recorder.time, "time_ns", lambda: 2_000_000_000)
     monkeypatch.setattr(event_recorder.time, "monotonic_ns", lambda: 123456)
     monkeypatch.setattr(event_recorder, "read_host_boot_id", lambda: "boot-test")
-    event_recorder.emit_model_path_start("request-on")
-    event_recorder.emit_model_path_end("request-on", status="success")
-    recorder.stop()
-    emitted = [
-        json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines()
-    ]
-    assert [item["event_name"] for item in emitted] == [
+
+    event_recorder.emit_model_path_start("request")
+    event_recorder.emit_model_path_end("request", status="success")
+    recorder.stop(wait=True)
+
+    events = read_events(path)
+    assert [event["event_name"] for event in events] == [
         "model_path_start",
         "model_path_end",
     ]
-    assert all(item["metadata"]["monotonic_ns"] == 123456 for item in emitted)
-    assert all(item["metadata"]["clock"] == "CLOCK_MONOTONIC" for item in emitted)
-    assert all(item["metadata"]["host_boot_id"] == "boot-test" for item in emitted)
-    assert emitted[-1]["metadata"]["status"] == "success"
-
-
-def test_model_path_activity_preserves_the_profiler_wall_clock_domain(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    recorder = event_recorder.get_recorder()
-    recorder.stop()
-    path = recorder.start("run-clock-domain", str(tmp_path), "tts_engine")
-    monkeypatch.setattr(event_recorder.time, "time_ns", lambda: 2_000_000_000)
-    monkeypatch.setattr(event_recorder.time, "monotonic_ns", lambda: 123456)
-    event_recorder.emit(
-        request_id="request-clock-domain",
-        stage="tts_engine",
-        event_name="request_started",
-    )
-    event_recorder.emit_model_path_start("request-clock-domain")
-    event_recorder.emit_model_path_end(
-        "request-clock-domain",
-        status="success",
-    )
-    event_recorder.emit(
-        request_id="request-clock-domain",
-        stage="tts_engine",
-        event_name="request_finished",
-    )
-    recorder.stop()
-
-    emitted = [
-        json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines()
-    ]
-    model_path_events = [
-        item for item in emitted if item["event_name"].startswith("model_path_")
-    ]
-    assert all(item["timestamp_ns"] == 2_000_000_000 for item in emitted)
-    assert all(item["metadata"]["monotonic_ns"] == 123456 for item in model_path_events)
-    assert reconstruct_timelines(path)["request-clock-domain"].total_ms == 0.0
+    assert all(event["timestamp_ns"] == 2_000_000_000 for event in events)
+    assert all(event["metadata"]["monotonic_ns"] == 123456 for event in events)
+    assert all(event["metadata"]["host_boot_id"] == "boot-test" for event in events)
+    assert reconstruct_timelines(path)["request"].total_ms == 0.0
