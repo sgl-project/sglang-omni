@@ -2120,6 +2120,19 @@ class OmniScheduler(Generic[RequestDataT]):
                 ),
             )
 
+    def running_batch_admits_prefill(self) -> bool:
+        """Whether the batch builder can admit a prefill beside the running batch.
+
+        Upstream's builder drops finished requests from the running batch on
+        every pass and clears its full flag when the batch shrank, so a full
+        batch that still holds a finished request admits a prefill this pass.
+        """
+        running_batch = self.running_batch
+        if not running_batch.batch_is_full:
+            return True
+        else:
+            return any(req.finished() for req in running_batch.reqs)
+
     def is_prefill_expected(self) -> bool:
         running_batch = self.running_batch
         if self.is_mixed_chunk or self.dllm_config is not None:
@@ -2136,7 +2149,7 @@ class OmniScheduler(Generic[RequestDataT]):
         allocatable_request_count = self.get_num_allocatable_reqs(
             running_request_count, running_batch=running_batch
         )
-        is_batch_full = running_batch.batch_is_full and not (
+        is_batch_full = not self.running_batch_admits_prefill() and not (
             self.enable_priority_preemption
             or self.is_hybrid_swa
             or self.enable_hisparse
@@ -4252,9 +4265,10 @@ class OmniScheduler(Generic[RequestDataT]):
                 and self.is_mixed_chunk
                 and (
                     self.chunked_req is not None
-                    or (self.waiting_queue and not self.running_batch.batch_is_full)
+                    or (self.waiting_queue and self.running_batch_admits_prefill())
                 )
             ):
+                # note (ratish): a mixed prefill built here would carry the running rows the pending step is about to finish, and drop_stale_overrun cannot reslice a mixed batch, so drain first.
                 self.resolve_pending_async()
             elif (
                 self.async_decode_resolve_before_prefill
