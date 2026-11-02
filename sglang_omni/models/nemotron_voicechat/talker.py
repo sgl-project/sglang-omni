@@ -6,7 +6,6 @@ import torch
 from sglang.srt.models.gemma3_causal import Gemma3ForCausalLM
 from sglang.srt.runtime_context import get_exec, get_schedule
 from torch import nn
-from torch.nn import functional
 from transformers import T5GemmaConfig, T5GemmaEncoderModel, T5GemmaModuleConfig
 
 from sglang_omni.models.nemotron_voicechat.mog_head import MoGHead, RMSNorm
@@ -222,10 +221,15 @@ class EarTtsTalker(nn.Module):
             )
         else:
             pass
-        padded_QCD = functional.pad(self.rvq_embs, (0, 0, 0, 1))
-        return torch.stack([padded_QCD[q][codes_TQ[:, q]] for q in range(levels)]).sum(
-            0
-        )
+        # note (Junnan Li): the padding code, one past the codebook, embeds to zero; masking it after the gather avoids copying a padded codebook on every call.
+        codebook_size = self.rvq_embs.shape[1]
+        # note (Junnan Li): contiguous so the sum adds the levels in order, which fixes its rounding.
+        codes_LT = codes_TQ[:, :levels].T.contiguous()
+        level_offsets_L1 = torch.arange(levels, device=codes_TQ.device)[:, None]
+        rows_LTD = self.rvq_embs.flatten(0, 1)[
+            level_offsets_L1 * codebook_size + codes_LT.clamp_max(codebook_size - 1)
+        ]
+        return torch.where((codes_LT < codebook_size)[..., None], rows_LTD, 0.0).sum(0)
 
 
 TALKER_ARCH = "NemotronVoiceChatTalker"

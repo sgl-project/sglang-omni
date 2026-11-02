@@ -69,6 +69,47 @@ sgl-omni serve \
 ```
 
 
+### Native MLX runtime
+
+`cosyvoice3_server` from the native MLX runtime (`sglang_omni_mlx/native`) serves the same `/v1/audio/speech` API on an Apple Silicon Mac from the float16 [`mlx-community/Fun-CosyVoice3-0.5B-2512-fp16`](https://huggingface.co/mlx-community/Fun-CosyVoice3-0.5B-2512-fp16) checkpoint, as one C++ process without PyTorch, ONNX Runtime or Python. Voice cloning runs the reference-audio front end natively too: the checkpoint's CAMPPlus speaker encoder, and the S3 speech tokenizer v3 from [`mlx-community/S3TokenizerV3`](https://huggingface.co/mlx-community/S3TokenizerV3) in the model directory's `speech_tokenizer/`.
+
+```bash
+sglang_omni_mlx/native/scripts/build_runtime.sh ~/omni-runtime
+
+hf download mlx-community/Fun-CosyVoice3-0.5B-2512-fp16 config.json model.safetensors \
+  tokenizer.json tokenizer_config.json \
+  --revision 18ccb7fbd7246e8cd3420d02f5dd28595cc0fcd9 --local-dir fun-cosyvoice3-mlx-fp16
+hf download mlx-community/S3TokenizerV3 config.json model.safetensors \
+  --revision b143914b3e912278104824da706edc9c2d317c4e \
+  --local-dir fun-cosyvoice3-mlx-fp16/speech_tokenizer
+
+~/omni-runtime/bin/cosyvoice3_server --model-path fun-cosyvoice3-mlx-fp16 \
+  --model-name FunAudioLLM/Fun-CosyVoice3-0.5B-2512 --port 8000 \
+  --allowed-local-media-path "$PWD"
+```
+
+```bash
+curl -s http://localhost:8000/v1/audio/speech -H "Content-Type: application/json" \
+  -d '{"input": "Hello from Apple Silicon.", "seed": 1}' -o hello.wav
+
+curl -s http://localhost:8000/v1/audio/speech -H "Content-Type: application/json" \
+  -d "{\"input\": \"Hello from Apple Silicon.\", \"ref_audio\": \"$PWD/reference.wav\",
+       \"ref_text\": \"What the reference recording says.\", \"seed\": 1}" -o cloned.wav
+```
+
+The native server differs from the CUDA server in that:
+
+- Reference audio is a WAV file of 0.5 to 30 seconds, sent as a base64 data URL (`ref_audio` or `references[0].data`), or as a path or `file://` URL inside `--allowed-local-media-path`; http(s) URLs and other containers return 400. `ref_audio` with `ref_text`, or one `references` item with `text`, clones the voice as on CUDA; without a transcript the reference conditions only the flow (cross-lingual). Giving both `ref_audio` and `references` returns 400. Uploaded voices (`/v1/audio/voices`) are not served.
+- `voice` must be `default`; `language` is accepted and unused, as on CUDA.
+- `response_format` is `wav` or `pcm`; `speed` must be `1.0`; `stream_format` must be `audio`.
+- `stream: true` sends the whole utterance's PCM once it is vocoded, since the flow decodes the utterance at once.
+- `max_new_tokens` is at most `2048` speech tokens (25 per second, about 82 seconds), where CUDA takes any value; without it the limit is 20 per target text token, as on CUDA. Integer fields take integral floats such as `5.0`, as CUDA's request model does.
+- Sampling defaults match the CUDA server (`temperature` 0.7, `top_p` 0.8, `top_k` 20, `repetition_penalty` 1.21, with the repetition-aware redraw); a request without `seed` gets a random one.
+- Started with `--model-name`, it returns 404 for any other `model`; without that flag, `model` is ignored, as on CUDA.
+- Errors are `{"detail": "..."}`. Requests run one at a time and `--max-queued-requests` (default 2) more wait; the rest get 503. A request not finished `--request-timeout-s` (default 600) seconds after it arrives is cancelled with 504, or its stream ends early, and so is one whose client disconnects. A request body over 32 MiB returns 413.
+
+Measured on an Apple M5 (24 GB, macOS 26.3.1), warm, over 8 utterances (76 s of audio): 0.2 s load, real-time factor 0.33, about 2.4 GB peak MLX memory (3.2 GB with a reference). With the same speech tokens, the legacy Python MLX implementation from [#1964](https://github.com/sgl-project/sglang-omni/pull/1964) takes RTF 0.36 on the same MLX build. Transcribed back with Qwen3-ASR-1.7B-8bit, 16 English corpus sentences give 0.62% WER and 16 Chinese ones 0.97% CER. Against the official ONNX front end, the native one gives identical reference speech tokens on 20 of 20 corpus clips (speaker embedding cosine 0.99999, prompt mel within 7e-4), and with the same seed identical cloned speech tokens; cloned output transcribes at 1.03% WER (English) and 5.83% CER (Chinese, mostly digits and Latin names), the same with either front end. Mac CI checks seven seeded requests' speech tokens (English, Chinese, Chinese with instructions, a `max_new_tokens` cap, the default length limit, an English clone and a cross-lingual clone) against `sglang_omni_mlx/native/ci/model_golden/fun-cosyvoice3-0.5b-2512.json`, and on every chip the mel of two of them vocoded from the recorded tokens, within a tolerance.
+
 For Intel GPUs, follow the [Fun-CosyVoice3 XPU recipe](../get_started/installation_xpu.md#fun-cosyvoice3-text-to-speech-single-xpu).
 
 ## Synthesizing Speech
@@ -247,7 +288,7 @@ On the other hand, decrease the admission budget to reduce latency and lower pea
 
 ### Vocoder Configuration
 
-Vocoder configuration controls batching, precision, and acceleration. The scheduler accepts `max_batch_size` (16) and `max_batch_wait_ms` (30) to tune batch assembly. Flow uses `dtype` (bfloat16) for autocast, while HiFT uses `hift_dtype` (float32), independent of Flow; bfloat16 shows no speedup on H200 and reduces fidelity. Buffered Flow CUDA Graphs and DiT `torch.compile` are on by default. The Flow prefix cache keeps the keys and values of each stream's completed frames for its later hops. It takes the GPU memory left after the TTS engine and the vocoder's other allocations, within the stage's `gpu_memory_fraction` or `total_reserve_bytes` when one is declared. It leaves free the prefix graphs and the largest step the vocoder admits, both measured at startup (the larger of `max_batch_size` streams, each a 30 s reference prompt and the TTS engine's context length of generated tokens, and the largest non-streaming batch that `flow_batch_admission_frames` lets through), and the runtime headroom (`1 - mem_fraction_static` of the GPU memory free before the TTS engine loaded, or before the vocoder loaded in a process without the engine). The cache's size counts its padding block, each stream's convolution context and the allocator's rounding. `flow_prefix_cache_gb` caps that size, a larger value falls back to it with a warning, and `0` turns the cache off. Streaming hops over the Flow prefix cache replay their Euler solve from CUDA graphs captured per frame tier (one at every whole DiT chunk, from a tier holding the shortest hop up to `max_batch_size` rows of the longest hop). A step above the largest tier runs in eager mode, and `enable_flow_prefix_cuda_graph=false` turns the graphs off. A stream's final step replays its whole-history Euler solve from CUDA graphs captured per frame tier with `max_batch_size` row slots, on the prefill graph ladder up to `flow_batch_admission_frames`. A final step above the largest tier runs eagerly, and `enable_flow_whole_history_cuda_graph=false` turns these graphs off. HiFT's decode replays from CUDA graphs captured per row tier, up to `max_batch_size`, and per frame tier, from a first hop's window to a final's. F0 and the sine source stay eager, and a step wider than the largest frame tier decodes eagerly. The graphs need a float32 HiFT on CUDA with Triton, and `enable_hift_cuda_graph=false` turns them off. `enable_flow_estimator_trt` stays opt-in; enabling it turns the DiT compile default off, and enabling both explicitly is rejected.
+Vocoder configuration controls batching, precision, and acceleration. The scheduler accepts `max_batch_size` (16) and `max_batch_wait_ms` (30) to tune batch assembly. Flow uses `dtype` (bfloat16) for autocast, while HiFT uses `hift_dtype` (float32), independent of Flow; bfloat16 shows no speedup on H200 and reduces fidelity. Buffered Flow CUDA Graphs and DiT `torch.compile` are on by default. The Flow prefix cache keeps the keys and values of each stream's completed frames for its later hops. It takes the GPU memory left after the TTS engine and the vocoder's other allocations, within the stage's `gpu_memory_fraction` or `total_reserve_bytes` when one is declared. It leaves free the prefix graphs and the largest step the vocoder admits, both measured at startup (the larger of `max_batch_size` streams, each a 30 s reference prompt and the TTS engine's context length of generated tokens, and the largest non-streaming batch that `flow_batch_admission_frames` lets through), and the runtime headroom (`1 - mem_fraction_static` of the GPU memory free before the TTS engine loaded, or before the vocoder loaded in a process without the engine). The cache's size counts its padding block, each stream's convolution context and the allocator's rounding. `flow_prefix_cache_gb` caps that size, a larger value falls back to it with a warning, and `0` turns the cache off. Streaming hops over the Flow prefix cache replay their Euler solve from CUDA graphs captured per frame tier (one at every whole DiT chunk, from a tier holding the shortest hop up to `max_batch_size` rows of the longest hop). A step above the largest tier runs in eager mode, and `enable_flow_prefix_cuda_graph=false` turns the graphs off. A stream's final step replays its whole-history Euler solve from CUDA graphs captured per frame tier with `max_batch_size` row slots, on the prefill graph ladder up to `flow_batch_admission_frames`. A final step above the largest tier runs eagerly, and `enable_flow_whole_history_cuda_graph=false` turns these graphs off. On SM120 the DiT runs FlashAttention 4, the whole-history graphs stay off. When the largest admitted step does not fit on the device, serving runs without the prefix cache. HiFT's decode replays from CUDA graphs captured per row tier, up to `max_batch_size`, and per frame tier, from a first hop's window to a final's. F0 and the sine source stay eager, and a step wider than the largest frame tier decodes eagerly. The graphs need a float32 HiFT on CUDA with Triton, and `enable_hift_cuda_graph=false` turns them off. `enable_flow_estimator_trt` stays opt-in; enabling it turns the DiT compile default off, and enabling both explicitly is rejected.
 
 The TTS engine stage accepts `onnx_intra_op_threads` (16) for the speech tokenizer and speaker encoder ONNX sessions. Preprocessing takes `max_concurrency` (8) to limit concurrent reference conditioning requests.
 

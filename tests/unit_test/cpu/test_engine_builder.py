@@ -186,14 +186,8 @@ def test_graph_disabled_infrastructure_still_initializes_the_eager_runner(
         def get_memory_pool(self):
             return "req", "kv"
 
-    monkeypatch.setattr("sglang.srt.runtime_context.get_context", lambda: FakeContext())
-    monkeypatch.setattr(
-        "sglang.srt.runtime_context.get_schedule", lambda: SimpleNamespace(page_size=1)
-    )
-    monkeypatch.setattr(
-        "sglang.srt.runtime_context.get_spec",
-        lambda: SimpleNamespace(speculative_algorithm=None),
-    )
+    monkeypatch.setattr(bootstrap, "get_context", lambda: FakeContext())
+    monkeypatch.setattr(bootstrap, "get_schedule", lambda: SimpleNamespace(page_size=1))
     monkeypatch.setattr(
         bootstrap,
         "describe_sglang_runtime_configuration",
@@ -205,7 +199,7 @@ def test_graph_disabled_infrastructure_still_initializes_the_eager_runner(
 
     want_cuda_graph, infrastructure = (
         bootstrap.create_sglang_infrastructure_defer_cuda_graph(
-            SimpleNamespace(disable_cuda_graph=True),
+            SimpleNamespace(disable_cuda_graph=True, speculative_algorithm=None),
             gpu_id=0,
         )
     )
