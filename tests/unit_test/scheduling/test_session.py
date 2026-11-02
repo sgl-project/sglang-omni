@@ -33,6 +33,7 @@ from sglang_omni.proto.session import (
     fragment_chunk,
     wire_size,
 )
+from sglang_omni.scheduling import session as session_module
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.session import (
@@ -357,6 +358,65 @@ def test_the_first_stage_restores_a_chunk_from_its_fragments_for_the_append():
     small = replace(unit(2, 256), seq=last.seq + 1)
     run_operation(scheduler, "append", small)
     assert hooks.appended[-1] == small
+
+
+def test_fragment_assembly_failure_fences_successors_and_preserves_other_sessions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hooks = RecordingHooks()
+    scheduler = SessionScheduler(hooks, max_concurrency=3)
+    failed_identity = SessionIdentity("failed")
+    healthy_identity = SessionIdentity("healthy")
+    whole_unit = unit(1, 10_000)
+    *leading_fragments, (first, _) = fragment_chunk(whole_unit, 0, 1024)
+    successor = TimedChunk(
+        "control", 0, 0, first.seq + 1, b"successor", format="unit", turn=2
+    )
+    healthy = TimedChunk("control", 0, 0, 0, b"healthy", format="unit", turn=1)
+
+    def fail_assembly(fragments: list[TimedChunk]) -> TimedChunk:
+        del fragments
+        raise RuntimeError("fragment assembly failed")
+
+    monkeypatch.setattr(session_module, "join_fragments", fail_assembly)
+    compute_registered(
+        scheduler, operation_payload("failed-open", "open", failed_identity)
+    )
+    compute_registered(
+        scheduler, operation_payload("healthy-open", "open", healthy_identity)
+    )
+    for index, fragment in enumerate(leading_fragments):
+        compute_registered(
+            scheduler,
+            operation_payload(
+                f"fragment-{index}", "fragment", failed_identity, fragment
+            ),
+        )
+
+    first_payload = operation_payload("first", "append", failed_identity, first)
+    successor_payload = operation_payload(
+        "successor", "append", failed_identity, successor
+    )
+    scheduler.inbox.put(IncomingMessage("first", "new_request", first_payload))
+    scheduler.inbox.put(IncomingMessage("successor", "new_request", successor_payload))
+    first_message = scheduler.inbox.get_nowait()
+    successor_message = scheduler.inbox.get_nowait()
+
+    with pytest.raises(RuntimeError, match="fragment assembly failed"):
+        scheduler.compute(first_message.data)
+    with pytest.raises(RuntimeError, match="terminal"):
+        scheduler.compute(successor_message.data)
+
+    assert failed_identity not in scheduler.open_sessions
+    assert hooks.appended == []
+    compute_registered(
+        scheduler,
+        operation_payload("healthy-append", "append", healthy_identity, healthy),
+    )
+    assert hooks.appended == [healthy]
+    compute_registered(
+        scheduler, operation_payload("healthy-close", "close", healthy_identity)
+    )
 
 
 def test_fragments_an_interrupt_cut_short_give_way_to_the_next_turn():

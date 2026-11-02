@@ -968,8 +968,10 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
                         payload.data = {"controlled": True}
                         return payload
                     else:
-                        append = self.start_append(payload, session_operation, session)
                         try:
+                            append = self.start_append(
+                                payload, session_operation, session
+                            )
                             if not self.begin_append_execution(
                                 payload.request_id, session_identity
                             ):
