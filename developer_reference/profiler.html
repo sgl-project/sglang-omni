@@ -591,8 +591,7 @@
                   
   <section class="tex2jax_ignore mathjax_ignore" id="request-level-profiler">
 <h1>Request-level profiler<a class="headerlink" href="#request-level-profiler" title="Link to this heading">#</a></h1>
-<p><code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> ships two complementary profilers that share the same <code class="docutils literal notranslate"><span class="pre">run_id</span></code>
-and are controlled by the same HTTP surface:</p>
+<p><code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> ships two complementary profilers that share the same <code class="docutils literal notranslate"><span class="pre">run_id</span></code> and are controlled by the same HTTP surface:</p>
 <ul class="simple">
 <li><p>a <strong>request-level event recorder</strong> that writes a JSONL stream of
 per-request milestones (admission, preprocess, encoder, prefill, first
@@ -610,8 +609,7 @@ Intel.</p></li>
 deeper kernel investigation.</p>
 <section id="event-model">
 <h2>Event model<a class="headerlink" href="#event-model" title="Link to this heading">#</a></h2>
-<p>Every instrumentation point appends a single line of JSON to a per-process
-JSONL file. The shape:</p>
+<p>Every instrumentation point records one logical event. After the run is deactivated, each retained event is serialized as one line of JSON in a per-process JSONL file. The shape is:</p>
 <div class="highlight-jsonc notranslate"><div class="highlight"><pre><span></span>{
   "request_id": "req-123",
   "stage": "thinker",
@@ -623,11 +621,18 @@ JSONL file. The shape:</p>
 }
 </pre></div>
 </div>
-<p>Files are written under <code class="docutils literal notranslate"><span class="pre">&lt;event_dir&gt;/events_&lt;stage&gt;_&lt;pid&gt;.jsonl</span></code>. Multiple
-co-located stages in the same OS process share <strong>one</strong> JSONL file — the
-filename uses the first stage to start, and the per-event <code class="docutils literal notranslate"><span class="pre">stage</span></code> field
-identifies the owner. The views layer merges files from every process by
-<code class="docutils literal notranslate"><span class="pre">request_id</span></code>.</p>
+<p>Files are written under <code class="docutils literal notranslate"><span class="pre">&lt;event_dir&gt;/events_&lt;stage&gt;_&lt;pid&gt;.jsonl</span></code>. Multiple co-located stages in the same OS process share <strong>one</strong> JSONL file — the filename uses the first stage to start, and the per-event <code class="docutils literal notranslate"><span class="pre">stage</span></code> field identifies the owner. The views layer merges files from every process by <code class="docutils literal notranslate"><span class="pre">request_id</span></code>. The writer creates each JSONL file exclusively; an existing file is a storage failure rather than an append target.</p>
+<p>The recorder uses one bounded producer-private buffer per OS thread and one low-priority writer thread per process, created only after the run stops. Each producer can retain 1024 events by default. <code class="docutils literal notranslate"><span class="pre">event_buffer_capacity</span></code> overrides that per-producer limit for one recording; any positive integer is accepted, with no hard-coded maximum. The number of producer buffers remains separately bounded at 16 per process. An omitted value uses the recorder’s constructor default on each new run, and capacity cannot change during an active run. Buffers grow dynamically as events are retained; event objects are not preallocated.</p>
+<p>To estimate memory, multiply the per-recording event capacity by each process’s producer-buffer count and sum the results:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>retained_events &lt;= sum(process producer_buffer_count * event_buffer_capacity)
+approximate_memory = retained_events * estimated_bytes_per_event
+</pre></div>
+</div>
+<p>Bytes per event depends on the workload and Python object contents; measure it when accurate memory budgeting matters. A larger capacity can increase post-stop serialization and flush time. Overflow still drops events and marks the trace incomplete. Linux <code class="docutils literal notranslate"><span class="pre">SCHED_IDLE</span></code> is best effort and cannot guarantee zero Python GIL or CPU interference.</p>
+<p>Each OS thread registers its buffer once under a small control lock. Cached producers then capture timestamps, stage attribution, and bounded metadata without acquiring that lock. Buffer admission is the stop cutoff: the post-stop writer waits for admitted operations, while a capture that has not reserved a buffer before stop is ignored and does not consume its snapshots. <code class="docutils literal notranslate"><span class="pre">RequestEventBuffer</span></code> uses the same producer buffer: deferred records count against the same event limit and are snapshotted once. During capture, producers do not start a writer, open files, serialize JSON, flush, or enqueue into a shared queue. JSON serialization, file operations, and flushes run only after deactivation.</p>
+<p>Events do not exist on disk until the run has stopped. Consumers must treat a missing sidecar, or a sidecar with <code class="docutils literal notranslate"><span class="pre">complete:</span> <span class="pre">false</span></code>, as incomplete.</p>
+<p>Each finalized run also attempts to write <code class="docutils literal notranslate"><span class="pre">run_status_&lt;pid&gt;.json</span></code> beside the JSONL file. When publication succeeds, it records <code class="docutils literal notranslate"><span class="pre">run_id</span></code>, <code class="docutils literal notranslate"><span class="pre">pid</span></code>, <code class="docutils literal notranslate"><span class="pre">stages</span></code>, the effective <code class="docutils literal notranslate"><span class="pre">event_buffer_capacity</span></code>, <code class="docutils literal notranslate"><span class="pre">producer_buffer_count</span></code>, and <code class="docutils literal notranslate"><span class="pre">producer_buffer_event_counts</span></code> (accepted plus dropped records per registered buffer), followed by event counters, metadata snapshot and truncation counts, serialization/write/finalization failures, <code class="docutils literal notranslate"><span class="pre">incomplete_reasons</span></code>, and <code class="docutils literal notranslate"><span class="pre">complete</span></code>; that flag has <code class="docutils literal notranslate"><span class="pre">completeness_scope</span></code> set to <code class="docutils literal notranslate"><span class="pre">event_storage</span></code> and does not claim semantic timing or cross-process coverage. The sidecar also records whether the writer obtained <code class="docutils literal notranslate"><span class="pre">SCHED_IDLE</span></code> or used the default scheduling policy. <code class="docutils literal notranslate"><span class="pre">RequestEventFinalization.wait()</span></code> reports whether the status sidecar was published; inspect <code class="docutils literal notranslate"><span class="pre">complete</span></code> separately to determine whether the trace is complete. Producer-buffer overflow, writer failure, metadata snapshot failure, metadata truncation, and a missing or failed drain mark the run incomplete. Consumers must not treat a missing sidecar, or a sidecar with <code class="docutils literal notranslate"><span class="pre">complete:</span> <span class="pre">false</span></code>, as a complete trace.</p>
+<p>Metadata is intentionally limited to scalars, JSON-like mappings/sequences, and tensor-like values represented by shape/dtype/device summaries. Tensor contents are never materialized by the producer. Unsupported values are rejected without calling arbitrary <code class="docutils literal notranslate"><span class="pre">repr</span></code>; the serving path records a metadata snapshot failure and continues. Strings are bounded, and bytes are unsupported rather than copied into the trace. Bounded depth/item truncation is recorded in the event metadata and in the status sidecar rather than reported as complete.</p>
 <section id="standard-event-names">
 <h3>Standard event names<a class="headerlink" href="#standard-event-names" title="Link to this heading">#</a></h3>
 <p>The recorder always attaches the active <code class="docutils literal notranslate"><span class="pre">stage</span></code> name to every event, so the
@@ -768,6 +773,13 @@ instrumentation sites do not need to guard against the disabled case.</p>
 </section>
 <section id="full-duplex-session-unit-metrics">
 <h2>Full Duplex session Unit metrics<a class="headerlink" href="#full-duplex-session-unit-metrics" title="Link to this heading">#</a></h2>
+<p>Pass <code class="docutils literal notranslate"><span class="pre">event_buffer_capacity</span></code> to <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/start_request_profile</span></code>, or to <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/start_profile</span></code> when request-event recording is enabled. For example:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://127.0.0.1:8000/start_request_profile<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s1">'Content-Type: application/json'</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{"run_id":"performance_test","event_dir":"/tmp/performance_test/events","event_buffer_capacity":1500}'</span>
+</pre></div>
+</div>
+<p>The value applies per producer for that run and can be changed on the next profiling run without restarting the server.</p>
 <p>Enable the existing request event recorder with <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/start_request_profile</span></code>
 and stop it with <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/stop_request_profile</span></code>. The JSONL files then include a
 small session vocabulary that can be converted with
@@ -861,6 +873,12 @@ clears both the thread-local slot and the contextvar.</p>
 </section>
 <section id="lifecycle">
 <h2>Lifecycle<a class="headerlink" href="#lifecycle" title="Link to this heading">#</a></h2>
+<p><strong>Intended use and assumptions:</strong> Request event profiling is an opt-in tool for
+controlled performance investigations, not an always-on logging or recovery
+service. Use a <strong>unique <code class="docutils literal notranslate"><span class="pre">run_id</span></code> and a fresh, empty <code class="docutils literal notranslate"><span class="pre">event_dir</span></code> for each
+recording</strong>. Only one run can be active or draining in a process. A new run is
+rejected until the prior post-stop writer has finished; this prevents a new
+measured window from sharing a writer with the old one.</p>
 <p>The recorder is process-local. It is started on every stage and on the
 coordinator when <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/start_profile</span></code> (or <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/start_request_profile</span></code>)
 is hit:</p>
@@ -873,9 +891,19 @@ carrying both the torch trace template and the <code class="docutils literal not
 the first stage to call <code class="docutils literal notranslate"><span class="pre">start()</span></code> wins the filename; every subsequent
 stage in the same process writes to the same file and the per-event
 <code class="docutils literal notranslate"><span class="pre">stage</span></code> field disambiguates.</p></li>
-<li><p>On <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/stop_profile</span></code>, the recorder is closed everywhere; files
-remain on disk under <code class="docutils literal notranslate"><span class="pre">&lt;event_dir&gt;</span></code>.</p></li>
+<li><p>On <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/stop_profile</span></code>, every process deactivates its current run without
+joining the writer on its serving/control loop. Accepted events still drain
+and the writer creates the status sidecar during finalization. The HTTP
+response is not an acknowledgement that every process has finalized its
+artifact; inspect every expected process sidecar before analysis.</p></li>
 </ol>
+<p>The Python API is nonblocking by default: <code class="docutils literal notranslate"><span class="pre">RequestEventRecorder.stop()</span></code> is
+equivalent to <code class="docutils literal notranslate"><span class="pre">stop(wait=False)</span></code>. It deactivates promptly and returns the event
+path; it does not wait for disk finalization. Administrative code may use
+<code class="docutils literal notranslate"><span class="pre">stop(wait=True)</span></code>, the returned <code class="docutils literal notranslate"><span class="pre">RequestEventFinalization</span></code> handle, or
+<code class="docutils literal notranslate"><span class="pre">wait_for_finalizations(timeout_seconds=...)</span></code>. Serving control paths use
+<code class="docutils literal notranslate"><span class="pre">stop(wait=False)</span></code> or <code class="docutils literal notranslate"><span class="pre">deactivate()</span></code>. A stalled or failed writer cannot block
+serving, but the resulting status must be treated as incomplete.</p>
 <p><code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/stop_profile</span></code> and <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/stop_request_profile</span></code> accept an optional
 <code class="docutils literal notranslate"><span class="pre">run_id</span></code> field. When <strong>omitted</strong>, the request is a wildcard: every stage
 stops whatever profiler session is currently active. When <strong>set</strong>, only
@@ -891,8 +919,10 @@ paying for a kernel trace.</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">sglang_omni.profiler.views</span><span class="w"> </span><span class="kn">import</span> <span class="n">build_report</span>
 <span class="n">report</span> <span class="o">=</span> <span class="n">build_report</span><span class="p">(</span><span class="s2">"/tmp/profiles/demo-run/events"</span><span class="p">)</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">report</span><span class="p">[</span><span class="s2">"request_count"</span><span class="p">],</span> <span class="nb">len</span><span class="p">(</span><span class="n">report</span><span class="p">[</span><span class="s2">"stage_breakdown"</span><span class="p">]))</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">report</span><span class="p">[</span><span class="s2">"completeness"</span><span class="p">][</span><span class="s2">"state"</span><span class="p">])</span>
 </pre></div>
 </div>
+<p><code class="docutils literal notranslate"><span class="pre">build_report</span></code> validates the process-local <code class="docutils literal notranslate"><span class="pre">run_status_&lt;pid&gt;.json</span></code> sidecars against the supplied event filenames. It reports <code class="docutils literal notranslate"><span class="pre">complete</span></code>, <code class="docutils literal notranslate"><span class="pre">incomplete</span></code>, or <code class="docutils literal notranslate"><span class="pre">unknown</span></code>; missing or malformed sidecars are always <code class="docutils literal notranslate"><span class="pre">unknown</span></code> with <code class="docutils literal notranslate"><span class="pre">complete:</span> <span class="pre">false</span></code>. This checks only the files supplied to the report. A directory containing one TP rank’s files can establish local event-storage completeness for that rank, but cannot establish that every expected TP rank or process is present. Global completeness requires an expected-process inventory, which this report does not provide.</p>
 <p>…or via the CLI:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>sglang_omni.profiler<span class="w"> </span>/tmp/profiles/demo-run/events<span class="w"> </span>--format<span class="w"> </span>table
 python<span class="w"> </span>-m<span class="w"> </span>sglang_omni.profiler<span class="w"> </span>/tmp/profiles/demo-run/events<span class="w"> </span>--format<span class="w"> </span>json<span class="w"> </span>--out<span class="w"> </span>report.json
@@ -976,7 +1006,7 @@ multi-GB trace — only opt in when you need that specific information.</p>
 <tr class="row-even"><td><p>POST</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">/start_request_profile</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">{&quot;run_id&quot;:</span> <span class="pre">?,</span> <span class="pre">&quot;event_dir&quot;:</span> <span class="pre">?}</span></code></p></td>
-<td><p>Event recorder only — no torch trace. Lower overhead; safer to leave on.</p></td>
+<td><p>Event recorder only — no torch trace. Lower overhead; still intended for short, opt-in captures.</p></td>
 </tr>
 <tr class="row-odd"><td><p>POST</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">/stop_request_profile</span></code></p></td>
@@ -998,14 +1028,23 @@ python<span class="w"> </span>-m<span class="w"> </span>sglang_omni.profiler<spa
 <section id="discipline">
 <h2>Discipline<a class="headerlink" href="#discipline" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p><strong>Profiling must never break serving.</strong> The emitter swallows write
-errors and counts drops; the first failure is logged once.</p></li>
+<li><p><strong>Profiling must never break serving.</strong> While active, the emitter performs
+no JSON serialization or file I/O, takes no recorder-wide lock after its
+one-time producer registration, and never waits for capacity or a writer.
+Producer-buffer overflow and bounded registration failures are counted as
+drops; writer failures are recorded in the run status.</p></li>
+<li><p><strong>Finalization is deferred.</strong> The writer starts only after the last local
+stage releases the run or an administrative stop deactivates it. It waits
+for in-flight producers to quiesce before freezing buffers, then flushes and
+closes the JSONL file before publishing the status sidecar. A new run is
+rejected while this drain is in progress.</p></li>
 <li><p><strong>Tensors and large blobs stay out of event metadata.</strong> Keep metadata
 to small scalars (ids, counts, durations, modality, error strings). The
 recorder enforces this defensively: if a tensor / numpy array ends up
-in metadata, <code class="docutils literal notranslate"><span class="pre">_json_default</span></code> serializes a summary
-(<code class="docutils literal notranslate"><span class="pre">{&quot;__tensor_summary__&quot;:</span> <span class="pre">true,</span> <span class="pre">&quot;type&quot;:</span> <span class="pre">...,</span> <span class="pre">&quot;shape&quot;:</span> <span class="pre">[...],</span> <span class="pre">&quot;dtype&quot;:</span> <span class="pre">&quot;...&quot;,</span> <span class="pre">&quot;device&quot;:</span> <span class="pre">&quot;...&quot;}</span></code>) instead of materializing the contents. 0-D
-tensors / numpy scalars still serialize as plain scalars.</p></li>
+in metadata, the JSON default serializer emits a summary
+(<code class="docutils literal notranslate"><span class="pre">{&quot;__tensor_summary__&quot;:</span> <span class="pre">true,</span> <span class="pre">&quot;type&quot;:</span> <span class="pre">...,</span> <span class="pre">&quot;shape&quot;:</span> <span class="pre">[...],</span> <span class="pre">&quot;dtype&quot;:</span>&#160;&#160; <span class="pre">&quot;...&quot;,</span> <span class="pre">&quot;device&quot;:</span> <span class="pre">&quot;...&quot;}</span></code>) instead of materializing the contents. CPU
+0-D tensors / numpy scalars still serialize as plain scalars; device-backed
+0-D values remain summaries.</p></li>
 <li><p><strong>Event naming.</strong> Lowercase snake_case, prefix with the layer that
 owns the event (<code class="docutils literal notranslate"><span class="pre">stage_*</span></code>, <code class="docutils literal notranslate"><span class="pre">scheduler_*</span></code>, <code class="docutils literal notranslate"><span class="pre">encoder_*</span></code>, etc.). Use the
 stage name (not the event name) to distinguish “thinker prefill start”
