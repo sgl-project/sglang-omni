@@ -143,6 +143,25 @@ class CuTeDSLResidualUnit(nn.Module):
         return self.conv2.forward_btc(output, residual=residual).transpose(1, 2)
 
 
+@torch.inference_mode()
+def warmup_cutedsl_fallbacks(decoder: nn.Module) -> None:
+    """Compile native fallback wrappers with the serving thread's Torch state."""
+    for module in decoder.modules():
+        if isinstance(module, ChannelsLastUpsample) or (
+            isinstance(module, CuTeDSLCausalConv1d) and not module.has_custom_kernel
+        ):
+            # note (Hao Wang): Torch specializes singleton dimensions even with dynamic shapes enabled.
+            for batch_size in (1, 2):
+                for length in (1, 3):
+                    module(
+                        module.conv.weight.new_zeros(
+                            (batch_size, module.conv.in_channels, length)
+                        )
+                    )
+        else:
+            pass
+
+
 def fuse_cutedsl_convolutions(decoder: nn.Module) -> int:
     """Replace supported BF16 waveform blocks after SnakeBeta preparation."""
     if not supports_auxiliary(next(decoder.parameters())) or isinstance(

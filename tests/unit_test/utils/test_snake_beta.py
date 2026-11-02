@@ -9,6 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 import torch
+from torch._dynamo.utils import counters
 
 from sglang_omni.models.qwen3_tts.compat import (
     apply_qwen_tts_transformers_compatibility_patches,
@@ -23,6 +24,7 @@ if find_spec("cutlass") is not None and find_spec("qwen_tts") is not None:
         CuTeDSLCausalConv1d,
         CuTeDSLResidualUnit,
         fuse_cutedsl_convolutions,
+        warmup_cutedsl_fallbacks,
     )
     from sglang_omni.models.qwen3_tts.incremental_codec import (
         Qwen3TTSIncrementalCodecState,
@@ -330,6 +332,49 @@ def test_cutedsl_output_convolution_compiled_fallback() -> None:
     torch.testing.assert_close(
         wrapped(hidden_states), original(hidden_states), atol=0.03125, rtol=0.02
     )
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or CuTeDSLResidualUnit is None,
+    reason="requires CUDA, CUTLASS DSL, and qwen-tts",
+)
+@pytest.mark.parametrize("upsample", [False, True])
+@torch.inference_mode()
+def test_cutedsl_fallback_serving_thread_warmup(upsample: bool) -> None:
+    """A thread-count change after factory warmup must not defer fallback compilation to requests."""
+    torch.compiler.reset()
+    apply_qwen_tts_transformers_compatibility_patches()
+    tokenizer = import_module(
+        "qwen_tts.core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2"
+    )
+    if upsample:
+        original = tokenizer.Qwen3TTSTokenizerV2CausalTransConvNet(96, 96, 8, 4)
+    else:
+        original = tokenizer.Qwen3TTSTokenizerV2CausalConvNet(96, 1, 7)
+    original = original.cuda().bfloat16().eval()
+    wrapped = (
+        ChannelsLastUpsample(original) if upsample else CuTeDSLCausalConv1d(original)
+    )
+    decoder = torch.nn.Sequential(wrapped)
+    original_threads = torch.get_num_threads()
+    try:
+        torch.set_num_threads(2)
+        warmup_cutedsl_fallbacks(decoder)
+        torch.set_num_threads(1)
+        warmup_cutedsl_fallbacks(decoder)
+        compiled_graphs = counters["stats"]["unique_graphs"]
+        for batch_size, length in ((1, 17), (3, 11), (2, 1)):
+            hidden_states = torch.randn(
+                batch_size, 96, length, device="cuda", dtype=torch.bfloat16
+            )
+            torch.testing.assert_close(
+                wrapped(hidden_states), original(hidden_states), atol=0.03125, rtol=0.02
+            )
+        assert counters["stats"]["unique_graphs"] == compiled_graphs
+    finally:
+        torch.set_num_threads(original_threads)
+        torch.compiler.reset()
 
 
 @pytest.mark.accelerator

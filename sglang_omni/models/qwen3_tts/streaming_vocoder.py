@@ -58,7 +58,10 @@ if QTTS_BACKEND == "cutedsl":
     from sglang_omni.models.qwen3_tts.cutedsl.conv1d import pointwise_conv
     from sglang_omni.models.qwen3_tts.cutedsl.snake_beta import fuse_cutedsl_vocoder
     from sglang_omni.models.qwen3_tts.cutedsl.state_copy import CuTeDSLCodecStateArena
-    from sglang_omni.models.qwen3_tts.cutedsl.vocoder import fuse_cutedsl_convolutions
+    from sglang_omni.models.qwen3_tts.cutedsl.vocoder import (
+        fuse_cutedsl_convolutions,
+        warmup_cutedsl_fallbacks,
+    )
 else:
     pass
 
@@ -1360,6 +1363,13 @@ class Qwen3TTSStreamingVocoderScheduler(
         self.signal_async_stop()
         super().stop()
         self.join_async_workers()
+
+    def warm_up_serving_thread(self) -> None:
+        # note (Hao Wang): Engine initialization changes Torch's thread-count guard after factory warmup.
+        if QTTS_BACKEND == "cutedsl":
+            warmup_cutedsl_fallbacks(self.decoder)
+        else:
+            pass
 
     def warmup_now(self) -> None:
         if not self.async_decode:
