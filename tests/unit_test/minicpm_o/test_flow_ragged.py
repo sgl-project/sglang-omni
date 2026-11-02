@@ -23,12 +23,14 @@ from sglang_omni.models.minicpm_o.components.token2wav.vocoder import (
 )
 from sglang_omni.models.minicpm_o.components.tts_runtime import (
     CODEC_CHUNK_SIZE,
+    SILENCE_PREFIX_LENGTH,
     MiniCPMOVocoderRuntime,
     SynthesisRequest,
 )
 from sglang_omni.models.minicpm_o.native_config import (
     DEFAULT_SPEECH_STATE_BYTES_PER_SESSION,
 )
+from tests.unit_test.fixtures.accelerator import require_cuda
 
 MEL_CHANNELS = 8
 # note (Junnan Li): The silence token that pads every stream is id 4218, so the vocabulary keeps the checkpoint's size.
@@ -128,6 +130,7 @@ def warmed_caches(
 @pytest.mark.parametrize(
     "device", ["cpu", pytest.param("cuda", marks=pytest.mark.accelerator)]
 )
+@pytest.mark.parametrize("is_channels_last", [False, True])
 @pytest.mark.parametrize(
     ("lengths", "is_last_chunk", "warmup_chunks"),
     [
@@ -137,12 +140,21 @@ def warmed_caches(
     ],
 )
 def test_ragged_chunks_match_each_stream_alone(
+    monkeypatch: pytest.MonkeyPatch,
     device: str,
+    is_channels_last: bool,
     lengths: tuple[int, ...],
     is_last_chunk: list[bool],
     warmup_chunks: list[int],
 ) -> None:
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
+    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
     flow = tiny_flow()
+    if is_channels_last:
+        for block in flow.decoder.estimator.blocks:
+            block.conv.use_channels_last()
+    else:
+        pass
     with torch.inference_mode():
         speakers, caches = warmed_caches(flow, warmup_chunks)
         flow.to(device)
@@ -189,6 +201,44 @@ def test_ragged_chunks_match_each_stream_alone(
                 torch.testing.assert_close(
                     batched_cache[key], cache[key], rtol=1e-4, atol=1e-4
                 )
+
+
+@pytest.mark.accelerator
+def test_a_chunk_after_a_short_one_in_chunk_graphs_matches_the_plain_flow() -> None:
+    require_cuda()
+    device = torch.device("cuda")
+    plain = tiny_flow()
+    channels_last = tiny_flow()
+    for block in channels_last.decoder.estimator.blocks:
+        block.conv.use_channels_last()
+    with torch.inference_mode():
+        speakers, caches = warmed_caches(plain, [1])
+        speaker = speakers[0].to(device)
+        cache = {key: value.to(device) for key, value in caches[0].items()}
+        plain.to(device)
+        channels_last.to(device)
+        channels_last.decoder.capture_chunk_graphs(
+            stream_counts=(1,),
+            frame_counts=((WINDOW_TOKENS - channels_last.pre_lookahead_len) * UP_RATE,),
+            history_capacity=PROMPT_TOKENS * UP_RATE + FLOW_CACHE_TAIL_FRAMES,
+            convolution_cache=cache["estimator_convolution_cache"],
+            attention_cache=cache["estimator_attention_cache"],
+        )
+        mels = []
+        for flow in (plain, channels_last):
+            torch.manual_seed(0)
+            state = clone(cache)
+            for length, seed in ((10, 7), (WINDOW_TOKENS, 8)):
+                ((mel, state),) = flow.inference_chunks(
+                    [random_token_ids(length, seed).to(device)],
+                    speaker,
+                    [state],
+                    is_last_chunk=[False],
+                    n_timesteps=N_TIMESTEPS,
+                )
+            mels.append(mel)
+
+    torch.testing.assert_close(mels[1], mels[0], rtol=1e-4, atol=1e-4)
 
 
 class MelEnvelopeVocoder(torch.nn.Module):
@@ -290,6 +340,37 @@ def run_sessions(
         for final_unit in final_units:
             synthesize([final_unit])
     return runtime, waveforms
+
+
+def test_reply_audio_holds_each_decoded_frame_once_from_its_first_sample() -> None:
+    """A reply plays each decoded frame once, at full level from its first sample; leading padding or audio held back in the first unit would delay every reply's onset, and a fade-in would soften it."""
+    runtime = MiniCPMOVocoderRuntime(
+        TinyCode2Wav(tiny_token2wav()),
+        max_state_bytes_per_session=DEFAULT_SPEECH_STATE_BYTES_PER_SESSION,
+        max_open_sessions=1,
+    )
+    runtime.open_session("0", reference_audio=b"0")
+    lookahead_tokens = runtime.token2wav.flow.pre_lookahead_len
+    # note (wenyao): The last unit's 30 tokens decode one non-last window before its last chunk, so a chunk after the first must trim its crossfade tail too.
+    first_unit_tokens, last_unit_tokens = 10, 30
+
+    ((_, first_unit),) = runtime.synthesize_batch(
+        [unit(0, 0, first_unit_tokens, True, False)]
+    )
+    ((_, last_unit),) = runtime.synthesize_batch(
+        [unit(0, 1, last_unit_tokens, False, True)]
+    )
+
+    first_frame = first_unit[:SAMPLES_PER_MEL_FRAME]
+    assert first_frame[0] != 0
+    assert np.all(first_frame == first_frame[0])
+    assert first_unit.size == SAMPLES_PER_MEL_FRAME * (
+        (SILENCE_PREFIX_LENGTH + first_unit_tokens - lookahead_tokens) * UP_RATE
+        - MEL_CACHE_FRAMES
+    )
+    assert first_unit.size + last_unit.size == SAMPLES_PER_MEL_FRAME * UP_RATE * (
+        SILENCE_PREFIX_LENGTH + first_unit_tokens + last_unit_tokens
+    )
 
 
 def test_sessions_decoded_together_match_each_session_alone() -> None:

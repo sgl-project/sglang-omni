@@ -9,7 +9,6 @@ import torchaudio
 import torchaudio.functional as F
 from numpy.typing import ArrayLike
 
-from sglang_omni.models.ming_omni.talker.audio_vae.modeling_audio_vae import AudioVAE
 from sglang_omni.models.ming_tts.payload_types import (
     MING_TTS_SAMPLE_RATE,
     load_ming_tts_state,
@@ -17,6 +16,7 @@ from sglang_omni.models.ming_tts.payload_types import (
 )
 from sglang_omni.models.ming_tts.prompt_builder import build_ming_tts_prompt
 from sglang_omni.models.ming_tts.tokenizer import MingTTSTokenizerBundle
+from sglang_omni.modules.ming_audio.vae.modeling_audio_vae import AudioVAE
 from sglang_omni.preprocessing.cache_key import reference_path_cache_key
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.reference_encoder import (

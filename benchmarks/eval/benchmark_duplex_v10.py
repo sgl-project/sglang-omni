@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Record, transcribe and score Full-Duplex-Bench v1.0 turn-taking sessions."""
+"""Record Full-Duplex-Bench v1.0 sessions and score them in the reference layout."""
 
 from __future__ import annotations
 
@@ -14,9 +14,13 @@ from pathlib import Path
 from openai import OpenAI
 
 from benchmarks.duplex import v10_dataset
-from benchmarks.duplex.artifacts import add_server_identity_args, server_identity
-from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES
-from benchmarks.duplex.reference_core import V10_REFERENCE_FILES
+from benchmarks.duplex.artifacts import (
+    add_protocol_args,
+    add_server_identity_args,
+    server_identity,
+)
+from benchmarks.duplex.reference_capture import TraceFormat
+from benchmarks.duplex.reference_core import V10_REFERENCE_FILES, read_json
 from benchmarks.duplex.reference_source import verify_reference
 from benchmarks.duplex.reference_v10 import (
     JudgeLedger,
@@ -25,10 +29,9 @@ from benchmarks.duplex.reference_v10 import (
     exported_subsets,
     transcribe,
 )
-from benchmarks.duplex.run_artifacts import TIMELINES, accounting, load_run
-from benchmarks.duplex.v10_evaluation import RUN_KIND, score_run
+from benchmarks.duplex.run_artifacts import accounting, load_run
+from benchmarks.duplex.unified_v10 import render, score_tree
 from benchmarks.duplex.v15_runner import run_samples
-from benchmarks.duplex.v15_transcribe import add_transcribe_arguments
 
 VARIANTS = {"input": "input"}
 
@@ -52,8 +55,11 @@ def record(args: argparse.Namespace) -> int:
             max_per_subset=args.max_per_subset,
             dataset=v10_dataset,
             variants=VARIANTS,
-            kind=RUN_KIND,
+            kind=v10_dataset.RUN_KIND,
             profile=args.profile,
+            concurrency=args.concurrency,
+            turn_detection=args.turn_detection,
+            legacy_tail_s=args.legacy_tail,
         )
     )
     manifest, _, _ = load_run(args.output)
@@ -64,34 +70,8 @@ def record(args: argparse.Namespace) -> int:
     )
 
 
-def score(args: argparse.Namespace) -> int:
-    result = score_run(
-        args.run,
-        args.output,
-        transcripts_dir=args.transcripts,
-        timeline=args.timeline,
-        backchannel_reference=args.backchannel_reference,
-    )
-    counts = result["accounting"]
-    print(
-        json.dumps(
-            {
-                "accounting": {
-                    key: value for key, value in counts.items() if key != "failures"
-                },
-                "failures": len(counts["failures"]),
-                "timeline": args.timeline,
-                "tasks": result["scoring"]["tasks"],
-            },
-            indent=2,
-            allow_nan=False,
-        )
-    )
-    return 0
-
-
 def reference_export(args: argparse.Namespace) -> int:
-    manifest = export(args.run, args.dataset_root, args.out)
+    manifest = export(args.run, args.dataset_root, args.out, args.trace_format)
     print(json.dumps(manifest["counts"], indent=2))
     return 0
 
@@ -121,10 +101,11 @@ def reference_evaluate(args: argparse.Namespace) -> int:
         else:
             pass
         timestamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        client = OpenAI(api_key=api_key, base_url=args.base_url)
         judge = JudgeLedger(
-            OpenAI(api_key=api_key, base_url=args.base_url),
+            client,
             args.tree / "judge" / f"user-interruption-{timestamp}.jsonl",
-            args.base_url,
+            str(client.base_url),
             args.served_model,
         )
     else:
@@ -139,6 +120,31 @@ def reference_evaluate(args: argparse.Namespace) -> int:
     return 0
 
 
+def unified_score(args: argparse.Namespace) -> int:
+    unified = score_tree(args.tree)
+    summary_path = args.tree / "summary.json"
+    summary = read_json(summary_path) if summary_path.exists() else None
+    changed = (
+        []
+        if summary is None
+        else [
+            name
+            for name in ("manifest_sha256", "asr_sha256")
+            if summary[name] != unified[name]
+        ]
+    )
+    official = summary["subsets"] if summary is not None and not changed else {}
+    print(render(unified, official))
+    if changed:
+        print(
+            f"summary.json has a different {' and '.join(changed)} than this tree; "
+            "official reference numbers omitted"
+        )
+    else:
+        pass
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -150,12 +156,19 @@ def main(argv: list[str] | None = None) -> int:
         "--output", type=Path, required=True, help="New immutable run directory"
     )
     add_server_identity_args(record_parser)
-    record_parser.add_argument("--profile", choices=PROFILES, default=DEFAULT_PROFILE)
+    add_protocol_args(record_parser)
     record_parser.add_argument(
         "--dataset-revision", required=True, help="Dataset release or archive digest"
     )
     record_parser.add_argument(
         "--timeout", type=float, default=120.0, help="Per-session deadline in seconds"
+    )
+    record_parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        help="Maximum concurrent variants; excess connections may receive "
+        "HTTP 503 and fail if admission retries are exhausted",
     )
     selection = record_parser.add_mutually_exclusive_group()
     selection.add_argument(
@@ -166,37 +179,6 @@ def main(argv: list[str] | None = None) -> int:
     selection.add_argument("--max-per-subset", type=int)
     record_parser.set_defaults(handler=record)
 
-    timeline_help = "; ".join(
-        f"{name}: {timeline['meaning']}" for name, timeline in TIMELINES.items()
-    )
-
-    transcribe_parser = commands.add_parser(
-        "transcribe", help="Word-timestamped Whisper ASR of generated output audio"
-    )
-    # note (Jeffro): align with upstream which v1.0 uses Parakeet.
-    add_transcribe_arguments(transcribe_parser, timeline_help, default_asr="parakeet")
-
-    score_parser = commands.add_parser(
-        "score", help="Offline takeover and latency scores from transcripts"
-    )
-    score_parser.add_argument("--run", type=Path, required=True)
-    score_parser.add_argument("--output", type=Path, required=True)
-    score_parser.add_argument(
-        "--transcripts",
-        type=Path,
-        required=True,
-        help="Directory written by the transcribe command",
-    )
-    score_parser.add_argument(
-        "--timeline", choices=TIMELINES, default="simulated_playout", help=timeline_help
-    )
-    score_parser.add_argument(
-        "--backchannel-reference",
-        type=Path,
-        help="Upstream icc_gt_distribution.json; without it backchannel timing is unscored",
-    )
-    score_parser.set_defaults(handler=score)
-
     export_parser = commands.add_parser(
         "reference-export",
         help="Fixed-window output.wav plus annotations in the reference layout",
@@ -205,6 +187,11 @@ def main(argv: list[str] | None = None) -> int:
     export_parser.add_argument("--dataset-root", type=Path, required=True)
     export_parser.add_argument(
         "--out", type=Path, required=True, help="New reference tree directory"
+    )
+    export_parser.add_argument(
+        "--trace-format",
+        choices=[trace_format.value for trace_format in TraceFormat],
+        help="Capture trace format of the runs. Default: the native realtime format",
     )
     export_parser.set_defaults(handler=reference_export)
 
@@ -241,6 +228,15 @@ def main(argv: list[str] | None = None) -> int:
         "--served-model", help="Model name sent to --base-url in place of gpt-4-turbo"
     )
     evaluate_parser.set_defaults(handler=reference_evaluate)
+
+    unified_parser = commands.add_parser(
+        "unified-score",
+        help="System-agnostic metrics from the reference transcripts and annotations",
+    )
+    unified_parser.add_argument(
+        "--tree", type=Path, required=True, help="Tree transcribed by reference-asr"
+    )
+    unified_parser.set_defaults(handler=unified_score)
 
     args = parser.parse_args(argv)
     if args.command == "reference-evaluate" and (args.base_url is None) != (

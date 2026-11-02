@@ -2,10 +2,12 @@
 """Vocoder sessions: shared per-voice stream caches, turn resets and failed opens."""
 
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch
 
+from sglang_omni.models.minicpm_o.components import tts_runtime as tts_runtime_module
 from sglang_omni.models.minicpm_o.components.token2wav.vocoder import StreamChunk
 from sglang_omni.models.minicpm_o.components.tts_runtime import (
     CODEC_CHUNK_SIZE,
@@ -87,6 +89,40 @@ def test_voice_cache_lifecycle() -> None:
     runtime.close_session("c")
     with pytest.raises(ValueError, match="invalid audio"):
         runtime.open_session("d", reference_audio=b"invalid")
+    assert not runtime.speakers and not runtime.sessions
+
+
+@pytest.mark.parametrize(("has_existing_session",), [(False,), (True,)])
+def test_failed_cache_clone_leaves_no_speaker_owner(
+    monkeypatch: pytest.MonkeyPatch, has_existing_session: bool
+) -> None:
+    runtime = MiniCPMOVocoderRuntime(
+        FakeCode2Wav(), max_state_bytes_per_session=1 << 30, max_open_sessions=2
+    )
+    if has_existing_session:
+        runtime.open_session("existing", reference_audio=b"voice")
+    else:
+        pass
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            tts_runtime_module,
+            "clone_caches",
+            Mock(
+                spec=tts_runtime_module.clone_caches,
+                side_effect=torch.OutOfMemoryError("cache clone failed"),
+            ),
+        )
+        with pytest.raises(torch.OutOfMemoryError, match="cache clone failed"):
+            runtime.open_session("failed", reference_audio=b"voice")
+    if has_existing_session:
+        runtime.close_session("existing")
+    else:
+        pass
+
+    assert not runtime.speakers and not runtime.sessions
+    runtime.open_session("recovered", reference_audio=b"voice")
+    runtime.close_session("recovered")
     assert not runtime.speakers and not runtime.sessions
 
 

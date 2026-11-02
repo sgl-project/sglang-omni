@@ -16,10 +16,10 @@
 #include <string>
 #include <vector>
 
-#include "audio.h"
-#include "form.h"
+#include "common/audio.h"
+#include "common/form.h"
 #include "nlohmann/json.hpp"
-#include "sensevoice_transcriber.h"
+#include "sensevoice/sensevoice_transcriber.h"
 
 int main(int argc, char **argv) {
   std::string model_path;
@@ -41,7 +41,7 @@ int main(int argc, char **argv) {
     } else if (argument == "--language") {
       options.language = value();
     } else if (argument == "--use-itn") {
-      options.use_itn = qwen3_asr::FormFlag(value());
+      options.use_itn = omni_common::FormFlag(value());
     } else if (argument == "--vad-model-directory") {
       vad_model_directory = value();
     } else if (argument == "--vad-threshold") {
@@ -102,7 +102,7 @@ int main(int argc, char **argv) {
     bytes << stream.rdbuf();
     const auto started = std::chrono::steady_clock::now();
     const qwen3_asr::TranscriptionResult result = transcriber.Transcribe(
-        qwen3_asr::DecodeWav(bytes.str()), options, cancel);
+        omni_common::DecodeWav(bytes.str()), options, cancel);
     const nlohmann::json line = {
         {"file", file},
         {"text", result.text},

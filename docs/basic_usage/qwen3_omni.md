@@ -40,6 +40,8 @@ concurrent load. Threaded preprocessing changes how requests arrive at the
 thinker, so greedy outputs of the bf16 MoE can differ from the serial default;
 keep the default when comparing accuracy across runs.
 
+Each preprocessing worker decodes a request's videos on parallel decoders that share min(16, the stage's CPUs divided by its workers) FFmpeg threads, split evenly among the request's videos. Set `--preprocessing.factory.video_decode_threads N` to choose that count. A value at or below the video reader's own threads (`TORCHCODEC_NUM_THREADS`, 8 by default) decodes each video on the reader alone.
+
 For MMSU-style audio-input / text-output benchmarks with short requests, use
 the fused text-path config so the full text path stays inside one worker
 process:
@@ -490,6 +492,8 @@ To enable `semantic_vad`, provision the BSD-2 licensed
 to its path (file or containing directory). The server never downloads it and
 verifies its SHA-256 on load. If the model is missing or invalid, the
 endpoint still works — semantic requests just fall back to `server_vad`.
+
+On the Session graph (`examples/qwen3_omni/session_h200.yaml`), `semantic_vad` is a node: declare `turn_detection: {stages: [turn_detection], inputs: ["input:pcm16", "input:session", "vad:session"]}` beside `vad`, let `dialog` read `turn_detection:session` in place of `vad:session` and publish `turn_detection: [session]` in place of `vad: [session]`; the stage loads the model from `pipecat-ai/smart-turn-v3` unless `factory.model_path` names a local copy. See [Turn detection node](../developer_reference/full_duplex_guide.md#turn-detection-node).
 
 Text arrives in `response.text.delta` events; spoken output arrives as
 base64-encoded mono 24 kHz PCM16 in `response.audio.delta` events, followed by

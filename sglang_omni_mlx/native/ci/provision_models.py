@@ -6,7 +6,8 @@
 Every file is checked against the SHA-256 in model_pins.json. A checkpoint
 lands in <data_root>/models/<org>_<name>; a Whisper checkpoint also gets the
 tokenizer files of its openai/whisper-* repo in that directory, where Voxt
-puts them. The corpus comes from provision.py.
+puts them, and Fun-CosyVoice3 gets its S3 speech tokenizer's checkpoint in
+speech_tokenizer/. The corpus comes from provision.py.
 """
 
 from __future__ import annotations
@@ -26,6 +27,9 @@ class FileSource(TypedDict):
 
 class TokenizerSource(FileSource):
     repo: str
+    # Where under the model directory its files go; the model directory itself
+    # when absent.
+    subdirectory: NotRequired[str]
 
 
 class ModelPin(FileSource):
@@ -38,18 +42,24 @@ def main() -> None:
     parser.add_argument(
         "--model", action="append", help="repo to provision (default: all pinned)"
     )
+    parser.add_argument("--exclude-model", action="append", default=[])
     arguments = parser.parse_args()
     pins: dict[str, ModelPin] = json.loads(
         (CI_DIRECTORY / "model_pins.json").read_text()
     )
     for repo in arguments.model or list(pins):
+        if repo in arguments.exclude_model:
+            continue
+        else:
+            pass
         pin = pins[repo]
         model_directory = provision_model(arguments.data_root, repo, pin)
         if "tokenizer" in pin:
             tokenizer = pin["tokenizer"]
             for name, digest in tokenizer["files"].items():
                 url = f"https://huggingface.co/{tokenizer['repo']}/resolve/{tokenizer['revision']}/{name}"
-                download(url, model_directory / name, digest)
+                destination = model_directory / tokenizer.get("subdirectory", "")
+                download(url, destination / name, digest)
         else:
             pass
         print(f"model {repo}: {model_directory}", flush=True)

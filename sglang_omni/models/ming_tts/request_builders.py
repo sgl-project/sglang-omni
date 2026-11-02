@@ -75,14 +75,6 @@ def preprocess_ming_tts_payload(
             pass
         return True
 
-    def explicit_generation_fields(tts_source: Mapping[str, object]) -> set[str]:
-        raw = tts_source.get("explicit_generation_params")
-        if isinstance(raw, (list, tuple, set)):
-            return {str(field) for field in raw}
-        else:
-            pass
-        return set()
-
     def first_present(
         *sources: Mapping[str, object], names: tuple[str, ...]
     ) -> object | None:
@@ -342,7 +334,6 @@ def preprocess_ming_tts_payload(
     else:
         pass
 
-    explicit_fields = explicit_generation_fields(tts_params)
     for field in _LOGITS_SAMPLING_FIELDS:
         if has_non_empty_value(tts_params, field) or has_non_empty_value(
             tts_engine_params, field
@@ -352,7 +343,7 @@ def preprocess_ming_tts_payload(
             )
         else:
             pass
-        if field in explicit_fields and params.get(field) is not None:
+        if params.get(field) is not None:
             raise ValueError(
                 f"Ming-Omni-TTS does not use logits sampling field {field!r}"
             )
@@ -416,11 +407,7 @@ def preprocess_ming_tts_payload(
         temperature_value = params["ming_temperature"]
     else:
         pass
-    if (
-        temperature_value is None
-        and "temperature" in explicit_fields
-        and params.get("temperature") is not None
-    ):
+    if temperature_value is None and params.get("temperature") is not None:
         temperature_value = params["temperature"]
     else:
         pass

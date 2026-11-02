@@ -1,0 +1,389 @@
+# Fish Audio Drama 3
+
+**Fish Audio Drama 3** is Fish Audio's new-generation text-to-speech model, built for multi-character scenes and long-form content. It supports multi-speaker generation, voice cloning and natural-language control.
+
+- **35B parameters, 3B active per token**: MoE text backbone with hybrid (full + linear) attention
+- **Codebook-MTP audio decoder**: 10 codebooks decoded causally over the whole sequence
+- **FP8 MoE experts** with the remaining weights in bf16; an [int4 checkpoint](#int4-checkpoint) cuts the weight memory from 37.0 GB to 20.8 GB
+- **Speaker tags** `<|speaker:0|>` … `<|speaker:15|>` — one text can carry up to 16 characters
+- **Long text** is chunked automatically and can be streamed per chunk
+
+## Installation and Startup
+
+Detailed instructions are in [Installation](../get_started/installation.md). From the repository root:
+
+```bash
+uv pip install --prerelease=allow -v -e ".[fishaudio]"
+```
+
+Download the checkpoint, then start the server. This command places preprocessing, the engine, and the vocoder on GPU 0. A stage moves to another GPU only when its `--<stage>.gpu` flag says so; see [Deployment](#deployment).
+
+```bash
+hf download fishaudio/drama-3
+
+sgl-omni serve \
+  --model-path fishaudio/drama-3 \
+  --port 8000
+```
+
+## Synthesize Speech
+
+The server supports plain text-to-speech, optionally cloning a voice from reference audio, returned as one response or
+as a stream.
+
+Plain TTS:
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": "Hello, how are you?"
+  }' \
+  --output output.wav
+```
+
+Voice cloning, with a reference clip and its transcript:
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": "Get the trust fund to the bank early.",
+    "references": [{
+      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
+      "text": "We asked over twenty different people, and they all said it was his."
+    }]
+  }' \
+  --output output_voice_cloning.wav
+```
+
+Streaming:
+
+```bash
+curl -N -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": "Get the trust fund to the bank early.",
+    "stream": true,
+    "response_format": "pcm"
+  }' \
+  --output output_streaming.pcm
+```
+
+## Example Usage
+
+The reference clip the samples below clone, unmodified:
+
+The reference, `en0` — a 3.9 s clip, the same `common_voice_en_10119832.wav` the cloning example above uses, with the transcript `We asked over twenty different people, and they all said it was his.`:
+
+<audio controls>
+  <source src="https://github.com/user-attachments/files/33393249/en0.wav" type="audio/wav">
+</audio>
+
+### Point tags
+
+A plain `/v1/tts` request: one reference (`en0`), no history, and the tags written into the text at the position where the event should land.
+
+```json
+{
+  "text": "[sighs] Fine. If we miss it, it's on you. [laughs] Well, maybe that's fair.",
+  "references": [{"audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav", "text": "We asked over twenty different people, and they all said it was his."}]
+}
+```
+
+<audio controls>
+  <source src="https://github.com/user-attachments/files/33393205/A1_point_tags.wav" type="audio/wav">
+</audio>
+
+
+### Editing as continuation
+
+Just send the previous VQ tokens and sent it as normal language models do.
+
+```json
+{
+  "text": "The quarterly report is due on Thursday, so please finish it by noon.",
+  "references": [{"audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav", "text": "We asked over twenty different people, and they all said it was his."}],
+  "previous_takes": ["The quarterly report is due on Wednesday, so please finish it by noon."]
+}
+```
+
+<audio controls>
+  <source src="https://github.com/user-attachments/files/33393156/K1_edit_word_with_context.wav" type="audio/wav">
+</audio>
+
+A second edit chained onto the result of the first:
+
+K5 chains a second edit: `by noon` becomes `by five`, with both earlier takes in the context.
+
+```json
+{
+  "text": "The quarterly report is due on Thursday, so please finish it by five.",
+  "references": [{"audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav", "text": "We asked over twenty different people, and they all said it was his."}],
+  "previous_takes": [
+    "The quarterly report is due on Wednesday, so please finish it by noon.",
+    "The quarterly report is due on Thursday, so please finish it by noon."
+  ]
+}
+```
+
+<audio controls>
+  <source src="https://github.com/user-attachments/files/33393164/K5_second_edit_chained.wav" type="audio/wav">
+</audio>
+
+## Serving Limits
+
+### Reference Audio Length
+
+Each reference given as audio may be at most 60 seconds long. The limit applies to every reference in the request separately, and a longer one fails the request with HTTP 400 before it is encoded:
+
+```text
+Drama 3 request: references.1: reference audio lasts 75.3 s, longer than the 60 s limit; shorten it or raise max_reference_audio_seconds
+```
+
+`references.N` names the reference by its position in the request's `references` list, counted from 0.
+
+Shorten that reference, or raise the limit when you start the server, for example to 90 seconds:
+
+```bash
+sgl-omni serve \
+  --model-path <checkpoint> \
+  --preprocessing.factory.max_reference_audio_seconds 90 \
+  --preprocessing.total_reserve_bytes 9GiB
+```
+
+or in a config file:
+
+```yaml
+stages:
+  preprocessing:
+    factory:
+      max_reference_audio_seconds: 90
+    total_reserve_bytes: 9GiB
+```
+
+The GPU memory the preprocessing stage needs grows with the length of the reference it encodes, and the stage is capped at `total_reserve_bytes` (6 GiB by default, sized for the 60-second limit). When you raise the limit, raise the reserve with it, measured on your GPU; a reference that does not fit the reserve fails with an out-of-memory error in
+the preprocessing stage. The budgets of all stages on the GPU must still fit the card, which the server checks at startup.
+
+### Prompt Length
+
+A prompt holds the tokens of the prompt template, the input text and the reference transcripts, plus one row for every codec frame of its reference audio, about 21.5 rows per second of audio (the codec turns 44.1 kHz audio into frames of 2048 samples). A prompt may have at most 8192 rows; a longer one fails the request with HTTP 400:
+
+```text
+Drama 3 request: a prompt of 8193 rows exceeds the maximum allowed length of 8192 rows
+```
+
+Change the cap with `--tts_engine.factory.max_prompt_rows`. A prompt and its `max_new_tokens` must also fit the engine's context length.
+
+## Attention Backend
+
+Drama 3 runs its attention on the `triton` backend only. The server refuses to start with any other attention backend, for example `--tts_engine.engine.attention_backend fa3`.
+
+## Int4 Checkpoint
+
+[`fishaudio/drama-3-int4`](https://huggingface.co/fishaudio/drama-3-int4) is a 4-bit GPTQ quantization of Drama 3. Thanks so much to [AK](https://x.com/_akhaliq) for the quantization! The server reads its quantization from the checkpoint, so it starts with the same command:
+
+```bash
+hf download fishaudio/drama-3-int4
+
+sgl-omni serve \
+  --model-path fishaudio/drama-3-int4 \
+  --port 8000
+```
+
+The routed MoE experts and the attention projections (`q/k/v/o_proj` of the full attention layers, `in_proj_qkv`, `in_proj_z` and `out_proj` of the linear attention layers) hold symmetric 4-bit weights with one scale per 128 input channels, and run on GPTQ-Marlin kernels. The shared expert, the router, the linear attention's `in_proj_a/b`, the output head and the codebook-MTP audio decoder stay in bf16. The engine's weights take 20.8 GB of GPU memory instead of 37.0 GB, which leaves more of the engine's share for the KV cache. GPTQ-Marlin needs compute capability 8.0 or newer.
+
+Table 3 compares the two checkpoints on one H200 with the default server settings: the 1,088 Seed-TTS English prompts, each cloning the voice of its own reference clip, sent as non-streaming requests at concurrency 8. WER is computed on the generated audio transcribed by Qwen3-ASR-1.7B.
+
+| Checkpoint | Weights | Latency mean | Latency p95 | RTF mean | Throughput (req/s) | WER (corpus) | WER without samples above 50% |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `fishaudio/drama-3` (FP8 experts) | 37.0 GB | 1.235 s | 1.902 s | 0.281 | 6.47 | 1.99% | 1.32% |
+| `fishaudio/drama-3-int4` | 20.8 GB | 1.334 s | 2.178 s | 0.320 | 5.99 | 1.63% | 1.42% |
+
+*Table 3. Drama 3 FP8 and int4 checkpoints on Seed-TTS English, concurrency 8, one H200.*
+
+The int4 checkpoint is about 8% slower per request and its WER stays at the FP8 level: the gap between the two is about as large as the run-to-run spread of one checkpoint (a second FP8 run measured 1.365 s mean latency and 2.02% WER).
+
+## Deployment Performance
+
+On one GPU the default placement works as is: every stage runs on GPU 0, with the vocoder in its own process. With two GPUs, put the vocoder on the second one, so its decoding no longer shares a GPU with the engine:
+
+```bash
+sgl-omni serve \
+  --model-path <checkpoint> \
+  --tts_engine.gpu 0 \
+  --vocoder.gpu 1
+```
+
+When the engine and the vocoder share one GPU, `--mps on` lets their processes share it through CUDA MPS (see [Same-GPU Data Parallelism with CUDA MPS](../basic_usage/mps_dp.md)). It can raise throughput under high concurrency but may make a single stream slower; measure it with your own load before you keep it.
+
+### High Concurrency
+
+The defaults run at most 16 requests at a time on the engine and give it 0.70 of the GPU's memory. For more streams at once, raise the request cap; the measurements below also raise the engine's share:
+
+```bash
+sgl-omni serve \
+  --model-path <checkpoint> \
+  --tts_engine.gpu_memory_fraction 0.85 \
+  --tts_engine.factory.max_running_requests 256
+```
+
+These values are sized for an H200: the engine's and the vocoder's shares and the preprocessing reserve must fit one GPU together, which the server checks at startup.
+
+### Production Serving
+
+All numbers below were measured on NVIDIA H200 GPUs with streaming requests on Seed-TTS English prompts. Each request clones a voice from one pre-encoded reference (`vq_codes` with its transcript) and uses `temperature` 1.0, `top_p` 0.9, `top_k` 30 and `max_new_tokens` 500. Throughput counts generated acoustic frames per second. TTFA is the time to first audio. RTF is the time from sending a request to its last audio chunk, divided by the duration of the returned audio.
+
+| Concurrency | Throughput (frames/s) | TTFA p50 | TTFA p95 | RTF (mean) |
+|---:|---:|---:|---:|---:|
+| 1 | 166.7 | 88.9 ms | 90.8 ms | 0.131 |
+| 2 | 287.0 | 96.2 ms | 130.1 ms | 0.152 |
+| 4 | 467.6 | 108.2 ms | 156.4 ms | 0.186 |
+| 8 | 678.1 | 153.2 ms | 210.9 ms | 0.256 |
+| 16 | 927.6 | 210.1 ms | 287.2 ms | 0.373 |
+| 32 | 1,244.7 | 304.6 ms | 396.1 ms | 0.551 |
+| 64 | 1,687.3 | 450.9 ms | 1,020.1 ms | 0.801 |
+
+*Table 1. Drama 3 streaming performance on one H200. Each cell is the mean of four runs.*
+
+A single stream gets its first audio in under 100 ms. At concurrency 16, audio is still generated about 2.7× faster than it plays back, and at concurrency 64 mean RTF stays at 0.80. In SGLang-Omni, how the pipeline stages are grouped into processes and placed on GPUs is deployment-time configuration rather than per-model code. Table 2 uses this to compare two vocoder placements at higher concurrency, with the vocoder's default GPU share, 1,088 requests per concurrency level, and the average of six server starts. Its throughput also counts the end-of-speech frame that ends each stream.
+
+| Vocoder placement | Concurrency | Throughput (frames/s) | TTFA p50 | TTFA p95 |
+|---|---:|---:|---:|---:|
+| Engine's GPU | 128 | 2,177 | 685 ms | 1,412 ms |
+| Engine's GPU | 256 | 2,422 | 3,403 ms | 4,255 ms |
+| Second GPU | 128 | 3,692 | 401 ms | 995 ms |
+| Second GPU | 256 | 4,160 | 2,146 ms | 2,469 ms |
+
+*Table 2. Drama 3 streaming performance by vocoder placement. Each cell is the mean of six server starts.*
+
+With the vocoder on the engine's GPU, at 256 streams the vocoder is fully loaded and each new stream's first audio waits in its queue. Moving it to a second GPU, as described under [Deployment](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_drama3.html#deployment), gave about 72% more throughput and a 37% lower median TTFA at 256 streams. Use this layout when you need many concurrent streams and a short time to first audio together.
+
+### Non-Streaming Requests
+
+The vocoder decodes a non-streaming request's audio in one piece after the engine finishes it, batching requests that
+finish together up to a frame limit it sets at startup from its memory share (`--vocoder.gpu_memory_fraction`, 0.10
+by default) and logs:
+
+```text
+Drama 3 vocoder: a non-streaming decode takes up to <frames> padded frames of <bytes> bytes each; share <share> GiB, held <held> GiB
+```
+
+The limit does not count the memory the vocoder process holds outside PyTorch's allocator, so it cannot guarantee that the process stays within its share. With the engine's share raised to 0.85 on the same GPU, concurrent non-streaming requests can run out of GPU memory. To avoid that, stream those requests (`"stream": true`), keep the engine's default share of 0.70 on the GPU that runs the vocoder, or put the vocoder on a second GPU, as under [Deployment](#deployment).
+
+## Defaults Parameters
+
+| Default | What it does | Change it with |
+|---|---|---|
+| Decode CUDA graph | Replays decode steps as CUDA graphs. | `--tts_engine.engine.cuda_graph_backend_decode disabled`; `--tts_engine.engine.disable_cuda_graph true` turns off every engine CUDA graph |
+| Breakable prefill CUDA graph, up to 2048 tokens | Replays prefill batches of up to 2048 tokens, backbone and codebook tower together, as one breakable CUDA graph; larger batches run eagerly. Shortens the time to the first audio at the cost of startup time and GPU memory; the KV cache keeps its size. | `--tts_engine.engine.cuda_graph_backend_prefill disabled`; the token cap with `--tts_engine.engine.cuda_graph_max_bs_prefill` |
+| First-frame CUDA graphs, up to 16 requests | Replays the step that samples each request's first frame as a CUDA graph for prefills of up to 16 requests (at most the decode CUDA graph's largest batch); larger prefills sample eagerly. Needs the decode CUDA graph; shortens each prefill at the cost of startup time and GPU memory. | `--tts_engine.factory.first_frame_cuda_graphs false`; the request cap with `--tts_engine.factory.first_frame_cuda_graph_max_requests` |
+| `prefill_decode_interval` 4 | After a prefill, new prefills wait for the next 4 scheduling rounds, so running streams keep decoding. | `--tts_engine.engine.prefill_decode_interval 0` schedules prefills without the wait |
+| Sampling: `temperature` 1.0, `top_p` 0.9, no `top_k` cap | Without a request `top_k`, the main token is drawn with no top-k cap; a cap of 30 there lets a stream fall silent after its first phrase. The codebook heads draw with top-k 30 at most whatever the request asks, since wider caps there cost speaker similarity. | The request's `temperature`, `top_p` and `top_k`; a request `top_k` caps the main token, and the codebook heads up to 30 |
+| Triton sampling | Samples each frame's main token and codes with Triton kernels instead of the PyTorch sampler, under the same top-k, top-p and repetition-aware rules. Using the same seed does not guarantee the same tokens as the PyTorch sampler. Rounding can keep or drop a candidate whose cumulative probability lies at top_p. | `--tts_engine.factory.triton_sampling false` |
+| Reference sampling, off | Samples each frame with Fish Audio's reference sampling for Drama 3, in PyTorch, instead of the samplers above. The main token's first draw keeps only candidates whose probability reaches the request's `epsilon_cutoff` (1e-3 when unset, 0 turns it off) and top-p drops the token that crosses it; a first draw that repeats one of the last 16 main tokens, end of speech included, becomes the most probable candidate. The codebook heads take the request's `temperature`, `top_k` and `top_p` with no epsilon cutoff and never return a code the codec's 1024-entry residual codebooks lack. Its recommended request parameters are `temperature` 1.0, `top_p` 1.0, no `top_k` and `epsilon_cutoff` 1e-3. With it off, a request that sets a non-zero `epsilon_cutoff` is refused. | `--tts_engine.factory.reference_sampling true`; `--tts_engine.factory.reference_sampling_fallback ras` replaces a repeated first draw with a second draw at temperature 1.0, top-p 0.95 and top-k 30 instead |
+| Fused codebook tower layers, up to 16 rows | Runs the codebook tower layers of decode and first-frame steps of up to 16 rows as fused Triton kernels, eagerly or inside the CUDA graphs; larger steps and the tower's prefill keep the module path. The kernels add in a different order, so the tower's outputs can differ in the last bits and the sampled frames can differ. | `--tts_engine.factory.tower_fused_layers false` |
+| Vocoder window CUDA graphs | Replays the decode of each streaming window length at batch 1 as a CUDA graph; batches and longer windows decode eagerly. | `--vocoder.factory.window_cuda_graphs false` |
+| Vocoder fp16 decoding | Decodes frames into audio in fp16. | `--vocoder.factory.decode_dtype float32` |
+
+The same settings in a config file:
+
+```yaml
+stages:
+  tts_engine:
+    engine:
+      cuda_graph_backend_prefill: disabled
+      prefill_decode_interval: 0
+  vocoder:
+    factory:
+      window_cuda_graphs: false
+      decode_dtype: float32
+```
+
+Triton sampling and the fused codebook tower layers have been validated on Hopper GPUs only, so they run only on compute capability 9.0; on any other GPU no setting turns them on. Both also fall back without Triton or a CUDA device. Triton sampling falls back to the PyTorch sampler when its kernels do not cover the codebook size or the main-token candidate count, and the fused layers fall back to the module path with deterministic inference or when their kernels do not cover the tower weights or the KV cache. The startup log names the path each one takes and, for a fallback, the reason, for example:
+
+```text
+Drama 3 codebook sampling: PyTorch, untested GPU sm_120
+Drama 3 tower fused layers: off, untested GPU sm_120
+```
+
+
+## Apple Silicon: native MLX
+
+The standalone `fishaudio_drama3_server` runs entirely in C++ on MLX under `sglang_omni_mlx/native/` and serves `/v1/audio/speech` with the CUDA server's request fields; reference audio is sent as base64 WAV (see the table below). It serves two community MLX conversions of `fishaudio/drama-3`, made by mlx-audio's `fish_drama3/convert.py` from the official FP8 checkpoint:
+
+| Checkpoint | Routed experts | Other projections | On disk | Peak MLX memory, mlx-audio | Unified memory |
+|---|---|---|---:|---:|---:|
+| `mlx-community/fish-audio-drama-3-4bit` | 4-bit | 8-bit | 24 GB | 28.7 GB | 48 GB or more |
+| `mlx-community/fish-audio-drama-3-8bit` | 8-bit | bf16 | 42 GB | 47.1 GB | 64 GB or more |
+
+Both quantize with MLX affine groups of 64 and keep the embeddings in bf16, the norm gains and the codec in fp32; the 8-bit checkpoint quantizes only the routed experts. The 4-bit checkpoint peaks above the GPU working set of a 32 or 36 GB Mac; the 8-bit one fits the 55.7 GB working set of a 64 GB Mac, with nothing else holding much memory. Both were measured on a 64 GB Mac. Download a pinned checkpoint, then build with the native runtime's MLX 0.32.3 toolchain:
+
+```bash
+python sglang_omni_mlx/native/ci/provision_models.py "$DRAMA3_DATA" \
+  --model mlx-community/fish-audio-drama-3-4bit
+sglang_omni_mlx/native/scripts/build_runtime.sh "$DRAMA3_RUNTIME" "$DRAMA3_BUILD"
+"$DRAMA3_RUNTIME/bin/fishaudio_drama3_server" \
+  --model-path "$DRAMA3_DATA/models/mlx-community_fish-audio-drama-3-4bit" \
+  --model-name fishaudio/drama-3 --port 8000
+```
+
+Set `DRAMA3_DATA`, `DRAMA3_RUNTIME` and `DRAMA3_BUILD` to separate local directories; for the 8-bit checkpoint, replace `4bit` with `8bit` in both commands. Serving needs neither Python nor SGLang's CUDA package. Voice cloning sends the reference clip, a mono 44.1 kHz WAV, as base64:
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d "{\"input\": \"Get the trust fund to the bank early.\",
+       \"references\": [{\"data\": \"$(base64 < reference_44k.wav | tr -d '\n')\",
+                       \"text\": \"We asked over twenty different people, and they all said it was his.\"}]}" \
+  --output output_voice_cloning.wav
+```
+
+The server reads the request fields the CUDA server reads and refuses the same unsupported ones (`seed` included). Where they differ:
+
+| | CUDA server | Native MLX server |
+|---|---|---|
+| Reference audio | A path, URL or base64 data in any format the server decodes, resampled to 44.1 kHz; up to 60 s each by default | Base64 mono 44.1 kHz PCM16 or float32 WAV, as `references[i].data`, a `data:` URL in `references[i].audio`, or `ref_audio` with `ref_text`; paths and remote URLs are refused |
+| References | Any number, within the prompt row limit (`max_prompt_rows`) | Up to 4, together at most 30 s (646 frames of `vq_codes`) and 1024 transcript characters |
+| Voices | `default` (or `speaker`) or an uploaded voice | `default` (or `speaker`) only |
+| Long input | One prompt; `max_new_tokens` defaults to the remaining context, up to 2048 frames | Split into chunks of about 300 bytes, each seeing the first and the previous chunk; `max_new_tokens` (default 1024, at most 4096) caps each chunk; `input` holds at most 4096 characters |
+| Requests | Batched | One at a time; `--max-queued-requests` more may wait (2 by default), the rest get 503; a request not done `--request-timeout-s` seconds after it arrives (600 by default) gets 504, and a disconnected client's request is cancelled |
+| Streaming | `"stream": true` with `"response_format": "pcm"` | The same, with audio every 7 frames (0.33 s) |
+
+`fishaudio_drama3_synthesize` runs one request from the command line and prints its timings; with `--codes-output` it also writes the first chunk's prompt ids and every frame's codes, for parity checks.
+
+### Reference parity and performance
+
+The numerical reference is mlx-audio 0.6.2 (`f6d5da9`: `mlx_audio/tts/models/fish_drama3` and `mlx_audio/codec/models/fish_s1_dac`) on the same checkpoint and MLX 0.32.3; `native/licenses/fishaudio_drama3-MIT.txt` holds its license. The native runtime runs the gated delta rule on MLX's `mx::fast::gated_delta_update`, where mlx-audio runs its own Metal kernel, and the two round their bf16 outputs differently. With mlx-audio's gated delta step on the same MLX primitive and the same seed (given to `fishaudio_drama3_synthesize`), the native runtime samples the same codes and decodes the same PCM16 samples on every seeded test request.
+
+Measured on an Apple M4 Max (64 GB), warm, in ABBA order (native, reference, reference, native). The server takes no seed, so each side ran each request three times; the table gives each round's median real-time factor (generation time over audio duration) and the median time to the first streamed audio. Native times include the HTTP request and PCM encoding. The 4-bit checkpoint:
+
+| Request | Real-time factor, native | Real-time factor, mlx-audio 0.6.2 | First streamed audio, native | First streamed audio, mlx-audio |
+|---|---:|---:|---:|---:|
+| English, no reference | 0.376 / 0.377 | 0.372 / 0.372 | 0.18 s | 0.18 s |
+| English, cloned voice | 0.375 / 0.373 | 0.375 / 0.372 | 0.18 s | 0.18 s |
+| Chinese, cloned voice | 0.367 / 0.370 | 0.366 / 0.366 | 0.18 s | 0.18 s |
+| Two speakers, cloned voice | 0.371 / 0.373 | 0.368 / 0.369 | 0.19 s | 0.18 s |
+| 26 s passage, two chunks | 0.374 / 0.371 | 0.369 / 0.377 | 0.22 s | 0.22 s |
+
+Loading takes 4.1 s native and 4.5 s for the reference, from a warm file cache. Peak MLX memory (`mx.get_peak_memory()`) is 28.2 GB native on the passage and 28.7 GB in the reference; the server's process footprint stays near 32 GB under mixed load, against 23 GB idle.
+
+The 8-bit checkpoint, measured the same way:
+
+| Request | Real-time factor, native | Real-time factor, mlx-audio 0.6.2 | First streamed audio, native | First streamed audio, mlx-audio |
+|---|---:|---:|---:|---:|
+| English, no reference | 0.513 / 0.513 | 0.513 / 0.514 | 0.25 s | 0.25 s |
+| English, cloned voice | 0.507 / 0.506 | 0.510 / 0.506 | 0.25 s | 0.25 s |
+| Chinese, cloned voice | 0.500 / 0.499 | 0.502 / 0.501 | 0.25 s | 0.25 s |
+| Two speakers, cloned voice | 0.504 / 0.500 | 0.508 / 0.505 | 0.26 s | 0.26 s |
+| 26 s passage, two chunks | 0.496 / 0.495 | 0.498 / 0.497 | 0.30 s | 0.30 s |
+
+Loading takes 6.4 to 6.8 s native and 6.9 to 7.2 s for the reference. Peak MLX memory is 47.1 GB in the reference, and the server's process footprint reaches 48 GB. Its routed experts are twice the size of the 4-bit ones and its other projections are bf16, and it runs about 1.35 times slower.
+
+## Links
+
+- [Fish Audio Playground](https://fish.audio)
+- [Fish Speech GitHub](https://github.com/fishaudio/fish-speech)
+- [Technical Report](https://github.com/fishaudio/fish-speech/tree/main/docs/assets/Fish_Audio_Drama_3_Technical_Report.pdf)
+- [Fish Audio Drama 3 SGLang Omni Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_drama3.html)
+- [SGLang Omni](https://sgl-project.github.io/sglang-omni/)

@@ -5,6 +5,10 @@ diarization on sglang-omni's native runtime (`sglang_omni_mlx/native`): C++
 binaries on MLX, with no Python runtime. Voxt starts and owns the selected
 server. Other models keep their Swift backend.
 
+To add or change a model here, read the
+[MLX path policy and contribution requirements](../../docs/mlx/index.md)
+first.
+
 | Checkpoint | Runtime | Voxt behavior kept |
 | --- | --- | --- |
 | `mlx-community/Qwen3-ASR-0.6B-4bit`, `mlx-community/Qwen3-ASR-1.7B-6bit`, `mlx-community/Qwen3-ASR-1.7B-8bit` | `qwen3_asr_server` | Final with context bias and language hint, Swift's audio layout and stop rules, 1200 s energy-cut chunks sharing one token budget, first detected language carried forward; live preview over the realtime socket, first decode after 100 ms of audio, then once a second |
@@ -18,6 +22,19 @@ server. Other models keep their Swift backend.
 | `mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit` | `nemotron_asr_server` | Final through the cache-aware stream at the native 1120 ms chunk with Voxt's first main language as the prompt; live text over the realtime socket from one stream per session at Voxt's chosen latency (80, 160, 320, 560 or 1120 ms), encoding only the audio that arrived since the last decode |
 | `mlx-community/parakeet-tdt-0.6b-v3` | `parakeet_server` | Final as Voxt's Swift path decodes it: 5 s chunks overlapping by 1 s for a whole-recording request (at least 0.5 s otherwise), their tokens merged on the overlap, and timed sentence segments; live text uses batch preview |
 | `mlx-community/SenseVoiceSmall` | `sensevoice_server` | Final with Voxt's language hint and ITN setting, the language, emotion and event of each pass in Voxt's SenseVoice metadata; past 30 s, Silero VAD speech cut into 24 s chunks overlapping by 0.35 s whose texts merge as Voxt merges them; live text uses batch preview |
+
+The runtime also builds the standalone `music3_server` and `music3_synthesize`
+for MiniMax Music3. They reuse the native lifecycle, checkpoint operations and
+byte-level tokenizer. Music generation is served through `/v1/audio/speech`;
+see the [Music3 cookbook](../../docs/cookbook/minimax_music3.md#apple-silicon-native-mlx)
+for checkpoint provisioning, request fields, reference parity and waveform
+goldens. Voxt's ASR model selection is unchanged.
+
+It also builds `fishaudio_drama3_server` and `fishaudio_drama3_synthesize` for Fish
+Audio Drama 3 text-to-speech, served through `/v1/audio/speech` with the speech
+API `voxtral_tts_server` uses (`qwen3_asr/speech_service`); see the
+[Drama 3 cookbook](../../docs/cookbook/fishaudio_drama3.md#apple-silicon-native-mlx).
+Voxt does not start it.
 
 ## Build and run
 
@@ -34,8 +51,9 @@ Voxt/backend/run_omni_dev.sh run
 `whisper_transcribe`, `cohere_transcribe_server`, `cohere_transcribe`,
 `moss_transcribe_diarize_server`, `moss_transcribe`, `nemotron_asr_server`,
 `nemotron_transcribe`, `parakeet_server`, `parakeet_transcribe`,
-`sensevoice_server`, `sensevoice_transcribe`, and the pinned MLX library
-and Metal kernels next to them.
+`sensevoice_server`, `sensevoice_transcribe`, `voxtral_tts_server`,
+`voxtral_tts_synthesize`, `qwen3_tts_server`, `qwen3_tts_synthesize`,
+`cosyvoice3_server`, `cosyvoice3_synthesize`, `music3_server`, `music3_synthesize`, `fishaudio_drama3_server`, `fishaudio_drama3_synthesize`, and the pinned MLX library and Metal kernels next to them.
 
 "Voxt Omni Dev" has its own bundle identifier. It runs without the sandbox so it
 can start the runtime, and it sees `~/.voxt-omni-dev` as its home, so its
@@ -89,7 +107,7 @@ and quitting stops it.
 
     It also needs `VOXT_ASR_BACKEND=omni`, `VOXT_OMNI_RUNTIME`, `VOXT_MODEL_STORAGE_ROOT` and `VOXT_LIFECYCLE_CLIPS`.
   - `OmniPhase1BenchmarkTests`: the measurement against the original backend. See its header for the `VOXT_BENCH_*` variables.
-  - `OmniVoiceActivityIntegrationTests` and `OmniSpeakerDiarizationIntegrationTests` run Voxt's Silero detectors and Sortformer engine against the server and MLXAudioVAD in the same process. See their headers for the variables.
+  - `OmniVoiceActivityIntegrationTests` and `OmniSpeakerDiarizationIntegrationTests` compare Native results with explicitly supplied, independently captured legacy references (`VOXT_VAD_REFERENCE_JSON` / `VOXT_SORTFORMER_REFERENCE`). Model/configuration/sample identity and profile metadata are checked; no in-process Audio library remains. Missing references skip parity, not certify it. See their headers.
 
 Pass environment variables to an `xcodebuild test-without-building` run through
 the `.xctestrun` file.

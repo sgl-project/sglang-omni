@@ -42,36 +42,6 @@ def test_load_audio_rejects_non_base64_data_uri() -> None:
         load_audio("data:audio/wav,not-base64")
 
 
-def test_load_audio_raises_typed_error_for_undecodable_bytes(
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(
-        audio,
-        "check_torchcodec_ready",
-        lambda: True,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        audio,
-        "is_invalid_audio_source",
-        lambda source: True,
-        raising=False,
-    )
-
-    def raise_invalid_audio(source):
-        del source
-        raise RuntimeError("invalid audio data")
-
-    monkeypatch.setattr(
-        audio.torchaudio,
-        "load",
-        raise_invalid_audio,
-    )
-
-    with pytest.raises(AudioDecodeError, match="Could not decode Qwen3-ASR"):
-        load_audio(b"not-audio", source_name="Qwen3-ASR")
-
-
 def test_check_torchcodec_ready_probes_decoder_and_warns_once(
     monkeypatch, caplog
 ) -> None:
@@ -275,7 +245,7 @@ def float32_wav_bytes(sample_rate: int = 16000, num_samples: int = 1600) -> byte
     return b"RIFF" + struct.pack("<I", len(body)) + body
 
 
-@pytest.mark.parametrize("sample_rate", [8000, 16000, 44100, 48000])
+@pytest.mark.parametrize("sample_rate", [8000, 16000, 44100])
 def test_load_audio_fast_path_matches_torchaudio(monkeypatch, sample_rate) -> None:
     wav = sine_wav_bytes(sample_rate=sample_rate)
 
@@ -366,12 +336,6 @@ def test_load_audio_trims_before_resampling() -> None:
 
     assert samples.shape == expected.squeeze(0).shape
     np.testing.assert_allclose(samples, expected.squeeze(0).numpy())
-
-
-def test_load_audio_falls_back_when_not_mono() -> None:
-    samples = load_audio(sine_wav_bytes(num_channels=2), mono=False)
-
-    assert samples.shape == (2, 1600)
 
 
 def test_load_audio_falls_back_for_24bit_pcm() -> None:

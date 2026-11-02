@@ -2,6 +2,29 @@ import XCTest
 @testable import Voxt
 
 final class RemoteModelConfigurationEndpointMigrationTests: RemoteModelConfigurationTestCase {
+    func testCustomOpenAIAPIFormatRoundTripPreservesExplicitProtocol() throws {
+        for format in OpenAIAPIFormat.allCases {
+            let configuration = RemoteProviderConfiguration(
+                providerID: "openAI", model: "custom-model",
+                endpoint: "https://inference.example/v1/chat/completions", apiKey: "",
+                openAIAPIFormat: format.rawValue
+            )
+            let decoded = try JSONDecoder().decode(RemoteProviderConfiguration.self, from: JSONEncoder().encode(configuration))
+            let normalized = RemoteModelConfigurationStore.normalizedCompatibilityValues(for: decoded)
+            XCTAssertEqual(decoded.openAIAPIFormat, format.rawValue)
+            XCTAssertEqual(normalized.endpoint, format == .responses
+                ? "https://inference.example/v1/responses"
+                : "https://inference.example/v1/chat/completions")
+            XCTAssertEqual(normalized.usesResponsesAPI(for: .openAI), format == .responses)
+        }
+    }
+
+    func testLegacyCustomChatEndpointIsPreservedWithoutAPIFormatField() throws {
+        let configuration = try JSONDecoder().decode(RemoteProviderConfiguration.self, from: Data(#"{"providerID":"openAI","model":"custom-model","endpoint":"https://inference.example/v1/chat/completions"}"#.utf8))
+        XCTAssertEqual(configuration.openAIAPIFormatValue, .automatic)
+        XCTAssertFalse(configuration.usesResponsesAPI(for: .openAI))
+        XCTAssertEqual(RemoteModelConfigurationStore.normalizedCompatibilityValues(for: configuration).endpoint, configuration.endpoint)
+    }
     func testDecodeLegacyAliyunEndpointMigratesToResponsesURL() {
         let legacyJSON = """
         [

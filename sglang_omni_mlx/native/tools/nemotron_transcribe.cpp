@@ -15,8 +15,8 @@
 #include <string>
 #include <vector>
 
-#include "audio.h"
-#include "nemotron_transcriber.h"
+#include "common/audio.h"
+#include "nemotron/nemotron_transcriber.h"
 #include "nlohmann/json.hpp"
 
 int main(int argc, char **argv) {
@@ -62,7 +62,7 @@ int main(int argc, char **argv) {
     std::ifstream stream(file, std::ios::binary);
     std::ostringstream bytes;
     bytes << stream.rdbuf();
-    const std::vector<float> samples = qwen3_asr::DecodeWav(bytes.str());
+    const std::vector<float> samples = omni_common::DecodeWav(bytes.str());
     const auto started = std::chrono::steady_clock::now();
     const qwen3_asr::TranscriptionResult result =
         transcriber.Transcribe(samples, options, cancel);

@@ -6,7 +6,9 @@ Qwen3-ASR does not support `/v1/audio/translations`; that endpoint returns HTTP 
 
 ## Prerequisites
 
-Install `sglang-omni` by following [Installation](../get_started/installation.md), then download the model:
+Install `sglang-omni` by following the [CUDA installation](../get_started/installation.md)
+or [Apple Silicon installation](../get_started/installation_apple_silicon.md),
+then download the model:
 
 ```bash
 MODEL_REVISION=7278e1e70fe206f11671096ffdd38061171dd6e5
@@ -17,10 +19,16 @@ MODEL_PATH="$(
 )"
 ```
 
-### Apple Silicon (MLX)
+### Ascend NPU graph execution
+
+See [Qwen3-ASR graph execution on Ascend NPU](../get_started/installation_npu.md#qwen3-asr-graph-execution) for queue settings and runtime restrictions.
+
+<a id="apple-silicon-torch-mps"></a>
+
+### Apple Silicon
 
 The Apple Silicon path requires macOS 14 or newer, Python 3.12, Homebrew, and
-SGLang's MLX runtime. Audio decoding also requires Homebrew's versioned FFmpeg 7 formula:
+PyTorch with the MPS backend. Audio decoding also requires Homebrew's versioned FFmpeg 7 formula:
 
 ```bash
 brew install ffmpeg@7
@@ -43,7 +51,7 @@ SGLang tag from source with its `all_mps` dependencies before installing
 SGLang-Omni:
 
 ```bash
-git clone --branch v0.5.21 https://github.com/sgl-project/sglang.git
+git clone --branch v0.5.22 https://github.com/sgl-project/sglang.git
 git clone https://github.com/sgl-project/sglang-omni.git
 
 uv venv -p 3.12 sglang-omni/.venv-apple
@@ -57,46 +65,25 @@ cd ../sglang-omni
 uv pip install -e .
 ```
 
-This installs MLX through SGLang. It does not install or use the `mlx-audio`
-package. Before downloading a model, verify both Metal and FFmpeg loading:
+Before downloading a model, verify both Metal and FFmpeg loading:
 
 ```bash
-SGLANG_USE_MLX=1 python - <<'PY'
-import mlx.core as mx
+python - <<'PY'
+import torch
 from torchcodec.decoders import AudioDecoder
 
-assert mx.metal.is_available()
-print("MLX Metal and TorchCodec FFmpeg loading are available")
+assert torch.backends.mps.is_available()
+print("PyTorch MPS and TorchCodec FFmpeg loading are available")
 PY
 ```
 
-Use an MLX-converted Qwen3-ASR checkpoint and opt into the MLX runner:
+Pass an official PyTorch Qwen3-ASR checkpoint. The Torch MPS path currently
+uses one device (`tp_size=1`), greedy decoding, and the eager
+`torch_native`/`sdpa` profile:
 
 ```bash
-export SGLANG_USE_MLX=1
 export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
 
-sgl-omni serve \
-  --model-path mlx-community/Qwen3-ASR-0.6B-4bit \
-  --model-name Qwen/Qwen3-ASR-0.6B \
-  --asr.engine.max_running_requests 1 \
-  --port 8000
-```
-
-The MLX path currently supports one device (`tp_size=1`) and greedy decoding.
-Radix caching, chunked prefill, and CUDA graphs are not used by this path. The
-HTTP and SSE transcription interfaces below are the same as on CUDA;
-`stream=true` provides pseudo-streaming transcript deltas as tokens are decoded.
-The Apple paths do not provide sampling penalties or token logprobs yet. MLX
-can batch multiple requests, but `max_running_requests=1` is recommended when
-single-request latency matters; increase it only when throughput is preferred.
-
-To use the Torch MPS compatibility path instead, leave `SGLANG_USE_MLX` unset
-and pass an official PyTorch Qwen3-ASR checkpoint. It currently uses one device,
-greedy decoding, and the eager `torch_native`/`sdpa` profile:
-
-```bash
-unset SGLANG_USE_MLX
 sgl-omni serve \
   --model-path Qwen/Qwen3-ASR-0.6B \
   --model-name Qwen/Qwen3-ASR-0.6B \
@@ -104,11 +91,15 @@ sgl-omni serve \
   --port 8000
 ```
 
+Radix caching, chunked prefill, and CUDA graphs are not used by this path. The
+HTTP and SSE transcription interfaces below are the same as on CUDA;
+`stream=true` provides pseudo-streaming transcript deltas as tokens are decoded.
+The Apple path does not provide sampling penalties or token logprobs yet.
+
 The initial Torch MPS profile is bounded to a 2,048-token KV budget, uses
 `audio_chunking.max_audio_clip_s` for non-streaming chunks (30 seconds by
 default), and caps native/whole-upload requests at 60 seconds. Values above
-that qualified limit are rejected. Use the MLX path for long audio and the
-larger native context limit.
+that qualified limit are rejected.
 
 ## Server Configuration
 
@@ -249,6 +240,7 @@ WebSocket session open for new audio.
   "type": "session.update",
   "session": {
     "language": "English",
+    "decode_interval_ms": 1000,
     "turn_detection": {
       "type": "server_vad",
       "threshold": 0.5,
@@ -258,6 +250,8 @@ WebSocket session open for new audio.
   }
 }
 ```
+
+`decode_interval_ms` is how much new audio arrives between partial decodes. It defaults to 2000 ms, must be at least 200 ms, and `null` restores the default. Like `language` and `turn_detection`, it can change only while no uncommitted audio is buffered; with server VAD that means before the first audio packet.
 
 Each periodic decode is an ordinary stateless Qwen3-ASR request over all audio
 in the active segment. After the first two refreshes, the server rolls five
@@ -273,14 +267,24 @@ Partial results are full replacements, not append-only deltas:
   "type": "transcription.segment",
   "event_index": 7,
   "segment_id": 0,
+  "audio_start_ms": 0,
+  "audio_end_ms": 2000,
   "text": "hello wor",
-  "is_final": false
+  "is_final": false,
+  "language": "English"
 }
 ```
 
-A later event for the same `segment_id` replaces this text. An event with
+A later event for the same `segment_id` replaces this text. `audio_start_ms`
+and `audio_end_ms` are the span of input audio the text was decoded from.
+A partial can trail the audio already sent, since audio that arrives while it
+decodes is left to the next partial. `audio_start_ms` stays fixed for the
+segment, including segments opened by the 30 second boundary, which have no
+`input_audio_buffer.speech_started` event. An event with
 `is_final=true` is immutable. `transcription.completed` contains the joined
 text from all final segments.
+
+`language` is the language the segment was transcribed in, as Qwen3-ASR names it (for example `English`): the detected language, or the `language` hint when the session set one. `transcription.completed` carries the language of its last non-empty final segment. Both fields are `null` when the language is unknown.
 
 Append events are not idempotent. After a transport failure, reconnect and
 restart the transcription rather than retrying packets on the old session.
@@ -390,7 +394,7 @@ Behavior notes:
 - A few unusual audio formats may not expose a readable duration; we fall
   back to the non-chunked path for those uploads.
 - Streamed responses (`stream=true`) do not support chunking yet; a stream
-  request runs as one engine request. MLX and CUDA accept audio up to the
+  request runs as one engine request. CUDA accepts audio up to the
   model-native `max_native_clip_s` (1,200s), while Torch MPS accepts up to its
   qualified 60-second cap and returns HTTP 400 above that -- use `stream=false`
   for longer uploads.
@@ -495,6 +499,6 @@ sgl-omni serve --model-path Qwen/Qwen3-ASR-1.7B \
   `/v1/realtime?intent=transcription` and requires `--enable-realtime`.
 - Non-streaming uploads up to `max_total_audio_s` (default one hour) are
   transcribed in full via chunking; see Long Audio above. Streaming requests
-  are limited to `max_native_clip_s` (1,200s) on MLX/CUDA; Torch MPS caps both
+  are limited to `max_native_clip_s` (1,200s) on CUDA; Torch MPS caps both
   native and whole-upload requests at 60 seconds.
 - Audio is resampled to 16 kHz before transcription.

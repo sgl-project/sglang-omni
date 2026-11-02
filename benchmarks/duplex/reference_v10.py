@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import time
+import traceback
 import types
 from collections import Counter
 from pathlib import Path
@@ -18,6 +19,7 @@ from openai import OpenAI
 from openai.types.chat import ChatCompletion
 from pydantic import JsonValue
 
+from benchmarks.duplex.profiles import PROFILES
 from benchmarks.duplex.reference_asr import (
     USE_CUDA_GRAPH_DECODER,
     ParakeetModel,
@@ -33,7 +35,7 @@ from benchmarks.duplex.reference_audio import (
     sha_bytes,
     write_wav,
 )
-from benchmarks.duplex.reference_capture import TraceFormat
+from benchmarks.duplex.reference_capture import TraceFormat, resolve_trace_format
 from benchmarks.duplex.reference_core import (
     ASR_MODEL_ID,
     JUDGE_MAX_ATTEMPTS,
@@ -50,8 +52,13 @@ from benchmarks.duplex.reference_core import (
 )
 from benchmarks.duplex.reference_export import send_receipts_required
 from benchmarks.duplex.run_artifacts import file_sha256
-from benchmarks.duplex.v10_dataset import DECLARED_COUNTS, SUBSET_TASKS, SUBSETS, Task
-from benchmarks.duplex.v10_evaluation import RUN_KIND
+from benchmarks.duplex.v10_dataset import (
+    DECLARED_COUNTS,
+    RUN_KIND,
+    SUBSET_TASKS,
+    SUBSETS,
+    Task,
+)
 from benchmarks.duplex.v15_audio import normalize_audio, write_json
 
 MANIFEST_KIND = "full-duplex-bench-v1.0-reference-audio"
@@ -66,12 +73,26 @@ REFERENCE_FILES_RECORD = {
     key: {"path": path, "sha256": sha256}
     for key, (path, sha256) in V10_REFERENCE_FILES.items()
 }
+OFFICIAL_JUDGE_BASE_URL = "https://api.openai.com/v1/"
+# note (luojiaxuan): the pinned evaluator sends neither a token cap nor a thinking
+# switch; a self-hosted Qwen judge would spend SGLang's default 128 new tokens on
+# reasoning, so the non-official path turns thinking off and caps the answer.
+SELF_HOSTED_JUDGE_OPTIONS: dict[str, JsonValue] = {
+    "max_tokens": 512,
+    "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+}
 RESULT_MEAN_LINE = re.compile(r"(?P<label>.+) - Mean: (?P<mean>\S+) ± (?P<std>\S+)")
 RESULT_VALUE_LINE = re.compile(r"(?P<label>[^:]+):\s+(?P<value>\S+)")
 
 
-def export(runs: list[Path], dataset_root: Path, output: Path) -> dict[str, JsonValue]:
+def export(
+    runs: list[Path],
+    dataset_root: Path,
+    output: Path,
+    trace_format: str | None = None,
+) -> dict[str, JsonValue]:
     """Write <output>/<subset>/<id>/output.wav and its dataset annotation per eligible session."""
+    capture_format = resolve_trace_format(trace_format)
     output = output.resolve()
     for run in runs:
         if output.is_relative_to(run.resolve()):
@@ -80,7 +101,7 @@ def export(runs: list[Path], dataset_root: Path, output: Path) -> dict[str, Json
             raise ValueError(f"{run} is not a {RUN_KIND} run")
         else:
             pass
-    chosen, sources, superseded = load_runs(runs, TraceFormat.PCM16)
+    chosen, sources, superseded = load_runs(runs, capture_format)
     output.mkdir(parents=True, exist_ok=False)
     rows = []
     for sample_id in sorted(chosen):
@@ -91,13 +112,33 @@ def export(runs: list[Path], dataset_root: Path, output: Path) -> dict[str, Json
             raise ValueError(f"Variant directory escapes run: {directory}")
         else:
             pass
+        # note (luojiaxuan): load_runs already required a profile of the format's
+        # protocol; the turn-based protocols take their rate from that profile.
+        profile_rate = (
+            PROFILES[read_json(run / "manifest.json")["profile"]].output_sample_rate
+            if capture_format is not TraceFormat.PCM16
+            else None
+        )
         record, pcm, audio = analyze_variant(
             directory,
-            TraceFormat.PCM16,
+            capture_format,
             None if state["input"] is None else state["input"]["sha256"],
             receipts_required=send_receipts_required(run),
+            profile_rate=profile_rate,
         )
         reasons = record["window"]["reasons"]
+        # note (luojiaxuan): A legacy or turn-based session that failed its
+        # protocol replay can be silent for protocol reasons, so silence is only
+        # valid after a pass.
+        if (
+            capture_format is not TraceFormat.PCM16
+            and state["protocol_verdict"] != "pass"
+        ):
+            reasons.append(
+                f"recorder protocol verdict {state['protocol_verdict']!r} is not pass"
+            )
+        else:
+            pass
         annotation = entry["paths"].get("annotation")
         if pcm is not None:
             source = dataset_root / state["source"]["file"]
@@ -150,7 +191,7 @@ def export(runs: list[Path], dataset_root: Path, output: Path) -> dict[str, Json
     manifest = {
         "schema_version": 1,
         "kind": MANIFEST_KIND,
-        "trace_format": TraceFormat.PCM16.value,
+        "trace_format": capture_format.value,
         "created_utc": utc_now(),
         "policy_version": POLICY_VERSION,
         "policy": POLICY,
@@ -265,19 +306,21 @@ class JudgeLedger:
     """Chat client for the pinned interruption judge, recording every exchange.
 
     The pinned evaluator resends an identical request until its rating parses;
-    the JUDGE_MAX_ATTEMPTS-th identical request is the last one sent.
+    the JUDGE_MAX_ATTEMPTS-th identical request is the last one sent. base_url
+    is the endpoint the client resolved, so the summary names where the
+    requests went, whatever the CLI flag or OPENAI_BASE_URL said.
     """
 
     def __init__(
         self,
         client: OpenAI,
         ledger_path: Path,
-        base_url: str | None,
+        base_url: str,
         served_model: str | None,
     ) -> None:
         self.client: OpenAI = client
         self.ledger_path: Path = ledger_path
-        self.base_url: str | None = base_url
+        self.base_url: str = base_url
         self.served_model: str | None = served_model
         self.attempts: Counter[str] = Counter()
         self.exchanges: list[dict[str, JsonValue]] = []
@@ -298,15 +341,17 @@ class JudgeLedger:
             pass
         self.attempts[request_sha256] += 1
         sent_model = model if self.served_model is None else self.served_model
+        options = {} if self.served_model is None else SELF_HOSTED_JUDGE_OPTIONS
         started_utc, started_s = utc_now(), time.monotonic()
         response = self.client.chat.completions.create(
-            model=sent_model, messages=messages, seed=seed
+            model=sent_model, messages=messages, seed=seed, **options
         )
         exchange = {
             "request_sha256": request_sha256,
             "attempt": self.attempts[request_sha256],
             "requested_model": model,
             "sent_model": sent_model,
+            "sent_options": options,
             "returned_model": response.model,
             "seed": seed,
             "started_utc": started_utc,
@@ -324,7 +369,8 @@ class JudgeLedger:
 
     def summary(self) -> dict[str, JsonValue]:
         return {
-            "official": self.base_url is None,
+            "official": self.served_model is None
+            and self.base_url == OFFICIAL_JUDGE_BASE_URL,
             "base_url": self.base_url,
             "requested_models": sorted(
                 {exchange["requested_model"] for exchange in self.exchanges}
@@ -447,7 +493,15 @@ def evaluate(
                 open(log_path, "w", encoding="utf-8") as log_file,
                 contextlib.redirect_stdout(log_file),
             ):
-                module.eval_user_interruption(str(subset_dir), judge)
+                try:
+                    module.eval_user_interruption(str(subset_dir), judge)
+                except Exception:
+                    # note (luojiaxuan): the subprocess tasks keep their stderr in
+                    # the log; the in-process evaluator's traceback lands there too,
+                    # so the log tells a judge failure from the takeover-count
+                    # ZeroDivisionError.
+                    traceback.print_exc(file=log_file)
+                    raise
             stdout = log_path.read_text(encoding="utf-8")
         else:
             # note (luojiaxuan): eval_backchannel opens ./icc_gt_distribution.json.

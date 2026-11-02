@@ -5,7 +5,76 @@ import XCTest
 @testable import Voxt
 
 @MainActor
-final class FeatureModelCatalogBuilderTests: XCTestCase {
+final class FeatureModelCatalogBuilderTests: MLXModelManagerTestCase {
+    func testNewNativeASRSelectionUsesInstallationAndPlatformGatesInEveryFeature() async throws {
+        let repos: [String] = [
+            "mlx-community/parakeet-tdt-0.6b-v3",
+            "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit",
+            "mlx-community/SenseVoiceSmall"
+        ]
+        for isInstalled in [false, true] {
+            try await withIsolatedModelStorageRoot { root in
+                if isInstalled {
+                    for repo in repos {
+                        try seedValidMLXModelDirectory(repo: repo, root: root)
+                    }
+                }
+                let manager = MLXModelManager(modelRepo: repos[0])
+                for repo in repos {
+                    _ = try await manager.refreshInstallation(repo: repo)
+                }
+                for repo in repos {
+                    let availability = FeatureModelCatalogBuilder.localSelectorAvailability(
+                        isInstalled: isInstalled,
+                        unavailabilityReason: OmniASRBackend.unavailabilityReason(for: repo)
+                    )
+                    let selection = FeatureModelSelectionID.mlx(repo)
+                    let builder = makeBuilder(
+                        mlxModelManager: manager,
+                        featureSettings: makeFeatureSettings(
+                            transcriptionASR: selection,
+                            translationASR: selection,
+                            rewriteASR: selection
+                        )
+                    )
+                    for sheet in [FeatureModelSelectorSheet.transcriptionASR, .translationASR, .rewriteASR, .meetingASR] {
+                        let entry = try XCTUnwrap(builder.entries(for: sheet).first { $0.selectionID == selection })
+                        XCTAssertEqual(entry.isSelectable, isInstalled && OmniASRBackend.isAppleSilicon)
+                        XCTAssertEqual(entry.disabledReason, availability.disabledReason)
+                        XCTAssertEqual(
+                            entry.displayTags.contains(AppLocalization.localizedString("Realtime")),
+                            repo == "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit" && OmniASRBackend.isAppleSilicon
+                        )
+                        XCTAssertEqual(entry.filterTags.contains(AppLocalization.localizedString("Installed")), isInstalled)
+                        XCTAssertTrue(entry.usageLocations.contains(AppLocalization.localizedString("Meeting")))
+                    }
+                }
+                await manager.shutdownForApplicationTermination()
+            }
+        }
+    }
+
+    func testInstalledNativeSupportedASRUsesPlatformGateInEveryFeature() async throws {
+        let repo = "mlx-community/Qwen3-ASR-0.6B-4bit"
+        try await withIsolatedModelStorageRoot { root in
+            try seedValidMLXModelDirectory(repo: repo, root: root)
+            let manager = MLXModelManager(modelRepo: repo)
+            _ = try await manager.refreshInstallation(repo: repo)
+            let builder = makeBuilder(mlxModelManager: manager, featureSettings: makeFeatureSettings())
+            for sheet in [FeatureModelSelectorSheet.transcriptionASR, .translationASR, .rewriteASR, .meetingASR] {
+                let entry = try XCTUnwrap(builder.entries(for: sheet).first { $0.selectionID == .mlx(repo) })
+#if arch(arm64)
+                XCTAssertTrue(entry.isSelectable)
+                XCTAssertNil(entry.disabledReason)
+#else
+                XCTAssertFalse(entry.isSelectable)
+                XCTAssertEqual(entry.disabledReason, OmniASRBackend.unavailabilityReason(for: repo))
+#endif
+            }
+            await manager.shutdownForApplicationTermination()
+        }
+    }
+
     func testAppleIntelligenceEntryRemainsVisibleWhenUnavailable() throws {
         let builder = makeBuilder(
             featureSettings: makeFeatureSettings(),
@@ -246,6 +315,25 @@ final class FeatureModelCatalogBuilderTests: XCTestCase {
         XCTAssertFalse(entry.displayTags.contains(AppLocalization.localizedString("Multilingual")))
     }
 
+    func testOmniASRSelectorUsesSGLangOmniEngineBadge() throws {
+        let repo = "mlx-community/Qwen3-ASR-0.6B-4bit"
+        let builder = makeBuilder(
+            featureSettings: makeFeatureSettings(transcriptionASR: .mlx(repo))
+        )
+
+        let entry = try XCTUnwrap(
+            builder.entries(for: .transcriptionASR)
+                .first(where: { $0.selectionID == .mlx(repo) })
+        )
+
+#if arch(arm64)
+        XCTAssertEqual(entry.engine, AppLocalization.localizedString("SGLang Omni"))
+#else
+        XCTAssertFalse(entry.isSelectable)
+        XCTAssertEqual(entry.disabledReason, OmniASRBackend.unavailabilityReason(for: repo))
+#endif
+    }
+
     func testParakeetV3SelectorDoesNotClaimUnsupportedChinesePrimaryLanguage() throws {
         let repo = "mlx-community/parakeet-tdt-0.6b-v3"
         let builder = makeBuilder(
@@ -332,7 +420,11 @@ final class FeatureModelCatalogBuilderTests: XCTestCase {
                 .first(where: { $0.selectionID == .mlx(repo) })
         )
 
+#if arch(arm64)
         XCTAssertTrue(entry.displayTags.contains(AppLocalization.localizedString("Realtime")))
+#else
+        XCTAssertFalse(entry.displayTags.contains(AppLocalization.localizedString("Realtime")))
+#endif
     }
 
 

@@ -9,6 +9,7 @@ import json
 import logging
 import math
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TypedDict, TypeGuard
 
@@ -16,8 +17,9 @@ import numpy as np
 import numpy.typing as npt
 import torch
 import xxhash
+from sglang.srt.utils.hf_transformers.common import get_context_length
 from tokenizers.normalizers import NFC
-from transformers import BatchFeature, PreTrainedTokenizerBase
+from transformers import AutoConfig, BatchFeature, PreTrainedTokenizerBase
 from transformers.models.qwen3_omni_moe.processing_qwen3_omni_moe import (
     Qwen3OmniMoeProcessor,
 )
@@ -63,7 +65,6 @@ class VideoProcessorKwargs(TypedDict, total=False):
     max_frames: int
     min_pixels: int
     max_pixels: int
-    total_pixels: int
     use_audio_in_video: bool
     seconds_per_chunk: float
     position_id_per_seconds: float
@@ -141,6 +142,16 @@ def merge_extracted_video_audio(
     )
     # note (Teery): Match the video-before-audio placeholder order in _build_multimodal_messages.
     return [*extracted_audios, *explicit], True
+
+
+def count_top_level_media(top_level: object) -> int:
+    """Items in a top-level media field, one placeholder per loaded item."""
+    if top_level is None:
+        return 0
+    elif isinstance(top_level, list):
+        return len(top_level)
+    else:
+        return 1
 
 
 def with_content_media(content_urls: list[str], top_level: object) -> object:
@@ -320,9 +331,10 @@ class Qwen3OmniPreprocessor:
         video_min_pixels: int | None = None,
         video_max_pixels: int | None = None,
         video_total_pixels: int | None = None,
+        video_decode_threads: int,
     ) -> None:
         self.model_path = model_path
-        self.max_seq_len = max_seq_len
+        self.video_decode_threads = video_decode_threads
         self.default_video_fps = float(video_fps) if video_fps is not None else None
         self.default_video_max_frames = (
             int(video_max_frames) if video_max_frames is not None else None
@@ -337,6 +349,13 @@ class Qwen3OmniPreprocessor:
             int(video_total_pixels) if video_total_pixels is not None else None
         )
         self.model_dir = resolve_local_model_dir(model_path)
+        if max_seq_len is None:
+            thinker_text_config = AutoConfig.from_pretrained(
+                self.model_dir, trust_remote_code=True
+            ).thinker_config.text_config
+            self.max_seq_len = get_context_length(thinker_text_config)
+        else:
+            self.max_seq_len = max_seq_len
         # Only override ``extra_special_tokens`` when the checkpoint omits them
         # (transformers 5.x layout). Passing an empty dict would clobber the
         # tokens a transformers 4.x checkpoint already declares in its config.
@@ -405,7 +424,7 @@ class Qwen3OmniPreprocessor:
         max_new_tokens: int,
         request_id: str,
     ) -> None:
-        """Reject prompt text that cannot fit before the tokenizer spends time on it.
+        """Reject prompt text that cannot fit before media loads or the tokenizer runs.
 
         A token spans at most max_token_chars characters of the NFC text the
         tokenizer encodes, and NFC keeps at least a quarter of its input
@@ -685,18 +704,6 @@ class Qwen3OmniPreprocessor:
             audio_target_sr = int(inputs.get("audio_target_sr", 16000))
             audio_bytes = inputs.get("audio_bytes")
             if audio_bytes is not None:
-                try:
-                    prepared_audio = await asyncio.to_thread(
-                        prepare_audio,
-                        payload,
-                        source_name="Qwen3-Omni",
-                        target_sample_rate=audio_target_sr,
-                    )
-                except AudioDecodeError as exc:
-                    raise ValueError(
-                        "Qwen3-Omni could not decode the uploaded audio; "
-                        "provide a valid audio file."
-                    ) from exc
                 transcription_prompt = (
                     "Please transcribe the speech in the audio verbatim. "
                     "Output only the transcription in its original language, "
@@ -714,7 +721,6 @@ class Qwen3OmniPreprocessor:
                 else:
                     pass
                 messages = [{"role": "user", "content": transcription_prompt}]
-                raw_audios = [prepared_audio.waveform]
             else:
                 pass
             video_fps = inputs.get("video_fps", self.default_video_fps)
@@ -738,7 +744,6 @@ class Qwen3OmniPreprocessor:
             video_seconds_per_chunk = inputs.get("video_seconds_per_chunk")
             video_position_id_per_seconds = inputs.get("video_position_id_per_seconds")
             audio_from_video = False
-            num_explicit_audios = 0
             resolved_video_fps = float(video_fps) if video_fps is not None else None
             resolved_video_max_frames = (
                 int(video_max_frames) if video_max_frames is not None else None
@@ -763,11 +768,44 @@ class Qwen3OmniPreprocessor:
                 else None
             )
 
-            # Count explicit audio inputs (for placeholder insertion)
-            if raw_audios is not None:
-                num_explicit_audios = (
-                    len(raw_audios) if isinstance(raw_audios, list) else 1
-                )
+            # Insert placeholders:
+            # - Explicit audio files get independent audio placeholders
+            # - Video audio (when use_audio_in_video=True) is handled by video token, no separate placeholder
+            messages_mm = self.build_multimodal_messages(
+                messages,
+                num_images=count_top_level_media(raw_images),
+                num_audios=(
+                    1 if audio_bytes is not None else count_top_level_media(raw_audios)
+                ),
+                num_videos=count_top_level_media(raw_videos),
+            )
+            prompt_text = self.processor.apply_chat_template(
+                messages_mm,
+                add_generation_prompt=True,
+                tokenize=False,
+            )
+            max_new_tokens = payload.request.params.get(
+                "max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS
+            )
+            self.validate_prompt_text_len(
+                prompt_text,
+                max_new_tokens=max_new_tokens,
+                request_id=payload.request_id,
+            )
+            if audio_bytes is not None:
+                try:
+                    prepared_audio = await asyncio.to_thread(
+                        prepare_audio,
+                        payload,
+                        source_name="Qwen3-Omni",
+                        target_sample_rate=audio_target_sr,
+                    )
+                except AudioDecodeError as exc:
+                    raise ValueError(
+                        "Qwen3-Omni could not decode the uploaded audio; "
+                        "provide a valid audio file."
+                    ) from exc
+                raw_audios = [prepared_audio.waveform]
             else:
                 pass
 
@@ -797,6 +835,7 @@ class Qwen3OmniPreprocessor:
                     extract_audio=extract_audio_from_video_flag,
                     audio_target_sr=audio_target_sr,
                     resource_connector=connector,
+                    video_decode_threads=self.video_decode_threads,
                 ),
                 ensure_audio_list_async(
                     request_audios,
@@ -835,15 +874,6 @@ class Qwen3OmniPreprocessor:
         else:
             raise ValueError("Preprocessing expects a list of chat messages")
 
-        # Insert placeholders:
-        # - Explicit audio files get independent audio placeholders
-        # - Video audio (when use_audio_in_video=True) is handled by video token, no separate placeholder
-        messages_mm = self.build_multimodal_messages(
-            messages,
-            num_images=len(images) - len(content_media.images),
-            num_audios=num_explicit_audios,
-            num_videos=len(videos) - len(content_media.videos),
-        )
         if audio_from_video and (content_media.audios or content_media.videos):
             # note (ratish): the processor reads one audio per audio placeholder and per video
             # placeholder in text order; only content parts can put an audio before a video.
@@ -868,21 +898,6 @@ class Qwen3OmniPreprocessor:
         audio_cache_key = compute_audio_cache_key(audios)
         # Image and video keys follow the same rule and hash the loaded media.
         image_cache_key = compute_image_cache_key(images)
-        video_cache_key = compute_video_cache_key(videos)
-
-        prompt_text = self.processor.apply_chat_template(
-            messages_mm,
-            add_generation_prompt=True,
-            tokenize=False,
-        )
-        max_new_tokens = payload.request.params.get(
-            "max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS
-        )
-        self.validate_prompt_text_len(
-            prompt_text,
-            max_new_tokens=max_new_tokens,
-            request_id=payload.request_id,
-        )
 
         videos_kwargs: VideoProcessorKwargs = {}
         if sampled_video_fps:
@@ -910,10 +925,6 @@ class Qwen3OmniPreprocessor:
             videos_kwargs["max_pixels"] = resolved_video_max_pixels
         else:
             pass
-        if resolved_video_total_pixels is not None:
-            videos_kwargs["total_pixels"] = resolved_video_total_pixels
-        else:
-            pass
         if effective_use_audio_in_video is not None:
             videos_kwargs["use_audio_in_video"] = effective_use_audio_in_video
         else:
@@ -939,14 +950,28 @@ class Qwen3OmniPreprocessor:
         else:
             pass
 
-        hf_inputs: BatchFeature = self.processor(
-            text=prompt_text,
-            images=images or None,
-            videos=videos or None,
-            audio=audios or None,
-            add_special_tokens=False,
-            return_tensors="pt",
-            **processor_kwargs,
+        # note (ratish): the video key only tags the encoder inputs, and the HF processor reads float32 frames without writing them, so the request's own thread hashes them while the processor runs; leaving the block waits for the hash on every exit.
+        with ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="qwen3-omni-video-cache-key"
+        ) as video_cache_key_executor:
+            video_cache_key_future = (
+                video_cache_key_executor.submit(compute_video_cache_key, videos)
+                if videos
+                else None
+            )
+            hf_inputs: BatchFeature = self.processor(
+                text=prompt_text,
+                images=images or None,
+                videos=videos or None,
+                audio=audios or None,
+                add_special_tokens=False,
+                return_tensors="pt",
+                **processor_kwargs,
+            )
+        video_cache_key = (
+            video_cache_key_future.result()
+            if video_cache_key_future is not None
+            else None
         )
 
         input_ids = hf_inputs["input_ids"][0]

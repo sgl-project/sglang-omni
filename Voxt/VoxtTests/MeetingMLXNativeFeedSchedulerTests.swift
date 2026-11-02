@@ -1,5 +1,4 @@
 import Foundation
-import MLXAudioSTT
 import XCTest
 @testable import Voxt
 
@@ -101,8 +100,8 @@ private actor FeedTestGate {
     }
 }
 
-nonisolated private final class FeedTestSession: MLXNativeStreamingSession, @unchecked Sendable {
-    let events: AsyncStream<TranscriptionEvent> = AsyncStream { $0.finish() }
+nonisolated private final class FeedTestSession: ASRStreamingSession, @unchecked Sendable {
+    let events: AsyncStream<ASRStreamingEvent> = AsyncStream { $0.finish() }
     private let lock = NSLock()
     private var stops = 0
     private var cancels = 0

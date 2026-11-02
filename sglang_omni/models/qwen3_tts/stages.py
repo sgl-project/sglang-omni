@@ -8,9 +8,10 @@ import logging
 import os
 import threading
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 import torch
+from transformers.models.mimi.modeling_mimi import MimiEuclideanCodebook
 
 from sglang_omni.models.qwen3_tts.compat import (
     apply_qwen_tts_transformers_compatibility_patches,
@@ -21,12 +22,15 @@ from sglang_omni.models.qwen3_tts.config import (
 )
 from sglang_omni.models.qwen3_tts.reference_encoder_cuda_graph import (
     DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES,
-    move_conv_padding_to_host,
+    pad_convs_by_integers,
 )
 from sglang_omni.models.qwen3_tts.request_builders import (
+    Qwen3TTSReferenceEncoderStats,
     Qwen3TTSSGLangRequestData,
+    bind_preprocessing_thread_device,
     cleanup_prepared_qwen3_tts_request,
     preprocess_qwen3_tts_payload,
+    qwen3_tts_reference_encoder_stats,
 )
 from sglang_omni.models.qwen3_tts.streaming_vocoder import (
     DEFAULT_QWEN3_TTS_CODEC_STATE_SLOTS,
@@ -34,13 +38,22 @@ from sglang_omni.models.qwen3_tts.streaming_vocoder import (
     DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE,
     DEFAULT_QWEN3_TTS_STREAM_STRIDE,
     Qwen3TTSStreamingVocoderScheduler,
+    UnsupportedAdminData,
 )
+from sglang_omni.models.weight_loader import load_weights_by_prefix
 from sglang_omni.platforms import current_platform
+from sglang_omni.proto.admin import ADMIN_MODEL_INFO
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
 from sglang_omni.utils.device import resolve_concrete_device
+from sglang_omni.utils.hf import use_text_rope
 from sglang_omni.utils.json import JsonValue
+
+if current_platform.is_npu():
+    import torch_npu
+else:
+    torch_npu = None
 
 if TYPE_CHECKING:
     from qwen_tts import Qwen3TTSTokenizer
@@ -93,12 +106,33 @@ def resolve_qwen3_tts_attn_implementation(
     return attn_implementation or "sdpa"
 
 
+def load_float32_encoder_weights(
+    tokenizer: "Qwen3TTSTokenizer", checkpoint_dir: str
+) -> None:
+    """Give the codec encoder its float32 checkpoint weights and build its codebook tables from them; the decoder is untouched."""
+    # note (ratish): the encoder's quantizers pick each codeword by nearest distance, which bf16 rounding flips, so the encoder keeps the checkpoint's float32.
+    encoder = tokenizer.model.encoder
+    encoder.to(torch.float32)
+    encoder.load_state_dict(
+        load_weights_by_prefix(
+            os.path.join(checkpoint_dir, "speech_tokenizer"), prefix="encoder."
+        )
+    )
+    # note (ratish): a table built lazily by the first encode sits inside that encode's float32 activations and keeps them reserved when the KV pool is sized.
+    for module in encoder.modules():
+        if isinstance(module, MimiEuclideanCodebook):
+            module.embed
+        else:
+            pass
+
+
 def load_qwen3_tts_tokenizer(
     model_path: str,
     *,
     device: str,
     dtype: str,
     attn_implementation: str | None,
+    float32_encoder: bool,
 ) -> "Qwen3TTSTokenizer":
     apply_qwen_tts_transformers_compatibility_patches()
     try:
@@ -121,6 +155,18 @@ def load_qwen3_tts_tokenizer(
             logger.info(
                 f"Reusing the Qwen3-TTS speech tokenizer from {tokenizer_path} on {device}"
             )
+            # note (ratish): a stage that only decodes may have loaded this copy first, so a caller that encodes still gets the float32 encoder.
+            if (
+                float32_encoder
+                and next(tokenizer.model.encoder.parameters()).dtype != torch.float32
+            ):
+                logger.info(
+                    "Giving the reused Qwen3-TTS speech tokenizer's encoder its "
+                    f"float32 weights on {device}"
+                )
+                load_float32_encoder_weights(tokenizer, checkpoint_dir)
+            else:
+                pass
             return tokenizer
         else:
             pass
@@ -141,7 +187,12 @@ def load_qwen3_tts_tokenizer(
             attn_implementation or "upstream-default",
         )
         tokenizer = Qwen3TTSTokenizer.from_pretrained(tokenizer_path, **kwargs)
-        move_conv_padding_to_host(tokenizer.model.encoder)
+        # note (ratish): converted right after the load, so the process's later allocations reuse the bf16 weights it frees; converted later, they sit between the decoder's weights and shrink the KV pool.
+        if float32_encoder:
+            load_float32_encoder_weights(tokenizer, checkpoint_dir)
+        else:
+            pass
+        pad_convs_by_integers(tokenizer.model.encoder)
         _SPEECH_TOKENIZERS[key] = tokenizer
         return tokenizer
 
@@ -158,11 +209,11 @@ def register_qwen3_tts_hf_config() -> None:
 
         def _patched_init(self, *args, **kwargs):
             original_init(self, *args, **kwargs)
-            talker_config = getattr(self, "talker_config", None)
-            if talker_config is not None:
-                self.text_config = talker_config
-            else:
-                pass
+            # note (ratish): the talker's three MRoPE position rows are identical, so it
+            # rotates as text RoPE; dropping the MRoPE keys before the runtime reads the
+            # text config means no MRoPE positions are built or copied for it.
+            use_text_rope(self.talker_config)
+            self.text_config = self.talker_config
 
         Qwen3TTSConfig.__init__ = _patched_init
         Qwen3TTSConfig._sglang_omni_patched = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -187,6 +238,79 @@ def load_qwen3_tts_generate_defaults(checkpoint_dir: str) -> dict[str, JsonValue
     return data if isinstance(data, dict) else {}
 
 
+class Qwen3TTSPreprocessingModelInfo(TypedDict):
+    reference_encoders: Qwen3TTSReferenceEncoderStats | None
+
+
+class Qwen3TTSPreprocessingAdminResult(TypedDict):
+    success: bool
+    message: str
+    data: Qwen3TTSPreprocessingModelInfo | UnsupportedAdminData
+
+
+class Qwen3TTSPreprocessingScheduler(
+    ThreadedSimpleScheduler[StagePayload, StagePayload]
+):
+    """Preprocessing that reports the graph coverage of the reference encoders it runs."""
+
+    def admin(
+        self, action: str, payload: dict[str, object] | None = None
+    ) -> Qwen3TTSPreprocessingAdminResult:
+        """Report the reference encoders for model_info; skip every other action."""
+        # note (Haoling Pu): payload is part of the stage admin contract.
+        if action == ADMIN_MODEL_INFO:
+            return {
+                "success": True,
+                "message": "ok",
+                "data": {"reference_encoders": qwen3_tts_reference_encoder_stats()},
+            }
+        else:
+            return {
+                "success": True,
+                "message": f"unsupported admin action: {action}",
+                "data": {"skipped": True, "unsupported": True},
+            }
+
+    def log_reference_encoder_coverage(self) -> None:
+        """Log the reference lengths the encoders replay graphs for."""
+        encoder_stats = qwen3_tts_reference_encoder_stats()
+        if encoder_stats is None:
+            return
+        else:
+            pass
+        coverage: list[str] = []
+        # note (Haoling Pu): the codec runner is never built without an encode
+        # stream, with graphs disabled, or on a platform that cannot capture it;
+        # a built runner is off when it has no backend or its capture failed.
+        for name, unit, absent, stats in (
+            ("codec", "codec frames", "off (not built)", encoder_stats["codec"]),
+            ("speaker", "mel frames", "not loaded", encoder_stats["speaker"]),
+        ):
+            if stats is None:
+                coverage.append(f"{name} {absent}")
+            elif stats["enabled"]:
+                coverage.append(
+                    f"{name} {len(stats['captured'])} graphs up to "
+                    f"{max(stats['captured'])} {unit}"
+                )
+            else:
+                coverage.append(
+                    f"{name} off ({stats['disable_reason'] or 'not captured'})"
+                )
+        summary = ", ".join(coverage)
+        logger.info(
+            f"Qwen3-TTS reference encoder CUDA graphs: {summary}; "
+            "longer references and encoders without graphs run eagerly"
+        )
+
+    def warm_up_serving_thread(self) -> None:
+        # note (Haoling Pu): a process builds all of its stages before starting
+        # any, so encoders the engine stage loaded already exist here, and the
+        # stage reports ready only after this returns.
+        super().warm_up_serving_thread()
+        self.log_reference_encoder_coverage()
+
+
 def create_preprocessing_executor(
     model_path: str,
     *,
@@ -197,7 +321,7 @@ def create_preprocessing_executor(
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     attn_implementation: str | None = None,
-) -> ThreadedSimpleScheduler[StagePayload, StagePayload]:
+) -> Qwen3TTSPreprocessingScheduler:
     if load_frontend:
         load_standalone_preprocessing_context(
             model_path,
@@ -212,13 +336,14 @@ def create_preprocessing_executor(
     # serial executor keeps at most one reference-code request in flight, so
     # the speech-tokenizer batcher would only ever see batches of one; the
     # default matches the batcher's max_batch_size.
-    return ThreadedSimpleScheduler(
+    return Qwen3TTSPreprocessingScheduler(
         functools.partial(
             preprocess_qwen3_tts_payload,
             default_stream_codec_output=stream_codec_output,
         ),
         max_concurrency=max_concurrency,
         abort_callback=cleanup_prepared_qwen3_tts_request,
+        thread_initializer=bind_preprocessing_thread_device,
     )
 
 
@@ -256,6 +381,7 @@ def load_standalone_preprocessing_context(
         device=device,
         dtype=dtype,
         attn_implementation=attn_implementation,
+        float32_encoder=frontend.tts_model_type == "base",
     )
     frontend.load_speech_tokenizer(speech_tokenizer)
     if frontend.speaker_encoder_graph_runner is not None:
@@ -320,8 +446,8 @@ def create_vocoder_executor(
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
     attn_implementation: str | None = None,
-    max_batch_size: int = 8,
-    max_batch_wait_ms: int = 2,
+    max_batch_size: int | None = None,
+    max_batch_wait_ms: int | None = None,
     stream_stride: int = DEFAULT_QWEN3_TTS_STREAM_STRIDE,
     stream_followup_stride: int = DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE,
     stream_initial_followup_stride: int | None = None,
@@ -347,6 +473,8 @@ def create_vocoder_executor(
     incremental_codec_cuda_graph_min_free_gb: float = 3.0,
     suppress_bootstrap_silence: bool = True,
     suppress_bootstrap_max_streams: int = 24,
+    running_stream_count: int | None = None,
+    shares_engine_speech_tokenizer: bool,
 ) -> Qwen3TTSStreamingVocoderScheduler:
     device = str(resolve_concrete_device(device, gpu_id))
     # note (luojiaxuan): the graph and compile switches follow the decoder
@@ -357,19 +485,43 @@ def create_vocoder_executor(
     else:
         pass
     if incremental_codec_compile is None:
-        incremental_codec_compile = enable_stateful_codec_decoder
+        incremental_codec_compile = (
+            enable_stateful_codec_decoder and torch.device(device).type != "npu"
+        )
     else:
         pass
+    checkpoint_config = load_qwen3_tts_checkpoint_config(model_path)
+    model_type = normalize_qwen3_tts_model_type(checkpoint_config.get("tts_model_type"))
+    # note (ratish): the vocoder only decodes, so its tokenizer's encoder takes float32 only on the copy the engine will share and encode with.
     tokenizer = load_qwen3_tts_tokenizer(
         model_path,
         device=device,
         dtype=dtype,
         attn_implementation=attn_implementation,
+        float32_encoder=shares_engine_speech_tokenizer and model_type == "base",
     )
+    configured_model_size = checkpoint_config.get("tts_model_size")
+    tts_model_size: Literal["0b6", "1b7"] | None = None
+    if model_type == "base" and configured_model_size in {"0b6", "1b7"}:
+        tts_model_size = configured_model_size
+    else:
+        pass
+    uses_small_base_cuda_policy = (
+        tts_model_size == "0b6" and torch.device(device).type == "cuda"
+    )
+    if max_batch_size is None:
+        max_batch_size = 2 if uses_small_base_cuda_policy else 8
+    else:
+        pass
+    if max_batch_wait_ms is None:
+        max_batch_wait_ms = 0 if uses_small_base_cuda_policy else 2
+    else:
+        pass
 
     scheduler = Qwen3TTSStreamingVocoderScheduler(
         tokenizer,
         device=device,
+        tts_model_size=tts_model_size,
         stream_stride=stream_stride,
         stream_followup_stride=stream_followup_stride,
         stream_initial_followup_stride=stream_initial_followup_stride,
@@ -405,13 +557,22 @@ def create_vocoder_executor(
         suppress_bootstrap_max_streams=suppress_bootstrap_max_streams,
         # note (ratish): only a Base checkpoint clones a reference voice, so only its
         # first chunks carry reference codes.
-        has_reference_prefixed_first_chunks=normalize_qwen3_tts_model_type(
-            load_qwen3_tts_checkpoint_config(model_path).get("tts_model_type")
-        )
-        == "base",
+        has_reference_prefixed_first_chunks=model_type == "base",
     )
     # note (ratish): Factory construction completes before the stage process
     # publishes readiness, so CUDA capture cannot overlap request-time GPU work
     # from colocated stages.
-    scheduler.warmup_now()
+    if torch.device(device).type == "npu":
+        # note (cocoa): Internal-format convolutions use aclop, which cannot be captured.
+        previous_internal_format = torch_npu._C._npu_getOption(
+            "ALLOW_INTERNAL_FORMAT"
+        ).decode()  # noqa: leading-underscore  # torch-npu 2.10 has no public getter.
+        torch.npu.config.allow_internal_format = False
+        try:
+            scheduler.warmup_now()
+        finally:
+            torch.npu.set_option({"ALLOW_INTERNAL_FORMAT": previous_internal_format})
+    else:
+        scheduler.warmup_now()
+    scheduler.log_cuda_graph_coverage(running_stream_count)
     return scheduler

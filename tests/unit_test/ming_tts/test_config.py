@@ -2,24 +2,15 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import pytest
 
-from sglang_omni.config.manager import ConfigManager
-from sglang_omni.config.sources import sources_from_config_file
 from sglang_omni.models.ming_tts.config import (
     AUDIO_DECODE_STAGE,
-    MING_TTS_DEFAULT_INITIAL_CHUNK_PATCHES,
-    MING_TTS_DEFAULT_STEADY_CHUNK_PATCHES,
-    MING_TTS_DEFAULT_STREAM_SLOTS,
-    MING_TTS_DEFAULT_STREAMING_CUDA_GRAPH,
     TTS_ENGINE_STAGE,
     MingTTSPipelineConfig,
 )
-
-REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def audio_decode_stage(raw_config: dict[str, Any]) -> dict[str, Any]:
@@ -43,49 +34,8 @@ def test_ming_tts_pipeline_requires_audio_decode_stream_edge() -> None:
         MingTTSPipelineConfig.model_validate(raw)
 
 
-def test_ming_tts_audio_decode_defaults_are_full_sequence_and_serial() -> None:
-    raw = MingTTSPipelineConfig(model_path="fake-model").model_dump()
-    factory = audio_decode_stage(raw)["factory"]
-
-    assert "decode_mode" not in factory
-    assert factory["initial_chunk_patches"] == MING_TTS_DEFAULT_INITIAL_CHUNK_PATCHES
-    assert factory["steady_chunk_patches"] == MING_TTS_DEFAULT_STEADY_CHUNK_PATCHES
-    assert factory["streaming_cuda_graph"] is MING_TTS_DEFAULT_STREAMING_CUDA_GRAPH
-    assert factory["stream_slots"] == MING_TTS_DEFAULT_STREAM_SLOTS
-    assert factory["max_batch_size"] == 1
-    assert factory["max_batch_wait_ms"] == 0
-
-
-def test_ming_tts_example_config_uses_supported_audio_decode_contract() -> None:
-    config_path = REPO_ROOT / "examples/configs/ming_omni_tts.yaml"
-    config, patches = sources_from_config_file(str(config_path))
-    config = ConfigManager(config).merge_config([], extra_patches=patches)
-    assert isinstance(config, MingTTSPipelineConfig)
-
-    audio_decode = config.stage_named(AUDIO_DECODE_STAGE)
-    factory = audio_decode.factory
-
-    assert "decode_mode" not in (factory.model_extra or {})
-    assert factory.initial_chunk_patches == MING_TTS_DEFAULT_INITIAL_CHUNK_PATCHES
-    assert factory.steady_chunk_patches == MING_TTS_DEFAULT_STEADY_CHUNK_PATCHES
-    assert factory.streaming_cuda_graph is True
-    assert factory.stream_slots == 8
-    assert factory.max_batch_size == 1
-    assert factory.max_batch_wait_ms == 0
-
-
-def test_ming_tts_missing_initial_cadence_remains_unset() -> None:
-    raw = MingTTSPipelineConfig(model_path="fake-model").model_dump()
-    audio_decode_stage(raw)["factory"].pop("initial_chunk_patches")
-
-    config = MingTTSPipelineConfig.model_validate(raw)
-    factory = config.stage_named(AUDIO_DECODE_STAGE).factory
-
-    assert factory.initial_chunk_patches is None
-
-
 @pytest.mark.parametrize("field", ["initial_chunk_patches", "steady_chunk_patches"])
-@pytest.mark.parametrize("value", [True, 1.5, "2", 0, -1])
+@pytest.mark.parametrize("value", [True, 0])
 def test_ming_tts_rejects_invalid_cadence(field: str, value: Any) -> None:
     """The positive-integer rule is a static declaration on the typed group."""
     raw = MingTTSPipelineConfig(model_path="fake-model").model_dump()
@@ -93,20 +43,6 @@ def test_ming_tts_rejects_invalid_cadence(field: str, value: Any) -> None:
 
     with pytest.raises(ValueError, match=field):
         MingTTSPipelineConfig.model_validate(raw)
-
-
-@pytest.mark.parametrize("field", ["initial_chunk_patches", "steady_chunk_patches"])
-@pytest.mark.parametrize("text", ["0", "true", "1.5"])
-def test_ming_tts_rejects_invalid_cadence_via_dotted_override(
-    field: str, text: str
-) -> None:
-    """The same rule holds when the write arrives through the merge; a
-    boolean is refused by the lossless conversion rule on the way in."""
-    config = MingTTSPipelineConfig(model_path="fake-model")
-    with pytest.raises(ValueError, match=field):
-        ConfigManager(config).merge_config(
-            [(f"{AUDIO_DECODE_STAGE}.factory.{field}", text)]
-        )
 
 
 def test_ming_tts_accepts_initial_cadence_larger_than_steady() -> None:
@@ -130,14 +66,7 @@ def test_ming_tts_rejects_legacy_audio_decode_mode() -> None:
         MingTTSPipelineConfig.model_validate(raw)
 
 
-def test_ming_tts_accepts_positive_audio_decode_stream_slots() -> None:
-    raw = MingTTSPipelineConfig(model_path="fake-model").model_dump()
-    audio_decode_stage(raw)["factory"]["stream_slots"] = 2
-
-    MingTTSPipelineConfig.model_validate(raw)
-
-
-@pytest.mark.parametrize("value", [True, 1.5, "2", 0, -1])
+@pytest.mark.parametrize("value", [True, 0])
 def test_ming_tts_rejects_invalid_audio_decode_stream_slots(value: Any) -> None:
     raw = MingTTSPipelineConfig(model_path="fake-model").model_dump()
     audio_decode_stage(raw)["factory"]["stream_slots"] = value

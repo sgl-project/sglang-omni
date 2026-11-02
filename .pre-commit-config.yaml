@@ -27,7 +27,7 @@ repos:
       - id: check-added-large-files
       - id: check-merge-conflict
       - id: check-shebang-scripts-are-executable
-        exclude: (?:^\.claude/skills/|^sglang_omni_router/rust/tests/.*\.rs$|^Voxt/(?!backend/|Config/OmniDev\.xcconfig$|Voxt/VoxtOmniDev\.entitlements$|Voxt/Transcription/Omni))
+        exclude: (?:^\.claude/skills/|^sglang_omni_router/tests/.*\.rs$|^Voxt/(?!backend/|Config/OmniDev\.xcconfig$|Voxt/VoxtOmniDev\.entitlements$|Voxt/Transcription/Omni))
       - id: detect-private-key
       - id: debug-statements
       - id: no-commit-to-branch
@@ -72,9 +72,9 @@ repos:
         pass_filenames: false
       - id: rustfmt-sglang-omni-router
         name: rustfmt sglang-omni-router
-        entry: bash -c 'cd sglang_omni_router/rust && cargo fmt --all -- --check'
+        entry: bash -c 'cd sglang_omni_router && cargo fmt --all -- --check'
         language: system
-        files: ^sglang_omni_router/rust/.*\.rs$
+        files: ^sglang_omni_router/.*\.rs$
         pass_filenames: false
       # Matches every new/existing file under sglang_omni/ and tests/, including
       # models/*. Check only. Do not pass --fix: it renames within one file and
@@ -95,3 +95,19 @@ repos:
         types: [python]
         files: ^sglang_omni/
         exclude: ^sglang_omni/vendor/
+      # Check only. Each doc must have exactly one H1 and may not go deeper
+      # than H3 (#### is rejected). Headings inside fenced code blocks are
+      # ignored.
+      - id: doc-heading-structure
+        name: document heading structure (one H1, max H3)
+        entry: python3 scripts/check_doc_headings.py
+        language: system
+        types: [markdown]
+        files: ^docs/
+      - id: doc-style
+        name: document style
+        entry: python3 scripts/check_doc_style.py
+        language: python
+        additional_dependencies: [emoji==2.15.0]
+        files: ^(docs/.*\.md$|scripts/check_doc_style\.py$|tests/unit_test/scripts/test_check_doc_style\.py$)
+        pass_filenames: false

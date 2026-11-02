@@ -19,7 +19,11 @@ from torch import nn
 from sglang_omni.models.qwen3_tts.compat import (
     apply_qwen_tts_transformers_compatibility_patches,
 )
-from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSPromptBuilderMixin
+from sglang_omni.models.qwen3_tts.sglang_model import (
+    Qwen3TTSCodecTables,
+    Qwen3TTSPromptBuilderMixin,
+    load_codec_table,
+)
 from sglang_omni.models.qwen3_tts.speaker_encoder_cuda_graph import (
     Qwen3TTSSpeakerEncoderCudaGraphRunner,
 )
@@ -50,18 +54,11 @@ class PromptProjection(nn.Module):
 
 
 class PromptEmbeddings(nn.Module):
-    feedback_buffer: torch.Tensor
-
     def __init__(self, config: "Qwen3TTSTalkerConfig") -> None:
         super().__init__()
         self.codec_embedding = nn.Embedding(config.vocab_size, config.hidden_size)
         self.text_embedding = nn.Embedding(
             config.text_vocab_size, config.text_hidden_size
-        )
-        # Note (Jiaxin Deng): the prompt builders only read this buffer's device
-        # and dtype; the talker's real feedback buffer lives in the engine.
-        self.register_buffer(
-            "feedback_buffer", torch.zeros(1, config.hidden_size), persistent=False
         )
 
     def get_input_embeddings(self) -> nn.Embedding:
@@ -76,11 +73,8 @@ class PromptPredictorEmbeddings(nn.Module):
         super().__init__()
         cp_config = config.code_predictor_config
         self.model = nn.Module()
-        self.model.codec_embedding = nn.ModuleList(
-            [
-                nn.Embedding(cp_config.vocab_size, config.hidden_size)
-                for _ in range(config.num_code_groups - 1)
-            ]
+        self.model.codec_embedding = Qwen3TTSCodecTables(
+            config.num_code_groups - 1, cp_config.vocab_size, config.hidden_size
         )
 
 
@@ -99,17 +93,18 @@ class Qwen3TTSPromptFrontend(Qwen3TTSPromptBuilderMixin, nn.Module):
         self.root_config = root_config
         self.config = config
         self.vocab_size = config.vocab_size
-        self.tts_model_type = getattr(root_config, "tts_model_type", "base")
-        self.speaker_encoder_sample_rate = getattr(
-            getattr(root_config, "speaker_encoder_config", None),
-            "sample_rate",
-            24000,
+        self.tts_model_type = root_config.tts_model_type
+        self.speaker_encoder_sample_rate = (
+            root_config.speaker_encoder_config.sample_rate
         )
         self.text_projection = PromptProjection(
             config.text_hidden_size, config.text_hidden_size, config.hidden_size
         )
         self.model = PromptEmbeddings(config)
         self.code_predictor = PromptPredictorEmbeddings(config)
+        self.codec_table_params_mapping = Qwen3TTSCodecTables.make_params_mapping(
+            config.num_code_groups - 1
+        )
         if self.tts_model_type == "base":
             apply_qwen_tts_transformers_compatibility_patches()
             from qwen_tts.core.models.modeling_qwen3_tts import Qwen3TTSSpeakerEncoder
@@ -128,10 +123,13 @@ class Qwen3TTSPromptFrontend(Qwen3TTSPromptBuilderMixin, nn.Module):
         self.requires_grad_(False)
 
     def checkpoint_weight_names(self) -> set[str]:
-        names = set()
+        names = {_TALKER_PREFIX + name for name in self.codec_table_params_mapping}
+        stacked_names = {name for name, _ in self.codec_table_params_mapping.values()}
         for name, _ in self.named_parameters():
             if name.startswith(_SPEAKER_ENCODER_PREFIX):
                 names.add(name)
+            elif name in stacked_names:
+                pass
             else:
                 names.add(_TALKER_PREFIX + name)
         return names
@@ -146,14 +144,17 @@ class Qwen3TTSPromptFrontend(Qwen3TTSPromptBuilderMixin, nn.Module):
                 target = name
             else:
                 continue
-            param = params.get(target)
-            if param is None:
-                continue
+            codec_table_slot = self.codec_table_params_mapping.get(target)
+            if codec_table_slot is not None:
+                param_name, codebook_index = codec_table_slot
+                load_codec_table(params[param_name], tensor, codebook_index)
+            elif target in params:
+                param = params[target]
+                param.data.copy_(tensor.to(device=param.device, dtype=param.dtype))
             else:
-                pass
-            param.data.copy_(tensor.to(device=param.device, dtype=param.dtype))
-            loaded.add(target)
-        missing = sorted(set(params) - loaded)
+                continue
+            loaded.add(name)
+        missing = sorted(self.checkpoint_weight_names() - loaded)
         if missing:
             raise RuntimeError(
                 f"Qwen3-TTS prompt frontend is missing {len(missing)} weights "

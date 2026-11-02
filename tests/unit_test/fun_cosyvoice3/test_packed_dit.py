@@ -9,6 +9,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from sglang_omni.models.fun_cosyvoice3 import packed_dit
 from sglang_omni.models.fun_cosyvoice3.causal_conv import (
     GROUP_CONV_KERNEL_CHANNELS,
     FusedConvPositionEmbedding,
@@ -28,6 +29,7 @@ from sglang_omni.models.fun_cosyvoice3.packed_dit import (
     rotated,
     scatter_rows,
     solve_flow_euler_packed,
+    supports_ragged_attention,
 )
 from sglang_omni.models.fun_cosyvoice3.stages import solve_flow_euler
 
@@ -99,6 +101,13 @@ def valid(padded: torch.Tensor) -> list[torch.Tensor]:
 def rope(estimator: PackedDiT, rows: PackedRows) -> tuple[torch.Tensor, torch.Tensor]:
     angles = estimator.rope_angles(rows.width)[:, rows.positions]
     return angles.cos(), angles.sin()
+
+
+def modulations_at(
+    estimator: PackedDiT, t: torch.Tensor
+) -> tuple[tuple[torch.Tensor, ...], torch.Tensor]:
+    estimator.build_modulations(torch.cat((t, torch.ones_like(t))), t.dtype)
+    return estimator.block_modulations[0], estimator.final_modulations[0]
 
 
 def relative_error(actual: torch.Tensor, expected: torch.Tensor) -> float:
@@ -209,7 +218,7 @@ def test_packed_forward_matches_the_padded_dit_per_row(streaming: bool) -> None:
             packed["mu"],
             packed["spks"],
             packed["cond"],
-            packed["t"],
+            *modulations_at(estimator, packed["t"]),
             packed["rows"],
             attention,
             rope(estimator, packed["rows"]),
@@ -278,6 +287,7 @@ def test_packed_solve_matches_the_padded_solve_per_row(streaming: bool) -> None:
     twin_rows = pack_rows(LENGTHS * 2, CPU)
 
     with torch.inference_mode():
+        estimator.build_modulations(time_span, torch.float64)
         expected = solve_flow_euler(
             decoder,
             noise.clone(),
@@ -358,9 +368,10 @@ def test_rows_packed_beside_an_empty_and_a_trailing_row_are_unchanged(
     ]
 
     with torch.inference_mode():
+        modulations = modulations_at(estimator, packed["t"])
         together = estimator.forward(
             *together_inputs,
-            packed["t"],
+            *modulations,
             rows,
             estimator.row_attention(rows, streaming=streaming, dtype=torch.float64),
             rope(estimator, rows),
@@ -372,7 +383,7 @@ def test_rows_packed_beside_an_empty_and_a_trailing_row_are_unchanged(
                 padded["mu"][index : index + 1, :, :length].transpose(1, 2),
                 padded["spks"][index : index + 1].expand(length, -1).unsqueeze(0),
                 padded["cond"][index : index + 1, :, :length].transpose(1, 2),
-                padded["t"],
+                *modulations,
                 alone_rows,
                 estimator.row_attention(
                     alone_rows, streaming=streaming, dtype=torch.float64
@@ -392,11 +403,9 @@ def test_rows_packed_beside_an_empty_and_a_trailing_row_are_unchanged(
 def test_the_ragged_read_matches_the_padded_read(
     chunk_size: int | None, max_frames_scale: int
 ) -> None:
-    from sglang.kernels.ops.attention.flash_attention_v3 import _is_fa3_supported
-
     device = torch.device("cuda")
-    if not _is_fa3_supported():
-        pytest.skip("FA3 is unavailable on this device")
+    if not supports_ragged_attention(device):
+        pytest.skip("Ragged attention is unavailable on this device")
     torch.manual_seed(2)
     heads = 2
     head_dim = 64
@@ -477,3 +486,23 @@ def test_the_fused_position_embedding_is_as_close_to_float64_as_the_module() -> 
     assert relative_error(fused_output, reference) <= relative_error(
         module_output, reference
     )
+
+
+@pytest.mark.parametrize(
+    ("major", "is_fa4_available", "expected"),
+    [(12, True, True), (12, False, False), (9, True, False)],
+)
+def test_fa4_runs_only_on_sm120_with_the_kernel(
+    monkeypatch: pytest.MonkeyPatch,
+    major: int,
+    is_fa4_available: bool,
+    expected: bool,
+) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device: (major, 0))
+    monkeypatch.setattr(
+        packed_dit, "is_flash_attention_v4_available", lambda: is_fa4_available
+    )
+    packed_dit.uses_fa4.cache_clear()
+    assert packed_dit.uses_fa4(torch.device("cuda")) is expected
+    packed_dit.uses_fa4.cache_clear()

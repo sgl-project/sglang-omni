@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import sys
 import threading
+from types import FrameType
 
 import pytest
 import torch
@@ -44,6 +46,21 @@ def test_stage_output_cache_allows_zero_capacity(capacity: str) -> None:
     assert cache.get("key") is None
 
 
+def test_stage_output_cache_stores_a_view_without_its_larger_storage() -> None:
+    cache = StageOutputCache(max_bytes=1024, cache_device="cpu")
+    transfer_buffer = torch.arange(1 << 20, dtype=torch.int64)
+    grid = transfer_buffer[8:11]
+    compact = torch.arange(3)
+
+    cache.put("view", {"grid": grid})
+    cache.put("compact", compact)
+
+    cached = cache.get("view")["grid"]
+    assert torch.equal(cached, grid)
+    assert cached.untyped_storage().nbytes() == 24
+    assert cache.get("compact").data_ptr() == compact.data_ptr()
+
+
 def test_remove_if_same_preserves_a_replacement() -> None:
     cache = StageOutputCache()
     cache.put("key", torch.zeros(1))
@@ -59,37 +76,47 @@ def test_remove_if_same_preserves_a_replacement() -> None:
 
 
 def test_concurrent_get_put_keeps_byte_accounting_consistent() -> None:
-    # Mirrors the moss-td encoder: many reader threads racing one writer.
-    cache = StageOutputCache(max_size=64, size_fn=fixed_size)
-    stop = threading.Event()
+    cache = StageOutputCache(max_size=1, size_fn=fixed_size)
+    cache.put("read", 0)
+    reader_paused = threading.Event()
+    release_reader = threading.Event()
     errors: list[BaseException] = []
+
+    def pause_after_lookup(frame: FrameType, event: str, argument: object) -> None:
+        if event == "c_return" and argument == cache.cache.get:
+            sys.setprofile(None)
+            reader_paused.set()
+            assert release_reader.wait(5)
+        else:
+            pass
+
+    def reader() -> None:
+        sys.setprofile(pause_after_lookup)
+        try:
+            cache.get("read")
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+        finally:
+            sys.setprofile(None)
 
     def writer() -> None:
         try:
-            for i in range(5000):
-                cache.put(str(i % 128), i)
-        except BaseException as exc:  # noqa: BLE001 - surface to main thread
-            errors.append(exc)
-        finally:
-            stop.set()
-
-    def reader() -> None:
-        try:
-            while not stop.is_set():
-                cache.get(str(threading.get_ident() % 128))
+            cache.put("write", 1)
         except BaseException as exc:  # noqa: BLE001
             errors.append(exc)
 
-    threads = [threading.Thread(target=writer)]
-    threads += [threading.Thread(target=reader) for _ in range(4)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=30)
+    reader_thread = threading.Thread(target=reader)
+    reader_thread.start()
+    assert reader_paused.wait(5)
+    writer_thread = threading.Thread(target=writer)
+    writer_thread.start()
+    writer_thread.join(timeout=0.5)
+    release_reader.set()
+    reader_thread.join(timeout=5)
+    writer_thread.join(timeout=5)
 
-    assert not any(thread.is_alive() for thread in threads)
+    assert not reader_thread.is_alive() and not writer_thread.is_alive()
     assert not errors, errors
-    # current_bytes must exactly track the surviving entries.
     assert cache.current_bytes == len(cache) * 8
 
 
@@ -119,30 +146,50 @@ def test_remove_if_predicate_may_reenter_cache_without_deadlock() -> None:
 
 
 def test_concurrent_remove_if_and_put_do_not_corrupt_state() -> None:
-    cache = StageOutputCache(size_fn=fixed_size)
+    cache = StageOutputCache(max_size=1, size_fn=fixed_size)
+    cache.put("old", 0)
+    putter_paused = threading.Event()
+    release_putter = threading.Event()
     errors: list[BaseException] = []
 
+    def pause_before_eviction(frame: FrameType, event: str, argument: object) -> None:
+        if (
+            event == "c_return"
+            and argument is len
+            and frame.f_code.co_name == "evict_over_budget"
+        ):
+            sys.setprofile(None)
+            putter_paused.set()
+            assert release_putter.wait(5)
+        else:
+            pass
+
     def putter() -> None:
+        sys.setprofile(pause_before_eviction)
         try:
-            for i in range(2000):
-                cache.put(str(i % 50), i)
+            cache.put("new", 1)
         except BaseException as exc:  # noqa: BLE001
             errors.append(exc)
+        finally:
+            sys.setprofile(None)
 
     def remover() -> None:
         try:
-            for _ in range(2000):
-                cache.remove_if(lambda key: int(key) % 3 == 0)
+            cache.remove_if(lambda key: True)
         except BaseException as exc:  # noqa: BLE001
             errors.append(exc)
 
-    threads = [threading.Thread(target=putter), threading.Thread(target=remover)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=30)
+    putter_thread = threading.Thread(target=putter)
+    putter_thread.start()
+    assert putter_paused.wait(5)
+    remover_thread = threading.Thread(target=remover)
+    remover_thread.start()
+    remover_thread.join(timeout=0.5)
+    release_putter.set()
+    putter_thread.join(timeout=5)
+    remover_thread.join(timeout=5)
 
-    assert not any(thread.is_alive() for thread in threads)
+    assert not putter_thread.is_alive() and not remover_thread.is_alive()
     assert not errors, errors
     assert cache.current_bytes == len(cache) * 8
 
@@ -195,6 +242,20 @@ def test_pinned_cache_reuses_already_pinned_host_tensor() -> None:
     assert cached_host is not None
     # No second copy for a pre-pinned tensor: same storage, still pinned.
     assert cached_host.data_ptr() == host.data_ptr() and cached_host.is_pinned()
+
+
+@pytest.mark.accelerator
+@requires_cuda
+def test_pinned_cache_stores_a_pinned_view_without_its_larger_storage() -> None:
+    cache = StageOutputCache(cache_device="cpu", pin_memory=True)
+    host = torch.arange(1 << 20, dtype=torch.float32, pin_memory=True)
+    view = host[4:8]
+
+    cache.put("view", view)
+
+    cached = cache.get("view")
+    assert torch.equal(cached, view) and cached.is_pinned()
+    assert cached.untyped_storage().nbytes() == 16
 
 
 @pytest.mark.accelerator
