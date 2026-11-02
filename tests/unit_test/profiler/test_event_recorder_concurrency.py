@@ -66,6 +66,7 @@ def test_active_capture_does_not_serialize_or_open_files(
         )
 
     assert recorder.writer_thread is None
+    assert Path(path).exists() is False
     assert recorder.stop(wait=True) == path
     assert len(read_events(path)) == 1
 
