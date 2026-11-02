@@ -360,7 +360,7 @@ sgl-omni serve \
   --port 8000
 ```
 
-Verification reproduces CosyVoice3's sampler exactly: temperature, top-k/top-p, the repetition penalty, the minimum-length stop mask and the repetition-aware redraw. The speech tokens therefore follow the same distribution as without the draft. A request's `seed` fixes only its first token, because the draft and verify draws come from the process's random generator, so seeded output is not reproducible while the draft is on.
+Verification reproduces CosyVoice3's sampler exactly: temperature, top-k/top-p, the repetition penalty, the minimum-length stop mask and the repetition-aware redraw. The speech tokens therefore follow the same distribution as without the draft. A request's `seed` fixes every draft and verify draw, so a seeded request reproduces its speech tokens while the draft is on; they differ from the tokens the same seed gives without the draft, which samples differently.
 
 LLM speech-token throughput without the vocoder (Seed-TTS zh, 2,020 utterances, one H200 141GB with SGLang 0.5.22, target and draft on FA3, each batch run to completion), with the default sampling and about 3.0 tokens accepted per verify:
 
