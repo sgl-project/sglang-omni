@@ -1,8 +1,12 @@
+import sys
+from contextlib import redirect_stdout
+
 from typer import Typer
 
-from .check_gpu import check_gpu
-from .config import config_app
-from .serve import serve as _serve
+with redirect_stdout(sys.stderr):
+    from .check_gpu import check_gpu
+    from .config import config_app
+    from .serve import serve as _serve
 
 app = Typer()
 

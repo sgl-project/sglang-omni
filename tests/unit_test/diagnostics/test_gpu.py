@@ -42,7 +42,7 @@ class FakeCuda:
     def device_count(self) -> int:
         return len(self.properties)
 
-    def get_device_properties(self, index: int):
+    def get_device_properties(self, index: int) -> SimpleNamespace:
         return self.properties[index]
 
 
@@ -65,6 +65,9 @@ class FakePlatform:
 
     def is_npu(self) -> bool:
         return self.device_type == "npu"
+
+    def is_musa(self) -> bool:
+        return self.device_type == "musa"
 
 
 def pin_platform(monkeypatch, device_type: str) -> None:
@@ -137,6 +140,8 @@ def test_collect_gpu_diagnostics_preserves_reordered_visible_mapping(
         "GPU-uuid-a",
     ]
     assert report["environment"]["cuda_visible_devices"] == "1,0"
+    assert report["environment"]["pytorch_accelerator_build"] == "13.0"
+    assert report["schema_version"] == 3
     assert set(report) == {
         "schema_version",
         "environment",
@@ -357,13 +362,13 @@ class FakeXpu:
 
 class FakeXpuTorch:
     __version__ = "2.14.0.dev+xpu"
-    version = SimpleNamespace(cuda=None)
+    version = SimpleNamespace(cuda=None, xpu="2026.1")
 
     def __init__(self, physical_indices: list[int]) -> None:
         self.cuda = SimpleNamespace(is_available=lambda: False)
         self.xpu = FakeXpu(physical_indices)
 
-    def get_device_module(self, device_type: str):
+    def get_device_module(self, device_type: str) -> FakeXpu:
         return self.xpu
 
 
@@ -386,6 +391,7 @@ def test_a_non_cuda_accelerator_is_enumerated_through_its_device_module(
     assert environment["cuda_available"] is False
     assert environment["logical_device_count"] == 2
     assert environment["driver_version"] == "1.15.38646+6"
+    assert environment["pytorch_accelerator_build"] == "2026.1"
     assert [gpu["name"] for gpu in report["gpus"]] == [
         "Intel(R) Arc(TM) Pro B60 Graphics"
     ] * 2
@@ -483,6 +489,151 @@ def test_an_affinity_mask_maps_to_physical_cards_in_ascending_order(
     assert [gpu["uuid"] for gpu in report["gpus"]] == ["uuid-2", "uuid-5"]
 
 
+class FakeMusa:
+    UUIDS = {0: "musa-uuid-0", 1: "musa-uuid-1", 2: "musa-uuid-2"}
+
+    def __init__(
+        self,
+        physical_indices: list[int],
+        *,
+        is_available: bool = True,
+        memory_failure_index: int | None = None,
+    ) -> None:
+        self.physical_indices = physical_indices
+        self.available = is_available
+        self.memory_failure_index = memory_failure_index
+
+    def is_available(self) -> bool:
+        return self.available
+
+    def device_count(self) -> int:
+        return len(self.physical_indices)
+
+    def get_device_properties(self, index: int) -> SimpleNamespace:
+        physical_index = self.physical_indices[index]
+        return SimpleNamespace(
+            name="MTT S5000",
+            total_memory=48 * 1024**3,
+            uuid=self.UUIDS[physical_index],
+        )
+
+    def mem_get_info(self, index: int) -> tuple[int, int]:
+        if index == self.memory_failure_index:
+            raise RuntimeError("MUSA memory query failed")
+        else:
+            pass
+        return ((40 - index) * 1024**3, 48 * 1024**3)
+
+
+class FakeMusaTorch:
+    __version__ = "2.11.0.post2+musa5.2.0"
+    version = SimpleNamespace(cuda=None, musa="5.2.0")
+
+    def __init__(self, musa: FakeMusa) -> None:
+        self.cuda = SimpleNamespace(is_available=lambda: False)
+        self.musa = musa
+
+    def get_device_module(self, device_type: str) -> FakeMusa:
+        assert device_type == "musa"
+        return self.musa
+
+
+class ForbiddenNVML(ModuleType):
+    def __init__(self) -> None:
+        super().__init__("forbidden_pynvml")
+
+    def nvmlInit(self) -> None:
+        pytest.fail("MUSA diagnostics must not initialize NVML")
+
+
+def test_musa_uses_native_visibility_and_device_module(monkeypatch) -> None:
+    """MUSA diagnostics used CUDA/NVML and ignored the native device mask."""
+    monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
+    pin_platform(monkeypatch, "musa")
+
+    report = gpu_diagnostics.collect_gpu_diagnostics(
+        env={
+            "MUSA_VISIBLE_DEVICES": "2,0",
+            "CUDA_VISIBLE_DEVICES": "7,8",
+        },
+        torch_module=FakeMusaTorch(FakeMusa([2, 0])),
+        pynvml_module=ForbiddenNVML(),
+    )
+
+    environment = report["environment"]
+    assert report["schema_version"] == 3
+    assert environment["device_type"] == "musa"
+    assert environment["visible_devices_variable"] == "MUSA_VISIBLE_DEVICES"
+    assert environment["visible_devices"] == "2,0"
+    assert environment["cuda_visible_devices"] == "7,8"
+    assert environment["logical_device_count"] == 2
+    assert environment["pytorch_accelerator_build"] == "5.2.0"
+    assert environment["driver_version"] is None
+    assert [gpu["physical_index"] for gpu in report["gpus"]] == [2, 0]
+    assert [gpu["name"] for gpu in report["gpus"]] == ["MTT S5000"] * 2
+    assert [gpu["uuid"] for gpu in report["gpus"]] == [
+        "musa-uuid-2",
+        "musa-uuid-0",
+    ]
+    assert [gpu["total_memory_bytes"] for gpu in report["gpus"]] == [48 * 1024**3] * 2
+    assert [gpu["free_memory_bytes"] for gpu in report["gpus"]] == [
+        40 * 1024**3,
+        39 * 1024**3,
+    ]
+    assert "PyTorch/MUSA build: 2.11.0.post2+musa5.2.0 / 5.2.0" in (
+        gpu_diagnostics.render_gpu_diagnostics(report)
+    )
+
+
+def test_musa_ignores_cuda_mask_when_native_mask_is_unset(monkeypatch) -> None:
+    """A CUDA compatibility mask must not be mistaken for the MUSA mask."""
+    monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
+    pin_platform(monkeypatch, "musa")
+
+    report = gpu_diagnostics.collect_gpu_diagnostics(
+        env={"CUDA_VISIBLE_DEVICES": "5,2"},
+        torch_module=FakeMusaTorch(FakeMusa([0, 1])),
+        pynvml_module=ForbiddenNVML(),
+    )
+
+    assert report["environment"]["visible_devices"] is None
+    assert [gpu["physical_index"] for gpu in report["gpus"]] == [0, 1]
+
+
+def test_unavailable_musa_does_not_fall_back_to_nvml(monkeypatch) -> None:
+    """An unavailable MUSA runtime must not report unrelated NVML devices."""
+    monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
+    pin_platform(monkeypatch, "musa")
+
+    report = gpu_diagnostics.collect_gpu_diagnostics(
+        env={"MUSA_VISIBLE_DEVICES": "0,1"},
+        torch_module=FakeMusaTorch(FakeMusa([], is_available=False)),
+        pynvml_module=ForbiddenNVML(),
+    )
+
+    assert report["gpus"] == []
+    assert report["environment"]["logical_device_count"] == 0
+
+
+def test_musa_memory_failure_preserves_the_device(monkeypatch) -> None:
+    """One failed memory query must not hide an otherwise healthy MUSA card."""
+    monkeypatch.setattr(gpu_diagnostics, "backend_inventory", lambda: [])
+    pin_platform(monkeypatch, "musa")
+
+    report = gpu_diagnostics.collect_gpu_diagnostics(
+        env={"MUSA_VISIBLE_DEVICES": "0,1"},
+        torch_module=FakeMusaTorch(FakeMusa([0, 1], memory_failure_index=1)),
+        pynvml_module=ForbiddenNVML(),
+    )
+
+    assert len(report["gpus"]) == 2
+    assert report["gpus"][1]["free_memory_bytes"] is None
+    assert any(
+        "free memory on musa:1 is unavailable" in warning
+        for warning in report["warnings"]
+    )
+
+
 def test_check_gpu_json_output(monkeypatch) -> None:
     check_gpu_module = importlib.import_module("sglang_omni.cli.check_gpu")
     report = {
@@ -490,22 +641,50 @@ def test_check_gpu_json_output(monkeypatch) -> None:
         "environment": {"logical_device_count": 0},
         "gpus": [],
     }
-    monkeypatch.setattr(
-        check_gpu_module,
-        "collect_gpu_diagnostics",
-        lambda: report,
-    )
+
+    def noisy_collect() -> dict[str, object]:
+        print("Dependency initialization log")
+        return report
+
+    monkeypatch.setattr(check_gpu_module, "collect_gpu_diagnostics", noisy_collect)
 
     result = CliRunner().invoke(app, ["check-gpu", "--json"])
 
     assert result.exit_code == 0
     assert json.loads(result.stdout) == report
+    assert "Dependency initialization log" in result.stderr
+
+
+def test_cli_import_routes_dependency_output_to_stderr() -> None:
+    script = """
+import builtins
+
+original_import = builtins.__import__
+
+def noisy_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if name == "check_gpu" and level == 1:
+        print("Dependency startup log")
+    return original_import(name, globals, locals, fromlist, level)
+
+builtins.__import__ = noisy_import
+import sglang_omni.cli
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+    assert "Dependency startup log" in result.stderr
 
 
 def test_check_gpu_strict_fails_on_warning(monkeypatch) -> None:
     check_gpu_module = importlib.import_module("sglang_omni.cli.check_gpu")
     report = {
-        "schema_version": 2,
+        "schema_version": 3,
         "environment": {
             "logical_device_count": 1,
         },
@@ -528,7 +707,7 @@ def test_check_gpu_strict_fails_on_warning(monkeypatch) -> None:
 def test_check_gpu_strict_fails_without_a_visible_accelerator(monkeypatch) -> None:
     check_gpu_module = importlib.import_module("sglang_omni.cli.check_gpu")
     report = {
-        "schema_version": 2,
+        "schema_version": 3,
         "environment": {
             "logical_device_count": 0,
         },
@@ -554,7 +733,7 @@ def test_check_gpu_strict_passes_with_gpus_and_no_cuda(monkeypatch) -> None:
     """
     check_gpu_module = importlib.import_module("sglang_omni.cli.check_gpu")
     report = {
-        "schema_version": 2,
+        "schema_version": 3,
         "environment": {
             "cuda_available": False,
             "logical_device_count": 1,
