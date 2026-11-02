@@ -107,6 +107,32 @@ text; it does not change the final transcript.
 | `temperature` | float | `0.0` | Sampling temperature; `0.0` (greedy) is the correct decoding mode for Fun-ASR-Nano and the default |
 | `max_new_tokens` | integer | duration-based | Generation budget scaled to the audio duration. Explicit values must be between 1 and 200 |
 
+## Speculative Decoding
+
+The decoder can verify tokens proposed by the DFlash draft [`wilsonzheng0327/Fun-ASR-Nano-dflash`](https://huggingface.co/wilsonzheng0327/Fun-ASR-Nano-dflash) on one CUDA GPU. The example config pins the draft revision:
+
+```bash
+sgl-omni serve --config examples/configs/fun_asr_nano_dflash.yaml --port 8000
+```
+
+- **Accuracy.** The decoder verifies every proposed token. On SeedTTS, corpus WER is 1.86% in both modes for EN, and 1.44% without the draft against 1.42% with it for ZH.
+- **Sampling.** `temperature` works. Requests with `repetition_penalty` are rejected, because the draft worker applies penalties once per verify block.
+- **Latency.** Streaming time to first text is unchanged at concurrency 1 and 10 to 14% higher at concurrency 16.
+- **Cost.** The draft's KV takes about 15% of the pool, startup takes about a minute longer, and async decode is off.
+
+The 70-layer audio encoder takes a large share of each request, so the gain is well below the draft's accept length of about 5.3 tokens per verify, and it grows with clip length. Speedup over the same config without the draft, on two H100 80GB GPUs with paired fresh servers and clips the server had not seen:
+
+| Concurrency | SeedTTS EN | SeedTTS ZH | Held-out EN | Held-out ZH |
+|---:|---:|---:|---:|---:|
+| 1 | 1.19x | 1.22x | 1.25x | 1.06x |
+| 4 | 1.22x | 1.24x | 1.43x | 1.66x |
+| 8 | 1.19x | 1.25x | 1.40x | 1.33x |
+| 16 | 1.20x | 1.20x | 1.29x | 1.30x |
+| 32 | 1.01x | 1.11x | 1.20x | 1.26x |
+| 64 | 1.07x | 1.09x | 1.07x | 1.17x |
+
+SeedTTS clips average 4.7 s, and the held-out clips (the draft's LibriSpeech, FLEURS and YODAS2 test audio) 9.5 s. SeedTTS EN at concurrency 1 goes from 22.3 to 26.4 samples per second, and its single pairs at concurrency 16 and above range from 0.89x to 1.38x.
+
 ## Benchmarking
 
 SeedTTS EN/ZH concurrency/WER benchmarking for Fun-ASR-Nano lives in
