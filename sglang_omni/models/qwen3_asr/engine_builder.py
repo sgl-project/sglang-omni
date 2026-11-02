@@ -291,6 +291,8 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
                     pass
             else:
                 envs.SGLANG_ENABLE_METADATA_GLUE_GRAPH.set(False)
+        elif current_platform.is_xpu():
+            envs.SGLANG_ENABLE_METADATA_GLUE_GRAPH.set(False)
         else:
             pass
         if self.uses_torch_mps():
