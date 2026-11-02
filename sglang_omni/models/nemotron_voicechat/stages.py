@@ -121,6 +121,19 @@ def create_perception_executor(
         )
         for batch_size in PERCEPTION_BATCH_SIZES
     ]
+    # note (Junnan Li): a bucket captured on its first batch would stall live requests, so every bucket captures before serving.
+    for perception_stream in perception_streams:
+        if enable_cuda_graph and perception_stream.device.type == "cuda":
+            perception_stream.push(
+                torch.zeros(
+                    perception_stream.batch_size,
+                    SAMPLES_PER_FRAME,
+                    device=perception_stream.device,
+                )
+            )
+            perception_stream.reset()
+        else:
+            pass
 
     @torch.inference_mode()
     def encode_batch(payloads: list[StagePayload]) -> list[StagePayload]:
