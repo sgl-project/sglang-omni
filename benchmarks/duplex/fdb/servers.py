@@ -101,9 +101,12 @@ def model_server_gpus(settings: Settings) -> str:
 
 
 def judge_server_command(settings: Settings) -> list[str]:
+    # note (jeffro): the CI venv reuses the image site-packages, which leaves no
+    # sglang console script beside its interpreter.
     return [
-        str(Path(sys.executable).with_name("sglang")),
-        "serve",
+        sys.executable,
+        "-m",
+        "sglang.launch_server",
         "--model-path",
         str(settings.judge_model_path),
         "--served-model-name",

@@ -37,7 +37,7 @@ from benchmarks.duplex.fdb.selection import (
     leave_out_hint,
     select_v10_samples,
 )
-from benchmarks.duplex.fdb.servers import RunningServer
+from benchmarks.duplex.fdb.servers import RunningServer, judge_server_command
 from benchmarks.duplex.reference_v10 import MANIFEST_KIND
 from benchmarks.duplex.run_artifacts import file_sha256
 from benchmarks.duplex.v10_dataset import SUBSETS as V10_SUBSETS
@@ -282,6 +282,12 @@ def test_leave_out_hint_names_an_option_change_the_parser_accepts() -> None:
 def test_env_exports_the_scoring_interpreter(settings: Settings) -> None:
     # note (luojiaxuan): the manual scoring commands run with this interpreter.
     assert settings.shell_exports()["SCORING_PYTHON"] == str(settings.scoring_python)
+
+
+def test_judge_server_runs_from_the_current_interpreter(settings: Settings) -> None:
+    command = judge_server_command(settings)
+    assert command[:3] == [sys.executable, "-m", "sglang.launch_server"]
+    assert "serve" not in command
 
 
 def test_session_timeouts_stay_within_the_recorder_ceiling(
