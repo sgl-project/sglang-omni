@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "common/text.h"
 
+#include <algorithm>
 #include <set>
 
 namespace omni_common {
@@ -9,6 +10,9 @@ namespace {
 
 constexpr size_t kTokenLoopWindow = 24;
 constexpr size_t kTokenLoopMaxDistinct = 3;
+// Note (Minyi Tang): half the window, as a short unit can stop the guard while
+// the window still holds a token from before the loop.
+constexpr size_t kTokenLoopMinTokens = kTokenLoopWindow / 2;
 
 } // namespace
 
@@ -49,6 +53,31 @@ std::vector<uint32_t> CodePoints(const std::string &text) {
   return code_points;
 }
 
+void AppendUtf8(uint32_t code_point, std::string &out) {
+  if (code_point < 0x80) {
+    out.push_back(static_cast<char>(code_point));
+  } else if (code_point < 0x800) {
+    out.push_back(static_cast<char>(0xC0 | (code_point >> 6)));
+    out.push_back(static_cast<char>(0x80 | (code_point & 0x3F)));
+  } else if (code_point < 0x10000) {
+    out.push_back(static_cast<char>(0xE0 | (code_point >> 12)));
+    out.push_back(static_cast<char>(0x80 | ((code_point >> 6) & 0x3F)));
+    out.push_back(static_cast<char>(0x80 | (code_point & 0x3F)));
+  } else {
+    out.push_back(static_cast<char>(0xF0 | (code_point >> 18)));
+    out.push_back(static_cast<char>(0x80 | ((code_point >> 12) & 0x3F)));
+    out.push_back(static_cast<char>(0x80 | ((code_point >> 6) & 0x3F)));
+    out.push_back(static_cast<char>(0x80 | (code_point & 0x3F)));
+  }
+}
+
+size_t CodePointCount(const std::string &text) {
+  return static_cast<size_t>(
+      std::count_if(text.begin(), text.end(), [](char byte) {
+        return (static_cast<unsigned char>(byte) & 0xc0) != 0x80;
+      }));
+}
+
 std::string StripUnicodeWhitespace(const std::string &text) {
   const std::vector<uint32_t> code_points = CodePoints(text);
   size_t begin_cp = 0;
@@ -81,6 +110,28 @@ bool IsTokenLoop(const std::vector<int> &output_ids) {
   const std::set<int> distinct(output_ids.end() - kTokenLoopWindow,
                                output_ids.end());
   return distinct.size() <= kTokenLoopMaxDistinct;
+}
+
+std::vector<int> CollapseTokenLoop(const std::vector<int> &output_ids) {
+  const size_t token_count = output_ids.size();
+  for (size_t unit_token_count = 1;
+       2 * unit_token_count <= std::min(token_count, kTokenLoopWindow);
+       ++unit_token_count) {
+    size_t loop_start = token_count - unit_token_count;
+    while (loop_start > 0 &&
+           output_ids[loop_start - 1] ==
+               output_ids[loop_start - 1 + unit_token_count]) {
+      --loop_start;
+    }
+    if (token_count - loop_start >=
+        std::max(kTokenLoopMinTokens, 2 * unit_token_count)) {
+      return std::vector<int>(output_ids.begin(), output_ids.begin() +
+                                                      loop_start +
+                                                      unit_token_count);
+    } else {
+    }
+  }
+  return output_ids;
 }
 
 std::optional<std::vector<uint8_t>> DecodeBase64(const std::string &text) {

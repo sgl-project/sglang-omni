@@ -283,6 +283,31 @@ def test_smallest_bucket_picks_the_first_bucket_that_fits() -> None:
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_reference_encoder_capture_benchmarks_no_kernel_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(tmp_path))
+    torch.manual_seed(11)
+    device = torch.device("cuda", torch.cuda.current_device())
+    model = MimiModel(MimiConfig(num_hidden_layers=1, num_quantizers=8))
+    model = model.to(device).eval()
+    pad_convs_by_integers(model)
+    runner = Qwen3TTSReferenceEncoderCudaGraphRunner(
+        model,
+        hop=1920,
+        num_quantizers=8,
+        bucket_frames=(256,),
+        stream=torch.cuda.Stream(device),
+    )
+    torch.compiler.reset()
+    runner.capture()
+
+    assert runner.stats()["captured"] == [256]
+    assert sorted(tmp_path.rglob("*.best_config")) == []
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_reference_encoder_graph_replays_match_the_compiled_encode_and_miss_above_the_largest_bucket() -> (
     None
 ):

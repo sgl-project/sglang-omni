@@ -2,11 +2,23 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 import torch
+
+
+def test_model_class_imports_without_the_audio_vae() -> None:
+    script = (
+        "import sys\n"
+        "import sglang_omni.models.ming_tts.sglang_model\n"
+        "loaded = sorted(name for name in sys.modules if name.startswith('diffusers'))\n"
+        "assert not loaded, loaded[:5]\n"
+    )
+    subprocess.run([sys.executable, "-c", script], check=True, timeout=120)
 
 
 @pytest.mark.parametrize(
