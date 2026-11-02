@@ -316,10 +316,12 @@ class OmniScheduler(Generic[RequestDataT]):
 
     Session admission:
         A queued session unit whose retained KV holds a request row reuses
-        that row, so a prefill batch admits it beyond the free rows.
-        ``continuation_aware_admission=False`` counts such units against the
-        free rows like any other request; the KV is still retained and the
-        row still reused.
+        that row, so a prefill batch admits it beyond the free rows: the
+        session bridge counts the queued units that reuse a row.
+        ``continuation_aware_admission=False`` leaves the count to upstream,
+        which credits a unit's held row once the unit is in the batch, so a
+        batch admits such units only when it has a free row for the first
+        one; the KV is still retained and the row still reused.
     """
 
     session_bridge: ARSessionBridge | None = None
