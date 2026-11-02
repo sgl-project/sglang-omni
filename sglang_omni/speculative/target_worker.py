@@ -39,6 +39,8 @@ class SpeculativeTargetWorker:
         # An EAGLE draft extends on the embeddings the target prefilled with.
         self.publishes_prefill_input_embeds: bool = speculative_algorithm.is_eagle()
         self.omni_runner: ModelRunner | None = None
+        # note (0xtoward): the step in flight, in verify-row order; set by the scheduler.
+        self.verify_requests: list[SchedulerRequest] = []
 
     def attach_runner(self, omni_runner: ModelRunner) -> None:
         if omni_runner.tp_worker is not self.model_worker:
@@ -71,6 +73,18 @@ class SpeculativeTargetWorker:
                 skip_attn_backend_init
             )
             output = self.model_runner.forward(forward_batch=forward_batch)
+            requests = self.verify_requests
+            logits = output.logits_output.next_token_logits
+            if self.omni_runner is not None and requests and logits is not None:
+                assert logits.shape[0] % len(requests) == 0, (
+                    f"{logits.shape[0]} verify rows do not split over "
+                    f"{len(requests)} requests"
+                )
+                self.omni_runner.apply_speculative_verify_logits(
+                    output.logits_output, requests, logits.shape[0] // len(requests)
+                )
+            else:
+                pass
             return GenerationBatchResult(
                 logits_output=output.logits_output,
                 can_run_cuda_graph=output.can_run_graph,

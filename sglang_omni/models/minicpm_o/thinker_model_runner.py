@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from itertools import accumulate
 from typing import TYPE_CHECKING
 
 import torch
@@ -11,7 +12,10 @@ from sglang.srt.managers.scheduler import GenerationBatchResult
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
-from sglang_omni.models.minicpm_o.routing import THINKER_STAGE
+from sglang_omni.models.minicpm_o.routing import (
+    THINKER_STAGE,
+    should_generate_audio_output,
+)
 from sglang_omni.scheduling.types import (
     RequestOutput,
     SchedulerOutput,
@@ -37,6 +41,9 @@ else:
 
 class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
     """Run the thinker and accumulate hidden states for speech conditioning."""
+
+    speculative_verify_takes_logits_hooks = True
+    speculative_ignores_request_seed = True
 
     def __init__(
         self,
@@ -72,6 +79,8 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
             else get_server_return_hidden_states_mode()
         )
         self.pending_hidden: dict[str, list[torch.Tensor]] = {}
+        self.hands_hidden_to_talker = output_processor.capture_hidden
+        self.speculative_hidden_queue: dict[str, torch.Tensor] = {}
 
     def requested_capture_hidden_mode_prefill(
         self, schedule_batch: ScheduleBatch, requests: list[SchedulerRequest]
@@ -161,6 +170,71 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
                 # note (MayDomine): CUDA graph replay overwrites the original hidden buffer.
                 seq.append(hidden_rows[-1].detach().clone())
 
+    def after_speculative_step(
+        self, batch: ScheduleBatch, *, is_prefill: bool, num_draft_tokens: int
+    ) -> None:
+        """Queue each request's hidden rows for the tokens this step commits.
+
+        A prefill commits one token, generated from the last prompt row. A chain
+        verify commits the leading rows of a request's block, the rows plain decode
+        would have produced; emission trims the block to its committed tokens.
+        """
+        model = self.outer_model
+        if not self.hands_hidden_to_talker:
+            return
+        elif is_prefill:
+            end_rows = list(accumulate(batch.extend_lens))
+            last_rows = torch.tensor(
+                end_rows,
+                device=model.prefill_hidden_rows.device,
+            )
+            rows = model.prefill_hidden_rows[last_rows - 1]
+            start = 0
+            for index, (request, end) in enumerate(zip(batch.reqs, end_rows)):
+                payload = request.omni_data.stage_payload
+                prompt = (payload.data or {}).get("prompt") or {}
+                if not should_generate_audio_output(payload.request):
+                    pass
+                elif prompt.get("known_tts_output_ids") is not None:
+                    hidden = model.prefill_hidden_rows[start:end].detach().clone()
+                    self.pending_hidden.setdefault(request.rid, []).extend(
+                        hidden.unbind(0)
+                    )
+                else:
+                    self.speculative_hidden_queue[request.rid] = rows[index : index + 1]
+                start = end
+        else:
+            speaking = [
+                index
+                for index, req in enumerate(batch.reqs)
+                if should_generate_audio_output(req.omni_data.stage_payload.request)
+            ]
+            if not speaking:
+                return
+            else:
+                pass
+            block = model.speculative_hidden_rows[
+                : len(batch.reqs) * num_draft_tokens
+            ].clone()
+            for index in speaking:
+                start = index * num_draft_tokens
+                self.speculative_hidden_queue[batch.reqs[index].rid] = block[
+                    start : start + num_draft_tokens
+                ]
+
+    def on_speculative_tokens(
+        self, scheduler_request: SchedulerRequest, token_ids: list[int]
+    ) -> None:
+        """Append the queued rows of the committed tokens, which end at the stop."""
+        hidden = self.speculative_hidden_queue.pop(scheduler_request.request_id, None)
+        if hidden is None:
+            return
+        else:
+            pass
+        seq = self.pending_hidden.setdefault(scheduler_request.request_id, [])
+        # Row views would keep this step's whole block alive until the request ends.
+        seq.extend(hidden[: len(token_ids)].clone().unbind(0))
+
     def finalize_skip_rids(self, scheduler_output: SchedulerOutput) -> set[str]:
         """Do not advance generation state for non-final prefill chunks."""
         return {
@@ -173,6 +247,7 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         self, request_id: str, req_data: SGLangARRequestData
     ) -> None:
         """Flush the request's hidden accumulator with a single D2H copy."""
+        self.speculative_hidden_queue.pop(request_id, None)
         seq = self.pending_hidden.pop(request_id, None)
         if not seq:
             return
@@ -190,4 +265,5 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
 
     def reset_request(self, request_id: str) -> None:
         """Drop accumulated hidden states on abort (no terminal flush runs)."""
+        self.speculative_hidden_queue.pop(request_id, None)
         self.pending_hidden.pop(request_id, None)

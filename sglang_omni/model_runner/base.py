@@ -163,6 +163,10 @@ class ModelRunner(Generic[RequestDataInput]):
 
     # True when the model's own speculative verify applies repetition_penalty exactly.
     speculative_verifies_repetition_penalty: bool = False
+    # True when every verify row takes this runner's logits hooks, as its plain decode row would.
+    speculative_verify_takes_logits_hooks: bool = False
+    # True when the model's sampled DFlash or DSpark verify draws without the request seed.
+    speculative_ignores_request_seed: bool = False
     # An EAGLE draft extends on the embeddings the target prefilled with, which a
     # runner composing multimodal inputs keeps here for one prefill.
     retain_prefill_input_embeds: bool = False
@@ -712,6 +716,28 @@ class ModelRunner(Generic[RequestDataInput]):
                 self.cleanup_prefill(forward_batch, schedule_batch, requests)
             else:
                 pass
+
+    def apply_speculative_verify_logits(
+        self,
+        logits_output: LogitsProcessorOutput,
+        requests: list[SchedulerRequest],
+        rows_per_request: int,
+    ) -> None:
+        """Give every verify row the logits hooks its plain decode row would take.
+
+        Speculative verify samples outside sample_next_token_ids. The codec suppress
+        set and process_sampling_logits depend on the request but not the position,
+        so applying them to each of a request's rows is exact.
+        """
+        rows = [request for request in requests for _ in range(rows_per_request)]
+        self.apply_codec_suppress_tokens(logits_output, rows)
+        self.process_sampling_logits(logits_output, rows)
+
+    def after_speculative_step(
+        self, batch: ScheduleBatch, *, is_prefill: bool, num_draft_tokens: int
+    ) -> None:
+        """Hook right after a speculative step, before its tokens are emitted."""
+        return None
 
     def on_speculative_tokens(
         self, scheduler_request: SchedulerRequest, token_ids: list[int]

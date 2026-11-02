@@ -2007,6 +2007,12 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
         sampling_params = request.sampling_params
+        # note (0xtoward): the runner's own sampler draws a one-token request's token
+        # on the target prefill, which never reaches a verify.
+        if sampling_params.max_new_tokens == 1:
+            return None
+        else:
+            pass
         # note (wilsonzheng0327): SGLang's draft workers drop min_p and apply each
         # penalty once per verify block; logprobs come from the runner's sampler, which
         # speculative decode bypasses, and hidden-state results need the per-request
@@ -2017,6 +2023,14 @@ class OmniScheduler(Generic[RequestDataT]):
                 ("logprobs", request_data.return_logprob),
                 ("return_hidden_states", request.return_hidden_states),
                 ("min_p", sampling_params.min_p > 0.0),
+                (
+                    "seed",
+                    sampling_params.sampling_seed is not None
+                    and sampling_params.top_k != 1
+                    and self.spec_algorithm
+                    in (SpeculativeAlgorithm.DFLASH, SpeculativeAlgorithm.DSPARK)
+                    and self.model_runner.speculative_ignores_request_seed,
+                ),
                 ("frequency_penalty", sampling_params.frequency_penalty != 0.0),
                 ("presence_penalty", sampling_params.presence_penalty != 0.0),
                 (
@@ -2314,7 +2328,8 @@ class OmniScheduler(Generic[RequestDataT]):
 
     def run_speculative_batch(self, batch: ScheduleBatch) -> GenerationBatchResult:
         """Submit a draft/verify round; stream_output emits the committed tokens."""
-        if batch.forward_mode.is_extend():
+        is_prefill = batch.forward_mode.is_extend()
+        if is_prefill:
             # note (wilsonzheng0327): a re-prefilled request samples its next token
             # here, and speculative decode never cumulates penalty history.
             self.model_runner.restore_output_penalty_history(batch)
@@ -2367,10 +2382,22 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
         resolve_forward_inputs(batch, self.future_map)
+        if self.model_runner.speculative_verify_takes_logits_hooks:
+            # The next step of this loop replaces the list the verify reads here.
+            self.tp_worker.speculative_target_worker.verify_requests = (
+                self.build_sched_output(batch).requests
+            )
+        else:
+            pass
         with _Upstream._forward_isolation(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             self, batch, overlap=False
         ):
             result = self.draft_worker.forward_batch_generation(batch)
+        self.model_runner.after_speculative_step(
+            batch,
+            is_prefill=is_prefill,
+            num_draft_tokens=self.draft_worker.speculative_num_draft_tokens,
+        )
         batch.spec_info = result.next_draft_input
         new_sequence_lengths = result.new_seq_lens
         if (
