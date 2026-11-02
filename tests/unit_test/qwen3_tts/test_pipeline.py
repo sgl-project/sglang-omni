@@ -7262,7 +7262,7 @@ def admit_followup_stream(
 
 
 def record_decode_steps(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
-    """Enable profiling and collect (request_id, decode step) in emit order."""
+    """Enable event capture and collect decode steps in capture order."""
 
     class ActiveRecorder:
         def is_active(self) -> bool:
@@ -7270,21 +7270,22 @@ def record_decode_steps(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]
 
     decode_steps: list[tuple[str, str]] = []
 
-    def record_event(
-        *,
-        request_id: str,
-        stage: str | None,
+    def record_capture(
+        self: RequestEventBuffer,
         event_name: str,
-        metadata: dict[str, int | float | str],
-        timestamp_ns: int | None,
+        snapshots: Iterable[RequestEventSnapshot],
+        metadata: dict[str, object],
     ) -> None:
-        decode_steps.append(
-            (request_id, event_name.removeprefix("qwen3_tts_vocoder_decode_"))
-        )
+        for snapshot in snapshots:
+            decode_steps.append(
+                (
+                    snapshot.request_id,
+                    event_name.removeprefix("qwen3_tts_vocoder_decode_"),
+                )
+            )
 
     monkeypatch.setattr(qwen3_streaming_vocoder, "get_recorder", ActiveRecorder)
-    monkeypatch.setattr(event_recorder, "get_recorder", ActiveRecorder)
-    monkeypatch.setattr(event_recorder, "emit", record_event)
+    monkeypatch.setattr(RequestEventBuffer, "capture", record_capture)
     return decode_steps
 
 
