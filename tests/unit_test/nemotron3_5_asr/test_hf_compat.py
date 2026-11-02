@@ -16,7 +16,10 @@ from tokenizers.models import WordLevel
 from transformers.cache_utils import DynamicCache
 from transformers.generation import GenerationMixin
 
-from sglang_omni.models.nemotron3_5_asr.encoder import encode_pooled_streaming_batch
+from sglang_omni.models.nemotron3_5_asr.encoder import (
+    NemotronStreamingEncoderGraphRunner,
+    encode_pooled_streaming_batch,
+)
 from sglang_omni.models.nemotron3_5_asr.encoder_state_pool import (
     EncoderPoolLayout,
     NemotronEncoderStatePool,
@@ -340,6 +343,109 @@ def test_encoder_outputs_after_slot_reuse(
         )
         # note (wirybeaver): Batch size and padded history change floating-point reduction order.
         torch.testing.assert_close(actual, torch.cat(expected), rtol=1e-4, atol=1e-5)
+    pool.close()
+
+
+@torch.inference_mode()
+def test_conformer_pointwise_linear_matches_conv1d(
+    tiny_model_config: Nemotron3_5AsrConfig,
+) -> None:
+    """Both pointwise paths keep the Conv1d result of the convolution module."""
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(7)
+        model = Nemotron3_5AsrForRNNT(tiny_model_config).eval()
+    convolution_module = model.encoder.layers[0].conv
+    hidden_size = tiny_model_config.encoder_config.hidden_size
+    # note (Emre): The model initializes the biases to zero, so a dropped bias argument would still pass.
+    convolution_module.pointwise_conv1.bias.copy_(
+        torch.linspace(-1.0, 1.5, 2 * hidden_size)
+    )
+    convolution_module.pointwise_conv2.bias.copy_(
+        torch.linspace(0.75, -0.5, hidden_size)
+    )
+    generator = torch.Generator().manual_seed(11)
+    hidden_states = torch.randn(2, 6, hidden_size, generator=generator)
+    all_masked_rows = torch.zeros(2, 1, 6, dtype=torch.bool)
+    all_masked_rows[0, 0, -1] = True
+
+    expected = convolution_module.pointwise_conv1(hidden_states.transpose(1, 2))
+    expected = torch.nn.functional.glu(expected, dim=1)
+    expected = expected.masked_fill(all_masked_rows, 0.0)
+    expected = convolution_module.depthwise_conv(expected)
+    expected = convolution_module.norm(expected.transpose(1, 2)).transpose(1, 2)
+    expected = convolution_module.activation(expected)
+    expected = convolution_module.pointwise_conv2(expected).transpose(1, 2)
+
+    for use_linear_pointwise in (False, True):
+        actual = convolution_module(
+            hidden_states,
+            all_masked_rows=all_masked_rows,
+            use_linear_pointwise=use_linear_pointwise,
+        )
+        torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@torch.inference_mode()
+def test_streaming_encoder_graph_replay_matches_eager(
+    tiny_model_config: Nemotron3_5AsrConfig,
+) -> None:
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(7)
+        model = Nemotron3_5AsrForRNNT(tiny_model_config).eval().cuda()
+    pool = NemotronEncoderStatePool(EncoderPoolLayout.from_model(model), 6)
+    graph_runner = NemotronStreamingEncoderGraphRunner(
+        model,
+        pool,
+        subsequent_mel_frames=8,
+        num_lookahead_tokens=3,
+        max_batch_size=2,
+    )
+    assert set(graph_runner.captured_batches) == {1, 2}
+    graph_slots = [pool.acquire(), pool.acquire()]
+    eager_slots = [pool.acquire(), pool.acquire()]
+    prompt_ids = torch.tensor([0, 1], device="cuda")
+    generator = torch.Generator().manual_seed(11)
+    for step in range(5):
+        mel_frames = 7 if step == 0 else 8
+        features = []
+        for _ in graph_slots:
+            features.append(torch.randn(1, mel_frames, 4, generator=generator).cuda())
+        graph_output = encode_pooled_streaming_batch(
+            model,
+            features,
+            prompt_ids,
+            encoder_slots=graph_slots,
+            num_lookahead_tokens=3,
+            graph_runner=graph_runner,
+        )
+        eager_output = encode_pooled_streaming_batch(
+            model,
+            features,
+            prompt_ids,
+            encoder_slots=eager_slots,
+            num_lookahead_tokens=3,
+        )
+        assert torch.equal(graph_output, eager_output)
+    for graph_slot, eager_slot in zip(graph_slots, eager_slots, strict=True):
+        assert torch.equal(
+            pool.key_states[:, graph_slot.slot_id],
+            pool.key_states[:, eager_slot.slot_id],
+        )
+        assert torch.equal(
+            pool.value_states[:, graph_slot.slot_id],
+            pool.value_states[:, eager_slot.slot_id],
+        )
+        for convolution_states in pool.convolution_states.values():
+            assert torch.equal(
+                convolution_states[graph_slot.slot_id],
+                convolution_states[eager_slot.slot_id],
+            )
+        assert (
+            pool.seen_frames[graph_slot.slot_id] == pool.seen_frames[eager_slot.slot_id]
+        )
+    graph_runner.close()
     pool.close()
 
 

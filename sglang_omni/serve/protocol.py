@@ -441,6 +441,7 @@ class CreateSpeechRequest(BaseModel):
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None
+    epsilon_cutoff: float | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
 
@@ -478,6 +479,7 @@ class SpeechBatchItem(BaseModel):
     temperature: object = None
     top_p: object = None
     top_k: object = None
+    epsilon_cutoff: object = None
     repetition_penalty: object = None
     seed: object = None
     stage_params: object = None
@@ -513,6 +515,7 @@ class CreateSpeechBatchRequest(BaseModel):
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None
+    epsilon_cutoff: float | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
     stage_params: dict[str, dict[str, object]] | None = None
@@ -578,6 +581,7 @@ class SpeechStreamSessionConfig(BaseModel):
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None
+    epsilon_cutoff: float | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
     stage_params: dict[str, dict[str, object]] | None = None

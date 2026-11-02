@@ -42,9 +42,9 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 # The public S2-Pro codec decodes every frame to exactly this many samples.
 SAMPLES_PER_FRAME = 2048
 SAMPLE_RATE = 44100
-# Windows of 10, 10, 12, 32, 64 and 64 frames, then a 22-frame tail.
+# Windows of 4, 10, 12, 32, 64 and 64 frames, then a 28-frame tail.
 STREAMED_FRAME_COUNT = 214
-STREAMED_CHUNK_FRAMES = [10, 10, 12, 32, 64, 64, 22]
+STREAMED_CHUNK_FRAMES = [4, 10, 12, 32, 64, 64, 28]
 MAX_RUNNING_REQUESTS = 16
 STARTUP_TIMEOUT_S = 900
 REQUEST_TIMEOUT_S = 300.0

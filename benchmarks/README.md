@@ -440,18 +440,13 @@ The harness follows the session protocol merged in
 output epochs, `response.cancel` and the `session.closed.held` resource receipt.
 Use a VoiceChat server that includes this protocol and record its actual revision.
 
-This needs **two checkouts**, because neither side contains the other: the
-launcher `examples/run_nemotron_voicechat_duplex.py` exists only in the pinned
-target, and `benchmarks/duplex/` exists only here. Run the server from the
-target checkout and the harness from this one.
-
 ```bash
-# Terminal A — in the pinned target checkout: serve the native duplex endpoint
-python examples/run_nemotron_voicechat_duplex.py \
-    --model-path nvidia/NVIDIA-NemotronLabs-VoiceChat-11B \
-    --serve --port 8097
+# Terminal A — serve the native duplex endpoint
+python -m sglang_omni.cli serve \
+    --model-path nvidia/NVIDIA-NemotronLabs-VoiceChat-11B --variant session \
+    --enable-realtime --port 8097
 
-# Terminal B — in this repository: record and grade the continuous case
+# Terminal B — record and grade the continuous case
 python -m benchmarks.eval.benchmark_duplex \
     --url ws://127.0.0.1:8097/v1/realtime \
     --audio caller-16k.wav \

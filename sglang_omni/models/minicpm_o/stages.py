@@ -47,6 +47,7 @@ from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.scheduling.streaming_detokenizer import StreamingDetokenizeScheduler
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
+from sglang_omni.utils.cpu import automatic_video_decode_threads
 from sglang_omni.utils.device import resolve_concrete_device
 from sglang_omni.utils.misc import avail_gpu_mem
 
@@ -60,14 +61,20 @@ def create_preprocessing_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     max_concurrency: int,
+    video_decode_threads: int | None = None,
 ) -> (
     SimpleScheduler[StagePayload, StagePayload]
     | ThreadedSimpleScheduler[StagePayload, StagePayload]
 ):
+    if video_decode_threads is None:
+        video_decode_threads = automatic_video_decode_threads(max_concurrency)
+    else:
+        pass
     preprocessor = MiniCPMOPreprocessor(
         model_path,
         speech_enabled=speech_enabled,
         device=resolve_concrete_device(device, gpu_id),
+        video_decode_threads=video_decode_threads,
     )
 
     async def preprocess_with_events(payload: StagePayload) -> StagePayload:

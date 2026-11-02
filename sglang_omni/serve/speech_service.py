@@ -980,7 +980,13 @@ class SpeechRequestValidator:
                 pass
         else:
             pass
-        for field_name in ("speed", "temperature", "top_p", "repetition_penalty"):
+        for field_name in (
+            "speed",
+            "temperature",
+            "top_p",
+            "epsilon_cutoff",
+            "repetition_penalty",
+        ):
             if field_name in payload and payload[field_name] is not None:
                 value = payload[field_name]
                 if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -1224,6 +1230,7 @@ def build_sampling_params(request: CreateSpeechRequest) -> SamplingParams:
         temperature=request.temperature,
         top_p=request.top_p,
         top_k=request.top_k,
+        epsilon_cutoff=request.epsilon_cutoff,
         repetition_penalty=request.repetition_penalty,
         seed=request.seed,
         max_new_tokens=request.max_new_tokens,
