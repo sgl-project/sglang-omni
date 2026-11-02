@@ -160,6 +160,21 @@ class RequestEventRecorder:
             session_identity, decision
         )
 
+    def session_sampling_identity_for_request(
+        self, request_id: str
+    ) -> tuple[str, int] | None:
+        """Return an admitted request's cached session identity for stream transport."""
+        run_state = self.active_state
+        if (
+            run_state is None
+            or run_state.mode != "runtime"
+            or run_state.sampling_unit != "session"
+        ):
+            return None
+        else:
+            pass
+        return run_state.request_session_identities.get(request_id)
+
     def record_request_admission(
         self,
         request_id: str,
@@ -223,6 +238,7 @@ class RequestEventRecorder:
         *,
         event_metadata: Mapping[str, object] | None = None,
         request_metadata: Mapping[str, object] | None = None,
+        sampling_session_identity: tuple[str, int] | None = None,
     ) -> bool:
         if run_state.mode != "runtime":
             return True
@@ -232,12 +248,14 @@ class RequestEventRecorder:
         if cached_decision is not None:
             return cached_decision
         elif run_state.sampling_unit == "request":
-            decision = self.deterministic_sampling_decision(run_state, request_id)
-            run_state.request_sampling_decisions.setdefault(request_id, decision)
-            return run_state.request_sampling_decisions[request_id]
+            return self.deterministic_sampling_decision(run_state, request_id)
         else:
             pass
-        session_identity = self.session_identity_from_metadata(event_metadata)
+        session_identity = sampling_session_identity
+        if session_identity is None:
+            session_identity = self.session_identity_from_metadata(event_metadata)
+        else:
+            pass
         if session_identity is None:
             session_identity = self.session_identity_from_metadata(request_metadata)
         else:
@@ -301,6 +319,7 @@ class RequestEventRecorder:
         event_metadata: Mapping[str, object] | None = None,
         expected_run_id: str | None = None,
         expected_run_state: RecorderRunState | None = None,
+        sampling_session_identity: tuple[str, int] | None = None,
     ) -> ProducerBuffer | None:
         """Reserve one producer operation before stop can freeze its buffer."""
         observed_state = self.active_state
@@ -321,11 +340,20 @@ class RequestEventRecorder:
                 return None
             else:
                 pass
+            if observed_state.file_size_limit_reached:
+                return None
+            else:
+                pass
             if request_id is not None and not self.should_sample_request(
                 observed_state,
                 request_id,
                 event_metadata=event_metadata,
+                sampling_session_identity=sampling_session_identity,
             ):
+                return None
+            else:
+                pass
+            if observed_state.file_size_limit_reached:
                 return None
             else:
                 pass
@@ -408,6 +436,7 @@ class RequestEventRecorder:
         metadata: Mapping[str, object] | None = None,
         timestamp_ns: int | None = None,
         expected_run_id: str | None = None,
+        sampling_session_identity: tuple[str, int] | None = None,
     ) -> None:
         """Append one event without waiting for storage or another producer."""
         try:
@@ -415,6 +444,7 @@ class RequestEventRecorder:
                 request_id=request_id,
                 event_metadata=metadata,
                 expected_run_id=expected_run_id,
+                sampling_session_identity=sampling_session_identity,
             )
         except Exception:
             return
@@ -427,6 +457,10 @@ class RequestEventRecorder:
 
         run_state = producer_buffer.run_state
         try:
+            if run_state.mode == "runtime" and run_state.file_size_limit_reached:
+                return
+            else:
+                pass
             if expected_run_id is not None and expected_run_id != run_state.run_id:
                 return
             else:
@@ -450,12 +484,20 @@ class RequestEventRecorder:
                 return
             else:
                 pass
+            if run_state.mode == "runtime" and run_state.file_size_limit_reached:
+                return
+            else:
+                pass
             try:
                 captured_metadata = snapshot_metadata(metadata)
             except Exception:
                 producer_buffer.metadata_snapshot_failures += 1
                 producer_buffer.dropped_events += 1
                 producer_buffer.incomplete_reasons.add("metadata_snapshot_failure")
+                return
+            else:
+                pass
+            if run_state.mode == "runtime" and run_state.file_size_limit_reached:
                 return
             else:
                 pass
@@ -794,7 +836,13 @@ class RequestEventRecorder:
                     run_state,
                     None if run_state.writer_failed else file_handle,
                 ):
-                    pass
+                    if any(
+                        producer_buffer.events
+                        for producer_buffer in run_state.producer_buffers
+                    ):
+                        time.sleep(RUNTIME_WRITER_POLL_INTERVAL_SECONDS)
+                    else:
+                        pass
                 else:
                     pass
                 file_handle = self.close_event_file(run_state, file_handle)

@@ -77,10 +77,18 @@ class RequestEventBuffer(threading.local):
             pass
         expected_run_state: RecorderRunState | None = None
         if observed_state.mode == "runtime":
+            if observed_state.file_size_limit_reached:
+                return
+            else:
+                pass
             expected_run_state = observed_state
             snapshot_iterator = iter(snapshots)
             selected_snapshot: RequestEventSnapshot | None = None
             for snapshot in snapshot_iterator:
+                if observed_state.file_size_limit_reached:
+                    return
+                else:
+                    pass
                 if recorder.should_sample_request(
                     observed_state,
                     snapshot.request_id,
@@ -101,7 +109,8 @@ class RequestEventBuffer(threading.local):
                     (
                         snapshot
                         for snapshot in snapshot_iterator
-                        if recorder.should_sample_request(
+                        if not observed_state.file_size_limit_reached
+                        and recorder.should_sample_request(
                             observed_state,
                             snapshot.request_id,
                             event_metadata=metadata,
@@ -124,6 +133,11 @@ class RequestEventBuffer(threading.local):
         else:
             pass
         run_state = producer_buffer.run_state
+        if run_state.mode == "runtime" and run_state.file_size_limit_reached:
+            producer_buffer.in_flight -= 1
+            return
+        else:
+            pass
         timestamp_ns = time.time_ns()
         monotonic_seconds = time.monotonic()
         worker_name = threading.current_thread().name
@@ -134,6 +148,10 @@ class RequestEventBuffer(threading.local):
             else:
                 pass
             for snapshot in snapshots:
+                if run_state.mode == "runtime" and run_state.file_size_limit_reached:
+                    break
+                else:
+                    pass
                 if (
                     len(producer_buffer.events) + producer_buffer.pending_event_count
                     >= producer_buffer.capacity
@@ -257,6 +275,7 @@ def emit(
     event_name: str,
     metadata: Mapping[str, object] | None = None,
     timestamp_ns: int | None = None,
+    sampling_session_identity: tuple[str, int] | None = None,
 ) -> None:
     """Module-level shortcut for the process recorder."""
     RECORDER.emit(
@@ -265,6 +284,7 @@ def emit(
         event_name=event_name,
         metadata=metadata,
         timestamp_ns=timestamp_ns,
+        sampling_session_identity=sampling_session_identity,
     )
 
 

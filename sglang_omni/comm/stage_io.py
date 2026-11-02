@@ -27,6 +27,7 @@ from sglang_omni.proto.messages import (
     StageDataRef,
     StreamChunkBatchMessage,
 )
+from sglang_omni.proto.session import SessionIdentityDict
 from sglang_omni.relay.base import Relay, RelayOperation
 from sglang_omni.relay.shm import ShmRelay
 
@@ -375,6 +376,7 @@ class BatchedStreamChunk:
     chunk_id: int
     data: torch.Tensor
     metadata: dict[str, object] | None
+    session_sampling_identity: SessionIdentityDict | None = None
 
 
 def pack_stream_chunk_batch(
@@ -403,6 +405,11 @@ def pack_stream_chunk_batch(
         tensor_bytes=tensor_bytes,
         pickled_metadata=pickle.dumps([chunk.metadata for chunk in chunks]),
         replica_bindings=replica_bindings,
+        session_sampling_identities=(
+            [chunk.session_sampling_identity for chunk in chunks]
+            if any(chunk.session_sampling_identity is not None for chunk in chunks)
+            else None
+        ),
     )
 
 
@@ -410,13 +417,25 @@ def unpack_stream_chunk_batch(
     message: StreamChunkBatchMessage,
 ) -> list[BatchedStreamChunk]:
     chunks: list[BatchedStreamChunk] = []
-    for request_id, chunk_id, dtype_name, shape, chunk_bytes, metadata in zip(
+    sampling_identities = message.session_sampling_identities or [
+        None
+    ] * len(message.request_ids)
+    for (
+        request_id,
+        chunk_id,
+        dtype_name,
+        shape,
+        chunk_bytes,
+        metadata,
+        sampling_identity,
+    ) in zip(
         message.request_ids,
         message.chunk_ids,
         message.dtypes,
         message.shapes,
         message.tensor_bytes,
         pickle.loads(message.pickled_metadata),
+        sampling_identities,
         strict=True,
     ):
         if type(chunk_bytes) is not bytes:
@@ -436,7 +455,11 @@ def unpack_stream_chunk_batch(
             data = torch.empty(shape, dtype=dtype)
         chunks.append(
             BatchedStreamChunk(
-                request_id=request_id, chunk_id=chunk_id, data=data, metadata=metadata
+                request_id=request_id,
+                chunk_id=chunk_id,
+                data=data,
+                metadata=metadata,
+                session_sampling_identity=sampling_identity,
             )
         )
     return chunks

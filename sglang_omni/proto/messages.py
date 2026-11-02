@@ -14,6 +14,7 @@ from sglang_omni.proto.kv_transfer import (
     KVTransferReadyMessage,
 )
 from sglang_omni.proto.request import StagePayload
+from sglang_omni.proto.session import SessionIdentityDict
 
 
 class DirectCudaIpcTensor(TypedDict):
@@ -53,6 +54,7 @@ class DataReadyMessage:
     is_done: bool = False
     error: str | None = None
     replica_bindings: dict[str, int] | None = None
+    session_sampling_identity: SessionIdentityDict | None = None
 
     def to_dict(self) -> dict[str, object]:
         require_str(self.request_id, "request_id")
@@ -107,6 +109,12 @@ class DataReadyMessage:
             d["replica_bindings"] = dict(self.replica_bindings)
         else:
             pass
+        if self.session_sampling_identity is not None:
+            d["session_sampling_identity"] = require_session_sampling_identity(
+                self.session_sampling_identity
+            )
+        else:
+            pass
         return d
 
     @classmethod
@@ -157,6 +165,13 @@ class DataReadyMessage:
             is_done=is_done,
             error=error,
             replica_bindings=d.get("replica_bindings"),
+            session_sampling_identity=(
+                None
+                if d.get("session_sampling_identity") is None
+                else require_session_sampling_identity(
+                    d.get("session_sampling_identity")
+                )
+            ),
         )
 
 
@@ -176,9 +191,10 @@ class StreamChunkBatchMessage:
     tensor_bytes: list[bytes]
     pickled_metadata: bytes
     replica_bindings: dict[str, dict[str, int]]
+    session_sampling_identities: list[SessionIdentityDict | None] | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        d: dict[str, object] = {
             "type": "stream_chunk_batch",
             "from_stage": self.from_stage,
             "to_stage": self.to_stage,
@@ -190,6 +206,22 @@ class StreamChunkBatchMessage:
             "pickled_metadata": self.pickled_metadata,
             "replica_bindings": self.replica_bindings,
         }
+        if self.session_sampling_identities is not None:
+            if len(self.session_sampling_identities) != len(self.request_ids):
+                raise ValueError(
+                    "stream chunk batch session sampling identities must match chunks"
+                )
+            else:
+                pass
+            d["session_sampling_identities"] = [
+                None
+                if identity is None
+                else require_session_sampling_identity(identity)
+                for identity in self.session_sampling_identities
+            ]
+        else:
+            pass
+        return d
 
     @classmethod
     def from_dict(cls, d: Mapping[str, object]) -> "StreamChunkBatchMessage":
@@ -210,6 +242,25 @@ class StreamChunkBatchMessage:
             require_str(request_id, "request_id")
         for chunk_id in chunk_ids:
             require_non_negative_int(chunk_id, "chunk_id")
+        session_sampling_identities = d.get("session_sampling_identities")
+        if session_sampling_identities is not None:
+            if type(session_sampling_identities) is not list:
+                raise TypeError(
+                    "stream chunk batch session sampling identities must be a list"
+                )
+            elif len(session_sampling_identities) != len(request_ids):
+                raise ValueError(
+                    "stream chunk batch session sampling identities must match chunks"
+                )
+            else:
+                session_sampling_identities = [
+                    None
+                    if identity is None
+                    else require_session_sampling_identity(identity)
+                    for identity in session_sampling_identities
+                ]
+        else:
+            pass
         pickled_metadata = d.get("pickled_metadata")
         if type(pickled_metadata) is not bytes:
             raise TypeError("stream chunk batch pickled_metadata must be bytes")
@@ -230,6 +281,7 @@ class StreamChunkBatchMessage:
             tensor_bytes=tensor_bytes,
             pickled_metadata=pickled_metadata,
             replica_bindings=replica_bindings,
+            session_sampling_identities=session_sampling_identities,
         )
 
 
@@ -664,3 +716,16 @@ def require_non_negative_int(value: object, name: str) -> int:
     else:
         pass
     return value
+
+
+def require_session_sampling_identity(value: object) -> SessionIdentityDict:
+    if not isinstance(value, Mapping):
+        raise TypeError("session_sampling_identity must be a mapping")
+    else:
+        pass
+    return {
+        "id": require_str(value.get("id"), "session_sampling_identity.id"),
+        "open_index": require_non_negative_int(
+            value.get("open_index"), "session_sampling_identity.open_index"
+        ),
+    }

@@ -44,7 +44,12 @@ retained_events <= sum(process producer_buffer_count * event_buffer_capacity)
 approximate_memory = retained_events * estimated_bytes_per_event
 ```
 
-Bytes per event depends on the workload and Python object contents; measure it when accurate memory budgeting matters. A larger capacity can increase post-stop serialization and flush time. Overflow still drops events and marks the trace incomplete. Linux `SCHED_IDLE` is best effort and cannot guarantee zero Python GIL or CPU interference.
+Bytes per event depends on the workload and Python object contents; measure it when
+accurate memory budgeting matters. A larger capacity can increase post-stop
+serialization and flush time. Runtime finalization continues draining in bounded,
+paced batches, so a large backlog can take longer to finalize. Overflow still drops
+events and marks the trace incomplete. Linux `SCHED_IDLE` is best effort and cannot
+guarantee zero Python GIL or CPU interference.
 
 Each OS thread registers its buffer once under a small control lock. Cached producers then capture timestamps, stage attribution, and bounded metadata without acquiring that lock. Buffer admission is the stop cutoff: the writer waits asynchronously for admitted operations, while a capture that has not reserved a buffer before stop is ignored and does not consume its snapshots. `RequestEventBuffer` uses the same producer buffer: deferred records count against the same event limit and are snapshotted once. In both modes, producers do not start writers, open files, serialize JSON, flush, or enqueue into a shared queue. Performance mode performs JSON serialization, file operations, and flushes only after deactivation; Runtime mode performs them on its separate writer while profiling is active.
 
@@ -56,7 +61,18 @@ Each finalized run also attempts to write `run_status_<pid>.json` beside the JSO
 
 `POST /start_request_profile` defaults to Performance mode and preserves the existing post-stop writer behavior. Runtime mode is opt-in, starts its process-local writer with the run, and requires both `sampling_unit` and `sample_rate`; configuration cannot change until that run is finalized. Runtime mode does not enable Torch profiling, and `/stop_request_profile` stops either mode.
 
-Request sampling hashes `request_id`; session sampling hashes `(session_id, session_open_index)`, so independent coordinator, Stage, and TP processes make the same decision for a given run. The run ID is part of the stable BLAKE2b sampling key. Session sampling keeps every operation and audio Unit for a selected session eligible, including a `session_unit_ready` event recorded before its operation is submitted. Intentionally unsampled requests are not counted as drops.
+Request sampling hashes `request_id`; an unregistered ID is hashed without being
+retained, and admission establishes the cache used until normal request cleanup.
+Session sampling hashes `(session_id, session_open_index)`, so independent coordinator,
+Stage, and TP processes make the same decision for a given run. The run ID is part of
+the stable BLAKE2b sampling key. Session sampling keeps every operation and audio Unit
+for a selected session eligible, including a `session_unit_ready` event recorded
+before its operation is submitted. A stream sender carries the two-field session
+identity in the existing chunk envelope so eligible pre-payload receive events use
+the same decision. A sender without an admitted session identity cannot provide that
+pre-payload context. `complete` and `completeness_scope` describe sampled-event
+storage only; they do not establish semantic event coverage. Intentionally unsampled
+requests are not counted as drops.
 
 Start a 1% request-sampled profile with a 1024-event per-producer limit and the default 256 MiB per-process event-file limit:
 
@@ -82,7 +98,19 @@ curl -X POST http://127.0.0.1:8000/stop_request_profile \
 
 The memory ceiling is at most `16 × event_buffer_capacity` retained records per process, including deferred records; actual memory depends on Python object overhead and bounded metadata size. A larger capacity increases possible memory use. Runtime mode writes at most `max_event_file_bytes` of serialized JSONL per process and never splits a record; the default is 256 MiB. Each process produces one JSONL file and one status file, so the aggregate event-file ceiling is the per-process limit multiplied by the number of profiling processes. Use a fresh, empty event directory for each run.
 
-Sampling controls which requests or sessions are intentionally recorded. Overflow and persistence failures concern selected events: selected records rejected at producer capacity increment `dropped_events`, and accepted records that cannot be written increment `unwritten_events`. Reaching the Runtime file-size limit stops further writes and adds `file_size_limit_reached`; it does not rotate or delete files. `complete: true` means sampled-event storage completed according to that process's counters. It does not mean every request was sampled, establish end-to-end completeness across TP ranks, or cover requests crossing profile start/stop boundaries.
+Sampling controls which requests or sessions are intentionally recorded. Overflow and
+persistence failures concern selected events: selected records rejected at producer
+capacity increment `dropped_events`, and accepted records that cannot be written
+increment `unwritten_events`. Once the Runtime writer flags the file-size limit, later
+producer calls skip sampling, timestamps, metadata snapshots, and buffer capture
+without incrementing accepted, dropped, written, or overflow counters. Calls already
+in flight may still finish and follow normal accepted or dropped accounting. Reaching
+the limit stops further writes and adds `file_size_limit_reached`; it does not rotate
+or delete files, and the trace remains incomplete. `complete: true` means storage of
+sampled events completed according to that process's counters. It does not count
+events skipped after cap exhaustion, mean every request was sampled, establish
+semantic completeness or end-to-end completeness across TP ranks, or cover requests
+crossing profile start/stop boundaries.
 
 The writer requests Linux `SCHED_IDLE` as a best effort. That scheduling policy does not eliminate Python GIL contention or guarantee zero CPU interference. Each OS process owns its own recorder, writer, JSONL file, buffer budget, and disk limit. Colocated stages in one process share them; coordinator and TP-rank processes each have their own. Multiple MPS clients likewise create separate process-local writers and files. Deterministic sampling aligns their selected request/session identities but does not prove that every process emitted or persisted every event.
 

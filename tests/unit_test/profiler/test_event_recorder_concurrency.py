@@ -13,12 +13,15 @@ import pytest
 from sglang_omni.profiler import event_recorder as event_recorder_module
 from sglang_omni.profiler import event_recorder_writer
 from sglang_omni.profiler.event_recorder import (
+    RequestEvent,
     RequestEventBuffer,
     RequestEventRecorder,
     RequestEventSnapshot,
 )
 from sglang_omni.profiler.event_recorder_types import (
     MAX_PRODUCER_BUFFERS,
+    RUNTIME_WRITER_MAX_EVENTS_PER_ROUND,
+    RUNTIME_WRITER_POLL_INTERVAL_SECONDS,
     RecorderRunState,
 )
 from tests.unit_test.profiler.event_recorder_test_utils import (
@@ -287,6 +290,34 @@ def test_runtime_request_sampling_matches_independent_recorders(
             sampling_unit="request",
             sample_rate=0.35,
         )
+        assert recorder.active_state is not None
+        for request_number in range(12):
+            request_id = f"unadmitted-{request_number}"
+            decision = recorder.deterministic_sampling_decision(
+                recorder.active_state, request_id
+            )
+            assert recorder.should_sample_request(
+                recorder.active_state, request_id
+            ) is decision
+            recorder.emit(
+                request_id=request_id,
+                stage="coordinator",
+                event_name="session_unit_ready",
+            )
+        assert not any(
+            request_id.startswith("unadmitted-")
+            for request_id in recorder.active_state.request_sampling_decisions
+        )
+        recorder.record_request_admission(
+            "later-admitted",
+            {},
+            stage_name="coordinator",
+        )
+        assert "later-admitted" in recorder.active_state.request_sampling_decisions
+        recorder.clear_request_sampling(
+            "later-admitted", stage_name="coordinator"
+        )
+        assert "later-admitted" not in recorder.active_state.request_sampling_decisions
         for request_number in range(80):
             request_id = f"request-{request_number}"
             recorder.record_request_admission(
@@ -316,6 +347,99 @@ def test_runtime_request_sampling_matches_independent_recorders(
     assert sampled_request_ids[0]
 
 
+def test_runtime_final_drain_is_batched_paced_and_asynchronous(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = RequestEventRecorder(queue_capacity=96)
+    writer_entered = threading.Event()
+    release_setup = threading.Event()
+    pacing_entered = threading.Event()
+    release_pacing = threading.Event()
+    final_batch_sizes: list[int] = []
+    pacing_intervals: list[float] = []
+
+    def pause_writer(run_state: RecorderRunState) -> None:
+        writer_entered.set()
+        if not release_setup.wait(timeout=5):
+            raise AssertionError("test did not release the runtime writer")
+        else:
+            pass
+        run_state.writer_scheduling = "default"
+
+    original_drain = recorder.drain_runtime_buffers
+
+    def track_drain(
+        run_state: RecorderRunState, file_handle: TextIOWrapper | None
+    ) -> int:
+        stopping = run_state.stop_requested.is_set()
+        count = original_drain(run_state, file_handle)
+        if stopping and count:
+            assert count <= RUNTIME_WRITER_MAX_EVENTS_PER_ROUND
+            final_batch_sizes.append(count)
+        else:
+            pass
+        return count
+
+    def pause_between_batches(interval: float) -> None:
+        pacing_intervals.append(interval)
+        pacing_entered.set()
+        if not release_pacing.wait(timeout=5):
+            raise AssertionError("test did not release final-drain pacing")
+        else:
+            pass
+
+    monkeypatch.setattr(recorder, "set_writer_scheduling", pause_writer)
+    monkeypatch.setattr(recorder, "drain_runtime_buffers", track_drain)
+    monkeypatch.setattr(event_recorder_writer.time, "sleep", pause_between_batches)
+    path = recorder.start(
+        "runtime-final-drain",
+        str(tmp_path),
+        "stage",
+        mode="runtime",
+        sampling_unit="request",
+        sample_rate=1.0,
+    )
+    assert writer_entered.wait(timeout=5)
+    accepted_count = RUNTIME_WRITER_MAX_EVENTS_PER_ROUND * 2 + 1
+    for event_number in range(accepted_count):
+        recorder.emit(
+            request_id="request",
+            stage="stage",
+            event_name="event",
+            metadata={"number": event_number},
+        )
+
+    assert recorder.stop(wait=False) == path
+    assert recorder.draining_state is not None
+    finalization = recorder.draining_state.finalization
+    assert finalization.completion_event.is_set() is False
+    release_setup.set()
+    assert pacing_entered.wait(timeout=5)
+    assert finalization.completion_event.is_set() is False
+    assert final_batch_sizes == [RUNTIME_WRITER_MAX_EVENTS_PER_ROUND]
+
+    release_pacing.set()
+    assert finalization.wait(timeout_seconds=5) is True
+
+    assert final_batch_sizes == [
+        RUNTIME_WRITER_MAX_EVENTS_PER_ROUND,
+        RUNTIME_WRITER_MAX_EVENTS_PER_ROUND,
+        1,
+    ]
+    assert pacing_intervals == [
+        RUNTIME_WRITER_POLL_INTERVAL_SECONDS,
+        RUNTIME_WRITER_POLL_INTERVAL_SECONDS,
+    ]
+    assert len(read_events(path)) == accepted_count
+    status = read_status(path)
+    assert status["accepted_events"] == accepted_count
+    assert status["processed_events"] == accepted_count
+    assert status["written_events"] == accepted_count
+    assert status["unwritten_events"] == 0
+    assert status["complete"] is True
+
+
 def test_runtime_session_sampling_covers_units_and_ready_boundary(
     tmp_path: Path,
 ) -> None:
@@ -329,6 +453,33 @@ def test_runtime_session_sampling_covers_units_and_ready_boundary(
         sample_rate=1.0,
     )
     session_identity = {"id": "session-A", "open_index": 3}
+    pre_payload_request_id = "session-operation-pre-payload"
+    recorder.emit(
+        request_id=pre_payload_request_id,
+        stage="stage",
+        event_name="stage_stream_chunk_received",
+        sampling_session_identity=("session-A", 3),
+    )
+    assert recorder.active_state is not None
+    assert (
+        pre_payload_request_id
+        not in recorder.active_state.request_sampling_decisions
+    )
+    recorder.record_request_admission(
+        pre_payload_request_id,
+        {
+            "omni_session": {
+                "operation": "append",
+                "session_identity": session_identity,
+            }
+        },
+        stage_name="stage",
+    )
+    recorder.emit(
+        request_id=pre_payload_request_id,
+        stage="stage",
+        event_name="stage_input_received",
+    )
     request_ids = [
         f"session-operation-{operation}" for operation in ("open", "append", "close")
     ]
@@ -366,9 +517,9 @@ def test_runtime_session_sampling_covers_units_and_ready_boundary(
     events = read_events(path)
     event_counts = {
         request_id: sum(event["request_id"] == request_id for event in events)
-        for request_id in request_ids
+        for request_id in (*request_ids, pre_payload_request_id)
     }
-    assert event_counts == dict.fromkeys(request_ids, 2)
+    assert event_counts == dict.fromkeys((*request_ids, pre_payload_request_id), 2)
     assert "ordinary-request" not in {event["request_id"] for event in events}
     status = read_status(path)
     assert status["dropped_events"] == 0
@@ -520,9 +671,48 @@ def test_runtime_buffer_overflow_is_counted_while_writer_is_paused(
 
 
 def test_runtime_disk_cap_reports_unwritten_events_without_partial_records(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     recorder = RequestEventRecorder(queue_capacity=8)
+    limit_reached = threading.Event()
+    original_write_event = recorder.write_event
+    original_snapshot_metadata = event_recorder_writer.snapshot_metadata
+    original_should_sample = recorder.should_sample_request
+    original_time_ns = event_recorder_writer.time.time_ns
+    snapshot_calls = 0
+    sampling_calls = 0
+    timestamp_calls = 0
+
+    def write_event(
+        request_event: RequestEvent,
+        file_handle: TextIOWrapper,
+        run_state: RecorderRunState,
+    ) -> None:
+        original_write_event(request_event, file_handle, run_state)
+        if run_state.file_size_limit_reached:
+            limit_reached.set()
+        else:
+            pass
+
+    def snapshot_metadata(metadata: object) -> dict[str, object]:
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+        return original_snapshot_metadata(metadata)
+
+    def should_sample_request(*arguments: object, **keyword_arguments: object) -> bool:
+        nonlocal sampling_calls
+        sampling_calls += 1
+        return original_should_sample(*arguments, **keyword_arguments)
+
+    def time_ns() -> int:
+        nonlocal timestamp_calls
+        timestamp_calls += 1
+        return original_time_ns()
+
+    monkeypatch.setattr(recorder, "write_event", write_event)
+    monkeypatch.setattr(event_recorder_writer, "snapshot_metadata", snapshot_metadata)
+    monkeypatch.setattr(recorder, "should_sample_request", should_sample_request)
+    monkeypatch.setattr(event_recorder_writer.time, "time_ns", time_ns)
     path = recorder.start(
         "runtime-disk-cap",
         str(tmp_path),
@@ -532,15 +722,41 @@ def test_runtime_disk_cap_reports_unwritten_events_without_partial_records(
         sample_rate=1.0,
         max_event_file_bytes=1,
     )
-    recorder.emit(request_id="request-1", stage="stage", event_name="event")
-    recorder.emit(request_id="request-2", stage="stage", event_name="event")
+    recorder.emit(
+        request_id="request-1",
+        stage="stage",
+        event_name="event",
+        metadata={"value": 1},
+    )
+    assert limit_reached.wait(timeout=5)
+    calls_after_limit = (sampling_calls, timestamp_calls, snapshot_calls)
+    recorder.emit(
+        request_id="request-2",
+        stage="stage",
+        event_name="event",
+        metadata={"value": 2},
+    )
+    assert (sampling_calls, timestamp_calls, snapshot_calls) == calls_after_limit
+    monkeypatch.setattr(
+        event_recorder_module, "get_recorder", lambda: recorder
+    )
+    monkeypatch.setattr(
+        event_recorder_module, "snapshot_metadata", snapshot_metadata
+    )
+    RequestEventBuffer().capture(
+        "deferred_event",
+        [RequestEventSnapshot(request_id="request-3", metadata={})],
+        {},
+    )
+    assert (sampling_calls, timestamp_calls, snapshot_calls) == calls_after_limit
     recorder.stop(wait=True)
 
     status = read_status(path)
     assert Path(path).read_bytes() == b""
-    assert status["accepted_events"] == 2
+    assert Path(path).stat().st_size <= 1
+    assert status["accepted_events"] == 1
     assert status["written_events"] == 0
-    assert status["unwritten_events"] == 2
+    assert status["unwritten_events"] == 1
     assert status["dropped_events"] == 0
     assert "file_size_limit_reached" in status["incomplete_reasons"]
     assert status["complete"] is False

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Iterable
 if TYPE_CHECKING:
     from sglang_omni.pipeline.stage import Stage
     from sglang_omni.proto.request import StagePayload
+    from sglang_omni.proto.session import SessionIdentityDict
 else:
     pass
 
@@ -22,6 +23,7 @@ class LocalStreamChunk:
     data: object
     metadata: dict[str, object] | None
     replica_bindings: dict[str, int] | None
+    session_sampling_identity: SessionIdentityDict | None = None
 
 
 class LocalStageDispatcher:
