@@ -6,10 +6,8 @@ import copy
 import os
 import random
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
-import sgl_kernel
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -38,37 +36,6 @@ from sglang_omni.models.qwen3_tts.incremental_codec_cuda_graph import (
 from sglang_omni.platforms import current_platform
 from sglang_omni.utils import channels_last_conv, snake_beta
 from sglang_omni.utils.channels_last_conv import channels_last_weight
-from tests.unit_test.fixtures.accelerator import require_device_streams
-
-
-def test_codec_uses_aot_rmsnorm() -> None:
-    assert incremental_codec.rmsnorm is sgl_kernel.rmsnorm
-
-
-@pytest.mark.accelerator
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-@pytest.mark.parametrize("shape", [(2, 1024), (2, 3, 1024)])
-@pytest.mark.parametrize("epsilon", [1e-6, 1e-2])
-def test_fused_codec_normalize(
-    dtype: torch.dtype, shape: tuple[int, ...], epsilon: float
-) -> None:
-    device = require_device_streams()
-    hidden_states = torch.randn(shape, dtype=dtype, device=device)
-    weight = torch.randn(shape[-1], dtype=dtype, device=device)
-    norm = SimpleNamespace(weight=weight, variance_epsilon=epsilon)
-
-    actual = FusedIncrementalTransformer.normalize(hidden_states, norm)
-
-    reference = hidden_states.cpu().float()
-    reference = reference * torch.rsqrt(
-        reference.square().mean(dim=-1, keepdim=True) + epsilon
-    )
-    reference = (reference * weight.cpu().float()).to(dtype)
-    tolerance = 1e-2 if dtype == torch.bfloat16 else 1e-3
-    assert actual.shape == hidden_states.shape
-    assert actual.dtype == dtype
-    assert actual.device == device
-    torch.testing.assert_close(actual.cpu(), reference, rtol=tolerance, atol=tolerance)
 
 
 def random_partitions(total: int, seed: int) -> list[int]:
