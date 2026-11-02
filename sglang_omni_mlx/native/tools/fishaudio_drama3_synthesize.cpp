@@ -10,7 +10,7 @@
 //       [--reference-text TRANSCRIPT]...
 //       [--seed N] [--temperature T] [--top-p P] [--top-k K]
 //       [--max-new-tokens N] [--stream] [--output out.wav]
-//       [--codes-output codes.json]
+//       [--codes-output codes.json] [--expert-offload 2gib]
 //
 // Reference audio is mono 44.1 kHz WAV; reference codes are a JSON
 // [codebooks][frames] grid. References pair with transcripts in order.
@@ -90,6 +90,7 @@ int Run(int argc, char **argv) {
   fishaudio_drama3::Sampling sampling;
   int max_frames = fishaudio_drama3::kDefaultMaxFrames;
   bool stream = false;
+  bool offload_experts = false;
   std::string output_path;
   std::string codes_output_path;
   for (int i = 1; i < argc; ++i) {
@@ -104,6 +105,12 @@ int Run(int argc, char **argv) {
     const std::string value = argv[++i];
     if (argument == "--model-path") {
       model_path = value;
+    } else if (argument == "--expert-offload") {
+      if (value != "2gib") {
+        throw UsageError("--expert-offload only accepts 2gib");
+      } else {
+      }
+      offload_experts = true;
     } else if (argument == "--text") {
       text = value;
     } else if (argument == "--reference-audio") {
@@ -174,7 +181,7 @@ int Run(int argc, char **argv) {
   } else {
   }
   const auto load_started = std::chrono::steady_clock::now();
-  fishaudio_drama3::Drama3Model model(model_path);
+  fishaudio_drama3::Drama3Model model(model_path, offload_experts);
   std::cerr << "loaded in " << SecondsSince(load_started) << " s\n";
 
   const auto started = std::chrono::steady_clock::now();

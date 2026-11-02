@@ -17,6 +17,7 @@
 #include "common/layers.h"
 #include "common/tokenizer.h"
 #include "fishaudio_drama3/fishaudio_drama3_codec.h"
+#include "fishaudio_drama3/fishaudio_drama3_experts.h"
 #include "fishaudio_drama3/fishaudio_drama3_prompt.h"
 #include "mlx/mlx.h"
 #include "qwen3_asr/qwen3_asr_transcriber.h"
@@ -73,7 +74,8 @@ struct Voice {
 
 class Drama3Model {
 public:
-  explicit Drama3Model(const std::filesystem::path &model_directory);
+  explicit Drama3Model(const std::filesystem::path &model_directory,
+                       bool offload_experts = false);
 
   const omni_common::Tokenizer &tokenizer() const { return tokenizer_; }
   const AudioCodec &codec() const { return codec_; }
@@ -160,6 +162,7 @@ private:
       const std::function<void(const mlx::core::array &)> &on_frame) const;
 
   nlohmann::json config_;
+  std::unique_ptr<ExpertCache> expert_cache_;
   omni_common::Checkpoint checkpoint_;
   omni_common::Tokenizer tokenizer_;
   AudioCodec codec_;

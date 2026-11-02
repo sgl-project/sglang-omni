@@ -1,0 +1,498 @@
+// SPDX-License-Identifier: Apache-2.0
+#include "fishaudio_drama3/fishaudio_drama3_experts.h"
+
+#include <algorithm>
+#include <cerrno>
+#include <chrono>
+#include <cstdlib>
+#include <cstring>
+#include <fcntl.h>
+#include <fstream>
+#include <iostream>
+#include <limits>
+#include <stdexcept>
+#include <sys/stat.h>
+#include <unistd.h>
+
+namespace fishaudio_drama3 {
+namespace mx = mlx::core;
+
+namespace {
+
+std::vector<std::filesystem::path>
+DramaWeightFiles(const std::filesystem::path &model_directory) {
+  std::vector<std::filesystem::path> paths;
+  for (const auto &file :
+       std::filesystem::directory_iterator(model_directory)) {
+    if (file.is_regular_file() && file.path().extension() == ".safetensors" &&
+        !file.path().filename().string().starts_with("._")) {
+      paths.push_back(file.path());
+    } else {
+    }
+  }
+  if (paths.empty()) {
+    throw std::runtime_error("no .safetensors files in " +
+                             model_directory.string());
+  } else {
+  }
+  std::sort(paths.begin(), paths.end());
+  return paths;
+}
+
+class ExpertSliceReader : public mx::io::Reader {
+public:
+  ExpertSliceReader(const std::filesystem::path &path, size_t offset_bytes,
+                    size_t payload_bytes, const mx::Shape &shape,
+                    mx::Dtype dtype,
+                    std::shared_ptr<std::atomic<size_t>> payload_read_bytes)
+      : payload_read_bytes_(std::move(payload_read_bytes)),
+        path_(path.string()), offset_bytes_(offset_bytes),
+        payload_bytes_(payload_bytes) {
+    const std::string dtype_name = dtype == mx::uint32     ? "U32"
+                                   : dtype == mx::float16  ? "F16"
+                                   : dtype == mx::bfloat16 ? "BF16"
+                                                           : "F32";
+    const std::string metadata =
+        nlohmann::json({{"expert",
+                         {{"dtype", dtype_name},
+                          {"shape", shape},
+                          {"data_offsets", {0, payload_bytes}}}}})
+            .dump();
+    const uint64_t header_bytes = metadata.size();
+    header_.resize(8 + header_bytes);
+    std::memcpy(header_.data(), &header_bytes, 8);
+    std::memcpy(header_.data() + 8, metadata.data(), header_bytes);
+    descriptor_ = open(path_.c_str(), O_RDONLY);
+    struct stat status {};
+    if (descriptor_ < 0 || fstat(descriptor_, &status) != 0 ||
+        !S_ISREG(status.st_mode) || status.st_size < 0 ||
+        offset_bytes > static_cast<size_t>(status.st_size) ||
+        payload_bytes > static_cast<size_t>(status.st_size) - offset_bytes) {
+      if (descriptor_ >= 0) {
+        close(descriptor_);
+        descriptor_ = -1;
+      } else {
+      }
+      throw std::runtime_error("invalid expert file extent: " + path_);
+    } else {
+    }
+  }
+  ~ExpertSliceReader() override { close(descriptor_); }
+  bool is_open() const override { return descriptor_ >= 0; }
+  bool good() const override { return is_open(); }
+  std::string label() const override { return path_; }
+  size_t tell() override { return position_bytes_; }
+  void seek(int64_t offset, std::ios_base::seekdir direction) override {
+    const int64_t base = direction == std::ios_base::end
+                             ? header_.size() + payload_bytes_
+                         : direction == std::ios_base::cur ? position_bytes_
+                                                           : 0;
+    if (offset < -base ||
+        offset > static_cast<int64_t>(header_.size() + payload_bytes_) - base) {
+      throw std::runtime_error("invalid expert reader seek");
+    } else {
+    }
+    position_bytes_ = base + offset;
+  }
+  void read(char *destination, size_t count) override {
+    read(destination, count, position_bytes_);
+    position_bytes_ += count;
+  }
+  void read(char *destination, size_t count, size_t offset) override {
+    if (offset > header_.size() + payload_bytes_ ||
+        count > header_.size() + payload_bytes_ - offset) {
+      throw std::runtime_error("invalid expert reader range");
+    } else {
+    }
+    if (offset < header_.size()) {
+      const size_t header_count = std::min(count, header_.size() - offset);
+      std::memcpy(destination, header_.data() + offset, header_count);
+      destination += header_count;
+      offset += header_count;
+      count -= header_count;
+    } else {
+    }
+    while (count != 0) {
+      const ssize_t received = pread(descriptor_, destination, count,
+                                     offset_bytes_ + offset - header_.size());
+      if (received < 0 && errno == EINTR) {
+        continue;
+      } else if (received <= 0) {
+        throw std::runtime_error("short expert payload read: " + path_);
+      } else {
+      }
+      payload_read_bytes_->fetch_add(received);
+      destination += received;
+      offset += received;
+      count -= received;
+    }
+  }
+
+private:
+  std::shared_ptr<std::atomic<size_t>> payload_read_bytes_;
+  std::string path_;
+  std::string header_;
+  int descriptor_ = -1;
+  size_t offset_bytes_;
+  size_t payload_bytes_;
+  size_t position_bytes_ = 0;
+};
+
+std::vector<mx::array> SwigluGraph(const std::vector<mx::array> &inputs) {
+  const mx::array &gate = inputs[0];
+  return {mx::multiply(mx::multiply(gate, mx::sigmoid(gate)), inputs[1])};
+}
+
+} // namespace
+
+// silu(gate) * x, fused into one kernel.
+mx::array Swiglu(const mx::array &gate, const mx::array &x) {
+  static const auto compiled = mx::compile(SwigluGraph, true);
+  return compiled({gate, x})[0];
+}
+
+omni_common::WeightMap
+LoadDrama3Weights(const std::filesystem::path &model_directory,
+                  bool offload_experts) {
+  omni_common::WeightMap weights;
+  for (const auto &path : DramaWeightFiles(model_directory)) {
+    auto [loaded, metadata] = mx::load_safetensors(path.string());
+    for (auto &[name, weight] : loaded) {
+      weights.insert_or_assign(name, std::move(weight));
+    }
+  }
+  std::erase_if(weights, [offload_experts](const auto &named) {
+    if (offload_experts && IsRoutedExpertWeight(named.first)) {
+      return true;
+    } else {
+    }
+    for (const char *prefix : {"backbone.", "semantic_head.", "tower."}) {
+      if (named.first.starts_with(prefix)) {
+        return false;
+      } else {
+      }
+    }
+    return true;
+  });
+  return weights;
+}
+
+bool IsRoutedExpertWeight(const std::string &name) {
+  return name.starts_with("backbone.") &&
+         name.find(".mlp.switch_mlp.") != std::string::npos;
+}
+
+ExpertCache::ExpertCache(const std::filesystem::path &model_directory,
+                         size_t capacity_bytes)
+    : capacity_bytes_(capacity_bytes),
+      profile_(std::getenv("DRAMA3_EXPERT_PROFILE") != nullptr) {
+  if (capacity_bytes == 0 || capacity_bytes > kExpertCacheBytes) {
+    throw std::invalid_argument("expert cache capacity must be in (0, 2 GiB]");
+  } else {
+  }
+  for (const auto &path : DramaWeightFiles(model_directory)) {
+    // Note (Codex): MLX validates extents and dtypes without evaluating
+    // payloads.
+    const auto [weights, metadata] = mx::load_safetensors(path.string());
+    std::ifstream stream(path, std::ios::binary);
+    uint64_t header_bytes = 0;
+    stream.read(reinterpret_cast<char *>(&header_bytes), sizeof(header_bytes));
+    if (!stream || header_bytes == 0 || header_bytes >= 100000000) {
+      throw std::runtime_error("invalid safetensors header");
+    } else {
+    }
+    std::string header(header_bytes, '\0');
+    stream.read(header.data(), header.size());
+    if (!stream) {
+      throw std::runtime_error("short safetensors header");
+    } else {
+    }
+    const auto tensors = nlohmann::json::parse(header);
+    for (const auto &[name, weight] : weights) {
+      if (!IsRoutedExpertWeight(name)) {
+        continue;
+      } else if (weight.ndim() != 3 || weight.shape(0) <= 0 ||
+                 weight.nbytes() == 0) {
+        throw std::runtime_error("invalid expert tensor shape: " + name);
+      } else {
+      }
+      size_t expected_bytes = weight.itemsize();
+      for (const int dimension : weight.shape()) {
+        if (dimension <= 0 ||
+            expected_bytes > std::numeric_limits<size_t>::max() / dimension) {
+          throw std::runtime_error("invalid expert tensor length: " + name);
+        } else {
+        }
+        expected_bytes *= dimension;
+      }
+      const auto offsets =
+          tensors.at(name).at("data_offsets").get<std::vector<size_t>>();
+      const size_t file_bytes = std::filesystem::file_size(path);
+      if (offsets.size() != 2 || offsets[1] < offsets[0] ||
+          offsets[1] - offsets[0] != expected_bytes ||
+          8 + header_bytes > file_bytes ||
+          offsets[1] > file_bytes - 8 - header_bytes) {
+        throw std::runtime_error("invalid expert tensor extent: " + name);
+      } else {
+      }
+      const size_t offset_bytes = offsets[0];
+      if (!slices_
+               .emplace(name, TensorSlice{path, weight.shape(), weight.dtype(),
+                                          8 + header_bytes + offset_bytes,
+                                          weight.nbytes() / weight.shape(0)})
+               .second) {
+        throw std::runtime_error("duplicate expert tensor: " + name);
+      } else {
+      }
+    }
+  }
+  if (slices_.empty()) {
+    throw std::runtime_error("no routed expert tensors found");
+  } else {
+  }
+  for (const auto &[name, tensor] : slices_) {
+    if (!name.ends_with(".up_proj.weight")) {
+      continue;
+    } else {
+    }
+    const auto separator = name.rfind('.');
+    const auto projection_separator = name.rfind('.', separator - 1);
+    const std::string prefix = name.substr(0, projection_separator);
+    for (const char *projection : {"up_proj", "gate_proj", "down_proj"}) {
+      const auto &weight = slices_.at(prefix + "." + projection + ".weight");
+      const auto &scales = slices_.at(prefix + "." + projection + ".scales");
+      const auto &biases = slices_.at(prefix + "." + projection + ".biases");
+      if (weight.dtype != mx::uint32 || weight.shape[0] != tensor.shape[0] ||
+          scales.shape != biases.shape || scales.shape[0] != weight.shape[0] ||
+          scales.shape[1] != weight.shape[1] || scales.dtype != biases.dtype ||
+          (scales.dtype != mx::float16 && scales.dtype != mx::bfloat16 &&
+           scales.dtype != mx::float32)) {
+        throw std::runtime_error("inconsistent quantized expert tensors: " +
+                                 prefix);
+      } else {
+      }
+    }
+  }
+}
+
+void ExpertCache::Release() {
+  for (const auto &[identity, entry] : entries_) {
+    if (entry.weights.use_count() != 1) {
+      throw std::runtime_error("cannot release a pinned expert cache");
+    } else {
+    }
+  }
+  released_entries_ += entries_.size();
+  entries_.clear();
+  resident_bytes_ = 0;
+}
+
+std::shared_ptr<const ExpertCache::ExpertWeights>
+ExpertCache::Acquire(const std::string &prefix, int expert_id) {
+  const auto identity = std::make_pair(prefix, expert_id);
+  const auto found = entries_.find(identity);
+  if (found != entries_.end()) {
+    ++hits_;
+    found->second.age = ++clock_;
+    return found->second.weights;
+  } else {
+  }
+  const auto load_started = profile_ ? std::chrono::steady_clock::now()
+                                     : std::chrono::steady_clock::time_point{};
+  size_t packed_bytes = 0;
+  for (const char *projection : {"up_proj", "gate_proj", "down_proj"}) {
+    for (const char *suffix : {"weight", "scales", "biases"}) {
+      const auto &tensor = slices_.at(prefix + "." + projection + "." + suffix);
+      if (expert_id < 0 || expert_id >= tensor.shape[0] ||
+          tensor.expert_bytes > capacity_bytes_ - packed_bytes) {
+        throw std::runtime_error(
+            "invalid expert id or expert exceeds cache capacity");
+      } else {
+      }
+      if ((std::string(suffix) == "weight" && tensor.dtype != mx::uint32) ||
+          (std::string(suffix) != "weight" && tensor.dtype != mx::float16 &&
+           tensor.dtype != mx::bfloat16 && tensor.dtype != mx::float32)) {
+        throw std::runtime_error("unsupported quantized expert dtype");
+      } else {
+      }
+      packed_bytes += tensor.expert_bytes;
+    }
+  }
+  while (resident_bytes_ > capacity_bytes_ - packed_bytes) {
+    auto victim = entries_.end();
+    for (auto entry = entries_.begin(); entry != entries_.end(); ++entry) {
+      if (entry->second.weights.use_count() == 1 &&
+          (victim == entries_.end() ||
+           entry->second.age < victim->second.age)) {
+        victim = entry;
+      } else {
+      }
+    }
+    if (victim == entries_.end()) {
+      throw std::runtime_error("expert cache capacity is pinned");
+    } else {
+    }
+    resident_bytes_ -= victim->second.packed_bytes;
+    entries_.erase(victim);
+    ++evictions_;
+  }
+  peak_bytes_ = std::max(peak_bytes_, resident_bytes_ + packed_bytes);
+  auto weights = std::make_shared<ExpertWeights>();
+  std::vector<mx::array> parameters;
+  for (const char *projection : {"up_proj", "gate_proj", "down_proj"}) {
+    for (const char *suffix : {"weight", "scales", "biases"}) {
+      const std::string name = std::string(projection) + "." + suffix;
+      const auto &tensor = slices_.at(prefix + "." + name);
+      const size_t offset_bytes =
+          tensor.offset_bytes + expert_id * tensor.expert_bytes;
+      const size_t file_bytes = std::filesystem::file_size(tensor.path);
+      if (offset_bytes > file_bytes ||
+          tensor.expert_bytes > file_bytes - offset_bytes) {
+        throw std::runtime_error("expert payload exceeds file extent");
+      } else {
+      }
+      mx::Shape shape(tensor.shape.begin() + 1, tensor.shape.end());
+      auto [loaded, metadata] =
+          mx::load_safetensors(std::make_shared<ExpertSliceReader>(
+              tensor.path, offset_bytes, tensor.expert_bytes, shape,
+              tensor.dtype, payload_read_bytes_));
+      mx::array weight = loaded.at("expert");
+      parameters.push_back(weight);
+      weights->emplace(name, std::move(weight));
+    }
+  }
+  // Note (Codex): completed loads own MLX arrays, without a second host payload
+  // cache.
+  mx::eval(parameters);
+  entries_.emplace(identity, Entry{weights, packed_bytes, ++clock_});
+  resident_bytes_ += packed_bytes;
+  ++misses_;
+  if (profile_) {
+    load_seconds_ += std::chrono::duration<double>(
+                         std::chrono::steady_clock::now() - load_started)
+                         .count();
+  } else {
+  }
+  return weights;
+}
+
+mx::array ExpertCache::Routed(const mx::array &input,
+                              const mx::array &expert_ids,
+                              const mx::array &scores,
+                              const std::string &prefix,
+                              const omni_common::Checkpoint &checkpoint) {
+  const auto routed_started = profile_
+                                  ? std::chrono::steady_clock::now()
+                                  : std::chrono::steady_clock::time_point{};
+  if (input.ndim() < 2 || expert_ids.ndim() != input.ndim() ||
+      expert_ids.shape() != scores.shape() || expert_ids.size() == 0 ||
+      expert_ids.size() >
+          static_cast<size_t>(std::numeric_limits<int32_t>::max()) ||
+      !std::equal(input.shape().begin(), input.shape().end() - 1,
+                  expert_ids.shape().begin())) {
+    throw std::invalid_argument("inconsistent routed expert rows");
+  } else {
+  }
+  const int top_k = expert_ids.shape(-1);
+  const mx::array flat_input = mx::reshape(input, {-1, input.shape(-1)});
+  const mx::array flat_ids =
+      mx::astype(mx::reshape(expert_ids, {-1, top_k}), mx::int32);
+  const mx::array flat_scores = mx::reshape(scores, {-1, top_k});
+  mx::eval({flat_input, flat_ids, flat_scores});
+  std::map<int, std::vector<int32_t>> positions_by_expert;
+  for (int position = 0; position < static_cast<int>(flat_ids.size());
+       ++position) {
+    positions_by_expert[flat_ids.data<int32_t>()[position]].push_back(position);
+  }
+  std::vector<std::optional<mx::array>> routed(flat_ids.size());
+  for (const auto &[expert_id, positions] : positions_by_expert) {
+    const auto lease = Acquire(prefix, expert_id);
+    std::vector<int32_t> rows;
+    for (const int position : positions) {
+      rows.push_back(position / top_k);
+    }
+    const int expert_count = slices_.at(prefix + ".up_proj.weight").shape[0];
+    const bool use_sorted_kernel =
+        flat_ids.size() >= 64 && flat_ids.size() / expert_count >= 4;
+    // Note (Codex): preserve MLX 0.32.3's sorted gather kernel when splitting a
+    // batch.
+    if (use_sorted_kernel && rows.size() < 16) {
+      rows.resize(16, rows.back());
+    } else {
+    }
+    const auto hidden = mx::expand_dims(
+        mx::take(
+            flat_input,
+            mx::array(rows.data(), {static_cast<int>(rows.size())}, mx::int32),
+            0),
+        -2);
+    const auto indices = mx::zeros({static_cast<int>(rows.size())}, mx::uint32);
+    const auto linear = [&](const mx::array &value,
+                            const std::string &projection) {
+      const auto &quantization =
+          checkpoint.Quantization(prefix + "." + projection);
+      return mx::gather_qmm(
+          value, mx::expand_dims(lease->at(projection + ".weight"), 0),
+          mx::expand_dims(lease->at(projection + ".scales"), 0),
+          mx::expand_dims(lease->at(projection + ".biases"), 0), std::nullopt,
+          indices, true, quantization.group_size, quantization.bits,
+          quantization.mode, std::nullopt, use_sorted_kernel);
+    };
+    auto result =
+        linear(Swiglu(linear(hidden, "gate_proj"), linear(hidden, "up_proj")),
+               "down_proj");
+    mx::eval(result);
+    for (size_t position = 0; position < positions.size(); ++position) {
+      routed[positions[position]] =
+          mx::take(result, mx::array(static_cast<int>(position)), 0);
+    }
+  }
+  std::vector<mx::array> ordered;
+  for (const auto &result : routed) {
+    ordered.push_back(*result);
+  }
+  const auto combined = mx::sum(
+      mx::multiply(mx::reshape(mx::concatenate(ordered, 0),
+                               {flat_input.shape(0), top_k, input.shape(-1)}),
+                   mx::expand_dims(flat_scores, -1)),
+      -2);
+  mx::eval(combined);
+  if (profile_) {
+    std::cerr
+        << nlohmann::
+               json{{"drama3_expert_profile", true},
+                    {"phase", profile_phase_},
+                    {"frame_index", profile_frame_index_},
+                    {"unix_seconds",
+                     std::chrono::duration<double>(
+                         std::chrono::system_clock::now().time_since_epoch())
+                         .count()},
+                    {"monotonic_seconds",
+                     std::chrono::duration<double>(
+                         std::chrono::steady_clock::now().time_since_epoch())
+                         .count()},
+                    {"load_seconds_cumulative", load_seconds_},
+                    {"routed_seconds",
+                     std::chrono::duration<double>(
+                         std::chrono::steady_clock::now() - routed_started)
+                         .count()},
+                    {"prefix", prefix},
+                    {"rows", flat_input.shape(0)},
+                    {"hits", hits_},
+                    {"misses", misses_},
+                    {"evictions", evictions_},
+                    {"released_entries", released_entries_},
+                    {"packed_bytes", resident_bytes_},
+                    {"peak_packed_bytes", peak_bytes_},
+                    {"payload_read_bytes", payload_read_bytes()},
+                    {"mlx_active_bytes", mx::get_active_memory()},
+                    {"mlx_peak_bytes", mx::get_peak_memory()},
+                    {"mlx_allocator_cache_bytes", mx::get_cache_memory()}}
+                   .dump()
+        << '\n';
+  } else {
+  }
+  return mx::reshape(combined, input.shape());
+}
+
+} // namespace fishaudio_drama3

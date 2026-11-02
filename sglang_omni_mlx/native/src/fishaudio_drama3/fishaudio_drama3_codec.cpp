@@ -468,4 +468,51 @@ mx::array AudioCodec::Encode(const std::vector<float> &samples) const {
   return stacked;
 }
 
+std::vector<float> CodecStream::Decode(
+    const std::vector<mx::array> &codes, size_t begin, size_t end,
+    bool limit_idle_cache, bool synchronize,
+    const std::function<void(const char *, size_t, size_t)> &profile) {
+  constexpr size_t kDecodeFrames = 64;
+  constexpr size_t kIdleCacheBytes = 256 * 1024 * 1024;
+  std::optional<size_t> previous_cache_limit;
+  if (limit_idle_cache) {
+    previous_cache_limit = mx::set_cache_limit(kIdleCacheBytes);
+    if (*previous_cache_limit < kIdleCacheBytes) {
+      mx::set_cache_limit(*previous_cache_limit);
+    }
+  }
+  std::vector<float> audio;
+  try {
+    if (limit_idle_cache) {
+      mx::synchronize();
+      mx::clear_cache();
+    }
+    for (size_t piece = begin; piece < end; piece += kDecodeFrames) {
+      const size_t piece_end = std::min(end, piece + kDecodeFrames);
+      const std::vector<mx::array> frames(codes.begin() + piece,
+                                          codes.begin() + piece_end);
+      profile("codec_before_push", piece, piece_end);
+      const mx::array samples =
+          mx::astype(Push(mx::stack(frames, 1)), mx::float32);
+      mx::eval(samples);
+      if (synchronize) {
+        mx::synchronize();
+      }
+      profile("codec_after_eval", piece, piece_end);
+      audio.insert(audio.end(), samples.data<float>(),
+                   samples.data<float>() + samples.size());
+      profile("codec_after_host_copy", piece, piece_end);
+    }
+  } catch (...) {
+    if (previous_cache_limit.has_value()) {
+      mx::set_cache_limit(*previous_cache_limit);
+    }
+    throw;
+  }
+  if (previous_cache_limit.has_value()) {
+    mx::set_cache_limit(*previous_cache_limit);
+  }
+  return audio;
+}
+
 } // namespace fishaudio_drama3
