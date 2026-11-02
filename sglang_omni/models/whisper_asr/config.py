@@ -15,6 +15,8 @@ from sglang_omni.config import (
     PipelineConfig,
     StageConfig,
 )
+from sglang_omni.config.schema import RealtimeTranscriptionConfig
+from sglang_omni.models.whisper_asr.streaming import WhisperStreamingStrategy
 
 _PKG = "sglang_omni.models.whisper_asr"
 
@@ -50,6 +52,13 @@ class WhisperASRPipelineConfig(PipelineConfig):
     min_tail_s: ClassVar[float] = 1.0
     audio_chunking: AudioChunkingConfig = AudioChunkingConfig(
         max_audio_clip_s=float(WHISPER_MAX_INPUT_SECONDS),
+    )
+    realtime_transcription: ClassVar[RealtimeTranscriptionConfig] = (
+        RealtimeTranscriptionConfig(
+            strategy_cls=WhisperStreamingStrategy,
+            server_vad=True,
+            max_segment_s=float(WHISPER_MAX_INPUT_SECONDS),
+        )
     )
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {

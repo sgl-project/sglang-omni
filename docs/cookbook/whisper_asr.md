@@ -142,6 +142,37 @@ resp.raise_for_status()
 print(resp.json()["text"])
 ```
 
+## Realtime Audio Input
+
+Enable live transcription on the shared WebSocket endpoint:
+
+```bash
+sgl-omni serve \
+  --model-path openai/whisper-large-v3 \
+  --enable-realtime \
+  --port 8000
+```
+
+Connect to `/v1/realtime?intent=transcription` and send 16 kHz mono PCM16 audio. Whisper re-decodes the growing segment every two seconds by default; `session.update` can set `decode_interval_ms`. Each `transcription.segment` event replaces the previous text for its `segment_id`, including when earlier words change. Only `is_final=true` commits that segment. `transcription.completed` contains the joined final segments.
+
+Set `language` explicitly for non-English speech. Realtime decoding uses the Whisper decoder's English default when no language is supplied; it does not run the HTTP endpoint's separate automatic-language-detection pass. The example disables server VAD and finalizes with `transcription.done`; server VAD is enabled by default, and `input_audio_buffer.commit` finalizes one segment while keeping the session open.
+
+Use the existing realtime benchmark to send audio at wall-clock pace, retain event traces, and compare final WER with HTTP transcription:
+
+```bash
+python -m benchmarks.eval.benchmark_asr_realtime \
+  --port 8000 --model-path openai/whisper-large-v3 \
+  --lang en --max-samples 32 --concurrencies 1,4 \
+  --mode manual --http-baseline \
+  --output whisper_realtime_en.json
+```
+
+Use `--lang zh` for Chinese or `--mode vad` for VAD-driven finalization. The benchmark sends the selected language in `session.update`. Clients should maintain text by `segment_id`, replacing each segment's hypothesis rather than concatenating its partial events.
+
+VAD boundaries affect recognition: the default 500 ms silence threshold can split a sentence into short independent decodes and lose context. For speech with pauses, use manual segmentation or increase the threshold in `session.update`, for example `"turn_detection": {"type": "server_vad", "silence_duration_ms": 1500}`. A longer threshold also delays finalization; validate it on the target audio rather than assuming VAD matches full-clip HTTP accuracy.
+
+This is pseudo-streaming: every refresh re-encodes the current audio, with no persistent decoder KV or conditioning on earlier partial text. Segments are capped at Whisper's 30-second input window. Longer input produces multiple final segments on the same connection; words crossing a split can differ from offline long-audio transcription. Silence is handled by the shared session layer. `input_audio_buffer.clear` discards the current segment and its in-flight decode; disconnecting closes the session. Translation, subtitle timestamps, and native incremental encoder reuse are outside this realtime path.
+
 ## Translate Audio
 
 Whisper multilingual checkpoints can translate source speech to English via
