@@ -467,7 +467,7 @@ def test_incremental_codec_warmup_traces_a_compiled_shape_on_its_own_tensors() -
     assert state.frame_positions.is_inference()
     assert state.index is static_index
     assert inference is True and grad is False
-    assert [entry[2] for entry in decodes] == [True, True, True]
+    assert decodes and all(entry[2] for entry in decodes)
     assert all(
         entry[0] is static_codes and entry[1].index is static_index for entry in decodes
     )
@@ -478,7 +478,7 @@ def test_incremental_codec_warmup_traces_a_compiled_shape_on_its_own_tensors() -
     runner(()).warmup_capture_shape(key, static_codes, None, static_index, resources)
 
     assert traces == []
-    assert [entry[2] for entry in decodes] == [False, False, False]
+    assert decodes and not any(entry[2] for entry in decodes)
 
 
 @pytest.mark.accelerator

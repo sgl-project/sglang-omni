@@ -38,6 +38,7 @@ class MiniCPMOThinkerSessionState:
     is_listen_held: bool = False
     # note (luojiaxuan): One detector per session, since silero carries its recurrent state from one frame to the next.
     speech_detector: StatelessVAD
+    drain_units_left: int = 0
     force_listen_counter: int = 0
     generated_history: list[int] = field(default_factory=list)
     reply_units: list[ReplyUnit] = field(default_factory=list)
@@ -62,6 +63,7 @@ class DuplexUnitRequestData(SGLangARRequestData):
     pending_unit_token: int | None = None
     is_listen_forced: bool = False
     is_interrupted: bool = False
+    hears_user: bool = False
     unit_index: int = 0
     perception_token_ids: list[int] = field(default_factory=list)
     perception_embedding_spans: list[EmbeddingSpan] = field(default_factory=list)
