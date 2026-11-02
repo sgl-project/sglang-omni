@@ -23,6 +23,7 @@ SERVED_KINDS = {
     "cosyvoice3_server": ("cosyvoice3",),
     "fishaudio_drama3_server": ("fishaudio_drama3",),
     "music3_server": ("minimax_music3",),
+    "ming3_audio_server": ("ming3_audio",)
 }
 SYSTEM_LIBRARY_PREFIXES = ("/usr/lib/", "/System/Library/")
 
