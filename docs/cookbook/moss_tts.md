@@ -28,17 +28,13 @@ The processor ships with the checkpoint, so no extra TTS package is needed. Deco
 
 ### Ascend NPU
 
-The single-card NPU path uses BF16 MOSS-TTS-v1.5 with backbone decode and sampling/state-machine graphs. Sampling capture uses the shared platform graph backend. It uses the released SGLang dependency without a SGLang source patch.
-
-Use the A3 runtime pinned by `base-image-a3` in `[tool.sglang-omni.npu]` in `pyproject_npu.toml`, rather than a rolling image tag. The current runtime selects SGLang 0.5.22, CANN 9.1.0, Python 3.12, PyTorch 2.10.0 and torch_npu 2.10.0.post6. The host driver and firmware must support this CANN release; see [Ascend prerequisites](../get_started/installation_npu.md#prerequisites). Install this checkout inside that prepared runtime:
+For single-NPU BF16 inference, use the A3 runtime pinned by `base-image-a3` in [`pyproject_npu.toml`](../../pyproject_npu.toml) and compatible [host drivers](../get_started/installation_npu.md#prerequisites). From that runtime's root shell, install this checkout and its audio dependencies:
 
 ```bash
 bash scripts/npu/install_npu.sh --install-system-deps
 ```
 
-Run this command from the base image's root shell. The system-dependency option installs FFmpeg, libsndfile and SoX; omit it if these are already installed.
-
-Set the device and queue options before starting the server:
+Before starting the server, select your allocated device (0 below) and set the queue options:
 
 ```bash
 export ASCEND_RT_VISIBLE_DEVICES=0
@@ -47,7 +43,7 @@ export PER_STREAM_QUEUE=1
 export TASK_QUEUE_ENABLE=1
 ```
 
-`PER_STREAM_QUEUE` is an [experimental torch_npu option](https://www.hiascend.com/document/detail/en/Pytorch/2610/devguide/fwfeatures/docs/en/framework_feature_guide_pytorch/stream_taskqueue_parallel_delivery.md). Device 0 is an example; select the device allocated to your deployment.
+`PER_STREAM_QUEUE` is an [experimental torch_npu option](https://www.hiascend.com/document/detail/en/Pytorch/2610/devguide/fwfeatures/docs/en/framework_feature_guide_pytorch/stream_taskqueue_parallel_delivery.md).
 
 Download `OpenMOSS-Team/MOSS-Audio-Tokenizer` as well as the TTS checkpoint. For local weights, create `npu-moss.yaml`:
 
@@ -323,18 +319,17 @@ A handful of utterances in the H200 reference run away into a repetition loop (>
 micro-average; excluding them, corpus WER is ~1.3% in both languages, and per-sample median WER
 is 0.00%.
 
-The Ascend profile above completed all 1088 EN samples with BF16 MOSS-TTS-v1.5 on one Ascend910_9362, SGLang 0.5.22, CANN 9.1.0 and torch_npu 2.10.0.post6. The run used concurrency 8, seed 1234, eight warmup requests, reference audio/text and automatic duration tokens. HF Whisper-large-v3 FP32 scored every output, with zero generation or scoring failures.
+Single-NPU BF16 results on Ascend910_9362 with SGLang 0.5.22, CANN 9.1.0 and torch_npu 2.10.0.post6: all 1088 EN samples generated and scored successfully using reference audio/text, automatic duration tokens, concurrency 8, seed 1234 and eight warmup requests. Scoring used HF Whisper-large-v3 FP32 with `EnglishTextNormalizer({})`; backbone decode and sampling graphs were enabled.
 
-| Device | WER (all samples) | Auxiliary WER (excl. >50%) | Latency mean / p95 (s) | Throughput (qps) |
-| --- | --- | --- | --- | --- |
-| Ascend910_9362 | 205/11943 = 1.7165% | 186/11920 = 1.5604% (3 severe samples) | 7.584 / 9.799 | 1.054 |
+| Device | WER (all samples) | Latency mean / p95 (s) | Throughput (qps) |
+| --- | --- | --- | --- |
+| Ascend910_9362 | 205/11943 = 1.7165% | 7.584 / 9.799 | 1.054 |
 
-All three severe samples remain in the primary WER; their cause is unresolved. Hardware, software revision and recorded seed conditions differ from the historical H200 reference, so these results are not a matched hardware comparison. Backbone decode and sampling/state-machine graphs remain enabled on the NPU.
-
-This single pass on the November 2 mainline integration records one more word error than the October 25 run (204/11943), with the same three severe sample IDs. It does not establish a stable accuracy or performance change. The earlier NPU throughput regression remains tracked in [#3296](https://github.com/sgl-project/sglang-omni/issues/3296).
+WER includes all three samples above 50% WER; their cause is unresolved. The historical H200 results use different hardware, software revision and recorded seed conditions, so they are not a matched comparison.
 
 ## Known Limitations
 
+- **NPU throughput.** The earlier throughput regression remains tracked in [#3296](https://github.com/sgl-project/sglang-omni/issues/3296).
 - **Voice cloning depends on the reference.** Omit the reference for non-cloned speech; provide
   the transcript (`text` / `ref_text`) for the best speaker similarity when cloning.
 - **Concurrency vs. WER.** Quality is best around `--max-concurrency 8`; higher concurrency
