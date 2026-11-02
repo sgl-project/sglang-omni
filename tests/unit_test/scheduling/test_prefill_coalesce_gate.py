@@ -417,6 +417,8 @@ def test_the_hold_predicate_stamps_nothing_and_agrees_with_the_gate(
 
 
 class DecodingStubScheduler(StubScheduler):
+    running_batch_admits_prefill = OmniScheduler.running_batch_admits_prefill
+
     def __init__(self, *, request_admission_lock: CountingLock) -> None:
         super().__init__(coalesce_requests=8, requires_pending_builds=True)
         self.is_mixed_chunk = False
@@ -429,7 +431,9 @@ class DecodingStubScheduler(StubScheduler):
         self.enable_hisparse = False
         self.min_free_slots_delayer = None
         self.running_batch = SimpleNamespace(
-            is_empty=lambda: False, reqs=[object()], batch_is_full=False
+            is_empty=lambda: False,
+            reqs=[SimpleNamespace(finished=lambda: False)],
+            batch_is_full=False,
         )
         self.request_admission_lock = request_admission_lock
         self.pending_request_builds = {"build": object()}
