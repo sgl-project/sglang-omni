@@ -18,8 +18,20 @@ from sglang_omni.speculative.dflash_draft import (
     materialize_draft_checkpoint,
 )
 
+SINGLE_FILE_WEIGHTS = ("model.safetensors",)
+SHARDED_WEIGHTS = (
+    "model.safetensors.index.json",
+    "model-00001-of-00002.safetensors",
+    "model-00002-of-00002.safetensors",
+)
 
-def write_speculators_checkpoint(directory: Path, **config_fields: object) -> None:
+
+def write_speculators_checkpoint(
+    directory: Path,
+    *,
+    weight_files: tuple[str, ...] = SINGLE_FILE_WEIGHTS,
+    **config_fields: object,
+) -> None:
     config = {
         "speculators_model_type": "dflash",
         "sample_from_anchor": False,
@@ -38,14 +50,24 @@ def write_speculators_checkpoint(directory: Path, **config_fields: object) -> No
         **config_fields,
     }
     (directory / "config.json").write_text(json.dumps(config))
-    (directory / "model.safetensors").touch()
+    (directory / "README.md").touch()
+    for weight_file in weight_files:
+        (directory / weight_file).touch()
 
 
+@pytest.mark.parametrize(
+    "weight_files",
+    [
+        pytest.param(SINGLE_FILE_WEIGHTS, id="single-file"),
+        pytest.param(SHARDED_WEIGHTS, id="sharded"),
+    ],
+)
 def test_flat_config_captures_before_the_layers_the_draft_was_trained_on(
-    tmp_path: Path,
+    tmp_path: Path, weight_files: tuple[str, ...]
 ) -> None:
-    """Passing the aux ids straight through feeds the draft one layer too late."""
-    write_speculators_checkpoint(tmp_path)
+    """Passing the aux ids straight through feeds the draft one layer too late, and a
+    sharded draft loses its weights unless every shard is linked."""
+    write_speculators_checkpoint(tmp_path, weight_files=weight_files)
 
     draft_checkpoint = materialize_draft_checkpoint(str(tmp_path), None)
     draft_dir = Path(draft_checkpoint.name)
@@ -61,9 +83,11 @@ def test_flat_config_captures_before_the_layers_the_draft_was_trained_on(
     assert config["sliding_window"] == 131072
     assert config["draft_vocab_size"] == 48000
     assert config["tie_word_embeddings"] is False
-    assert (draft_dir / "model.safetensors").resolve() == (
-        tmp_path / "model.safetensors"
-    ).resolve()
+    assert sorted(path.name for path in draft_dir.iterdir()) == sorted(
+        ("config.json", *weight_files)
+    )
+    for weight_file in weight_files:
+        assert (draft_dir / weight_file).resolve() == (tmp_path / weight_file).resolve()
 
 
 @pytest.mark.parametrize(

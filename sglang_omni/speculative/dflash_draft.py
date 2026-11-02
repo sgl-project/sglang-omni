@@ -71,7 +71,7 @@ def materialize_draft_checkpoint(
     with open(os.path.join(draft_checkpoint.name, "config.json"), "w") as config_file:
         json.dump(draft_config, config_file, indent=2)
     for file_name in os.listdir(source_dir):
-        if file_name.startswith("model.safetensors"):
+        if ".safetensors" in file_name:
             os.symlink(
                 os.path.realpath(os.path.join(source_dir, file_name)),
                 os.path.join(draft_checkpoint.name, file_name),
