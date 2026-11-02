@@ -698,6 +698,7 @@ def requeue_scheduler() -> OmniScheduler:
     scheduler.disaggregation_mode = DisaggregationMode.NULL
     scheduler.enable_priority_scheduling = False
     scheduler.abort_on_priority_when_disabled = False
+    scheduler.rust_server = None
     scheduler.max_queued_requests = None
     scheduler.waiting_queue = []
     scheduler.enable_hicache_storage = False
@@ -3363,6 +3364,7 @@ def construct_omni_scheduler(
         enable_metrics=False,
         enable_metrics_for_all_schedulers=False,
         prefill_decode_interval=prefill_decode_interval,
+        prefill_decode_interval_min_bs=0,
     )
 
     class StrictParallelContext:

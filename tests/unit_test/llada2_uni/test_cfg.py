@@ -114,7 +114,7 @@ def test_guidance_updates_all_cfg_branches(size: int, rescale: float) -> None:
 
     result = algorithm.run(
         NS(forward=forward),
-        NS(input_ids=input_ids, batch_size=size, reqs=requests),
+        NS(input_ids=input_ids, batch_size=size, reqs=requests, dllm_prompt_mask=None),
     )
 
     assert result[2:] == (None, None, False)
