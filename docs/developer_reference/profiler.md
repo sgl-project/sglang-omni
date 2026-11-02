@@ -67,11 +67,12 @@ Session sampling hashes `(session_id, session_open_index)`, so independent coord
 Stage, and TP processes make the same decision for a given run. The run ID is part of
 the stable BLAKE2b sampling key. Session sampling keeps every operation and audio Unit
 for a selected session eligible, including a `session_unit_ready` event recorded
-before its operation is submitted. A stream sender carries the two-field session
-identity in the existing chunk envelope so eligible pre-payload receive events use
-the same decision. A sender without an admitted session identity cannot provide that
-pre-payload context. `complete` and `completeness_scope` describe sampled-event
-storage only; they do not establish semantic event coverage. Intentionally unsampled
+before its operation is submitted. Selected sessions carry the two-field session
+identity in the existing chunk envelope; each receiver registers it before recording
+or routing a pre-payload chunk, so the context survives multi-hop streaming. Unselected
+sessions omit this profiler-specific identity. Runtime profiling remains best-effort;
+`complete` and `completeness_scope` describe sampled-event storage only and do not
+guarantee semantic event coverage across profile boundaries. Intentionally unsampled
 requests are not counted as drops.
 
 Start a 1% request-sampled profile with a 1024-event per-producer limit and the default 256 MiB per-process event-file limit:

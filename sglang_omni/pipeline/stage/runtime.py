@@ -1042,19 +1042,25 @@ class Stage:
         chunk_id: int | None,
         session_sampling_identity: SessionIdentityDict | None = None,
     ) -> None:
+        sampling_session_identity = None
+        if session_sampling_identity is not None:
+            sampling_session_identity = (
+                session_sampling_identity["id"],
+                session_sampling_identity["open_index"],
+            )
+            _get_recorder().register_session_sampling_context(
+                request_id,
+                sampling_session_identity,
+                stage_name=self.name,
+            )
+        else:
+            pass
         _emit_event(
             request_id=request_id,
             stage=self.name,
             event_name="stage_stream_chunk_received",
             metadata={"from_stage": from_stage, "chunk_id": chunk_id},
-            sampling_session_identity=(
-                None
-                if session_sampling_identity is None
-                else (
-                    session_sampling_identity["id"],
-                    session_sampling_identity["open_index"],
-                )
-            ),
+            sampling_session_identity=sampling_session_identity,
         )
 
     @staticmethod
@@ -2320,9 +2326,7 @@ class Stage:
             data=data,
             metadata=metadata,
             replica_bindings=self.replica_bindings.get(request_id),
-            session_sampling_identity=self.stream_session_sampling_identity(
-                request_id
-            ),
+            session_sampling_identity=self.stream_session_sampling_identity(request_id),
         )
 
     async def send_local_stream_chunks(
@@ -2393,9 +2397,7 @@ class Stage:
             chunk_id=chunk_id,
             data=data,
             metadata=metadata,
-            session_sampling_identity=self.stream_session_sampling_identity(
-                request_id
-            ),
+            session_sampling_identity=self.stream_session_sampling_identity(request_id),
         )
 
     async def send_stream_chunk_batch(
@@ -2765,11 +2767,7 @@ class Stage:
 
     def on_profiler_start(self, msg: ProfilerStartMessage) -> None:
         run_id = msg.run_id
-        if (
-            msg.enable_torch
-            and msg.mode != "runtime"
-            and not TorchProfiler.is_active()
-        ):
+        if msg.enable_torch and msg.mode != "runtime" and not TorchProfiler.is_active():
             base_tpl = msg.trace_path_template.format(run_id=run_id, stage=self.name)
             template = f"{base_tpl}_pid{os.getpid()}"
             prof_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR")

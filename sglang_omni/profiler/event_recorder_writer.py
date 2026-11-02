@@ -21,16 +21,16 @@ from sglang_omni.profiler.event_recorder_types import (
     EVENT_FILE_BUFFER_BYTES,
     MAX_EVENT_TEXT_LENGTH,
     MAX_PRODUCER_BUFFERS,
-    ProfileMode,
     RUNTIME_WRITER_MAX_EVENTS_PER_ROUND,
     RUNTIME_WRITER_POLL_INTERVAL_SECONDS,
-    SamplingUnit,
     WRITER_POLL_INTERVAL_SECONDS,
     ProducerBuffer,
     ProducerDropCounter,
+    ProfileMode,
     RecorderRunState,
     RequestEvent,
     RequestEventFinalization,
+    SamplingUnit,
     get_active_stage,
     json_default,
     snapshot_metadata,
@@ -132,9 +132,7 @@ class RequestEventRecorder:
         if isinstance(sampling_identity, str):
             sampling_parts.append(sampling_identity)
         else:
-            sampling_parts.extend(
-                (sampling_identity[0], str(sampling_identity[1]))
-            )
+            sampling_parts.extend((sampling_identity[0], str(sampling_identity[1])))
         for sampling_part in sampling_parts:
             encoded_part = sampling_part.encode("utf-8")
             digest.update(len(encoded_part).to_bytes(8, "big"))
@@ -163,17 +161,76 @@ class RequestEventRecorder:
     def session_sampling_identity_for_request(
         self, request_id: str
     ) -> tuple[str, int] | None:
-        """Return an admitted request's cached session identity for stream transport."""
+        """Return a selected request's cached session identity for stream transport."""
+        run_state = self.active_state
+        if (
+            run_state is None
+            or run_state.mode != "runtime"
+            or run_state.sampling_unit != "session"
+            or run_state.request_sampling_decisions.get(request_id) is not True
+        ):
+            return None
+        else:
+            pass
+        return run_state.request_session_identities.get(request_id)
+
+    def register_session_sampling_context(
+        self,
+        request_id: str,
+        session_identity: tuple[str, int],
+        *,
+        stage_name: str,
+    ) -> None:
+        """Cache transported session sampling context before a payload arrives."""
         run_state = self.active_state
         if (
             run_state is None
             or run_state.mode != "runtime"
             or run_state.sampling_unit != "session"
         ):
-            return None
+            return
         else:
             pass
-        return run_state.request_session_identities.get(request_id)
+        has_registered_session_sampling_context = (
+            request_id in run_state.request_sampling_decisions
+            and request_id in run_state.request_session_identities
+        )
+        request_stage_names = run_state.request_sampling_stage_names.get(request_id)
+        if (
+            has_registered_session_sampling_context
+            and request_stage_names is not None
+            and stage_name in request_stage_names
+        ):
+            return
+        else:
+            pass
+        with self.control_lock:
+            if (
+                self.active_state is not run_state
+                or run_state.mode != "runtime"
+                or run_state.sampling_unit != "session"
+            ):
+                return
+            else:
+                pass
+            has_registered_session_sampling_context = (
+                request_id in run_state.request_sampling_decisions
+                and request_id in run_state.request_session_identities
+            )
+            if has_registered_session_sampling_context:
+                run_state.request_sampling_stage_names.setdefault(
+                    request_id, set()
+                ).add(stage_name)
+                return
+            else:
+                pass
+            run_state.request_session_identities[request_id] = session_identity
+            run_state.request_sampling_decisions[request_id] = (
+                self.session_sampling_decision(run_state, session_identity)
+            )
+            run_state.request_sampling_stage_names.setdefault(request_id, set()).add(
+                stage_name
+            )
 
     def record_request_admission(
         self,
@@ -188,6 +245,30 @@ class RequestEventRecorder:
                 return
             else:
                 pass
+            session_identity = None
+            if run_state.sampling_unit == "session":
+                session_identity = self.session_identity_from_metadata(request_metadata)
+                if session_identity is not None:
+                    run_state.request_session_identities.setdefault(
+                        request_id, session_identity
+                    )
+                    session_operation = (
+                        request_metadata.get(SESSION_METADATA_KEY)
+                        if request_metadata is not None
+                        else None
+                    )
+                    if isinstance(session_operation, Mapping):
+                        operation = session_operation.get("operation")
+                        if isinstance(operation, str):
+                            run_state.request_session_operations[request_id] = operation
+                        else:
+                            pass
+                    else:
+                        pass
+                else:
+                    pass
+            else:
+                pass
             decision = run_state.request_sampling_decisions.get(request_id)
             if decision is None:
                 if run_state.sampling_unit == "request":
@@ -195,39 +276,16 @@ class RequestEventRecorder:
                         run_state, request_id
                     )
                 else:
-                    session_identity = self.session_identity_from_metadata(
-                        request_metadata
-                    )
                     if session_identity is None:
                         decision = False
                     else:
                         decision = self.session_sampling_decision(
                             run_state, session_identity
                         )
-                        run_state.request_session_identities[
-                            request_id
-                        ] = session_identity
-                        session_operation = (
-                            request_metadata.get(SESSION_METADATA_KEY)
-                            if request_metadata is not None
-                            else None
-                        )
-                        if isinstance(session_operation, Mapping):
-                            operation = session_operation.get("operation")
-                            if isinstance(operation, str):
-                                run_state.request_session_operations[
-                                    request_id
-                                ] = operation
-                            else:
-                                pass
-                        else:
-                            pass
             else:
                 pass
             run_state.request_sampling_decisions[request_id] = decision
-            run_state.request_sampling_stage_names.setdefault(
-                request_id, set()
-            ).add(
+            run_state.request_sampling_stage_names.setdefault(request_id, set()).add(
                 stage_name
             )
 
@@ -294,10 +352,13 @@ class RequestEventRecorder:
             session_operation = run_state.request_session_operations.pop(
                 request_id, None
             )
-            if session_identity is not None and (
-                clear_session or session_operation in ("close", "read")
-            ):
-                run_state.session_sampling_decisions.pop(session_identity, None)
+            if session_identity is not None:
+                if clear_session or session_operation in ("close", "read"):
+                    self.clear_session_sampling_if_idle(run_state, session_identity)
+                elif session_identity in run_state.session_sampling_clear_when_idle:
+                    self.clear_session_sampling_if_idle(run_state, session_identity)
+                else:
+                    pass
             else:
                 pass
 
@@ -308,9 +369,20 @@ class RequestEventRecorder:
                 return
             else:
                 pass
-            run_state.session_sampling_decisions.pop(
-                (session_id, session_open_index), None
+            self.clear_session_sampling_if_idle(
+                run_state, (session_id, session_open_index)
             )
+
+    @staticmethod
+    def clear_session_sampling_if_idle(
+        run_state: RecorderRunState,
+        session_identity: tuple[str, int],
+    ) -> None:
+        if session_identity in run_state.request_session_identities.values():
+            run_state.session_sampling_clear_when_idle.add(session_identity)
+        else:
+            run_state.session_sampling_decisions.pop(session_identity, None)
+            run_state.session_sampling_clear_when_idle.discard(session_identity)
 
     def begin_buffer_operation(
         self,
@@ -334,8 +406,7 @@ class RequestEventRecorder:
             ):
                 return None
             elif (
-                expected_run_id is not None
-                and expected_run_id != observed_state.run_id
+                expected_run_id is not None and expected_run_id != observed_state.run_id
             ):
                 return None
             else:
@@ -417,11 +488,7 @@ class RequestEventRecorder:
                 run_state=observed_state,
                 capacity=observed_state.event_buffer_capacity,
                 in_flight=1,
-                events=(
-                    []
-                    if observed_state.mode == "performance"
-                    else deque()
-                ),
+                events=([] if observed_state.mode == "performance" else deque()),
             )
             observed_state.producer_buffers.append(producer_buffer)
             self.producer_local.buffer = producer_buffer

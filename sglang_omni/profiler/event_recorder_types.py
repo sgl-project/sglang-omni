@@ -139,6 +139,7 @@ class RecorderRunState:
     request_sampling_stage_names: dict[str, set[str]] = field(default_factory=dict)
     request_session_identities: dict[str, tuple[str, int]] = field(default_factory=dict)
     request_session_operations: dict[str, str] = field(default_factory=dict)
+    session_sampling_clear_when_idle: set[tuple[str, int]] = field(default_factory=set)
     session_sampling_decisions: dict[tuple[str, int], bool] = field(
         default_factory=dict
     )

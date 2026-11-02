@@ -296,9 +296,10 @@ def test_runtime_request_sampling_matches_independent_recorders(
             decision = recorder.deterministic_sampling_decision(
                 recorder.active_state, request_id
             )
-            assert recorder.should_sample_request(
-                recorder.active_state, request_id
-            ) is decision
+            assert (
+                recorder.should_sample_request(recorder.active_state, request_id)
+                is decision
+            )
             recorder.emit(
                 request_id=request_id,
                 stage="coordinator",
@@ -314,9 +315,7 @@ def test_runtime_request_sampling_matches_independent_recorders(
             stage_name="coordinator",
         )
         assert "later-admitted" in recorder.active_state.request_sampling_decisions
-        recorder.clear_request_sampling(
-            "later-admitted", stage_name="coordinator"
-        )
+        recorder.clear_request_sampling("later-admitted", stage_name="coordinator")
         assert "later-admitted" not in recorder.active_state.request_sampling_decisions
         for request_number in range(80):
             request_id = f"request-{request_number}"
@@ -336,9 +335,7 @@ def test_runtime_request_sampling_matches_independent_recorders(
                 event_name="stage_complete",
             )
         recorder.stop(wait=True)
-        sampled_request_ids.append(
-            {event["request_id"] for event in read_events(path)}
-        )
+        sampled_request_ids.append({event["request_id"] for event in read_events(path)})
         status = read_status(path)
         assert status["dropped_events"] == 0
         assert status["complete"] is True
@@ -462,8 +459,7 @@ def test_runtime_session_sampling_covers_units_and_ready_boundary(
     )
     assert recorder.active_state is not None
     assert (
-        pre_payload_request_id
-        not in recorder.active_state.request_sampling_decisions
+        pre_payload_request_id not in recorder.active_state.request_sampling_decisions
     )
     recorder.record_request_admission(
         pre_payload_request_id,
@@ -737,12 +733,8 @@ def test_runtime_disk_cap_reports_unwritten_events_without_partial_records(
         metadata={"value": 2},
     )
     assert (sampling_calls, timestamp_calls, snapshot_calls) == calls_after_limit
-    monkeypatch.setattr(
-        event_recorder_module, "get_recorder", lambda: recorder
-    )
-    monkeypatch.setattr(
-        event_recorder_module, "snapshot_metadata", snapshot_metadata
-    )
+    monkeypatch.setattr(event_recorder_module, "get_recorder", lambda: recorder)
+    monkeypatch.setattr(event_recorder_module, "snapshot_metadata", snapshot_metadata)
     RequestEventBuffer().capture(
         "deferred_event",
         [RequestEventSnapshot(request_id="request-3", metadata={})],
@@ -831,6 +823,12 @@ def test_runtime_deferred_sampling_and_colocated_cleanup(
             "session_identity": {"id": "shared-session", "open_index": 1},
         }
     }
+    closing_metadata = {
+        "omni_session": {
+            "operation": "close",
+            "session_identity": {"id": "shared-session", "open_index": 1},
+        }
+    }
     recorder.record_request_admission(
         "shared-request",
         session_metadata,
@@ -841,6 +839,30 @@ def test_runtime_deferred_sampling_and_colocated_cleanup(
         session_metadata,
         stage_name="stage-b",
     )
+    recorder.record_request_admission(
+        "closing-request",
+        closing_metadata,
+        stage_name="stage-a",
+    )
+    recorder.record_request_admission(
+        "closing-request",
+        closing_metadata,
+        stage_name="stage-b",
+    )
+    recorder.clear_request_sampling("closing-request", stage_name="stage-a")
+    recorder.clear_request_sampling("closing-request", stage_name="stage-b")
+    assert recorder.active_state is not None
+    assert recorder.active_state.request_sampling_decisions == {"shared-request": True}
+    assert recorder.active_state.session_sampling_decisions == {
+        ("shared-session", 1): True
+    }
+    assert recorder.active_state.session_sampling_clear_when_idle == {
+        ("shared-session", 1)
+    }
+    recorder.clear_session_sampling("shared-session", 1)
+    assert recorder.active_state.session_sampling_decisions == {
+        ("shared-session", 1): True
+    }
     recorder.clear_request_sampling("shared-request", stage_name="stage-a")
     monkeypatch.setattr(event_recorder_module, "get_recorder", lambda: recorder)
 
@@ -866,7 +888,10 @@ def test_runtime_deferred_sampling_and_colocated_cleanup(
     )
     assert recorder.active_state is not None
     assert recorder.active_state.request_sampling_decisions == {}
+    assert recorder.active_state.request_session_identities == {}
+    assert recorder.active_state.request_session_operations == {}
     assert recorder.active_state.session_sampling_decisions == {}
+    assert recorder.active_state.session_sampling_clear_when_idle == set()
     recorder.stop(wait=True)
 
     events = read_events(path)
