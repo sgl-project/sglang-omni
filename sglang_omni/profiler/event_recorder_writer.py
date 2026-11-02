@@ -137,7 +137,7 @@ class RequestEventRecorder:
                 pass
             producer_buffer = ProducerBuffer(
                 run_state=observed_state,
-                capacity=self.event_capacity,
+                capacity=observed_state.event_buffer_capacity,
                 in_flight=1,
             )
             observed_state.producer_buffers.append(producer_buffer)
@@ -236,14 +236,36 @@ class RequestEventRecorder:
             for text in (request_id, stage, event_name, run_id)
         )
 
-    def start(self, run_id: str, event_dir: str, stage: str) -> str:
+    def start(
+        self,
+        run_id: str,
+        event_dir: str,
+        stage: str,
+        *,
+        event_buffer_capacity: int | None = None,
+    ) -> str:
         """Start or join one process-local run using a fresh output directory."""
+        if event_buffer_capacity is not None and (
+            type(event_buffer_capacity) is not int or event_buffer_capacity <= 0
+        ):
+            raise ValueError("event_buffer_capacity must be a positive integer")
+        else:
+            pass
         with self.control_lock:
             active_state = self.active_state
             if active_state is not None:
                 if active_state.run_id != run_id:
                     raise RuntimeError(
                         f"request event run {active_state.run_id} is already active"
+                    )
+                else:
+                    pass
+                if (
+                    event_buffer_capacity is not None
+                    and event_buffer_capacity != active_state.event_buffer_capacity
+                ):
+                    raise RuntimeError(
+                        "co-located stages must use the same event_buffer_capacity"
                     )
                 else:
                     pass
@@ -298,6 +320,11 @@ class RequestEventRecorder:
                 path=event_path,
                 status_path=status_path,
                 finalization=finalization,
+                event_buffer_capacity=(
+                    self.event_capacity
+                    if event_buffer_capacity is None
+                    else event_buffer_capacity
+                ),
             )
             return str(event_path)
 
@@ -581,6 +608,7 @@ class RequestEventRecorder:
             "pid": self.pid,
             "event_path": str(run_state.path),
             "stages": sorted(run_state.stages),
+            "event_buffer_capacity": run_state.event_buffer_capacity,
             "accepted_events": run_state.accepted_events,
             "producer_buffer_count": len(run_state.producer_buffers),
             "producer_buffer_event_counts": [

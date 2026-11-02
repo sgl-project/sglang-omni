@@ -2702,7 +2702,10 @@ class Stage:
         if msg.event_dir is not None:
             try:
                 _get_recorder().start(
-                    run_id=run_id, event_dir=msg.event_dir, stage=self.name
+                    run_id=run_id,
+                    event_dir=msg.event_dir,
+                    stage=self.name,
+                    event_buffer_capacity=msg.event_buffer_capacity,
                 )
             except Exception:
                 logger.warning(

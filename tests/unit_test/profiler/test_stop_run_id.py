@@ -17,7 +17,11 @@ wildcard: stop whatever's active.
 
 from __future__ import annotations
 
-from sglang_omni.proto.messages import ProfilerStopMessage
+from sglang_omni.proto.messages import (
+    ProfilerStartMessage,
+    ProfilerStopMessage,
+    parse_message,
+)
 
 
 def test_profiler_stop_message_supports_optional_run_id() -> None:
@@ -36,3 +40,33 @@ def test_profiler_stop_message_legacy_run_id_round_trip() -> None:
     d = msg.to_dict()
     round_trip = ProfilerStopMessage.from_dict(d)
     assert round_trip.run_id == "abc"
+
+
+def test_profiler_start_message_capacity_round_trip_and_legacy_payload() -> None:
+    message = ProfilerStartMessage(
+        run_id="performance_test",
+        trace_path_template="",
+        event_dir="/tmp/performance_test/events",
+        enable_torch=False,
+        event_buffer_capacity=1500,
+    )
+
+    payload = message.to_dict()
+    round_trip = parse_message(payload)
+
+    assert isinstance(round_trip, ProfilerStartMessage)
+    assert round_trip.event_buffer_capacity == 1500
+
+    legacy_message = parse_message(
+        {
+            "type": "profiler_start",
+            "run_id": "legacy",
+            "trace_path_template": "",
+            "event_dir": "/tmp/legacy/events",
+            "enable_torch": False,
+        }
+    )
+
+    assert isinstance(legacy_message, ProfilerStartMessage)
+    assert legacy_message.event_buffer_capacity is None
+    assert "event_buffer_capacity" not in legacy_message.to_dict()

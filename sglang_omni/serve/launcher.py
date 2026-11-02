@@ -42,7 +42,7 @@ from typing import TypedDict
 import httpx
 import uvicorn
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sglang.srt.utils.network import NetworkAddress
 
 from sglang_omni.client import Client
@@ -368,6 +368,7 @@ class StartReq(BaseModel):
     config: dict[str, object] | None = None
     event_dir: str | None = None
     enable_torch: bool = True
+    event_buffer_capacity: int | None = Field(default=None, gt=0, strict=True)
 
 
 class StopReq(BaseModel):
@@ -377,6 +378,7 @@ class StopReq(BaseModel):
 class StartRequestProfileReq(BaseModel):
     run_id: str | None = None
     event_dir: str | None = None
+    event_buffer_capacity: int | None = Field(default=None, gt=0, strict=True)
 
 
 def default_event_dir(profiler_dir: str, run_id: str) -> str:
@@ -425,7 +427,10 @@ def mount_profiler_routes(
         if event_dir is not None:
             try:
                 _get_event_recorder().start(
-                    run_id=run_id, event_dir=event_dir, stage="coordinator"
+                    run_id=run_id,
+                    event_dir=event_dir,
+                    stage="coordinator",
+                    event_buffer_capacity=req.event_buffer_capacity,
                 )
             except RuntimeError as exc:
                 logger.warning(
@@ -447,6 +452,9 @@ def mount_profiler_routes(
             config=req.config,
             event_dir=event_dir,
             enable_torch=req.enable_torch,
+            event_buffer_capacity=(
+                req.event_buffer_capacity if event_dir is not None else None
+            ),
         )
         return {
             "run_id": run_id,
@@ -476,7 +484,10 @@ def mount_profiler_routes(
             pass
         try:
             _get_event_recorder().start(
-                run_id=run_id, event_dir=event_dir, stage="coordinator"
+                run_id=run_id,
+                event_dir=event_dir,
+                stage="coordinator",
+                event_buffer_capacity=req.event_buffer_capacity,
             )
         except RuntimeError as exc:
             logger.warning(
@@ -495,6 +506,7 @@ def mount_profiler_routes(
             trace_path_template="",
             event_dir=event_dir,
             enable_torch=False,
+            event_buffer_capacity=req.event_buffer_capacity,
         )
         return {"run_id": run_id, "event_dir": event_dir}
 

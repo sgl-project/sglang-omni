@@ -120,6 +120,7 @@ class RecorderRunState:
     path: Path
     status_path: Path
     finalization: RequestEventFinalization
+    event_buffer_capacity: int = DEFAULT_EVENT_BUFFER_CAPACITY
     producer_buffers: list[ProducerBuffer] = field(default_factory=list)
     producer_drop_counters: list[ProducerDropCounter] = field(default_factory=list)
     accepted_events: int = 0

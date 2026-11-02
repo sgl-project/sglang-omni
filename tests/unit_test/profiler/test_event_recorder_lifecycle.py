@@ -38,6 +38,54 @@ def test_zero_event_run_publishes_complete_status(tmp_path: Path) -> None:
     assert status["complete"] is True
 
 
+def test_event_buffer_capacity_is_per_run_and_respects_colocated_stages(
+    tmp_path: Path,
+) -> None:
+    recorder = RequestEventRecorder()
+    event_dir = tmp_path / "capacity-3"
+    event_path = recorder.start(
+        "capacity-3",
+        str(event_dir),
+        "stage_a",
+        event_buffer_capacity=3,
+    )
+    assert recorder.start("capacity-3", str(event_dir), "stage_b") == event_path
+    with pytest.raises(RuntimeError, match="same event_buffer_capacity"):
+        recorder.start(
+            "capacity-3",
+            str(event_dir),
+            "stage_c",
+            event_buffer_capacity=4,
+        )
+    for event_number in range(4):
+        recorder.emit(
+            request_id=f"request-{event_number}",
+            stage="stage_a",
+            event_name="event",
+        )
+
+    first_finalization = recorder.deactivate()
+
+    assert first_finalization is not None
+    assert first_finalization.wait(timeout_seconds=5) is True
+    first_status = read_status_file(first_finalization.status_path)
+    assert first_status["event_buffer_capacity"] == 3
+    assert first_status["accepted_events"] == 3
+    assert first_status["dropped_events"] == 1
+    assert first_status["complete"] is False
+    assert first_status["stages"] == ["stage_a", "stage_b"]
+
+    recorder.start("default-capacity", str(tmp_path / "default"), "stage")
+    recorder.emit(request_id="default", stage="stage", event_name="event")
+    second_finalization = recorder.deactivate()
+
+    assert second_finalization is not None
+    assert second_finalization.wait(timeout_seconds=5) is True
+    second_status = read_status_file(second_finalization.status_path)
+    assert second_status["event_buffer_capacity"] == 1024
+    assert second_status["complete"] is True
+
+
 def test_unflushed_instance_events_are_counted_as_lost(tmp_path: Path) -> None:
     recorder = get_recorder()
     buffer_a = RequestEventBuffer()

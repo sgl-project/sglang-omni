@@ -1187,6 +1187,126 @@ def test_start_profile_request_only_mode_does_not_require_trace_template(
             rec.stop(wait=True)
 
 
+@pytest.mark.parametrize("endpoint", ["/start_profile", "/start_request_profile"])
+def test_profiler_start_routes_pass_event_buffer_capacity(
+    endpoint: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeRecorder:
+        def __init__(self) -> None:
+            self.capacities: list[int | None] = []
+
+        def start(
+            self,
+            run_id: str,
+            event_dir: str,
+            stage: str,
+            *,
+            event_buffer_capacity: int | None = None,
+        ) -> str:
+            self.capacities.append(event_buffer_capacity)
+            return "/tmp/events.jsonl"
+
+    class FakeProfilerControl:
+        def __init__(self) -> None:
+            self.capacities: list[int | None] = []
+
+        async def broadcast_start(
+            self,
+            run_id: str,
+            trace_path_template: str,
+            config: dict[str, object] | None = None,
+            stages: list[str] | None = None,
+            event_dir: str | None = None,
+            enable_torch: bool = True,
+            event_buffer_capacity: int | None = None,
+        ) -> None:
+            self.capacities.append(event_buffer_capacity)
+
+    recorder = FakeRecorder()
+    control = FakeProfilerControl()
+    monkeypatch.setattr(launcher, "_get_event_recorder", lambda: recorder)
+    app = FastAPI()
+    launcher.mount_profiler_routes(app, control, profiler_dir=str(tmp_path))
+    event_dir = str(tmp_path / "events")
+    body: dict[str, object] = {
+        "run_id": "capacity-test",
+        "event_dir": event_dir,
+        "event_buffer_capacity": 1500,
+    }
+    if endpoint == "/start_profile":
+        body["enable_torch"] = False
+    else:
+        pass
+
+    with TestClient(app) as client:
+        response = client.post(endpoint, json=body)
+
+    assert response.status_code == 200
+    assert recorder.capacities == [1500]
+    assert control.capacities == [1500]
+
+
+@pytest.mark.parametrize("invalid_capacity", [0, -1, True, 1.5, "1500"])
+def test_profiler_start_routes_reject_invalid_event_buffer_capacity(
+    invalid_capacity: object,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeRecorder:
+        def __init__(self) -> None:
+            self.starts = 0
+
+        def start(
+            self,
+            run_id: str,
+            event_dir: str,
+            stage: str,
+            *,
+            event_buffer_capacity: int | None = None,
+        ) -> str:
+            self.starts += 1
+            return "/tmp/events.jsonl"
+
+    class FakeProfilerControl:
+        def __init__(self) -> None:
+            self.starts = 0
+
+        async def broadcast_start(
+            self,
+            run_id: str,
+            trace_path_template: str,
+            config: dict[str, object] | None = None,
+            stages: list[str] | None = None,
+            event_dir: str | None = None,
+            enable_torch: bool = True,
+            event_buffer_capacity: int | None = None,
+        ) -> None:
+            self.starts += 1
+
+    recorder = FakeRecorder()
+    control = FakeProfilerControl()
+    monkeypatch.setattr(launcher, "_get_event_recorder", lambda: recorder)
+    app = FastAPI()
+    launcher.mount_profiler_routes(app, control, profiler_dir=str(tmp_path))
+    event_dir = str(tmp_path / "events")
+    request_body: dict[str, object] = {
+        "run_id": "invalid-capacity",
+        "event_dir": event_dir,
+        "enable_torch": False,
+        "event_buffer_capacity": invalid_capacity,
+    }
+
+    with TestClient(app) as client:
+        for endpoint in ("/start_profile", "/start_request_profile"):
+            response = client.post(endpoint, json=request_body)
+            assert response.status_code == 422
+
+    assert recorder.starts == 0
+    assert control.starts == 0
+
+
 class RecordingProfilerControl:
     def __init__(self) -> None:
         self.calls: list[str] = []
