@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from itertools import accumulate
 from typing import TYPE_CHECKING
 
 import torch
@@ -11,7 +12,10 @@ from sglang.srt.managers.scheduler import GenerationBatchResult
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
-from sglang_omni.models.minicpm_o.routing import THINKER_STAGE
+from sglang_omni.models.minicpm_o.routing import (
+    THINKER_STAGE,
+    should_generate_audio_output,
+)
 from sglang_omni.scheduling.types import (
     RequestOutput,
     SchedulerOutput,
@@ -25,6 +29,7 @@ if TYPE_CHECKING:
         CaptureHiddenMode,
         ForwardBatch,
     )
+    from sglang.srt.speculative.ragged_verify import RaggedVerifyLayout
 
     from sglang_omni.model_runner.model_worker import ModelWorker
     from sglang_omni.scheduling.sglang_backend.output_processor import (
@@ -35,8 +40,17 @@ else:
     pass
 
 
+def thinker_length_penalty(sched_req: SchedulerRequest) -> float:
+    params = sched_req.data.stage_payload.request.params or {}
+    thinker_params = (params.get("stage_params") or {}).get(THINKER_STAGE) or {}
+    return thinker_params.get("length_penalty", 1.0)
+
+
 class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
     """Run the thinker and accumulate hidden states for speech conditioning."""
+
+    speculative_verify_takes_logits_hooks = True
+    speculative_ignores_request_seed = True
 
     def __init__(
         self,
@@ -72,6 +86,8 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
             else get_server_return_hidden_states_mode()
         )
         self.pending_hidden: dict[str, list[torch.Tensor]] = {}
+        self.hands_hidden_to_talker = output_processor.capture_hidden
+        self.speculative_hidden_queue: dict[str, torch.Tensor] = {}
 
     def requested_capture_hidden_mode_prefill(
         self, schedule_batch: ScheduleBatch, requests: list[SchedulerRequest]
@@ -93,9 +109,7 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         """Scale end-of-sequence logits by each request's length_penalty."""
         logits = logits_output.next_token_logits
         for row_idx, sched_req in enumerate(requests):
-            params = sched_req.data.stage_payload.request.params or {}
-            thinker_params = (params.get("stage_params") or {}).get(THINKER_STAGE) or {}
-            length_penalty = thinker_params.get("length_penalty", 1.0)
+            length_penalty = thinker_length_penalty(sched_req)
             if length_penalty == 1.0:
                 continue
             else:
@@ -106,6 +120,12 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
                     eos_logits / length_penalty,
                     eos_logits * length_penalty,
                 )
+
+    def verify_rows_take_logits_hooks(self, requests: list[SchedulerRequest]) -> bool:
+        """Only a length_penalty or a codec suppress set changes a thinker verify row."""
+        return super().verify_rows_take_logits_hooks(requests) or any(
+            thinker_length_penalty(sched_req) != 1.0 for sched_req in requests
+        )
 
     def eos_token_id_tensor(self, device: torch.device) -> torch.Tensor:
         """Keep the EOS ids on the logits device so indexing needs no H2D copy."""
@@ -161,6 +181,89 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
                 # note (MayDomine): CUDA graph replay overwrites the original hidden buffer.
                 seq.append(hidden_rows[-1].detach().clone())
 
+    def after_speculative_step(
+        self,
+        batch: ScheduleBatch,
+        *,
+        is_prefill: bool,
+        num_draft_tokens: int,
+        verify_layout: RaggedVerifyLayout | None = None,
+    ) -> None:
+        """Queue each request's hidden rows for the tokens this step commits.
+
+        A prefill commits one token, generated from the last prompt row. A chain
+        verify commits the leading rows of a request's block, the rows plain decode
+        would have produced; emission trims the block to its committed tokens.
+        """
+        model = self.outer_model
+        if not self.hands_hidden_to_talker:
+            return
+        elif is_prefill:
+            end_rows = list(accumulate(batch.extend_lens))
+            last_rows = torch.tensor(
+                end_rows,
+                device=model.prefill_hidden_rows.device,
+            )
+            rows = model.prefill_hidden_rows[last_rows - 1]
+            start = 0
+            for index, (request, end) in enumerate(zip(batch.reqs, end_rows)):
+                payload = request.omni_data.stage_payload
+                prompt = (payload.data or {}).get("prompt") or {}
+                if not should_generate_audio_output(payload.request):
+                    pass
+                elif prompt.get("known_tts_output_ids") is not None:
+                    hidden = model.prefill_hidden_rows[start:end].detach().clone()
+                    self.pending_hidden.setdefault(request.rid, []).extend(
+                        hidden.unbind(0)
+                    )
+                else:
+                    self.speculative_hidden_queue[request.rid] = rows[index : index + 1]
+                start = end
+        else:
+            speaking = [
+                index
+                for index, req in enumerate(batch.reqs)
+                if should_generate_audio_output(req.omni_data.stage_payload.request)
+            ]
+            if not speaking:
+                return
+            else:
+                pass
+            rows = model.speculative_hidden_rows
+            if verify_layout is None:
+                starts = (
+                    torch.arange(len(batch.reqs), device=rows.device) * num_draft_tokens
+                )
+            else:
+                # note (0xtoward): a compact verify packs each request's rows back to back; the
+                # starts stay on the device, and the rows gathered past a request's own are
+                # never emitted, since it commits at most as many tokens as it verified.
+                starts = verify_layout.extend_start_loc[: len(batch.reqs)].to(
+                    torch.long
+                )
+            offsets = torch.arange(num_draft_tokens, device=rows.device)
+            rows_index = (starts[:, None] + offsets[None, :]).clamp_(
+                max=rows.shape[0] - 1
+            )
+            block = rows.index_select(0, rows_index.reshape(-1)).view(
+                len(batch.reqs), num_draft_tokens, -1
+            )
+            for index in speaking:
+                self.speculative_hidden_queue[batch.reqs[index].rid] = block[index]
+
+    def on_speculative_tokens(
+        self, scheduler_request: SchedulerRequest, token_ids: list[int]
+    ) -> None:
+        """Append the queued rows of the committed tokens, which end at the stop."""
+        hidden = self.speculative_hidden_queue.pop(scheduler_request.request_id, None)
+        if hidden is None:
+            return
+        else:
+            pass
+        seq = self.pending_hidden.setdefault(scheduler_request.request_id, [])
+        # Row views would keep this step's whole block alive until the request ends.
+        seq.extend(hidden[: len(token_ids)].clone().unbind(0))
+
     def finalize_skip_rids(self, scheduler_output: SchedulerOutput) -> set[str]:
         """Do not advance generation state for non-final prefill chunks."""
         return {
@@ -173,6 +276,7 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         self, request_id: str, req_data: SGLangARRequestData
     ) -> None:
         """Flush the request's hidden accumulator with a single D2H copy."""
+        self.speculative_hidden_queue.pop(request_id, None)
         seq = self.pending_hidden.pop(request_id, None)
         if not seq:
             return
@@ -190,4 +294,5 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
 
     def reset_request(self, request_id: str) -> None:
         """Drop accumulated hidden states on abort (no terminal flush runs)."""
+        self.speculative_hidden_queue.pop(request_id, None)
         self.pending_hidden.pop(request_id, None)
