@@ -155,7 +155,7 @@ See [Session Graph](../developer_reference/full_duplex_guide.md#session-graph) f
 
 ## Speculative Decoding
 
-The thinker can verify tokens proposed by SpeechSpec's DFlash draft [`yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8`](https://huggingface.co/yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8) or EAGLE3 draft [`yuekai/qwen3_omni_30b_a3b_instruct_eagle3_audio`](https://huggingface.co/yuekai/qwen3_omni_30b_a3b_instruct_eagle3_audio) on a text-only server.
+The thinker can verify tokens proposed by SpeechSpec's DFlash draft [`yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8`](https://huggingface.co/yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8) or EAGLE3 draft [`yuekai/qwen3_omni_30b_a3b_instruct_eagle3_audio`](https://huggingface.co/yuekai/qwen3_omni_30b_a3b_instruct_eagle3_audio).
 
 ```bash
 # DFlash: one 8-token block per step
@@ -185,6 +185,6 @@ sgl-omni serve \
 - **Overlap trade-offs.** Overlap can improve decode throughput. Prefill-heavy workloads or short outputs can see higher TTFT and lower throughput.
 - **Prefill boundary.** Set `SGLANG_DISABLE_CONSECUTIVE_PREFILL_OVERLAP=1` before launch to process the previous prefill batch's result before launching the next consecutive prefill batch. This can lower TTFT at a throughput cost. Decode rounds continue to overlap.
 - **Execution failure.** An execution failure in speculative overlap stops the pipeline and fails its pending requests.
-- **Speech output.** Speech generation is unsupported with a draft; use `--text-only`.
+- **Speech output.** The commands above serve text only; drop `--text-only` from either one to also serve speech. The draft speeds up the thinker only; the talker decodes without one. A talker that accepts the thinker's final layer is unsupported with a draft; `Qwen/Qwen3-Omni-30B-A3B-Instruct` accepts layer 24 of 48.
 
 Compare modes with matching workloads and prefix-cache conditions. Measure TTFT, throughput and accuracy for your workload.

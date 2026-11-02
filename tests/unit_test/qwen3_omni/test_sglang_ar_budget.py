@@ -555,22 +555,28 @@ def test_qwen_colocated_thinker_explicit_mem_fraction_skips_default_reserve(
 
 
 @pytest.mark.parametrize("speculative_algorithm", ["DFLASH", "EAGLE3"])
-def test_a_speech_thinker_refuses_a_speculative_draft(
+def test_a_speech_thinker_serves_a_speculative_draft(
     monkeypatch, speculative_algorithm: str
 ) -> None:
-    """The talker's prompt capture shares the layers a draft reads, so speech output
-    is refused before the draft loads."""
-    patch_thinker_startup(monkeypatch)
+    """The talker's prompt capture and a draft's capture run side by side, so a
+    thinker that feeds the talker builds with a draft."""
+    scheduler_calls = patch_thinker_startup(monkeypatch, expected_context_length=8192)
+    monkeypatch.setattr(
+        qwen_stages.AutoConfig,
+        "from_pretrained",
+        lambda *args, **kwargs: SimpleNamespace(max_position_embeddings=8192),
+    )
 
-    with pytest.raises(ValueError, match="does not support speech output"):
-        qwen_stages.create_sglang_thinker_executor_from_config(
-            "dummy",
-            speech_enabled=True,
-            server_args_overrides={
-                "speculative_algorithm": speculative_algorithm,
-                "speculative_draft_model_path": "draft",
-            },
-        )
+    qwen_stages.create_sglang_thinker_executor_from_config(
+        "dummy",
+        speech_enabled=True,
+        server_args_overrides={
+            "speculative_algorithm": speculative_algorithm,
+            "speculative_draft_model_path": "draft",
+        },
+    )
+
+    assert len(scheduler_calls) == 1
 
 
 @pytest.mark.parametrize(

@@ -1130,9 +1130,18 @@ def make_thinker_stream_output_builder(
                 and isinstance(req_data.req, PromptHiddenRequest)
                 and not req_data.req.is_prompt_hidden_handed_off
             ):
-                message.data = prompt_hidden_store.read(
-                    req_data.req.kv.req_pool_idx, req_data.req.prompt_hidden_positions
-                )
+                request = req_data.req
+                if request.kv.req_pool_idx is not None:
+                    slot_ids = prompt_hidden_store.prompt_slot_ids(
+                        request.kv.req_pool_idx, request.prompt_hidden_positions
+                    )
+                else:
+                    # note (wenchen76): under a draft, a request that finishes on its
+                    # prefill streams after its KV is released, so it reads the slots
+                    # its speculative prefill saved; no forward has reused them yet.
+                    assert request.prompt_hidden_slot_ids is not None
+                    slot_ids = request.prompt_hidden_slot_ids
+                message.data = prompt_hidden_store.read(slot_ids)
                 message.metadata["prompt_hidden_positions"] = (
                     req_data.req.prompt_hidden_positions.tolist()
                 )
