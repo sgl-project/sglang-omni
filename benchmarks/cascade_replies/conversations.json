@@ -1,0 +1,359 @@
+{
+  "version": 1,
+  "units": {
+    "en": "words: runs of letters, digits or apostrophes",
+    "zh": "Chinese characters, plus each run of Latin letters or digits as one"
+  },
+  "categories": {
+    "factoid": "A fact with a short answer. One sentence.",
+    "howto": "Steps to do something. The key two to four steps in a few spoken sentences, or an offer to go step by step.",
+    "explain": "Why something happens or how two things differ. The key point in one or two sentences.",
+    "recommend": "A choice or suggestion. One or two picks with a short reason, not a list.",
+    "social": "Small talk or a feeling. Short and warm, no lecture or unasked advice.",
+    "expand": "The user asks for more detail. Longer than an ordinary reply; a length limit must not block it.",
+    "brief": "The user asks for a short answer. A word to one short sentence.",
+    "visual": "Content made for a screen: a long list, a table, code, a URL or a formula. Say the gist or a few items in speech, without reading symbols or a long list.",
+    "clarify": "The request cannot be answered as asked. One short clarifying question.",
+    "followup": "A follow-up that only makes sense with the earlier turns. Answer it in that context, briefly."
+  },
+  "bands": {
+    "en": {
+      "factoid": [3, 20],
+      "howto": [15, 70],
+      "explain": [12, 50],
+      "recommend": [10, 45],
+      "social": [5, 30],
+      "expand": [35, 130],
+      "brief": [1, 10],
+      "visual": [10, 50],
+      "clarify": [3, 25],
+      "followup": [3, 30]
+    },
+    "zh": {
+      "factoid": [4, 30],
+      "howto": [25, 110],
+      "explain": [20, 80],
+      "recommend": [15, 70],
+      "social": [8, 45],
+      "expand": [55, 200],
+      "brief": [1, 15],
+      "visual": [15, 75],
+      "clarify": [5, 35],
+      "followup": [5, 45]
+    }
+  },
+  "conversations": [
+    {
+      "id": "en_01",
+      "language": "en",
+      "topic": "breakfast and eggs",
+      "turns": [
+        {"category": "social", "user": "Good morning! I actually slept well for once.", "points": ["responds warmly to the good news", "no unasked advice"]},
+        {"category": "howto", "user": "How do I make a soft-boiled egg?", "points": ["lower the egg into boiling water", "cook about six to seven minutes", "cool it in cold or ice water to stop the cooking"]},
+        {"category": "expand", "user": "Can you walk me through that step by step?", "expands": 1, "points": ["the steps in order: boil the water, lower the egg in, time it, ice bath, crack and peel", "more detail than the previous reply"]},
+        {"category": "factoid", "user": "How much protein is in one egg?", "points": ["about six grams for a large egg"]},
+        {"category": "brief", "user": "Just yes or no, can I eat eggs every day?", "points": ["yes, for most healthy people", "no long explanation"]},
+        {"category": "visual", "user": "Give me a shopping list for a week of breakfasts.", "points": ["names a few key items, such as eggs, bread, fruit, yogurt or oats", "does not read out a long list"]}
+      ]
+    },
+    {
+      "id": "en_02",
+      "language": "en",
+      "topic": "a trip to Japan",
+      "turns": [
+        {"category": "social", "user": "I'm finally going to Japan next month!", "points": ["shares the excitement", "short"]},
+        {"category": "recommend", "user": "Should I start in Tokyo or Kyoto?", "points": ["picks one or gives a clear rule of thumb", "a short reason, such as flights landing in Tokyo"]},
+        {"category": "factoid", "user": "How long is the bullet train from Tokyo to Kyoto?", "points": ["about two hours and fifteen minutes on the fastest train"]},
+        {"category": "followup", "user": "And from Kyoto to Osaka?", "points": ["about fifteen minutes by bullet train, or about half an hour by regular train", "answers for Kyoto to Osaka"]},
+        {"category": "visual", "user": "Write me a seven-day itinerary.", "points": ["a short outline, such as a few days in Tokyo, then Kyoto, then Osaka", "does not read seven days of detail", "may offer to go day by day"]},
+        {"category": "brief", "user": "In one word, what's the currency there?", "points": ["yen"]}
+      ]
+    },
+    {
+      "id": "en_03",
+      "language": "en",
+      "topic": "a slow laptop",
+      "turns": [
+        {"category": "clarify", "user": "It keeps crashing, what should I do?", "points": ["asks what is crashing: an app, a phone or a computer", "does not assume a device"]},
+        {"category": "howto", "user": "It's my laptop. Chrome freezes whenever I open more than a few tabs.", "points": ["two or three concrete steps, such as closing tabs or extensions, updating Chrome, restarting", "not an exhaustive list"]},
+        {"category": "explain", "user": "What's the difference between RAM and storage?", "points": ["RAM is short-term working memory for running programs", "storage keeps files even when the computer is off"]},
+        {"category": "expand", "user": "Explain that in more detail, I really want to understand it.", "expands": 2, "points": ["goes deeper, such as speed, RAM clearing on power off, why more RAM helps with many tabs", "longer than the previous reply"]},
+        {"category": "followup", "user": "So how much RAM do I need for all those tabs?", "points": ["eight gigabytes at least, sixteen is comfortable"]},
+        {"category": "visual", "user": "Write a short Python script that prints my memory usage.", "points": ["does not read code symbol by symbol", "describes the approach briefly, such as the psutil library"]}
+      ]
+    },
+    {
+      "id": "en_04",
+      "language": "en",
+      "topic": "losing a job",
+      "turns": [
+        {"category": "social", "user": "I got laid off today after eight years at the company.", "points": ["expresses sympathy", "does not jump into advice", "short"]},
+        {"category": "recommend", "user": "Should I tell my family tonight or wait until I have a plan?", "points": ["a gentle pick or a way to decide", "short reason, no lecture"]},
+        {"category": "clarify", "user": "Do I qualify for it?", "note": "Nothing earlier names what it is, and the user's country is unknown.", "points": ["asks what benefit or program is meant, or where the user lives", "does not assume"]},
+        {"category": "howto", "user": "How do I explain the layoff in a job interview?", "points": ["brief and honest: the role was cut in a layoff", "turn to what the user did and wants next", "don't criticize the old company"]},
+        {"category": "explain", "user": "What's the difference between severance and unemployment pay?", "points": ["severance is paid by the employer", "unemployment pay comes from a government program", "a person may get both, depending on local rules"]},
+        {"category": "brief", "user": "Thanks. Just tell me one thing to do tonight.", "points": ["one small concrete action", "one short sentence"]}
+      ]
+    },
+    {
+      "id": "en_05",
+      "language": "en",
+      "topic": "the moon",
+      "turns": [
+        {"category": "factoid", "user": "How far is the moon from Earth?", "points": ["about 384,000 kilometers, or about 239,000 miles, on average"]},
+        {"category": "explain", "user": "Why does the moon have phases?", "points": ["the sun lights half of the moon", "as it orbits Earth we see different amounts of the lit half", "not Earth's shadow"]},
+        {"category": "expand", "user": "Okay, tell me more about that, I'm curious.", "expands": 1, "points": ["names some phases, such as new, crescent, quarter, full", "the cycle takes about 29.5 days", "longer than the previous reply"]},
+        {"category": "followup", "user": "And a lunar eclipse, is that the same thing?", "points": ["no, an eclipse is Earth's shadow on the moon", "it only happens at a full moon"]},
+        {"category": "visual", "user": "What's the formula for gravitational force?", "points": ["says it in words: G times the two masses, divided by the distance squared", "does not read symbols such as F equals G m1 m2 over r squared letter by letter"]},
+        {"category": "brief", "user": "One number, how many days is a lunar month?", "points": ["about 29.5"]}
+      ]
+    },
+    {
+      "id": "en_06",
+      "language": "en",
+      "topic": "running",
+      "turns": [
+        {"category": "social", "user": "I just ran my first 5K without stopping!", "points": ["congratulates", "short"]},
+        {"category": "recommend", "user": "Should I run every day now?", "points": ["no, three or four runs a week with rest days", "short reason: recovery and avoiding injury"]},
+        {"category": "howto", "user": "How do I stretch my calves after a run?", "points": ["hands on a wall, one leg back, heel down", "hold about twenty to thirty seconds each side"]},
+        {"category": "visual", "user": "Make me a weekly training table for a 10K.", "points": ["the shape of the plan, such as three or four runs, one long run, rest days, a gradual increase", "does not read a table"]},
+        {"category": "factoid", "user": "How long is a 10K in miles?", "points": ["about 6.2 miles"]},
+        {"category": "followup", "user": "And a half marathon?", "points": ["about 13.1 miles"]}
+      ]
+    },
+    {
+      "id": "en_07",
+      "language": "en",
+      "topic": "buying a laptop",
+      "turns": [
+        {"category": "clarify", "user": "Which one should I buy?", "points": ["asks what product or which options", "short"]},
+        {"category": "recommend", "user": "A laptop for college, mostly writing papers and watching videos.", "points": ["a type or one or two models, such as a light laptop with long battery life", "short reason"]},
+        {"category": "explain", "user": "What's the difference between an SSD and a hard drive?", "points": ["an SSD uses flash memory with no moving parts and is much faster", "a hard drive spins a disk and is cheaper per gigabyte"]},
+        {"category": "brief", "user": "Just tell me, is 256 gigabytes enough?", "points": ["yes, for papers and streaming", "very short"]},
+        {"category": "followup", "user": "What about for gaming?", "points": ["more storage, such as 512 gigabytes to a terabyte", "a better graphics chip"]},
+        {"category": "social", "user": "Okay, thanks, that really helps!", "points": ["a short friendly close", "no long recap"]}
+      ]
+    },
+    {
+      "id": "en_08",
+      "language": "en",
+      "topic": "learning Spanish",
+      "turns": [
+        {"category": "factoid", "user": "How do you say thank you in Spanish?", "points": ["gracias"]},
+        {"category": "howto", "user": "How do I roll my R in Spanish?", "points": ["tongue tip just behind the upper front teeth", "push air so the tongue vibrates", "practice with words such as perro"]},
+        {"category": "expand", "user": "Can you go step by step? I still can't do it.", "expands": 1, "points": ["ordered steps", "a practice drill, such as a fast t or d tap", "longer than the previous reply"]},
+        {"category": "visual", "user": "Give me the conjugation table for ser.", "points": ["does not read a table with its symbols", "may say the present forms in one sentence: soy, eres, es, somos, sois, son"]},
+        {"category": "clarify", "user": "Can you translate this for me?", "note": "The user gives no text to translate.", "points": ["asks what to translate", "short"]},
+        {"category": "recommend", "user": "What app should I use to practice?", "points": ["one or two apps", "short reason"]}
+      ]
+    },
+    {
+      "id": "en_09",
+      "language": "en",
+      "topic": "a new kitten",
+      "turns": [
+        {"category": "social", "user": "I just adopted a kitten, she's so cute.", "points": ["shares the joy", "short"]},
+        {"category": "explain", "user": "Why do kittens sleep so much?", "points": ["they are growing, and growth hormone is released during sleep", "playing burns a lot of energy"]},
+        {"category": "howto", "user": "How do I get her to use the litter box?", "points": ["put her in the box after meals and naps", "keep it clean and in a quiet spot", "don't punish accidents"]},
+        {"category": "brief", "user": "Can kittens drink cow's milk? Just yes or no.", "points": ["no"]},
+        {"category": "visual", "user": "List every vaccine she needs and when.", "points": ["the core idea: core vaccines such as FVRCP and rabies, starting around six to eight weeks, boosters every three to four weeks", "does not read a long schedule", "the vet confirms the schedule"]},
+        {"category": "followup", "user": "And when should she be spayed?", "points": ["commonly around five to six months", "ask the vet"]}
+      ]
+    },
+    {
+      "id": "en_10",
+      "language": "en",
+      "topic": "money basics",
+      "turns": [
+        {"category": "explain", "user": "What's the difference between a credit card and a debit card?", "points": ["debit spends money already in the bank account", "credit borrows money to pay back later, with interest if late"]},
+        {"category": "clarify", "user": "Should I move it over?", "note": "Nothing earlier says what would move where.", "points": ["asks what would move and where", "short"]},
+        {"category": "howto", "user": "How do I start a simple monthly budget?", "points": ["list income", "track and group spending", "set limits per group and save a fixed share first"]},
+        {"category": "expand", "user": "Can you explain the 50/30/20 rule in more detail?", "expands": 2, "points": ["50 percent needs, 30 percent wants, 20 percent savings or debt", "an example of each", "longer than an ordinary reply"]},
+        {"category": "factoid", "user": "How many months of expenses should an emergency fund cover?", "points": ["three to six months"]},
+        {"category": "social", "user": "Ugh, money stuff always stresses me out.", "points": ["acknowledges the stress", "short encouragement, no lecture"]}
+      ]
+    },
+    {
+      "id": "en_11",
+      "language": "en",
+      "topic": "sleep and caffeine",
+      "turns": [
+        {"category": "clarify", "user": "Is it normal to feel like this?", "points": ["asks what the user is feeling", "short"]},
+        {"category": "recommend", "user": "I mean I'm tired all the time. Is it better to take a nap or just drink coffee?", "points": ["a pick or a simple rule, such as a nap of about twenty minutes", "short reason"]},
+        {"category": "factoid", "user": "How many hours of sleep do adults need?", "points": ["seven to nine hours"]},
+        {"category": "explain", "user": "Why does caffeine keep me awake?", "points": ["caffeine blocks adenosine receptors", "adenosine builds up and makes you sleepy"]},
+        {"category": "followup", "user": "How long does it stay in my body?", "points": ["a half-life of about five hours", "so afternoon coffee can affect sleep"]},
+        {"category": "expand", "user": "Can you explain in detail how sleep cycles work?", "points": ["a cycle lasts about ninety minutes", "light sleep, deep sleep and REM", "four to six cycles a night", "longer than an ordinary reply"]}
+      ]
+    },
+    {
+      "id": "en_12",
+      "language": "en",
+      "topic": "dinner tonight",
+      "turns": [
+        {"category": "clarify", "user": "What can I make with it?", "points": ["asks what ingredient", "short"]},
+        {"category": "recommend", "user": "I have chicken, rice and some broccoli.", "points": ["one dish, such as a chicken and broccoli stir-fry over rice", "short"]},
+        {"category": "visual", "user": "Give me the full recipe with all the measurements.", "points": ["the outline and a few key amounts, not a long list", "may offer to go step by step"]},
+        {"category": "howto", "user": "How do I know when the chicken is cooked?", "points": ["165 degrees Fahrenheit or 74 Celsius inside", "no pink in the middle and clear juices"]},
+        {"category": "expand", "user": "Tell me more about cooking rice properly, mine always turns out mushy.", "points": ["rinse the rice", "less water, about one and a quarter cups per cup of white rice", "simmer covered, then rest, without stirring", "longer than an ordinary reply"]},
+        {"category": "brief", "user": "Quick, how many minutes for the broccoli?", "points": ["about three to five minutes", "very short"]}
+      ]
+    },
+    {
+      "id": "zh_01",
+      "language": "zh",
+      "topic": "番茄炒蛋",
+      "turns": [
+        {"category": "social", "user": "今天终于不用加班了，好开心！", "points": ["回应开心", "简短，不给没被问的建议"]},
+        {"category": "howto", "user": "番茄炒蛋怎么做才好吃？", "points": ["鸡蛋先炒到半熟盛出", "番茄炒出汁再把鸡蛋倒回去", "少许盐和糖调味"]},
+        {"category": "expand", "user": "你一步一步详细说一下吧。", "expands": 1, "points": ["按顺序：打蛋、热油炒蛋、盛出、炒番茄出汁、回锅、调味", "比上一条更详细"]},
+        {"category": "brief", "user": "番茄要不要去皮？说要还是不要。", "points": ["一句话给结论：不是必须，去皮口感更好", "不展开"]},
+        {"category": "factoid", "user": "一个鸡蛋大概多少克？", "points": ["大约五十克"]},
+        {"category": "visual", "user": "给我列一个一周的晚饭菜单。", "points": ["说几道代表菜或大致思路", "不逐条念七天的菜单"]}
+      ]
+    },
+    {
+      "id": "zh_02",
+      "language": "zh",
+      "topic": "去成都旅游",
+      "turns": [
+        {"category": "social", "user": "下个月我要去成都玩啦！", "points": ["回应期待", "简短"]},
+        {"category": "recommend", "user": "去成都玩三天，住春熙路附近好还是宽窄巷子附近好？", "points": ["给出一个选择或简单的判断标准", "简短理由，比如春熙路交通购物方便，宽窄巷子更有老成都的味道"]},
+        {"category": "factoid", "user": "从北京坐高铁到成都要多久？", "points": ["最快七个多小时"]},
+        {"category": "followup", "user": "那坐飞机呢？", "points": ["大约三个小时", "回答的是北京到成都"]},
+        {"category": "visual", "user": "帮我做一个三天的详细行程表。", "points": ["先概括三天怎么安排，比如市区、熊猫基地、都江堰或青城山", "不念表格", "可以提出一天一天说"]},
+        {"category": "brief", "user": "四川话里的巴适是什么意思？一句话说。", "points": ["舒服、好、地道"]}
+      ]
+    },
+    {
+      "id": "zh_03",
+      "language": "zh",
+      "topic": "手机变卡",
+      "turns": [
+        {"category": "clarify", "user": "它老是卡，怎么办？", "points": ["问是什么卡：手机、电脑还是某个应用", "不预设设备"]},
+        {"category": "howto", "user": "是我的手机，用了三年了，打开微信都要等好久。", "points": ["两三个具体办法，比如清理存储空间和微信缓存、关后台、重启、更新系统", "不列一长串"]},
+        {"category": "explain", "user": "运行内存和存储空间有什么区别？", "points": ["运行内存是程序运行时临时用的，关机就清空", "存储空间长期保存照片和文件"]},
+        {"category": "expand", "user": "再讲详细点，我想彻底搞明白。", "expands": 2, "points": ["更深入，比如速度差别、运行内存小为什么会卡、存储满了也会变慢", "比上一条长"]},
+        {"category": "followup", "user": "那我这种情况需要多大的运行内存？", "points": ["八GB够用，十二GB更从容"]},
+        {"category": "visual", "user": "写一段代码帮我自动清理手机缓存。", "points": ["不逐个念代码符号", "说明一般用系统设置或自带的清理功能就行，或者简单说思路"]}
+      ]
+    },
+    {
+      "id": "zh_04",
+      "language": "zh",
+      "topic": "考研失利",
+      "turns": [
+        {"category": "social", "user": "我考研又没考上，已经是第二次了。", "points": ["表达理解和安慰", "不马上说教", "简短"]},
+        {"category": "recommend", "user": "你觉得我应该再考一年，还是直接去找工作？", "points": ["给出倾向或判断思路，比如分差、经济压力、目标", "简短"]},
+        {"category": "clarify", "user": "你帮我写一下吧。", "note": "前面没有说要写什么。", "points": ["问要写什么", "简短"]},
+        {"category": "howto", "user": "春招应该怎么准备？", "points": ["尽快准备简历", "多投递，关注招聘网站和学校就业信息", "准备面试常见问题"]},
+        {"category": "explain", "user": "调剂和二战有什么区别？", "points": ["调剂是今年分数过线后去别的学校或专业录取", "二战是明年重新考"]},
+        {"category": "brief", "user": "谢谢，就跟我说一句打气的话吧。", "points": ["一句鼓励的话", "不长"]}
+      ]
+    },
+    {
+      "id": "zh_05",
+      "language": "zh",
+      "topic": "月亮",
+      "turns": [
+        {"category": "factoid", "user": "月亮离地球有多远？", "points": ["平均约三十八万公里"]},
+        {"category": "explain", "user": "为什么会有月相变化？", "points": ["月亮自己不发光，被太阳照亮一半", "绕地球转的时候，我们看到被照亮部分的多少不同", "不是地球的影子造成的"]},
+        {"category": "expand", "user": "挺有意思的，再多讲讲。", "expands": 1, "points": ["说出几个月相，比如新月、上弦月、满月、下弦月", "周期约二十九天半", "比上一条长"]},
+        {"category": "followup", "user": "那月食也是这个原因吗？", "points": ["不是，月食是地球的影子落在月亮上", "只在满月的时候发生"]},
+        {"category": "visual", "user": "万有引力的公式是什么？", "points": ["用口语说：引力常数乘以两个质量，再除以距离的平方", "不念 F、G、m1、r 这类符号"]},
+        {"category": "brief", "user": "就说个数，农历一个月大概几天？", "points": ["二十九天半左右"]}
+      ]
+    },
+    {
+      "id": "zh_06",
+      "language": "zh",
+      "topic": "跑步",
+      "turns": [
+        {"category": "social", "user": "我今天第一次跑完了五公里，一步都没停！", "points": ["祝贺", "简短"]},
+        {"category": "recommend", "user": "那我以后是不是该天天跑？", "points": ["不建议天天跑，每周三到四次，留休息日", "简短理由：恢复、防受伤"]},
+        {"category": "howto", "user": "跑完步怎么拉伸小腿？", "points": ["双手扶墙，一条腿后撤，脚跟踩地", "每边保持二十到三十秒"]},
+        {"category": "visual", "user": "给我做一个十公里的训练计划表。", "points": ["概括计划结构，比如每周几次、一次长距离、休息日、逐周加量", "不念表格"]},
+        {"category": "factoid", "user": "半程马拉松是多少公里？", "points": ["约二十一公里"]},
+        {"category": "followup", "user": "那全马呢？", "points": ["约四十二公里"]}
+      ]
+    },
+    {
+      "id": "zh_07",
+      "language": "zh",
+      "topic": "给妈妈买手机",
+      "turns": [
+        {"category": "clarify", "user": "你说我买哪个好？", "points": ["问要买什么，或者在哪几个之间选", "简短"]},
+        {"category": "recommend", "user": "想给我妈买个手机，她主要用来视频聊天和刷短视频。", "points": ["推荐类型或一两款，比如屏幕大、电池耐用的中端机", "简短理由"]},
+        {"category": "explain", "user": "5G和4G用起来差别大吗？", "points": ["5G网速更快、延迟更低", "视频聊天和刷短视频用4G也够"]},
+        {"category": "brief", "user": "128G够不够？直接说够不够。", "points": ["对她的用途基本够", "一句话"]},
+        {"category": "followup", "user": "那要是我自己打游戏用呢？", "points": ["建议256G或更大", "处理器和散热也要好一些"]},
+        {"category": "social", "user": "好的，谢谢你，帮大忙了！", "points": ["简短友好地收尾", "不长篇总结"]}
+      ]
+    },
+    {
+      "id": "zh_08",
+      "language": "zh",
+      "topic": "学英语发音",
+      "turns": [
+        {"category": "factoid", "user": "猕猴桃用英语怎么说？", "points": ["kiwi，或者 kiwifruit"]},
+        {"category": "howto", "user": "英语里的th这个音怎么发？", "points": ["舌尖放在上下齿之间", "送气：清音像 think，浊音像 this，声带要振动"]},
+        {"category": "expand", "user": "你能一步一步教我吗？我还是发不好。", "expands": 1, "points": ["分步骤：舌位、送气、清浊区分、练习词", "比上一条长"]},
+        {"category": "visual", "user": "把不规则动词表给我念一遍。", "points": ["不念整张表", "举几个例子，比如 go、went、gone", "建议对着表分批练"]},
+        {"category": "clarify", "user": "帮我把这句翻译一下。", "note": "用户没有给出要翻译的句子。", "points": ["问要翻译哪句", "简短"]},
+        {"category": "recommend", "user": "有什么App适合练口语？", "points": ["推荐一两个", "简短理由"]}
+      ]
+    },
+    {
+      "id": "zh_09",
+      "language": "zh",
+      "topic": "养小猫",
+      "turns": [
+        {"category": "social", "user": "我刚领养了一只小猫，太可爱了！", "points": ["分享喜悦", "简短"]},
+        {"category": "explain", "user": "小猫为什么那么能睡？", "points": ["在长身体，睡觉时分泌生长激素", "玩耍消耗很多能量"]},
+        {"category": "howto", "user": "怎么教它用猫砂盆？", "points": ["吃完饭和睡醒后把它放进猫砂盆", "放在安静的地方并保持干净", "乱尿了不要惩罚"]},
+        {"category": "brief", "user": "小猫能喝牛奶吗？说能还是不能。", "points": ["不能"]},
+        {"category": "visual", "user": "把它要打的疫苗和时间全部列出来。", "points": ["概括核心疫苗，比如猫三联和狂犬疫苗，八周左右开始，每隔三到四周加强", "不念长表", "跟兽医确认"]},
+        {"category": "followup", "user": "那什么时候做绝育比较好？", "points": ["一般五到六个月左右", "问兽医"]}
+      ]
+    },
+    {
+      "id": "zh_10",
+      "language": "zh",
+      "topic": "理财入门",
+      "turns": [
+        {"category": "explain", "user": "信用卡和借记卡有什么区别？", "points": ["借记卡直接花账户里自己的钱", "信用卡是先借钱消费再还，逾期要付利息"]},
+        {"category": "clarify", "user": "那我要不要转过去？", "note": "前面没有说要把什么转到哪里。", "points": ["问转什么、转到哪里", "简短"]},
+        {"category": "howto", "user": "每个月的预算怎么做？", "points": ["先列收入", "记录支出并分类", "给每类定上限，先存一部分"]},
+        {"category": "expand", "user": "你详细讲讲先存后花这个方法吧。", "expands": 2, "points": ["发工资先按比例存一部分，比如百分之二十", "剩下的再分配到各项开销", "举个例子，比平时长"]},
+        {"category": "factoid", "user": "应急备用金一般存几个月的开销？", "points": ["三到六个月"]},
+        {"category": "social", "user": "唉，一说到钱我就焦虑。", "points": ["回应焦虑", "简短鼓励，不说教"]}
+      ]
+    },
+    {
+      "id": "zh_11",
+      "language": "zh",
+      "topic": "犯困和咖啡",
+      "turns": [
+        {"category": "clarify", "user": "这样正常吗？", "points": ["问指的是什么情况", "简短"]},
+        {"category": "recommend", "user": "我是说我最近总是很困。白天困了是睡个午觉好，还是喝咖啡好？", "points": ["给出选择或简单规则，比如午睡二十分钟左右", "简短理由"]},
+        {"category": "factoid", "user": "成年人一天要睡几个小时？", "points": ["七到九个小时"]},
+        {"category": "explain", "user": "咖啡为什么能提神？", "points": ["咖啡因挡住腺苷受体", "腺苷积累会让人犯困"]},
+        {"category": "followup", "user": "它在身体里能待多久？", "points": ["半衰期大约五个小时", "下午喝可能影响晚上睡觉"]},
+        {"category": "expand", "user": "你能详细讲讲睡眠周期是怎么回事吗？", "points": ["一个周期大约九十分钟", "浅睡、深睡和快速眼动睡眠", "一晚四到六个周期", "比平时长"]}
+      ]
+    },
+    {
+      "id": "zh_12",
+      "language": "zh",
+      "topic": "今晚做饭",
+      "turns": [
+        {"category": "clarify", "user": "用它能做什么菜？", "points": ["问是什么食材", "简短"]},
+        {"category": "recommend", "user": "我冰箱里有鸡胸肉、米饭和西兰花。", "points": ["推荐一道菜，比如西兰花炒鸡胸肉配米饭", "简短"]},
+        {"category": "visual", "user": "把完整菜谱和每样东西放多少克都告诉我。", "points": ["概括做法和几个关键用量，不逐条念长清单", "可以提出一步一步说"]},
+        {"category": "howto", "user": "鸡胸肉怎么炒才不柴？", "points": ["切片后用少许淀粉和油腌一下", "大火快炒，不要炒太久"]},
+        {"category": "expand", "user": "米饭怎么煮才不会太软？你详细说说。", "points": ["淘米", "水少放一点，米和水大约一比一点二", "煮好后焖十分钟，中途不掀盖", "比平时长"]},
+        {"category": "brief", "user": "西兰花焯水要几分钟？快说。", "points": ["一到两分钟", "很短"]}
+      ]
+    }
+  ]
+}
