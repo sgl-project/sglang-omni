@@ -16,16 +16,6 @@ import emoji
 
 DOCS_ROOT = Path(__file__).resolve().parents[1] / "docs"
 FENCE_PATTERN = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
-INLINE_CODE_PATTERN = re.compile(r"(?<!`)(`+)(?!`)(.*?)(?<!`)\1(?!`)", re.DOTALL)
-URL_PATTERN = re.compile(r"(?:[a-zA-Z][a-zA-Z0-9+.-]*://|www\.)[^\s<>]+")
-PROPER_NOUN_PATTERN = re.compile(r"\b(Cuda|Mlx|Openai|Sglang|Huggingface)\b")
-EXPECTED_PROPER_NOUN_FORMS = {
-    "Cuda": "CUDA",
-    "Mlx": "MLX",
-    "Openai": "OpenAI",
-    "Sglang": "SGLang",
-    "Huggingface": "Hugging Face",
-}
 TEXT_PRESENTATION_SELECTOR = "\ufe0e"
 EMOJI_PRESENTATION_SELECTOR = "\ufe0f"
 # note (fengxiaohu): Unicode 17.0 includes these two forms missing from emoji.
@@ -68,14 +58,12 @@ def check_source(
 ) -> list[Violation]:
     """Check one Markdown source and optionally collect completed fenced blocks."""
     violations: list[Violation] = []
-    prose_lines: list[str] = []
     fence_marker = ""
     fence_start_line_number = 0
     body_lines: list[str] = []
     for line_number, line in enumerate(source.splitlines(), start=1):
         fence = FENCE_PATTERN.match(line)
         if fence_marker:
-            prose_lines.append("")
             if (
                 fence
                 and fence.group(1)[0] == fence_marker[0]
@@ -97,7 +85,6 @@ def check_source(
             else:
                 body_lines.append(line.rstrip())
         elif fence:
-            prose_lines.append("")
             fence_marker = fence.group(1)
             fence_start_line_number = line_number
             body_lines = []
@@ -113,7 +100,6 @@ def check_source(
             else:
                 pass
         else:
-            prose_lines.append(line)
             emoji_matches = emoji.emoji_list(line)
             sequences: list[str] = []
             for sequence_match in emoji_matches:
@@ -162,20 +148,6 @@ def check_source(
                         detail=f"remove emoji sequence {sequence!r}",
                     )
                 )
-    prose = "\n".join(prose_lines)
-    for pattern in (INLINE_CODE_PATTERN, URL_PATTERN):
-        prose = pattern.sub(lambda match: re.sub(r"[^\n]", " ", match.group()), prose)
-    for line_number, line in enumerate(prose.splitlines(), start=1):
-        for noun_match in PROPER_NOUN_PATTERN.finditer(line):
-            noun = noun_match.group()
-            violations.append(
-                Violation(
-                    path=path,
-                    line_number=line_number,
-                    rule="proper-noun",
-                    detail=f"use {EXPECTED_PROPER_NOUN_FORMS[noun]} instead of {noun}",
-                )
-            )
     if fence_marker:
         violations.append(
             Violation(

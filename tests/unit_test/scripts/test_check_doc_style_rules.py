@@ -38,59 +38,6 @@ def test_check_source_reports_unlabeled_fences() -> None:
     ]
 
 
-def test_check_source_masks_fences_inline_code_and_urls_for_proper_nouns() -> None:
-    source = (
-        "```python\nCuda Mlx Openai Sglang Huggingface\n```\n"
-        "`Cuda` ``Mlx`` ```Openai``` ````Sglang````\n"
-        "See https://example.test/Cuda/Openai and www.example.test/Sglang.\n"
-        "Cuda Mlx Openai Sglang Huggingface\n"
-    )
-
-    violations = check_source(Path("guide.md"), source)
-
-    assert [
-        (violation.rule, violation.line_number, violation.detail)
-        for violation in violations
-    ] == [
-        ("proper-noun", 6, "use CUDA instead of Cuda"),
-        ("proper-noun", 6, "use MLX instead of Mlx"),
-        ("proper-noun", 6, "use OpenAI instead of Openai"),
-        ("proper-noun", 6, "use SGLang instead of Sglang"),
-        ("proper-noun", 6, "use Hugging Face instead of Huggingface"),
-    ]
-
-
-def test_check_source_matches_proper_nouns_as_whole_words() -> None:
-    source = "CUDA MLX OpenAI SGLang Hugging Face CudaX Mlx2 Sglang_name\n"
-
-    violations = check_source(Path("guide.md"), source)
-
-    assert violations == []
-
-
-def test_check_source_masks_multiline_inline_code_for_proper_nouns() -> None:
-    source = "Inline ````Mlx\nHuggingface````\nCuda\n"
-
-    violations = check_source(Path("guide.md"), source)
-
-    assert [(violation.line_number, violation.detail) for violation in violations] == [
-        (3, "use CUDA instead of Cuda")
-    ]
-
-
-def test_check_source_handles_mismatched_inline_code_delimiters() -> None:
-    malformed_ending = "`Cuda``\n"
-    valid_double_delimiters = "``Cuda ` literal``\n"
-
-    malformed_violations = check_source(Path("guide.md"), malformed_ending)
-    valid_violations = check_source(Path("guide.md"), valid_double_delimiters)
-
-    assert [
-        (violation.rule, violation.line_number) for violation in malformed_violations
-    ] == [("proper-noun", 1)]
-    assert valid_violations == []
-
-
 def test_check_docs_enforces_basename_pattern_except_root_readme(
     tmp_path: Path,
 ) -> None:
@@ -184,7 +131,7 @@ def test_check_docs_preserves_known_toctree_exemptions(tmp_path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         content = "# Exempt\n"
         if relative_path == "design/gpu_radix_hash.md":
-            content = "Cuda 😀\n\n```\nbody\n```\n"
+            content = "😀\n\n```\nbody\n```\n"
         else:
             pass
         path.write_text(content, encoding="utf-8")
@@ -199,7 +146,7 @@ def test_check_docs_preserves_known_toctree_exemptions(tmp_path: Path) -> None:
         for violation in violations
         if violation.path.relative_to(docs_root).as_posix()
         == "design/gpu_radix_hash.md"
-    } == {"no-emoji", "proper-noun", "fence-language"}
+    } == {"no-emoji", "fence-language"}
 
 
 def test_check_docs_reports_every_cross_file_duplicate_location(tmp_path: Path) -> None:
