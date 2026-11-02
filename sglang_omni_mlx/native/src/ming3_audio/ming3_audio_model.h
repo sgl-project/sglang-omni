@@ -11,6 +11,7 @@
 
 #include "common/layers.h"
 #include "common/tokenizer.h"
+#include "qwen3_asr/qwen3_decoder.h"
 
 namespace ming3_audio {
 
@@ -36,13 +37,8 @@ struct ChatResult {
   int completion_tokens = 0;
 };
 
-struct LatentAttentionState {
-  mlx::core::array keys;
-  mlx::core::array values;
-};
-
 struct LayerCache {
-  std::optional<LatentAttentionState> attention;
+  qwen3_asr::KVCache attention;
   std::array<std::optional<mlx::core::array>, 3> convolution;
   std::optional<mlx::core::array> recurrent;
 };
@@ -73,9 +69,9 @@ private:
   mlx::core::array DeltaAttention(const mlx::core::array &hidden,
                                   const std::string &prefix,
                                   LayerCache &cache) const;
-  mlx::core::array
-  LatentAttention(const mlx::core::array &hidden, const std::string &prefix,
-                  std::optional<LatentAttentionState> &cache) const;
+  mlx::core::array LatentAttention(const mlx::core::array &hidden,
+                                   const std::string &prefix,
+                                   qwen3_asr::KVCache &cache) const;
 
   nlohmann::json text_;
   nlohmann::json audio_;

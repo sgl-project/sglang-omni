@@ -11,11 +11,11 @@ namespace {
 constexpr int kRecurrentTokenLimit = 64;
 }
 
-mx::array
-Model::LatentAttention(const mx::array &hidden, const std::string &prefix,
-                       std::optional<LatentAttentionState> &cache) const {
+mx::array Model::LatentAttention(const mx::array &hidden,
+                                 const std::string &prefix,
+                                 qwen3_asr::KVCache &cache) const {
   const int length = hidden.shape(1), heads = text_.at("num_attention_heads");
-  const int cached_tokens = cache.has_value() ? cache->keys.shape(2) : 0;
+  const int cached_tokens = cache.offset();
   const int rotary_width = text_.at("qk_rope_head_dim");
   const int plain_width = text_.at("qk_nope_head_dim");
   const int value_width = text_.at("v_head_dim"),
@@ -64,24 +64,20 @@ Model::LatentAttention(const mx::array &hidden, const std::string &prefix,
   };
   const auto queries =
       mx::concatenate({query_parts[0], rotary(query_parts[1])}, -1);
-  auto keys = mx::concatenate(
+  const auto keys = mx::concatenate(
       {key_value_parts[0],
        mx::broadcast_to(
            rotary(mx::reshape(compressed[1], {1, 1, length, rotary_width})),
            {1, heads, length, rotary_width})},
       -1);
-  auto values = key_value_parts[1];
-  if (cache.has_value()) {
-    keys = mx::concatenate({cache->keys, keys}, 2);
-    values = mx::concatenate({cache->values, values}, 2);
-  } else {
-  }
-  cache = LatentAttentionState{keys, values};
-  auto attended = mx::transpose(
-      mx::fast::scaled_dot_product_attention(
-          queries, keys, values, 1.0f / std::sqrt(plain_width + rotary_width),
-          length > 1 ? "causal" : ""),
-      {0, 2, 1, 3});
+  const auto [cached_keys, cached_values] =
+      cache.UpdateAndFetch(keys, key_value_parts[1]);
+  auto attended =
+      mx::transpose(mx::fast::scaled_dot_product_attention(
+                        queries, cached_keys, cached_values,
+                        1.0f / std::sqrt(plain_width + rotary_width),
+                        length > 1 ? "causal" : ""),
+                    {0, 2, 1, 3});
   const auto gate = mx::astype(
       mx::sigmoid(mx::astype(checkpoint_.Linear(hidden, prefix + ".g_proj"),
                              mx::float32)),
