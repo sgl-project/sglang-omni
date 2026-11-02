@@ -34,7 +34,7 @@ Lint, Test Layout, Docs Check, Rust Router and the NPU image build run on GitHub
 
 - `run-all-ci` runs every stage below.
 - `run-lint-only` runs lint only. The self-hosted gates succeed and run no tests. Use `/tag-and-rerun-ci lint` to add it. It does not turn off a stage label that is also present.
-- A stage label runs one stage: `run-asr-ci`, `run-tts-ci`, `run-mps-ci` and `run-omni-ci` on H100, `run-intel-cpu-ci` (Intel Xeon), `run-intel-xpu-ci` (Intel GPU) and `run-mac-ci` (Apple Silicon). The hardware stages still skip a PR that touches none of their paths.
+- A stage label runs one stage: `run-asr-ci`, `run-tts-ci`, `run-mps-ci`, `run-omni-ci`, `run-full-duplex`, `run-turn-based` and `run-cascaded` on H100, `run-intel-cpu-ci` (Intel Xeon), `run-intel-xpu-ci` (Intel GPU) and `run-mac-ci` (Apple Silicon). The hardware stages still skip a PR that touches none of their paths.
 - Any stage label also runs the H100 unit tests.
 - `run-unit-test-ci-only` runs just the H100 unit tests after shared setup when no other stage labels or `run-all-ci` are present. Use `/tag-and-rerun-ci unit-test` to add it and re-run completed CI.
 - A model label picks the model of every selected stage that accepts it. It does not select a stage. Without one, a selected stage draws its model at random. Keep at most one model label per stage.
