@@ -43,9 +43,9 @@ These workflows run on GitHub-hosted runners for every pull request, drafts incl
 
 Omni CI runs PR Test and the four H100 model stages. Its preflight job waits for lint, resolves the labels and draws the models once. A shared setup job then builds the virtualenv and downloads model weights. With `run-all-ci`, the stages run in this order:
 
-PR Test → ASR → TTS → MPS → Omni
+PR Test → ASR, TTS and Omni side by side → MPS
 
-Only PR Test and the selected stages actually run; a stage that is not selected is skipped at once. With `run-omni-ci` alone, Omni starts as soon as PR Test finishes, and with `run-tts-ci` and `run-mps-ci`, the order is PR Test → TTS → MPS. Each stage waits for the previous one to finish, and a stage that fails does not stop the stages after it. A failed setup job blocks every stage.
+Only PR Test and the selected stages actually run; a stage that is not selected is skipped at once. ASR, TTS and Omni start together as soon as PR Test finishes, whether it passed or not, and their jobs spread over whichever H100 runners are free. Jobs within a stage run side by side as well, except TTS stage 3, which waits for TTS stages 1 and 2 because it compares their results. MPS starts after the other selected stages finish: it tests the PR head commit instead of the merge commit, so it may rebuild the PR's shared virtualenv, and that must not happen while another stage is using it. With `run-tts-ci` and `run-mps-ci`, the order is PR Test → TTS → MPS. A stage that fails does not stop any other stage. A failed setup job blocks every stage.
 
 ### PR Test
 
