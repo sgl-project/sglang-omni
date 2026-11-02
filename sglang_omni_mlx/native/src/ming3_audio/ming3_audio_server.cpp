@@ -117,7 +117,7 @@ private:
 int main(int argc, char **argv) {
   return omni_server::Serve(
       argc, argv,
-      {{"ming3-audio",
+      {{"ming3_audio",
         [](const std::filesystem::path &directory) {
           return std::make_unique<chat_service::ChatService>(
               std::make_unique<ming3_audio::ServedModel>(directory),
