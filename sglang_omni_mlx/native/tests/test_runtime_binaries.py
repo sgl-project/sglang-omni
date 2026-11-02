@@ -104,6 +104,8 @@ def test_a_load_without_a_checkpoint_reports_failed(
         ("qwen3_asr_server", ("--max-segment-seconds", "0.00001"), "--max-segment-seconds must span one sample"),
         ("qwen3_asr_server", ("--decode-interval-ms", "0"), "--decode-interval-ms must be positive"),
         ("qwen3_asr_server", ("--first-decode-ms", "-1"), "--first-decode-ms must not be negative"),
+        ("qwen3_asr_server", ("--draft-bits", "-1"), "--draft-bits must be 4, 6 or 8"),
+        ("qwen3_asr_server", ("--draft-bits", "8"), "--draft-bits needs --draft-model-path"),
         ("music3_server", ("--request-timeout-s", "0"), "--request-timeout-s must be above 0"),
         ("music3_server", ("--stage-offload-components", "ar"), "requires both ar,dit"),
         ("music3_server", ("--stage-offload-components", "ar,dit,other"), "requires both ar,dit"),

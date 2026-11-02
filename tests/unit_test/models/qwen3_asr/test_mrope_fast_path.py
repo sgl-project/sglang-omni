@@ -32,7 +32,7 @@ def mm_input(prompt_len: int, *, delta: int = 0, degenerate: bool = True):
     positions = torch.arange(prompt_len, dtype=torch.long)
     mm = SimpleNamespace(
         mrope_positions=positions.unsqueeze(0).expand(3, -1).clone(),
-        mrope_position_delta=torch.tensor([delta], dtype=torch.long),
+        mrope_position_delta=torch.tensor([[delta]], dtype=torch.long),
         mrope_position_delta_repeated_cache=None,
     )
     if degenerate:
