@@ -16,6 +16,10 @@ import pytest
 import torch
 
 from sglang_omni.models.dots_tts.codec import DotsAudioCodec
+from tests.unit_test.fixtures.torch_backend_flags import (  # noqa: F401  # fixture
+    CublasFlagSetter,
+    cublas_flags,
+)
 
 HOP_SIZE = 8
 PATCH_SIZE = 4
@@ -96,8 +100,10 @@ def install_waveforms(
     monkeypatch.setattr("sglang_omni.models.dots_tts.codec.load_audio", fake_load_audio)
 
 
-def set_tf32(monkeypatch: pytest.MonkeyPatch, *, enabled: bool) -> None:
-    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", enabled)
+def set_tf32(
+    monkeypatch: pytest.MonkeyPatch, cublas_flags: CublasFlagSetter, *, enabled: bool
+) -> None:
+    cublas_flags("allow_tf32", enabled)
     monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", enabled)
 
 
@@ -209,13 +215,13 @@ def test_hop_misaligned_latents_are_rejected() -> None:
 
 
 def test_encoder_coalesces_equal_length_references_into_one_forward(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, cublas_flags: CublasFlagSetter
 ) -> None:
     import concurrent.futures
 
     from sglang_omni.models.dots_tts.codec import DotsReferenceEncoder
 
-    set_tf32(monkeypatch, enabled=False)
+    set_tf32(monkeypatch, cublas_flags, enabled=False)
     codec = make_codec()
     # Same duration, different content: the case batching can actually help.
     waveforms = {
@@ -255,14 +261,14 @@ def test_encoder_coalesces_equal_length_references_into_one_forward(
 
 
 def test_encoder_handles_all_distinct_lengths_without_padding(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, cublas_flags: CublasFlagSetter
 ) -> None:
     """Worst case for grouping: every group is size one, results still correct."""
     import concurrent.futures
 
     from sglang_omni.models.dots_tts.codec import DotsReferenceEncoder
 
-    set_tf32(monkeypatch, enabled=False)
+    set_tf32(monkeypatch, cublas_flags, enabled=False)
     codec = make_codec()
     waveforms = {
         f"ref-{index}.wav": make_waveform(4 + index, seed=40 + index)
@@ -295,11 +301,11 @@ def test_encoder_handles_all_distinct_lengths_without_padding(
 
 
 def test_cuda_reference_batching_is_disabled_with_default_cudnn_tf32(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, cublas_flags: CublasFlagSetter
 ) -> None:
     from sglang_omni.models.dots_tts.codec import DotsReferenceEncoder
 
-    set_tf32(monkeypatch, enabled=False)
+    set_tf32(monkeypatch, cublas_flags, enabled=False)
     monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", True)
     codec = make_codec()
     codec.device = torch.device("cuda")
@@ -311,11 +317,11 @@ def test_cuda_reference_batching_is_disabled_with_default_cudnn_tf32(
 
 
 def test_reference_executor_defaults_to_per_request(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, cublas_flags: CublasFlagSetter
 ) -> None:
     from sglang_omni.models.dots_tts import stages
 
-    set_tf32(monkeypatch, enabled=False)
+    set_tf32(monkeypatch, cublas_flags, enabled=False)
     codec = make_codec()
     monkeypatch.setattr(stages, "load_dots_audio_codec", lambda *args, **_kwargs: codec)
 
@@ -328,11 +334,11 @@ def test_reference_executor_defaults_to_per_request(
 
 
 def test_reference_executor_stop_closes_batch_worker(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, cublas_flags: CublasFlagSetter
 ) -> None:
     from sglang_omni.models.dots_tts import stages
 
-    set_tf32(monkeypatch, enabled=False)
+    set_tf32(monkeypatch, cublas_flags, enabled=False)
     codec = make_codec()
     monkeypatch.setattr(stages, "load_dots_audio_codec", lambda *args, **_kwargs: codec)
     scheduler = stages.create_reference_encode_executor(
