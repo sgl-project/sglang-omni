@@ -25,6 +25,9 @@ DRAFT_NOISE_SEED_SALT = 0x68E31DA4
 ACCEPTANCE_NOISE_SEED_SALT = 0x1D8E4E27
 RESIDUAL_NOISE_SEED_SALT = 0x7A4C2D61
 HASH_VALUE_COUNT = 2**32
+# note (YifanLi3): the top hash buckets round to 1.0 in float32, and an acceptance
+# uniform of 1.0 rejects a draft whose target and draft probabilities are equal.
+LARGEST_FLOAT32_BELOW_ONE = 1.0 - 2**-24
 
 
 def seeded_uniform_noise(

@@ -51,6 +51,7 @@ from sglang_omni.models.fun_cosyvoice3.dspark_draft import (
 from sglang_omni.models.fun_cosyvoice3.dspark_sampling import (
     ACCEPTANCE_NOISE_SEED_SALT,
     EMPTY_HISTORY_TOKEN,
+    LARGEST_FLOAT32_BELOW_ONE,
     RESIDUAL_NOISE_SEED_SALT,
     DraftSamplingState,
     ExactAccept,
@@ -235,7 +236,7 @@ class ExactVerifyExecutor(TargetVerifyExecutor):
                     column_count=draft_tokens.shape[1],
                 )
                 .float()
-                .clamp_(max=1.0 - 2**-24)
+                .clamp_(max=LARGEST_FLOAT32_BELOW_ONE)
             )
             exponential_noise = seeded_exponential_noise(
                 draft_state.seeds,

@@ -29,6 +29,7 @@ from sglang_omni.models.fun_cosyvoice3.dspark_sampling import (
     ACCEPTANCE_NOISE_SEED_SALT,
     DRAFT_NOISE_SEED_SALT,
     EMPTY_HISTORY_TOKEN,
+    LARGEST_FLOAT32_BELOW_ONE,
     RESIDUAL_NOISE_SEED_SALT,
     exact_accept,
     rejection_sample,
@@ -237,12 +238,16 @@ def seeded_step_noise(
     ).view(samples, draft_count, vocab_size)
     # The exponential race sample_draft_block runs on the draft logits.
     draft_tokens = torch.argmax(draft_probabilities.to(device) / draft_noise, dim=2)
-    uniform_noise = seeded_uniform_noise(
-        seeds,
-        output_lengths,
-        salt=ACCEPTANCE_NOISE_SEED_SALT,
-        column_count=draft_count,
-    ).float()
+    uniform_noise = (
+        seeded_uniform_noise(
+            seeds,
+            output_lengths,
+            salt=ACCEPTANCE_NOISE_SEED_SALT,
+            column_count=draft_count,
+        )
+        .float()
+        .clamp_(max=LARGEST_FLOAT32_BELOW_ONE)
+    )
     exponential_noise = seeded_exponential_noise(
         seeds, output_lengths, salt=RESIDUAL_NOISE_SEED_SALT, column_count=vocab_size
     )
