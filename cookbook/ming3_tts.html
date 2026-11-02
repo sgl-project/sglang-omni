@@ -587,14 +587,14 @@
 <section id="installation-and-startup">
 <h2>Installation and Startup<a class="headerlink" href="#installation-and-startup" title="Link to this heading">#</a></h2>
 <p>Install SGLang-Omni by following <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">Installation</span></a>.</p>
-<p>Startup uses one GPU. Preprocessing runs on the CPU. The backbone and the VAE decoder share that GPU. The two checkpoints differ only by the model path.</p>
+<p>Startup uses one GPU. Both checkpoints run the backbone and AudioVAE decoder on that GPU. Tiny uses CPU preprocessing with one worker, while dense 0.5B uses GPU preprocessing with four workers. Select the checkpoint with the model path.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>inclusionAI/Ming-3.0-tts-tiny
 </pre></div>
 </div>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>inclusionAI/Ming-3.0-tts-0.5B
 </pre></div>
 </div>
-<p>The speech endpoint is <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/v1/audio/speech</span></code>. The body is one complete waveform. <code class="docutils literal notranslate"><span class="pre">stream=true</span></code> still waits until that waveform is finished, then returns it as a single PCM body. The requests below are the same for both servers. Set <code class="docutils literal notranslate"><span class="pre">model</span></code> to the checkpoint id used at startup. The examples use <code class="docutils literal notranslate"><span class="pre">inclusionAI/Ming-3.0-tts-tiny</span></code>.</p>
+<p>The speech endpoint is <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/v1/audio/speech</span></code>. With <code class="docutils literal notranslate"><span class="pre">stream=false</span></code>, the response is one complete waveform. With <code class="docutils literal notranslate"><span class="pre">stream=true</span></code> and <code class="docutils literal notranslate"><span class="pre">response_format=&quot;pcm&quot;</span></code>, CUDA vocoders return incremental PCM for both Tiny and 0.5B; CPU vocoders retain complete-waveform decoding. The default decoder group is eight latents. Buffering and lookahead delay the first non-empty chunk until latent 17; shorter utterances flush when synthesis finishes. This is a decoder grouping rule, not an elapsed-time first-packet guarantee. The requests below are the same for both servers. Set <code class="docutils literal notranslate"><span class="pre">model</span></code> to the checkpoint id used at startup. The examples use <code class="docutils literal notranslate"><span class="pre">inclusionAI/Ming-3.0-tts-tiny</span></code>.</p>
 </section>
 <section id="zero-shot-speech">
 <h2>Zero-shot speech<a class="headerlink" href="#zero-shot-speech" title="Link to this heading">#</a></h2>
