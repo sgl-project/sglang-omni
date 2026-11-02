@@ -56,9 +56,7 @@ ASCEND_RT_VISIBLE_DEVICES=0 sgl-omni serve \
   --port 8000
 ```
 
-This configuration places all three stages on one NPU, uses Ascend attention for the backbone and SDPA for the audio codec, and enables NPU graphs for frame-local generation and streaming vocoder steps of 1–7 frames. Backbone prefill/decode and other vocoder frame counts use eager execution. Codec decoding uses BF16 autocast while retaining FP32 quantization and LayerNorm computation.
-
-The engine factory's frame_graph_batch_sizes option controls local graphs independently: null follows the backbone graph setting, an empty list disables local graphs, and explicit buckets capture local graphs even when backbone graphs are disabled. The NPU recipe selects explicit local buckets because backbone graph replay produced incorrect speech in validation.
+This configuration places all three stages on one NPU, uses Ascend attention for the backbone and SDPA for the audio codec, and enables NPU graphs for frame-local generation and streaming vocoder steps of 1–7 frames. Backbone prefill/decode and other vocoder frame counts use eager execution. Codec decoding uses BF16 autocast while retaining FP32 quantization and LayerNorm computation. The engine factory's frame_graph_batch_sizes option controls local graphs independently: null follows the backbone graph setting, an empty list disables local graphs, and explicit buckets capture local graphs even when backbone graphs are disabled. The NPU recipe selects explicit local buckets because backbone graph replay produced incorrect speech in validation.
 
 ### Streaming vocoder CUDA graphs
 

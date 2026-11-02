@@ -24,14 +24,7 @@ def test_npu_recipe_keeps_frame_graphs_without_backbone_graphs() -> None:
     assert engine["cuda_graph_backend_prefill"] == "disabled"
     assert engine["disable_cuda_graph"] is True
     factory = resolve_stage_factory_args(config.stage_named("tts_engine"), config)
-    assert factory["frame_graph_batch_sizes"] == [
-        1,
-        2,
-        4,
-        8,
-        12,
-        16,
-    ]
+    assert factory["frame_graph_batch_sizes"] == [1, 2, 4, 8, 12, 16]
     assert engine["attention_backend"] == "ascend"
     assert config.stage_factory_kwargs("vocoder")["vocoder_cuda_graph"] is True
 

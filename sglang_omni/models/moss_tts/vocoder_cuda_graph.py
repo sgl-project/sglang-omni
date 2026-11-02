@@ -94,6 +94,7 @@ class MossVocoderCudaGraphRunner:
         )  # noqa: leading-underscore  # private backing for a read-only configuration property
         self.graphs: dict[tuple[int, int], CapturedVocoderGraph] = {}
         self.pool: DeviceGraphPool | None = None
+        self.capture_stream: torch.Stream | None = None
         self.sealed: bool = False
 
         if self.real_state_capacity <= 0:
@@ -180,7 +181,11 @@ class MossVocoderCudaGraphRunner:
         lengths = torch.zeros(batch_size, dtype=torch.long, device=device)
         state_slot_ids = self.capture_state_slots(batch_size, device=device)
         valid_rows = torch.zeros(batch_size, dtype=torch.bool, device=device)
-        stream = self.device_module.Stream(device=device)
+        if self.capture_stream is None:
+            self.capture_stream = self.device_module.Stream(device=device)
+        else:
+            pass
+        stream = self.capture_stream
         graph: ReplayableGraph | None = None
 
         try:
@@ -218,10 +223,8 @@ class MossVocoderCudaGraphRunner:
                     )
                 )
             current_stream.wait_stream(stream)
+        finally:
             synchronize_capture_stream(stream)
-        except BaseException:
-            synchronize_capture_stream(stream)
-            raise
         assert graph is not None
         self.graphs[(batch_size, frame_size)] = CapturedVocoderGraph(
             graph=graph,

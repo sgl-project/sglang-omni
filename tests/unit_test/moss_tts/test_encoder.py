@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -340,46 +341,21 @@ def test_npu_encoder_preserves_reference_codec_precision(
     ).eval()
     norm_dtypes: list[torch.dtype] = []
     quantizer_contexts: list[bool] = []
-    query_lengths: list[int] = []
-    original_attention = torch.nn.functional.scaled_dot_product_attention
-
-    def record_norm(
-        module: torch.nn.Module,
-        arguments: tuple[torch.Tensor, ...],
-        output: torch.Tensor,
-    ) -> None:
-        norm_dtypes.append(output.dtype)
-
-    def record_quantizer(
-        module: torch.nn.Module,
-        arguments: tuple[torch.Tensor | int | None, ...],
-    ) -> None:
-        quantizer_contexts.append(
+    model.encoder[1].transformer.layers[0].norm1.register_forward_hook(
+        lambda module, arguments, output: norm_dtypes.append(output.dtype)
+    )
+    model.quantizer.register_forward_pre_hook(
+        lambda module, arguments: quantizer_contexts.append(
             torch.is_autocast_enabled(current_platform.device_type)
         )
-
-    def record_attention(
-        query: torch.Tensor,
-        key: torch.Tensor,
-        value: torch.Tensor,
-        attn_mask: torch.Tensor | None = None,
-        dropout_p: float = 0.0,
-    ) -> torch.Tensor:
-        query_lengths.append(query.shape[-2])
-        return original_attention(
-            query, key, value, attn_mask=attn_mask, dropout_p=dropout_p
-        )
-
-    model.encoder[1].transformer.layers[0].norm1.register_forward_hook(record_norm)
-    model.quantizer.register_forward_pre_hook(record_quantizer)
-    monkeypatch.setattr(
-        torch.nn.functional, "scaled_dot_product_attention", record_attention
     )
+    attention = Mock(wraps=torch.nn.functional.scaled_dot_product_attention)
+    monkeypatch.setattr(torch.nn.functional, "scaled_dot_product_attention", attention)
     waveform = torch.linspace(-1, 1, 3202, device=current_platform.device_type)
     result = model.batch_encode([waveform.unsqueeze(0)], num_quantizers=2)
 
     assert norm_dtypes == [torch.float32]
-    assert query_lengths == [1500, 101]
+    assert [call.args[0].shape[-2] for call in attention.call_args_list] == [1500, 101]
     assert quantizer_contexts == [False]
     assert result.audio_codes_lengths.tolist() == [1601]
     assert torch.isfinite(result.encoder_hidden_states).all()

@@ -46,16 +46,21 @@ class CodecStreamSession:
         )
         self.free_stream_slots: list[int] = list(range(self.stream_slots))
         self.stream_slots_in_use: set[int] = set()
-        self.slot_offsets: list[int] = [0] * (2 * self.stream_slots)
-        self.streaming_max_positions: int = min(
-            (
-                int(module.packed_rope_cache.streaming_max_positions)
-                for module in self.codec.decoder.modules()
-                if isinstance(module, MossAudioTokenizerAttention)
-                and module.rope is not None
-            ),
-            default=0,
-        )
+        self.slot_offsets: list[int] = []
+        self.streaming_max_positions: int = 0
+        if self.is_npu:
+            self.slot_offsets = [0] * (2 * self.stream_slots)
+            self.streaming_max_positions = min(
+                (
+                    int(module.packed_rope_cache.streaming_max_positions)
+                    for module in self.codec.decoder.modules()
+                    if isinstance(module, MossAudioTokenizerAttention)
+                    and module.rope is not None
+                ),
+                default=0,
+            )
+        else:
+            pass
         self.closed: bool = False
         self.cg_runner: MossVocoderCudaGraphRunner | None = None
         # Capture is attempted at most once per session; a low-VRAM skip must not re-probe per step.
@@ -188,8 +193,11 @@ class CodecStreamSession:
         slot_ids = torch.as_tensor(slots, dtype=torch.long, device=self.device)
         with torch.no_grad():
             self.codec.reset_decoder_state_slots(slot_ids)
-        for slot in slots:
-            self.slot_offsets[slot] = 0
+        if self.is_npu:
+            for slot in slots:
+                self.slot_offsets[slot] = 0
+        else:
+            pass
 
     def step(self, slot_codes: dict[int, torch.Tensor]) -> dict[int, torch.Tensor]:
         """Advance equal-length code rows and return each slot's CPU waveform."""
@@ -334,8 +342,11 @@ class CodecStreamSession:
             else:
                 pass
             raise
-        for slot in slots:
-            self.slot_offsets[slot] += step_t
+        if self.is_npu:
+            for slot in slots:
+                self.slot_offsets[slot] += step_t
+        else:
+            pass
         if self.cg_runner is not None:
             if graphed is not None:
                 self.cg_graph_t[step_t] += 1
