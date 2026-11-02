@@ -220,7 +220,7 @@ def create_talker_executor(
 def create_code2wav_executor(
     model_path: str,
     *,
-    chunk_frames: tuple[int, ...],
+    chunk_frames: tuple[int, ...] = (1,),
     max_batch_size: int = 1,
     dtype: str | None = None,
     device: str | None = None,
