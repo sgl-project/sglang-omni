@@ -151,6 +151,12 @@ def build_logical_process(
     process_cfg: ProcessConfig | None,
 ) -> LogicalProcess:
     policy = process_cfg if process_cfg is not None else _DEFAULT_PROCESS_CONFIG
+    if policy.num_replicas > 1 and any(
+        stage.runtime_gpu_ids is not None for stage in stages
+    ):
+        raise ValueError("Configure each native runtime GPU group as a separate stage")
+    else:
+        pass
     # Note (kaige): a TP stage owns its process outright, so the max is that
     # stage's tp_size; a shared process only ever holds non-TP stages.
     tp_size = max(stage.tp_size for stage in stages)
@@ -362,6 +368,19 @@ def resolve_group_gpu_id(
     stages: list[StageConfig],
     gpu_placement: StagePlacementPlan,
 ) -> int | None:
+    if any(stage.allow_child_processes for stage in stages):
+        if len(stages) != 1:
+            raise ValueError(
+                "A stage that owns native children must own its OS process"
+            )
+        else:
+            pass
+        if stages[0].runtime_gpu_ids is not None:
+            return stages[0].gpu
+        else:
+            pass
+    else:
+        pass
     gpu_ids = {
         gpu_id
         for stage in stages

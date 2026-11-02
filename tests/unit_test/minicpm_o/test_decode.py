@@ -3,18 +3,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from sglang_omni.models.minicpm_o.merge import build_decode_result
 from sglang_omni.proto import OmniRequest, StagePayload
-
-STAGES_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "sglang_omni"
-    / "models"
-    / "minicpm_o"
-    / "stages.py"
-)
 
 
 class FakeTokenizer:
@@ -37,7 +27,3 @@ def test_build_decode_result_returns_text_and_usage() -> None:
     assert result["text"] == "hello"
     assert result["events"][0]["type"] == "text_final"
     assert result["usage"]["completion_tokens"] == 2
-
-
-def test_minicpm_stages_do_not_import_qwen3_omni() -> None:
-    assert "qwen3_omni" not in STAGES_PATH.read_text()

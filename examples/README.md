@@ -2,6 +2,12 @@
 
 Run these commands from the repository root after installing `sglang-omni`.
 
+## Full-duplex audio
+
+MiniCPM-o and PersonaPlex launch commands, server settings, and the realtime
+protocol are in
+[Full Duplex Interactive Model](../docs/developer_reference/full_duplex_guide.md).
+
 ## Unified Launcher
 
 `run_omni.py` keeps model and topology choices in reusable presets. Use

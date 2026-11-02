@@ -142,6 +142,7 @@ def make_arkasr_scheduler_adapters(
         payload: StagePayload,
     ) -> ArkASRRequestData | DeferredAdmission[ArkASRRequestData]:
         params = payload.request.params or {}
+        temperature = float(params.get("temperature") or 0.0)
         prepared = prepare_audio(
             payload, source_name="ARK-ASR", target_sample_rate=_SAMPLE_RATE
         )
@@ -199,7 +200,6 @@ def make_arkasr_scheduler_adapters(
         )
         mm_inputs.audio_token_id = audio_token_id
 
-        temperature = float(params.get("temperature") or 0.0)
         request_max_new_tokens = int(params.get("max_new_tokens") or max_new_tokens)
         sampling_params = SamplingParams(
             max_new_tokens=request_max_new_tokens,

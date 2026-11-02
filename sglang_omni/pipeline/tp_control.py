@@ -20,6 +20,7 @@ from sglang_omni.proto.messages import (
     AbortMessage,
     AdminMessage,
     AdminResultMessage,
+    FreezeGCMessage,
     ProfilerStartMessage,
     ProfilerStopMessage,
     ShutdownMessage,
@@ -31,7 +32,11 @@ logger = logging.getLogger(__name__)
 _WORK_POLL_SECONDS = 0.1
 
 TPControlMessage = (
-    ShutdownMessage | ProfilerStartMessage | ProfilerStopMessage | AdminMessage
+    ShutdownMessage
+    | FreezeGCMessage
+    | ProfilerStartMessage
+    | ProfilerStopMessage
+    | AdminMessage
 )
 
 
@@ -150,6 +155,7 @@ class TPFollowerControlPlane:
     ) -> (
         AdminMessage
         | ShutdownMessage
+        | FreezeGCMessage
         | ProfilerStartMessage
         | ProfilerStopMessage
         | TPWorkMessage
@@ -160,6 +166,7 @@ class TPFollowerControlPlane:
             (
                 AdminMessage,
                 ShutdownMessage,
+                FreezeGCMessage,
                 ProfilerStartMessage,
                 ProfilerStopMessage,
                 TPWorkMessage,

@@ -101,7 +101,7 @@ class AutocastFusedDiT(FusedAdaLNDiT):
     ) -> torch.Tensor:
         dtype = self.fused_adaln[-1].weight.dtype
         device_type = timesteps.device.type
-        autocast = device_type == "cuda" and dtype in {
+        autocast = device_type != "cpu" and dtype in {
             torch.float16,
             torch.bfloat16,
         }
@@ -326,10 +326,10 @@ def validate_acoustic_pool_memory(
     device: torch.device,
     headroom_ratio: float = 0.15,
 ) -> None:
-    """Raise if free CUDA memory cannot hold the pools plus headroom."""
+    """Raise if free accelerator memory cannot hold the pools plus headroom."""
     # note (guozhihao-224): CPU paths skip this gate so unit tests can allocate
     # tiny pools; never silently lower max_running_requests or patch capacity.
-    if device.type != "cuda":
+    if device.type == "cpu":
         return
     else:
         pass
@@ -337,10 +337,11 @@ def validate_acoustic_pool_memory(
         raise ValueError("dots.tts acoustic pool headroom_ratio must be non-negative")
     else:
         pass
-    with torch.cuda.device(device):
-        torch.cuda.empty_cache()
-    free_bytes, total_bytes = torch.cuda.mem_get_info(device)
-    # note (guozhihao-224): 15% headroom covers CUDA-graph capture and scratch
+    device_module = torch.get_device_module(device)
+    with device_module.device(device):
+        device_module.empty_cache()
+    free_bytes, total_bytes = device_module.mem_get_info(device)
+    # note (guozhihao-224): 15% headroom covers graph capture and scratch
     # beyond the eager pool tensors themselves.
     required = int(estimate.total_bytes * (1.0 + float(headroom_ratio)))
     if free_bytes >= required:
@@ -355,7 +356,7 @@ def validate_acoustic_pool_memory(
         f"(pools={gib(estimate.total_bytes):.2f} GiB + "
         f"{headroom_ratio:.0%} headroom for graphs/workspace) but only "
         f"{gib(free_bytes):.2f} GiB is free on {device} "
-        f"(GPU total {gib(total_bytes):.2f} GiB). "
+        f"(device total {gib(total_bytes):.2f} GiB). "
         f"Configured slots={estimate.num_slots} patch_capacity={estimate.patch_capacity} "
         f"nfe={estimate.nfe} dtype={estimate.dtype}. "
         "Lower max_running_requests and/or max_generate_length "
@@ -511,8 +512,9 @@ class DotsTtsAcousticTail:
         spec = self.spec
         estimate = self.pool_memory_estimate(mods_width)
         free_bytes = total_bytes = None
-        if self.device.type == "cuda":
-            free_bytes, total_bytes = torch.cuda.mem_get_info(self.device)
+        if self.device.type != "cpu":
+            device_module = torch.get_device_module(self.device)
+            free_bytes, total_bytes = device_module.mem_get_info(self.device)
         else:
             pass
         logger.info(
@@ -532,8 +534,8 @@ class DotsTtsAcousticTail:
                 ""
                 if free_bytes is None or total_bytes is None
                 else (
-                    f" cuda_free={gib(free_bytes):.2f} GiB "
-                    f"cuda_total={gib(total_bytes):.2f} GiB"
+                    f" device_free={gib(free_bytes):.2f} GiB "
+                    f"device_total={gib(total_bytes):.2f} GiB"
                 )
             ),
         )

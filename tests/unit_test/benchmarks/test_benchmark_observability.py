@@ -20,6 +20,7 @@ from benchmarks.benchmarker.conditions import (
     sampling_seed_field,
     warn_if_tail_percentile_is_thin,
 )
+from benchmarks.benchmarker.data import FinishReason, finish_reason_from_server
 from benchmarks.dataset.mmmu import MMMUSample
 from benchmarks.dataset.mmsu import MmsuSample
 from benchmarks.dataset.videomme import VideoMMESample
@@ -353,6 +354,46 @@ async def test_video_request_includes_seed_only_when_set() -> None:
     await omitted(session, video_sample())
     assert session.payloads[0]["seed"] == 5
     assert "seed" not in session.payloads[1]
+
+
+class LengthSession(RecordingSession):
+    def post(self, url: str, json: dict[str, object]) -> JsonResponse:
+        self.payloads.append(json)
+        return JsonResponse(
+            {
+                "choices": [
+                    {"message": {"content": "Answer"}, "finish_reason": "length"}
+                ],
+                "usage": {},
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_mmmu_and_video_requests_record_the_finish_reason() -> None:
+    """MMMU and video requests keep the server's finish reason, so cut answers are counted."""
+    mmmu = await make_mmmu_send_fn("qwen3-omni", "http://localhost/v1")(
+        LengthSession(), mmmu_sample()
+    )
+    video = await make_video_send_fn("qwen3-omni", "http://localhost/v1")(
+        LengthSession(), video_sample()
+    )
+    assert (mmmu.finish_reason, video.finish_reason) == (
+        FinishReason.LENGTH,
+        FinishReason.LENGTH,
+    )
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("stop", FinishReason.STOP),
+        ("tool_calls", FinishReason.UNKNOWN),
+        (None, FinishReason.UNKNOWN),
+    ],
+)
+def test_finish_reason_from_server(value: str | None, expected: FinishReason) -> None:
+    assert finish_reason_from_server(value) == expected
 
 
 @pytest.mark.asyncio

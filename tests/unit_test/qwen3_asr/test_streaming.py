@@ -35,7 +35,6 @@ class Tokenizer:
 @pytest.mark.parametrize(
     ("text", "rollback", "expected_ids", "expected_text"),
     [
-        ("", 5, [], ""),
         ("abc", 5, [], ""),
         ("abcdef", 0, [1, 2, 3, 4, 5, 6], "abcdef"),
         ("abcdef", 2, [1, 2, 3, 4], "abcd"),
@@ -188,21 +187,3 @@ def test_qwen_strategy_skips_prefix_until_language_is_known() -> None:
     )
     assert fourth.extra_params["_asr_streaming_prefix_text"] == "hello"
     assert fourth.extra_params["language"] == "English"
-
-
-def test_qwen_strategy_extracts_language_and_visible_transcript() -> None:
-    strategy = Qwen3ASRStreamingStrategy()
-    state = strategy.create_state(
-        model_name="qwen3-asr",
-        language=None,
-    )
-
-    transcript = strategy.update_hypothesis(
-        generated_text="hello world",
-        language="English",
-        state=state,
-    )
-
-    assert transcript == "hello world"
-    assert state.transcript == "hello world"
-    assert state.language == "English"

@@ -64,7 +64,12 @@ class Connection:
 
         if not dist.is_initialized():
             os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
-            os.environ.setdefault("MASTER_PORT", "29500")
+            if "MASTER_PORT" not in os.environ:
+                from sglang_omni.utils.port_claim import claim_tcp_port
+
+                os.environ["MASTER_PORT"] = str(claim_tcp_port())
+            else:
+                pass
 
             if torch.cuda.is_available():
                 self.device_id = rank % torch.cuda.device_count()

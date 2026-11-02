@@ -9,6 +9,7 @@ from __future__ import annotations
 # Note (Akazaakane): Import whisper_asr after whisper so the timestamp-capable
 # subclass owns their shared registry key while retaining chunk-context behavior.
 from sglang_omni.serve.transcription_adapters import (  # noqa: F401
+    minicpm_o,
     moss_transcribe_diarize,
     whisper,
     whisper_asr,

@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import pickle
-import random
 import re
 
 import numpy as np
@@ -36,26 +35,20 @@ def add_prefix(name: str, prefix: str) -> str:
 
 
 def set_random_seed(seed: int) -> None:
-    """Set the random seed for all libraries."""
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-    else:
-        pass
+    """Set the random seed for all libraries, including this host's accelerator."""
+    from sglang_omni.platforms import current_platform
+
+    current_platform.seed_everything(seed)
 
 
 def avail_gpu_mem(gpu_id: int) -> float | None:
     """Return currently free GPU memory in GiB, or None when unavailable."""
+    from sglang_omni.platforms import current_platform
+
     try:
-        if not torch.cuda.is_available():
-            return None
-        else:
-            pass
-        free_bytes, _ = torch.cuda.mem_get_info(gpu_id)
+        free_bytes, _ = current_platform.get_available_memory(gpu_id)
         return free_bytes / (1024**3)
-    except Exception:
+    except (NotImplementedError, RuntimeError, ValueError):
         return None
 
 

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Apple Silicon platform policy for PyTorch MPS and the opt-in MLX backend."""
+"""Apple Silicon platform policy for PyTorch MPS."""
 
 from __future__ import annotations
 
@@ -20,10 +20,9 @@ else:
 class AppleOmniPlatform(OmniPlatform):
     """Single-device Apple Metal platform.
 
-    SGLang enables its MLX runner through SGLANG_USE_MLX=1 but does not
-    register an MPS SRTPlatform. Omni still needs concrete device operations
-    because every accelerator-backed stage binds its scheduler thread through
-    current_platform.get_device and set_device.
+    SGLang does not register an MPS SRTPlatform. Omni still needs concrete
+    device operations because every accelerator-backed stage binds its
+    scheduler thread through current_platform.get_device and set_device.
     """
 
     _enum: PlatformEnum = PlatformEnum.MPS
@@ -58,8 +57,8 @@ class AppleOmniPlatform(OmniPlatform):
         else:
             index = int(device)
         self.validate_device_id(index)
-        # Note (yexiaodong): PyTorch MPS and MLX share one process-global Metal
-        # device, so there is no CUDA-style device selection to perform.
+        # Note (yexiaodong): PyTorch MPS uses one process-global Metal device,
+        # so there is no CUDA-style device selection to perform.
 
     def get_device_name(self, device_id: int = 0) -> str:
         self.validate_device_id(device_id)
@@ -67,27 +66,11 @@ class AppleOmniPlatform(OmniPlatform):
 
     def get_device_total_memory(self, device_id: int = 0) -> int:
         self.validate_device_id(device_id)
-        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
-
-        if use_mlx():
-            import mlx.core as mx
-
-            return int(mx.device_info()["max_recommended_working_set_size"])
-        else:
-            pass
         return int(torch.mps.recommended_max_memory())
 
     def get_current_memory_usage(self, device: torch.device | None = None) -> float:
         if device is not None and device.type != "mps":
             raise ValueError(f"Expected an MPS device, got {device}")
-        else:
-            pass
-        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
-
-        if use_mlx():
-            import mlx.core as mx
-
-            return float(mx.get_active_memory())
         else:
             pass
         return float(torch.mps.current_allocated_memory())
@@ -117,24 +100,10 @@ class AppleOmniPlatform(OmniPlatform):
         return TransportKind.SHM
 
     def empty_cache(self) -> None:
-        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
-
-        if use_mlx():
-            import mlx.core as mx
-
-            mx.clear_cache()
-        else:
-            torch.mps.empty_cache()
+        torch.mps.empty_cache()
 
     def synchronize(self) -> None:
-        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
-
-        if use_mlx():
-            import mlx.core as mx
-
-            mx.synchronize()
-        else:
-            torch.mps.synchronize()
+        torch.mps.synchronize()
 
     def enable_code2wav_graph(self) -> bool:
         return False

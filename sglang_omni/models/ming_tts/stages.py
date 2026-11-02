@@ -34,6 +34,7 @@ from sglang_omni.models.ming_tts.streaming_vocoder import (
 )
 from sglang_omni.models.ming_tts.tokenizer import load_ming_tts_tokenizer
 from sglang_omni.models.ming_tts.weight_loading import load_ming_tts_audio_vae_weights
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
@@ -48,11 +49,9 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     import torch
 
-    from sglang_omni.models.ming_omni.talker.audio_vae.modeling_audio_vae import (
-        AudioVAE,
-    )
     from sglang_omni.models.ming_tts.audio_config import AudioVAEconfig
     from sglang_omni.models.ming_tts.engine_io import MingTTSSGLangRequestData
+    from sglang_omni.modules.ming_audio.vae.modeling_audio_vae import AudioVAE
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 else:
     pass
@@ -91,9 +90,7 @@ def load_ming_tts_audio_vae(
 ) -> AudioVAE:
     import torch
 
-    from sglang_omni.models.ming_omni.talker.audio_vae.modeling_audio_vae import (
-        AudioVAE,
-    )
+    from sglang_omni.modules.ming_audio.vae.modeling_audio_vae import AudioVAE
 
     if getattr(audio_config, "semantic_module_kwargs", None) is not None:
         raise ValueError(
@@ -242,6 +239,15 @@ def create_reference_encode_executor(
     return SimpleScheduler(_encode, max_concurrency=max_concurrency)
 
 
+def process_memory_bytes(device: torch.device) -> int | None:
+    import torch
+
+    if device.type == "cuda":
+        return get_process_gpu_memory_bytes(device.index)
+    else:
+        return int(torch.get_device_module(device).memory_reserved(device))
+
+
 def create_audio_decode_executor(
     model_path: str,
     *,
@@ -278,6 +284,15 @@ def create_audio_decode_executor(
     from sglang_omni.models.ming_tts.streaming_vocoder import (
         MingTTSStreamingVocoderScheduler,
     )
+
+    if streaming_cuda_graph and not current_platform.supports_graph_captured_fft():
+        logger.warning(
+            "ming_tts_audio_decode_streaming_graph stage=audio_decode "
+            f"requested=cuda_graph resolved=eager platform={current_platform.device_type}"
+        )
+        streaming_cuda_graph = False
+    else:
+        pass
 
     component_fraction = total_gpu_memory_fraction
     process_fraction = process_total_gpu_memory_fraction
@@ -335,14 +350,18 @@ def create_audio_decode_executor(
     from sglang_omni.utils.device import resolve_concrete_device
 
     resolved_device = resolve_concrete_device(device, gpu_id)
-    if resolved_device.type != "cuda" or not torch.cuda.is_available():
+    if (
+        resolved_device.type not in ("cuda", "musa", "xpu")
+        or not torch.get_device_module(resolved_device).is_available()
+    ):
         raise ValueError(
-            "Ming-Omni-TTS fixed AudioVAE serving requires an available CUDA device"
+            "Ming-Omni-TTS fixed AudioVAE serving requires an available "
+            "CUDA, MUSA, or XPU device"
         )
     else:
         pass
     logical_gpu_id = resolved_device.index
-    if logical_gpu_id >= torch.cuda.device_count():
+    if logical_gpu_id >= torch.get_device_module(resolved_device).device_count():
         raise ValueError(
             f"Ming-Omni-TTS audio decode GPU {logical_gpu_id} is not visible"
         )
@@ -357,9 +376,8 @@ def create_audio_decode_executor(
         )
     else:
         pass
-
     device_info = get_gpu_device_info(logical_gpu_id)
-    pre_process_bytes = get_process_gpu_memory_bytes(logical_gpu_id)
+    pre_process_bytes = process_memory_bytes(resolved_device)
 
     checkpoint_dir = _resolve_checkpoint(model_path)
     config = load_ming_tts_config(checkpoint_dir)
@@ -427,7 +445,7 @@ def create_audio_decode_executor(
         raise
     try:
         scheduler.warmup_now()
-        post_process_bytes = get_process_gpu_memory_bytes(logical_gpu_id)
+        post_process_bytes = process_memory_bytes(resolved_device)
         process_delta_bytes = (
             post_process_bytes - pre_process_bytes
             if pre_process_bytes is not None and post_process_bytes is not None

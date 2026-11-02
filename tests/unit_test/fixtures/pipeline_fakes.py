@@ -134,6 +134,9 @@ class FakeScheduler:
         self.stopped = False
         self.aborted: list[str] = []
 
+    def warm_up_serving_thread(self) -> None:
+        pass
+
     def start(self) -> None:
         self.started = True
         if self.fail_start is not None:
@@ -300,6 +303,9 @@ class ReplicaProcessProbeScheduler:
         self.running = False
         self.stream_chunks: dict[str, list[Any]] = {}
         self.stream_done: set[str] = set()
+
+    def warm_up_serving_thread(self) -> None:
+        pass
 
     def start(self) -> None:
         self.running = True
@@ -581,3 +587,27 @@ def make_scheduler_consuming_kv_budget(**kwargs: Any) -> FakeScheduler:
     scheduler.consumed_kv_cache_bytes = consume_stage_kv_cache_bytes()
     scheduler.factory_kwargs = kwargs
     return scheduler
+
+
+def block_on_inbox(monkeypatch: Any) -> None:
+    """Make the SimpleScheduler loop wait for a message instead of polling.
+
+    Only a message then wakes the loop, and stop puts a wakeup to end it, so a
+    scheduler check that runs only when the loop polls never runs.
+    """
+    from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+
+    stop = SimpleScheduler.stop
+
+    def next_message(self: SimpleScheduler) -> IncomingMessage:
+        if self.pending_messages:
+            return self.pending_messages.popleft()
+        else:
+            return self.inbox.get()
+
+    def stop_and_wake(self: SimpleScheduler) -> None:
+        stop(self)
+        self.inbox.put(IncomingMessage("", "wakeup"))
+
+    monkeypatch.setattr(SimpleScheduler, "next_message", next_message)
+    monkeypatch.setattr(SimpleScheduler, "stop", stop_and_wake)

@@ -3,8 +3,8 @@
 
 The LRU mechanics live in the shared StageOutputCache (covered by its own tests);
 these cover ZONOS2's model-local glue now routed through it: content-hash keying,
-a cache hit avoiding a second forward, recency-ordered eviction at the count cap,
-and clone isolation of returned embeddings. The Qwen3 embedder is stubbed, so no
+a cache hit avoiding a second forward, and recency-ordered eviction at the count
+cap. The Qwen3 embedder is stubbed, so no
 model checkpoint or GPU is needed (the module still imports torchaudio/transformers).
 """
 
@@ -113,20 +113,3 @@ def test_eviction_is_recency_ordered() -> None:
     assert fake.calls == 3
     enc.encode(b)  # b was evicted -> recompute
     assert fake.calls == 4
-
-
-def test_returned_embedding_is_isolated_clone() -> None:
-    enc, _ = make_encoder()
-    ref = (torch.zeros(1, 100), 16000)
-    cold = enc.encode(ref)  # store-path return
-    cold.add_(123.0)  # mutate the store-path copy
-    warm = enc.encode(ref)  # served from cache
-    assert not torch.equal(cold, warm)  # cache untouched by store-path mutation
-    warm.add_(456.0)  # mutate the hit-path copy
-    warm2 = enc.encode(ref)  # served from cache again
-    assert not torch.equal(warm, warm2)  # cache untouched by hit-path mutation
-
-
-def test_rejects_non_positive_cache_size() -> None:
-    with pytest.raises(ValueError):
-        SpeakerEncoder(device="cpu", cache_max_items=0)

@@ -21,13 +21,16 @@ def test_qwen3_omni_thinker_explicit_penalty_is_preserved():
         params={"repetition_penalty": 1.7},
         tokenizer=FakeQwenTokenizer(),
         vocab_size=32000,
+        capture_prompt_hidden_states=False,
     )
     assert isinstance(data.req.sampling_params, SamplingParams)
     assert data.req.sampling_params.repetition_penalty == 1.7
 
 
-@pytest.mark.parametrize("with_sglang_state", [False, True])
-@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize(
+    ("with_sglang_state", "dtype"),
+    [(False, torch.float32), (True, torch.bfloat16)],
+)
 def test_shared_sampler_receives_only_codec_shaping(with_sglang_state, dtype):
     runner = object.__new__(ModelRunner)
     original = torch.tensor([[4.0, -6.0, 8.0, 3.0], [-4.0, 6.0, 2.0, 1.0]], dtype=dtype)

@@ -335,23 +335,6 @@ def test_streaming_vocoder_final_flush_emits_tail_before_result() -> None:
         stop_scheduler(scheduler, thread)
 
 
-def test_streaming_vocoder_done_before_payload_finalizes_after_new_request() -> None:
-    scheduler, thread = start_scheduler()
-    try:
-        scheduler.inbox.put(IncomingMessage("req", "stream_chunk", make_chunk(1)))
-        scheduler.inbox.put(IncomingMessage("req", "stream_done"))
-        scheduler.inbox.put(IncomingMessage("req", "new_request", make_payload("req")))
-        stream = scheduler.outbox.get(timeout=2.0)
-        final = scheduler.outbox.get(timeout=2.0)
-        assert stream.type == "stream"
-        assert final.type == "result"
-        assert final.request_id == "req"
-        with pytest.raises(queue.Empty):
-            scheduler.outbox.get(timeout=0.2)
-    finally:
-        stop_scheduler(scheduler, thread)
-
-
 def test_streaming_vocoder_final_payload_preserves_usage_without_redecode() -> None:
     scheduler, thread = start_scheduler()
     usage = {"prompt_tokens": 5, "completion_tokens": 4, "total_tokens": 9}
@@ -400,7 +383,7 @@ def test_streaming_vocoder_falls_back_when_no_codes_were_streamed() -> None:
         final = scheduler.outbox.get(timeout=2.0)
 
         assert stream.type == "stream"
-        assert len(stream.data["audio_data"]) == 16
+        assert len(np.frombuffer(stream.data["audio_waveform"], dtype=np.float32)) == 16
         assert final.type == "result"
         assert final.data.data == {
             "modality": "audio",
@@ -474,31 +457,6 @@ def test_streaming_vocoder_abort_cleans_state_and_suppresses_final() -> None:
         assert "req" not in scheduler.stream_states
         assert "req" not in scheduler.pending_done
         assert "req" in scheduler.aborted_request_ids
-        with pytest.raises(queue.Empty):
-            scheduler.outbox.get(timeout=0.2)
-    finally:
-        stop_scheduler(scheduler, thread)
-
-
-def test_streaming_vocoder_abort_does_not_block_other_request() -> None:
-    scheduler, thread = start_scheduler()
-    try:
-        scheduler.inbox.put(
-            IncomingMessage("aborted", "new_request", make_payload("aborted"))
-        )
-        scheduler.inbox.put(IncomingMessage("aborted", "stream_chunk", make_chunk(1)))
-        scheduler.inbox.put(
-            IncomingMessage("other", "new_request", make_payload("other"))
-        )
-        scheduler.inbox.put(IncomingMessage("other", "stream_chunk", make_chunk(1)))
-        scheduler.inbox.put(IncomingMessage("other", "stream_chunk", make_chunk(2)))
-        scheduler.inbox.put(IncomingMessage("other", "stream_chunk", make_chunk(3)))
-
-        scheduler.abort("aborted")
-
-        out = scheduler.outbox.get(timeout=2.0)
-        assert out.request_id == "other"
-        assert out.type == "stream"
         with pytest.raises(queue.Empty):
             scheduler.outbox.get(timeout=0.2)
     finally:

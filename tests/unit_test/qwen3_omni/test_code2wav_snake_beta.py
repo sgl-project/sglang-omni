@@ -11,7 +11,9 @@ from unittest.mock import Mock
 
 import pytest
 import torch
-from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import SnakeBeta
+from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
+    Qwen3OmniMoeSnakeBeta,
+)
 
 from sglang_omni.models.qwen3_omni.components import code2wav_scheduler
 from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
@@ -20,14 +22,17 @@ from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
 )
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.utils import snake_beta
-from tests.unit_test.fixtures.qwen_fakes import make_qwen_payload
+from tests.unit_test.fixtures.qwen_fakes import (
+    deliver_code2wav_chunk,
+    make_qwen_payload,
+)
 
 
 @pytest.mark.parametrize("enabled", [False, True])
 def test_factory_installs_shared_snake_before_graph_capture(
     monkeypatch: pytest.MonkeyPatch, enabled: bool
 ) -> None:
-    original = SnakeBeta(96).eval()
+    original = Qwen3OmniMoeSnakeBeta(96).eval()
     decoder = torch.nn.Sequential(original)
     model = SimpleNamespace(
         decoder=decoder,
@@ -63,7 +68,7 @@ def test_factory_installs_shared_snake_before_graph_capture(
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_hf_snake_uses_shared_kernel(monkeypatch: pytest.MonkeyPatch) -> None:
-    original = SnakeBeta(96).to(device="cuda", dtype=torch.bfloat16).eval()
+    original = Qwen3OmniMoeSnakeBeta(96).to(device="cuda", dtype=torch.bfloat16).eval()
     decoder = torch.nn.Sequential(original)
     x = torch.randn(16, 96, 37845, device="cuda", dtype=torch.bfloat16)
     with torch.inference_mode():
@@ -90,8 +95,8 @@ def test_real_code2wav_pcm_equal(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     graph_keys = tuple(
         dict.fromkeys(
-            code2wav_scheduler.batched_graph_keys(10, 25, 16)
-            + code2wav_scheduler.batched_graph_keys(10, 25, 16, 2)
+            code2wav_scheduler.window_graph_keys(10, 25, 8)
+            + code2wav_scheduler.window_graph_keys(10, 25, 8, 2)
         )
     )
     shapes = sorted(
@@ -145,7 +150,8 @@ def test_real_code2wav_pcm_equal(monkeypatch: pytest.MonkeyPatch) -> None:
             scheduler.stream_payloads["parity"] = make_qwen_payload(request_id="parity")
             state = scheduler.get_or_create_stream_state("parity")
             for index, frame in enumerate(chunk_input[0].T):
-                scheduler.handle_stream_chunk(
+                deliver_code2wav_chunk(
+                    scheduler,
                     "parity",
                     StreamItem(index, frame, "talker", metadata={"stream": True}),
                 )

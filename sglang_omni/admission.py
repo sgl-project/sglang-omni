@@ -1,16 +1,22 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Queue-full rejects. Stage IPC stringifies exceptions; use matches()."""
+"""Admission rejects. Stage IPC stringifies exceptions; use matches()."""
 
 from __future__ import annotations
 
+REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV = 1
+
 
 class QueueFullError(RuntimeError):
-    """A serving queue is at capacity (HTTP 503)."""
+    """A serving queue is at capacity (HTTP 503).
+
+    A message that explains the outcome starts with MESSAGE, so matches still
+    recognizes it after stage IPC turns it into text.
+    """
 
     MESSAGE = "The request queue is full."
 
-    def __init__(self) -> None:
-        super().__init__(self.MESSAGE)
+    def __init__(self, message: str = MESSAGE) -> None:
+        super().__init__(message)
 
     @classmethod
     def matches(cls, exc: BaseException | str | None) -> bool:
@@ -19,7 +25,32 @@ class QueueFullError(RuntimeError):
     @classmethod
     def from_message(cls, message: str | None) -> Exception:
         if cls.matches(message):
-            return cls()
+            # Keep the explanation a capacity error adds after MESSAGE.
+            return cls(message)
         else:
             pass
         return RuntimeError(message or "Unknown error")
+
+
+class AdminDroppedRequestError(RuntimeError):
+    """A stage dropped the request in an admin action, such as an abort mode
+    pause or a weight update that aborts every request."""
+
+    MESSAGE = "The request was dropped by an admin action."
+
+    def __init__(self) -> None:
+        super().__init__(self.MESSAGE)
+
+    @classmethod
+    def matches(cls, exc: BaseException | str | None) -> bool:
+        return isinstance(exc, cls) or (exc is not None and str(exc) == cls.MESSAGE)
+
+
+class ContextExhaustedError(ValueError):
+    """A session unit that no longer fits the thinker context."""
+
+    CODE = "context_exhausted"
+
+    @classmethod
+    def matches(cls, exc: BaseException) -> bool:
+        return isinstance(exc, cls) or str(exc).startswith(f"{cls.CODE}:")

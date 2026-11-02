@@ -11,6 +11,8 @@ from fastapi import WebSocket
 from starlette.websockets import WebSocketState
 from typing_extensions import Unpack
 
+from sglang_omni.audio.semantic_vad import SemanticEOUModel, SemanticVADConfig
+from sglang_omni.audio.vad import Emit, StreamingVAD, VADConfig, VADEvent, offsets_to_ms
 from sglang_omni.client import Client, GenerateRequest, Message, SamplingParams
 from sglang_omni.serve.realtime.audio_buffer import RealtimeAudioBuffer
 from sglang_omni.serve.realtime.events import (
@@ -26,15 +28,7 @@ from sglang_omni.serve.realtime.events import (
     make_event,
     parse_conversation_client_event,
 )
-from sglang_omni.serve.realtime.semantic_vad import SemanticEOUModel, SemanticVADConfig
 from sglang_omni.serve.realtime.turn_detector import TurnDetector, build_turn_detector
-from sglang_omni.serve.realtime.vad import (
-    Emit,
-    StreamingVAD,
-    VADConfig,
-    VADEvent,
-    offsets_to_ms,
-)
 
 DEFAULT_INSTRUCTIONS = (
     "You are a helpful realtime voice assistant. Respond conversationally."
@@ -48,6 +42,9 @@ _TRANSCRIPTION_PROMPT = (
 )
 
 _MAX_CANCELLED_ASSISTANT_ITEM_IDS = 64
+
+# note (Tianyao Wu): 10 tokens a second over the 60 s audio buffer cap; speech is 3-5.
+TRANSCRIPTION_MAX_NEW_TOKENS = 600
 
 HANDLERS: dict[type[ClientEvent], str] = {
     SessionUpdate: "handle_session_update",
@@ -1170,7 +1167,9 @@ class RealtimeSession:
                 Message(role="system", content=_TRANSCRIPTION_PROMPT),
                 Message(role="user", content="Transcribe the spoken audio."),
             ],
-            sampling=self.sampling(),
+            sampling=dataclasses.replace(
+                self.sampling(), max_new_tokens=TRANSCRIPTION_MAX_NEW_TOKENS
+            ),
             stream=True,
             output_modalities=["text"],
             metadata={"audios": [audio_payload]},

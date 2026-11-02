@@ -7,7 +7,7 @@ from sglang_omni.config.patch import ConfigPatchSet
 from sglang_omni.config.resolver import ConfigResolver
 from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.config.sources import patches_from_dotted_cli, sources_from_config_file
-from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY, resolve_variant
 from sglang_omni.utils import (
     architecture_from_hf_config,
     try_resolve_arch_from_auk_layout,
@@ -16,6 +16,7 @@ from sglang_omni.utils import (
     try_resolve_arch_from_nemo_config,
     try_resolve_arch_from_personaplex_layout,
     try_resolve_arch_from_raw_config,
+    try_resolve_ming3_dense_tts,
 )
 
 
@@ -30,10 +31,18 @@ def resolve_config_cls_for_model_path(model_path: str):
         revision = pinned or None
     else:
         pass
+    dense_arch = try_resolve_ming3_dense_tts(repo_id, revision=revision)
+    if dense_arch is not None:
+        return PIPELINE_CONFIG_REGISTRY.get_config(dense_arch)
+    else:
+        pass
     hf_kwargs = {"revision": revision} if revision else {}
     hf_config = None
     try:
-        hf_config = AutoConfig.from_pretrained(repo_id, **hf_kwargs)
+        # Checkpoints with custom code fall through to the config.json readers below, so transformers never prompts.
+        hf_config = AutoConfig.from_pretrained(
+            repo_id, trust_remote_code=False, **hf_kwargs
+        )
     except (OSError, ValueError, KeyError):
         hf_config = None
 
@@ -140,9 +149,6 @@ class ConfigManager:
         else:
             pass
         resolved = ConfigResolver(self.config).resolve(patches)
-        validate_dotted_gpu_override_conflicts(
-            resolved.config, {patch.key for patch in patches.ordered()}
-        )
         return resolved.config
 
     @staticmethod
@@ -156,10 +162,11 @@ class ConfigManager:
             module = importlib.import_module(config_cls.__module__)
             variants = getattr(module, "Variants", None)
             if variants and variant in variants:
-                config_cls = variants[variant]
+                config_cls = resolve_variant(variants[variant])
             else:
                 raise ValueError(
-                    f"Unknown variant '{variant}' for {config_cls.__name__}"
+                    f"Unknown variant '{variant}' for {config_cls.__name__}. "
+                    f"Available variants: {', '.join(sorted(variants or ())) or 'none'}"
                 )
         else:
             pass
@@ -185,38 +192,6 @@ class ConfigManager:
             pass
         resolved = ConfigResolver(config).resolve(patches)
         return ConfigManager(resolved.config)
-
-
-def validate_dotted_gpu_override_conflicts(
-    config: PipelineConfig,
-    override_keys: set[str],
-) -> None:
-    """Reject stage GPU overrides shadowed by process replica placement."""
-    stage_by_name = {stage.name: stage for stage in config.stages}
-    for key in sorted(override_keys):
-        parts = key.split(".")
-        if len(parts) != 3 or parts[0] != "stages" or parts[2] != "gpu":
-            continue
-        else:
-            pass
-
-        stage = stage_by_name.get(parts[1])
-        if stage is None:
-            continue
-        else:
-            pass
-        process_name = stage.process or stage.name
-        process_config = config.processes.get(process_name)
-        if process_config is None or process_config.replica_devices is None:
-            continue
-        else:
-            pass
-
-        raise ValueError(
-            f"{key} cannot override GPU placement for stage {stage.name!r} "
-            f"because process {process_name!r} declares replica_devices; update "
-            f"processes.{process_name}.replica_devices instead"
-        )
 
 
 def normalize_flag_key(key: str) -> str:

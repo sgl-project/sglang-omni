@@ -67,10 +67,11 @@ class MingTalkerExecutor:
         """Load talker model and VAE (runs in thread pool)."""
         from transformers import AutoTokenizer
 
-        from sglang_omni.models.ming_omni.talker import MingOmniTalker, SpkembExtractor
-        from sglang_omni.models.ming_omni.talker.audio_vae.modeling_audio_vae import (
-            AudioVAE,
+        from sglang_omni.models.ming_omni.talker.modeling_ming_omni_talker import (
+            MingOmniTalker,
+            SpkembExtractor,
         )
+        from sglang_omni.modules.ming_audio.vae.modeling_audio_vae import AudioVAE
 
         logger.info(
             "[TALKER] Loading MingOmniTalker from %s (device=%s)",

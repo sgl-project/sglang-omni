@@ -524,7 +524,7 @@ class HiggsTTSModelRunner(ModelRunner):
         offset = 0
         for sched_req in requests:
             data = sched_req.data
-            end = offset + int(data.req.extend_range.length)
+            end = offset + data.req.extend_len
             codes_rows = data.reference_codes_delayed
             if not codes_rows:
                 offset = end
@@ -546,7 +546,7 @@ class HiggsTTSModelRunner(ModelRunner):
             # absolute prompt position instead of request-local progress.
             consumed = sum(
                 token == AUDIO_PLACEHOLDER_ID
-                for token in data.req.origin_input_ids[: data.req.extend_range.start]
+                for token in data.req.origin_input_ids[: data.req.prefix_len]
             )
             if consumed + n_placeholders > len(codes_rows):
                 raise RuntimeError(
@@ -852,22 +852,6 @@ class HiggsTTSModelRunner(ModelRunner):
             pass
         return max(num_codebooks, stride)
 
-    @classmethod
-    def next_stream_flush_rows(
-        cls, data: HiggsSGLangRequestData, flushed_rows: int
-    ) -> int:
-        num_codebooks, stride, followup, initial_frames = cls.stream_params(data)
-        steady_codec_frames = max(1, stride - num_codebooks + 1)
-        emitted_initial_chunk = (
-            not bool(data.stream_code_first_flush_done)
-            and 0 < initial_frames < steady_codec_frames
-        )
-        if emitted_initial_chunk:
-            return max(num_codebooks, stride) + followup
-        else:
-            pass
-        return int(flushed_rows) + followup
-
     def flush_code_chunks(
         self,
         request_id: str,
@@ -886,13 +870,11 @@ class HiggsTTSModelRunner(ModelRunner):
             payload = torch.stack(rows, dim=0)
         flushed_rows = int(data.stream_code_seen_rows)
         if not force:
-            data.stream_code_next_flush_rows = self.next_stream_flush_rows(
-                data, flushed_rows
-            )
+            _, _, followup_rows, _ = self.stream_params(data)
+            data.stream_code_next_flush_rows = flushed_rows + followup_rows
         else:
             pass
         data.stream_code_buffer = []
-        data.stream_code_first_flush_done = True
         self.emit_code_chunk(request_id, data, payload)
 
     def emit_code_chunk(

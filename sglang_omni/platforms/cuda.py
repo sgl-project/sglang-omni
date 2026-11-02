@@ -67,7 +67,20 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
         spec: StageLaunchConfig,
         env: Mapping[str, str] | None = None,
     ) -> dict[str, str]:
-        if spec.tp_size <= 1:
+        if spec.allow_child_processes and spec.owned_gpu_ids:
+            # Native children inherit this, and host threads that touch an
+            # unpinned device stay on the stage's own GPUs.
+            from sglang_omni.utils.gpu_memory import narrow_visible_devices
+
+            source_env = env if env is not None else os.environ
+            return {
+                "CUDA_VISIBLE_DEVICES": narrow_visible_devices(
+                    source_env.get("CUDA_VISIBLE_DEVICES"),
+                    spec.owned_gpu_ids,
+                    "CUDA_VISIBLE_DEVICES",
+                )
+            }
+        elif spec.tp_size <= 1:
             return {}
         else:
             pass

@@ -1,0 +1,1 @@
+Transcribe the audio as plain text without timestamps or speaker labels.

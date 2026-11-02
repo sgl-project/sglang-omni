@@ -725,3 +725,72 @@ class VoxtralTTSAudioTokenizer(nn.Module):
         param = params_dict[name]
         param.data.copy_(loaded_weight)
         return name
+
+
+class VoxtralCodecGraphs:
+    """CUDA graphs of the codec decoder for right-padded ``[B, K, max_frames]``
+    code windows; the causal decoder leaves each window's valid prefix unchanged."""
+
+    def __init__(
+        self,
+        tokenizer: VoxtralTTSAudioTokenizer,
+        stream: torch.cuda.Stream,
+        *,
+        max_frames: int,
+        batch_sizes: tuple[int, ...] = (1, 2, 4, 8, 16),
+    ) -> None:
+        self.tokenizer = tokenizer
+        self.max_frames = int(max_frames)
+        self.graphs: dict[
+            int, tuple[torch.cuda.CUDAGraph, torch.Tensor, torch.Tensor]
+        ] = {}
+        device = next(tokenizer.parameters()).device
+        num_codebooks = tokenizer.num_codebooks
+        with torch.no_grad(), torch.cuda.stream(stream):
+            for batch_size in sorted(batch_sizes):
+                codes = torch.zeros(
+                    batch_size,
+                    num_codebooks,
+                    self.max_frames,
+                    dtype=torch.long,
+                    device=device,
+                )
+                for _ in range(2):
+                    tokenizer.decode(codes, dtype=torch.bfloat16)
+                stream.synchronize()
+                graph = torch.cuda.CUDAGraph()
+                with torch.cuda.graph(graph, stream=stream):
+                    audio = tokenizer.decode(codes, dtype=torch.bfloat16)
+                self.graphs[batch_size] = (graph, codes, audio)
+        logger.info(
+            f"Voxtral codec CUDA graphs captured for bs={sorted(self.graphs)} "
+            f"frames={self.max_frames}"
+        )
+
+    def fits(self, windows: list[torch.Tensor]) -> bool:
+        return all(int(window.shape[0]) <= self.max_frames for window in windows)
+
+    def decode(self, windows: list[torch.Tensor]) -> list[torch.Tensor]:
+        """Decode ``[T_i, K]`` code windows (special-token offset included) on the
+        current stream; returns CPU float waveforms of ``T_i`` frames each."""
+        max_batch = max(self.graphs)
+        audios = []
+        for start in range(0, len(windows), max_batch):
+            audios.extend(self.decode_batch(windows[start : start + max_batch]))
+        return audios
+
+    def decode_batch(self, windows: list[torch.Tensor]) -> list[torch.Tensor]:
+        bucket = min(bs for bs in self.graphs if bs >= len(windows))
+        graph, codes, audio = self.graphs[bucket]
+        staged = torch.zeros(codes.shape, dtype=torch.long)
+        for index, window in enumerate(windows):
+            staged[index, :, : window.shape[0]] = window.t() - 2
+        with torch.no_grad():
+            codes.copy_(staged)
+            graph.replay()
+        audio_cpu = audio[: len(windows), 0].float().cpu()
+        samples_per_frame = self.tokenizer.downsample_factor
+        return [
+            audio_cpu[index, : int(window.shape[0]) * samples_per_frame]
+            for index, window in enumerate(windows)
+        ]

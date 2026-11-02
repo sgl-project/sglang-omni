@@ -7,11 +7,15 @@ import asyncio
 import atexit
 import ipaddress
 import logging
+import os
 import socket
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Awaitable, TypeVar
 from urllib.parse import ParseResult, urlparse
 from urllib.request import url2pathname
 
@@ -33,6 +37,22 @@ _MAX_HTTP_REDIRECTS = 5
 # Global thread pool for CPU-bound tasks (decoding/resampling)
 global_thread_pool = ThreadPoolExecutor(max_workers=8)
 atexit.register(global_thread_pool.shutdown)
+
+
+async def await_media_cleanup(awaitable: Awaitable[None]) -> None:
+    """Finish cleanup before propagating cancellation of its caller."""
+    cleanup = asyncio.ensure_future(awaitable)
+    cancellation = None
+    while not cleanup.done():
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError as exc:
+            cancellation = exc
+    cleanup.result()
+    if cancellation is not None:
+        raise cancellation
+    else:
+        pass
 
 
 class ResourceHTTPConnection:
@@ -79,6 +99,10 @@ class ResourceHTTPConnection:
 global_http_connection = ResourceHTTPConnection()
 
 
+class MediaPolicyError(ValueError):
+    """Media the server's local path or domain policy refuses to load."""
+
+
 def resolve_allowed_local_media_path(path: str | Path) -> Path:
     resolved = Path(path).expanduser().resolve()
     if not resolved.exists() or not resolved.is_dir():
@@ -100,7 +124,7 @@ def resolve_local_file(
     if allowed_local_media_path is not None and not resolved.is_relative_to(
         allowed_local_media_path
     ):
-        raise ValueError(f"File path {resolved} is not within allowed directory.")
+        raise MediaPolicyError(f"File path {resolved} is not within allowed directory.")
     else:
         pass
     return resolved
@@ -269,6 +293,18 @@ async def read_limited_response_bytes_async(
     return b"".join(chunks)
 
 
+ALLOWED_LOCAL_MEDIA_PATH_ENV = "SGLANG_OMNI_ALLOWED_LOCAL_MEDIA_PATH"
+ALLOWED_MEDIA_DOMAINS_ENV = "SGLANG_OMNI_ALLOWED_MEDIA_DOMAINS"
+
+
+def export_media_policy(
+    allowed_local_media_path: str | None, allowed_media_domains: list[str] | None
+) -> None:
+    """Hand the server's media policy to the stage processes it spawns."""
+    os.environ[ALLOWED_LOCAL_MEDIA_PATH_ENV] = allowed_local_media_path or ""
+    os.environ[ALLOWED_MEDIA_DOMAINS_ENV] = ",".join(allowed_media_domains or [])
+
+
 class MultiModalResourceConnector:
     """Connector for optimized multi-modal data loading."""
 
@@ -296,6 +332,12 @@ class MultiModalResourceConnector:
         """
         self.media_io_kwargs = media_io_kwargs or {}
         self.connection = connection
+        allowed_local_media_path = allowed_local_media_path or os.environ.get(
+            ALLOWED_LOCAL_MEDIA_PATH_ENV
+        )
+        allowed_media_domains = allowed_media_domains or os.environ.get(
+            ALLOWED_MEDIA_DOMAINS_ENV, ""
+        ).split(",")
 
         self.allowed_local_media_path = None
         if allowed_local_media_path:
@@ -325,7 +367,7 @@ class MultiModalResourceConnector:
             not self.allowed_media_domains
             and not self.allow_remote_media_without_domains
         ):
-            raise ValueError(
+            raise MediaPolicyError(
                 "Remote media URLs require --allowed-media-domain to be configured."
             )
         else:
@@ -334,7 +376,7 @@ class MultiModalResourceConnector:
             is_allowed_remote_domain(normalized_hostname, domain)
             for domain in self.allowed_media_domains
         ):
-            raise ValueError(f"Domain {hostname} is not allowed.")
+            raise MediaPolicyError(f"Domain {hostname} is not allowed.")
         else:
             pass
 
@@ -342,7 +384,7 @@ class MultiModalResourceConnector:
             for address in resolve_remote_addresses(normalized_hostname):
                 category = unsafe_remote_address_category(address)
                 if category is not None:
-                    raise ValueError(
+                    raise MediaPolicyError(
                         f"Remote media URL resolves to a {category} address: {address}"
                     )
                 else:
@@ -389,6 +431,14 @@ class MultiModalResourceConnector:
             allowed_local_media_path=self.allowed_local_media_path,
         )
         return media_io.load_file(filepath)
+
+    def local_media_path(self, path: str | Path) -> str | Path:
+        if self.allowed_local_media_path is None:
+            return path
+        else:
+            return resolve_local_file(
+                path, allowed_local_media_path=self.allowed_local_media_path
+            )
 
     def load_local_path(self, path: str | Path, media_io: MediaIO[_M]) -> _M:
         """Load media from a bare local path.
@@ -462,7 +512,6 @@ class MultiModalResourceConnector:
             Loaded media object.
         """
         url_spec = urlparse(url)
-        loop = asyncio.get_running_loop()
 
         if url_spec.scheme and url_spec.scheme.startswith("http"):
             download_start = time.time()
@@ -481,9 +530,17 @@ class MultiModalResourceConnector:
                 pass
 
             decode_start = time.time()
-            result = await loop.run_in_executor(
+            decode_future = asyncio.get_running_loop().run_in_executor(
                 global_thread_pool, media_io.load_http_bytes, data, media_type
             )
+
+            async def cleanup_http_decoder() -> None:
+                await asyncio.gather(decode_future, return_exceptions=True)
+
+            try:
+                result = await asyncio.shield(decode_future)
+            finally:
+                await await_media_cleanup(cleanup_http_decoder())
             decode_time = time.time() - decode_start
 
             if len(data) > 1024 * 1024:
@@ -503,9 +560,17 @@ class MultiModalResourceConnector:
             method = (
                 self.load_data_url if url_spec.scheme == "data" else self.load_file_url
             )
-            return await loop.run_in_executor(
+            decode_future = asyncio.get_running_loop().run_in_executor(
                 global_thread_pool, method, url_spec, media_io
             )
+
+            async def cleanup_url_decoder() -> None:
+                await asyncio.gather(decode_future, return_exceptions=True)
+
+            try:
+                return await asyncio.shield(decode_future)
+            finally:
+                await await_media_cleanup(cleanup_url_decoder())
         else:
             pass
 
@@ -640,6 +705,7 @@ class MultiModalResourceConnector:
         timeout: float = 30.0,
         extract_audio: bool = False,
         audio_target_sr: int = 16000,
+        decode_threads: int,
     ) -> tuple[torch.Tensor, float, npt.NDArray[np.float32] | None]:
         """Asynchronously load video from a URL.
 
@@ -654,6 +720,7 @@ class MultiModalResourceConnector:
             timeout: Timeout for HTTP requests in seconds.
             extract_audio: If True, extract audio from video and return as third element.
             audio_target_sr: Target sample rate for audio extraction (default: 16000).
+            decode_threads: FFmpeg threads this video's torchcodec decoders may use together.
 
         Returns:
             Tuple of (video_tensor, sample_fps, audio_or_None).
@@ -669,6 +736,7 @@ class MultiModalResourceConnector:
             image_mode=image_mode,
             extract_audio=extract_audio,
             audio_target_sr=audio_target_sr,
+            decode_threads=decode_threads,
             **self.media_io_kwargs.get("video", {}),
         )
 
@@ -676,10 +744,30 @@ class MultiModalResourceConnector:
 
 
 _global_connector: MultiModalResourceConnector | None = None
+_request_connector: ContextVar[MultiModalResourceConnector | None] = ContextVar(
+    "resource_connector", default=None
+)
+
+
+@contextmanager
+def resource_connector_scope(
+    connector: MultiModalResourceConnector,
+) -> Iterator[None]:
+    """Use one media connector for the current async request."""
+    token = _request_connector.set(connector)
+    try:
+        yield
+    finally:
+        _request_connector.reset(token)
 
 
 def get_global_resource_connector() -> MultiModalResourceConnector:
     """Get or create the global resource connector."""
+    request_connector = _request_connector.get()
+    if request_connector is not None:
+        return request_connector
+    else:
+        pass
     global _global_connector
     if _global_connector is None:
         _global_connector = MultiModalResourceConnector()

@@ -1,0 +1,5 @@
+config_cls: Drama3PipelineConfig
+# A local checkpoint directory holding config.json, tokenizer.json and the weights;
+# replace it here or pass --model-path. The vocoder's codec defaults to the public
+# S2-Pro codec pinned to a commit (stages.vocoder.factory.codec_path).
+model_path: drama3-checkpoint

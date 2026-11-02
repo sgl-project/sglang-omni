@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from sglang_omni.config import EngineStageConfig, PipelineConfig, StageConfig
+from sglang_omni.config import (
+    EngineStageConfig,
+    PipelineConfig,
+    RealtimeTranscriptionConfig,
+    StageConfig,
+)
+
+from .streaming import FunASRStreamingStrategy
 
 _PKG = "sglang_omni.models.fun_asr"
 
@@ -15,6 +22,14 @@ class FunASRPipelineConfig(PipelineConfig):
     architecture_aliases: ClassVar[tuple[str, ...]] = (
         "FunASRNano",
         "FunASRForConditionalGeneration",
+    )
+    realtime_transcription: ClassVar[RealtimeTranscriptionConfig] = (
+        RealtimeTranscriptionConfig(
+            strategy_cls=FunASRStreamingStrategy,
+            decode_interval_ms=720,
+            server_vad=True,
+            max_segment_s=30.0,
+        )
     )
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {

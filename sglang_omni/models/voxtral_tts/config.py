@@ -49,6 +49,7 @@ class VoxtralTTSPipelineConfig(PipelineConfig):
             factory=FactoryArgs(max_new_tokens=4096),
             gpu=0,
             next=VOCODER_STAGE,
+            stream_to=[VOCODER_STAGE],
         ),
         StageConfig(
             name=VOCODER_STAGE,
@@ -56,6 +57,7 @@ class VoxtralTTSPipelineConfig(PipelineConfig):
             factory_path=f"{_PKG}.stages.create_vocoder_executor",
             gpu=0,
             terminal=True,
+            can_accept_stream_before_payload=True,
         ),
     ]
 

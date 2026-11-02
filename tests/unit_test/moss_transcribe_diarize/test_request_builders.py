@@ -20,7 +20,7 @@ from sglang_omni.models.moss_transcribe_diarize.request_builders import (
     audio_feature_lengths_from_waveform,
     make_moss_transcribe_diarize_scheduler_adapters,
 )
-from sglang_omni.proto import EXPLICIT_GENERATION_PARAMS_KEY, OmniRequest, StagePayload
+from sglang_omni.proto import OmniRequest, StagePayload
 
 
 def wav_bytes(num_samples: int = 1600, sample_rate: int = 16000) -> bytes:
@@ -93,6 +93,17 @@ class FastFakeTokenizer(FakeTokenizer):
         if text.startswith("<|audio_end|>"):
             return [self.ids["<|audio_end|>"], 11]
         raise AssertionError(f"Unexpected prompt fragment: {text!r}")
+
+
+def spelled(text: str) -> list[int]:
+    return [ord(char) for char in text]
+
+
+class SpellingTokenizer(FastFakeTokenizer):
+    def encode(self, text: str, *, add_special_tokens: bool) -> list[int]:
+        assert add_special_tokens is False
+        self.encode_calls.append(text)
+        return spelled(text)
 
 
 class FakeProcessor:
@@ -239,20 +250,9 @@ def test_streamlined_request_builder_preserves_exact_input_ids() -> None:
     assert processor.processor_calls == 0
 
 
-def test_streamlined_request_builder_caches_default_prompt_parts() -> None:
-    processor = FakeProcessor()
-    request_builder = make_request_builder(processor)
-
-    request_builder(payload())
-    request_builder(payload())
-
-    assert processor.chat_template_calls == 1
-    assert len(processor.tokenizer.encode_calls) == 2
-    assert processor.feature_extractor.calls == 2
-
-
 def test_streamlined_request_builder_preserves_custom_messages() -> None:
     processor = FakeProcessor()
+    processor.tokenizer = SpellingTokenizer()
     request_builder = make_request_builder(processor)
     messages = [
         {
@@ -264,7 +264,7 @@ def test_streamlined_request_builder_preserves_custom_messages() -> None:
         }
     ]
 
-    request_builder(
+    data = request_builder(
         payload_with_inputs(
             {
                 "audio_bytes": wav_bytes(),
@@ -273,23 +273,30 @@ def test_streamlined_request_builder_preserves_custom_messages() -> None:
         )
     )
 
+    suffix = spelled("<|audio_end|>custom prompt<|im_start|>assistant\n")
     assert processor.messages is messages
     assert processor.chat_template_calls == 2
     assert len(processor.tokenizer.encode_calls) == 4
+    assert data.input_ids.tolist()[-len(suffix) :] == suffix
 
 
 def test_streamlined_request_builder_preserves_direct_prompt() -> None:
     processor = FakeProcessor()
+    processor.tokenizer = SpellingTokenizer()
     request_builder = make_request_builder(processor)
     direct_prompt = (
         "<|im_start|>user\n<|audio_start|><|audio_pad|><|audio_end|>"
         "direct prompt<|im_start|>assistant\n"
     )
 
-    request_builder(payload(prompt=direct_prompt))
+    data = request_builder(payload(prompt=direct_prompt))
 
+    prefix_text, suffix_text = direct_prompt.split("<|audio_pad|>")
+    input_ids = data.input_ids.tolist()
     assert processor.chat_template_calls == 1
     assert len(processor.tokenizer.encode_calls) == 4
+    assert input_ids[: len(prefix_text)] == spelled(prefix_text)
+    assert input_ids[-len(suffix_text) :] == spelled(suffix_text)
 
 
 def test_streamlined_request_builder_enforces_context_limit() -> None:
@@ -514,35 +521,13 @@ def test_request_builder_caps_default_output_budget_for_short_audio() -> None:
     )
 
 
-def test_request_builder_scaled_budget_applies_below_fixed_default() -> None:
-    processor = FakeProcessor()
-    request_builder, _ = make_moss_transcribe_diarize_scheduler_adapters(
-        processor=processor,
-        tokenizer=processor.tokenizer,
-        max_new_tokens=5120,
-        context_length=TEST_CONTEXT_LENGTH,
-    )
-
-    data = request_builder(
-        payload_with_inputs({"audios": [wav_bytes(num_samples=16000 * 60)]})
-    )
-
-    expected = (
-        60 * request_builders._OUTPUT_TOKENS_PER_AUDIO_SECOND
-    )  # noqa: leading-underscore  # production name
-    assert data.req.sampling_params.max_new_tokens == expected
-
-
 def test_request_builder_repetition_penalty_passthrough() -> None:
     request_builder = make_request_builder()
 
     data = request_builder(
         payload(
             params={"repetition_penalty": 1.3},
-            metadata={
-                "model": "moss-transcribe-diarize",
-                EXPLICIT_GENERATION_PARAMS_KEY: ["repetition_penalty"],
-            },
+            metadata={"model": "moss-transcribe-diarize"},
         )
     )
 
@@ -557,10 +542,7 @@ def test_request_builder_rejects_out_of_range_repetition_penalty() -> None:
         request_builder(
             payload(
                 params={"repetition_penalty": 2.5},
-                metadata={
-                    "model": "moss-transcribe-diarize",
-                    EXPLICIT_GENERATION_PARAMS_KEY: ["repetition_penalty"],
-                },
+                metadata={"model": "moss-transcribe-diarize"},
             )
         )
 
@@ -639,10 +621,7 @@ def test_request_builder_preserves_sampling_overrides() -> None:
                 "top_p": 0.9,
                 "top_k": 25,
             },
-            metadata={
-                "model": "moss-transcribe-diarize",
-                EXPLICIT_GENERATION_PARAMS_KEY: ["temperature", "top_p", "top_k"],
-            },
+            metadata={"model": "moss-transcribe-diarize"},
         )
     )
 
@@ -651,25 +630,8 @@ def test_request_builder_preserves_sampling_overrides() -> None:
     assert data.top_k == 25
 
 
-def test_request_builder_ignores_implicit_client_sampling_defaults() -> None:
-    request_builder = make_request_builder()
-
-    data = request_builder(
-        payload(
-            params={
-                "temperature": 1.0,
-                "top_p": 1.0,
-                "top_k": -1,
-            },
-        )
-    )
-
-    assert data.temperature == DEFAULT_TEMPERATURE
-    assert data.top_p == DEFAULT_TOP_P
-    assert data.top_k == DEFAULT_TOP_K
-
-
 def test_request_builder_preserves_explicit_default_valued_overrides() -> None:
+    """A set temperature 1.0, top_p 1.0 or top_k -1 reaches the model instead of being dropped."""
     request_builder = make_request_builder()
 
     data = request_builder(
@@ -679,29 +641,13 @@ def test_request_builder_preserves_explicit_default_valued_overrides() -> None:
                 "top_p": 1.0,
                 "top_k": -1,
             },
-            metadata={
-                "model": "moss-transcribe-diarize",
-                EXPLICIT_GENERATION_PARAMS_KEY: ["temperature", "top_p", "top_k"],
-            },
+            metadata={"model": "moss-transcribe-diarize"},
         )
     )
 
     assert data.temperature == 1.0
     assert data.top_p == 1.0
     assert data.top_k == -1
-
-
-def test_request_builder_ignores_openai_transcription_temperature_default() -> None:
-    request_builder = make_request_builder()
-
-    data = request_builder(
-        payload(
-            params={"temperature": 0.0},
-            metadata={"model": "moss-transcribe-diarize"},
-        )
-    )
-
-    assert data.temperature == DEFAULT_TEMPERATURE
 
 
 def test_request_builder_uses_default_prompt_for_empty_transcription_prompt() -> None:

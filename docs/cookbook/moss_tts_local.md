@@ -30,7 +30,9 @@ The processor ships with the checkpoint, so no extra TTS package is needed. Deco
 
 ## Server Configuration
 
-The default layout puts the AR backbone and the codec/vocoder on the same GPU:
+The default layout runs preprocessing, the AR backbone, and the vocoder in
+separate processes on the same GPU. MPS defaults to `auto`, enabling CUDA MPS
+when the device and process layout support it:
 
 ```bash
 sgl-omni serve \
@@ -99,7 +101,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 `ref_audio` and `ref_text` are accepted as shorthand for `references[0].audio_path` and
 `references[0].text`.
 
-#### Python
+**Python**
 
 ```python
 import requests

@@ -80,7 +80,7 @@ def create_sglang_moss_transcribe_diarize_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
-    max_running_requests: int = 16,
+    max_running_requests: int = 64,
     max_new_tokens: int | None = None,
     context_length: int | None = None,
     mem_fraction_static: float | None = 0.80,
@@ -100,6 +100,7 @@ def create_sglang_moss_transcribe_diarize_executor(
     encoder_chunk_buckets: list[int] | None = None,
     encoder_torch_compile: bool = False,
     encoder_max_batch_size: int = 2,
+    enable_trimmed_fbank: bool = True,
     # note (yichi): 8 parallel mel extractions measured optimal; fewer starve
     # the encoder feed, more oversubscribe the CPU.
     request_build_max_workers: int = 8,
@@ -130,6 +131,7 @@ def create_sglang_moss_transcribe_diarize_executor(
         encoder_chunk_buckets=buckets,
         encoder_torch_compile=encoder_torch_compile,
         encoder_max_batch_size=encoder_max_batch_size,
+        enable_trimmed_fbank=enable_trimmed_fbank,
         prefill_coalesce_requests=prefill_coalesce_requests,
         prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
         prefill_coalesce_when_idle=prefill_coalesce_when_idle,

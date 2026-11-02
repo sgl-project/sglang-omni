@@ -36,7 +36,7 @@ def test_ming_sampling_kwargs_forward_request_controls() -> None:
     }
 
 
-def test_ming_sampling_kwargs_match_qwen3_defaults_when_absent() -> None:
+def test_ming_sampling_kwargs_defaults_when_absent() -> None:
     from sglang_omni.models.ming_omni.pipeline.sampling import (
         build_ming_sampling_kwargs,
     )
@@ -45,7 +45,7 @@ def test_ming_sampling_kwargs_match_qwen3_defaults_when_absent() -> None:
 
     assert kwargs == {
         "max_new_tokens": 2048,
-        "temperature": 0.0,
+        "temperature": 1.0,
         "top_p": 1.0,
         "top_k": -1,
         "min_p": 0.0,

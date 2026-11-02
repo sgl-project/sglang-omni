@@ -57,11 +57,9 @@ class InferencePromptEncoder:
 
     def append_vq(self, codes: torch.Tensor) -> None:
         codes = codes.clone().to(torch.int)
-        tokens = torch.tensor(
-            self.tokenizer.convert_tokens_to_ids(
-                [SEMANTIC_TOKEN_TEMPLATE.format(i=code) for code in codes[0].int()]
-            ),
-            dtype=torch.int,
+        # Semantic ids are contiguous, as the engine's semantic logit bias assumes.
+        tokens = codes[0] + self.tokenizer.convert_tokens_to_ids(
+            SEMANTIC_TOKEN_TEMPLATE.format(i=0)
         )
         self.token_segments.append(tokens)
         self.vq_mask_segments.append(torch.ones_like(tokens, dtype=torch.bool))

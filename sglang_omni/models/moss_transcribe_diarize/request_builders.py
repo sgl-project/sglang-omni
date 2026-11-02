@@ -25,8 +25,9 @@ from transformers import PreTrainedTokenizerBase, ProcessorMixin
 from sglang_omni.models.moss_transcribe_diarize.encoder_service import (
     BatchedAudioEncoderService,
 )
+from sglang_omni.models.moss_transcribe_diarize.fast_features import TrimmedWhisperFbank
 from sglang_omni.preprocessing.transcription import prepare_audio
-from sglang_omni.proto import EXPLICIT_GENERATION_PARAMS_KEY, StagePayload
+from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 from sglang_omni.scheduling.token_text_streaming import (
@@ -164,25 +165,9 @@ def unwrap_source_dict(source: object) -> object:
     return source
 
 
-def explicit_generation_fields(metadata: dict[str, object]) -> set[str]:
-    """Sampling fields the caller set explicitly (see EXPLICIT_GENERATION_PARAMS_KEY).
-
-    Anything not listed here resolves to the model's own default, so a client
-    layer that fills every SamplingParams field with a placeholder no longer
-    shadows the MOSS defaults.
-    """
-    fields = metadata.get(EXPLICIT_GENERATION_PARAMS_KEY)
-    if isinstance(fields, (list, tuple)):
-        return {str(field) for field in fields}
-    else:
-        pass
-    return set()
-
-
 @overload
 def sampling_param(
     params: dict[str, object],
-    explicit_fields: set[str],
     field: str,
     default: int,
     cast: type[int],
@@ -192,7 +177,6 @@ def sampling_param(
 @overload
 def sampling_param(
     params: dict[str, object],
-    explicit_fields: set[str],
     field: str,
     default: float,
     cast: type[float],
@@ -201,15 +185,10 @@ def sampling_param(
 
 def sampling_param(
     params: dict[str, object],
-    explicit_fields: set[str],
     field: str,
     default: int | float,
     cast: type[int] | type[float],
 ) -> int | float:
-    if field not in explicit_fields:
-        return default
-    else:
-        pass
     value = params.get(field)
     return default if value is None else cast(value)
 
@@ -401,6 +380,31 @@ def extract_audio_features(
     )
 
 
+def extract_audio_features_fast(
+    processor: ProcessorMixin,
+    audio: np.ndarray,
+    fast_fbank: TrimmedWhisperFbank | None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
+    """extract_audio_features, using the verified single-window fast log-mel."""
+    if fast_fbank is None or not fast_fbank.supports(int(audio.shape[0])):
+        return extract_audio_features(processor, audio)
+    else:
+        pass
+    audio_feature_lengths = audio_feature_lengths_from_waveform(
+        processor,
+        int(audio.shape[0]),
+    )
+    input_features = torch.from_numpy(
+        fast_fbank.compute(np.asarray(audio, dtype=np.float32))
+    ).unsqueeze(0)
+    return (
+        input_features,
+        audio_feature_lengths,
+        torch.zeros_like(audio_feature_lengths),
+        int(audio_feature_lengths.sum().item()),
+    )
+
+
 def make_moss_transcribe_diarize_scheduler_adapters(
     processor: ProcessorMixin,
     tokenizer: PreTrainedTokenizerBase,
@@ -408,6 +412,7 @@ def make_moss_transcribe_diarize_scheduler_adapters(
     context_length: int,
     duration_scaled_default: bool = True,
     audio_encoder_service: BatchedAudioEncoderService | None = None,
+    enable_trimmed_fbank: bool = True,
 ) -> tuple[
     Callable[[StagePayload], MossTranscribeDiarizeRequestData],
     Callable[[MossTranscribeDiarizeRequestData], StagePayload],
@@ -421,6 +426,11 @@ def make_moss_transcribe_diarize_scheduler_adapters(
     eos_token_id = int(tokenizer.eos_token_id)
     vocab_size = int(tokenizer.vocab_size)
     audio_token = str(processor.audio_token)
+    fast_fbank = (
+        TrimmedWhisperFbank.verified(processor.feature_extractor)
+        if enable_trimmed_fbank
+        else None
+    )
     default_prompt = render_prompt(processor, DEFAULT_TRANSCRIBE_DIARIZE_PROMPT)
     default_prompt_parts = prompt_token_parts(
         default_prompt,
@@ -430,8 +440,6 @@ def make_moss_transcribe_diarize_scheduler_adapters(
 
     def request_builder(payload: StagePayload) -> MossTranscribeDiarizeRequestData:
         params = payload.request.params or {}
-        metadata = payload.request.metadata or {}
-        explicit_fields = explicit_generation_fields(metadata)
         prepared = prepare_audio(
             payload,
             source_name="MOSS-Transcribe-Diarize",
@@ -473,7 +481,7 @@ def make_moss_transcribe_diarize_scheduler_adapters(
                 audio_feature_lengths,
                 audio_chunk_mapping,
                 audio_token_count,
-            ) = extract_audio_features(processor, audio)
+            ) = extract_audio_features_fast(processor, audio, fast_fbank)
         else:
             features = None
             audio_chunk_mapping = torch.zeros_like(audio_feature_lengths)
@@ -545,16 +553,12 @@ def make_moss_transcribe_diarize_scheduler_adapters(
             audio_end_id=audio_end_id,
         )
 
-        temperature = sampling_param(
-            params, explicit_fields, "temperature", DEFAULT_TEMPERATURE, float
-        )
-        top_p = sampling_param(params, explicit_fields, "top_p", DEFAULT_TOP_P, float)
-        top_k = sampling_param(params, explicit_fields, "top_k", DEFAULT_TOP_K, int)
+        temperature = sampling_param(params, "temperature", DEFAULT_TEMPERATURE, float)
+        top_p = sampling_param(params, "top_p", DEFAULT_TOP_P, float)
+        top_k = sampling_param(params, "top_k", DEFAULT_TOP_K, int)
         # Opt-in mitigation for repetition loops (#975): honoured only when
         # the caller sets it explicitly, so greedy defaults stay unchanged.
-        repetition_penalty = sampling_param(
-            params, explicit_fields, "repetition_penalty", 1.0, float
-        )
+        repetition_penalty = sampling_param(params, "repetition_penalty", 1.0, float)
         # Same range SamplingParams enforces; failing here keeps the error
         # on the request path instead of inside the scheduler.
         if not 0.0 < repetition_penalty <= 2.0:

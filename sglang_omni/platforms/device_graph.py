@@ -10,12 +10,24 @@ choice belongs on the platform rather than in a per-model branch.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from typing import Literal, Protocol, TypedDict
 
 import torch
 from torch.cuda import _POOL_HANDLE as CudaGraphPoolHandle
-from torch.xpu import _POOL_HANDLE as XpuGraphPoolHandle
+
+try:
+    import torch_npu
+except ImportError:
+    # note (chaijiacheng888): only NPU stacks install torch_npu; the NPU backend
+    # reads its option API lazily, so a non-NPU build can still import this.
+    torch_npu = None
+
+try:
+    from torch.xpu import _POOL_HANDLE as XpuGraphPoolHandle
+except ImportError:
+    # note (cocoa): NPU stacks on PyTorch 2.10 do not expose XPU graph types.
+    XpuGraphPoolHandle = tuple[int, int]
 
 
 class CudaCaptureKwargs(TypedDict, total=False):
@@ -38,6 +50,11 @@ class XpuCaptureKwargs(TypedDict, total=False):
 class ReplayableGraph(Protocol):
     def replay(self) -> None: ...
 
+    def reset(self) -> None: ...
+
+
+DeviceGraphPool = CudaGraphPoolHandle | XpuGraphPoolHandle | tuple[int, int]
+
 
 class DeviceGraphBackend(Protocol):
     """Records a model-owned graph on one accelerator."""
@@ -45,16 +62,23 @@ class DeviceGraphBackend(Protocol):
     def capture(
         self,
         *,
-        pool: CudaGraphPoolHandle | XpuGraphPoolHandle | tuple[int, int] | None = None,
-        stream: torch.cuda.Stream | torch.xpu.Stream | torch.Stream | None = None,
+        pool: DeviceGraphPool | None = None,
+        stream: torch.Stream | None = None,
         thread_local_errors: bool = False,
     ) -> AbstractContextManager[ReplayableGraph]:
         """Open a capture and yield the graph it records into."""
         ...
 
+    def graph_pool_handle(self) -> DeviceGraphPool:
+        """A pool handle several captures of this backend can share."""
+        ...
+
 
 class CudaDeviceGraphBackend:
     """CUDA, and the backends that present through torch.cuda: HIP and MUSA."""
+
+    def graph_pool_handle(self) -> CudaGraphPoolHandle:
+        return torch.cuda.graph_pool_handle()
 
     @contextmanager
     def capture(
@@ -85,6 +109,9 @@ class CudaDeviceGraphBackend:
 class NpuDeviceGraphBackend:
     """Ascend NPU."""
 
+    def graph_pool_handle(self) -> tuple[int, int]:
+        return torch.npu.graph_pool_handle()
+
     @contextmanager
     def capture(
         self,
@@ -107,12 +134,27 @@ class NpuDeviceGraphBackend:
             kwargs["capture_error_mode"] = "thread_local"
         else:
             pass
-        with torch.npu.graph(npu_graph=graph, **kwargs):
-            yield graph
+        # note (chaijiacheng888): capture rejects aclop, which internal formats select.
+        previous_internal_format = torch_npu._C._npu_getOption(
+            "ALLOW_INTERNAL_FORMAT"
+        ).decode()  # noqa: leading-underscore  # torch-npu 2.10 has no public getter.
+        torch.npu.config.allow_internal_format = False
+        try:
+            capture = torch.npu.graph(npu_graph=graph, **kwargs)
+            with ExitStack() as stack:
+                # note (cocoa): NPU capture caches tensors updated outside inference mode.
+                with torch.inference_mode(False):
+                    stack.enter_context(capture)
+                yield graph
+        finally:
+            torch.npu.set_option({"ALLOW_INTERNAL_FORMAT": previous_internal_format})
 
 
 class XpuDeviceGraphBackend:
     """Intel XPU."""
+
+    def graph_pool_handle(self) -> XpuGraphPoolHandle:
+        return torch.xpu.graph_pool_handle()
 
     @contextmanager
     def capture(
@@ -135,13 +177,19 @@ class XpuDeviceGraphBackend:
             kwargs["stream"] = stream
         else:
             pass
-        with torch.xpu.graph(xpu_graph=graph, **kwargs):
+        capture = torch.xpu.graph(xpu_graph=graph, **kwargs)
+        with ExitStack() as stack:
+            # Note (siju): capture_begin registers the generator state in place, so
+            # open it outside inference mode or later captures are refused.
+            with torch.inference_mode(False):
+                stack.enter_context(capture)
             yield graph
 
 
 __all__ = [
     "CudaDeviceGraphBackend",
     "DeviceGraphBackend",
+    "DeviceGraphPool",
     "NpuDeviceGraphBackend",
     "ReplayableGraph",
     "XpuDeviceGraphBackend",

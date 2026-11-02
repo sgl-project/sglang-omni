@@ -128,24 +128,34 @@ class SineGen2(torch.nn.Module):
         self.sampling_rate = samp_rate
         self.voiced_threshold = voiced_threshold
         self.upsample_scale = upsample_scale
+        self.register_buffer(
+            "harmonic_multipliers",
+            torch.arange(1, self.harmonic_num + 2, dtype=torch.float32)[None, None, :],
+            persistent=False,
+        )
 
     def f02uv(self, f0: torch.Tensor) -> torch.Tensor:
-        uv = (f0 > self.voiced_threshold).type(torch.float32)
-        return uv
+        voiced_mask = (f0 > self.voiced_threshold).type(torch.float32)
+        return voiced_mask
 
-    def f02sine(self, f0_values: torch.Tensor) -> torch.Tensor:
-        rad_values = f0_values / self.sampling_rate % 1
-        rand_ini = torch.rand(
-            f0_values.shape[0], f0_values.shape[2], device=f0_values.device
+    def f02sine(
+        self, f0_values: torch.Tensor, noise_generator: torch.Generator
+    ) -> torch.Tensor:
+        radian_values = f0_values / self.sampling_rate % 1
+        initial_phase = torch.rand(
+            f0_values.shape[0],
+            f0_values.shape[2],
+            device=f0_values.device,
+            generator=noise_generator,
         )
-        rand_ini[:, 0] = 0
-        rad_values[:, 0, :] = rad_values[:, 0, :] + rand_ini
-        rad_values = torch.nn.functional.interpolate(
-            rad_values.transpose(1, 2),
+        initial_phase[:, 0] = 0
+        radian_values[:, 0, :] = radian_values[:, 0, :] + initial_phase
+        radian_values = torch.nn.functional.interpolate(
+            radian_values.transpose(1, 2),
             scale_factor=1 / self.upsample_scale,
             mode="linear",
         ).transpose(1, 2)
-        phase = torch.cumsum(rad_values, dim=1) * 2 * np.pi
+        phase = torch.cumsum(radian_values, dim=1) * 2 * np.pi
         phase = torch.nn.functional.interpolate(
             phase.transpose(1, 2) * self.upsample_scale,
             scale_factor=self.upsample_scale,
@@ -154,17 +164,17 @@ class SineGen2(torch.nn.Module):
         return torch.sin(phase)
 
     def forward(
-        self, f0: torch.Tensor
+        self, f0: torch.Tensor, noise_generator: torch.Generator
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        fn = torch.multiply(
-            f0, torch.FloatTensor([[range(1, self.harmonic_num + 2)]]).to(f0.device)
+        harmonic_frequencies = torch.multiply(f0, self.harmonic_multipliers)
+        sine_waves = self.f02sine(harmonic_frequencies, noise_generator) * self.sine_amp
+        voiced = self.f02uv(f0)
+        noise_amplitude = voiced * self.noise_std + (1 - voiced) * self.sine_amp / 3
+        noise = noise_amplitude * torch.empty_like(sine_waves).normal_(
+            generator=noise_generator
         )
-        sine_waves = self.f02sine(fn) * self.sine_amp
-        uv = self.f02uv(f0)
-        noise_amp = uv * self.noise_std + (1 - uv) * self.sine_amp / 3
-        noise = noise_amp * torch.randn_like(sine_waves)
-        sine_waves = sine_waves * uv + noise
-        return (sine_waves, uv, noise)
+        sine_waves = sine_waves * voiced + noise
+        return (sine_waves, voiced, noise)
 
 
 class SourceModuleHnNSF2(torch.nn.Module):
@@ -193,10 +203,14 @@ class SourceModuleHnNSF2(torch.nn.Module):
         self.l_tanh = torch.nn.Tanh()
 
     def forward(
-        self, x: torch.Tensor
+        self, x: torch.Tensor, noise_generator: torch.Generator
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         with torch.no_grad():
-            sine_wavs, uv, _ = self.l_sin_gen(x)
-        sine_merge = self.l_tanh(self.l_linear(sine_wavs))
-        noise = torch.randn_like(uv) * self.sine_amp / 3
-        return (sine_merge, noise, uv)
+            sine_waves, voiced, _ = self.l_sin_gen(x, noise_generator)
+        merged_sine = self.l_tanh(self.l_linear(sine_waves))
+        noise = (
+            torch.empty_like(voiced).normal_(generator=noise_generator)
+            * self.sine_amp
+            / 3
+        )
+        return (merged_sine, noise, voiced)

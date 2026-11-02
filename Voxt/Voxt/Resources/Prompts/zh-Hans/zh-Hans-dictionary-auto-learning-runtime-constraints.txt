@@ -1,0 +1,10 @@
+从最终改动片段中提取的候选词：
+<candidate_terms>
+{{CANDIDATE_TERMS}}
+</candidate_terms>
+
+补充判断规则：
+5. 如果 <baseline_changed_fragment> 和 <final_changed_fragment> 都是短词或短语，且 final 明显是在纠正 baseline 的专有名词、产品名、工具名、技术术语、命令或混合语言词汇，直接返回 final 的最终正确写法。
+6. 类似 “Cloud Code -> Claude Code”、“Go Host -> Ghostty”、“Wechart -> WeChat”、“SG 骆魔鬼群 -> SGLang 魔鬼群” 这类错拼、音近词、错分词修正，优先返回最终完整词汇。
+7. 优先从 <candidate_terms> 中选择真正像词典词条的最终纠正形式；如果候选只是数字、单位、时间、普通格式变化或整句片段，返回空数组。
+8. 即使上下文是一整句，也不要返回整句；只返回最短、最稳定、最终纠正后的词汇。

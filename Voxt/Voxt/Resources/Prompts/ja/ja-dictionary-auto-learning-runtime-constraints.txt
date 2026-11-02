@@ -1,0 +1,10 @@
+最終変更断片から抽出した候補語：
+<candidate_terms>
+{{CANDIDATE_TERMS}}
+</candidate_terms>
+
+追加の判定ルール：
+5. <baseline_changed_fragment> と <final_changed_fragment> がどちらも短い語またはフレーズで、final が固有名詞、製品名、ツール名、技術用語、コマンド、混在言語の語を明確に訂正している場合、final の正しい表記をそのまま返してください。
+6. “Cloud Code -> Claude Code”、“Go Host -> Ghostty”、“Wechart -> WeChat”、“SG 骆魔鬼群 -> SGLang 魔鬼群” のような綴り間違い、同音語、誤った分かち書きの訂正では、最終的な完全な語を優先してください。
+7. <candidate_terms> から辞書語として妥当なものを優先してください。数字、単位、時刻、通常の書式変更、文全体の断片だけであれば空配列を返してください。
+8. コンテキストが文全体でも、文ではなく、最短で安定した最終訂正語だけを返してください。

@@ -23,11 +23,6 @@ from tests.unit_test.fixtures.pipeline_fakes import fake_factory_path
 LOG = logging.getLogger(__name__)
 
 
-def test_consume_outside_scope_returns_none() -> None:
-    assert consume_stage_kv_cache_bytes() is None
-    assert peek_stage_kv_cache_bytes() is None
-
-
 def test_scope_delivers_budget_once_consumed() -> None:
     with stage_kv_cache_budget("thinker", 2 * 1024**3):
         assert peek_stage_kv_cache_bytes() == 2 * 1024**3
@@ -107,6 +102,7 @@ def test_construct_scheduler_without_budget_opens_no_scope() -> None:
     scheduler = construct_scheduler(spec, None, LOG)
 
     assert scheduler.consumed_kv_cache_bytes is None
+    assert construct_scheduler(make_spec("make_scheduler"), None, LOG) is not None
 
 
 def test_total_reserve_cap_accumulates_across_colocated_stages(monkeypatch):

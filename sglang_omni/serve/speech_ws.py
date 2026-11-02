@@ -56,6 +56,7 @@ MAX_BUFFERED_RECEIVE_BYTES_DURING_GENERATION = (
 SENTENCE_BOUNDARIES = frozenset(".!?。！？")
 CLAUSE_BOUNDARIES = frozenset(".!?。！？,，;；")
 SUPPORTED_SPLIT_GRANULARITIES = frozenset({"sentence", "clause"})
+SESSION_CONFIG_ENVELOPE_KEYS = frozenset({"type", "session"})
 
 
 def new_speech_ws_id(prefix: str) -> str:
@@ -250,8 +251,18 @@ class SpeechWebSocketSession:
         payload: Mapping[str, object],
     ) -> SpeechStreamSessionConfig:
         raw_config: object = payload.get("session")
+        outer_fields = {
+            key: value
+            for key, value in payload.items()
+            if key not in SESSION_CONFIG_ENVELOPE_KEYS
+        }
         if raw_config is None:
-            raw_config = {key: value for key, value in payload.items() if key != "type"}
+            raw_config = outer_fields
+        elif outer_fields and self.speech_service.supported_speech_fields is not None:
+            outer_key = next(iter(outer_fields))
+            raise bad_request(
+                f"unknown session.config field: {outer_key}", param=outer_key
+            )
         else:
             pass
         if not isinstance(raw_config, dict):
@@ -263,6 +274,9 @@ class SpeechWebSocketSession:
             pass
         self.speech_service.validate_raw_speech_fields(raw_config)
         validate_raw_session_fields(raw_config)
+        self.speech_service.validate_supported_fields(
+            raw_config, SpeechStreamSessionConfig
+        )
         config = SpeechStreamSessionConfig.model_validate(raw_config)
         if config.split_granularity not in SUPPORTED_SPLIT_GRANULARITIES:
             supported = ", ".join(sorted(SUPPORTED_SPLIT_GRANULARITIES))
@@ -280,8 +294,8 @@ class SpeechWebSocketSession:
         else:
             pass
         prepared = await asyncio.to_thread(
-            self.speech_service.parse_generation_request,
-            self.speech_payload_from_config(config, "probe"),
+            self.speech_service.prepare_generation_request,
+            self.speech_request_from_config(config, "probe"),
         )
         config_fields = set(SpeechStreamSessionConfig.model_fields)
         prepared_updates = {

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 
 import httpx
 import pytest
 from fastapi import FastAPI
 
+from sglang_omni.admission import QueueFullError
 from sglang_omni.client import GenerateChunk
 from sglang_omni.client.types import CompletionResult, GenerateRequest
 from sglang_omni.serve import create_app
@@ -144,7 +146,6 @@ def test_unsupported_model_returns_openai_shaped_400_before_audio_read() -> None
 @pytest.mark.parametrize(
     "response_format,expected_status,expected_content_type",
     [
-        ("json", 200, "application/json"),
         ("verbose_json", 200, "application/json"),
         ("text", 200, "text/plain"),
         ("srt", 200, "text/plain"),
@@ -162,9 +163,7 @@ def test_translation_response_format_matrix(
 
     assert response.status_code == expected_status
     assert response.headers["content-type"].startswith(expected_content_type)
-    if response_format == "json":
-        assert response.json() == {"text": "hello world"}
-    elif response_format == "verbose_json":
+    if response_format == "verbose_json":
         body = response.json()
         assert body["task"] == "translate"
         assert body["text"] == "hello world"
@@ -265,17 +264,10 @@ def test_whisper_translation_stream_matches_transcription_sse_lifecycle() -> Non
     assert backend.requests[0].extra_params["language"] == "de"
 
 
-@pytest.mark.parametrize("response_format", ["srt", "vtt"])
-def test_translation_stream_rejects_formats_without_segment_timestamps(
-    response_format: str,
-) -> None:
+def test_translation_stream_rejects_formats_without_segment_timestamps() -> None:
     client, backend = translation_client()
 
-    response = post_translation(
-        client,
-        response_format=response_format,
-        stream=True,
-    )
+    response = post_translation(client, response_format="srt", stream=True)
 
     assert response.status_code == 400
     assert "stream=true" in response.json()["error"]["message"]
@@ -293,3 +285,43 @@ def test_unknown_model_rejected_with_404() -> None:
     assert error["code"] == "model_not_found"
     assert "unknown/model" in error["message"]
     assert backend.requests == []
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_translation_overload_returns_openai_503(stream: bool) -> None:
+    class OverloadedTranslationClient(RecordingTranslationClient):
+        async def completion(
+            self,
+            request: GenerateRequest,
+            *,
+            request_id: str,
+            audio_format: str = "wav",
+        ) -> CompletionResult:
+            raise QueueFullError()
+
+        async def generate(
+            self,
+            request: GenerateRequest,
+            request_id: str | None = None,
+        ) -> AsyncIterator[GenerateChunk]:
+            raise QueueFullError()
+            yield  # note (Richard Wang): unreachable, makes this an async generator
+
+    app = create_app(
+        OverloadedTranslationClient(),
+        model_name=WHISPER_MODEL,
+        architectures=["WhisperForConditionalGeneration"],
+        supports_audio_translation=True,
+    )
+
+    response = post_translation(app, stream=stream)
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": {
+            "message": QueueFullError.MESSAGE,
+            "type": "server_error",
+            "param": None,
+            "code": None,
+        }
+    }

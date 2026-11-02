@@ -79,6 +79,9 @@ class MingStreamingSegmenterScheduler:
         self.states: dict[str, RequestState] = {}
 
     # ------------------------------------------------------------------ lifecycle
+    def warm_up_serving_thread(self) -> None:
+        pass
+
     def start(self) -> None:
         self.running = True
         while self.running:

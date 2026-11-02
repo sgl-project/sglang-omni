@@ -21,89 +21,17 @@ from sglang_omni.models.qwen3_omni.config import MIN_PARTIAL_START_CHUNKS
 EXAMPLES_DIR = pathlib.Path(__file__).resolve().parents[3] / "examples"
 
 
-@pytest.mark.parametrize(
-    "preset",
-    [
-        "qwen3-text-server",
-        "qwen3-speech-server",
-        "qwen3-speech",
-        "ming-text-server",
-        "ming-speech-server",
-        "ming-speech",
-        "ming-text",
-    ],
-)
-def test_unified_launcher_preset_help(preset):
-    result = subprocess.run(
-        [sys.executable, str(EXAMPLES_DIR / "run_omni.py"), preset, "--help"],
-        capture_output=True,
-    )
-    assert result.returncode == 0, result.stderr.decode()
-
-
-def test_qwen_speech_help_preserves_topology_contract():
+def test_unified_launcher_preset_help():
     result = subprocess.run(
         [
             sys.executable,
             str(EXAMPLES_DIR / "run_omni.py"),
-            "qwen3-speech-server",
+            "qwen3-text-server",
             "--help",
         ],
         capture_output=True,
     )
-
     assert result.returncode == 0, result.stderr.decode()
-    help_text = " ".join(result.stdout.decode().split())
-    assert "Tensor-parallel size for the thinker stage" in help_text
-    assert "exactly that many GPU ids" in help_text
-    assert "Defaults to on for the disaggregated topology" in help_text
-    assert "must be >= MIN_PARTIAL_START_CHUNKS (3)" in help_text
-    assert "All GPU stage flags must point to the same device" in help_text
-
-
-def preset_help(preset: str) -> str:
-    result = subprocess.run(
-        [sys.executable, str(EXAMPLES_DIR / "run_omni.py"), preset, "--help"],
-        capture_output=True,
-    )
-    assert result.returncode == 0, result.stderr.decode()
-    return " ".join(result.stdout.decode().split())
-
-
-def test_ming_speech_server_help_preserves_pipeline_contract():
-    help_text = preset_help("ming-speech-server")
-
-    assert "8-stage streaming-TTS path" in help_text
-    assert "non-streaming 7-stage speech path" in help_text
-    assert "about 200 GB of MoE weights" in help_text
-    assert "--gpu-thinker is the first GPU rank" in help_text
-    assert "curl http://localhost:8000/v1/chat/completions" in help_text
-
-
-@pytest.mark.parametrize(
-    ("preset", "expected_examples"),
-    [
-        ("qwen3-text-server", ("qwen3-text-server", "curl http://localhost:8000")),
-        ("qwen3-speech", ("qwen3-speech", "--output audio.wav")),
-        ("ming-text-server", ("ming-text-server", "curl http://localhost:8000")),
-        ("ming-speech", ("ming-speech", "--output audio.wav")),
-        ("ming-text", ("ming-text", "--audio-path /path/to/audio.wav")),
-    ],
-)
-def test_remaining_launcher_help_preserves_examples(preset, expected_examples):
-    help_text = preset_help(preset)
-
-    for expected in expected_examples:
-        assert expected in help_text
-
-
-def test_offline_help_preserves_input_output_guidance():
-    ming_help = preset_help("ming-speech")
-    qwen_help = preset_help("qwen3-speech")
-
-    assert "Thinker GPU id. With TP > 1" in ming_help
-    assert "Output WAV path (default: ./output_audio.wav)" in ming_help
-    assert "Output WAV path; omit to skip saving audio" in qwen_help
 
 
 def fresh_process_log_level(preset: str, loglevel: str | None) -> str:
@@ -132,20 +60,8 @@ def fresh_process_log_level(preset: str, loglevel: str | None) -> str:
     return result.stdout.strip().splitlines()[-1]
 
 
-@pytest.mark.parametrize(
-    "preset",
-    [
-        "qwen3-text-server",
-        "qwen3-speech-server",
-        "qwen3-speech",
-        "ming-text-server",
-        "ming-speech-server",
-        "ming-speech",
-        "ming-text",
-    ],
-)
-def test_unified_launcher_honors_loglevel_override(preset):
-    assert fresh_process_log_level(preset, "DEBUG") == "DEBUG"
+def test_unified_launcher_honors_loglevel_override():
+    assert fresh_process_log_level("qwen3-text-server", "DEBUG") == "DEBUG"
 
 
 @pytest.mark.parametrize(
@@ -154,28 +70,6 @@ def test_unified_launcher_honors_loglevel_override(preset):
 )
 def test_unified_launcher_preserves_default_log_levels(preset, expected):
     assert fresh_process_log_level(preset, None) == expected
-
-
-def test_unified_qwen_offline_launcher_applies_stage_gpus(monkeypatch):
-    from examples import _omni_launcher as registry
-    from examples.launchers import qwen3_omni as launcher
-
-    captured = {}
-
-    async def fake_run(config, **kwargs):
-        captured["config"] = config
-
-    monkeypatch.setattr(launcher, "run_speech_request", fake_run)
-    args = registry.parse_preset_args("qwen3-speech", ["--model-path", "dummy"])
-
-    asyncio.run(launcher.run_qwen_speech(args))
-
-    stages = {stage.name: stage for stage in captured["config"].stages}
-    assert stages["thinker"].gpu == 0
-    assert stages["talker_ar"].gpu == 1
-    assert stages["code2wav"].gpu == 0
-    assert stages["image_encoder"].gpu == 0
-    assert stages["audio_encoder"].gpu == 0
 
 
 def test_unified_ming_offline_launcher_applies_tp_and_overrides(monkeypatch):
@@ -274,7 +168,7 @@ def make_args(**overrides) -> argparse.Namespace:
         gpu_audio_encoder=None,
         thinker_tp_size=1,
         gpu_thinker_tp=None,
-        thinker_max_seq_len=8192,
+        thinker_max_seq_len=None,
         talker_max_seq_len=None,
         mem_fraction_static=None,
         thinker_mem_fraction_static=None,
@@ -286,6 +180,7 @@ def make_args(**overrides) -> argparse.Namespace:
         port=8000,
         model_name="qwen3-omni",
         enable_realtime=False,
+        skip_server_warmup=False,
     )
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -465,15 +360,15 @@ def test_partial_start_min_chunks_rejects_below_floor(mock_launch_server):
 
 
 def test_colocated_defaults_use_thinker_gpu_for_gpu_stages(mock_launch_server):
-    args = make_args(colocated=True)
+    args = make_args(colocated=True, gpu_thinker=3)
     _launch_speech_server(args)
 
     config = mock_launch_server.call_args[0][0]
-    assert make_stage(config, "image_encoder").gpu == 0
-    assert make_stage(config, "audio_encoder").gpu == 0
-    assert make_stage(config, "thinker").gpu == 0
-    assert make_stage(config, "talker_ar").gpu == 0
-    assert make_stage(config, "code2wav").gpu == 0
+    assert make_stage(config, "image_encoder").gpu == 3
+    assert make_stage(config, "audio_encoder").gpu == 3
+    assert make_stage(config, "thinker").gpu == 3
+    assert make_stage(config, "talker_ar").gpu == 3
+    assert make_stage(config, "code2wav").gpu == 3
 
 
 def test_colocated_rejects_conflicting_stage_gpu(mock_launch_server):

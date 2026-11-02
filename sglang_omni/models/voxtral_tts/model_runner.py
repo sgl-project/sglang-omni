@@ -116,8 +116,8 @@ class VoxtralTTSModelRunner(ModelRunner):
         for sched_req in requests:
             data: VoxtralSGLangRequestData = sched_req.data
             req = data.req
-            req_len = int(req.extend_range.length)
-            prefix_len = len(req.prefix_indices)
+            req_len = req.extend_len
+            prefix_len = req.prefix_len
             full_ids = data.input_ids
             current_ids = full_ids[prefix_len : prefix_len + req_len]
             audio_positions = (current_ids == int(data.audio_token_id)).nonzero(
@@ -160,7 +160,7 @@ class VoxtralTTSModelRunner(ModelRunner):
             hidden = hidden[:, -1, :]
         else:
             pass
-        codes = self.model.acoustic_transformer(hidden)
+        codes = self.model.run_acoustic_transformer(hidden)
         semantic_ids = codes[:, 0].to(dtype=torch.long)
         result.next_token_ids = semantic_ids
 
@@ -186,6 +186,11 @@ class VoxtralTTSModelRunner(ModelRunner):
             pass
 
         eos_id = AudioSpecialTokens.id(AudioSpecialTokens.end_audio)
+        host_codes = (
+            codes.to("cpu")
+            if any(sched_req.data.stream for sched_req in scheduler_output.requests)
+            else None
+        )
         for row_idx, sched_req in enumerate(scheduler_output.requests):
             req_output = outputs[sched_req.request_id]
             if req_output.data is None or int(req_output.data) == eos_id:
@@ -193,6 +198,10 @@ class VoxtralTTSModelRunner(ModelRunner):
             else:
                 pass
             sched_req.data.output_codes.append(codes[row_idx].detach().clone())
+            if host_codes is not None and sched_req.data.stream:
+                sched_req.data.stream_pending_rows.append(host_codes[row_idx])
+            else:
+                pass
             sched_req.data.pending_feedback_queue.append(
                 embeds[row_idx, 0].detach().clone()
             )

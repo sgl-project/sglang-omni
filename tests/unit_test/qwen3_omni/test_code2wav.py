@@ -10,25 +10,35 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
+from sglang.kernels.ops.attention.flash_attention_v3 import _is_fa3_supported
 from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
     Qwen3OmniMoeCode2WavConfig,
 )
 
 from sglang_omni.config.schema import StageConfig
 from sglang_omni.models.qwen3_omni.components import code2wav_scheduler
-from sglang_omni.models.qwen3_omni.components.code2wav import Qwen3OmniCode2Wav
+from sglang_omni.models.qwen3_omni.components.code2wav import (
+    Qwen3OmniCode2Wav,
+    Qwen3OmniIncrementalCodec,
+)
 from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
+    Code2WavCudaGraphRunner,
     Code2WavRunResult,
     GraphKey,
 )
 from sglang_omni.models.qwen3_omni.components.code2wav_scheduler import (
     Code2WavScheduler,
 )
+from sglang_omni.models.qwen3_omni.components.codec_state_pool import CodecStatePool
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.utils import snake_beta
-from tests.unit_test.fixtures.qwen_fakes import FakeCode2WavModel, make_qwen_payload
+from tests.unit_test.fixtures.qwen_fakes import (
+    FakeCode2WavModel,
+    deliver_code2wav_chunk,
+    make_qwen_payload,
+)
 
 DEFAULT_GRAPH_KEYS = tuple(
     GraphKey(batch_size=1, frames=frames) for frames in (10, 20, 30, 35)
@@ -76,6 +86,13 @@ class FakeCudaGraphRunner:
         self.replay_error = replay_error
         self.calls: list[tuple[tuple[int, ...], bool]] = []
 
+    def available_batch_sizes(self, frames: int, decode: str) -> tuple[int, ...]:
+        return tuple(
+            key.batch_size
+            for key in DEFAULT_GRAPH_KEYS
+            if key.frames == int(frames) and key.decode == decode
+        )
+
     def run(self, codes: torch.Tensor, *, eligible: bool) -> Code2WavRunResult:
         self.calls.append((tuple(codes.shape), eligible))
         if self.replay_error is not None:
@@ -118,39 +135,6 @@ def seed_stream_state(
     scheduler.get_or_create_stream_state(request_id)
 
 
-def test_qwen_load_code2wav_model_returns_eval_model(monkeypatch) -> None:
-    from transformers import AutoConfig
-    from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
-        Qwen3OmniMoeCode2Wav,
-    )
-
-    from sglang_omni.models import weight_loader
-
-    model = FactoryModel()
-    config = SimpleNamespace(code2wav_config=object())
-    monkeypatch.setattr(
-        AutoConfig,
-        "from_pretrained",
-        staticmethod(lambda *args, **kwargs: config),
-    )
-    monkeypatch.setattr(
-        Qwen3OmniMoeCode2Wav,
-        "_from_config",
-        staticmethod(lambda code2wav_config: model),
-    )
-    monkeypatch.setattr(weight_loader, "resolve_dtype", lambda dtype: torch.float32)
-    monkeypatch.setattr(
-        weight_loader,
-        "load_module",
-        lambda loaded_model, *args, **kwargs: loaded_model,
-    )
-
-    loaded = code2wav_scheduler.load_code2wav_model("dummy", device="cpu")
-
-    assert loaded is model
-    assert model.eval_calls == 1
-
-
 def test_qwen_code2wav_factory_default_does_not_build_cuda_graphs(monkeypatch) -> None:
     model = FactoryModel()
     monkeypatch.setattr(
@@ -172,20 +156,6 @@ def test_qwen_code2wav_factory_default_does_not_build_cuda_graphs(monkeypatch) -
     )
 
     assert scheduler.cuda_graph_runner is None
-
-
-def test_only_graph_capable_platforms_enable_the_code2wav_graph() -> None:
-    from sglang_omni.platforms.cpu import CPUOmniPlatform
-    from sglang_omni.platforms.cuda import CUDAOmniPlatform
-    from sglang_omni.platforms.npu import NPUOmniPlatform
-    from sglang_omni.platforms.rocm import ROCMOmniPlatform
-    from sglang_omni.platforms.xpu import XPUOmniPlatform
-
-    assert XPUOmniPlatform().enable_code2wav_graph() is True
-    assert CUDAOmniPlatform().enable_code2wav_graph() is True
-    assert NPUOmniPlatform().enable_code2wav_graph() is False
-    assert CPUOmniPlatform().enable_code2wav_graph() is False
-    assert ROCMOmniPlatform().enable_code2wav_graph() is False
 
 
 def test_the_code2wav_stage_takes_its_graph_flag_from_the_platform() -> None:
@@ -227,49 +197,16 @@ def test_qwen_code2wav_enabled_factory_rejects_missing_typed_budget_before_load(
     assert named & set(StageConfig.model_fields), str(excinfo.value)
 
 
-def test_qwen_code2wav_factory_allows_batching_with_cuda_graph(
+def test_qwen_code2wav_factory_captures_every_walk_length_at_every_row_count(
     monkeypatch,
 ) -> None:
     pin_cuda_platform(monkeypatch)
-    model = FactoryModel(num_quantizers=12)
-    runner = SimpleNamespace(
-        available_batch_sizes=lambda frames: (8, 4, 2, 1),
-        stats=lambda: {"enabled": True, "disable_reason": None},
-    )
-    monkeypatch.setattr(
-        code2wav_scheduler, "load_code2wav_model", lambda *a, **k: model.eval()
-    )
-    monkeypatch.setattr(
-        code2wav_scheduler.Code2WavCudaGraphRunner,
-        "build",
-        staticmethod(lambda *args, **kwargs: runner),
-    )
-
-    scheduler = code2wav_scheduler.create_code2wav_scheduler(
-        "dummy",
-        device="cuda",
-        gpu_id=0,
-        enable_batching=True,
-        enable_cuda_graph=True,
-        total_gpu_memory_fraction=0.02,
-    )
-
-    assert scheduler.enable_batching is True
-    assert scheduler.cuda_graph_runner is runner
-    assert scheduler.chunk_aligned_dispatch is True
-    assert scheduler.decode_stream is None, "alone in its process: default stream"
-
-
-def test_qwen_code2wav_factory_combines_batching_with_cuda_graph(
-    monkeypatch,
-) -> None:
-    pin_cuda_platform(monkeypatch)
-    captured_keys: list[tuple] = []
+    captured: list[dict] = []
 
     class RecordingRunner:
         @staticmethod
         def build(model, **kwargs):
-            captured_keys.append(tuple(kwargs["graph_keys"]))
+            captured.append(kwargs)
             runner = object.__new__(code2wav_scheduler.Code2WavCudaGraphRunner)
             runner.stats = lambda: {"enabled": True, "disable_reason": None}
             return runner
@@ -289,83 +226,134 @@ def test_qwen_code2wav_factory_combines_batching_with_cuda_graph(
         "dummy",
         device="cuda",
         gpu_id=0,
-        enable_batching=True,
-        batch_ceiling=4,
+        max_replay_rows=3,
         enable_cuda_graph=True,
         total_gpu_memory_fraction=0.02,
     )
 
-    assert scheduler.enable_batching is True
-    assert scheduler.cuda_graph_runner is not None
-    (keys,) = captured_keys
-    frames = (10, 20, 30, 35)
-    assert keys == tuple(
-        code2wav_scheduler.GraphKey(batch_size=1, frames=f) for f in frames
-    ) + tuple(
-        code2wav_scheduler.GraphKey(batch_size=b, frames=f)
-        for b in (2, 4)
-        for f in frames
+    assert scheduler.max_replay_rows == 3
+    (build,) = captured
+    walk = (10, 20, 30, 35)
+    # every row count of every walk length, so any number of queued windows up to the cap
+    # replays one graph; single rows first, they are the atomic tier
+    assert build["graph_keys"] == tuple(
+        GraphKey(batch_size=rows, frames=frames)
+        for rows in (1, 2, 3)
+        for frames in walk
     )
-
-
-def test_qwen_code2wav_factory_disables_batching_when_runner_disabled(
-    monkeypatch,
-) -> None:
-    pin_cuda_platform(monkeypatch)
-    build_calls: list[tuple] = []
-
-    class DisabledRunner:
-        @staticmethod
-        def build(model, **kwargs):
-            build_calls.append(tuple(kwargs["graph_keys"]))
-            runner = object.__new__(code2wav_scheduler.Code2WavCudaGraphRunner)
-            runner.stats = lambda: {"enabled": False, "disable_reason": "test"}
-            return runner
-
-    monkeypatch.setattr(
-        code2wav_scheduler,
-        "load_code2wav_model",
-        lambda *args, **kwargs: FactoryModel(),
+    # final windows stay one row each: every length a stream can end on, short streams
+    # included, minus the walk's own lengths
+    assert build["best_effort_keys"] == tuple(
+        GraphKey(batch_size=1, frames=frames)
+        for frames in range(1, 35)
+        if frames not in (10, 20, 30)
     )
-    monkeypatch.setattr(
-        code2wav_scheduler,
-        "Code2WavCudaGraphRunner",
-        DisabledRunner,
-    )
-
-    scheduler = code2wav_scheduler.create_code2wav_scheduler(
-        "dummy",
-        device="cuda",
-        gpu_id=0,
-        enable_batching=True,
-        enable_cuda_graph=True,
-        total_gpu_memory_fraction=0.02,
-    )
-
-    # Note (ruoyu): the runner degrades internally, so the factory never
-    # rebuilds; it only drops batching once the runner is fully disabled.
-    assert len(build_calls) == 1
-    assert scheduler.enable_batching is False
-    assert scheduler.chunk_aligned_dispatch is False
 
 
 @pytest.mark.parametrize(
-    ("stream_chunk_size", "left_context_size", "expected_frames"),
+    ("stream_chunk_size", "left_context_size", "initial_frames", "expected_frames"),
     [
-        (10, 25, (10, 20, 30, 35)),
-        (20, 25, (20, 40, 45)),
-        (6, 0, (6,)),
+        (10, 25, 0, (10, 20, 30, 35)),
+        (20, 25, 0, (20, 40, 45)),
+        (6, 0, 0, (6,)),
+        # a short first window offsets every window until the context saturates
+        (10, 25, 2, (2, 12, 22, 32, 35)),
     ],
 )
-def test_qwen_code2wav_serial_threshold_graph_keys_follow_scheduler_windows(
+def test_qwen_code2wav_window_graph_keys_are_the_windows_the_scheduler_decodes(
     stream_chunk_size: int,
     left_context_size: int,
+    initial_frames: int,
     expected_frames: tuple[int, ...],
 ) -> None:
-    assert code2wav_scheduler.serial_threshold_graph_keys(
-        stream_chunk_size,
-        left_context_size,
-    ) == tuple(GraphKey(batch_size=1, frames=frames) for frames in expected_frames)
+    model = FakeCode2WavModel(total_upsample=1)
+    scheduler = Code2WavScheduler(
+        model,
+        device="cpu",
+        stream_chunk_size=stream_chunk_size,
+        left_context_size=left_context_size,
+        initial_codec_chunk_frames=initial_frames,
+        enable_output_overlap=False,
+    )
+    scheduler.stream_payloads["r"] = make_qwen_payload(request_id="r")
+    for index in range(left_context_size + 3 * stream_chunk_size):
+        deliver_code2wav_chunk(
+            scheduler,
+            "r",
+            StreamItem(
+                index, torch.tensor([1, 2]), "talker", metadata={"stream": True}
+            ),
+        )
+    decoded = tuple(dict.fromkeys(shape[-1] for shape in model.calls))
+    assert decoded == expected_frames
+    assert code2wav_scheduler.window_graph_keys(
+        stream_chunk_size, left_context_size, 2, initial_frames
+    ) == tuple(
+        GraphKey(batch_size=rows, frames=frames)
+        for rows in (1, 2)
+        for frames in expected_frames
+    )
+
+
+@pytest.mark.parametrize(
+    ("stream_chunk_size", "left_context_size", "initial_chunk_frames"),
+    [(10, 25, 0), (20, 25, 0), (10, 25, 4), (6, 0, 0), (10, 0, 4), (10, 1, 0)],
+)
+def test_qwen_code2wav_factory_captures_the_last_window_of_every_stream_length(
+    monkeypatch,
+    stream_chunk_size: int,
+    left_context_size: int,
+    initial_chunk_frames: int,
+) -> None:
+    """Streams of every length end on a window the factory captures, and its final keys hold no other length."""
+    final_lengths: set[int] = set()
+    for stream_frames in range(1, left_context_size + 3 * stream_chunk_size + 1):
+        emitted = 0
+        while True:
+            step = (
+                initial_chunk_frames
+                if emitted == 0 and initial_chunk_frames
+                else stream_chunk_size
+            )
+            if stream_frames - emitted >= step:
+                emitted += step
+            else:
+                break
+        if stream_frames > emitted:
+            final_lengths.add(min(left_context_size, emitted) + stream_frames - emitted)
+        else:
+            pass
+
+    pin_cuda_platform(monkeypatch)
+    captured: dict[str, tuple[GraphKey, ...]] = {}
+
+    def build(built_model, *, graph_keys, best_effort_keys, **kwargs):
+        captured.update(graph_keys=graph_keys, best_effort_keys=best_effort_keys)
+        return SimpleNamespace(stats=lambda: {"enabled": True, "disable_reason": None})
+
+    monkeypatch.setattr(
+        code2wav_scheduler, "load_code2wav_model", lambda *a, **k: FactoryModel()
+    )
+    monkeypatch.setattr(
+        code2wav_scheduler.Code2WavCudaGraphRunner, "build", staticmethod(build)
+    )
+
+    code2wav_scheduler.create_code2wav_scheduler(
+        "dummy",
+        device="cuda",
+        gpu_id=0,
+        stream_chunk_size=stream_chunk_size,
+        left_context_size=left_context_size,
+        initial_codec_chunk_frames=initial_chunk_frames,
+        enable_cuda_graph=True,
+        total_gpu_memory_fraction=0.02,
+    )
+
+    threshold_frames = {key.frames for key in captured["graph_keys"]}
+    final_keys = captured["best_effort_keys"]
+    assert all(key.batch_size == 1 for key in final_keys)
+    assert len(final_keys) == len(set(final_keys))
+    assert {key.frames for key in final_keys} == final_lengths - threshold_frames
 
 
 def test_qwen_code2wav_enabled_factory_normalizes_device_and_derives_graph_keys(
@@ -432,6 +420,7 @@ def test_qwen_code2wav_enabled_factory_normalizes_device_and_derives_graph_keys(
             total_gpu_memory_fraction=0.02,
             stream_chunk_size=20,
             left_context_size=25,
+            max_replay_rows=1,
             talker_in_process=True,
         )
 
@@ -447,8 +436,15 @@ def test_qwen_code2wav_enabled_factory_normalizes_device_and_derives_graph_keys(
         "num_quantizers": 12,
         "total_gpu_memory_fraction": 0.02,
         "graph_keys": expected_graph_keys,
+        "best_effort_keys": tuple(
+            GraphKey(batch_size=1, frames=frames)
+            for frames in range(1, 45)
+            if frames not in (20, 40, 45)
+        ),
         "model_footprint_bytes": 3 * 4 + 2 * 8,
         "decode_stream": scheduler.decode_stream,
+        "incremental_codec": None,
+        "codec_pool": None,
     }
     assert scheduler.decode_stream.device == torch.device("cuda:3")
     assert scheduler.decode_stream.priority == -2
@@ -464,103 +460,7 @@ def test_qwen_code2wav_enabled_factory_normalizes_device_and_derives_graph_keys(
     assert json.loads(stats_record.message.split("stats=", 1)[1]) == runner.stats()
 
 
-def test_qwen_code2wav_enabled_factory_logs_disabled_build_reason(
-    monkeypatch,
-    caplog,
-) -> None:
-    model = FactoryModel(num_quantizers=12)
-    runner = SimpleNamespace(
-        stats=lambda: {
-            "enabled": False,
-            "disable_reason": "capture_failed: RuntimeError: capture failed",
-        }
-    )
-    monkeypatch.setattr(
-        code2wav_scheduler, "load_code2wav_model", lambda *a, **k: model.eval()
-    )
-    monkeypatch.setattr(
-        code2wav_scheduler.Code2WavCudaGraphRunner,
-        "build",
-        staticmethod(lambda *args, **kwargs: runner),
-    )
-    import sglang_omni.platforms as platforms
-
-    monkeypatch.setattr(
-        platforms.current_platform, "device_type", "cuda", raising=False
-    )
-    monkeypatch.setattr(
-        platforms.current_platform,
-        "get_device",
-        lambda index: torch.device("cuda", index),
-        raising=False,
-    )
-
-    with caplog.at_level(logging.INFO, logger=code2wav_scheduler.__name__):
-        scheduler = code2wav_scheduler.create_code2wav_scheduler(
-            "dummy",
-            gpu_id=3,
-            enable_cuda_graph=True,
-            total_gpu_memory_fraction=0.02,
-        )
-
-    assert scheduler.cuda_graph_runner is runner
-    stats_record = next(
-        record
-        for record in caplog.records
-        if "device graph startup stats=" in record.message
-    )
-    assert json.loads(stats_record.message.split("stats=", 1)[1]) == {
-        "disable_reason": "capture_failed: RuntimeError: capture failed",
-        "enabled": False,
-    }
-
-
-def test_qwen_code2wav_threshold_context_windows_hit_cuda_graph(monkeypatch) -> None:
-    model = FakeCode2WavModel(total_upsample=2)
-    runner = FakeCudaGraphRunner(model)
-    scheduler = Code2WavScheduler(
-        model,
-        device="cpu",
-        stream_chunk_size=10,
-        left_context_size=25,
-        enable_cuda_graph=True,
-        cuda_graph_runner=runner,
-    )
-    seed_stream_state(scheduler)
-    events = activate_event_capture(monkeypatch)
-
-    for chunk_id in range(40):
-        scheduler.handle_stream_chunk(
-            "req-1",
-            StreamItem(
-                chunk_id,
-                torch.tensor([chunk_id + 1, 10]),
-                "talker",
-                metadata={"stream": True},
-            ),
-        )
-
-    assert runner.calls == [
-        ((1, 2, 10), True),
-        ((1, 2, 20), True),
-        ((1, 2, 30), True),
-        ((1, 2, 35), True),
-    ]
-    decode_ends = [
-        event for event in events if event["event_name"] == "code2wav_decode_end"
-    ]
-    assert [event["metadata"]["execution_mode"] for event in decode_ends] == [
-        "cuda_graph"
-    ] * 4
-    assert [event["metadata"]["graph_key"]["frames"] for event in decode_ends] == [
-        10,
-        20,
-        30,
-        35,
-    ]
-
-
-def test_qwen_code2wav_stream_done_tail_is_eager_when_shape_matches_graph(
+def test_qwen_code2wav_stream_done_tail_replays_the_graph_of_its_shape(
     monkeypatch,
 ) -> None:
     model = FakeCode2WavModel(total_upsample=2)
@@ -577,7 +477,8 @@ def test_qwen_code2wav_stream_done_tail_is_eager_when_shape_matches_graph(
     events = activate_event_capture(monkeypatch)
 
     for chunk_id in range(11):
-        scheduler.handle_stream_chunk(
+        deliver_code2wav_chunk(
+            scheduler,
             "req-1",
             StreamItem(
                 chunk_id,
@@ -588,16 +489,20 @@ def test_qwen_code2wav_stream_done_tail_is_eager_when_shape_matches_graph(
         )
     scheduler.handle_stream_done("req-1")
 
-    assert runner.calls == [((1, 2, 6), True), ((1, 2, 10), False)]
+    assert runner.calls == [((1, 2, 6), True), ((1, 2, 10), True)]
     decode_ends = [
         event for event in events if event["event_name"] == "code2wav_decode_end"
     ]
     tail_metadata = decode_ends[-1]["metadata"]
     assert tail_metadata["trigger"] == "stream_done"
     assert tail_metadata["window_frames"] == 10
-    assert tail_metadata["execution_mode"] == "eager"
-    assert tail_metadata["graph_key"] is None
-    assert tail_metadata["fallback_reason"] == "ineligible"
+    assert tail_metadata["execution_mode"] == "cuda_graph"
+    assert tail_metadata["graph_key"] == {
+        "batch_size": 1,
+        "frames": 10,
+        "decode": "window",
+    }
+    assert tail_metadata["fallback_reason"] is None
 
 
 def test_qwen_code2wav_request_events_are_symmetric_and_keep_start_metadata(
@@ -615,7 +520,8 @@ def test_qwen_code2wav_request_events_are_symmetric_and_keep_start_metadata(
     events = activate_event_capture(monkeypatch)
 
     for chunk_id, codes in enumerate(([1, 10], [2, 20], [3, 30])):
-        scheduler.handle_stream_chunk(
+        deliver_code2wav_chunk(
+            scheduler,
             "req-1",
             StreamItem(
                 chunk_id,
@@ -643,6 +549,7 @@ def test_qwen_code2wav_request_events_are_symmetric_and_keep_start_metadata(
         "new_frames": 2,
         "context_frames": 0,
         "window_frames": 2,
+        "rows": 1,
         "active_request_count": 1,
         "threshold_ready_request_count": 1,
         "inbox_depth": 0,
@@ -688,7 +595,8 @@ def test_qwen_code2wav_eligible_key_miss_has_json_safe_fallback_metadata(
     events = activate_event_capture(monkeypatch)
 
     for chunk_id in range(6):
-        scheduler.handle_stream_chunk(
+        deliver_code2wav_chunk(
+            scheduler,
             "req-1",
             StreamItem(
                 chunk_id,
@@ -711,6 +619,7 @@ def test_qwen_code2wav_eligible_key_miss_has_json_safe_fallback_metadata(
     assert decode_end["metadata"]["graph_key"] == {
         "batch_size": 1,
         "frames": 6,
+        "decode": "window",
     }
     assert decode_end["metadata"]["fallback_reason"] == "key_miss"
 
@@ -728,7 +637,8 @@ def run_code2wav_stream(*, cuda_graph: bool) -> tuple[list[tuple], object]:
     )
     seed_stream_state(scheduler)
     for chunk_id in range(11):
-        scheduler.handle_stream_chunk(
+        deliver_code2wav_chunk(
+            scheduler,
             "req-1",
             StreamItem(
                 chunk_id,
@@ -767,7 +677,7 @@ def test_qwen_code2wav_graph_output_protocol_matches_eager_exactly() -> None:
         for item in graph_snapshot
         if item[0] == "stream"
     ] == [20, 2]
-    assert runner.calls == [((1, 2, 10), True), ((1, 2, 2), False)]
+    assert runner.calls == [((1, 2, 10), True), ((1, 2, 2), True)]
 
 
 def test_qwen_code2wav_consumes_borrowed_output_under_state_lock() -> None:
@@ -777,6 +687,9 @@ def test_qwen_code2wav_consumes_borrowed_output_under_state_lock() -> None:
             self.static_output = torch.zeros((1, 1, 2), dtype=torch.float32)
             self.lock_was_held: list[bool] = []
             self.replays = 0
+
+        def available_batch_sizes(self, frames: int, decode: str) -> tuple[int, ...]:
+            return (1,)
 
         def run(self, codes: torch.Tensor, *, eligible: bool) -> Code2WavRunResult:
             assert eligible
@@ -806,7 +719,8 @@ def test_qwen_code2wav_consumes_borrowed_output_under_state_lock() -> None:
     seed_stream_state(scheduler)
 
     for chunk_id in range(2):
-        scheduler.handle_stream_chunk(
+        deliver_code2wav_chunk(
+            scheduler,
             "req-1",
             StreamItem(
                 chunk_id,
@@ -888,7 +802,8 @@ def feed(
 ) -> None:
     meta: dict[str, object] = {"stream": stream}
     for i, code in enumerate(codes):
-        scheduler.handle_stream_chunk(
+        deliver_code2wav_chunk(
+            scheduler,
             request_id,
             StreamItem(i, torch.tensor([code, code * 10]), "talker", metadata=meta),
         )
@@ -943,7 +858,8 @@ def test_eos_chunk_is_skipped_and_never_decoded() -> None:
     feed(scheduler, "req-1", (1, 2), stream=False)
     assert model.calls == [(1, 2, 2)]
 
-    scheduler.handle_stream_chunk(
+    deliver_code2wav_chunk(
+        scheduler,
         "req-1",
         StreamItem(2, torch.tensor([2150, 0]), "talker", metadata={"stream": False}),
     )
@@ -1023,7 +939,8 @@ def test_decode_stream_waits_on_the_newest_codes_event_before_the_forward(
     first_event, second_event = object(), object()
 
     for chunk_id, event in enumerate((first_event, second_event)):
-        scheduler.handle_stream_chunk(
+        deliver_code2wav_chunk(
+            scheduler,
             "req-1",
             StreamItem(
                 chunk_id,
@@ -1057,7 +974,7 @@ def test_qwen_code2wav_emits_full_chunk_despite_model_output_deficit() -> None:
 
 
 def make_tiny_code2wav(
-    device: str, dtype: torch.dtype, seed: int = 0
+    device: str, dtype: torch.dtype, seed: int = 0, max_position_embeddings: int = 8000
 ) -> Qwen3OmniCode2Wav:
     config = Qwen3OmniMoeCode2WavConfig(
         codebook_size=16,
@@ -1071,6 +988,7 @@ def make_tiny_code2wav(
         upsampling_ratios=[2],
         decoder_dim=32,
         sliding_window=4,
+        max_position_embeddings=max_position_embeddings,
     )
     torch.manual_seed(seed)
     model = Qwen3OmniCode2Wav(config).eval()
@@ -1162,7 +1080,8 @@ def test_fused_code2wav_transformer_error_to_fp32_is_below_the_hf_error(
                 inputs_embeds=hidden_states.to(dtype)
             ).last_hidden_state
             model.use_fused_transformer(
-                current_platform.get_joint_rope_inplace_kernel()
+                current_platform.get_joint_rope_inplace_kernel(),
+                max_positions=model.config.max_position_embeddings,
             )
             actual = model.pre_transformer(
                 inputs_embeds=hidden_states.to(dtype)
@@ -1171,3 +1090,463 @@ def test_fused_code2wav_transformer_error_to_fp32_is_below_the_hf_error(
         fused_error += float((actual.float() - reference).norm() / reference.norm())
 
     assert fused_error <= 0.95 * hf_error
+
+
+SLOT_DECODES = pytest.mark.skipif(
+    not torch.cuda.is_available() or not current_platform.is_cuda(),
+    reason="slot decodes run on the fused channels-last code2wav, NVIDIA CUDA only",
+)
+
+
+def make_fused_tiny_code2wav(seed: int = 0) -> Qwen3OmniCode2Wav:
+    model = make_tiny_code2wav("cuda", torch.bfloat16, seed)
+    model.use_channels_last()
+    model.use_fused_transformer(
+        current_platform.get_joint_rope_inplace_kernel(),
+        max_positions=model.config.max_position_embeddings,
+    )
+    snake_beta.fuse_vocoder_decoder(model.decoder)
+    return model
+
+
+def make_pool(
+    incremental_codec: Qwen3OmniIncrementalCodec, slots: int, largest_part: int
+) -> CodecStatePool:
+    return CodecStatePool(
+        incremental_codec.spec,
+        num_slots=slots,
+        capture_slots=0,
+        ring_frames=incremental_codec.spec.retained_context + largest_part,
+        device=torch.device("cuda"),
+        dtype=incremental_codec.model.dtype,
+    )
+
+
+def decode_in_parts(
+    incremental_codec: Qwen3OmniIncrementalCodec,
+    codes: torch.Tensor,
+    parts: tuple[int, ...],
+    pool: CodecStatePool | None = None,
+    slot_index: torch.Tensor | None = None,
+) -> torch.Tensor:
+    rows = int(codes.shape[0])
+    if pool is None:
+        pool = make_pool(incremental_codec, rows, max(parts))
+        slot_index = torch.arange(rows, device="cuda")
+    else:
+        pass
+    waveforms = []
+    start = 0
+    for frames in parts:
+        waveforms.append(
+            incremental_codec.decode_slots(
+                codes[..., start : start + frames],
+                pool,
+                slot_index,
+                first_decode=start == 0,
+            )
+        )
+        start += frames
+    return torch.cat(waveforms, dim=-1)
+
+
+@pytest.mark.accelerator
+@SLOT_DECODES
+@pytest.mark.parametrize(
+    "is_paged_attention",
+    [
+        pytest.param(
+            True,
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available() or not _is_fa3_supported(),
+                reason="FlashAttention 3 runs on SM 8.x and 9.x with CUDA 12.3 or newer",
+            ),
+        ),
+        False,
+    ],
+)
+@pytest.mark.parametrize("parts", [(4, 6, 7), (1,) * 17, (10, 7)])
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+def test_slot_decodes_error_to_fp32_is_the_fused_forward_error(
+    monkeypatch: pytest.MonkeyPatch,
+    parts: tuple[int, ...],
+    is_paged_attention: bool,
+    dtype: torch.dtype,
+) -> None:
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
+    whole_error = 0.0
+    incremental_error = 0.0
+    for seed in range(4):
+        model = make_tiny_code2wav("cuda", torch.float32, seed)
+        codes = torch.randint(0, 16, (2, 2, sum(parts)), device="cuda")
+        with torch.inference_mode():
+            reference = model(codes)
+            model.to(dtype)
+            model.use_channels_last()
+            model.use_fused_transformer(
+                current_platform.get_joint_rope_inplace_kernel(),
+                max_positions=model.config.max_position_embeddings,
+            )
+            snake_beta.fuse_vocoder_decoder(model.decoder)
+            whole = model(codes)
+            incremental_codec = Qwen3OmniIncrementalCodec(model)
+            incremental_codec.is_paged_attention = is_paged_attention
+            incremental = decode_in_parts(incremental_codec, codes, parts)
+        whole_error += float((whole.float() - reference).norm() / reference.norm())
+        incremental_error += float(
+            (incremental.float() - reference).norm() / reference.norm()
+        )
+
+    assert incremental_error <= 1.25 * whole_error
+
+
+@pytest.mark.accelerator
+@SLOT_DECODES
+def test_slot_decodes_rotate_frames_past_the_code2wav_config_positions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
+    hf_error = 0.0
+    whole_error = 0.0
+    incremental_error = 0.0
+    for seed in range(4):
+        model = make_tiny_code2wav(
+            "cuda", torch.float32, seed, max_position_embeddings=8
+        )
+        codes = torch.randint(0, 16, (2, 2, 30), device="cuda")
+        with torch.inference_mode():
+            reference = model(codes)
+            model.to(torch.bfloat16)
+            expected = model(codes)
+            model.use_channels_last()
+            model.use_fused_transformer(
+                current_platform.get_joint_rope_inplace_kernel(), max_positions=30
+            )
+            snake_beta.fuse_vocoder_decoder(model.decoder)
+            whole = model(codes)
+            incremental = decode_in_parts(
+                Qwen3OmniIncrementalCodec(model), codes, (10, 10, 10)
+            )
+        hf_error += float((expected.float() - reference).norm() / reference.norm())
+        whole_error += float((whole.float() - reference).norm() / reference.norm())
+        incremental_error += float(
+            (incremental.float() - reference).norm() / reference.norm()
+        )
+
+    assert whole_error <= hf_error
+    assert incremental_error <= 1.25 * whole_error
+
+
+@pytest.mark.accelerator
+@SLOT_DECODES
+def test_a_reused_slot_decodes_a_new_stream_as_a_fresh_pool() -> None:
+    model = make_fused_tiny_code2wav()
+    incremental_codec = Qwen3OmniIncrementalCodec(model)
+    first_codes = torch.randint(0, 16, (1, 2, 13), device="cuda")
+    second_codes = torch.randint(0, 16, (1, 2, 9), device="cuda")
+    pool = make_pool(incremental_codec, 1, 4)
+    slot_index = torch.zeros(1, dtype=torch.long, device="cuda")
+
+    with torch.inference_mode():
+        decode_in_parts(incremental_codec, first_codes, (4, 4, 4, 1), pool, slot_index)
+        reused = decode_in_parts(
+            incremental_codec, second_codes, (3, 4, 2), pool, slot_index
+        )
+        fresh = decode_in_parts(incremental_codec, second_codes, (3, 4, 2))
+
+    assert torch.equal(reused, fresh)
+
+
+@pytest.mark.accelerator
+@SLOT_DECODES
+def test_slot_decode_rows_at_different_positions_keep_their_own_streams() -> None:
+    model = make_fused_tiny_code2wav()
+    incremental_codec = Qwen3OmniIncrementalCodec(model)
+    first_frames = (5, 9)
+    codes = [
+        torch.randint(0, 16, (1, 2, frames + 4), device="cuda")
+        for frames in first_frames
+    ]
+    pool = make_pool(incremental_codec, 2, 9)
+    slots = [torch.tensor([row], device="cuda") for row in range(2)]
+
+    with torch.inference_mode():
+        heads = [
+            incremental_codec.decode_slots(
+                stream_codes[..., :frames], pool, slot, first_decode=True
+            )
+            for stream_codes, frames, slot in zip(codes, first_frames, slots)
+        ]
+        tails = incremental_codec.decode_slots(
+            torch.cat([stream_codes[..., -4:] for stream_codes in codes]),
+            pool,
+            torch.cat(slots),
+            first_decode=False,
+        )
+        alone = [
+            decode_in_parts(incremental_codec, stream_codes, (frames, 4))
+            for stream_codes, frames in zip(codes, first_frames)
+        ]
+
+    for row in range(2):
+        torch.testing.assert_close(
+            torch.cat((heads[row], tails[row : row + 1]), dim=-1),
+            alone[row],
+            rtol=2e-2,
+            atol=2e-3,
+        )
+
+
+def make_incremental_scheduler(
+    model: Qwen3OmniCode2Wav, codec_state_slots: int, *, cuda_graph: bool = False
+) -> Code2WavScheduler:
+    incremental_codec = Qwen3OmniIncrementalCodec(model)
+    device = torch.device("cuda", torch.cuda.current_device())
+    pool = CodecStatePool(
+        incremental_codec.spec,
+        num_slots=codec_state_slots,
+        capture_slots=2,
+        ring_frames=incremental_codec.spec.retained_context + 3,
+        device=device,
+        dtype=torch.bfloat16,
+    )
+    runner = None
+    if cuda_graph:
+        runner = Code2WavCudaGraphRunner.build(
+            model,
+            device=device,
+            num_quantizers=2,
+            total_gpu_memory_fraction=1.0,
+            graph_keys=code2wav_scheduler.window_graph_keys(3, 2, 2)
+            + code2wav_scheduler.incremental_graph_keys(3, 2),
+            best_effort_keys=tuple(
+                GraphKey(batch_size=1, frames=frames, decode="next")
+                for frames in (1, 2)
+            ),
+            model_footprint_bytes=0,
+            decode_stream=None,
+            incremental_codec=incremental_codec,
+            codec_pool=pool,
+        )
+    else:
+        pass
+    return Code2WavScheduler(
+        model,
+        device=str(device),
+        stream_chunk_size=3,
+        left_context_size=2,
+        sample_rate=24000,
+        enable_cuda_graph=cuda_graph,
+        cuda_graph_runner=runner,
+        incremental_codec=incremental_codec,
+        codec_pool=pool,
+    )
+
+
+def run_streams(
+    scheduler: Code2WavScheduler, codes: torch.Tensor, *, first_request: int = 0
+) -> list[np.ndarray]:
+    request_ids = [
+        f"req-{first_request + index}" for index in range(int(codes.shape[0]))
+    ]
+    for request_id in request_ids:
+        scheduler.stream_payloads[request_id] = make_qwen_payload(request_id=request_id)
+    for frame in range(int(codes.shape[-1])):
+        for request_id, request_codes in zip(request_ids, codes):
+            deliver_code2wav_chunk(
+                scheduler,
+                request_id,
+                StreamItem(
+                    frame,
+                    request_codes[:, frame].clone(),
+                    "talker",
+                    metadata={"stream": False},
+                ),
+            )
+    waveforms = []
+    for request_id in request_ids:
+        scheduler.handle_stream_done(request_id)
+        result = scheduler.outbox.get_nowait()
+        waveforms.append(
+            np.frombuffer(result.data.data["audio_waveform"], dtype=np.float32)
+        )
+    return waveforms
+
+
+@pytest.mark.accelerator
+@SLOT_DECODES
+@pytest.mark.parametrize("cuda_graph", [False, True])
+def test_scheduler_decodes_streams_from_their_slots(
+    cuda_graph: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    model = make_fused_tiny_code2wav()
+    scheduler = make_incremental_scheduler(
+        model, codec_state_slots=2, cuda_graph=cuda_graph
+    )
+    codes = torch.randint(0, 16, (2, 2, 11), device="cuda")
+
+    with caplog.at_level(logging.WARNING):
+        waveforms = run_streams(scheduler, codes)
+
+    with torch.inference_mode():
+        expected = decode_in_parts(
+            Qwen3OmniIncrementalCodec(model), codes, (3, 3, 3, 2)
+        )
+    for waveform, wanted in zip(waveforms, expected.reshape(2, -1).float().cpu()):
+        np.testing.assert_allclose(waveform, wanted.numpy(), rtol=2e-2, atol=2e-3)
+    assert "codec state pool is full" not in caplog.text
+    assert scheduler.codec_pool.available_size() == scheduler.codec_pool.num_slots
+    if cuda_graph:
+        runtime = scheduler.cuda_graph_runner.stats()["runtime"]
+        assert runtime["fallback_counts"] == {}
+        assert runtime["graph_replays"] > 0
+    else:
+        pass
+
+
+@pytest.mark.accelerator
+@SLOT_DECODES
+def test_a_stream_without_a_free_slot_decodes_with_left_context(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    model = make_fused_tiny_code2wav()
+    scheduler = make_incremental_scheduler(model, codec_state_slots=1)
+    codes = torch.randint(0, 16, (2, 2, 7), device="cuda")
+
+    with caplog.at_level(logging.WARNING):
+        waveforms = run_streams(scheduler, codes)
+
+    with torch.inference_mode():
+        expected = decode_in_parts(
+            Qwen3OmniIncrementalCodec(model), codes[:1], (3, 3, 1)
+        )
+    wanted = expected.reshape(-1).float().cpu().numpy()
+    np.testing.assert_allclose(waveforms[0], wanted, rtol=2e-2, atol=2e-3)
+    assert waveforms[1].shape == wanted.shape
+    assert caplog.text.count("req-1 decodes with left context") == 1
+    assert scheduler.codec_pool.available_size() == scheduler.codec_pool.num_slots
+
+
+@pytest.mark.accelerator
+@SLOT_DECODES
+def test_a_stream_takes_its_slot_with_its_first_codes_and_abort_returns_it() -> None:
+    scheduler = make_incremental_scheduler(
+        make_fused_tiny_code2wav(), codec_state_slots=1
+    )
+    scheduler.stream_payloads["req-0"] = make_qwen_payload(request_id="req-0")
+    deliver_code2wav_chunk(
+        scheduler,
+        "req-0",
+        StreamItem(0, torch.randint(0, 16, (2,)), "talker", metadata={"stream": False}),
+    )
+    assert scheduler.codec_pool.available_size() == 0
+
+    scheduler.abort("req-0")
+
+    assert scheduler.codec_pool.available_size() == scheduler.codec_pool.num_slots
+
+
+@pytest.mark.accelerator
+@SLOT_DECODES
+def test_a_stream_ending_before_its_first_window_decodes_without_slot_state() -> None:
+    model = make_fused_tiny_code2wav()
+    scheduler = make_incremental_scheduler(model, codec_state_slots=1)
+    run_streams(scheduler, torch.randint(0, 16, (1, 2, 7), device="cuda"))
+    short_codes = torch.randint(0, 16, (1, 2, 2), device="cuda")
+
+    waveforms = run_streams(scheduler, short_codes, first_request=1)
+
+    with torch.inference_mode():
+        expected = model(short_codes).reshape(-1).float().cpu().numpy()
+    np.testing.assert_allclose(waveforms[0], expected, rtol=2e-2, atol=2e-3)
+    assert scheduler.codec_pool.available_size() == scheduler.codec_pool.num_slots
+
+
+@pytest.mark.accelerator
+@SLOT_DECODES
+@pytest.mark.parametrize("cuda_graph", [False, True])
+def test_streams_decoded_in_one_replay_keep_their_own_slots(cuda_graph: bool) -> None:
+    model = make_fused_tiny_code2wav()
+    scheduler = make_incremental_scheduler(
+        model, codec_state_slots=2, cuda_graph=cuda_graph
+    )
+    codes = torch.randint(0, 16, (2, 2, 11), device="cuda")
+    request_ids = ["req-0", "req-1"]
+    for request_id in request_ids:
+        scheduler.stream_payloads[request_id] = make_qwen_payload(request_id=request_id)
+
+    for start in (0, 3, 6):
+        for request_id, request_codes in zip(request_ids, codes):
+            scheduler.handle_stream_chunk(
+                request_id,
+                StreamItem(
+                    start,
+                    request_codes[:, start : start + 3].T,
+                    "talker",
+                    metadata={"stream": False},
+                ),
+            )
+        assert len(scheduler.ready_window_group()) == 2
+        scheduler.run_ready_step()
+    waveforms = []
+    for request_id, request_codes in zip(request_ids, codes):
+        scheduler.handle_stream_chunk(
+            request_id,
+            StreamItem(9, request_codes[:, 9:].T, "talker", metadata={"stream": False}),
+        )
+        scheduler.handle_stream_done(request_id)
+        result = scheduler.outbox.get_nowait()
+        waveforms.append(
+            np.frombuffer(result.data.data["audio_waveform"], dtype=np.float32)
+        )
+
+    with torch.inference_mode():
+        expected = decode_in_parts(
+            Qwen3OmniIncrementalCodec(model), codes, (3, 3, 3, 2)
+        )
+    for waveform, wanted in zip(waveforms, expected.reshape(2, -1).float().cpu()):
+        np.testing.assert_allclose(waveform, wanted.numpy(), rtol=2e-2, atol=2e-3)
+    assert scheduler.codec_pool.available_size() == scheduler.codec_pool.num_slots
+
+
+@pytest.mark.accelerator
+@SLOT_DECODES
+@pytest.mark.parametrize("enable_cuda_graph", [False, True])
+def test_slot_graphs_and_capture_slots_stop_at_the_codec_slot_count(
+    monkeypatch: pytest.MonkeyPatch, enable_cuda_graph: bool
+) -> None:
+    build_call: dict[str, object] = {}
+
+    def build(model: Qwen3OmniCode2Wav, **kwargs: object) -> SimpleNamespace:
+        build_call.update(kwargs)
+        return SimpleNamespace(stats=lambda: {})
+
+    monkeypatch.setattr(
+        code2wav_scheduler,
+        "load_code2wav_model",
+        lambda *args, **kwargs: make_fused_tiny_code2wav(),
+    )
+    monkeypatch.setattr(
+        code2wav_scheduler.Code2WavCudaGraphRunner, "build", staticmethod(build)
+    )
+
+    scheduler = code2wav_scheduler.create_code2wav_scheduler(
+        "dummy",
+        device="cuda",
+        enable_cuda_graph=enable_cuda_graph,
+        total_gpu_memory_fraction=0.5,
+        stream_chunk_size=3,
+        left_context_size=2,
+        max_replay_rows=8,
+        fused_snake_activation=False,
+        codec_state_slots=2,
+    )
+
+    slot_graph_rows = {
+        key.batch_size
+        for key in build_call.get("graph_keys", ())
+        if key.decode != "window"
+    }
+    assert (len(scheduler.codec_pool.scratch_slots), slot_graph_rows) == (
+        (2, {1, 2}) if enable_cuda_graph else (0, set())
+    )

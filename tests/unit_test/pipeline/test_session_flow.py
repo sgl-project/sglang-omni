@@ -10,6 +10,7 @@ import pytest
 from sglang_omni.pipeline.sessions import Session
 from sglang_omni.proto import OmniRequest
 from sglang_omni.proto.session import TimedChunk, find_session_operation
+from tests.unit_test.fixtures.session_outputs import control_chunk
 from tests.unit_test.fixtures.session_pipeline import chunk, event_log, pipeline
 
 IN_FLIGHT_ACCEPT_TIMEOUT_S = 1
@@ -159,23 +160,32 @@ async def test_next_input_is_accepted_while_one_unit_is_in_flight(
     )
     entered, release = asyncio.Event(), asyncio.Event()
     append_seqs: list[int] = []
-    original = coordinator.session_operation
+    original = coordinator.submit_session_operation
 
     async def hold_first_append(
         session: Session,
-        operation: Literal["open", "append", "close"],
+        operation: Literal["open", "read", "append", "control", "close"],
         *,
         owner: str | None = None,
         chunk: TimedChunk | None = None,
-    ) -> None:
+        request_id: str | None = None,
+        should_preempt: bool = False,
+    ) -> str:
         if operation == "append" and chunk is not None:
             append_seqs.append(chunk.seq)
             if chunk.seq == 0:
                 entered.set()
                 await release.wait()
-        return await original(session, operation, owner=owner, chunk=chunk)
+        return await original(
+            session,
+            operation,
+            owner=owner,
+            chunk=chunk,
+            request_id=request_id,
+            should_preempt=should_preempt,
+        )
 
-    monkeypatch.setattr(coordinator, "session_operation", hold_first_append)
+    monkeypatch.setattr(coordinator, "submit_session_operation", hold_first_append)
     outputs = coordinator.session_outputs(session_identity)
     try:
         assert await coordinator.append_session(session_identity, chunk(0)) == 0
@@ -260,3 +270,126 @@ async def test_later_operations_do_not_carry_the_opening_inputs(
         request_inputs is None and raw_inputs is None
         for _, request_inputs, raw_inputs in submitted
     )
+
+
+def control_owners(events: Queue) -> list[tuple[str, str]]:
+    return [
+        (event[1], event[3]) for event in event_log(events) if event[0] == "control"
+    ]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_control_reaches_every_stage_of_the_route_or_the_named_stages(
+    linear_pair,
+) -> None:
+    coordinator, events, _ = linear_pair
+    session_identity = await coordinator.open_session(
+        OmniRequest(None), stages=["source", "sink"]
+    )
+    outputs = coordinator.session_outputs(session_identity)
+    interrupt = control_chunk("interrupt")
+    try:
+        await coordinator.control_session(session_identity, interrupt)
+        await coordinator.control_session(
+            session_identity, control_chunk("truncate"), stages=["sink"]
+        )
+        with pytest.raises(ValueError, match="not all on the session route"):
+            await coordinator.control_session(
+                session_identity, interrupt, stages=["middle"]
+            )
+        await coordinator.append_session(session_identity, chunk(0, eos=True))
+        await asyncio.wait_for(anext(outputs), STAGE_REPLY_TIMEOUT_S)
+    finally:
+        await outputs.aclose()
+    assert control_owners(events) == [
+        ("source", "interrupt"),
+        ("sink", "interrupt"),
+        ("sink", "truncate"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_open_session_read_holds_no_generation_slot(tmp_path):
+    async with pipeline(tmp_path) as (coordinator, _, _):
+        coordinator.max_in_flight = 1
+        session_identity = await coordinator.open_session(OmniRequest(None))
+        outputs = coordinator.session_outputs(session_identity)
+        try:
+            await coordinator.append_session(session_identity, chunk(0))
+            received = [
+                await asyncio.wait_for(anext(outputs), STAGE_REPLY_TIMEOUT_S)
+                for _ in range(2)
+            ]
+            assert [item.kind for item in received] == ["data", "input_done"]
+        finally:
+            await outputs.aclose()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_unordered_control_passes_the_appends_before_it(linear_pair) -> None:
+    coordinator, events, _ = linear_pair
+    session_identity = await coordinator.open_session(
+        OmniRequest(None, {"delay": 0.05}), stages=["source", "sink"]
+    )
+    outputs = coordinator.session_outputs(session_identity)
+    try:
+        await coordinator.append_session(session_identity, chunk(0))
+        await coordinator.append_session(session_identity, chunk(1))
+        await coordinator.control_session(
+            session_identity, control_chunk("configure"), is_ordered=False
+        )
+        received = [
+            await asyncio.wait_for(anext(outputs), STAGE_REPLY_TIMEOUT_S)
+            for _ in range(4)
+        ]
+        assert [item.input_seq for item in received if item.kind == "input_done"] == [
+            0,
+            1,
+        ]
+    finally:
+        await outputs.aclose()
+    order = [
+        (event[1], event[3])
+        for event in event_log(events)
+        if event[0] in ("append", "control")
+    ]
+    for stage in ("source", "sink"):
+        items = [item for owner, item in order if owner == stage]
+        assert items.index("configure") < items.index(1)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_control_follows_the_appends_accepted_before_it(linear_pair) -> None:
+    coordinator, events, _ = linear_pair
+    session_identity = await coordinator.open_session(
+        OmniRequest(None, {"delay": 0.05}), stages=["source", "sink"]
+    )
+    outputs = coordinator.session_outputs(session_identity)
+    try:
+        await coordinator.append_session(session_identity, chunk(0))
+        await coordinator.append_session(session_identity, chunk(1))
+        await coordinator.control_session(session_identity, control_chunk("configure"))
+        await coordinator.append_session(session_identity, chunk(2))
+        received = [
+            await asyncio.wait_for(anext(outputs), STAGE_REPLY_TIMEOUT_S)
+            for _ in range(6)
+        ]
+        assert [item.input_seq for item in received if item.kind == "input_done"] == [
+            0,
+            1,
+            2,
+        ]
+    finally:
+        await outputs.aclose()
+    order = [
+        (event[1], event[3])
+        for event in event_log(events)
+        if event[0] in ("append", "control")
+    ]
+    for stage in ("source", "sink"):
+        assert [item for owner, item in order if owner == stage] == [
+            0,
+            1,
+            "configure",
+            2,
+        ]

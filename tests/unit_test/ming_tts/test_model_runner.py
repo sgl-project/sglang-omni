@@ -251,10 +251,7 @@ def test_ming_tts_prefill_replays_prompt_and_generated_feedback() -> None:
         request_id="req-ming-tts",
         data=SimpleNamespace(
             input_ids=torch.tensor([1, 2, 3]),
-            req=SimpleNamespace(
-                prefix_indices=torch.empty(0, dtype=torch.long),
-                extend_range=SimpleNamespace(length=5),
-            ),
+            req=SimpleNamespace(prefix_len=0, extend_len=5),
         ),
     )
     forward_batch = SimpleNamespace(input_ids=torch.zeros(5, dtype=torch.long))

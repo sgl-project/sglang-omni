@@ -25,6 +25,9 @@ sglang_model_runner = pytest.importorskip(
     reason="sglang (and its sgl_kernel dependency) not importable here",
 )
 from sglang.srt.model_executor.model_runner import ModelRunner  # noqa: E402
+from sglang.srt.model_executor.model_runner_components.weight_updater import (  # noqa: E402
+    WeightUpdater,
+)
 from sglang.srt.runtime_context import get_context, get_flags  # noqa: E402
 
 from sglang_omni.utils import ipc_weights  # noqa: E402
@@ -97,6 +100,28 @@ def test_env_unset_is_stock_path(tmp_path, monkeypatch):
     assert not os.listdir(tmp_path)  # nothing exported anywhere
     # Weight updates stay allowed on the stock path.
     assert runner.weight_update_blocked_reason() is None
+
+
+def test_distributed_update_reports_a_receive_without_an_update_group():
+    runner = bare_runner()
+    runner.weight_updater = WeightUpdater(
+        tp_rank=0,
+        device="cpu",
+        gpu_id=0,
+        model_config=SimpleNamespace(),
+        custom_weight_loaders={},
+        get_model=lambda: SmallModel(fill=1.0),
+        update_model_fields=lambda **fields: None,
+        recapture_cuda_graph=lambda: None,
+        get_model_runner=lambda: runner,
+    )
+
+    success, message = runner.update_weights_from_distributed(
+        ["linear.weight"], ["float32"], [[2, 3]], "absent-group"
+    )
+
+    assert success is False
+    assert message.startswith("Failed to receive weights")
 
 
 def test_leader_loads_normally_then_exports(tmp_path, monkeypatch):
@@ -353,19 +378,6 @@ def test_moss_follower_keeps_scratch_storage(tmp_path, monkeypatch):
     assert torch.all(runner.model.linear.weight == 7.0)
 
 
-def test_moss_policy_on_model_without_scratch_fails_closed(tmp_path, monkeypatch):
-    # The MOSS policy names a tensor SmallModel lacks: the model and policy
-    # diverged, so the leader must refuse to export rather than share it all.
-    monkeypatch.setenv(ipc_weights.ENV_WEIGHT_SHARE, f"leader:{tmp_path}")
-    runner = bare_runner()
-    runner.model_arch_override = "MossTTSLocalSGLangModel"
-    with mock.patch.object(
-        ModelRunner, "load_model", fake_upstream_load({"auto": 1.0})
-    ):
-        with pytest.raises(ipc_weights.WeightShareError, match="diverged"):
-            runner.load_model()
-
-
 def test_weight_update_guard_blocks_all_three(tmp_path, monkeypatch):
     monkeypatch.setenv(ipc_weights.ENV_WEIGHT_SHARE, f"leader:{tmp_path}")
     runner = bare_runner()
@@ -373,11 +385,14 @@ def test_weight_update_guard_blocks_all_three(tmp_path, monkeypatch):
         ModelRunner, "load_model", fake_upstream_load({"auto": 1.0})
     ):
         runner.load_model()
-    for method in (
-        runner.update_weights_from_disk,
-        runner.update_weights_from_tensor,
-        runner.update_weights_from_distributed,
+    for method, args in (
+        (runner.update_weights_from_disk, ()),
+        (runner.update_weights_from_tensor, ()),
+        (
+            runner.update_weights_from_distributed,
+            (["weight"], ["float32"], [[1]], "group"),
+        ),
     ):
-        ok, message = method()
+        ok, message = method(*args)
         assert ok is False
         assert "weight sharing" in message

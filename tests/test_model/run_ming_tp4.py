@@ -209,7 +209,12 @@ def stream_sse(
             data = line_text[len("data: ") :]
             if data == "[DONE]":
                 break
-            events.append(json.loads(data))
+            event = json.loads(data)
+            if event.get("error") is not None:
+                raise RuntimeError(f"stream failed: {event['error']}")
+            else:
+                pass
+            events.append(event)
     return events
 
 

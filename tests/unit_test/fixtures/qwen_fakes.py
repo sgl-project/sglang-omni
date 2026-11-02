@@ -3,14 +3,32 @@
 
 from __future__ import annotations
 
+import threading
+from queue import Queue
 from types import SimpleNamespace
 from typing import Any
 
 import torch
 from torch import nn
 
+from sglang_omni.models.qwen3_omni.components.code2wav_scheduler import (
+    Code2WavScheduler,
+)
 from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
+from sglang_omni.models.qwen3_omni.session_input import QwenInputHooks
+from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.proto.session import SessionIdentity, TimedChunk
+from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.scheduling.session import SessionContext
+
+
+class RecordingOutbox(Queue[OutgoingMessage]):
+    """A real scheduler outbox whose messages a test reads back in order."""
+
+    @property
+    def sent(self) -> list[OutgoingMessage]:
+        return list(self.queue)
 
 
 class FakeQwenTokenizer:
@@ -64,6 +82,24 @@ def make_qwen_payload(
         ),
         data=(state or make_qwen_state()).to_dict(),
     )
+
+
+def make_dialog(
+    session_identity: SessionIdentity,
+) -> tuple[QwenInputHooks, list[TimedChunk], SessionContext]:
+    """An open dialog stage whose emitted chunks a test reads back in order."""
+    hooks = QwenInputHooks(
+        max_utterance_seconds=1, max_queued_turns=2, max_utterance_frames=4
+    )
+    outputs: list[TimedChunk] = []
+    hooks.open(session_identity, OmniRequest(None))
+    hooks.attach_output_stream(session_identity, outputs.append)
+    context = SessionContext(
+        session_identity=session_identity,
+        cancelled=threading.Event(),
+        emit=outputs.append,
+    )
+    return hooks, outputs, context
 
 
 class FakeCodecEmbedding(nn.Module):
@@ -171,3 +207,12 @@ class FakeCode2WavModel:
         samples = int(codes.shape[-1]) * self.total_upsample - self.output_deficit
         base = codes.to(dtype=torch.float32).flatten(1).sum(dim=1).view(-1, 1, 1)
         return torch.arange(samples, dtype=torch.float32).view(1, 1, samples) + base
+
+
+def deliver_code2wav_chunk(
+    scheduler: Code2WavScheduler, request_id: str, item: StreamItem
+) -> None:
+    """One chunk in the serving loop's order: ingested, then every ready window decoded."""
+    scheduler.handle_stream_chunk(request_id, item)
+    while scheduler.has_ready_work():
+        scheduler.run_ready_step()

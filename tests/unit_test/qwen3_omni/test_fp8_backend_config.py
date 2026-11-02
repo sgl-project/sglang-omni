@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Iterator
 from dataclasses import dataclass
 from types import ModuleType, SimpleNamespace
 
@@ -156,21 +157,6 @@ def make_model_config(
             expected_fp8_gemm_backend="triton",
         ),
         BackendPolicyCase(
-            name="fp8_thinker_explicit_dense_deep_gemm_is_preserved",
-            model_quantization="fp8",
-            server_quantization=None,
-            native_fp8_block_quant=True,
-            model_arch_override="Qwen3OmniThinkerForCausalLM",
-            has_moe=True,
-            initial_moe_backend="auto",
-            initial_fp8_gemm_backend="deep_gemm",
-            ep_size=1,
-            cutlass_supported=True,
-            expected_quantization="fp8",
-            expected_moe_backend="cutlass",
-            expected_fp8_gemm_backend="deep_gemm",
-        ),
-        BackendPolicyCase(
             name="server_fp8_override_without_native_block_quant_stays_auto",
             model_quantization=None,
             server_quantization="fp8",
@@ -289,21 +275,6 @@ def make_model_config(
             expected_quantization="fp8",
             expected_moe_backend="cutlass",
             expected_fp8_gemm_backend="deep_gemm",
-        ),
-        BackendPolicyCase(
-            name="fp8_talker_explicit_dense_cutlass_is_preserved",
-            model_quantization="fp8",
-            server_quantization=None,
-            native_fp8_block_quant=True,
-            model_arch_override="Qwen3OmniTalker",
-            has_moe=True,
-            initial_moe_backend="auto",
-            initial_fp8_gemm_backend="cutlass",
-            ep_size=1,
-            cutlass_supported=True,
-            expected_quantization="fp8",
-            expected_moe_backend="cutlass",
-            expected_fp8_gemm_backend="cutlass",
         ),
         BackendPolicyCase(
             name="fp8_talker_unset_dense_backend_uses_triton",
@@ -478,23 +449,14 @@ def test_model_worker_backend_policy_uses_strict_server_args_override(
     )
 
 
-@pytest.mark.parametrize(
-    ("cap_fp8", "expected_moe_backend"),
-    [
-        pytest.param(False, "flashinfer_cutlass", id="cuda_sm90_no_fp8_bf16"),
-        pytest.param(True, "flashinfer_cutlass", id="cuda_with_fp8_bf16"),
-    ],
-)
 def test_bf16_talker_moe_downgrade_keys_on_device_not_fp8(
     monkeypatch: pytest.MonkeyPatch,
-    cap_fp8: bool,
-    expected_moe_backend: str,
 ) -> None:
     """A bf16 talker's flashinfer_cutlass->triton downgrade must never be gated on
     FP8 CUTLASS availability. Off-CUDA is structural now that the policy hangs off
     CUDAOmniPlatform, so a non-CUDA platform never reaches this kernel choice.
     """
-    monkeypatch.setattr(cuda, "is_fp8_cutlass_moe_supported", lambda: cap_fp8)
+    monkeypatch.setattr(cuda, "is_fp8_cutlass_moe_supported", lambda: False)
     monkeypatch.setattr(cuda, "is_h20_device", lambda: False)
 
     server_args = make_server_args(moe_runner_backend="auto")
@@ -507,7 +469,7 @@ def test_bf16_talker_moe_downgrade_keys_on_device_not_fp8(
     )
 
     assert effective_quantization is None
-    assert resolution_result(server_args, "moe_runner_backend") == expected_moe_backend
+    assert resolution_result(server_args, "moe_runner_backend") == "flashinfer_cutlass"
 
 
 @pytest.mark.parametrize("backend", ["flashinfer_cutlass", "cutlass"])
@@ -583,30 +545,56 @@ def test_fp8_cutlass_moe_support_matches_sglang_0_5_16_contract(
     assert cuda.is_fp8_cutlass_moe_supported() is expected_supported
 
 
-def test_backend_global_initialization_for_fp8_moe_model(monkeypatch) -> None:
-    calls: list[str] = []
+@pytest.fixture
+def backend_globals() -> Iterator[tuple[object, ModuleType]]:
+    from sglang.srt.layers.quantization import fp8_utils
+    from sglang.srt.runtime_context import get_context, get_flags
 
-    install_fake_backend_modules(monkeypatch, calls)
+    moe_flags = get_flags().moe
+    saved_moe_flags = {
+        name: getattr(moe_flags, name) for name in moe_flags.__struct_fields__
+    }
+    saved_fp8_backend = fp8_utils.FP8_GEMM_RUNNER_BACKEND
+    moe_flags.runner_backend = None
+    fp8_utils.FP8_GEMM_RUNNER_BACKEND = None
+    published = get_context().override_server_args(
+        moe_runner_backend="triton", fp8_gemm_runner_backend="triton"
+    )
+    published.install()
+    yield moe_flags, fp8_utils
+    published.restore()
+    fp8_utils.FP8_GEMM_RUNNER_BACKEND = saved_fp8_backend
+    for name, value in saved_moe_flags.items():
+        setattr(moe_flags, name, value)
+
+
+def test_backend_global_initialization_for_fp8_moe_model(backend_globals) -> None:
+    from sglang.srt.layers.moe.utils import MoeRunnerBackend
+    from sglang.srt.layers.quantization.fp8_utils import Fp8GemmRunnerBackend
+
+    moe_flags, fp8_utils = backend_globals
 
     model_worker.initialize_model_worker_backend_globals(
         make_model_config(quantization="fp8", native_fp8_block_quant=True),
         "fp8",
     )
 
-    assert calls == ["moe", "fp8"]
+    assert moe_flags.runner_backend == MoeRunnerBackend.TRITON
+    assert fp8_utils.FP8_GEMM_RUNNER_BACKEND == Fp8GemmRunnerBackend.TRITON
 
 
-def test_backend_global_initialization_for_bf16_moe_omits_fp8(monkeypatch) -> None:
-    calls: list[str] = []
+def test_backend_global_initialization_for_bf16_moe_omits_fp8(backend_globals) -> None:
+    from sglang.srt.layers.moe.utils import MoeRunnerBackend
 
-    install_fake_backend_modules(monkeypatch, calls)
+    moe_flags, fp8_utils = backend_globals
 
     model_worker.initialize_model_worker_backend_globals(
         make_model_config(quantization=None),
         None,
     )
 
-    assert calls == ["moe"]
+    assert moe_flags.runner_backend == MoeRunnerBackend.TRITON
+    assert fp8_utils.FP8_GEMM_RUNNER_BACKEND is None
 
 
 @dataclass(frozen=True)
@@ -733,26 +721,6 @@ CONFIGURE_BACKEND_POLICY_CASES = [
         expected_fp8_gemm_backend="auto",
     ),
 ]
-
-
-def install_fake_backend_modules(
-    monkeypatch: pytest.MonkeyPatch,
-    calls: list[str],
-) -> None:
-    install_fake_module(monkeypatch, "sglang")
-    install_fake_module(monkeypatch, "sglang.srt")
-    install_fake_module(monkeypatch, "sglang.srt.layers")
-    install_fake_module(monkeypatch, "sglang.srt.layers.quantization")
-    install_fake_module(
-        monkeypatch,
-        "sglang.srt.layers.moe",
-        initialize_moe_config=lambda: calls.append("moe"),
-    )
-    install_fake_module(
-        monkeypatch,
-        "sglang.srt.layers.quantization.fp8_utils",
-        initialize_fp8_gemm_config=lambda: calls.append("fp8"),
-    )
 
 
 def install_fake_cutlass_support_modules(

@@ -27,7 +27,9 @@ def test_cosyvoice_is_required_only_for_model_loading() -> None:
                 from sglang_omni.models.fun_cosyvoice3 import stages
 
                 try:
-                    stages.load_cosyvoice3_flow_hift("unused", device="cpu")
+                    stages.load_cosyvoice3_flow_hift(
+                        "unused", device="cpu", autocast_dtype=None
+                    )
                 except RuntimeError as exc:
                     assert str(exc) == stages.COSYVOICE_INSTALL_HINT
                 else:

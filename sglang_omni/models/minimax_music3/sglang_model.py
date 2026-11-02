@@ -74,11 +74,19 @@ def attach_minimax_modules(model: "Qwen3ForCausalLM", checkpoint_root: str) -> N
     model.mel_token_offset = AUDIO_CODE_OFFSET
     model.stop_mel_token = SPECIAL_TOKEN_IDS["<|audio_end|>"]
     model.cfg_token = SPECIAL_TOKEN_IDS["<|audio_cfg|>"]
-    model.audio_embedding_offsets = (
-        torch.arange(num_codebooks - 1, device=device) * audio_vocab_size
-    ).unsqueeze(0)
+    model.register_buffer(
+        "audio_embedding_offsets",
+        (torch.arange(num_codebooks - 1, device=device) * audio_vocab_size).unsqueeze(
+            0
+        ),
+        persistent=False,
+    )
     model.frame_embedding_scale = num_codebooks**-0.5
-    model.c0_logit_ids = build_c0_logit_ids(model.stop_mel_token, device)
+    model.register_buffer(
+        "c0_logit_ids",
+        build_c0_logit_ids(model.stop_mel_token, device),
+        persistent=False,
+    )
     model.graph_feedback_buffer = None
 
     use_unfused_qk_norm(model)

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.moss_tts import request_builders
@@ -23,7 +23,6 @@ from sglang_omni.scheduling.engine_factory import (
 )
 
 if TYPE_CHECKING:
-    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
 
     from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
     from sglang_omni.models.moss_tts.sglang_model import MossTTSDelaySGLangModel
@@ -41,8 +40,18 @@ class MossTtsEngineBuilder(TtsEngineBuilder[MossTTSSGLangRequestData]):
     supports_context_length_override = True
     supports_breakable_prefill_cuda_graph = True
 
-    def __init__(self, *, total_gpu_memory_fraction: float | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        enable_async_decode: bool = False,
+        async_decode_min_batch_size: int = 2,
+        async_decode_mode: Literal["all", "nonstream"] | None = None,
+        total_gpu_memory_fraction: float | None = None,
+    ) -> None:
         super().__init__()
+        self.enable_async_decode = enable_async_decode
+        self.async_decode_min_batch_size = async_decode_min_batch_size
+        self.async_decode_mode = async_decode_mode
         self.total_gpu_memory_fraction = total_gpu_memory_fraction
 
     def infra_kwargs(self) -> InfrastructureOptions:
@@ -86,7 +95,7 @@ class MossTtsEngineBuilder(TtsEngineBuilder[MossTTSSGLangRequestData]):
     def setup_model(
         self,
         *,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         checkpoint_dir: str,
         device: str,
         gpu_id: int,
@@ -107,14 +116,19 @@ class MossTtsEngineBuilder(TtsEngineBuilder[MossTTSSGLangRequestData]):
 
     def make_model_runner(
         self,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         output_proc: SGLangOutputProcessor,
     ) -> MossTTSModelRunner:
         model_runner_mod = importlib.import_module(
             "sglang_omni.models.moss_tts.model_runner"
         )
 
-        return model_runner_mod.MossTTSModelRunner(model_worker, output_proc)
+        model_runner = model_runner_mod.MossTTSModelRunner(model_worker, output_proc)
+        if self.async_decode_mode is not None:
+            model_runner.async_decode_mode = self.async_decode_mode
+        else:
+            pass
+        return model_runner
 
     def make_adapters(self, model: MossTTSDelaySGLangModel | None) -> tuple[
         Callable[[StagePayload], MossTTSSGLangRequestData],
@@ -126,7 +140,11 @@ class MossTtsEngineBuilder(TtsEngineBuilder[MossTTSSGLangRequestData]):
         return request_builders.make_moss_tts_scheduler_adapters(model=model)
 
     def extra_scheduler_kwargs(self) -> SchedulerExtras[MossTTSSGLangRequestData]:
-        return {"stream_output_builder": self.stream_output_builder}
+        return {
+            "stream_output_builder": self.stream_output_builder,
+            "enable_async_decode": self.enable_async_decode,
+            "async_decode_min_batch_size": self.async_decode_min_batch_size,
+        }
 
     def make_abort_callback(self) -> Callable[[str], None]:
         return request_builders.cleanup_prepared_moss_tts_request

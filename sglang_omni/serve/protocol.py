@@ -8,7 +8,16 @@ import binascii
 import math
 from typing import Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
+
+from sglang_omni.client.types import UsageInfo
 
 
 class UsageResponse(BaseModel):
@@ -38,6 +47,38 @@ class ChatCompletionAudio(BaseModel):
     transcript: str | None = None
 
 
+class ImageGenerationParams(BaseModel):
+    """Per-request image generation and editing controls (sglang-omni extension).
+
+    Text-to-image defaults to 1024x1024; edits follow the input image grid.
+    """
+
+    model_config = ConfigDict(allow_inf_nan=False, extra="forbid")
+
+    mode: Literal["normal", "thinking"] = "normal"
+    decode_mode: Literal["normal", "decoder-turbo"] = "normal"
+    decoder_steps: int | None = Field(default=None, ge=1)
+    seed: int | None = None
+    cfg_scale: float = Field(default=1.0, ge=1.0)
+    cfg_text_scale: float | None = Field(default=None, ge=0.0)
+    cfg_image_scale: float = Field(default=0.0, ge=0.0)
+    cfg_rescale: float = Field(default=0.7, ge=0.0, le=1.0)
+    image_h: int | None = Field(default=None, ge=32, multiple_of=32)
+    image_w: int | None = Field(default=None, ge=32, multiple_of=32)
+    dllm_steps: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_decoder_steps(self) -> ImageGenerationParams:
+        if self.decode_mode == "normal" and self.decoder_steps == 1:
+            raise ValueError(
+                "normal decoding requires decoder_steps >= 2; use decoder-turbo "
+                "for a one-step request"
+            )
+        else:
+            pass
+        return self
+
+
 class ChatCompletionRequest(BaseModel):
     """OpenAI-compatible chat completion request."""
 
@@ -52,8 +93,8 @@ class ChatCompletionRequest(BaseModel):
     top_k: int | None = None
     min_p: float | None = None
     repetition_penalty: float | None = None
-    max_tokens: int | None = None
-    max_completion_tokens: int | None = None
+    max_tokens: int | None = Field(default=None, ge=1)
+    max_completion_tokens: int | None = Field(default=None, ge=1)
     stop: str | list[str] | None = None
     seed: int | None = None
 
@@ -82,6 +123,7 @@ class ChatCompletionRequest(BaseModel):
     video_min_pixels: int | None = None
     video_max_pixels: int | None = None
     video_total_pixels: int | None = None
+    use_audio_in_video: bool | None = None
 
     # Per-stage sampling overrides (sglang-omni specific)
     stage_sampling: dict[str, dict[str, object]] | None = None
@@ -97,6 +139,16 @@ class ChatCompletionRequest(BaseModel):
     # Misc
     request_id: str | None = None
     user: str | None = None
+
+    @model_validator(mode="after")
+    def validate_input_present(self) -> ChatCompletionRequest:
+        if not self.messages and not (self.audios or self.images or self.videos):
+            raise ValueError(
+                "messages must not be empty without audios, images or videos"
+            )
+        else:
+            pass
+        return self
 
     @property
     def effective_max_tokens(self) -> int | None:
@@ -227,6 +279,10 @@ class SerializedMultimodalInputs(BaseModel):
     tensors: dict[str, SerializedMultimodalTensor] = Field(min_length=1)
 
 
+# Token ids are stored as signed 64-bit integers.
+TOKEN_ID_STORAGE_BOUND = 1 << 63
+
+
 class RolloutGenerateRequest(BaseModel):
     """Rollout request for ``POST /generate``; set exactly one of
     ``input_ids``, ``prompt``, ``messages``."""
@@ -235,9 +291,9 @@ class RolloutGenerateRequest(BaseModel):
 
     model: str | None = None
 
-    input_ids: list[int] | None = None
+    input_ids: list[int] | None = Field(default=None, min_length=1)
     prompt: str | None = None
-    messages: list[RolloutMessage] | None = None
+    messages: list[RolloutMessage] | None = Field(default=None, min_length=1)
 
     sampling_params: RolloutSamplingParams = Field(
         default_factory=RolloutSamplingParams
@@ -255,6 +311,20 @@ class RolloutGenerateRequest(BaseModel):
     return_omni_rollout: bool = False
     return_routed_experts: bool = False
     return_indexer_topk: bool = False
+
+    @field_validator("input_ids")
+    @classmethod
+    def validate_input_ids(cls, input_ids: list[int] | None) -> list[int] | None:
+        # One located error keeps the 422 small for a long invalid prompt.
+        for index, token_id in enumerate(input_ids or ()):
+            if not 0 <= token_id < TOKEN_ID_STORAGE_BOUND:
+                raise ValueError(
+                    f"input_ids[{index}] is {token_id}. "
+                    "Token ids must be in [0, 2**63)."
+                )
+            else:
+                pass
+        return input_ids
 
 
 class GenerateFinishReason(BaseModel):
@@ -326,6 +396,7 @@ class SpeechReference(BaseModel):
     media_type: str | None = None
     text: str | None = None
     vq_codes: list[list[int]] | list[int] | None = None
+    speaker_embedding: list[float] | None = None
 
 
 class CreateSpeechRequest(BaseModel):
@@ -370,6 +441,7 @@ class CreateSpeechRequest(BaseModel):
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None
+    epsilon_cutoff: float | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
 
@@ -407,6 +479,7 @@ class SpeechBatchItem(BaseModel):
     temperature: object = None
     top_p: object = None
     top_k: object = None
+    epsilon_cutoff: object = None
     repetition_penalty: object = None
     seed: object = None
     stage_params: object = None
@@ -442,6 +515,7 @@ class CreateSpeechBatchRequest(BaseModel):
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None
+    epsilon_cutoff: float | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
     stage_params: dict[str, dict[str, object]] | None = None
@@ -457,6 +531,14 @@ class SpeechBatchResult(BaseModel):
     media_type: str | None = None
     finish_reason: str | None = None
     error: dict[str, object] | None = None
+
+
+class SpeechStreamOutcome(BaseModel):
+    """Terminal state of a finished raw PCM speech stream."""
+
+    request_id: str
+    finish_reason: str
+    usage: UsageInfo | None = None
 
 
 class SpeechBatchResponse(BaseModel):
@@ -499,6 +581,7 @@ class SpeechStreamSessionConfig(BaseModel):
     temperature: float | None = None
     top_p: float | None = None
     top_k: int | None = None
+    epsilon_cutoff: float | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
     stage_params: dict[str, dict[str, object]] | None = None
@@ -538,6 +621,7 @@ class TranscriptionResponse(BaseModel):
 
     text: str
     usage: TranscriptionUsage | None = None
+    finish_reason: str | None = None
 
 
 class TranscriptionSegment(BaseModel):
@@ -558,6 +642,7 @@ class TranscriptionVerboseResponse(BaseModel):
     text: str
     segments: list[TranscriptionSegment] = Field(default_factory=list)
     usage: TranscriptionUsage | None = None
+    finish_reason: str | None = None
 
 
 class TranscriptionTextDeltaEvent(BaseModel):
@@ -573,6 +658,7 @@ class TranscriptionTextDoneEvent(BaseModel):
     type: str = "transcript.text.done"
     text: str
     usage: TranscriptionUsage | None = None
+    finish_reason: str | None = None
 
 
 class ModelPermission(BaseModel):

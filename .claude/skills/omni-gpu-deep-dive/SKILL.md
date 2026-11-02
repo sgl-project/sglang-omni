@@ -12,7 +12,7 @@ The kernel, overlap, and fuse analysis is not in this repo. It lives in the
 
 - https://github.com/BBuf/AI-Infra-Auto-Driven-SKILLS
 
-Source attribution for `sglang_omni/` and `sglang_omni_router/` is part of that
+Source attribution for `sglang_omni/` is part of that
 skill as of its PR #96, so nothing here patches it. This skill owns three things:
 
 - the backend pointer and its capability check
@@ -36,7 +36,7 @@ grep -q sglang_omni "$OMNI_PROFILER_BACKEND/scripts/profile_common.py" \
 ```
 
 A hard exit, because the failure is quiet. An older backend still runs and still
-prints three tables, but its path allowlist knows `python/sglang/` and `vllm/`
+prints three tables, but its path allowlist knows `python/sglang/`
 and not `sglang_omni/`, so an omni frame loses to the torch frame that launched
 the kernel and the overlap table's scope degrades to `torch/nn/modules/linear.py`
 and friends. The kernel table may survive on a fallback that ranks any python

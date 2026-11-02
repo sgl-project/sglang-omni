@@ -23,6 +23,7 @@ import wave
 import aiohttp
 import requests
 import torch
+import torchaudio
 from jiwer import process_words
 
 from benchmarks.benchmarker.data import RequestResult
@@ -35,6 +36,7 @@ from benchmarks.metrics.wer import (
     calculate_asr_speed_metrics,
     calculate_wer_metrics,
 )
+from sglang_omni.utils.audio import load_with_torchaudio
 
 logger = logging.getLogger(__name__)
 
@@ -95,9 +97,7 @@ def normalize_text(text: str, lang: str) -> str:
 
 
 def _load_wav_mono_16k(wav_path: str) -> torch.Tensor:
-    import torchaudio
-
-    audio, sample_rate = torchaudio.load(wav_path)
+    audio, sample_rate = load_with_torchaudio(wav_path, source_name="ASR benchmark")
     if audio.ndim == 2 and audio.shape[0] > 1:
         audio = audio.mean(dim=0, keepdim=True)
     audio = audio.squeeze(0).to(torch.float32)

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from fastapi.responses import JSONResponse
 
 from sglang_omni.admission import QueueFullError
-from sglang_omni.serve.openai_errors import is_bad_request_error
+from sglang_omni.serve.openai_errors import generation_error_status_code
 
 
 @dataclass
@@ -129,12 +129,10 @@ def speech_generation_error(exc: BaseException) -> SpeechAPIError:
         return exc
     else:
         pass
-    if QueueFullError.matches(exc):
+    status_code = generation_error_status_code(exc)
+    if status_code == 503:
         return service_unavailable(QueueFullError.MESSAGE)
-    else:
-        pass
-    if is_bad_request_error(exc):
+    elif status_code == 400:
         return bad_request(str(exc))
     else:
-        pass
-    return internal_error(str(exc))
+        return internal_error(str(exc))

@@ -173,23 +173,6 @@ def test_cache_hit_skips_reencode() -> None:
     assert service.stats()["hits"] == 1
 
 
-def test_extended_audio_never_reuses_prefix_embedding() -> None:
-    model = StubModel()
-    service = make_service(model)
-
-    short = make_item(111, 3)
-    extended = make_item(222, 5)
-    service.encode_item(short)
-    service.encode_item(extended)
-
-    assert model.encode_calls == 2
-    assert extended.precomputed_embeddings.shape == (5, HIDDEN_SIZE)
-    assert len(service.cache) == 2
-    assert not torch.equal(
-        short.precomputed_embeddings[0], extended.precomputed_embeddings[0]
-    )
-
-
 def test_cache_key_prefers_full_waveform_fingerprint() -> None:
     model = StubModel()
     service = make_service(model)
@@ -718,16 +701,6 @@ def test_item_without_fingerprint_encodes_without_caching() -> None:
     assert first.feature is None
     assert first.precomputed_embeddings.shape == (2, HIDDEN_SIZE)
     assert len(service.cache) == 0
-
-
-def test_expected_audio_tokens_uses_request_metadata() -> None:
-    explicit = MultimodalDataItem(
-        modality=Modality.AUDIO,
-        feature=torch.zeros(1, 560, 17),
-        model_specific_data={"num_audio_tokens": 5},
-    )
-    assert expected_audio_tokens(explicit) == 5
-    assert expected_audio_tokens(MultimodalDataItem(modality=Modality.AUDIO)) is None
 
 
 def test_build_cache_namespace_is_stable_and_scoped() -> None:

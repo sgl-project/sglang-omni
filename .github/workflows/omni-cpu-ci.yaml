@@ -5,7 +5,7 @@ name: CPU CI
 # DAG:
 #   check-changes -> preflight -> cpu-ci -> finish
 #                                             ^
-#                        (finish always runs, aggregates the result)
+#                        (finish aggregates the result unless cancelled)
 #
 # Design notes / why this differs from omni-xpu-ci.yaml:
 #
@@ -41,7 +41,6 @@ name: CPU CI
 
 on:
   pull_request:
-    branches: [main]
     types: [opened, labeled, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
@@ -100,6 +99,7 @@ jobs:
     timeout-minutes: 15
     outputs:
       test_sha: ${{ steps.meta.outputs.test_sha }}
+      run_intel_cpu: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.plan.outputs.run_intel_cpu }}
     steps:
       - name: Fetch latest PR gate state
         if: ${{ github.event_name == 'pull_request' }}
@@ -109,14 +109,16 @@ jobs:
           github-token: ${{ github.token }}
           script: |
             // Reruns reuse the original pull_request event payload, so fetch
-            // live labels/draft state after /tag-and-rerun-ci adds run-ci.
+            // the live labels and draft state.
             const pr = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: context.issue.number,
             });
-            core.setOutput("labels", JSON.stringify(pr.data.labels.map((label) => label.name)));
+            const labels = pr.data.labels.map((label) => label.name);
+            core.setOutput("labels", JSON.stringify(labels));
             core.setOutput("draft", pr.data.draft ? "true" : "false");
+            core.setOutput("is_selected", labels.includes("run-all-ci") || labels.includes("run-intel-cpu-ci"));
 
       - name: Log PR gate state
         if: ${{ github.event_name == 'pull_request' }}
@@ -125,21 +127,25 @@ jobs:
           echo "PR draft: ${{ steps.pr.outputs.draft }}"
 
       - name: Block draft PR
-        if: ${{ github.event_name == 'pull_request' && fromJson(steps.pr.outputs.draft) }}
+        if: ${{ steps.pr.outputs.is_selected == 'true' && fromJson(steps.pr.outputs.draft) }}
         run: |
           echo "PR is draft. Blocking CPU CI."
           exit 1
 
-      - name: Require run-ci label
-        if: ${{ github.event_name == 'pull_request' }}
-        run: |
-          if [[ "${{ contains(fromJson(steps.pr.outputs.labels), 'run-ci') }}" == "false" ]]; then
-            echo "Missing required label 'run-ci'. Add the label or use /tag-and-rerun-ci to opt into CPU CI."
-            exit 1
-          fi
-
       - name: Checkout workflow scripts
+        if: ${{ github.event_name == 'workflow_dispatch' || steps.pr.outputs.is_selected == 'true' }}
         uses: actions/checkout@v4
+
+      - name: Resolve CI stages
+        if: ${{ steps.pr.outputs.is_selected == 'true' }}
+        id: plan
+        env:
+          LABELS_JSON: ${{ steps.pr.outputs.labels }}
+        run: |
+          python .github/scripts/resolve_ci_labels.py resolve \
+            --labels-json "${LABELS_JSON}" \
+            --seed "${GITHUB_RUN_ID}" \
+            --github-output "${GITHUB_OUTPUT}"
 
       - name: Resolve tested commit
         id: meta
@@ -153,7 +159,7 @@ jobs:
           echo "Tested commit SHA: ${TEST_SHA}"
 
       - name: Check PR lint and mergeability
-        if: ${{ github.event_name == 'pull_request' }}
+        if: ${{ github.event_name == 'pull_request' && steps.plan.outputs.run_self_hosted == 'true' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python .github/scripts/pr_ci_gate.py
@@ -163,9 +169,9 @@ jobs:
         run: echo "Manual workflow_dispatch bypasses PR lint/mergeability gate."
 
   cpu-ci:
-    name: cpu-ci (unit_test/cpu)
+    name: intel-cpu-ci (unit_test/cpu)
     needs: [check-changes, preflight]
-    if: ${{ needs.check-changes.outputs.run == 'true' && needs.preflight.result == 'success' }}
+    if: ${{ needs.check-changes.outputs.run == 'true' && needs.preflight.result == 'success' && needs.preflight.outputs.run_intel_cpu == 'true' }}
     runs-on: [self-hosted, intel-omni-spr]
     timeout-minutes: 90
     env:
@@ -269,7 +275,7 @@ jobs:
   finish:
     name: CPU CI Status
     needs: [check-changes, preflight, cpu-ci]
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -279,9 +285,7 @@ jobs:
           echo "check-changes: ${{ needs.check-changes.result }}"
           echo "preflight:     ${{ needs.preflight.result }}"
           echo "cpu-ci:        ${{ needs.cpu-ci.result }}"
-          # Jobs skipped because the PR did not touch CPU paths are a valid
-          # "nothing to do" -> success. Preflight gate failures and cancellations
-          # remain real failures and fail the aggregate status.
+          # Jobs skipped by paths or labels are valid; failed jobs are not.
           if ${{ contains(needs.*.result, 'failure') }}; then
             echo "A required CPU CI job failed."
             exit 1

@@ -19,7 +19,6 @@ from typing import Callable, Iterable, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
-from sglang.srt.distributed import get_pp_group
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.layers.utils import PPMissingLayer, get_layer_id
@@ -27,7 +26,7 @@ from sglang.srt.layers.vocab_parallel_embedding import VocabParallelEmbedding
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.qwen3 import Qwen3Model
-from sglang.srt.runtime_context import get_schedule
+from sglang.srt.runtime_context import get_parallel, get_schedule
 from sglang.srt.utils import add_prefix
 from transformers import GPT2Config, PretrainedConfig, Qwen3Config
 
@@ -80,7 +79,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         prefix: str = "",
     ) -> None:
         super().__init__()
-        self.pp_group = get_pp_group()
+        self.pp_group = get_parallel().pp_group
         self.config = self.normalize_config(config)
         self.quant_config = quant_config
         self.hidden_size = int(self.config.hidden_size)
@@ -282,8 +281,9 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         input_embeds: Optional[torch.Tensor] = None,
         pp_proxy_tensors: Optional[PPProxyTensors] = None,
         input_embeds_are_projected: bool = False,
+        omni_prefill_rids: list[str] | None = None,
     ) -> LogitsProcessorOutput:
-        del input_embeds_are_projected
+        # note (Zhang Yiyang): MOSS-TTS Local ignores the shared prefill projection flag and request IDs.
         if input_embeds is None:
             forward_mode = getattr(forward_batch, "forward_mode", None)
             is_decode = (

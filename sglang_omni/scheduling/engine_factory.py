@@ -38,10 +38,6 @@ from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoi
 
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
-    from sglang.srt.hardware_backend.mlx.model_runner_stub import (
-        _DummyModel as MlxStubModel,
-    )
-    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
     from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
     from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
     from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
@@ -87,6 +83,10 @@ class SchedulerExtras(TypedDict, Generic[RequestDataT], total=False):
     stream_output_builder: StreamOutputBuilder[RequestDataT] | None
     enable_async_decode: bool
     async_decode_min_batch_size: int
+    async_decode_resolve_before_prefill: bool
+    async_prefill: bool
+    should_run_top_priority_stream: bool
+    request_build_admission_wait_s: float
     prefill_coalesce_requests: int
     prefill_coalesce_wait_ms: float
     prefill_coalesce_when_idle: bool
@@ -107,6 +107,8 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
 
     model_name: str
     context_length: int
+    # The operator's overrides, to tell a set value from one the policy derived.
+    server_args_overrides: Mapping[str, object]
     model_arch_override: str | None = None
     supports_context_length_override: ClassVar[bool] = False
     # Set True only by builders whose model has adopted the breakable prefill
@@ -134,6 +136,7 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
         gpu_id: int | None = None,
         dtype: str = "bfloat16",
         server_args_overrides: Mapping[str, object] | None = None,
+        total_gpu_memory_fraction: float | None = None,
     ) -> "OmniScheduler[RequestDataT]":
         from sglang_omni.platforms import current_platform
         from sglang_omni.scheduling import bootstrap as scheduling_bootstrap
@@ -158,6 +161,7 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
             server_args_overrides["disable_cuda_graph"] = True
         else:
             pass
+        self.server_args_overrides = server_args_overrides or {}
 
         requested_context_length = (
             server_args_overrides.get("context_length")
@@ -263,7 +267,7 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
         else:
             pass
 
-        def before_memory_pool(model_worker: ModelWorker | MlxTpModelWorker) -> None:
+        def before_memory_pool(model_worker: ModelWorker) -> None:
             self.before_memory_pool(
                 model_worker=model_worker,
                 checkpoint_dir=checkpoint_dir,
@@ -273,6 +277,10 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
             )
 
         infra_kwargs["before_memory_pool"] = before_memory_pool
+        if total_gpu_memory_fraction is not None:
+            infra_kwargs["total_gpu_memory_fraction"] = total_gpu_memory_fraction
+        else:
+            pass
         prefill_graph_backend = get_prefill_cuda_graph_backend(server_args)
         if prefill_graph_backend == CudaGraphBackend.BREAKABLE:
             if not self.supports_breakable_prefill_cuda_graph:
@@ -396,7 +404,7 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
         del server_args
 
     def validate_after_model_setup(
-        self, model: torch.nn.Module | MlxStubModel, server_args: ServerArgs
+        self, model: torch.nn.Module, server_args: ServerArgs
     ) -> None:
         del model, server_args
 
@@ -412,7 +420,7 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
     def before_memory_pool(
         self,
         *,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         checkpoint_dir: str,
         device: str,
         gpu_id: int,
@@ -424,7 +432,7 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
     def setup_model(
         self,
         *,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         checkpoint_dir: str,
         device: str,
         gpu_id: int,
@@ -432,23 +440,21 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
     ) -> None:
         del model_worker, checkpoint_dir, device, gpu_id, server_args
 
-    def get_model_buffer_bs(self, model: torch.nn.Module | MlxStubModel) -> int | None:
+    def get_model_buffer_bs(self, model: torch.nn.Module) -> int | None:
         del model
         return None
 
-    def compile_model(
-        self, model: torch.nn.Module | MlxStubModel, server_args: ServerArgs
-    ) -> None:
+    def compile_model(self, model: torch.nn.Module, server_args: ServerArgs) -> None:
         del model, server_args
 
     def post_cuda_graph_setup(
-        self, model: torch.nn.Module | MlxStubModel, server_args: ServerArgs
+        self, model: torch.nn.Module, server_args: ServerArgs
     ) -> None:
         del model, server_args
 
     def setup_model_resources(
         self,
-        model: torch.nn.Module | MlxStubModel,
+        model: torch.nn.Module,
         server_args: ServerArgs,
         *,
         generation_cuda_graph_enabled: bool,
@@ -456,20 +462,20 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
         del model, server_args, generation_cuda_graph_enabled
 
     def setup_runtime_resources(
-        self, model: torch.nn.Module | MlxStubModel, server_args: ServerArgs
+        self, model: torch.nn.Module, server_args: ServerArgs
     ) -> None:
         del model, server_args
 
     @abstractmethod
     def make_model_runner(
         self,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         output_proc: SGLangOutputProcessor,
     ) -> ModelRunner[RequestDataT]:
         raise NotImplementedError
 
     @abstractmethod
-    def make_adapters(self, model: torch.nn.Module | MlxStubModel) -> tuple[
+    def make_adapters(self, model: torch.nn.Module) -> tuple[
         Callable[[StagePayload], RequestDataT | DeferredAdmission[RequestDataT]] | None,
         Callable[[RequestDataT], StagePayload] | None,
     ]:
@@ -478,8 +484,8 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
     def build_runtime(
         self,
         *,
-        model_worker: ModelWorker | MlxTpModelWorker,
-        model: torch.nn.Module | MlxStubModel,
+        model_worker: ModelWorker,
+        model: torch.nn.Module,
         output_proc: SGLangOutputProcessor,
         tree_cache: BasePrefixCache,
         req_to_token_pool: ReqToTokenPool,
@@ -522,7 +528,7 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
     def make_scheduler(
         self,
         *,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         tree_cache: BasePrefixCache,
         req_to_token_pool: ReqToTokenPool,
         token_to_kv_pool_allocator: BaseTokenToKVPoolAllocator,
@@ -580,7 +586,7 @@ class AsrEngineBuilder(SGLangGenerationEngineBuilder[RequestDataT]):
 
     def make_model_runner(
         self,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         output_proc: SGLangOutputProcessor,
     ) -> ModelRunner[RequestDataT]:
         from sglang_omni.model_runner.base import ModelRunner
@@ -595,7 +601,7 @@ class TtsEngineBuilder(SGLangGenerationEngineBuilder[RequestDataT]):
     def setup_model(
         self,
         *,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         checkpoint_dir: str,
         device: str,
         gpu_id: int,
@@ -606,7 +612,7 @@ class TtsEngineBuilder(SGLangGenerationEngineBuilder[RequestDataT]):
     @abstractmethod
     def make_model_runner(
         self,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         output_proc: SGLangOutputProcessor,
     ) -> ModelRunner[RequestDataT]:
         raise NotImplementedError
@@ -618,7 +624,7 @@ class TtsEngineBuilder(SGLangGenerationEngineBuilder[RequestDataT]):
         del server_args
 
     def validate_after_model_setup(
-        self, model: torch.nn.Module | MlxStubModel, server_args: ServerArgs
+        self, model: torch.nn.Module, server_args: ServerArgs
     ) -> None:
         validate_generation_batch_policy(
             model_name=self.model_name,
@@ -630,7 +636,7 @@ class TtsEngineBuilder(SGLangGenerationEngineBuilder[RequestDataT]):
     def make_scheduler(
         self,
         *,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         tree_cache: BasePrefixCache,
         req_to_token_pool: ReqToTokenPool,
         token_to_kv_pool_allocator: BaseTokenToKVPoolAllocator,
@@ -659,8 +665,8 @@ class TtsEngineBuilder(SGLangGenerationEngineBuilder[RequestDataT]):
     def build_runtime(
         self,
         *,
-        model_worker: ModelWorker | MlxTpModelWorker,
-        model: torch.nn.Module | MlxStubModel,
+        model_worker: ModelWorker,
+        model: torch.nn.Module,
         output_proc: SGLangOutputProcessor,
         tree_cache: BasePrefixCache,
         req_to_token_pool: ReqToTokenPool,

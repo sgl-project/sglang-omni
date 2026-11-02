@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import os
-import socket
 from bisect import bisect_left
 from collections import Counter
 from collections.abc import Mapping
@@ -24,6 +23,9 @@ if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
     from sglang.srt.model_executor.forward_batch_info import ForwardBatch
     from sglang.srt.server_args import ServerArgs
+    from sglang.srt.speculative.base_spec_worker import BaseSpecWorker
+
+    from sglang_omni.speculative.target_worker import SpeculativeTargetWorker
 else:
     pass
 
@@ -38,8 +40,6 @@ class ModelWorkerConfig:
     total_gpu_memory_fraction: float | None = None
     kv_cache_bytes: int | None = None
     enable_prefill_input_embeds: bool = False
-    mlx_model_path: str | None = None
-    mlx_model_revision: str | None = None
 
 
 @dataclass(slots=True)
@@ -95,11 +95,41 @@ class ModelWorker:
 
         self.gpu_id = gpu_id
         self.tp_rank = tp_rank
+        # Set by create_sglang_infrastructure when speculative decoding is on.
+        self.speculative_target_worker: SpeculativeTargetWorker | None = None
+        self.speculative_worker: BaseSpecWorker | None = None
         self.init_model_config()
         effective_quantization = self.configure_backend_policy()
-        from sglang.srt.runtime_context import publish
+        from sglang.srt.distributed import bootstrap
+        from sglang.srt.runtime_context import (
+            SpawnRanks,
+            get_device,
+            get_parallel,
+            publish,
+            spawn_world_rank,
+        )
+        from sglang.srt.utils import broadcast_pyobj, set_random_seed
 
-        publish(self.server_args, role="scheduler")
+        publish(
+            self.server_args,
+            role="scheduler",
+            ranks=SpawnRanks(
+                world_rank=spawn_world_rank(
+                    self.server_args, tp_rank=tp_rank, pp_rank=0
+                ),
+                gpu_id=gpu_id,
+            ),
+        )
+        if self.nccl_port is None:
+            self.nccl_port = resolve_nccl_port()
+        else:
+            pass
+        bootstrap.init_parallel_runtime(
+            server_args=self.server_args,
+            device=get_device().device,
+            dist_port=self.nccl_port,
+        )
+        bootstrap.init_layer_runtime(model_config=self.model_config)
         initialize_model_worker_backend_globals(
             self.model_config, effective_quantization
         )
@@ -108,13 +138,11 @@ class ModelWorker:
         self.prefill_cuda_graph_usage = PrefillCudaGraphUsage()
 
         self.device = self.model_runner.device
-        from sglang.srt.runtime_context import get_device
-        from sglang.srt.utils import broadcast_pyobj, set_random_seed
 
         self.random_seed = broadcast_pyobj(
             [get_device().random_seed],
             self.tp_rank,
-            self.model_runner.tp_group.cpu_group,
+            get_parallel().tp_group.cpu_group,
         )[0]
         set_random_seed(self.random_seed)
 
@@ -260,7 +288,7 @@ class ModelWorker:
             self.model_runner.effective_max_total_num_tokens
         )
         max_req_len = min(
-            self.server_args.context_length - 1,
+            self.model_config.context_len - 1,
             effective_max_total_num_tokens - 1,
         )
         max_req_input_len = max_req_len - 1
@@ -282,13 +310,17 @@ class ModelWorker:
         )
 
     def get_tp_group(self):
-        return self.model_runner.tp_group
+        from sglang.srt.runtime_context import get_parallel
+
+        return get_parallel().tp_group
 
     def get_attention_tp_group(self):
-        return self.model_runner.attention_tp_group
+        from sglang.srt.runtime_context import get_parallel
+
+        return get_parallel().attn_tp_group
 
     def get_attention_tp_cpu_group(self):
-        return self.model_runner.attention_tp_group.cpu_group
+        return self.get_attention_tp_group().cpu_group
 
     def get_pad_input_ids_func(self):
         return getattr(self.model_runner.model, "pad_input_ids", None)
@@ -296,19 +328,11 @@ class ModelWorker:
     def init_model_runner(self):
         from .sglang_model_runner import SGLModelRunner
 
-        nccl_port = (
-            self.nccl_port if self.nccl_port is not None else resolve_nccl_port()
-        )
         self.model_runner = SGLModelRunner(
             model_config=self.model_config,
             server_args=self.server_args,
             gpu_id=self.gpu_id,
-            tp_rank=self.tp_rank,
-            moe_ep_rank=0,
-            moe_ep_size=1,
-            pp_rank=0,
-            pp_size=1,
-            nccl_port=nccl_port,
+            nccl_port=self.nccl_port,
             model_arch_override=self.model_arch_override,
             weight_prefix=self.weight_prefix,
             total_gpu_memory_fraction=self.total_gpu_memory_fraction,
@@ -603,16 +627,15 @@ def resolve_nccl_port() -> int:
     else:
         pass
 
+    from sglang_omni.utils.port_claim import NCCL_PORT_BASE, claim_tcp_port
+
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.bind(("", 0))
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            port = sock.getsockname()[1]
+        port = claim_tcp_port()
     except PermissionError:
-        # Some restricted CI / sandbox environments do not allow ephemeral socket
-        # binding during test-time configuration. Fall back to a stable default so
+        # Some restricted CI / sandbox environments do not allow socket binding
+        # during test-time configuration. Fall back to a stable default so
         # callers still receive a valid NCCL port choice.
-        port = 29500
+        port = NCCL_PORT_BASE
 
     os.environ["MASTER_PORT"] = str(port)
     return port

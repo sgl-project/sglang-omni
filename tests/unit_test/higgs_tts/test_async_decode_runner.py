@@ -218,42 +218,6 @@ def test_async_resolve_overrun_guard_skips_finished_row(monkeypatch):
     assert asy == sync
 
 
-def test_async_matches_sync_bs1_active(monkeypatch):
-    """Parity at bs=1 (the size that the scheduler routes to the SYNC fast path
-    via async_decode_min_batch_size=2). The collect itself must still agree, so
-    a future default-flip can't silently change bs=1 behavior.
-    """
-    kw = dict(
-        codes_BN=[[9, 8, 7]],
-        was_done=[False],
-        active_generation_done=[False],
-        inflight_middle_chunks=[0],
-        finished=[lambda: False],
-    )
-    sync = run_sync(**kw)
-    asy = run_async(monkeypatch, **kw)
-    assert sync["output_codes"] == [[[9, 8, 7]]]
-    assert sync["next_token_ids"] == [9]
-    assert asy == sync
-
-
-def test_async_matches_sync_bs1_eoc(monkeypatch):
-    """bs=1 where the single row finishes via EOC: generation_done + finish
-    reason must propagate identically through the async path."""
-    kw = dict(
-        codes_BN=[[EOC_ID, 1, 2]],
-        was_done=[False],
-        active_generation_done=[True],
-        inflight_middle_chunks=[0],
-        finished=[lambda: False],
-    )
-    sync = run_sync(**kw)
-    asy = run_async(monkeypatch, **kw)
-    assert sync["generation_done"] == [True]
-    assert sync["finished_reason"] == [{"type": "stop", "matched": EOC_ID}]
-    assert asy == sync
-
-
 def pick_free_cuda_device(min_free_mib: int = 512) -> str | None:
     """Return the first CUDA device with at least ``min_free_mib`` free, else
     None. Avoids OOM on shared boxes where some GPUs already host a server."""

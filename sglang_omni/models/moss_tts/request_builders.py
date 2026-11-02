@@ -31,6 +31,7 @@ from sglang_omni.models.moss_tts.payload_types import (
     MossTTSState,
     resolve_moss_audio_pad_code,
 )
+from sglang_omni.models.moss_tts.reference_encoder import MossReferenceEncoder
 from sglang_omni.proto import StagePayload
 from sglang_omni.sampling.seed import derive_sampling_seed, new_random_sampling_seed
 from sglang_omni.scheduling.message import OutgoingMessage
@@ -41,12 +42,7 @@ from sglang_omni.utils.audio_payload import audio_data_uri_from_reference
 
 if TYPE_CHECKING:
     from sglang_omni.models.moss_tts.sglang_model import MossTTSDelaySGLangModel
-    from sglang_omni.models.moss_tts.stages import (
-        BatchedReferenceEncoder,
-        MossTTSReferenceEncoder,
-    )
 
-    ReferenceEncoder = BatchedReferenceEncoder | MossTTSReferenceEncoder
 else:
     pass
 
@@ -127,6 +123,13 @@ class MossTTSSGLangRequestData(ARRequestData):
     audio_length: int = 0
     delayed_length: int = _INF_DELAY
     is_audio: bool = False
+    # note (rsi): launch-side step counter; under lookahead decode the committed
+    # generation_steps lags the launched step by one.
+    sampling_steps: int = 0
+    # Step that emits audio_end, known once the delay countdown starts; the
+    # step after it samples the full text vocabulary. Derived from output_rows.
+    audio_end_step: int | None = None
+    audio_end_scanned_rows: int = 0
     engine_start_s: float = 0.0
 
 
@@ -144,7 +147,7 @@ class MossTTSPreparedRequest:
 @dataclass
 class MossTTSPreprocessingContext:
     processor: MossRequestProcessor[MossDelayReferences]
-    reference_encoder: ReferenceEncoder | None = None
+    reference_encoder: MossReferenceEncoder | None = None
 
 
 _QUEUE: PreparedRequestQueue[MossTTSPreprocessingContext, MossTTSPreparedRequest] = (
@@ -170,7 +173,7 @@ def close_moss_tts_preprocessing_context(
 def set_moss_tts_preprocessing_context(
     *,
     processor: MossRequestProcessor[MossDelayReferences],
-    reference_encoder: ReferenceEncoder | None = None,
+    reference_encoder: MossReferenceEncoder | None = None,
 ) -> None:
     """Register the upstream MOSS processor used by preprocessing."""
 
@@ -359,12 +362,6 @@ def build_generation_kwargs(
     *,
     tts_params: Mapping[str, object],
 ) -> dict[str, int | float]:
-    explicit_generation_params = tts_params.get("explicit_generation_params")
-    if isinstance(explicit_generation_params, (list, tuple, set)):
-        explicit_fields = {str(field) for field in explicit_generation_params}
-    else:
-        explicit_fields = set()
-
     raw_max_new_tokens = params.get("max_new_tokens")
     if raw_max_new_tokens is None:
         max_new_tokens = MOSS_TTS_DEFAULT_MAX_NEW_TOKENS
@@ -389,25 +386,22 @@ def build_generation_kwargs(
         "audio_repetition_penalty": AUDIO_REPETITION_PENALTY,
     }
 
-    if "temperature" in explicit_fields and params.get("temperature") is not None:
+    if params.get("temperature") is not None:
         generation_kwargs["text_temperature"] = float(params["temperature"])
         generation_kwargs["audio_temperature"] = float(params["temperature"])
     else:
         pass
-    if "top_p" in explicit_fields and params.get("top_p") is not None:
+    if params.get("top_p") is not None:
         generation_kwargs["text_top_p"] = float(params["top_p"])
         generation_kwargs["audio_top_p"] = float(params["top_p"])
     else:
         pass
-    if "top_k" in explicit_fields and params.get("top_k") is not None:
+    if params.get("top_k") is not None:
         generation_kwargs["text_top_k"] = int(params["top_k"])
         generation_kwargs["audio_top_k"] = int(params["top_k"])
     else:
         pass
-    if (
-        "repetition_penalty" in explicit_fields
-        and params.get("repetition_penalty") is not None
-    ):
+    if params.get("repetition_penalty") is not None:
         generation_kwargs["audio_repetition_penalty"] = float(
             params["repetition_penalty"]
         )
@@ -506,7 +500,7 @@ def build_row_cache_key_ids(rows: torch.Tensor) -> list[int]:
 def reference_for_processor(
     processor: object,
     ref_audio: MossAudioReference | None,
-    reference_encoder: ReferenceEncoder | None = None,
+    reference_encoder: MossReferenceEncoder | None = None,
 ) -> list[str | torch.Tensor] | None:
     if ref_audio is None:
         return None
@@ -530,7 +524,7 @@ def reference_for_processor(
 def build_processor_message(
     processor: MossRequestProcessor[MossDelayReferences],
     state: MossTTSState,
-    reference_encoder: ReferenceEncoder | None = None,
+    reference_encoder: MossReferenceEncoder | None = None,
 ) -> MossUserMessage:
     reference = reference_for_processor(
         processor,
@@ -550,7 +544,7 @@ def prepare_moss_tts_request(
     payload: StagePayload,
     *,
     processor: MossRequestProcessor[MossDelayReferences],
-    reference_encoder: ReferenceEncoder | None = None,
+    reference_encoder: MossReferenceEncoder | None = None,
 ) -> MossTTSPreparedRequest:
     state = build_moss_tts_state(payload)
     message = build_processor_message(processor, state, reference_encoder)

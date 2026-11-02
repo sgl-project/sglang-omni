@@ -1,3 +1,5 @@
+"""Dataset download pins, sample staging, path safety and input fingerprints."""
+
 from __future__ import annotations
 
 import io

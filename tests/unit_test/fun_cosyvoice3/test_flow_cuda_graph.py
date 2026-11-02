@@ -12,10 +12,7 @@ import sglang_omni.models.fun_cosyvoice3.stages as stages
 
 
 @pytest.fixture
-def cpu_cuda_contexts(monkeypatch) -> None:
-    monkeypatch.setattr(
-        torch.cuda, "device", lambda *args, **kwargs: contextlib.nullcontext()
-    )
+def cpu_autocast(monkeypatch) -> None:
     monkeypatch.setattr(
         torch, "autocast", lambda *args, **kwargs: contextlib.nullcontext()
     )
@@ -57,9 +54,13 @@ class ReplayGraph:
 
 
 def make_runner() -> stages.FlowCudaGraphRunner:
-    return stages.FlowCudaGraphRunner(
+    runner = stages.FlowCudaGraphRunner(
         make_flow(), device=torch.device("cpu"), autocast_dtype=None
     )
+    runner.device_module = SimpleNamespace(
+        device=lambda device: contextlib.nullcontext()
+    )
+    return runner
 
 
 def install(runner: stages.FlowCudaGraphRunner, key: tuple[int, int]) -> None:
@@ -105,7 +106,7 @@ def test_verify_capture_shapes_rejects_unaligned_frames() -> None:
         stages.verify_flow_cuda_graph_capture_shapes(((1, 495),))
 
 
-@pytest.mark.usefixtures("cpu_cuda_contexts")
+@pytest.mark.usefixtures("cpu_autocast")
 def test_resident_replay_crops_to_actual_frames() -> None:
     runner = make_runner()
     install(runner, (2, 496))
@@ -126,7 +127,7 @@ def test_resident_replay_crops_to_actual_frames() -> None:
     assert torch.equal(output, noisy_mel + token_condition + prompt_mel)
 
 
-@pytest.mark.usefixtures("cpu_cuda_contexts")
+@pytest.mark.usefixtures("cpu_autocast")
 def test_nonresident_shape_returns_none() -> None:
     runner = make_runner()
     install(runner, (2, 496))
@@ -150,8 +151,10 @@ def test_generate_flow_does_not_retry_eager_after_replay_failure(monkeypatch) ->
     assert eager_calls == []
 
 
-def cuda_flow(*, channels: int = 4, max_frames: int = 512) -> SimpleNamespace:
-    parameter = torch.nn.Parameter(torch.zeros(1, device="cuda"))
+def accelerator_flow(
+    device: torch.device, *, channels: int = 4, max_frames: int = 512
+) -> SimpleNamespace:
+    parameter = torch.nn.Parameter(torch.zeros(1, device=device))
 
     def forward_estimator(
         noisy_mel_cfg,
@@ -186,19 +189,20 @@ def cuda_flow(*, channels: int = 4, max_frames: int = 512) -> SimpleNamespace:
 
 @pytest.mark.accelerator
 def test_capture_populates_graphs_and_replays_eager_equivalent() -> None:
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA required for flow CUDA graph capture")
-    flow = cuda_flow()
-    runner = stages.FlowCudaGraphRunner(
-        flow, device=torch.device("cuda"), autocast_dtype=None
-    )
+    device = torch.device(stages.current_platform.device_type)
+    if stages.current_platform.get_device_graph_backend(device) is None:
+        pytest.skip(f"{device.type} records no Flow graphs")
+    else:
+        pass
+    flow = accelerator_flow(device)
+    runner = stages.FlowCudaGraphRunner(flow, device=device, autocast_dtype=None)
     shape = (1, 16)
     runner.capture((shape,))
 
     captured = runner.graphs.get(shape)
     assert captured is not None, "capture() must install a graph for each shape"
     for static in captured.static_inputs:
-        assert static.is_cuda
+        assert static.device.type == device.type
 
     noisy_mel, time_span, token_condition, mel_mask, speaker, prompt_mel = (
         runner.capture_inputs(*shape)

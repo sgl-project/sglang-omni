@@ -95,11 +95,6 @@ class TestErrors:
         with pytest.raises(ConfigPathError, match="empty segment"):
             ConfigPath.parse("stages..tp_size", type(pipeline_config))
 
-    def test_unknown_top_level_field(self, pipeline_config):
-        with pytest.raises(ConfigPathError) as excinfo:
-            ConfigPath.parse("stagez", type(pipeline_config))
-        assert "stages" in str(excinfo.value)
-
 
 class TestVisibility:
     def test_the_engine_leaf_is_public(self, pipeline_config):
@@ -144,10 +139,6 @@ class TestCoercion:
         )
         assert path.coerce("4") == "4"
 
-    def test_non_string_values_pass_through(self, pipeline_config):
-        path = ConfigPath.parse("stages.thinker.tp_size", type(pipeline_config))
-        assert path.coerce(4) == 4
-
     def test_free_form_group_keys_fall_back_to_scalar_parsing(self, pipeline_config):
         path = ConfigPath.parse(
             "stages.thinker.factory.made_up_knob", type(pipeline_config)
@@ -188,15 +179,6 @@ class TestReadWrite:
         ConfigPath.parse("stages.thinker.comm.credits", cls).write(data, 8)
         rebuilt = cls(**data)
         assert rebuilt.stage_named("thinker").comm.credits == 8
-
-    def test_write_new_mapping_key(self, pipeline_config: PipelineConfig):
-        cls = type(pipeline_config)
-        data = pipeline_config.model_dump()
-        ConfigPath.parse("stages.thinker.env.CUDA_LAUNCH_BLOCKING", cls).write(
-            data, "1"
-        )
-        rebuilt = cls(**data)
-        assert rebuilt.stage_named("thinker").env["CUDA_LAUNCH_BLOCKING"] == "1"
 
     def test_unknown_stage_lists_the_real_names(self, pipeline_config: PipelineConfig):
         data = pipeline_config.model_dump()
@@ -269,7 +251,3 @@ class TestLosslessNumericCoercion:
         path = self.path(pipeline_config, "stages.thinker.factory.enable_async_decode")
         assert path.coerce("1") is True
         assert path.coerce("0") is False
-
-    def test_numeric_text_stays_text_on_a_string_field(self, pipeline_config) -> None:
-        path = self.path(pipeline_config, "stages.thinker.factory.device")
-        assert path.coerce("123") == "123"

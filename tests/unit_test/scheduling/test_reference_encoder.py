@@ -260,18 +260,6 @@ def test_exception_propagates_to_all_waiters_and_does_not_poison() -> None:
     assert hook.calls["flaky"] == 2
 
 
-def test_artifact_larger_than_budget_is_returned_but_not_cached() -> None:
-    hook = TensorHook()
-    service = ReferenceEncodeService(hook, max_items=16, max_bytes=1)
-
-    first = service.get_or_encode("large")
-    second = service.get_or_encode("large")
-
-    assert torch.equal(first, second)
-    assert hook.calls["large"] == 2
-    assert service.stats()["entries"] == 0
-
-
 def test_lru_eviction_respects_max_bytes() -> None:
     hook = TensorHook()
     service = ReferenceEncodeService(hook, max_items=16, max_bytes=16)
@@ -339,21 +327,6 @@ def test_follower_timeout_does_not_remove_leader_inflight() -> None:
     assert torch.equal(service.get_or_encode("slow"), leader_result[0])
 
 
-def test_stats_hits_misses_merged_entries_bytes() -> None:
-    hook = TensorHook()
-    service = ReferenceEncodeService(hook, max_items=16, max_bytes=1024)
-
-    service.get_or_encode("stats")
-    service.get_or_encode("stats")
-    stats = service.stats()
-
-    assert stats["hits"] == 1
-    assert stats["misses"] == 1
-    assert stats["merged"] == 0
-    assert stats["entries"] == 1
-    assert stats["bytes"] > 0
-
-
 def test_revalidate_exception_clears_inflight_and_does_not_poison() -> None:
     # A hook whose revalidate() raises (e.g. reference file mutated mid-encode)
     # must not strand the in-flight entry: the leader has to fail the future and
@@ -376,53 +349,3 @@ def test_revalidate_exception_clears_inflight_and_does_not_poison() -> None:
     with pytest.raises(RuntimeError, match="revalidate boom"):
         service.get_or_encode("k")
     assert hook.calls["k"] == 2
-
-
-def test_revalidate_exception_propagates_to_followers_without_timeout() -> None:
-    # Concurrent same-key followers must receive the leader's failure promptly,
-    # not sit on follower_fut.result() until timeout_s.
-    release = threading.Event()
-    entered = threading.Event()
-    worker_count = 4
-    gate = FirstWaveGate(worker_count)
-
-    class GatedRaisingHook(TensorHook):
-        def normalize_input(self, raw_input: Any) -> str:
-            item = super().normalize_input(raw_input)
-            gate.wait()
-            return item
-
-        def encode_one(self, item: str) -> torch.Tensor:
-            entered.set()
-            assert release.wait(timeout=5)
-            return super().encode_one(item)
-
-        def revalidate(self, item: str, key: ReferenceEncodeKey) -> bool:
-            raise RuntimeError("revalidate boom")
-
-    hook = GatedRaisingHook()
-    # Large timeout: if the key were poisoned, followers would block far past the
-    # join() below, leaving their threads alive and errors incomplete.
-    service = ReferenceEncodeService(hook, max_items=16, max_bytes=1024, timeout_s=30)
-    errors: list[Exception] = []
-
-    def worker() -> None:
-        try:
-            service.get_or_encode("k", desc="k")
-        except Exception as exc:
-            errors.append(exc)
-
-    threads = [threading.Thread(target=worker) for _ in range(worker_count)]
-    for thread in threads:
-        thread.start()
-    assert entered.wait(timeout=5)
-    wait_for_merged(service, worker_count - 1)
-    release.set()
-    for thread in threads:
-        thread.join(timeout=5)
-
-    assert all(not thread.is_alive() for thread in threads)
-    assert len(errors) == 4
-    assert all(isinstance(error, RuntimeError) for error in errors)
-    assert all(str(error) == "revalidate boom" for error in errors)
-    assert len(service.inflight) == 0

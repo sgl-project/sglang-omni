@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import TypedDict
 
 import torch
 from sglang.srt.managers.schedule_batch import Req
@@ -21,6 +22,7 @@ from sglang_omni.models.personaplex.architecture import (
     TEXT_PAD_ID,
 )
 from sglang_omni.models.personaplex.config import CODE2WAV_STAGE, LM_STAGE
+from sglang_omni.models.personaplex.model_runner import DecodeFeedback
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.sampling import AudioSampling
 from sglang_omni.models.personaplex.timeline import (
@@ -28,26 +30,13 @@ from sglang_omni.models.personaplex.timeline import (
     build_prompt_frames,
     build_timeline,
 )
-from sglang_omni.proto.request import (
-    EXPLICIT_GENERATION_PARAMS_KEY,
-    EXPLICIT_STAGE_SAMPLING_PARAMS_KEY,
-    StagePayload,
-)
+from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.sampling.seed import derive_sampling_seed
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.types import RequestOutput
 
 SEED_NAMESPACE = "personaplex"
-# Note (wilsonzheng0327): The client fills these into every request, so a value equal
-# to one of them only counts when the caller listed the field as explicit.
-CLIENT_FILLER_VALUES = {
-    "temperature": 1.0,
-    "top_k": -1,
-    "top_p": 1.0,
-    "min_p": 0.0,
-    "repetition_penalty": 1.0,
-}
 
 
 @dataclass(frozen=True)
@@ -97,24 +86,8 @@ def param_or_default(params: dict, key: str, default, cast):
     return default if value is None else cast(value)
 
 
-def chosen_text_param(sources: list[tuple[dict, bool]], key: str, default, cast):
-    """The first value a caller actually chose, from (params, explicit) sources."""
-    for params, explicit in sources:
-        value = params.get(key)
-        if value is None:
-            continue
-        else:
-            pass
-        if not explicit and value == CLIENT_FILLER_VALUES[key]:
-            continue
-        else:
-            pass
-        return cast(value)
-    return default
-
-
 def resolve_sampling(
-    params: dict, explicit_fields=(), *, stage_sampling: dict
+    params: dict[str, object], *, stage_sampling: dict[str, object]
 ) -> RequestSampling:
     """Resolve selected stage values before stage overrides and top-level values."""
     for source in (params, stage_param_overrides(params, LM_STAGE), stage_sampling):
@@ -147,24 +120,23 @@ def resolve_sampling(
                 pass
     lm_overrides = stage_param_overrides(params, LM_STAGE)
     lm_params = {**params, **lm_overrides}
-    explicit = set(explicit_fields)
     seed = stage_sampling.get("seed")
     if seed is None:
         seed = lm_params.get("seed")
     else:
         pass
-
-    def text(key: str, default, cast):
-        sources = [
-            (stage_sampling, True),
-            (lm_overrides, True),
-            (params, key in explicit),
-        ]
-        return chosen_text_param(sources, key, default, cast)
+    text_params = {
+        field_name: value
+        for source in (params, lm_overrides, stage_sampling)
+        for field_name, value in source.items()
+        if value is not None
+    }
 
     return RequestSampling(
-        text_temperature=text("temperature", DEFAULT_TEXT_TEMPERATURE, float),
-        text_top_k=text("top_k", DEFAULT_TEXT_TOP_K, int),
+        text_temperature=float(
+            text_params.get("temperature", DEFAULT_TEXT_TEMPERATURE)
+        ),
+        text_top_k=int(text_params.get("top_k", DEFAULT_TEXT_TOP_K)),
         audio=AudioSampling(
             temperature=param_or_default(
                 lm_params, "audio_temperature", DEFAULT_AUDIO_TEMPERATURE, float
@@ -172,74 +144,45 @@ def resolve_sampling(
             top_k=param_or_default(lm_params, "audio_top_k", DEFAULT_AUDIO_TOP_K, int),
         ),
         seed=None if seed is None else int(seed),
-        top_p=text("top_p", 1.0, float),
-        min_p=text("min_p", 0.0, float),
-        repetition_penalty=text("repetition_penalty", 1.0, float),
+        top_p=float(text_params.get("top_p", 1.0)),
+        min_p=float(text_params.get("min_p", 0.0)),
+        repetition_penalty=float(text_params.get("repetition_penalty", 1.0)),
     )
 
 
-def timeline_from_state(state: PersonaPlexState) -> Timeline:
-    if state.user_codes is None:
-        raise ValueError("PersonaPlex LM request has no encoded caller audio")
-    else:
-        pass
-    voice_codes = state.voice_codes
-    prompt = build_prompt_frames(
-        voice_frames=int(state.voice_frames),
-        text_prompt_ids=[int(i) for i in state.text_prompt_ids],
-        voice_codes=None if voice_codes is None else voice_codes.to(torch.long),
-    )
-    return build_timeline(
-        prompt,
-        state.user_codes.to(torch.long),
-        voice_embeddings=state.voice_embeddings,
-        voice_tail_codes=(
-            None
-            if state.voice_tail_codes is None
-            else state.voice_tail_codes.to(torch.long)
-        ),
-    )
+class LMInputs(TypedDict, total=False):
+    """The model runner's state for one request, or for every unit of one session.
+
+    timeline through pending_frames are set when the request is built, and
+    num_samples for an offline request; the runner adds the rest.
+    """
+
+    timeline: Timeline
+    sampling: RequestSampling
+    agent_rows: list[torch.Tensor]
+    frames: list[torch.Tensor]
+    pending_frames: list[torch.Tensor]
+    num_samples: int
+    decode_feedback: DecodeFeedback
+    prefill_forced: torch.Tensor
+    audio_generator: torch.Generator
 
 
-def build_lm_request(
-    payload: StagePayload, *, vocab_size: int, context_length: int | None = None
-) -> SGLangARRequestData:
-    """One request per recording: the whole prompt as prefill, then one
-    decode step per 80 ms frame of the caller's audio."""
-    state = PersonaPlexState.from_dict(payload.data)
-    timeline = timeline_from_state(state)
-    metadata = payload.request.metadata or {}
-    params = payload.request.params
+def request_sampling(request: OmniRequest) -> RequestSampling:
+    """The LM sampling a request selects, from its params."""
+    params = request.params
     if "stage_sampling" in params and LM_STAGE in params["stage_sampling"]:
-        stage_sampling = {
-            key: params["stage_sampling"][LM_STAGE][key]
-            for key in metadata[EXPLICIT_STAGE_SAMPLING_PARAMS_KEY][LM_STAGE]
-        }
+        stage_sampling = params["stage_sampling"][LM_STAGE]
     else:
         stage_sampling = {}
-    sampling = resolve_sampling(
-        params,
-        metadata.get(EXPLICIT_GENERATION_PARAMS_KEY) or (),
-        stage_sampling=stage_sampling,
-    )
-    if timeline.num_frames < 1:
-        raise ValueError("PersonaPlex needs at least one 80 ms frame of caller audio")
-    else:
-        pass
-    positions = timeline.num_prompt_positions + timeline.num_frames
-    if context_length is not None and positions > context_length - 1:
-        raise ValueError(
-            f"PersonaPlex request needs {positions} positions "
-            f"({timeline.num_prompt_positions} prompt + {timeline.num_frames} caller "
-            f"frames, {timeline.num_frames * SAMPLES_PER_FRAME / SAMPLE_RATE:.1f} s) "
-            f"but the LM context holds {context_length - 1}; shorten the recording "
-            "or raise the lm stage's context_length"
-        )
-    else:
-        pass
+    return resolve_sampling(params, stage_sampling=stage_sampling)
 
+
+def lm_sampling_params(
+    sampling: RequestSampling, *, max_new_tokens: int, vocab_size: int
+) -> SamplingParams:
     sampling_params = SamplingParams(
-        max_new_tokens=timeline.num_frames,
+        max_new_tokens=max_new_tokens,
         temperature=sampling.text_temperature,
         top_k=sampling.text_top_k,
         top_p=sampling.top_p,
@@ -258,18 +201,85 @@ def build_lm_request(
         sampling_params.sampling_seed = sampling.text_seed
     else:
         pass
+    return sampling_params
 
-    # Note (wilsonzheng0327): Placeholder ids for SGLang's bookkeeping; the model runner
-    # embeds the real rows. The text stream's initial token is outside the vocabulary,
-    # so it is masked.
+
+def timeline_from_state(
+    state: PersonaPlexState, user_codes_UK: torch.Tensor
+) -> Timeline:
+    voice_codes = state.voice_codes
+    prompt = build_prompt_frames(
+        voice_frames=int(state.voice_frames),
+        text_prompt_ids=[int(i) for i in state.text_prompt_ids],
+        voice_codes=None if voice_codes is None else voice_codes.to(torch.long),
+    )
+    return build_timeline(
+        prompt,
+        user_codes_UK.to(torch.long),
+        voice_embeddings=state.voice_embeddings,
+        voice_tail_codes=(
+            None
+            if state.voice_tail_codes is None
+            else state.voice_tail_codes.to(torch.long)
+        ),
+    )
+
+
+def prompt_input_ids(timeline: Timeline) -> list[int]:
+    """Placeholder ids for SGLang's bookkeeping; the model runner embeds the real rows."""
+    # Note (wilsonzheng0327): The text stream's initial token is outside the
+    # vocabulary, so it is masked.
     text_ids = timeline.prefill_tokens[:, 0].clone()
     text_ids[text_ids >= TEXT_CARD] = TEXT_PAD_ID
-    input_ids = [int(i) for i in text_ids.tolist()]
+    return [int(i) for i in text_ids.tolist()]
+
+
+def new_model_inputs(timeline: Timeline, sampling: RequestSampling) -> LMInputs:
+    return {
+        "timeline": timeline,
+        "sampling": sampling,
+        "agent_rows": [],
+        "frames": [],
+        "pending_frames": [],
+    }
+
+
+def build_lm_request(
+    payload: StagePayload, *, vocab_size: int, context_length: int | None = None
+) -> SGLangARRequestData:
+    """One request per recording: the whole prompt as prefill, then one
+    decode step per 80 ms frame of the caller's audio."""
+    state = PersonaPlexState.from_dict(payload.data)
+    if state.user_codes is None:
+        raise ValueError("PersonaPlex LM request has no encoded caller audio")
+    else:
+        pass
+    timeline = timeline_from_state(state, state.user_codes)
+    sampling = request_sampling(payload.request)
+    if timeline.num_frames < 1:
+        raise ValueError("PersonaPlex needs at least one 80 ms frame of caller audio")
+    else:
+        pass
+    positions = timeline.num_prompt_positions + timeline.num_frames
+    if context_length is not None and positions > context_length - 1:
+        raise ValueError(
+            f"PersonaPlex request needs {positions} positions "
+            f"({timeline.num_prompt_positions} prompt + {timeline.num_frames} caller "
+            f"frames, {timeline.num_frames * SAMPLES_PER_FRAME / SAMPLE_RATE:.1f} s) "
+            f"but the LM context holds {context_length - 1}; shorten the recording "
+            "or raise the lm stage's context_length"
+        )
+    else:
+        pass
+
+    input_ids = prompt_input_ids(timeline)
     req = Req(
         rid=payload.request_id,
         origin_input_text="",
         origin_input_ids=input_ids,
-        sampling_params=sampling_params,
+        sampling_params=lm_sampling_params(
+            sampling, max_new_tokens=timeline.num_frames, vocab_size=vocab_size
+        ),
         vocab_size=vocab_size,
     )
     data = SGLangARRequestData(
@@ -279,14 +289,8 @@ def build_lm_request(
         max_new_tokens=timeline.num_frames,
         temperature=sampling.text_temperature,
     )
-    data.talker_model_inputs = {
-        "timeline": timeline,
-        "sampling": sampling,
-        "num_samples": int(state.num_samples),
-        "agent_rows": [],
-        "frames": [],
-        "pending_frames": [],
-    }
+    data.talker_model_inputs = new_model_inputs(timeline, sampling)
+    data.talker_model_inputs["num_samples"] = int(state.num_samples)
     return data
 
 
@@ -300,9 +304,7 @@ def apply_lm_result(data: SGLangARRequestData) -> StagePayload:
         int(token) for token in data.output_ids
     ]
     state.text_ids = text_ids[: len(frames)]
-    state.codes = (
-        torch.stack(frames).cpu() if frames else torch.zeros(0, 8, dtype=torch.long)
-    )
+    state.codes = torch.stack(frames) if frames else torch.zeros(0, 8, dtype=torch.long)
     for name in (
         "waveform",
         "voice_waveform",
@@ -325,7 +327,7 @@ def lm_stream_output_builder(
         return []
     else:
         pass
-    frames = torch.stack(pending).cpu()
+    frames = torch.stack(pending)
     pending.clear()
     return [
         OutgoingMessage(
@@ -336,16 +338,22 @@ def lm_stream_output_builder(
             metadata={
                 "modality": "audio_codes",
                 "num_samples": data.talker_model_inputs["num_samples"],
+                "stream": bool(data.stage_payload.request.params.get("stream")),
             },
         )
     ]
 
 
 __all__ = [
+    "LMInputs",
     "RequestSampling",
     "apply_lm_result",
     "build_lm_request",
+    "lm_sampling_params",
     "lm_stream_output_builder",
+    "new_model_inputs",
+    "prompt_input_ids",
+    "request_sampling",
     "resolve_sampling",
     "stage_request_params",
     "timeline_from_state",

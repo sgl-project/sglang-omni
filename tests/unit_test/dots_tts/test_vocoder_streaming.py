@@ -115,17 +115,6 @@ def patch(value: float = 0.0, *, frames: int = 3, dim: int = 5) -> torch.Tensor:
     return torch.full((1, frames, dim), value)
 
 
-def test_append_decoder_input_per_row_matches_scalar_when_ages_equal() -> None:
-    window = torch.zeros(2, 2, 6)
-    window[0, :, :2] = 1
-    window[1, :, :2] = 1
-    decoder_input = torch.full((2, 2, 2), 3.0)
-    valid = torch.tensor([2, 2], dtype=torch.int64)
-    out = append_decoder_input_per_row(decoder_input, window, valid)
-    assert out.shape == window.shape
-    assert torch.equal(out[0], out[1])
-
-
 def test_append_decoder_input_keeps_independent_row_ages() -> None:
     window = torch.zeros(2, 1, 6)
     window[0, :, :1] = 1
@@ -139,7 +128,7 @@ def test_append_decoder_input_keeps_independent_row_ages() -> None:
 
 def test_slot_pool_batches_equal_t_and_preserves_independent_counters() -> None:
     inference = FakeInference()
-    pool = DotsVocoderSlotPool(inference, num_slots=4, chunk_size=6)
+    pool = DotsVocoderSlotPool(inference, num_slots=4, chunk_size=6, latent_dim=5)
     s0 = pool.acquire()
     s1 = pool.acquire()
     older = torch.ones(1, 3, 5)
@@ -162,7 +151,7 @@ def test_slot_pool_batches_equal_t_and_preserves_independent_counters() -> None:
 
 
 def test_slot_pool_rejects_mixed_step_lengths() -> None:
-    pool = DotsVocoderSlotPool(FakeInference(), num_slots=2, chunk_size=6)
+    pool = DotsVocoderSlotPool(FakeInference(), num_slots=2, chunk_size=6, latent_dim=5)
     a = pool.acquire()
     b = pool.acquire()
     with pytest.raises(ValueError, match="uniform latent length"):
@@ -302,7 +291,7 @@ def test_release_stream_resources_returns_slot() -> None:
 
 
 def test_slot_exhaustion_raises_clear_admission_error() -> None:
-    pool = RecordingSlotPool(num_slots=1)
+    pool = DotsVocoderSlotPool(FakeInference(), num_slots=1, chunk_size=6, latent_dim=5)
     vocoder = DotsTTSStreamingVocoder(
         make_codec(),
         optimize=True,

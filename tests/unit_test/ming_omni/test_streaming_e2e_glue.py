@@ -57,22 +57,6 @@ def make_req_output(token_id):
     return SimpleNamespace(data=token_id)
 
 
-def test_thinker_stream_builder_emits_to_segmenter():
-    builder = make_thinker_stream_output_builder(
-        tokenizer=FakeTokenizer(),
-        eos_token_id=None,
-    )
-    req = make_req()
-    req_data = make_req_data(req)
-
-    msgs = builder("req-1", req_data, make_req_output(5))
-    # Thinker is not terminal, so only inter-stage stream to segmenter.
-    assert len(msgs) == 1
-    assert msgs[0].target == "segmenter"
-    assert msgs[0].data.dtype.is_floating_point is False  # uint8 tensor
-    assert bytes(msgs[0].data.tolist()).decode("utf-8") == "Hello"
-
-
 def test_streaming_tts_combined_builder_sends_token_to_decode_and_text_to_segmenter():
     builder = make_combined_stream_output_builder(
         make_text_stream_output_builder(),
@@ -154,6 +138,24 @@ def test_thinker_stream_builder_buffers_incomplete_utf8():
     msgs2 = builder("req-3", req_data, make_req_output(6))
     assert len(msgs2) == 1
     assert msgs2[0].target == "segmenter"
+
+
+def test_thinker_stream_builder_streams_text_after_a_literal_replacement_character():
+    tokenizer = FakeTokenizer()
+    tokenizer.vocab[9] = " �"
+    builder = make_thinker_stream_output_builder(
+        tokenizer=tokenizer,
+        eos_token_id=None,
+    )
+    req_data = make_req_data(make_req())
+
+    deltas = [
+        bytes(message.data.tolist()).decode("utf-8")
+        for token_id in (5, 9, 6, 8)
+        for message in builder("req-6", req_data, make_req_output(token_id))
+    ]
+
+    assert "".join(deltas) == "Hello � world Tail"
 
 
 def test_client_result_builder_merges_decode_with_talker_stream():

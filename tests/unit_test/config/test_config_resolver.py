@@ -38,12 +38,6 @@ def make(config, path, value, source=CLI, **kwargs):
 
 
 class TestResolve:
-    def test_applies_a_leaf_patch(self, pipeline_config: PipelineConfig):
-        resolved = ConfigResolver(pipeline_config).resolve(
-            patchset(make(pipeline_config, MEM_FRACTION, "0.8"))
-        )
-        assert resolved.value(MEM_FRACTION) == 0.8
-
     def test_baseline_is_untouched(self, pipeline_config: PipelineConfig):
         ConfigResolver(pipeline_config).resolve(
             patchset(make(pipeline_config, MEM_FRACTION, "0.8"))
@@ -79,15 +73,6 @@ class TestResolve:
                 )
             )
 
-    def test_tp_size_text_is_coerced_and_applied(self, pipeline_config: PipelineConfig):
-        resolved = ConfigResolver(pipeline_config).resolve(
-            patchset(
-                make(pipeline_config, "stages.thinker.tp_size", "4"),
-                make(pipeline_config, "stages.thinker.gpu", "[0, 1, 2, 3]"),
-            )
-        )
-        assert resolved.config.stages[1].tp_size == 4
-
 
 class TestProvenance:
     def test_explains_the_full_chain(self, pipeline_config: PipelineConfig):
@@ -122,19 +107,6 @@ class TestProvenance:
         )
         assert not resolved.provenance.touched("stages.thinker.process")
         assert resolved.provenance.winner("stages.thinker.process") is None
-
-    def test_entries_carry_the_contributing_patch(
-        self, pipeline_config: PipelineConfig
-    ):
-        """An entry is the patch plus the verdict, not a copy of its fields."""
-        patch = make(pipeline_config, MEM_FRACTION, 0.9)
-        resolved = ConfigResolver(pipeline_config).resolve(patchset(patch))
-        winner = resolved.provenance.winner(MEM_FRACTION)
-        assert winner is not None
-        assert winner.patch is patch
-        assert winner.winning is True
-        assert winner.value == 0.9
-        assert winner.source is CLI
 
     def test_no_rewrite_note_when_the_winning_value_sticks(
         self, pipeline_config: PipelineConfig

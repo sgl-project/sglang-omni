@@ -32,7 +32,14 @@ class NPUOmniPlatform(OmniPlatform):
     def enable_code2wav_graph(self):
         return False
 
+    def enable_mimi_decode_graph(self) -> bool:
+        """Capture PersonaPlex's Mimi streaming decode in NPU graphs."""
+        return True
+
     def enable_tts_predictor_graph(self) -> bool:
+        return True
+
+    def enable_tts_vocoder_fast_path(self) -> bool:
         return False
 
     def supports_torchaudio_resample(self) -> bool:

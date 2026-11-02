@@ -6,8 +6,12 @@ from types import SimpleNamespace
 
 import torch
 
+from sglang_omni.models.qwen3_omni import (
+    talker_model_runner as talker_model_runner_module,
+)
 from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
-from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.scheduling.message import OutgoingMessage, put_messages
+from tests.unit_test.fixtures.qwen_fakes import RecordingOutbox
 
 
 def fake_model(n: int, hidden: int, code_groups: int) -> SimpleNamespace:
@@ -28,8 +32,7 @@ def make_runner(model: SimpleNamespace) -> QwenTalkerModelRunner:
     runner.code2wav_target = "code2wav"
     runner.code2wav_in_process = True
     runner.codec_coalesce_frames = 0
-    runner.outbox = SimpleNamespace(sent=[])
-    runner.outbox.put = runner.outbox.sent.append
+    runner.outbox = RecordingOutbox()
     return runner
 
 
@@ -137,12 +140,14 @@ def test_every_code_message_carries_one_event_recorded_after_the_snapshot(
     )
     runner = make_runner(model)
 
-    def put_after_record(message: OutgoingMessage) -> None:
+    def put_after_record(outbox, messages: list[OutgoingMessage]) -> None:
         assert log[-1] == ("record", talker_stream)
-        assert message.metadata["codes_ready_event"] is not None
-        runner.outbox.sent.append(message)
+        assert all(
+            message.metadata["codes_ready_event"] is not None for message in messages
+        )
+        put_messages(outbox, messages)
 
-    runner.outbox.put = put_after_record
+    monkeypatch.setattr(talker_model_runner_module, "put_messages", put_after_record)
 
     runner.emit_code_chunks_and_feedback(
         schedule_batch=sched_batch(n), requests=make_requests(n)

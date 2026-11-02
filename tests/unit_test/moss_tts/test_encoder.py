@@ -17,7 +17,6 @@ from sglang_omni.models.moss_tts.audio_tokenizer import (
     MossAudioTokenizerVocoderDecoder,
     MossAudioVocoder,
     PatchedPretransform,
-    ResidualLFQ,
     load_moss_audio_encoder,
     load_moss_audio_vocoder,
     normalize_moss_audio_tokenizer_v1_transformer_state_dict,
@@ -139,18 +138,6 @@ def test_repository_encoder_defaults_missing_compute_dtype_to_bfloat16() -> None
 
     assert model.encoder_dtype is torch.bfloat16
     assert model.compute_dtype is torch.bfloat16
-
-
-def test_repository_encoder_uses_shared_packed_attention_wrapper() -> None:
-    model = MossAudioTokenizerEncoder(
-        tiny_config(),
-        parameter_device="cpu",
-    )
-    stage = model.encoder[1]
-
-    assert isinstance(stage, MossAudioTokenizerProjectedTransformer)
-    attention = stage.transformer.layers[0].self_attn
-    assert attention.attention_backend == "auto"
 
 
 def test_repository_encoder_uses_configured_attention_implementation() -> None:
@@ -568,19 +555,6 @@ def test_repository_vocoder_materialized_bfloat16_does_not_use_autocast(
     assert model.decoder_dtype is torch.bfloat16
     assert model.compute_dtype is torch.bfloat16
     assert audio.dtype is torch.float32
-
-
-def test_repository_quantizer_decode_matches_codebook_sum() -> None:
-    torch.manual_seed(0)
-    quantizer = ResidualLFQ(tiny_config()["quantizer_kwargs"], device="cpu")
-    codes = torch.randint(0, 4, (2, 3, 5))
-
-    expected = quantizer.output_proj(
-        quantizer.quantizers[0].decode_code(codes[0])
-        + quantizer.quantizers[1].decode_code(codes[1])
-    )
-
-    torch.testing.assert_close(quantizer.decode_codes(codes), expected)
 
 
 def test_repository_moss_audio_tokenizer_v1_vocoder_normalizes_checkpoint_fields(

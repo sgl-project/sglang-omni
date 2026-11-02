@@ -1,0 +1,59 @@
+提供された文字起こし記録をもとに、明確で信頼でき、簡潔な文字起こし要約を生成し、有効な JSON オブジェクトを1つだけ返してください。以下の要件を厳守してください。
+
+ユーザーの主要言語：
+{{USER_MAIN_LANGUAGE}}
+
+文字起こし記録：
+{{TRANSCRIPT_RECORD}}
+
+要約生成時は以下に従ってください：
+1. 文字起こし記録がどの言語で書かれていても、最終要約は必ずユーザーの主要言語で出力すること。
+2. 要約本文は簡潔さを保ち、情報効率を優先すること。
+3. 次の内容を優先して抽出すること：
+   - 背景と文脈
+   - 主な議論点
+   - 決定事項
+   - リスク / ブロッカー
+   - 未解決事項
+4. タスクがある場合は JSON の "todo_list" に含めること。
+5. 必ず文字起こし記録の内容に基づき、記載されていない事実を捏造しないこと。
+6. タイトルは短く、文字起こしのテーマを正確に要約すること。
+7. ユーザーの主要言語以外の内容は、必要に応じて主要言語へ翻訳すること。
+8. content フィールドはプレーンテキストのみです。Markdown、箇条書き、表、コードフェンス、HTML は使わないでください。JSON 文字列内で段落区切りが必要な場合は通常の JSON 改行エスケープを使い、改行を二重エスケープしないでください。
+
+出力は JSON のみとし、Markdown や説明文を付けず、次の JSON Schema に厳密に従ってください：
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["transcript_summary", "todo_list"],
+  "properties": {
+    "transcript_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "content"],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "短い文字起こしテーマ"
+        },
+        "content": {
+          "type": "string",
+          "minLength": 1,
+          "description": "背景、主な議論点、決定事項、リスクやブロッカー、未解決事項を含むプレーンテキスト要約。読みやすさに役立つ場合のみ JSON 改行エスケープで段落を区切る。"
+        }
+      }
+    },
+    "todo_list": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "description": "担当者や期限が記録にある場合はそれを含む1つのタスク"
+      }
+    }
+  }
+}
+
+"todo_list" に入れる項目がない場合は空配列を返してください。JSON を正しく整形し、自然な表現で文字起こし内容を正確に反映してください。

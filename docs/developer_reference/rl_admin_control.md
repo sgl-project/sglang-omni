@@ -5,7 +5,7 @@ The contract follows the SGLang and Miles control surface while preserving the
 Omni pipeline boundary:
 
 ```text
-HTTP / router -> Client -> Coordinator -> Stage -> Scheduler -> ModelWorker
+Worker HTTP API -> Client -> Coordinator -> Stage -> Scheduler -> ModelWorker
 ```
 
 The control plane carries only metadata and small result summaries. Tensor
@@ -17,12 +17,10 @@ group, or another data plane.
 Admin endpoints are unauthenticated by default for backward compatibility. They
 require `Authorization: Bearer <key>` when either of these is set:
 
-- `admin_api_key` passed to the worker/router `create_app(...)`
+- `admin_api_key` passed to the worker `create_app(...)`
 - `SGLANG_OMNI_ADMIN_KEY` in the environment
 
-The external router also accepts `--admin-api-key`. The router forwards the
-`Authorization` header to workers, so a deployment can use the same key at both
-layers.
+Send administrative requests directly to the worker endpoints. The Omni Router does not expose these APIs or broadcast administrative requests.
 
 ## Worker Endpoints
 
@@ -58,7 +56,7 @@ updated the model weights; recover by reloading or otherwise repairing the
 worker before calling `continue_generation`.
 
 `/update_weights_from_tensor` is still reserved for a future tensor data-plane
-integration and returns HTTP 501 from the worker and router HTTP APIs. Once
+integration and returns HTTP 501 from the worker HTTP API. Once
 enabled, a failed tensor update leaves the scheduler paused because tensor
 loading is non-transactional; repair the worker before calling
 `continue_generation`.
@@ -73,20 +71,6 @@ collects one result per rank, and returns a stage-level aggregate result with
 Stages without an admin-capable scheduler return a successful skipped result so
 mixed pipelines can broadcast model info or pause commands without failing on
 pre/post-processing stages.
-
-## Router Behavior
-
-The external router broadcasts admin requests to every non-dead worker. Update
-and pause routes temporarily disable target workers from normal request routing
-while the broadcast is in flight, then restore each worker's previous disabled
-state.
-
-The router serializes pause, distributed group lifecycle, and weight-update
-broadcasts with an admin update lock. If another update holds the lock for too
-long, the router returns HTTP 503 instead of blocking subsequent admin callers
-indefinitely. If distributed group initialization fails or times out, the target
-worker remains disabled until an operator explicitly re-enables it after
-recovery.
 
 ## Weight Checker
 

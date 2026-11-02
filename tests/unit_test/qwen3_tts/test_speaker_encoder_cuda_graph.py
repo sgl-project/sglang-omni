@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Literal
 
 import numpy as np
 import pytest
@@ -20,6 +21,7 @@ from sglang_omni.models.qwen3_tts.speaker_encoder_cuda_graph import (
     masked_mean,
     reflect_index,
 )
+from tests.unit_test.fixtures.accelerator import require_device_streams
 
 SAMPLE_RATE = 24000
 NUM_MELS = 8
@@ -152,6 +154,64 @@ def test_runner_without_graphs_runs_the_encoder_eagerly() -> None:
     assert torch.equal(embedding, eager[0])
 
 
+class FailingGraphBackend:
+    def graph_pool_handle(self) -> tuple[int, int]:
+        raise RuntimeError("no graph pool")
+
+
+@pytest.mark.parametrize(
+    ("graph_backend", "disable_reason"),
+    [
+        (None, "no graph backend on cpu"),
+        (FailingGraphBackend(), "capture_failed: RuntimeError: no graph pool"),
+    ],
+    ids=["no_backend", "capture_failed"],
+)
+def test_runner_reports_why_it_has_no_graphs(
+    monkeypatch: pytest.MonkeyPatch,
+    graph_backend: FailingGraphBackend | None,
+    disable_reason: str,
+) -> None:
+    monkeypatch.setattr(
+        speaker_encoder_cuda_graph, "supports_device_streams", lambda device: True
+    )
+    monkeypatch.setattr(
+        speaker_encoder_cuda_graph.current_platform,
+        "get_device_graph_backend",
+        lambda device: graph_backend,
+    )
+    encoder = small_speaker_encoder(torch.float32)
+    runner = Qwen3TTSSpeakerEncoderCudaGraphRunner(encoder, sample_rate=SAMPLE_RATE)
+    runner.capture((2, 4), 8 * SPEAKER_MEL_HOP)
+    with torch.inference_mode():
+        runner.embed(clip_of(20, 6))
+
+    assert runner.stats() == {
+        "enabled": False,
+        "disable_reason": disable_reason,
+        "bucket_frames": [16, 32],
+        "captured": [],
+        "replays": 0,
+        "misses": 1,
+    }
+
+
+def test_runner_without_buckets_captures_nothing() -> None:
+    runner = Qwen3TTSSpeakerEncoderCudaGraphRunner(
+        small_speaker_encoder(torch.float32), sample_rate=SAMPLE_RATE
+    )
+    runner.capture((), 8 * SPEAKER_MEL_HOP)
+
+    assert runner.stats() == {
+        "enabled": False,
+        "disable_reason": None,
+        "bucket_frames": [],
+        "captured": [],
+        "replays": 0,
+        "misses": 0,
+    }
+
+
 def test_embed_rejects_a_clip_shorter_than_the_largest_reflect_pad() -> None:
     encoder = small_speaker_encoder(torch.float32)
     runner = Qwen3TTSSpeakerEncoderCudaGraphRunner(encoder, sample_rate=SAMPLE_RATE)
@@ -160,22 +220,30 @@ def test_embed_rejects_a_clip_shorter_than_the_largest_reflect_pad() -> None:
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_runner_replays_captured_buckets_and_encodes_the_rest() -> None:
-    device = torch.device("cuda", torch.cuda.current_device())
+    device = require_device_streams()
+    device_module = torch.get_device_module(device)
     encoder = small_speaker_encoder(torch.float32).to(device)
     with torch.device(device):
         runner = Qwen3TTSSpeakerEncoderCudaGraphRunner(encoder, sample_rate=SAMPLE_RATE)
     assert runner.pads == PADS
     runner.capture((2, 4), 8 * SPEAKER_MEL_HOP)
     assert sorted(runner.graphs) == [16, 32]
+    assert runner.stats() == {
+        "enabled": True,
+        "disable_reason": None,
+        "bucket_frames": [16, 32],
+        "captured": [16, 32],
+        "replays": 0,
+        "misses": 0,
+    }
 
     frames = (32, 20, 5, 24, 20, 40)
     seeds = (0, 1, 2, 3, 1, 5)
     clips = [clip_of(count, seed) for count, seed in zip(frames, seeds)]
     with torch.inference_mode():
         embeddings = [runner.embed(clip) for clip in clips]
-        torch.cuda.synchronize(device)
+        device_module.synchronize(device)
         assert runner.replays == 5
         assert runner.misses == 1
         for clip, embedding in zip(clips, embeddings):
@@ -188,20 +256,28 @@ def test_runner_replays_captured_buckets_and_encodes_the_rest() -> None:
 
 
 def raise_out_of_memory() -> None:
-    raise torch.OutOfMemoryError("CUDA out of memory")
+    raise torch.OutOfMemoryError("device out of memory")
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 @pytest.mark.parametrize(
-    "failing_call, fail",
-    [(5, raise_out_of_memory), (6, torch.cuda.synchronize)],
+    "failing_call, failure_mode",
+    [(5, "out_of_memory"), (6, "synchronize")],
     ids=["warmup_of_the_second_bucket", "inside_the_capture_of_the_second_bucket"],
 )
 def test_a_failed_capture_leaves_no_graphs_and_the_runner_eager(
-    monkeypatch, caplog, failing_call: int, fail
+    monkeypatch,
+    caplog,
+    failing_call: int,
+    failure_mode: Literal["out_of_memory", "synchronize"],
 ) -> None:
-    device = torch.device("cuda", torch.cuda.current_device())
+    device = require_device_streams()
+    if failure_mode == "out_of_memory":
+        fail = raise_out_of_memory
+    else:
+        # A synchronize inside a capture ends it, which is the other way a bucket
+        # fails on real hardware.
+        fail = torch.get_device_module(device).synchronize
     encoder = small_speaker_encoder(torch.float32).to(device)
     with torch.device(device):
         runner = Qwen3TTSSpeakerEncoderCudaGraphRunner(encoder, sample_rate=SAMPLE_RATE)

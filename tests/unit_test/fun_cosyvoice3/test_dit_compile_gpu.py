@@ -8,13 +8,14 @@ import copy
 
 import pytest
 import torch
-from sglang.kernels.ops.attention.flash_attention_v3 import _is_fa3_supported
 
 from sglang_omni.models.fun_cosyvoice3 import stages
 from sglang_omni.models.fun_cosyvoice3.packed_dit import (
     DIT_INDUCTOR_OPTIONS,
     PackedDiT,
+    PackedRows,
     pack_rows,
+    supports_ragged_attention,
 )
 
 cosyvoice_dit = pytest.importorskip("cosyvoice.flow.DiT.dit")
@@ -22,7 +23,12 @@ cosyvoice_dit = pytest.importorskip("cosyvoice.flow.DiT.dit")
 pytestmark = pytest.mark.accelerator
 
 TOL = 1e-4
-COMPILED_OVER_EAGER_ERROR = 2.0
+COMPILED_OVER_EAGER_ERROR = 1.1
+
+
+def rope(estimator: PackedDiT, rows: PackedRows) -> tuple[torch.Tensor, torch.Tensor]:
+    angles = estimator.rope_angles(rows.width)[:, rows.positions]
+    return angles.cos(), angles.sin()
 
 
 def native_inputs(batch: int, frames: int) -> tuple[torch.Tensor, ...]:
@@ -72,6 +78,7 @@ def test_compile_dit_backbone_matches_eager_beyond_the_warmup_shapes() -> None:
                 inputs = native_inputs(batch, frames)
                 cases.append((inputs, streaming, dit(*inputs, streaming=streaming)))
 
+    PackedDiT(dit, device="cuda")
     stages.compile_dit_backbone(flow, warmup_mel_frames=16, warmup_steps=1)
 
     with torch.inference_mode():
@@ -110,8 +117,8 @@ def test_the_compiled_chunk_mask_matches_eager(static_chunk_size: int) -> None:
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
 def test_production_packed_dit_compile_is_as_close_to_float32_as_eager() -> None:
-    if not _is_fa3_supported():
-        pytest.skip("FA3 is unavailable on this device")
+    if not supports_ragged_attention(torch.device("cuda")):
+        pytest.skip("Ragged attention is unavailable on this device")
 
     torch.manual_seed(3)
     dit = (
@@ -144,6 +151,12 @@ def test_production_packed_dit_compile_is_as_close_to_float32_as_eager() -> None
     estimator = PackedDiT(dit, device="cuda")
     assert estimator.is_ragged
     reference = PackedDiT(copy.deepcopy(dit).float(), device="cuda")
+    t = torch.full((1,), 0.37, device="cuda", dtype=torch.bfloat16)
+    time_span = torch.cat((t, torch.ones_like(t)))
+    with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+        estimator.build_modulations(time_span, torch.bfloat16)
+    with torch.inference_mode():
+        reference.build_modulations(time_span.float(), torch.float32)
 
     def run(rows, inputs, streaming: bool) -> torch.Tensor:
         with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
@@ -152,12 +165,13 @@ def test_production_packed_dit_compile_is_as_close_to_float32_as_eager() -> None
                 inputs["mu"],
                 inputs["spks"],
                 inputs["cond"],
-                inputs["t"],
+                estimator.block_modulations[0],
+                estimator.final_modulations[0],
                 rows,
                 estimator.row_attention(
                     rows, streaming=streaming, dtype=inputs["spks"].dtype
                 ),
-                estimator.rope(rows),
+                rope(estimator, rows),
             )
 
     def run_float32(rows, inputs, streaming: bool) -> torch.Tensor:
@@ -168,10 +182,11 @@ def test_production_packed_dit_compile_is_as_close_to_float32_as_eager() -> None
                 floats["mu"],
                 floats["spks"],
                 floats["cond"],
-                floats["t"],
+                reference.block_modulations[0],
+                reference.final_modulations[0],
                 rows,
                 reference.row_attention(rows, streaming=streaming, dtype=torch.float32),
-                reference.rope(rows),
+                rope(reference, rows),
             )
 
     def error(actual: torch.Tensor, expected: torch.Tensor) -> float:
@@ -191,7 +206,6 @@ def test_production_packed_dit_compile_is_as_close_to_float32_as_eager() -> None
             inputs["spks"] = torch.randn(
                 1, rows.total, 8, device="cuda", dtype=torch.bfloat16
             )
-            inputs["t"] = torch.full((1,), 0.37, device="cuda", dtype=torch.bfloat16)
             cases.append(
                 (
                     rows,
@@ -202,7 +216,7 @@ def test_production_packed_dit_compile_is_as_close_to_float32_as_eager() -> None
                 )
             )
 
-    assert estimator.rope(cases[0][0])[0].dtype == torch.float32
+    assert rope(estimator, cases[0][0])[0].dtype == torch.float32
     assert estimator.compile(torch.bfloat16)
     for rows, inputs, streaming, eager, float32 in cases:
         compiled = run(rows, inputs, streaming)

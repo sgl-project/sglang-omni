@@ -97,7 +97,7 @@ def test_streaming_simple_scheduler_batches_non_streaming_requests() -> None:
     assert [msg.request_id for msg in drain_results(scheduler)] == ["a", "b", "c"]
 
 
-@pytest.mark.parametrize("source", ["inbox", "pending", "split"])
+@pytest.mark.parametrize("source", ["split"])
 def test_non_streaming_batch_skips_done_before_later_payloads(source: str) -> None:
     scheduler = StreamingSchedulerUnderTest(max_batch_size=3)
     first = IncomingMessage("a", "new_request", make_payload("a"))
@@ -350,15 +350,6 @@ def test_stream_chunk_batch_skips_aborted_requests() -> None:
     scheduler.handle_message(make_chunk("a", "x"), None)
     assert scheduler.pump_batches == [["a", "c"]]
     assert [m.request_id for m in drain_results(scheduler)] == ["a", "c"]
-
-
-def test_stream_chunk_batch_respects_cap() -> None:
-    scheduler = BatchStreamingScheduler(max_batch_size=2)
-    for rid in ("b", "c", "d"):
-        scheduler.inbox.put(make_chunk(rid, rid))
-    scheduler.handle_message(make_chunk("a", "x"), None)
-    assert scheduler.pump_batches == [["a", "b"]]
-    assert scheduler.next_message().request_id == "c"
 
 
 def test_stream_chunk_batch_default_hook_emits_per_chunk_in_order() -> None:

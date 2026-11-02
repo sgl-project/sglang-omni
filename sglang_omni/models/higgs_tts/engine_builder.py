@@ -33,7 +33,6 @@ from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputP
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
 if TYPE_CHECKING:
-    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
 
     from sglang_omni.models.higgs_tts.model import HiggsTTSModel
     from sglang_omni.models.higgs_tts.model_runner import HiggsTTSModelRunner
@@ -142,7 +141,7 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder[HiggsSGLangRequestData]):
     def setup_model(
         self,
         *,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         checkpoint_dir: str,
         device: str,
         gpu_id: int,
@@ -157,7 +156,7 @@ class HiggsTtsEngineBuilder(TtsEngineBuilder[HiggsSGLangRequestData]):
 
     def make_model_runner(
         self,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         output_proc: SGLangOutputProcessor,
     ) -> HiggsTTSModelRunner:
         model_runner_mod = importlib.import_module(

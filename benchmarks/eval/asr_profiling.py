@@ -24,6 +24,7 @@ from typing import Any, TextIO
 
 import requests
 
+from sglang_omni.http.admin_auth import admin_auth_headers
 from sglang_omni.profiler.views import ProfilerReport, build_report
 
 _NO_PROXIES = {"http": None, "https": None}
@@ -36,6 +37,7 @@ def start_request_profile(base_url: str, run_id: str, event_dir: str) -> dict:
         f"{base_url.rstrip('/')}/start_request_profile",
         json={"run_id": run_id, "event_dir": event_dir},
         timeout=_PROFILE_TIMEOUT_S,
+        headers=admin_auth_headers(),
         proxies=_NO_PROXIES,
     )
     response.raise_for_status()
@@ -48,6 +50,7 @@ def stop_request_profile(base_url: str, run_id: str | None = None) -> dict:
         f"{base_url.rstrip('/')}/stop_request_profile",
         json={"run_id": run_id},
         timeout=_PROFILE_TIMEOUT_S,
+        headers=admin_auth_headers(),
         proxies=_NO_PROXIES,
     )
     response.raise_for_status()
