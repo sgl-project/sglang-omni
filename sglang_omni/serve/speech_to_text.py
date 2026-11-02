@@ -401,6 +401,22 @@ def probe_audio_duration(audio_bytes: bytes) -> float:
     return av_duration(audio_bytes)
 
 
+def reported_truncation(finish_reason: str | None) -> str | None:
+    """Expose a token-budget stop; a normal stop stays off the response."""
+    if finish_reason == "length":
+        return finish_reason
+    else:
+        return None
+
+
+def truncation_headers(finish_reason: str | None) -> dict[str, str]:
+    reported = reported_truncation(finish_reason)
+    if reported is None:
+        return {}
+    else:
+        return {"X-Finish-Reason": reported}
+
+
 def assemble_speech_to_text_response(
     *,
     text: str,
@@ -412,6 +428,7 @@ def assemble_speech_to_text_response(
     architectures: list[str] | None,
     duration_s: float | None = None,
     response_formats: Collection[str] = DEFAULT_RESPONSE_FORMATS,
+    finish_reason: str | None = None,
 ) -> Response:
     """Keep response schemas consistent across sibling endpoints."""
     normalized_response_format = validate_speech_to_text_response_format(
@@ -422,8 +439,10 @@ def assemble_speech_to_text_response(
     )
     adapter = resolve_speech_to_text_adapter(architectures)
     raw_text = text
+    headers = truncation_headers(finish_reason)
+    visible_finish_reason = reported_truncation(finish_reason)
     if normalized_response_format == "text":
-        return PlainTextResponse(raw_text)
+        return PlainTextResponse(raw_text, headers=headers)
     else:
         pass
 
@@ -467,21 +486,29 @@ def assemble_speech_to_text_response(
             )
         response.task = task
         response.usage = usage
+        response.finish_reason = visible_finish_reason
         if normalized_response_format == "srt":
-            return PlainTextResponse(segments_to_srt(response.segments))
+            return PlainTextResponse(
+                segments_to_srt(response.segments), headers=headers
+            )
         else:
             pass
         if normalized_response_format == "vtt":
-            return PlainTextResponse(segments_to_vtt(response.segments))
+            return PlainTextResponse(
+                segments_to_vtt(response.segments), headers=headers
+            )
         else:
             pass
-        return JSONResponse(content=response.model_dump(exclude_none=True))
+        return JSONResponse(
+            content=response.model_dump(exclude_none=True), headers=headers
+        )
     else:
         pass
     return JSONResponse(
-        content=TranscriptionResponse(text=text, usage=usage).model_dump(
-            exclude_none=True
-        )
+        content=TranscriptionResponse(
+            text=text, usage=usage, finish_reason=visible_finish_reason
+        ).model_dump(exclude_none=True),
+        headers=headers,
     )
 
 
@@ -568,10 +595,12 @@ async def speech_to_text_stream(
 ) -> AsyncIterator[str]:
     """Keep terminal event ordering stable for OpenAI-compatible clients."""
     final_text: str | None = None
+    finish_reason: str | None = None
 
     def _event_for(chunk: GenerateChunk) -> str | None:
-        nonlocal final_text
+        nonlocal final_text, finish_reason
         if chunk.finish_reason is not None:
+            finish_reason = chunk.finish_reason
             if isinstance(chunk.text, str) and chunk.text:
                 final_text = chunk.text
             else:
@@ -614,7 +643,11 @@ async def speech_to_text_stream(
     usage = (
         TranscriptionUsage(seconds=math.ceil(duration_s)) if duration_s > 0 else None
     )
-    done_event = TranscriptionTextDoneEvent(text=text, usage=usage)
+    done_event = TranscriptionTextDoneEvent(
+        text=text,
+        usage=usage,
+        finish_reason=reported_truncation(finish_reason),
+    )
     yield f"data: {done_event.model_dump_json(exclude_none=True)}\n\n"
     yield f"data: {STREAM_DONE_SENTINEL}\n\n"
 

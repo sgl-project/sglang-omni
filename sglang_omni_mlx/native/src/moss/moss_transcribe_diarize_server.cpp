@@ -36,10 +36,10 @@ public:
       throw std::invalid_argument("max_new_tokens must not be negative");
     } else {
     }
-    options.stop_at_end_of_text = qwen3_asr::FormFlag(
+    options.stop_at_end_of_text = omni_common::FormFlag(
         asr_service::TextField(form, "stop_at_end_of_text"));
-    options.stop_on_token_loop =
-        qwen3_asr::FormFlag(asr_service::TextField(form, "stop_on_token_loop"));
+    options.stop_on_token_loop = omni_common::FormFlag(
+        asr_service::TextField(form, "stop_on_token_loop"));
     return [this, samples = std::move(samples),
             options = std::move(options)](const std::atomic<bool> &cancel) {
       return transcriber_.Transcribe(samples, options, cancel);

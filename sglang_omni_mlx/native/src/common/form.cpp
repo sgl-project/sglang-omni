@@ -4,7 +4,7 @@
 #include <algorithm>
 #include <cctype>
 
-namespace qwen3_asr {
+namespace omni_common {
 
 namespace {
 
@@ -134,4 +134,4 @@ bool FormFlag(const std::optional<std::string> &value) {
          normalized == "on";
 }
 
-} // namespace qwen3_asr
+} // namespace omni_common

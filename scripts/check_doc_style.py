@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Reject emoji outside top-level fenced code in Markdown documentation."""
+"""Check Markdown documentation filenames, emoji, and code fence labels."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ class Violation:
 
 
 def check_source(path: Path, source: str) -> list[Violation]:
-    """Check emoji presentation while preserving complete sequence matches."""
+    """Check fence labels and emoji presentation with complete sequence matches."""
     violations: list[Violation] = []
     fence_marker = ""
     fence_start_line_number = 0
@@ -47,6 +47,17 @@ def check_source(path: Path, source: str) -> list[Violation]:
         elif fence:
             fence_marker = fence.group(1)
             fence_start_line_number = line_number
+            if not fence.group(2).strip():
+                violations.append(
+                    Violation(
+                        path=path,
+                        line_number=line_number,
+                        rule="fence-language",
+                        detail="opening fence needs a non-empty info string",
+                    )
+                )
+            else:
+                pass
         else:
             emoji_matches = emoji.emoji_list(line)
             sequences: list[str] = []
@@ -114,6 +125,19 @@ def check_docs(docs_root: Path = DOCS_ROOT) -> list[Violation]:
     """Scan all Markdown documentation without rewriting files."""
     violations: list[Violation] = []
     for path in sorted(docs_root.rglob("*.md")):
+        if path != docs_root / "README.md" and not re.fullmatch(
+            r"[a-z0-9_]+\.md", path.name
+        ):
+            violations.append(
+                Violation(
+                    path=path,
+                    line_number=1,
+                    rule="filename-conventions",
+                    detail=r"Markdown basename must match [a-z0-9_]+\.md",
+                )
+            )
+        else:
+            pass
         violations.extend(check_source(path, path.read_text(encoding="utf-8")))
     return violations
 

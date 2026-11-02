@@ -17,7 +17,7 @@ pip install --upgrade pip
 pip install uv
 
 uv venv .venv -p 3.12 && source .venv/bin/activate
-uv pip install --prerelease=allow "sglang-omni==0.1.9"
+uv pip install --prerelease=allow "sglang-omni==0.2.0"
 ```
 
 See [Installation](../get_started/installation.md) for Docker digests and source installs.
@@ -143,7 +143,7 @@ The session takes 16 kHz PCM16 audio and camera frames. A user turn ends on `spe
 
 Camera input uses `sglang.input_image.append`, as for [MiniCPM-o](minicpm_o.md): a base64 JPEG or PNG in `image` and its audio timeline position in `sglang.t_ms`. The newest `max_utterance_frames` (4) frames that fall in an utterance go to the model with that turn; each frame costs thinker context for the rest of the session.
 
-`instructions` can be set at session start and changed with `configure` until the first user turn is processed. `sampling` can be changed with `configure` at any time and applies from the next unit; the defaults are greedy decoding for the thinker and the checkpoint's `generation_config.json` for the talker (`talker_temperature` 0.9, `talker_top_k` 50, `talker_top_p` 1.0, `talker_repetition_penalty` 1.05, `talker_max_new_tokens` 4096), with `max_new_tokens` 2048 per turn for the thinker.
+`instructions` can be set at session start and changed with `configure` until the first user turn is processed. `sampling` can be changed with `configure` at any time and applies from the next unit; the defaults are greedy decoding for the thinker and the checkpoint's `generation_config.json` for the talker (`talker_temperature` 0.9, `talker_top_k` 50, `talker_top_p` 1.0, `talker_repetition_penalty` 1.05, `talker_max_new_tokens` 4096), with `max_new_tokens` 2048 per turn for the thinker. Over `/v1/realtime`, `sglang.sampling` in a later `session.update` applies from the next unit as well, and `instructions` is accepted only in the first `session.update`; `session.updated` reports this as `supports_sampling_updates` true and `supports_instruction_updates` false.
 
 Current limits:
 
@@ -151,4 +151,40 @@ Current limits:
 - After an interruption, send `truncate` with the milliseconds of reply audio the listener heard (`conversation.item.truncate`); the model's history then keeps only that much of the reply. Without it, the whole reply generated so far stays in the history.
 - `instructions` cannot change after the first user turn is processed; open a new session instead.
 
-See [Session Graph](../developer_reference/full_duplex_interactive_model.md#session-graph) for the shared routing and delivery contracts.
+See [Session Graph](../developer_reference/full_duplex_guide.md#session-graph) for the shared routing and delivery contracts.
+
+## Speculative Decoding
+
+The thinker can verify tokens proposed by SpeechSpec's DFlash draft [`yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8`](https://huggingface.co/yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8) or EAGLE3 draft [`yuekai/qwen3_omni_30b_a3b_instruct_eagle3_audio`](https://huggingface.co/yuekai/qwen3_omni_30b_a3b_instruct_eagle3_audio) on a text-only server.
+
+```bash
+# DFlash: one 8-token block per step
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --text-only \
+  --thinker.engine.speculative_algorithm DFLASH \
+  --thinker.engine.speculative_draft_model_path yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8 \
+  --thinker.engine.speculative_num_draft_tokens 8 \
+  --port 8000
+
+# EAGLE3: a 3-step chain
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --text-only \
+  --thinker.engine.speculative_algorithm EAGLE3 \
+  --thinker.engine.speculative_draft_model_path yuekai/qwen3_omni_30b_a3b_instruct_eagle3_audio \
+  --thinker.engine.speculative_num_steps 3 \
+  --thinker.engine.speculative_eagle_topk 1 \
+  --thinker.engine.speculative_num_draft_tokens 4 \
+  --port 8000
+```
+
+- **Context.** The drafts shown above have an 8,192-token context. The prompt, output budget and speculative reservations must fit within it. Use `--preprocessing.factory.max_seq_len 8192` to reject oversized prompts early.
+- **Sampling.** Keep `repetition_penalty=1`, `frequency_penalty=0`, `presence_penalty=0`, and `min_p=0`. Disable logprobs and `return_hidden_states`. For `/generate`, send `return_logprob: false`.
+- **Scheduling.** Speculative decoding is synchronous by default. Add `--thinker.factory.enable_async_decode true` to either command to enable overlap, keeping `async_decode_min_batch_size=1`. Mixed prefill/decode batches (`enable_mixed_chunk=true`), sessions and weight updates are unsupported with a draft.
+- **Overlap trade-offs.** Overlap can improve decode throughput. Prefill-heavy workloads or short outputs can see higher TTFT and lower throughput.
+- **Prefill boundary.** Set `SGLANG_DISABLE_CONSECUTIVE_PREFILL_OVERLAP=1` before launch to process the previous prefill batch's result before launching the next consecutive prefill batch. This can lower TTFT at a throughput cost. Decode rounds continue to overlap.
+- **Execution failure.** An execution failure in speculative overlap stops the pipeline and fails its pending requests.
+- **Speech output.** Speech generation is unsupported with a draft; use `--text-only`.
+
+Compare modes with matching workloads and prefix-cache conditions. Measure TTFT, throughput and accuracy for your workload.

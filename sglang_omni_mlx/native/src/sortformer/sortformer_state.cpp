@@ -6,6 +6,7 @@
 #include <limits>
 #include <stdexcept>
 
+#include "common/layers.h"
 #include "sortformer/sortformer.h"
 
 // Note (Jiaxin Deng): Swift never fuses a multiply and an add; segment times
@@ -20,10 +21,7 @@ namespace {
 
 constexpr float kInfinity = std::numeric_limits<float>::infinity();
 
-// Note (Jiaxin Deng): Swift scalar operands take the array's dtype.
-mx::array Scalar(float value, const mx::array &like) {
-  return mx::array(value, like.dtype());
-}
+using omni_common::Scalar;
 
 void UpdateSilenceProfile(StreamingState &state, const mx::array &embeddings,
                           const mx::array &predictions,

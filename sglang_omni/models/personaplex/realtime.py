@@ -14,7 +14,10 @@ from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import OutputChunk
 from sglang_omni.serve.realtime.adapters import CoordinatorAdapter
-from sglang_omni.serve.realtime.manager import RealtimeDeployment
+from sglang_omni.serve.realtime.manager import (
+    RealtimeDeployment,
+    runtime_limits_for_pipeline,
+)
 from sglang_omni.serve.realtime.output import (
     AudioDelta,
     AudioFinished,
@@ -133,6 +136,7 @@ def create_realtime_deployment(
             voices=packaged_voices(resolve_model_path(pipeline_config.model_path)),
         ),
         adapter_factory=create_adapter,
+        limits=runtime_limits_for_pipeline(pipeline_config),
         max_connections=pipeline_config.max_sessions,
     )
 

@@ -25,7 +25,10 @@ from sglang.srt.layers.moe.moe_runner.triton_utils.fused_moe_triton_config impor
 from sglang.srt.layers.moe.topk import StandardTopKOutput, TopK, TopKOutput
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.layers.quantization.unquant import UnquantizedFusedMoEMethod
-from sglang.srt.layers.vocab_parallel_embedding import ParallelLMHead
+from sglang.srt.layers.vocab_parallel_embedding import (
+    ParallelLMHead,
+    VocabParallelEmbedding,
+)
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.qwen3_moe import Qwen3MoeDecoderLayer, Qwen3MoeSparseMoeBlock
@@ -98,6 +101,9 @@ class PaddedRowsTopK(nn.Module):
 class Qwen3OmniThinkerForCausalLM(nn.Module):
     """Qwen3-Omni thinker text model without duplicated audio/vision towers."""
 
+    # Set by a speculative draft that reads the target's intermediate hidden states.
+    capture_aux_hidden_states: bool = False
+
     def __init__(
         self,
         config: PretrainedConfig,
@@ -168,6 +174,33 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
             else []
         )
 
+    def get_input_embeddings(self) -> VocabParallelEmbedding:
+        return self.model.embed_tokens
+
+    def get_embed_and_head(self) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.model.embed_tokens.weight, self.lm_head.weight
+
+    def set_eagle3_layers_to_capture(self, layer_ids: list[int] | None) -> None:
+        """Capture the residual stream after each named layer for an EAGLE3 draft."""
+        self.capture_aux_hidden_states = True
+        if layer_ids is None:
+            # A draft that names no layers reads the early, middle and late stream.
+            num_layers = self.config.num_hidden_layers
+            self.model.set_eagle3_layers_to_capture(
+                [2, num_layers // 2, num_layers - 3]
+            )
+        else:
+            self.model.set_eagle3_layers_to_capture(
+                [layer_id + 1 for layer_id in layer_ids]
+            )
+
+    def set_dflash_layers_to_capture(self, layer_ids: list[int]) -> None:
+        """Capture the residual stream after each named layer for a DFlash draft."""
+        self.capture_aux_hidden_states = True
+        self.model.set_dflash_layers_to_capture(
+            [layer_id + 1 for layer_id in layer_ids]
+        )
+
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -193,7 +226,10 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
         marked_live_rows = self.decode_live_rows
         if (
             marked_live_rows is not None
-            and forward_batch.forward_mode.is_decode()
+            and (
+                forward_batch.forward_mode.is_decode()
+                or forward_batch.forward_mode.is_target_verify()
+            )
             and forward_batch.out_cache_loc.shape[0] > 1
         ):
             marked_live_rows.is_live_row = forward_batch.out_cache_loc != 0

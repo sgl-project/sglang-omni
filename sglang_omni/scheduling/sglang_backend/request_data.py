@@ -14,6 +14,9 @@ from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.pending_text_queue import PendingTextTensorQueue
 from sglang_omni.scheduling.types import ARRequestData
 
+# ARRequestData.finish_reason of SGLang's FINISH_LENGTH: the request used up its token budget.
+FINISH_LENGTH_KIND = "length"
+
 
 @dataclass(frozen=True, kw_only=True)
 class EmbeddingSpan:

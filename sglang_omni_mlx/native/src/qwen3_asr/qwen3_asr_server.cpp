@@ -34,14 +34,26 @@ public:
                            : std::nullopt;
     options.context = asr_service::TextField(form, "prompt");
     options.max_new_tokens = asr_service::IntegerField(form, "max_new_tokens");
+    options.repetition_penalty =
+        asr_service::NumberField(form, "repetition_penalty")
+            .value_or(options.repetition_penalty);
     if (options.max_new_tokens.value_or(0) < 0) {
       throw std::invalid_argument("max_new_tokens must not be negative");
+    } else if (options.repetition_penalty <= 0) {
+      throw std::invalid_argument("repetition_penalty must be positive");
     } else {
     }
-    options.stop_at_end_of_text = qwen3_asr::FormFlag(
+    options.stop_at_end_of_text = omni_common::FormFlag(
         asr_service::TextField(form, "stop_at_end_of_text"));
-    options.stop_on_token_loop =
-        qwen3_asr::FormFlag(asr_service::TextField(form, "stop_on_token_loop"));
+    const auto stop_on_token_loop =
+        asr_service::TextField(form, "stop_on_token_loop");
+    // Note (Minyi Tang): greedy decoding loops on audio with little speech, so
+    // the guard is on unless a request turns it off.
+    if (stop_on_token_loop.has_value()) {
+      options.stop_on_token_loop = omni_common::FormFlag(stop_on_token_loop);
+    } else {
+      options.stop_on_token_loop = true;
+    }
     const std::string layout =
         asr_service::TextField(form, "audio_layout").value_or("");
     if (layout.empty() || layout == "reference") {
@@ -148,7 +160,7 @@ int main(int argc, char **argv) {
   };
   qwen3_asr.check_flags = [&]() {
     const double max_segment_samples =
-        max_segment_seconds * qwen3_asr::kSampleRate;
+        max_segment_seconds * omni_common::kSampleRate;
     if (decode_interval_ms <= 0) {
       throw std::invalid_argument("--decode-interval-ms must be positive");
     } else if (first_decode_ms < 0) {

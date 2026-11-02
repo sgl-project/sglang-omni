@@ -39,6 +39,9 @@ if TYPE_CHECKING:
 else:
     pass
 
+# note (ratish): official qwen-tts generates the talker with min_new_tokens=2; an EOS on the first frame ended a request with no audio.
+QWEN3_TTS_MIN_NEW_FRAMES = 2
+
 
 class Qwen3TTSModelInfo(TypedDict):
     predictor_cuda_graph: PredictorGraphStats
@@ -178,6 +181,12 @@ class Qwen3TTSModelRunner(ModelRunner):
             active_logits[:, codec_eos + 1 : suppress_stop] = float("-inf")
         else:
             active_logits[:, suppress_start:suppress_stop] = float("-inf")
+        for row_index, scheduled_request in enumerate(requests):
+            if len(scheduled_request.data.output_codes) < QWEN3_TTS_MIN_NEW_FRAMES:
+                # note (ratish): a slice fills on the device; assigning one element copies a host scalar and waits for the stream.
+                active_logits[row_index, codec_eos : codec_eos + 1] = float("-inf")
+            else:
+                pass
 
         # note (luojiaxuan): a cold-start clone that samples a silence id first
         # tends to stay silent for several frames, so silence ids are excluded

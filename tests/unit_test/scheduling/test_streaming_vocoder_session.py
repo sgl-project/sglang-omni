@@ -18,6 +18,7 @@ from sglang_omni.proto.streams import (
     AUDIO,
     PCM_F32,
     REPLY_PROGRESS,
+    REPLY_TRUNCATED,
     SESSION_CONTROL,
     TEXT_DELTA,
     TURN_DONE,
@@ -276,3 +277,30 @@ def test_a_declared_reply_unit_publishes_its_turn_around_relayed_text_and_audio(
     ]
     assert all(c is None or c.turn == 1 for _, _, c in out)
     assert out[1][2].payload == {"text": "hi"}
+
+
+def test_a_reply_the_talker_cut_at_its_token_budget_reports_it_on_turn_done():
+    """A talker that hits its token budget flags the reply, which ends its turn as truncated rather than as a completed one."""
+    vocoder = FakeStreamingVocoder(reply_unit_format=REPLY_UNIT)
+    vocoder.handle_new_request_batch(
+        [IncomingMessage("r1", "new_request", reply_unit("r1", 5))]
+    )
+    vocoder.handle_stream_chunk(
+        "r1",
+        StreamItem(
+            0,
+            torch.empty(0, dtype=torch.long),
+            "talker_ar",
+            {"modality": "text", "stream": True, REPLY_TRUNCATED: True},
+        ),
+    )
+    vocoder.handle_stream_done("r1")
+    out = chunks(drain(vocoder))
+    done = [
+        c
+        for _, _, c in out
+        if c is not None
+        and c.format == SESSION_CONTROL
+        and c.payload["type"] == TURN_DONE
+    ]
+    assert [c.payload for c in done] == [{"type": TURN_DONE, REPLY_TRUNCATED: True}]

@@ -218,7 +218,7 @@ std::string BuildPrompt(const std::string &caption, const std::string &lyrics) {
 }
 
 Request ParseRequest(const nlohmann::json &body,
-                     const qwen3_asr::Tokenizer &tokenizer,
+                     const omni_common::Tokenizer &tokenizer,
                      const std::string &model_name, int context_tokens) {
   if (!body.is_object()) {
     throw std::invalid_argument("request must be a JSON object");

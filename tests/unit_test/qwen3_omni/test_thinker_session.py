@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The thinker session keeps one native turn per append and refills what an interrupted reply's listener heard."""
 
+import queue
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -23,6 +24,7 @@ from sglang_omni.proto.streams import (
     INTERRUPT,
     PCM16,
     REPLY_DELIVERED,
+    REPLY_TRUNCATED,
     TRUNCATE,
     TURN_STARTED,
 )
@@ -63,6 +65,7 @@ def adapter(monkeypatch: pytest.MonkeyPatch) -> QwenThinkerSessionAdapter:
             ),
             output_ids=[],
             stage_payload=None,
+            finish_reason=None,
         )
 
     monkeypatch.setattr(thinker_session, "build_sglang_thinker_request", build_request)
@@ -73,6 +76,7 @@ def adapter(monkeypatch: pytest.MonkeyPatch) -> QwenThinkerSessionAdapter:
     )
     config = SimpleNamespace(image_token_id=100, video_token_id=101, audio_token_id=102)
     result = QwenThinkerSessionAdapter(tokenizer, 200, config)
+    result.outbox = queue.Queue()
     result.open(IDENTITY, OmniRequest(None))
     return result
 
@@ -267,6 +271,20 @@ def test_truncating_past_the_end_of_a_finished_reply_keeps_its_kv(
     assert second.req.origin_input_ids == [NEWLINE, 7]
 
 
+def test_a_truncate_of_an_earlier_reply_keeps_the_history(
+    adapter: QwenThinkerSessionAdapter,
+) -> None:
+    first = adapter.build(IDENTITY, unit_chunk(1), payload(1, [5]))
+    finish(adapter, first, [51, 52, 53, END])
+    second = adapter.build(IDENTITY, unit_chunk(2), payload(2, [7]))
+    finish(adapter, second, [71, 72, 73, END])
+    adapter.control(IDENTITY, truncate(1, t_ms=CODEC_FRAME_MS))
+    preparation = adapter.prepare_unit(IDENTITY, unit_chunk(3), payload(3, [8]))
+    assert preparation.reset_history is False
+    third = adapter.build(IDENTITY, unit_chunk(3), payload(3, [8]))
+    assert third.req.origin_input_ids == [NEWLINE, 8]
+
+
 def test_truncating_a_finished_reply_rebuilds_the_native_session(
     adapter: QwenThinkerSessionAdapter,
 ) -> None:
@@ -295,6 +313,33 @@ def test_truncating_a_finished_reply_rebuilds_the_native_session(
     )
     third = adapter.build(IDENTITY, unit_chunk(3), payload(3, [8]))
     assert third.req.origin_input_ids == [END, NEWLINE, 8]
+
+
+def test_a_reply_cut_at_the_thinker_token_budget_tells_the_talker(
+    adapter: QwenThinkerSessionAdapter,
+) -> None:
+    """The talker speaks the text it got and stops, so without this the turn ends as a natural stop."""
+    request_data = adapter.build(IDENTITY, unit_chunk(1), payload(1, [5]))
+    request_data.finish_reason = "length"
+    finish(adapter, request_data, [50, 51])
+    message = adapter.outbox.get_nowait()
+    assert (message.request_id, message.target, message.type) == (
+        "unit-1",
+        "talker_ar",
+        "stream",
+    )
+    assert message.metadata == {REPLY_TRUNCATED: True}
+    assert message.data.numel() == 0
+    assert adapter.outbox.empty()
+
+
+def test_a_reply_that_ended_on_its_own_tells_the_talker_nothing(
+    adapter: QwenThinkerSessionAdapter,
+) -> None:
+    request_data = adapter.build(IDENTITY, unit_chunk(1), payload(1, [5]))
+    request_data.finish_reason = "stop"
+    finish(adapter, request_data, [50, END])
+    assert adapter.outbox.empty()
 
 
 def test_system_prefix_must_match_the_tokenized_prompt(
@@ -398,6 +443,144 @@ def test_an_aborted_rebuild_keeps_the_history_for_the_next_unit(
         NEWLINE,
         7,
         71,
+        END,
+        NEWLINE,
+        8,
+    ]
+
+
+# What a third unit prefills once turn 1's reply, refilled by turn 2's unit, was cut to one codec frame and turn 2 replied 60.
+CUT_REFILLED_REPLY_HISTORY = SYSTEM_PREFIX + [
+    5,
+    51,
+    52,
+    53,
+    54,
+    END,
+    NEWLINE,
+    7,
+    60,
+    END,
+    NEWLINE,
+    8,
+]
+
+
+@pytest.mark.parametrize(
+    ("heard_ms", "is_next_reply_finished", "reset_history", "third_ids"),
+    [
+        pytest.param(
+            CODEC_FRAME_MS, True, True, CUT_REFILLED_REPLY_HISTORY, id="finished"
+        ),
+        pytest.param(
+            CODEC_FRAME_MS, False, False, CUT_REFILLED_REPLY_HISTORY, id="aborted"
+        ),
+        pytest.param(
+            10 * CODEC_FRAME_MS, True, False, [NEWLINE, 8], id="past-the-reply"
+        ),
+    ],
+)
+def test_a_truncate_of_an_aborted_reply_the_unit_in_flight_refills_still_cuts_it(
+    adapter: QwenThinkerSessionAdapter,
+    heard_ms: float,
+    is_next_reply_finished: bool,
+    reset_history: bool,
+    third_ids: list[int],
+) -> None:
+    """The next turn's unit went out with the whole interrupted reply in front of its prompt before the truncate of that reply came; the cut used to be lost, so the full reply stayed in the history once the unit finished and was refilled again once it was aborted. A truncate past the refilled reply changes nothing and costs no rebuild."""
+    adapter.build(IDENTITY, unit_chunk(1), payload(1, [5]))
+    abort(adapter, [51, 52, 53, 54, 55, 56])
+    second = adapter.build(IDENTITY, unit_chunk(2), payload(2, [7]))
+    adapter.control(IDENTITY, truncate(1, t_ms=heard_ms))
+    if is_next_reply_finished:
+        finish(adapter, second, [60, END])
+    else:
+        abort(adapter, [60])
+    assert (
+        adapter.prepare_unit(IDENTITY, unit_chunk(3), payload(3, [8])).reset_history
+        is reset_history
+    )
+    third = adapter.build(IDENTITY, unit_chunk(3), payload(3, [8]))
+    assert third.req.origin_input_ids == third_ids
+
+
+def test_a_cut_refilled_reply_stays_cut_when_the_dialog_asks_the_next_turn_again(
+    adapter: QwenThinkerSessionAdapter,
+) -> None:
+    """The truncate of the interrupted reply came after the next unit had refilled it; that unit is interrupted too and its utterance asked again, so only the cut reply precedes the re-asked prompt."""
+    adapter.build(IDENTITY, unit_chunk(1), payload(1, [5]))
+    abort(adapter, [51, 52, 53, 54, 55, 56])
+    adapter.build(IDENTITY, unit_chunk(2), payload(2, [7]))
+    adapter.control(IDENTITY, truncate(1, t_ms=CODEC_FRAME_MS))
+    abort(adapter, [60])
+    third = adapter.build(IDENTITY, unit_chunk(3, (2,)), payload(3, [8]))
+    assert third.req.origin_input_ids == SYSTEM_PREFIX + [
+        5,
+        51,
+        52,
+        53,
+        54,
+        END,
+        NEWLINE,
+        8,
+    ]
+
+
+def test_a_truncate_between_a_units_preparation_and_its_build_rebuilds_the_next_unit(
+    adapter: QwenThinkerSessionAdapter,
+) -> None:
+    """The scheduler prepares every append of a batch before it builds any, so a truncate in the same batch set the rebuild after the preparation had kept the KV, and the build sent the whole history onto that KV."""
+    first = adapter.build(IDENTITY, unit_chunk(1), payload(1, [5]))
+    finish(adapter, first, [51, 52, 53, 54, 55, END])
+    preparation = adapter.prepare_unit(IDENTITY, unit_chunk(2), payload(2, [7]))
+    assert preparation.reset_history is False
+    adapter.control(IDENTITY, truncate(1, t_ms=CODEC_FRAME_MS))
+    second = adapter.build(IDENTITY, unit_chunk(2), payload(2, [7]))
+    assert second.req.origin_input_ids == [NEWLINE, 7]
+    finish(adapter, second, [60, END])
+    assert adapter.prepare_unit(IDENTITY, unit_chunk(3), payload(3, [8])).reset_history
+    third = adapter.build(IDENTITY, unit_chunk(3), payload(3, [8]))
+    heard = PREFILL_TEXT_ROWS + 1
+    assert third.req.origin_input_ids == SYSTEM_PREFIX + [
+        5,
+        *[51, 52, 53, 54, 55][:heard],
+        END,
+        NEWLINE,
+        7,
+        60,
+        END,
+        NEWLINE,
+        8,
+    ]
+
+
+@pytest.mark.parametrize(
+    "is_next_reply_finished",
+    [pytest.param(True, id="finished"), pytest.param(False, id="aborted")],
+)
+def test_a_truncate_of_a_committed_reply_while_the_next_unit_is_in_flight_outlives_that_unit(
+    adapter: QwenThinkerSessionAdapter,
+    is_next_reply_finished: bool,
+) -> None:
+    """The next unit was appended to the native session holding the full reply before the truncate came; its result used to clear the rebuild, so the KV kept the full reply the history had cut, and the next prompt got a second newline after the cut reply."""
+    first = adapter.build(IDENTITY, unit_chunk(1), payload(1, [5]))
+    finish(adapter, first, [51, 52, 53, 54, 55, END])
+    second = adapter.build(IDENTITY, unit_chunk(2), payload(2, [7]))
+    adapter.control(IDENTITY, truncate(1, t_ms=CODEC_FRAME_MS))
+    if is_next_reply_finished:
+        finish(adapter, second, [60, END])
+    else:
+        abort(adapter, [60])
+    assert adapter.prepare_unit(IDENTITY, unit_chunk(3), payload(3, [8])).reset_history
+    third = adapter.build(IDENTITY, unit_chunk(3), payload(3, [8]))
+    heard = PREFILL_TEXT_ROWS + 1
+    assert third.req.origin_input_ids == SYSTEM_PREFIX + [
+        5,
+        *[51, 52, 53, 54, 55][:heard],
+        END,
+        NEWLINE,
+        7,
+        60,
         END,
         NEWLINE,
         8,

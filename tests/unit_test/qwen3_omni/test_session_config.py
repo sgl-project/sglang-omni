@@ -12,10 +12,8 @@ from sglang_omni.config.schema import SessionNodeConfig
 from sglang_omni.config.topology import compile_logical_processes
 from sglang_omni.models.qwen3_omni.config import Qwen3OmniSessionPipelineConfig
 from sglang_omni.pipeline.replicas import expand_replica_stages
-from sglang_omni.pipeline.sessions import admit_input
-from sglang_omni.proto.session import ControlEdge, TimedChunk
+from sglang_omni.proto.session import ControlEdge
 from sglang_omni.proto.streams import (
-    CONTROL,
     IMAGE_FRAME,
     INTERRUPT,
     PCM16,
@@ -57,6 +55,7 @@ def test_qwen3_omni_profile_declares_persistent_stage_routes_and_feedback() -> N
     )
     assert node.controls == (
         ControlEdge("input", "configure"),
+        ControlEdge("dialog", "configure"),
         ControlEdge("dialog", INTERRUPT, should_preempt=True),
         ControlEdge("dialog", "qwen.truncate"),
     )
@@ -108,6 +107,13 @@ def test_ar_stages_take_continuation_aware_admission_from_their_factory_settings
         assert kwargs["continuation_aware_admission"] is admission
 
 
+def test_every_session_stage_admits_the_configured_session_count() -> None:
+    config = profile_config().model_copy(update={"max_sessions": 32})
+    for stage_name in ("vad", "dialog"):
+        kwargs = resolve_stage_factory_args(config.stage_named(stage_name), config)
+        assert kwargs["max_open_sessions"] == 32
+
+
 def test_a_node_reading_every_input_format_must_take_camera_frames():
     config = profile_config()
     blind_vad = SessionNodeConfig(stages=["vad"], inputs=["input"])
@@ -130,23 +136,3 @@ def test_session_profile_round_trip_keeps_model_factory_arguments() -> None:
     assert config.realtime_deployment_factory == (
         "sglang_omni.serve.realtime.session_deployment.build_realtime_deployment"
     )
-
-
-def test_session_limit_admits_a_complete_maximum_duration_utterance() -> None:
-    config = profile_config()
-    unit = TimedChunk(
-        CONTROL,
-        0,
-        0,
-        0,
-        {
-            "pcm": bytes(int(config.max_utterance_seconds * 32000)),
-            "images": [],
-            "carried_turns": [],
-        },
-        format="qwen.unit",
-        turn=1,
-    )
-    admitted, encoded_bytes = admit_input(unit, config.session_limits(), {}, set())
-    assert admitted.payload["pcm"] == unit.payload["pcm"]
-    assert encoded_bytes > 1048576

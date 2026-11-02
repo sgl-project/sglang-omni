@@ -203,6 +203,7 @@ def test_open_session_merges_patch_into_current_configuration() -> None:
         ("force_listen_count", 1.5),
         ("max_new_tokens_per_unit", 0),
         ("talker_temperature", -1.0),
+        ("talker_top_k", 0),
         ("length_penalty", 1.1),
     ],
 )
@@ -258,11 +259,24 @@ def test_open_session_freezes_admission_fields(patch: JsonObject) -> None:
     assert current["sglang"]["max_slice_nums"] == 4
     assert granted["sampling_parameters"] == ["temperature"]
     assert granted["supports_reference_audio"] is True
+    assert granted["supports_instruction_updates"] is False
+    assert granted["supports_sampling_updates"] is False
 
     with pytest.raises(ProtocolError) as exc_info:
         negotiation.negotiate(current, "OPEN", patch)
 
     assert exc_info.value.code == "invalid_state"
+
+
+@pytest.mark.parametrize("supports_cancel", [True, False])
+def test_the_grant_says_whether_the_deployment_stops_a_reply_on_cancel(
+    supports_cancel: bool,
+) -> None:
+    """A client reads supports_cancel from session.updated to decide whether its stop control sends response.cancel or only mutes playback."""
+    _, granted = build_negotiation(
+        Capabilities(supports_cancel=supports_cancel)
+    ).negotiate({}, "CREATED", {})
+    assert granted["supports_cancel"] is supports_cancel
 
 
 @pytest.mark.parametrize(("slices", "frames"), [(1, 4), (9, 1), (10, None)])

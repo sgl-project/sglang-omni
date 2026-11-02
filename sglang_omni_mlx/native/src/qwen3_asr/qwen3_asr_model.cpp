@@ -30,11 +30,12 @@ mx::array SinusoidalPositions(int length, int channels) {
 } // namespace
 
 Qwen3ASR::Qwen3ASR(const std::filesystem::path &model_directory)
-    : Qwen3ASR(ReadJson(model_directory / "config.json"), model_directory) {}
+    : Qwen3ASR(omni_common::ReadJson(model_directory / "config.json"),
+               model_directory) {}
 
 Qwen3ASR::Qwen3ASR(const nlohmann::json &config,
                    const std::filesystem::path &model_directory)
-    : checkpoint_(LoadSafetensors(model_directory), config),
+    : checkpoint_(omni_common::LoadSafetensors(model_directory), config),
       decoder_(checkpoint_, "model",
                Qwen3DecoderConfig::FromJson(
                    config.at("thinker_config").at("text_config"))) {
@@ -78,7 +79,7 @@ mx::array Qwen3ASR::AudioEncoderLayer(const mx::array &x, int layer) const {
                             prefix + ".self_attn.out_proj"));
   return mx::add(
       hidden, checkpoint_.Linear(
-                  Gelu(checkpoint_.Linear(
+                  omni_common::Gelu(checkpoint_.Linear(
                       checkpoint_.LayerNorm(
                           hidden, prefix + ".final_layer_norm", kLayerNormEps),
                       prefix + ".fc1")),
@@ -107,9 +108,9 @@ mx::array Qwen3ASR::EncodeAudio(const mx::array &mel,
         mx::pad(chunk, {{0, 0}, {0, longest_chunk - chunk_lengths[i]}}));
   }
   mx::array x = mx::expand_dims(mx::stack(padded_chunks), -1);
-  x = Gelu(Conv2d(x, "audio_tower.conv2d1"));
-  x = Gelu(Conv2d(x, "audio_tower.conv2d2"));
-  x = Gelu(Conv2d(x, "audio_tower.conv2d3"));
+  x = omni_common::Gelu(Conv2d(x, "audio_tower.conv2d1"));
+  x = omni_common::Gelu(Conv2d(x, "audio_tower.conv2d2"));
+  x = omni_common::Gelu(Conv2d(x, "audio_tower.conv2d3"));
   const int chunk_count = x.shape(0);
   const int frequency_bins = x.shape(1);
   const int conv_frames = x.shape(2);
@@ -201,7 +202,7 @@ mx::array Qwen3ASR::EncodeAudio(const mx::array &mel,
   hidden_states = checkpoint_.LayerNorm(mx::concatenate(ordered, 0),
                                         "audio_tower.ln_post", kLayerNormEps);
   return checkpoint_.Linear(
-      Gelu(checkpoint_.Linear(hidden_states, "audio_tower.proj1")),
+      omni_common::Gelu(checkpoint_.Linear(hidden_states, "audio_tower.proj1")),
       "audio_tower.proj2");
 }
 

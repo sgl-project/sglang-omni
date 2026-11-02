@@ -1,4 +1,4 @@
-"""Realtime unit identity, adapter contracts and resource configuration."""
+"""Realtime unit identity, adapter contracts, session failures and resource configuration."""
 
 from __future__ import annotations
 
@@ -7,7 +7,19 @@ from collections.abc import Awaitable
 from dataclasses import asdict, dataclass
 from typing import Protocol, get_args
 
+from sglang_omni.pipeline.types import SessionIdleTimeoutError, SessionOutputBudgetError
 from sglang_omni.profiler.duplex_events import SessionUnitReadyObservation
+from sglang_omni.proto.session import (
+    DEFAULT_IDLE_TIMEOUT_S,
+    DEFAULT_SESSION_UPDATE_TIMEOUT_S,
+)
+from sglang_omni.serve.realtime.constants import (
+    CLOSE_REASON_CONTEXT_LIMIT,
+    CLOSE_REASON_INTERNAL,
+    CLOSE_REASON_OUTPUT_BUDGET_EXHAUSTED,
+    CLOSE_REASON_SESSION_IDLE_TIMEOUT,
+    CLOSE_REASON_SESSION_OPEN_TIMEOUT,
+)
 from sglang_omni.serve.realtime.control import ControlEvent
 from sglang_omni.serve.realtime.output import OutputEvent
 from sglang_omni.serve.realtime.schema import (
@@ -32,6 +44,42 @@ class ProtocolError(ValueError):
         super().__init__(message)
 
 
+class ContextLimitError(RuntimeError):
+    """A single response's text outgrew max_history_chars."""
+
+    MESSAGE = "response text context limit"
+
+    def __init__(self) -> None:
+        super().__init__(self.MESSAGE)
+
+
+class OutputBudgetError(RuntimeError):
+    """Session output outgrew its bounded buffer."""
+
+    MESSAGE = "outbound event budget exhausted"
+
+    def __init__(self, message: str = MESSAGE) -> None:
+        super().__init__(message)
+
+
+class SessionOpenTimeoutError(TimeoutError):
+    """The backend did not finish opening a realtime session in time."""
+
+
+def failure_code(exc: Exception) -> str:
+    """Client-facing error code of a server-side session failure."""
+    if isinstance(exc, ContextLimitError):
+        return CLOSE_REASON_CONTEXT_LIMIT
+    elif isinstance(exc, (OutputBudgetError, SessionOutputBudgetError)):
+        return CLOSE_REASON_OUTPUT_BUDGET_EXHAUSTED
+    elif isinstance(exc, SessionIdleTimeoutError):
+        return CLOSE_REASON_SESSION_IDLE_TIMEOUT
+    elif isinstance(exc, SessionOpenTimeoutError):
+        return CLOSE_REASON_SESSION_OPEN_TIMEOUT
+    else:
+        return CLOSE_REASON_INTERNAL
+
+
 def samples_to_ms(sample_count: int, sample_rate_hz: int) -> float:
     return sample_count * MS_PER_SECOND / sample_rate_hz
 
@@ -44,7 +92,8 @@ class RuntimeLimits:
     max_output_bytes: int = 32 * 1024 * 1024
     max_history_chars: int = 64 * 1024
     cleanup_timeout_s: float = 30
-    session_update_timeout_s: float = 60
+    session_update_timeout_s: float = DEFAULT_SESSION_UPDATE_TIMEOUT_S
+    idle_timeout_s: float = DEFAULT_IDLE_TIMEOUT_S
 
     def __post_init__(self) -> None:
         if any(
@@ -72,7 +121,9 @@ class Capabilities:
     supports_reference_audio: bool = False
     voices: tuple[str, ...] = ()
     supports_instruction_updates: bool = False
+    supports_sampling_updates: bool = False
     supports_truncate: bool = False
+    supports_cancel: bool = False
     supports_client_commit: bool = False
     # note (Junnan Li): Frame cap per unit, indexed by the session's max_slice_nums minus one.
     image_frames_per_unit: tuple[int, ...] = (1,)
@@ -132,12 +183,15 @@ class Capabilities:
             tail_policy=self.tail_policy,
             supports_server_interrupt=False,
             supports_truncate=self.supports_truncate,
+            supports_cancel=self.supports_cancel,
             supports_resume=False,
             partial_style=self.partial_style,
             pressure_policy="reject",
             strict_order=True,
             sampling_parameters=list(self.sampling_parameters),
             supports_reference_audio=self.supports_reference_audio,
+            supports_instruction_updates=self.supports_instruction_updates,
+            supports_sampling_updates=self.supports_sampling_updates,
         )
 
         if self.voices:
@@ -210,7 +264,7 @@ class InteractionAdapter:
     async def cancel(self) -> None:
         raise ProtocolError("not_supported", "this session does not cancel responses")
 
-    async def truncate(self, audio_end_ms: float) -> None:
+    async def truncate(self, item_id: str, audio_end_ms: float) -> None:
         raise ProtocolError("not_supported", "this session does not truncate responses")
 
     async def commit(self) -> None:

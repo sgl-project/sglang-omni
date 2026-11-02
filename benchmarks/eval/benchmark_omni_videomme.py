@@ -50,7 +50,7 @@ Last verified: 2026-04-26
 
 Accuracy (full set)
 
-| Model      | Config                      | accuracy | correct   | failed | mc_fallback | Source                                                                    |
+| Model      | Config                      | accuracy | correct   | failed | unparseable | Source                                                                    |
 | ---------- | --------------------------- | -------- | --------- | ------ | ----------- | ------------------------------------------------------------------------- |
 | Qwen3-Omni | thinker-only, full-set, c=4 | 64.74%   | 1616/2496 | 0      | 81          | PR #411 [H200, c=4, max_tokens=256]                                 |
 | Qwen3-Omni | thinker-only, full-set, c=4 | 65.06%   | 1624/2496 | 0      | 72          | PR #411 [H100, c=4, max_tokens=256]                                 |

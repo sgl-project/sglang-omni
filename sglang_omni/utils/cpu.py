@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 GPU_LOCAL_CPUS_ENV = "SGLANG_OMNI_BIND_GPU_LOCAL_CPUS"
 _CGROUP_ROOT = Path("/sys/fs/cgroup")
 _PROC_SELF_CGROUP = Path("/proc/self/cgroup")
+PCI_DEVICES_ROOT = Path("/sys/bus/pci/devices")
+# note (ratish): 16 beat the reader's own 8 threads on Video-MME CI videos; larger values are unmeasured.
+MAX_VIDEO_DECODE_THREADS = 16
 
 
 def read_self_cgroup_paths(proc_self_cgroup: Path) -> tuple[str | None, str | None]:
@@ -180,6 +183,13 @@ def bounded_intraop_threads(*, worker_count: int, max_threads: int) -> int:
     return min(max(effective_cpu_count() // worker_count, 1), max_threads)
 
 
+def automatic_video_decode_threads(worker_count: int) -> int:
+    """FFmpeg threads each of a preprocessing stage's request workers decodes its videos with when the stage sets none."""
+    return bounded_intraop_threads(
+        worker_count=worker_count, max_threads=MAX_VIDEO_DECODE_THREADS
+    )
+
+
 # Native multimodal_gen gives each of num_gpus colocated GPU workers
 # min(16, cpu_count // num_gpus) intra-op threads when OMP_NUM_THREADS is
 # unset (gpu_worker._worker_cpu_intra_op_threads in SGLang).
@@ -195,6 +205,34 @@ def native_worker_intraop_threads(worker_count: int) -> int:
     return bounded_intraop_threads(
         worker_count=worker_count, max_threads=NATIVE_WORKER_MAX_INTRAOP_THREADS
     )
+
+
+def parse_cpu_list(text: str) -> set[int]:
+    """CPUs of a kernel CPU list such as 0-3,8,10-11."""
+    cpus: set[int] = set()
+    for part in text.strip().split(","):
+        if not part:
+            continue
+        else:
+            pass
+        first, _dash, last = part.partition("-")
+        cpus.update(range(int(first), int(last or first) + 1))
+    return cpus
+
+
+def pci_local_cpus(bus_id: str | bytes) -> set[int] | None:
+    """The CPUs sysfs lists as local to a PCI device, None when unreadable."""
+    if isinstance(bus_id, bytes):
+        bus_id = bus_id.decode()
+    else:
+        pass
+    # Sysfs uses a minimum of four hex digits for the PCI domain.
+    domain, _colon, address = bus_id.lower().partition(":")
+    try:
+        path = PCI_DEVICES_ROOT / f"{int(domain, 16):04x}:{address}" / "local_cpulist"
+        return parse_cpu_list(path.read_text())
+    except (OSError, ValueError):
+        return None
 
 
 def gpu_local_cpus(logical_gpu_ids: Iterable[int]) -> set[int]:
@@ -213,6 +251,13 @@ def gpu_local_cpus(logical_gpu_ids: Iterable[int]) -> set[int]:
             handle = get_device_handle(
                 pynvml, resolve_visible_device_id(gpu_id, visible)
             )
+            # note (rsi): use the kernel's local CPU list, falling back to NVML.
+            local_cpus = pci_local_cpus(pynvml.nvmlDeviceGetPciInfo(handle).busId)
+            if local_cpus is not None:
+                cpus.update(local_cpus)
+                continue
+            else:
+                pass
             for index, word in enumerate(
                 pynvml.nvmlDeviceGetCpuAffinity(handle, words)
             ):

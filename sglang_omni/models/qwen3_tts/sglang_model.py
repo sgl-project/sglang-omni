@@ -48,12 +48,14 @@ from sglang_omni.models.qwen3_tts.compat import (
 )
 from sglang_omni.models.qwen3_tts.predictor_kernels import (
     gather_codec_embedding_and_add,
+    short_cache_gqa_npu,
 )
 from sglang_omni.models.qwen3_tts.sampling_kernels import (
     sample_codes_and_gather_codec_embedding,
     sample_from_logits_with_seed_top_k_top_p,
     sample_from_logprobs_with_seed_npu,
     sample_from_sorted_logprobs_with_seed_small_k,
+    sample_top_k,
 )
 from sglang_omni.models.qwen3_tts.speaker_encoder_cuda_graph import (
     Qwen3TTSSpeakerEncoderCudaGraphRunner,
@@ -120,8 +122,13 @@ def predictor_gqa_attention(
     num_key_value_heads: int,
     is_causal: bool,
 ) -> torch.Tensor:
-    """Run Predictor GQA, preferring Ascend's inference kernel on NPU for one query."""
+    """Run Predictor GQA with shape-specific kernels for non-causal NPU queries."""
     if q.device.type == "npu" and not is_causal:
+        output = short_cache_gqa_npu(q, key, value)
+        if output is not None:
+            return output
+        else:
+            pass
         fused_attention = getattr(
             getattr(torch.ops, "npu", None),
             "npu_fused_infer_attention_score",
@@ -2040,6 +2047,16 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         scores = logits.float() / temperatures.unsqueeze(1)
         if max_top_k > 0 and max_top_k < vocab_size and not has_unbounded_top_k:
             sorted_scores, sorted_idx = torch.topk(scores, max_top_k, dim=-1)
+            if not self.sub_sampled_has_top_p:
+                sampled = sample_top_k(
+                    sorted_scores, sorted_idx, top_ks, seeds, sub_positions
+                )
+                if sampled is not None:
+                    return sampled
+                else:
+                    pass
+            else:
+                pass
             rank = torch.arange(max_top_k, device=logits.device).unsqueeze(0)
             keep_top_k = rank < top_ks.unsqueeze(1)
             sorted_scores = sorted_scores.masked_fill(~keep_top_k, -float("inf"))

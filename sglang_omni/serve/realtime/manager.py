@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field, replace
 
 from fastapi import WebSocket
 
 from sglang_omni.audio.semantic_vad import SemanticEOUModel
 from sglang_omni.client import Client
-from sglang_omni.config import RealtimeTranscriptionConfig
+from sglang_omni.config.schema import PipelineConfig, RealtimeTranscriptionConfig
 from sglang_omni.proto.session import SessionLimits
 from sglang_omni.serve.realtime.protocol import SharedRealtimeSession
 from sglang_omni.serve.realtime.runtime import SessionRuntime
@@ -31,12 +32,30 @@ class RealtimeDeployment:
     limits: RuntimeLimits = field(default_factory=RuntimeLimits)
     session_limits: SessionLimits = field(default_factory=SessionLimits)
     max_connections: int = 128
+    # note (Junnan Li): called once with the warmup timeout in seconds, before the server reports ready.
+    warmup: Callable[[float], Awaitable[None]] | None = None
 
     def __post_init__(self) -> None:
         if type(self.max_connections) is not int or self.max_connections < 1:
             raise ValueError("max_connections must be a positive integer")
         else:
             pass
+
+
+def runtime_limits_for_pipeline(
+    pipeline_config: PipelineConfig | None,
+    runtime_limits: RuntimeLimits | None = None,
+) -> RuntimeLimits:
+    """Apply pipeline timeouts without changing other runtime limits."""
+    resolved_limits = RuntimeLimits() if runtime_limits is None else runtime_limits
+    if pipeline_config is None:
+        return resolved_limits
+    else:
+        return replace(
+            resolved_limits,
+            session_update_timeout_s=pipeline_config.realtime_session_update_timeout_s,
+            idle_timeout_s=pipeline_config.realtime_idle_timeout_s,
+        )
 
 
 class RealtimeSessionManager:

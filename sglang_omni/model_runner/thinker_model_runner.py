@@ -532,6 +532,10 @@ class ThinkerModelRunner(ModelRunner):
         else:
             pass
 
+        if self.retain_prefill_input_embeds:
+            self.retained_prefill_input_embeds = input_embeds
+        else:
+            pass
         with attn_forward_context(model_runner.attn_backend):
             hidden_states = outer.model(
                 input_ids=None,

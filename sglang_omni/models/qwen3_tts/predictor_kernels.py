@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Optional CUDA kernels for the Qwen3-TTS residual-code predictor."""
+"""Optional accelerator kernels for the Qwen3-TTS residual-code predictor."""
 
 from __future__ import annotations
 
@@ -7,20 +7,26 @@ import torch
 
 from sglang_omni.platforms import current_platform
 
-if not current_platform.is_npu():
-    try:
-        import triton
-        import triton.language as tl
-    except ImportError:  # pragma: no cover - depends on runtime image
-        triton = None
-        tl = None
-else:
+try:
+    import triton
+    import triton.language as tl
+except ImportError:  # pragma: no cover - depends on runtime image
     triton = None
     tl = None
 
 
 def has_triton_runtime() -> bool:
     return triton is not None and not current_platform.is_npu()
+
+
+if current_platform.is_npu():
+    from sglang_omni.models.qwen3_tts.ascend_triton_kernels import short_cache_gqa_npu
+else:
+
+    def short_cache_gqa_npu(
+        q: torch.Tensor, key: torch.Tensor, value: torch.Tensor
+    ) -> torch.Tensor | None:
+        return None
 
 
 if has_triton_runtime():

@@ -33,8 +33,9 @@ import signal
 import socket
 import threading
 import time
-from collections.abc import Callable, Generator
+from collections.abc import Awaitable, Callable, Generator
 from contextlib import contextmanager, suppress
+from dataclasses import replace
 from types import FrameType
 from typing import TypedDict
 
@@ -62,6 +63,7 @@ from sglang_omni.serve.protocol import (
     CreateSpeechRequest,
 )
 from sglang_omni.serve.realtime.manager import RealtimeDeployment
+from sglang_omni.serve.realtime.types import ProtocolError, RuntimeLimits
 from sglang_omni.serve.server_warmup import TranscriptionWarmupRequest
 from sglang_omni.serve.services import ServiceProcesses
 from sglang_omni.serve.stage_routes import (
@@ -586,17 +588,19 @@ async def warm_up_server(
         ChatCompletionRequest | CreateSpeechRequest | TranscriptionWarmupRequest
     ],
     timeout_s: float,
+    realtime_warmup: Callable[[float], Awaitable[None]] | None = None,
 ) -> None:
     """Mark the server up once its warmup requests have crossed every stage.
 
     A fresh process builds kernels on its first request; this keeps that cost
-    off user requests. Every process then freezes the heap warmup built. A failed
-    warmup stops the server and raises; a shutdown that starts first drops the
-    request in flight and leaves the server down.
+    off user requests. The realtime deployment's warmup, when it has one, runs
+    after the requests. Every process then freezes the heap warmup built. A
+    failed warmup stops the server and raises; a shutdown that starts first
+    drops the work in flight and leaves the server down.
     """
     while not server.started:
         await asyncio.sleep(SERVER_START_POLL_S)
-    if not requests:
+    if not requests and realtime_warmup is None:
         app.state.server_status = ServerStatus.UP
         await freeze_serving_gc(server, coordinator)
         return
@@ -607,7 +611,28 @@ async def warm_up_server(
         is_warmed_up = await send_warmup_requests(
             server, base_url=base_url, requests=requests, timeout_s=timeout_s
         )
-    except (httpx.HTTPError, RuntimeError) as exc:
+        if is_warmed_up and realtime_warmup is not None:
+            warmup_task = asyncio.create_task(
+                asyncio.wait_for(realtime_warmup(timeout_s), timeout_s)
+            )
+            try:
+                while not warmup_task.done() and not server.should_exit:
+                    await asyncio.wait({warmup_task}, timeout=SERVER_START_POLL_S)
+                if warmup_task.done():
+                    warmup_task.result()
+                else:
+                    is_warmed_up = False
+            finally:
+                # note (Junnan Li): run_server cancels this coroutine on shutdown, and the warmup session must not outlive the pipeline.
+                if not warmup_task.done():
+                    warmup_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await warmup_task
+                else:
+                    pass
+        else:
+            pass
+    except (httpx.HTTPError, ProtocolError, RuntimeError, TimeoutError) as exc:
         logger.error(f"Server warmup failed, stopping the server: {exc!r}")
         server.should_exit = True
         raise
@@ -621,8 +646,9 @@ async def warm_up_server(
     gc.collect()
     app.state.server_status = ServerStatus.UP
     await freeze_serving_gc(server, coordinator)
+    realtime_note = "" if realtime_warmup is None else " and a realtime session"
     logger.info(
-        f"Server warmup of {len(requests)} request(s) finished in "
+        f"Server warmup of {len(requests)} request(s){realtime_note} finished in "
         f"{time.perf_counter() - start:.1f} s; the server is ready"
     )
 
@@ -636,6 +662,8 @@ async def run_server(
     log_level: str = "info",
     client_kwargs: ClientOptions | None = None,
     enable_realtime: bool = False,
+    realtime_session_update_timeout_s: float | None = None,
+    realtime_idle_timeout_s: float | None = None,
     allowed_local_media_path: str | None = None,
     allowed_media_domains: list[str] | None = None,
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
@@ -646,6 +674,26 @@ async def run_server(
     This is the async entry point.  For a blocking call use :func:`launch_server`.
     """
     export_media_policy(allowed_local_media_path, allowed_media_domains)
+    deployment_factory = type(pipeline_config).realtime_deployment_factory
+    realtime_timeout_overrides_seconds = {
+        timeout_name: timeout_seconds
+        for timeout_name, timeout_seconds in (
+            ("session_update_timeout_s", realtime_session_update_timeout_s),
+            ("idle_timeout_s", realtime_idle_timeout_s),
+        )
+        if timeout_seconds is not None
+    }
+    # note (Haiyang Luo): Validate overrides before starting any pipeline process.
+    RuntimeLimits(**realtime_timeout_overrides_seconds)
+    if realtime_timeout_overrides_seconds and (
+        not enable_realtime or deployment_factory is None
+    ):
+        raise ValueError(
+            "Realtime timeout overrides require --enable-realtime and a pipeline "
+            "with a shared duplex realtime deployment"
+        )
+    else:
+        pass
     # 0. Check port availability before loading models
     port = find_available_port(host, port)
     export_server_port(port)
@@ -694,11 +742,20 @@ async def run_server(
                 ] * num_replicas
             cl_kwargs = client_kwargs or {}
             client = Client(coordinator, **cl_kwargs)
-            deployment_factory = type(pipeline_config).realtime_deployment_factory
             if enable_realtime and deployment_factory is not None:
                 realtime_deployment: RealtimeDeployment | None = import_string(
                     deployment_factory
                 )(client, pipeline_config)
+                if realtime_timeout_overrides_seconds:
+                    realtime_deployment = replace(
+                        realtime_deployment,
+                        limits=replace(
+                            realtime_deployment.limits,
+                            **realtime_timeout_overrides_seconds,
+                        ),
+                    )
+                else:
+                    pass
             else:
                 realtime_deployment = None
             app = create_app(
@@ -720,6 +777,7 @@ async def run_server(
                 required_speech_reference_count=(
                     pipeline_config.required_speech_reference_count
                 ),
+                speaker_embedding_size=pipeline_config.resolve_speaker_embedding_size(),
                 speech_reference_text_required=(
                     pipeline_config.speech_reference_text_required
                 ),
@@ -784,6 +842,11 @@ async def run_server(
                     requests=warmup_requests,
                     timeout_s=float(
                         os.environ.get("SGLANG_OMNI_WARMUP_TIMEOUT", "600")
+                    ),
+                    realtime_warmup=(
+                        None
+                        if skip_server_warmup or realtime_deployment is None
+                        else realtime_deployment.warmup
                     ),
                 )
             )
@@ -864,6 +927,8 @@ def launch_server(
     log_level: str = "info",
     client_kwargs: ClientOptions | None = None,
     enable_realtime: bool = False,
+    realtime_session_update_timeout_s: float | None = None,
+    realtime_idle_timeout_s: float | None = None,
     allowed_local_media_path: str | None = None,
     allowed_media_domains: list[str] | None = None,
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
@@ -882,6 +947,8 @@ def launch_server(
             :class:`~sglang_omni.client.Client`.
         enable_realtime: If True, mount the WebSocket ``/v1/realtime``
             endpoint (OpenAI Realtime API).
+        realtime_session_update_timeout_s: Set the timeout for the first session.update, in seconds. To keep the pipeline configuration, use None.
+        realtime_idle_timeout_s: Set the idle timeout for shared sessions, in seconds. To keep the pipeline configuration, use None.
         allowed_local_media_path: Directory that local media references in TTS
             requests must resolve inside. ``file://`` references are disabled
             when omitted; bare local paths remain allowed by default but are
@@ -889,8 +956,8 @@ def launch_server(
         allowed_media_domains: Domains allowed for remote TTS reference audio.
         tts_batch_max_items: Maximum items accepted by
             ``/v1/audio/speech/batch``.
-        skip_server_warmup: Report ready without sending the pipeline's
-            warmup requests first.
+        skip_server_warmup: Report ready without running the pipeline's
+            warmup requests or its realtime deployment's warmup first.
     """
     apply_gpu_compat_env_defaults()
     sigterm_received = False
@@ -911,6 +978,8 @@ def launch_server(
             log_level=log_level,
             client_kwargs=client_kwargs,
             enable_realtime=enable_realtime,
+            realtime_session_update_timeout_s=realtime_session_update_timeout_s,
+            realtime_idle_timeout_s=realtime_idle_timeout_s,
             allowed_local_media_path=allowed_local_media_path,
             allowed_media_domains=allowed_media_domains,
             tts_batch_max_items=tts_batch_max_items,

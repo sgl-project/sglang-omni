@@ -2,6 +2,7 @@
 // Transcribes WAV files with the native runtime and prints one JSON line each,
 // for parity checks against the Python reference server.
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -45,6 +46,13 @@ int main(int argc, char **argv) {
       options.stop_on_token_loop = true;
     } else if (argument == "--max-new-tokens") {
       options.max_new_tokens = std::stoi(value());
+    } else if (argument == "--repetition-penalty") {
+      options.repetition_penalty = std::stof(value());
+      if (!std::isfinite(options.repetition_penalty) ||
+          options.repetition_penalty <= 0) {
+        throw std::invalid_argument(argument + " must be positive and finite");
+      } else {
+      }
     } else if (argument == "--encode") {
       encode = true;
       encode_text = value();
@@ -60,15 +68,15 @@ int main(int argc, char **argv) {
   }
   if (!dump_mel_filters.empty()) {
     std::ofstream out(dump_mel_filters, std::ios::binary);
-    const auto &filters = qwen3_asr::MelFilterBank();
-    const auto &window = qwen3_asr::PeriodicHannWindow();
+    const auto &filters = omni_common::MelFilterBank();
+    const auto &window = omni_common::PeriodicHannWindow();
     out.write(reinterpret_cast<const char *>(filters.data()),
               filters.size() * sizeof(float));
     out.write(reinterpret_cast<const char *>(window.data()),
               window.size() * sizeof(float));
     return 0;
   } else if (!encode_lines.empty()) {
-    const qwen3_asr::Tokenizer tokenizer(model_path);
+    const omni_common::Tokenizer tokenizer(model_path);
     std::ifstream lines(encode_lines);
     std::string line;
     while (std::getline(lines, line)) {
@@ -89,11 +97,11 @@ int main(int argc, char **argv) {
       return std::chrono::duration<double, std::milli>(b - a).count();
     };
     const qwen3_asr::Qwen3ASR model(model_path);
-    const qwen3_asr::Tokenizer tokenizer(model_path);
+    const omni_common::Tokenizer tokenizer(model_path);
     std::ifstream stream(files.at(0), std::ios::binary);
     std::ostringstream bytes;
     bytes << stream.rdbuf();
-    const std::vector<float> samples = qwen3_asr::DecodeWav(bytes.str());
+    const std::vector<float> samples = omni_common::DecodeWav(bytes.str());
     for (int round = 0; round < 3; ++round) {
       const auto t0 = Clock::now();
       mx::array mel = qwen3_asr::LogMel(samples, AudioLayout::kVoxtSwift);
@@ -133,7 +141,7 @@ int main(int argc, char **argv) {
     }
     return 0;
   } else if (encode) {
-    const qwen3_asr::Tokenizer tokenizer(model_path);
+    const omni_common::Tokenizer tokenizer(model_path);
     std::cout << nlohmann::json(tokenizer.Encode(encode_text)).dump() << "\n";
     return 0;
   } else {
@@ -152,7 +160,7 @@ int main(int argc, char **argv) {
     bytes << stream.rdbuf();
     const auto started = std::chrono::steady_clock::now();
     const auto result = transcriber.Transcribe(
-        qwen3_asr::DecodeWav(bytes.str()), options, cancel);
+        omni_common::DecodeWav(bytes.str()), options, cancel);
     nlohmann::json line = {
         {"file", file},
         {"text", result.text},

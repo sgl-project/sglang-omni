@@ -6,13 +6,14 @@
 #include <stdexcept>
 
 #include "common/audio.h"
+#include "common/text.h"
 
 namespace moss {
 
-using qwen3_asr::kSampleRate;
+using omni_common::kSampleRate;
+using omni_common::StripUnicodeWhitespace;
 using qwen3_asr::SpeakerSegment;
 using qwen3_asr::SpeakerSegmentsJson;
-using qwen3_asr::StripUnicodeWhitespace;
 using qwen3_asr::TranscriptionResult;
 
 namespace {

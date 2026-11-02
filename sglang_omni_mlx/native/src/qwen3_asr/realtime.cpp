@@ -6,8 +6,14 @@
 #include <random>
 
 #include "common/audio.h"
+#include "common/text.h"
 
 namespace qwen3_asr {
+
+using omni_common::CodePoints;
+using omni_common::DecodeBase64;
+using omni_common::IsUnicodeSpace;
+using omni_common::StripUnicodeWhitespace;
 
 namespace {
 
@@ -49,58 +55,12 @@ std::string NewEventId() {
 
 } // namespace
 
-std::optional<std::vector<uint8_t>> DecodeBase64(const std::string &text) {
-  // Note (Jiaxin Deng): matches Python's b64decode(validate=False), which
-  // drops characters outside the alphabet but still checks the padding.
-  std::string clean;
-  for (const char c : text) {
-    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-        (c >= '0' && c <= '9') || c == '+' || c == '/' || c == '=') {
-      clean.push_back(c);
-    } else {
-    }
-  }
-  size_t padding = 0;
-  while (!clean.empty() && clean.back() == '=') {
-    clean.pop_back();
-    ++padding;
-  }
-  const size_t remainder = clean.size() % 4;
-  if (clean.find('=') != std::string::npos || remainder == 1 ||
-      (remainder != 0 && padding < 4 - remainder)) {
-    return std::nullopt;
-  } else {
-  }
-  const auto value = [](char c) -> uint32_t {
-    if (c >= 'A' && c <= 'Z')
-      return c - 'A';
-    if (c >= 'a' && c <= 'z')
-      return c - 'a' + 26;
-    if (c >= '0' && c <= '9')
-      return c - '0' + 52;
-    return c == '+' ? 62 : 63;
-  };
-  std::vector<uint8_t> bytes;
-  uint32_t buffer = 0;
-  int bits = 0;
-  for (const char c : clean) {
-    buffer = (buffer << 6) | value(c);
-    bits += 6;
-    if (bits >= 8) {
-      bits -= 8;
-      bytes.push_back(static_cast<uint8_t>((buffer >> bits) & 0xFF));
-    } else {
-    }
-  }
-  return bytes;
-}
-
 RealtimeSettings MakeRealtimeSettings(int decode_interval_ms,
                                       int first_decode_ms,
                                       double max_segment_seconds) {
-  return {decode_interval_ms * kSampleRate / 1000,
-          first_decode_ms * kSampleRate / 1000,
-          static_cast<int>(max_segment_seconds * kSampleRate)};
+  return {decode_interval_ms * omni_common::kSampleRate / 1000,
+          first_decode_ms * omni_common::kSampleRate / 1000,
+          static_cast<int>(max_segment_seconds * omni_common::kSampleRate)};
 }
 
 std::string JoinTranscriptParts(const std::vector<std::string> &parts) {
@@ -348,7 +308,7 @@ void RealtimeSession::MaybeStartRefresh() {
     const long end_sample = EndSample();
     samples = SegmentSamples(segment, end_sample);
     const bool silent =
-        PeakIsSilent(samples.data(), samples.size(), kSilentPeak);
+        omni_common::PeakIsSilent(samples.data(), samples.size(), kSilentPeak);
     // Note (Jiaxin Deng): leading silence keeps the early first decode for the
     // first audible audio.
     if (!(silent && segment.decode_count == 0)) {
@@ -432,7 +392,8 @@ void RealtimeSession::FinalizeThrough(long end_sample) {
       samples = SegmentSamples(segment, cut_sample);
     }
     std::optional<std::string> text;
-    if (PeakIsSilent(samples.data(), samples.size(), kSilentPeak)) {
+    if (omni_common::PeakIsSilent(samples.data(), samples.size(),
+                                  kSilentPeak)) {
       text = std::string();
     } else {
       TranscriptionOptions options;

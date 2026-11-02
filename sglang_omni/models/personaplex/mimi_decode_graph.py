@@ -63,7 +63,7 @@ class MimiDecodeSlots:
         device = codec.device
         graph_backend = (
             current_platform.get_device_graph_backend(device)
-            if current_platform.enable_codec_decode_graph()
+            if current_platform.enable_mimi_decode_graph()
             else None
         )
         if graph_backend is None or max_graph_frames == 0:

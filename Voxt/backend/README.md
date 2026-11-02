@@ -30,6 +30,12 @@ see the [Music3 cookbook](../../docs/cookbook/minimax_music3.md#apple-silicon-na
 for checkpoint provisioning, request fields, reference parity and waveform
 goldens. Voxt's ASR model selection is unchanged.
 
+It also builds `fishaudio_drama3_server` and `fishaudio_drama3_synthesize` for Fish
+Audio Drama 3 text-to-speech, served through `/v1/audio/speech` with the speech
+API `voxtral_tts_server` uses (`qwen3_asr/speech_service`); see the
+[Drama 3 cookbook](../../docs/cookbook/fishaudio_drama3.md#apple-silicon-native-mlx).
+Voxt does not start it.
+
 ## Build and run
 
 Requirements: an Apple Silicon Mac, Xcode and [uv](https://docs.astral.sh/uv/).
@@ -46,8 +52,8 @@ Voxt/backend/run_omni_dev.sh run
 `moss_transcribe_diarize_server`, `moss_transcribe`, `nemotron_asr_server`,
 `nemotron_transcribe`, `parakeet_server`, `parakeet_transcribe`,
 `sensevoice_server`, `sensevoice_transcribe`, `voxtral_tts_server`,
-`voxtral_tts_synthesize`, and the pinned MLX library
-and Metal kernels next to them.
+`voxtral_tts_synthesize`, `qwen3_tts_server`, `qwen3_tts_synthesize`,
+`cosyvoice3_server`, `cosyvoice3_synthesize`, `music3_server`, `music3_synthesize`, `fishaudio_drama3_server`, `fishaudio_drama3_synthesize`, and the pinned MLX library and Metal kernels next to them.
 
 "Voxt Omni Dev" has its own bundle identifier. It runs without the sandbox so it
 can start the runtime, and it sees `~/.voxt-omni-dev` as its home, so its
@@ -75,8 +81,9 @@ and quitting stops it.
 - The Qwen3-ASR server API:
   - `/health` with `request_states`;
   - `/v1/models`;
-  - `/v1/audio/transcriptions` (JSON or SSE);
+  - `/v1/audio/transcriptions` (JSON or SSE), whose optional `repetition_penalty` (positive, default 1 = off; Voxt does not send it) scales down the logits of tokens already generated, as SGLang's sampler does on CUDA, to break runaway token loops;
   - the `/v1/realtime` manual-turn socket.
+- Qwen3-ASR's `/v1/audio/transcriptions` stops greedy decoding at a token loop (the last 24 tokens use at most 3 distinct ids) unless the request sends `stop_on_token_loop=false`, and the text keeps one copy of the repeated unit. `qwen3_asr_transcribe` does so only with `--stop-on-token-loop`. Realtime refreshes run without the guard.
 - `Voxt/Transcription/Omni*.swift` is the client:
   - `OmniASRRuntime` handles launch, requests, and an awaitable retire that drains in-flight work.
   - It also contains the request planning, the live session and its adapter to Voxt's streaming session interface.
@@ -109,6 +116,7 @@ the `.xctestrun` file.
 ## Known limitations
 
 - Greedy decoding only.
+- Qwen3-ASR's token-loop guard misses a loop whose repeated unit has more than 3 distinct tokens.
 - Whisper uses batch preview; its server has no realtime socket.
 - Cohere uses batch preview until a native streaming session is implemented.
 - The dev build is ad hoc signed without keychain access groups, so remote
