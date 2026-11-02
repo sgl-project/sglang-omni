@@ -502,6 +502,34 @@ def test_complete_status_sidecar_allows_complete_report(tmp_path: Path) -> None:
     assert report["completeness"]["complete"] is True
 
 
+def test_status_without_event_file_prevents_complete_report(tmp_path: Path) -> None:
+    process_a_pid = os.getpid()
+    process_b_pid = process_a_pid + 1
+    write_events(
+        tmp_path / f"events_coordinator_{process_a_pid}.jsonl",
+        [make_ev("r1", "coordinator", "event", 1)],
+    )
+    write_status(
+        tmp_path / f"run_status_{process_a_pid}.json",
+        complete=True,
+        reasons=[],
+    )
+    write_status(
+        tmp_path / f"run_status_{process_b_pid}.json",
+        complete=False,
+        reasons=["producer_buffer_overflow"],
+    )
+
+    completeness = assess_completeness(tmp_path)
+
+    assert completeness["state"] == "incomplete"
+    assert completeness["complete"] is False
+    assert completeness["expected_status_files"] == 2
+    assert completeness["found_status_files"] == 2
+    assert "status_without_event_file" in completeness["incomplete_reasons"]
+    assert "producer_buffer_overflow" in completeness["incomplete_reasons"]
+
+
 def test_inconsistent_complete_status_is_not_accepted(tmp_path: Path) -> None:
     event_path = tmp_path / f"events_coordinator_{os.getpid()}.jsonl"
     write_events(event_path, [make_ev("r1", "coordinator", "event", 1)])
