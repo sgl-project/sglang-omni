@@ -5,6 +5,7 @@ Greedy decoding follows each Apple chip's GPU arithmetic, so a golden file keeps
 exact outputs per chip; other chips are gated on error rates within tolerance.
 Silero VAD and Sortformer golden files are checked within kernel tolerances.
 Voxtral TTS golden files hold seeded speech requests' codes, exact per chip.
+A request with draft_model_path ({"model": repo}) decodes with that DFlash draft.
 """
 
 from __future__ import annotations
@@ -17,18 +18,38 @@ import subprocess
 import sys
 import unicodedata
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Protocol
 
 # (runtime bin, data root, golden file, manifest of the clips to run) -> outputs
 TranscribeCorpus = Callable[[Path, Path, dict, dict[str, dict]], dict[str, dict]]
 
+import cosyvoice3_golden
+import fishaudio_drama3_golden
 import music3_golden
 import qwen3_tts_golden
 import sortformer_golden
+import speech_golden
 import vad_golden
 import voxtral_golden
+from speech_golden import SpeechCase, SpeechOutputs
 
 CI_DIRECTORY = Path(__file__).resolve().parent
+
+
+class SpeechSynthesizer(Protocol):
+    """A seeded speech case's outputs through a model's synthesis tool."""
+
+    def __call__(
+        self, runtime_bin: Path, model_directory: Path, case: SpeechCase
+    ) -> SpeechOutputs: ...
+
+
+# The speech golden kinds, checked by speech_golden.check.
+SPEECH_SYNTHESIZERS: dict[str, SpeechSynthesizer] = {
+    "voxtral_tts": voxtral_golden.synthesize,
+    "qwen3_tts": qwen3_tts_golden.synthesize,
+    "fishaudio_drama3": fishaudio_drama3_golden.synthesize,
+}
 COMPARED_FIELDS = ("text", "language", "generated_token_count", "finish_reason")
 QUALITY_GROUPS = {
     "wer_en": lambda clip: clip["lang"] == "en"
@@ -92,7 +113,11 @@ def spoken_text(text: str, model_kind: str | None) -> str:
 
 
 def transcribe(
-    runtime_bin: Path, model_directory: Path, clips: list[Path], request: dict
+    runtime_bin: Path,
+    model_directory: Path,
+    clips: list[Path],
+    request: dict,
+    draft_directory: Path | None,
 ) -> dict[str, dict]:
     command = [
         str(runtime_bin / "qwen3_asr_transcribe"),
@@ -101,6 +126,10 @@ def transcribe(
         "--language", request["language"],
         "--max-new-tokens", str(request["max_new_tokens"]),
     ]  # fmt: skip
+    if draft_directory is not None:
+        command += ["--draft-model-path", str(draft_directory)]
+    else:
+        pass
     if request["stop_at_end_of_text"]:
         command.append("--stop-at-end-of-text")
     else:
@@ -286,18 +315,20 @@ def run(transcribe_corpus: TranscribeCorpus) -> None:
         report(
             *sortformer_golden.check(golden, arguments.runtime_bin, arguments.data_root)
         )
-    elif golden.get("kind") == "voxtral_tts":
-        results = voxtral_golden.synthesize_cases(
-            arguments.runtime_bin,
-            model_directory(arguments.data_root, golden["model"]),
-            golden["cases"],
-        )
+    elif golden.get("kind") in SPEECH_SYNTHESIZERS:
+        synthesize = SPEECH_SYNTHESIZERS[golden["kind"]]
+        results = {
+            case_id: synthesize(
+                arguments.runtime_bin,
+                model_directory(arguments.data_root, golden["model"]),
+                case,
+            )
+            for case_id, case in golden["cases"].items()
+        }
         metrics = {}
-    elif golden.get("kind") == "qwen3_tts":
-        results = qwen3_tts_golden.synthesize_cases(
-            arguments.runtime_bin,
-            model_directory(arguments.data_root, golden["model"]),
-            golden["cases"],
+    elif golden.get("kind") == "cosyvoice3":
+        results = cosyvoice3_golden.synthesize_cases(
+            arguments.runtime_bin, arguments.data_root, golden, chip()
         )
         metrics = {}
     else:
@@ -337,10 +368,10 @@ def run(transcribe_corpus: TranscribeCorpus) -> None:
         return
     else:
         pass
-    if golden.get("kind") == "voxtral_tts":
-        report(*voxtral_golden.check(golden, device, results))
-    elif golden.get("kind") == "qwen3_tts":
-        report(*qwen3_tts_golden.check(golden, device, results))
+    if golden.get("kind") in SPEECH_SYNTHESIZERS:
+        report(*speech_golden.check(golden, device, results))
+    elif golden.get("kind") == "cosyvoice3":
+        report(*cosyvoice3_golden.check(golden, device, results))
     else:
         report(*check(golden, device, results, metrics))
 
@@ -351,11 +382,19 @@ def transcribe_qwen3_asr(
     clips = [
         data_root / "corpus" / "v1" / "clips" / f"{clip_id}.wav" for clip_id in manifest
     ]
+    request = golden["request"]
+    if "draft_model_path" in request:
+        draft_directory = model_directory(
+            data_root, request["draft_model_path"]["model"]
+        )
+    else:
+        draft_directory = None
     return transcribe(
         runtime_bin,
         model_directory(data_root, golden["model"]),
         clips,
-        golden["request"],
+        request,
+        draft_directory,
     )
 
 
