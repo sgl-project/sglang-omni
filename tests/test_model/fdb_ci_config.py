@@ -111,6 +111,11 @@ QWEN3_OMNI_FDB_PRESET = FdbCiPreset(
         gpu_arguments=(),
         num_shards=4,
         should_run_semantic_judge=True,
+        # note (jeffro): the turn-based model ends a short reply before three
+        # background-speech events begin; five H100 runs exercised 2-3 of those
+        # pairs and 14-16 of 20 in all, while a silent model still fails.
+        min_exercised_pairs_per_category=1,
+        min_exercised_pairs=12,
     ),
     references={
         "v15_respond_on_interruption": QWEN3_OMNI_FDB_RESPOND_ON_INTERRUPTION_REFERENCE,

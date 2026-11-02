@@ -138,13 +138,15 @@ class Measurement:
 
 @dataclass(frozen=True, kw_only=True)
 class FdbCiStrategy:
-    """One strategy's CI run: its engine, how its sessions spread over the GPUs
-    and whether the semantic judge grades it."""
+    """One strategy's CI run: its engine, how its sessions spread over the GPUs,
+    whether the semantic judge grades it and how many overlaps it must exercise."""
 
     engine_name: EngineName
     gpu_arguments: tuple[str, ...]
     num_shards: int
     should_run_semantic_judge: bool
+    min_exercised_pairs_per_category: int = MIN_EXERCISED_PAIRS_PER_CATEGORY
+    min_exercised_pairs: int = MIN_EXERCISED_PAIRS
 
     @property
     def run_name(self) -> str:
@@ -277,21 +279,22 @@ def count_exercised_overlaps(run_root: Path, engine_name: EngineName) -> Counter
 
 
 def check_overlaps_exercised(
-    checks: MetricCheckCollector, exercised: Counter[str]
+    checks: MetricCheckCollector, exercised: Counter[str], strategy: FdbCiStrategy
 ) -> None:
     """Record a run whose model was too often silent when the events began to
     have tested the overlaps at all."""
+    per_category = strategy.min_exercised_pairs_per_category
     for category in V15_CATEGORIES:
         checks.check(
-            exercised[category] >= MIN_EXERCISED_PAIRS_PER_CATEGORY,
+            exercised[category] >= per_category,
             f"{category}: overlap exercised in {exercised[category]}/"
-            f"{V15_PER_SUBSET} pairs < {MIN_EXERCISED_PAIRS_PER_CATEGORY}",
+            f"{V15_PER_SUBSET} pairs < {per_category}",
         )
     total = sum(exercised.values())
     pairs = V15_PER_SUBSET * len(V15_CATEGORIES)
     checks.check(
-        total >= MIN_EXERCISED_PAIRS,
-        f"overlap exercised in {total}/{pairs} pairs < {MIN_EXERCISED_PAIRS}",
+        total >= strategy.min_exercised_pairs,
+        f"overlap exercised in {total}/{pairs} pairs < {strategy.min_exercised_pairs}",
     )
 
 

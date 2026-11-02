@@ -47,7 +47,7 @@ def test_full_duplex_bench() -> None:
     for category, count in exercised.items():
         print(f"  {category + ' overlaps exercised':36} {count}/{V15_PER_SUBSET}")
     checks = MetricCheckCollector(f"FDB {STRATEGY_NAME}")
-    check_overlaps_exercised(checks, exercised)
+    check_overlaps_exercised(checks, exercised, strategy)
     if PRESET.calibrated:
         check_no_regression(checks, metrics, PRESET.references)
     else:

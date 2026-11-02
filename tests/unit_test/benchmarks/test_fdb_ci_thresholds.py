@@ -18,6 +18,8 @@ from tests.utils import MetricCheckCollector, fdb_ci
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CI_TEST = "tests/test_model/test_fdb_ci.py"
 ENGINE = "cascade"
+STRATEGY = fdb_ci_config.FDB_CI_PRESETS["cascaded"].strategy
+TURN_BASED = fdb_ci_config.FDB_CI_PRESETS["turn-based"].strategy
 STOP_INTERVAL_S = 1.0
 RESPONSE_INTERVAL_S = 2.0
 EVENT_SPAN_S = [1.0, 2.0]
@@ -218,11 +220,12 @@ def gate(
     run_root: Path,
     should_run_semantic_judge: bool = True,
     references: dict[str, float] = REFERENCES,
+    strategy: fdb_ci.FdbCiStrategy = STRATEGY,
 ) -> None:
     metrics = fdb_ci.collect_fdb_metrics(run_root, ENGINE, should_run_semantic_judge)
     checks = MetricCheckCollector("FDB fixture")
     fdb_ci.check_overlaps_exercised(
-        checks, fdb_ci.count_exercised_overlaps(run_root, ENGINE)
+        checks, fdb_ci.count_exercised_overlaps(run_root, ENGINE), strategy
     )
     fdb_ci.check_no_regression(checks, metrics, references)
     checks.assert_all()
@@ -338,6 +341,55 @@ def test_too_few_exercised_overlaps_fail_though_every_category_has_three(
     set_model_segments(run_root, late[5:], SPEAKING_AFTER_EVENT)
     with pytest.raises(AssertionError, match="overlap exercised in 12/20 pairs < 15"):
         gate(run_root)
+
+
+def test_turn_based_floors_accept_its_short_replies_but_not_a_silent_category(
+    run_root: Path,
+) -> None:
+    """The turn-based model's usual run, two background-speech pairs and 14 in
+    all, passes its floors and fails the shared ones."""
+    set_model_segments(
+        run_root,
+        [
+            "background_speech/1",
+            "background_speech/2",
+            "background_speech/3",
+            "talking_to_other/2",
+            "talking_to_other/4",
+            "user_backchannel/1",
+        ],
+        SPEAKING_AFTER_EVENT,
+    )
+    gate(run_root, strategy=TURN_BASED)
+    with pytest.raises(
+        AssertionError, match="background_speech: overlap exercised in 2/5 pairs < 3"
+    ):
+        gate(run_root)
+    set_model_segments(
+        run_root, ["background_speech/4", "background_speech/5"], SPEAKING_AFTER_EVENT
+    )
+    with pytest.raises(
+        AssertionError, match="background_speech: overlap exercised in 0/5 pairs < 1"
+    ):
+        gate(run_root, strategy=TURN_BASED)
+
+
+def test_turn_based_still_needs_twelve_exercised_overlaps(run_root: Path) -> None:
+    late = [
+        "user_interruption/1",
+        "user_interruption/2",
+        "user_backchannel/1",
+        "user_backchannel/2",
+        "user_backchannel/3",
+        "talking_to_other/1",
+        "talking_to_other/2",
+        "talking_to_other/3",
+    ]
+    set_model_segments(run_root, late, SPEAKING_AFTER_EVENT)
+    gate(run_root, strategy=TURN_BASED)
+    set_model_segments(run_root, ["background_speech/1"], SPEAKING_AFTER_EVENT)
+    with pytest.raises(AssertionError, match="overlap exercised in 11/20 pairs < 12"):
+        gate(run_root, strategy=TURN_BASED)
 
 
 def test_a_sample_without_event_timestamps_fails(run_root: Path) -> None:
