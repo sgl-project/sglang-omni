@@ -928,6 +928,15 @@ class ModelRunner(Generic[RequestDataInput]):
     ) -> None:
         """Called after prefill forward."""
 
+    def post_speculative_target_forward(
+        self,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> None:
+        """Called after a target prefill (schedule_batch set) or verify forward a draft drives, before the draft reads it."""
+
     def post_decode(
         self,
         result: GenerationBatchResult,

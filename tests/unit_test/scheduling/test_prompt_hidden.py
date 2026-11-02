@@ -23,10 +23,12 @@ def test_a_read_returns_the_rows_its_slots_were_last_computed_with() -> None:
         req_to_token[0, 2] = 5
 
         assert torch.equal(
-            store.read(1, torch.tensor([1, 2, 3])),
+            store.read(store.prompt_slot_ids(1, torch.tensor([1, 2, 3]))),
             torch.cat([first_rows[:2], second_rows]).cpu(),
         )
-        assert torch.equal(store.read(0, torch.tensor([2])), reused_rows.cpu())
+        assert torch.equal(
+            store.read(store.prompt_slot_ids(0, torch.tensor([2]))), reused_rows.cpu()
+        )
 
 
 @pytest.mark.accelerator

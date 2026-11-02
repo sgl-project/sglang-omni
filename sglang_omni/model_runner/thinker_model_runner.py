@@ -156,7 +156,46 @@ class ThinkerModelRunner(ModelRunner):
             else forward_batch.out_cache_loc_virtual
         )
         self.prompt_hidden_store.stage(
-            slot_ids[batch_rows], result.logits_output.hidden_states[batch_rows]
+            slot_ids[batch_rows],
+            self.outer_model.select_captured_hidden_states(
+                result.logits_output.hidden_states[batch_rows],
+                self.outer_model.talker_capture_layer_ids,
+            ),
+        )
+
+    def post_speculative_target_forward(
+        self,
+        result: GenerationBatchResult,
+        forward_batch: ForwardBatch,
+        schedule_batch: ScheduleBatch | None,
+        requests: list[SchedulerRequest],
+    ) -> None:
+        logits_output = result.logits_output
+        if self.prompt_hidden_store is None or logits_output.hidden_states is None:
+            return
+        elif schedule_batch is not None:
+            self.post_prefill(result, forward_batch, schedule_batch, requests)
+            # note (wenchen76): a draft streams a request's prefill token after the
+            # scheduler releases a finished request's KV, so its prompt slots are saved now.
+            for request, prefix_length, extend_length in zip(
+                schedule_batch.reqs,
+                schedule_batch.prefix_lens,
+                schedule_batch.extend_lens,
+            ):
+                if isinstance(request, PromptHiddenRequest) and (
+                    prefix_length + extend_length >= len(request.origin_input_ids)
+                ):
+                    request.prompt_hidden_slot_ids = (
+                        self.prompt_hidden_store.prompt_slot_ids(
+                            request.kv.req_pool_idx, request.prompt_hidden_positions
+                        )
+                    )
+                else:
+                    pass
+        else:
+            pass
+        logits_output.hidden_states = self.outer_model.select_captured_hidden_states(
+            logits_output.hidden_states, self.outer_model.draft_capture_layer_ids
         )
 
     # ------------------------------------------------------------------

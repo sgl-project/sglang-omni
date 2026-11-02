@@ -103,6 +103,10 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
 
     # Set by a speculative draft that reads the target's intermediate hidden states.
     capture_aux_hidden_states: bool = False
+    # The layer inputs each reader captures; the model captures their union, in layer order.
+    talker_capture_layer_ids: tuple[int, ...] = ()
+    draft_capture_layer_ids: tuple[int, ...] = ()
+    is_talker_reading_final_layer: bool = False
 
     def __init__(
         self,
@@ -168,11 +172,48 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
         else:
             pass
         # Note (wenyao): the final layer uses normalized output; auxiliary states hold layer inputs.
-        self.model.layers_to_capture = (
-            [accept_hidden_layer]
-            if accept_hidden_layer < self.config.num_hidden_layers
-            else []
+        self.is_talker_reading_final_layer = (
+            accept_hidden_layer == self.config.num_hidden_layers
         )
+        self.talker_capture_layer_ids = (
+            () if self.is_talker_reading_final_layer else (accept_hidden_layer,)
+        )
+        self.capture_layers()
+
+    def capture_layers(self) -> None:
+        """Capture the layers the talker and the draft read, each once."""
+        if self.is_talker_reading_final_layer and self.draft_capture_layer_ids:
+            # note (wenchen76): a draft's captures replace the normalized output in the
+            # captured hidden states, so the talker could not read its final layer.
+            raise ValueError(
+                "a speculative draft cannot serve a talker that accepts the "
+                "thinker's final layer"
+            )
+        else:
+            pass
+        self.model.layers_to_capture = sorted(
+            {*self.talker_capture_layer_ids, *self.draft_capture_layer_ids}
+        )
+
+    def select_captured_hidden_states(
+        self, hidden_states: torch.Tensor, layer_ids: tuple[int, ...]
+    ) -> torch.Tensor:
+        """The columns of a capture that hold layer_ids, in layer order."""
+        captured_layer_ids = self.model.layers_to_capture
+        if list(layer_ids) == captured_layer_ids:
+            return hidden_states
+        else:
+            hidden_size = self.config.hidden_size
+            columns = [captured_layer_ids.index(layer_id) for layer_id in layer_ids]
+            return torch.cat(
+                [
+                    hidden_states[
+                        ..., column * hidden_size : (column + 1) * hidden_size
+                    ]
+                    for column in columns
+                ],
+                dim=-1,
+            )
 
     def get_input_embeddings(self) -> VocabParallelEmbedding:
         return self.model.embed_tokens
@@ -186,20 +227,22 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
         if layer_ids is None:
             # A draft that names no layers reads the early, middle and late stream.
             num_layers = self.config.num_hidden_layers
-            self.model.set_eagle3_layers_to_capture(
-                [2, num_layers // 2, num_layers - 3]
+            self.draft_capture_layer_ids = tuple(
+                sorted({2, num_layers // 2, num_layers - 3})
             )
         else:
-            self.model.set_eagle3_layers_to_capture(
-                [layer_id + 1 for layer_id in layer_ids]
+            self.draft_capture_layer_ids = tuple(
+                sorted({layer_id + 1 for layer_id in layer_ids})
             )
+        self.capture_layers()
 
     def set_dflash_layers_to_capture(self, layer_ids: list[int]) -> None:
         """Capture the residual stream after each named layer for a DFlash draft."""
         self.capture_aux_hidden_states = True
-        self.model.set_dflash_layers_to_capture(
-            [layer_id + 1 for layer_id in layer_ids]
+        self.draft_capture_layer_ids = tuple(
+            sorted({layer_id + 1 for layer_id in layer_ids})
         )
+        self.capture_layers()
 
     def forward(
         self,

@@ -65,13 +65,15 @@ class SpeculativeTargetWorker:
     ) -> GenerationBatchResult:
         if pp_proxy_tensors is not None:
             raise ValueError("speculative decoding does not support pipeline parallel")
+        elif self.omni_runner is None:
+            raise RuntimeError("the speculative target runner is not attached")
         elif forward_batch is not None:
             assert batch is None and is_verify
             forward_batch.apply_deprecated_skip_attn_backend_init(
                 skip_attn_backend_init
             )
             output = self.model_runner.forward(forward_batch=forward_batch)
-            return GenerationBatchResult(
+            batch_result = GenerationBatchResult(
                 logits_output=output.logits_output,
                 can_run_cuda_graph=output.can_run_graph,
                 expert_distribution_metrics=output.expert_distribution_metrics,
@@ -79,8 +81,10 @@ class SpeculativeTargetWorker:
                 indexer_topk_output=output.indexer_topk_output,
                 kv_loc_plan=forward_batch.kv_loc_plan if return_kv_loc_plan else None,
             )
-        elif self.omni_runner is None:
-            raise RuntimeError("the speculative target runner is not attached")
+            self.omni_runner.post_speculative_target_forward(
+                batch_result, forward_batch, None, []
+            )
+            return batch_result
         else:
             # Prefill runs the model's own hooks and samples with its own sampler.
             assert batch is not None and not is_verify
@@ -97,6 +101,9 @@ class SpeculativeTargetWorker:
             ]
             batch_result = omni_runner.prepare_and_forward(
                 forward_batch, batch, requests, is_prefill=True
+            )
+            omni_runner.post_speculative_target_forward(
+                batch_result, forward_batch, batch, requests
             )
             if omni_runner.retain_prefill_input_embeds:
                 batch_result.logits_output.mm_input_embeds = (

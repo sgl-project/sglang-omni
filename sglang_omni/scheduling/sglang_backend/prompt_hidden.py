@@ -27,6 +27,8 @@ class PromptHiddenRequest(Req):
 
     prompt_hidden_positions: torch.Tensor
     is_prompt_hidden_handed_off: bool = False
+    # The slots at those positions, saved for a hand-off after the request's KV is released.
+    prompt_hidden_slot_ids: torch.Tensor | None = None
 
     def prompt_hidden_offsets(
         self, prefix_length: int, extend_length: int
@@ -107,11 +109,15 @@ class PromptHiddenStore:
             pass
         self.hidden_states = None
 
-    def read(self, request_pool_index: int, positions: torch.Tensor) -> torch.Tensor:
-        """The rows at a request's prompt positions, through the slots its KV holds now."""
+    def prompt_slot_ids(
+        self, request_pool_index: int, positions: torch.Tensor
+    ) -> torch.Tensor:
+        """The slots a request's KV holds now at its prompt positions."""
         req_to_token = self.req_to_token_pool.req_to_token
-        slot_ids = req_to_token[
-            request_pool_index, positions.to(req_to_token.device)
-        ].cpu()
+        return req_to_token[request_pool_index, positions.to(req_to_token.device)]
+
+    def read(self, slot_ids: torch.Tensor) -> torch.Tensor:
+        """The rows last computed at slot_ids."""
+        host_slot_ids = slot_ids.cpu()
         self.store_copied(wait=True)
-        return self.hidden_states[slot_ids]
+        return self.hidden_states[host_slot_ids]
