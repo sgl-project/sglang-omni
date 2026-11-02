@@ -106,6 +106,13 @@ wrapped `get_next_batch_to_run` in a stage timer whose first statement read an
 attribute only upstream's `__init__` set. Upstream also moves work between
 methods: request timeout aborts left `get_next_batch_to_run` for an intake
 method Omni's event loops never call, which disables them without an error.
+A borrowed body also writes state Omni reads before calling it: one release
+made `get_next_batch_to_run` drop finished requests from the running batch and
+clear its `batch_is_full` flag on every pass, so the async decode loop, which
+read the flag first to decide whether to drain its pending step, built a mixed
+prefill batch it could not reslice and died under load; audit the state a
+borrowed body writes as closely as the state it reads, and test the loop
+predicates against the builder's view.
 When a constructor gains or loses fields, pass the new shape;
 a helper that filters kwargs by signature or branches on field layout keeps
 two versions alive.
