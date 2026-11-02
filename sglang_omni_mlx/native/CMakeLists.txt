@@ -327,3 +327,11 @@ install(FILES licenses/music3-MIT.txt licenses/fishaudio_drama3-MIT.txt
 add_executable(fishaudio_drama3_codec_test EXCLUDE_FROM_ALL
   ci/fishaudio_drama3_codec_test.cpp)
 target_link_libraries(fishaudio_drama3_codec_test PRIVATE fishaudio_drama3)
+
+# The protocol tests' stand-in server (tests/stub_server.cpp); built only on
+# request and never installed.
+add_executable(stub_server EXCLUDE_FROM_ALL tests/stub_server.cpp)
+target_link_libraries(stub_server PRIVATE speech_service)
+target_compile_options(stub_server PRIVATE -Wall -Wextra)
+set_target_properties(stub_server PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
