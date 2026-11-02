@@ -17,7 +17,7 @@ from sglang_omni.serve.speech_service import SpeechRequestValidator
 from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
 VOCODER_WINDOWS = {
-    "stream_stride": 10,
+    "stream_stride": 4,
     "stream_followup_stride_ramp": (10, 12, 32),
     "stream_followup_stride": 64,
     "stream_overlap_tokens": 32,
@@ -76,7 +76,7 @@ def test_each_factory_gets_the_defaults_written_once() -> None:
         "tower_fused_layers": True,
         "enable_async_decode": False,
         "async_decode_min_batch_size": 1,
-        "stream_stride": 10,
+        "stream_stride": 4,
         "stream_followup_stride_ramp": (10, 12, 32),
         "stream_followup_stride": 64,
     }

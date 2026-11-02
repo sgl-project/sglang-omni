@@ -119,41 +119,24 @@ Supported Models
 
 
 .. toctree::
-   :maxdepth: 1
+   :maxdepth: 2
    :caption: Cookbook
 
-   cookbook/qwen3_tts.md
-   cookbook/moss_tts.md
-   cookbook/moss_tts_local.md
-   cookbook/whisper_asr.md
-   cookbook/nemotron3_5_asr.md
-   cookbook/nemotron_transcribe.md
-   cookbook/moss_transcribe_diarize.md
-   cookbook/fishaudio_s2_pro.md
-   cookbook/fun_cosyvoice3.md
-   cookbook/nemotron_voicechat.md
-   cookbook/personaplex.md
-   cookbook/cosmos3_nano.md
-   cookbook/qwen3_omni.md
-   cookbook/qwen3_asr.md
-   cookbook/minicpm_o.md
-   cookbook/fun_asr.md
-   cookbook/higgs_tts.md
-   cookbook/nemotron_diarization.md
-   cookbook/fishaudio_drama3.md
-   cookbook/minimax_music3.md
-   cookbook/ming_omni.md
-   cookbook/auk.md
-   cookbook/zonos2.md
-   cookbook/arkasr.md
-   cookbook/hy_simulmt.md
-   cookbook/voxtral_tts.md
-   cookbook/dots_tts.md
-   cookbook/llada2_uni.md
-   cookbook/ming_tts.md
-   cookbook/ming3_asr.md
-   cookbook/ming3_audio.md
-   cookbook/ming3_tts.md
+   cookbook/companies/qwen.md
+   cookbook/companies/openmoss.md
+   cookbook/companies/openai.md
+   cookbook/companies/nvidia.md
+   cookbook/companies/fish_audio.md
+   cookbook/companies/fun_audio_llm.md
+   cookbook/companies/openbmb.md
+   cookbook/companies/boson_ai.md
+   cookbook/companies/minimax.md
+   cookbook/companies/inclusionai.md
+   cookbook/companies/tencent.md
+   cookbook/companies/zyphra.md
+   cookbook/companies/autoark_ai.md
+   cookbook/companies/mistral_ai.md
+   cookbook/companies/dots_studio.md
 
 .. toctree::
    :maxdepth: 1

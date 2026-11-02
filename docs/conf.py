@@ -106,10 +106,11 @@ html_last_updated_fmt = ""
 
 html_theme_options = {
     "repository_url": "https://github.com/sgl-project/sglang-omni",
-    "repository_branch": "main/docs",
+    "repository_branch": "main",
+    "path_to_docs": "docs/",
     "show_navbar_depth": 3,
     "max_navbar_depth": 4,
-    "collapse_navbar": True,
+    "collapse_navbar": False,
     "use_edit_page_button": True,
     "use_source_button": True,
     "use_issues_button": True,
@@ -130,6 +131,7 @@ html_context = {
 html_static_path = ["_static"]
 html_css_files = ["css/custom_log.css"]
 html_js_files = [
+    "js/sidebar_company_toggle.js",
     "js/qwen3_omni_server_generator.js",
     "js/ming_omni_server_generator.js",
 ]
