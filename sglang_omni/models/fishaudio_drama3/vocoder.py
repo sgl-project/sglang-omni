@@ -17,7 +17,8 @@ from sglang_omni.scheduling.audio_stream import (
     FinalAudioData,
     StreamVocoderState,
     WindowDecoder,
-    build_stream_vocoder_chunk,
+    finish_stream_window,
+    stream_window_codes,
 )
 from sglang_omni.scheduling.audio_vocoder import StreamingVocoderScheduler
 from sglang_omni.scheduling.message import OutgoingMessage
@@ -136,6 +137,9 @@ class WindowGraphDecoder:
 class Drama3VocoderScheduler(StreamingVocoderScheduler):
     """Decode complete windows regardless of incoming frame chunk sizes."""
 
+    can_batch_stream_chunks: bool = True
+    stream_chunk_batch_distinct_requests: bool = True
+
     def __init__(
         self,
         codec: DAC,
@@ -172,6 +176,8 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
         self.stream_followup_stride_ramp = tuple(stream_followup_stride_ramp)
         self.stream_window_counts: dict[str, int] = {}
         self.max_padded_frames_per_decode = max_padded_frames_per_decode
+        # note (yaourt): singleton graphs must not fall back to eager for coalesced streams.
+        self.can_batch_stream_chunks = not isinstance(decode_window, WindowGraphDecoder)
 
     def followup_stride(self, request_id: str) -> int:
         window_count = self.stream_window_counts.get(request_id, 0)
@@ -183,50 +189,126 @@ class Drama3VocoderScheduler(StreamingVocoderScheduler):
     def stream_frames(
         self, request_id: str, frame_codes: torch.Tensor
     ) -> list[OutgoingMessage]:
-        """Audio chunks for frames [1 + num_codebooks, frames] given in order."""
-        state = self.stream_states.setdefault(request_id, StreamVocoderState())
+        return self.stream_frame_batch({request_id: frame_codes})
+
+    def stream_frame_batch(
+        self, frames_by_request: dict[str, torch.Tensor]
+    ) -> list[OutgoingMessage]:
         messages: list[OutgoingMessage] = []
-        incoming_frame_count = frame_codes.shape[1]
-        first_frame_index = 0
-        while first_frame_index < incoming_frame_count:
-            window_end_frame = state.next_vocode_tokens or self.stream_stride
-            remaining_window_frame_count = window_end_frame - state.total_tokens
-            if incoming_frame_count - first_frame_index < remaining_window_frame_count:
-                end_frame_index = incoming_frame_count
-                is_window_end = False
-            else:
-                end_frame_index = first_frame_index + remaining_window_frame_count
-                is_window_end = True
-            audio_chunk = build_stream_vocoder_chunk(
-                state,
-                frame_codes[:, first_frame_index:end_frame_index],
-                codec=self.codec,
-                device=self.device,
-                stream_stride=self.stream_stride,
-                stream_followup_stride=self.followup_stride(request_id),
-                stream_overlap_tokens=self.stream_overlap_tokens,
-                stream_crossfade_samples=self.stream_crossfade_samples,
-                decode_window=self.decode_window,
-            )
-            if is_window_end:
-                self.stream_window_counts[request_id] = (
-                    self.stream_window_counts.get(request_id, 0) + 1
+        remaining_frames = dict(frames_by_request)
+        while remaining_frames:
+            windows_by_length: dict[int, list[tuple[str, torch.Tensor]]] = {}
+            for request_id, frame_codes in list(remaining_frames.items()):
+                if self.is_aborted(request_id):
+                    remaining_frames.pop(request_id)
+                    continue
+                else:
+                    pass
+                state = self.stream_states.setdefault(request_id, StreamVocoderState())
+                window_end_frame = state.next_vocode_tokens or self.stream_stride
+                frame_count = min(
+                    frame_codes.shape[1], window_end_frame - state.total_tokens
                 )
-            else:
-                pass
-            if audio_chunk is not None:
-                messages.append(
-                    OutgoingMessage(
-                        request_id=request_id,
-                        type="stream",
-                        data=audio_chunk,
-                        metadata={"modality": "audio"},
+                state.codes.append(
+                    frame_codes[:, :frame_count]
+                    .detach()
+                    .to(device=self.device, dtype=torch.long, non_blocking=True)
+                )
+                state.total_tokens += frame_count
+                if frame_count == frame_codes.shape[1]:
+                    remaining_frames.pop(request_id)
+                else:
+                    remaining_frames[request_id] = frame_codes[:, frame_count:]
+                if state.total_tokens < window_end_frame:
+                    state.next_vocode_tokens = window_end_frame
+                else:
+                    window_codes = stream_window_codes(
+                        state, stream_overlap_tokens=self.stream_overlap_tokens
                     )
-                )
-            else:
-                pass
-            first_frame_index = end_frame_index
+                    windows_by_length.setdefault(window_codes.shape[1], []).append(
+                        (request_id, window_codes)
+                    )
+            for frame_count, windows in windows_by_length.items():
+                batch_size = self.max_batch_size
+                if self.max_padded_frames_per_decode is not None:
+                    batch_size = min(
+                        batch_size,
+                        max(1, self.max_padded_frames_per_decode // frame_count),
+                    )
+                else:
+                    pass
+                for first_index in range(0, len(windows), batch_size):
+                    batch = windows[first_index : first_index + batch_size]
+                    if len(batch) == 1:
+                        batched_codes = batch[0][1].unsqueeze(0)
+                    else:
+                        batched_codes = torch.stack([codes for _, codes in batch])
+                    with torch.no_grad():
+                        audio = (
+                            self.codec.from_indices
+                            if self.decode_window is None
+                            else self.decode_window
+                        )(batched_codes)
+                    for request_index, (request_id, _) in enumerate(batch):
+                        state = self.stream_states[request_id]
+                        audio_chunk = finish_stream_window(
+                            state,
+                            audio[request_index, 0].float(),
+                            codec=self.codec,
+                            stream_overlap_tokens=self.stream_overlap_tokens,
+                            stream_crossfade_samples=self.stream_crossfade_samples,
+                            is_final=False,
+                        )
+                        state.next_vocode_tokens = (
+                            state.total_tokens + self.followup_stride(request_id)
+                        )
+                        self.stream_window_counts[request_id] = (
+                            self.stream_window_counts.get(request_id, 0) + 1
+                        )
+                        if audio_chunk is not None:
+                            messages.append(
+                                OutgoingMessage(
+                                    request_id=request_id,
+                                    type="stream",
+                                    data=audio_chunk,
+                                    metadata={"modality": "audio"},
+                                )
+                            )
+                        else:
+                            pass
         return messages
+
+    def on_stream_chunk_batch(self, items: list[tuple[str, StreamItem]]) -> None:
+        with self.state_lock:
+            frames_by_request: dict[str, torch.Tensor] = {}
+            for request_id, chunk in items:
+                if self.is_aborted(request_id):
+                    continue
+                elif not isinstance(chunk.data, torch.Tensor) or chunk.data.ndim != 2:
+                    self.emit_error(
+                        request_id,
+                        TypeError("Drama 3 stream chunks must carry a 2D frame tensor"),
+                    )
+                    self.abort(request_id)
+                else:
+                    assert request_id not in frames_by_request
+                    frames_by_request[request_id] = chunk.data
+            try:
+                messages = self.stream_frame_batch(frames_by_request)
+            except Exception as error:
+                # note (yaourt): a failed decode invalidates every participating stream.
+                for request_id in frames_by_request:
+                    if not self.is_aborted(request_id):
+                        self.emit_error(request_id, error)
+                        self.abort(request_id)
+                    else:
+                        pass
+            else:
+                for message in messages:
+                    if not self.is_aborted(message.request_id):
+                        self.outbox.put(message)
+                    else:
+                        pass
 
     def on_stream_chunk(
         self, request_id: str, chunk: StreamItem

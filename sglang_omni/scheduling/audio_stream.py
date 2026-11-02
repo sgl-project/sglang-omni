@@ -163,7 +163,6 @@ def decode_stream_window(
     else:
         pass
 
-    code_start_token = stream_state.code_start_token
     total_tokens = stream_state.total_tokens
     emitted_tokens = stream_state.last_vocode_tokens
     if total_tokens <= emitted_tokens:
@@ -184,19 +183,53 @@ def decode_stream_window(
     else:
         pass
 
-    retained_frame_codes = torch.cat(stream_state.codes, dim=1)
-    window_start_token = max(code_start_token, emitted_tokens - stream_overlap_tokens)
-    window_offset = window_start_token - code_start_token
-    window_codes = retained_frame_codes[:, window_offset:]
-    codebook_codes = window_codes[1:].to(device=device, dtype=torch.long)
+    codebook_codes = stream_window_codes(
+        stream_state, stream_overlap_tokens=stream_overlap_tokens
+    ).to(device=device, dtype=torch.long)
 
     with torch.no_grad():
         audio = (codec.from_indices if decode_window is None else decode_window)(
             codebook_codes[None]
         )
 
-    audio_tensor = audio[0, 0].float()
-    overlap_token_count = emitted_tokens - window_start_token
+    return finish_stream_window(
+        stream_state,
+        audio[0, 0].float(),
+        codec=codec,
+        stream_overlap_tokens=stream_overlap_tokens,
+        stream_crossfade_samples=stream_crossfade_samples,
+        is_final=is_final,
+    )
+
+
+def stream_window_codes(
+    stream_state: StreamVocoderState, *, stream_overlap_tokens: int
+) -> torch.Tensor:
+    retained_frame_codes = torch.cat(stream_state.codes, dim=1)
+    window_start_token = max(
+        stream_state.code_start_token,
+        stream_state.last_vocode_tokens - stream_overlap_tokens,
+    )
+    return retained_frame_codes[
+        1:, window_start_token - stream_state.code_start_token :
+    ]
+
+
+def finish_stream_window(
+    stream_state: StreamVocoderState,
+    audio_tensor: torch.Tensor,
+    *,
+    codec: AudioCodec,
+    stream_overlap_tokens: int,
+    stream_crossfade_samples: int,
+    is_final: bool,
+) -> dict[str, bytes | list[int] | str | int] | None:
+    total_tokens = stream_state.total_tokens
+    window_start_token = max(
+        stream_state.code_start_token,
+        stream_state.last_vocode_tokens - stream_overlap_tokens,
+    )
+    overlap_token_count = stream_state.last_vocode_tokens - window_start_token
     overlap_samples = int(overlap_token_count * codec.frame_length)
     if audio_tensor.shape[-1] <= overlap_samples:
         return None
