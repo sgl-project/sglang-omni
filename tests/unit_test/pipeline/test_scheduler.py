@@ -4243,6 +4243,7 @@ def test_omni_scheduler_stop_runs_shutdown_callback_once() -> None:
     scheduler.pending_request_admissions = {}
     scheduler.shutdown_lock = threading.Lock()
     scheduler.shutdown_callback = lambda: shutdowns.append(None)
+    scheduler.async_d2h_worker = None
 
     scheduler.stop()
     scheduler.stop()
