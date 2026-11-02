@@ -10,13 +10,22 @@ root; the test skips otherwise.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch
 
+from sglang_omni.models.minicpm_o import stages
+from sglang_omni.models.minicpm_o.audio_encoder_batching import (
+    batch_audio_encoder_payloads,
+)
 from sglang_omni.models.minicpm_o.components.audio_encoder import (
     MiniCPMOAudioEncoder,
     MultiModalProjector,
@@ -30,6 +39,10 @@ from sglang_omni.models.minicpm_o.components.whisper_encoder import (
     AudioEncoderState,
     MiniCPMWhisperEncoder,
 )
+from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
+from sglang_omni.proto.request import OmniRequest, StagePayload
+from sglang_omni.scheduling.message import IncomingMessage
+from sglang_omni.scheduling.stage_cache import StageOutputCache
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -306,3 +319,165 @@ def test_batched_streaming_matches_each_session_alone(
             state.key_value_states.untyped_storage().nbytes()
             == state.key_value_states.nbytes
         )
+
+
+def audio_payload(
+    request_id: str,
+    audio_features: torch.Tensor,
+    audio_feature_lengths: torch.Tensor,
+    *,
+    cache_key: str | None,
+) -> StagePayload:
+    state = MiniCPMOPipelineState(
+        encoder_inputs={
+            "audio_encoder": {
+                "audio_features": audio_features,
+                "audio_feature_lens": audio_feature_lengths,
+                "cache_key": cache_key,
+            }
+        }
+    )
+    return StagePayload(
+        request_id=request_id,
+        request=OmniRequest(inputs={}),
+        data=state.to_dict(),
+    )
+
+
+def test_cross_request_batch_routes_results_and_errors() -> None:
+    """A valid neighbor must not turn a too-short request into cached success."""
+    encoder = Mock()
+    encoder.audio_pool_step = 5
+    encoder.return_value = {
+        "audio_embeds": torch.tensor([[1.0, 2.0], [3.0, 4.0], [7.0, 8.0]])
+    }
+    cache = StageOutputCache(cache_device="cpu")
+    cached_embeddings = torch.tensor([[5.0, 6.0]])
+    cache.put("cached", {"audio_embeds": cached_embeddings})
+    short_features = torch.ones(1, 80, 8)
+    long_features = torch.ones(2, 80, 19)
+    other_features = torch.ones(1, 80, 11)
+    payloads = [
+        audio_payload("cached", other_features, torch.tensor([11]), cache_key="cached"),
+        audio_payload(
+            "leader", long_features, torch.tensor([19, 5]), cache_key="shared"
+        ),
+        audio_payload(
+            "follower", long_features, torch.tensor([19, 5]), cache_key="shared"
+        ),
+        audio_payload("short", short_features, torch.tensor([8]), cache_key="short"),
+        audio_payload("other", other_features, torch.tensor([11]), cache_key="other"),
+    ]
+
+    outputs = batch_audio_encoder_payloads(payloads, encoder=encoder, cache=cache)
+
+    assert isinstance(outputs[3], ValueError)
+    assert cache.get("short") is None
+    successful_outputs = [outputs[index] for index in (0, 1, 2, 4)]
+    assert [payload.request_id for payload in successful_outputs] == [
+        "cached",
+        "leader",
+        "follower",
+        "other",
+    ]
+    encoder.assert_called_once()
+    encoder_call_kwargs = encoder.call_args.kwargs
+    assert encoder_call_kwargs["audio_features"].shape == (3, 80, 19)
+
+    embeddings = [
+        payload.data["encoder_outs"]["audio_encoder"]["audio_embeds"]
+        for payload in successful_outputs
+    ]
+    assert torch.equal(embeddings[0], cached_embeddings)
+    assert torch.equal(embeddings[1], torch.tensor([[1.0, 2.0], [3.0, 4.0]]))
+    assert torch.equal(embeddings[2], embeddings[1])
+    assert torch.equal(embeddings[3], torch.tensor([[7.0, 8.0]]))
+
+    cached = batch_audio_encoder_payloads(
+        [
+            audio_payload(
+                "cached-again", long_features, torch.tensor([19, 5]), cache_key="shared"
+            )
+        ],
+        encoder=encoder,
+        cache=cache,
+    )
+    encoder.assert_called_once()
+    assert torch.equal(
+        cached[0].data["encoder_outs"]["audio_encoder"]["audio_embeds"],
+        embeddings[1],
+    )
+
+
+def test_audio_batch_uses_npu_stream_before_publishing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Audio batching must retain the encoder stream isolation used with AR graphs."""
+    events: list[str] = []
+    stream = Mock()
+    stream.wait_stream.side_effect = lambda previous: events.append("wait")
+    stream.synchronize.side_effect = lambda: events.append("synchronize")
+
+    @contextmanager
+    def stream_context(selected_stream: Mock) -> Iterator[None]:
+        assert selected_stream is stream
+        events.append("enter")
+        yield
+        events.append("exit")
+
+    device_module = Mock()
+    device_module.Stream.return_value = stream
+    device_module.stream.side_effect = stream_context
+    monkeypatch.setattr(torch, "get_device_module", Mock(return_value=device_module))
+
+    class RecordingEncoder:
+        device: SimpleNamespace = SimpleNamespace(type="npu")
+        audio_pool_step: int = 5
+
+        def __init__(self, model_path: str, *, device: str, dtype: str | None) -> None:
+            pass
+
+        def __call__(
+            self,
+            *,
+            audio_features: torch.Tensor,
+            audio_feature_lens: torch.Tensor,
+            original_mel_frame_counts: torch.Tensor | None = None,
+        ) -> dict[str, torch.Tensor]:
+            assert events[-1] == "enter"
+            events.append("encode")
+            return {"audio_embeds": torch.zeros(audio_features.shape[0], 2)}
+
+    monkeypatch.setattr(stages, "MiniCPMOAudioEncoder", RecordingEncoder)
+    scheduler = stages.create_audio_encoder_executor(
+        "model", device="cpu", max_batch_size=2, max_batch_wait_ms=0
+    )
+    monkeypatch.setattr(
+        scheduler.outbox,
+        "put",
+        Mock(side_effect=lambda message: events.append(f"publish:{message.type}")),
+    )
+    messages = [
+        IncomingMessage(
+            request_id=str(index),
+            type="new_request",
+            data=audio_payload(
+                str(index), torch.ones(1, 80, 9), torch.tensor([9]), cache_key=None
+            ),
+        )
+        for index in range(2)
+    ]
+    loop = asyncio.new_event_loop()
+    try:
+        scheduler.run_batch(messages, loop)
+    finally:
+        loop.close()
+    assert events == [
+        "wait",
+        "enter",
+        "encode",
+        "synchronize",
+        "exit",
+        "publish:result",
+        "publish:result",
+    ]
