@@ -566,6 +566,7 @@
                 <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#layout">Layout</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#rule-1-mlx-is-a-separate-path">Rule 1: MLX is a separate path</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speculative-decoding">Speculative decoding</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#rule-2-contribution-requirements">Rule 2: Contribution requirements</a></li>
 </ul>
             </nav>
@@ -634,6 +635,30 @@ noticing.</p></li>
 <a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/2725">#2725</a>; do not add it
 back. If a change really needs a cross-path abstraction, open an issue and
 agree on it with a maintainer first.</p>
+</section>
+<section id="speculative-decoding">
+<h2>Speculative decoding<a class="headerlink" href="#speculative-decoding" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">qwen3_asr_server</span></code> and <code class="docutils literal notranslate"><span class="pre">qwen3_asr_transcribe</span></code> take <code class="docutils literal notranslate"><span class="pre">--draft-model-path</span> <span class="pre">DIR</span></code> (and <code class="docutils literal notranslate"><span class="pre">--draft-bits</span> <span class="pre">4|6|8</span></code> to quantize the draft at load). The Qwen3-ASR target then verifies a DFlash draft’s block of proposals each step and keeps its own greedy transcript; the parity tool reports <code class="docutils literal notranslate"><span class="pre">verify_rounds</span></code> per clip. The draft is a Speculators-layout DFlash checkpoint (<code class="docutils literal notranslate"><span class="pre">aux_hidden_state_layer_ids</span></code>, <code class="docutils literal notranslate"><span class="pre">block_size</span></code>, <code class="docutils literal notranslate"><span class="pre">mask_token_id</span></code>, <code class="docutils literal notranslate"><span class="pre">transformer_layer_config</span></code>; weights <code class="docutils literal notranslate"><span class="pre">fc</span></code>, <code class="docutils literal notranslate"><span class="pre">hidden_norm</span></code>, <code class="docutils literal notranslate"><span class="pre">layers.*</span></code>, <code class="docutils literal notranslate"><span class="pre">norm</span></code>, <code class="docutils literal notranslate"><span class="pre">lm_head</span></code>, <code class="docutils literal notranslate"><span class="pre">d2t</span></code>) checked against the target at load: hidden size, the layers it reads (in order), the <code class="docutils literal notranslate"><span class="pre">fc</span></code>, <code class="docutils literal notranslate"><span class="pre">lm_head</span></code> and <code class="docutils literal notranslate"><span class="pre">d2t</span></code> shapes, <code class="docutils literal notranslate"><span class="pre">d2t</span></code> landing inside the target’s vocabulary, and a causal block; one that does not fit is refused at load. A request that sets <code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code> decodes without the draft.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Target</p></th>
+<th class="head"><p>Draft</p></th>
+<th class="head"><p>Golden</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">mlx-community/Qwen3-ASR-0.6B-4bit</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">wilsonzheng0327/Qwen3-ASR-0.6B-dflash</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ci/golden/qwen3-asr-0.6b-4bit-dflash.json</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">mlx-community/Qwen3-ASR-1.7B-{6bit,8bit}</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">wilsonzheng0327/Qwen3-ASR-1.7B-dflash</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ci/golden/qwen3-asr-1.7b-8bit-dflash.json</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Both drafts are pinned in <code class="docutils literal notranslate"><span class="pre">ci/models.json</span></code>. A draft for another target is one pin, one golden whose request names it under <code class="docutils literal notranslate"><span class="pre">draft_model_path</span></code>, and a row in Voxt’s <code class="docutils literal notranslate"><span class="pre">OmniASRBackend.draftModelReposByRepo</span></code>. Verifying a block moves the target’s low-precision logits slightly, so a few percent of clips differ from plain decoding in punctuation or a near-tie word; the goldens hold each chip’s draft outputs like any other.</p>
 </section>
 <section id="rule-2-contribution-requirements">
 <h2>Rule 2: Contribution requirements<a class="headerlink" href="#rule-2-contribution-requirements" title="Link to this heading">#</a></h2>
@@ -755,6 +780,7 @@ or <code class="docutils literal notranslate"><span class="pre">run-all-ci</span
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#layout">Layout</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#rule-1-mlx-is-a-separate-path">Rule 1: MLX is a separate path</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speculative-decoding">Speculative decoding</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#rule-2-contribution-requirements">Rule 2: Contribution requirements</a></li>
 </ul>
   </nav></div>
