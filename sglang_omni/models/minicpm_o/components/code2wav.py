@@ -61,8 +61,10 @@ class MiniCPMOCode2Wav(nn.Module):
     ) -> None:
         super().__init__()
         resolved_device = torch.device(device)
-        if resolved_device.type not in {"cuda", "xpu"}:
-            raise ValueError(f"Token2wav requires a CUDA or XPU device, got {device}")
+        if resolved_device.type not in {"cuda", "xpu", "npu"}:
+            raise ValueError(
+                f"Token2wav requires a CUDA, XPU, or NPU device, got {device}"
+            )
         elif reference_workers < 1 or prompt_cache_capacity < 1:
             raise ValueError(
                 "reference_workers and prompt_cache_capacity must be positive, got "

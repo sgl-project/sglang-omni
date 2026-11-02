@@ -36,6 +36,8 @@ class VADFactoryArgs(FactoryArgs):
     prefix_padding_ms: int | None = Field(default=None, ge=0)
     # Note (ruoyu): A pause after a comma or a short "Sorry." often runs past 500 ms and split one utterance into two turns, which 800 ms avoided in our zh and en runs.
     silence_duration_ms: int | None = Field(default=800, ge=0)
+    # note (wenyao): On the Full-Duplex-Bench v1.5 dev split, 6 dB still heard every interruption, backchannel and side remark, and ignored 71 of 75 background voices.
+    background_margin_db: float | None = Field(default=6.0, ge=0)
     max_open_sessions: int | None = Field(default=None, ge=1)
     max_concurrency: int | None = Field(default=None, ge=1)
 

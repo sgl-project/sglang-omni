@@ -172,6 +172,7 @@ class TalkerPrefillBuilder:
         self.device = model.model.codec_embedding.weight.device
         self.dtype = model.activation_dtype
         self.thinker_embed_cache: dict[int, torch.Tensor] = {}
+        self.projected_text_cache: dict[int, torch.Tensor] = {}
         self.tts_special_cache: (
             tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None
         ) = None
@@ -320,16 +321,24 @@ class TalkerPrefillBuilder:
     def project_assistant_chunk(self, chunk: StreamItem) -> torch.Tensor:
         metadata = chunk.metadata or {}
         token_id = metadata.get("token_id")
-        if token_id is not None:
-            chunk_tensor = self.load_prompt_token_embeddings(
-                torch.tensor([int(token_id)], dtype=torch.long)
-            )
-        else:
+        if token_id is None:
             chunk_tensor = chunk.data.to(
                 device=self.device, dtype=self.dtype
             ).unsqueeze(0)
-        projected = self.model.text_projection(chunk_tensor)
-        return projected[0].detach()
+            return self.model.text_projection(chunk_tensor)[0].detach()
+        else:
+            pass
+        # note (ratish): a token's projected row depends only on its id, so each id is projected once and every request shares the row, as the tts special rows are shared.
+        projected = self.projected_text_cache.get(int(token_id))
+        if projected is None:
+            chunk_tensor = self.load_prompt_token_embeddings(
+                torch.tensor([int(token_id)], dtype=torch.long)
+            )
+            projected = self.model.text_projection(chunk_tensor)[0].detach()
+            self.projected_text_cache[int(token_id)] = projected
+        else:
+            pass
+        return projected
 
     def build_multimodal_mask(self, token_ids: torch.Tensor) -> torch.Tensor:
         mask = torch.zeros(token_ids.shape[0], dtype=torch.bool, device=self.device)

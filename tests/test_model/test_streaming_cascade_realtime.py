@@ -4,7 +4,7 @@
 The cascade is served as a turn-based interaction on the native realtime
 protocol: server VAD ends each utterance and the reply streams back as text and
 audio. Requires the services described in
-docs/developer_reference/full_duplex_interactive_model.md, a profile's launch config in
+docs/developer_reference/full_duplex_guide.md, a profile's launch config in
 SGLANG_OMNI_CASCADE_CONFIG and a 16 kHz mono PCM16 WAV question in
 SGLANG_OMNI_CASCADE_AUDIO. Set SGLANG_OMNI_TEST_REALTIME_PORT to use an already
 running server.

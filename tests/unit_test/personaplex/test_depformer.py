@@ -1,11 +1,25 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Depformer weight slicing and teacher forcing, on a scaled-down spec."""
+"""Depformer weight routing, sampling, and CUDA graph parity."""
+
+from dataclasses import replace
+from unittest.mock import Mock, patch
 
 import pytest
 import torch
+from torch import nn
 
-from sglang_omni.models.personaplex.architecture import AUDIO_CARD, DepformerSpec
-from sglang_omni.models.personaplex.components.depformer import Depformer
+import sglang_omni.models.personaplex.components.depformer as depformer_module
+from sglang_omni.models.personaplex.architecture import (
+    AUDIO_CARD,
+    DEPFORMER,
+    DepformerSpec,
+)
+from sglang_omni.models.personaplex.components.depformer import (
+    Depformer,
+    DepformerLayer,
+    rms_norm_f32,
+    silu_gate,
+)
 from sglang_omni.models.personaplex.components.depformer_cuda_graph import (
     DepformerCudaGraphRunner,
 )
@@ -16,6 +30,10 @@ from sglang_omni.models.personaplex.sampling import (
     sample_token,
 )
 
+CUDA_ONLY = pytest.mark.skipif(
+    not (torch.cuda.is_available() and torch.version.cuda is not None),
+    reason="NVIDIA CUDA is unavailable",
+)
 SPEC = DepformerSpec(
     dim=32, num_heads=4, num_layers=2, ffn_hidden=24, steps=8, input_dim=16
 )
@@ -287,28 +305,58 @@ def test_cuda_graph_runner_falls_back_on_cpu() -> None:
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
-@pytest.mark.parametrize("batch_size", [1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32])
+@pytest.mark.parametrize(
+    "model_spec,batch_size",
+    [
+        pytest.param(SPEC, batch_size, id=f"scaled-batch-{batch_size}")
+        for batch_size in (1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32)
+    ]
+    + [
+        pytest.param(
+            replace(DEPFORMER, num_layers=1, input_dim=SPEC.input_dim),
+            batch_size,
+            id=f"production-batch-{batch_size}",
+            marks=CUDA_ONLY,
+        )
+        for batch_size in (1, 8)
+    ],
+)
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 @torch.inference_mode()
 def test_graph_batch_codes_and_rng_match_eager(
-    batch_size: int, dtype: torch.dtype
+    model_spec: DepformerSpec, batch_size: int, dtype: torch.dtype
 ) -> None:
-    weights = {
-        name: (
-            tensor / tensor.shape[-1] ** 0.5
-            if tensor.ndim == 2 and "emb" not in name
-            else tensor
-        )
-        for name, tensor in reference_weights(8).items()
-    }
-    model = Depformer(SPEC).to(device="cuda", dtype=dtype)
-    model.load_reference_weights(weights)
+    """Graph replay preserves eager codes and RNG at scaled and production dimensions."""
+    torch.manual_seed(42)
+    model = Depformer(model_spec).to(device="cuda", dtype=dtype)
     runner = DepformerCudaGraphRunner(model, (1, 2, 4, 8, 16, 32))
-    runner.capture_graphs(AudioSampling(0.8, 25), max_batch_size=batch_size)
-    hidden_states = torch.randn(batch_size, SPEC.input_dim, device="cuda", dtype=dtype)
+    if model_spec == SPEC:
+        weights = {
+            name: (
+                tensor / tensor.shape[-1] ** 0.5
+                if tensor.ndim == 2 and "emb" not in name
+                else tensor
+            )
+            for name, tensor in reference_weights(8).items()
+        }
+        model.load_reference_weights(weights)
+        runner.capture_graphs(AudioSampling(0.8, 25), max_batch_size=batch_size)
+    else:
+        for parameter in model.parameters():
+            nn.init.normal_(parameter, std=0.05)
+        with patch.multiple(
+            depformer_module,
+            rms_norm_f32=Mock(side_effect=AssertionError),
+            silu_gate=Mock(side_effect=AssertionError),
+        ):
+            model.warmup_pointwise()
+            runner.capture_graphs(AudioSampling(0.8, 25), max_batch_size=batch_size)
+    hidden_states = torch.randn(
+        batch_size, model_spec.input_dim, device="cuda", dtype=dtype
+    )
     text_tokens = torch.arange(batch_size, device="cuda")
     forced_codes = torch.full(
-        (batch_size, SPEC.steps), -1, dtype=torch.long, device="cuda"
+        (batch_size, model_spec.steps), -1, dtype=torch.long, device="cuda"
     )
     eager_generators = [
         torch.Generator(device="cuda").manual_seed(7 + row) if row % 4 < 2 else None
@@ -340,11 +388,11 @@ def test_graph_batch_codes_and_rng_match_eager(
         )
         padded_text_tokens[: len(rows)].copy_(text_tokens[rows])
         padded_hidden_states = torch.zeros(
-            bucket_size, SPEC.input_dim, dtype=dtype, device="cuda"
+            bucket_size, model_spec.input_dim, dtype=dtype, device="cuda"
         )
         padded_hidden_states[: len(rows)].copy_(hidden_states[rows])
         padded_forced_codes = torch.full(
-            (bucket_size, SPEC.steps), -1, dtype=torch.long, device="cuda"
+            (bucket_size, model_spec.steps), -1, dtype=torch.long, device="cuda"
         )
         padded_forced_codes[: len(rows)].copy_(forced_codes[rows])
 
@@ -360,17 +408,23 @@ def test_graph_batch_codes_and_rng_match_eager(
                 return actual
 
         random_state = torch.cuda.get_rng_state()
-        expected = model.generate(
-            padded_text_tokens,
-            padded_hidden_states,
-            padded_forced_codes,
-            sample_padded,
-        )[: len(rows)]
+        with patch.multiple(
+            depformer_module,
+            fused_rms_norm_f32=rms_norm_f32,
+            fused_silu_gate=silu_gate,
+        ):
+            expected = model.generate(
+                padded_text_tokens,
+                padded_hidden_states,
+                padded_forced_codes,
+                sample_padded,
+            )[: len(rows)]
         expected_random_state = torch.cuda.get_rng_state()
         torch.cuda.set_rng_state(random_state)
-        actual = runner.generate(
-            text_tokens[rows], hidden_states[rows], forced_codes[rows], graph_runs
-        )
+        with patch.object(model, "generate", side_effect=AssertionError):
+            actual = runner.generate(
+                text_tokens[rows], hidden_states[rows], forced_codes[rows], graph_runs
+            )
         torch.testing.assert_close(actual, expected, atol=0, rtol=0)
         assert torch.equal(torch.cuda.get_rng_state(), expected_random_state)
         for eager_generator, graph_generator in zip(
@@ -424,3 +478,186 @@ def test_graph_supported_fallbacks(fallback: str) -> None:
     torch.cuda.manual_seed(81)
     actual = runner.generate(text_tokens, hidden_states, forced_codes, runs)
     torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+
+
+@pytest.mark.accelerator
+@CUDA_ONLY
+@torch.inference_mode()
+def test_startup_warmup_allows_graph_capture_with_mixed_norm_dtypes() -> None:
+    model = Depformer(
+        replace(DEPFORMER, num_layers=1, steps=1, input_dim=SPEC.input_dim)
+    ).to(device="cuda", dtype=torch.bfloat16)
+    model.requires_grad_(False)
+    layer = model.layers[0]
+    layer.norm1_alpha = nn.Parameter(layer.norm1_alpha.float(), requires_grad=False)
+    layer.norm2_alpha = nn.Parameter(
+        layer.norm2_alpha.to(torch.float16), requires_grad=False
+    )
+    model.warmup_pointwise()
+    torch.cuda.synchronize()
+    for batch_size in (3, 7, 15, 33):
+        hidden_states = torch.randn(
+            batch_size, DEPFORMER.dim, device="cuda", dtype=torch.bfloat16
+        )
+        gate_up = torch.randn(
+            batch_size, 2 * DEPFORMER.ffn_hidden, device="cuda", dtype=torch.bfloat16
+        )
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            for alpha in (layer.norm1_alpha, layer.norm2_alpha):
+                depformer_module.fused_rms_norm_f32(
+                    hidden_states, alpha, model.spec.rms_norm_eps
+                )
+            depformer_module.fused_silu_gate(gate_up)
+        graph.replay()
+        torch.cuda.synchronize()
+
+
+@pytest.mark.accelerator
+@CUDA_ONLY
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float16])
+@pytest.mark.parametrize(
+    "batch_size,alpha_dtype",
+    [
+        (1, torch.float32),
+        (2, torch.bfloat16),
+        (3, torch.float16),
+        (4, torch.float32),
+        (8, torch.float32),
+        (16, torch.float32),
+    ],
+)
+@torch.inference_mode()
+def test_fused_pointwise_preserves_rounding_stream_and_graph(
+    dtype: torch.dtype, alpha_dtype: torch.dtype, batch_size: int
+) -> None:
+    torch.manual_seed(42)
+    execution_stream = torch.cuda.Stream()
+    execution_stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(execution_stream):
+        initial_hidden_states = torch.randn(
+            batch_size, DEPFORMER.dim, device="cuda", dtype=dtype
+        )
+        alpha = torch.linspace(-2, 2, DEPFORMER.dim, device="cuda").to(alpha_dtype)
+        gate_up = torch.randn(
+            batch_size, 2 * DEPFORMER.ffn_hidden, device="cuda", dtype=dtype
+        )
+        if dtype == torch.float32:
+            gate_up[0, 0] = torch.finfo(dtype).tiny
+            gate_up[0, DEPFORMER.ffn_hidden] = 0.5
+        else:
+            pass
+        activated_states = depformer_module.fused_silu_gate(gate_up)
+        expected_activated_states = silu_gate(gate_up)
+        torch.testing.assert_close(
+            activated_states, expected_activated_states, rtol=0, atol=0
+        )
+        hidden_scales = (
+            (0, 1e-40, 1e-6, 1, 100) if dtype == torch.float32 else (0, 1e-6, 1, 100)
+        )
+        for hidden_scale in hidden_scales:
+            hidden_states = initial_hidden_states * hidden_scale
+            normalized_states = depformer_module.fused_rms_norm_f32(
+                hidden_states, alpha, DEPFORMER.rms_norm_eps
+            )
+            torch.testing.assert_close(
+                normalized_states,
+                rms_norm_f32(hidden_states, alpha, DEPFORMER.rms_norm_eps),
+                rtol=0,
+                atol=0,
+                msg=f"RMSNorm scale={hidden_scale}",
+            )
+        execution_stream.synchronize()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, stream=execution_stream):
+            replayed_norm = depformer_module.fused_rms_norm_f32(
+                hidden_states, alpha, DEPFORMER.rms_norm_eps
+            )
+            replayed_gate = depformer_module.fused_silu_gate(gate_up)
+        hidden_states.mul_(0.5).add_(0.25)
+        alpha.neg_()
+        gate_up.neg_()
+        graph.replay()
+    execution_stream.synchronize()
+    expected_norm = rms_norm_f32(hidden_states, alpha, DEPFORMER.rms_norm_eps)
+    torch.testing.assert_close(replayed_norm, expected_norm, rtol=0, atol=0)
+    torch.testing.assert_close(replayed_gate, silu_gate(gate_up), rtol=0, atol=0)
+
+
+@pytest.mark.accelerator
+@CUDA_ONLY
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float16])
+@pytest.mark.parametrize("batch_size", [1, 3])
+@torch.inference_mode()
+def test_cuda_depformer_matches_eager_logits_and_codes(
+    dtype: torch.dtype, batch_size: int
+) -> None:
+    torch.manual_seed(42)
+    model_spec = replace(DEPFORMER, num_layers=1, input_dim=SPEC.input_dim)
+    model = Depformer(model_spec).to(device="cuda", dtype=dtype)
+    model.eval().requires_grad_(False)
+    for parameter in model.parameters():
+        nn.init.normal_(parameter, std=0.05)
+    text_tokens = torch.arange(batch_size, device="cuda") + 3
+    hidden_states = torch.randn(
+        batch_size, model_spec.input_dim, device="cuda", dtype=dtype
+    )
+    forced_codes = torch.full(
+        (batch_size, model_spec.steps), -1, device="cuda", dtype=torch.long
+    )
+    captured_logits: list[torch.Tensor] = []
+
+    def sample(logits: torch.Tensor) -> torch.Tensor:
+        captured_logits.append(logits)
+        return logits.argmax(-1)
+
+    model.warmup_pointwise()
+    with patch.multiple(
+        depformer_module,
+        rms_norm_f32=Mock(side_effect=AssertionError),
+        silu_gate=Mock(side_effect=AssertionError),
+    ):
+        fused_codes = model.generate(text_tokens, hidden_states, forced_codes, sample)
+        fused_logits = torch.stack(captured_logits)
+    captured_logits.clear()
+    with patch.multiple(
+        depformer_module,
+        fused_rms_norm_f32=rms_norm_f32,
+        fused_silu_gate=silu_gate,
+    ):
+        eager_codes = model.generate(text_tokens, hidden_states, forced_codes, sample)
+    torch.testing.assert_close(fused_codes, eager_codes, rtol=0, atol=0)
+    torch.testing.assert_close(
+        fused_logits,
+        torch.stack(captured_logits),
+        rtol=2 * torch.finfo(dtype).eps,
+        atol=1e-6,
+    )
+
+
+@pytest.mark.accelerator
+@CUDA_ONLY
+@pytest.mark.parametrize(
+    "layer_spec",
+    [
+        replace(DEPFORMER, dim=SPEC.dim),
+        replace(DEPFORMER, ffn_hidden=SPEC.ffn_hidden),
+    ],
+)
+@torch.inference_mode()
+def test_cuda_layer_keeps_eager_outputs_for_unsupported_inputs(
+    layer_spec: DepformerSpec,
+) -> None:
+    layer = DepformerLayer(replace(layer_spec, steps=1)).cuda()
+    for parameter in layer.parameters():
+        nn.init.normal_(parameter, std=0.05)
+    hidden_states = torch.randn(1, layer_spec.dim, device="cuda")
+    cache = hidden_states.new_empty(2, 1, layer_spec.num_heads, 1, layer_spec.head_dim)
+    expected = layer.step(hidden_states, 0, cache.clone())
+    with patch.multiple(
+        depformer_module,
+        fused_rms_norm_f32=Mock(side_effect=AssertionError),
+        fused_silu_gate=Mock(side_effect=AssertionError),
+    ):
+        actual = layer.step(hidden_states, 0, cache)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)

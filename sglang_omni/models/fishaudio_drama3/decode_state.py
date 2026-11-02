@@ -25,6 +25,7 @@ class Drama3DecodeStatePool:
     temperature: torch.Tensor
     top_k: torch.Tensor
     top_p: torch.Tensor
+    epsilon_cutoff: torch.Tensor
     row_indices: torch.Tensor
 
     @classmethod
@@ -45,6 +46,7 @@ class Drama3DecodeStatePool:
             temperature=torch.ones(row_count, dtype=torch.float32, device=device),
             top_k=torch.ones(row_count, dtype=torch.int64, device=device),
             top_p=torch.ones(row_count, dtype=torch.float32, device=device),
+            epsilon_cutoff=torch.zeros(row_count, dtype=torch.float32, device=device),
             row_indices=torch.zeros(
                 request_slot_count, dtype=torch.int64, device=device
             ),

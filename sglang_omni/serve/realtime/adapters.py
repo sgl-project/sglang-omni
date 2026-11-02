@@ -24,9 +24,11 @@ from sglang_omni.serve.realtime.schema import SessionConfiguration
 from sglang_omni.serve.realtime.task_cleanup import cancel_local_tasks
 from sglang_omni.serve.realtime.types import (
     InteractionAdapter,
+    OutputBudgetError,
     OutputSink,
     RuntimeLimits,
     Unit,
+    failure_code,
     samples_to_ms,
 )
 
@@ -148,7 +150,9 @@ class CoordinatorAdapter(InteractionAdapter):
                             or self.unit_output_bytes + event_size_bytes
                             > self.limits.max_output_bytes
                         ):
-                            raise RuntimeError("native unit output budget exhausted")
+                            raise OutputBudgetError(
+                                "native unit output budget exhausted"
+                            )
                         else:
                             pass
                         self.unit_output_events.append(event)
@@ -159,17 +163,18 @@ class CoordinatorAdapter(InteractionAdapter):
                 pass
         except Exception as exc:
             if ContextExhaustedError.matches(exc):
-                failure_code = ContextExhaustedError.CODE
+                code = ContextExhaustedError.CODE
             else:
+                code = failure_code(exc)
+            if code == CLOSE_REASON_INTERNAL:
                 logger.exception("Realtime session output reader failed")
-                failure_code = CLOSE_REASON_INTERNAL
+            else:
+                pass
             self.reader_error = exc
             if self.unit_completion is not None and not self.unit_completion.done():
                 self.unit_completion.set_exception(exc)
             else:
-                await self.output_sink(
-                    TurnFailure("server_error", failure_code, str(exc))
-                )
+                await self.output_sink(TurnFailure("server_error", code, str(exc)))
 
     async def process(self, unit: Unit) -> int:
         assert (

@@ -6,6 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
+from sglang.srt.layers.attention.vision import VisionAttentionMetadata
 from transformers.models.qwen3_omni_moe import modeling_qwen3_omni_moe as hf_modeling
 from transformers.processing_utils import Unpack
 from transformers.utils.generic import TransformersKwargs, merge_with_config_defaults
@@ -22,6 +23,7 @@ class VisionRotaryInputs:
 @dataclass(frozen=True, kw_only=True)
 class VisionSequenceMetadata:
     sequence_patch_counts: tuple[int, ...]
+    packed_attention_metadata: VisionAttentionMetadata | None
 
 
 class Qwen3OmniMoeVisionEncoderCompat(hf_modeling.Qwen3OmniMoeVisionEncoder):
@@ -37,6 +39,7 @@ class Qwen3OmniMoeVisionEncoderCompat(hf_modeling.Qwen3OmniMoeVisionEncoder):
     def prepare_attention_metadata(
         self,
         sequence_patch_counts: tuple[int, ...],
+        cumulative_sequence_lengths: torch.Tensor,
     ) -> dict[str, VisionSequenceMetadata]:
         """The extra attention keywords every block receives."""
         return {}
@@ -129,12 +132,12 @@ class Qwen3OmniMoeVisionEncoderCompat(hf_modeling.Qwen3OmniMoeVisionEncoder):
             (host_cu_seqlens[1:] - host_cu_seqlens[:-1]).tolist()
         )
         max_seqlen = max(sequence_patch_counts)
-        attention_metadata_arguments = self.prepare_attention_metadata(
-            sequence_patch_counts
-        )
         device = hidden_states.device
         cu_seqlens = host_cu_seqlens.to(device, non_blocking=True)
         position_ids = position_ids.to(device, non_blocking=True)
+        attention_metadata_arguments = self.prepare_attention_metadata(
+            sequence_patch_counts, cu_seqlens
+        )
 
         hidden_states = self.patch_embed(hidden_states)
         pos_embeds = self.interpolate_position_embeddings(host_grid_thw.tolist())

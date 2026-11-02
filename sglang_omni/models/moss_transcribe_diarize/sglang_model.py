@@ -31,6 +31,9 @@ from sglang_omni.models.moss_transcribe_diarize.encoder_cuda_graph import (
 from sglang_omni.models.moss_transcribe_diarize.hf_config import (
     MossTranscribeDiarizeConfig,
 )
+from sglang_omni.models.moss_transcribe_diarize.whisper_encoder import (
+    PackedWhisperEncoder,
+)
 from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 
@@ -79,6 +82,7 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
     ) -> None:
         super().__init__()
         self.config = config
+        self.encoder_is_unquantized = quant_config is None
         self.whisper_encoder = WhisperEncoder(config.audio_config, quant_config)
         self.vq_adaptor = VQAdaptor(
             input_dim=config.adaptor_input_dim,
@@ -133,8 +137,20 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
             return
         else:
             pass
+        encoder = self.whisper_encoder
+        can_pack = (
+            current_platform.is_cuda()
+            and next(encoder.parameters()).dtype == torch.bfloat16
+            and self.encoder_is_unquantized
+            and all(
+                layer.self_attn.num_heads == layer.self_attn.total_num_heads
+                and layer.self_attn.head_dim == 64
+                for layer in encoder.layers
+            )
+        )
+        graph_encoder = PackedWhisperEncoder(encoder) if can_pack else encoder
         runner = WhisperEncoderCudaGraphRunner(
-            self.whisper_encoder,
+            graph_encoder,
             num_mel_bins=int(self.config.audio_config.num_mel_bins),
             input_feature_len=int(input_feature_len),
             graph_backend=graph_backend,
@@ -221,7 +237,6 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
         items: List[MultimodalDataItem],
         forward_batch: ForwardBatch | None,
     ) -> torch.Tensor:
-        merge_size = int(self.config.audio_merge_size)
         device = next(self.whisper_encoder.parameters()).device
         encoder_dtype = next(self.whisper_encoder.parameters()).dtype
 
@@ -287,6 +302,19 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
             pass
 
         with torch.no_grad():
+            graph_runner = self.encoder_graph_runner
+            if (
+                current_platform.is_cuda()
+                and self.compiled_encoder is None
+                and graph_runner is not None
+                and graph_runner.can_run_chunks(len(chunks), chunks[0].shape[-1])
+            ):
+                # The graph output aliases its static buffer; the slicing below
+                # copies what it needs before the next replay is enqueued.
+                features = graph_runner.run_chunks(chunks)
+                return self.merge_and_adapt(features, token_lens, audio_spans)
+            else:
+                pass
             batched_features = torch.stack(chunks).to(
                 device=device, dtype=encoder_dtype
             )
@@ -310,21 +338,27 @@ class MossTranscribeDiarizeForConditionalGeneration(nn.Module):
                 features = self.whisper_encoder(
                     batched_features, encoder_position_ids, forward_batch
                 )
+            return self.merge_and_adapt(features, token_lens, audio_spans)
 
-            adaptor_dtype = next(self.vq_adaptor.parameters()).dtype
-            merged = [
-                self.time_merge(
-                    torch.cat(
-                        [
-                            features[i : i + 1, : token_lens[i] * merge_size]
-                            for i in ids
-                        ],
-                        dim=1,
-                    ).to(dtype=adaptor_dtype)
-                ).squeeze(0)
-                for ids in audio_spans
-            ]
-            return self.vq_adaptor(torch.cat(merged, dim=0))
+    def merge_and_adapt(
+        self,
+        features: torch.Tensor,
+        token_lens: list[int],
+        audio_spans: list[list[int]],
+    ) -> torch.Tensor:
+        """Keep each chunk's valid frames, time-merge per audio, and adapt."""
+        merge_size = int(self.config.audio_merge_size)
+        adaptor_dtype = next(self.vq_adaptor.parameters()).dtype
+        merged = [
+            self.time_merge(
+                torch.cat(
+                    [features[i : i + 1, : token_lens[i] * merge_size] for i in ids],
+                    dim=1,
+                ).to(dtype=adaptor_dtype)
+            ).squeeze(0)
+            for ids in audio_spans
+        ]
+        return self.vq_adaptor(torch.cat(merged, dim=0))
 
     def forward(
         self,

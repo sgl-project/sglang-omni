@@ -292,6 +292,7 @@ def test_tts_pipeline_state_round_trips_preserve_payload_fields() -> None:
                 instructions="fast",
                 ref_audio={"path": "ref.wav"},
                 ref_text="ref",
+                speaker_embedding=[0.5, -0.25],
                 uploaded_voice_name="uploaded",
                 uploaded_voice_created_at=456,
                 x_vector_only_mode=True,

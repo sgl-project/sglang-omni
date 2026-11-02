@@ -109,7 +109,7 @@ def test_check_docs_enforces_basename_pattern_except_root_readme(
     assert [
         violation.path.relative_to(docs_root).as_posix()
         for violation in violations
-        if violation.rule == "filename-separators"
+        if violation.rule == "filename-conventions"
     ] == ["bad-name.md", "nested/README.md"]
     assert [
         violation.path.relative_to(docs_root).as_posix()

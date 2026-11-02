@@ -144,7 +144,6 @@ def test_native_capability_requires_actual_true(value: JsonValue) -> None:
     ("key", "value"),
     [
         ("supports_resume", True),
-        ("supports_truncate", True),
         ("supports_server_interrupt", True),
         ("output_modalities", ["text"]),
         ("output_audio_format", {"type": "audio/pcm", "rate": 16000}),

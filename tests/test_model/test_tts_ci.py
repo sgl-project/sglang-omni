@@ -38,13 +38,11 @@ from typing import Literal
 
 import httpx
 import pytest
-from pydantic import TypeAdapter
 
 from benchmarks.dataset.prepare import DATASETS, download_dataset
 from benchmarks.dataset.seedtts import load_seedtts_samples
 from benchmarks.eval.benchmark_tts_generation_budget import (
-    DEFAULT_CASES_PATH,
-    GenerationProbeCase,
+    PROBE_CASES,
     run_generation_probe,
 )
 from benchmarks.eval.benchmark_tts_seedtts import (
@@ -824,14 +822,6 @@ def test_qwen3_tts_repeated_short_speech_budget(
         ]
     else:
         pass
-    cases = TypeAdapter(list[GenerationProbeCase]).validate_json(
-        DEFAULT_CASES_PATH.read_text()
-    )
-    cases = [
-        case
-        for case in cases
-        if case.id in ("short_en", "short_zh", "numbers_en", "mixed_zh")
-    ]
     output_dir = (
         Path(resolve_stage_output_dir(tmp_path, f"generation_budget_{stream}"))
         / f"attempt-{os.environ.get('OMNI_CI_ATTEMPT', '1')}"
@@ -844,10 +834,11 @@ def test_qwen3_tts_repeated_short_speech_budget(
                 client,
                 f"http://127.0.0.1:{router_server.port}/v1",
                 speech_request,
-                cases,
+                list(PROBE_CASES),
                 range(8),
                 stream,
                 output_dir,
+                keep_passing_audio=False,
             )
         failures = [result.model_dump() for result in results if result.errors]
         assert not failures, f"Generation-budget failures: {failures}"

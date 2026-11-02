@@ -104,6 +104,27 @@ def single_session_deployment(
     )
 
 
+def test_warmup_sends_three_silent_units_and_closes_its_session() -> None:
+    client = RecordingSessionClient()
+    asyncio.run(single_session_deployment(client).warmup(30))
+    assert [chunk.payload for chunk in client.chunks if chunk.payload] == [
+        bytes(2560)
+    ] * 3
+    assert client.chunks[-1].eos
+    assert client.closed_sessions == 1
+
+
+class FailingCloseClient(RecordingSessionClient):
+    async def close_session(self, identity: SessionIdentity) -> None:
+        await super().close_session(identity)
+        raise RuntimeError("session cleanup failed")
+
+
+def test_warmup_fails_when_its_session_cleanup_fails() -> None:
+    with pytest.raises(RuntimeError, match="session cleanup failed"):
+        asyncio.run(single_session_deployment(FailingCloseClient()).warmup(30))
+
+
 def send_event(
     websocket: WebSocketTestSession, event_type: str, **fields: JsonValue
 ) -> None:
@@ -144,6 +165,8 @@ def test_native_websocket_partial_tail_continuation_and_close() -> None:
         )
         update = receive_until(websocket, "session.updated")[-1]
         assert update["session"]["audio"]["output"]["format"]["rate"] == 22050
+        # Note (ruoyu): The adapter answers response.cancel with not_supported, so a page must treat its stop button as a local mute.
+        assert update["session"]["sglang"]["granted"]["supports_cancel"] is False
         append_audio(websocket, 0, 640, 0)
         receive_until(websocket, "sglang.input_audio.accepted")
         assert client.chunks == []

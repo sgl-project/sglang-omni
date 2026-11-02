@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The thinker session keeps one native turn per append and refills what an interrupted reply's listener heard."""
 
+import queue
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -23,6 +24,7 @@ from sglang_omni.proto.streams import (
     INTERRUPT,
     PCM16,
     REPLY_DELIVERED,
+    REPLY_TRUNCATED,
     TRUNCATE,
     TURN_STARTED,
 )
@@ -63,6 +65,7 @@ def adapter(monkeypatch: pytest.MonkeyPatch) -> QwenThinkerSessionAdapter:
             ),
             output_ids=[],
             stage_payload=None,
+            finish_reason=None,
         )
 
     monkeypatch.setattr(thinker_session, "build_sglang_thinker_request", build_request)
@@ -73,6 +76,7 @@ def adapter(monkeypatch: pytest.MonkeyPatch) -> QwenThinkerSessionAdapter:
     )
     config = SimpleNamespace(image_token_id=100, video_token_id=101, audio_token_id=102)
     result = QwenThinkerSessionAdapter(tokenizer, 200, config)
+    result.outbox = queue.Queue()
     result.open(IDENTITY, OmniRequest(None))
     return result
 
@@ -309,6 +313,33 @@ def test_truncating_a_finished_reply_rebuilds_the_native_session(
     )
     third = adapter.build(IDENTITY, unit_chunk(3), payload(3, [8]))
     assert third.req.origin_input_ids == [END, NEWLINE, 8]
+
+
+def test_a_reply_cut_at_the_thinker_token_budget_tells_the_talker(
+    adapter: QwenThinkerSessionAdapter,
+) -> None:
+    """The talker speaks the text it got and stops, so without this the turn ends as a natural stop."""
+    request_data = adapter.build(IDENTITY, unit_chunk(1), payload(1, [5]))
+    request_data.finish_reason = "length"
+    finish(adapter, request_data, [50, 51])
+    message = adapter.outbox.get_nowait()
+    assert (message.request_id, message.target, message.type) == (
+        "unit-1",
+        "talker_ar",
+        "stream",
+    )
+    assert message.metadata == {REPLY_TRUNCATED: True}
+    assert message.data.numel() == 0
+    assert adapter.outbox.empty()
+
+
+def test_a_reply_that_ended_on_its_own_tells_the_talker_nothing(
+    adapter: QwenThinkerSessionAdapter,
+) -> None:
+    request_data = adapter.build(IDENTITY, unit_chunk(1), payload(1, [5]))
+    request_data.finish_reason = "stop"
+    finish(adapter, request_data, [50, END])
+    assert adapter.outbox.empty()
 
 
 def test_system_prefix_must_match_the_tokenized_prompt(

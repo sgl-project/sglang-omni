@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import copy
 import gc
+from dataclasses import dataclass
 from types import SimpleNamespace
 
 import pytest
@@ -13,10 +14,12 @@ import torch
 
 from sglang_omni.models.fun_cosyvoice3.causal_conv import FusedConvPositionEmbedding
 from sglang_omni.models.fun_cosyvoice3.packed_dit import (
+    CONV_CONTEXT_FRAMES,
     PackedDiT,
     gather_rows,
     pack_rows,
     solve_flow_euler_packed,
+    uses_fa4,
 )
 from sglang_omni.models.fun_cosyvoice3.prefix_cache import (
     BLOCK_FRAMES,
@@ -45,9 +48,14 @@ CHUNK = 50
 CHANNELS = 80
 HEADS, HEAD_DIM, LAYERS = 4, 64, 3
 COMPILED_OVER_EAGER_ERROR = 1.1
+# note (emre): error against the float32 reference over the BF16 baseline's error.
+# Measured on SM120 at most 1.58 for solves, 1.51 for convs, 1.44 for K and V.
+SOLVE_ERROR_RATIO = 2.0
+CONV_ERROR_RATIO = 2.0
+KV_ERROR_RATIO = 2.0
 
 
-def make_estimator() -> PackedDiT:
+def make_estimator(dtype: torch.dtype = torch.bfloat16) -> PackedDiT:
     torch.manual_seed(0)
     dit = (
         cosyvoice_dit.DiT(
@@ -79,7 +87,7 @@ def make_estimator() -> PackedDiT:
         dit.norm_out.linear.bias.fill_(0.5)
     for module in dit.modules():
         if isinstance(module, (torch.nn.Linear, torch.nn.Conv1d)):
-            module.to(torch.bfloat16)
+            module.to(dtype)
         else:
             pass
     dit.input_embed.conv_pos_embed = FusedConvPositionEmbedding(
@@ -87,10 +95,116 @@ def make_estimator() -> PackedDiT:
     )
     estimator = PackedDiT(dit, device="cuda")
     if not estimator.is_ragged:
-        pytest.skip("requires FA3")
+        pytest.skip("requires ragged attention")
     else:
         pass
     return estimator
+
+
+def max_error(actual: torch.Tensor, reference: torch.Tensor) -> float:
+    return (actual.float() - reference.float()).abs().max().item()
+
+
+def assert_within_baseline(
+    label: str,
+    actual: torch.Tensor,
+    expected: torch.Tensor,
+    reference: torch.Tensor | None,
+    baseline: torch.Tensor | None,
+    ratio: float,
+) -> None:
+    """Bit equal to expected on FA3. On SM120 BF16 rounding varies with the row count,
+    so actual has to stay about as near the float32 reference as the BF16 baseline."""
+    if uses_fa4(actual.device):
+        baseline_error = max_error(baseline, reference)
+        error = max_error(actual, reference)
+        assert error <= ratio * baseline_error, (label, error, baseline_error)
+    else:
+        assert torch.equal(actual, expected), label
+
+
+class RecordingAttention:
+    """Keeps each layer's keys and values, in call order: Euler step, then layer."""
+
+    def __init__(self, attention) -> None:
+        self.attention = attention
+        self.keys: list[torch.Tensor] = []
+        self.values: list[torch.Tensor] = []
+
+    def __call__(
+        self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor
+    ) -> torch.Tensor:
+        self.keys.append(key.clone())
+        self.values.append(value.clone())
+        return self.attention(query, key, value)
+
+
+@dataclass
+class WholeHistoryStates:
+    solve: torch.Tensor
+    keys: list[torch.Tensor]
+    values: list[torch.Tensor]
+    conv_inputs: torch.Tensor
+
+
+class WholeHistoryReference:
+    """Eager whole-history solves of one seed in float32 and in BF16. Their difference
+    is the rounding error a correct BF16 path has, for each kind of state."""
+
+    def __init__(self, time_span: torch.Tensor) -> None:
+        self.time_span = time_span.float()
+        self.estimators = {
+            torch.float32: make_estimator(torch.float32),
+            torch.bfloat16: make_estimator(torch.bfloat16),
+        }
+        for dtype, estimator in self.estimators.items():
+            with torch.autocast("cuda", dtype=dtype, enabled=dtype != torch.float32):
+                estimator.build_modulations(self.time_span.to(dtype), dtype)
+
+    def run(
+        self,
+        dtype: torch.dtype,
+        noise: torch.Tensor,
+        mu: torch.Tensor,
+        spks: torch.Tensor,
+        cond: torch.Tensor,
+        lengths: list[int],
+        *,
+        streaming: bool = True,
+    ) -> WholeHistoryStates:
+        estimator = self.estimators[dtype]
+        device = noise.device
+        twin_rows = pack_rows(lengths * 2, device)
+        attention = RecordingAttention(
+            estimator.row_attention(twin_rows, streaming=streaming, dtype=dtype)
+        )
+        conv_inputs: list[torch.Tensor] = []
+        positional_conv = type(estimator).positional_conv
+
+        def recording_conv(x: torch.Tensor, conv_index: int) -> torch.Tensor:
+            conv_inputs.append(x.clone())
+            return positional_conv(estimator, x, conv_index)
+
+        estimator.positional_conv = recording_conv
+        try:
+            with torch.autocast("cuda", dtype=dtype, enabled=dtype != torch.float32):
+                solve = solve_flow_euler_packed(
+                    estimator,
+                    noise.to(dtype),
+                    self.time_span.to(dtype),
+                    mu.to(dtype),
+                    spks.to(dtype),
+                    cond.to(dtype),
+                    twin_rows,
+                    attention,
+                    estimator.rope_angles(twin_rows.width),
+                    cfg_rate=0.7,
+                )
+        finally:
+            del estimator.positional_conv
+        return WholeHistoryStates(
+            solve, attention.keys, attention.values, torch.stack(conv_inputs)
+        )
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
@@ -124,6 +238,7 @@ def test_prefix_hops_are_bit_identical_to_whole_history_hops(
     previous = 0
     with torch.inference_mode(), torch.autocast("cuda", dtype=dtype):
         estimator.build_modulations(time_span, dtype)
+        references = WholeHistoryReference(time_span)
         for total in totals:
             packed = pack_rows([total] * rows, device)
             twin_rows = pack_rows([total] * 2 * rows, device)
@@ -158,15 +273,33 @@ def test_prefix_hops_are_bit_identical_to_whole_history_hops(
                 caches,
                 cfg_rate=0.7,
             )
+            float32_solve = references.run(
+                torch.float32,
+                gather_rows(noise[:, :, :total].transpose(1, 2), packed),
+                gather_rows(mu[:, :, :total].transpose(1, 2), packed),
+                spks,
+                gather_rows(cond[:, :, :total].transpose(1, 2), packed),
+                [total] * rows,
+            ).solve
             for row in range(rows):
                 expected = reference[0, row * total + previous : (row + 1) * total]
+                float32_row = float32_solve[
+                    0, row * total + previous : (row + 1) * total
+                ]
                 actual = cached[
                     0,
                     row * (total - start)
                     + previous
                     - start : (row + 1) * (total - start),
                 ]
-                assert torch.equal(actual, expected), (total, row)
+                assert_within_baseline(
+                    f"hop_solve {total} {row}",
+                    actual,
+                    expected,
+                    float32_row,
+                    expected,
+                    SOLVE_ERROR_RATIO,
+                )
             previous = total
     used = 32 - len(pool.free_blocks)
     assert used == rows * 2 * ((totals[-1] + BLOCK_FRAMES - 1) // BLOCK_FRAMES)
@@ -203,6 +336,11 @@ def test_prefix_and_whole_history_hops_launch_without_a_host_wait() -> None:
         assert grow_rows(pool, list(pair), [length, length])
     with torch.inference_mode(), torch.autocast("cuda", dtype=dtype):
         estimator.build_modulations(time_span, dtype)
+        float32_solve = (
+            WholeHistoryReference(time_span)
+            .run(torch.float32, noise, mu, spks, cond, lengths)
+            .solve
+        )
         angles = estimator.rope_angles(max(lengths))
         torch.cuda.synchronize()
         sync_debug_mode = torch.cuda.get_sync_debug_mode()
@@ -235,7 +373,9 @@ def test_prefix_and_whole_history_hops_launch_without_a_host_wait() -> None:
             )
         finally:
             torch.cuda.set_sync_debug_mode(sync_debug_mode)
-    assert torch.equal(cached, whole)
+    assert_within_baseline(
+        "no_wait_solve", cached, whole, float32_solve, whole, SOLVE_ERROR_RATIO
+    )
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
@@ -491,6 +631,7 @@ def test_prefix_graph_replays_equal_the_eager_solve(compile_prefix: bool) -> Non
     time_span = (1 - torch.cos(unit * 0.5 * torch.pi)).float()
     with torch.inference_mode(), torch.autocast("cuda", dtype=dtype):
         estimator.build_modulations(time_span, dtype)
+        references = WholeHistoryReference(time_span)
     if compile_prefix:
         assert estimator.compile(dtype)
         for pool in pools:
@@ -621,23 +762,101 @@ def test_prefix_graph_replays_equal_the_eager_solve(compile_prefix: bool) -> Non
                         cfg_rate=0.7,
                     )
                 outputs.append(generated)
-            assert torch.equal(outputs[0], outputs[1]), step
-            for name in names:
-                for graph_row, eager_row in zip(*caches[name]):
-                    assert graph_row.committed_frames == eager_row.committed_frames
-                    assert torch.equal(graph_row.conv_context, eager_row.conv_context)
-                    graph_pages = graph_row.pages(device)[: graph_row.committed_frames]
-                    eager_pages = eager_row.pages(device)[: eager_row.committed_frames]
+            states = {}
+            for name, total in step:
+                frames = [
+                    streams[name][key][:, :total].transpose(0, 1).unsqueeze(0)
+                    for key in ("noise", "mu", "mel_conditioning")
+                ]
+                speaker = streams[name]["speaker_embeddings"].unsqueeze(0)
+                states[name] = (
+                    references.run(
+                        torch.float32,
+                        frames[0],
+                        frames[1],
+                        speaker,
+                        frames[2],
+                        [total],
+                    ),
+                    references.run(
+                        dtype, frames[0], frames[1], speaker, frames[2], [total]
+                    ),
+                )
+            float32_parts = []
+            bf16_parts = []
+            for (name, total), start in zip(step, starts):
+                float32_parts.append(states[name][0].solve[0, start:total])
+                bf16_parts.append(states[name][1].solve[0, start:total])
+            float32_output = torch.cat(float32_parts).unsqueeze(0)
+            bf16_output = torch.cat(bf16_parts).unsqueeze(0)
+            for pool_index, output in enumerate(outputs):
+                assert_within_baseline(
+                    f"replay_solve {pool_index}",
+                    output,
+                    outputs[1],
+                    float32_output,
+                    bf16_output,
+                    SOLVE_ERROR_RATIO,
+                )
+            for name, total in step:
+                float32_states, bf16_states = states[name]
+                for twin, rows in enumerate(zip(*caches[name])):
+                    graph_row, eager_row = rows
+                    committed = graph_row.committed_frames
+                    assert committed == eager_row.committed_frames
+                    row_offset = twin * (CONV_CONTEXT_FRAMES + total) + committed
+                    window = range(row_offset, row_offset + CONV_CONTEXT_FRAMES)
+                    float32_conv = float32_states.conv_inputs[:, window]
+                    bf16_conv = bf16_states.conv_inputs[:, window]
+                    float32_conv = float32_conv.view(10, 2, CONV_CONTEXT_FRAMES, -1)
+                    bf16_conv = bf16_conv.view(10, 2, CONV_CONTEXT_FRAMES, -1)
+                    for pool_index, row in enumerate((graph_row, eager_row)):
+                        assert_within_baseline(
+                            f"replay_conv {pool_index}",
+                            row.conv_context,
+                            eager_row.conv_context,
+                            float32_conv,
+                            bf16_conv,
+                            CONV_ERROR_RATIO,
+                        )
+                    frames = range(twin * total, twin * total + committed)
+                    if committed == 0:
+                        continue
+                    else:
+                        pass
+                    pages = [
+                        graph_row.pages(device)[:committed],
+                        eager_row.pages(device)[:committed],
+                    ]
                     for euler_step in range(10):
                         for layer in range(LAYERS):
-                            assert torch.equal(
-                                graph_pool.keys[euler_step][layer][graph_pages],
-                                eager_pool.keys[euler_step][layer][eager_pages],
-                            )
-                            assert torch.equal(
-                                graph_pool.values[euler_step][layer][graph_pages],
-                                eager_pool.values[euler_step][layer][eager_pages],
-                            )
+                            call = euler_step * LAYERS + layer
+                            for pool_index, pool in enumerate(pools):
+                                for label, cached, float32_part, bf16_part in (
+                                    (
+                                        "key",
+                                        pool.keys[euler_step][layer],
+                                        float32_states.keys[call],
+                                        bf16_states.keys[call],
+                                    ),
+                                    (
+                                        "value",
+                                        pool.values[euler_step][layer],
+                                        float32_states.values[call],
+                                        bf16_states.values[call],
+                                    ),
+                                ):
+                                    eager_cached = getattr(eager_pool, f"{label}s")[
+                                        euler_step
+                                    ][layer][pages[1]]
+                                    assert_within_baseline(
+                                        f"replay_{label} {pool_index}",
+                                        cached[pages[pool_index]].flatten(1),
+                                        eager_cached.flatten(1),
+                                        float32_part[0, frames],
+                                        bf16_part[0, frames],
+                                        KV_ERROR_RATIO,
+                                    )
     for pair_per_pool in caches.values():
         for pool, pair in zip(pools, pair_per_pool):
             release_rows(pool, list(pair))
@@ -726,6 +945,9 @@ def test_whole_history_graph_replays_equal_the_eager_solve(
             mel_conditioning=torch.randn(frames, device=device, generator=generator),
         )
 
+    with torch.inference_mode():
+        references = WholeHistoryReference(time_span)
+
     def eager_solve(lengths: tuple[int, ...]) -> torch.Tensor:
         inputs = step_inputs(lengths)
         twin_rows = pack_rows(lengths * 2, device)
@@ -776,6 +998,22 @@ def test_whole_history_graph_replays_equal_the_eager_solve(
             (40, 70),
         ):
             replayed = runner.run(**step_inputs(lengths), lengths=lengths)
-            assert torch.equal(replayed, eager_solve(lengths)), lengths
+            inputs = step_inputs(lengths)
+            frames = (
+                inputs["noise"],
+                inputs["mu"],
+                inputs["speaker_embeddings"],
+                inputs["mel_conditioning"],
+            )
+            assert_within_baseline(
+                f"whole_replay {lengths}",
+                replayed,
+                eager_solve(lengths),
+                references.run(
+                    torch.float32, *frames, list(lengths), streaming=False
+                ).solve,
+                references.run(dtype, *frames, list(lengths), streaming=False).solve,
+                SOLVE_ERROR_RATIO,
+            )
         for lengths in ((900, 900, 400), (20, 20, 20, 20)):
             assert runner.run(**step_inputs(lengths), lengths=lengths) is None

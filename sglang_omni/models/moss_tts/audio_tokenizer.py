@@ -38,6 +38,7 @@ from sglang_omni.models.moss_tts.attention import (
     unpack_packed_sequence_from_indices,
     unpack_unpadded_sequence,
     validate_attention_backend,
+    warmup_packed_attention,
 )
 from sglang_omni.models.moss_tts.vocoder_quantizer import (
     MossAudioTokenizerQuantizerDecoder,
@@ -1971,6 +1972,7 @@ def load_moss_audio_encoder(
         device=device,
     )
     model.eval()
+    warmup_packed_attention(model.encoder)
     logger.info(
         "Loaded repository-local MOSS-Audio-Tokenizer encoder from %s on %s "
         "(channels=%d, attention_backend=%s, encoder_dtype=%s, "
@@ -2461,6 +2463,7 @@ def load_moss_audio_vocoder(
         v1_weights=model.uses_moss_audio_tokenizer_v1_weights,
     )
     model.eval()
+    warmup_packed_attention(model.decoder)
     logger.info(
         "Loaded repository-local MOSS-Audio-Tokenizer vocoder from %s on %s "
         "(attention_backend=%s, decoder_dtype=%s, compute_dtype=%s)",

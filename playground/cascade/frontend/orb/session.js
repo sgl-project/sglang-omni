@@ -44,6 +44,30 @@ function codeUnitOffset(text, codePoints) {
   return offset;
 }
 
+const WORDS = new Intl.Segmenter(undefined, { granularity: "word" });
+
+// note (luojiaxuan): How far into a playing reply's text the caption has reached, in UTF-16 code
+// units: past the last progress point whose audio has played, then on through the stretch being
+// played to the last whole word its played share of audio reaches.
+export function playingTextEnd(text, progress, playedMs) {
+  let start = { textEnd: 0, audioMs: 0 };
+  let next = null;
+  for (const point of progress) {
+    if (point.audioMs <= playedMs && point.textEnd > start.textEnd) start = point;
+    else if (point.audioMs > playedMs && point.textEnd > start.textEnd && (next === null || point.textEnd < next.textEnd)) next = point;
+  }
+  const startUnits = codeUnitOffset(text, start.textEnd);
+  if (next === null || next.textEnd <= start.textEnd) return startUnits;
+  // note (luojiaxuan): Only the two ends of the stretch are timed, so the caption takes its words as evenly paced between them; a stretch whose end is not timed yet waits at its start.
+  const reached = codeUnitOffset(text, Math.floor(start.textEnd + ((next.textEnd - start.textEnd) * (playedMs - start.audioMs)) / (next.audioMs - start.audioMs)));
+  let end = startUnits;
+  for (const { index, segment, isWordLike } of WORDS.segment(text)) {
+    if (index + segment.length > reached) break;
+    if (isWordLike && index + segment.length > startUnits) end = index + segment.length;
+  }
+  return end;
+}
+
 export class DuplexSession {
   // transport(event) sends one JSON-serialisable client event; now() returns ms.
   constructor({ transport, now, outputModalities = ["audio"], instructions = "", extension = null, turnDetection = null, listeners = {} }) {
@@ -93,8 +117,8 @@ export class DuplexSession {
 
   // What the caption shows of a reply: the heard part and the part still to play. A reply that ended
   // other than completed, or that the player stopped, keeps only what was heard: the prefix the
-  // server's history kept once it reports one, else the progress the player passed, and nothing when
-  // none of its audio played. A reply without progress from the server is shown whole until it is cut.
+  // server's history kept once it reports one, else where its caption was when it stopped, and nothing
+  // when none of its audio played. A reply without progress from the server is shown whole until it is cut.
   captionParts(responseId) {
     const reply = this.reply(responseId);
     if (!reply) return { heard: "", pending: "" };
@@ -104,7 +128,8 @@ export class DuplexSession {
     if (cut && reply.keptEnd !== null) {
       end = codeUnitOffset(reply.text, reply.keptEnd);
     } else if (reply.progress.length) {
-      end = codeUnitOffset(reply.text, this.heardEnd(responseId));
+      // note (luojiaxuan): A playing reply's heard part moves word by word through the stretch being played; playedMs stops with a stopped reply, so its caption stays put until the kept prefix arrives.
+      end = playingTextEnd(reply.text, reply.progress, reply.playedMs);
     } else if (cut) {
       end = 0;
     } else {

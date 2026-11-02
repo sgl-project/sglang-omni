@@ -21,7 +21,7 @@ def check_gpu(
         bool,
         typer.Option(
             "--strict",
-            help="Exit nonzero when warnings are present or no CUDA GPU is visible.",
+            help="Exit nonzero when warnings are present or no GPU is visible.",
         ),
     ] = False,
 ) -> None:
@@ -33,11 +33,7 @@ def check_gpu(
     else:
         typer.echo(render_gpu_diagnostics(report))
 
-    if strict and (
-        report["warnings"]
-        or not report["environment"]["cuda_available"]
-        or not report["gpus"]
-    ):
+    if strict and (report["warnings"] or not report["gpus"]):
         raise typer.Exit(code=1)
     else:
         pass

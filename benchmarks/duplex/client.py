@@ -5,9 +5,15 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
+import io
 import json
+import queue
+import threading
 import time
 import uuid
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypedDict
 
@@ -32,6 +38,10 @@ ADMISSION_DENIED_STATUS = 503
 ADMISSION_RETRIES = 3
 ADMISSION_BACKOFF_S = 0.25
 SEND_RECEIPTS_FILE = "input-send-receipts.json"
+# Trace lines reach the disk in batches at most this far apart.
+TRACE_FLUSH_INTERVAL_S = 0.5
+# Sessions that end together are closed in one batch gathered for this long.
+TRACE_CLOSE_BATCH_S = 0.05
 # note (wenyao): Keepalive and compression would perturb packet timing.
 TRANSPORT: dict[str, JsonValue] = {
     "max_message_bytes": MAX_MESSAGE_BYTES,
@@ -93,6 +103,171 @@ class SendReceipt(TypedDict):
     completed_s: float
 
 
+@dataclass(frozen=True, kw_only=True)
+class TraceLine:
+    trace_file: io.TextIOWrapper
+    line: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReceiptsWrite:
+    trace_file: io.TextIOWrapper
+    receipts_path: Path
+    receipts: list[SendReceipt]
+
+
+@dataclass(frozen=True, kw_only=True)
+class TraceClose:
+    trace_file: io.TextIOWrapper
+    loop: asyncio.AbstractEventLoop
+    closed: asyncio.Future[None]
+
+
+def settle_close(closed: asyncio.Future[None], failure: OSError | None) -> None:
+    if closed.done():
+        pass
+    elif failure is None:
+        closed.set_result(None)
+    else:
+        closed.set_exception(failure)
+
+
+def reject_constant(constant: str) -> float:
+    raise ValueError(f"Out of range float values are not JSON compliant: {constant}")
+
+
+# A frame lands in the trace as received, so it must already be strict JSON.
+SERVER_EVENT_DECODER = json.JSONDecoder(parse_constant=reject_constant)
+
+
+# note (kangwenqiao): A write can wait hundreds of ms for disk writeback of its page,
+# so it leaves the loop that paces every session. Every other thread that wakes takes
+# the GIL from that loop, so one thread writes on a fixed period for all sessions.
+class TraceWriter:
+    """One thread writes the trace and receipts of every session of the process."""
+
+    def __init__(self) -> None:
+        self.pending: queue.SimpleQueue[TraceLine | ReceiptsWrite | TraceClose] = (
+            queue.SimpleQueue()
+        )
+        self.close_requested: threading.Event = threading.Event()
+        self.lock: threading.Lock = threading.Lock()
+        self.open_traces: int = 0
+        self.thread: threading.Thread | None = None
+
+    def open(self, trace_path: Path) -> io.TextIOWrapper:
+        trace_file = trace_path.open("x", encoding="utf-8")
+        with self.lock:
+            self.open_traces += 1
+            if self.thread is None:
+                # A session that never closes has no lines left that it waits for.
+                self.thread = threading.Thread(
+                    target=self.run, name="trace-writer", daemon=True
+                )
+                self.thread.start()
+            else:
+                pass
+        return trace_file
+
+    def write_line(self, trace_file: io.TextIOWrapper, line: str) -> None:
+        self.pending.put(TraceLine(trace_file=trace_file, line=line))
+
+    def write_receipts(
+        self,
+        trace_file: io.TextIOWrapper,
+        receipts_path: Path,
+        receipts: list[SendReceipt],
+    ) -> None:
+        self.pending.put(
+            ReceiptsWrite(
+                trace_file=trace_file, receipts_path=receipts_path, receipts=receipts
+            )
+        )
+
+    async def close(self, trace_file: io.TextIOWrapper) -> None:
+        """Returns once the session's files are on disk; raises their write error."""
+        loop = asyncio.get_running_loop()
+        closed: asyncio.Future[None] = loop.create_future()
+        self.pending.put(TraceClose(trace_file=trace_file, loop=loop, closed=closed))
+        self.close_requested.set()
+        await closed
+
+    def run(self) -> None:
+        failures: dict[io.TextIOWrapper, OSError] = {}
+        while True:
+            if self.close_requested.wait(TRACE_FLUSH_INTERVAL_S):
+                time.sleep(TRACE_CLOSE_BATCH_S)
+            else:
+                pass
+            self.close_requested.clear()
+            batches: dict[io.TextIOWrapper, list[str]] = {}
+            receipts_writes: list[ReceiptsWrite] = []
+            closes: list[TraceClose] = []
+            while not self.pending.empty():
+                request = self.pending.get_nowait()
+                if isinstance(request, TraceLine):
+                    batches.setdefault(request.trace_file, []).append(request.line)
+                elif isinstance(request, ReceiptsWrite):
+                    receipts_writes.append(request)
+                else:
+                    closes.append(request)
+            for trace_file, lines in batches.items():
+                if trace_file not in failures:
+                    try:
+                        trace_file.write("".join(lines))
+                    except OSError as exc:
+                        failures[trace_file] = exc
+                else:
+                    pass
+            for receipts_write in receipts_writes:
+                try:
+                    # note (kangwenqiao): Compact, because the indented dump is
+                    # pure Python and holds the GIL from the pacing loop.
+                    receipts_write.receipts_path.write_text(
+                        json.dumps(
+                            {"appends": receipts_write.receipts}, allow_nan=False
+                        )
+                        + "\n",
+                        encoding="utf-8",
+                    )
+                except OSError as exc:
+                    failures.setdefault(receipts_write.trace_file, exc)
+            for close_request in closes:
+                try:
+                    close_request.trace_file.close()
+                except OSError as exc:
+                    failures.setdefault(close_request.trace_file, exc)
+                try:
+                    close_request.loop.call_soon_threadsafe(
+                        settle_close,
+                        close_request.closed,
+                        failures.pop(close_request.trace_file, None),
+                    )
+                except RuntimeError:
+                    # A loop torn down mid-session has nobody left to wake.
+                    pass
+            with self.lock:
+                self.open_traces -= len(closes)
+                if self.open_traces == 0 and self.pending.empty():
+                    self.thread = None
+                    return
+                else:
+                    pass
+
+
+TRACE_WRITER = TraceWriter()
+
+
+@contextlib.asynccontextmanager
+async def open_trace(trace_path: Path) -> AsyncIterator[io.TextIOWrapper]:
+    """Trace file written by TRACE_WRITER; complete on exit, or raises its write error."""
+    trace_file = TRACE_WRITER.open(trace_path)
+    try:
+        yield trace_file
+    finally:
+        await TRACE_WRITER.close(trace_file)
+
+
 async def run_session(
     url: str,
     pcm: bytes,
@@ -133,14 +308,15 @@ async def run_session(
     input_s = len(pcm) / (2 * SAMPLE_RATE)
 
     receipts: list[SendReceipt] = []
-    with trace_path.open("x", encoding="utf-8", buffering=1) as trace_file:
+    async with open_trace(trace_path) as trace_file:
 
         def record(
             direction: Literal["send", "receive", "error", "admission"],
             event: dict[str, JsonValue],
         ) -> float:
             observed_time_s = time.perf_counter()
-            trace_file.write(
+            TRACE_WRITER.write_line(
+                trace_file,
                 json.dumps(
                     {
                         "direction": direction,
@@ -149,9 +325,33 @@ async def run_session(
                     },
                     allow_nan=False,
                 )
-                + "\n"
+                + "\n",
             )
             return observed_time_s
+
+        # note (edwingao28): Embedding the frame saves a second encode on the pacing
+        # loop; a non-ASCII or multi-line frame is encoded again to keep ASCII lines.
+        def record_frame(
+            direction: Literal["send", "receive"],
+            frame: str,
+            event: dict[str, JsonValue],
+            observed_time_s: float,
+        ) -> None:
+            if not frame.isascii() or "\n" in frame or "\r" in frame:
+                line = json.dumps(
+                    {
+                        "direction": direction,
+                        "time_s": observed_time_s,
+                        "event": event,
+                    },
+                    allow_nan=False,
+                )
+            else:
+                line = (
+                    f'{{"direction": "{direction}", "time_s": {observed_time_s!r}, '
+                    f'"event": {frame}}}'
+                )
+            TRACE_WRITER.write_line(trace_file, line + "\n")
 
         async def admit() -> websockets.ClientConnection:
             attempt = 0
@@ -219,8 +419,10 @@ async def run_session(
                         event["sglang"] = sglang
                     else:
                         pass
-                    send_started_s = record("send", event)
-                    await websocket.send(json.dumps(event))
+                    send_started_s = time.perf_counter()
+                    frame = json.dumps(event, allow_nan=False)
+                    record_frame("send", frame, event, send_started_s)
+                    await websocket.send(frame)
                     if event_type == "input_audio_buffer.append":
                         assert sglang is not None
                         receipts.append(
@@ -251,8 +453,10 @@ async def run_session(
                 async def receive() -> None:
                     nonlocal fatal
                     async for frame in websocket:
+                        received_s = time.perf_counter()
                         try:
-                            event = json.loads(frame)
+                            text = frame if isinstance(frame, str) else frame.decode()
+                            event = SERVER_EVENT_DECODER.decode(text)
                             if not isinstance(event, dict):
                                 raise ValueError("server event must be a JSON object")
                             else:
@@ -262,7 +466,7 @@ async def run_session(
                                 raise ValueError("server event type must be a string")
                             else:
                                 pass
-                            record("receive", event)
+                            record_frame("receive", text, event, received_s)
                         except ValueError as exc:
                             raise ValueError(
                                 "malformed server frame "
@@ -310,18 +514,22 @@ async def run_session(
                         else:
                             pass
                         streamed = True
-                        start_s = time.perf_counter()
                         for sequence, byte_offset in enumerate(
                             range(0, len(pcm), PACKET_BYTES)
                         ):
-                            await asyncio.sleep(
-                                max(
-                                    0.0,
-                                    start_s
-                                    + sequence * PACKET_MS / 1000
-                                    - time.perf_counter(),
+                            # note (edwingao28): Replay measures pacing from the
+                            # first append's send, so the deadlines start there too.
+                            if receipts:
+                                await asyncio.sleep(
+                                    max(
+                                        0.0,
+                                        receipts[0]["start_s"]
+                                        + sequence * PACKET_MS / 1000
+                                        - time.perf_counter(),
+                                    )
                                 )
-                            )
+                            else:
+                                pass
                             if aborted.is_set():
                                 streamed = False
                                 break
@@ -413,7 +621,6 @@ async def run_session(
         ) as exc:
             record("error", {"message": f"{type(exc).__name__}: {exc}"})
         finally:
-            trace_path.with_name(SEND_RECEIPTS_FILE).write_text(
-                json.dumps({"appends": receipts}, indent=2, allow_nan=False) + "\n",
-                encoding="utf-8",
+            TRACE_WRITER.write_receipts(
+                trace_file, trace_path.with_name(SEND_RECEIPTS_FILE), receipts
             )

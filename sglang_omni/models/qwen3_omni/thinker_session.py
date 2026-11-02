@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from queue import Queue
 
 import torch
 from sglang.srt.managers.schedule_batch import MultimodalInputs
@@ -14,18 +15,24 @@ from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
 
 from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
 from sglang_omni.models.qwen3_omni.request_builders import (
+    TALKER_STAGE,
     build_sglang_thinker_request,
     compute_mrope_positions,
     extract_thinker_model_inputs,
 )
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
+from sglang_omni.proto.streams import REPLY_TRUNCATED
+from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.sglang_backend.ar_session import (
     ARSessionAdapter,
     ARSessionPreparation,
     SessionUnit,
 )
-from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+from sglang_omni.scheduling.sglang_backend.request_data import (
+    FINISH_LENGTH_KIND,
+    SGLangARRequestData,
+)
 
 TRUNCATE_FORMAT = "qwen.truncate"
 # One codec frame is 1920 samples at 24 kHz: the code2wav upsample ratios 8·5·4·3 and 2·2 of the checkpoint.
@@ -131,6 +138,7 @@ class QwenThinkerSessionAdapter(ARSessionAdapter):
         self.end_token_id: int = tokenizer.convert_tokens_to_ids("<|im_end|>")
         self.newline_ids: list[int] = tokenizer.encode("\n", add_special_tokens=False)
         self.states: dict[SessionIdentity, ThinkerHistory] = {}
+        self.outbox: Queue[OutgoingMessage] | None = None
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
         self.states[session_identity] = ThinkerHistory()
@@ -404,4 +412,21 @@ class QwenThinkerSessionAdapter(ARSessionAdapter):
         history.pending = None
         payload = request_data.stage_payload
         payload.data["thinker_out"] = {"output_ids": output_ids, "is_final": True}
+        if request_data.finish_reason == FINISH_LENGTH_KIND:
+            self.relay_truncation(payload.request_id)
+        else:
+            pass
         return payload
+
+    def relay_truncation(self, request_id: str) -> None:
+        """Tell the talker, ahead of the end of the reply's text, that the reply stopped at the thinker's token budget."""
+        assert self.outbox is not None
+        self.outbox.put(
+            OutgoingMessage(
+                request_id=request_id,
+                type="stream",
+                data=torch.empty(0, dtype=torch.long),
+                target=TALKER_STAGE,
+                metadata={REPLY_TRUNCATED: True},
+            )
+        )

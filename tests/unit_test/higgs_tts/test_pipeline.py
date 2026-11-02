@@ -1098,7 +1098,6 @@ def test_higgs_model_runner_emits_latched_stream_metadata() -> None:
             HIGGS_STREAM_FOLLOWUP_STRIDE_METADATA: DEFAULT_HIGGS_STREAM_FOLLOWUP_STRIDE,
         },
         stream_code_buffer=[],
-        stream_code_first_flush_done=False,
         stream_code_seen_rows=0,
         stream_code_next_flush_rows=0,
     )
@@ -1136,7 +1135,6 @@ def test_higgs_request_finish_flushes_partial_stream_window() -> None:
             torch.tensor([4, 5, 6]),
         ],
         stream_code_seen_rows=2,
-        stream_code_first_flush_done=False,
         stream_metadata={"modality": "audio_codes", "stream": True},
     )
 
@@ -1147,7 +1145,6 @@ def test_higgs_request_finish_flushes_partial_stream_window() -> None:
     assert output.type == "stream"
     assert output.data.tolist() == [[1, 2, 3], [4, 5, 6]]
     assert data.stream_code_buffer == []
-    assert data.stream_code_first_flush_done is True
 
 
 def test_higgs_model_runner_batches_stream_code_rows_on_decode_boundaries() -> None:
@@ -1168,7 +1165,6 @@ def test_higgs_model_runner_batches_stream_code_rows_on_decode_boundaries() -> N
         max_new_tokens=99,
         generation_done=False,
         stream_code_buffer=[],
-        stream_code_first_flush_done=False,
         stream_code_seen_rows=0,
         stream_code_next_flush_rows=0,
     )
@@ -1188,7 +1184,6 @@ def test_higgs_model_runner_batches_stream_code_rows_on_decode_boundaries() -> N
     assert first.type == "stream"
     assert first.target == "vocoder"
     assert first.data.tolist() == [[0, 1, 2], [1, 2, 3], [2, 3, 4]]
-    assert data.stream_code_first_flush_done is True
 
     for i in range(7):
         runner.queue_or_emit_code_chunk(
@@ -1240,7 +1235,6 @@ def test_higgs_model_runner_collect_streaming_uses_preallocated_buffer() -> None
             HIGGS_STREAM_FOLLOWUP_STRIDE_METADATA: 8,
         },
         stream_code_buffer=[],
-        stream_code_first_flush_done=False,
         stream_code_seen_rows=0,
         stream_code_next_flush_rows=0,
     )
@@ -1310,7 +1304,29 @@ def test_higgs_stream_metadata_resolves_model_default_and_explicit_zero(
     assert metadata["initial_codec_chunk_frames"] == expected
 
 
-def test_higgs_producer_flushes_default_initial_chunk_at_row_27() -> None:
+@pytest.mark.parametrize(
+    (
+        "num_codebooks",
+        "stream_stride",
+        "followup_rows",
+        "initial_frames",
+        "expected_flush_rows",
+    ),
+    [
+        (8, 75, 75, 20, (27, 102, 177)),
+        (8, 75, 75, 0, (75, 150, 225)),
+        (8, 75, 75, 68, (75, 150, 225)),
+        (3, 8, 4, 1, (3, 7, 11)),
+    ],
+)
+def test_higgs_producer_uses_uniform_followup_windows(
+    num_codebooks: int,
+    stream_stride: int,
+    followup_rows: int,
+    initial_frames: int,
+    expected_flush_rows: tuple[int, int, int],
+) -> None:
+    """A short first packet must not delay the next code packet beyond one follow-up window."""
     runner = object.__new__(HiggsTTSModelRunner)
     runner.outbox = queue.Queue()
     runner.vocoder_target = "vocoder"
@@ -1321,37 +1337,48 @@ def test_higgs_producer_flushes_default_initial_chunk_at_row_27() -> None:
     )
     metadata = build_higgs_stream_metadata(
         payload,
-        SimpleNamespace(num_codebooks=8, codebook_size=1026),
+        SimpleNamespace(num_codebooks=num_codebooks, codebook_size=1026),
+        stream_stride=stream_stride,
+        stream_followup_stride=followup_rows,
+        initial_chunk_frames=initial_frames,
     )
     data = SimpleNamespace(
         stream_metadata=metadata,
-        num_codebooks=8,
+        num_codebooks=num_codebooks,
         output_codes=[],
         max_new_tokens=99,
         generation_done=False,
         stream_code_buffer=[],
-        stream_code_first_flush_done=False,
         stream_code_seen_rows=0,
         stream_code_next_flush_rows=0,
     )
     sched_req = SimpleNamespace(request_id="req", data=data)
+    delayed_rows = torch.arange(
+        (expected_flush_rows[-1] + 1) * num_codebooks, dtype=torch.long
+    ).reshape(-1, num_codebooks)
+    previous_flush_rows = 0
 
-    for row in range(26):
-        runner.queue_or_emit_code_chunk(
-            sched_req,
-            torch.full((8,), row, dtype=torch.long),
-        )
+    for row_index, code_row in enumerate(delayed_rows):
+        runner.queue_or_emit_code_chunk(sched_req, code_row)
+        if row_index + 1 in expected_flush_rows:
+            message = runner.outbox.get_nowait()
+            assert message.type == "stream"
+            assert message.target == "vocoder"
+            assert message.metadata == metadata
+            torch.testing.assert_close(
+                message.data, delayed_rows[previous_flush_rows : row_index + 1]
+            )
+            previous_flush_rows = row_index + 1
+        else:
+            pass
+        with pytest.raises(queue.Empty):
+            runner.outbox.get_nowait()
+
+    runner.on_request_finished("req", data)
+    tail_message = runner.outbox.get_nowait()
+    torch.testing.assert_close(tail_message.data, delayed_rows[-1])
     with pytest.raises(queue.Empty):
         runner.outbox.get_nowait()
-
-    runner.queue_or_emit_code_chunk(
-        sched_req,
-        torch.full((8,), 26, dtype=torch.long),
-    )
-    message = runner.outbox.get_nowait()
-
-    assert message.data.shape == (27, 8)
-    assert message.metadata["initial_codec_chunk_frames"] == 20
 
 
 def test_higgs_model_runner_collects_rollout_logprobs_only_when_requested() -> None:
@@ -1937,48 +1964,90 @@ def test_higgs_initial_codec_chunk_frames_controls_first_chunk_only() -> None:
     assert drain_higgs_outbox(scheduler) == []
 
 
-def test_higgs_initial_chunk_resumes_after_followup_boundary() -> None:
-    raw_codes = torch.arange(1, 43, dtype=torch.long).reshape(14, 3)
+@pytest.mark.parametrize(
+    (
+        "num_codebooks",
+        "stream_stride",
+        "followup_rows",
+        "initial_frames",
+        "holdback_frames",
+        "expected_flush_rows",
+        "expected_audio_frames",
+    ),
+    [
+        (8, 75, 75, 20, 4, (27, 102, 177), (20, 71, 75)),
+        (8, 75, 75, 0, 4, (75, 150, 225), (64, 75, 75)),
+        (8, 75, 75, 68, 4, (75, 150, 225), (64, 75, 75)),
+        (3, 8, 4, 1, 0, (3, 7, 11), (1, 4, 4)),
+    ],
+)
+def test_higgs_initial_chunk_resumes_after_followup_boundary(
+    num_codebooks: int,
+    stream_stride: int,
+    followup_rows: int,
+    initial_frames: int,
+    holdback_frames: int,
+    expected_flush_rows: tuple[int, int, int],
+    expected_audio_frames: tuple[int, int, int],
+) -> None:
+    """A short first packet must not leave extra codes buffered before the next audio."""
+    raw_frames = expected_flush_rows[-1] + 3 - num_codebooks + 1
+    raw_codes = (
+        torch.arange(raw_frames * num_codebooks, dtype=torch.long).reshape(
+            raw_frames, num_codebooks
+        )
+        % 100
+    )
     delayed = apply_delay_pattern(raw_codes)
+    codec = FakeUnevenHiggsStreamingCodec()
     scheduler = HiggsStreamingVocoderScheduler(
-        FakeUnevenHiggsStreamingCodec(),
-        stream_stride=8,
-        stream_followup_stride=4,
-        stream_overlap_tokens=1,
-        stream_holdback_tokens=0,
+        codec,
+        stream_stride=stream_stride,
+        stream_followup_stride=followup_rows,
+        stream_overlap_tokens=8,
+        stream_holdback_tokens=holdback_frames,
     )
     payload = higgs_stream_payload(
         "req",
         stream=True,
         delayed_rows=delayed.tolist(),
-        codebook_size=64,
-        initial_codec_chunk_frames=1,
+        num_codebooks=num_codebooks,
+        codebook_size=1026,
+        initial_codec_chunk_frames=initial_frames,
     )
 
     scheduler.handle_streaming_new_request("req", payload)
-    for row in delayed[:3]:
-        scheduler.handle_stream_chunk("req", higgs_stream_item(row, codebook_size=64))
+    streamed_parts: list[np.ndarray[tuple[int], np.dtype[np.float32]]] = []
 
-    first_streams = [
-        msg for msg in drain_higgs_outbox(scheduler) if msg.type == "stream"
-    ]
-    assert len(first_streams) == 1
+    for row_index, code_row in enumerate(delayed):
+        scheduler.handle_stream_chunk(
+            "req",
+            higgs_stream_item(
+                code_row, num_codebooks=num_codebooks, codebook_size=1026
+            ),
+        )
+        messages = drain_higgs_outbox(scheduler)
+        if row_index + 1 in expected_flush_rows:
+            assert len(messages) == 1
+            assert messages[0].type == "stream"
+            audio_samples = np.frombuffer(
+                messages[0].data["audio_waveform"], dtype=np.float32
+            ).copy()
+            expected_frames = expected_audio_frames[len(streamed_parts)]
+            assert audio_samples.size == expected_frames * codec.model.config.hop_length
+            streamed_parts.append(audio_samples)
+        else:
+            assert messages == []
 
-    for row in delayed[3:7]:
-        scheduler.handle_stream_chunk("req", higgs_stream_item(row, codebook_size=64))
-    assert drain_higgs_outbox(scheduler) == []
-
-    for row in delayed[7:11]:
-        scheduler.handle_stream_chunk("req", higgs_stream_item(row, codebook_size=64))
-    assert drain_higgs_outbox(scheduler) == []
-
-    scheduler.handle_stream_chunk(
-        "req", higgs_stream_item(delayed[11], codebook_size=64)
+    scheduler.handle_stream_done("req")
+    streamed_parts.extend(
+        np.frombuffer(message.data["audio_waveform"], dtype=np.float32).copy()
+        for message in drain_higgs_outbox(scheduler)
+        if message.type == "stream"
     )
-    second_streams = [
-        msg for msg in drain_higgs_outbox(scheduler) if msg.type == "stream"
-    ]
-    assert len(second_streams) == 1
+    full_audio = scheduler.decode_state_to_audio(HiggsTtsState.from_dict(payload.data))
+    assert full_audio is not None
+    np.testing.assert_array_equal(np.concatenate(streamed_parts), full_audio.numpy())
 
 
 def test_higgs_stream_contract_change_rejects_chunk_without_buffering() -> None:
