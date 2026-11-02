@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -576,45 +575,32 @@ def test_acoustic_scheduler_accepts_the_relay_tensor_shape() -> None:
     assert decoder.hidden_shape == (1, 32768)
 
 
-def test_backbone_config_patch_leaves_the_snapshot_and_blob_alone(
+def test_engine_builder_selects_native_backbone_without_mutating_legacy_config(
     tmp_path: Path,
 ) -> None:
-    """A Hub snapshot symlinks config.json into the shared blob store.
-
-    Writing through the link would rewrite a blob whose filename is its own
-    content hash, corrupting it for every other snapshot that shares it, and
-    rewriting the snapshot at all breaks read-only weights mounts. The builder
-    therefore loads the backbone through a shadow directory, leaving both the
-    blob and the snapshot byte-identical.
-    """
+    """The native language model is loadable without changing the legacy copy."""
     from sglang_omni.models.minimax_music3.engine_builder import (
         MiniMaxMusic3EngineBuilder,
     )
 
-    blob = tmp_path / "blob"
-    blob.write_text(json.dumps({"model_type": "mixtral", "hidden_size": 4096}))
-    snapshot = tmp_path / "snapshot" / "qwen_7B" / "qwen_7B"
-    snapshot.mkdir(parents=True)
-    config_path = snapshot / "config.json"
+    root = tmp_path / "checkpoint"
+    language_model_dir = root / "language_model"
+    language_model_dir.mkdir(parents=True)
+    (root / "flowmatching_vae.pth").touch()
+
+    legacy_dir = root / "qwen_7B" / "qwen_7B"
+    legacy_dir.mkdir(parents=True)
+    blob = tmp_path / "config-blob"
+    original_config = b'{"model_type":"mixtral","hidden_size":4096}'
+    blob.write_bytes(original_config)
+    config_path = legacy_dir / "config.json"
     config_path.symlink_to(blob)
-    (snapshot / "model.safetensors").write_bytes(b"weights")
-    (tmp_path / "snapshot" / "flowmatching_vae.pth").write_bytes(b"dit")
+
     builder = MiniMaxMusic3EngineBuilder()
-    shadow = Path(builder.resolve_checkpoint(str(tmp_path / "snapshot")))
+    resolved = Path(builder.resolve_checkpoint(str(root)))
 
-    assert json.loads(blob.read_text())["model_type"] == "mixtral"
+    assert resolved == language_model_dir
     assert config_path.is_symlink()
-    assert json.loads((shadow / "config.json").read_text())["model_type"] == "qwen3"
-    assert (shadow / "model.safetensors").is_symlink()
-    assert not (snapshot / "config.json.bak").exists()
-
-    second_backbone = tmp_path / "second" / "qwen_7B" / "qwen_7B"
-    second_backbone.mkdir(parents=True)
-    (second_backbone / "config.json").write_text(
-        json.dumps({"model_type": "qwen3", "hidden_size": 4096})
-    )
-    (second_backbone / "model.safetensors").write_bytes(b"weights")
-    (tmp_path / "second" / "flowmatching_vae.pth").write_bytes(b"dit")
-    second_checkpoint = Path(builder.resolve_checkpoint(str(tmp_path / "second")))
-
-    assert second_checkpoint == second_backbone
+    assert config_path.resolve() == blob
+    assert config_path.read_bytes() == original_config
+    assert not (legacy_dir / "config.json.bak").exists()

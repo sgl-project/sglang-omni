@@ -17,6 +17,7 @@ from sglang_omni.utils.json import JsonValue
 @dataclass(frozen=True)
 class TTMCheckpointPaths:
     root: Path
+    language_model_dir: Path
     qwen_dir: Path
     tokenizer_dir: Path
     config_path: Path
@@ -33,13 +34,22 @@ def download_once(model_path: str) -> str:
 def resolve_checkpoint(model_path: str | Path) -> TTMCheckpointPaths:
     root = Path(download_once(str(Path(model_path).expanduser()))).expanduser()
     direct_qwen = root / "qwen_7B" / "qwen_7B"
+    direct_language_model = root / "language_model"
     direct_dit = root / "flowmatching_vae.pth"
-    if not (direct_qwen.is_dir() and direct_dit.exists()) and root.is_dir():
+    if (
+        not (
+            direct_qwen.is_dir()
+            and direct_language_model.is_dir()
+            and direct_dit.exists()
+        )
+        and root.is_dir()
+    ):
         candidates = [
             child
             for child in root.iterdir()
             if child.is_dir()
             and (child / "qwen_7B" / "qwen_7B").is_dir()
+            and (child / "language_model").is_dir()
             and (child / "flowmatching_vae.pth").exists()
         ]
         if len(candidates) == 1:
@@ -52,6 +62,7 @@ def resolve_checkpoint(model_path: str | Path) -> TTMCheckpointPaths:
     tokenizer_dir = root / "qwen_7B" / "qwen3-8B-tokenizer-music"
     paths = TTMCheckpointPaths(
         root=root,
+        language_model_dir=root / "language_model",
         qwen_dir=qwen_dir,
         tokenizer_dir=tokenizer_dir,
         config_path=qwen_dir / "config.json",
