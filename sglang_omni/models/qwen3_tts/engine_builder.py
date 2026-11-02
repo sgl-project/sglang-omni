@@ -26,6 +26,8 @@ from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.qwen3_tts import CAPABILITIES, request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
 from sglang_omni.models.qwen3_tts.config import (
+    QWEN3_TTS_MAX_QUEUED_REQUESTS,
+    QWEN3_TTS_MAX_RUNNING_REQUESTS,
     load_qwen3_tts_checkpoint_config,
     normalize_qwen3_tts_model_type,
 )
@@ -253,9 +255,8 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
         self.stream_output_builder: (
             StreamOutputBuilder[Qwen3TTSSGLangRequestData] | None
         ) = None
-        # note (luojiaxuan): the factory assigns this before generation_defaults
-        # runs, but Qwen3TTSPipelineConfig.generation_admission_defaults builds a
-        # bare builder just to read the admission keys, so it needs a value.
+        # note (ratish): the factory assigns this before generation_defaults runs; a builder
+        # that never builds reads the defaults of an unknown checkpoint.
         self.checkpoint_dir: str = ""
 
     def resolve_checkpoint(self, model_path: str) -> str:
@@ -281,8 +282,8 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
         # note(ratish): the decode graph ladder follows the running bound, so it
         # is not set here.
         defaults: GenerationDefaults = {
-            "max_running_requests": 64,
-            "max_queued_requests": 64,
+            "max_running_requests": QWEN3_TTS_MAX_RUNNING_REQUESTS,
+            "max_queued_requests": QWEN3_TTS_MAX_QUEUED_REQUESTS,
             "dtype": dtype,
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,

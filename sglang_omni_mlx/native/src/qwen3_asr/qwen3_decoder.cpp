@@ -14,6 +14,14 @@ constexpr int kKvCacheStepTokens = 256;
 
 } // namespace
 
+std::vector<mx::array> KVCache::Arrays() const {
+  if (keys_.has_value()) {
+    return {*keys_, *values_};
+  } else {
+    return {};
+  }
+}
+
 Qwen3DecoderConfig
 Qwen3DecoderConfig::FromJson(const nlohmann::json &text_config) {
   return {text_config.at("num_hidden_layers").get<int>(),
