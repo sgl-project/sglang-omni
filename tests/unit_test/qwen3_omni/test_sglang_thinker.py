@@ -120,6 +120,7 @@ def test_real_qwen_config_drives_prefill_positions(
 
     runner = object.__new__(PrefillCudaGraphRunner)
     runner.model_runner = SimpleNamespace(model=wrapper)
+    runner.enable_cp_bcg_capture = False
     ordinary_positions = torch.arange(4, dtype=torch.long)
     mrope_positions = ordinary_positions.repeat(3, 1)
     forward_batch = SimpleNamespace(
