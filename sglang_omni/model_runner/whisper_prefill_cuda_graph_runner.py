@@ -6,7 +6,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, TypedDict
 
 import torch
-from sglang.srt.layers.attention.base_attn_backend import AttentionBackend
+from sglang.srt.layers.attention.base_attn_backend import (
+    AttentionBackend,
+    SharedReadEnds,
+)
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
 from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
@@ -75,12 +78,14 @@ class WhisperPrefillCudaGraphRunner(PrefillCudaGraphRunner):
         self,
         forward_batch: ForwardBatch,
         **kwargs: Unpack[PrefillReplayKwargs],
-    ) -> ForwardBatch:
-        static_forward_batch = super().load_batch(forward_batch, **kwargs)
+    ) -> tuple[ForwardBatch, SharedReadEnds]:
+        static_forward_batch, shared_read_ends = super().load_batch(
+            forward_batch, **kwargs
+        )
         static_forward_batch.encoder_lens_cpu = forward_batch.encoder_lens_cpu
         static_forward_batch.encoder_cached = forward_batch.encoder_cached
         static_forward_batch.encoder_out_cache_loc = forward_batch.encoder_out_cache_loc
-        return static_forward_batch
+        return static_forward_batch, shared_read_ends
 
 
 __all__ = ["WhisperPrefillCudaGraphRunner"]
