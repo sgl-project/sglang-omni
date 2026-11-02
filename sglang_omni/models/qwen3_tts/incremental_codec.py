@@ -35,7 +35,11 @@ if current_platform.is_cuda():
         SnakeBetaCoefficients,
         fused_bias_snake_beta,
     )
-    from sglang_omni.kernels.codec_state import history_exchange, overlap_exchange
+    from sglang_omni.kernels.codec_state import (
+        history_exchange,
+        overlap_exchange,
+        ring_step_rows,
+    )
     from sglang_omni.kernels.single_output_conv import clamped_single_output_conv
 else:
     pass
@@ -717,6 +721,22 @@ def ring_window_attention_fake(
     return query.new_empty(query.shape)
 
 
+def ring_step_rows_fake(
+    start_positions: torch.Tensor,
+    slot_rows: torch.Tensor,
+    fresh_frames: int,
+    ring_frames: int,
+    retained_frames: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    batch_size = start_positions.shape[0]
+    return (
+        start_positions.new_empty(batch_size * fresh_frames),
+        start_positions.new_empty(batch_size * fresh_frames),
+        start_positions.new_empty(batch_size, ring_frames, dtype=torch.int32),
+        start_positions.new_empty(batch_size, dtype=torch.int32),
+    )
+
+
 if current_platform.is_cuda():
     # note (ratish): FA3 has no fake implementation, so a compiled decode calls it as this op.
     compiled_ring_window_attention = register_custom_op(
@@ -724,6 +744,12 @@ if current_platform.is_cuda():
         op_name="qwen3_tts_codec_ring_window_attention",
         mutates_args=[],
         fake_impl=ring_window_attention_fake,
+    )
+    compiled_ring_step_rows = register_custom_op(
+        ring_step_rows,
+        op_name="qwen3_tts_codec_ring_step_rows",
+        mutates_args=[],
+        fake_impl=ring_step_rows_fake,
     )
 else:
     pass
@@ -772,18 +798,15 @@ class FusedIncrementalTransformer:
         else:
             return rmsnorm(hidden_states, norm.weight, norm.variance_epsilon)
 
-    def cos_sin_rows(
-        self, query_positions: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """The rope kernels' cos/sin table, one row per query, and each query's row."""
+    def cos_sin(self, query_positions: torch.Tensor) -> torch.Tensor:
+        """The rope kernels' cos/sin table, one row per query."""
         # note (ratish): one cos/sin row per query, from its absolute frame position,
         # which a stream's reference prefix can carry past max_position_embeddings.
         rows = query_positions.numel()
         angles = query_positions.reshape(rows, 1).float() * self.inverse_frequencies
-        cos_sin = torch.cat((angles.cos(), angles.sin()), dim=-1) * (
+        return torch.cat((angles.cos(), angles.sin()), dim=-1) * (
             self.attention_scaling
         )
-        return cos_sin, torch.arange(rows, device=query_positions.device)
 
     def projected_qkv(
         self,
@@ -879,7 +902,8 @@ class FusedIncrementalTransformer:
         attention_mask = allowed_keys(
             key_positions, query_positions, int(transformer.window_size)
         ).unsqueeze(1)
-        cos_sin, rotary_rows = self.cos_sin_rows(query_positions)
+        cos_sin = self.cos_sin(query_positions)
+        rotary_rows = torch.arange(rows, device=device)
         hidden_states = hidden_states.reshape(rows, hidden_size)
         next_keys: dict[int, torch.Tensor] = {}
         next_values: dict[int, torch.Tensor] = {}
@@ -947,14 +971,29 @@ class FusedIncrementalTransformer:
             fresh_frames, device=device
         )
         slot_rows = rings.slot_rows.unsqueeze(1)
-        frame_rows = slot_rows + query_positions % rings.ring_frames
-        cos_sin, rotary_rows = self.cos_sin_rows(query_positions)
+        cos_sin = self.cos_sin(query_positions)
         is_in_place = (
             valid_frames is None
             and fresh_frames <= rings.ring_frames - retained_context
         )
-        if is_in_place:
-            write_rows = frame_rows.reshape(rows)
+        if is_in_place and self.is_paged_attention:
+            # note (ratish): as tensor expressions, Inductor writes these rows into a buffer per
+            # layer that reads them, sixteen launches a decode for the same values.
+            step_rows = (
+                compiled_ring_step_rows
+                if torch.compiler.is_dynamo_compiling()
+                else ring_step_rows
+            )
+            write_rows, rotary_rows, page_table, window_lengths = step_rows(
+                start_positions,
+                rings.slot_rows,
+                fresh_frames,
+                rings.ring_frames,
+                retained_context,
+            )
+        elif is_in_place:
+            rotary_rows = torch.arange(rows, device=device)
+            write_rows = (slot_rows + query_positions % rings.ring_frames).reshape(rows)
             window_starts = (start_positions - retained_context).clamp(min=0)
             window_rows = (
                 slot_rows
@@ -965,20 +1004,16 @@ class FusedIncrementalTransformer:
                 % rings.ring_frames
             )
             window_lengths = start_positions - window_starts + fresh_frames
-            if self.is_paged_attention:
-                page_table = window_rows.to(torch.int32)
-                window_lengths = window_lengths.to(torch.int32)
-            else:
-                query_offsets = (window_lengths - fresh_frames).unsqueeze(
-                    1
-                ) + torch.arange(fresh_frames, device=device)
-                distances = query_offsets.unsqueeze(2) - torch.arange(
-                    rings.ring_frames, device=device
-                )
-                attention_mask = (
-                    (distances >= 0) & (distances < window_size)
-                ).unsqueeze(1)
+            query_offsets = (window_lengths - fresh_frames).unsqueeze(1) + torch.arange(
+                fresh_frames, device=device
+            )
+            distances = query_offsets.unsqueeze(2) - torch.arange(
+                rings.ring_frames, device=device
+            )
+            attention_mask = ((distances >= 0) & (distances < window_size)).unsqueeze(1)
         else:
+            rotary_rows = torch.arange(rows, device=device)
+            frame_rows = slot_rows + query_positions % rings.ring_frames
             key_positions = start_positions.unsqueeze(1) + torch.arange(
                 -retained_context, fresh_frames, device=device
             )
