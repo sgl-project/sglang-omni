@@ -155,7 +155,7 @@ sgl-omni serve \
 
 Connect to `/v1/realtime?intent=transcription` and send 16 kHz mono PCM16 audio. Whisper re-decodes the growing segment every two seconds by default; `session.update` can set `decode_interval_ms`. Each `transcription.segment` event replaces the previous text for its `segment_id`, including when earlier words change. Only `is_final=true` commits that segment. `transcription.completed` contains the joined final segments.
 
-Set `language` explicitly for non-English speech. Realtime decoding uses the Whisper decoder's English default when no language is supplied; this path does not perform automatic language detection. The example disables server VAD and finalizes with `transcription.done`; server VAD is enabled by default, and `input_audio_buffer.commit` finalizes one segment while keeping the session open.
+Set `language` to skip language detection. When it is omitted, Whisper first predicts the language from the audio available at the first decode, then transcribes the same audio and reuses that language for later refreshes of the segment. A short segment finalized before the refresh interval is detected and transcribed immediately; detection does not wait for 30 seconds of audio. The example disables server VAD and finalizes with `transcription.done`; server VAD is enabled by default, and `input_audio_buffer.commit` finalizes one segment while keeping the session open.
 
 Use the existing realtime benchmark to send audio at wall-clock pace, retain event traces, and compare final WER with HTTP transcription:
 

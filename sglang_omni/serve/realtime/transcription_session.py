@@ -84,7 +84,9 @@ class StreamingASRStrategy(Protocol):
         generated_text: str,
         language: str | None,
         state: object,
-    ) -> str: ...
+    ) -> str | None:
+        """Return text, or None to request a follow-up decode on the same audio."""
+        ...
 
 
 class SessionState(enum.Enum):
@@ -738,37 +740,41 @@ class RealtimeTranscriptionSession:
         end_sample: int,
         is_final: bool,
     ) -> None:
-        segment.decode_attempt += 1
-        request_id = f"{self.session_id}:{segment.segment_id}:{segment.decode_attempt}"
-        request = self.strategy.build_decode_request(
-            audio=audio,
-            state=segment.strategy_state,
-            is_final=is_final,
-            request_id=request_id,
-        )
-        self.inflight_request_id = request_id
-        try:
-            result = await self.client.completion(request, request_id=request_id)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            await self.send_error("server_error", "transcription_failed", str(exc))
-            return
-        finally:
-            if self.inflight_request_id == request_id:
-                self.inflight_request_id = None
-            else:
-                pass
-        if not is_final and self.active_segment is not segment:
-            return
-        else:
-            pass
+        text: str | None = None
+        while text is None:
+            segment.decode_attempt += 1
+            request_id = (
+                f"{self.session_id}:{segment.segment_id}:{segment.decode_attempt}"
+            )
+            self.inflight_request_id = request_id
+            try:
+                request = self.strategy.build_decode_request(
+                    audio=audio,
+                    state=segment.strategy_state,
+                    is_final=is_final,
+                    request_id=request_id,
+                )
+                result = await self.client.completion(request, request_id=request_id)
+                if not is_final and self.active_segment is not segment:
+                    return
+                else:
+                    pass
+                text = self.strategy.update_hypothesis(
+                    generated_text=result.text,
+                    language=result.language,
+                    state=segment.strategy_state,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                await self.send_error("server_error", "transcription_failed", str(exc))
+                return
+            finally:
+                if self.inflight_request_id == request_id:
+                    self.inflight_request_id = None
+                else:
+                    pass
         segment.language = result.language or segment.language
-        text = self.strategy.update_hypothesis(
-            generated_text=result.text,
-            language=result.language,
-            state=segment.strategy_state,
-        )
         if not is_final and text == segment.last_text:
             return
         else:

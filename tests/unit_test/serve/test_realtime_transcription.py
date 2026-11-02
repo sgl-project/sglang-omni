@@ -17,6 +17,7 @@ from sglang_omni.audio import vad as vad_module
 from sglang_omni.audio.vad import StatelessVAD, StreamingVAD, VADConfig, VADEvent
 from sglang_omni.client import CompletionResult, GenerateRequest
 from sglang_omni.config import RealtimeTranscriptionConfig
+from sglang_omni.models.whisper_asr.streaming import WhisperStreamingStrategy
 from sglang_omni.serve.realtime import transcription_session as session_module
 from sglang_omni.serve.realtime.transcription_session import (
     RealtimeTranscriptionSession,
@@ -829,3 +830,87 @@ async def test_session_update_sets_the_decode_interval(
     assert websocket.events[-1]["error"]["code"] == "session_active"
     assert session.settings.decode_interval_ms == 500
     await session.teardown()
+
+
+class LanguageDetectionClient(FakeClient):
+    def __init__(self, blocked_call: int | None = None) -> None:
+        super().__init__([])
+        self.requests: list[GenerateRequest] = []
+        self.blocked_call = blocked_call
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def completion(
+        self, request: GenerateRequest, *, request_id: str
+    ) -> CompletionResult:
+        self.calls.append(request_id)
+        self.requests.append(request)
+        if len(self.calls) == self.blocked_call:
+            self.started.set()
+            await self.release.wait()
+        else:
+            pass
+        detecting = bool(request.extra_params.get("detect_language"))
+        return CompletionResult(
+            request_id=request_id,
+            text="zh" if detecting else "你好",
+            language="english" if detecting else "zh",
+        )
+
+
+@pytest.mark.asyncio
+async def test_language_prepass_is_not_emitted_as_a_transcript(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, websocket, _client = await make_session(monkeypatch)
+    client = LanguageDetectionClient()
+    session.client = client
+    session.strategy = WhisperStreamingStrategy()
+    await session.dispatch(audio_event(make_pcm(1.0)))
+    await session.dispatch({"type": "transcription.done"})
+    hypotheses = [
+        event for event in websocket.events if event["type"] == "transcription.segment"
+    ]
+    assert [
+        (event["text"], event["language"], event["is_final"]) for event in hypotheses
+    ] == [("你好", "zh", True)]
+    assert websocket.events[-1]["text"] == "你好"
+    assert len(client.calls) == len(set(client.calls)) == 2
+    assert client.requests[0].extra_params["detect_language"] is True
+    assert client.requests[1].extra_params["language"] == "zh"
+    await session.teardown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocked_call", [1, 2])
+@pytest.mark.parametrize("operation", ["clear", "disconnect"])
+async def test_language_prepass_and_followup_cancel_with_session(
+    monkeypatch: pytest.MonkeyPatch, blocked_call: int, operation: str
+) -> None:
+    session, websocket, _client = await make_session(monkeypatch)
+    client = LanguageDetectionClient(blocked_call=blocked_call)
+    session.client = client
+    session.strategy = WhisperStreamingStrategy()
+    await session.dispatch(audio_event(make_pcm(2.1)))
+    await asyncio.wait_for(client.started.wait(), timeout=5)
+    if operation == "clear":
+        await session.dispatch({"type": "input_audio_buffer.clear"})
+        assert session.active_segment is None
+        assert not session.decode_worker_task.done()
+    else:
+        await session.teardown()
+        assert session.decode_worker_task.done()
+    assert client.aborted == [client.calls[-1]]
+    assert len(client.calls) == blocked_call
+    assert not any(
+        event["type"] == "transcription.segment" for event in websocket.events
+    )
+    if operation == "clear":
+        client.blocked_call = None
+        await session.dispatch(audio_event(make_pcm(1.0)))
+        await session.dispatch({"type": "transcription.done"})
+        assert websocket.events[-1]["text"] == "你好"
+        assert client.requests[blocked_call].extra_params["detect_language"] is True
+        await session.teardown()
+    else:
+        pass

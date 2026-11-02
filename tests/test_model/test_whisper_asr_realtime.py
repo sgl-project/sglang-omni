@@ -228,6 +228,23 @@ async def test_refreshes_replace_text_and_final_matches_offline(
     segments = [event for event in events if event["type"] == "transcription.segment"]
     assert len(segments) >= 3, events
     assert {event["segment_id"] for event in segments} == {0}
+    assert all(event["language"] in ("en", "english") for event in segments)
+
+
+async def test_short_input_detects_language_on_done(realtime_server_url: str) -> None:
+    pcm = load_pcm("query_to_draw.wav")[: int(1.5 * SAMPLE_RATE) * BYTES_PER_SAMPLE]
+    websocket_url = realtime_server_url.replace("http:", "ws:")
+    with disable_proxy():
+        expected = await asyncio.to_thread(offline_text, realtime_server_url, pcm)
+        async with connect(
+            f"{websocket_url}/v1/realtime?intent=transcription"
+        ) as socket:
+            await configure_session(socket, language=None)
+            await send_audio(socket, pcm)
+            await socket.send(json.dumps({"type": "transcription.done"}))
+            events = await receive_until(socket)
+    assert final_text(events) == expected
+    assert events[-1]["language"] in ("en", "english")
 
 
 async def test_vad_finalizes_without_manual_commit(realtime_server_url: str) -> None:
@@ -252,7 +269,19 @@ async def test_vad_finalizes_without_manual_commit(realtime_server_url: str) -> 
             await socket.send(json.dumps({"type": "transcription.done"}))
             events.extend(await receive_until(socket))
     assert final_text(events)
+    assert any(event["type"] == "input_audio_buffer.speech_started" for event in events)
     assert any(event["type"] == "input_audio_buffer.speech_stopped" for event in events)
+    committed_ids = [
+        event["segment_id"]
+        for event in events
+        if event["type"] == "input_audio_buffer.committed"
+    ]
+    final_ids = [
+        event["segment_id"]
+        for event in events
+        if event["type"] == "transcription.segment" and event["is_final"]
+    ]
+    assert committed_ids == final_ids == sorted(set(final_ids))
 
 
 async def test_long_input_splits_at_model_window(realtime_server_url: str) -> None:

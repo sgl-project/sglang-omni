@@ -12,14 +12,14 @@ from sglang_omni.serve.speech_to_text import build_speech_to_text_generate_reque
 @dataclass(slots=True, kw_only=True)
 class WhisperStreamingState:
     model_name: str
-    language: str
+    language: str | None
 
 
 class WhisperStreamingStrategy:
     def create_state(
         self, *, model_name: str, language: str | None
     ) -> WhisperStreamingState:
-        return WhisperStreamingState(model_name=model_name, language=language or "en")
+        return WhisperStreamingState(model_name=model_name, language=language)
 
     @staticmethod
     def state(state: object) -> WhisperStreamingState:
@@ -46,6 +46,8 @@ class WhisperStreamingStrategy:
             language=whisper_state.language,
             prompt=None,
             temperature=0.0,
+            max_new_tokens=1 if whisper_state.language is None else None,
+            detect_language=whisper_state.language is None,
             stream=False,
         )
 
@@ -55,10 +57,18 @@ class WhisperStreamingStrategy:
         generated_text: str,
         language: str | None,
         state: object,
-    ) -> str:
+    ) -> str | None:
         whisper_state = self.state(state)
-        if language:
-            whisper_state.language = language
+        if whisper_state.language is None:
+            detected_language = generated_text.strip()
+            if not detected_language:
+                raise ValueError("Whisper language detection returned no language")
+            else:
+                whisper_state.language = detected_language
+            return None
         else:
-            pass
-        return generated_text
+            if language:
+                whisper_state.language = language
+            else:
+                pass
+            return generated_text

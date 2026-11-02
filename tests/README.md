@@ -360,7 +360,7 @@ Relevant model CI ownership:
   and drives `/v1/realtime?intent=transcription` over a real WebSocket:
   manual commit across several rollback refreshes, server-VAD finalization
   without a commit, and recovery after a mid-decode disconnect.
-- `test_whisper_asr_realtime.py`: starts a Whisper server with encoder and decoder CUDA graphs and tests live refreshes, default/explicit English, HTTP final-text parity, VAD, 30-second splits, clear/disconnect recovery, and concurrent-session isolation. Runs in the ASR CI stage when the selected model is Whisper. Run locally with `python -m pytest tests/test_model/test_whisper_asr_realtime.py -v -s`; `WHISPER_MODEL_PATH` selects a local checkpoint, and `WHISPER_REALTIME_PORT` reuses an already-running server instead of starting one.
+- `test_whisper_asr_realtime.py`: starts a Whisper server with encoder and decoder CUDA graphs and tests live refreshes, automatic/explicit language selection, HTTP final-text parity, VAD, 30-second splits, clear/disconnect recovery, and concurrent-session isolation. Runs in the ASR CI stage when the selected model is Whisper. Run locally with `python -m pytest tests/test_model/test_whisper_asr_realtime.py -v -s`; `WHISPER_MODEL_PATH` selects a local checkpoint, and `WHISPER_REALTIME_PORT` reuses an already-running server instead of starting one.
 - `utils.py`: shared fixture/helpers for talker/TTS WER CI —
   stops the upstream model server, runs `delete_gpu_process.sh --kill-orphans`, then launches
   a Qwen3-ASR router. It also owns the WER ASR concurrency constant
