@@ -75,6 +75,18 @@ When finished, press Ctrl-C in the server terminal to stop it.
 
 For other preset voices, streaming output, and native server limitations, see the [Voxtral TTS cookbook](../cookbook/voxtral_tts.md#apple-silicon-native-mlx).
 
+## Supported models
+
+The following models have native MLX setup instructions in the cookbook, listed in cookbook navigation order. Each model links directly to its native MLX section.
+
+| Model | Checkpoint variant | Task |
+| --- | --- | --- |
+| [Qwen3-TTS](../cookbook/qwen3_tts.md#apple-silicon-native-mlx) | 0.6B CustomVoice, BF16 | Text-to-speech |
+| [Fish Audio Drama3](../cookbook/fishaudio_drama3.md#apple-silicon-native-mlx) | 4-bit / 8-bit | Text-to-speech, voice cloning |
+| [Fun-CosyVoice3](../cookbook/fun_cosyvoice3.md#native-mlx-runtime) | 0.5B, FP16 | Text-to-speech, voice cloning |
+| [MiniMax Music3](../cookbook/minimax_music3.md#apple-silicon-native-mlx) | MXFP8 | Music generation |
+| [Voxtral TTS](../cookbook/voxtral_tts.md#apple-silicon-native-mlx) | 4B, 4-bit | Text-to-speech |
+
 ## Layout
 
 | Path | Contents |
