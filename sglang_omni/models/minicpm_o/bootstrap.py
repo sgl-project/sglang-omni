@@ -53,6 +53,17 @@ def create_talker_scheduler(
 
     want_cuda_graph = not bool(resolved_view(server_args).disable_cuda_graph)
     prefill_graph_backend = get_prefill_cuda_graph_backend(server_args)
+    speculative = resolved_view(server_args).speculative_algorithm is not None
+    if speculative:
+        # note (0xtoward): the draft modules import Triton kernels, which only a
+        # speculative deployment needs.
+        from sglang_omni.models.minicpm_o.talker_dspark import (
+            MiniCPMOTalkerDSparkWorker,
+        )
+
+        speculative_worker_class = MiniCPMOTalkerDSparkWorker
+    else:
+        speculative_worker_class = None
     # note (MayDomine): condition embeddings require an uncached, unsplit prefill.
     override_server_args(
         server_args,
@@ -78,6 +89,8 @@ def create_talker_scheduler(
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         defer_cuda_graph_capture=want_cuda_graph,
         enable_prefill_input_embeds=prefill_graph_backend == CudaGraphBackend.BREAKABLE,
+        supports_speculative_decoding=speculative,
+        speculative_worker_class=speculative_worker_class,
     )
 
     model = model_worker.model_runner.model
@@ -126,7 +139,8 @@ def create_talker_scheduler(
         result_adapter=result_adapter,
         session_adapter=TalkerAdapter(model) if session_mode else None,
         # note (0xtoward): the penalty and length floor read device state, never an unresolved token, so lookahead starts at one request.
-        enable_async_decode=not session_mode,
+        # A draft worker verifies whole blocks in the synchronous loop.
+        enable_async_decode=not (session_mode or speculative),
         async_decode_min_batch_size=1,
     )
 

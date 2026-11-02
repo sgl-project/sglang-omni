@@ -449,3 +449,19 @@ def test_seeded_requests_draw_eager_tokens_when_batch_members_change(
         sampling_info = build_batch_sampling_info(sampling_params, device)
         assert graph_runner.samples_in_graph(len(rows), sampling_info) is is_graph_used
         assert not graph_runner.samples_in_graph(9, sampling_info), "above the top size"
+
+
+def test_speculative_verify_rows_reach_the_draft_worker_unshaped() -> None:
+    runner = MiniCPMOTalkerModelRunner.__new__(MiniCPMOTalkerModelRunner)
+    requests = [make_talker_request(index, 1.5, SamplingParams()) for index in range(2)]
+    for request in requests:
+        request.data.req.output_ids = [1, 2, 2]
+        request.data.suppress_tokens = None
+    logits = torch.randn(6, VOCAB_SIZE)
+    logits_output = LogitsProcessorOutput(
+        next_token_logits=logits.clone(), hidden_states=None
+    )
+
+    runner.apply_speculative_verify_logits(logits_output, requests, 3)
+
+    assert torch.equal(logits_output.next_token_logits, logits)

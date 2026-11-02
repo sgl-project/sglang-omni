@@ -23,6 +23,8 @@ from sglang_omni.models.minicpm_o.components.talker import (
 class MiniCPMOTalkerForCausalLM(nn.Module):
     """MiniCPM-o TTS llama backbone emitting s3tokenizer codec tokens."""
 
+    capture_aux_hidden_states: bool = False
+
     def __init__(
         self,
         config: PretrainedConfig,
@@ -86,6 +88,11 @@ class MiniCPMOTalkerForCausalLM(nn.Module):
         # note (0xtoward): SGLang's prefill graph setup looks for the decoder here.
         return self.llama.model
 
+    def set_dflash_layers_to_capture(self, layer_ids: list[int]) -> None:
+        """Capture the residual stream after each named layer for a DSpark draft."""
+        self.capture_aux_hidden_states = True
+        self.llama.model.layers_to_capture = [layer_id + 1 for layer_id in layer_ids]
+
     def build_condition_embeddings(
         self, tts_token_ids: torch.Tensor, tts_hidden: torch.Tensor
     ) -> torch.Tensor:
@@ -109,7 +116,9 @@ class MiniCPMOTalkerForCausalLM(nn.Module):
         **kwargs: object,
     ) -> LogitsProcessorOutput:
         """Consume projected embeddings; extra keywords follow the runner interface."""
-        if forward_batch.forward_mode.is_decode():
+        forward_mode = forward_batch.forward_mode
+        # Decode and speculative verify feed sampled codec ids; prefill feeds condition embeddings.
+        if forward_mode.is_decode() or forward_mode.is_target_verify():
             input_embeds = self.emb_code(input_ids)
         elif input_embeds is None:
             input_embeds = forward_batch.input_embeds
@@ -122,8 +131,13 @@ class MiniCPMOTalkerForCausalLM(nn.Module):
             forward_batch=forward_batch,
             input_embeds=input_embeds,
         )
+        if self.capture_aux_hidden_states:
+            hidden_states, aux_hidden_states = hidden_states
+            captured_hidden_states = torch.cat(aux_hidden_states, dim=-1)
+        else:
+            captured_hidden_states = None
 
-        if forward_batch.forward_mode.is_extend():
+        if forward_mode.is_extend() and not forward_mode.is_target_verify():
             extend_seq_lens = forward_batch.extend_seq_lens
             if extend_seq_lens is not None:
                 last_indices = (
@@ -140,7 +154,12 @@ class MiniCPMOTalkerForCausalLM(nn.Module):
 
         logits = self.head_code(hidden_states)
         return LogitsProcessorOutput(
-            next_token_logits=logits, hidden_states=hidden_states
+            next_token_logits=logits,
+            hidden_states=(
+                hidden_states
+                if captured_hidden_states is None
+                else captured_hidden_states
+            ),
         )
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
