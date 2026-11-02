@@ -376,27 +376,56 @@ def test_speech_service_allows_reference_text_with_instructions_by_default() -> 
     assert request.instructions == "speak warmly"
 
 
-def test_speech_service_requires_pcm_for_http_streaming() -> None:
+@pytest.mark.parametrize(
+    ("request_fields", "expected_message"),
+    [
+        ({"stream": True, "response_format": "wav"}, "stream=true"),
+        ({"stream_format": "sse", "response_format": "mp3"}, "SSE streaming"),
+    ],
+)
+def test_speech_service_rejects_unsupported_stream_formats(
+    request_fields: dict[str, object], expected_message: str
+) -> None:
     service = SpeechRequestValidator(default_model="tts")
 
     with pytest.raises(SpeechAPIError) as exc_info:
-        service.parse_request(
-            {"input": "hello", "stream": True, "response_format": "wav"}
-        )
+        service.parse_request({"input": "hello", **request_fields})
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == "response_format"
-    assert "stream=true" in exc_info.value.message
+    assert expected_message in exc_info.value.message
 
 
-def test_speech_service_sse_enables_streaming() -> None:
+@pytest.mark.parametrize(
+    ("response_format", "speed"), [(None, 0.25), ("wav", 2.0), ("pcm", 4.0)]
+)
+def test_sse_accepts_audio_formats_and_speed_without_enabling_a_file_encoder(
+    response_format: str | None, speed: float, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Explicit SSE accepts the default WAV format instead of rejecting it."""
     service = SpeechRequestValidator(default_model="tts")
-
-    request = service.parse_request(
-        {"input": "hello", "response_format": "pcm", "stream_format": "sse"}
+    monkeypatch.setattr(
+        speech_service,
+        "audio_encoding_unavailable_reason",
+        Mock(return_value="File encoder is unavailable"),
     )
+    payload: dict[str, object] = {
+        "input": "hello",
+        "stream_format": "sse",
+        "speed": speed,
+    }
+    if response_format is not None:
+        payload["response_format"] = response_format
+    else:
+        pass
 
-    assert request.stream
+    request = service.parse_request(payload)
+    generated = service.build_generate_request(request, validate=False)
+
+    assert request.stream is True
+    assert request.response_format == (response_format or "wav")
+    assert request.speed == speed
+    assert generated.stream is True
 
 
 def test_speech_service_reports_missing_encoder_dependency_as_capability_error(

@@ -333,16 +333,13 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
   --output output.pcm
 ```
 
-Streaming returns 16-bit mono PCM bytes (`audio/pcm`) with sample-rate metadata
-in response headers. It does not include in-band JSON events, final usage, or a
-terminal sentinel. Set `"stream_format": "sse"` to receive the same PCM as
-Server-Sent Events instead; `sse` streams even when `stream` is omitted. Each
-`speech.audio.delta` event carries base64 PCM in `audio`, and the stream ends
-with one `speech.audio.done` event carrying `usage` and `finish_reason`, or with an `error` event if
-generation fails mid-stream. The sample-rate headers are the same for both
-formats. `usage` reports the model's own token counts, so what `input_tokens`
-covers depends on the model: Qwen3-TTS counts reference-audio codec frames, not
-text tokens.
+Streaming returns 16-bit mono PCM bytes (`audio/pcm`) with sample-rate metadata in response headers. It does not include in-band JSON events, final usage, or a terminal sentinel.
+
+Set `"stream_format": "sse"` to receive Server-Sent Events; `sse` streams even when `stream` is omitted. SSE accepts `response_format="pcm"` or `"wav"` (the default) and supports the same `speed` range as raw PCM streaming. Each named `speech.audio.delta` event carries base64 audio in `audio` and its `response_format`. WAV sends one file header before the PCM chunks. Both transports keep `X-Request-Id`, `X-Sample-Rate`, `X-Channels`, and `X-Bit-Depth` response headers.
+
+The stream ends with one `speech.audio.done` event carrying `finish_reason`, emitted audio `duration` in seconds after speed adjustment, and `usage`. Missing usage remains `null`; actual zero counts remain zero. Qwen3-TTS counts target text tokens, nonblank instructions, and reference audio frames used for in-context cloning as input, and generated Talker steps including EOS as output. Other models use their reported prompt and completion counts. SSE does not include a `[DONE]` sentinel.
+
+Request validation and generation failures before the first audio chunk remain HTTP JSON errors. Failures after SSE starts emit `speech.audio.error` instead of `speech.audio.done`. An error after any audio delta includes `partial_audio=true` and `action="discard"`.
 
 
 For raw PCM, use the response's `X-SGLang-Omni-Speech-Id` with
@@ -660,8 +657,8 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `voice` | string | `"default"` | Preset or uploaded voice identifier |
 | `response_format` | string | `"wav"` | Output audio format: `wav`, `mp3`, `flac`, `pcm`, `aac`, or `opus` |
 | `speed` | float | `1.0` | Playback speed multiplier from `0.25` to `4.0` |
-| `stream` | bool | `false` | Enable raw PCM streaming. When true, `response_format` must be `pcm` |
-| `stream_format` | string | `"audio"` | Streaming transport: `audio` for raw PCM bytes, `sse` for `speech.audio.delta` / `speech.audio.done` events. `sse` streams without `stream=true` and requires `response_format="pcm"` |
+| `stream` | bool | `false` | Enable streaming. Raw audio streaming requires `response_format="pcm"`; SSE also accepts `"wav"` |
+| `stream_format` | string | `"audio"` | Streaming transport: `audio` for raw PCM bytes, `sse` for named audio delta, done, and error events. `sse` streams without `stream=true` and accepts `response_format="pcm"` or `"wav"` |
 | `initial_codec_chunk_frames` | int | `null` | Optional first codec chunk size for streaming TTFA / playback-continuity tuning. When omitted, each model applies its own default: Qwen3-TTS ramps `1 -> 2 -> 4` into the steady stride, Higgs TTS uses `20`, MOSS-TTS Local uses `5`, and ZONOS2 uses `40`. An explicit `0` uses the model's steady chunk size from the start. Ming-Omni-TTS rejects the field entirely |
 | `stream_codec_output` | bool | `true` | Qwen3-TTS only. Forward codec frames to the vocoder as they are generated. Set `false` to restore whole-utterance decoding for CustomVoice / VoiceDesign |
 | `suppress_bootstrap_silence` | bool | `true` | Qwen3-TTS only. Withhold the silent bootstrap codec frame's audio from streamed CustomVoice output on validated voice/language pairs; an audible first frame is always emitted unchanged. Set `false` to keep the leading silence |

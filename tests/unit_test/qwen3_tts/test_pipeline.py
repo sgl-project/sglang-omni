@@ -1688,7 +1688,7 @@ def test_qwen3_tts_uploaded_voice_clone_prompt_uses_shared_cache(
             },
         )
 
-    qwen3_request_builders.prepare_qwen3_tts_request(
+    first_prepared = qwen3_request_builders.prepare_qwen3_tts_request(
         make_uploaded_payload(7),
         model=model,
         wrapper=wrapper,
@@ -1705,13 +1705,15 @@ def test_qwen3_tts_uploaded_voice_clone_prompt_uses_shared_cache(
     assert cached["ref_code"][0].device.type == "cpu"
     assert cached["ref_code"][0].shape == (4, 2)
 
-    qwen3_request_builders.prepare_qwen3_tts_request(
+    cached_prepared = qwen3_request_builders.prepare_qwen3_tts_request(
         make_uploaded_payload(7),
         model=model,
         wrapper=wrapper,
         prompt_constants=placeholder_prompt_constants(),
         prompt_row_cache_keys=placeholder_prompt_row_cache_keys(),
     )
+    assert first_prepared.state.speech_input_tokens == 7
+    assert cached_prepared.state.speech_input_tokens == 7
     qwen3_request_builders.prepare_qwen3_tts_request(
         make_uploaded_payload(8),
         model=model,
@@ -1802,14 +1804,14 @@ def test_qwen3_tts_adhoc_voice_clone_prompt_uses_reference_service(
         params.update(tts_params)
         return make_payload(inputs="target", tts_params=params)
 
-    qwen3_request_builders.prepare_qwen3_tts_request(
+    first_prepared = qwen3_request_builders.prepare_qwen3_tts_request(
         make_adhoc_payload(),
         model=model,
         wrapper=wrapper,
         prompt_constants=placeholder_prompt_constants(),
         prompt_row_cache_keys=placeholder_prompt_row_cache_keys(),
     )
-    qwen3_request_builders.prepare_qwen3_tts_request(
+    cached_prepared = qwen3_request_builders.prepare_qwen3_tts_request(
         make_adhoc_payload(),
         model=model,
         wrapper=wrapper,
@@ -1818,6 +1820,8 @@ def test_qwen3_tts_adhoc_voice_clone_prompt_uses_reference_service(
     )
     assert calls == 1
     assert cache.stats()["entries"] == 0
+    assert first_prepared.state.speech_input_tokens == 7
+    assert cached_prepared.state.speech_input_tokens == 7
 
     qwen3_request_builders.prepare_qwen3_tts_request(
         make_adhoc_payload(ref_text="different"),
@@ -1827,7 +1831,7 @@ def test_qwen3_tts_adhoc_voice_clone_prompt_uses_reference_service(
         prompt_row_cache_keys=placeholder_prompt_row_cache_keys(),
     )
     assert calls == 2
-    qwen3_request_builders.prepare_qwen3_tts_request(
+    x_vector_prepared = qwen3_request_builders.prepare_qwen3_tts_request(
         make_adhoc_payload(x_vector_only_mode=True),
         model=model,
         wrapper=wrapper,
@@ -1835,6 +1839,7 @@ def test_qwen3_tts_adhoc_voice_clone_prompt_uses_reference_service(
         prompt_row_cache_keys=placeholder_prompt_row_cache_keys(),
     )
     assert calls == 2
+    assert x_vector_prepared.state.speech_input_tokens == 6
     qwen3_request_builders.clear_qwen3_tts_preprocessing_context()
 
 
@@ -7616,6 +7621,8 @@ def test_qwen3_tts_result_adapter_keeps_code_handoff_tensor_native() -> None:
         output_codes=[torch.tensor([1, 2]), torch.tensor([3, 4])],
         ref_code=torch.tensor([[9, 9]]),
         ref_code_len=1,
+        speech_input_tokens=9,
+        speech_output_tokens=3,
         stage_payload=payload,
     )
 
@@ -7624,6 +7631,9 @@ def test_qwen3_tts_result_adapter_keeps_code_handoff_tensor_native() -> None:
     assert isinstance(result.data["audio_codes"], torch.Tensor)
     assert result.data["audio_codes"].tolist() == [[9, 9], [1, 2], [3, 4]]
     assert result.data["completion_tokens"] == 2
+    assert result.data["prompt_tokens"] == 1
+    assert result.data["speech_input_tokens"] == 9
+    assert result.data["speech_output_tokens"] == 3
     assert result.data["finish_reason"] == "stop"
 
 
@@ -8012,8 +8022,18 @@ def test_qwen3_tts_prepared_payload_missing_state_fails_without_rebuild(
         )
 
 
+@pytest.mark.parametrize(
+    ("instructions", "speech_input_tokens"),
+    [
+        ("  calm  ", 14),
+        ("   ", 6),
+        (None, 6),
+    ],
+)
 def test_qwen3_tts_prepare_custom_voice_uses_speaker_path(
     monkeypatch: pytest.MonkeyPatch,
+    instructions: str | None,
+    speech_input_tokens: int,
 ) -> None:
     calls: list[tuple[str, object]] = []
 
@@ -8025,7 +8045,9 @@ def test_qwen3_tts_prepare_custom_voice_uses_speaker_path(
             return f"instruct:{text}"
 
         def _tokenize_texts(self, texts):
-            return [torch.arange(8, dtype=torch.long).unsqueeze(0) for _ in texts]
+            return [
+                torch.arange(len(text), dtype=torch.long).unsqueeze(0) for text in texts
+            ]
 
         def _merge_generate_kwargs(self, **kwargs):
             return kwargs
@@ -8047,15 +8069,17 @@ def test_qwen3_tts_prepare_custom_voice_uses_speaker_path(
                 None,
             )
 
+    payload = make_payload(
+        inputs="target",
+        params={"max_new_tokens": 64},
+        tts_params={
+            "task_type": "CustomVoice",
+            "voice": "Ryan",
+            "instructions": instructions,
+        },
+    )
     prepared = qwen3_request_builders.prepare_qwen3_tts_request(
-        make_payload(
-            inputs="target",
-            tts_params={
-                "task_type": "CustomVoice",
-                "voice": "Ryan",
-                "instructions": "calm",
-            },
-        ),
+        payload,
         model=FakeModel(),
         wrapper=FakeWrapper(),
         prompt_constants=placeholder_prompt_constants(),
@@ -8064,10 +8088,13 @@ def test_qwen3_tts_prepare_custom_voice_uses_speaker_path(
 
     assert prepared.state.task_type == "CustomVoice"
     assert prepared.state.voice == "Ryan"
+    assert prepared.state.speech_input_tokens == speech_input_tokens
     assert [name for name, _ in calls] == ["custom"]
     kwargs = calls[0][1]
     assert kwargs["voice"] == "Ryan"
-    assert kwargs["instruct_id"] is not None
+    assert (kwargs["instruct_id"] is not None) == bool(
+        instructions and instructions.strip()
+    )
 
 
 def test_qwen3_tts_prepare_voice_design_uses_instruction_path(
