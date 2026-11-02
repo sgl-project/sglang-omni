@@ -19,9 +19,12 @@ namespace {
 constexpr float kLayerNormEps = 1e-5f;
 // Note (Yucheng Hu): audio longer than this many chunks is encoded in groups
 // evaluated as they go, so the large activations are bounded by the group size
-// instead of the audio length. Shorter audio keeps one lazy graph: forcing the
-// grouped path there measured about 25 ms slower (M2 Pro, 10-60 s).
-constexpr int kMinimumConvChunksPerGroup = 64;
+// instead of the audio length. Shorter audio keeps one lazy graph, so its
+// kernels and output stay as they were.
+constexpr int kLongAudioChunks = 64;
+// Note (Yucheng Hu): 8-chunk conv groups cut the encoder's peak by up to a
+// fifth more but ran up to 3% slower (M2 Pro).
+constexpr int kMinimumConvChunksPerGroup = 16;
 // Note (Yucheng Hu): smaller groups would change the output bits, since MLX
 // sums a matmul with split-K while K >= 3 * max(M, N) on NAX GPUs: conv_out
 // (13 rows per chunk, K = 7680) up to 7680 / (3 * 13) = 196 chunks, and the
@@ -29,7 +32,9 @@ constexpr int kMinimumConvChunksPerGroup = 64;
 // stop splitting at smaller sizes, so these minimums also run the ungrouped
 // encoder's kernels there.
 constexpr int kMinimumConvOutChunksPerGroup = 197;
-constexpr int kMinimumWindowsPerGroup = 32;
+// Note (Yucheng Hu): 14 to 23 windows per group, above the split-K bound, split
+// 5-minute audio into two groups that ran 2-6% slower (M2 Pro).
+constexpr int kMinimumWindowsPerGroup = 24;
 
 // Note (Yucheng Hu): as many groups as keep the minimum in each, split evenly,
 // so a group holds at least the minimum and fewer than twice it, never a short
@@ -129,14 +134,19 @@ mx::array Qwen3ASR::EncodeAudio(const mx::array &mel,
   const int longest_chunk =
       *std::max_element(chunk_lengths.begin(), chunk_lengths.end());
   const int chunk_count = static_cast<int>(chunk_starts.size());
-  const bool is_long_audio = chunk_count > kMinimumConvChunksPerGroup;
+  const bool is_long_audio = chunk_count > kLongAudioChunks;
+  const auto group_bounds = [is_long_audio](int member_count,
+                                            int minimum_group_size) {
+    return is_long_audio ? GroupBounds(member_count, minimum_group_size)
+                         : std::vector<std::pair<int, int>>{{0, member_count}};
+  };
   std::vector<int> credited_lengths;
   for (const int length : chunk_lengths) {
     credited_lengths.push_back(layout == AudioLayout::kReference
                                    ? ConvOutputFrames(length)
                                    : SwiftTokenCount(length));
   }
-  if (GroupBounds(chunk_count, kMinimumConvChunksPerGroup).size() > 1) {
+  if (is_long_audio) {
     // Note (Yucheng Hu): the STFT temporaries are freed before the first conv
     // group runs, instead of being held alongside it.
     mx::eval(mel);
@@ -147,10 +157,10 @@ mx::array Qwen3ASR::EncodeAudio(const mx::array &mel,
   // the flattened conv output.
   std::vector<mx::array> kept_row_groups;
   const std::vector<std::pair<int, int>> conv_out_groups =
-      GroupBounds(chunk_count, kMinimumConvOutChunksPerGroup);
+      group_bounds(chunk_count, kMinimumConvOutChunksPerGroup);
   for (const auto &[conv_out_start, conv_out_end] : conv_out_groups) {
     const std::vector<std::pair<int, int>> conv_groups =
-        GroupBounds(conv_out_end - conv_out_start, kMinimumConvChunksPerGroup);
+        group_bounds(conv_out_end - conv_out_start, kMinimumConvChunksPerGroup);
     std::vector<mx::array> flattened_groups;
     int conv_frames = 0;
     for (const auto &[group_start, group_end] : conv_groups) {
@@ -245,7 +255,7 @@ mx::array Qwen3ASR::EncodeAudio(const mx::array &mel,
       } else {
       }
     }
-    for (const auto &[group_start, group_end] : GroupBounds(
+    for (const auto &[group_start, group_end] : group_bounds(
              static_cast<int>(same_length.size()), kMinimumWindowsPerGroup)) {
       std::vector<mx::array> rows;
       for (int i = group_start; i < group_end; ++i) {
