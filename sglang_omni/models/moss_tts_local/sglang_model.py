@@ -126,6 +126,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         self.compiled_frame_sampler: Callable[..., torch.Tensor] | None = None
         self.large_vocab_frame_sampler: Callable[..., torch.Tensor] | None = None
         self.frame_compile_configured = False
+        self.qkv_lookup: torch.Tensor | None = None
 
     def acquire_row(self, rid: str) -> int:
         """Assign (or return the existing) decode-state pool row for ``rid``."""
@@ -397,6 +398,105 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
             pass
         return self.large_vocab_frame_sampler(logits, **kwargs)
 
+    def fused_head_available(self) -> bool:
+        """Whether the fused depth head (sample + QKV lookup + attention) can run."""
+        if os.environ.get("MOSS_LOCAL_FUSED_HEAD", "1") == "0":
+            return False
+        else:
+            pass
+        from sglang_omni.models.moss_tts_local import local_transformer as _lt
+
+        if _lt.triton is None:
+            return False
+        else:
+            pass
+        lt = self.local_transformer
+        if len(lt.h) != 1:
+            return False
+        else:
+            pass
+        weight = self.first_embedding_weight()
+        return (
+            weight.is_cuda
+            and self.dtype in (torch.bfloat16, torch.float16)
+            and 1 < self.n_vq <= 16
+            and lt.head_dim <= 128
+            and int(self.config.audio_vocab_size) <= MAX_FUSED_SAMPLE_VOCAB
+        )
+
+    @staticmethod
+    def _apply_rope_rounded(
+        x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, dtype: torch.dtype
+    ) -> torch.Tensor:
+        """Interleaved RoPE with the rotary_cache_kernel's eager rounding.
+
+        The kernel rounds each product to the cache dtype before the fp32 sum
+        and rounds again on store; replicate that exactly so the precomputed
+        QKV rows match the on-the-fly rope bit-for-bit. ``cos``/``sin`` are
+        per-head ``[head_dim]`` slices tiled across the hidden axis.
+        """
+        cos = cos.to(dtype).float().repeat(x.shape[-1] // cos.shape[-1])
+        sin = sin.to(dtype).float().repeat(x.shape[-1] // sin.shape[-1])
+        pairs = x.view(*x.shape[:-1], x.shape[-1] // 2, 2)
+        even, odd = pairs[..., 0], pairs[..., 1]
+        rotated = torch.stack((-odd, even), dim=-1).reshape_as(x)
+        first = (x.float() * cos).to(dtype).float()
+        second = (rotated.float() * sin).to(dtype).float()
+        return (first + second).to(dtype)
+
+    @torch.no_grad()
+    def prepare_qkv_lookup(self) -> None:
+        """Precompute per-codebook QKV rows for depth positions 1..n_vq-1.
+
+        Depth position ``c+1``'s input is codebook ``c``'s embedding, so its
+        ``c_attn(ln_1(.))`` projection (RoPE for that position baked in) can
+        be tabulated once per code over all codes. Must run before CUDA graph
+        capture; never replace the table while captured graphs reference it.
+        """
+        lt = self.local_transformer
+        block = lt.h[0]
+        vocab = int(self.config.audio_vocab_size)
+        table = torch.empty(
+            (self.n_vq - 1, vocab, 3 * lt.hidden_size),
+            device=self.device,
+            dtype=self.dtype,
+        )
+        for channel in range(self.n_vq - 1):
+            cos = lt.rope_cos[channel + 1]
+            sin = lt.rope_sin[channel + 1]
+            weight = self.audio_embedding_weight(channel)
+            for start in range(0, vocab, 256):
+                embeds = weight[start : start + 256].to(dtype=self.dtype)
+                qkv = block.attn.c_attn(block.ln_1(embeds))
+                q, k, v = qkv.split(lt.hidden_size, dim=-1)
+                q = self._apply_rope_rounded(q, cos, sin, self.dtype)
+                k = self._apply_rope_rounded(k, cos, sin, self.dtype)
+                table[channel, start : start + 256].copy_(
+                    torch.cat(
+                        (
+                            q.reshape(-1, lt.hidden_size),
+                            k.reshape(-1, lt.hidden_size),
+                            v,
+                        ),
+                        dim=-1,
+                    )
+                )
+        self.qkv_lookup = table
+        logger.info(
+            f"MOSS-TTS Local QKV lookup prepared: {table.numel() * table.element_size() / 2**20:.1f} MiB"
+        )
+
+    def forward_lookup(
+        self, hidden: torch.Tensor, attn_output: torch.Tensor
+    ) -> torch.Tensor:
+        """Post-attention residual path of the single local block."""
+        lt = self.local_transformer
+        block = lt.h[0]
+        hidden = hidden + block.attn.c_proj(attn_output)
+        hidden = hidden + block.mlp(block.ln_2(hidden))
+        return lt.ln_f(hidden)
+
+
     @torch.no_grad()
     def decode_frame_graphable(
         self,
@@ -424,9 +524,39 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         embeddings, summed in the same channel order as
         ``_prepare_multi_modal_inputs``.
         """
-        local_hidden = self.local_transformer.step(
-            hidden_states.to(dtype=self.dtype), 0
-        )
+        fused = self.fused_head_available()
+        if fused and self.qkv_lookup is None:
+            if torch.cuda.is_current_stream_capturing():
+                raise RuntimeError(
+                    "MOSS-TTS Local QKV lookup must be prepared before graph capture"
+                )
+            else:
+                pass
+            self.prepare_qkv_lookup()
+        else:
+            pass
+        if fused:
+            from sglang_omni.models.moss_tts_local.local_kernels import (
+                frame_lookup_attention,
+                seeded_sample_attend,
+            )
+
+            lt = self.local_transformer
+            block = lt.h[0]
+            first = hidden_states.to(dtype=self.dtype)
+            qkv = block.attn.c_attn(block.ln_1(first))
+            key = first.new_empty(
+                (first.shape[0], lt.num_heads, self.n_vq, lt.head_dim),
+                dtype=self.dtype,
+            )
+            value = torch.empty_like(key)
+            local_hidden = self.forward_lookup(
+                first, frame_lookup_attention(qkv, key, value, 0)
+            )
+        else:
+            local_hidden = self.local_transformer.step(
+                hidden_states.to(dtype=self.dtype), 0
+            )
         text_logits = F.linear(local_hidden, self.local_text_lm_head.weight).float()
         stop_choice = self.sample_seeded_branchless(
             text_logits,
@@ -440,6 +570,41 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
             seeds, int(self.config.audio_assistant_slot_token_id)
         )
         feedback = self.embedding_list[0](slot_ids)
+        if fused:
+            codes = torch.empty(
+                (hidden_states.shape[0], self.n_vq),
+                dtype=torch.long,
+                device=hidden_states.device,
+            )
+            for channel in range(self.n_vq):
+                head_weight = self.audio_embedding_weight(channel)
+                logits = F.linear(local_hidden, head_weight).float()
+                last = channel + 1 == self.n_vq
+                attn_out, residual = seeded_sample_attend(
+                    logits,
+                    temperature=audio_temperature,
+                    top_p=audio_top_p,
+                    top_k=audio_top_k,
+                    seeds=seeds,
+                    base_positions=base_positions,
+                    codes=codes,
+                    channel=channel,
+                    qkv=None if last else self.qkv_lookup[channel],
+                    embedding=head_weight,
+                    key=key,
+                    value=value,
+                    position=channel + 1,
+                )
+                feedback = feedback + residual
+                if not last:
+                    local_hidden = self.forward_lookup(
+                        residual.to(dtype=self.dtype), attn_out
+                    )
+                else:
+                    pass
+            return (stop_choice, codes, feedback)
+        else:
+            pass
         codes = []
         current = local_hidden
         for channel in range(self.n_vq):
@@ -476,6 +641,10 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         buckets = sorted({int(bs) for bs in batch_sizes})
         if not buckets:
             return
+        else:
+            pass
+        if self.fused_head_available() and self.qkv_lookup is None:
+            self.prepare_qkv_lookup()
         else:
             pass
         device = self.device

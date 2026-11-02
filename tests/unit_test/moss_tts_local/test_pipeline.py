@@ -2339,3 +2339,161 @@ def test_async_decode_dotted_flags_accept_moss_local():
     assert args["async_decode_min_batch_size"] == 4
     assert args["total_gpu_memory_fraction"] == pytest.approx(0.67)
     assert args["codec_mem_reserve"] == pytest.approx(0.0)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_seeded_sample_attend_matches_standalone_sampler():
+    """The fused sample-attend kernel must reproduce the standalone fused
+    sampler bit-for-bit (verbatim sampling body, same seed schedule)."""
+    from sglang_omni.models.moss_tts.sampling_kernels import sample_seeded_fused
+    from sglang_omni.models.moss_tts_local.local_kernels import seeded_sample_attend
+
+    torch.manual_seed(3)
+    device = torch.device("cuda")
+    batch, vocab, heads, head_dim, n_vq = 8, 256, 4, 16, 5
+    channel = 2
+    logits = torch.randn(batch, vocab, device=device, dtype=torch.float32)
+    temperature = torch.full((batch,), 1.3, device=device)
+    top_p = torch.full((batch,), 0.9, device=device)
+    top_k = torch.full((batch,), 25, device=device, dtype=torch.long)
+    seeds = torch.arange(batch, device=device, dtype=torch.long) * 101
+    base = torch.full((batch,), 41, device=device, dtype=torch.long)
+    codes = torch.zeros(batch, n_vq, device=device, dtype=torch.long)
+    qkv = torch.randn(
+        vocab, 3 * heads * head_dim, device=device, dtype=torch.bfloat16
+    )
+    embedding = torch.randn(
+        vocab, heads * head_dim, device=device, dtype=torch.bfloat16
+    )
+    key = torch.zeros(
+        batch, heads, n_vq, head_dim, device=device, dtype=torch.bfloat16
+    )
+    value = torch.zeros_like(key)
+    _, residual = seeded_sample_attend(
+        logits,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        seeds=seeds,
+        base_positions=base,
+        codes=codes,
+        channel=channel,
+        qkv=qkv,
+        embedding=embedding,
+        key=key,
+        value=value,
+        position=channel + 1,
+    )
+    reference = sample_seeded_fused(
+        logits,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        seeds=seeds,
+        positions=base + channel + 1,
+    )
+    assert torch.equal(codes[:, channel], reference)
+    assert torch.equal(residual, torch.nn.functional.embedding(reference, embedding))
+    # unattending last channel still samples and gathers the residual
+    last = n_vq - 1
+    codes.zero_()
+    out, residual = seeded_sample_attend(
+        logits,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        seeds=seeds,
+        base_positions=base,
+        codes=codes,
+        channel=last,
+        qkv=None,
+        embedding=embedding,
+        key=key,
+        value=value,
+        position=last,
+    )
+    assert out is None
+    assert torch.equal(
+        codes[:, last], sample_seeded_fused(logits, temperature=temperature, top_p=top_p, top_k=top_k, seeds=seeds, positions=base + last + 1)
+    )
+    assert torch.equal(residual, torch.nn.functional.embedding(codes[:, last], embedding))
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_seeded_sample_attend_attention_matches_reference():
+    """Greedy (temperature=0) draw, then KV insert + prefix attention must
+    match a torch reference within bf16 tolerance."""
+    from sglang_omni.models.moss_tts_local.local_kernels import seeded_sample_attend
+
+    torch.manual_seed(5)
+    device = torch.device("cuda")
+    batch, vocab, heads, head_dim, n_vq = 6, 128, 4, 16, 5
+    channel = 3
+    position = channel + 1
+    logits = torch.randn(batch, vocab, device=device, dtype=torch.float32)
+    temperature = torch.zeros(batch, device=device)  # greedy: argmax draw
+    top_p = torch.ones(batch, device=device)
+    top_k = torch.full((batch,), 25, device=device, dtype=torch.long)
+    seeds = torch.arange(batch, device=device, dtype=torch.long) * 7
+    base = torch.zeros(batch, device=device, dtype=torch.long)
+    codes = torch.zeros(batch, n_vq, device=device, dtype=torch.long)
+    hidden = heads * head_dim
+    qkv = torch.randn(vocab, 3 * hidden, device=device, dtype=torch.bfloat16)
+    embedding = torch.randn(vocab, hidden, device=device, dtype=torch.bfloat16)
+    key = torch.zeros(batch, heads, n_vq, head_dim, device=device, dtype=torch.bfloat16)
+    value = torch.zeros_like(key)
+    # prefill positions 0..channel with random K/V so the prefix is non-trivial
+    key[:, :, :position].normal_()
+    value[:, :, :position].normal_()
+    key_ref, value_ref = key.clone(), value.clone()
+    out, _ = seeded_sample_attend(
+        logits,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        seeds=seeds,
+        base_positions=base,
+        codes=codes,
+        channel=channel,
+        qkv=qkv,
+        embedding=embedding,
+        key=key,
+        value=value,
+        position=position,
+    )
+    tokens = codes[:, channel]
+    # reference: insert the sampled rows' K/V, SDPA over the valid prefix
+    q = qkv[tokens, :hidden].view(batch, heads, head_dim).float()
+    k = qkv[tokens, hidden : 2 * hidden].view(batch, heads, head_dim)
+    v = qkv[tokens, 2 * hidden :].view(batch, heads, head_dim)
+    key_ref[:, :, position] = k
+    value_ref[:, :, position] = v
+    reference = torch.nn.functional.scaled_dot_product_attention(
+        q.unsqueeze(2),
+        key_ref[:, :, : position + 1].float(),
+        value_ref[:, :, : position + 1].float(),
+    ).squeeze(2).reshape(batch, hidden).to(torch.bfloat16)
+    torch.testing.assert_close(out, reference, rtol=5e-2, atol=5e-2)
+    torch.testing.assert_close(key, key_ref)
+    torch.testing.assert_close(value, value_ref)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_frame_lookup_attention_position_zero():
+    """Depth-0 attention copies the projected V of each row exactly."""
+    from sglang_omni.models.moss_tts_local.local_kernels import frame_lookup_attention
+
+    torch.manual_seed(9)
+    device = torch.device("cuda")
+    batch, heads, head_dim, n_vq = 5, 8, 32, 12
+    hidden = heads * head_dim
+    qkv = torch.randn(batch, 3 * hidden, device=device, dtype=torch.bfloat16)
+    key = torch.zeros(batch, heads, n_vq, head_dim, device=device, dtype=torch.bfloat16)
+    value = torch.zeros_like(key)
+    out = frame_lookup_attention(qkv, key, value, 0)
+    assert torch.equal(out, qkv[:, 2 * hidden :])
+    assert torch.equal(key[:, :, 0], qkv[:, hidden : 2 * hidden].view(batch, heads, head_dim))
+    assert torch.equal(value[:, :, 0], qkv[:, 2 * hidden :].view(batch, heads, head_dim))

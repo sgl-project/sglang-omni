@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING
 
@@ -82,6 +83,13 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
             effective_total_gpu_memory_fraction=None,
             applied_codec_mem_reserve=0.0,
         )
+        # note (ratish): flashinfer's GQA tensor-core decode shares the prefill
+        # kernel plus a ragged-merge pass; at this model's decode shapes
+        # (bs <= 256, kv <= ~800, GQA group 4) the specialized decode kernel
+        # is ~1.3 ms/step cheaper (17.97 vs 19.47 ms per decode main graph on
+        # A100, c=256 soak trace). setdefault keeps an operator's explicit
+        # choice intact.
+        os.environ.setdefault("SGLANG_FLASHINFER_USE_TENSOR_CORE", "false")
         self.profile_total_gpu_memory_fraction: float | None = None
         self.model: MossTTSLocalSGLangModel | None = None
 
