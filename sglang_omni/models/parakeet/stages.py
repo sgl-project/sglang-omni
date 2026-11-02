@@ -9,7 +9,6 @@ import time
 from collections.abc import Callable, Sequence
 
 import numpy as np
-import torch
 
 from sglang_omni.models.parakeet.request_builders import (
     ParakeetASRRequest,
@@ -93,45 +92,23 @@ def make_parakeet_batch_fn(
     return transcribe_batch
 
 
-PARAKEET_BACKENDS = ("mlx", "torch")
-
-
-def make_parakeet_runner(
-    model_path: str, *, backend: str, device: torch.device, dtype: str
-):
-    """Native MLX (default) or the Transformers model on Torch MPS."""
-    if backend == "mlx":
-        from sglang_omni.models.parakeet.mlx.runner import ParakeetMlxModelRunner
-
-        return ParakeetMlxModelRunner(model_path, dtype=dtype)
-    else:
-        from sglang_omni.models.parakeet.model_runner import ParakeetModelRunner
-
-        return ParakeetModelRunner(model_path, device=str(device), dtype=dtype)
-
-
 def create_parakeet_asr_executor(
     model_path: str,
     *,
     device: str | None = None,
     gpu_id: int | None = None,
-    backend: str = "mlx",
-    dtype: str = "bfloat16",
+    dtype: str = "float32",
     max_batch_size: int = 16,
     max_batch_wait_ms: float = 5.0,
     max_batch_audio_s: float = 600.0,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
+    from sglang_omni.models.parakeet.model_runner import ParakeetModelRunner
     from sglang_omni.utils.device import resolve_concrete_device
 
     if not current_platform.is_mps():
         raise ValueError(
             "Parakeet ASR runs only on macOS Apple Silicon (MPS); this host "
             f"resolved to {current_platform.device_type!r}"
-        )
-    elif backend not in PARAKEET_BACKENDS:
-        raise ValueError(
-            f"Parakeet ASR backend must be one of {list(PARAKEET_BACKENDS)}, "
-            f"got {backend!r}"
         )
     elif max_batch_size < 1:
         raise ValueError(f"max_batch_size must be >= 1, got {max_batch_size}")
@@ -153,9 +130,7 @@ def create_parakeet_asr_executor(
         )
     else:
         pass
-    runner = make_parakeet_runner(
-        model_path, backend=backend, device=concrete_device, dtype=dtype
-    )
+    runner = ParakeetModelRunner(model_path, device=str(concrete_device), dtype=dtype)
     batch_fn = make_parakeet_batch_fn(
         request_builder=make_parakeet_request_builder(sample_rate=runner.sample_rate),
         transcribe=runner.transcribe,
@@ -178,9 +153,7 @@ def create_parakeet_asr_executor(
 
 
 __all__ = [
-    "PARAKEET_BACKENDS",
     "create_parakeet_asr_executor",
     "make_parakeet_batch_fn",
-    "make_parakeet_runner",
     "plan_padded_batches",
 ]

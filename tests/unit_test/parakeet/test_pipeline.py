@@ -48,8 +48,7 @@ def test_factory_receives_placement_kwargs() -> None:
 def test_factory_defaults() -> None:
     signature = inspect.signature(parakeet_stages.create_parakeet_asr_executor)
 
-    assert signature.parameters["backend"].default == "mlx"
-    assert signature.parameters["dtype"].default == "bfloat16"
+    assert signature.parameters["dtype"].default == "float32"
     assert signature.parameters["max_batch_size"].default == 16
     assert signature.parameters["max_batch_audio_s"].default == 600.0
 
@@ -82,7 +81,6 @@ def test_factory_refuses_the_cpu_device_on_apple_silicon(
 @pytest.mark.parametrize(
     "kwargs, message",
     [
-        ({"backend": "cuda"}, "backend must be one of"),
         ({"max_batch_size": 0}, "max_batch_size"),
         ({"max_batch_wait_ms": -1.0}, "max_batch_wait_ms"),
         ({"max_batch_audio_s": float("inf")}, "max_batch_audio_s"),
@@ -184,42 +182,3 @@ def test_batch_fn_fails_only_the_group_whose_forward_raised() -> None:
 
     assert isinstance(results[0], RuntimeError)
     assert results[1].data["text"] == "ok"
-
-
-@pytest.mark.parametrize(
-    "backend, runner_module, runner_name",
-    [
-        ("mlx", "sglang_omni.models.parakeet.mlx.runner", "ParakeetMlxModelRunner"),
-        ("torch", "sglang_omni.models.parakeet.model_runner", "ParakeetModelRunner"),
-    ],
-)
-def test_runner_follows_the_backend_setting(
-    monkeypatch: pytest.MonkeyPatch,
-    backend: str,
-    runner_module: str,
-    runner_name: str,
-) -> None:
-    if backend == "mlx":
-        pytest.importorskip("mlx.core")
-    else:
-        pass
-    import importlib
-
-    calls: list[tuple[str, dict[str, object]]] = []
-    monkeypatch.setattr(
-        importlib.import_module(runner_module),
-        runner_name,
-        lambda model_path, **kwargs: calls.append((model_path, kwargs)) or runner_name,
-    )
-
-    runner = parakeet_stages.make_parakeet_runner(
-        "ckpt", backend=backend, device=torch.device("mps", 0), dtype="float32"
-    )
-
-    assert runner == runner_name
-    expected_kwargs = (
-        {"dtype": "float32"}
-        if backend == "mlx"
-        else {"device": "mps:0", "dtype": "float32"}
-    )
-    assert calls == [("ckpt", expected_kwargs)]

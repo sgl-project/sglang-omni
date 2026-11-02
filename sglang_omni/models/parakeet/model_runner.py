@@ -25,14 +25,6 @@ PARAKEET_ARCHITECTURES = ("ParakeetForCTC", "ParakeetForRNNT", "ParakeetForTDT")
 WARMUP_SECONDS = 1.0
 
 
-def pad_to_min_samples(waveform: np.ndarray, min_samples: int) -> np.ndarray:
-    """Zero-pad clips shorter than one STFT window; silence decodes to nothing."""
-    if waveform.shape[0] >= min_samples:
-        return waveform
-    else:
-        return np.pad(waveform, (0, min_samples - waveform.shape[0]))
-
-
 def encoder_output_lengths(
     feature_lengths: torch.Tensor, encoder_config
 ) -> torch.Tensor:
@@ -119,7 +111,11 @@ class ParakeetModelRunner:
             pass
 
     def pad_short_waveform(self, waveform: np.ndarray) -> np.ndarray:
-        return pad_to_min_samples(waveform, self.min_samples)
+        """Zero-pad clips shorter than one STFT window; silence decodes to nothing."""
+        if waveform.shape[0] >= self.min_samples:
+            return waveform
+        else:
+            return np.pad(waveform, (0, self.min_samples - waveform.shape[0]))
 
     @torch.inference_mode()
     def transcribe(self, waveforms: Sequence[np.ndarray]) -> list[str]:
@@ -157,10 +153,8 @@ class ParakeetModelRunner:
 
 __all__ = [
     "PARAKEET_ARCHITECTURES",
-    "WARMUP_SECONDS",
     "ParakeetModelRunner",
     "drop_tokens_past_valid_frames",
     "encoder_output_lengths",
-    "pad_to_min_samples",
     "resolve_parakeet_architecture",
 ]
