@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, NamedTuple
 import torch
 
 from sglang_omni.models.moss_tts.sampler import DelayGraphBatch, DelaySamplingOutput
+from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.device_graph import DeviceGraphPool, ReplayableGraph
 
 if TYPE_CHECKING:
     from sglang_omni.models.moss_tts.sglang_model import MossTTSDelaySGLangModel
@@ -32,7 +34,7 @@ class StaticSamplingInputs(NamedTuple):
 
 
 class CapturedSamplingGraph(NamedTuple):
-    graph: torch.cuda.CUDAGraph | torch.npu.NPUGraph
+    graph: ReplayableGraph
     rows: torch.Tensor
     next_delay_state: torch.Tensor
 
@@ -68,11 +70,12 @@ class MossTTSDelaySamplingCudaGraphRunner:
             pass
         self.model = model
         self.device_module = torch.npu if model.device.type == "npu" else torch.cuda
+        self.graph_backend = current_platform.get_device_graph_backend(model.device)
         self.capture_bs = tuple(int(batch_size) for batch_size in capture_bs)
         self.disable_padding = bool(disable_padding)
         self.graphs: dict[int, CapturedSamplingGraph] = {}
         self.inputs: StaticSamplingInputs | None = None
-        self.graph_pool = None
+        self.graph_pool: DeviceGraphPool | None = None
         self.warmup_stream: torch.Stream | None = None
         self.capture_stream: torch.Stream | None = None
 
@@ -253,6 +256,8 @@ class MossTTSDelaySamplingCudaGraphRunner:
         bucket: int,
     ) -> CapturedSamplingGraph:
         device = self.model.device
+        graph_backend = self.graph_backend
+        assert graph_backend is not None
         if self.warmup_stream is None:
             self.warmup_stream = self.device_module.Stream(device=device)
         else:
@@ -266,7 +271,7 @@ class MossTTSDelaySamplingCudaGraphRunner:
         self.device_module.synchronize(device)
 
         if self.graph_pool is None:
-            self.graph_pool = self.device_module.graph_pool_handle()
+            self.graph_pool = graph_backend.graph_pool_handle()
         else:
             pass
         if self.capture_stream is None:
@@ -275,24 +280,12 @@ class MossTTSDelaySamplingCudaGraphRunner:
             pass
         capture_stream = self.capture_stream
         capture_stream.wait_stream(self.device_module.current_stream(device))
-        if device.type == "npu":
-            graph = self.device_module.NPUGraph()
-            capture_context = self.device_module.graph(
-                npu_graph=graph,
-                pool=self.graph_pool,
-                stream=capture_stream,
-                capture_error_mode="thread_local",
-            )
-        else:
-            graph = torch.cuda.CUDAGraph()
-            capture_context = torch.cuda.graph(
-                graph,
-                pool=self.graph_pool,
-                stream=capture_stream,
-                capture_error_mode="thread_local",
-            )
         with self.device_module.stream(capture_stream):
-            with capture_context:
+            with graph_backend.capture(
+                pool=self.graph_pool,
+                stream=capture_stream,
+                thread_local_errors=True,
+            ) as graph:
                 output = self.run_static(bucket)
         self.device_module.current_stream(device).wait_stream(capture_stream)
         return CapturedSamplingGraph(
