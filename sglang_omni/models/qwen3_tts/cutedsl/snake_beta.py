@@ -203,6 +203,21 @@ class CuTeDSLSnakeBeta(FusedSnakeBeta):
         self.register_buffer(
             "sine_lookup", sine_table(self.alpha.device), persistent=False
         )
+        # note (Hao Wang): CUDA graph buckets do not cover every native-decoder length or layout.
+        channels = self.alpha.numel()
+        arch = device_arch(self.alpha.device)
+        for vector in (1, 2, 4, 8):
+            for lookup in (False, True):
+                compile_kernel(channels, False, 128, vector, arch, lookup)
+        for maximum_vector in (4, 8):
+            vector = maximum_vector
+            while channels % vector:
+                vector //= 2
+            compile_kernel(channels, True, 128, vector, arch, False)
+            if maximum_vector == 8:
+                compile_kernel(channels, True, 128, vector, arch, True)
+            else:
+                pass
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         if (

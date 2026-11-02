@@ -40,6 +40,9 @@ if find_spec("cutlass") is not None:
         pointwise_conv,
         warmup_conv1d,
     )
+    from sglang_omni.models.qwen3_tts.cutedsl.snake_beta import (
+        compile_kernel as compile_snake_kernel,
+    )
     from sglang_omni.models.qwen3_tts.cutedsl.snake_beta import fuse_cutedsl_vocoder
 else:
     fuse_cutedsl_vocoder = None
@@ -188,6 +191,36 @@ class StubSnakeBeta(torch.nn.Module):
 
 
 StubSnakeBeta.__name__ = "SnakeBeta"
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or fuse_cutedsl_vocoder is None,
+    reason="requires CUDA and CUTLASS DSL",
+)
+@pytest.mark.parametrize("channels_last", [False, True])
+@torch.inference_mode()
+def test_cutedsl_snake_native_lengths_do_not_compile(channels_last: bool) -> None:
+    """Uncaptured audio lengths must not compile new SnakeBeta variants during requests."""
+    if torch.cuda.get_device_capability() not in ((9, 0), (10, 0), (10, 3)):
+        pytest.skip("requires Hopper or datacenter Blackwell")
+    else:
+        pass
+    original = StubSnakeBeta(64).cuda().bfloat16().eval()
+    decoder = torch.nn.Sequential(original)
+    compile_snake_kernel.cache_clear()
+    assert fuse_cutedsl_vocoder(decoder) == 1
+    compiled_variants = compile_snake_kernel.cache_info().misses
+    for length in (33, 34, 36, 40, 65537, 65538, 65540, 65536):
+        hidden_states = torch.randn(1, 64, length, device="cuda", dtype=torch.bfloat16)
+        if channels_last:
+            hidden_states = hidden_states.transpose(1, 2).contiguous().transpose(1, 2)
+        else:
+            pass
+        torch.testing.assert_close(
+            decoder(hidden_states), original(hidden_states), atol=0, rtol=0
+        )
+    assert compile_snake_kernel.cache_info().misses == compiled_variants
 
 
 @pytest.mark.accelerator
