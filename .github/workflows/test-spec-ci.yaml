@@ -1,0 +1,78 @@
+name: Speculative CI
+
+on:
+  workflow_call:
+    inputs:
+      spec_ci_models:
+        description: JSON list of the models whose drafts to serve, resolved by the parent omni-ci preflight.
+        type: string
+        required: true
+      omni_ci_home:
+        description: PR-scoped CI home from the parent omni-ci workflow.
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  checks: read
+  pull-requests: read
+
+env:
+  OMNI_CI_HOME: >-
+    ${{ inputs.omni_ci_home != ''
+        && inputs.omni_ci_home
+        || format('/data/omni-ci/run-{0}', github.run_id) }}
+
+
+jobs:
+  drafts:
+    name: drafts - ${{ matrix.model }}
+    runs-on: [self-hosted, h100]
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ${{ fromJSON(inputs.spec_ci_models) }}
+    container:
+      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
+      options: >-
+        --rm
+        -e NVIDIA_VISIBLE_DEVICES
+        -e OMNI_CI_CPUSET
+        -v /dev/shm:/dev/shm
+        -v /data/omni-ci:/data/omni-ci
+        -v /data/cache/huggingface:/github/home/.cache/huggingface
+        -v /data/cache/huggingface:/root/.cache/huggingface
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: ./.github/actions/omni-setup
+        with:
+          venv-name: omni
+
+      - name: Serve each draft
+        shell: bash
+        run: |
+          source omni/bin/activate
+          export PYTHONPATH=$PWD
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/test_model/test_spec_ci.py -v -s
+        env:
+          SPEC_CI_MODEL: ${{ matrix.model }}
+          HF_ENDPOINT: https://huggingface.co
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
+
+      - name: Post-stage cleanup
+        if: always()
+        uses: ./.github/actions/omni-post-stage
+        with:
+          stage-label: Speculative (${{ matrix.model }})
+          artifact-path-globs: |
+            */spec_ci_*_results.json
+          artifact-upload-name: spec-ci-${{ matrix.model }}-results
+          artifact-upload-path: |
+            /tmp/**/spec_ci_*_results.json
+          summary-only: "true"

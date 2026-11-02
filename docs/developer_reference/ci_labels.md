@@ -20,6 +20,7 @@ In this sense, two kinds of labels exist and they combine: a stage label decides
 | Omni CI: TTS | H100 | Voice cloning on SeedTTS with Higgs-TTS, MOSS-TTS, Qwen3-TTS or Fun-CosyVoice3: non-streaming and streaming speed, word error rate, speaker similarity and UTMOS, streaming consistency, first-audio latency for Qwen3-TTS, and a serving stress test on Higgs-TTS | `run-tts-ci` or `run-all-ci` |
 | Omni CI: MPS | H100 | External CUDA MPS DP2 non-streaming validation, native MPS lifecycle validation, and native CUDA IPC weight-sharing lifecycle validation | `run-mps-ci` or `run-all-ci` |
 | Omni CI: Omni | H100 | Qwen3-Omni or MiniCPM-o 4.5: thinker length limits, SeedTTS voice cloning, accuracy and speed on MMMU, MMSU, Video-MME and Video-AMME with text and spoken answers, a tensor parallel thinker, and Qwen3-Omni process replicas | `run-omni-ci` or `run-all-ci` |
+| Omni CI: Speculative | H100 | Every speculative decoding draft: acceptance length and word error rate, one job per model | `run-spec-ci` or `run-all-ci` |
 | CPU CI | Intel Xeon (`intel-omni-spr`) | Job `intel-cpu-ci (unit_test/cpu)`: `pytest tests/unit_test/cpu/` | `run-intel-cpu-ci` or `run-all-ci` |
 | XPU CI | Intel GPU (`intel-omni-bmg`) | Intel GPU device layer tests | `run-intel-xpu-ci` or `run-all-ci` |
 | Voxt Mac CI | GitHub macOS | MLX native runtime build and protocol, Voxt app tests | `run-mac-ci` or `run-all-ci` |
@@ -41,11 +42,11 @@ These workflows run on GitHub-hosted runners for every pull request, drafts incl
 
 ## The Omni CI workflow
 
-Omni CI runs PR Test and the four H100 model stages. Its preflight job waits for lint, resolves the labels and draws the models once. A shared setup job then builds the virtualenv and downloads model weights. With `run-all-ci`, the stages run in this order:
+Omni CI runs PR Test and the five H100 model stages. Its preflight job waits for lint, resolves the labels and draws the models once. A shared setup job then builds the virtualenv and downloads model weights. With `run-all-ci`, the stages run in this order:
 
-PR Test → ASR, TTS and Omni side by side → MPS
+PR Test → ASR, TTS, Omni and Speculative side by side → MPS
 
-Only PR Test and the selected stages actually run; a stage that is not selected is skipped at once. ASR, TTS and Omni start together as soon as PR Test finishes, whether it passed or not, and their jobs spread over whichever H100 runners are free. Jobs within a stage run side by side as well, except TTS stage 3, which waits for TTS stages 1 and 2 because it compares their results. MPS starts after the other selected stages finish: it tests the PR head commit instead of the merge commit, so it may rebuild the PR's shared virtualenv, and that must not happen while another stage is using it. With `run-tts-ci` and `run-mps-ci`, the order is PR Test → TTS → MPS. A stage that fails does not stop any other stage. A failed setup job blocks every stage.
+Only PR Test and the selected stages actually run; a stage that is not selected is skipped at once. ASR, TTS, Omni and Speculative start together as soon as PR Test finishes, whether it passed or not, and their jobs spread over whichever H100 runners are free. Jobs within a stage run side by side as well, except TTS stage 3, which waits for TTS stages 1 and 2 because it compares their results. MPS starts after the other selected stages finish: it tests the PR head commit instead of the merge commit, so it may rebuild the PR's shared virtualenv, and that must not happen while another stage is using it. With `run-tts-ci` and `run-mps-ci`, the order is PR Test → TTS → MPS. A stage that fails does not stop any other stage. A failed setup job blocks every stage.
 
 ### PR Test
 
@@ -136,6 +137,22 @@ The stage label is `run-omni-ci`. A model label does not name the stage. Combine
 | `run-qwen3-omni-30b-a3b-instruct` | `Qwen/Qwen3-Omni-30B-A3B-Instruct` | Yes |
 | `run-minicpm-o-4.5` | `openbmb/MiniCPM-o-4_5` | Yes |
 
+### Speculative
+
+Each model with a draft gets its own job, which serves each of its drafts in turn on one H100.
+
+| Job | What it covers |
+| --- | --- |
+| drafts - qwen3-asr | Qwen3-ASR-1.7B with its DFlash draft from `examples/configs/qwen3_asr_1_7b_dflash.yaml`, on all 1,088 SeedTTS English clips. |
+
+Every job gates two things. The mean acceptance length in the server's decode log must clear the draft's floor, because a draft that proposes the wrong tokens still transcribes correctly, only slower; a server that logs no acceptance fails as well, since its draft never ran. The word error rate must stay within the model's own calibrated gate. Neither depends on the GPU, so the floors in `tests/test_model/spec_ci_config.py` are measured once rather than calibrated on the CI host. Throughput is reported, not gated.
+
+The stage label is `run-spec-ci`. Unlike the other stages, it does not draw a model: without a model label it runs every job, because all drafts share the speculative scheduler path. A model label narrows it to that model's job, and it is the same label the model's own stage takes:
+
+| Model label | Job |
+| --- | --- |
+| `run-qwen3-asr-1.7b` | drafts - qwen3-asr |
+
 ## Hardware workflows
 
 Each hardware stage is its own workflow. Its gate checks live labels and skips draft blocking, label resolution and lint checks unless its stage label or `run-all-ci` selects it. None of them has model labels. Each keeps a path filter, so a stage label alone does not force a run: a pull request that changes none of the stage's paths skips its tests.
@@ -163,8 +180,8 @@ The stage label is `run-mac-ci`.
 1. A stage runs only when its stage label or `run-all-ci` is on the pull request. `run-all-ci` selects every stage.
 2. Self-hosted CI needs `run-all-ci`, a stage label, or `run-lint-only`. Without one, the Omni CI gate fails with `No CI label found`; unselected hardware workflows skip their tests without failing. The checks on GitHub-hosted runners do not depend on labels. `run-lint-only` runs no self-hosted job, so a green lint check leaves no self-hosted failure. It does not turn off a stage label that is also present.
 3. Any stage label also runs PR Test. A pull request labeled only `run-mac-ci` still runs PR Test on H100.
-4. A model label names a model, not a stage. It picks that model for every selected stage that accepts it, and never selects a stage by itself. Higgs and MOSS labels are accepted by TTS and MPS. If no selected stage accepts the label, the gate prints a warning.
-5. A selected stage without a model label draws its model at random from that stage's pool. The draw is seeded by the workflow run ID, so re-running jobs in the same run keeps the same model, while a new push or a newly added label starts a new run and draws again.
+4. A model label names a model, not a stage. It picks that model for every selected stage that accepts it, and never selects a stage by itself. Higgs and MOSS labels are accepted by TTS and MPS, and ASR model labels by ASR and Speculative. If no selected stage accepts the label, the gate prints a warning.
+5. A selected stage without a model label draws its model at random from that stage's pool, except Speculative, which runs every model. The draw is seeded by the workflow run ID, so re-running jobs in the same run keeps the same model, while a new push or a newly added label starts a new run and draws again.
 6. Each stage takes at most one model label. Two model labels for the same stage fail the gate, even when that stage is not selected.
 7. Stage labels combine. `run-tts-ci` together with `run-mps-ci` runs PR Test, TTS and MPS, and nothing else.
 
@@ -177,6 +194,7 @@ The stage label is `run-mac-ci`.
 | `run-tts-ci` | TTS in Omni CI |
 | `run-mps-ci` | MPS in Omni CI |
 | `run-omni-ci` | Omni in Omni CI |
+| `run-spec-ci` | Speculative in Omni CI |
 | `run-intel-cpu-ci` | Intel Xeon job `intel-cpu-ci (unit_test/cpu)`, when the CPU paths match |
 | `run-intel-xpu-ci` | XPU CI |
 | `run-mac-ci` | Voxt Mac CI |
@@ -194,6 +212,8 @@ The checks on GitHub-hosted runners run in every case below, so the table lists 
 | `run-tts-ci`, `run-moss-tts-local-transformer-v1.5` | PR Test, then TTS on MOSS-TTS. MPS does not run. |
 | `run-mps-ci`, `run-higgs-tts-3-4b` | PR Test, then MPS on Higgs-TTS. TTS does not run. |
 | `run-tts-ci`, `run-mps-ci` | PR Test, TTS and MPS, each drawing its own model. |
+| `run-spec-ci` | PR Test, then Speculative on every model with a draft. |
+| `run-asr-ci`, `run-spec-ci`, `run-qwen3-asr-1.7b` | PR Test, then ASR on Qwen3-ASR and Speculative on the Qwen3-ASR draft only. |
 | `run-tts-ci`, `run-mps-ci`, `run-higgs-tts-3-4b` | PR Test, then TTS and MPS, both on Higgs-TTS. |
 | `run-mac-ci` | PR Test on H100 and Voxt Mac CI. No H100 model stage. |
 | `run-all-ci` | Every stage. Each model stage draws its own model. |

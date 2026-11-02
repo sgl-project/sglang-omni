@@ -1,7 +1,7 @@
 name: Omni CI
 
 # DAG:
-#   preflight -> setup -> pr-test -> {asr-ci, tts-ci, qwen3-omni-ci} -> mps-ci
+#   preflight -> setup -> pr-test -> {asr-ci, tts-ci, qwen3-omni-ci, spec-ci} -> mps-ci
 #   setup + unit/model suites -> cleanup (dispatch only)
 #
 # preflight resolves the CI labels with .github/scripts/resolve_ci_labels.py:
@@ -75,11 +75,13 @@ jobs:
       run_tts: ${{ steps.plan.outputs.run_tts }}
       run_mps: ${{ steps.plan.outputs.run_mps }}
       run_omni: ${{ steps.plan.outputs.run_omni }}
+      run_spec: ${{ steps.plan.outputs.run_spec }}
       asr_ci_model: ${{ steps.plan.outputs.asr_ci_model }}
       tts_ci_model: ${{ steps.plan.outputs.tts_ci_model }}
       mps_ci_model: ${{ steps.plan.outputs.mps_ci_model }}
       mps_ci_config: ${{ steps.plan.outputs.mps_ci_config }}
       omni_ci_model: ${{ steps.plan.outputs.omni_ci_model }}
+      spec_ci_models: ${{ steps.plan.outputs.spec_ci_models }}
     steps:
       - name: Fetch CI labels
         id: pr
@@ -260,7 +262,7 @@ jobs:
 
   mps-ci:
     name: MPS CI
-    needs: [preflight, setup, pr-test, asr-ci, tts-ci, qwen3-omni-ci]
+    needs: [preflight, setup, pr-test, asr-ci, tts-ci, qwen3-omni-ci, spec-ci]
     if: >-
       always() && !cancelled() &&
       needs.setup.result == 'success' &&
@@ -292,6 +294,22 @@ jobs:
             || format('/data/omni-ci/run-{0}', github.run_id) }}
     secrets: inherit
 
+  spec-ci:
+    name: Speculative CI
+    needs: [preflight, setup, pr-test]
+    if: >-
+      always() && !cancelled() &&
+      needs.setup.result == 'success' &&
+      needs.preflight.outputs.run_spec == 'true'
+    uses: ./.github/workflows/test-spec-ci.yaml
+    with:
+      spec_ci_models: ${{ needs.preflight.outputs.spec_ci_models }}
+      omni_ci_home: >-
+        ${{ github.event_name == 'pull_request'
+            && format('/data/omni-ci/pr-{0}', github.event.pull_request.number)
+            || format('/data/omni-ci/run-{0}', github.run_id) }}
+    secrets: inherit
+
   pr-test:
     name: PR Test
     needs: setup
@@ -307,7 +325,7 @@ jobs:
 
   cleanup:
     name: cleanup - reclaim ephemeral run home
-    needs: [setup, pr-test, asr-ci, tts-ci, mps-ci, qwen3-omni-ci]
+    needs: [setup, pr-test, asr-ci, tts-ci, mps-ci, qwen3-omni-ci, spec-ci]
     if: >-
       always() && !cancelled() &&
       needs.setup.result == 'success' &&

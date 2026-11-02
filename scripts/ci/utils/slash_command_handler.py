@@ -79,6 +79,8 @@ def handle_tag_run_ci(
                 target = f"{preset}-asr"
             elif stage.name == "mps":
                 target = f"mps-{preset}"
+            elif stage.name == "spec":
+                target = f"{preset}-spec"
             else:
                 target = preset
             labels_by_target[target] = frozenset({stage.label, label})

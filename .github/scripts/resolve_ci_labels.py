@@ -4,8 +4,9 @@
 A stage runs with its stage label or run-all-ci. run-lint-only satisfies the
 gate and runs no self-hosted job. A model label names a model, not a stage.
 It picks that model for every selected stage that accepts it, and never
-selects a stage. Higgs and MOSS labels are shared by TTS and MPS. A selected
-stage without a model label draws its model at random.
+selects a stage. Higgs and MOSS labels are shared by TTS and MPS, and ASR model
+labels by ASR and Speculative. A selected stage without a model label draws its
+model at random, except Speculative, which then serves every model's drafts.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ class CiStage:
     workflow: str
     preset_by_model_label: dict[str, str]
     random_presets: tuple[str, ...]
+    runs_every_preset: bool = False
 
 
 CI_STAGES: tuple[CiStage, ...] = (
@@ -88,6 +90,18 @@ CI_STAGES: tuple[CiStage, ...] = (
         random_presets=("qwen3-omni", "minicpmo"),
     ),
     CiStage(
+        name="spec",
+        label="run-spec-ci",
+        workflow=OMNI_CI_WORKFLOW,
+        preset_by_model_label={
+            "run-qwen3-asr-1.7b": "qwen3-asr",
+        },
+        random_presets=(),
+        # note (wilsonzheng0327): every draft runs through the same speculative
+        # scheduler path, so without a model label a change is checked on all of them.
+        runs_every_preset=True,
+    ),
+    CiStage(
         name="intel_cpu",
         label="run-intel-cpu-ci",
         workflow="CPU CI",
@@ -119,7 +133,7 @@ GATED_WORKFLOWS = frozenset(stage.workflow for stage in CI_STAGES)
 @dataclass(frozen=True, kw_only=True)
 class CiPlan:
     enabled_stage_names: frozenset[str]
-    preset_by_stage_name: dict[str, str]
+    presets_by_stage_name: dict[str, tuple[str, ...]]
     ignored_model_labels: tuple[str, ...]
 
 
@@ -159,7 +173,7 @@ def resolve_ci_plan(labels: frozenset[str], seed: str) -> CiPlan:
     else:
         pass
 
-    preset_by_stage_name: dict[str, str] = {}
+    presets_by_stage_name: dict[str, tuple[str, ...]] = {}
     unused_model_labels: list[str] = []
     used_model_labels: set[str] = set()
     for stage in CI_STAGES:
@@ -172,14 +186,18 @@ def resolve_ci_plan(labels: frozenset[str], seed: str) -> CiPlan:
             unused_model_labels.extend(model_labels)
         elif model_labels:
             selected_model_label = model_labels[0]
-            preset_by_stage_name[stage.name] = stage.preset_by_model_label[
-                selected_model_label
-            ]
+            presets_by_stage_name[stage.name] = (
+                stage.preset_by_model_label[selected_model_label],
+            )
             used_model_labels.add(selected_model_label)
+        elif stage.runs_every_preset:
+            presets_by_stage_name[stage.name] = tuple(
+                dict.fromkeys(stage.preset_by_model_label.values())
+            )
         elif stage.random_presets:
-            preset_by_stage_name[stage.name] = random.Random(
-                f"{seed}-{stage.name}"
-            ).choice(stage.random_presets)
+            presets_by_stage_name[stage.name] = (
+                random.Random(f"{seed}-{stage.name}").choice(stage.random_presets),
+            )
         else:
             pass
     ignored_model_labels = tuple(
@@ -189,7 +207,7 @@ def resolve_ci_plan(labels: frozenset[str], seed: str) -> CiPlan:
     )
     return CiPlan(
         enabled_stage_names=enabled_stage_names,
-        preset_by_stage_name=preset_by_stage_name,
+        presets_by_stage_name=presets_by_stage_name,
         ignored_model_labels=ignored_model_labels,
     )
 
@@ -199,12 +217,16 @@ def format_github_outputs(plan: CiPlan) -> list[str]:
     for stage in CI_STAGES:
         is_enabled = stage.name in plan.enabled_stage_names
         output_lines.append(f"run_{stage.name}={str(is_enabled).lower()}")
-        if stage.preset_by_model_label:
-            preset = plan.preset_by_stage_name.get(stage.name, "")
+        presets = plan.presets_by_stage_name.get(stage.name, ())
+        if stage.runs_every_preset:
+            output_lines.append(f"{stage.name}_ci_models={json.dumps(list(presets))}")
+        elif stage.preset_by_model_label:
+            preset = presets[0] if presets else ""
             output_lines.append(f"{stage.name}_ci_model={preset}")
         else:
             pass
-    mps_preset = plan.preset_by_stage_name.get("mps", "")
+    mps_presets = plan.presets_by_stage_name.get("mps", ())
+    mps_preset = mps_presets[0] if mps_presets else ""
     output_lines.append(f"mps_ci_config={MPS_CONFIG_BY_PRESET.get(mps_preset, '')}")
     is_self_hosted = bool(plan.enabled_stage_names)
     output_lines.append(f"run_self_hosted={str(is_self_hosted).lower()}")
