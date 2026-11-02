@@ -12,6 +12,7 @@ from benchmarks.metrics.speculative import (
     ServerLogStats,
     compare,
     read_server_log,
+    render,
 )
 
 # Lines from SGLang 0.5.22 servers on H100: MOSS-TD with a DFlash draft, and a Qwen3-ASR server without one that meets the same prompt twice.
@@ -92,7 +93,7 @@ def test_comparison_reads_gain_k_and_every_load_the_draft_makes_worse() -> None:
     ]
     draft_results = [
         client_result(1, 20.0, 0.3),
-        client_result(16, 120.0, 2.5, skipped=2),
+        client_result(16, 120.0, 2.5),
         client_result(64, 192.0, 3.0),
     ]
     legs = [
@@ -109,8 +110,33 @@ def test_comparison_reads_gain_k_and_every_load_the_draft_makes_worse() -> None:
     )
     assert comparison.k == 16
     assert comparison.worse_concurrencies == [16, 64]
-    assert comparison.rows[1].draft.failed_requests == 4
+    assert comparison.incomplete_concurrencies == []
     assert comparison.accept_length_mean == pytest.approx(5.25)
+
+
+def test_a_load_with_failed_requests_keeps_its_numbers_but_qualifies_nothing() -> None:
+    """Throughput over the requests that finished can show 2x while half of them failed."""
+    baseline_results = [client_result(1, 10.0, 0.5), client_result(16, 100.0, 1.0)]
+    draft_results = [
+        client_result(1, 15.0, 0.3),
+        client_result(16, 200.0, 0.5, skipped=50),
+    ]
+    legs = [
+        leg("1_baseline", None, baseline_results),
+        leg("2_draft", 5.0, draft_results),
+        leg("3_draft", 5.0, draft_results),
+        leg("4_baseline", None, baseline_results),
+    ]
+
+    comparison = compare(legs, k_gain=1.2)
+
+    assert comparison.rows[1].gain == pytest.approx(2.0)
+    assert comparison.rows[1].draft.failed_requests == 100
+    assert comparison.incomplete_concurrencies == [16]
+    assert comparison.k == 1
+    assert comparison.worse_concurrencies == []
+    roadmap_row = render(comparison, legs, title="draft").splitlines()[-1]
+    assert "| 1.50x | – | – | invalid | – | – |" in roadmap_row
 
 
 REQUIRED = ["--model-path", "m", "--draft-config", "d.yaml", "--output-dir", "out"]

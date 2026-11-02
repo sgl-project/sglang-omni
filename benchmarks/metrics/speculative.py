@@ -88,6 +88,7 @@ class ConcurrencyRow:
     draft: SideAtConcurrency
     gain: float | None
     latency_ratio: float | None
+    is_complete: bool
 
 
 @dataclass(kw_only=True)
@@ -95,6 +96,7 @@ class Comparison:
     rows: list[ConcurrencyRow]
     k: int | None
     worse_concurrencies: list[int]
+    incomplete_concurrencies: list[int]
     accept_length_mean: float | None
 
 
@@ -171,31 +173,37 @@ def compare(legs: list[Leg], *, k_gain: float) -> Comparison:
     for concurrency in concurrencies:
         baseline = sides[("baseline", concurrency)]
         draft = sides[("draft", concurrency)]
+        gain = mean_ratio(draft.throughputs, baseline.throughputs)
+        latency_ratio = mean_ratio(draft.latencies_p95_s, baseline.latencies_p95_s)
         rows.append(
             ConcurrencyRow(
                 concurrency=concurrency,
                 baseline=baseline,
                 draft=draft,
-                gain=mean_ratio(draft.throughputs, baseline.throughputs),
-                latency_ratio=mean_ratio(
-                    draft.latencies_p95_s, baseline.latencies_p95_s
-                ),
+                gain=gain,
+                latency_ratio=latency_ratio,
+                # note (wilsonzheng0327): throughput and p95 count only the requests that finished, so a load where any failed cannot qualify.
+                is_complete=baseline.failed_requests == 0
+                and draft.failed_requests == 0
+                and gain is not None
+                and latency_ratio is not None,
             )
         )
-    reaching = [
-        row.concurrency for row in rows if row.gain is not None and row.gain >= k_gain
-    ]
+    complete_rows = [row for row in rows if row.is_complete]
     return Comparison(
         rows=rows,
-        k=max(reaching, default=None),
+        k=max(
+            (row.concurrency for row in complete_rows if row.gain >= k_gain),
+            default=None,
+        ),
         worse_concurrencies=[
             row.concurrency
-            for row in rows
-            if (row.gain is not None and row.gain < NEVER_WORSE_THROUGHPUT_RATIO)
-            or (
-                row.latency_ratio is not None
-                and row.latency_ratio > NEVER_WORSE_LATENCY_RATIO
-            )
+            for row in complete_rows
+            if row.gain < NEVER_WORSE_THROUGHPUT_RATIO
+            or row.latency_ratio > NEVER_WORSE_LATENCY_RATIO
+        ],
+        incomplete_concurrencies=[
+            row.concurrency for row in rows if not row.is_complete
         ],
         accept_length_mean=mean_or_none(
             [
@@ -236,7 +244,7 @@ def render(comparison: Comparison, legs: list[Leg], *, title: str) -> str:
     ]
     for row in comparison.rows:
         lines.append(
-            f"| {row.concurrency} "
+            f"| {row.concurrency}{'' if row.is_complete else ' (incomplete)'} "
             f"| {number(mean_or_none(row.baseline.throughputs), 2)} "
             f"| {number(mean_or_none(row.draft.throughputs), 2)} "
             f"| {number(row.gain, 2, 'x')} "
@@ -252,9 +260,11 @@ def render(comparison: Comparison, legs: list[Leg], *, title: str) -> str:
         )
     lines += [
         "",
-        f"- k, the highest concurrency with at least {K_GAIN}x: {comparison.k if comparison.k is not None else 'none'}",
+        f"- k, the highest complete concurrency with at least {K_GAIN}x: {comparison.k if comparison.k is not None else 'none'}",
         f"- Worse than no draft (throughput under {NEVER_WORSE_THROUGHPUT_RATIO}x or p95 over {NEVER_WORSE_LATENCY_RATIO}x): "
         f"{', '.join(f'c{concurrency}' for concurrency in comparison.worse_concurrencies) or 'none'}",
+        "- Incomplete, so left out of k and the never-worse check (failed requests or missing numbers): "
+        f"{', '.join(f'c{concurrency}' for concurrency in comparison.incomplete_concurrencies) or 'none'}",
         "- Prompt tokens served from the prefix cache, which repeated prompts inflate: "
         + ", ".join(
             f"{leg.name} {percent(leg.server.cached_prompt_token_share)}"
@@ -281,15 +291,22 @@ def render(comparison: Comparison, legs: list[Leg], *, title: str) -> str:
             f"| {number(leg.server.token_usage_peak, 2)} | {leg.server.retracted_requests} "
             f"| {number(leg.server.accept_length_mean, 2)} | {number(max(peaks, default=None), 0)} |"
         )
-    gains = {row.concurrency: row.gain for row in comparison.rows}
-    roadmap_cells = " | ".join(
-        number(gains.get(concurrency), 2, "x") for concurrency in ROADMAP_CONCURRENCIES
-    )
+    rows_by_concurrency = {row.concurrency: row for row in comparison.rows}
+    roadmap_cells = []
+    for concurrency in ROADMAP_CONCURRENCIES:
+        row = rows_by_concurrency.get(concurrency)
+        if row is None:
+            roadmap_cells.append("–")
+        elif row.is_complete:
+            roadmap_cells.append(number(row.gain, 2, "x"))
+        else:
+            roadmap_cells.append("invalid")
+
     lines += [
         "",
         "Roadmap row:",
         "",
-        f"| {title} | | {number(comparison.accept_length_mean, 1)} | {roadmap_cells} "
+        f"| {title} | | {number(comparison.accept_length_mean, 1)} | {' | '.join(roadmap_cells)} "
         f"| WER {percent(mean_or_none(baseline_wers))} → {percent(mean_or_none(draft_wers))} | |",
     ]
     return "\n".join(lines) + "\n"
