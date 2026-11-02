@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Resolve SenseNova sampling parameters and request extras."""
+import math
 from argparse import Namespace
 from dataclasses import dataclass, field
 from typing import TypedDict
@@ -135,6 +136,16 @@ class SenseNovaU1SamplingParams(SamplingParams):
             raise ValueError(
                 f"cfg_interval must satisfy 0 <= start <= end <= 1, got {self.cfg_interval!r}"
             )
+        else:
+            pass
+        if not 0.0 < self.timestep_shift < math.inf:
+            raise ValueError(
+                f"timestep_shift must be a finite number above 0, got {self.timestep_shift!r}"
+            )
+        else:
+            pass
+        if not 0.0 <= self.t_eps < 1.0:
+            raise ValueError(f"t_eps must satisfy 0 <= t_eps < 1, got {self.t_eps!r}")
         else:
             pass
 

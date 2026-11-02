@@ -10,7 +10,6 @@ __all__ = ["register"]
 
 
 def register() -> None:
-    """Register SenseNova configuration and model classes with Transformers."""
     from transformers import AutoConfig, AutoModel
 
     AutoConfig.register("neo_vision", NEOVisionConfig, exist_ok=True)

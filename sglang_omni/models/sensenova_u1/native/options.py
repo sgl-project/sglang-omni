@@ -25,7 +25,6 @@ DEFAULT_THINK_MODE: bool = False
 
 
 def is_sensenova_u1_model(model_path: str) -> bool:
-    """Identify local SenseNova-U1 base checkpoints."""
     if os.path.isdir(model_path):
         checkpoint_config_path = os.path.join(model_path, "config.json")
         try:

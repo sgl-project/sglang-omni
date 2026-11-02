@@ -21,6 +21,7 @@ from sglang.multimodal_gen.runtime.platforms import current_platform
 
 from sglang_omni.models.sensenova_u1.native.generation import SenseNovaU1GenerationStage
 from sglang_omni.models.sensenova_u1.native.sampling import SenseNovaU1SamplingParams
+from sglang_omni.vendor.sensenova_u1 import modeling_neo_chat
 
 
 def test_external_package_in_fresh_process(tmp_path: Path) -> None:
@@ -118,6 +119,64 @@ def test_native_generation_preserves_request_and_output(
     assert output.usage == {"think_text": "reasoning"}
 
 
+def test_think_mode_attention_keeps_the_reasoning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Think Mode image attention covers the reasoning appended to the prompt cache."""
+    prompt_length, cache_length = 5, 12
+
+    class Cache:
+        layers = [
+            SimpleNamespace(
+                keys=torch.zeros(1, 1, cache_length, 2),
+                values=torch.zeros(1, 1, cache_length, 2),
+            )
+        ]
+
+        def get_seq_length(self) -> int:
+            return cache_length
+
+    class Model:
+        concat_time_token_num = 0
+        downsample_ratio = 0.5
+        patch_size = 16
+        config = SimpleNamespace()
+        _build_t2i_image_indexes = (  # noqa: leading-underscore -- the model method t2i_generate calls.
+            modeling_neo_chat.NEOChatModel._build_t2i_image_indexes
+        )
+
+        def _build_t2i_query(self, *args: object, **kwargs: object) -> str:
+            return "query"
+
+        def _build_t2i_text_inputs(self, *args: object) -> tuple:
+            return (
+                torch.zeros(1, prompt_length, dtype=torch.long),
+                torch.zeros(1, 3, prompt_length, dtype=torch.long),
+                None,
+                None,
+                torch.tensor([prompt_length]),
+            )
+
+        def _think_prefix_forward(self, **kwargs: object) -> SimpleNamespace:
+            return SimpleNamespace(past_key_values=Cache(), logits=torch.zeros(1, 1, 2))
+
+        def _generate_think(self, tokenizer, outputs, cache, t_index, image_start):
+            return cache, t_index + cache_length - prompt_length, "reasoning"
+
+    class Prepared(Exception):
+        pass
+
+    def prepare(cache, current_len, batch_size, prefix_lengths) -> None:
+        raise Prepared(prefix_lengths.tolist())
+
+    monkeypatch.setattr(modeling_neo_chat, "prepare_flash_kv_cache", prepare)
+    with pytest.raises(Prepared) as prepared:
+        modeling_neo_chat.NEOChatModel.t2i_generate(
+            Model(), None, "a cat", image_size=(32, 32), think_mode=True
+        )
+    assert prepared.value.args == ([cache_length],)
+
+
 def test_npu_startup_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     config = get_model_info(
         "sensenova/SenseNova-U1.5-8B-MoT", backend="sglang"
@@ -158,9 +217,20 @@ def test_offload_default_is_reset_but_explicit_request_is_rejected(
         assert server_args.dit_cpu_offload is False
 
 
-def test_invalid_size_is_rejected() -> None:
-    with pytest.raises(ValueError, match="divisible"):
-        SenseNovaU1SamplingParams(width=65, height=64)
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"width": 65, "height": 64}, "divisible"),
+        ({"timestep_shift": 0.0}, "timestep_shift"),
+        ({"timestep_shift": float("inf")}, "timestep_shift"),
+        ({"t_eps": float("nan")}, "t_eps"),
+    ],
+)
+def test_invalid_sampling_values_are_rejected(
+    overrides: dict[str, float], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        SenseNovaU1SamplingParams(**overrides)
 
 
 @pytest.mark.parametrize("think_mode", [False, True])
