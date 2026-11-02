@@ -20,7 +20,11 @@ def _restore_legacy_rope_theta(config) -> None:
 
 
 class NEOLLMConfig(Qwen3Config):
-    """Dense Qwen3 config with extra RoPE settings for the spatial height and width axes."""
+    """Config for the dense Qwen3 backbone used by NEO-Unify.
+
+    Extends ``Qwen3Config`` with two extra rope knobs used by the spatial
+    (height/width) rotary axes that are layered on top of the temporal one.
+    """
 
     def __init__(
         self, rope_theta_hw=10000.0, max_position_embeddings_hw=10000, **kwargs
@@ -32,9 +36,23 @@ class NEOLLMConfig(Qwen3Config):
 
 
 class NEOMoELLMConfig(Qwen3MoeConfig):
-    """Qwen3-MoE config with separate understanding and image generation expert branches.
+    """Config for the Qwen3-MoE backbone used by NEO-Unify.
 
-    Each generation branch setting falls back to its understanding branch value when unset.
+    Extends ``Qwen3MoeConfig`` with the same ``rope_theta_hw`` /
+    ``max_position_embeddings_hw`` extras as :class:`NEOLLMConfig`, and adds a
+    *generation-path* MoE branch alongside the standard understanding-path one.
+    In the A3B unified model every decoder layer carries two parallel sparse
+    MoE blocks routed by the per-token ``image_gen_indicators`` mask:
+
+        * ``mlp``           - sparse MoE for the understanding path
+                              (``num_experts`` experts, ``num_experts_per_tok`` active,
+                              expert width ``moe_intermediate_size``).
+        * ``mlp_mot_gen``   - sparse MoE for the image generation path
+                              (``gen_num_experts`` experts, ``gen_num_experts_per_tok``
+                              active, expert width ``gen_moe_intermediate_size``).
+
+    Each gen-path knob falls back to its understanding-path counterpart when
+    unset, so vanilla single-MoE configs keep working without changes.
     """
 
     def __init__(
@@ -51,6 +69,9 @@ class NEOMoELLMConfig(Qwen3MoeConfig):
         self.rope_theta_hw = rope_theta_hw
         self.max_position_embeddings_hw = max_position_embeddings_hw
 
+        # Generation-path MoE knobs default to the understanding-path values
+        # so legacy single-MoE configs (where both branches share the same
+        # router width / expert count) keep working unchanged.
         self.gen_num_experts = (
             int(gen_num_experts)
             if gen_num_experts is not None
@@ -67,7 +88,12 @@ class NEOMoELLMConfig(Qwen3MoeConfig):
             else int(self.moe_intermediate_size)
         )
 
-        # note (Richard Wang): Qwen3Attention reads config.layer_types, which older Qwen3MoeConfig leaves unset.
+        # ``Qwen3Attention`` (used by NEO-Unify MoE layers) reads
+        # ``config.layer_types[layer_idx]`` to decide between ``"full_attention"``
+        # and ``"sliding_attention"``. Older / vanilla ``Qwen3MoeConfig`` does
+        # not populate that field, so we backfill it here mirroring the dense
+        # ``Qwen3Config`` behaviour: sliding-attention layers start at
+        # ``max_window_layers`` when ``use_sliding_window`` is enabled.
         existing = getattr(self, "layer_types", None)
         if not existing or len(existing) != self.num_hidden_layers:
             use_swa = (
@@ -86,6 +112,12 @@ class NEOMoELLMConfig(Qwen3MoeConfig):
 
 
 def _is_moe_llm_config(llm_config) -> bool:
+    """Detect whether an ``llm_config`` (dict or object) targets a MoE backbone.
+
+    Order of checks: explicit ``model_type``, ``architectures`` entry that
+    contains ``MoE/MoeForCausalLM``, or presence of MoE-specific keys
+    (``num_experts``).
+    """
     if isinstance(llm_config, dict):
         model_type = llm_config.get("model_type", "")
         archs = llm_config.get("architectures") or []
@@ -109,6 +141,7 @@ def _is_moe_llm_config(llm_config) -> bool:
 
 
 def _build_llm_config(llm_config):
+    """Instantiate the right LLM config object from a dict or pre-built config."""
     if isinstance(llm_config, dict):
         if _is_moe_llm_config(llm_config):
             return NEOMoELLMConfig(**llm_config)
@@ -161,6 +194,12 @@ class NEOChatConfig(PretrainedConfig):
         self.tie_word_embeddings = self.llm_config.tie_word_embeddings
 
     def to_dict(self):
+        """
+        Serializes this instance to a Python dictionary. Override the default [`~PretrainedConfig.to_dict`].
+
+        Returns:
+            `Dict[str, any]`: Dictionary of all the attributes that make up this configuration instance,
+        """
         output = copy.deepcopy(self.__dict__)
         output["vision_config"] = self.vision_config.to_dict()
         output["llm_config"] = self.llm_config.to_dict()

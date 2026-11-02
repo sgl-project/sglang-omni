@@ -17,6 +17,9 @@ def _timestep_freqs(half: int, max_period: float, device: torch.device):
 
 
 class TimestepEmbedder(nn.Module):
+    """
+    Embeds scalar timesteps into vector representations.
+    """
 
     def __init__(self, hidden_size, frequency_embedding_size=256):
         super().__init__()
@@ -29,7 +32,13 @@ class TimestepEmbedder(nn.Module):
 
     @staticmethod
     def timestep_embedding(t: torch.Tensor, dim: int, max_period: float = 10000.0):
-        """Create sinusoidal embeddings for N timesteps, which may be fractional."""
+        """
+        Create sinusoidal timestep embeddings.
+        :param t: a 1-D Tensor of N indices, one per batch element. These may be fractional.
+        :param dim: the dimension of the output.
+        :param max_period: controls the minimum frequency of the embeddings.
+        :return: an (N, D) Tensor of positional embeddings.
+        """
         # https://github.com/openai/glide-text2im/blob/main/glide_text2im/nn.py
         half = dim // 2
         freqs = _timestep_freqs(half, max_period, t.device)
@@ -50,13 +59,16 @@ class TimestepEmbedder(nn.Module):
 class ConvDecoder(nn.Module):
     def __init__(self, input_dim=4096, hidden_dim=1024):
         super().__init__()
+        # layer 1: H/32 -> H/16 (2x upscale)
         self.ps1 = nn.PixelShuffle(2)
         self.conv1 = nn.Conv2d(input_dim // 4, hidden_dim, kernel_size=3, padding=1)
         self.act1 = nn.GELU()
 
+        # layer 2: H/16 -> H/8 (2x upscale)
         self.ps2 = nn.PixelShuffle(2)
         self.conv2 = nn.Conv2d(hidden_dim // 4, 192, kernel_size=3, padding=1)
 
+        # layer 3: H/8 -> H (8x upscale)
         self.ps3 = nn.PixelShuffle(8)
 
     def forward(self, x):

@@ -15,16 +15,18 @@ from typing import Dict, List, Tuple
 
 @dataclasses.dataclass
 class Conversation:
+    """A class that manages prompt templates and keeps all conversation history."""
 
     name: str
     system_template: str = "{system_message}"
     system_message: str = ""
     roles: Tuple[str] = ("USER", "ASSISTANT")
-    # note (Richard Wang): each item is a (role, message) pair.
+    # All messages. Each item is (role, message).
     messages: List[List[str]] = ()
     sep: str = "\n"
 
     def get_prompt(self) -> str:
+        """Get the prompt for generation."""
         if self.system_message is not None and self.system_message != "":
             system_prompt = self.system_template.format(
                 system_message=self.system_message
@@ -46,6 +48,7 @@ class Conversation:
         return ret
 
     def append_message(self, role: str, message: str):
+        """Append a new message."""
         self.messages.append([role, message])
 
     def copy(self):
@@ -71,4 +74,5 @@ conv_templates: Dict[str, Conversation] = {
 
 
 def get_conv_template(name: str) -> Conversation:
+    """Get a conversation template."""
     return conv_templates[name].copy()

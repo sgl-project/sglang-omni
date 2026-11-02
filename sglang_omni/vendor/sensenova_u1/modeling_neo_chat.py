@@ -39,7 +39,12 @@ def prepare_flash_kv_cache(
     batch_size: int,
     prefix_lengths: Optional[torch.Tensor] = None,
 ):
-    """Preallocate the [prefix + current] KV buffer as [B, S, H, D], or [B, H, S, D] for NPU FIA."""
+    """
+    Preallocate the full KV buffer for [prefix + current]. CUDA/SDPA use
+    [B, S, H, D], while NPU FIA keeps the source [B, H, S, D] layout.
+
+    This is done once before denoising loop.
+    """
     if past_key_values is None:
         return
 
@@ -67,6 +72,7 @@ def prepare_flash_kv_cache(
             layer.flash_cache_layout = None
             continue
 
+        # original cache layout: [B, H, S, D]
         prefix_len = past_k.shape[2]
         total_len = prefix_len + current_len
         if lengths is not None and any(
@@ -149,8 +155,10 @@ def clear_flash_kv_cache(past_key_values):
 
 
 def optimized_scale(positive_flat, negative_flat):
-    # note (Richard Wang): the squared norm and division run in float32 under any autocast.
-    # note (Richard Wang): torch.autocast rejects mps, so mps inputs autocast as cpu.
+    # Force the divisor computation to float32 regardless of the surrounding
+    # autocast (the squared-norm/division is what we don't want in fp16/bf16).
+    # ``device_type`` is taken from the input so this runs equally on CUDA and
+    # XPU. ``mps`` is rerouted to ``cpu`` because torch.autocast rejects it.
     device_type = positive_flat.device.type
     if device_type == "mps":
         device_type = "cpu"
@@ -158,10 +166,13 @@ def optimized_scale(positive_flat, negative_flat):
         positive_flat = positive_flat.float()
         negative_flat = negative_flat.float()
 
+        # Calculate dot production
         dot_product = torch.sum(positive_flat * negative_flat, dim=1, keepdim=True)
 
+        # Squared norm of uncondition
         squared_norm = torch.sum(negative_flat**2, dim=1, keepdim=True) + 1e-8
 
+        # st_star = v_cond^T * v_uncond / ||v_uncond||^2
         st_star = dot_product / squared_norm
 
     return st_star
@@ -246,6 +257,10 @@ class NEOChatModel(PreTrainedModel):
         if language_model is not None:
             self.language_model = language_model
         else:
+            # Pick the right backbone class based on the LLM config: dense
+            # Qwen3 (DANCE family) or Qwen3-MoE (A3B family). The two share
+            # the same NEO-Unify two-branch attention/norm layout, so the
+            # rest of this class works against either.
             if isinstance(config.llm_config, NEOMoELLMConfig):
                 self.language_model = Qwen3MoeForCausalLM(config.llm_config)
             else:
@@ -292,7 +307,10 @@ class NEOChatModel(PreTrainedModel):
         self.conv_template = get_conv_template(self.template)
         self.system_message = self.conv_template.system_message
 
-        # note (Richard Wang): Transformers 5 sets all_tied_weights_keys for composite models in post_init.
+        # Transformers 5 builds composite-model metadata (including
+        # ``all_tied_weights_keys``) in ``post_init``.  Without this call a
+        # real checkpoint reaches the final loading pass with that metadata
+        # missing, even though the nested language model initialized it.
         self.post_init()
 
     def forward(
@@ -320,7 +338,10 @@ class NEOChatModel(PreTrainedModel):
         ).last_hidden_state
 
     def patchify(self, images, patch_size, channel_first=False):
-        """Map images (N, 3, H, W) to patches (N, L, patch_size**2 * 3)."""
+        """
+        images: (N, 3, H, W)
+        x: (N, L, patch_size**2 *3)
+        """
         h, w = images.shape[2] // patch_size, images.shape[3] // patch_size
         x = images.reshape(shape=(images.shape[0], 3, h, patch_size, w, patch_size))
 
@@ -333,7 +354,10 @@ class NEOChatModel(PreTrainedModel):
         return x
 
     def unpatchify(sle, x, patch_size, h=None, w=None):
-        """Map patches (N, L, patch_size**2 * 3) back to images (N, 3, H, W)."""
+        """
+        x: (N, L, patch_size**2 *3)
+        images: (N, 3, H, W)
+        """
         if h is None or w is None:
             h = w = int(x.shape[1] ** 0.5)
         else:
@@ -436,6 +460,7 @@ class NEOChatModel(PreTrainedModel):
         return out.past_key_values, out.last_hidden_state
 
     def _think_prefix_forward(self, **kwargs):
+        """Build the Think prefix cache without materialising per-token logits."""
         return self.language_model(use_cache=True, logits_to_keep=1, **kwargs)
 
     def _append_text_tokens_to_cache(self, cache, t_idx, input_ids):
@@ -816,7 +841,7 @@ class NEOChatModel(PreTrainedModel):
             denoise_key_valid_mask = torch.cat(
                 [condition_key_valid_mask, image_key_valid_mask], dim=1
             )
-            # note (Richard Wang): Ascend SDPA requires an explicit query dimension.
+            # Ascend SDPA requires an explicit query dimension.
             attention_mask_condition["full_attention"] = (
                 denoise_key_valid_mask[:, None, None, :]
                 .expand(-1, -1, token_h * token_w, -1)
@@ -838,6 +863,7 @@ class NEOChatModel(PreTrainedModel):
                     "noise_scale_embedder"
                 ](noise_level)
 
+        # the CFG window for every step, read to the host once
         cfg_window = (
             (timesteps >= cfg_interval[0]) & (timesteps <= cfg_interval[1])
         ).tolist()

@@ -17,6 +17,10 @@ from .modeling_qwen3 import (
 
 
 class Qwen3MoeMLP(nn.Module):
+    """Single expert FFN. Same structure as :class:`Qwen3MLP` but the
+    intermediate size is parameterised so it can be ``moe_intermediate_size``
+    (per-expert) for experts and ``intermediate_size`` for any dense fallback.
+    """
 
     def __init__(self, config, intermediate_size: Optional[int] = None):
         super().__init__()
@@ -39,7 +43,15 @@ class Qwen3MoeMLP(nn.Module):
 
 
 class Qwen3MoeSparseMoeBlock(nn.Module):
-    """Top-k softmax-routed MoE block whose parameter names match converted A3B checkpoint keys."""
+    """Top-k softmax-routed MoE block matching HuggingFace's Qwen3-MoE layout.
+
+    Parameter names (``gate.weight``, ``experts.{i}.gate_proj/up_proj/down_proj``)
+    are kept identical so converted A3B checkpoints load directly via the
+    ``mlp.*`` / ``mlp_mot_gen.*`` keys. The block is parameterised explicitly
+    so the same class can serve both the understanding branch (``num_experts``
+    experts, top-k = ``num_experts_per_tok``, width ``moe_intermediate_size``)
+    and the image-generation branch (``gen_num_experts`` etc.).
+    """
 
     def __init__(
         self,
@@ -94,7 +106,7 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
         output = torch.zeros(
             (n_tokens, hidden_dim), dtype=flat.dtype, device=flat.device
         )
-        # note (Richard Wang): expert_mask is (num_experts, top_k, num_tokens).
+        # (num_experts, top_k, num_tokens)
         expert_mask = F.one_hot(selected_experts, num_classes=self.num_experts).permute(
             2, 1, 0
         )
@@ -114,6 +126,23 @@ class Qwen3MoeSparseMoeBlock(nn.Module):
 
 
 class Qwen3MoeDecoderLayer(Qwen3DecoderLayer):
+    """A Qwen3-MoE decoder block with the NEO-Unify two-branch structure.
+
+    Mirrors ``Qwen3DecoderLayer`` from :mod:`modeling_qwen3` but uses sparse
+    MoE blocks on *both* branches:
+
+      * ``self.mlp``         - understanding-path MoE
+                               (``num_experts`` / ``num_experts_per_tok`` /
+                               ``moe_intermediate_size``)
+      * ``self.mlp_mot_gen`` - image-generation-path MoE
+                               (``gen_num_experts`` / ``gen_num_experts_per_tok`` /
+                               ``gen_moe_intermediate_size``)
+
+    Layers listed in ``mlp_only_layers`` or those not aligned with
+    ``decoder_sparse_step`` fall back to a dense :class:`Qwen3MoeMLP` on the
+    understanding branch (matching upstream Qwen3-MoE), while the
+    generation branch still uses a sparse MoE.
+    """
 
     def _init_mlps(self, config: NEOMoELLMConfig, layer_idx: int):
         mlp_only_layers = list(config.mlp_only_layers or [])
@@ -134,7 +163,11 @@ class Qwen3MoeDecoderLayer(Qwen3DecoderLayer):
         else:
             self.mlp = Qwen3MoeMLP(config, intermediate_size=config.intermediate_size)
 
-        # note (Richard Wang): the A3B generation branch is also sparse MoE, defaulting to the understanding settings.
+        # Image-generation branch: in the A3B checkpoint this is *also* a sparse
+        # MoE block (``gen_num_experts`` experts, typically smaller than the und
+        # branch's ``num_experts``). ``NEOMoELLMConfig`` defaults the gen-path
+        # knobs to their und-path counterparts so legacy single-pool configs
+        # keep working.
         self.mlp_mot_gen = Qwen3MoeSparseMoeBlock(
             config,
             num_experts=config.gen_num_experts,
@@ -146,7 +179,7 @@ class Qwen3MoeDecoderLayer(Qwen3DecoderLayer):
 class Qwen3MoePreTrainedModel(Qwen3PreTrainedModel):
     config: NEOMoELLMConfig
     _no_split_modules = ["Qwen3MoeDecoderLayer"]
-    _can_compile_fullgraph = False  # note (Richard Wang): data-dependent MoE routing breaks fullgraph compile.
+    _can_compile_fullgraph = False  # MoE routing has data-dependent control flow.
     _can_record_outputs = {
         "hidden_states": Qwen3MoeDecoderLayer,
         "attentions": Qwen3Attention,
