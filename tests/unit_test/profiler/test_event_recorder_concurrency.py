@@ -22,6 +22,7 @@ from sglang_omni.profiler.event_recorder_types import (
     MAX_PRODUCER_BUFFERS,
     RUNTIME_WRITER_MAX_EVENTS_PER_ROUND,
     RUNTIME_WRITER_POLL_INTERVAL_SECONDS,
+    ProducerDropCounter,
     RecorderRunState,
 )
 from tests.unit_test.profiler.event_recorder_test_utils import (
@@ -29,6 +30,23 @@ from tests.unit_test.profiler.event_recorder_test_utils import (
     read_status,
     stall_writer,
 )
+
+
+@pytest.fixture(autouse=True)
+def runtime_writer_has_idle_priority(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_set_writer_scheduling = RequestEventRecorder.set_writer_scheduling
+
+    def set_writer_scheduling(
+        recorder: RequestEventRecorder, run_state: RecorderRunState
+    ) -> None:
+        if run_state.mode == "runtime":
+            run_state.writer_scheduling = "SCHED_IDLE"
+        else:
+            original_set_writer_scheduling(recorder, run_state)
+
+    monkeypatch.setattr(
+        RequestEventRecorder, "set_writer_scheduling", set_writer_scheduling
+    )
 
 
 def test_disabled_emit_returns_before_timestamp_and_snapshot(
@@ -148,69 +166,50 @@ def test_buffer_overflow_reports_exact_loss_count(
     assert status["complete"] is False
 
 
-def test_producer_buffer_limit_is_counted(tmp_path: Path) -> None:
+def test_overflow_producers_share_bounded_drop_accounting(tmp_path: Path) -> None:
     recorder = RequestEventRecorder(queue_capacity=2)
-    path = recorder.start("producer-limit", str(tmp_path), "stage")
-    barrier = threading.Barrier(MAX_PRODUCER_BUFFERS + 2)
-    rejected_ready = threading.Event()
-    release_rejected = threading.Event()
-    rejected_thread_id: int | None = None
+    path = recorder.start("bounded-overflow", str(tmp_path), "stage")
+    observed_drop_counters: list[ProducerDropCounter] = []
 
     def produce(producer_number: int) -> None:
-        nonlocal rejected_thread_id
-        barrier.wait(timeout=5)
         recorder.emit(
             request_id=f"request-{producer_number}",
             stage="stage",
             event_name="event",
         )
-        if getattr(recorder.producer_local, "buffer", None) is None:
-            rejected_thread_id = threading.get_ident()
-            rejected_ready.set()
-            if not release_rejected.wait(timeout=5):
-                raise AssertionError("test did not release the rejected producer")
-            else:
-                pass
-            for event_number in range(3):
-                recorder.emit(
-                    request_id=f"rejected-{event_number}",
-                    stage="stage",
-                    event_name="event",
-                )
-        else:
-            pass
+        if producer_number >= MAX_PRODUCER_BUFFERS:
+            assert recorder.active_state is not None
+            producer_drop_counter = recorder.active_state.producer_drop_counter
+            assert producer_drop_counter is not None
+            observed_drop_counters.append(producer_drop_counter)
 
+    producer_count = MAX_PRODUCER_BUFFERS + 8
     producers = [
         threading.Thread(target=produce, args=(producer_number,))
-        for producer_number in range(MAX_PRODUCER_BUFFERS + 1)
+        for producer_number in range(producer_count)
     ]
     for producer in producers:
         producer.start()
-    barrier.wait(timeout=5)
-    assert rejected_ready.wait(timeout=5)
-    accepted_producers = [
-        producer for producer in producers if producer.ident != rejected_thread_id
-    ]
-    for producer in accepted_producers:
         producer.join(timeout=5)
         assert producer.is_alive() is False
 
-    rejected_producer = next(
-        producer for producer in producers if producer.ident == rejected_thread_id
+    assert recorder.active_state is not None
+    assert len(recorder.active_state.producer_buffers) == MAX_PRODUCER_BUFFERS
+    assert recorder.active_state.producer_drop_counter is not None
+    assert len(observed_drop_counters) == producer_count - MAX_PRODUCER_BUFFERS
+    assert all(
+        drop_counter is recorder.active_state.producer_drop_counter
+        for drop_counter in observed_drop_counters
     )
-    with pytest.MonkeyPatch.context() as control_lock_patch:
-        control_lock_patch.setattr(recorder, "control_lock", object())
-        release_rejected.set()
-        rejected_producer.join(timeout=5)
-        assert rejected_producer.is_alive() is False
 
     recorder.stop(wait=True)
     status = read_status(path)
     assert status["accepted_events"] == MAX_PRODUCER_BUFFERS
-    assert status["dropped_events"] == 4
+    assert status["dropped_events"] == producer_count - MAX_PRODUCER_BUFFERS
     assert status["complete"] is False
     assert status["producer_buffer_count"] == MAX_PRODUCER_BUFFERS
     assert sorted(status["producer_buffer_event_counts"]) == [1] * MAX_PRODUCER_BUFFERS
+    assert "producer_buffer_registration_limit" in status["incomplete_reasons"]
 
 
 def test_stop_waits_for_an_admitted_emit_to_finish(tmp_path: Path) -> None:
@@ -276,72 +275,133 @@ def test_stalled_writer_does_not_block_stop_or_inactive_emit(
     recorder.stop(wait=True)
 
 
-def test_runtime_request_sampling_matches_independent_recorders(
+@pytest.mark.parametrize("sampling_unit", ["request", "session"])
+def test_runtime_sampling_is_deterministic_across_independent_recorders(
+    sampling_unit: str,
     tmp_path: Path,
 ) -> None:
-    sampled_request_ids: list[set[str]] = []
+    sampled_identities: list[set[str]] = []
     for recorder_number in range(2):
         recorder = RequestEventRecorder(queue_capacity=256)
         path = recorder.start(
-            "stable-request-sampling",
+            "stable-sampling",
             str(tmp_path / str(recorder_number)),
             "coordinator",
             mode="runtime",
-            sampling_unit="request",
+            sampling_unit=sampling_unit,
             sample_rate=0.35,
         )
         assert recorder.active_state is not None
+        unadmitted_selected: set[str] = set()
         for request_number in range(12):
             request_id = f"unadmitted-{request_number}"
+            session_identity = (f"session-unadmitted-{request_number}", 1)
+            sampling_identity: str | tuple[str, int] = (
+                request_id if sampling_unit == "request" else session_identity
+            )
             decision = recorder.deterministic_sampling_decision(
-                recorder.active_state, request_id
+                recorder.active_state, sampling_identity
             )
             assert (
-                recorder.should_sample_request(recorder.active_state, request_id)
+                recorder.should_sample_request(
+                    recorder.active_state,
+                    request_id,
+                    sampling_session_identity=(
+                        session_identity if sampling_unit == "session" else None
+                    ),
+                )
                 is decision
             )
             recorder.emit(
                 request_id=request_id,
                 stage="coordinator",
                 event_name="session_unit_ready",
+                sampling_session_identity=(
+                    session_identity if sampling_unit == "session" else None
+                ),
             )
-        assert not any(
-            request_id.startswith("unadmitted-")
-            for request_id in recorder.active_state.request_sampling_decisions
-        )
-        recorder.record_request_admission(
-            "later-admitted",
-            {},
-            stage_name="coordinator",
-        )
-        assert "later-admitted" in recorder.active_state.request_sampling_decisions
-        recorder.clear_request_sampling("later-admitted", stage_name="coordinator")
-        assert "later-admitted" not in recorder.active_state.request_sampling_decisions
-        for request_number in range(80):
-            request_id = f"request-{request_number}"
-            recorder.record_request_admission(
-                request_id,
-                {},
-                stage_name="coordinator",
-            )
-            recorder.emit(
-                request_id=request_id,
-                stage="coordinator",
-                event_name="request_admission",
-            )
-            recorder.emit(
-                request_id=request_id,
-                stage="stage",
-                event_name="stage_complete",
-            )
+            if decision:
+                unadmitted_selected.add(request_id)
+
+        assert recorder.active_state.request_sampling_decisions == {}
+        assert recorder.active_state.request_sampling_stage_names == {}
+        assert recorder.active_state.request_session_identities == {}
+
+        admitted_decisions: dict[str, bool] = {}
+        for identity_number in range(60):
+            session_id = f"session-{identity_number}"
+            operations: list[tuple[str, dict[str, object]]]
+            if sampling_unit == "request":
+                operations = [(f"request-{identity_number}", {})]
+            else:
+                operations = [
+                    (
+                        f"{operation}-{identity_number}",
+                        {
+                            "omni_session": {
+                                "operation": operation,
+                                "session_identity": {
+                                    "id": session_id,
+                                    "open_index": 2,
+                                },
+                            }
+                        },
+                    )
+                    for operation in ("open", "append", "close")
+                ]
+            session_decision: bool | None = None
+            for request_id, request_metadata in operations:
+                recorder.record_request_admission(
+                    request_id,
+                    request_metadata,
+                    stage_name="coordinator",
+                )
+                assert request_id in recorder.active_state.request_sampling_decisions
+                decision = recorder.active_state.request_sampling_decisions[request_id]
+                if sampling_unit == "session":
+                    assert decision is recorder.deterministic_sampling_decision(
+                        recorder.active_state, (session_id, 2)
+                    )
+                    if session_decision is None:
+                        session_decision = decision
+                    else:
+                        assert decision is session_decision
+                else:
+                    assert decision is recorder.deterministic_sampling_decision(
+                        recorder.active_state, request_id
+                    )
+                admitted_decisions[request_id] = decision
+                recorder.emit(
+                    request_id=request_id,
+                    stage="coordinator",
+                    event_name="request_admission",
+                )
+                recorder.clear_request_sampling(request_id, stage_name="coordinator")
+                assert (
+                    request_id not in recorder.active_state.request_sampling_decisions
+                )
+                assert (
+                    request_id not in recorder.active_state.request_session_identities
+                )
+
+        assert set(admitted_decisions.values()) == {False, True}
+        expected_selected = unadmitted_selected | {
+            request_id
+            for request_id, decision in admitted_decisions.items()
+            if decision
+        }
+        assert recorder.active_state.request_sampling_decisions == {}
+        assert recorder.active_state.request_session_identities == {}
         recorder.stop(wait=True)
-        sampled_request_ids.append({event["request_id"] for event in read_events(path)})
+        sampled = {event["request_id"] for event in read_events(path)}
+        assert sampled == expected_selected
+        sampled_identities.append(sampled)
         status = read_status(path)
         assert status["dropped_events"] == 0
         assert status["complete"] is True
 
-    assert sampled_request_ids[0] == sampled_request_ids[1]
-    assert sampled_request_ids[0]
+    assert sampled_identities[0] == sampled_identities[1]
+    assert sampled_identities[0]
 
 
 def test_runtime_final_drain_is_batched_paced_and_asynchronous(
@@ -360,9 +420,7 @@ def test_runtime_final_drain_is_batched_paced_and_asynchronous(
         writer_entered.set()
         if not release_setup.wait(timeout=5):
             raise AssertionError("test did not release the runtime writer")
-        else:
-            pass
-        run_state.writer_scheduling = "default"
+        run_state.writer_scheduling = "SCHED_IDLE"
 
     original_drain = recorder.drain_runtime_buffers
 
@@ -374,8 +432,6 @@ def test_runtime_final_drain_is_batched_paced_and_asynchronous(
         if stopping and count:
             assert count <= RUNTIME_WRITER_MAX_EVENTS_PER_ROUND
             final_batch_sizes.append(count)
-        else:
-            pass
         return count
 
     def pause_between_batches(interval: float) -> None:
@@ -383,8 +439,6 @@ def test_runtime_final_drain_is_batched_paced_and_asynchronous(
         pacing_entered.set()
         if not release_pacing.wait(timeout=5):
             raise AssertionError("test did not release final-drain pacing")
-        else:
-            pass
 
     monkeypatch.setattr(recorder, "set_writer_scheduling", pause_writer)
     monkeypatch.setattr(recorder, "drain_runtime_buffers", track_drain)
@@ -524,55 +578,8 @@ def test_runtime_session_sampling_covers_units_and_ready_boundary(
     assert status["completeness_scope"] == "sampled_event_storage"
 
 
-def test_runtime_session_sampling_is_consistent_across_stage_processes(
-    tmp_path: Path,
-) -> None:
-    selected_session_ids: list[set[str]] = []
-    for process_number in range(3):
-        recorder = RequestEventRecorder(queue_capacity=64)
-        path = recorder.start(
-            "stage-process-sampling",
-            str(tmp_path / str(process_number)),
-            "coordinator",
-            mode="runtime",
-            sampling_unit="session",
-            sample_rate=0.3,
-        )
-        for session_number in range(60):
-            session_id = f"session-{session_number}"
-            request_id = f"operation-{session_number}"
-            session_metadata = {
-                "omni_session": {
-                    "operation": "append",
-                    "session_identity": {
-                        "id": session_id,
-                        "open_index": 2,
-                    },
-                }
-            }
-            recorder.record_request_admission(
-                request_id,
-                session_metadata,
-                stage_name="stage",
-            )
-            recorder.emit(
-                request_id=request_id,
-                stage="stage",
-                event_name="stage_input_received",
-            )
-        recorder.stop(wait=True)
-        selected_session_ids.append(
-            {
-                event["request_id"].removeprefix("operation-")
-                for event in read_events(path)
-            }
-        )
-
-    assert selected_session_ids[0] == selected_session_ids[1] == selected_session_ids[2]
-
-
 def test_runtime_writer_concurrency_preserves_all_events(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     recorder = RequestEventRecorder(queue_capacity=64)
     path = recorder.start(
@@ -585,6 +592,41 @@ def test_runtime_writer_concurrency_preserves_all_events(
     )
     producer_count = 8
     events_per_producer = 48
+    first_write_entered = threading.Event()
+    release_first_write = threading.Event()
+    first_write_finished = threading.Event()
+    producer_snapshot_entered = threading.Event()
+    release_producer_snapshot = threading.Event()
+    original_write_event = recorder.write_event
+
+    def block_first_write(
+        request_event: RequestEvent,
+        file_handle: TextIOWrapper,
+        run_state: RecorderRunState,
+    ) -> None:
+        if request_event.request_id == "request-seed":
+            first_write_entered.set()
+            if not release_first_write.wait(timeout=5):
+                raise AssertionError("test did not release the runtime writer")
+        original_write_event(request_event, file_handle, run_state)
+        if request_event.request_id == "request-seed":
+            first_write_finished.set()
+
+    class BlockingMetadata(dict[str, object]):
+        def items(self) -> ItemsView[str, object]:
+            producer_snapshot_entered.set()
+            if not release_producer_snapshot.wait(timeout=5):
+                raise AssertionError("test did not release producer capture")
+            return super().items()
+
+    monkeypatch.setattr(recorder, "write_event", block_first_write)
+    recorder.emit(
+        request_id="request-seed",
+        stage="stage",
+        event_name="event",
+        metadata={"number": -1},
+    )
+    assert first_write_entered.wait(timeout=5)
 
     def produce_events(producer_number: int) -> None:
         for event_number in range(events_per_producer):
@@ -592,7 +634,11 @@ def test_runtime_writer_concurrency_preserves_all_events(
                 request_id=f"request-{producer_number}",
                 stage="stage",
                 event_name="event",
-                metadata={"number": event_number},
+                metadata=(
+                    BlockingMetadata(number=event_number)
+                    if producer_number == 0 and event_number == 0
+                    else {"number": event_number}
+                ),
             )
 
     producers = [
@@ -601,6 +647,10 @@ def test_runtime_writer_concurrency_preserves_all_events(
     ]
     for producer in producers:
         producer.start()
+    assert producer_snapshot_entered.wait(timeout=5)
+    release_first_write.set()
+    assert first_write_finished.wait(timeout=5)
+    release_producer_snapshot.set()
     for producer in producers:
         producer.join(timeout=5)
         assert producer.is_alive() is False
@@ -615,6 +665,7 @@ def test_runtime_writer_concurrency_preserves_all_events(
         for producer_number in range(producer_count)
         for event_number in range(events_per_producer)
     }
+    expected_keys.add(("request-seed", -1))
     assert event_keys == expected_keys
     assert len(events) == len(expected_keys)
     status = read_status(path)
@@ -636,9 +687,7 @@ def test_runtime_buffer_overflow_is_counted_while_writer_is_paused(
         writer_entered.set()
         if not release_writer.wait(timeout=5):
             raise AssertionError("test did not release the runtime writer")
-        else:
-            pass
-        run_state.writer_scheduling = "default"
+        run_state.writer_scheduling = "SCHED_IDLE"
 
     monkeypatch.setattr(recorder, "set_writer_scheduling", pause_writer)
     path = recorder.start(
@@ -687,8 +736,6 @@ def test_runtime_disk_cap_reports_unwritten_events_without_partial_records(
         original_write_event(request_event, file_handle, run_state)
         if run_state.file_size_limit_reached:
             limit_reached.set()
-        else:
-            pass
 
     def snapshot_metadata(metadata: object) -> dict[str, object]:
         nonlocal snapshot_calls
@@ -774,8 +821,6 @@ def test_runtime_stop_waits_in_writer_for_in_flight_emit(
             snapshot_entered.set()
             if not release_snapshot.wait(timeout=5):
                 raise AssertionError("test did not release producer snapshot")
-            else:
-                pass
             return super().items()
 
     producer = threading.Thread(
@@ -804,6 +849,71 @@ def test_runtime_stop_waits_in_writer_for_in_flight_emit(
     assert status["complete"] is True
 
 
+def test_runtime_priority_failure_disables_capture_and_finalizes_incomplete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = RequestEventRecorder(queue_capacity=8)
+    scheduling_started = threading.Event()
+    release_scheduling = threading.Event()
+    scheduling_failed = threading.Event()
+    open_calls = 0
+    original_open_event_file = recorder.open_event_file
+
+    def fail_priority(run_state: RecorderRunState) -> None:
+        scheduling_started.set()
+        if not release_scheduling.wait(timeout=5):
+            raise AssertionError("test did not release scheduling setup")
+        run_state.writer_scheduling = "default"
+        run_state.writer_failed = True
+        scheduling_failed.set()
+
+    def track_open_event_file(
+        run_state: RecorderRunState,
+    ) -> TextIOWrapper | None:
+        nonlocal open_calls
+        open_calls += 1
+        return original_open_event_file(run_state)
+
+    monkeypatch.setattr(recorder, "set_writer_scheduling", fail_priority)
+    monkeypatch.setattr(recorder, "open_event_file", track_open_event_file)
+    path = recorder.start(
+        "priority-unavailable",
+        str(tmp_path),
+        "stage",
+        mode="runtime",
+        sampling_unit="request",
+        sample_rate=1.0,
+    )
+    assert scheduling_started.wait(timeout=5)
+    recorder.emit(
+        request_id="before-failure",
+        stage="stage",
+        event_name="event",
+    )
+    release_scheduling.set()
+    assert scheduling_failed.wait(timeout=5)
+    recorder.record_request_admission("after-failure", {}, stage_name="stage")
+    recorder.emit(
+        request_id="after-failure",
+        stage="stage",
+        event_name="event",
+    )
+    assert recorder.active_state is not None
+    assert "after-failure" not in recorder.active_state.request_sampling_decisions
+    assert recorder.stop(wait=False) == path
+    assert recorder.wait_for_finalizations(timeout_seconds=5) is True
+
+    status = read_status(path)
+    assert open_calls == 0
+    assert Path(path).exists() is False
+    assert status["accepted_events"] == 1
+    assert status["written_events"] == 0
+    assert status["unwritten_events"] == 1
+    assert status["complete"] is False
+    assert "writer_priority_unavailable" in status["incomplete_reasons"]
+
+
 def test_runtime_deferred_sampling_and_colocated_cleanup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -823,12 +933,6 @@ def test_runtime_deferred_sampling_and_colocated_cleanup(
             "session_identity": {"id": "shared-session", "open_index": 1},
         }
     }
-    closing_metadata = {
-        "omni_session": {
-            "operation": "close",
-            "session_identity": {"id": "shared-session", "open_index": 1},
-        }
-    }
     recorder.record_request_admission(
         "shared-request",
         session_metadata,
@@ -839,31 +943,9 @@ def test_runtime_deferred_sampling_and_colocated_cleanup(
         session_metadata,
         stage_name="stage-b",
     )
-    recorder.record_request_admission(
-        "closing-request",
-        closing_metadata,
-        stage_name="stage-a",
-    )
-    recorder.record_request_admission(
-        "closing-request",
-        closing_metadata,
-        stage_name="stage-b",
-    )
-    recorder.clear_request_sampling("closing-request", stage_name="stage-a")
-    recorder.clear_request_sampling("closing-request", stage_name="stage-b")
+    recorder.clear_request_sampling("shared-request", stage_name="stage-a")
     assert recorder.active_state is not None
     assert recorder.active_state.request_sampling_decisions == {"shared-request": True}
-    assert recorder.active_state.session_sampling_decisions == {
-        ("shared-session", 1): True
-    }
-    assert recorder.active_state.session_sampling_clear_when_idle == {
-        ("shared-session", 1)
-    }
-    recorder.clear_session_sampling("shared-session", 1)
-    assert recorder.active_state.session_sampling_decisions == {
-        ("shared-session", 1): True
-    }
-    recorder.clear_request_sampling("shared-request", stage_name="stage-a")
     monkeypatch.setattr(event_recorder_module, "get_recorder", lambda: recorder)
 
     deferred_buffer = RequestEventBuffer()
@@ -881,17 +963,10 @@ def test_runtime_deferred_sampling_and_colocated_cleanup(
         stage="stage-b",
         event_name="ordinary_event",
     )
-    recorder.clear_request_sampling(
-        "shared-request",
-        stage_name="stage-b",
-        clear_session=True,
-    )
+    recorder.clear_request_sampling("shared-request", stage_name="stage-b")
     assert recorder.active_state is not None
     assert recorder.active_state.request_sampling_decisions == {}
     assert recorder.active_state.request_session_identities == {}
-    assert recorder.active_state.request_session_operations == {}
-    assert recorder.active_state.session_sampling_decisions == {}
-    assert recorder.active_state.session_sampling_clear_when_idle == set()
     recorder.stop(wait=True)
 
     events = read_events(path)

@@ -1370,37 +1370,10 @@ def test_runtime_profile_route_forwards_runtime_configuration(
     assert control.configurations[0]["mode"] == "runtime"
 
 
-@pytest.mark.parametrize(
-    "configuration",
-    [
-        {"mode": "runtime"},
-        {"mode": "runtime", "sampling_unit": "request"},
-        {"mode": "runtime", "sample_rate": 0.1},
-        {"mode": "runtime", "sampling_unit": "other", "sample_rate": 0.1},
-        {"mode": "runtime", "sampling_unit": "request", "sample_rate": 0},
-        {"mode": "runtime", "sampling_unit": "request", "sample_rate": 1.01},
-        {"mode": "runtime", "sampling_unit": "session", "sample_rate": True},
-        {"mode": "runtime", "sampling_unit": "session", "sample_rate": float("inf")},
-        {
-            "mode": "performance",
-            "sampling_unit": "request",
-            "sample_rate": 0.1,
-        },
-        {
-            "mode": "runtime",
-            "sampling_unit": "session",
-            "sample_rate": 0.1,
-            "max_event_file_bytes": 0,
-        },
-    ],
-)
-def test_runtime_profile_route_rejects_invalid_configuration(
-    configuration: dict[str, object],
+def test_runtime_profile_route_rejects_missing_sampling_configuration(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from sglang_omni.serve import launcher
-
     class FakeRecorder:
         def __init__(self) -> None:
             self.starts = 0
@@ -1428,13 +1401,40 @@ def test_runtime_profile_route_rejects_invalid_configuration(
             json={
                 "run_id": "invalid-runtime-test",
                 "event_dir": str(tmp_path / "events"),
-                **configuration,
+                "mode": "runtime",
             },
         )
 
     assert response.status_code == 422
     assert recorder.starts == 0
     assert control.starts == 0
+
+
+@pytest.mark.parametrize(
+    "configuration",
+    [
+        {"mode": "runtime"},
+        {"mode": "runtime", "sampling_unit": "request"},
+        {"mode": "runtime", "sample_rate": 0.1},
+        {"mode": "runtime", "sampling_unit": "other", "sample_rate": 0.1},
+        {"mode": "runtime", "sampling_unit": "request", "sample_rate": 0},
+        {"mode": "runtime", "sampling_unit": "request", "sample_rate": 1.01},
+        {"mode": "runtime", "sampling_unit": "session", "sample_rate": True},
+        {"mode": "runtime", "sampling_unit": "session", "sample_rate": float("inf")},
+        {"mode": "performance", "sampling_unit": "request", "sample_rate": 0.1},
+        {
+            "mode": "runtime",
+            "sampling_unit": "session",
+            "sample_rate": 0.1,
+            "max_event_file_bytes": 0,
+        },
+    ],
+)
+def test_request_profile_model_rejects_invalid_runtime_configuration(
+    configuration: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError):
+        launcher.StartRequestProfileReq.model_validate(configuration)
 
 
 class RecordingProfilerControl:

@@ -395,19 +395,13 @@ class StartRequestProfileReq(BaseModel):
     def validate_runtime_configuration(self) -> StartRequestProfileReq:
         if self.mode == "runtime":
             if self.sampling_unit is None or self.sample_rate is None:
-                raise ValueError(
-                    "runtime mode requires sampling_unit and sample_rate"
-                )
-            else:
-                pass
+                raise ValueError("runtime mode requires sampling_unit and sample_rate")
         elif (
             self.sampling_unit is not None
             or self.sample_rate is not None
             or self.max_event_file_bytes is not None
         ):
             raise ValueError("runtime options require mode='runtime'")
-        else:
-            pass
         return self
 
 
@@ -507,17 +501,11 @@ def mount_profiler_routes(
                         "SGLANG_TORCH_PROFILER_DIR is not set"
                     ),
                 )
-            else:
-                pass
             event_dir = default_event_dir(profiler_dir, run_id)
-        else:
-            pass
         try:
             max_event_file_bytes = req.max_event_file_bytes
             if req.mode == "runtime" and max_event_file_bytes is None:
                 max_event_file_bytes = DEFAULT_MAX_EVENT_FILE_BYTES
-            else:
-                pass
             _get_event_recorder().start(
                 run_id=run_id,
                 event_dir=event_dir,
@@ -564,8 +552,6 @@ def mount_profiler_routes(
                     "max_event_file_bytes": max_event_file_bytes,
                 }
             )
-        else:
-            pass
         return response
 
     @router.post("/stop_profile")

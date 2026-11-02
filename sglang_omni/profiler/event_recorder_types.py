@@ -134,15 +134,10 @@ class RecorderRunState:
     sample_rate: float | None = None
     max_event_file_bytes: int | None = None
     producer_buffers: list[ProducerBuffer] = field(default_factory=list)
-    producer_drop_counters: list[ProducerDropCounter] = field(default_factory=list)
+    producer_drop_counter: ProducerDropCounter | None = None
     request_sampling_decisions: dict[str, bool] = field(default_factory=dict)
     request_sampling_stage_names: dict[str, set[str]] = field(default_factory=dict)
     request_session_identities: dict[str, tuple[str, int]] = field(default_factory=dict)
-    request_session_operations: dict[str, str] = field(default_factory=dict)
-    session_sampling_clear_when_idle: set[tuple[str, int]] = field(default_factory=set)
-    session_sampling_decisions: dict[tuple[str, int], bool] = field(
-        default_factory=dict
-    )
     stop_requested: threading.Event = field(default_factory=threading.Event)
     writer_buffer_index: int = 0
     event_file_bytes_written: int = 0
@@ -184,11 +179,11 @@ class ProducerBuffer:
 
 @dataclass
 class ProducerDropCounter:
-    """Count events rejected after the producer-buffer limit is reached."""
+    """Bounded shared counter for producers rejected after the buffer limit."""
 
     run_state: RecorderRunState
     dropped_events: int = 0
-    in_flight: int = 0
+    lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 def snapshot_metadata_text(

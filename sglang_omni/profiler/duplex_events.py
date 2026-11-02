@@ -38,18 +38,6 @@ def capture_session_stage_start() -> tuple[str, int] | None:
     return get_recorder().capture_active_run_timestamp_ns()
 
 
-def clear_session_sampling(session_identity: SessionIdentity) -> None:
-    """Release one completed or aborted session's runtime sampling decision."""
-    recorder = get_recorder()
-    if recorder.is_runtime_active():
-        recorder.clear_session_sampling(
-            session_identity.id,
-            session_identity.open_index,
-        )
-    else:
-        pass
-
-
 def session_identity_metadata(
     session_identity: SessionIdentity,
     input_chunk: TimedChunk,

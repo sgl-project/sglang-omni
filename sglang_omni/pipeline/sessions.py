@@ -19,7 +19,6 @@ from sglang_omni.pipeline.replicas import assign_replica_bindings
 from sglang_omni.pipeline.session_delivery import DeliveryPacer
 from sglang_omni.pipeline.types import SessionIdleTimeoutError, SessionOutputBudgetError
 from sglang_omni.profiler.duplex_events import (
-    clear_session_sampling,
     emit_session_output_event,
     emit_session_unit_event,
     emit_session_unit_ready_event,
@@ -979,7 +978,6 @@ class CoordinatorSessions:
         session.cleanup_error = session.error = error
         self.session_unavailable_stages.update(session.opened)
         session.is_closed = True
-        clear_session_sampling(session.session_identity)
         session.output_wake.set()
 
     async def cleanup_session(self, session: Session) -> None:
@@ -1019,7 +1017,6 @@ class CoordinatorSessions:
                 self.session_unavailable_stages.update(unconfirmed)
                 break
         session.is_closed = True
-        clear_session_sampling(session.session_identity)
         session.output_wake.set()
         # Note (Junnan Li): An unacknowledged owner may still hold buffers; keep its capacity reserved.
         if session.cleanup_error is None:
