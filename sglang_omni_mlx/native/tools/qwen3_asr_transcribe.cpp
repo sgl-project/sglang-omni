@@ -2,6 +2,7 @@
 // Transcribes WAV files with the native runtime and prints one JSON line each,
 // for parity checks against the Python reference server.
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -45,6 +46,13 @@ int main(int argc, char **argv) {
       options.stop_on_token_loop = true;
     } else if (argument == "--max-new-tokens") {
       options.max_new_tokens = std::stoi(value());
+    } else if (argument == "--repetition-penalty") {
+      options.repetition_penalty = std::stof(value());
+      if (!std::isfinite(options.repetition_penalty) ||
+          options.repetition_penalty <= 0) {
+        throw std::invalid_argument(argument + " must be positive and finite");
+      } else {
+      }
     } else if (argument == "--encode") {
       encode = true;
       encode_text = value();

@@ -11,15 +11,24 @@ from __future__ import annotations
 import http.client
 import io
 import json
-import re
 import socket
 import time
 import wave
 from collections.abc import Iterator
 from pathlib import Path
 
-import numpy as np
 import pytest
+from speech_api import (
+    open_speech_stream,
+    request_states,
+    send_speech_request,
+    speak,
+    transcript_words,
+    wait_until_idle,
+    wait_until_running,
+    word_errors,
+    words,
+)
 from test_server_api import DATA_ROOT, RUNTIME_BIN, Server
 
 pytestmark = pytest.mark.skipif(
@@ -28,7 +37,6 @@ pytestmark = pytest.mark.skipif(
 VOXTRAL_REPO = "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit"
 CHOSEN_MODEL_NAME = "mistralai/Voxtral-4B-TTS-2603"
 SAMPLE_RATE = 24000
-ASR_SAMPLE_RATE = 16000
 # One audio frame is 80 ms of 16-bit samples.
 FRAME_BYTES = 1920 * 2
 SENTENCE = "Please remember to bring your passport and boarding pass to the airport."
@@ -73,113 +81,6 @@ def asr_server() -> Iterator[Server]:
     running.stop()
 
 
-def speak(server: Server, body: dict) -> tuple[int, dict[str, str], bytes]:
-    connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=300)
-    connection.request("POST", "/v1/audio/speech", body=json.dumps(body))
-    response = connection.getresponse()
-    return response.status, dict(response.getheaders()), response.read()
-
-
-def send_speech_request(
-    server: Server, body: dict, receive_buffer_bytes: int | None = None
-) -> socket.socket:
-    """Sends a speech request on a socket of its own, without reading the answer."""
-    encoded_body = json.dumps(body)
-    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    # The receive buffer is sized before connecting, so the window follows it.
-    if receive_buffer_bytes is not None:
-        client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, receive_buffer_bytes)
-    else:
-        pass
-    client.settimeout(300)
-    client.connect(("127.0.0.1", server.port))
-    client.sendall(
-        b"POST /v1/audio/speech HTTP/1.1\r\nHost: test\r\n"
-        b"Content-Type: application/json\r\n"
-        + f"Content-Length: {len(encoded_body)}\r\n\r\n{encoded_body}".encode()
-    )
-    return client
-
-
-def open_speech_stream(
-    server: Server, text: str, receive_buffer_bytes: int | None = None
-) -> socket.socket:
-    """Sends a streamed speech request; returns once its 200 headers arrive."""
-    client = send_speech_request(
-        server,
-        {"input": text, "response_format": "pcm", "stream": True},
-        receive_buffer_bytes,
-    )
-    received = b""
-    while b"\r\n\r\n" not in received:
-        chunk = client.recv(65536)
-        if not chunk:
-            client.close()
-            raise ConnectionError(f"stream closed before its headers: {received!r}")
-        else:
-            received += chunk
-    if not received.startswith(b"HTTP/1.1 200 "):
-        client.close()
-        raise AssertionError(f"stream was refused: {received!r}")
-    else:
-        pass
-    return client
-
-
-def request_states(server: Server) -> dict[str, int]:
-    return json.loads(server.request("GET", "/health")[1])["request_states"]
-
-
-def wait_until_running(server: Server) -> None:
-    started_at = time.monotonic()
-    while request_states(server) != {"running": 1}:
-        assert time.monotonic() - started_at < CANCEL_SECONDS
-        time.sleep(0.05)
-
-
-def wait_until_idle(server: Server, timeout_seconds: float = CANCEL_SECONDS) -> None:
-    started_at = time.monotonic()
-    while request_states(server):
-        assert (
-            time.monotonic() - started_at < timeout_seconds
-        ), "generation kept running after it was cancelled"
-        time.sleep(0.05)
-
-
-def transcript_words(asr_server: Server, pcm: bytes) -> list[str]:
-    samples = np.frombuffer(pcm, dtype="<i2").astype(np.float64)
-    resampled_count = len(samples) * ASR_SAMPLE_RATE // SAMPLE_RATE
-    # Band-limited resampling: keep the spectrum below the new Nyquist rate.
-    spectrum = np.fft.rfft(samples)[: resampled_count // 2 + 1]
-    resampled = np.fft.irfft(spectrum, resampled_count) * resampled_count / len(samples)
-    buffer = io.BytesIO()
-    with wave.open(buffer, "wb") as writer:
-        writer.setnchannels(1)
-        writer.setsampwidth(2)
-        writer.setframerate(ASR_SAMPLE_RATE)
-        writer.writeframes(np.clip(resampled, -32768, 32767).astype("<i2").tobytes())
-    status, body = asr_server.post_form({"language": "en"}, buffer.getvalue())
-    assert status == 200
-    return words(json.loads(body)["text"])
-
-
-def words(text: str) -> list[str]:
-    return re.findall(r"[a-z0-9]+", text.lower())
-
-
-def word_errors(reference: list[str], hypothesis: list[str]) -> int:
-    distances = list(range(len(hypothesis) + 1))
-    for row, expected in enumerate(reference, 1):
-        diagonal, distances[0] = distances[0], row
-        for column, heard in enumerate(hypothesis, 1):
-            diagonal, distances[column] = distances[column], min(
-                distances[column] + 1,
-                distances[column - 1] + 1,
-                diagonal + (expected != heard),
-            )
-    return distances[-1]
-
-
 def test_voxtral_wav_speaks_its_input(
     voxtral_server: Server, asr_server: Server
 ) -> None:
@@ -206,7 +107,7 @@ def test_voxtral_wav_speaks_its_input(
         assert reader.getframerate() == SAMPLE_RATE
         pcm = reader.readframes(reader.getnframes())
     assert len(pcm) == frame_count * FRAME_BYTES
-    heard = transcript_words(asr_server, pcm)
+    heard = transcript_words(asr_server, pcm, SAMPLE_RATE)
     assert word_errors(words(SENTENCE), heard) <= MAX_WORD_ERRORS, heard
 
 
@@ -240,7 +141,7 @@ def test_voxtral_streams_pcm_while_it_speaks(
     assert pcm and len(pcm) % FRAME_BYTES == 0
     # The first chunk is five frames: it arrives well before the last.
     assert first_audio_at - started_at < (finished_at - started_at) / 2
-    heard = transcript_words(asr_server, pcm)
+    heard = transcript_words(asr_server, pcm, SAMPLE_RATE)
     assert word_errors(words(SENTENCE), heard) <= MAX_WORD_ERRORS, heard
 
 
@@ -258,10 +159,10 @@ def test_voxtral_stops_at_max_new_tokens(voxtral_server: Server) -> None:
 
 
 def test_voxtral_disconnect_stops_its_generation(voxtral_server: Server) -> None:
-    with open_speech_stream(voxtral_server, LONG_SENTENCE) as client:
+    with open_speech_stream(voxtral_server, {"input": LONG_SENTENCE}) as client:
         assert client.recv(65536)
         assert request_states(voxtral_server) == {"running": 1}
-    wait_until_idle(voxtral_server)
+    wait_until_idle(voxtral_server, CANCEL_SECONDS)
 
 
 def test_voxtral_disconnect_stops_a_generation_it_has_not_answered(
@@ -269,8 +170,8 @@ def test_voxtral_disconnect_stops_a_generation_it_has_not_answered(
 ) -> None:
     """A WAV request kept generating after its client disconnected."""
     with send_speech_request(voxtral_server, {"input": PASSAGE}):
-        wait_until_running(voxtral_server)
-    wait_until_idle(voxtral_server)
+        wait_until_running(voxtral_server, CANCEL_SECONDS)
+    wait_until_idle(voxtral_server, CANCEL_SECONDS)
 
 
 def test_voxtral_disconnect_is_seen_past_bytes_sent_after_the_request(
@@ -278,9 +179,9 @@ def test_voxtral_disconnect_is_seen_past_bytes_sent_after_the_request(
 ) -> None:
     """Bytes a client sent after its request hid that it then disconnected."""
     with send_speech_request(voxtral_server, {"input": PASSAGE}) as client:
-        wait_until_running(voxtral_server)
+        wait_until_running(voxtral_server, CANCEL_SECONDS)
         client.sendall(b"GET /health HTTP/1.1\r\nHost: test\r\n\r\n")
-    wait_until_idle(voxtral_server)
+    wait_until_idle(voxtral_server, CANCEL_SECONDS)
 
 
 def test_voxtral_half_closed_client_counts_as_gone(voxtral_server: Server) -> None:
@@ -292,13 +193,13 @@ def test_voxtral_half_closed_client_counts_as_gone(voxtral_server: Server) -> No
         while chunk := client.recv(65536):
             received += chunk
         assert received == b""
-    wait_until_idle(voxtral_server)
+    wait_until_idle(voxtral_server, CANCEL_SECONDS)
 
 
 def test_voxtral_refuses_requests_beyond_its_queue(voxtral_server: Server) -> None:
     with (
-        open_speech_stream(voxtral_server, LONG_SENTENCE) as running,
-        open_speech_stream(voxtral_server, LONG_SENTENCE),
+        open_speech_stream(voxtral_server, {"input": LONG_SENTENCE}) as running,
+        open_speech_stream(voxtral_server, {"input": LONG_SENTENCE}),
     ):
         assert running.recv(65536)
         assert request_states(voxtral_server) == {
@@ -326,7 +227,7 @@ def test_voxtral_times_out_a_request_past_its_deadline(
         {"detail": "Speech generation timed out."},
     )
     assert time.monotonic() - started_at >= REQUEST_TIMEOUT_SECONDS
-    wait_until_idle(voxtral_server)
+    wait_until_idle(voxtral_server, CANCEL_SECONDS)
 
 
 def test_voxtral_stops_a_stream_its_client_stops_reading_at_its_deadline(
@@ -334,7 +235,9 @@ def test_voxtral_stops_a_stream_its_client_stops_reading_at_its_deadline(
 ) -> None:
     # Note (Minyi Tang): seconds of audio fill a 4 KB receive window and the
     # server's send buffer, so the server's write blocks while generation runs.
-    with open_speech_stream(voxtral_server, PASSAGE, receive_buffer_bytes=4096):
+    with open_speech_stream(
+        voxtral_server, {"input": PASSAGE}, receive_buffer_bytes=4096
+    ):
         assert request_states(voxtral_server) == {"running": 1}
         wait_until_idle(voxtral_server, REQUEST_TIMEOUT_SECONDS + CANCEL_SECONDS)
 
