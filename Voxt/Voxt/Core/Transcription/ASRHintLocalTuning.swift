@@ -370,6 +370,10 @@ struct MLXLocalTuningSettings: Codable, Equatable {
     var preset: LocalASRRecognitionPreset = .balanced
     var whisperTemperature: Double = 0.0
     var qwenContextBias: String = ""
+    /// A checkpoint with a draft model (OmniASRBackend.draftModelRepo) verifies
+    /// the draft's proposals, decoding several tokens per step with the same
+    /// transcript. Stored per family like every other field here.
+    var speculativeDecoding: Bool = false
     var senseVoiceUseITN: Bool = false
     var mossOutputMode: MossASROutputMode = .plainText
     var mossHotwords: String = AppPreferenceKey.asrDictionaryTermsTemplateVariable
@@ -387,6 +391,7 @@ struct MLXLocalTuningSettings: Codable, Equatable {
         preset: LocalASRRecognitionPreset = .balanced,
         whisperTemperature: Double = 0.0,
         qwenContextBias: String = "",
+        speculativeDecoding: Bool = false,
         senseVoiceUseITN: Bool = false,
         mossOutputMode: MossASROutputMode = .plainText,
         mossHotwords: String = AppPreferenceKey.asrDictionaryTermsTemplateVariable,
@@ -403,6 +408,7 @@ struct MLXLocalTuningSettings: Codable, Equatable {
         self.preset = preset
         self.whisperTemperature = whisperTemperature
         self.qwenContextBias = qwenContextBias
+        self.speculativeDecoding = speculativeDecoding
         self.senseVoiceUseITN = senseVoiceUseITN
         self.mossOutputMode = mossOutputMode
         self.mossHotwords = mossHotwords
@@ -421,6 +427,7 @@ struct MLXLocalTuningSettings: Codable, Equatable {
         case preset
         case whisperTemperature
         case qwenContextBias
+        case speculativeDecoding
         case senseVoiceUseITN
         case mossOutputMode
         case mossHotwords
@@ -440,6 +447,7 @@ struct MLXLocalTuningSettings: Codable, Equatable {
         preset = try container.decodeIfPresent(LocalASRRecognitionPreset.self, forKey: .preset) ?? .balanced
         whisperTemperature = try container.decodeIfPresent(Double.self, forKey: .whisperTemperature) ?? 0.0
         qwenContextBias = try container.decodeIfPresent(String.self, forKey: .qwenContextBias) ?? ""
+        speculativeDecoding = try container.decodeIfPresent(Bool.self, forKey: .speculativeDecoding) ?? false
         senseVoiceUseITN = try container.decodeIfPresent(Bool.self, forKey: .senseVoiceUseITN) ?? false
         let legacyMossOutputMode = try container.decodeIfPresent(MossASROutputMode.self, forKey: .mossOutputMode)
         let legacyMossHotwords = try container.decodeIfPresent(String.self, forKey: .mossHotwords)
@@ -564,6 +572,7 @@ enum MLXLocalTuningSettingsStore {
             qwenContextBias: AppPromptDefaults.matchesKnownDefault(qwenContextBias, kind: .qwenASRContextBias)
                 ? ""
                 : qwenContextBias,
+            speculativeDecoding: settings.speculativeDecoding,
             senseVoiceUseITN: settings.senseVoiceUseITN,
             mossOutputMode: settings.mossOutputMode,
             mossHotwords: settings.mossHotwords.trimmingCharacters(in: .whitespacesAndNewlines),
