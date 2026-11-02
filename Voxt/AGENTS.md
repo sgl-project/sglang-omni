@@ -16,8 +16,8 @@ Use the shared `Voxt` scheme.
 
 ```bash
 xcodebuild -list -project Voxt.xcodeproj
-xcodebuild build -project Voxt.xcodeproj -scheme Voxt -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
-xcodebuild test -project Voxt.xcodeproj -scheme Voxt -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+xcodebuild build -project Voxt.xcodeproj -scheme Voxt -destination 'platform=macOS' -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO
+xcodebuild test -project Voxt.xcodeproj -scheme Voxt -destination 'platform=macOS' -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO
 ```
 
 For focused test runs, prefer `-only-testing:VoxtTests/TestClassName` or `-only-testing:VoxtTests/TestClassName/testMethodName`.
