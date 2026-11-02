@@ -1264,7 +1264,7 @@ class Stage:
         if session_operation is not None:
             # Note (Junnan Li): A preempted append dies here as the control arrives: its result here and anything it sends here later are dropped.
             for preempted_request_id in session_operation.preempted_request_ids:
-                self.on_abort(preempted_request_id)
+                self.on_abort(preempted_request_id, is_preemption=True)
         else:
             pass
         if (
@@ -1273,6 +1273,10 @@ class Stage:
             and self.owns_external_io
         ):
             await self.forward_session_append(request_id, payload, session_operation)
+        else:
+            pass
+        if request_id in self.aborted and self.role != "follower":
+            return
         else:
             pass
         _emit_event(
@@ -2672,7 +2676,7 @@ class Stage:
         else:
             pass
 
-    def on_abort(self, request_id: str) -> None:
+    def on_abort(self, request_id: str, *, is_preemption: bool = False) -> None:
         self.record_aborted_request_id(request_id)
         self.comm.cleanup(request_id)
         self.clear_request_state(request_id)
@@ -2680,7 +2684,15 @@ class Stage:
         if self.role == "single" or not getattr(
             self.scheduler, "requires_tp_work_fanout", False
         ):
-            self.scheduler.abort(request_id)
+            abort_preempted = (
+                getattr(self.scheduler, "abort_preempted", None)
+                if is_preemption
+                else None
+            )
+            if abort_preempted is None:
+                self.scheduler.abort(request_id)
+            else:
+                abort_preempted(request_id)
         else:
             pass
 
