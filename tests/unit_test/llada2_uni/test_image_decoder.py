@@ -8,6 +8,7 @@ import base64
 import io
 import os
 import re
+import socket
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -114,11 +115,18 @@ def test_image_pipeline_config_round_trip() -> None:
 
 
 def native_worker(
-    rank: int, directory: str, cfg: DecoderConfig, dtype: torch.dtype
+    rank: int,
+    directory: str,
+    cfg: DecoderConfig,
+    dtype: torch.dtype,
+    ulysses: int,
+    ring: int,
+    port: int,
 ) -> None:
-    os.environ["LOCAL_RANK"] = "0"
-    os.environ["RANK"] = "0"
-    os.environ["WORLD_SIZE"] = "1"
+    sp_size = ulysses * ring
+    os.environ["LOCAL_RANK"] = str(rank)
+    os.environ["RANK"] = str(rank)
+    os.environ["WORLD_SIZE"] = str(sp_size)
 
     from sglang_omni.models.llada2_uni.components.decoder_runtime import (
         initialize_decoder_runtime,
@@ -127,13 +135,21 @@ def native_worker(
     path = Path(directory)
     with initialize_decoder_runtime(
         directory,
-        gpu_id=0,
+        gpu_id=rank,
         dtype=dtype,
-        attention_backend="torch_sdpa",
+        attention_backend="fa" if ring > 1 else "torch_sdpa",
         dist_timeout=120,
+        sp_rank=rank,
+        sp_size=sp_size,
+        stage_role=(
+            "single" if sp_size == 1 else ("leader" if rank == 0 else "follower")
+        ),
+        ulysses_degree=ulysses,
+        ring_degree=ring,
+        nccl_port=port,
     ) as runtime:
         with runtime.compute_context(), torch.inference_mode():
-            for device in ("cuda", "cuda:0"):
+            for device in ("cuda", f"cuda:{rank}"):
                 decoder = LLaDA2ImageDecoder(
                     directory,
                     device=device,
@@ -145,7 +161,7 @@ def native_worker(
             with pytest.raises(ValueError, match="device/dtype must match"):
                 LLaDA2ImageDecoder(
                     directory,
-                    device="cuda:1",
+                    device=f"cuda:{rank + 1}",
                     dtype=dtype,
                     backend="sglang",
                     runtime=runtime,
@@ -169,12 +185,19 @@ def native_worker(
                     return_dict=False,
                 )[0]
             )
-            torch.save(output.cpu(), path / "native.pt")
+            torch.save(output.cpu(), path / f"native-{rank}.pt")
     assert not torch.distributed.is_initialized()
 
 
 @pytest.mark.accelerator
-def test_sglang_backend_matches_diffusers(tmp_path: Path) -> None:
+@pytest.mark.parametrize("ulysses,ring", [(1, 1), (2, 1), (1, 2)])
+@pytest.mark.parametrize("width,caption_length", [(16, 32), (20, 40)])
+def test_sglang_backend_matches_diffusers(
+    tmp_path: Path, ulysses: int, ring: int, width: int, caption_length: int
+) -> None:
+    sp_size = ulysses * ring
+    if torch.cuda.device_count() < sp_size:
+        pytest.skip(f"requires {sp_size} visible GPUs")
     dtype = torch.bfloat16
     cfg = decoder_config(
         {
@@ -194,8 +217,8 @@ def test_sglang_backend_matches_diffusers(tmp_path: Path) -> None:
         torch.nn.init.normal_(reference.x_pad_token, std=0.01)
         torch.nn.init.normal_(reference.cap_pad_token, std=0.01)
         inputs = {
-            "x": torch.randn(2, 16, 1, 16, 16),
-            "cap": torch.randn(2, 32, 16),
+            "x": torch.randn(2, 16, 1, 16, width),
+            "cap": torch.randn(2, caption_length, 16),
             "t": torch.tensor([0.125, 0.875]),
         }
     save_file(
@@ -217,14 +240,18 @@ def test_sglang_backend_matches_diffusers(tmp_path: Path) -> None:
         )
     del reference
 
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
     mp.spawn(
         native_worker,
-        args=(str(tmp_path), cfg, dtype),
-        nprocs=1,
+        args=(str(tmp_path), cfg, dtype, ulysses, ring, port),
+        nprocs=sp_size,
         join=True,
     )
-    actual = torch.load(tmp_path / "native.pt", weights_only=True)
-    torch.testing.assert_close(actual.float(), expected, rtol=2e-2, atol=2e-2)
+    for rank in range(sp_size):
+        actual = torch.load(tmp_path / f"native-{rank}.pt", weights_only=True)
+        torch.testing.assert_close(actual.float(), expected, rtol=2e-2, atol=2e-2)
 
 
 def test_sglang_decoder_factory_wiring(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -256,7 +283,16 @@ def test_sglang_decoder_factory_wiring(monkeypatch: pytest.MonkeyPatch) -> None:
     assert constructor.call_args.kwargs["runtime"] is runtime
     assert constructor.call_args.kwargs["backend"] == "sglang"
     initialize.assert_called_once_with(
-        "unused", gpu_id=None, dtype=torch.bfloat16, attention_backend="torch_sdpa"
+        "unused",
+        gpu_id=None,
+        dtype=torch.bfloat16,
+        attention_backend="torch_sdpa",
+        sp_rank=0,
+        sp_size=1,
+        stage_role="single",
+        nccl_port=None,
+        ulysses_degree=1,
+        ring_degree=1,
     )
     decoder.decode.assert_called_once_with(
         [3], 1, 1, decode_mode="decoder-turbo", num_steps=8
@@ -427,7 +463,7 @@ def test_normal_step_bound_before_loading(tmp_path):
 
 @pytest.fixture
 def decode_probe(monkeypatch, tmp_path):
-    observed = SimpleNamespace(ids=None, latents=None)
+    observed = SimpleNamespace(ids=None, latents=None, calls=[])
     decoder = LLaDA2ImageDecoder(
         str(tmp_path),
         device="cpu",
@@ -441,6 +477,7 @@ def decode_probe(monkeypatch, tmp_path):
         return ids.float().unsqueeze(-1).expand(-1, -1, 16)
 
     def model(**kwargs):
+        observed.calls.append(kwargs)
         return ([torch.ones_like(latent) for latent in kwargs["x"]],)
 
     def vae_decode(latents, return_dict):
@@ -455,6 +492,7 @@ def decode_probe(monkeypatch, tmp_path):
     decoder.diff_config = {
         "all_patch_size": [2],
         "all_f_patch_size": [1],
+        "cap_feat_dim": 16,
     }
     decoder.vae = SimpleNamespace(
         config=SimpleNamespace(scaling_factor=2.0, shift_factor=3.0),
@@ -476,6 +514,34 @@ def test_decode_pipeline(decode_probe):
     torch.testing.assert_close(
         observed.latents, (expected_noise.squeeze(2) + 1) / 2 + 3
     )
+
+
+def test_sp_follower_samples_without_sigvq_vae_or_image_encoding(
+    decode_probe, monkeypatch
+):
+    from contextlib import nullcontext
+
+    decoder, observed = decode_probe
+    decoder.runtime = SimpleNamespace(
+        is_leader=False,
+        preparation=lambda phase: nullcontext(),
+        request_seed=lambda metadata, seed: 19,
+        broadcast_features=lambda features: features.fill_(1),
+    )
+    monkeypatch.setattr(
+        decoder, "ensure_sigvq", lambda: pytest.fail("follower loaded SigVQ")
+    )
+    monkeypatch.setattr(
+        decoder, "ensure_vae", lambda: pytest.fail("follower loaded VAE")
+    )
+    assert decoder.decode([1, 2], 1, 2) is None
+    assert observed.ids is None and observed.latents is None
+    assert observed.calls
+    assert observed.calls[0]["cap_feats"][0].shape == (8, 16)
+    first_input = observed.calls[0]["x"][0].clone()
+    observed.calls.clear()
+    assert decoder.decode([1, 2], 1, 2) is None
+    torch.testing.assert_close(observed.calls[0]["x"][0], first_input, rtol=0, atol=0)
 
 
 def test_decode_rejects_invalid_tokens_before_loading(tmp_path, monkeypatch):

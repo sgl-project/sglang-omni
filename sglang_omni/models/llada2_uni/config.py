@@ -38,13 +38,40 @@ class LLaDA2ImageDecoderFactoryArgs(FactoryArgs):
     decode_mode: Literal["normal", "decoder-turbo"] = "normal"
     num_steps: int = Field(default=50, ge=1)
     resolution_multiplier: int = Field(default=2, ge=1)
+    ulysses_degree: int = Field(default=1, ge=1)
+    ring_degree: int = Field(default=1, ge=1)
     attention_backend: str = "torch_sdpa"
 
 
 class LLaDA2ImageDecoderStageConfig(StageConfig):
+    supports_sequence_parallel: ClassVar[bool] = True
     factory: LLaDA2ImageDecoderFactoryArgs = Field(
         default_factory=LLaDA2ImageDecoderFactoryArgs
     )
+
+    def model_post_init(self, context: object = None) -> None:
+        super().model_post_init(context)
+        if self.tp_size != 1:
+            raise ValueError("LLaDA image decoder uses SP, not TP")
+        else:
+            pass
+        if self.sp_size != self.factory.ulysses_degree * self.factory.ring_degree:
+            raise ValueError(
+                "image decoder sp_size must equal ulysses_degree * ring_degree"
+            )
+        else:
+            pass
+        if self.sp_size > 1 and self.factory.backend != "sglang":
+            raise ValueError("image decoder SP requires backend='sglang'")
+        else:
+            pass
+        if self.factory.ring_degree > 1 and self.factory.attention_backend not in {
+            "fa",
+            "sage_attn",
+        }:
+            raise ValueError("Decoder ring parallelism requires fa or sage_attn")
+        else:
+            pass
 
 
 class LLaDA2UniPipelineConfig(PipelineConfig):
@@ -54,6 +81,7 @@ class LLaDA2UniPipelineConfig(PipelineConfig):
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         THINKER_STAGE: EngineStageConfig,
+        IMAGE_DECODE_STAGE: LLaDA2ImageDecoderStageConfig,
     }
 
     model_path: str

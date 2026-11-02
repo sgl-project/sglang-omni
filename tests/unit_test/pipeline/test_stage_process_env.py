@@ -1016,7 +1016,7 @@ def run_process(spec, ready_event, log, startup_error_channel=None):
 teardown = Teardown()
 stage_workers.prepare_accelerator_environment = lambda stage_spec, log: None
 stage_workers.run_process = run_process
-stage = SimpleNamespace(gpu_id=None, allow_child_processes=False)
+stage = SimpleNamespace(gpu_id=None, allow_child_processes=False, sp_size=1)
 spec = SimpleNamespace(log_level=20, stage_specs=[stage], process_name="p")
 stage_workers.stage_process_main(spec, None)
 """
