@@ -81,19 +81,24 @@ Both drafts are pinned in `ci/models.json`. A draft for another target is one pi
 **Golden and pins**
 
 - Pin every checkpoint file by revision and SHA-256 in `ci/model_pins.json`.
-- Add a golden under `ci/model_golden/`. Import the Mac CI runner's outputs
-  (`golden-outputs` artifact, `--import`) so the runner checks exactly. A
-  speech model's golden holds seeded requests' codes (`ci/speech_golden.py`).
+- Add a golden under `ci/model_golden/`: record a chip's outputs with
+  `check_model_golden.py --outputs` and add them with `--import`. Mac CI does
+  not run it, so give its result on your Mac in the PR. A speech model's
+  golden holds seeded requests' codes (`ci/speech_golden.py`).
 - Add a second golden for paths the corpus misses (long-audio chunking, VAD).
 
 **Tests**
 
-- Server tests in `ci/test_model_servers.py`, or in the model's own
-  `ci/test_<model>_api.py` added to the Mac CI job once that file would pass
-  ~400 lines: JSON, SSE and realtime success paths; every invalid input
-  returns 400; session-state errors, cancel on disconnect, and wrong model
-  kind.
+- Real-model server tests in `ci/test_model_servers.py`, or in the model's
+  own `ci/test_<model>_api.py` once that file would pass ~400 lines, run by
+  hand: JSON, SSE and realtime success paths; every invalid input returns 400;
+  session-state errors and cancel on disconnect.
 - Assert structure, not one chip's exact text; exact text lives in the golden.
+- Mac CI runs `tests/` with no checkpoint. List a new server and its model
+  kinds in `tests/test_runtime_binaries.py`, with a row for each flag its
+  startup rejects. A change to the shared protocol (`common/service.cpp`,
+  `qwen3_asr/asr_service.cpp`, `speech_service.cpp`, `realtime.cpp`) gets a
+  case against `tests/stub_server.cpp`.
 - New Voxt Omni tests go into the `voxt-unit` job in `voxt-mac-ci.yaml`.
 
 **Robustness**
@@ -106,8 +111,9 @@ Both drafts are pinned in `ci/models.json`. A draft for another target is one pi
 
 **Performance**
 
-- Mac CI checks correctness only. Report total time, realtime factor, peak
-  memory and load time against the reference, with the device stated.
+- Mac CI checks neither outputs nor speed. Report total time, realtime
+  factor, peak memory and load time against the reference, with the device
+  stated.
 
 **CI and style**
 
