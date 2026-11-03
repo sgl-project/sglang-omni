@@ -96,8 +96,8 @@ CI_STAGES: tuple[CiStage, ...] = (
         preset_by_model_label={},
         random_presets=(),
     ),
-    # note (db-ol): turn based and cascaded fail by design until they are
-    # calibrated on the CI host, so run-all-ci leaves them out.
+    # note (db-ol): turn based fails by design until it is calibrated on the
+    # CI host, so run-all-ci leaves it out.
     CiStage(
         name="turn_based",
         label="run-turn-based-duplex",
