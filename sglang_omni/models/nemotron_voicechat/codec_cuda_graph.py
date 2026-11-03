@@ -65,3 +65,10 @@ class CodecDecodeGraphRunner:
         graph.replay()
         # note (Xinhao Tan): the next replay overwrites the graph output.
         return self.waveform_by_window_frames[window_frames].clone()
+
+    def decode_batch(self, codes_BTQ: torch.Tensor) -> torch.Tensor:
+        if codes_BTQ.shape[0] == 1:
+            return self(codes_BTQ[0])[None]
+        else:
+            # note (Xinhao Tan): each graph decodes one window, so a batch decodes eagerly.
+            return self.decoder.decode_batch(codes_BTQ)
