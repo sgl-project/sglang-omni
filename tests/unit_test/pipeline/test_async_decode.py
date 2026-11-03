@@ -724,6 +724,7 @@ class FakeBatch:
 
 def new_scheduler_for_async_loop():
     s = OmniScheduler.__new__(OmniScheduler)
+    s.enable_overlap = False
     s.sleep_during_idle = lambda: None
     s.admin_lock = threading.Lock()
     s.admin_queue = queue.Queue()
@@ -926,7 +927,7 @@ def test_full_running_batch_keeps_lookahead_with_waiting_requests():
     )
     s = scaffold_async_loop(async_pending=pending)
     s.is_mixed_chunk = True
-    s.running_batch.batch_is_full = True
+    s.running_batch = RunningBatch(2, batch_is_full=True)
     s.waiting_queue = [object()]
     s.resolve_and_process = lambda *args: events.append("resolve")
 
@@ -945,6 +946,38 @@ def test_full_running_batch_keeps_lookahead_with_waiting_requests():
     s.event_loop_async_decode()
 
     assert events == [("schedule", True), "launch", "resolve"]
+
+
+def test_full_running_batch_with_a_finished_request_drains_before_the_mixed_prefill():
+    """The batch builder drops finished requests and clears the full flag on every pass, so the
+    loop drains the pending step before the mixed prefill that pass admits."""
+    events = []
+    pending = PendingDecode(
+        batch=FakeBatch(2), scheduler_output="prev_sched", device_step="prev_step"
+    )
+    s = scaffold_async_loop(async_pending=pending)
+    s.is_mixed_chunk = True
+    s.running_batch = RunningBatch(2, batch_is_full=True, finished=1)
+    s.waiting_queue = [object()]
+    s.batch_is_decode = lambda batch: False
+    s.resolve_and_process = lambda *args: events.append("resolve")
+    s.process_batch_result = lambda batch, result: None
+
+    def run_batch(batch):
+        events.append("prefill")
+        return object()
+
+    s.run_batch = run_batch
+
+    def get_next_batch_to_run():
+        events.append(("schedule", s.async_pending))
+        s.running = False
+        return FakeBatch(1)
+
+    s.get_next_batch_to_run = get_next_batch_to_run
+    s.event_loop_async_decode()
+
+    assert events == ["resolve", ("schedule", None), "prefill"]
 
 
 # ---------------------------------------------------------------------------
@@ -1154,6 +1187,7 @@ def test_drain_resolve_failure_calls_handle_batch_failure():
     failures = []
     stranded_batch = FakeBatch(2)
     s = OmniScheduler.__new__(OmniScheduler)
+    s.enable_overlap = False
     s.async_pending = PendingDecode(
         batch=stranded_batch, scheduler_output="sched", device_step="step"
     )
@@ -1300,12 +1334,19 @@ def test_drop_stale_overrun_filters_decoding_reqs():
 
 
 class RunningBatch:
-    def __init__(self, request_count: int, *, batch_is_full: bool = False) -> None:
-        self.reqs = [object() for _ in range(request_count)]
+    def __init__(
+        self, request_count: int, *, batch_is_full: bool = False, finished: int = 0
+    ) -> None:
+        self.reqs = [DFReq(f"running-{index}") for index in range(request_count)]
+        for req in self.reqs[:finished]:
+            req.done = True
         self.batch_is_full = batch_is_full
 
     def is_empty(self) -> bool:
         return not self.reqs
+
+    def batch_size(self) -> int:
+        return len(self.reqs)
 
 
 def scaffold_resolve_before_prefill(
@@ -1422,6 +1463,18 @@ def test_lookahead_continues_when_no_prefill_is_expected(
     s.event_loop_async_decode()
 
     assert events == ["admin", "schedule", "launch", "resolve"]
+
+
+def test_a_full_running_batch_with_a_finished_request_expects_a_prefill() -> None:
+    events: list[str] = []
+    s = scaffold_resolve_before_prefill(events, async_pending=in_flight_step())
+    s.running_batch = RunningBatch(2, batch_is_full=True, finished=1)
+    s.waiting_queue = [object()]
+    schedule_once(s, events, FakeBatch(1), is_decode=False)
+
+    s.event_loop_async_decode()
+
+    assert events == ["admin", "resolve", "admin", "schedule", "prefill"]
 
 
 def test_a_chunked_request_resolves_first_even_with_nothing_waiting() -> None:
@@ -1604,11 +1657,12 @@ def test_the_prediction_defers_exactly_when_upstream_defers(
         interval_remaining  # noqa: leading-underscore  # production name
     )
     upstream_state = types.SimpleNamespace(
-        _prefill_decode_interval_remaining=interval_remaining  # noqa: leading-underscore  # production name
+        _prefill_decode_interval_remaining=interval_remaining,  # noqa: leading-underscore  # production name
+        prefill_decode_interval_min_bs=0,
     )
 
     expected = not Scheduler._should_defer_prefill(  # noqa: leading-underscore  # production name
-        upstream_state
+        upstream_state, s.running_batch
     )
 
     assert s.is_prefill_expected() is expected

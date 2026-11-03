@@ -192,7 +192,7 @@ def test_codec_matches_offline_samples_including_final_tail() -> None:
         codes = torch.tensor([[frame_index]])
         output = hooks.append(audio_chunk(), stage_payload({"codes": codes}), context)
         actual_packets.append(output.data["pcm"])
-        reference_audio = torch.cat(reference.push(codes))
+        reference_audio = reference.push(codes)
         expected_packets.append(
             (reference_audio.numpy() * 32767).astype("<i2").tobytes()
         )

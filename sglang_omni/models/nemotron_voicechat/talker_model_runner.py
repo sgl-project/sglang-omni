@@ -32,6 +32,7 @@ class VoiceChatTalkerModelRunner(ModelRunner):
         )
         self.char_vocab = char_vocab_from_tokenizer(self.tokenizer)
         self.char_padding_idx = len(self.char_vocab)
+        self.initialize_character_lookup()
         # From the checkpoint's names above: the tokenizer's own eos_token_id
         # is <SPECIAL_12>, the text channel's PAD, which means still speaking.
         self.text_pad_id = int(self.tokenizer.pad_token_id)
@@ -50,28 +51,49 @@ class VoiceChatTalkerModelRunner(ModelRunner):
     def fusion_device(self) -> torch.device:
         return self.model.fusion_buffer.device
 
-    def char_batch(self, token_ids: list[int]):
-        device = self.fusion_device()
-        sequences = [
-            [
-                self.char_vocab[c]
-                for c in (self.tokenizer.convert_ids_to_tokens(t) or "")
-                if c in self.char_vocab
-            ]
-            or [self.char_padding_idx]
-            for t in token_ids
+    def character_ids_for_token(self, token_id: int) -> list[int]:
+        return [
+            self.char_vocab[character]
+            for character in (self.tokenizer.convert_ids_to_tokens(token_id) or "")
+            if character in self.char_vocab
+        ] or [self.char_padding_idx]
+
+    def initialize_character_lookup(self) -> None:
+        token_id_count = max(self.tokenizer.get_vocab().values(), default=-1) + 1
+        self.character_ids_by_token: list[list[int]] = [
+            self.character_ids_for_token(token_id) for token_id in range(token_id_count)
         ]
-        width = max(len(s) for s in sequences)
-        char_ids = torch.full(
-            (len(sequences), width),
-            self.char_padding_idx,
+
+    def char_batch(
+        self, token_ids: list[int]
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        character_sequences = [
+            (
+                self.character_ids_by_token[token_id]
+                if 0 <= token_id < len(self.character_ids_by_token)
+                else self.character_ids_for_token(token_id)
+            )
+            for token_id in token_ids
+        ]
+        character_lengths = [len(sequence) for sequence in character_sequences]
+        character_width = max(character_lengths)
+        padded_character_ids = [
+            character_id
+            for sequence in character_sequences
+            for character_id in sequence
+            + [self.char_padding_idx] * (character_width - len(sequence))
+        ]
+        batch_tensor = torch.tensor(
+            token_ids + character_lengths + padded_character_ids,
             dtype=torch.long,
-            device=device,
+            device=self.fusion_device(),
         )
-        for row, sequence in enumerate(sequences):
-            char_ids[row, : len(sequence)] = torch.tensor(sequence, device=device)
-        lengths = torch.tensor([len(s) for s in sequences], device=device)
-        return torch.tensor(token_ids, device=device), char_ids, lengths
+        batch_size = len(token_ids)
+        return (
+            batch_tensor[:batch_size],
+            batch_tensor[2 * batch_size :].view(batch_size, character_width),
+            batch_tensor[batch_size : 2 * batch_size],
+        )
 
     def warmup(self):
         if self.warmup_rows is None:
@@ -106,22 +128,30 @@ class VoiceChatTalkerModelRunner(ModelRunner):
             device=self.fusion_device(),
         )
 
-    def step_row(self, prev_codes: torch.Tensor, token: int) -> torch.Tensor:
-        """The one row a frame forwards: last frame's codes, this frame's text."""
+    def step_rows(self, prev_codes_BQ: torch.Tensor, tokens: list[int]) -> torch.Tensor:
         talker = self.model.talker
-        if self.force_silence and token == self.text_eos_id:
-            prev_codes = self.model.codec_silence_tokens.unsqueeze(0)
+        if self.force_silence and self.text_eos_id in tokens:
+            at_eos_B = torch.tensor(
+                [token == self.text_eos_id for token in tokens],
+                device=prev_codes_BQ.device,
+            )
+            prev_codes_BQ = torch.where(
+                at_eos_B[:, None], self.model.codec_silence_tokens, prev_codes_BQ
+            )
         else:
             pass
-        audio_1D = talker.embed_codes(prev_codes)
-        ids, chars, lengths = self.char_batch([token])
-        text_1D = talker.embed_subword(ids, chars, lengths)
-        return talker.gated_fusion_audio_text(audio_1D, text_1D)
+        audio_BD = talker.embed_codes(prev_codes_BQ)
+        ids, chars, lengths = self.char_batch(tokens)
+        text_BD = talker.embed_subword(ids, chars, lengths)
+        return talker.gated_fusion_audio_text(audio_BD, text_BD)
 
     def generate_codes(self, index: int) -> torch.Tensor:
+        return self.sample_codes(self.model.hidden_out[index : index + 1])
+
+    def sample_codes(self, hidden_TD: torch.Tensor) -> torch.Tensor:
         model = self.model
         return model.talker.generate_codes(
-            model.hidden_out[index : index + 1].float(),
+            hidden_TD.float(),
             model.mog_head,
             level_schedule=self.level_schedule,
             top_p=self.top_p,
@@ -171,7 +201,7 @@ class NemotronVoiceChatTalkerModelRunner(VoiceChatTalkerModelRunner):
     ) -> None:
         del forward_batch, is_lookahead
         model = self.model
-        rows = []
+        tokens = []
         for request, req in zip(requests, schedule_batch.reqs, strict=True):
             data = request.data
             queue = data.pending_text_queue
@@ -186,21 +216,22 @@ class NemotronVoiceChatTalkerModelRunner(VoiceChatTalkerModelRunner):
                     f"talker request {request.request_id} reached decode with no "
                     "text token and no finish reason"
                 )
-            rows.append(
-                self.step_row(
-                    data.talker_model_inputs["prev_codes"],
-                    token,
-                )
-            )
-        batch = len(rows)
-        model.fusion_buffer[:batch] = torch.cat(rows, dim=0)
+            tokens.append(token)
+        prev_codes_BQ = torch.cat(
+            [request.data.talker_model_inputs["prev_codes"] for request in requests]
+        )
+        batch = len(tokens)
+        model.fusion_buffer[:batch] = self.step_rows(prev_codes_BQ, tokens)
         model.fusion_mask[:batch] = True
 
     def post_decode(self, result, forward_batch, schedule_batch, requests) -> None:
         del result, forward_batch, schedule_batch
+        # note (Xinhao Tan): a call per request repeats the 8-step sampler and a GPU sync.
+        codes_BQ = self.sample_codes(self.model.hidden_out[: len(requests)])
+        host_codes_BQ = codes_BQ.cpu()
         for index, request in enumerate(requests):
             inputs = request.data.talker_model_inputs
-            codes = self.generate_codes(index)
+            codes = codes_BQ[index : index + 1]
             inputs["prev_codes"] = codes
             inputs["codes_rows"].append(codes[0])
-            inputs["stream_chunk"] = codes.cpu()
+            inputs["stream_chunk"] = host_codes_BQ[index : index + 1]
