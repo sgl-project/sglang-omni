@@ -18,7 +18,7 @@ import pytest
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.server import ServerConnection, serve
 
-from sglang_omni_mlx.native.ci import long_audio_client
+from sglang_omni_mlx.native.ci import benchmark_long_audio, long_audio_client
 from sglang_omni_mlx.native.ci.long_audio_client import (
     MemorySampler,
     compare_cancellation_timing,
@@ -389,3 +389,122 @@ def test_http_disconnect_records_the_first_heartbeat_and_running_state() -> None
             release.set()
             server.shutdown()
             thread.join(timeout=5)
+
+
+@pytest.mark.skipif(platform.system() != "Darwin", reason="macOS process accounting")
+@pytest.mark.parametrize(
+    "exit_policy", ["normal", "early_zero", "early_23", "shutdown_23"]
+)
+def test_unexpected_server_exit_fails_the_benchmark(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exit_policy: str
+) -> None:
+    """An exit after recovery must not be reported as a successful measurement."""
+    corpus = tmp_path / "corpus"
+    (corpus / "clips").mkdir(parents=True)
+    records = []
+    for index in range(2):
+        clip_id = f"{index:04d}_en_short"
+        with wave.open(str(corpus / "clips" / f"{clip_id}.wav"), "wb") as writer:
+            writer.setnchannels(1)
+            writer.setsampwidth(2)
+            writer.setframerate(16000)
+            writer.writeframes(b"\x00\x00" * 16000)
+        records.append(
+            {"id": clip_id, "stratum": "en_short", "lang": "en", "reference": "hello"}
+        )
+    (corpus / "manifest.jsonl").write_text(
+        "\n".join(json.dumps(record) for record in records)
+    )
+    model = tmp_path / "model"
+    model.mkdir()
+    server = tmp_path / "fake_server.py"
+    server.write_text(
+        f"#!{sys.executable}\n"
+        + r"""import json, os, sys, threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+policy = EXIT_POLICY
+post_count = 0
+health_count = 0
+lock = threading.Lock()
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+    def do_GET(self):
+        global health_count
+        with lock:
+            health_count += 1
+            states = {"running": 1} if health_count == 1 else {}
+        payload = json.dumps({"request_states": states}).encode()
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(payload)
+    def do_POST(self):
+        global post_count
+        self.rfile.read(int(self.headers["Content-Length"]))
+        with lock:
+            post_count += 1
+            count = post_count
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        self.wfile.write(b":\n\ndata: {\"type\":\"transcript.text.done\",\"text\":\"hello\"}\n\n")
+        self.wfile.flush()
+        if count == 5 and policy.startswith("early_"):
+            os._exit(0 if policy == "early_zero" else 23)
+
+server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+print(json.dumps({"event": "ready", "port": server.server_port}), flush=True)
+for line in sys.stdin:
+    if json.loads(line).get("command") == "shutdown":
+        server.shutdown()
+        sys.exit(23 if policy == "shutdown_23" else 0)
+""".replace(
+            "EXIT_POLICY", repr(exit_policy)
+        )
+    )
+    server.chmod(0o755)
+    output = tmp_path / "results"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "benchmark_long_audio",
+            "--server",
+            str(server),
+            "--model-directory",
+            str(model),
+            "--corpus-directory",
+            str(corpus),
+            "--output",
+            str(output),
+            "--mode",
+            "http",
+            "--minutes",
+            "0.001",
+            "--languages",
+            "en",
+        ],
+    )
+    monkeypatch.setattr(
+        benchmark_long_audio,
+        "compare_cancellation_timing",
+        lambda *arguments: (1.0, True),
+    )
+    with pytest.raises(SystemExit) as stopped:
+        benchmark_long_audio.main()
+    result = json.loads((output / "en-0.001m.result.json").read_text())
+    assert result["recovery_matches_warmup"] is True
+    if exit_policy == "normal":
+        assert stopped.value.code == 0
+        assert result["status"] == "measured"
+        assert result["server_exit_code"] == 0
+    else:
+        assert stopped.value.code != 0
+        assert result["status"] == "failed"
+        assert result["server_exit_code"] == (0 if exit_policy == "early_zero" else 23)
+        assert (
+            "during shutdown" if exit_policy == "shutdown_23" else "before shutdown"
+        ) in result["error"]
