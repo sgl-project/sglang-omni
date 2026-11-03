@@ -2624,6 +2624,29 @@ async def spoken_languages(spec: dict, deltas: list[TimedChunk]) -> list[str]:
 
 
 @pytest.mark.asyncio
+async def test_a_clear_utterance_uses_its_recognized_language_for_speech():
+    dialog = build({"kind": "dialog", "language": "English"})
+    _, prompt_chunk = dialog.respond(1, "Quel temps fait-il aujourd'hui ?", "French")
+    generator = build({"kind": "openai_chat", **HTTP_SERVICE})
+
+    async def complete(
+        prompt_messages: list[ChatMessage],
+    ) -> AsyncIterator[ChatDelta]:
+        assert prompt_messages[-1].content == "Quel temps fait-il aujourd'hui ?"
+        yield ChatDelta(content="Il fait 25 degrés aujourd’hui.")
+
+    generator.complete = complete
+    deltas = [
+        output
+        for output in await drain(generator, [prompt_chunk])
+        if output.format == TEXT_DELTA
+    ]
+    assert await spoken_requests({"language": "auto"}, deltas) == [
+        ("French", "Il fait 25 degrés aujourd’hui.")
+    ]
+
+
+@pytest.mark.asyncio
 async def test_openai_speech_keeps_the_digits_of_a_chinese_sentence_in_an_english_session():
     deltas = [
         text_chunk("This year is 2024. ", 1, "English"),
