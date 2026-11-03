@@ -416,6 +416,61 @@ def test_greedy_rows_accept_only_the_target_argmax() -> None:
     assert next_tokens.tolist() == [2, 1]
 
 
+@pytest.mark.accelerator
+@REQUIRES_CUDA
+@pytest.mark.parametrize("batch_size", [1, 3])
+def test_compiled_exact_accept_matches_eager(batch_size: int) -> None:
+    """The worker compiles the verify into one graph, rejection sampling included."""
+    generator = torch.Generator().manual_seed(batch_size)
+    drafts = DRAFT_TOKENS_PER_STEP
+    target_logits = torch.randn(batch_size, drafts + 1, TOTAL_VOCAB_SIZE) * 3
+    distinct_tokens = torch.randperm(VOCAB_SIZE, generator=generator)
+    draft_tokens = distinct_tokens[: batch_size * drafts].view(batch_size, drafts)
+    window_tokens = distinct_tokens[
+        batch_size * drafts : batch_size * drafts + COSYVOICE3_RAS_WINDOW_SIZE
+    ]
+    # A window token the target favors, so each bonus row takes the redraw.
+    target_logits[:, :, window_tokens[0]] = 8.0
+    # Accepted drafts hold nearly all the target mass and the first rejected one
+    # almost none, so no acceptance sits near its threshold.
+    expected_accepted = (torch.arange(batch_size) * 3 + 2) % (drafts + 1)
+    for request in range(batch_size):
+        for draft in range(drafts):
+            token = draft_tokens[request, draft]
+            if draft < expected_accepted[request]:
+                target_logits[request, draft, token] = 20.0
+            elif draft == expected_accepted[request]:
+                target_logits[request, draft, token] = -20.0
+            else:
+                pass
+    inputs = [
+        target_logits.view(-1, TOTAL_VOCAB_SIZE),
+        torch.zeros(batch_size, drafts, TOTAL_VOCAB_SIZE),
+        draft_tokens,
+        torch.rand(batch_size, TOTAL_VOCAB_SIZE, generator=generator) < 0.02,
+        torch.full((batch_size,), 1.21),
+        torch.full((batch_size,), 300),
+        torch.zeros(batch_size, dtype=torch.long),
+        torch.full((batch_size,), 0.7),
+        torch.zeros(batch_size, dtype=torch.bool),
+        torch.full((batch_size,), 20, dtype=torch.int32),
+        torch.full((batch_size,), 0.8),
+        window_tokens.expand(batch_size, -1).clone(),
+        torch.rand(batch_size, drafts, generator=generator),
+        torch.empty(batch_size, TOTAL_VOCAB_SIZE).exponential_(generator=generator),
+    ]
+    inputs = [tensor.cuda() for tensor in inputs]
+
+    eager_accepted, eager_next_tokens = exact_accept(*inputs)
+    compiled_accepted, compiled_next_tokens = torch.compile(exact_accept, dynamic=True)(
+        *inputs
+    )
+
+    assert eager_accepted.tolist() == expected_accepted.tolist()
+    assert compiled_accepted.tolist() == eager_accepted.tolist()
+    assert compiled_next_tokens.tolist() == eager_next_tokens.tolist()
+
+
 def seeded_step_request(
     request_id: str, seed: int | None, output_ids: list[int], slot: int
 ) -> SimpleNamespace:

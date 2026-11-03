@@ -237,9 +237,6 @@ def target_probabilities(
     return torch.where(greedy.unsqueeze(1), greedy_probabilities, redrawn.float())
 
 
-# note (wilsonzheng0327): inductor (torch 2.13) emits an invalid Triton kernel when it
-# fuses the residual draw with the gathers, so this part stays eager.
-@torch.compiler.disable
 def rejection_sample(
     *,
     target: torch.Tensor,
