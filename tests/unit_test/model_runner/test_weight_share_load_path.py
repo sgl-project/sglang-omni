@@ -30,6 +30,7 @@ from sglang.srt.model_executor.model_runner_components.weight_updater import (  
 )
 from sglang.srt.runtime_context import get_context, get_flags  # noqa: E402
 
+from sglang_omni.platforms import current_platform  # noqa: E402
 from sglang_omni.utils import ipc_weights  # noqa: E402
 
 SGLModelRunner = sglang_model_runner.SGLModelRunner
@@ -73,6 +74,7 @@ def bare_runner(load_format="auto"):
         runner._resolve_draft_load_format()
     )  # noqa: leading-underscore  # production name
     runner.token_to_kv_pool = SimpleNamespace(post_capture_active=False)
+    runner.device = current_platform.device_type
     return runner
 
 
@@ -293,6 +295,223 @@ def test_a_non_xpu_platform_captures_unwrapped():
         runner.init_cuda_graphs()
 
     assert calls == ["capture"]
+
+
+@pytest.mark.parametrize("is_recorded", [True, False])
+def test_tensor_parallel_decode_capture_follows_the_collective_probe(
+    monkeypatch, is_recorded
+):
+    from sglang_omni.platforms import current_platform
+
+    tp_group = object()
+    probed_groups = []
+    captured_decode = []
+    monkeypatch.setattr(
+        sglang_model_runner,
+        "get_parallel",
+        lambda: SimpleNamespace(tp_size=8, pp_size=1),
+    )
+    monkeypatch.setattr(sglang_model_runner, "get_tp_group", lambda: tp_group)
+    runner = bare_runner()
+
+    def probe(group):
+        probed_groups.append(group)
+        return is_recorded
+
+    with (
+        get_context().override_server_args(),
+        mock.patch.object(current_platform, "graph_capture_records_collectives", probe),
+        mock.patch.object(
+            ModelRunner,
+            "init_cuda_graphs",
+            lambda self, capture_decode_cuda_graph=True: captured_decode.append(
+                capture_decode_cuda_graph
+            ),
+        ),
+    ):
+        runner.init_cuda_graphs()
+
+    assert probed_groups == [tp_group]
+    # A dropped collective would replay stale activations, so decode stays eager.
+    assert captured_decode == [is_recorded]
+
+
+def test_a_cpu_placed_tensor_parallel_runner_skips_the_collective_probe(monkeypatch):
+    """On an accelerator host the platform still reports that accelerator, but a stage placed on
+    the host has a host-only process group: probing it would submit device tensors to it.
+    """
+    captured_decode = []
+    monkeypatch.setattr(
+        sglang_model_runner,
+        "get_parallel",
+        lambda: SimpleNamespace(tp_size=8, pp_size=1),
+    )
+    monkeypatch.setattr(sglang_model_runner, "get_tp_group", lambda: object())
+    monkeypatch.setattr(current_platform, "device_type", "xpu", raising=False)
+    runner = bare_runner()
+    runner.device = "cpu"
+
+    def fail_if_probed(group):
+        raise AssertionError("a host-placed stage must not probe the accelerator")
+
+    with (
+        get_context().override_server_args(),
+        mock.patch.object(
+            current_platform, "graph_capture_records_collectives", fail_if_probed
+        ),
+        mock.patch.object(
+            ModelRunner,
+            "init_cuda_graphs",
+            lambda self, capture_decode_cuda_graph=True: captured_decode.append(
+                capture_decode_cuda_graph
+            ),
+        ),
+    ):
+        runner.init_cuda_graphs()
+
+    assert captured_decode == [True]
+
+
+def test_a_disabled_decode_graph_skips_the_collective_probe(monkeypatch):
+    """The probe captures a graph of its own, so an eager deployment must not reach it."""
+    from sglang_omni.platforms import current_platform
+
+    captured_decode = []
+    monkeypatch.setattr(
+        sglang_model_runner,
+        "get_parallel",
+        lambda: SimpleNamespace(tp_size=8, pp_size=1),
+    )
+    monkeypatch.setattr(sglang_model_runner, "get_tp_group", lambda: object())
+    monkeypatch.setattr(
+        sglang_model_runner, "check_cuda_graph_backend", lambda phase, backend: True
+    )
+    runner = bare_runner()
+
+    def fail_if_probed(group):
+        raise AssertionError("a disabled decode graph must not capture a probe")
+
+    with (
+        get_context().override_server_args(),
+        mock.patch.object(
+            current_platform, "graph_capture_records_collectives", fail_if_probed
+        ),
+        mock.patch.object(
+            ModelRunner,
+            "init_cuda_graphs",
+            lambda self, capture_decode_cuda_graph=True: captured_decode.append(
+                capture_decode_cuda_graph
+            ),
+        ),
+    ):
+        runner.init_cuda_graphs()
+
+    # Left as upstream received it; SGLang itself declines the capture.
+    assert captured_decode == [True]
+
+
+def test_a_failed_probe_takes_the_decode_graph_off_the_resolved_config(monkeypatch):
+    """A draft worker captures through its own runner and never reaches this hook, so the verdict
+    has to land on the resolved config, which is what SGLang's shared decode capture consults for
+    the target and the draft alike."""
+    from sglang.srt.model_executor.cuda_graph_config import (
+        Backend,
+        CudaGraphConfig,
+        Phase,
+        check_cuda_graph_backend,
+    )
+
+    from sglang_omni.platforms import current_platform
+
+    captured_decode = []
+    monkeypatch.setattr(
+        sglang_model_runner,
+        "get_parallel",
+        lambda: SimpleNamespace(tp_size=8, pp_size=1),
+    )
+    monkeypatch.setattr(sglang_model_runner, "get_tp_group", lambda: object())
+    runner = bare_runner()
+
+    with (
+        get_context().override_server_args(cuda_graph_config=CudaGraphConfig()),
+        mock.patch.object(
+            current_platform, "graph_capture_records_collectives", lambda group: False
+        ),
+        mock.patch.object(
+            ModelRunner,
+            "init_cuda_graphs",
+            lambda self, capture_decode_cuda_graph=True: captured_decode.append(
+                capture_decode_cuda_graph
+            ),
+        ),
+    ):
+        assert check_cuda_graph_backend(Phase.DECODE, Backend.DISABLED) is False
+        runner.init_cuda_graphs()
+
+        # The target serves eagerly, and any later capture (the draft's included) declines.
+        assert captured_decode == [False]
+        assert check_cuda_graph_backend(Phase.DECODE, Backend.DISABLED) is True
+
+
+def test_a_passing_probe_leaves_the_resolved_config_alone(monkeypatch):
+    from sglang.srt.model_executor.cuda_graph_config import (
+        Backend,
+        CudaGraphConfig,
+        Phase,
+        check_cuda_graph_backend,
+    )
+
+    from sglang_omni.platforms import current_platform
+
+    monkeypatch.setattr(
+        sglang_model_runner,
+        "get_parallel",
+        lambda: SimpleNamespace(tp_size=8, pp_size=1),
+    )
+    monkeypatch.setattr(sglang_model_runner, "get_tp_group", lambda: object())
+    runner = bare_runner()
+
+    with (
+        get_context().override_server_args(cuda_graph_config=CudaGraphConfig()),
+        mock.patch.object(
+            current_platform, "graph_capture_records_collectives", lambda group: True
+        ),
+        mock.patch.object(
+            ModelRunner,
+            "init_cuda_graphs",
+            lambda self, capture_decode_cuda_graph=True: None,
+        ),
+    ):
+        runner.init_cuda_graphs()
+
+        assert check_cuda_graph_backend(Phase.DECODE, Backend.DISABLED) is False
+
+
+def test_single_rank_decode_capture_skips_the_collective_probe():
+    from sglang_omni.platforms import current_platform
+
+    captured_decode = []
+
+    def fail_if_probed(group):
+        raise AssertionError("one rank has no collective to probe")
+
+    runner = bare_runner()
+    with (
+        get_context().override_server_args(),
+        mock.patch.object(
+            current_platform, "graph_capture_records_collectives", fail_if_probed
+        ),
+        mock.patch.object(
+            ModelRunner,
+            "init_cuda_graphs",
+            lambda self, capture_decode_cuda_graph=True: captured_decode.append(
+                capture_decode_cuda_graph
+            ),
+        ),
+    ):
+        runner.init_cuda_graphs()
+
+    assert captured_decode == [True]
 
 
 def test_graph_capture_reseeds_torch_compile_from_the_exec_bag():

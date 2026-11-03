@@ -655,9 +655,7 @@ class ThinkerModelRunner(ModelRunner):
         else:
             pass
         nt = result.next_token_ids
-        host_buf = self.async_host_buf(nt, n)
-        host_buf[:n].copy_(nt[:n], non_blocking=True)
-        return host_buf
+        return self.snapshot_launch_ids(nt[:n], self.async_host_buf(nt, n))
 
     def post_decode_resolve(
         self,
@@ -673,4 +671,6 @@ class ThinkerModelRunner(ModelRunner):
         else:
             pass
         n = len(requests)
-        result.next_token_ids = launch_buf[:n].to(torch.long).clone()
+        result.next_token_ids = (
+            self.host_launch_ids(launch_buf)[:n].to(torch.long).clone()
+        )
