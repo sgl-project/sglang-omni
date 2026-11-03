@@ -111,6 +111,9 @@ shared one-step-lookahead path to overlap host-side result processing with the
 next GPU decode forward even for a single request. Use
 `--asr.factory.enable_async_decode false` to disable it, or tune the crossover
 with `--asr.factory.async_decode_min_batch_size`.
+
+Whole-prompt async prefill extends the same lookahead loop to prefill, so the next device forward can launch before the host collects the prefill result. It is separate from async decode; it does not introduce parallel prefill and decode compute streams. CUDA enables it by default. The initial NPU adaptation is experimental and opt-in: pass `--asr.factory.enable_async_prefill true` while keeping `enable_async_decode=true`. Pass `--asr.factory.enable_async_prefill false` for a comparison with async decode still enabled. An omitted or `null` setting preserves the platform default (CUDA on, NPU off); an explicit boolean overrides that default only on CUDA and NPU. DFlash and Torch MPS remain excluded. Chunked, mixed, logprob and other ineligible batches retain the shared synchronous fallback. Native NPU correctness, progress and performance remain to be validated; see the [server validation handoff](../../scripts/npu/ASYNC_PREFILL_VALIDATION.md).
+
 The request builders also use the shared LM prefill-admission gate: prefill
 starts when 16 built requests are ready or after the oldest ready request waits
 40 ms. Once request-build work drains, a ready prefill is released immediately

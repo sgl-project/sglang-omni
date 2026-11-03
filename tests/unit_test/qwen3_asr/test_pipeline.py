@@ -664,6 +664,58 @@ def test_qwen3_asr_prefill_ladder_is_accepted_by_the_shared_policy(caplog) -> No
     assert not any("padding factor" in record.message for record in caplog.records)
 
 
+@pytest.mark.parametrize(
+    ("platform", "enabled", "draft", "expected"),
+    [
+        ("cuda", None, False, True),
+        ("cuda", False, False, False),
+        ("cuda", True, False, True),
+        ("npu", None, False, False),
+        ("npu", False, False, False),
+        ("npu", True, False, True),
+        ("npu", True, True, False),
+        ("cuda", True, True, False),
+        ("cpu", True, False, False),
+        ("rocm", True, False, False),
+        ("xpu", True, False, False),
+        ("mps", True, False, False),
+    ],
+)
+def test_qwen3_asr_async_prefill_platform_policy(
+    monkeypatch, platform, enabled, draft, expected
+) -> None:
+    monkeypatch.setattr(
+        qwen3_asr_builder.current_platform, "is_cuda", lambda: platform == "cuda"
+    )
+    monkeypatch.setattr(
+        qwen3_asr_builder.current_platform, "is_npu", lambda: platform == "npu"
+    )
+    builder = make_engine_builder()
+    builder.device = "mps" if platform == "mps" else "cpu"
+    builder.enable_async_prefill = enabled
+    builder.draft_checkpoint = object() if draft else None
+
+    assert builder.extra_scheduler_kwargs()["async_prefill"] is expected
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_qwen3_asr_factory_threads_npu_async_prefill(monkeypatch, enabled) -> None:
+    patch_engine_dependencies(monkeypatch)
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_npu", lambda: True)
+    monkeypatch.setenv("PER_STREAM_QUEUE", "1")
+    monkeypatch.setenv("TASK_QUEUE_ENABLE", "1")
+    monkeypatch.delenv("ASCEND_LAUNCH_BLOCKING", raising=False)
+    config = Qwen3ASRPipelineConfig(model_path="dummy")
+    config.stage_named("asr").factory.enable_async_prefill = enabled
+    factory_kwargs = config.stage_named("asr").factory.model_dump(exclude_none=True)
+
+    scheduler = create_sglang_qwen3_asr_executor("dummy", **factory_kwargs)
+
+    assert scheduler.enable_async_decode is True
+    assert scheduler.async_prefill is enabled
+    scheduler.shutdown_callback()
+
+
 def test_qwen3_asr_build_initializes_and_attests_prefill_graphs(monkeypatch) -> None:
     recorded = patch_engine_dependencies(monkeypatch, want_cuda_graph=True)
 

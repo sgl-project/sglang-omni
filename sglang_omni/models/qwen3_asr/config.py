@@ -37,6 +37,7 @@ QWEN3_ASR_TORCH_MPS_MAX_AUDIO_SECONDS = 60.0
 class Qwen3ASRFactoryArgs(FactoryArgs):
     """Qwen3-ASR's own constructor knobs, typed like the shared ones."""
 
+    enable_async_prefill: bool | None = None
     enable_pre_lm_encoder: bool | None = None
     pre_lm_cache_max_entries: int | None = Field(default=None, ge=1)
     pre_lm_cache_size_bytes: int | None = Field(default=None, ge=1)
