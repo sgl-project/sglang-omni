@@ -112,7 +112,6 @@ CI_STAGES: tuple[CiStage, ...] = (
         workflow=OMNI_CI_WORKFLOW,
         preset_by_model_label={},
         random_presets=(),
-        in_run_all=False,
     ),
     CiStage(
         name="intel_cpu",
