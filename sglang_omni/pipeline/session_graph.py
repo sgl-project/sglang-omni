@@ -975,3 +975,4 @@ class SessionGraphRunner(CoordinatorSessions):
         graph.output_bytes = 0
         graph.outputs.put_nowait(None)
         self.graphs.pop(graph.session_identity.id, None)
+        self.notify_session_closed()
