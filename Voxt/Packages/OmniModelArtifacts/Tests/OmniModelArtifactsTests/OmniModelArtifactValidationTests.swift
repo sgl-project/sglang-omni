@@ -23,6 +23,11 @@ final class OmniModelArtifactValidationTests: XCTestCase {
         XCTAssertNoThrow(try OmniModelArtifactValidation.validateSafetensorsDirectory(at: directory))
     }
 
+    func testNullMetadataIsTreatedAsAbsent() throws {
+        try writeSafetensors(header: #"{"weight":{"dtype":"F32","shape":[],"data_offsets":[0,4]},"__metadata__":null}"#)
+        XCTAssertNoThrow(try OmniModelArtifactValidation.validateSafetensorsDirectory(at: directory))
+    }
+
     func testMultipleShardsAndOutOfOrderTensors() throws {
         try writeSafetensors(header: scalarHeader, named: "first.safetensors")
         try writeSafetensors(
@@ -216,7 +221,7 @@ final class OmniModelArtifactValidationTests: XCTestCase {
     }
 
     func testMetadataMustBeAStringDictionary() throws {
-        for metadata in ["null", "[]", "\"pt\"", #"{"version":1}"#, #"{"nested":{}}"#, #"{"null":null}"#] {
+        for metadata in ["[]", "\"pt\"", #"{"version":1}"#, #"{"nested":{}}"#, #"{"null":null}"#] {
             try writeSafetensors(header: "{\"weight\":{\"dtype\":\"F32\",\"shape\":[],\"data_offsets\":[0,4]},\"__metadata__\":\(metadata)}")
             assertRejected()
         }
