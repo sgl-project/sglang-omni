@@ -24,7 +24,7 @@ from sglang.srt.mem_cache.unified_radix_cache import UnifiedRadixCache
 from sglang.srt.runtime_context import get_context
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.session.session_controller import SessionController
-from transformers import Qwen3Config, Qwen3ForCausalLM
+from transformers import AutoConfig, Qwen3Config, Qwen3ForCausalLM
 
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, SessionOperation, TimedChunk
@@ -321,6 +321,7 @@ def create_tiny_checkpoints(directory: Path) -> tuple[Path, Path]:
     target = Qwen3ForCausalLM(config)
     target.save_pretrained(directory / "target")
     config.num_hidden_layers = 1
+    config.layer_types = ["full_attention"]
     draft = Qwen3ForCausalLM(config)
     weights = dict(draft.state_dict())
     weights["fc.weight"] = torch.eye(128)
@@ -340,6 +341,16 @@ def create_tiny_checkpoints(directory: Path) -> tuple[Path, Path]:
     )
     (draft_dir / "config.json").write_text(json.dumps(draft_config))
     return directory / "target", draft_dir
+
+
+def test_tiny_checkpoints_reload_with_matching_layer_types(tmp_path: Path) -> None:
+    target_dir, draft_dir = create_tiny_checkpoints(tmp_path)
+    target = AutoConfig.from_pretrained(target_dir)
+    draft = AutoConfig.from_pretrained(draft_dir)
+    assert target.num_hidden_layers == len(target.layer_types) == 2
+    assert draft.num_hidden_layers == len(draft.layer_types) == 1
+    assert draft.architectures == ["DFlashDraftModel"]
+    assert draft.dflash_config["target_layer_ids"] == [0]
 
 
 @pytest.mark.accelerator
