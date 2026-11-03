@@ -273,6 +273,10 @@ To use services you already run, drop their `services` entries and point the nod
 
 The default Vivian cascade profile uses Qwen3.8-27B with thinking off on GPU 0 and Qwen3-ASR/Qwen3-TTS Base on GPU 1. The audio-file example in `examples/streaming_cascade/run.py` uses this profile when `--config` is omitted.
 
+This profile enables DFlash speculative decoding for the chat service with the pinned `incoai/Qwen3.8-27B-DFlash2` draft and for ASR through `examples/configs/qwen3_asr_1_7b_dflash.yaml`. Both verify blocks of eight tokens. Qwen3-TTS has no speculative decoding adapter, so enabling all supported stages means chat and ASR. The draft weights and caches also occupy GPU memory; the profile keeps the same two-GPU placement.
+
+For a chat-only comparison, remove the ASR service's `--config` argument and its value. For a baseline, also remove the chat service's four `--speculative-*` arguments and their values. Stop the services between configurations: an existing service on the same port is reused, so changing a launch file alone does not change its decoding settings. Use the repository's `benchmarks.eval.benchmark_duplex_serving` with `--dataset v1.5 --profile turn-based` as shown in [v1.5 scoring](#v15-scoring). Its first-audio latency starts at `response.created`, after the ASR transcript opens the reply; evaluating ASR's contribution also requires the speech-stop and transcription events in the recording's `continuous.jsonl`.
+
 ```bash
 sgl-omni serve --config examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-vivian/launch.yaml --enable-realtime --port 8765
 ```
