@@ -3,6 +3,7 @@
 // mel-conditioned upsampling network whose STFT frames give 24 kHz audio.
 #pragma once
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -16,8 +17,10 @@ public:
   explicit Vocoder(const omni_common::Checkpoint &checkpoint);
 
   // 24 kHz samples [1, samples] for mel [1, 80, frames], float32. Draws the
-  // source's phases and noise from MLX's global random keys.
-  mlx::core::array Waveform(const mlx::core::array &mel) const;
+  // source's phases and noise from MLX's global random keys. on_step, when
+  // given, runs between the vocoding stages and may throw to stop it.
+  mlx::core::array Waveform(const mlx::core::array &mel,
+                            const std::function<void()> &on_step = {}) const;
 
 private:
   // The harmonic source [1, samples, 1] for F0 in Hz [1, samples, 1].

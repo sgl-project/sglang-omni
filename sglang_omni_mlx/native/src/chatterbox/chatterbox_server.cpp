@@ -180,7 +180,15 @@ float NumberField(const Json &body, const char *name, float fallback,
         std::to_string(low) + ", " + std::to_string(high) + "]");
   } else {
   }
-  return static_cast<float>(number);
+  const float converted = static_cast<float>(number);
+  if (!std::isfinite(converted) || converted > high ||
+      (low_inclusive ? converted < low : converted <= low)) {
+    throw std::invalid_argument(
+        std::string(name) + " must be in " + (low_inclusive ? "[" : "(") +
+        std::to_string(low) + ", " + std::to_string(high) + "]");
+  } else {
+  }
+  return converted;
 }
 
 std::string Lowercase(std::string text) {
@@ -280,8 +288,31 @@ ReferenceBytes(const std::string &source,
         "data URL");
   } else {
   }
-  const std::string path =
-      source.rfind("file://", 0) == 0 ? source.substr(7) : source;
+  std::string path = source;
+  if (source.rfind("file://", 0) == 0) {
+    std::string_view location = std::string_view(source).substr(7);
+    if (location.rfind("localhost/", 0) == 0) {
+      location.remove_prefix(9);
+    } else if (location.empty() || location.front() != '/') {
+      throw std::invalid_argument("reference audio file URLs must be local");
+    } else {
+    }
+    path.clear();
+    for (size_t i = 0; i < location.size(); ++i) {
+      if (location[i] == '%' && i + 2 < location.size() &&
+          std::isxdigit(static_cast<unsigned char>(location[i + 1])) &&
+          std::isxdigit(static_cast<unsigned char>(location[i + 2]))) {
+        int value = 0;
+        std::from_chars(location.data() + i + 1, location.data() + i + 3, value,
+                        16);
+        path.push_back(static_cast<char>(value));
+        i += 2;
+      } else {
+        path.push_back(location[i]);
+      }
+    }
+  } else {
+  }
   std::error_code error;
   const std::filesystem::path resolved =
       std::filesystem::weakly_canonical(path, error);
@@ -804,9 +835,10 @@ private:
       }
     };
     check_deadline();
-    const chatterbox::Voice voice = request.reference.has_value()
-                                        ? model_.CloneVoice(*request.reference)
-                                        : model_.builtin_voice();
+    const chatterbox::Voice voice =
+        request.reference.has_value()
+            ? model_.CloneVoice(*request.reference, check_deadline)
+            : model_.builtin_voice();
     check_deadline();
     mlx::core::random::seed(request.seed);
     std::vector<int> speech_tokens;
@@ -819,7 +851,8 @@ private:
         });
     result.generated_token_count = static_cast<int>(speech_tokens.size());
     check_deadline();
-    std::vector<float> samples = model_.Synthesize(speech_tokens, voice);
+    std::vector<float> samples =
+        model_.Synthesize(speech_tokens, voice, check_deadline);
     check_deadline();
     std::lock_guard<std::mutex> lock(channel.mutex);
     channel.samples = std::move(samples);

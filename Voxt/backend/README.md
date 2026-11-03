@@ -81,8 +81,9 @@ and quitting stops it.
 - The Qwen3-ASR server API:
   - `/health` with `request_states`;
   - `/v1/models`;
-  - `/v1/audio/transcriptions` (JSON or SSE);
+  - `/v1/audio/transcriptions` (JSON or SSE), whose optional `repetition_penalty` (positive, default 1 = off; Voxt does not send it) scales down the logits of tokens already generated, as SGLang's sampler does on CUDA, to break runaway token loops;
   - the `/v1/realtime` manual-turn socket.
+- Qwen3-ASR's `/v1/audio/transcriptions` stops greedy decoding at a token loop (the last 24 tokens use at most 3 distinct ids) unless the request sends `stop_on_token_loop=false`, and the text keeps one copy of the repeated unit. `qwen3_asr_transcribe` does so only with `--stop-on-token-loop`. Realtime refreshes run without the guard.
 - `Voxt/Transcription/Omni*.swift` is the client:
   - `OmniASRRuntime` handles launch, requests, and an awaitable retire that drains in-flight work.
   - It also contains the request planning, the live session and its adapter to Voxt's streaming session interface.
@@ -90,11 +91,11 @@ and quitting stops it.
 
 ## Tests and CI
 
-- Runtime correctness is checked by `sglang_omni_mlx/native/ci`:
+- Runtime correctness is checked by hand with `sglang_omni_mlx/native/ci`:
   - `provision.py` fetches the pinned checkpoint and rebuilds the frozen corpus from its public sources, checking every file's SHA-256.
   - `check_golden.py` runs the runtime over the 392-clip corpus with Voxt's Final request and requires every clip to match the golden output. It reports error rates next to the original Swift backend's.
   - Silero VAD and Sortformer golden files hold the original Swift outputs; `vad_golden.py` and `sortformer_golden.py` check them with tolerances for MLX kernel differences.
-- The `Voxt Mac CI` workflow runs these on the repository's Apple Silicon runner, together with the server API tests and Voxt's Omni unit tests.
+- The `Voxt Mac CI` workflow runs none of these and no model. On GitHub's macOS runners it builds the runtime and runs `sglang_omni_mlx/native/tests`: the protocol every server shares, on `stub_server` with stand-in models; each server's model kinds and startup checks; and that the installed runtime links only the system and itself. It also runs Voxt's Omni unit tests.
 - The Whisper check pins its checkpoint and tokenizer, runs all 392 frozen clips through `check_model_golden.py`, and tests the transcription server. Its golden keeps per-chip outputs with `check_golden.py`'s tolerance, and records the original Swift backend's error rates as its baseline.
 - The Cohere check pins its checkpoint and Silero VAD v6, runs the same frozen corpus through `check_model_golden.py`, and tests the server. Its golden keeps per-chip outputs with the same tolerance, and records the original Swift backend's error rates as its baseline; a second golden freezes the energy cut's multi-chunk path on the long clips.
 - Voxt's opt-in suites need the installed model and `VOXT_RUN_MODEL_TESTS=1`:
@@ -115,6 +116,7 @@ the `.xctestrun` file.
 ## Known limitations
 
 - Greedy decoding only.
+- Qwen3-ASR's token-loop guard misses a loop whose repeated unit has more than 3 distinct tokens.
 - Whisper uses batch preview; its server has no realtime socket.
 - Cohere uses batch preview until a native streaming session is implemented.
 - The dev build is ad hoc signed without keychain access groups, so remote

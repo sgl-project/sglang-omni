@@ -338,7 +338,8 @@ mx::array FlowDecoder::Velocity(const mx::array &x, const mx::array &mu,
 }
 
 mx::array FlowDecoder::Mel(const mx::array &speech_tokens,
-                           const FlowPrompt &prompt) const {
+                           const FlowPrompt &prompt,
+                           const std::function<void()> &on_step) const {
   const int token_count = speech_tokens.shape(1);
   const int prompt_mel_frames = prompt.prompt_mel.shape(1);
   const mx::array speaker = prompt.speaker_embedding;
@@ -373,11 +374,17 @@ mx::array FlowDecoder::Mel(const mx::array &speech_tokens,
       2);
   const mx::array times = mx::linspace(0.0, 1.0, kFlowSteps + 1);
   for (int step = 0; step < kFlowSteps; ++step) {
+    if (on_step) {
+      on_step();
+    } else {
+    }
     const mx::array t = mx::slice(times, {step}, {step + 1});
     const mx::array r = mx::slice(times, {step + 1}, {step + 2});
     const mx::array velocity =
         Velocity(x, mu, speaker_conditioning, mel_conditioning, t, r);
     x = mx::add(x, mx::multiply(mx::subtract(r, t), velocity));
+    // One evaluation per step bounds the graph and lets on_step interrupt it.
+    mx::eval(x);
   }
   return mx::slice(x, {0, 0, prompt_mel_frames}, {1, kMelBins, mel_frames});
 }

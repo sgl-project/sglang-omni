@@ -22,7 +22,7 @@ In this sense, two kinds of labels exist and they combine: a stage label decides
 | Omni CI: Omni | H100 | Qwen3-Omni or MiniCPM-o 4.5: thinker length limits, SeedTTS voice cloning, accuracy and speed on MMMU, MMSU, Video-MME and Video-AMME with text and spoken answers, a tensor parallel thinker, and Qwen3-Omni process replicas | `run-omni-ci` or `run-all-ci` |
 | CPU CI | Intel Xeon (`intel-omni-spr`) | Job `intel-cpu-ci (unit_test/cpu)`: `pytest tests/unit_test/cpu/` | `run-intel-cpu-ci` or `run-all-ci` |
 | XPU CI | Intel GPU (`intel-omni-bmg`) | Intel GPU device layer tests | `run-intel-xpu-ci` or `run-all-ci` |
-| Voxt Mac CI | Apple Silicon | MLX native runtime and Voxt app tests | `run-mac-ci` or `run-all-ci` |
+| Voxt Mac CI | GitHub macOS | MLX native runtime build and protocol, Voxt app tests | `run-mac-ci` or `run-all-ci` |
 
 The Omni CI stages are the core of the project's CI: they serve the main ASR, TTS and omni models end to end on H100 and gate their accuracy and speed.
 
@@ -150,7 +150,7 @@ The stage label is `run-intel-xpu-ci`.
 
 ### Voxt Mac CI
 
-Voxt Mac CI has two jobs on Apple Silicon. The native runtime job builds the MLX runtime, checks its golden outputs on a frozen corpus for Qwen3-ASR and the other native models, and runs the server API tests. The Voxt unit test job builds the Voxt app with Xcode and runs its Omni and MLX test classes. The workflow starts only when the pull request touches `Voxt/`, `sglang_omni_mlx/` or the workflow itself; otherwise it does not appear on the pull request at all.
+Voxt Mac CI has two jobs on GitHub's macOS runners. The native runtime job builds the MLX runtime and a stub server, then tests the protocol every native server shares on the stub server, each server's startup checks, and that the installed runtime links only the system and itself. The Voxt unit test job builds the Voxt app with Xcode and runs its Omni and MLX test classes. Model outputs are checked by hand per model PR with the tools in `sglang_omni_mlx/native/ci`. The workflow starts only when the pull request touches `Voxt/`, `sglang_omni_mlx/` or the workflow itself; otherwise it does not appear on the pull request at all.
 
 The stage label is `run-mac-ci`.
 

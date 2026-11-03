@@ -232,7 +232,8 @@ void ChatterboxModel::CheckReference(std::string_view wav_bytes) {
   }
 }
 
-Voice ChatterboxModel::CloneVoice(std::string_view wav_bytes) const {
+Voice ChatterboxModel::CloneVoice(std::string_view wav_bytes,
+                                  const std::function<void()> &on_step) const {
   const std::vector<float> reference =
       NormalizeLoudness(ReadAudio(wav_bytes, kOutputSampleRate),
                         kOutputSampleRate, kReferenceTargetLufs);
@@ -242,10 +243,18 @@ Voice ChatterboxModel::CloneVoice(std::string_view wav_bytes) const {
       Prefix(reference, kFlowReferenceSeconds * kOutputSampleRate);
   const std::vector<float> t3_reference_16k =
       Prefix(reference_16k, kT3ReferenceSeconds * kTokenizerSampleRate);
+  if (on_step) {
+    on_step();
+  } else {
+  }
 
   mx::array prompt_tokens = speech_tokenizer_.Encode(
       Prefix(reference_16k, kFlowReferenceSeconds * kTokenizerSampleRate));
   mx::array prompt_mel = S3GenMel(flow_reference);
+  if (on_step) {
+    on_step();
+  } else {
+  }
   // Two mel frames per token: the longer of the two is cut to the other.
   const int token_count = prompt_tokens.shape(1);
   const int paired_token_count = prompt_mel.shape(1) / 2;
@@ -258,6 +267,10 @@ Voice ChatterboxModel::CloneVoice(std::string_view wav_bytes) const {
   }
   const mx::array speaker_embedding = speaker_encoder_.Embed(
       Resample(flow_reference, kOutputSampleRate, kTokenizerSampleRate));
+  if (on_step) {
+    on_step();
+  } else {
+  }
 
   const mx::array t3_tokens = speech_tokenizer_.Encode(t3_reference_16k);
   Voice voice{
@@ -265,6 +278,10 @@ Voice ChatterboxModel::CloneVoice(std::string_view wav_bytes) const {
        mx::slice(t3_tokens, {0, 0},
                  {1, std::min(t3_tokens.shape(1), kPromptSpeechTokenLimit)})},
       {prompt_tokens, prompt_mel, speaker_embedding}};
+  if (on_step) {
+    on_step();
+  } else {
+  }
   mx::eval({voice.t3.speaker_embedding, voice.t3.prompt_speech_tokens,
             voice.flow.prompt_tokens, voice.flow.prompt_mel,
             voice.flow.speaker_embedding});
@@ -284,7 +301,8 @@ std::vector<int> ChatterboxModel::EncodeText(const std::string &text) const {
 
 std::vector<float>
 ChatterboxModel::Synthesize(const std::vector<int> &speech_tokens,
-                            const Voice &voice) const {
+                            const Voice &voice,
+                            const std::function<void()> &on_step) const {
   std::vector<int32_t> tokens;
   for (const int token : speech_tokens) {
     if (token < kSpeechTokenCount) {
@@ -296,8 +314,12 @@ ChatterboxModel::Synthesize(const std::vector<int> &speech_tokens,
   const mx::array mel =
       flow_.Mel(mx::array(tokens.begin(), {1, static_cast<int>(tokens.size())},
                           mx::int32),
-                voice.flow);
-  mx::array waveform = vocoder_.Waveform(mel);
+                voice.flow, on_step);
+  if (on_step) {
+    on_step();
+  } else {
+  }
+  mx::array waveform = vocoder_.Waveform(mel, on_step);
   const int sample_count = waveform.shape(1);
   if (sample_count >= fade_in_.shape(0)) {
     waveform = mx::concatenate(
@@ -308,6 +330,10 @@ ChatterboxModel::Synthesize(const std::vector<int> &speech_tokens,
   } else {
   }
   waveform = mx::astype(mx::reshape(waveform, {-1}), mx::float32);
+  if (on_step) {
+    on_step();
+  } else {
+  }
   mx::eval(waveform);
   return std::vector<float>(waveform.data<float>(),
                             waveform.data<float>() + waveform.size());

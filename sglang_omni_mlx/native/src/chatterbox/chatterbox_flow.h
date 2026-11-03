@@ -4,6 +4,7 @@
 // mel in two mean-flow steps.
 #pragma once
 
+#include <functional>
 #include <string>
 #include <utility>
 
@@ -25,9 +26,11 @@ public:
   explicit FlowDecoder(const omni_common::Checkpoint &checkpoint);
 
   // The mel [1, 80, 2 * tokens] for speech_tokens int32 [1, tokens], prompt
-  // part removed. Draws its noise from MLX's global random keys.
+  // part removed. Draws its noise from MLX's global random keys. on_step, when
+  // given, runs between the flow steps and may throw to stop decoding.
   mlx::core::array Mel(const mlx::core::array &speech_tokens,
-                       const FlowPrompt &prompt) const;
+                       const FlowPrompt &prompt,
+                       const std::function<void()> &on_step = {}) const;
 
 private:
   // Encoder states [1, 2 * frames, 512] for token embeddings [1, frames, 512].
