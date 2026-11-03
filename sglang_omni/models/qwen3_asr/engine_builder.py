@@ -391,7 +391,9 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             raise ValueError("Qwen3-ASR DFlash currently requires one CUDA GPU")
         else:
             # note (WilsonZheng0327): Draft modules import Triton kernels unavailable on Torch MPS hosts.
-            from sglang_omni.models.qwen3_asr.dflash import materialize_draft_checkpoint
+            from sglang_omni.speculative.dflash_draft import (
+                materialize_draft_checkpoint,
+            )
 
             draft_model_path = overrides.get("speculative_draft_model_path")
             draft_revision = overrides.get("speculative_draft_model_revision")
@@ -404,7 +406,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             else:
                 pass
             self.draft_checkpoint = materialize_draft_checkpoint(
-                draft_model_path, draft_revision
+                draft_model_path, draft_revision, allow_non_causal=True
             )
             overrides["speculative_draft_model_path"] = self.draft_checkpoint.name
             overrides["speculative_draft_model_revision"] = None
@@ -455,11 +457,13 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             return {}
         else:
             # note (WilsonZheng0327): Draft modules import Triton kernels unavailable on Torch MPS hosts.
-            from sglang_omni.models.qwen3_asr.dflash import Qwen3ASRDFlashWorker
+            from sglang_omni.speculative.dflash_draft import (
+                ReducedVocabularyDFlashWorker,
+            )
 
             return {
                 "supports_speculative_decoding": True,
-                "speculative_worker_class": Qwen3ASRDFlashWorker,
+                "speculative_worker_class": ReducedVocabularyDFlashWorker,
             }
 
     def setup_model_resources(

@@ -62,14 +62,19 @@ def write_speculators_checkpoint(
         pytest.param(SHARDED_WEIGHTS, id="sharded"),
     ],
 )
+@pytest.mark.parametrize("non_causal", [False, True])
 def test_flat_config_captures_before_the_layers_the_draft_was_trained_on(
-    tmp_path: Path, weight_files: tuple[str, ...]
+    tmp_path: Path, weight_files: tuple[str, ...], non_causal: bool
 ) -> None:
     """Passing the aux ids straight through feeds the draft one layer too late, and a
     sharded draft loses its weights unless every shard is linked."""
-    write_speculators_checkpoint(tmp_path, weight_files=weight_files)
+    write_speculators_checkpoint(
+        tmp_path, weight_files=weight_files, sliding_window_non_causal=non_causal
+    )
 
-    draft_checkpoint = materialize_draft_checkpoint(str(tmp_path), None)
+    draft_checkpoint = materialize_draft_checkpoint(
+        str(tmp_path), None, allow_non_causal=non_causal
+    )
     draft_dir = Path(draft_checkpoint.name)
 
     config = json.loads((draft_dir / "config.json").read_text())
@@ -80,6 +85,7 @@ def test_flat_config_captures_before_the_layers_the_draft_was_trained_on(
         "block_size": 8,
         "sample_from_anchor": False,
     }
+    assert config.get("is_causal", True) is not non_causal
     assert config["sliding_window"] == 131072
     assert config["draft_vocab_size"] == 48000
     assert config["tie_word_embeddings"] is False
@@ -115,12 +121,14 @@ def make_draft_model() -> ReducedVocabularyDFlashDraftModel:
     nn.Module.__init__(draft_model)
     draft_model.projector_type = None
     draft_model.is_nemotron_35_draft = False
+    draft_model.fc = nn.Linear(2, 2, bias=False)
     draft_model.lm_head = nn.Linear(2, 3, bias=False)
     draft_model.register_buffer(
         "draft_to_target_token_ids", torch.empty(3, dtype=torch.long)
     )
     draft_model.load_weights(
         [
+            ("fc.weight", torch.tensor([[2.0, 3.0], [5.0, 7.0]])),
             ("lm_head.weight", torch.tensor([[1.0, 0.0], [0.0, 1.0], [-1.0, -1.0]])),
             ("d2t", torch.tensor([2, 4, 7])),
             ("t2d", torch.zeros(12, dtype=torch.bool)),
@@ -132,6 +140,7 @@ def make_draft_model() -> ReducedVocabularyDFlashDraftModel:
 def test_captured_and_eager_proposals_map_the_draft_head_to_target_tokens() -> None:
     """Using the target head, or a draft row as a target id, proposes the wrong token."""
     draft_model = make_draft_model()
+    assert torch.equal(draft_model.fc.weight, torch.tensor([[2.0, 3.0], [5.0, 7.0]]))
     worker = ReducedVocabularyDFlashWorker.__new__(ReducedVocabularyDFlashWorker)
     worker.draft_model = draft_model
     # One three-token block: the anchor row, then rows picking draft ids 0 and 1.
