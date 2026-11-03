@@ -68,6 +68,8 @@ _BAD_REQUEST_MARKERS = (
     "Native generation request ",
     "Native chat request rejected: ",
     "Invalid UMM request: ",
+    "Parakeet ASR supports",
+    "Parakeet ASR does not support",
 )
 _BAD_REQUEST_PATTERNS = (
     re.compile(

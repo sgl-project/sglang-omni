@@ -2,7 +2,7 @@
 
 <a id="macos-apple-silicon"></a>
 
-Install the Python Torch/MPS path of `sglang-omni` for Qwen3-ASR and Fun-ASR
+Install the Python Torch/MPS path of `sglang-omni` for Qwen3-ASR, Fun-ASR and Parakeet
 on macOS Apple Silicon (arm64) with `./install.sh`. CUDA users should follow
 the [CUDA installation](./installation.md).
 
@@ -42,8 +42,9 @@ defaults with `UV_HTTP_TIMEOUT` and `UV_HTTP_RETRIES`.
 This path currently supports macOS 14 or newer on `arm64` only (the pinned
 `torch==2.14.1`, `torchvision==0.29.1` and `torchcodec==0.17.0` wheels are built
 for `macosx_14_0_arm64`) and is intended for the Apple-Silicon Qwen3-ASR
-Torch-MPS path and the
-[Fun-ASR Torch/MPS path](../cookbook/fun_asr.md#apple-silicon).
+Torch-MPS path, the
+[Fun-ASR Torch/MPS path](../cookbook/fun_asr.md#apple-silicon) and
+[Parakeet](../cookbook/parakeet.md).
 Common failures are a missing Homebrew/uv on `PATH`, an unavailable Python 3.12
 toolchain, or forgetting the `DYLD_LIBRARY_PATH` export when starting an audio
 server.
@@ -80,3 +81,4 @@ For a fork or an internal mirror, set `SGLANG_OMNI_REPO` and
 
 - [Run Qwen3-ASR with Torch/MPS](../cookbook/qwen3_asr.md#apple-silicon).
 - [Run Fun-ASR with Torch/MPS](../cookbook/fun_asr.md#apple-silicon).
+- [Run Parakeet with Torch/MPS](../cookbook/parakeet.md).
