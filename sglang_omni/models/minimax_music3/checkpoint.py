@@ -18,9 +18,10 @@ from sglang_omni.utils.json import JsonValue
 class TTMCheckpointPaths:
     root: Path
     language_model_dir: Path
+    language_model_config_path: Path
     qwen_dir: Path
     tokenizer_dir: Path
-    config_path: Path
+    audio_config_path: Path
     qwen_index_path: Path
     dit_path: Path
     dav_path: Path
@@ -60,16 +61,21 @@ def resolve_checkpoint(model_path: str | Path) -> TTMCheckpointPaths:
         pass
     qwen_dir = root / "qwen_7B" / "qwen_7B"
     tokenizer_dir = root / "qwen_7B" / "qwen3-8B-tokenizer-music"
+    language_model_dir = root / "language_model"
+    language_model_config_path = language_model_dir / "config.json"
+    audio_config_path = qwen_dir / "config.json"
     paths = TTMCheckpointPaths(
         root=root,
-        language_model_dir=root / "language_model",
+        language_model_dir=language_model_dir,
+        language_model_config_path=language_model_config_path,
         qwen_dir=qwen_dir,
         tokenizer_dir=tokenizer_dir,
-        config_path=qwen_dir / "config.json",
+        audio_config_path=audio_config_path,
         qwen_index_path=qwen_dir / "model.safetensors.index.json",
         dit_path=root / "flowmatching_vae.pth",
         dav_path=root / "dav.pth",
     )
+    validate_checkpoint_configs(paths)
     return paths
 
 
@@ -81,6 +87,41 @@ def load_json(path: Path) -> dict[str, JsonValue]:
     else:
         pass
     return value
+
+
+def validate_checkpoint_configs(paths: TTMCheckpointPaths) -> None:
+    if not paths.language_model_config_path.is_file():
+        raise ValueError(
+            "MiniMax Music 3 checkpoint is missing the native Qwen3 backbone "
+            f"config: {paths.language_model_config_path}"
+        )
+    else:
+        pass
+    if not paths.audio_config_path.is_file():
+        raise ValueError(
+            "MiniMax Music 3 checkpoint is missing the audio module config: "
+            f"{paths.audio_config_path}"
+        )
+    else:
+        pass
+    language_model_config = load_json(paths.language_model_config_path)
+    audio_config = load_json(paths.audio_config_path)
+    if language_model_config.get("model_type") != "qwen3":
+        raise ValueError(
+            "MiniMax Music 3 native backbone must declare model_type='qwen3'; "
+            f"got {language_model_config.get('model_type')!r}"
+        )
+    else:
+        pass
+    language_hidden_size = int(language_model_config["hidden_size"])
+    audio_hidden_size = int(audio_config["hidden_size"])
+    if language_hidden_size != audio_hidden_size:
+        raise ValueError(
+            "MiniMax Music 3 backbone/audio hidden_size mismatch: "
+            f"{language_hidden_size} != {audio_hidden_size}"
+        )
+    else:
+        pass
 
 
 def load_torch_state(path: str | Path, *, device: torch.device) -> dict[str, object]:
@@ -132,4 +173,5 @@ __all__ = [
     "load_json",
     "load_torch_state",
     "resolve_checkpoint",
+    "validate_checkpoint_configs",
 ]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -586,6 +587,9 @@ def test_engine_builder_selects_native_backbone_without_mutating_legacy_config(
     root = tmp_path / "checkpoint"
     language_model_dir = root / "language_model"
     language_model_dir.mkdir(parents=True)
+    (language_model_dir / "config.json").write_text(
+        json.dumps({"model_type": "qwen3", "hidden_size": 4096})
+    )
     (root / "flowmatching_vae.pth").touch()
 
     legacy_dir = root / "qwen_7B" / "qwen_7B"
@@ -593,14 +597,77 @@ def test_engine_builder_selects_native_backbone_without_mutating_legacy_config(
     blob = tmp_path / "config-blob"
     original_config = b'{"model_type":"mixtral","hidden_size":4096}'
     blob.write_bytes(original_config)
-    config_path = legacy_dir / "config.json"
-    config_path.symlink_to(blob)
+    legacy_config_path = legacy_dir / "config.json"
+    legacy_config_path.symlink_to(blob)
 
     builder = MiniMaxMusic3EngineBuilder()
     resolved = Path(builder.resolve_checkpoint(str(root)))
 
     assert resolved == language_model_dir
-    assert config_path.is_symlink()
-    assert config_path.resolve() == blob
-    assert config_path.read_bytes() == original_config
+    assert builder.model_arch_override is None
+    assert "pre_infra_setup" not in type(builder).__dict__
+    assert legacy_config_path.is_symlink()
+    assert legacy_config_path.resolve() == blob
+    assert legacy_config_path.read_bytes() == original_config
     assert not (legacy_dir / "config.json.bak").exists()
+
+
+def test_checkpoint_requires_native_qwen3_backbone(tmp_path: Path) -> None:
+    from sglang_omni.models.minimax_music3.engine_builder import (
+        MiniMaxMusic3EngineBuilder,
+    )
+
+    root = tmp_path / "checkpoint"
+    legacy_dir = root / "qwen_7B" / "qwen_7B"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "config.json").write_text(
+        json.dumps({"model_type": "mixtral", "hidden_size": 4096})
+    )
+    (root / "flowmatching_vae.pth").touch()
+
+    with pytest.raises(ValueError, match="language_model/config.json"):
+        MiniMaxMusic3EngineBuilder().resolve_checkpoint(str(root))
+
+
+def test_checkpoint_rejects_non_qwen3_native_config(tmp_path: Path) -> None:
+    from sglang_omni.models.minimax_music3.engine_builder import (
+        MiniMaxMusic3EngineBuilder,
+    )
+
+    root = tmp_path / "checkpoint"
+    language_model_dir = root / "language_model"
+    language_model_dir.mkdir(parents=True)
+    (language_model_dir / "config.json").write_text(
+        json.dumps({"model_type": "mixtral", "hidden_size": 4096})
+    )
+    legacy_dir = root / "qwen_7B" / "qwen_7B"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "config.json").write_text(
+        json.dumps({"model_type": "mixtral", "hidden_size": 4096})
+    )
+    (root / "flowmatching_vae.pth").touch()
+
+    with pytest.raises(ValueError, match="model_type='qwen3'"):
+        MiniMaxMusic3EngineBuilder().resolve_checkpoint(str(root))
+
+
+def test_checkpoint_rejects_hidden_size_mismatch(tmp_path: Path) -> None:
+    from sglang_omni.models.minimax_music3.engine_builder import (
+        MiniMaxMusic3EngineBuilder,
+    )
+
+    root = tmp_path / "checkpoint"
+    language_model_dir = root / "language_model"
+    language_model_dir.mkdir(parents=True)
+    (language_model_dir / "config.json").write_text(
+        json.dumps({"model_type": "qwen3", "hidden_size": 4096})
+    )
+    legacy_dir = root / "qwen_7B" / "qwen_7B"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "config.json").write_text(
+        json.dumps({"model_type": "mixtral", "hidden_size": 3584})
+    )
+    (root / "flowmatching_vae.pth").touch()
+
+    with pytest.raises(ValueError, match="hidden_size mismatch"):
+        MiniMaxMusic3EngineBuilder().resolve_checkpoint(str(root))
