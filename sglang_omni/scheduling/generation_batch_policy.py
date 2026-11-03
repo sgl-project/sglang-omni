@@ -174,6 +174,7 @@ class GenerationStageDefaults(TypedDict, total=False):
     quantization: str
     sampling_backend: str
     decrypted_config_file: str | None
+    model_config_parser: str
     cuda_graph_backend_prefill: str
     cuda_graph_backend_decode: str
 
