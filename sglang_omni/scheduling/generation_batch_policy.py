@@ -81,7 +81,7 @@ def build_default_prefill_cuda_graph_bs(
     *,
     extra_token_buckets: Sequence[int] = (),
 ) -> list[int]:
-    """Build a capped prefill token ladder with exact single-token and model-specific buckets."""
+    """Build the default capped prefill token ladder with optional model-specific buckets."""
     max_num_tokens = int(max_num_tokens)
     if max_num_tokens < 1:
         raise ValueError("max_num_tokens must be >= 1")
@@ -89,7 +89,6 @@ def build_default_prefill_cuda_graph_bs(
         pass
 
     token_buckets = {
-        1,
         max_num_tokens,
         *generate_prefill_cuda_graph_batch_sizes(max_num_tokens),
         *extra_token_buckets,
@@ -216,6 +215,7 @@ def build_generation_batch_overrides(
     cuda_graph_max_bs: int | None = None,
     torch_compile_max_bs: int | None = None,
     server_args_overrides: Mapping[str, object] | None = None,
+    prefill_extra_token_buckets: Sequence[int] = (),
     **stage_defaults: Unpack[GenerationStageDefaults],
 ) -> dict[str, object]:
     incoming = dict(server_args_overrides or {})
@@ -295,7 +295,9 @@ def build_generation_batch_overrides(
         # an unset chunk is only known inside ServerArgs.
         cap = explicit_prefill_cap(overrides)
         if cap is not None:
-            prefill_bs = build_default_prefill_cuda_graph_bs(cap)
+            prefill_bs = build_default_prefill_cuda_graph_bs(
+                cap, extra_token_buckets=prefill_extra_token_buckets
+            )
             prefill_max_bs = cap
             overrides["cuda_graph_bs_prefill"] = prefill_bs
             overrides["cuda_graph_max_bs_prefill"] = cap
