@@ -2,13 +2,21 @@
 
 <a id="macos-apple-silicon"></a>
 
-Install the Python Torch/MPS path of `sglang-omni` for Qwen3-ASR and Fun-ASR
-on macOS 14 or newer with Apple Silicon (arm64). CUDA users should follow
-the [CUDA installation](./installation.md).
+Choose the runtime you want to use on Apple Silicon:
 
-The native C++ MLX runtime under `sglang_omni_mlx/native/` has a separate build
-and run workflow. See the [MLX path documentation](../mlx/index.md)
-and the [Voxt backend guide](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/backend/README.md) for that path.
+- **Torch MPS:** Follow the [installation steps on this page](#prerequisites)
+  to run Qwen3-ASR and Fun-ASR with PyTorch on macOS 14 or newer.
+- **Native MLX / Voxt:** The C++ runtime in `sglang_omni_mlx/native/` has its
+  own build and run workflow. See the [Native MLX / Voxt guide](../mlx/index.md)
+  and the [Voxt backend guide](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/backend/README.md).
+
+For NVIDIA GPUs, see the [CUDA installation](./installation.md).
+
+```{toctree}
+:hidden:
+
+Native MLX / Voxt <../mlx/index>
+```
 
 ## Prerequisites
 

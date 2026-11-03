@@ -3,6 +3,15 @@
 Install SGLang-Omni on Linux with an NVIDIA GPU. Docker is recommended.
 The current stable release is [v0.2.0 on PyPI](https://pypi.org/project/sglang-omni/).
 
+## Other platforms
+
+Using a different device? Choose the installation guide for your hardware:
+[Apple Silicon](./installation_apple_silicon.md),
+[Ascend NPU](./installation_npu.md),
+[Intel XPU](./installation_xpu.md),
+[Intel CPU](./installation_cpu.md), and
+[Moore Threads MUSA](./installation_musa.md).
+
 ## Install SGLang-Omni
 
 Choose [Docker](#docker-recommended) for a prebuilt CUDA environment,
@@ -118,12 +127,3 @@ For model-specific configuration and other request formats, see the
 
 See [Troubleshooting](./troubleshooting.md) for installation errors. Compare
 `uv pip check` output against the [expected CUDA dependency messages](./troubleshooting.md#expected-output-of-uv-pip-check).
-
-## Other platforms
-
-For other platforms, use the dedicated pages:
-[Apple Silicon](./installation_apple_silicon.md),
-[Ascend NPU](./installation_npu.md),
-[Intel XPU](./installation_xpu.md),
-[Intel CPU](./installation_cpu.md), and
-[MUSA](./installation_musa.md).

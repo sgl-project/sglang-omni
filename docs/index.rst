@@ -259,12 +259,18 @@ Community & Resources
    Quickstart <get_started/apiserver_quickstart>
    Installation <get_started/installation>
    get_started/examples
-   get_started/installation_apple_silicon.md
-   get_started/installation_npu.md
-   get_started/installation_xpu.md
-   get_started/installation_cpu.md
-   get_started/installation_musa.md
    get_started/troubleshooting.md
+
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Other Platforms
+
+   Apple Silicon <get_started/installation_apple_silicon>
+   Ascend NPU <get_started/installation_npu>
+   Intel XPU <get_started/installation_xpu>
+   Intel CPU <get_started/installation_cpu>
+   Moore Threads MUSA <get_started/installation_musa>
 
 
 .. toctree::
@@ -301,13 +307,6 @@ Community & Resources
    basic_usage/omni_router.md
    basic_usage/mps_dp.md
    basic_usage/native_media_routes.md
-
-
-.. toctree::
-   :maxdepth: 1
-   :caption: MLX
-
-   mlx/index.md
 
 
 .. toctree::
