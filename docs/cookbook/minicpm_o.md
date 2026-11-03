@@ -63,6 +63,8 @@ sampling and resizing policy. They place explicit images, video frames, and
 independent audio before the final user message's text, in that order.
 Predecoded video tensors remain supported, including mixed file/tensor inputs.
 
+Top-level videos without use_audio_in_video decode on parallel decoders. Each of the four preprocessing workers gets min(16, the stage's CPUs divided by four) FFmpeg threads, split evenly among a request's videos. Set `--preprocessing.factory.video_decode_threads N` to choose that count. A value at or below the video reader's own threads (`TORCHCODEC_NUM_THREADS`, 8 by default) decodes each video on the reader alone.
+
 Inline videos and top-level requests with use_audio_in_video use MiniCPM timed
 video sampling. Set use_audio on an inline video, or use_audio_in_video on a
 top-level request, to include interleaved audio from file or URL sources.
@@ -91,3 +93,22 @@ audio = client.audio.speech.create(
 ```
 
 The speech output is non-streaming. The sampling fields you set, such as `temperature`, `top_p` and `max_new_tokens`, apply to the Talker, which generates the speech; the rest keep the Talker's defaults.
+
+## Speculative Decoding
+
+The Thinker can verify tokens proposed by a DSpark draft trained on its own answers to text, audio, image and video prompts, [`Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm`](https://huggingface.co/Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm):
+
+```bash
+python -m sglang_omni.cli serve --model-path openbmb/MiniCPM-o-4_5 --port 8000 \
+  --thinker.engine.speculative_algorithm DSPARK \
+  --thinker.engine.speculative_draft_model_path Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm \
+  --thinker.engine.speculative_dspark_block_size 7
+```
+
+An EAGLE3 draft for Qwen3-8B, such as [`Tengyunw/qwen3_8b_eagle3`](https://huggingface.co/Tengyunw/qwen3_8b_eagle3), runs with `--thinker.engine.speculative_algorithm EAGLE3`, `speculative_num_steps 3`, `speculative_eagle_topk 1` and `speculative_num_draft_tokens 4`.
+
+- **Speech output.** The Talker reads one Thinker hidden row per text token, and the draft's layer capture keeps the row of every verified token, so a speech server accepts drafts that verify one linear block per request: a chain EAGLE3 draft (`speculative_eagle_topk 1`), DFlash or DSpark. Qwen3-8B DFlash drafts mask with token 151669, which is `<image>` in MiniCPM-o, so they accept almost no tokens here.
+- **Supported settings.** DSpark uses static verification. DFlash and DSpark reject a request seed for sampled verification; greedy and prefill-only requests still accept a seed. Speech verification supports at most 8,192 hidden rows per batch, including graph padding. Prefill storage follows the configured token ceiling; text-only serving does not allocate speech hidden buffers.
+- **Sampling.** `length_penalty` applies to every verified token. Requests with `repetition_penalty`, `frequency_penalty`, `presence_penalty`, `min_p` or logprobs are rejected, because the draft workers cannot reproduce them. A prefill-only request keeps them, since the runner's own sampler draws its single token on the target prefill and never reaches a verify.
+- **Scheduling.** Async decode is turned off, and so is the stage's own mixed-chunk default. An explicit `enable_mixed_chunk` is refused rather than silently turned off.
+- **Startup.** The thinker serves EAGLE3, DFlash and DSpark only, and `speculative_algorithm` and `speculative_draft_model_path` are given together. `max_seq_len` stays within the draft's own `max_position_embeddings`, so raising it for long video prompts needs a draft whose context reaches that far.

@@ -22,9 +22,11 @@ from torch import nn
 from transformers import Qwen3Config
 
 from sglang_omni.models.fun_cosyvoice3.dspark_sampling import (
+    DRAFT_NOISE_SEED_SALT,
     DraftBlockSampler,
     DraftSamplingState,
     sample_draft_block,
+    seeded_exponential_noise,
 )
 from sglang_omni.models.fun_cosyvoice3.sglang_model import TOTAL_VOCAB_SIZE
 
@@ -156,10 +158,20 @@ class MirroredMarkovHead(VanillaMarkov):
         """Draw the block from the stage-shaped logits and return those logits."""
         state = self.sampling_state
         assert state is not None, "a draft step needs its sampling state"
+        if state.seeds is None:
+            exponential_noise = torch.empty_like(base_logits).exponential_()
+        else:
+            batch_size, draft_count, vocab_size = base_logits.shape
+            exponential_noise = seeded_exponential_noise(
+                state.seeds,
+                state.output_lengths,
+                salt=DRAFT_NOISE_SEED_SALT,
+                column_count=draft_count * vocab_size,
+            ).view(batch_size, draft_count, vocab_size)
         return self.block_sampler(
             base_logits,
             first_prev_tokens.long(),
-            torch.empty_like(base_logits).exponential_(),
+            exponential_noise,
             self.markov_w1.weight,
             self.markov_w2.weight,
             state.presence_mask,

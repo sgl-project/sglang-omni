@@ -39,7 +39,8 @@ public:
                                         std::exception_ptr)>;
 
   // Runs load on the worker thread; throws what load throws.
-  explicit TranscriptionWorker(std::function<void()> load);
+  TranscriptionWorker(std::function<void()> load,
+                      std::function<void()> release_idle_memory);
   ~TranscriptionWorker();
   TranscriptionWorker(const TranscriptionWorker &) = delete;
   TranscriptionWorker &operator=(const TranscriptionWorker &) = delete;
@@ -60,7 +61,8 @@ private:
     Completion completion;
   };
 
-  void Run(std::promise<void> loaded, std::function<void()> load);
+  void Run(std::promise<void> loaded, std::function<void()> load,
+           std::function<void()> release_idle_memory);
 
   mutable std::mutex mutex_;
   std::condition_variable wake_;

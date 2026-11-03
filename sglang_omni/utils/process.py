@@ -20,6 +20,22 @@ def register_prewarm_cuda_ipc_handle(handle: bytes) -> None:
     _prewarm_cuda_ipc_handles.append(handle)
 
 
+def unlink_prewarm_cuda_ipc_files() -> None:
+    """Remove prewarm reference counter files without touching CUDA."""
+    for handle in _prewarm_cuda_ipc_handles:
+        with suppress(OSError):
+            os.unlink(b"/dev/shm/" + handle.lstrip(b"/"))
+    _prewarm_cuda_ipc_handles.clear()
+
+
+def terminate_gpu_worker() -> NoReturn:
+    """Fail the process without cleanup that could touch unfinished GPU work."""
+    try:
+        unlink_prewarm_cuda_ipc_files()
+    finally:
+        os._exit(1)  # noqa: leading-underscore  # bypass unsafe GPU teardown
+
+
 def exit_without_teardown(code: int) -> NoReturn:
     """End a process whose work and cleanup are done, minus interpreter teardown.
 
@@ -58,10 +74,7 @@ def release_cuda_ipc_file() -> None:
     """
     # note (db-ol): a prewarm share holds its slot to the end, so its file is unlinked
     # here. A normal exit never reaches this, and its teardown removes the file itself.
-    for handle in _prewarm_cuda_ipc_handles:
-        with suppress(OSError):
-            os.unlink(b"/dev/shm/" + handle.lstrip(b"/"))
-    _prewarm_cuda_ipc_handles.clear()
+    unlink_prewarm_cuda_ipc_files()
     torch = sys.modules.get("torch")
     if torch is None or not torch.cuda.is_initialized():
         return

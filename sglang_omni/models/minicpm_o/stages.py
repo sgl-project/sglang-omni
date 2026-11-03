@@ -11,7 +11,8 @@ from contextlib import nullcontext
 import numpy as np
 import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
-from transformers import AutoTokenizer
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
+from transformers import AutoConfig, AutoTokenizer
 
 from sglang_omni.models.minicpm_o.bootstrap import (
     create_talker_scheduler,
@@ -47,6 +48,7 @@ from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.scheduling.streaming_detokenizer import StreamingDetokenizeScheduler
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
+from sglang_omni.utils.cpu import automatic_video_decode_threads
 from sglang_omni.utils.device import resolve_concrete_device
 from sglang_omni.utils.misc import avail_gpu_mem
 
@@ -60,14 +62,20 @@ def create_preprocessing_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     max_concurrency: int,
+    video_decode_threads: int | None = None,
 ) -> (
     SimpleScheduler[StagePayload, StagePayload]
     | ThreadedSimpleScheduler[StagePayload, StagePayload]
 ):
+    if video_decode_threads is None:
+        video_decode_threads = automatic_video_decode_threads(max_concurrency)
+    else:
+        pass
     preprocessor = MiniCPMOPreprocessor(
         model_path,
         speech_enabled=speech_enabled,
         device=resolve_concrete_device(device, gpu_id),
+        video_decode_threads=video_decode_threads,
     )
 
     async def preprocess_with_events(payload: StagePayload) -> StagePayload:
@@ -436,6 +444,55 @@ def create_sglang_thinker_executor_from_config(
     )
     overrides.setdefault("trust_remote_code", False)
     overrides["tp_size"] = tp_size
+    draft_model_path = overrides.get("speculative_draft_model_path")
+    speculative_algorithm = SpeculativeAlgorithm.from_string(
+        overrides.get("speculative_algorithm")
+    )
+    if speculative_algorithm.is_none():
+        if draft_model_path is not None:
+            raise ValueError(
+                "speculative_draft_model_path needs a speculative_algorithm"
+            )
+        else:
+            pass
+    else:
+        if not (
+            speculative_algorithm.is_eagle3()
+            or speculative_algorithm.is_dflash()
+            or speculative_algorithm.is_dspark()
+        ):
+            raise ValueError(
+                "MiniCPM-o speculative thinker decoding supports EAGLE3, DFLASH and "
+                f"DSPARK, not {speculative_algorithm.name}"
+            )
+        elif draft_model_path is None:
+            raise ValueError(
+                f"speculative_algorithm={speculative_algorithm.name} needs "
+                "speculative_draft_model_path"
+            )
+        elif (server_args_overrides or {}).get("enable_mixed_chunk"):
+            raise ValueError(
+                "speculative thinker decoding needs enable_mixed_chunk off"
+            )
+        else:
+            pass
+        # note (0xtoward): the draft worker verifies whole blocks in a synchronous loop.
+        overrides["enable_mixed_chunk"] = False
+        enable_async_decode = False
+        # The draft has its own positional capacity; the target serves within it.
+        draft_context_length = int(
+            AutoConfig.from_pretrained(
+                draft_model_path,
+                revision=overrides.get("speculative_draft_model_revision"),
+            ).max_position_embeddings
+        )
+        if max_seq_len > draft_context_length:
+            raise ValueError(
+                f"max_seq_len={max_seq_len} exceeds the draft's "
+                f"{draft_context_length}-token context"
+            )
+        else:
+            pass
     server_args = build_sglang_server_args(
         model_path,
         context_length=max_seq_len,

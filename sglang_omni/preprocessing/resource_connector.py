@@ -705,6 +705,7 @@ class MultiModalResourceConnector:
         timeout: float = 30.0,
         extract_audio: bool = False,
         audio_target_sr: int = 16000,
+        decode_threads: int,
     ) -> tuple[torch.Tensor, float, npt.NDArray[np.float32] | None]:
         """Asynchronously load video from a URL.
 
@@ -719,6 +720,7 @@ class MultiModalResourceConnector:
             timeout: Timeout for HTTP requests in seconds.
             extract_audio: If True, extract audio from video and return as third element.
             audio_target_sr: Target sample rate for audio extraction (default: 16000).
+            decode_threads: FFmpeg threads this video's torchcodec decoders may use together.
 
         Returns:
             Tuple of (video_tensor, sample_fps, audio_or_None).
@@ -734,6 +736,7 @@ class MultiModalResourceConnector:
             image_mode=image_mode,
             extract_audio=extract_audio,
             audio_target_sr=audio_target_sr,
+            decode_threads=decode_threads,
             **self.media_io_kwargs.get("video", {}),
         )
 

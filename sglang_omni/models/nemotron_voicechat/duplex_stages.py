@@ -38,6 +38,7 @@ from sglang_omni.models.nemotron_voicechat.tools import (
 )
 from sglang_omni.models.weight_loader import load_module, resolve_dtype
 from sglang_omni.proto.request import StagePayload
+from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.session import SessionScheduler
 from sglang_omni.scheduling.sglang_backend.ar_session import ARSessionAdapter
@@ -64,6 +65,8 @@ class OfflineResultAdapter(Protocol):
 class DuplexSessionBuilderMixin:
     adapter: ARSessionAdapter
     scheduler_class = OmniScheduler
+    # note (Junnan Li): an eager thinker unit leaves no room in the 80 ms frame for a second session.
+    disable_cuda_graph = False
 
     def generation_defaults(self, *, dtype: str) -> dict[str, str | int | bool]:
         return {
@@ -74,6 +77,7 @@ class DuplexSessionBuilderMixin:
             # Triton supports the single-token KV pages used by streaming sessions.
             "attention_backend": "triton",
             "page_size": 1,
+            "cuda_graph_backend_prefill": CudaGraphBackend.DISABLED,
         }
 
     def extra_scheduler_kwargs(self) -> dict[str, ARSessionAdapter | int]:
