@@ -2186,7 +2186,13 @@ class OmniScheduler(Generic[RequestDataT]):
             return None
         else:
             pass
-        decode_is_idle = running_batch is None or running_batch.is_empty()
+        # note (ratish): admission drops finished rows before this check, so the step that emptied the batch still counts as decode: its requests return within a round trip and join the prefill.
+        decode_just_ran = self.last_batch is not None and self.batch_is_decode(
+            self.last_batch
+        )
+        decode_is_idle = not decode_just_ran and (
+            running_batch is None or running_batch.is_empty()
+        )
         if not self.prefill_coalesce_when_idle and decode_is_idle:
             return None
         else:

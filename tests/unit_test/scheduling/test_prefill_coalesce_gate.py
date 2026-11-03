@@ -22,6 +22,7 @@ import pytest
 pytest.importorskip("sglang")
 
 from sglang.srt.managers.schedule_batch import NextBatchPlan  # noqa: E402
+from sglang.srt.model_executor.forward_batch_info import ForwardMode  # noqa: E402
 
 from sglang_omni.scheduling import omni_scheduler  # noqa: E402
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler  # noqa: E402
@@ -58,6 +59,8 @@ class StubScheduler:
         self.chunked_req = None
         self.waiting_queue: list = []
         self.running_batch = SimpleNamespace(is_empty=lambda: False)
+        self.last_batch = None
+        self.batch_is_decode = OmniScheduler.batch_is_decode
         self.request_admission_lock = threading.RLock()
         self.pending_request_builds: dict = {}
         self.pending_request_admissions: dict = {}
@@ -270,6 +273,26 @@ def test_idle_decode_still_releases_after_build_work_drains(upstream, clock):
     sched.waiting_queue = [make_req(100.0)]
 
     clock.return_value = 100.001
+    assert sched.get_new_batch_prefill() is UPSTREAM_BATCH
+
+
+def test_the_step_that_emptied_the_batch_still_holds_a_small_prefill(upstream, clock):
+    """Admission filtering finished rows first released a partial batch before its last requests returned."""
+    sched = StubScheduler(
+        coalesce_requests=8,
+        wait_ms=6.0,
+        coalesce_when_idle=True,
+        requires_pending_builds=True,
+        coalesce_after_builds_during_decode=True,
+    )
+    sched.running_batch = SimpleNamespace(is_empty=lambda: True)
+    sched.last_batch = SimpleNamespace(forward_mode=ForwardMode.DECODE)
+    sched.waiting_queue = [make_req(100.0)]
+
+    clock.return_value = 100.001
+    assert sched.get_new_batch_prefill() is None
+
+    sched.last_batch = None
     assert sched.get_new_batch_prefill() is UPSTREAM_BATCH
 
 
