@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 
 _QWEN_COLOCATED_CONFIG_CLASS = "Qwen3OmniSpeechColocatedPipelineConfig"
+LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 
 
 class ServeCommand(TyperCommand):
@@ -525,13 +526,17 @@ def serve(
     ``--vocoder.factory.max_concurrency 8``, ``--talker_ar.gpu 1``,
     ``--thinker.process thinker``.
     """
-    # note (Chenyang): sglang serve installs a root handler before this runs,
-    # which makes basicConfig a no-op; force so --log-level applies there too.
-    logging.basicConfig(
-        level=getattr(logging, log_level.upper()),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        force=True,
-    )
+    root_logger = logging.getLogger()
+    logging.basicConfig(level=log_level.upper(), format=LOG_FORMAT)
+    # note (Chenyang): sglang serve installs a root console handler before this
+    # runs, which makes basicConfig a no-op. Set the level and the console
+    # format directly so both CLIs log alike, and keep plugin handlers intact.
+    root_logger.setLevel(log_level.upper())
+    for root_handler in root_logger.handlers:
+        if type(root_handler) is logging.StreamHandler:
+            root_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+        else:
+            pass
     configure_dependency_loggers()
 
     validate_colocate_cli_request(
