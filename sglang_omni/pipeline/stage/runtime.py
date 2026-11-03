@@ -758,6 +758,8 @@ class Stage:
                 request_metadata,
                 stage_name=self.name,
             )
+        else:
+            pass
         self.active_requests.add(request_id)
         if self.stream_queue is not None and not self.stream_queue.has(request_id):
             self.stream_queue.open(request_id)
@@ -900,6 +902,8 @@ class Stage:
                 payload.request.metadata,
                 stage_name=self.name,
             )
+        else:
+            pass
         self.active_requests.add(request_id)
         if self.stream_queue is not None and not self.stream_queue.has(request_id):
             self.stream_queue.open(request_id)
@@ -1049,6 +1053,8 @@ class Stage:
                 sampling_session_identity,
                 stage_name=self.name,
             )
+        else:
+            pass
         _emit_event(
             request_id=request_id,
             stage=self.name,
@@ -1066,6 +1072,8 @@ class Stage:
         )
         if session_identity is None:
             return None
+        else:
+            pass
         return {"id": session_identity[0], "open_index": session_identity[1]}
 
     async def route_stream_item_or_fail(
@@ -2675,6 +2683,10 @@ class Stage:
             recorder = _get_recorder()
             if recorder.is_runtime_active():
                 recorder.clear_request_sampling(request_id, stage_name=self.name)
+            else:
+                pass
+        else:
+            pass
 
     async def handle_scheduler_crash(self, exc: BaseException) -> None:
         if self.scheduler_crash_error is not None:
@@ -2755,6 +2767,8 @@ class Stage:
             else:
                 pass
             TorchProfiler.start(template, run_id=run_id)
+        else:
+            pass
         if msg.event_dir is not None:
             try:
                 _get_recorder().start(

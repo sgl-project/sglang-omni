@@ -214,9 +214,11 @@ class StreamChunkBatchMessage:
             else:
                 pass
             d["session_sampling_identities"] = [
-                None
-                if identity is None
-                else require_session_sampling_identity(identity)
+                (
+                    None
+                    if identity is None
+                    else require_session_sampling_identity(identity)
+                )
                 for identity in self.session_sampling_identities
             ]
         else:
@@ -254,9 +256,11 @@ class StreamChunkBatchMessage:
                 )
             else:
                 session_sampling_identities = [
-                    None
-                    if identity is None
-                    else require_session_sampling_identity(identity)
+                    (
+                        None
+                        if identity is None
+                        else require_session_sampling_identity(identity)
+                    )
                     for identity in session_sampling_identities
                 ]
         else:

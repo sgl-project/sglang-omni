@@ -97,16 +97,24 @@ class RequestEventRecorder:
     ) -> tuple[str, int] | None:
         if metadata is None:
             return None
+        else:
+            pass
         session_id = metadata.get("session_id")
         session_open_index = metadata.get("session_open_index")
         if isinstance(session_id, str) and type(session_open_index) is int:
             return session_id, session_open_index
+        else:
+            pass
         session_operation = metadata.get(SESSION_METADATA_KEY)
         if not isinstance(session_operation, Mapping):
             return None
+        else:
+            pass
         session_identity = session_operation.get("session_identity")
         if not isinstance(session_identity, Mapping):
             return None
+        else:
+            pass
         session_id = session_identity.get("id")
         session_open_index = session_identity.get("open_index")
         if isinstance(session_id, str) and type(session_open_index) is int:
@@ -149,6 +157,8 @@ class RequestEventRecorder:
             or run_state.request_sampling_decisions.get(request_id) is not True
         ):
             return None
+        else:
+            pass
         return run_state.request_session_identities.get(request_id)
 
     def register_session_sampling_context(
@@ -168,6 +178,8 @@ class RequestEventRecorder:
             or run_state.file_size_limit_reached
         ):
             return
+        else:
+            pass
         has_registered_session_sampling_context = (
             request_id in run_state.request_sampling_decisions
             and request_id in run_state.request_session_identities
@@ -179,6 +191,8 @@ class RequestEventRecorder:
             and stage_name in request_stage_names
         ):
             return
+        else:
+            pass
         with self.control_lock:
             if (
                 self.active_state is not run_state
@@ -188,6 +202,8 @@ class RequestEventRecorder:
                 or run_state.file_size_limit_reached
             ):
                 return
+            else:
+                pass
             has_registered_session_sampling_context = (
                 request_id in run_state.request_sampling_decisions
                 and request_id in run_state.request_session_identities
@@ -197,6 +213,8 @@ class RequestEventRecorder:
                     request_id, set()
                 ).add(stage_name)
                 return
+            else:
+                pass
             run_state.request_session_identities[request_id] = session_identity
             run_state.request_sampling_decisions[request_id] = (
                 self.deterministic_sampling_decision(run_state, session_identity)
@@ -220,6 +238,8 @@ class RequestEventRecorder:
             or run_state.file_size_limit_reached
         ):
             return
+        else:
+            pass
         with self.control_lock:
             if (
                 self.active_state is not run_state
@@ -228,6 +248,8 @@ class RequestEventRecorder:
                 or run_state.file_size_limit_reached
             ):
                 return
+            else:
+                pass
             session_identity = None
             if run_state.sampling_unit == "session":
                 session_identity = self.session_identity_from_metadata(request_metadata)
@@ -235,6 +257,10 @@ class RequestEventRecorder:
                     run_state.request_session_identities.setdefault(
                         request_id, session_identity
                     )
+                else:
+                    pass
+            else:
+                pass
             decision = run_state.request_sampling_decisions.get(request_id)
             if decision is None:
                 if run_state.sampling_unit == "request":
@@ -248,6 +274,8 @@ class RequestEventRecorder:
                         decision = self.deterministic_sampling_decision(
                             run_state, session_identity
                         )
+            else:
+                pass
             run_state.request_sampling_decisions[request_id] = decision
             run_state.request_sampling_stage_names.setdefault(request_id, set()).add(
                 stage_name
@@ -264,20 +292,32 @@ class RequestEventRecorder:
     ) -> bool:
         if run_state.mode != "runtime":
             return True
+        else:
+            pass
         if run_state.writer_failed:
             return False
+        else:
+            pass
         cached_decision = run_state.request_sampling_decisions.get(request_id)
         if cached_decision is not None:
             return cached_decision
         elif run_state.sampling_unit == "request":
             return self.deterministic_sampling_decision(run_state, request_id)
+        else:
+            pass
         session_identity = sampling_session_identity
         if session_identity is None:
             session_identity = self.session_identity_from_metadata(event_metadata)
+        else:
+            pass
         if session_identity is None:
             session_identity = self.session_identity_from_metadata(request_metadata)
+        else:
+            pass
         if session_identity is None:
             return False
+        else:
+            pass
         return self.deterministic_sampling_decision(run_state, session_identity)
 
     def clear_request_sampling(
@@ -290,12 +330,18 @@ class RequestEventRecorder:
             run_state = self.active_state
             if run_state is None or run_state.mode != "runtime":
                 return
+            else:
+                pass
             stage_names = run_state.request_sampling_stage_names.get(request_id)
             if stage_names is not None:
                 stage_names.discard(stage_name)
                 if stage_names:
                     return
+                else:
+                    pass
                 run_state.request_sampling_stage_names.pop(request_id, None)
+            else:
+                pass
             run_state.request_sampling_decisions.pop(request_id, None)
             run_state.request_session_identities.pop(request_id, None)
 
@@ -312,6 +358,8 @@ class RequestEventRecorder:
         observed_state = self.active_state
         if observed_state is None:
             return None
+        else:
+            pass
         if observed_state.mode == "runtime":
             if (
                 expected_run_state is not None
@@ -322,8 +370,12 @@ class RequestEventRecorder:
                 expected_run_id is not None and expected_run_id != observed_state.run_id
             ):
                 return None
+            else:
+                pass
             if observed_state.writer_failed or observed_state.file_size_limit_reached:
                 return None
+            else:
+                pass
             if request_id is not None and not self.should_sample_request(
                 observed_state,
                 request_id,
@@ -331,16 +383,26 @@ class RequestEventRecorder:
                 sampling_session_identity=sampling_session_identity,
             ):
                 return None
+            else:
+                pass
             if observed_state.file_size_limit_reached:
                 return None
+            else:
+                pass
+        else:
+            pass
 
         producer_buffer = getattr(self.producer_local, "buffer", None)
         if producer_buffer is not None and producer_buffer.run_state is observed_state:
             producer_buffer.in_flight += 1
             if self.active_state is observed_state:
                 return producer_buffer
+            else:
+                pass
             producer_buffer.in_flight -= 1
             return None
+        else:
+            pass
 
         producer_drop_counter = getattr(self.producer_local, "drop_counter", None)
         if (
@@ -350,11 +412,17 @@ class RequestEventRecorder:
             with producer_drop_counter.lock:
                 if self.active_state is observed_state:
                     producer_drop_counter.dropped_events += 1
+                else:
+                    pass
             return None
+        else:
+            pass
 
         with self.control_lock:
             if self.active_state is not observed_state:
                 return None
+            else:
+                pass
             producer_buffer = getattr(self.producer_local, "buffer", None)
             if (
                 producer_buffer is not None
@@ -362,6 +430,8 @@ class RequestEventRecorder:
             ):
                 producer_buffer.in_flight += 1
                 return producer_buffer
+            else:
+                pass
             if len(observed_state.producer_buffers) >= MAX_PRODUCER_BUFFERS:
                 producer_drop_counter = observed_state.producer_drop_counter
                 if producer_drop_counter is None:
@@ -372,11 +442,17 @@ class RequestEventRecorder:
                     observed_state.incomplete_reasons.add(
                         "producer_buffer_registration_limit"
                     )
+                else:
+                    pass
                 self.producer_local.drop_counter = producer_drop_counter
                 with producer_drop_counter.lock:
                     if self.active_state is observed_state:
                         producer_drop_counter.dropped_events += 1
+                    else:
+                        pass
                 return None
+            else:
+                pass
             producer_buffer = ProducerBuffer(
                 run_state=observed_state,
                 capacity=observed_state.event_buffer_capacity,
@@ -410,13 +486,19 @@ class RequestEventRecorder:
             return
         if producer_buffer is None:
             return
+        else:
+            pass
 
         run_state = producer_buffer.run_state
         try:
             if run_state.mode == "runtime" and run_state.file_size_limit_reached:
                 return
+            else:
+                pass
             if expected_run_id is not None and expected_run_id != run_state.run_id:
                 return
+            else:
+                pass
             if (
                 len(producer_buffer.events) + producer_buffer.pending_event_count
                 >= producer_buffer.capacity
@@ -424,6 +506,8 @@ class RequestEventRecorder:
                 producer_buffer.dropped_events += 1
                 producer_buffer.incomplete_reasons.add("producer_buffer_overflow")
                 return
+            else:
+                pass
 
             resolved_stage = stage or get_active_stage() or run_state.stage or "unknown"
             if not self.event_text_is_bounded(
@@ -432,8 +516,12 @@ class RequestEventRecorder:
                 producer_buffer.dropped_events += 1
                 producer_buffer.incomplete_reasons.add("event_payload_too_large")
                 return
+            else:
+                pass
             if run_state.mode == "runtime" and run_state.file_size_limit_reached:
                 return
+            else:
+                pass
             try:
                 captured_metadata = snapshot_metadata(metadata)
             except Exception:
@@ -443,9 +531,13 @@ class RequestEventRecorder:
                 return
             if run_state.mode == "runtime" and run_state.file_size_limit_reached:
                 return
+            else:
+                pass
             if "__metadata_truncated__" in captured_metadata:
                 producer_buffer.metadata_truncations += 1
                 producer_buffer.incomplete_reasons.add("metadata_truncated")
+            else:
+                pass
             request_event = RequestEvent(
                 request_id=request_id,
                 stage=resolved_stage,
@@ -494,6 +586,8 @@ class RequestEventRecorder:
             type(event_buffer_capacity) is not int or event_buffer_capacity <= 0
         ):
             raise ValueError("event_buffer_capacity must be a positive integer")
+        else:
+            pass
         if mode not in ("performance", "runtime"):
             raise ValueError("mode must be 'performance' or 'runtime'")
         elif mode == "runtime":
@@ -513,12 +607,16 @@ class RequestEventRecorder:
             else:
                 if max_event_file_bytes is None:
                     max_event_file_bytes = DEFAULT_MAX_EVENT_FILE_BYTES
+                else:
+                    pass
         elif (
             sampling_unit is not None
             or sample_rate is not None
             or max_event_file_bytes is not None
         ):
             raise ValueError("runtime sampling and file limits require runtime mode")
+        else:
+            pass
         with self.control_lock:
             active_state = self.active_state
             if active_state is not None:
@@ -526,6 +624,8 @@ class RequestEventRecorder:
                     raise RuntimeError(
                         f"request event run {active_state.run_id} is already active"
                     )
+                else:
+                    pass
                 if (
                     event_buffer_capacity is not None
                     and event_buffer_capacity != active_state.event_buffer_capacity
@@ -533,6 +633,8 @@ class RequestEventRecorder:
                     raise RuntimeError(
                         "co-located stages must use the same event_buffer_capacity"
                     )
+                else:
+                    pass
                 if (
                     mode != active_state.mode
                     or sampling_unit != active_state.sampling_unit
@@ -543,17 +645,25 @@ class RequestEventRecorder:
                         "co-located stages must use the same request event "
                         "profile configuration"
                     )
+                else:
+                    pass
                 directory = Path(event_dir).expanduser().resolve()
                 if active_state.path.parent != directory:
                     raise RuntimeError("co-located stages must use the same event_dir")
+                else:
+                    pass
                 active_state.stages.add(stage)
                 active_state.active_stages.add(stage)
                 return str(active_state.path)
+            else:
+                pass
 
             if self.writer_thread is not None:
                 raise RuntimeError(
                     "request event recorder is still draining the previous run"
                 )
+            else:
+                pass
             if self.draining_state is not None:
                 if not self.draining_state.finalization.completion_event.is_set():
                     raise RuntimeError(
@@ -561,6 +671,8 @@ class RequestEventRecorder:
                     )
                 else:
                     self.draining_state = None
+            else:
+                pass
 
             directory = Path(event_dir).expanduser()
             directory.mkdir(parents=True, exist_ok=True)
@@ -572,6 +684,8 @@ class RequestEventRecorder:
                     f"request event output already exists in {directory}; "
                     "use a fresh event_dir"
                 )
+            else:
+                pass
             finalization = RequestEventFinalization(
                 path=str(event_path),
                 status_path=str(status_path),
@@ -612,6 +726,8 @@ class RequestEventRecorder:
                     raise RuntimeError(
                         "request event runtime writer could not start"
                     ) from exc
+            else:
+                pass
             return str(event_path)
 
     def retire_active_state(self, run_state: RecorderRunState) -> None:
@@ -622,6 +738,8 @@ class RequestEventRecorder:
         if run_state.mode == "runtime":
             run_state.stop_requested.set()
             return
+        else:
+            pass
         writer_thread = threading.Thread(
             target=self.writer_loop,
             args=(run_state,),
@@ -644,9 +762,13 @@ class RequestEventRecorder:
             active_state = self.active_state
             if active_state is None or stage not in active_state.active_stages:
                 return None
+            else:
+                pass
             active_state.active_stages.remove(stage)
             if active_state.active_stages:
                 return None
+            else:
+                pass
             self.retire_active_state(active_state)
             return active_state.finalization
 
@@ -658,8 +780,12 @@ class RequestEventRecorder:
             active_state = self.active_state
             if active_state is None:
                 return None
+            else:
+                pass
             if run_id is not None and active_state.run_id != run_id:
                 return None
+            else:
+                pass
             self.retire_active_state(active_state)
             return active_state.finalization
 
@@ -673,8 +799,12 @@ class RequestEventRecorder:
         finalization = self.deactivate(run_id=run_id)
         if finalization is None:
             return None
+        else:
+            pass
         if wait and not finalization.wait():
             return None
+        else:
+            pass
         return finalization.path
 
     def wait_for_finalizations(
@@ -685,9 +815,13 @@ class RequestEventRecorder:
         with self.control_lock:
             if self.active_state is not None:
                 return False
+            else:
+                pass
             draining_state = self.draining_state
         if draining_state is None:
             return True
+        else:
+            pass
         return draining_state.finalization.wait(timeout_seconds)
 
     def writer_loop(self, run_state: RecorderRunState) -> None:
@@ -725,6 +859,8 @@ class RequestEventRecorder:
                                         last_flush_time = time.monotonic()
                                     else:
                                         pass
+                                else:
+                                    pass
                                 if run_state.writer_failed:
                                     run_state.stop_requested.wait()
                                     break
@@ -794,6 +930,10 @@ class RequestEventRecorder:
                                 )
                             if file_handle is not None and file_handle.closed:
                                 file_handle = None
+                            else:
+                                pass
+                        else:
+                            pass
                     producer_buffer.events.clear()
                 file_handle = self.close_event_file(run_state, file_handle)
                 status_published = self.publish_status(run_state)
@@ -810,6 +950,8 @@ class RequestEventRecorder:
             with self.control_lock:
                 if self.writer_thread is threading.current_thread():
                     self.writer_thread = None
+                else:
+                    pass
                 run_state.request_sampling_decisions.clear()
                 run_state.request_sampling_stage_names.clear()
                 run_state.request_session_identities.clear()
@@ -828,6 +970,8 @@ class RequestEventRecorder:
         if producer_drop_counter is not None:
             with producer_drop_counter.lock:
                 run_state.dropped_events += producer_drop_counter.dropped_events
+        else:
+            pass
         for producer_buffer in run_state.producer_buffers:
             run_state.accepted_events += producer_buffer.accepted_events
             run_state.dropped_events += producer_buffer.dropped_events
@@ -844,6 +988,8 @@ class RequestEventRecorder:
                 producer_buffer.dropped_events += pending_event_count
                 run_state.dropped_events += pending_event_count
                 run_state.incomplete_reasons.add("deferred_buffer_unflushed")
+            else:
+                pass
             for pending_events in producer_buffer.deferred_event_buffers:
                 pending_events.clear()
             producer_buffer.pending_event_count = 0
@@ -857,6 +1003,8 @@ class RequestEventRecorder:
         producer_buffer_count = len(producer_buffers)
         if producer_buffer_count == 0:
             return 0
+        else:
+            pass
         start_index = run_state.writer_buffer_index % producer_buffer_count
         ordered_buffers = (
             producer_buffers[start_index:] + producer_buffers[:start_index]
@@ -889,10 +1037,18 @@ class RequestEventRecorder:
                         self.write_event(request_event, file_handle, run_state)
                         if file_handle.closed:
                             run_state.writer_failed = True
+                        else:
+                            pass
+                    else:
+                        pass
                     if producer_buffer.events:
                         remaining_buffers.append(producer_buffer)
+                    else:
+                        pass
                 if processed_event_count >= RUNTIME_WRITER_MAX_EVENTS_PER_ROUND:
                     break
+                else:
+                    pass
             active_buffers = remaining_buffers
         return processed_event_count
 
@@ -931,6 +1087,8 @@ class RequestEventRecorder:
     ) -> None:
         if run_state.mode == "runtime" and run_state.file_size_limit_reached:
             return
+        else:
+            pass
         try:
             serialized_event = json.dumps(
                 request_event.to_dict(),
@@ -951,6 +1109,8 @@ class RequestEventRecorder:
                 run_state.file_size_limit_reached = True
                 run_state.incomplete_reasons.add("file_size_limit_reached")
                 return
+            else:
+                pass
             try:
                 file_handle.write(serialized_record)
             except OSError:
@@ -964,8 +1124,12 @@ class RequestEventRecorder:
                 return
             run_state.event_file_bytes_written += serialized_record_bytes
             run_state.written_events += 1
+        else:
+            pass
         if run_state.mode == "runtime":
             return
+        else:
+            pass
         try:
             file_handle.write(serialized_event)
             file_handle.write("\n")
@@ -987,6 +1151,8 @@ class RequestEventRecorder:
     ) -> None:
         if file_handle is None:
             return
+        else:
+            pass
         self.flush_event_file(run_state, file_handle)
         try:
             file_handle.close()
@@ -1021,13 +1187,19 @@ class RequestEventRecorder:
         )
         if run_state.processed_events != run_state.accepted_events:
             run_state.incomplete_reasons.add("processing_count_mismatch")
+        else:
+            pass
         if (
             run_state.written_events + run_state.unwritten_events
             != run_state.accepted_events
         ):
             run_state.incomplete_reasons.add("write_count_mismatch")
+        else:
+            pass
         if run_state.dropped_events:
             run_state.incomplete_reasons.add("events_dropped")
+        else:
+            pass
         status_payload = {
             "run_id": run_state.run_id,
             "pid": self.pid,
@@ -1066,6 +1238,8 @@ class RequestEventRecorder:
                     "event_file_bytes_written": run_state.event_file_bytes_written,
                 }
             )
+        else:
+            pass
         temporary_path = run_state.status_path.with_name(
             f".{run_state.status_path.name}.tmp"
         )

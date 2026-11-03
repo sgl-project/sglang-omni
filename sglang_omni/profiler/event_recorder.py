@@ -73,10 +73,14 @@ class RequestEventBuffer(threading.local):
         observed_state = recorder.active_state
         if observed_state is None:
             return
+        else:
+            pass
         expected_run_state: RecorderRunState | None = None
         if observed_state.mode == "runtime":
             if observed_state.writer_failed or observed_state.file_size_limit_reached:
                 return
+            else:
+                pass
             expected_run_state = observed_state
             snapshot_iterator = iter(snapshots)
             selected_snapshot: RequestEventSnapshot | None = None
@@ -86,6 +90,8 @@ class RequestEventBuffer(threading.local):
                     or observed_state.file_size_limit_reached
                 ):
                     return
+                else:
+                    pass
                 if recorder.should_sample_request(
                     observed_state,
                     snapshot.request_id,
@@ -94,6 +100,8 @@ class RequestEventBuffer(threading.local):
                 ):
                     selected_snapshot = snapshot
                     break
+                else:
+                    pass
             else:
                 return
             if selected_snapshot is None:
@@ -114,6 +122,8 @@ class RequestEventBuffer(threading.local):
                         )
                     ),
                 )
+        else:
+            pass
         try:
             producer_buffer = recorder.begin_buffer_operation(
                 expected_run_state=expected_run_state
@@ -122,10 +132,14 @@ class RequestEventBuffer(threading.local):
             return
         if producer_buffer is None:
             return
+        else:
+            pass
         run_state = producer_buffer.run_state
         if run_state.mode == "runtime" and run_state.file_size_limit_reached:
             producer_buffer.in_flight -= 1
             return
+        else:
+            pass
         timestamp_ns = time.time_ns()
         monotonic_seconds = time.monotonic()
         worker_name = threading.current_thread().name
@@ -133,9 +147,13 @@ class RequestEventBuffer(threading.local):
             if self.producer_buffer is not producer_buffer:
                 producer_buffer.deferred_event_buffers.append(self.pending_events)
                 self.producer_buffer = producer_buffer
+            else:
+                pass
             for snapshot in snapshots:
                 if run_state.mode == "runtime" and run_state.file_size_limit_reached:
                     break
+                else:
+                    pass
                 if (
                     len(producer_buffer.events) + producer_buffer.pending_event_count
                     >= producer_buffer.capacity
@@ -143,6 +161,8 @@ class RequestEventBuffer(threading.local):
                     producer_buffer.dropped_events += 1
                     producer_buffer.incomplete_reasons.add("producer_buffer_overflow")
                     continue
+                else:
+                    pass
                 if (
                     len(snapshot.request_id) > MAX_EVENT_TEXT_LENGTH
                     or len(event_name) > MAX_EVENT_TEXT_LENGTH
@@ -150,6 +170,8 @@ class RequestEventBuffer(threading.local):
                     producer_buffer.dropped_events += 1
                     producer_buffer.incomplete_reasons.add("event_payload_too_large")
                     continue
+                else:
+                    pass
                 try:
                     captured_metadata = snapshot_metadata(
                         {
@@ -167,6 +189,8 @@ class RequestEventBuffer(threading.local):
                 if "__metadata_truncated__" in captured_metadata:
                     producer_buffer.metadata_truncations += 1
                     producer_buffer.incomplete_reasons.add("metadata_truncated")
+                else:
+                    pass
                 self.pending_events.append(
                     PendingRequestEvent(
                         request_id=snapshot.request_id,

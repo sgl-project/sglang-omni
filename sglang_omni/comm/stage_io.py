@@ -417,9 +417,9 @@ def unpack_stream_chunk_batch(
     message: StreamChunkBatchMessage,
 ) -> list[BatchedStreamChunk]:
     chunks: list[BatchedStreamChunk] = []
-    sampling_identities = message.session_sampling_identities or [
-        None
-    ] * len(message.request_ids)
+    sampling_identities = message.session_sampling_identities or [None] * len(
+        message.request_ids
+    )
     for (
         request_id,
         chunk_id,
