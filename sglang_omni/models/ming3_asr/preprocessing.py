@@ -65,16 +65,22 @@ def build_transcription_prompt(
     )
 
 
-def extract_transcript(generated_text: str) -> str:
-    """Drop the language label the model writes before the transcript."""
+def extract_transcript(
+    generated_text: str, *, language: str | None = None, is_final: bool = True
+) -> str:
+    """Extract transcript text, deferring ambiguous language headers until completion."""
     text = generated_text.strip()
-    if LANGUAGE_SEPARATOR in text:
+    if language is not None:
+        return text
+    elif LANGUAGE_SEPARATOR in text:
         return text.split(LANGUAGE_SEPARATOR, 1)[1].strip()
+    elif not is_final:
+        return ""
     else:
         pass
-    for language in RECOGNIZED_LANGUAGES:
-        if text.startswith(language):
-            return text[len(language) :].strip()
+    for label in RECOGNIZED_LANGUAGES:
+        if text.startswith(label):
+            return text[len(label) :].strip()
         else:
             pass
     return text
