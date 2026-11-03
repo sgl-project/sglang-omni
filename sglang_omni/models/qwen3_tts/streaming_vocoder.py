@@ -86,7 +86,8 @@ DEFAULT_QWEN3_TTS_INCREMENTAL_WINDOW_FRAMES = (1, 2, 4, 8, 16, 32, 64)
 QWEN3_TTS_FULL_DECODE_GRAPH_MAX_FRAMES = 256
 QWEN3_TTS_FULL_DECODE_GRAPH_MAX_REQUESTS = 4
 QWEN3_TTS_FULL_DECODE_GRAPH_FRAME_STEP = 16
-# note (ratish): at 22 to 35 us a frame-row this holds the initial worker about as long as a first chunk's decode.
+# note (ratish): a long request leaves the first-audio worker after this many frames, four widest windows. A tuning
+# value: unbounded, queued first chunks wait for its whole decode, and one window splits ordinary requests off the graph widths.
 QWEN3_TTS_WHOLE_REQUEST_PIECE_FRAMES = 256
 # note (ratish): first-chunk widths with tail graphs; longer first chunks use the window graphs.
 QWEN3_TTS_TAIL_GRAPH_FRAMES = (32, 48, 64, 96, 128, 192, 256)
