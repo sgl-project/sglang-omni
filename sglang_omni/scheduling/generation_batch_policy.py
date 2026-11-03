@@ -83,7 +83,7 @@ def build_default_prefill_cuda_graph_bs(max_num_tokens: int) -> list[int]:
     else:
         pass
 
-    values = list(range(4, 33, 4))
+    values = [1] + list(range(4, 33, 4))
     values.extend(range(48, 257, 16))
     values.extend(range(288, 513, 32))
     values.extend(range(576, 1025, 64))

@@ -11,6 +11,9 @@ import pytest
 from sglang.srt.arg_groups.cuda_graph_hook import (
     generate_prefill_cuda_graph_batch_sizes,
 )
+from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
+    PrefillCudaGraphRunner,
+)
 from typing_extensions import TypedDict, Unpack
 
 from sglang_omni.scheduling.generation_batch_policy import (
@@ -447,11 +450,26 @@ def sglang_prefill_ladder(max_bs: int) -> list[int]:
     return generate_prefill_cuda_graph_batch_sizes(max_bs)
 
 
+@pytest.mark.parametrize("max_num_tokens", [1, 2, 16, 8192])
+def test_default_prefill_ladder_replays_single_token_cache_hits(
+    max_num_tokens: int,
+) -> None:
+    """Cached single-token prefill was padded to four tokens and ran eager."""
+    token_buckets = build_default_prefill_cuda_graph_bs(max_num_tokens)
+    padded_token_count = PrefillCudaGraphRunner._pad_to_bucket(  # noqa: leading-underscore  # upstream spelling
+        1, token_buckets
+    )
+    assert padded_token_count == 1
+    assert token_buckets[-1] == max_num_tokens
+
+
 @pytest.mark.parametrize("cap", [16384])
-def test_default_prefill_ladder_matches_the_sglang_generator_on_grid(
+def test_default_prefill_ladder_matches_sglang_above_single_token(
     cap: int,
 ) -> None:
-    assert build_default_prefill_cuda_graph_bs(cap) == sglang_prefill_ladder(cap)
+    assert [size for size in build_default_prefill_cuda_graph_bs(cap) if size > 1] == [
+        size for size in sglang_prefill_ladder(cap) if size > 1
+    ]
 
 
 @pytest.mark.parametrize("cap", [2, 4592])
@@ -461,7 +479,7 @@ def test_default_prefill_ladder_appends_the_off_grid_cap_sglang_omits(
     sglang_ladder = sglang_prefill_ladder(cap)
 
     assert not sglang_ladder or sglang_ladder[-1] < cap
-    assert build_default_prefill_cuda_graph_bs(cap) == [*sglang_ladder, cap]
+    assert build_default_prefill_cuda_graph_bs(cap) == sorted({1, *sglang_ladder, cap})
 
 
 def test_disable_overrides_win_over_default_prefill_backend() -> None:
@@ -711,10 +729,10 @@ def test_builder_rejects_breakable_without_model_opt_in(monkeypatch) -> None:
 def test_raised_operator_cap_extends_a_stage_ladder_without_dropping_buckets() -> None:
     """A raised cap must grow a stage ladder, not replace it with the shared one.
 
-    The stage ladders carry buckets the shared one does not, such as the
-    Qwen3-TTS 1-token bucket, and losing them sends those shapes back to eager.
+    Stage ladders can carry additional buckets such as 2 tokens, and losing
+    them can send those shapes back to eager.
     """
-    stage_ladder = [1, 2] + build_default_prefill_cuda_graph_bs(512)
+    stage_ladder = sorted({1, 2, *build_default_prefill_cuda_graph_bs(512)})
     overrides = build_generation_batch_overrides(
         max_running_requests=4,
         cuda_graph_backend_prefill="breakable",
