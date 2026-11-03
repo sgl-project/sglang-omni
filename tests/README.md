@@ -844,6 +844,11 @@ that happened to contain an older version of the test.
   - streaming vocoder chunking and flush behavior
   - scheduler terminal/abort cleanup, complete row reset and reuse, mixed-batch
     ownership, and async resolve contracts.
+  - `test_xpu_adaptation.py`: Intel XPU adaptation. The platform's `torch.compile`
+    refusal needs no device; the `accelerator` cases replay the per-frame tail
+    graph against an eager tail, pin the per-request sampler masks, place the
+    decode state, and decode delayed frames to aligned audio, and skip on a host
+    with no XPU.
 
 - `unit_test/utils/test_managed_workers.py`: CI worker command construction, GPU placement, parallel readiness, and process-group cleanup for `tests/utils/managed_workers.py`.
 - `sglang_omni_router/tests/` (from the repository root): Rust router process, HTTP, media, WebSocket, and voice integration tests. Unit tests live next to the Rust implementation.
