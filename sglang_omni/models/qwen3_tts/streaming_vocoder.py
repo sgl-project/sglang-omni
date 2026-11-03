@@ -86,6 +86,8 @@ DEFAULT_QWEN3_TTS_INCREMENTAL_WINDOW_FRAMES = (1, 2, 4, 8, 16, 32, 64)
 QWEN3_TTS_FULL_DECODE_GRAPH_MAX_FRAMES = 256
 QWEN3_TTS_FULL_DECODE_GRAPH_MAX_REQUESTS = 4
 QWEN3_TTS_FULL_DECODE_GRAPH_FRAME_STEP = 16
+# note (ratish): at 22 to 35 us a frame-row this holds the initial worker about as long as a first chunk's decode.
+QWEN3_TTS_WHOLE_REQUEST_PIECE_FRAMES = 256
 # note (ratish): first-chunk widths with tail graphs; longer first chunks use the window graphs.
 QWEN3_TTS_TAIL_GRAPH_FRAMES = (32, 48, 64, 96, 128, 192, 256)
 _CODEC_STATS_LOG_INTERVAL_S = 60.0
@@ -2903,7 +2905,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                     is_final=state.final_pending,
                     max_generated_frames=(
                         state.emitted_generated_frames
-                        + QWEN3_TTS_FULL_DECODE_GRAPH_MAX_FRAMES
+                        + QWEN3_TTS_WHOLE_REQUEST_PIECE_FRAMES
                         if state.whole_audio is not None
                         else state.initial_chunk_frames or self.stream_stride
                     ),

@@ -3906,7 +3906,7 @@ def test_qwen3_tts_long_whole_request_lets_queued_first_chunks_in_between_pieces
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        qwen3_streaming_vocoder, "QWEN3_TTS_FULL_DECODE_GRAPH_MAX_FRAMES", 4
+        qwen3_streaming_vocoder, "QWEN3_TTS_WHOLE_REQUEST_PIECE_FRAMES", 4
     )
     scheduler, _, runner = whole_request_scheduler(monkeypatch)
     message = whole_request_message("whole", 10)
@@ -4328,7 +4328,7 @@ def test_qwen3_tts_windowed_cohorts_split_at_the_window_runner_bucket(
     assert [[entry[0] for entry in group] for group in split] == [["a", "b"], ["c"]]
 
     uncovered = [(name, None, plan(7, slot)) for slot, name in enumerate("abc")]
-    runner.widths = (2, 4)
+    runner.fresh_frames = (2, 4)
     assert scheduler.split_incremental_group_for_graph(
         uncovered, runner=cold, window_runner=runner
     ) == [uncovered]
