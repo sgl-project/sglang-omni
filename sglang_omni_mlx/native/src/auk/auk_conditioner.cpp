@@ -215,22 +215,11 @@ Conditioner::Conditioner(const std::filesystem::path &directory,
 
 std::vector<int> Conditioner::Tokenize(const std::string &instruction,
                                        int audio_frame_count) const {
-  if (instruction.empty() || audio_frame_count < 0 ||
-      audio_frame_count > config_.max_audio_samples / omni_common::kHopLength) {
-    throw std::invalid_argument(
-        "invalid AuK conditioning instruction or audio length");
-  } else {
-  }
   std::string text = "<|im_start|>system\nYou are a helpful "
                      "assistant.<|im_end|>\n<|im_start|>user\n" +
                      instruction;
   if (audio_frame_count > 0) {
     const int audio_tokens = ((audio_frame_count + 1) / 2) / 2;
-    if (audio_tokens == 0) {
-      throw std::invalid_argument(
-          "AuK reference audio must contain at least three mel frames");
-    } else {
-    }
     text += "<|audio_bos|>";
     for (int token = 0; token < audio_tokens; ++token) {
       text += "<|AUDIO|>";
@@ -275,8 +264,7 @@ mx::array Conditioner::Encode(
   }
   const auto token_ids =
       Tokenize(instruction, features.has_value() ? features->shape(1) : 0);
-  return EncodeInputs(token_ids, std::vector<int>(token_ids.size(), 1),
-                      features);
+  return EncodeInputs(token_ids, features);
 }
 
 mx::array Conditioner::TextLayer(const mx::array &hidden, int layer,
@@ -326,36 +314,27 @@ mx::array Conditioner::TextLayer(const mx::array &hidden, int layer,
 
 mx::array
 Conditioner::EncodeInputs(const std::vector<int> &token_ids,
-                          const std::vector<int> &attention_mask,
                           const std::optional<mx::array> &features) const {
-  if (token_ids.empty() || token_ids.size() != attention_mask.size() ||
-      token_ids.size() > static_cast<size_t>(config_.max_tokens) ||
-      std::none_of(attention_mask.begin(), attention_mask.end(),
-                   [](int mask) { return mask == 1; })) {
+  if (token_ids.size() > static_cast<size_t>(config_.max_tokens)) {
     throw std::invalid_argument(
-        "AuK token IDs and attention mask must be matching nonempty sequences");
+        "AuK conditioning exceeds the text model's positions");
   } else {
   }
   const int length = static_cast<int>(token_ids.size());
   std::vector<int> audio_positions;
   std::vector<float> positions;
-  int valid_tokens = 0;
   for (int token = 0; token < length; ++token) {
     const int id = token_ids[token];
-    const int mask = attention_mask[token];
     if (id < 0 || id >= config_.vocabulary_size ||
-        id == config_.image_token_id || id == config_.video_token_id ||
-        (mask != 0 && mask != 1)) {
-      throw std::invalid_argument(
-          "invalid AuK text/audio token IDs or attention mask");
+        id == config_.image_token_id || id == config_.video_token_id) {
+      throw std::invalid_argument("invalid AuK text/audio token IDs");
     } else {
     }
     if (id == config_.audio_token_id) {
       audio_positions.push_back(token);
     } else {
     }
-    valid_tokens += mask;
-    positions.push_back(mask ? static_cast<float>(valid_tokens - 1) : 1.0f);
+    positions.push_back(static_cast<float>(token));
   }
   mx::array embeddings = checkpoint_.Embed(
       mx::array(token_ids.data(), {length}, mx::int32), "model.embed_tokens");
@@ -391,12 +370,8 @@ Conditioner::EncodeInputs(const std::vector<int> &token_ids,
   const mx::array indices = mx::arange(length);
   const mx::array distances =
       mx::subtract(mx::reshape(indices, {length, 1}), indices);
-  const mx::array mask =
-      mx::reshape(mx::logical_and(mx::greater_equal(distances, mx::array(0)),
-                                  mx::astype(mx::array(attention_mask.data(),
-                                                       {length}, mx::int32),
-                                             mx::bool_)),
-                  {1, 1, length, length});
+  const mx::array mask = mx::reshape(mx::greater_equal(distances, mx::array(0)),
+                                     {1, 1, length, length});
   mx::array hidden = mx::reshape(mx::astype(embeddings, mx::float32),
                                  {1, length, config_.hidden_size});
   std::vector<mx::array> states;

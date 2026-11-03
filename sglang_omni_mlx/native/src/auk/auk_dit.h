@@ -24,13 +24,6 @@ public:
   mlx::core::array
   FuseHiddenStates(const mlx::core::array &all_hidden_states) const;
 
-  // One request; the CFG result has conditional then unconditional batch rows.
-  mlx::core::array Forward(const mlx::core::array &latents,
-                           const mlx::core::array &conditioning, float timestep,
-                           const std::optional<mlx::core::array> &reference,
-                           int reference_length,
-                           bool classifier_free_guidance) const;
-
   mlx::core::array Sample(const mlx::core::array &conditioning,
                           const std::optional<mlx::core::array> &reference,
                           int reference_length, const mlx::core::array &noise,

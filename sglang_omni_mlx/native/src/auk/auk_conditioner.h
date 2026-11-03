@@ -24,18 +24,9 @@ public:
 
   // All text layers, including embeddings and the final normalized state:
   // [layers + 1, tokens, hidden]. Reference audio is mono at 16 kHz.
-  mlx::core::array Encode(const std::string &instruction,
-                          const std::optional<std::vector<float>>
-                              &reference_audio = std::nullopt) const;
-
-  std::vector<int> Tokenize(const std::string &instruction,
-                            int audio_frame_count = 0) const;
-  // Explicit processor outputs for parity checks; features contain only valid
-  // mel frames, [128, frames], for at most one reference recording.
-  mlx::core::array EncodeInputs(
-      const std::vector<int> &token_ids, const std::vector<int> &attention_mask,
-      const std::optional<mlx::core::array> &features = std::nullopt) const;
-  mlx::core::array EncodeAudio(const mlx::core::array &features) const;
+  mlx::core::array
+  Encode(const std::string &instruction,
+         const std::optional<std::vector<float>> &reference_audio) const;
 
 private:
   struct Config {
@@ -60,6 +51,13 @@ private:
     static Config Read(const std::filesystem::path &directory);
   };
 
+  std::vector<int> Tokenize(const std::string &instruction,
+                            int audio_frame_count) const;
+  // The reference's mel features are [128, frames], when it has them.
+  mlx::core::array
+  EncodeInputs(const std::vector<int> &token_ids,
+               const std::optional<mlx::core::array> &features) const;
+  mlx::core::array EncodeAudio(const mlx::core::array &features) const;
   mlx::core::array TextLayer(const mlx::core::array &hidden, int layer,
                              const mlx::core::array &mask,
                              const mlx::core::array &cosine,

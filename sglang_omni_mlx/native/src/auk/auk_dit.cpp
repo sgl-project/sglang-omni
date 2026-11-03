@@ -246,17 +246,6 @@ DiT::PrepareReference(const std::optional<mx::array> &reference,
   return prepared;
 }
 
-mx::array DiT::Forward(const mx::array &latents, const mx::array &conditioning,
-                       float timestep,
-                       const std::optional<mx::array> &reference,
-                       int reference_length,
-                       bool classifier_free_guidance) const {
-  const auto prepared =
-      PrepareReference(reference, reference_length, classifier_free_guidance);
-  return Predict(latents, ProjectText(conditioning), mx::array(timestep),
-                 prepared, classifier_free_guidance);
-}
-
 mx::array DiT::Predict(const mx::array &latents,
                        const mx::array &projected_text,
                        const mx::array &timestep,

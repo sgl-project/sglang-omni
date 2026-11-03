@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <stdexcept>
 
 #include "common/audio.h"
 
@@ -13,13 +12,6 @@ namespace auk {
 namespace mx = mlx::core;
 
 mx::array Conditioner::EncodeAudio(const mx::array &features) const {
-  if (features.ndim() != 2 || features.shape(0) != omni_common::kMelBinCount ||
-      features.shape(1) < 3 ||
-      features.shape(1) > config_.max_audio_samples / omni_common::kHopLength) {
-    throw std::invalid_argument(
-        "AuK audio features must contain valid mel frames");
-  } else {
-  }
   const int frame_count = features.shape(1);
   const int window = config_.audio_window_frames;
   const int maximum_frames = std::min(frame_count, window);
