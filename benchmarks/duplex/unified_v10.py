@@ -79,7 +79,7 @@ def word_spans(chunks: list[dict[str, JsonValue]]) -> list[Span]:
 
 
 def speech_segments(
-    wav_path: Path, window_s: float, vad: torch.jit.ScriptModule
+    wav_path: Path, sample_count: int, vad: torch.jit.ScriptModule
 ) -> list[Span]:
     """Silero speech segments [start, end) of a reference output.wav covering [0, T]."""
     info = soundfile.info(str(wav_path))
@@ -88,8 +88,10 @@ def speech_segments(
             f"{wav_path} is {info.samplerate} Hz, {info.channels} channels, "
             f"{info.subtype}; the reference layout is {VAD_RATE} Hz mono PCM_16"
         )
-    elif info.frames != round(window_s * VAD_RATE):
-        raise SystemExit(f"{wav_path} has {info.frames} samples; T is {window_s} s")
+    elif info.frames != sample_count:
+        raise SystemExit(
+            f"{wav_path} has {info.frames} samples; expected {sample_count}"
+        )
     else:
         pass
     audio, _ = soundfile.read(str(wav_path), dtype="float32")
@@ -316,7 +318,10 @@ def score_eligible(
     elif task == "turn_taking":
         quantities = turn_taking_sample(starts, reference, window_s)
     else:
-        speech = speech_segments(sample_dir / "output.wav", window_s, vad)
+        sample_count = math.ceil(
+            row["input"]["samples"] * VAD_RATE / row["input"]["sample_rate"]
+        )
+        speech = speech_segments(sample_dir / "output.wav", sample_count, vad)
         quantities = interruption_sample(starts, speech, reference, window_s)
     return {
         "words": len(chunks),
