@@ -339,3 +339,11 @@ install(TARGETS fishaudio_drama3_server fishaudio_drama3_synthesize RUNTIME DEST
 
 install(FILES licenses/music3-MIT.txt licenses/fishaudio_drama3-MIT.txt
   DESTINATION licenses)
+
+# The protocol tests' stand-in server (tests/stub_server.cpp); built only on
+# request and never installed.
+add_executable(stub_server EXCLUDE_FROM_ALL tests/stub_server.cpp)
+target_link_libraries(stub_server PRIVATE speech_service)
+target_compile_options(stub_server PRIVATE -Wall -Wextra)
+set_target_properties(stub_server PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")

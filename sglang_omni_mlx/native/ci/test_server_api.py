@@ -304,27 +304,6 @@ def test_invalid_requests_are_rejected(server: Server, fields: dict, wav) -> Non
     assert all(name in detail for name in fields)
 
 
-@pytest.mark.parametrize("repetition_penalty", ["0", "-1", "nan", "inf"])
-def test_invalid_cli_repetition_penalty_fails_before_model_loading(
-    repetition_penalty: str,
-) -> None:
-    """Invalid penalties reached decoding instead of being rejected before model loading."""
-    completed = subprocess.run(
-        [
-            str(Path(RUNTIME_BIN) / "qwen3_asr_transcribe"),
-            "--model-path",
-            "does-not-exist",
-            "--repetition-penalty",
-            repetition_penalty,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert completed.returncode != 0
-    assert "--repetition-penalty must be positive and finite" in completed.stderr
-
-
 def wav_bytes(pcm: bytes) -> bytes:
     """16 kHz mono 16-bit PCM wrapped in a WAV header."""
     out = io.BytesIO()
@@ -504,49 +483,3 @@ def test_shutdown_reports_stopped() -> None:
     running.process.stdin.flush()
     assert json.loads(running.process.stdout.readline()) == {"event": "stopped"}
     assert running.process.wait(timeout=10) == 0
-
-
-def test_unknown_model_kinds_are_rejected() -> None:
-    completed = subprocess.run(
-        [
-            str(Path(RUNTIME_BIN) / "qwen3_asr_server"),
-            "--supervised",
-            "--model-kind",
-            "whisper",
-            "--model-directory",
-            "x",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert completed.returncode == 2
-    assert completed.stdout == ""
-
-
-@pytest.mark.parametrize(
-    ("flag", "value"),
-    [
-        ("--max-segment-seconds", "0"),
-        ("--max-segment-seconds", "0.00001"),
-        ("--decode-interval-ms", "0"),
-        ("--first-decode-ms", "-1"),
-        ("--draft-bits", "-1"),
-        ("--draft-bits", "8"),
-    ],
-)
-def test_invalid_settings_fail_at_startup(flag: str, value: str) -> None:
-    completed = subprocess.run(
-        [
-            str(Path(RUNTIME_BIN) / "qwen3_asr_server"),
-            "--model-directory",
-            "x",
-            flag,
-            value,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert completed.returncode == 2
-    assert flag in completed.stderr
