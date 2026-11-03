@@ -70,17 +70,13 @@ MAX_INT32_POSITIVE = 0x7FFFFFFF
 class QwenThinkerRequest(Req):
     """Restore multimodal inputs and generated-text positions when rebuilding KV."""
 
-    omni_data: SGLangARRequestData
+    omni_data: SGLangARRequestData | None
 
     def reset_for_retract(self) -> None:
         super().reset_for_retract()
+        assert self.omni_data is not None, "a retracted request still owns its data"
         self.omni_model_inputs = self.omni_data.model_inputs or None
-        self._omni_consumed = (
-            None  # noqa: leading-underscore  # thinker runner contract
-        )
-        self._omni_mm_positions = (
-            None  # noqa: leading-underscore  # thinker runner contract
-        )
+        self._omni_consumed = None  # noqa: leading-underscore  # model runner contract
 
     def init_next_round_input(
         self,
@@ -88,30 +84,24 @@ class QwenThinkerRequest(Req):
         cow_mamba: bool | None = None,
     ) -> None:
         super().init_next_round_input(tree_cache, cow_mamba)
-        if not self.is_retracted:
-            return
-        else:
-            pass
         multimodal_inputs = self.multimodal_inputs
-        if multimodal_inputs is None:
+        if not self.is_retracted or multimodal_inputs is None:
             return
         else:
             pass
         prompt_token_count = len(self.origin_input_ids)
+        # note (evanderfan): the base hook appends generated positions from the prompt's last position on every call, but decode resumes past the prompt's maximum, which audio-in-video puts above the last.
         prompt_positions = multimodal_inputs.mrope_positions[:, :prompt_token_count]
-        # note (YzXiao): audio-in-video resumes from the prompt's maximum position, which can exceed its last position.
-        output_positions = torch.arange(
-            prompt_token_count,
-            prompt_token_count + len(self.output_ids),
-            dtype=torch.int64,
-            device=prompt_positions.device,
+        generated_positions = (
+            torch.arange(
+                prompt_token_count,
+                prompt_token_count + len(self.output_ids),
+                device=prompt_positions.device,
+            )
+            + multimodal_inputs.mrope_position_delta
         )
-        position_delta = multimodal_inputs.mrope_position_delta.to(
-            device=prompt_positions.device, dtype=torch.int64
-        )
-        output_positions = output_positions.unsqueeze(0) + position_delta
         multimodal_inputs.mrope_positions = torch.cat(
-            (prompt_positions, output_positions.expand(3, -1)), dim=1
+            (prompt_positions, generated_positions.expand(3, -1)), dim=1
         )
 
 
@@ -923,7 +913,6 @@ def build_sglang_thinker_request(
         req=req,
     )
     data.return_logprob = bool(params.get("return_logprob"))
-    req.omni_data = data
     return data
 
 
