@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import wave
@@ -45,6 +46,31 @@ def test_a_request_answers_one_audio_file(
             assert reader.getnframes() == CHUNK_COUNT * CHUNK_SAMPLE_COUNT
     else:
         assert len(response.body) == 2 * CHUNK_COUNT * CHUNK_SAMPLE_COUNT
+
+
+def test_a_generate_request_answers_json_around_the_base64_wav(
+    speech_server: SupervisedServer,
+) -> None:
+    response = speech_server.request(
+        "POST",
+        "/generate",
+        json.dumps(SPEECH_REQUEST).encode(),
+        {"Content-Type": "application/json"},
+    )
+    assert response.status == 200
+    result = response.json()
+    assert result["text"] == ""
+    assert result["meta_info"] == {
+        "finish_reason": {"type": "stop"},
+        "prompt_tokens": 0,
+        "completion_tokens": CHUNK_COUNT,
+    }
+    assert result["audio"]["format"] == "wav"
+    assert result["audio"]["sample_rate"] == STUB_SAMPLE_RATE
+    audio = base64.b64decode(result["audio"]["data"], validate=True)
+    with wave.open(io.BytesIO(audio)) as reader:
+        assert reader.getframerate() == STUB_SAMPLE_RATE
+        assert reader.getnframes() == CHUNK_COUNT * CHUNK_SAMPLE_COUNT
 
 
 def test_a_streamed_request_sends_every_chunk_as_pcm(

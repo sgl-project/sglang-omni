@@ -8,15 +8,17 @@
 #include <string_view>
 
 #include <civetweb.h>
-#include <nlohmann/json.hpp>
 
 #include "common/audio.h"
+#include "qwen3_asr/speech_service.h"
 
 namespace auk {
 
 namespace {
 
-using Json = nlohmann::json;
+using speech_service::FieldOr;
+using speech_service::Json;
+using speech_service::PresentFieldOr;
 constexpr size_t kMaximumTextBytes = 8192;
 
 const Json &ObjectField(const Json &request, const std::string &name) {
@@ -63,16 +65,12 @@ std::string Trim(const std::string &text) {
 
 } // namespace
 
-ParsedRequest ParseRequest(const Json &request, bool raw_instruction,
-                           float max_seconds, const std::string &model_name) {
-  if (!request.is_object()) {
-    throw std::invalid_argument("request must be a JSON object");
-  } else {
-  }
+SynthesisRequest ParseRequest(const Json &request, bool raw_instruction,
+                              float max_seconds) {
   static const std::set<std::string> speech_fields{
-      "model",    "input",  "instructions",    "voice",
-      "speed",    "stream", "response_format", "ref_audio",
-      "ref_text", "seed",   "gen_seconds",     "stage_params"};
+      "model",  "input",         "instructions",    "voice",     "speed",
+      "stream", "stream_format", "response_format", "ref_audio", "ref_text",
+      "seed",   "gen_seconds",   "stage_params"};
   static const std::set<std::string> generate_fields{
       "model",       "prompt", "metadata",          "stage_params",
       "gen_seconds", "seed",   "output_modalities", "return_logprob",
@@ -84,11 +82,11 @@ ParsedRequest ParseRequest(const Json &request, bool raw_instruction,
     } else {
     }
   }
-  if (request.value("stream", false)) {
+  const Json stream = PresentFieldOr(request, "stream", Json(false));
+  if (!stream.is_boolean()) {
+    throw std::invalid_argument("stream must be a boolean");
+  } else if (stream.get<bool>()) {
     throw std::invalid_argument("AuK does not support streaming responses");
-  } else if (request.contains("model") &&
-             TextField(request, "model") != model_name) {
-    throw std::invalid_argument("model does not match the loaded model");
   } else {
   }
   const std::string text =
@@ -134,7 +132,7 @@ ParsedRequest ParseRequest(const Json &request, bool raw_instruction,
     } else {
     }
   }
-  ParsedRequest parsed{};
+  SynthesisRequest synthesis{};
   const std::string reference = TextField(parameters, "ref_audio");
   if (!reference.empty()) {
     constexpr std::string_view prefix = "data:audio/wav;base64,";
@@ -171,22 +169,23 @@ ParsedRequest ParseRequest(const Json &request, bool raw_instruction,
           "ref_audio must contain at least 30 ms and fit --max-seconds");
     } else {
     }
-    parsed.synthesis.reference_audio = std::move(audio.samples);
-    parsed.synthesis.reference_sample_rate = audio.sample_rate;
+    synthesis.reference_audio = std::move(audio.samples);
+    synthesis.reference_sample_rate = audio.sample_rate;
   } else {
   }
   if (raw_instruction) {
-    if (request.value("return_logprob", false) ||
-        request.value("output_modalities", Json::array({"audio"})) !=
+    if (FieldOr(request, "return_logprob", Json(false)) != Json(false) ||
+        FieldOr(request, "output_modalities", Json::array({"audio"})) !=
             Json::array({"audio"})) {
       throw std::invalid_argument(
           "generate supports audio output without logprobs");
     } else {
     }
-    parsed.synthesis.instruction = Trim(text);
+    synthesis.instruction = Trim(text);
   } else {
+    const Json speed = FieldOr(request, "speed", Json(1.0));
     if (TextField(request, "voice", "default") != "default" ||
-        request.value("speed", 1.0) != 1.0) {
+        !speed.is_number() || speed.get<double>() != 1.0) {
       throw std::invalid_argument(
           "only voice=default and speed=1 are supported");
     } else {
@@ -196,11 +195,11 @@ ParsedRequest ParseRequest(const Json &request, bool raw_instruction,
     if (description.size() > kMaximumTextBytes) {
       throw std::invalid_argument(
           "instructions must contain at most 8192 bytes");
-    } else if (!parsed.synthesis.reference_audio.empty()) {
-      parsed.synthesis.instruction =
+    } else if (!synthesis.reference_audio.empty()) {
+      synthesis.instruction =
           "Say the following with the same voice: \"" + text + "\"";
     } else {
-      parsed.synthesis.instruction =
+      synthesis.instruction =
           "Generate speech based on the following description: \"" +
           (description.empty() ? "A clear, natural voice." : description) +
           "\". The content to speak is: \"" + text + "\".";
@@ -210,46 +209,40 @@ ParsedRequest ParseRequest(const Json &request, bool raw_instruction,
       "gen_seconds",
       parameters.value("gen_seconds", request.value("gen_seconds", Json())));
   const double reference_seconds =
-      static_cast<double>(parsed.synthesis.reference_audio.size()) /
-      parsed.synthesis.reference_sample_rate;
+      static_cast<double>(synthesis.reference_audio.size()) /
+      synthesis.reference_sample_rate;
   if (!duration.is_null()) {
     if (!duration.is_number() || !std::isfinite(duration.get<double>()) ||
         duration.get<double>() <= 0) {
       throw std::invalid_argument(
           "gen_seconds must be a positive finite number");
     } else {
-      parsed.synthesis.seconds = duration.get<double>();
+      synthesis.seconds = duration.get<double>();
     }
   } else if (raw_instruction) {
-    parsed.synthesis.seconds = reference_seconds > 0 ? reference_seconds : 5.0;
-    parsed.synthesis.match_reference_duration = reference_seconds > 0;
+    synthesis.seconds = reference_seconds > 0 ? reference_seconds : 5.0;
+    synthesis.match_reference_duration = reference_seconds > 0;
   } else {
     if (reference_seconds <= 0 || reference_text.empty()) {
       throw std::invalid_argument(
           "speech requires gen_seconds or ref_audio with ref_text");
     } else {
-      parsed.synthesis.seconds =
+      synthesis.seconds =
           reference_seconds * text.size() / reference_text.size();
     }
   }
-  parsed.synthesis.seconds =
-      std::min(parsed.synthesis.seconds, static_cast<double>(max_seconds));
+  synthesis.seconds =
+      std::min(synthesis.seconds, static_cast<double>(max_seconds));
   const Json seed = parameters.value("seed", request.value("seed", Json()));
   if (!seed.is_null()) {
     if (!seed.is_number_integer() || seed < 0) {
       throw std::invalid_argument("seed must be a nonnegative integer");
     } else {
-      parsed.synthesis.seed = seed.get<uint64_t>();
+      synthesis.seed = seed.get<uint64_t>();
     }
   } else {
   }
-  const std::string format = TextField(request, "response_format", "wav");
-  if (format != "wav" && format != "pcm") {
-    throw std::invalid_argument("response_format must be wav or pcm");
-  } else {
-    parsed.pcm = format == "pcm";
-  }
-  return parsed;
+  return synthesis;
 }
 
 } // namespace auk

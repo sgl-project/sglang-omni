@@ -44,6 +44,8 @@ def server(server_log: Path) -> Iterator[httpx.Client]:
                 "auk",
                 "--model-directory",
                 MODEL_DIRECTORY,
+                "--max-queued-requests",
+                "0",
             ],
             stdin=subprocess.PIPE,
             stdout=output,
@@ -209,7 +211,6 @@ def test_editing_without_duration_keeps_complete_reference_frames(
         {"response_format": "mp3"},
         {"stream": True},
         {"speed": 2},
-        {"model": "wrong-model"},
         {"ref_audio": "file:///tmp/audio.wav"},
         {"ref_audio": "data:audio/wav;base64,AAAA="},
         {"stage_params": {"auk_engine": {"nfe": 1}}},
@@ -258,7 +259,7 @@ def test_disconnect_cancels_generation(
         busy = server.post(
             "/v1/audio/speech", json={"input": "Hello.", "gen_seconds": 2}
         )
-        assert busy.status_code == 429
+        assert busy.status_code == 503
     while server.get("/health").json()["request_states"]:
         assert time.monotonic() < deadline_seconds
         time.sleep(0.02)

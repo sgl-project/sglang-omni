@@ -9,7 +9,8 @@
 // stub_asr transcribes audio to its decoded sample count, with the language
 // and max_new_tokens fields as its generation metadata, and serves
 // /v1/realtime, where transcription.done answers the sample count appended.
-// stub_speech answers chunks chunks of chunk_samples silent samples. Both
+// stub_speech answers chunks chunks of chunk_samples silent samples, on
+// /v1/audio/speech and as /generate's JSON. Both
 // read an outcome field: "fail" throws, "block" runs until it is cancelled or
 // its deadline passes, and stub_asr's "segments" returns one speaker segment.
 #include <chrono>
@@ -122,6 +123,12 @@ public:
   using SpeechServedModel::SpeechServedModel;
   void ReleaseIdleMemory() override {}
 
+  void AddHandlers(mg_context *context,
+                   qwen3_asr::TranscriptionWorker &worker) override {
+    SpeechServedModel::AddHandlers(context, worker);
+    mg_set_request_handler(context, "/generate$", HandleGenerate, this);
+  }
+
 protected:
   speech_service::SpeechJob ParseSpeech(const Json &body) override {
     speech_service::SpeechJob job = speech_service::ParseCommonFields(body);
@@ -155,6 +162,16 @@ protected:
   }
 
   int SampleRate() const override { return kSpeechSampleRate; }
+
+private:
+  static int HandleGenerate(mg_connection *connection, void *data) {
+    auto *model = static_cast<StubSpeechModel *>(data);
+    return model->Speak(connection, [model](const Json &body) {
+      speech_service::SpeechJob job = model->ParseSpeech(body);
+      job.is_generate_response = true;
+      return job;
+    });
+  }
 };
 
 } // namespace

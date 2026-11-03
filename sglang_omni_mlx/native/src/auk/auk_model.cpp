@@ -14,7 +14,6 @@ namespace mx = mlx::core;
 
 namespace {
 
-constexpr int SAMPLE_RATE = 24000;
 constexpr int SAMPLES_PER_FRAME = 480;
 constexpr int LATENT_CHANNELS = 64;
 
@@ -26,7 +25,7 @@ Model::ReadSamplingRecipe(const std::filesystem::path &directory,
   const auto config = omni_common::ReadJson(directory / "config.json");
   if (config.value("model_type", std::string()) != "auk" ||
       (config.at("name") != "AuK" && config.at("name") != "AuK-Flash") ||
-      config.at("sample_rate") != SAMPLE_RATE ||
+      config.at("sample_rate") != kSampleRate ||
       config.at("downsample_rate") != SAMPLES_PER_FRAME ||
       config.at("latent_dim") != LATENT_CHANNELS ||
       (dtype != mx::float32 && dtype != mx::bfloat16) ||
@@ -107,7 +106,7 @@ Model::Synthesize(const SynthesisRequest &request,
   int reference_length = 0;
   if (!request.reference_audio.empty()) {
     const auto reference_audio = omni_common::ResampleAudio(
-        request.reference_audio, request.reference_sample_rate, SAMPLE_RATE);
+        request.reference_audio, request.reference_sample_rate, kSampleRate);
     conditioner_audio = omni_common::ResampleAudio(
         request.reference_audio, request.reference_sample_rate, 16000);
     reference_length = static_cast<int>(reference_audio.size()) / vae.HopSize();
@@ -131,7 +130,7 @@ Model::Synthesize(const SynthesisRequest &request,
       request.match_reference_duration
           ? std::max(1, reference_length)
           : std::max(1, static_cast<int>(std::ceil(
-                            request.seconds * SAMPLE_RATE / vae.HopSize())));
+                            request.seconds * kSampleRate / vae.HopSize())));
   const auto noise = mx::random::normal({output_frames, vae.LatentDimension()},
                                         mx::float32, generation_key);
   const auto latents =
@@ -151,7 +150,7 @@ Model::Synthesize(const SynthesisRequest &request,
   } else {
     check_cancelled();
     return {{waveform.data<float>(), waveform.data<float>() + waveform.size()},
-            SAMPLE_RATE};
+            kSampleRate};
   }
 }
 

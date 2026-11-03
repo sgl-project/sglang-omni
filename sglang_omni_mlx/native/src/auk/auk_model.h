@@ -13,6 +13,9 @@
 
 namespace auk {
 
+// The VAE's sample rate, and so every output's.
+inline constexpr int kSampleRate = 24000;
+
 struct SynthesisRequest {
   std::string instruction;
   std::vector<float> reference_audio;

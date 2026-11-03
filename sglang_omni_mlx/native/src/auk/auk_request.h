@@ -1,20 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
-#include <string>
-
-#include <nlohmann/json_fwd.hpp>
-
 #include "auk/auk_model.h"
+#include "common/http.h"
 
 namespace auk {
 
-struct ParsedRequest {
-  SynthesisRequest synthesis;
-  bool pcm;
-};
-
-ParsedRequest ParseRequest(const nlohmann::json &request, bool raw_instruction,
-                           float max_seconds, const std::string &model_name);
+// The synthesis a /v1/audio/speech body, or with raw_instruction a /generate
+// body, asks for; throws std::invalid_argument for a request to answer with
+// 400.
+SynthesisRequest ParseRequest(const omni_server::Json &request,
+                              bool raw_instruction, float max_seconds);
 
 } // namespace auk
