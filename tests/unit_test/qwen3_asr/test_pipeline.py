@@ -161,6 +161,7 @@ def test_per_stream_queue_env_defaults(
         "PER_STREAM_QUEUE"
     )
     assert stage_env["SGLANG_ENABLE_METADATA_GLUE_GRAPH"] == "1"
+    assert stage_env["SGLANG_TORCH_COMPILE_MODE"] == "default"
     config.stage_named("asr").env["PER_STREAM_QUEUE"] = "0"
     assert config.resolved_stage_env_defaults("asr")["PER_STREAM_QUEUE"] == "0"
 
