@@ -13,7 +13,8 @@ nonisolated struct SafetensorsHeader: Decodable {
         var tensors: [SafetensorsTensor] = []
         for field in fields.allKeys {
             if field.stringValue == "__metadata__" {
-                _ = try fields.decode([String: String].self, forKey: field)
+                // note (incandescentxxc): mlx-community's nemotron/whisper-turbo conversions write an explicit JSON null here instead of omitting the key or using an object.
+                _ = try fields.decodeIfPresent([String: String].self, forKey: field)
             } else {
                 tensors.append(try fields.decode(SafetensorsTensor.self, forKey: field))
             }

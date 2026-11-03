@@ -79,6 +79,24 @@ sgl-omni serve \
   --port 8000
 ```
 
+### Optional CuTeDSL decode
+
+Install the optional dependency with `pip install -e '.[qwen3-tts-cutedsl]'`, then set `SGLANG_OMNI_QTTS_BACKEND=cutedsl` before launching the server. Leave it unset, or set it to `default`, for the existing implementation. Both talker and code predictor use the same selector.
+
+The kernels fuse input RMSNorm, QKV projection, Q/K normalization, RoPE and cache stores before attention, and output projection, residual addition, RMSNorm and the MLP after attention. Weights are packed once after loading; these copies add GPU memory because the originals remain for prefill and fallback. Online weight updates are rejected while this backend is active. K/V writes use the existing cache directly.
+
+Compiled attention kernels are shared within each 16/32-row tile bucket; live batch size, K/V capacity and RoPE table length are symbolic. Sampling and embedding kernels also reuse binaries across batch sizes. Model dimensions, dtypes, layouts, tail masking, fusion flags and scheduling choices remain specialization keys. CUDA graphs and per-batch workspaces are separate from this compilation cache.
+
+Warm each batch size before CUDA graph capture so workspace initialization stays outside replay. Norm weights are borrowed immutable tensors, and input/Q/K norms use the model's common RMSNorm epsilon. Gumbel draws deliberately remain FP64, including endpoint handling, to preserve the default CUDA sampler's behavior even on Blackwell; the faster FP32 variant changes seeded draws.
+
+On Hopper and datacenter Blackwell, the same selector also enables predictor sampling/embedding fusion and BF16 SnakeBeta in the vocoder. Greedy and top-k buckets 50/64/128 fuse token selection, code-buffer writes, embedding accumulation and optional projected lookup; other sampling settings retain their filtering/tie order and use separate embedding lookup. Prefiltered sampling supports up to 2048 candidates. SnakeBeta prepares immutable coefficients after weight loading and preserves eager BF16 rounding, including an exact BF16 sine table for large tensors. Unsupported layouts, dtypes and devices retain the existing implementations. Attention, preprocessing and scheduling are unchanged.
+
+With fused vocoder activation enabled, BF16 full/window decoding also uses causal Conv1D + bias + SnakeBeta and Conv1D + bias + residual kernels. Supported convolutions have stride/groups one and channel counts divisible by 32; transposed convolutions and the final one-channel convolution use channels-last cuDNN. Weights are packed after loading and remain immutable. Batch size and audio length are runtime parameters, so graph buckets reuse compiled kernels. Stateful incremental decoding uses CuTeDSL pointwise Conv1D and retains the default fused bias/residual/SnakeBeta activation. Convolution history and KV rings stay in place; remaining BF16 state gathers/scatters are batched into one kernel each. BF16 convolution reduction order can change waveform values; this is not bitwise-equivalent decoding.
+
+The transformer blocks support BF16, TP1, 0.6B/1.7B Qwen3-TTS, decode batches of 1–32 on full SM90/SM100/SM103 GPUs with at least 96 SMs. Devices below this minimum, including H20, keep the default transformer blocks; eligible auxiliary and vocoder kernels can still use CuTeDSL. The predictor's two-token prefix also uses these blocks for batches up to 16, with causal attention. The post-attention kernels require a cooperative grid of 24 resident four-CTA clusters; MIG and SM-partitioned contexts are not supported. Talker prefill, larger batches, unsupported weight layouts and other GPU architectures keep the default transformer blocks. Deterministic and batch-invariant modes also keep the default transformer blocks. The custom kernels are imported only when this backend is selected.
+
+The predictor follows the default fused predictor's rounding, norm accumulation and split-K order, and reuses its attention kernel. The 0.6B talker preserves the FP32 residual sum through RMSNorm and stores a separate BF16 residual carry; the 1.7B talker retains BF16-rounded residuals. GEMM accumulation and convolution reduction can still differ, so generated tokens and waveforms need not match exactly. Validate speech quality for your workload before deployment.
+
 ### Ascend NPU baseline
 
 All four NPU examples enable Talker graphs, asynchronous vocoder decoding, and
@@ -626,7 +644,7 @@ only the first chunk.
 | `top_p` | `1.0` | Top-p sampling |
 | `top_k` | `50` | Top-k sampling |
 | `repetition_penalty` | `1.05` | Repetition penalty |
-| `max_new_tokens` | Twice the slowest natural stop for the target text, at most `2048` | Maximum number of generated codec tokens (80 ms each). The default is `ceil(2 × (1.38 s + 0.39 s × target-text tokens) × 12.5)`: about 5 s for a three-token word, 26 s for 30 tokens, 2048 for long text. Set it for speech deliberately slower than natural |
+| `max_new_tokens` | Base: twice the slowest natural stop for the target text, at most `2048`. CustomVoice and VoiceDesign: the checkpoint's `generation_config.json` value, `8192` | Maximum number of generated codec tokens (80 ms each). The Base default is `ceil(2 × (1.38 s + 0.39 s × target-text tokens) × 12.5)`: about 5 s for a three-token word, 26 s for 30 tokens, 2048 for long text. Set it for speech deliberately slower than natural. The server lowers any limit to what the context and the KV pool can hold |
 | `seed` | `null` | Random seed for reproducibility |
 | `response_format` | `wav` | Explicit values override the default in every mode. HTTP streaming accepts `pcm` or `wav` |
 | `stream` | `false` | Stream raw WAV audio chunks by default; set `response_format="pcm"` for raw PCM |
@@ -764,6 +782,34 @@ Add `--stream` to check raw PCM streams. Output directories must be new. A fixed
 
 The TTS CI non-streaming and streaming stages run this probe for Qwen3-TTS on four short cases with eight seeds, 64 requests per stage, and upload `results.jsonl` with the audio of the pairs that failed.
 
+## Apple Silicon (Native MLX)
+
+`qwen3_tts_server` from the native MLX runtime (`sglang_omni_mlx/native`) serves the CustomVoice `/v1/audio/speech` API on an Apple Silicon Mac, from the bf16 [`mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16`](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16) checkpoint, as one C++ process without CUDA, PyTorch or Python.
+
+```bash
+sglang_omni_mlx/native/scripts/build_runtime.sh ~/omni-runtime
+
+hf download mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16 \
+  --revision 6415d95f88be018ff9e46813119dc3bc12261328 --local-dir qwen3-tts-0.6b-customvoice
+
+~/omni-runtime/bin/qwen3_tts_server --model-path qwen3-tts-0.6b-customvoice \
+  --model-name Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice --port 8000
+```
+
+The CustomVoice requests above work unchanged, with the same speakers, `language` values, sampling defaults (`max_new_tokens` 2048), `stage_params.tts_engine` overrides and prompt: the whole text is in the prompt, as the CUDA server's CustomVoice requests are. The native server differs from the CUDA server in that:
+
+- `response_format` is `wav` or `pcm`; `stream_format` must be `audio`.
+- The prompt and `max_new_tokens` must fit the talker's 8192 positions, as on CUDA: a larger `max_new_tokens` returns 400, and the default 2048 shrinks to fit. `instructions` are at most 4096 characters, and `repetition_penalty` must be above 0.
+- `seed` repeats a request's audio on the same chip and MLX version; it does not reproduce CUDA's audio.
+- A streamed request decodes a first chunk of `initial_codec_chunk_frames` frames (default 5, at most 25; `0` starts at 25, as on CUDA), then 25-frame chunks, each with 25 frames of left context; a whole request decodes in the CUDA vocoder's 300-frame chunks. Streamed and whole audio can differ slightly near chunk edges. `stream_codec_output` and `suppress_bootstrap_silence` are checked and then ignored.
+- Started with `--model-name`, it returns 404 for any other `model`; without that flag, `model` is ignored, as on CUDA.
+- Errors are `{"detail": "..."}`.
+- Requests run one at a time and `--max-queued-requests` (default 2) more wait; the rest get 503, and `/health` shows the queue.
+- A request not finished `--request-timeout-s` (default 600) seconds after it arrives, time in the queue included, is cancelled: it returns 504, or its stream ends early. A client that disconnects cancels its request.
+- A request body over 1 MiB returns 413.
+
+Measured on an Apple M5 MacBook (24 GB), warm: 0.46 s from launch to a healthy `/health`, 0.22 s (p50) to the first streamed audio, real-time factor 0.50 over 17 requests, and a peak memory footprint of 5.6 GB for a 5 s utterance and 13.2 GB for a 20 s one. The peak is the speech decoder's float32 upsampling over a 300-frame chunk, as in mlx-audio. Transcribed back with Qwen3-ASR-0.6B, 10 English sentences give 0% WER and 5 Chinese sentences 0% CER. With the same seed and MLX build, its audio codes are bit-identical to mlx-audio 0.5.8's Qwen3-TTS on all 22 requests compared, in both the CUDA server's prompt layout and mlx-audio's own; so is its 16-bit PCM up to 72 frames (5.8 s), beyond which the decoder's 72-frame sliding window, which the CUDA vocoder applies and mlx-audio does not, changes the samples. Mac CI checks six seeded requests' codes (English, Chinese, Japanese, Korean, the Beijing dialect speaker, and a `max_new_tokens` cap) against `sglang_omni_mlx/native/ci/model_golden/qwen3-tts-12hz-0.6b-customvoice.json`.
+
 ## Known Limitations
 
 - **Reference audio recommended.** As a cloning model, Qwen3-TTS Base produces robotic speech
@@ -774,5 +820,7 @@ The TTS CI non-streaming and streaming stages run this probe for Qwen3-TTS on fo
   set `language` explicitly when you know the target language.
 - **Rare runaway generation.** Roughly 0.2% of utterances (observed on the 0.6B checkpoint, and
   on one- or two-word texts on 1.7B) can fall into a repetition loop and keep generating up to
-  `max_new_tokens`. The default text-length budget stops such a loop after a few seconds with
+  `max_new_tokens`. On Base checkpoints the default text-length budget stops such a loop after a few seconds with
   finish reason `length`; raising `repetition_penalty` (default `1.05`) also helps.
+  CustomVoice and VoiceDesign loop far less often (2 runaways in about 121,000 Chinese requests and none in
+  9,792 English ones) and run to the checkpoint's limit unless the request sets `max_new_tokens`.

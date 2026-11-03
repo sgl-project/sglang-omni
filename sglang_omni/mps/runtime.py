@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import getpass
+import hashlib
 import logging
 import os
 import secrets
@@ -34,12 +35,14 @@ from sglang_omni.mps.manager import (
     MpsLease,
     MpsManager,
 )
-from sglang_omni.mps.state import MpsGpuPaths
+from sglang_omni.mps.state import MpsGpuPaths, pipe_sockets_fit
 
 logger = logging.getLogger(__name__)
 
 ArgsT = TypeVarTuple("ArgsT")
 ResultT = TypeVar("ResultT")
+# Parent of the state root when the temp dir is too deep for the daemon's sockets.
+SHORT_STATE_PARENT = Path("/tmp")
 
 
 class MpsDeviceInfo(Protocol):
@@ -52,14 +55,27 @@ class PhysicalMpsPlan:
     client_process_names: tuple[str, ...]
 
 
-def default_state_root() -> Path:
+def default_state_root(gpu_uuids: Iterable[str]) -> Path:
     # Keep this short: the control socket must fit Linux's AF_UNIX path budget.
     override = os.environ.get("SGLANG_OMNI_MPS_STATE_ROOT")
     if override:
         return Path(override)
     else:
         pass
-    return Path(tempfile.gettempdir()) / f"sglang-omni-mps-{getpass.getuser()}"
+    user = getpass.getuser()
+    temp_dir = tempfile.gettempdir()
+    root = Path(temp_dir) / f"sglang-omni-mps-{user}"
+    if all(
+        pipe_sockets_fit(MpsGpuPaths(state_root=root, gpu_uuid=gpu_uuid))
+        for gpu_uuid in gpu_uuids
+    ):
+        return root
+    else:
+        # note (rsi): a deep TMPDIR (sandboxes, batch jobs) leaves the daemon's
+        # sockets no room; a short root named after the user and that TMPDIR
+        # keeps their state apart, as the root inside the TMPDIR would.
+        digest = hashlib.sha256(f"{user}\0{temp_dir}".encode()).hexdigest()[:8]
+        return SHORT_STATE_PARENT / f"sglang-omni-mps-{digest}"
 
 
 def resolve_physical_plans(
@@ -355,7 +371,9 @@ class MpsPipelineRuntime:
         else:
             pass
 
-        root = state_root if state_root is not None else default_state_root()
+        root = (
+            state_root if state_root is not None else default_state_root(physical_plans)
+        )
         managers = {
             gpu_uuid: MpsManager(
                 paths=MpsGpuPaths(
