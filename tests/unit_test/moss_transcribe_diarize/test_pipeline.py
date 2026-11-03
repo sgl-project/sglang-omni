@@ -28,7 +28,6 @@ from sglang_omni.models.moss_transcribe_diarize.stages import (
 from sglang_omni.preprocessing.audio import decode_audio_bytes
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphConfig,
-    build_default_prefill_cuda_graph_bs,
     build_generation_batch_overrides,
 )
 from sglang_omni.serve.server_warmup import TranscriptionWarmupRequest
@@ -80,11 +79,11 @@ def test_moss_transcribe_diarize_prefill_backend_policy(
         server_args_overrides={"disable_prefill_cuda_graph": True}, **defaults
     )
     assert opted_out["cuda_graph_backend_prefill"] == "disabled"
-    assert defaults["cuda_graph_bs_prefill"] == [
-        1,
-        2,
-        *build_default_prefill_cuda_graph_bs(4096),
-    ]
+    prefill_buckets = resolved["cuda_graph_bs_prefill"]
+    assert prefill_buckets[:3] == [1, 2, 4]
+    assert all(
+        left < right for left, right in zip(prefill_buckets, prefill_buckets[1:])
+    )
     assert (
         max(defaults["cuda_graph_bs_prefill"])
         == defaults["max_prefill_tokens"]

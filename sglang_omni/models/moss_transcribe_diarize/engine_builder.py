@@ -134,14 +134,8 @@ class MossTranscribeDiarizeEngineBuilder(
         )
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
-        # note (Xinyu): cached-prefix extends commonly contain one or two new
-        # tokens, so keep exact graph buckets below the shared ladder's 4-token
-        # floor instead of failing the prefill padding-factor replay guard.
-        prefill_cuda_graph_bs = [
-            1,
-            2,
-            *build_default_prefill_cuda_graph_bs(4096),
-        ]
+        # note (Yuhao): cached-prefix extends also need an exact two-token bucket alongside the shared one-token bucket.
+        prefill_cuda_graph_bs = sorted({2, *build_default_prefill_cuda_graph_bs(4096)})
         return {
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,
