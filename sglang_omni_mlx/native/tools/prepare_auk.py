@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import re
 import shutil
 import tempfile
@@ -243,48 +242,6 @@ def prepare_conditioner(
             "license": "Qwen Research License; see ../licenses/qwen-research.txt and ../licenses/NOTICE.",
         },
     )
-    mx.save_safetensors(str(directory / "frontend.safetensors"), frontend_constants())
-
-
-def frontend_constants() -> dict[str, mx.array]:
-    """The 400-point periodic Hann and 128-bin Slaney filter bank used by AuK."""
-    window = read_config(Path(__file__).with_name("auk_hann_window.json"))
-    if window.n_fft != 400 or len(window.samples) != 400:
-        raise ValueError("AuK requires its 400-point periodic Hann window")
-    else:
-        pass
-    maximum_mel = 15.0 + math.log(8.0) * (27.0 / math.log(6.4))
-    step_mel = maximum_mel / 129
-    mel_edges = [index * step_mel for index in range(130)]
-    mel_edges[-1] = maximum_mel
-    frequencies_hz = [
-        (
-            200.0 * mel / 3.0
-            if mel < 15.0
-            else 1000.0 * math.exp(math.log(6.4) / 27.0 * (mel - 15.0))
-        )
-        for mel in mel_edges
-    ]
-    filters = []
-    for frequency_hz in range(0, 8001, 40):
-        row = []
-        for band in range(128):
-            low_hz, center_hz, high_hz = frequencies_hz[band : band + 3]
-            row.append(
-                max(
-                    0.0,
-                    min(
-                        (frequency_hz - low_hz) / (center_hz - low_hz),
-                        (high_hz - frequency_hz) / (high_hz - center_hz),
-                    ),
-                )
-                * (2.0 / (high_hz - low_hz))
-            )
-        filters.append(row)
-    return {
-        "frontend.hann_window": mx.array(list(window.samples), dtype=mx.float32),
-        "frontend.mel_filters": mx.array(filters, dtype=mx.float32),
-    }
 
 
 def prepare(auk_directory: Path, conditioner_directory: Path, output: Path) -> None:

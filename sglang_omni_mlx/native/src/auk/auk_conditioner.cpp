@@ -31,8 +31,7 @@ LoadConditionerWeights(const std::filesystem::path &directory,
     const std::string normalized =
         name.starts_with("thinker.") ? name.substr(8) : name;
     if ((!normalized.starts_with("model.") &&
-         !normalized.starts_with("audio_tower.") &&
-         !normalized.starts_with("frontend.")) ||
+         !normalized.starts_with("audio_tower.")) ||
         normalized.ends_with("audio_bos_eos_token.weight") ||
         normalized.ends_with("rotary_emb.inv_freq")) {
       continue;
@@ -44,8 +43,7 @@ LoadConditionerWeights(const std::filesystem::path &directory,
           "AuK conditioner weights must be floating point");
     } else {
     }
-    mx::array value = mx::astype(
-        weight, normalized.starts_with("frontend.") ? mx::float32 : dtype);
+    mx::array value = mx::astype(weight, dtype);
     if (normalized == "audio_tower.conv1.weight" ||
         normalized == "audio_tower.conv2.weight") {
       if (value.ndim() != 3 || value.shape(2) != 3) {
@@ -190,9 +188,6 @@ Conditioner::Conditioner(const std::filesystem::path &directory,
       checkpoint_(LoadConditionerWeights(directory, dtype),
                   nlohmann::json::object()),
       tokenizer_(directory) {
-  RequireWeight(checkpoint_, "frontend.hann_window", {omni_common::kFftSize});
-  RequireWeight(checkpoint_, "frontend.mel_filters",
-                {omni_common::kFftSize / 2 + 1, omni_common::kMelBinCount});
   const int hidden = config_.hidden_size;
   const int head_size = hidden / config_.text_head_count;
   const int key_width = config_.text_kv_head_count * head_size;
@@ -314,9 +309,9 @@ mx::array Conditioner::Encode(
                                   "within the checkpoint's duration limit");
     } else {
     }
-    // Note (Adrian Wei): CPU FFT and pinned frontend constants preserve the
-    // processor's BF16 inputs; padding only needs to cover the final window.
-    mx::StreamContext cpu(mx::Device::cpu);
+    // Note (XXXXRT666): the processor zero-pads to 30 s before its centered
+    // STFT, so the final frames see zeros; padding past the last window is
+    // enough for the same frames.
     std::vector<float> padded = *reference_audio;
     const int frames = static_cast<int>(
         (reference_audio->size() + omni_common::kHopLength - 1) /
@@ -326,9 +321,7 @@ mx::array Conditioner::Encode(
                  frames * omni_common::kHopLength + omni_common::kFftSize),
         0.0f);
     const mx::array full =
-        qwen3_asr::LogMel(padded, qwen3_asr::AudioLayout::kReference,
-                          checkpoint_.Weight("frontend.hann_window"),
-                          checkpoint_.Weight("frontend.mel_filters"));
+        qwen3_asr::LogMel(padded, qwen3_asr::AudioLayout::kReference);
     features = mx::slice(full, {0, 0}, {omni_common::kMelBinCount, frames});
     mx::eval(*features);
   } else {
