@@ -622,7 +622,7 @@ def test_llama_cpp_stage_keeps_a_cpu_resolution_off_the_gpu(
     assert captured["main_gpu"] == 0
 
 
-def test_llama_cpp_stage_keeps_a_musa_resolution_off_the_gpu(
+def test_llama_cpp_stage_falls_back_to_cpu_without_musa_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
@@ -637,7 +637,11 @@ def test_llama_cpp_stage_keeps_a_musa_resolution_off_the_gpu(
     monkeypatch.setitem(
         sys.modules,
         "llama_cpp",
-        types.SimpleNamespace(LLAMA_SPLIT_MODE_NONE=0, Llama=fake_llama),
+        types.SimpleNamespace(
+            LLAMA_SPLIT_MODE_NONE=0,
+            Llama=fake_llama,
+            llama_print_system_info=lambda: b"CUDA : compute 8.0",
+        ),
     )
     monkeypatch.setattr(stages, "resolve_gguf", lambda *args: "/model.gguf")
     monkeypatch.setattr(
@@ -650,6 +654,40 @@ def test_llama_cpp_stage_keeps_a_musa_resolution_off_the_gpu(
 
     assert captured["n_gpu_layers"] == 0
     assert captured["main_gpu"] == 0
+
+
+def test_llama_cpp_stage_uses_musa_backend_when_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class StopAfterCapture(RuntimeError):
+        pass
+
+    def fake_llama(**kwargs: object) -> None:
+        captured.update(kwargs)
+        raise StopAfterCapture
+
+    monkeypatch.setitem(
+        sys.modules,
+        "llama_cpp",
+        types.SimpleNamespace(
+            LLAMA_SPLIT_MODE_NONE=0,
+            Llama=fake_llama,
+            llama_print_system_info=lambda: b"MUSA : MTTS5000",
+        ),
+    )
+    monkeypatch.setattr(stages, "resolve_gguf", lambda *args: "/model.gguf")
+    monkeypatch.setattr(
+        "sglang_omni.utils.device.resolve_concrete_device",
+        lambda device, gpu_id: types.SimpleNamespace(type="musa", index=gpu_id),
+    )
+
+    with pytest.raises(StopAfterCapture):
+        stages.create_tts_engine_executor("unused", gpu_id=1, n_gpu_layers=17)
+
+    assert captured["n_gpu_layers"] == 17
+    assert captured["main_gpu"] == 1
 
 
 def test_llama_cpp_stage_rejects_a_device_it_cannot_serve(
