@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Fish S2-Pro golden check for check_golden.py: seeded speech requests through
-fish_s2_pro_synthesize, checked as voxtral_golden checks Voxtral's.
+fish_s2_pro_synthesize, checked as speech_golden checks the other speech models'.
 
 A case names its text, seed and max_new_tokens, and optionally a corpus clip to
 clone (ref_clip, with ref_text). A chip with golden outputs must also give the
@@ -18,8 +18,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-import voxtral_golden
-from voxtral_golden import joined
+import speech_golden
+from speech_golden import joined
 
 EXACT_FIELDS = ("reference_codes", "audio_sha256")
 
@@ -86,8 +86,8 @@ def synthesize_cases(
 def check(
     golden: dict, device: str, results: dict[str, dict]
 ) -> tuple[list[str], list[str]]:
-    """voxtral_golden.check, plus the reference codes and PCM on a recorded chip."""
-    lines, failures = voxtral_golden.check(golden, device, results)
+    """speech_golden.check, plus the reference codes and PCM on a recorded chip."""
+    lines, failures = speech_golden.check(golden, device, results)
     recorded = golden["devices"].get(device, {}).get("clips", {})
     for case_id, outputs in recorded.items():
         actual = results.get(case_id)
