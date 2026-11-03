@@ -23,14 +23,11 @@ from sglang_omni.client.audio import (
     select_audio_delta,
 )
 from sglang_omni.serve.protocol import CreateSpeechRequest, SpeechStreamSessionConfig
-from sglang_omni.serve.qwen3_tts_codec_guard import (
-    Qwen3TTSCodecLimitError,
-    qwen3_tts_codec_limit_error_from_result,
-    speech_result_exhausted_codec_budget,
-)
 from sglang_omni.serve.speech_errors import (
+    QWEN3_TTS_CODEC_LIMIT_MESSAGE,
     SpeechAPIError,
     bad_request,
+    internal_error,
     speech_generation_error,
     speech_websocket_error_payload,
 )
@@ -342,14 +339,7 @@ class SpeechWebSocketSession:
                     request_id,
                     error.message,
                 )
-            await self.send_error(
-                error,
-                partial_audio=(
-                    error.partial_audio
-                    if isinstance(error, Qwen3TTSCodecLimitError)
-                    else False
-                ),
-            )
+            await self.send_error(error)
         finally:
             if self.active_request_id == request_id:
                 self.active_request_id = None
@@ -385,10 +375,8 @@ class SpeechWebSocketSession:
         chunk_count = 0
         started = False
         async for chunk in self.client.generate(gen_req, request_id=request_id):
-            if self.reject_codec_length and speech_result_exhausted_codec_budget(chunk):
-                error = qwen3_tts_codec_limit_error_from_result(chunk)
-                error.partial_audio = total_bytes > 0
-                raise error
+            if self.reject_codec_length and chunk.finish_reason == "length":
+                raise internal_error(QWEN3_TTS_CODEC_LIMIT_MESSAGE)
             else:
                 pass
             if chunk.audio_data is None:
@@ -457,8 +445,8 @@ class SpeechWebSocketSession:
             speed=request.speed,
             allow_format_fallback=False,
         )
-        if self.reject_codec_length and speech_result_exhausted_codec_budget(result):
-            raise qwen3_tts_codec_limit_error_from_result(result)
+        if self.reject_codec_length and result.finish_reason == "length":
+            raise internal_error(QWEN3_TTS_CODEC_LIMIT_MESSAGE)
         else:
             pass
         if self.active_request_id == request_id:
@@ -675,16 +663,8 @@ class SpeechWebSocketSession:
             pass
         await self.websocket.send_text(json.dumps(payload))
 
-    async def send_error(
-        self, error: SpeechAPIError, *, partial_audio: bool = False
-    ) -> None:
-        payload = speech_websocket_error_payload(error)
-        if partial_audio:
-            payload["partial_audio"] = True
-            payload["action"] = "discard"
-        else:
-            pass
-        await self.send_json(payload)
+    async def send_error(self, error: SpeechAPIError) -> None:
+        await self.send_json(speech_websocket_error_payload(error))
 
     async def send_audio_start(
         self,

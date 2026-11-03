@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
@@ -11,7 +12,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from sglang_omni.client import GenerateChunk
-from sglang_omni.client.types import SpeechResult
+from sglang_omni.client.types import GenerateRequest, SpeechResult
 from sglang_omni.config import CustomVoiceConfig
 from sglang_omni.serve import create_app
 from sglang_omni.serve import speech_ws as speech_ws_module
@@ -33,15 +34,20 @@ CONTEXT_LENGTH_ERROR = (
 
 
 class StreamingSpeechClient:
-    def __init__(self, *, sample_rate: int = 24000) -> None:
+    def __init__(
+        self, *, sample_rate: int = 24000, finish_reason: str | None = None
+    ) -> None:
         self.sample_rate = sample_rate
+        self.finish_reason = finish_reason
         self.generated_prompts: list[str] = []
         self.speech_prompts: list[str] = []
 
     def health(self) -> dict[str, Any]:
         return {"running": True}
 
-    async def generate(self, request: Any, request_id: str | None = None):
+    async def generate(
+        self, request: GenerateRequest, request_id: str | None = None
+    ) -> AsyncIterator[GenerateChunk]:
         self.generated_prompts.append(request.prompt)
         yield GenerateChunk(
             request_id=request_id or "speech-ws",
@@ -67,6 +73,7 @@ class StreamingSpeechClient:
             mime_type=f"audio/{response_format}",
             format=response_format,
             sample_rate=self.sample_rate,
+            finish_reason=self.finish_reason,
         )
 
     async def abort(self, request_id: str) -> None:
@@ -74,7 +81,9 @@ class StreamingSpeechClient:
 
 
 class LengthAfterAudioStreamingSpeechClient(StreamingSpeechClient):
-    async def generate(self, request: Any, request_id: str | None = None):
+    async def generate(
+        self, request: GenerateRequest, request_id: str | None = None
+    ) -> AsyncIterator[GenerateChunk]:
         self.generated_prompts.append(request.prompt)
         yield GenerateChunk(
             request_id=request_id or "speech-ws",
@@ -355,7 +364,7 @@ def test_speech_websocket_streams_sentences_as_binary_frames() -> None:
     assert client_impl.generated_prompts == ["Hello.", "Second"]
 
 
-def test_qwen3_tts_websocket_marks_partial_length_audio_for_discard() -> None:
+def test_qwen3_tts_websocket_reports_length_after_partial_audio() -> None:
     client = TestClient(
         create_app(
             LengthAfterAudioStreamingSpeechClient(),
@@ -374,8 +383,28 @@ def test_qwen3_tts_websocket_marks_partial_length_audio_for_discard() -> None:
         done = websocket.receive_json()
 
     assert error["type"] == "error"
-    assert error["partial_audio"] is True
-    assert error["action"] == "discard"
+    assert "incomplete" in error["message"]
+    assert done["type"] == "audio.done"
+    assert done["error"] is True
+
+
+def test_qwen3_tts_websocket_buffered_length_returns_error_without_audio() -> None:
+    client = TestClient(
+        create_app(
+            StreamingSpeechClient(finish_reason="length"),
+            model_name="qwen3-tts",
+            architectures=["Qwen3TTSForConditionalGeneration"],
+        )
+    )
+    with client.websocket_connect("/v1/audio/speech/stream") as websocket:
+        websocket.send_json(session_config(response_format="wav", stream_audio=False))
+        assert websocket.receive_json()["type"] == "session.configured"
+        websocket.send_json({"type": "input.text", "text": "Hello."})
+        error = websocket.receive_json()
+        done = websocket.receive_json()
+
+    assert error["type"] == "error"
+    assert "incomplete" in error["message"]
     assert done["type"] == "audio.done"
     assert done["error"] is True
 

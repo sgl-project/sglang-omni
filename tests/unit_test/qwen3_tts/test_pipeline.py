@@ -1021,7 +1021,7 @@ def test_qwen3_tts_preprocessing_does_not_mutate_global_rng(
             return [(np.zeros(32, dtype=np.float32), 24000)]
 
         def _tokenize_texts(self, texts):
-            return [[idx + 1 for idx, _ in enumerate(texts[0])]]
+            return [torch.arange(1, len(texts[0]) + 1, dtype=torch.long).unsqueeze(0)]
 
         def _build_assistant_text(self, text):
             return text
@@ -5627,7 +5627,10 @@ def test_qwen3_tts_result_adapter_preserves_length_finish_reason() -> None:
     assert result.data["finish_reason"] == "length"
 
 
-def test_qwen3_tts_result_adapter_normalizes_scheduler_stop_reason() -> None:
+@pytest.mark.parametrize("max_new_tokens", [None, 1])
+def test_qwen3_tts_result_adapter_normalizes_scheduler_stop_reason(
+    max_new_tokens: int | None,
+) -> None:
     payload = make_payload(inputs="target")
     data = Qwen3TTSSGLangRequestData(
         req=SimpleNamespace(
@@ -5638,6 +5641,7 @@ def test_qwen3_tts_result_adapter_normalizes_scheduler_stop_reason() -> None:
         ),
         output_codes=[torch.tensor([1, 2])],
         stage_payload=payload,
+        max_new_tokens=max_new_tokens,
     )
 
     result = apply_sglang_qwen3_tts_result(payload, data)
@@ -5645,8 +5649,8 @@ def test_qwen3_tts_result_adapter_normalizes_scheduler_stop_reason() -> None:
     assert result.data["finish_reason"] == "stop"
 
 
-def test_qwen3_tts_result_adapter_does_not_infer_length_from_token_count() -> None:
-    """Token count alone cannot distinguish budget exhaustion from boundary EOS."""
+def test_qwen3_tts_result_adapter_infers_length_at_generation_budget() -> None:
+    """Without a scheduler reason, reaching the budget is still a length stop."""
     payload = make_payload(inputs="target")
     data = Qwen3TTSSGLangRequestData(
         req=SimpleNamespace(output_ids=[]),
@@ -5657,7 +5661,7 @@ def test_qwen3_tts_result_adapter_does_not_infer_length_from_token_count() -> No
 
     result = apply_sglang_qwen3_tts_result(payload, data)
 
-    assert result.data["finish_reason"] == "stop"
+    assert result.data["finish_reason"] == "length"
 
 
 def test_qwen3_tts_state_round_trips_finish_reason() -> None:
@@ -5932,8 +5936,24 @@ def test_qwen3_tts_prepared_payload_missing_state_fails_without_rebuild(
         )
 
 
+@pytest.mark.parametrize("stream_codec_output", [False, True])
+@pytest.mark.parametrize(
+    ("text_token_count", "configured_cap", "explicit", "expected_budget"),
+    [
+        (8, 2048, False, 192),
+        (30, 2048, False, 360),
+        (30, 256, False, 256),
+        (8, 64, False, 64),
+        (30, 4096, True, 4096),
+    ],
+)
 def test_qwen3_tts_prepare_custom_voice_uses_speaker_path(
     monkeypatch: pytest.MonkeyPatch,
+    text_token_count: int,
+    configured_cap: int,
+    explicit: bool,
+    expected_budget: int,
+    stream_codec_output: bool,
 ) -> None:
     calls: list[tuple[str, object]] = []
 
@@ -5945,7 +5965,10 @@ def test_qwen3_tts_prepare_custom_voice_uses_speaker_path(
             return f"instruct:{text}"
 
         def _tokenize_texts(self, texts):
-            return [torch.arange(8, dtype=torch.long).unsqueeze(0) for _ in texts]
+            return [
+                torch.arange(text_token_count, dtype=torch.long).unsqueeze(0)
+                for _ in texts
+            ]
 
         def _merge_generate_kwargs(self, **kwargs):
             return kwargs
@@ -5976,10 +5999,13 @@ def test_qwen3_tts_prepare_custom_voice_uses_speaker_path(
     prepared = qwen3_request_builders.prepare_qwen3_tts_request(
         make_payload(
             inputs="target",
+            params={"max_new_tokens": configured_cap},
             tts_params={
                 "task_type": "CustomVoice",
                 "voice": "Ryan",
                 "instructions": "calm",
+                "stream_codec_output": stream_codec_output,
+                "explicit_generation_params": ["max_new_tokens"] if explicit else [],
             },
         ),
         model=FakeModel(),
@@ -5988,7 +6014,8 @@ def test_qwen3_tts_prepare_custom_voice_uses_speaker_path(
 
     assert prepared.state.task_type == "CustomVoice"
     assert prepared.state.voice == "Ryan"
-    assert prepared.gen_kwargs["max_new_tokens"] == 192
+    assert prepared.gen_kwargs["max_new_tokens"] == expected_budget
+    assert prepared.state.stream_codec_output is stream_codec_output
     assert [name for name, _ in calls] == ["custom"]
     kwargs = calls[0][1]
     assert kwargs["voice"] == "Ryan"

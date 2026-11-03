@@ -70,7 +70,6 @@ from sglang_omni.http.admin_auth import (
 )
 from sglang_omni.http.favicon import register_favicon
 from sglang_omni.proto import EXPLICIT_STAGE_SAMPLING_PARAMS_KEY
-from sglang_omni.sampling.seed import new_random_sampling_seed
 from sglang_omni.serve.generation_params import (
     record_explicit_generation_params as _record_explicit_generation_params,
 )
@@ -107,17 +106,13 @@ from sglang_omni.serve.protocol import (
     VoiceListResponse,
     WeightsCheckerRequest,
 )
-from sglang_omni.serve.qwen3_tts_codec_guard import (
-    can_retry_qwen3_tts_codec_limit,
-    is_qwen3_tts_architecture,
-    qwen3_tts_codec_limit_error_from_result,
-    speech_result_exhausted_codec_budget,
-)
 from sglang_omni.serve.realtime.manager import RealtimeDeployment
 from sglang_omni.serve.realtime.schema import CapabilityResponse
 from sglang_omni.serve.speech_errors import (
+    QWEN3_TTS_CODEC_LIMIT_MESSAGE,
     SpeechAPIError,
     bad_request,
+    internal_error,
     openai_error_payload,
     speech_error_response,
     speech_generation_error,
@@ -1509,9 +1504,8 @@ def register_speech(app: FastAPI) -> None:
                     gen_req=gen_req,
                     request_id=request_id,
                     speed=req.speed,
-                    reject_codec_length=is_qwen3_tts_architecture(
-                        getattr(app.state, "architectures", None)
-                    ),
+                    reject_codec_length="Qwen3TTSForConditionalGeneration"
+                    in app.state.architectures,
                 )
             except ClientError as exc:
                 return speech_generation_failure_response(request_id, exc)
@@ -1535,44 +1529,13 @@ def register_speech(app: FastAPI) -> None:
                 response_format=req.response_format,
                 speed=req.speed,
             )
-            if is_qwen3_tts_architecture(
-                getattr(app.state, "architectures", None)
-            ) and speech_result_exhausted_codec_budget(result):
-                if can_retry_qwen3_tts_codec_limit(
-                    seed=req.seed,
-                    max_new_tokens=req.max_new_tokens,
-                ):
-                    retry_seed = new_random_sampling_seed()
-                    retry_request = req.model_copy(update={"seed": retry_seed})
-                    retry_gen_req = speech_service.build_generate_request(
-                        retry_request,
-                        validate=False,
-                        reference_descriptors=prepared.reference_descriptors,
-                        uploaded_voice=prepared.uploaded_voice,
-                    )
-                    retry_request_id = f"speech-{uuid.uuid4()}"
-                    logger.warning(
-                        f"Qwen3-TTS request {request_id} hit codec budget; "
-                        f"retrying once as {retry_request_id} with seed={retry_seed}"
-                    )
-                    result = await await_speech_response(
-                        request=request,
-                        client=client,
-                        gen_req=retry_gen_req,
-                        request_id=retry_request_id,
-                        response_format=req.response_format,
-                        speed=req.speed,
-                    )
-                    if speech_result_exhausted_codec_budget(result):
-                        return speech_error_response(
-                            qwen3_tts_codec_limit_error_from_result(result)
-                        )
-                    else:
-                        pass
-                else:
-                    return speech_error_response(
-                        qwen3_tts_codec_limit_error_from_result(result)
-                    )
+            if (
+                "Qwen3TTSForConditionalGeneration" in app.state.architectures
+                and result.finish_reason == "length"
+            ):
+                return speech_error_response(
+                    internal_error(QWEN3_TTS_CODEC_LIMIT_MESSAGE)
+                )
             else:
                 pass
         except ClientError as exc:
@@ -1664,12 +1627,10 @@ def register_speech_batch(app: FastAPI) -> None:
             return speech_error_response(mapped)
 
         response = SpeechBatchResponse.model_validate(response)
-        if is_qwen3_tts_architecture(getattr(app.state, "architectures", None)):
+        if "Qwen3TTSForConditionalGeneration" in app.state.architectures:
             for result in response.results:
-                if result.status == "success" and speech_result_exhausted_codec_budget(
-                    result
-                ):
-                    error = qwen3_tts_codec_limit_error_from_result(result)
+                if result.status == "success" and result.finish_reason == "length":
+                    error = internal_error(QWEN3_TTS_CODEC_LIMIT_MESSAGE)
                     result.status = "error"
                     result.audio_data = None
                     result.format = None
@@ -1736,8 +1697,8 @@ def register_speech_ws(app: FastAPI) -> None:
             websocket,
             client=app.state.client,
             speech_service=app.state.speech_service,
-            reject_codec_length=is_qwen3_tts_architecture(
-                getattr(app.state, "architectures", None)
+            reject_codec_length=(
+                "Qwen3TTSForConditionalGeneration" in app.state.architectures
             ),
         )
         await session.run()
@@ -1813,8 +1774,8 @@ async def speech_audio_response(
             except StopAsyncIteration:
                 stream_completed = True
                 break
-            if reject_codec_length and speech_result_exhausted_codec_budget(chunk):
-                raise qwen3_tts_codec_limit_error_from_result(chunk)
+            if reject_codec_length and chunk.finish_reason == "length":
+                raise internal_error(QWEN3_TTS_CODEC_LIMIT_MESSAGE)
             else:
                 pass
             if chunk.audio_data is None:
@@ -1867,8 +1828,8 @@ async def speech_audio_response(
             yield first_audio_bytes
 
             async for chunk in chunk_stream:
-                if reject_codec_length and speech_result_exhausted_codec_budget(chunk):
-                    raise qwen3_tts_codec_limit_error_from_result(chunk)
+                if reject_codec_length and chunk.finish_reason == "length":
+                    raise internal_error(QWEN3_TTS_CODEC_LIMIT_MESSAGE)
                 else:
                     pass
                 if chunk.audio_data is None:

@@ -424,6 +424,7 @@ def build_qwen3_tts_state(
         tts_params=tts_params,
     )
 
+    explicit_generation_params = tts_params.get("explicit_generation_params")
     return Qwen3TTSState(
         text=text,
         task_type=task_type,
@@ -450,8 +451,10 @@ def build_qwen3_tts_state(
             tts_params=tts_params,
             tts_engine_params=tts_engine_params,
         ),
-        explicit_max_new_tokens=explicit_qwen3_tts_max_new_tokens(
-            params, tts_params=tts_params
+        explicit_max_new_tokens=(
+            isinstance(explicit_generation_params, (list, tuple, set))
+            and "max_new_tokens" in explicit_generation_params
+            and params.get("max_new_tokens") is not None
         ),
         seed=normalized_seed,
     )
@@ -757,88 +760,6 @@ def build_generation_kwargs(
         else:
             pass
     return generation_kwargs
-
-
-def explicit_qwen3_tts_max_new_tokens(
-    params: dict[str, Any], *, tts_params: dict[str, Any]
-) -> bool:
-    explicit_generation_params = tts_params.get("explicit_generation_params")
-    if isinstance(explicit_generation_params, (list, tuple, set)):
-        return (
-            "max_new_tokens" in {str(field) for field in explicit_generation_params}
-            and params.get("max_new_tokens") is not None
-        )
-    else:
-        return False
-
-
-def resolve_qwen3_tts_codec_token_budget(
-    *,
-    configured_cap: int,
-    text_token_count: int | None,
-    explicit_max_new_tokens: bool,
-) -> int:
-    """Bound the default Qwen3-TTS codec budget by text length.
-
-    Qwen3-TTS can enter a repetitive state where codec EOS is unreachable under
-    top-k sampling. A fixed 2048-frame ceiling turns that into minutes of
-    unusable audio. Keep an explicit caller max_new_tokens as an opt-out.
-    """
-    configured = max(1, int(configured_cap))
-    if explicit_max_new_tokens:
-        return configured
-    else:
-        pass
-    if text_token_count is None or int(text_token_count) <= 0:
-        return configured
-    else:
-        pass
-    dynamic_cap = max(
-        QWEN3_TTS_MIN_CODEC_FRAMES,
-        int(text_token_count) * QWEN3_TTS_MAX_CODEC_FRAMES_PER_TEXT_TOKEN,
-    )
-    return max(1, min(configured, dynamic_cap))
-
-
-def apply_qwen3_tts_codec_token_budget(
-    gen_kwargs: dict[str, Any],
-    *,
-    text_token_count: int | None,
-    explicit_max_new_tokens: bool,
-) -> dict[str, Any]:
-    updated = dict(gen_kwargs)
-    configured = int(updated.get("max_new_tokens", QWEN3_TTS_DEFAULT_MAX_NEW_TOKENS))
-    updated["max_new_tokens"] = resolve_qwen3_tts_codec_token_budget(
-        configured_cap=configured,
-        text_token_count=text_token_count,
-        explicit_max_new_tokens=explicit_max_new_tokens,
-    )
-    return updated
-
-
-def count_qwen3_tts_text_tokens(wrapper: Any, text: str) -> int | None:
-    if not text:
-        return 0
-    else:
-        pass
-    try:
-        tokenized = wrapper._tokenize_texts(
-            [text]
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-    except Exception:
-        return None
-    if not tokenized:
-        return None
-    else:
-        pass
-    first = tokenized[0]
-    try:
-        return int(first.shape[-1])
-    except (AttributeError, IndexError, TypeError):
-        try:
-            return int(len(first))
-        except TypeError:
-            return None
 
 
 def build_embedding_cache_key_ids(input_embeds: torch.Tensor) -> list[int]:
@@ -1535,11 +1456,20 @@ def prepare_qwen3_tts_request(
     gen_kwargs = wrapper._merge_generate_kwargs(
         **state.generation_kwargs
     )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-    gen_kwargs = apply_qwen3_tts_codec_token_budget(
-        gen_kwargs,
-        text_token_count=count_qwen3_tts_text_tokens(wrapper, state.text),
-        explicit_max_new_tokens=state.explicit_max_new_tokens,
-    )
+    if state.explicit_max_new_tokens:
+        pass
+    else:
+        text_token_ids = wrapper._tokenize_texts([state.text])[
+            0
+        ]  # noqa: leading-underscore  # wrapper tokenizer interface
+        text_token_count = text_token_ids.shape[-1]
+        gen_kwargs["max_new_tokens"] = min(
+            gen_kwargs["max_new_tokens"],
+            max(
+                QWEN3_TTS_MIN_CODEC_FRAMES,
+                QWEN3_TTS_MAX_CODEC_FRAMES_PER_TEXT_TOKEN * text_token_count,
+            ),
+        )
     if state.task_type == QWEN3_TTS_TASK_BASE:
         (
             input_embeds,
@@ -1870,6 +1800,14 @@ def qwen3_tts_finish_reason(data: Qwen3TTSSGLangRequestData) -> str:
             else:
                 pass
         return str(raw)
+    else:
+        pass
+
+    # note (Junnan Li): the scheduler reason is absent when a stage owns the
+    # terminal step, and reaching the budget there is still a length stop.
+    max_new_tokens = data.max_new_tokens
+    if max_new_tokens is not None and len(data.output_codes) >= int(max_new_tokens):
+        return "length"
     else:
         pass
     return "stop"

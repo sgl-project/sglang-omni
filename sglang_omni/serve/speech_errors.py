@@ -11,6 +11,11 @@ from fastapi.responses import JSONResponse
 from sglang_omni.admission import QueueFullError
 from sglang_omni.serve.openai_errors import is_bad_request_error
 
+QWEN3_TTS_CODEC_LIMIT_MESSAGE = (
+    "Qwen3-TTS reached max_new_tokens without emitting codec EOS; "
+    "the generated audio is incomplete."
+)
+
 
 @dataclass
 class SpeechAPIError(Exception):
