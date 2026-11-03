@@ -90,8 +90,7 @@ DiT::DiT(omni_common::WeightMap weights, const nlohmann::json &architecture,
          int latent_channels, mx::Dtype dtype)
     : config_({{"arch", architecture}, {"latent_dim", latent_channels}}),
       checkpoint_(ConvertWeights(std::move(weights), dtype), config_),
-      dtype_(dtype),
-      head_count_(config_.at("arch").at("heads").get<int>()),
+      dtype_(dtype), head_count_(config_.at("arch").at("heads").get<int>()),
       joint_layer_count_(config_.at("arch").at("num_layers").get<int>()),
       single_layer_count_(
           config_.at("arch").at("num_single_layers").get<int>()),
@@ -108,8 +107,7 @@ void DiT::ValidateWeights() const {
   const int latent_channels = config_.at("latent_dim").get<int>();
   const double feed_forward_channels =
       hidden_channels * architecture.at("ff_mult").get<double>();
-  if ((dtype_ != mx::float32 && dtype_ != mx::bfloat16) || head_count_ <= 0 ||
-      hidden_channels <= 0 ||
+  if (head_count_ <= 0 || hidden_channels <= 0 ||
       hidden_channels > std::numeric_limits<int>::max() / 6 ||
       hidden_channels % head_count_ != 0 || head_channels <= 0 ||
       head_channels % 2 != 0 ||

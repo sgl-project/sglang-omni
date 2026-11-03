@@ -36,9 +36,9 @@ Arguments ParseArguments(int argc, char **argv) {
       arguments.requests = value;
     } else if (flag == "--output-directory") {
       arguments.output_directory = value;
-    } else if (flag == "--dtype" && (value == "bf16" || value == "bfloat16")) {
+    } else if (flag == "--dtype" && value == "bfloat16") {
       arguments.dtype = mlx::core::bfloat16;
-    } else if (flag == "--dtype" && (value == "fp32" || value == "float32")) {
+    } else if (flag == "--dtype" && value == "float32") {
       arguments.dtype = mlx::core::float32;
     } else {
       throw std::invalid_argument("unsupported argument: " + flag + " " +
@@ -46,8 +46,8 @@ Arguments ParseArguments(int argc, char **argv) {
     }
   }
   if (arguments.model_directory.empty() ||
-      arguments.text_encoder_directory.empty() ||
-      arguments.requests.empty() || arguments.output_directory.empty()) {
+      arguments.text_encoder_directory.empty() || arguments.requests.empty() ||
+      arguments.output_directory.empty()) {
     throw std::invalid_argument("--model-path, --text-encoder-path, --requests "
                                 "and --output-directory are required");
   } else {
@@ -67,7 +67,7 @@ int main(int argc, char **argv) {
     }
     std::filesystem::create_directories(arguments.output_directory);
     auk::Model model(arguments.model_directory,
-                     arguments.text_encoder_directory, arguments.dtype, 30.0f);
+                     arguments.text_encoder_directory, arguments.dtype);
     std::set<std::string> request_ids;
     std::string line;
     while (std::getline(requests, line)) {

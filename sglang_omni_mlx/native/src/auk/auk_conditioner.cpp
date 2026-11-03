@@ -20,11 +20,6 @@ constexpr const char *kNoPromptAudio = "|<no_prompt_audio>|";
 omni_common::WeightMap
 LoadConditionerWeights(const std::filesystem::path &directory,
                        mx::Dtype dtype) {
-  if (dtype != mx::bfloat16 && dtype != mx::float32) {
-    throw std::invalid_argument(
-        "AuK conditioning requires bfloat16 or float32");
-  } else {
-  }
   auto loaded = omni_common::LoadSafetensors(directory);
   omni_common::WeightMap weights;
   for (auto &[name, weight] : loaded) {
@@ -302,11 +297,9 @@ mx::array Conditioner::Encode(
   if (reference_audio.has_value()) {
     if (reference_audio->size() < omni_common::kFftSize ||
         reference_audio->size() >
-            static_cast<size_t>(config_.max_audio_samples) ||
-        !std::all_of(reference_audio->begin(), reference_audio->end(),
-                     [](float sample) { return std::isfinite(sample); })) {
-      throw std::invalid_argument("AuK reference audio must be finite and "
-                                  "within the checkpoint's duration limit");
+            static_cast<size_t>(config_.max_audio_samples)) {
+      throw std::invalid_argument(
+          "AuK reference audio must fit the checkpoint's audio window");
     } else {
     }
     // Note (XXXXRT666): the processor zero-pads to 30 s before its centered

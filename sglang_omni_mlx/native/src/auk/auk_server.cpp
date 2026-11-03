@@ -46,7 +46,7 @@ public:
       : SpeechServedModel(kMaxRequestBodyBytes, max_queued_requests,
                           request_timeout_seconds),
         max_seconds_(max_seconds),
-        model_(model_directory, text_encoder_directory, dtype, max_seconds) {}
+        model_(model_directory, text_encoder_directory, dtype) {}
 
   void AddHandlers(mg_context *context,
                    qwen3_asr::TranscriptionWorker &worker) override {
@@ -58,11 +58,11 @@ private:
   static int HandleGenerate(mg_connection *connection, void *data) {
     auto *service = static_cast<AukSpeechService *>(data);
     return service->Speak(connection, [service](const Json &body) {
-      speech_service::SpeechJob job;
-      job.synthesize = service->SynthesisFor(
+      auto synthesize = service->SynthesisFor(
           auk::ParseRequest(body, true, service->max_seconds_));
+      speech_service::SpeechJob job = speech_service::ParseCommonFields(body);
       job.model = speech_service::ParseModel(body);
-      job.response_format = "wav";
+      job.synthesize = std::move(synthesize);
       job.is_generate_response = true;
       return job;
     });

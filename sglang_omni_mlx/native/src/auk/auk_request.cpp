@@ -19,7 +19,6 @@ namespace {
 
 using speech_service::FieldOr;
 using speech_service::Json;
-using speech_service::PresentFieldOr;
 constexpr size_t kMaximumTextBytes = 8192;
 
 const Json &ObjectField(const Json &request, const std::string &name) {
@@ -83,10 +82,7 @@ SynthesisRequest ParseRequest(const Json &request, bool raw_instruction,
     } else {
     }
   }
-  const Json stream = PresentFieldOr(request, "stream", Json(false));
-  if (!stream.is_boolean()) {
-    throw std::invalid_argument("stream must be a boolean");
-  } else if (stream.get<bool>()) {
+  if (FieldOr(request, "stream", Json(false)) == Json(true)) {
     throw std::invalid_argument("AuK does not support streaming responses");
   } else {
   }
@@ -162,6 +158,7 @@ SynthesisRequest ParseRequest(const Json &request, bool raw_instruction,
     }
     bytes.resize(length - 1);
     auto audio = omni_common::DecodeAudioWav(bytes);
+    // The conditioner needs three mel frames, 30 ms at 16 kHz.
     if (audio.samples.size() <
             static_cast<size_t>(
                 (static_cast<int64_t>(audio.sample_rate) * 3 + 99) / 100) ||

@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <string_view>
 
+#include "common/audio.h"
 #include "common/audio_resample.h"
 #include "common/layers.h"
 
@@ -27,8 +28,7 @@ constexpr float kAukSwayCoefficient = -1.0f;
 constexpr int kFlashSteps = 4;
 constexpr float kFlashGuidanceStrength = 0.0f;
 constexpr std::array<float, kFlashSteps + 1> kFlashTimeGrid = {
-    0.0f, 0.07612049579620361f, 0.2928932309150696f, 0.6173166036605835f,
-    1.0f};
+    0.0f, 0.07612049579620361f, 0.2928932309150696f, 0.6173166036605835f, 1.0f};
 // The wrappers training saved the released weights under.
 constexpr std::array<std::string_view, 4> kTrainingPrefixes = {
     "ema_model.", "module.", "model.", "net."};
@@ -47,7 +47,8 @@ nlohmann::json VaeConfig(const nlohmann::json &config) {
   return vae_config;
 }
 
-omni_common::WeightMap LoadCheckpointWeights(const std::filesystem::path &path) {
+omni_common::WeightMap
+LoadCheckpointWeights(const std::filesystem::path &path) {
   const auto stored = mx::load_safetensors(path.string()).first;
   omni_common::WeightMap weights;
   for (const auto &[stored_name, weight] : stored) {
@@ -70,14 +71,12 @@ omni_common::WeightMap LoadCheckpointWeights(const std::filesystem::path &path) 
 } // namespace
 
 Model::SamplingRecipe Model::ReadSamplingRecipe(const nlohmann::json &config,
-                                                mx::Dtype dtype,
-                                                float max_seconds) {
+                                                mx::Dtype dtype) {
   if ((config.at("name") != "AuK" && config.at("name") != "AuK-Flash") ||
       config.at("vae").at("target_sample_rate") != kSampleRate ||
       config.at("vae").at("downsample_rate") != SAMPLES_PER_FRAME ||
       config.at("vae").at("latent_dim") != LATENT_CHANNELS ||
-      (dtype != mx::float32 && dtype != mx::bfloat16) ||
-      !std::isfinite(max_seconds) || max_seconds <= 0 || max_seconds > 30) {
+      (dtype != mx::float32 && dtype != mx::bfloat16)) {
     throw std::invalid_argument("unsupported AuK runtime configuration");
   } else if (config.at("name") == "AuK-Flash") {
     return {kFlashSteps, kFlashGuidanceStrength, std::nullopt,
@@ -89,23 +88,22 @@ Model::SamplingRecipe Model::ReadSamplingRecipe(const nlohmann::json &config,
 
 Model::Model(const std::filesystem::path &model_directory,
              const std::filesystem::path &text_encoder_directory,
-             mx::Dtype dtype, float max_seconds)
+             mx::Dtype dtype)
     : Model(ReadCheckpointConfig(model_directory), model_directory,
-            text_encoder_directory, dtype, max_seconds) {}
+            text_encoder_directory, dtype) {}
 
 Model::Model(const nlohmann::json &config,
              const std::filesystem::path &model_directory,
              const std::filesystem::path &text_encoder_directory,
-             mx::Dtype dtype, float maximum_seconds)
-    : sampling_recipe(ReadSamplingRecipe(config, dtype, maximum_seconds)),
-      max_seconds(maximum_seconds),
+             mx::Dtype dtype)
+    : sampling_recipe(ReadSamplingRecipe(config, dtype)),
       conditioner(text_encoder_directory, dtype),
-      diffusion(LoadCheckpointWeights(
-                    model_directory / (config.at("name") == "AuK-Flash"
+      diffusion(LoadCheckpointWeights(model_directory /
+                                      (config.at("name") == "AuK-Flash"
                                            ? "auk_flash.safetensors"
                                            : "auk_base.safetensors")),
-                config.at("arch"),
-                config.at("vae").at("latent_dim").get<int>(), dtype),
+                config.at("arch"), config.at("vae").at("latent_dim").get<int>(),
+                dtype),
       vae(LoadCheckpointWeights(model_directory / "vae.safetensors"),
           VaeConfig(config)) {
   diffusion.ValidateInputDimensions(conditioner.TextLayerCount(),
@@ -122,21 +120,6 @@ Model::Model(const nlohmann::json &config,
 SynthesisResult
 Model::Synthesize(const SynthesisRequest &request,
                   const std::function<void()> &check_cancelled) {
-  if (request.instruction.empty() || request.instruction.size() > 32768 ||
-      !std::isfinite(request.seconds) || request.seconds <= 0 ||
-      request.seconds > max_seconds || request.reference_sample_rate <= 0 ||
-      (!request.reference_audio.empty() &&
-       request.reference_audio.size() <
-           static_cast<size_t>(
-               std::ceil(request.reference_sample_rate * 0.03))) ||
-      request.reference_audio.size() >
-          static_cast<size_t>(request.reference_sample_rate * max_seconds) ||
-      !std::all_of(request.reference_audio.begin(),
-                   request.reference_audio.end(),
-                   [](float sample) { return std::isfinite(sample); })) {
-    throw std::invalid_argument("invalid AuK synthesis input");
-  } else {
-  }
   check_cancelled();
   uint64_t seed;
   if (request.seed) {
@@ -154,7 +137,8 @@ Model::Synthesize(const SynthesisRequest &request,
     const auto reference_audio = omni_common::ResampleAudio(
         request.reference_audio, request.reference_sample_rate, kSampleRate);
     conditioner_audio = omni_common::ResampleAudio(
-        request.reference_audio, request.reference_sample_rate, 16000);
+        request.reference_audio, request.reference_sample_rate,
+        omni_common::kSampleRate);
     reference_length = static_cast<int>(reference_audio.size()) / vae.HopSize();
     const auto waveform = mx::array(reference_audio.data(),
                                     {static_cast<int>(reference_audio.size())});
