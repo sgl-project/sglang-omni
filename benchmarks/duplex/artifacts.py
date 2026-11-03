@@ -227,6 +227,7 @@ def replay_run(run_dir: Path) -> dict[str, JsonValue]:
         (run_dir / "manifest.json").read_text(encoding="utf-8")
     )
     input_errors: list[str] = []
+    # note (yaourt137): Oracle and serving use the profile rate, so a mismatched recording would be miscounted silently.
     if manifest.input.sample_rate != PROFILES[manifest.profile].input_sample_rate:
         input_errors.append("input sample rate does not match profile")
     else:

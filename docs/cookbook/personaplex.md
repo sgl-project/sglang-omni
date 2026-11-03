@@ -66,7 +66,7 @@ PersonaPlex also serves live full-duplex voice sessions on `/v1/realtime` with i
 
 The shared recorder supports `--profile personaplex`: 80 ms input units, mono 24 kHz PCM16 input and output, and continuous output. Dataset audio is resampled before sessions start; `input.pcm`, `input.wav` and the input manifest describe the actual transmitted audio. Replay checks one extra 80 ms output frame at the start of each nonempty call, including calls whose final input unit needs padding. The empty end-of-input unit contributes no audio.
 
-For a single-call protocol check, start the session server above and record a mono 16 kHz PCM16 WAV with trailing silence:
+For a single-call protocol check, start the session server above and pass a mono 16 kHz PCM16 WAV with trailing silence as `--audio`:
 
 ```bash
 python -m benchmarks.eval.benchmark_duplex \

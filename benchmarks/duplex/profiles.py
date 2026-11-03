@@ -27,6 +27,7 @@ class DuplexProfile:
     continuous_output: bool
     protocol: Protocol
     input_sample_rate: int = 16000
+    # note (yaourt137): Extra frames in a session's first unit beyond the usual one; PersonaPlex's first unit returns two, so 1.
     initial_extra_output_frames: int = 0
     input_end_terminal_reason: Literal["stop", "input_audio_ended"] = "stop"
 

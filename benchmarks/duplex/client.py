@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, JsonValue
 from benchmarks.duplex.oracle_models import turn_detection_type
 from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES, ProfileName, Protocol
 
+# note (yaourt137): 16 kHz only, used by the pacing probe; run_session sizes packets from the profile input rate.
 SAMPLE_RATE = 16000
 PACKET_MS = 80
 PACKET_BYTES = SAMPLE_RATE * PACKET_MS // 1000 * 2

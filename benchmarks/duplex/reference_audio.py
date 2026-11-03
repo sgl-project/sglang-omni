@@ -608,6 +608,7 @@ def load_runs(runs: list[Path], trace_format: TraceFormat) -> tuple[
         else:
             pass
         profile = manifest.get("profile")
+        # note (yaourt137): Input windows and packet pacing assume RATE.
         if profile in PROFILES and PROFILES[profile].input_sample_rate != RATE:
             raise ValueError(
                 f"Reference export requires {RATE} Hz recorded input; "
