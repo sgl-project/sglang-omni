@@ -24,6 +24,7 @@ from sglang_omni.models.qwen3_asr.request_builders import (
 )
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.types import DeferredAdmission
+from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.utils import audio as audio_utils
 from sglang_omni.utils.audio import AudioDecodeError
 
@@ -537,8 +538,12 @@ def test_qwen3_asr_greedy_only_rejects_non_greedy_sampling(monkeypatch) -> None:
         data={},
     )
 
-    with pytest.raises(ValueError, match="supports only greedy decoding"):
+    with pytest.raises(ValueError, match="supports only greedy decoding") as refusal:
         request_builder(payload)
+
+    # The refusal crosses the stage boundary as text, and chunked transcription wraps it.
+    assert is_bad_request_error(RuntimeError(str(refusal.value)))
+    assert is_bad_request_error(RuntimeError(f"chunk 0 failed: {refusal.value}"))
 
 
 def test_qwen3_asr_request_builder_preserves_audio_beyond_30_seconds(
