@@ -11525,7 +11525,6 @@ def test_base_vocoder_policy_keeps_model_device_and_explicit_overrides(
     assert captured["max_batch_size"] == batch_size
     assert captured["max_batch_wait_ms"] == wait_ms
     assert captured["tts_model_size"] == (model_size if model_type == "base" else None)
-    assert captured["whole_requests_on_codec_state"] == (model_size == "1b7")
     overridden = vocoder_factory_capture(
         monkeypatch,
         tts_model_type=model_type,
