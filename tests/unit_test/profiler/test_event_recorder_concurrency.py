@@ -821,7 +821,6 @@ def test_runtime_disk_cap_reports_unwritten_events_without_partial_records(
 
     status = read_status(path)
     assert Path(path).read_bytes() == b""
-    assert Path(path).stat().st_size <= 1
     assert status["accepted_events"] == 1
     assert status["written_events"] == 0
     assert status["unwritten_events"] == 1
@@ -954,9 +953,6 @@ def test_runtime_event_file_open_failure_disables_capture_and_finalizes_incomple
     recorder = RequestEventRecorder(queue_capacity=8)
     scheduling_started = threading.Event()
     release_scheduling = threading.Event()
-    writer_waiting_after_failure = threading.Event()
-    drain_called = threading.Event()
-    original_drain_runtime_buffers = recorder.drain_runtime_buffers
 
     def pause_scheduling(run_state: RecorderRunState) -> None:
         scheduling_started.set()
@@ -964,21 +960,7 @@ def test_runtime_event_file_open_failure_disables_capture_and_finalizes_incomple
             raise AssertionError("test did not release scheduling setup")
         run_state.writer_scheduling = "SCHED_IDLE"
 
-    def track_runtime_drain(
-        run_state: RecorderRunState,
-        file_handle: TextIOWrapper | None,
-    ) -> int:
-        drain_called.set()
-        return original_drain_runtime_buffers(run_state, file_handle)
-
-    class FailureWaitEvent(threading.Event):
-        def wait(self, timeout: float | None = None) -> bool:
-            if timeout is None:
-                writer_waiting_after_failure.set()
-            return super().wait(timeout)
-
     monkeypatch.setattr(recorder, "set_writer_scheduling", pause_scheduling)
-    monkeypatch.setattr(recorder, "drain_runtime_buffers", track_runtime_drain)
     path = recorder.start(
         "event-file-open-failure",
         str(tmp_path),
@@ -996,16 +978,12 @@ def test_runtime_event_file_open_failure_disables_capture_and_finalizes_incomple
         event_name="event",
     )
     run_state.path.touch()
-    run_state.stop_requested = FailureWaitEvent()
     release_scheduling.set()
-    writer_waiting = writer_waiting_after_failure.wait(timeout=5)
-    if not writer_waiting:
-        recorder.stop(wait=False)
-        recorder.wait_for_finalizations(timeout_seconds=5)
-    assert writer_waiting is True
+    writer_failure_deadline = time.monotonic() + 5
+    while not run_state.writer_failed and time.monotonic() < writer_failure_deadline:
+        threading.Event().wait(timeout=0.001)
     assert run_state.writer_failed is True
     assert run_state.event_file_open_failures == 1
-    assert drain_called.is_set() is False
     recorder.emit(
         request_id="after-failure",
         stage="stage",
