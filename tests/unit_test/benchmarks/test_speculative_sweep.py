@@ -7,18 +7,33 @@ import json
 import wave
 from argparse import Namespace
 from pathlib import Path
-from typing import Literal
 
 import pytest
 from aiohttp import web
 
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.dataset.seedtts import SampleInput
-from benchmarks.eval import benchmark_asr_seedtts
-from benchmarks.eval.speculative_sweep import parse_args
+from benchmarks.eval import benchmark_asr_seedtts, speculative_workloads
+from benchmarks.eval.benchmark_asr_transcribe_diarize import (
+    RESULTS_FILE,
+    SPEED_RESULTS_FILE,
+)
+from benchmarks.eval.speculative_sweep import (
+    ServerConfigFile,
+    parse_args,
+    split_draft_config,
+)
+from benchmarks.eval.speculative_workloads import (
+    WORKLOADS,
+    LoadSettings,
+    TranscribeDiarizeWorkload,
+    measure_asr,
+    measure_transcribe_diarize,
+)
 from benchmarks.metrics.speculative import (
-    ClientResult,
+    AccuracyMetric,
     Leg,
+    LoadMeasurement,
     ServerLogStats,
     compare,
     read_server_log,
@@ -61,29 +76,29 @@ def test_server_log_gives_the_pool_usage_retractions_acceptance_and_cached_share
     )
 
 
-def client_result(
+def load(
     concurrency: int,
     throughput: float,
-    latency_p95_s: float | None,
-    skipped: int = 0,
-    failed: int = 0,
-) -> ClientResult:
-    return ClientResult.model_validate(
-        {
-            "concurrency": concurrency,
-            "total": 100,
-            "skipped": skipped,
-            "failed": failed,
-            "throughput_samples_per_s": {"mean": throughput},
-            "latency_p95_s": {"mean": latency_p95_s},
-            "corpus_wer": {"mean": 0.013},
-            "resources": {"gpu_memory_used_peak_mib": None},
-        }
+    latency_p95_s: float,
+    *,
+    failed_requests: int = 0,
+    first_output_latency_p95_s: float | None = None,
+    accuracy: dict[AccuracyMetric, float] | None = None,
+) -> LoadMeasurement:
+    return LoadMeasurement(
+        concurrency=concurrency,
+        total_requests=100,
+        failed_requests=failed_requests,
+        throughput_requests_per_s=throughput,
+        latency_p95_s=latency_p95_s,
+        first_output_latency_p95_s=first_output_latency_p95_s,
+        accuracy={"WER": 0.013} if accuracy is None else accuracy,
+        gpu_memory_peak_mib=None,
     )
 
 
 def leg(
-    name: str, accept_length_mean: float | None, results: list[ClientResult]
+    name: str, accept_length_mean: float | None, loads: list[LoadMeasurement]
 ) -> Leg:
     return Leg(
         name=name,
@@ -96,27 +111,30 @@ def leg(
             accept_length_mean=accept_length_mean,
             cached_prompt_token_share=None,
         ),
-        results=results,
+        loads=loads,
     )
 
 
+def abba(
+    baseline_loads: list[LoadMeasurement], draft_loads: list[LoadMeasurement]
+) -> list[Leg]:
+    return [
+        leg("1_baseline", None, baseline_loads),
+        leg("2_draft", 5.0, draft_loads),
+        leg("3_draft", 5.0, draft_loads),
+        leg("4_baseline", None, baseline_loads),
+    ]
+
+
 def test_comparison_reads_gain_k_and_every_load_the_draft_makes_worse() -> None:
-    """Scoring skips must not hide the qualifying c16 gain or the c16/c64 regressions."""
-    baseline_results = [
-        client_result(1, 10.0, 0.5, skipped=1),
-        client_result(16, 100.0, 1.5, skipped=1),
-        client_result(64, 200.0, 3.0, skipped=1),
-    ]
-    draft_results = [
-        client_result(1, 20.0, 0.3, skipped=1),
-        client_result(16, 120.0, 2.5, skipped=1),
-        client_result(64, 192.0, 3.0, skipped=1),
-    ]
+    """At c16 the draft still gains throughput but raises p95; at c64 it loses throughput."""
+    baseline_loads = [load(1, 10.0, 0.5), load(16, 100.0, 1.5), load(64, 200.0, 3.0)]
+    draft_loads = [load(1, 20.0, 0.3), load(16, 120.0, 2.5), load(64, 192.0, 3.0)]
     legs = [
-        leg("1_baseline", None, baseline_results),
-        leg("2_draft", 5.0, draft_results),
-        leg("3_draft", 5.5, [client_result(1, 22.0, 0.3), *draft_results[1:]]),
-        leg("4_baseline", None, [client_result(1, 12.0, 0.5), *baseline_results[1:]]),
+        leg("1_baseline", None, baseline_loads),
+        leg("2_draft", 5.0, draft_loads),
+        leg("3_draft", 5.5, [load(1, 22.0, 0.3), *draft_loads[1:]]),
+        leg("4_baseline", None, [load(1, 12.0, 0.5), *baseline_loads[1:]]),
     ]
 
     comparison = compare(legs, k_gain=1.2)
@@ -128,21 +146,15 @@ def test_comparison_reads_gain_k_and_every_load_the_draft_makes_worse() -> None:
     assert comparison.worse_concurrencies == [16, 64]
     assert comparison.incomplete_concurrencies == []
     assert comparison.accept_length_mean == pytest.approx(5.25)
+    assert "First output" not in render(comparison, legs, title="draft")
 
 
 def test_a_load_with_failed_requests_keeps_its_numbers_but_qualifies_nothing() -> None:
     """Throughput over the requests that finished can show 2x while half of them failed."""
-    baseline_results = [client_result(1, 10.0, 0.5), client_result(16, 100.0, 1.0)]
-    draft_results = [
-        client_result(1, 15.0, 0.3),
-        client_result(16, 200.0, 0.5, skipped=50, failed=50),
-    ]
-    legs = [
-        leg("1_baseline", None, baseline_results),
-        leg("2_draft", 5.0, draft_results),
-        leg("3_draft", 5.0, draft_results),
-        leg("4_baseline", None, baseline_results),
-    ]
+    legs = abba(
+        [load(1, 10.0, 0.5), load(16, 100.0, 1.0)],
+        [load(1, 15.0, 0.3), load(16, 200.0, 0.5, failed_requests=50)],
+    )
 
     comparison = compare(legs, k_gain=1.2)
 
@@ -155,71 +167,92 @@ def test_a_load_with_failed_requests_keeps_its_numbers_but_qualifies_nothing() -
     assert "| 1.50x | – | – | invalid | – | – |" in roadmap_row
 
 
-@pytest.mark.parametrize("failed_side", ["baseline", "draft", "both"])
-def test_all_failed_legs_still_render_an_incomplete_load(
-    failed_side: Literal["baseline", "draft", "both"],
-) -> None:
-    """Two zero-throughput legs previously prevented the entire sweep summary from rendering."""
-    legs = []
-    for index, side in enumerate(("baseline", "draft", "draft", "baseline"), 1):
-        failed = failed_side in (side, "both")
-        results = [
-            client_result(1, 15.0 if side == "draft" else 10.0, 0.5),
-            client_result(
-                16,
-                0.0 if failed else 100.0,
-                None if failed else 1.0,
-                skipped=100 if failed else 0,
-                failed=100 if failed else 0,
-            ),
-        ]
-        legs.append(leg(f"{index}_{side}", 5.0 if side == "draft" else None, results))
+def test_a_slower_first_output_makes_a_load_worse_even_when_throughput_gains() -> None:
+    legs = abba(
+        [load(16, 100.0, 1.0, first_output_latency_p95_s=0.20)],
+        [load(16, 150.0, 1.0, first_output_latency_p95_s=0.22)],
+    )
 
     comparison = compare(legs, k_gain=1.2)
-    summary = render(comparison, legs, title="failed load")
+    summary = render(comparison, legs, title="draft")
 
-    assert comparison.k == 1
-    assert comparison.incomplete_concurrencies == [16]
-    assert comparison.worse_concurrencies == []
+    assert comparison.k == 16
+    assert comparison.worse_concurrencies == [16]
     row = next(line for line in summary.splitlines() if line.startswith("| 16 "))
-    cells = [cell.strip() for cell in row.split("|")[1:-1]]
-    assert cells[0] == "16 (incomplete)"
-    for side, gap_column, failed_column in (("baseline", 4, 11), ("draft", 5, 12)):
-        failed = failed_side in (side, "both")
-        assert cells[gap_column] == ("–" if failed else "0.0%")
-        assert cells[failed_column] == ("200" if failed else "0")
-    assert "| 1.50x | – | – | invalid | – | – |" in summary.splitlines()[-1]
+    assert "| 0.200 | 0.220 | 10.0% |" in row
 
 
-REQUIRED = ["--model-path", "m", "--draft-config", "d.yaml", "--output-dir", "out"]
+def test_the_report_names_each_accuracy_metric_the_workload_measures() -> None:
+    """MOSS-TD reports CER and DER, which the table and roadmap row label as such rather than as WER."""
+    legs = abba(
+        [load(1, 4.0, 0.4, accuracy={"CER": 0.0587, "DER": 0.2111})],
+        [load(1, 8.0, 0.2, accuracy={"CER": 0.0582, "DER": 0.2101})],
+    )
+
+    summary = render(compare(legs, k_gain=1.2), legs, title="draft")
+
+    header = next(line for line in summary.splitlines() if line.startswith("| c |"))
+    assert "| CER, no draft | CER, draft | DER, no draft | DER, draft |" in header
+    assert "WER" not in summary
+    assert "- DER across legs and concurrencies: no draft 21.11% to 21.11%" in summary
+    assert summary.splitlines()[-1].endswith(
+        "| CER 5.87% → 5.82%, DER 21.11% → 21.01% | |"
+    )
 
 
-def test_arguments_after_the_separator_go_to_the_client(monkeypatch) -> None:
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
-
-    args = parse_args([*REQUIRED, "--", "--concurrencies", "1,16", "--repeats", "1"])
-
-    assert args.client_args == ["--concurrencies", "1,16", "--repeats", "1"]
-
-
-@pytest.mark.parametrize(
-    ("visible_gpus", "argv"),
-    [
-        pytest.param("0,1", REQUIRED, id="two-gpus"),
-        pytest.param("", REQUIRED, id="no-gpu-named"),
-        pytest.param("0", [*REQUIRED, "--order", "AA"], id="no-draft-leg"),
-        pytest.param("0", [*REQUIRED, "--order", "ABC"], id="unknown-leg"),
-        pytest.param("0", [*REQUIRED, "--", "--port=9000"], id="client-port"),
-    ],
-)
-def test_the_sweep_refuses_to_start_on_a_bad_setup(
-    monkeypatch, visible_gpus: str, argv: list[str]
+@pytest.mark.parametrize("keep_prefix_cache", [False, True])
+def test_the_no_draft_config_is_the_draft_config_without_its_speculative_settings(
+    keep_prefix_cache: bool,
 ) -> None:
-    """Between legs the managed server ends every process on every visible GPU."""
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", visible_gpus)
+    """Every other engine setting reaches both sides; only the drafted stage loses its prefix cache."""
+    draft_config = ServerConfigFile.model_validate(
+        {
+            "config_cls": "MossTranscribeDiarizePipelineConfig",
+            "model_path": "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+            "stages": {
+                "asr": {
+                    "engine": {
+                        "speculative_algorithm": "DFLASH",
+                        "speculative_draft_model_path": "draft",
+                        "mem_fraction_static": 0.8,
+                    },
+                    "factory": {"enable_async_decode": False},
+                },
+                "preprocessing": {"factory": {"max_seq_len": 8192}},
+            },
+        }
+    )
 
-    with pytest.raises(SystemExit):
-        parse_args(argv)
+    configs = split_draft_config(draft_config, keep_prefix_cache=keep_prefix_cache)
+
+    prefix_cache = {} if keep_prefix_cache else {"disable_radix_cache": True}
+    expected_stages = {
+        "baseline": {"mem_fraction_static": 0.8, **prefix_cache},
+        "draft": {
+            "speculative_algorithm": "DFLASH",
+            "speculative_draft_model_path": "draft",
+            "mem_fraction_static": 0.8,
+            **prefix_cache,
+        },
+    }
+    for side, engine in expected_stages.items():
+        assert configs[side].model_dump(exclude_unset=True) == {
+            "config_cls": "MossTranscribeDiarizePipelineConfig",
+            "model_path": "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+            "stages": {
+                "asr": {"engine": engine, "factory": {"enable_async_decode": False}},
+                "preprocessing": {"factory": {"max_seq_len": 8192}},
+            },
+        }
+
+
+def test_a_config_without_a_draft_is_refused() -> None:
+    config = ServerConfigFile.model_validate(
+        {"stages": {"asr": {"engine": {"mem_fraction_static": 0.8}}}}
+    )
+
+    with pytest.raises(ValueError, match="no speculative_"):
+        split_draft_config(config, keep_prefix_cache=False)
 
 
 @pytest.mark.asyncio
@@ -316,16 +349,28 @@ async def test_scoring_skips_do_not_fail_a_successful_http_sweep(
         assert aggregate["corpus_wer"]["mean"] == 1.0
     else:
         pass
-    result = ClientResult.model_validate_json(json.dumps(aggregate))
-    comparison = compare(
-        [
-            leg("A1", None, [result]),
-            leg("B1", 5, [result]),
-            leg("B2", 5, [result]),
-            leg("A2", None, [result]),
-        ],
-        k_gain=1.0,
+
+    def write_client_payload(
+        command: list[str], log_path: Path, *, check: bool
+    ) -> None:
+        output = Path(command[command.index("--output") + 1])
+        output.write_text(json.dumps({"results": [aggregate]}))
+
+    monkeypatch.setattr(speculative_workloads, "run_client", write_client_payload)
+    [measurement] = measure_asr(
+        WORKLOADS["seedtts-en"],
+        LoadSettings(
+            concurrencies=[1],
+            repeats=3,
+            warmup=False,
+            max_samples=None,
+            client_arguments=[],
+        ),
+        port=8800,
+        model_path="test-asr",
+        leg_dir=tmp_path,
     )
+    comparison = compare(abba([measurement], [measurement]), k_gain=1.0)
     assert comparison.rows[0].baseline.failed_requests == 6 * failed_per_repeat
     assert comparison.rows[0].is_complete is (failed_per_repeat == 0)
     assert comparison.k == (None if failed_per_repeat else 1)
@@ -353,3 +398,100 @@ def test_missing_results_and_request_errors_are_not_scoring_skips() -> None:
     assert report["speed"]["throughput_samples_per_s"] == 1.0
     assert report["speed"]["latency_p95_s"] == 0.2
     assert report["speed"]["failed_requests"] == 2
+
+
+def test_meeting_throughput_comes_from_the_wall_clock_not_the_rounded_rate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The client rounds throughput_qps to 3 decimals, so two aishell4_long runs 0.4% apart both read 0.028 requests/s."""
+    wall_clocks_s = iter([716.0, 719.0])
+
+    def write_client_files(command: list[str], log_path: Path, *, check: bool) -> None:
+        run_dir = Path(command[command.index("--output-dir") + 1])
+        run_dir.mkdir()
+        (run_dir / SPEED_RESULTS_FILE).write_text(
+            json.dumps(
+                {
+                    "config": {"wall_clock_s": next(wall_clocks_s)},
+                    "speed": {
+                        "total_requests": 20,
+                        "completed_requests": 20,
+                        "failed_requests": 0,
+                        "throughput_qps": 0.028,
+                        "latency_p95_s": 43.5,
+                    },
+                }
+            )
+        )
+        (run_dir / RESULTS_FILE).write_text(
+            json.dumps(
+                {
+                    "diarization_metrics": {
+                        "cer": 0.1395,
+                        "speaker_timestamp_der": 0.0999,
+                    }
+                }
+            )
+        )
+
+    monkeypatch.setattr(speculative_workloads, "run_client", write_client_files)
+
+    [measurement] = measure_transcribe_diarize(
+        TranscribeDiarizeWorkload(dataset="aishell4_long"),
+        LoadSettings(
+            concurrencies=[1],
+            repeats=2,
+            warmup=False,
+            max_samples=None,
+            client_arguments=[],
+        ),
+        port=8800,
+        model_path="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        leg_dir=tmp_path,
+    )
+
+    assert measurement.throughput_requests_per_s == pytest.approx(
+        (20 / 716.0 + 20 / 719.0) / 2
+    )
+    assert measurement.total_requests == 40
+    assert measurement.accuracy == {"CER": 0.1395, "DER": 0.0999}
+
+
+REQUIRED = [
+    "--draft-config",
+    "d.yaml",
+    "--workload",
+    "seedtts-en",
+    "--output-dir",
+    "out",
+]
+
+
+def test_arguments_after_the_separator_go_to_the_client(monkeypatch) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+
+    args = parse_args([*REQUIRED, "--concurrencies", "1,16", "--", "--stream"])
+
+    assert args.concurrencies == [1, 16]
+    assert args.client_args == ["--stream"]
+
+
+@pytest.mark.parametrize(
+    ("visible_gpus", "argv"),
+    [
+        pytest.param("0,1", REQUIRED, id="two-gpus"),
+        pytest.param("", REQUIRED, id="no-gpu-named"),
+        pytest.param("0", [*REQUIRED, "--order", "AA"], id="no-draft-leg"),
+        pytest.param("0", [*REQUIRED, "--order", "ABC"], id="unknown-leg"),
+        pytest.param("0", [*REQUIRED, "--", "--port=9000"], id="client-port"),
+        pytest.param("0", [*REQUIRED, "--", "--repeats", "1"], id="client-repeats"),
+    ],
+)
+def test_the_sweep_refuses_to_start_on_a_bad_setup(
+    monkeypatch, visible_gpus: str, argv: list[str]
+) -> None:
+    """Between legs the managed server ends every process on every visible GPU, and the sweep owns the load settings."""
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", visible_gpus)
+
+    with pytest.raises(SystemExit):
+        parse_args(argv)

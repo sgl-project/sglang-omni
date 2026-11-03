@@ -8,12 +8,11 @@ import statistics
 from dataclasses import dataclass
 from typing import Literal
 
-from pydantic import BaseModel
-
 Side = Literal["baseline", "draft"]
+AccuracyMetric = Literal["WER", "CER", "DER"]
 # The roadmap's k: the highest concurrency where the draft gains at least this much.
 K_GAIN = 1.2
-# The roadmap's never-worse gate: at every load the draft keeps at least this share of the throughput, and at most this multiple of the p95 latency.
+# The roadmap's never-worse gate: at every load the draft keeps at least this share of the throughput, and at most this multiple of the p95 latency and of the p95 first-output latency.
 NEVER_WORSE_THROUGHPUT_RATIO = 0.97
 NEVER_WORSE_LATENCY_RATIO = 1.05
 # note (wilsonzheng0327): the first allocation is the target's pool; a draft then allocates its own with the same token count.
@@ -25,33 +24,18 @@ PREFILL_TOKENS_PATTERN = re.compile(r"#new-token: (\d+), #cached-token: (\d+)")
 ROADMAP_CONCURRENCIES = (1, 4, 8, 16, 32, 64)
 
 
-class MetricMean(BaseModel):
-    mean: float | None
-
-
-class MetricPeak(BaseModel):
-    max: float
-
-
-class ClientResources(BaseModel):
-    gpu_memory_used_peak_mib: MetricPeak | None = None
-
-
-class ClientResult(BaseModel):
-    """One concurrency level as the benchmark_asr_seedtts sweep writes it."""
+@dataclass(kw_only=True)
+class LoadMeasurement:
+    """One leg at one concurrency; each number is the mean over the leg's repeats."""
 
     concurrency: int
-    total: int
-    skipped: int
-    failed: int
-    throughput_samples_per_s: MetricMean
-    latency_p95_s: MetricMean
-    corpus_wer: MetricMean
-    resources: ClientResources
-
-
-class ClientPayload(BaseModel):
-    results: list[ClientResult]
+    total_requests: int
+    failed_requests: int
+    throughput_requests_per_s: float | None
+    latency_p95_s: float | None
+    first_output_latency_p95_s: float | None
+    accuracy: dict[AccuracyMetric, float]
+    gpu_memory_peak_mib: float | None
 
 
 @dataclass(kw_only=True)
@@ -69,7 +53,7 @@ class Leg:
     side: Side
     startup_s: float
     server: ServerLogStats
-    results: list[ClientResult]
+    loads: list[LoadMeasurement]
 
 
 @dataclass(kw_only=True)
@@ -78,7 +62,8 @@ class SideAtConcurrency:
 
     throughputs: list[float]
     latencies_p95_s: list[float]
-    wers: list[float]
+    first_output_latencies_p95_s: list[float]
+    accuracy: dict[AccuracyMetric, list[float]]
     failed_requests: int
 
 
@@ -89,6 +74,7 @@ class ConcurrencyRow:
     draft: SideAtConcurrency
     gain: float | None
     latency_ratio: float | None
+    first_output_latency_ratio: float | None
     is_complete: bool
 
 
@@ -99,6 +85,7 @@ class Comparison:
     worse_concurrencies: list[int]
     incomplete_concurrencies: list[int]
     accept_length_mean: float | None
+    accuracy_metrics: list[AccuracyMetric]
 
 
 def mean_or_none(values: list[float]) -> float | None:
@@ -143,33 +130,45 @@ def read_server_log(text: str) -> ServerLogStats:
 
 
 def compare(legs: list[Leg], *, k_gain: float) -> Comparison:
-    concurrencies = [result.concurrency for result in legs[0].results]
-    if any(
-        [result.concurrency for result in leg.results] != concurrencies for leg in legs
-    ):
+    concurrencies = [load.concurrency for load in legs[0].loads]
+    if any([load.concurrency for load in leg.loads] != concurrencies for leg in legs):
         raise ValueError("every leg must sweep the same concurrencies")
     else:
         pass
+    accuracy_metrics = list(
+        dict.fromkeys(
+            metric for leg in legs for load in leg.loads for metric in load.accuracy
+        )
+    )
     sides = {
         (side, concurrency): SideAtConcurrency(
-            throughputs=[], latencies_p95_s=[], wers=[], failed_requests=0
+            throughputs=[],
+            latencies_p95_s=[],
+            first_output_latencies_p95_s=[],
+            accuracy={metric: [] for metric in accuracy_metrics},
+            failed_requests=0,
         )
         for side in ("baseline", "draft")
         for concurrency in concurrencies
     }
     for leg in legs:
-        for result in leg.results:
-            measured = sides[(leg.side, result.concurrency)]
+        for load in leg.loads:
+            measured = sides[(leg.side, load.concurrency)]
             for values, value in (
-                (measured.throughputs, result.throughput_samples_per_s.mean),
-                (measured.latencies_p95_s, result.latency_p95_s.mean),
-                (measured.wers, result.corpus_wer.mean),
+                (measured.throughputs, load.throughput_requests_per_s),
+                (measured.latencies_p95_s, load.latency_p95_s),
+                (
+                    measured.first_output_latencies_p95_s,
+                    load.first_output_latency_p95_s,
+                ),
             ):
                 if value is not None:
                     values.append(value)
                 else:
                     pass
-            measured.failed_requests += result.failed
+            for metric, value in load.accuracy.items():
+                measured.accuracy[metric].append(value)
+            measured.failed_requests += load.failed_requests
     rows = []
     for concurrency in concurrencies:
         baseline = sides[("baseline", concurrency)]
@@ -183,6 +182,10 @@ def compare(legs: list[Leg], *, k_gain: float) -> Comparison:
                 draft=draft,
                 gain=gain,
                 latency_ratio=latency_ratio,
+                first_output_latency_ratio=mean_ratio(
+                    draft.first_output_latencies_p95_s,
+                    baseline.first_output_latencies_p95_s,
+                ),
                 # note (wilsonzheng0327): throughput and p95 count only the requests that finished, so a load where any failed cannot qualify.
                 is_complete=baseline.failed_requests == 0
                 and draft.failed_requests == 0
@@ -202,6 +205,10 @@ def compare(legs: list[Leg], *, k_gain: float) -> Comparison:
             for row in complete_rows
             if row.gain < NEVER_WORSE_THROUGHPUT_RATIO
             or row.latency_ratio > NEVER_WORSE_LATENCY_RATIO
+            or (
+                row.first_output_latency_ratio is not None
+                and row.first_output_latency_ratio > NEVER_WORSE_LATENCY_RATIO
+            )
         ],
         incomplete_concurrencies=[
             row.concurrency for row in rows if not row.is_complete
@@ -213,6 +220,7 @@ def compare(legs: list[Leg], *, k_gain: float) -> Comparison:
                 if leg.side == "draft" and leg.server.accept_length_mean is not None
             ]
         ),
+        accuracy_metrics=accuracy_metrics,
     )
 
 
@@ -220,8 +228,17 @@ def number(value: float | int | None, digits: int, suffix: str = "") -> str:
     return "–" if value is None else f"{value:.{digits}f}{suffix}"
 
 
+def throughput(requests_per_s: float | None) -> str:
+    """Four significant digits, so 38-minute meetings at 0.03 requests/s keep their differences."""
+    return "–" if requests_per_s is None else f"{requests_per_s:.4g}"
+
+
 def percent(fraction: float | None) -> str:
     return "–" if fraction is None else f"{fraction * 100:.2f}%"
+
+
+def change_percent(ratio: float | None) -> str:
+    return number(None if ratio is None else (ratio - 1) * 100, 1, "%")
 
 
 def gap_percent(values: list[float]) -> float | None:
@@ -235,35 +252,72 @@ def gap_percent(values: list[float]) -> float | None:
 
 
 def render(comparison: Comparison, legs: list[Leg], *, title: str) -> str:
-    order = ", ".join(leg.name for leg in legs)
+    has_first_output = any(
+        row.baseline.first_output_latencies_p95_s
+        or row.draft.first_output_latencies_p95_s
+        for row in comparison.rows
+    )
+    headers = [
+        "c",
+        "No draft",
+        "Draft",
+        "Gain",
+        "Gap, no draft",
+        "Gap, draft",
+        "p95, no draft (s)",
+        "p95, draft (s)",
+        "p95 change",
+    ]
+    if has_first_output:
+        headers += [
+            "First output p95, no draft (s)",
+            "First output p95, draft (s)",
+            "First output change",
+        ]
+    else:
+        pass
+    for metric in comparison.accuracy_metrics:
+        headers += [f"{metric}, no draft", f"{metric}, draft"]
+    headers += ["Failed, no draft", "Failed, draft"]
     lines = [
         f"# {title}: draft against no draft",
         "",
-        f"Legs in order: {order}. Throughput is samples/s, the mean of each side's legs; gap is the spread between a side's legs.",
+        f"Legs in order: {', '.join(leg.name for leg in legs)}. Throughput is requests per second, the mean of each side's legs; gap is the spread between a side's legs.",
         "",
-        "| c | No draft | Draft | Gain | Gap, no draft | Gap, draft | p95, no draft (s) | p95, draft (s) | p95 change | WER, no draft | WER, draft | Failed, no draft | Failed, draft |",
-        "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---:|---:|",
+        f"| {' | '.join(headers)} |",
+        f"|{'---:|' * len(headers)}",
     ]
     for row in comparison.rows:
-        lines.append(
-            f"| {row.concurrency}{'' if row.is_complete else ' (incomplete)'} "
-            f"| {number(mean_or_none(row.baseline.throughputs), 2)} "
-            f"| {number(mean_or_none(row.draft.throughputs), 2)} "
-            f"| {number(row.gain, 2, 'x')} "
-            f"| {number(gap_percent(row.baseline.throughputs), 1, '%')} "
-            f"| {number(gap_percent(row.draft.throughputs), 1, '%')} "
-            f"| {number(mean_or_none(row.baseline.latencies_p95_s), 3)} "
-            f"| {number(mean_or_none(row.draft.latencies_p95_s), 3)} "
-            f"| {number(None if row.latency_ratio is None else (row.latency_ratio - 1) * 100, 1, '%')} "
-            f"| {', '.join(percent(wer) for wer in row.baseline.wers) or '–'} "
-            f"| {', '.join(percent(wer) for wer in row.draft.wers) or '–'} "
-            f"| {row.baseline.failed_requests} "
-            f"| {row.draft.failed_requests} |"
-        )
+        cells = [
+            f"{row.concurrency}{'' if row.is_complete else ' (incomplete)'}",
+            throughput(mean_or_none(row.baseline.throughputs)),
+            throughput(mean_or_none(row.draft.throughputs)),
+            number(row.gain, 2, "x"),
+            number(gap_percent(row.baseline.throughputs), 1, "%"),
+            number(gap_percent(row.draft.throughputs), 1, "%"),
+            number(mean_or_none(row.baseline.latencies_p95_s), 3),
+            number(mean_or_none(row.draft.latencies_p95_s), 3),
+            change_percent(row.latency_ratio),
+        ]
+        if has_first_output:
+            cells += [
+                number(mean_or_none(row.baseline.first_output_latencies_p95_s), 3),
+                number(mean_or_none(row.draft.first_output_latencies_p95_s), 3),
+                change_percent(row.first_output_latency_ratio),
+            ]
+        else:
+            pass
+        for metric in comparison.accuracy_metrics:
+            cells += [
+                ", ".join(percent(value) for value in side.accuracy[metric]) or "–"
+                for side in (row.baseline, row.draft)
+            ]
+        cells += [str(row.baseline.failed_requests), str(row.draft.failed_requests)]
+        lines.append(f"| {' | '.join(cells)} |")
     lines += [
         "",
         f"- k, the highest complete concurrency with at least {K_GAIN}x: {comparison.k if comparison.k is not None else 'none'}",
-        f"- Worse than no draft (throughput under {NEVER_WORSE_THROUGHPUT_RATIO}x or p95 over {NEVER_WORSE_LATENCY_RATIO}x): "
+        f"- Worse than no draft (throughput under {NEVER_WORSE_THROUGHPUT_RATIO}x, or p95 or first-output p95 over {NEVER_WORSE_LATENCY_RATIO}x): "
         f"{', '.join(f'c{concurrency}' for concurrency in comparison.worse_concurrencies) or 'none'}",
         "- Incomplete, so left out of k and the never-worse check (failed requests or missing numbers): "
         f"{', '.join(f'c{concurrency}' for concurrency in comparison.incomplete_concurrencies) or 'none'}",
@@ -273,20 +327,34 @@ def render(comparison: Comparison, legs: list[Leg], *, title: str) -> str:
             for leg in legs
         ),
     ]
-    baseline_wers = [wer for row in comparison.rows for wer in row.baseline.wers]
-    draft_wers = [wer for row in comparison.rows for wer in row.draft.wers]
+    accuracy_by_side = {
+        metric: {
+            "baseline": [
+                value
+                for row in comparison.rows
+                for value in row.baseline.accuracy[metric]
+            ],
+            "draft": [
+                value for row in comparison.rows for value in row.draft.accuracy[metric]
+            ],
+        }
+        for metric in comparison.accuracy_metrics
+    }
+    for metric, values in accuracy_by_side.items():
+        lines.append(
+            f"- {metric} across legs and concurrencies: no draft {percent(min(values['baseline'], default=None))} to {percent(max(values['baseline'], default=None))}, "
+            f"draft {percent(min(values['draft'], default=None))} to {percent(max(values['draft'], default=None))}"
+        )
     lines += [
-        f"- WER across legs and concurrencies: no draft {percent(min(baseline_wers, default=None))} to {percent(max(baseline_wers, default=None))}, "
-        f"draft {percent(min(draft_wers, default=None))} to {percent(max(draft_wers, default=None))}",
         "",
         "| Leg | Startup (s) | KV pool (tokens) | Peak token usage | Retractions | Accept len | Peak GPU memory (MiB) |",
         "|---|---:|---:|---:|---:|---:|---:|",
     ]
     for leg in legs:
         peaks = [
-            result.resources.gpu_memory_used_peak_mib.max
-            for result in leg.results
-            if result.resources.gpu_memory_used_peak_mib is not None
+            load.gpu_memory_peak_mib
+            for load in leg.loads
+            if load.gpu_memory_peak_mib is not None
         ]
         lines.append(
             f"| {leg.name} | {leg.startup_s:.1f} | {number(leg.server.kv_pool_tokens, 0)} "
@@ -303,12 +371,14 @@ def render(comparison: Comparison, legs: list[Leg], *, title: str) -> str:
             roadmap_cells.append(number(row.gain, 2, "x"))
         else:
             roadmap_cells.append("invalid")
-
+    accuracy_cell = ", ".join(
+        f"{metric} {percent(mean_or_none(values['baseline']))} → {percent(mean_or_none(values['draft']))}"
+        for metric, values in accuracy_by_side.items()
+    )
     lines += [
         "",
         "Roadmap row:",
         "",
-        f"| {title} | | {number(comparison.accept_length_mean, 1)} | {' | '.join(roadmap_cells)} "
-        f"| WER {percent(mean_or_none(baseline_wers))} → {percent(mean_or_none(draft_wers))} | |",
+        f"| {title} | | {number(comparison.accept_length_mean, 1)} | {' | '.join(roadmap_cells)} | {accuracy_cell} | |",
     ]
     return "\n".join(lines) + "\n"
