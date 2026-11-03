@@ -110,17 +110,11 @@ These measurements use SGLang 0.5.22, PyTorch 2.14.1, H100 80GB/FA3 and A100 SXM
 
 ### Audio quality and limitations
 
-All four FP8 candidates passed the predeclared UTMOS, WER and omission non-inferiority margins on 416 distinct English inputs × two seeds per configuration, with four voices, 30-second inputs, C8, normal sampling and CUDA graphs. Every frozen reply was retained. All FP8 KV quality runs used unit scales.
+All four FP8 candidates passed the predeclared UTMOS, WER and omission non-inferiority margins on 416 distinct English inputs × two seeds per configuration, with four voices, 30-second inputs, C8, normal sampling and CUDA graphs. Every frozen reply was retained. FP8 KV always uses unit scales: PersonaPlex does not load KV-scale files, so `--lm.engine.quantization_param_path` fails startup with FP8 KV.
 
 WER/omission compare each reply's ASR with its own generated text; they measure text/audio consistency, not answer correctness or semantic equivalence to BF16. These results do not establish quality at other concurrency levels or in natural long conversations. FA3 also casts Q to FP8 without a query scale, so the KV results include FP8 attention arithmetic. Ada and Ampere FP8 KV were not evaluated.
 
 [Full results, exact tested revisions, statistical methods and reproduction scripts](https://gist.github.com/EdwardZhang1108/ca872094ef9d1000ab446f982c3b86fa) include paired timings, quality intervals, capacity outcomes and kernel profiles.
-
-### Custom KV scales
-
-With `--lm.engine.kv_cache_dtype fp8_e4m3`, an optional file can be supplied through `--lm.engine.quantization_param_path /path/to/scales.json`. Other KV dtypes ignore this path. The schema uses `model_type: "llama"`, `kv_cache.dtype: "float8_e4m3fn"` and `kv_cache.scaling_factor: {"0": {"0": scale, ..., "31": scale}}` for the single-GPU pipeline. Each layer's scale applies to both K and V.
-
-Invalid files or scales that are not finite and positive in FP32 fail startup. The loader keeps tensor and host-float scales consistent and preserves existing tensor storage. Custom scale loading rejects FNUZ backends. The quality results above do not validate a custom calibration file; K/V scaling also cannot correct FA3's unscaled Q cast.
 
 ## Known limitations
 
