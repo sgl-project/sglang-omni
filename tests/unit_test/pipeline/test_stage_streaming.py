@@ -1426,6 +1426,7 @@ def test_local_pre_payload_stream_uses_transported_session_identity(
                     "omni_session": {
                         "operation": "close",
                         "session_identity": {"id": session_id, "open_index": 1},
+                        "stages": ["thinker", "talker", "speech"],
                     }
                 },
                 stage_name="thinker",
@@ -1537,6 +1538,7 @@ def test_local_pre_payload_stream_uses_transported_session_identity(
                         "omni_session": {
                             "operation": "close",
                             "session_identity": {"id": session_id, "open_index": 1},
+                            "stages": ["thinker", "talker", "speech"],
                         }
                     },
                 ),
