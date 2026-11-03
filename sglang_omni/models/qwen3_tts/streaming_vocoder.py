@@ -914,7 +914,6 @@ class Qwen3TTSStreamingVocoderScheduler(
             and incremental_codec_cuda_graph
             and self.whole_request_widths
             and self.device.type == "cuda"
-            and num_quantizers > 0
             and whole_requests_on_codec_state
         )
         full_decode_graphs_enabled = bool(
