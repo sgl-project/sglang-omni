@@ -4001,6 +4001,23 @@ def test_qwen3_tts_whole_request_aborted_in_flight_publishes_nothing(
     assert scheduler.codec_arena.active_slots() == 0
 
 
+def test_qwen3_tts_whole_request_aborted_as_it_starts_holds_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler, _, _ = whole_request_scheduler(monkeypatch)
+    message = whole_request_message("whole", 4)
+
+    scheduler.abort("whole")
+    scheduler.start_whole_request(
+        "whole", message.data, Qwen3TTSState.from_dict(message.data.data)
+    )
+
+    assert scheduler.initial_queue.empty()
+    assert not scheduler.stream_states
+    assert not scheduler.stream_payloads
+    assert scheduler.codec_arena.active_slots() == 0
+
+
 def test_qwen3_tts_whole_request_ignores_stream_done_in_any_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

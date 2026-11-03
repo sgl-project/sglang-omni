@@ -2830,10 +2830,8 @@ class Qwen3TTSStreamingVocoderScheduler(
                 or len(final_state.audio_codes) <= final_state.ref_code_len
             ):
                 without_frames.append(message)
-            elif not self.is_aborted(message.request_id):
-                self.start_whole_request(message.request_id, message.data, final_state)
             else:
-                pass
+                self.start_whole_request(message.request_id, message.data, final_state)
         if without_frames:
             super().run_non_streaming_batch(without_frames, loop)
         else:
@@ -2872,6 +2870,11 @@ class Qwen3TTSStreamingVocoderScheduler(
             whole_generated_frames=frames - final_state.ref_code_len,
         )
         with self.state_lock:
+            # note (ratish): an abort clears state under this lock, so one it has missed is seen here.
+            if self.is_aborted(request_id):
+                return
+            else:
+                pass
             self.pending_done.discard(request_id)
             self.completed_non_streaming_request_ids.discard(request_id)
             self.ingest(request_id, state, codes)
