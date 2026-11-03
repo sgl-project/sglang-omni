@@ -645,9 +645,15 @@ backend plugins, the same server can be launched through the core executable:</p
 </div>
 <p>SGLang-Omni intentionally does not install another <code class="docutils literal notranslate"><span class="pre">sglang</span></code> executable. It
 registers an <code class="docutils literal notranslate"><span class="pre">omni</span></code> serve backend with SGLang core, while <code class="docutils literal notranslate"><span class="pre">sgl-omni</span> <span class="pre">serve</span></code>
-remains available as a backward-compatible alias. Automatic Omni model
-detection is not enabled yet; select the backend explicitly with
-<code class="docutils literal notranslate"><span class="pre">--model-type</span> <span class="pre">omni</span></code>.</p>
+remains available as a backward-compatible alias. Both commands accept the same
+arguments, including the positional model path, so these two launches are
+equivalent:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sglang<span class="w"> </span>serve<span class="w"> </span>&lt;model-name-or-path&gt;<span class="w"> </span>--model-type<span class="w"> </span>omni<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
+sgl-omni<span class="w"> </span>serve<span class="w"> </span>&lt;model-name-or-path&gt;<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>Automatic Omni model detection is not enabled yet; select the backend
+explicitly with <code class="docutils literal notranslate"><span class="pre">--model-type</span> <span class="pre">omni</span></code>.</p>
 </section>
 </section>
 <section id="check-that-it-works">
