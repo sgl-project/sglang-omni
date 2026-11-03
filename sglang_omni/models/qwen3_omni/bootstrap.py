@@ -177,7 +177,10 @@ def create_thinker_scheduler(
         session_adapter = None
     else:
         session_adapter = QwenThinkerSessionAdapter(
-            tokenizer, model_config.vocab_size, thinker_config
+            tokenizer,
+            model_config.vocab_size,
+            thinker_config,
+            is_speculative=model_worker.speculative_worker is not None,
         )
 
     scheduler = OmniScheduler(
