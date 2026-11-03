@@ -34,6 +34,12 @@ from tests.unit_test.fishaudio_drama3.mtp_fixtures import (
     SEMANTIC_START_TOKEN_ID,
 )
 
+BFLOAT16_MANTISSA_BITS = 7
+# cuBLAS picks the bfloat16 lm_head GEMM by row count, so an eager decode of 5 rows
+# and its replay padded to 8 can round one logit apart (measured: 1 ulp, once in
+# 739 unfused-main steps on H100); everything downstream stays bit for bit.
+ROW_COUNT_DEPENDENT_FIELDS = {"semantic logits"}
+
 
 @dataclass(frozen=True, kw_only=True)
 class EnginePair:
@@ -48,6 +54,30 @@ def same_bits(left: torch.Tensor, right: torch.Tensor) -> bool:
         and left.shape == right.shape
         and torch.equal(bits(left), bits(right))
     )
+
+
+def within_one_bfloat16_ulp(left: torch.Tensor, right: torch.Tensor) -> bool:
+    """Equal non-finite entries, finite ones at most one bfloat16 ulp apart."""
+    if left.dtype != right.dtype or left.shape != right.shape:
+        return False
+    else:
+        pass
+    is_finite = left.isfinite()
+    if not torch.equal(is_finite, right.isfinite()) or not same_bits(
+        left[~is_finite], right[~is_finite]
+    ):
+        return False
+    else:
+        pass
+    finite_left = left[is_finite].float()
+    finite_right = right[is_finite].float()
+    magnitude = torch.maximum(finite_left.abs(), finite_right.abs())
+    one_ulp = torch.where(
+        magnitude > 0,
+        torch.exp2(torch.floor(torch.log2(magnitude)) - BFLOAT16_MANTISSA_BITS),
+        0.0,
+    )
+    return bool(((finite_left - finite_right).abs() <= one_ulp).all())
 
 
 def forward_name(record: GraphForwardRecord) -> str:
@@ -157,7 +187,8 @@ def tensor_fields(step: GraphRequestStep) -> dict[str, torch.Tensor]:
 
 
 def bit_problems(pair: EnginePair) -> list[str]:
-    """Every value the graph engine recorded that differs from the eager engine's."""
+    """Every value the graph engine recorded that differs from the eager engine's;
+    the lm_head logits may differ by one bfloat16 ulp, every other value by none."""
     problems = []
     for eager_record, graph_record in zip(
         pair.eager.forwards, pair.graph.forwards, strict=True
@@ -180,9 +211,16 @@ def bit_problems(pair: EnginePair) -> list[str]:
                 for name in eager_tensors.keys() | graph_tensors.keys()
                 if name not in eager_tensors
                 or name not in graph_tensors
-                or not same_bits(eager_tensors[name], graph_tensors[name])
+                or not tensors_match(name, eager_tensors[name], graph_tensors[name])
             )
     return problems
+
+
+def tensors_match(name: str, eager: torch.Tensor, graph: torch.Tensor) -> bool:
+    if name in ROW_COUNT_DEPENDENT_FIELDS:
+        return within_one_bfloat16_ulp(eager, graph)
+    else:
+        return same_bits(eager, graph)
 
 
 def finite_problems(run: GraphEngineRun) -> list[str]:
