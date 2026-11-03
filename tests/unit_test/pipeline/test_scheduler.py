@@ -2208,6 +2208,12 @@ def test_abort_during_speculative_emission_lands_before_or_after_the_step(
     assert scheduler.outbox.empty()
 
 
+def assert_refusal_is_a_caller_error(refusal: str) -> None:
+    """Refusals cross the stage boundary as text, and chunked transcription wraps that text."""
+    assert is_bad_request_error(RuntimeError(refusal))
+    assert is_bad_request_error(RuntimeError(f"chunk 0 failed: {refusal}"))
+
+
 def test_speculative_reserve_rejection_names_the_reserve(monkeypatch) -> None:
     scheduler = object.__new__(OmniScheduler)
     scheduler.draft_worker = SimpleNamespace()
@@ -2226,6 +2232,7 @@ def test_speculative_reserve_rejection_names_the_reserve(monkeypatch) -> None:
     message = scheduler.request_kv_capacity_error(request(40))
     assert "16-token speculative decoding reserve" in message
     assert "Lower max_tokens" in message
+    assert_refusal_is_a_caller_error(message)
 
 
 @pytest.mark.parametrize(
@@ -2245,6 +2252,9 @@ def test_speculative_reserve_rejection_names_the_reserve(monkeypatch) -> None:
         ({"presence_penalty": 0.5}, False, False, False, "presence_penalty"),
         ({"repetition_penalty": 1.2}, False, False, False, "repetition_penalty"),
         ({"repetition_penalty": 1.2}, False, False, True, None),
+        ({"sampling_seed": 42}, False, False, False, "seed"),
+        ({"sampling_seed": 42, "top_k": 1}, False, False, False, None),
+        ({"repetition_penalty": 1.2, "max_new_tokens": 1}, False, False, False, None),
     ],
 )
 def test_speculative_admission_refuses_sampling_the_draft_cannot_reproduce(
@@ -2256,14 +2266,19 @@ def test_speculative_admission_refuses_sampling_the_draft_cannot_reproduce(
 ) -> None:
     scheduler = object.__new__(OmniScheduler)
     scheduler.draft_worker = SimpleNamespace()
+    scheduler.spec_algorithm = SpeculativeAlgorithm.DSPARK
     scheduler.model_runner = SimpleNamespace(
-        speculative_verifies_repetition_penalty=verifies_repetition_penalty
+        speculative_verifies_repetition_penalty=verifies_repetition_penalty,
+        speculative_ignores_request_seed=True,
     )
     sampling_params = {
         "min_p": 0.0,
         "frequency_penalty": 0.0,
         "presence_penalty": 0.0,
         "repetition_penalty": 1.0,
+        "sampling_seed": None,
+        "top_k": -1,
+        "max_new_tokens": 2,
     }
     sampling_params.update(sampling_overrides)
     request = SimpleNamespace(
@@ -2278,6 +2293,11 @@ def test_speculative_admission_refuses_sampling_the_draft_cannot_reproduce(
         assert error is None
     else:
         assert refused_option in error
+        assert_refusal_is_a_caller_error(error)
+    scheduler.model_runner.speculative_ignores_request_seed = False
+    assert (scheduler.speculative_request_error(request, request_data) is None) == (
+        refused_option in (None, "seed")
+    ), "only a runner whose verify ignores the seed refuses it"
     scheduler.draft_worker = None
     assert scheduler.speculative_request_error(request, request_data) is None
 

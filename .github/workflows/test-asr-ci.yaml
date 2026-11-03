@@ -27,8 +27,7 @@ env:
   MOSS_TRANSCRIBE_DIARIZE_MODEL_PATH: OpenMOSS-Team/MOSS-Transcribe-Diarize
 
 # Invoked by omni-ci.yaml after unit tests. Restores omni only.
-# DAG:
-#   stage-1-multi-speaker -> stage-2-seedtts
+# The stages share no data, so they run side by side.
 
 jobs:
   stage-1-multi-speaker:
@@ -89,8 +88,6 @@ jobs:
 
   stage-2-seedtts:
     name: stage 2 - SeedTTS ASR
-    needs: stage-1-multi-speaker
-    if: always() && !cancelled()
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:

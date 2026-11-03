@@ -8,6 +8,9 @@ from collections.abc import Mapping, Sequence
 from numbers import Integral
 from typing import TYPE_CHECKING
 
+from sglang.srt.arg_groups.cuda_graph_hook import (
+    generate_prefill_cuda_graph_batch_sizes,
+)
 from sglang.srt.arg_groups.model_override_base import (
     attention_backends_of,
     resolved_view,
@@ -73,28 +76,56 @@ def build_default_cuda_graph_bs(max_bs: int) -> list[int]:
     return values
 
 
-def build_default_prefill_cuda_graph_bs(max_num_tokens: int) -> list[int]:
-    """Prefill token-count ladder for a declared token budget: fine-grained
-    at the bottom so short extends pad minimally, coarsening upward. The cap
-    is appended when off-grid so max(bs) matches the budget."""
+def build_default_prefill_cuda_graph_bs(
+    max_num_tokens: int,
+    *,
+    extra_token_buckets: Sequence[int] = (),
+) -> list[int]:
+    """Build the default capped prefill token ladder with optional model-specific buckets."""
     max_num_tokens = int(max_num_tokens)
     if max_num_tokens < 1:
         raise ValueError("max_num_tokens must be >= 1")
     else:
         pass
 
-    values = list(range(4, 33, 4))
-    values.extend(range(48, 257, 16))
-    values.extend(range(288, 513, 32))
-    values.extend(range(576, 1025, 64))
-    values.extend(range(1280, 4097, 256))
-    values.extend(range(4608, max_num_tokens + 1, 512))
-    values = [size for size in values if size <= max_num_tokens]
-    if not values or values[-1] != max_num_tokens:
-        values.append(max_num_tokens)
+    token_buckets = {
+        max_num_tokens,
+        *generate_prefill_cuda_graph_batch_sizes(max_num_tokens),
+        *extra_token_buckets,
+    }
+    return sorted(
+        token_count
+        for token_count in token_buckets
+        if 1 <= token_count <= max_num_tokens
+    )
+
+
+def resize_prefill_cuda_graph_token_buckets(
+    token_buckets: Sequence[int], *, max_num_tokens: int
+) -> list[int]:
+    """Resize a stage ladder, preserving its buckets and extending only above its original top."""
+    max_num_tokens = normalize_positive_int("max_num_tokens", max_num_tokens)
+    resized_token_buckets = [
+        int(token_count)
+        for token_count in token_buckets
+        if int(token_count) <= max_num_tokens
+    ]
+    current_max_tokens = max(
+        (int(token_count) for token_count in token_buckets), default=0
+    )
+    if max_num_tokens > current_max_tokens:
+        resized_token_buckets.extend(
+            token_count
+            for token_count in build_default_prefill_cuda_graph_bs(max_num_tokens)
+            if token_count > current_max_tokens
+        )
     else:
         pass
-    return values
+    if not resized_token_buckets or resized_token_buckets[-1] != max_num_tokens:
+        resized_token_buckets.append(max_num_tokens)
+    else:
+        pass
+    return resized_token_buckets
 
 
 def explicit_prefill_cap(overrides: Mapping[str, object]) -> int | None:
@@ -185,6 +216,7 @@ def build_generation_batch_overrides(
     cuda_graph_max_bs: int | None = None,
     torch_compile_max_bs: int | None = None,
     server_args_overrides: Mapping[str, object] | None = None,
+    prefill_extra_token_buckets: Sequence[int] = (),
     **stage_defaults: Unpack[GenerationStageDefaults],
 ) -> dict[str, object]:
     incoming = dict(server_args_overrides or {})
@@ -264,7 +296,9 @@ def build_generation_batch_overrides(
         # an unset chunk is only known inside ServerArgs.
         cap = explicit_prefill_cap(overrides)
         if cap is not None:
-            prefill_bs = build_default_prefill_cuda_graph_bs(cap)
+            prefill_bs = build_default_prefill_cuda_graph_bs(
+                cap, extra_token_buckets=prefill_extra_token_buckets
+            )
             prefill_max_bs = cap
             overrides["cuda_graph_bs_prefill"] = prefill_bs
             overrides["cuda_graph_max_bs_prefill"] = cap
@@ -287,29 +321,18 @@ def build_generation_batch_overrides(
             )
         else:
             pass
-        trimmed = [int(b) for b in prefill_bs if int(b) <= cap]
-        if not trimmed or trimmed[-1] != cap:
-            trimmed.append(cap)
-        else:
-            pass
-        overrides["cuda_graph_bs_prefill"] = trimmed
+        overrides["cuda_graph_bs_prefill"] = resize_prefill_cuda_graph_token_buckets(
+            prefill_bs, max_num_tokens=cap
+        )
     elif (
         prefill_bs
         and int(prefill_max_bs) > max(int(b) for b in prefill_bs)
         and "cuda_graph_bs_prefill" not in incoming
     ):
-        # note (luojiaxuan): a stage-supplied ladder has to grow with a raised
-        # operator cap, otherwise the builder default silently bounds the cap to
-        # its own top and the request is lost. Append above the current top
-        # rather than rebuilding: a stage ladder carries buckets the shared one
-        # does not, such as the Qwen3-TTS 1-token bucket and MOSS-TD's small
-        # ones, and rebuilding would drop them. A ladder the operator declared
-        # themselves is left alone, since they own both values.
-        cap = int(prefill_max_bs)
-        current_top = max(int(b) for b in prefill_bs)
-        overrides["cuda_graph_bs_prefill"] = [int(b) for b in prefill_bs] + [
-            b for b in build_default_prefill_cuda_graph_bs(cap) if b > current_top
-        ]
+        # note (luojiaxuan): raising a stage cap must preserve model-specific buckets; an operator owns its explicit ladder.
+        overrides["cuda_graph_bs_prefill"] = resize_prefill_cuda_graph_token_buckets(
+            prefill_bs, max_num_tokens=int(prefill_max_bs)
+        )
     else:
         pass
 

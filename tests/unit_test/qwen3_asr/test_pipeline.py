@@ -682,7 +682,7 @@ def test_qwen3_asr_stage_import_without_dflash() -> None:
             sys.executable,
             "-c",
             "import sys; "
-            "sys.modules['sglang_omni.models.qwen3_asr.dflash'] = None; "
+            "sys.modules['sglang_omni.speculative.dflash_draft'] = None; "
             "from sglang_omni.models.qwen3_asr.stages import "
             "create_sglang_qwen3_asr_executor",
         ],
@@ -692,12 +692,13 @@ def test_qwen3_asr_stage_import_without_dflash() -> None:
     )
 
 
+@pytest.mark.parametrize("non_causal", [False, True])
 def test_qwen3_asr_dflash_build_uses_sync_runtime_and_cleans_resources(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, non_causal: bool
 ) -> None:
     """DFlash must release its temporary checkpoint after both successful and failed builds."""
     # note (WilsonZheng0327): Only DFlash tests require the Triton-dependent worker.
-    from sglang_omni.models.qwen3_asr.dflash import Qwen3ASRDFlashWorker
+    from sglang_omni.speculative.dflash_draft import ReducedVocabularyDFlashWorker
 
     recorded = patch_engine_dependencies(monkeypatch, want_cuda_graph=True)
     monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: True)
@@ -705,7 +706,7 @@ def test_qwen3_asr_dflash_build_uses_sync_runtime_and_cleans_resources(
     source_config = {
         "speculators_model_type": "dflash",
         "sample_from_anchor": False,
-        "sliding_window_non_causal": False,
+        "sliding_window_non_causal": non_causal,
         "dtype": "bfloat16",
         "draft_vocab_size": 32000,
         "aux_hidden_state_layer_ids": [2, 14, 25],
@@ -732,6 +733,8 @@ def test_qwen3_asr_dflash_build_uses_sync_runtime_and_cleans_resources(
             "block_size": 8,
             "sample_from_anchor": False,
         }
+        assert config["architectures"] == ["ReducedVocabularyDFlashDraftModel"]
+        assert config.get("is_causal", True) is not non_causal
         assert config["draft_vocab_size"] == 32000
         assert (
             draft_path / "model.safetensors"
@@ -754,7 +757,10 @@ def test_qwen3_asr_dflash_build_uses_sync_runtime_and_cleans_resources(
     draft_path = Path(recorded.build_kwargs["speculative_draft_model_path"])
     assert not draft_path.exists()
     assert recorded.infra_kwargs[-1]["supports_speculative_decoding"] is True
-    assert recorded.infra_kwargs[-1]["speculative_worker_class"] is Qwen3ASRDFlashWorker
+    assert (
+        recorded.infra_kwargs[-1]["speculative_worker_class"]
+        is ReducedVocabularyDFlashWorker
+    )
     assert scheduler.enable_async_decode is False
     assert scheduler.async_prefill is False
     assert recorded.adapter_kwargs["greedy_only"] is True
@@ -963,6 +969,41 @@ def test_qwen3_asr_glue_graph_stage_override_is_preserved() -> None:
     assert (
         config.resolved_stage_env_defaults("asr")["SGLANG_ENABLE_METADATA_GLUE_GRAPH"]
         == "0"
+    )
+
+
+@pytest.mark.parametrize(
+    "is_xpu, device, expected_enabled",
+    [(True, "xpu", False), (False, "cuda", True)],
+    ids=["xpu_turns_it_off", "other_non_cuda_platform_keeps_it"],
+)
+def test_qwen3_asr_metadata_graph_is_off_only_on_xpu(
+    monkeypatch: pytest.MonkeyPatch, is_xpu: bool, device: str, expected_enabled: bool
+) -> None:
+    """The stage default enables the glue graph everywhere and it records through
+    torch.cuda. On XPU that raises at the first replay, so XPU has to end up with it
+    off; ROCm reaches torch.cuda through HIP and keeps the path it already had."""
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: False)
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_xpu", lambda: is_xpu)
+    monkeypatch.setenv("SGLANG_ENABLE_METADATA_GLUE_GRAPH", "1")
+    monkeypatch.setattr(
+        qwen3_asr_builder.metadata_glue,
+        "apply_thread_local_glue_capture",
+        lambda: pytest.fail("the CUDA-only glue capture must not be installed"),
+    )
+    builder = make_engine_builder()
+
+    builder.setup_model(
+        model_worker=SimpleNamespace(model_runner=SimpleNamespace()),
+        checkpoint_dir="dummy",
+        device=device,
+        gpu_id=0,
+        server_args=None,
+    )
+
+    assert (
+        qwen3_asr_builder.envs.SGLANG_ENABLE_METADATA_GLUE_GRAPH.get()
+        is expected_enabled
     )
 
 

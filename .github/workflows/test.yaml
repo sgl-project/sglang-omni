@@ -15,8 +15,8 @@ env:
         && inputs.omni_ci_home
         || format('/data/omni-ci/run-{0}', github.run_id) }}
 
-# Invoked by omni-ci.yaml after shared setup (first suite in the omni-ci
-# sequence: PR Test -> ASR -> TTS -> MPS -> Omni). Any stage label runs it.
+# Invoked by omni-ci.yaml after shared setup. The model suites start once it
+# finishes (see the DAG note in omni-ci.yaml). Any stage label runs it.
 # run-lint-only does not.
 # Restores omni only.
 

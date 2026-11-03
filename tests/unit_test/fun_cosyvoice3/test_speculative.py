@@ -8,6 +8,7 @@ import os
 from array import array
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Protocol
 
 import pytest
 import torch
@@ -20,16 +21,25 @@ from sglang_omni.models.fun_cosyvoice3.dspark_draft import (
     DRAFT_TOKENS_PER_STEP,
     MASK_TOKEN_ID,
     UNIFIED_MASK_TOKEN_ID,
+    VERIFY_TOKENS_PER_STEP,
+    MirroredMarkovHead,
     materialize_draft_checkpoint,
 )
 from sglang_omni.models.fun_cosyvoice3.dspark_sampling import (
+    ACCEPTANCE_NOISE_SEED_SALT,
+    DRAFT_NOISE_SEED_SALT,
     EMPTY_HISTORY_TOKEN,
+    LARGEST_FLOAT32_BELOW_ONE,
+    RESIDUAL_NOISE_SEED_SALT,
     exact_accept,
     rejection_sample,
     sample_draft_block,
+    seeded_exponential_noise,
+    seeded_uniform_noise,
     target_probabilities,
 )
 from sglang_omni.models.fun_cosyvoice3.dspark_worker import (
+    ExactVerifyExecutor,
     FunCosyVoice3DSparkWorker,
     RequestHistories,
     build_step_sampling_state,
@@ -44,6 +54,10 @@ from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
 )
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+REQUIRES_CUDA = pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="the seeded noise hashes with a CUDA kernel"
+)
 
 
 def stage_distribution(
@@ -184,9 +198,74 @@ def test_target_probabilities_redraw_a_repeated_token_that_holds_all_the_mass(
     assert float(probabilities[0, 42]) == 0.0
 
 
-def test_rejection_sampling_reproduces_the_target_distribution() -> None:
+class StepNoise(Protocol):
+    def __call__(
+        self, draft_probabilities: torch.Tensor, samples: int
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]: ...
+
+
+def global_rng_step_noise(
+    draft_probabilities: torch.Tensor, samples: int
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    draft_count, vocab_size = draft_probabilities.shape
+    draft_tokens = torch.stack(
+        [
+            torch.multinomial(draft_probabilities[step], samples, replacement=True)
+            for step in range(draft_count)
+        ],
+        dim=1,
+    )
+    return (
+        draft_tokens,
+        torch.rand(samples, draft_count),
+        torch.empty(samples, vocab_size).exponential_(),
+    )
+
+
+def seeded_step_noise(
+    draft_probabilities: torch.Tensor, samples: int
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """One step per sample, each with its own seed and output length, as served."""
+    draft_count, vocab_size = draft_probabilities.shape
+    device = torch.device("cuda")
+    seeds = torch.arange(samples, device=device)
+    output_lengths = torch.randint(1, 2000, (samples,), device=device)
+    draft_noise = seeded_exponential_noise(
+        seeds,
+        output_lengths,
+        salt=DRAFT_NOISE_SEED_SALT,
+        column_count=draft_count * vocab_size,
+    ).view(samples, draft_count, vocab_size)
+    # The exponential race sample_draft_block runs on the draft logits.
+    draft_tokens = torch.argmax(draft_probabilities.to(device) / draft_noise, dim=2)
+    uniform_noise = (
+        seeded_uniform_noise(
+            seeds,
+            output_lengths,
+            salt=ACCEPTANCE_NOISE_SEED_SALT,
+            column_count=draft_count,
+        )
+        .float()
+        .clamp_(max=LARGEST_FLOAT32_BELOW_ONE)
+    )
+    exponential_noise = seeded_exponential_noise(
+        seeds, output_lengths, salt=RESIDUAL_NOISE_SEED_SALT, column_count=vocab_size
+    )
+    return draft_tokens.cpu(), uniform_noise.cpu(), exponential_noise.cpu()
+
+
+@pytest.mark.parametrize(
+    "step_noise",
+    [
+        global_rng_step_noise,
+        pytest.param(seeded_step_noise, marks=[pytest.mark.accelerator, REQUIRES_CUDA]),
+    ],
+)
+def test_rejection_sampling_reproduces_the_target_distribution(
+    step_noise: StepNoise,
+) -> None:
     torch.manual_seed(0)
-    samples, draft_count, vocab_size = 400_000, 2, 5
+    samples, vocab_size = 400_000, 5
     target_rows = torch.tensor(
         [
             [0.1, 0.4, 0.3, 0.2, 0.0],
@@ -198,12 +277,8 @@ def test_rejection_sampling_reproduces_the_target_distribution() -> None:
         torch.tensor([[0.5, 0.1, 0.1, 0.2, 0.1], [0.1, 0.6, 0.1, 0.1, 0.1]])
     )
     draft_probabilities = torch.softmax(draft_logits_rows, dim=-1)
-    draft_tokens = torch.stack(
-        [
-            torch.multinomial(draft_probabilities[step], samples, replacement=True)
-            for step in range(draft_count)
-        ],
-        dim=1,
+    draft_tokens, uniform_noise, exponential_noise = step_noise(
+        draft_probabilities, samples
     )
     accepted_count, next_tokens = rejection_sample(
         target=target_rows.expand(samples, -1, -1),
@@ -211,8 +286,8 @@ def test_rejection_sampling_reproduces_the_target_distribution() -> None:
         draft_tokens=draft_tokens,
         temperatures=torch.ones(samples),
         greedy=torch.zeros(samples, dtype=torch.bool),
-        uniform_noise=torch.rand(samples, draft_count),
-        exponential_noise=torch.empty(samples, vocab_size).exponential_(),
+        uniform_noise=uniform_noise,
+        exponential_noise=exponential_noise,
     )
     first_tokens = torch.where(accepted_count > 0, draft_tokens[:, 0], next_tokens)
     first_distribution = torch.bincount(first_tokens, minlength=vocab_size) / samples
@@ -341,6 +416,124 @@ def test_greedy_rows_accept_only_the_target_argmax() -> None:
     assert next_tokens.tolist() == [2, 1]
 
 
+def seeded_step_request(
+    request_id: str, seed: int | None, output_ids: list[int], slot: int
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        rid=request_id,
+        kv=SimpleNamespace(req_pool_idx=slot),
+        output_ids=array("q", output_ids),
+        sampling_params=SimpleNamespace(
+            repetition_penalty=1.0, min_new_tokens=0, sampling_seed=seed
+        ),
+    )
+
+
+def run_speculative_step(
+    requests: list[SimpleNamespace],
+    markov_head: MirroredMarkovHead,
+    base_logits: torch.Tensor,
+    target_logits: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Draft and verify one block per request, returning drafts, accepts and bonus."""
+    device = base_logits.device
+    request_count = len(requests)
+    batch = SimpleNamespace(
+        reqs=requests,
+        req_pool_indices=torch.tensor(
+            [request.kv.req_pool_idx for request in requests], device=device
+        ),
+    )
+    sampling_info = SimpleNamespace(
+        temperatures=torch.full((request_count, 1), 0.8, device=device),
+        top_ks=torch.full(
+            (request_count,), TOTAL_VOCAB_SIZE, dtype=torch.int32, device=device
+        ),
+        top_ps=torch.ones(request_count, device=device),
+        need_top_p_sampling=False,
+        need_top_k_sampling=False,
+    )
+    state = build_step_sampling_state(
+        batch, sampling_info, RequestHistories(slot_count=4, device=device)
+    )
+    markov_head.sampling_state = state.draft
+    draft_tokens, shaped_logits = markov_head.draw_block(
+        base_logits,
+        torch.tensor([request.output_ids[-1] for request in requests], device=device),
+    )
+    executor = object.__new__(ExactVerifyExecutor)
+    executor.step_state = state
+    executor.gamma = DRAFT_TOKENS_PER_STEP
+    executor.verify_num_draft_tokens = VERIFY_TOKENS_PER_STEP
+    accept = executor.accept_and_finalize(
+        folded_accept=False,
+        bs=request_count,
+        verify_ids_2d=None,
+        target_logits=target_logits,
+        draft_block=SimpleNamespace(corrected_logits=shaped_logits),
+        sampling_info=sampling_info,
+        draft_input=None,
+        layout=None,
+        prefix_lens=torch.full((request_count,), 32, device=device),
+        draft_tokens=draft_tokens,
+    )
+    return draft_tokens, accept.correct_len, accept.bonus
+
+
+@pytest.mark.accelerator
+@REQUIRES_CUDA
+def test_a_seeded_request_steps_the_same_beside_any_other_request() -> None:
+    """Every speculative draw used the global RNG, so a seed fixed only the first token."""
+    torch.manual_seed(0)
+    device = torch.device("cuda")
+    markov_head = MirroredMarkovHead(vocab_size=TOTAL_VOCAB_SIZE, markov_rank=4).to(
+        device
+    )
+    rows = DRAFT_TOKENS_PER_STEP + 1
+    # Near-flat draft and target overlap mostly, so the noise decides the drafts,
+    # how many are accepted and the residual draw.
+    seeded_base_logits = torch.randn(DRAFT_TOKENS_PER_STEP, TOTAL_VOCAB_SIZE) * 0.1
+    seeded_target_logits = torch.randn(rows, TOTAL_VOCAB_SIZE) * 0.1
+
+    def seeded_step(
+        neighbor: SimpleNamespace, seeded_output_ids: list[int], seeded_first: bool
+    ) -> tuple[int, ...]:
+        seeded = seeded_step_request("seeded", 1234, seeded_output_ids, slot=0)
+        requests = [seeded, neighbor] if seeded_first else [neighbor, seeded]
+        row = 0 if seeded_first else 1
+        base_logits = torch.randn(2, DRAFT_TOKENS_PER_STEP, TOTAL_VOCAB_SIZE)
+        base_logits[row] = seeded_base_logits
+        target_logits = torch.randn(2, rows, TOTAL_VOCAB_SIZE)
+        target_logits[row] = seeded_target_logits
+        draft_tokens, accepted_count, next_tokens = run_speculative_step(
+            requests,
+            markov_head,
+            base_logits.to(device),
+            target_logits.view(-1, TOTAL_VOCAB_SIZE).to(device),
+        )
+        return (
+            *draft_tokens[row].tolist(),
+            int(accepted_count[row]),
+            int(next_tokens[row]),
+        )
+
+    beside_unseeded = seeded_step(
+        seeded_step_request("unseeded", None, [3, 4], slot=1), [5, 6, 7], True
+    )
+    beside_seeded = seeded_step(
+        seeded_step_request("other", 99, [8], slot=1), [5, 6, 7], False
+    )
+    # Same anchor and logits one committed token later: only the noise can differ.
+    one_token_later = seeded_step(
+        seeded_step_request("other", 99, [8], slot=1), [5, 6, 9, 7], False
+    )
+
+    assert beside_unseeded == beside_seeded
+    assert (
+        one_token_later[:DRAFT_TOKENS_PER_STEP] != beside_seeded[:DRAFT_TOKENS_PER_STEP]
+    )
+
+
 def test_request_histories_track_each_slot_through_reuse() -> None:
     histories = RequestHistories(slot_count=4, device=torch.device("cpu"))
 
@@ -381,7 +574,9 @@ def test_target_keeps_every_token_when_no_request_filters() -> None:
         rid="a",
         kv=SimpleNamespace(req_pool_idx=0),
         output_ids=array("q", [7]),
-        sampling_params=SimpleNamespace(repetition_penalty=1.0, min_new_tokens=0),
+        sampling_params=SimpleNamespace(
+            repetition_penalty=1.0, min_new_tokens=0, sampling_seed=None
+        ),
     )
     batch = SimpleNamespace(reqs=[request], req_pool_indices=torch.tensor([0]))
     sampling_info = SimpleNamespace(
@@ -586,6 +781,7 @@ def test_drafting_routes_only_a_mirrored_head_through_its_own_block_draw(
         min_new_tokens=None,
         temperatures=None,
         greedy=None,
+        seeds=None,
     )
     mirrored_head.block_sampler = lambda *args: (drafted_tokens, shaped_logits)
     other_head = SimpleNamespace()
