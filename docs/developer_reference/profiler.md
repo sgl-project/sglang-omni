@@ -1,7 +1,6 @@
 # Request-level profiler
 
-`sglang-omni` ships two complementary profilers that share the same `run_id`
-and are controlled by the same HTTP surface:
+`sglang-omni` ships two complementary profilers that share the same `run_id` and are controlled by the same HTTP surface:
 
 - a **request-level event recorder** that writes a JSONL stream of
   per-request milestones (admission, preprocess, encoder, prefill, first
@@ -20,8 +19,7 @@ deeper kernel investigation.
 
 ## Event model
 
-Every instrumentation point appends a single line of JSON to a per-process
-JSONL file. The shape:
+Every instrumentation point records one logical event. After the run is deactivated, each retained event is serialized as one line of JSON in a per-process JSONL file. The shape is:
 
 ```jsonc
 {
@@ -35,11 +33,26 @@ JSONL file. The shape:
 }
 ```
 
-Files are written under `<event_dir>/events_<stage>_<pid>.jsonl`. Multiple
-co-located stages in the same OS process share **one** JSONL file — the
-filename uses the first stage to start, and the per-event `stage` field
-identifies the owner. The views layer merges files from every process by
-`request_id`.
+Files are written under `<event_dir>/events_<stage>_<pid>.jsonl`. Multiple co-located stages in the same OS process share **one** JSONL file — the filename uses the first stage to start, and the per-event `stage` field identifies the owner. The views layer merges files from every process by `request_id`. The writer creates each JSONL file exclusively; an existing file is a storage failure rather than an append target.
+
+The recorder uses one bounded producer-private buffer per OS thread and one low-priority writer thread per process, created only after the run stops. Each producer can retain 1024 events by default. `event_buffer_capacity` overrides that per-producer limit for one recording; any positive integer is accepted, with no hard-coded maximum. The number of producer buffers remains separately bounded at 16 per process. An omitted value uses the recorder's constructor default on each new run, and capacity cannot change during an active run. Buffers grow dynamically as events are retained; event objects are not preallocated.
+
+To estimate memory, multiply the per-recording event capacity by each process's producer-buffer count and sum the results:
+
+```text
+retained_events <= sum(process producer_buffer_count * event_buffer_capacity)
+approximate_memory = retained_events * estimated_bytes_per_event
+```
+
+Bytes per event depends on the workload and Python object contents; measure it when accurate memory budgeting matters. A larger capacity can increase post-stop serialization and flush time. Overflow still drops events and marks the trace incomplete. Linux `SCHED_IDLE` is best effort and cannot guarantee zero Python GIL or CPU interference.
+
+Each OS thread registers its buffer once under a small control lock. Cached producers then capture timestamps, stage attribution, and bounded metadata without acquiring that lock. Buffer admission is the stop cutoff: the post-stop writer waits for admitted operations, while a capture that has not reserved a buffer before stop is ignored and does not consume its snapshots. `RequestEventBuffer` uses the same producer buffer: deferred records count against the same event limit and are snapshotted once. During capture, producers do not start a writer, open files, serialize JSON, flush, or enqueue into a shared queue. JSON serialization, file operations, and flushes run only after deactivation.
+
+Events do not exist on disk until the run has stopped. Consumers must treat a missing sidecar, or a sidecar with `complete: false`, as incomplete.
+
+Each finalized run also attempts to write `run_status_<pid>.json` beside the JSONL file. When publication succeeds, it records `run_id`, `pid`, `stages`, the effective `event_buffer_capacity`, `producer_buffer_count`, and `producer_buffer_event_counts` (accepted plus dropped records per registered buffer), followed by event counters, metadata snapshot and truncation counts, serialization/write/finalization failures, `incomplete_reasons`, and `complete`; that flag has `completeness_scope` set to `event_storage` and does not claim semantic timing or cross-process coverage. The sidecar also records whether the writer obtained `SCHED_IDLE` or used the default scheduling policy. `RequestEventFinalization.wait()` reports whether the status sidecar was published; inspect `complete` separately to determine whether the trace is complete. Producer-buffer overflow, writer failure, metadata snapshot failure, metadata truncation, and a missing or failed drain mark the run incomplete. Consumers must not treat a missing sidecar, or a sidecar with `complete: false`, as a complete trace.
+
+Metadata is intentionally limited to scalars, JSON-like mappings/sequences, and tensor-like values represented by shape/dtype/device summaries. Tensor contents are never materialized by the producer. Unsupported values are rejected without calling arbitrary `repr`; the serving path records a metadata snapshot failure and continues. Strings are bounded, and bytes are unsupported rather than copied into the trace. Bounded depth/item truncation is recorded in the event metadata and in the status sidecar rather than reported as complete.
 
 ### Standard event names
 
@@ -94,6 +107,16 @@ add domain-specific events. Events from inactive recorders are no-ops, so
 instrumentation sites do not need to guard against the disabled case.
 
 ## Full Duplex session Unit metrics
+
+Pass `event_buffer_capacity` to `POST /start_request_profile`, or to `POST /start_profile` when request-event recording is enabled. For example:
+
+```bash
+curl -X POST http://127.0.0.1:8000/start_request_profile \
+  -H 'Content-Type: application/json' \
+  -d '{"run_id":"performance_test","event_dir":"/tmp/performance_test/events","event_buffer_capacity":1500}'
+```
+
+The value applies per producer for that run and can be changed on the next profiling run without restarting the server.
 
 Enable the existing request event recorder with `POST /start_request_profile`
 and stop it with `POST /stop_request_profile`. The JSONL files then include a
@@ -197,6 +220,13 @@ clears both the thread-local slot and the contextvar.
 
 ## Lifecycle
 
+**Intended use and assumptions:** Request event profiling is an opt-in tool for
+controlled performance investigations, not an always-on logging or recovery
+service. Use a **unique `run_id` and a fresh, empty `event_dir` for each
+recording**. Only one run can be active or draining in a process. A new run is
+rejected until the prior post-stop writer has finished; this prevents a new
+measured window from sharing a writer with the old one.
+
 The recorder is process-local. It is started on every stage and on the
 coordinator when `POST /start_profile` (or `POST /start_request_profile`)
 is hit:
@@ -209,8 +239,19 @@ is hit:
    the first stage to call `start()` wins the filename; every subsequent
    stage in the same process writes to the same file and the per-event
    `stage` field disambiguates.
-5. On `POST /stop_profile`, the recorder is closed everywhere; files
-   remain on disk under `<event_dir>`.
+5. On `POST /stop_profile`, every process deactivates its current run without
+   joining the writer on its serving/control loop. Accepted events still drain
+   and the writer creates the status sidecar during finalization. The HTTP
+   response is not an acknowledgement that every process has finalized its
+   artifact; inspect every expected process sidecar before analysis.
+
+The Python API is nonblocking by default: `RequestEventRecorder.stop()` is
+equivalent to `stop(wait=False)`. It deactivates promptly and returns the event
+path; it does not wait for disk finalization. Administrative code may use
+`stop(wait=True)`, the returned `RequestEventFinalization` handle, or
+`wait_for_finalizations(timeout_seconds=...)`. Serving control paths use
+`stop(wait=False)` or `deactivate()`. A stalled or failed writer cannot block
+serving, but the resulting status must be treated as incomplete.
 
 `POST /stop_profile` and `POST /stop_request_profile` accept an optional
 `run_id` field. When **omitted**, the request is a wildcard: every stage
@@ -230,7 +271,10 @@ Use the views module directly:
 from sglang_omni.profiler.views import build_report
 report = build_report("/tmp/profiles/demo-run/events")
 print(report["request_count"], len(report["stage_breakdown"]))
+print(report["completeness"]["state"])
 ```
+
+`build_report` validates the process-local `run_status_<pid>.json` sidecars against the supplied event filenames. It reports `complete`, `incomplete`, or `unknown`; missing or malformed sidecars are always `unknown` with `complete: false`. This checks only the files supplied to the report. A directory containing one TP rank's files can establish local event-storage completeness for that rank, but cannot establish that every expected TP rank or process is present. Global completeness requires an expected-process inventory, which this report does not provide.
 
 …or via the CLI:
 
@@ -287,7 +331,7 @@ multi-GB trace — only opt in when you need that specific information.
 |---|---|---|---|
 | POST | `/start_profile` | `{"run_id": ?, "trace_path_template": ?, "event_dir": ?, "enable_torch": true \| false, "config": ?}` | Starts torch trace + event recorder. `run_id` auto-generated if omitted. |
 | POST | `/stop_profile` | `{"run_id": ?}` | Stops torch trace + event recorder. Omitting `run_id` is a wildcard ("stop whatever's active"). |
-| POST | `/start_request_profile` | `{"run_id": ?, "event_dir": ?}` | Event recorder only — no torch trace. Lower overhead; safer to leave on. |
+| POST | `/start_request_profile` | `{"run_id": ?, "event_dir": ?}` | Event recorder only — no torch trace. Lower overhead; still intended for short, opt-in captures. |
 | POST | `/stop_request_profile` | `{"run_id": ?}` | Same wildcard semantics as `/stop_profile`. |
 
 Example: record cheap events on every request without a kernel trace:
@@ -302,15 +346,24 @@ python -m sglang_omni.profiler /tmp/profiles/demo/events --format table
 
 ## Discipline
 
-- **Profiling must never break serving.** The emitter swallows write
-  errors and counts drops; the first failure is logged once.
+- **Profiling must never break serving.** While active, the emitter performs
+  no JSON serialization or file I/O, takes no recorder-wide lock after its
+  one-time producer registration, and never waits for capacity or a writer.
+  Producer-buffer overflow and bounded registration failures are counted as
+  drops; writer failures are recorded in the run status.
+- **Finalization is deferred.** The writer starts only after the last local
+  stage releases the run or an administrative stop deactivates it. It waits
+  for in-flight producers to quiesce before freezing buffers, then flushes and
+  closes the JSONL file before publishing the status sidecar. A new run is
+  rejected while this drain is in progress.
 - **Tensors and large blobs stay out of event metadata.** Keep metadata
   to small scalars (ids, counts, durations, modality, error strings). The
   recorder enforces this defensively: if a tensor / numpy array ends up
-  in metadata, `_json_default` serializes a summary
-  (`{"__tensor_summary__": true, "type": ..., "shape": [...], "dtype":
-  "...", "device": "..."}`) instead of materializing the contents. 0-D
-  tensors / numpy scalars still serialize as plain scalars.
+  in metadata, the JSON default serializer emits a summary
+    (`{"__tensor_summary__": true, "type": ..., "shape": [...], "dtype":
+    "...", "device": "..."}`) instead of materializing the contents. CPU
+    0-D tensors / numpy scalars still serialize as plain scalars; device-backed
+    0-D values remain summaries.
 - **Event naming.** Lowercase snake_case, prefix with the layer that
   owns the event (`stage_*`, `scheduler_*`, `encoder_*`, etc.). Use the
   stage name (not the event name) to distinguish "thinker prefill start"

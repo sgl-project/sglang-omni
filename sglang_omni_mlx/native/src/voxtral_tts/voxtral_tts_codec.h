@@ -84,10 +84,4 @@ private:
   int emitted_frames_ = 0;
 };
 
-// Samples as 16-bit little-endian PCM, clipped to [-1, 1] and scaled by
-// 32767 as the CUDA server's encode_pcm does.
-std::string Pcm16Bytes(const std::vector<float> &samples);
-// A mono 16-bit WAV file around PCM bytes.
-std::string WavBytes(const std::string &pcm, int sample_rate);
-
 } // namespace voxtral_tts

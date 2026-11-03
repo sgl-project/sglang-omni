@@ -548,6 +548,64 @@ def test_stage_stop_warns_but_succeeds_on_a_stuck_scheduler_thread(
     asyncio.run(run())
 
 
+def test_spec_stage_stop_retains_communication_until_inflight_work_drains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A valid speculative drain used to hard-exit when the local join timeout elapsed."""
+
+    async def run() -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        joining = threading.Event()
+        drained = threading.Event()
+        join_timeouts: list[float | None] = []
+        scheduler = FakeScheduler()
+        scheduler.enable_overlap = True
+
+        def forward() -> None:
+            entered.set()
+            release.wait()
+            drained.set()
+
+        scheduler.start = forward
+        relay = FakeRelay()
+        stage = make_stage(scheduler=scheduler, relay=relay)
+        monkeypatch.setattr(stage_runtime_module, "_SCHEDULER_THREAD_JOIN_TIMEOUT_S", 0)
+        monkeypatch.setattr(
+            stage_runtime_module,
+            "terminate_gpu_worker",
+            Mock(side_effect=RuntimeError("unexpected hard exit")),
+            raising=False,
+        )
+        await stage.start()
+        assert await asyncio.to_thread(entered.wait, 2)
+        thread = stage.scheduler_thread
+        original_join = thread.join
+
+        def join(timeout: float | None = None) -> None:
+            join_timeouts.append(timeout)
+            joining.set()
+            original_join(timeout)
+
+        monkeypatch.setattr(thread, "join", join)
+        stopping = asyncio.create_task(stage.stop())
+        try:
+            assert await asyncio.to_thread(joining.wait, 2)
+            assert join_timeouts == [None]
+            assert not stopping.done()
+            assert not stage.control_plane.closed
+            assert not relay.closed
+            assert not drained.is_set()
+        finally:
+            release.set()
+            await asyncio.wait_for(stopping, 2)
+        assert drained.is_set()
+        assert not thread.is_alive()
+        assert stage.control_plane.closed and relay.closed
+
+    asyncio.run(run())
+
+
 def test_relay_payload_and_cross_gpu_stream_contracts() -> None:
     """Preserves tensor payload round-trips and stream control-before-wait ordering."""
 

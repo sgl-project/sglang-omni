@@ -37,6 +37,7 @@ public:
   mlx::core::array Decode(const mlx::core::array &embeddings,
                           std::vector<KVCache> &caches) const;
   std::vector<KVCache> NewCaches() const;
+  const Qwen3Decoder &decoder() const { return decoder_; }
 
 private:
   Qwen3ASR(const nlohmann::json &config,

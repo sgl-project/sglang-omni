@@ -401,6 +401,7 @@ class Stage:
         self.receive_tasks.clear()
         self.receive_lane_tails.clear()
         if self.scheduler is not None:
+            is_speculative_overlap = getattr(self.scheduler, "enable_overlap", False)
             try:
                 self.scheduler.stop()
             except Exception as exc:
@@ -409,23 +410,26 @@ class Stage:
             # model-path events from its own finally, and the MPS validation
             # stage reads those files right after stop() returns, so wait for
             # the thread instead of letting a daemon thread be reclaimed at
-            # process exit. A slow thread is logged, not fatal: shutdown
-            # correctness must not start depending on this timeout.
+            # process exit.
             scheduler_thread = self.scheduler_thread
             if scheduler_thread is not None:
                 try:
+                    # note (YzXiao): the parent process enforces the shutdown deadline while speculative work drains.
                     await asyncio.to_thread(
                         scheduler_thread.join,
-                        _SCHEDULER_THREAD_JOIN_TIMEOUT_S,
+                        (
+                            None
+                            if is_speculative_overlap
+                            else _SCHEDULER_THREAD_JOIN_TIMEOUT_S
+                        ),
                     )
                 except Exception as exc:
                     _record_cleanup_error("scheduler thread", exc)
                 else:
                     if scheduler_thread.is_alive():
                         logger.warning(
-                            "Stage %s scheduler thread did not stop within %gs",
-                            self.name,
-                            _SCHEDULER_THREAD_JOIN_TIMEOUT_S,
+                            f"Stage {self.name} scheduler thread did not stop within "
+                            f"{_SCHEDULER_THREAD_JOIN_TIMEOUT_S:g}s"
                         )
                     else:
                         self.scheduler_thread = None
@@ -449,6 +453,8 @@ class Stage:
             await self.comm.close()
         except Exception as exc:
             _record_cleanup_error("comm", exc)
+        recorder = _get_recorder()
+        recorder.release_stage(self.name)
         logger.info("Stage %s stopped", self.name)
         if cleanup_error is not None:
             raise RuntimeError(f"Stage {self.name} cleanup failed") from cleanup_error
@@ -2696,7 +2702,10 @@ class Stage:
         if msg.event_dir is not None:
             try:
                 _get_recorder().start(
-                    run_id=run_id, event_dir=msg.event_dir, stage=self.name
+                    run_id=run_id,
+                    event_dir=msg.event_dir,
+                    stage=self.name,
+                    event_buffer_capacity=msg.event_buffer_capacity,
                 )
             except Exception:
                 logger.warning(
@@ -2719,7 +2728,7 @@ class Stage:
         if recorder.is_active() and (
             msg.run_id is None or recorder.active_run_id() == msg.run_id
         ):
-            recorder.stop(run_id=msg.run_id)
+            recorder.release_stage(self.name)
         else:
             pass
 

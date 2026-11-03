@@ -1240,7 +1240,7 @@ def create_sglang_thinker_executor_from_config(
     encoder_mem_reserve: float = 0.05,
     speech_enabled: bool = False,
     total_gpu_memory_fraction: float | None = None,
-    enable_async_decode: bool = True,
+    enable_async_decode: bool | None = None,
     async_decode_min_batch_size: int = 1,
     prefill_coalesce_requests: int = 0,
     prefill_coalesce_wait_ms: float = 60.0,
@@ -1301,8 +1301,6 @@ def create_sglang_thinker_executor_from_config(
         else:
             pass
     else:
-        # note (wilsonzheng0327): the draft worker drives a synchronous loop that
-        # verifies whole blocks, so mixed prefill tails and the lookahead stay off.
         if not (speculative_algorithm.is_dflash() or speculative_algorithm.is_eagle3()):
             raise ValueError(
                 "Qwen3-Omni speculative thinker decoding supports DFLASH and EAGLE3, "
@@ -1330,8 +1328,8 @@ def create_sglang_thinker_executor_from_config(
             )
         else:
             pass
+        # note (wilsonzheng0327): the draft verifies whole blocks, so mixed prefill/decode batches stay disabled.
         overrides["enable_mixed_chunk"] = False
-        enable_async_decode = False
         # The draft has its own positional capacity; the target serves within it.
         draft_context_length = int(
             AutoConfig.from_pretrained(
@@ -1346,6 +1344,11 @@ def create_sglang_thinker_executor_from_config(
             )
         else:
             max_seq_len = max_seq_len or draft_context_length
+
+    if enable_async_decode is None:
+        enable_async_decode = speculative_algorithm.is_none()
+    else:
+        pass
 
     if not current_platform.enable_thinker_decode_graph():
         overrides.setdefault("disable_decode_cuda_graph", True)
