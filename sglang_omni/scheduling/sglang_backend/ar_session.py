@@ -781,6 +781,21 @@ class ARSessionBridge:
         if unit is not None:
             session = self.sessions[unit.session_identity.id]
             session.unit = None
+            request = unit.session_request
+            if self.draft_kv is not None and request is not None and request.output_ids:
+                record = self.bridge_scheduler.tree_cache.session_records().get(
+                    unit.session_identity.id
+                )
+                if record is not None:
+                    # note (ruiling): A verify can cache the final output token; plain decode recomputes it next turn, after any history cut, so both must retain the same prefix.
+                    record.kv_committed_len = min(
+                        record.kv_committed_len,
+                        len(request.origin_input_ids) + len(request.output_ids) - 1,
+                    )
+                else:
+                    pass
+            else:
+                pass
             session.embedding_spans.extend(unit.embedding_spans)
             if (
                 request_data is not None

@@ -78,7 +78,9 @@ class TextSessionAdapter(ARSessionAdapter):
 class SessionPools:
     """Drive the bridge's host lifecycle while allocating and freeing real token slots."""
 
-    def __init__(self, size: int = 64, reserve_tokens: int = 8) -> None:
+    def __init__(
+        self, size: int = 64, reserve_tokens: int = 8, speculative: bool = True
+    ) -> None:
         self.target = MHATokenToKVPool(
             size, 1, torch.float32, 1, HEAD_DIM, 2, "cpu", False
         )
@@ -113,7 +115,11 @@ class SessionPools:
             self,
             self.adapter,
             speculative_reserve_tokens=reserve_tokens,
-            draft_kv=DraftSessionKV(self.draft, rotary_table(1000.0)),
+            draft_kv=(
+                DraftSessionKV(self.draft, rotary_table(1000.0))
+                if speculative
+                else None
+            ),
         )
 
     def synchronize_launched_decode(self) -> None:
@@ -206,13 +212,14 @@ def test_finished_blocks_resume_and_close_without_leaking_slots(
     pools.finish(first, [6, 7, 8, 9, 10], 3)
     record = pools.tree_cache.session_records()["s"]
     assert first.output_ids == [6, 7, 8]
-    assert record.kv_allocated_len == record.kv_committed_len == 8
+    assert record.kv_allocated_len == 8
+    assert record.kv_committed_len == 7
     assert pools.token_to_kv_pool_allocator.available_size() == initial_free - 8
 
     second = pools.append("s", "second", [11, 12], 2)
     assert list(second.origin_input_ids) == [1, 2, 3, 4, 5, 6, 7, 8, 11, 12]
     second_slots = pools.allocate(second, 16)
-    assert torch.equal(first_slots[:8], second_slots[:8])
+    assert torch.equal(first_slots[:7], second_slots[:7])
     if cancel_append:
         pools.bridge.cancel("second")
         assert not pools.tree_cache.session_records()
@@ -228,19 +235,28 @@ def test_finished_blocks_resume_and_close_without_leaking_slots(
     assert not pools.tree_cache.session_records()
 
 
-def test_history_cut_moves_both_models_before_freeing_the_shared_tail() -> None:
-    pools = SessionPools()
+@pytest.mark.parametrize("speculative", [False, True])
+def test_history_cut_moves_both_models_before_freeing_the_shared_tail(
+    speculative: bool,
+) -> None:
+    pools = SessionPools(speculative=speculative)
     pools.open("s")
     request = pools.append("s", "first", list(range(1, 9)), 3)
-    slots = pools.allocate(request, 11)
+    cached_tokens = 11 if speculative else 10
+    slots = pools.allocate(request, cached_tokens)
     original_keys = torch.randn(
-        11, 1, HEAD_DIM, generator=torch.Generator().manual_seed(4)
+        cached_tokens, 1, HEAD_DIM, generator=torch.Generator().manual_seed(4)
     )
     original_values = torch.randn(
-        11, 1, HEAD_DIM, generator=torch.Generator().manual_seed(5)
+        cached_tokens, 1, HEAD_DIM, generator=torch.Generator().manual_seed(5)
     )
     before: list[tuple[torch.Tensor, torch.Tensor]] = []
-    for cache in (pools.target, pools.draft):
+    caches = [(pools.target, 10000.0)]
+    if speculative:
+        caches.append((pools.draft, 1000.0))
+    else:
+        pass
+    for cache, _ in caches:
         for layer in range(cache.layer_num):
             cache.get_key_buffer(layer)[slots] = original_keys + layer
             cache.get_value_buffer(layer)[slots] = original_values + layer
@@ -251,15 +267,16 @@ def test_history_cut_moves_both_models_before_freeing_the_shared_tail() -> None:
                 )
             )
     pools.finish(request, [20, 21, 22], 3)
+    assert pools.tree_cache.session_records()["s"].kv_committed_len == 10
     free_before = pools.token_to_kv_pool_allocator.available_size()
     pools.bridge.drop_history(
         pools.bridge.sessions["s"],
         pools.session_controller.get("s"),
         HistoryCut(((2, 4),)),
     )
-    kept = torch.tensor([0, 1, 4, 5, 6, 7, 8, 9, 10])
-    distances = torch.full((7,), 2)
-    for cache, theta in ((pools.target, 10000.0), (pools.draft, 1000.0)):
+    kept = torch.tensor([0, 1, 4, 5, 6, 7, 8, 9])
+    distances = torch.full((6,), 2)
+    for cache, theta in caches:
         for layer in range(cache.layer_num):
             keys, values = before.pop(0)
             expected_keys = keys[slots[kept]].clone()
@@ -273,12 +290,16 @@ def test_history_cut_moves_both_models_before_freeing_the_shared_tail() -> None:
             rotated = complex_keys * torch.polar(torch.ones_like(angles), angles)
             expected_keys[2:] = torch.cat((rotated.real, rotated.imag), -1)
             torch.testing.assert_close(
-                cache.get_key_buffer(layer)[slots[:9]], expected_keys
+                cache.get_key_buffer(layer)[slots[:8]], expected_keys
             )
             assert torch.equal(
-                cache.get_value_buffer(layer)[slots[:9]], values[slots[kept]]
+                cache.get_value_buffer(layer)[slots[:8]], values[slots[kept]]
             )
-    assert pools.token_to_kv_pool_allocator.available_size() == free_before + 2
+    assert (
+        pools.token_to_kv_pool_allocator.available_size()
+        == free_before + cached_tokens - 8
+    )
+    assert pools.tree_cache.session_records()["s"].kv_allocated_len == 8
     next_request = pools.append("s", "next", [30], 1)
     assert list(next_request.origin_input_ids) == [1, 2, 5, 6, 7, 8, 20, 21, 22, 30]
     pools.bridge.cancel("next")
