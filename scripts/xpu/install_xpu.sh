@@ -94,7 +94,12 @@ if not hasattr(setuptools.build_meta, "build_editable"):
     )
 PY
 NOISO="--no-build-isolation"
-INSTALL_CMD="${PYBIN} -m pip install ${EDITABLE} ${TARGET} ${NOISO} --extra-index-url ${XPU_INDEX}"
+# note (yao-matrix): uv applies the protobuf override needed by the Fish Audio codec.
+if ! command -v uv >/dev/null 2>&1; then
+  echo "ERROR: uv is required to apply pyproject_xpu.toml's protobuf override; install it with: ${PYBIN} -m pip install uv" >&2
+  exit 1
+fi
+INSTALL_CMD="uv pip install --python $(${PYBIN} -c 'import sys; print(sys.executable)') ${EDITABLE} ${TARGET} ${NOISO} --extra-index-url ${XPU_INDEX}"
 WHISPER_CMD="${PYBIN} -m pip install --no-deps openai-whisper==${WHISPER_VERSION}"
 
 # Serialize the whole backup/swap/restore section. Without this the leftover-backup
@@ -159,6 +164,7 @@ cp -f "${PYPROJECT}" "${BACKUP}"
 cp -f "${PYPROJECT_XPU}" "${PYPROJECT}"
 echo "swapped in pyproject_xpu.toml"
 
+cd "${REPO_ROOT}"
 echo ">>> ${INSTALL_CMD}"
 ${INSTALL_CMD}
 # note (Matrix Yao): --no-deps keeps openai-whisper from replacing triton-xpu.

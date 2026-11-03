@@ -10,6 +10,8 @@
 
 ## Installation and Startup
 
+For Intel GPUs, see the [XPU installation and serving recipe](../get_started/installation_xpu.md#fish-audio-drama-3-text-to-speech-two-xpus-with-cpu-offload).
+
 Detailed instructions are in [Installation](../get_started/installation.md). From the repository root:
 
 ```bash
