@@ -39,7 +39,7 @@ private:
                    const std::atomic<bool> &cancel) const;
 
   ArkASR model_;
-  qwen3_asr::Tokenizer tokenizer_;
+  omni_common::Tokenizer tokenizer_;
   std::vector<int> prompt_prefix_ids_;
   std::vector<int> prompt_suffix_ids_;
   int end_of_turn_id_ = 0;

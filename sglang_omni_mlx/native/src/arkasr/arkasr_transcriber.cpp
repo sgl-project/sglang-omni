@@ -6,14 +6,17 @@
 #include <stdexcept>
 
 #include "common/audio.h"
+#include "common/text.h"
+#include "qwen3_asr/qwen3_audio.h"
 
 namespace arkasr {
 
 namespace mx = mlx::core;
+using omni_common::kSampleRate;
+using omni_common::kWhisperWindowSampleCount;
+using omni_common::StripUnicodeWhitespace;
 using qwen3_asr::FinishReason;
-using qwen3_asr::kSampleRate;
 using qwen3_asr::KVCache;
-using qwen3_asr::StripUnicodeWhitespace;
 using qwen3_asr::TranscriptionCancelled;
 using qwen3_asr::TranscriptionResult;
 
@@ -25,7 +28,7 @@ constexpr const char *kPromptSuffix =
 constexpr const char *kEndOfTurn = "<|im_end|>";
 // Note (AzizbekMuminoff): the processor truncates at Whisper's 30 s window,
 // so longer audio is decoded one window at a time.
-constexpr size_t kWindowSampleCount = 30 * kSampleRate;
+constexpr size_t kWindowSampleCount = kWhisperWindowSampleCount;
 constexpr size_t kCutSearchSampleCount = 5 * kSampleRate;
 constexpr size_t kCutEnergySampleCount = kSampleRate / 10;
 constexpr int kDefaultMaxNewTokens = 256;
@@ -77,7 +80,7 @@ ArkTranscriber::ArkTranscriber(const std::filesystem::path &model_directory)
   } else {
   }
   const nlohmann::json config =
-      qwen3_asr::ReadJson(model_directory / "tokenizer_config.json");
+      omni_common::ReadJson(model_directory / "tokenizer_config.json");
   for (const auto &[id, token] : config.at("added_tokens_decoder").items()) {
     const std::string content = token.at("content").get<std::string>();
     if (!content.empty() && content.front() == '<' && content.back() == '>' &&

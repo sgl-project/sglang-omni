@@ -42,7 +42,7 @@ private:
   WhisperEncoderConfig whisper_;
   int audio_token_id_ = 0;
   int merge_factor_ = 0;
-  qwen3_asr::Checkpoint checkpoint_;
+  omni_common::Checkpoint checkpoint_;
   qwen3_asr::Qwen3Decoder decoder_;
 };
 

@@ -10,11 +10,11 @@
 namespace arkasr {
 
 namespace mx = mlx::core;
-using qwen3_asr::Gelu;
-using qwen3_asr::LoadSafetensors;
+using omni_common::Gelu;
+using omni_common::LoadSafetensors;
+using omni_common::ReadJson;
+using omni_common::WeightMap;
 using qwen3_asr::Qwen3DecoderConfig;
-using qwen3_asr::ReadJson;
-using qwen3_asr::WeightMap;
 
 namespace {
 
@@ -38,7 +38,11 @@ WeightMap MlxLayoutWeights(WeightMap weights) {
   return weights;
 }
 
-Qwen3DecoderConfig Qwen2DecoderConfig(const nlohmann::json &config) {
+// Qwen2's config leaves head_dim out, as each head is hidden_size /
+// num_attention_heads wide, and its attention has no query and key norms.
+Qwen3DecoderConfig Qwen2DecoderConfig(nlohmann::json config) {
+  config["head_dim"] = config.at("hidden_size").get<int>() /
+                       config.at("num_attention_heads").get<int>();
   Qwen3DecoderConfig decoder = Qwen3DecoderConfig::FromJson(config);
   decoder.has_query_key_norm = false;
   return decoder;
@@ -58,7 +62,7 @@ ArkASR::ArkASR(const nlohmann::json &config,
               whisper.at("encoder_attention_heads").get<int>()};
   audio_token_id_ = config.at("audio_token_id").get<int>();
   merge_factor_ = config.at("merge_factor").get<int>();
-  if (whisper.at("num_mel_bins").get<int>() != qwen3_asr::kMelBinCount) {
+  if (whisper.at("num_mel_bins").get<int>() != omni_common::kMelBinCount) {
     throw std::runtime_error("the audio encoder must take 128 mel bins");
   } else if (!config.value("use_rope", false)) {
     throw std::runtime_error("only the rotary audio encoder is supported");
