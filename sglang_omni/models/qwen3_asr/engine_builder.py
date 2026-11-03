@@ -317,6 +317,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
 
     def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
         """Reject incompatible runtime settings before allocating engine resources."""
+        self.resolved_async_prefill()
         from sglang.srt.arg_groups.model_override_base import resolved_view
 
         cfg = resolved_view(server_args)
@@ -576,8 +577,42 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         else:
             pass
 
+    def resolved_async_prefill(self) -> bool:
+        """Resolve prefill lookahead before allocating infrastructure.
+
+        Prefill shares the async-decode event loop on CUDA and NPU. Reject an
+        explicit request without that loop; omitted settings keep synchronous
+        execution available, including when DFlash disables async decode.
+        """
+        if self.enable_async_prefill is True and not self.enable_async_decode:
+            raise ValueError(
+                "enable_async_prefill=True requires enable_async_decode=True"
+            )
+        else:
+            pass
+        return (
+            self.enable_async_decode
+            and not self.uses_torch_mps()
+            and self.draft_checkpoint is None
+            and (
+                current_platform.is_cuda()
+                if self.enable_async_prefill is None
+                else self.enable_async_prefill
+                and (current_platform.is_cuda() or current_platform.is_npu())
+            )
+        )
+
     def extra_scheduler_kwargs(self) -> SchedulerExtras[Qwen3ASRRequestData]:
         use_torch_mps = self.uses_torch_mps()
+        async_prefill = self.resolved_async_prefill()
+        logger.info(
+            "Qwen3-ASR async policy: async_decode=%s async_prefill=%s "
+            "enable_async_prefill=%s device=%s",
+            False if use_torch_mps else self.enable_async_decode,
+            async_prefill,
+            self.enable_async_prefill,
+            self.device,
+        )
         return {
             "stream_output_builder": request_builders.make_qwen3_asr_stream_output_builder(
                 tokenizer=self.tokenizer,
@@ -589,16 +624,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
             # note (rsi): ASR prompts fit one chunk, so a prefill's first
             # tokens can be resolved after the next decode launches.
-            # NPU reuses the device-neutral launch/resolve path, but remains
-            # opt-in until native prefill/decode lookahead is qualified.
-            "async_prefill": (
-                current_platform.is_cuda()
-                if self.enable_async_prefill is None
-                else self.enable_async_prefill
-                and (current_platform.is_cuda() or current_platform.is_npu())
-            )
-            and not use_torch_mps
-            and self.draft_checkpoint is None,
+            "async_prefill": async_prefill,
             "request_build_max_workers": (
                 1 if use_torch_mps else self.request_build_max_workers
             ),
