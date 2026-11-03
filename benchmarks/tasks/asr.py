@@ -282,6 +282,7 @@ def transcribe(asr: dict, wav_path: str, lang: str, device: str) -> str:
 
 def apply_wer(output: SampleOutput, hyp_text: str, lang: str) -> SampleOutput:
     """Fill output with normalized texts and per-sample WER fields."""
+    output.is_transcribed = True
     output.whisper_text = hyp_text
     output.ref_norm = normalize_text(output.target_text, lang)
     output.hyp_norm = normalize_text(hyp_text, lang)
@@ -368,8 +369,13 @@ def make_asr_send_fn(
                     result.is_success = True
                 else:
                     payload = await response.json()
-                    result.text = str(payload.get("text", ""))
-                    result.is_success = True
+                    if not isinstance(payload, dict) or not isinstance(
+                        payload.get("text"), str
+                    ):
+                        raise ValueError("Missing or invalid transcription text")
+                    else:
+                        result.text = payload["text"]
+                        result.is_success = True
         except (
             aiohttp.ClientError,
             asyncio.TimeoutError,
@@ -488,6 +494,7 @@ def build_asr_eval_results(
         per_sample.append(
             {
                 "id": output.sample_id,
+                "is_transcribed": output.is_transcribed,
                 "is_success": output.is_success,
                 "wer": output.wer if output.is_success else None,
                 "ref_text": output.target_text,

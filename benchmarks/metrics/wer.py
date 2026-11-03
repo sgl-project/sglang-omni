@@ -35,6 +35,7 @@ class SampleOutput:
     asr_latency_s: float = 0.0
     is_success: bool = False
     error: str = ""
+    is_transcribed: bool = False
 
 
 def calculate_wer_metrics(outputs: list[SampleOutput], lang: str) -> dict:
@@ -251,12 +252,17 @@ def calculate_asr_speed_metrics(
     wall_time_s: float | None = None,
 ) -> dict:
     """Compute speed metrics for the ASR transcription phase."""
-    successes = [o for o in outputs if o.is_success and o.asr_latency_s > 0]
+    transcribed = [
+        output for output in outputs if output.is_transcribed or output.is_success
+    ]
+    successes = [output for output in transcribed if output.asr_latency_s > 0]
+    failed_requests = len(outputs) - len(transcribed)
     if not successes:
         return {
             "total_samples": len(outputs),
             "evaluated": 0,
             "skipped": len(outputs),
+            "failed_requests": failed_requests,
             "asr_latency_mean_s": 0.0,
             "asr_latency_median_s": 0.0,
             "asr_latency_p95_s": 0.0,
@@ -290,6 +296,7 @@ def calculate_asr_speed_metrics(
         "total_samples": len(outputs),
         "evaluated": len(successes),
         "skipped": len(outputs) - len(successes),
+        "failed_requests": failed_requests,
         "asr_latency_mean_s": float(np.mean(latencies)),
         "asr_latency_median_s": float(np.median(latencies)),
         "asr_latency_p95_s": float(np.percentile(latencies, 95)),

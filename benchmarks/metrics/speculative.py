@@ -8,7 +8,7 @@ import statistics
 from dataclasses import dataclass
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 
 Side = Literal["baseline", "draft"]
 # The roadmap's k: the highest concurrency where the draft gains at least this much.
@@ -43,6 +43,8 @@ class ClientResult(BaseModel):
     concurrency: int
     total: int
     skipped: int
+    # note (ruiling): Old client JSON cannot distinguish scoring skips from request failures.
+    failed: int = Field(validation_alias=AliasChoices("failed", "skipped"))
     throughput_samples_per_s: MetricMean
     latency_p95_s: MetricMean
     corpus_wer: MetricMean
@@ -168,7 +170,7 @@ def compare(legs: list[Leg], *, k_gain: float) -> Comparison:
                     values.append(value)
                 else:
                     pass
-            measured.failed_requests += result.skipped
+            measured.failed_requests += result.failed
     rows = []
     for concurrency in concurrencies:
         baseline = sides[("baseline", concurrency)]

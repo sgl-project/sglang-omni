@@ -358,6 +358,7 @@ def make_repeat_result(concurrency: int, repeat: int, median: float) -> dict:
         "evaluated": 10,
         "total": 10,
         "skipped": 0,
+        "failed": 0,
         "corpus_wer": 0.01,
         "per_sample_wer_max": 0.05,
         "wall_clock_s": 2.0,
@@ -414,3 +415,15 @@ def test_server_identity_reports_models_best_effort(
     identity = collect_server_identity("http://127.0.0.1:8000")
     assert identity["url"] == "http://127.0.0.1:8000"
     assert identity["models"] is None
+
+
+def test_aggregate_supports_saved_repeats_without_failure_counts() -> None:
+    """Mixing old and new repeat records must not erase old failures or count new WER skips as failures."""
+    previous = make_repeat_result(8, 1, 0.4)
+    previous.pop("failed")
+    previous["skipped"] = 2
+    current = make_repeat_result(8, 2, 0.6)
+    current["skipped"] = 3
+    aggregate = _aggregate([previous, current])
+    assert aggregate["failed"] == 2
+    assert aggregate["skipped"] == 5
