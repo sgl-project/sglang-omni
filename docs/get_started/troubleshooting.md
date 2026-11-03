@@ -2,15 +2,19 @@
 
 ## Regional PyPI mirrors
 
-A configured PyPI mirror may be missing a required package version or lag
+**Symptom.** A configured PyPI mirror may be missing a required package version or lag
 behind PyPI. For example, if the mirror does not provide
 `mooncake-transfer-engine-cuda13>=0.3.10`, installation fails to resolve the
-requirement in [`pyproject.toml`](../../pyproject.toml). This is an index
+requirement in [`pyproject.toml`](https://github.com/sgl-project/sglang-omni/blob/main/pyproject.toml). This is an index
 availability issue; the mirror does not have the required version.
 
-Download that one wheel from PyPI, then use `--find-links` while keeping your
+**Check.** If uv reports that the requirement was not found in the package
+registry, check the configured mirror for the required wheel. To see whether
+PyPI has a wheel for your environment, use the download command below.
+
+**Fix.** Download that one wheel from PyPI, then use `--find-links` while keeping your
 existing uv mirror configuration for the other packages. With the Python 3.12
-virtual environment from the [installation guide](./installation.md#install-from-source)
+virtual environment from the {ref}`installation guide <install-from-source>`
 active, install pip into it so the downloaded wheel matches that environment:
 
 ```bash
@@ -22,7 +26,16 @@ uv pip install --prerelease=allow --find-links ./wheels -e .   # or "sglang-omni
 
 ## Expected output of uv pip check
 
-`uv pip check` and `python -m pip check` compare the requirements every installed distribution declares with the versions installed next to it. The CUDA install paths leave a few declared ranges unmet on purpose, so the lines in this table are expected and the code they concern runs. Any other line is a real conflict and worth reporting.
+**Symptom.** A CUDA installation finishes, but the dependency check reports
+version or platform conflicts.
+
+**Check.** With the SGLang-Omni environment active, run:
+
+```bash
+uv pip check
+```
+
+**Interpret the output.** `uv pip check` and `python -m pip check` compare the requirements every installed distribution declares with the versions installed next to it. The CUDA install paths leave a few declared ranges unmet on purpose, so the lines in this table are expected and the code they concern runs. Investigate any other line before serving a model.
 
 | Install path | Reported line | Why the runtime still works |
 | --- | --- | --- |
@@ -33,7 +46,7 @@ uv pip install --prerelease=allow --find-links ./wheels -e .   # or "sglang-omni
 | `[fishaudio]` extra and the CI image | `descript-audiotools` requires `protobuf<3.20,>=3.9.2` | The override keeps protobuf 6.x. `audiotools` reaches protobuf only through `torch.utils.tensorboard`, which the installed TensorBoard supports, and the CI import probe imports `dac` on every run. |
 | Every CUDA path | `decord 0.6.0 is not supported on this platform` (pip) or `The package decord was built for a different platform` (uv) | The wheel is published as `py3-none-manylinux2010_x86_64`, but its WHEEL file records the tag `cp36-cp36m`. decord loads `libdecord.so` through ctypes, and the MiniCPM-o video frontend decodes with it on Python 3.12. |
 
-The two tools word the lines differently, and `uv pip check` exits with status 1 whenever it prints one, so its exit status is not a gate. A source checkout has a script that runs the same comparison with the interpreter it is started with and fails only on a line outside this table. The PyPI package does not include it, so run it from the root of the checkout, for example after [installing from source](./installation.md#install-from-source), with the environment's Python:
+The two tools word the lines differently, and `uv pip check` exits with status 1 whenever it prints one, so its exit status is not a gate. A source checkout has a script that runs the same comparison with the interpreter it is started with and fails only on a line outside this table. The PyPI package does not include it, so run it from the root of the checkout, for example after {ref}`installing from source <install-from-source>`, with the environment's Python:
 
 ```bash
 cd sglang-omni   # the root of the source checkout

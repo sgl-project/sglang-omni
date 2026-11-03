@@ -136,7 +136,7 @@ Only these pages are exempt from navigation inclusion; emoji, fence-label, and f
 - `README.md`: repository overview, separate from the published manual.
 - `design/gpu_radix_hash.md` and `design/refactor_rfc.md`: internal notes outside the user manual.
 - `developer_reference/mlx.md`: excluded redirect; the published page is `mlx/index.md`.
-- `get_started/apiserver_quickstart.md`: linked from other pages, outside the sidebar.
+- `get_started/apiserver_quickstart.md`: legacy exemption; this page is now listed in the Get Started sidebar.
 - `basic_usage/python_router.md`: retained until the Python router is removed separately.
 
 ```bash

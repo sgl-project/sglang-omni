@@ -1,12 +1,27 @@
-SGLang-Omni
-=======================
+.. _sglang-omni:
 
-SGLang-Omni is a high-performance serving framework for omni and multimodal models, built on top of `SGLang <https://github.com/sgl-project/sglang>`_. It is designed to orchestrate multi-stage pipelines with low latency and OpenAI-compatible APIs.
+Welcome to SGLang-Omni
+======================
 
-Modern omni models — such as speech-output LLMs and multimodal generation systems — decompose into heterogeneous stages with fundamentally different computational profiles: a compute-bound thinker, a memory-bound talker, a latency-sensitive codec. SGLang-Omni is built around a **computation-centric design**: each stage runs its own independent scheduler tuned to its bottleneck, communicates through a shared inbox/outbox abstraction, and transfers tensors via zero-copy shared memory. This prevents any single stage from degrading the others and allows new models to plug into the framework by declaring a pipeline topology rather than building an inference system from scratch.
+Serve speech and multimodal models with SGLang-Omni.
+
+- **Speech & Multimodal Models.** Transcribe audio, generate speech, and serve models that accept audio, images, and video through OpenAI-compatible APIs.
+- **Streaming & Realtime.** Stream transcripts and speech as they are generated. Use realtime sessions for live audio input and interactive voice applications.
+- **Multi-stage Runtime.** Run preprocessing, inference, and audio generation as stages with independent scheduling. The runtime is built on `SGLang <https://github.com/sgl-project/sglang>`_.
+- **Hardware Support.** Choose the installation guide for your hardware: :doc:`CUDA <get_started/installation>`, :doc:`Apple Silicon <get_started/installation_apple_silicon>`, :doc:`Ascend NPU <get_started/installation_npu>`, :doc:`Intel XPU <get_started/installation_xpu>`, :doc:`Intel CPU <get_started/installation_cpu>`, or :doc:`MUSA <get_started/installation_musa>`. Model support varies by platform.
+
+Get Started
+-----------
+
+- :doc:`Quickstart <get_started/apiserver_quickstart>` — Start a model server and transcribe one audio clip.
+- :doc:`Installation <get_started/installation>` — Choose an installation method for your hardware.
+- :doc:`Examples <get_started/examples>` — Stream a transcript, generate speech, or send an audio chat request.
 
 About
 -----
+
+Modern omni models — such as speech-output LLMs and multimodal generation systems — decompose into heterogeneous stages with fundamentally different computational profiles: a compute-bound thinker, a memory-bound talker, a latency-sensitive codec. SGLang-Omni is built around a **computation-centric design**: each stage runs its own independent scheduler tuned to its bottleneck, communicates through a shared inbox/outbox abstraction, and transfers tensors via zero-copy shared memory. This prevents any single stage from degrading the others and allows new models to plug into the framework by declaring a pipeline topology rather than building an inference system from scratch.
+
 
 Core features:
 
@@ -105,11 +120,27 @@ Supported Models
      - Text + image understanding and generation
 
 
+Releases & Blog
+---------------
+
+- `GitHub releases <https://github.com/sgl-project/sglang-omni/releases>`_ and `PyPI <https://pypi.org/project/sglang-omni/>`_.
+- `The unified interactive runtime <https://www.sglang.io/blog/omni-interactive-runtime>`_ and `the Stage–Process–GPU topology <https://www.sglang.io/blog/spg-topology>`_.
+
+Community & Resources
+---------------------
+
+- `SGLang Slack <https://slack.sglang.io>`_ — Ask questions and discuss development.
+- `GitHub <https://github.com/sgl-project/sglang-omni>`_ and :doc:`Developer Reference <developer_reference/main>` — Find the source and contribution resources.
+
+
 .. toctree::
    :maxdepth: 1
    :caption: Get Started
 
-   get_started/installation.md
+   Welcome to SGLang-Omni <self>
+   Quickstart <get_started/apiserver_quickstart>
+   Installation <get_started/installation>
+   get_started/examples
    get_started/installation_apple_silicon.md
    get_started/installation_npu.md
    get_started/installation_xpu.md
