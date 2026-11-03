@@ -91,6 +91,8 @@ The serving report counts input units at 24 kHz, measures lag from input-send co
 
 ### Quality baseline
 
+The [single-call quality baseline](../developer_reference/personaplex_quality_baseline.md) records the H100 experiment configuration, subset coverage and greedy comparison results.
+
 Record FDB v1.0 and v1.5 at concurrency 1 with the same checkpoint, voice, role prompt and sampling configuration. Set `FDB10_ROOT` and `FDB15_ROOT` to the extracted datasets, and `FDB10_REVISION` and `FDB15_REVISION` to their archive digests. The following selection records three samples from each subset; the run manifests retain their IDs and source hashes.
 
 ```bash
@@ -106,7 +108,13 @@ python -m benchmarks.eval.benchmark_duplex_v10 record \
   --server-revision "$SERVER_REVISION" --model nvidia/personaplex-7b-v1 \
   --model-revision "$MODEL_REVISION" --concurrency 1 --max-per-subset 3 \
   --timeout 230 --output quality-v10
-python -m benchmarks.eval.benchmark_duplex_reference export \
+FDB_SELECTION=()
+for subset in user_interruption user_backchannel talking_to_other background_speech; do
+  for sample in 1 2 3; do
+    FDB_SELECTION+=(--only "$subset/$sample")
+  done
+done
+python -m benchmarks.eval.benchmark_duplex_reference export "${FDB_SELECTION[@]}" \
   --run quality-v15 --dataset-root "$FDB15_ROOT" \
   --engine personaplex --out quality-v15-reference
 python -m benchmarks.eval.benchmark_duplex_v10 reference-export \
