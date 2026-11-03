@@ -2851,16 +2851,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             if frames <= widths[-1]
             else frames + (-frames % widths[-1])
         )
-        if rounded_frames > frames:
-            codes = torch.cat(
-                (
-                    codes,
-                    codes.new_zeros((rounded_frames - frames, int(codes.shape[1]))),
-                ),
-                dim=0,
-            )
-        else:
-            pass
+        codes = torch.nn.functional.pad(codes, (0, 0, 0, rounded_frames - frames))
         state = Qwen3TTSStreamState(
             final_pending=True,
             pending_ref_frames=final_state.ref_code_len,
