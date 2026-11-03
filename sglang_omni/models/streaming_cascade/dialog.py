@@ -127,15 +127,13 @@ class Dialog(StreamComponent):
     arrives after the next reply began still cuts the history later prompts
     read. A reply the history keeps nothing of leaves no entry once an
     utterance follows it, and that utterance joins the user message the reply
-    answered. The Session's language is the configured language when set,
-    and otherwise the language the recognizer heard in the last utterance of
-    at least 3 words or 3 Chinese, Japanese or Korean characters; every
-    messages chunk carries it, a shorter utterance leaves the recognizer's
-    language unchanged, and when the recognizer heard another
-    language in it, that turn's latest user message asks for a reply in the
-    Session's language. A replacement adopts the history, the open reply and
-    the waiting utterances, so new settings apply at once and reach the next
-    prompt.
+    answered. A clear utterance carries the language the recognizer heard.
+    A shorter utterance leaves that remembered language unchanged and carries
+    the configured language when set, otherwise the remembered language; when
+    the recognizer heard another language in it, that turn's latest user
+    message asks for a reply in the language it carries. A replacement adopts
+    the history, the open reply and the waiting utterances, so new settings
+    apply at once and reach the next prompt.
 
     Speech that started after an utterance ended and has not stopped when
     the utterance's reply begins is speech over that reply, so the reply
@@ -406,25 +404,26 @@ class Dialog(StreamComponent):
                 self.language = language
             else:
                 pass
-            session_language = self.config.language or self.language
+            short_utterance_language = self.config.language or self.language
             is_short_switch = (
                 not is_clear
                 and language is not None
-                and session_language is not None
-                and language != session_language
+                and short_utterance_language is not None
+                and language != short_utterance_language
             )
             prompt = prompt_messages(self.messages)
             if is_short_switch:
-                note = SHORT_UTTERANCE_NOTE.format(language=session_language)
+                note = SHORT_UTTERANCE_NOTE.format(language=short_utterance_language)
                 prompt[-1] = ChatMessage(
                     role="user", content=f"{prompt[-1].content}\n\n[{note}]"
                 )
             else:
                 pass
+            reply_language = self.language if is_clear else short_utterance_language
             self.reply = []
             self.reply_turn = turn
             self.progress = []
             return [
                 control_chunk(TURN_STARTED, turn=turn),
-                messages_chunk(prompt, turn, session_language),
+                messages_chunk(prompt, turn, reply_language),
             ]
