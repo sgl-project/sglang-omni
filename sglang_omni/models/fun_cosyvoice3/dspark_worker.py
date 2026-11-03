@@ -195,10 +195,13 @@ def build_step_sampling_state(
         recent_tokens=recent_tokens.to(device),
         top_ks=top_ks,
         top_ps=top_ps,
-        # max_top_k stays an upper bound after filter_batch, and is None when a
-        # request keeps every token.
+        # note (YifanLi3): the two top-k paths can round and break ties differently, and
+        # a seeded draw must not depend on its neighbors' top_k, so a seeded batch keeps
+        # the full sort. max_top_k stays an upper bound after filter_batch.
         is_top_k_bounded=(
-            sampling_info.max_top_k is not None
+            not is_seeded
+            and sampling_info.sampling_seed is None
+            and sampling_info.max_top_k is not None
             and sampling_info.max_top_k <= TOP_K_BOUND
         ),
     )

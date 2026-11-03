@@ -20,7 +20,7 @@ from sglang_omni.models.fun_cosyvoice3.sglang_model import TOTAL_VOCAB_SIZE, VOC
 # Pads a request's repetition window before it has that many output tokens.
 EMPTY_HISTORY_TOKEN = -1
 # note (YifanLi3): covers the stage default top_k of 20 and the SpeechSpec 15; a batch
-# with a larger top_k sorts the whole vocabulary.
+# with a larger top_k or a seed sorts the whole vocabulary.
 TOP_K_BOUND = 64
 # note (YifanLi3): a seeded step keys every draw by the committed length, which grows
 # each step, so no draw is reused; the salts keep the three draws of a step apart.

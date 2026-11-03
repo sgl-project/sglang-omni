@@ -531,6 +531,7 @@ def run_speculative_step(
         need_top_p_sampling=False,
         need_top_k_sampling=False,
         max_top_k=None,
+        sampling_seed=None,
     )
     state = build_step_sampling_state(
         batch, sampling_info, RequestHistories(slot_count=4, device=device)
@@ -613,6 +614,38 @@ def test_a_seeded_request_steps_the_same_beside_any_other_request() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("request_seed", "installed_seeds", "is_top_k_bounded"),
+    [(None, None, True), (1234, None, False), (None, torch.tensor([42]), False)],
+)
+def test_only_an_unseeded_batch_takes_the_bounded_top_k(
+    request_seed: int | None,
+    installed_seeds: torch.Tensor | None,
+    is_top_k_bounded: bool,
+) -> None:
+    """The bounded top-k is a batch-wide path, so a seeded draw would depend on the
+    neighbors' top_k; deterministic inference seeds every row without a request seed."""
+    batch = SimpleNamespace(
+        reqs=[seeded_step_request("a", request_seed, [7], slot=0)],
+        req_pool_indices=torch.tensor([0]),
+    )
+    sampling_info = SimpleNamespace(
+        temperatures=torch.tensor([[0.7]]),
+        top_ks=torch.tensor([20]),
+        top_ps=torch.tensor([0.8]),
+        need_top_p_sampling=True,
+        need_top_k_sampling=True,
+        max_top_k=20,
+        sampling_seed=installed_seeds,
+    )
+    state = build_step_sampling_state(
+        batch,
+        sampling_info,
+        RequestHistories(slot_count=1, device=torch.device("cpu")),
+    )
+    assert state.is_top_k_bounded == is_top_k_bounded
+
+
 def test_request_histories_track_each_slot_through_reuse() -> None:
     histories = RequestHistories(slot_count=4, device=torch.device("cpu"))
 
@@ -671,6 +704,7 @@ def test_target_keeps_every_token_the_request_admits(
         need_top_p_sampling=False,
         need_top_k_sampling=max_top_k is not None,
         max_top_k=max_top_k,
+        sampling_seed=None,
     )
     state = build_step_sampling_state(
         batch,
