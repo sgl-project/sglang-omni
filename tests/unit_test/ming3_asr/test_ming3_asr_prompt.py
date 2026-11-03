@@ -8,6 +8,7 @@ from sglang_omni.models.ming3_asr.preprocessing import (
     AUDIO_END_TOKEN,
     AUDIO_PATCH_TOKEN,
     AUDIO_START_TOKEN,
+    Transcript,
     build_transcription_prompt,
     extract_transcript,
 )
@@ -55,12 +56,25 @@ def test_unsupported_requests_are_rejected_as_caller_errors(
 
 
 @pytest.mark.parametrize(
-    ("generated_text", "transcript"),
+    ("generated_text", "transcript", "language"),
     [
-        ("English\thello there ", "hello there"),
-        ("English hello there", "hello there"),
-        ("hello there", "hello there"),
+        ("English\thello there ", "hello there", "English"),
+        ("English hello there", "hello there", "English"),
+        ("hello there", "hello there", None),
     ],
 )
-def test_transcript_drops_language_label(generated_text: str, transcript: str) -> None:
-    assert extract_transcript(generated_text) == transcript
+def test_detected_language_label_is_split_from_transcript(
+    generated_text: str, transcript: str, language: str | None
+) -> None:
+    """Auto-detected transcriptions reported no language, though the model writes one."""
+    assert extract_transcript(generated_text, None) == Transcript(
+        text=transcript, language=language
+    )
+
+
+def test_requested_language_keeps_leading_language_name() -> None:
+    """With a requested language, a transcript starting with a language name lost that word."""
+    generated_text = "Chinese New Year is coming."
+    assert extract_transcript(generated_text, "en") == Transcript(
+        text=generated_text, language=None
+    )
