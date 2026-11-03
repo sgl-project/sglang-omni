@@ -94,8 +94,10 @@ class MiniCPMOPreprocessor:
         *,
         speech_enabled: bool = False,
         device: torch.device = torch.device("cpu"),
+        video_decode_threads: int,
     ) -> None:
         local_model_directory = str(resolve_model_path(model_path))
+        self.video_decode_threads = video_decode_threads
         self.tokenizer = AutoTokenizer.from_pretrained(
             local_model_directory, trust_remote_code=True
         )
@@ -415,6 +417,7 @@ class MiniCPMOPreprocessor:
                 total_pixels=video_options.video_total_pixels,
                 extract_audio=False,
                 audio_target_sr=16000,
+                video_decode_threads=self.video_decode_threads,
             )
         else:
             videos = []
