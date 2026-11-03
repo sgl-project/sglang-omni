@@ -21,6 +21,8 @@ from sglang_omni.profiler.event_recorder_types import (
     EVENT_FILE_BUFFER_BYTES,
     MAX_EVENT_TEXT_LENGTH,
     MAX_PRODUCER_BUFFERS,
+    RUNTIME_WRITER_BACKLOG_YIELD_INTERVAL_SECONDS,
+    RUNTIME_WRITER_FLUSH_INTERVAL_SECONDS,
     RUNTIME_WRITER_MAX_EVENTS_PER_ROUND,
     RUNTIME_WRITER_POLL_INTERVAL_SECONDS,
     WRITER_POLL_INTERVAL_SECONDS,
@@ -706,11 +708,51 @@ class RequestEventRecorder:
                             run_state.writer_failed = True
                             run_state.stop_requested.wait()
                         else:
+                            last_flushed_event_count = run_state.written_events
+                            last_flush_time = time.monotonic()
                             while not run_state.stop_requested.is_set():
                                 self.drain_runtime_buffers(run_state, file_handle)
-                                run_state.stop_requested.wait(
-                                    RUNTIME_WRITER_POLL_INTERVAL_SECONDS
-                                )
+                                now = time.monotonic()
+                                if (
+                                    run_state.written_events > last_flushed_event_count
+                                    and now - last_flush_time
+                                    >= RUNTIME_WRITER_FLUSH_INTERVAL_SECONDS
+                                ):
+                                    if self.flush_event_file(run_state, file_handle):
+                                        last_flushed_event_count = (
+                                            run_state.written_events
+                                        )
+                                        last_flush_time = time.monotonic()
+                                    else:
+                                        pass
+                                if run_state.writer_failed:
+                                    run_state.stop_requested.wait()
+                                    break
+                                else:
+                                    pass
+                                if any(
+                                    producer_buffer.events
+                                    for producer_buffer in run_state.producer_buffers
+                                ):
+                                    run_state.stop_requested.wait(
+                                        RUNTIME_WRITER_BACKLOG_YIELD_INTERVAL_SECONDS
+                                    )
+                                else:
+                                    flush_wait = max(
+                                        RUNTIME_WRITER_FLUSH_INTERVAL_SECONDS
+                                        - (time.monotonic() - last_flush_time),
+                                        0.0,
+                                    )
+                                    if flush_wait == 0:
+                                        flush_wait = (
+                                            RUNTIME_WRITER_POLL_INTERVAL_SECONDS
+                                        )
+                                    else:
+                                        flush_wait = min(
+                                            flush_wait,
+                                            RUNTIME_WRITER_POLL_INTERVAL_SECONDS,
+                                        )
+                                    run_state.stop_requested.wait(flush_wait)
                 except Exception:
                     run_state.writer_failed = True
                     run_state.finalization_failures += 1
@@ -733,11 +775,7 @@ class RequestEventRecorder:
                     run_state,
                     None if run_state.writer_failed else file_handle,
                 ):
-                    if any(
-                        producer_buffer.events
-                        for producer_buffer in run_state.producer_buffers
-                    ):
-                        time.sleep(RUNTIME_WRITER_POLL_INTERVAL_SECONDS)
+                    time.sleep(0)
                 file_handle = self.close_event_file(run_state, file_handle)
                 status_published = self.publish_status(run_state)
             else:
@@ -949,16 +987,33 @@ class RequestEventRecorder:
     ) -> None:
         if file_handle is None:
             return
-        try:
-            file_handle.flush()
-        except OSError:
-            run_state.write_failures += 1
-            run_state.incomplete_reasons.add("event_file_flush_failure")
+        self.flush_event_file(run_state, file_handle)
         try:
             file_handle.close()
         except OSError:
             run_state.write_failures += 1
             run_state.incomplete_reasons.add("event_file_close_failure")
+
+    @staticmethod
+    def flush_event_file(
+        run_state: RecorderRunState,
+        file_handle: TextIOWrapper,
+    ) -> bool:
+        try:
+            file_handle.flush()
+        except OSError as exc:
+            run_state.write_failures += 1
+            run_state.incomplete_reasons.add("event_file_flush_failure")
+            if run_state.mode == "runtime":
+                run_state.writer_failed = True
+            else:
+                pass
+            logger.warning(
+                f"RequestEventRecorder could not flush {run_state.path}: {exc}"
+            )
+            return False
+        else:
+            return True
 
     def publish_status(self, run_state: RecorderRunState) -> bool:
         run_state.unwritten_events = max(

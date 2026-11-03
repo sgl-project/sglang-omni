@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from collections.abc import ItemsView
 from io import TextIOWrapper
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -20,8 +22,11 @@ from sglang_omni.profiler.event_recorder import (
     RequestEventSnapshot,
 )
 from sglang_omni.profiler.event_recorder_types import (
+    EVENT_FILE_BUFFER_BYTES,
     MAX_PRODUCER_BUFFERS,
+    RUNTIME_WRITER_BACKLOG_YIELD_INTERVAL_SECONDS,
     RUNTIME_WRITER_MAX_EVENTS_PER_ROUND,
+    RUNTIME_WRITER_POLL_INTERVAL_SECONDS,
     ProducerDropCounter,
     RecorderRunState,
 )
@@ -95,6 +100,122 @@ def test_active_capture_does_not_serialize_or_open_files(
     assert Path(path).exists() is False
     assert recorder.stop(wait=True) == path
     assert len(read_events(path)) == 1
+
+
+def test_runtime_flushes_complete_low_volume_jsonl_while_active(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        event_recorder_writer, "RUNTIME_WRITER_FLUSH_INTERVAL_SECONDS", 0.05
+    )
+    recorder = RequestEventRecorder(queue_capacity=8)
+    path = recorder.start(
+        "runtime-live-flush",
+        str(tmp_path),
+        "stage",
+        mode="runtime",
+        sampling_unit="request",
+        sample_rate=1.0,
+    )
+    for event_number in range(3):
+        recorder.emit(
+            request_id="request",
+            stage="stage",
+            event_name="event",
+            metadata={"number": event_number},
+        )
+
+    visible_lines: list[bytes] = []
+    visibility_deadline = time.monotonic() + 5
+    while not visible_lines and time.monotonic() < visibility_deadline:
+        if Path(path).exists():
+            visible_lines = [
+                line
+                for line in Path(path).read_bytes().splitlines(keepends=True)
+                if line.endswith(b"\n")
+            ]
+        else:
+            pass
+        if not visible_lines:
+            threading.Event().wait(timeout=0.01)
+        else:
+            pass
+    assert visible_lines
+    assert Path(path).stat().st_size < EVENT_FILE_BUFFER_BYTES
+    visible_events = [json.loads(line) for line in visible_lines]
+    assert visible_events
+    assert recorder.active_state is not None
+
+    assert recorder.stop(wait=True) == path
+    events = read_events(path)
+    status = read_status(path)
+    assert len(events) == 3
+    assert status["accepted_events"] == 3
+    assert status["written_events"] == 3
+    assert status["unwritten_events"] == 0
+    assert status["complete"] is True
+
+
+def test_runtime_live_flush_failure_marks_run_incomplete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        event_recorder_writer, "RUNTIME_WRITER_FLUSH_INTERVAL_SECONDS", 0.02
+    )
+    recorder = RequestEventRecorder(queue_capacity=8)
+    original_open_event_file = recorder.open_event_file
+
+    def open_file_with_flush_failure(
+        run_state: RecorderRunState,
+    ) -> TextIOWrapper | None:
+        file_handle = original_open_event_file(run_state)
+        if file_handle is not None:
+            failing_file_handle = MagicMock(spec=TextIOWrapper, wraps=file_handle)
+            failing_file_handle.closed = False
+            failing_file_handle.flush.side_effect = OSError("synthetic flush failure")
+            return failing_file_handle
+        else:
+            return None
+
+    monkeypatch.setattr(recorder, "open_event_file", open_file_with_flush_failure)
+    path = recorder.start(
+        "runtime-live-flush-failure",
+        str(tmp_path),
+        "stage",
+        mode="runtime",
+        sampling_unit="request",
+        sample_rate=1.0,
+    )
+    recorder.emit(
+        request_id="accepted",
+        stage="stage",
+        event_name="event",
+    )
+    run_state = recorder.active_state
+    assert run_state is not None
+    writer_failure_deadline = time.monotonic() + 5
+    while not run_state.writer_failed and time.monotonic() < writer_failure_deadline:
+        threading.Event().wait(timeout=0.001)
+    assert run_state.writer_failed is True
+    assert "event_file_flush_failure" in run_state.incomplete_reasons
+    recorder.emit(
+        request_id="after-flush-failure",
+        stage="stage",
+        event_name="event",
+    )
+
+    assert recorder.stop(wait=False) == path
+    assert recorder.wait_for_finalizations(timeout_seconds=5) is True
+    status = read_status(path)
+    assert status["accepted_events"] == 1
+    assert status["processed_events"] == 1
+    assert status["written_events"] == 1
+    assert status["unwritten_events"] == 0
+    assert status["write_failures"] >= 1
+    assert status["complete"] is False
+    assert "event_file_flush_failure" in status["incomplete_reasons"]
 
 
 def test_concurrent_producers_preserve_per_producer_order(tmp_path: Path) -> None:
@@ -404,17 +525,143 @@ def test_runtime_sampling_is_deterministic_across_independent_recorders(
     assert sampled_identities[0]
 
 
-def test_runtime_final_drain_is_batched_paced_and_asynchronous(
+def test_runtime_writer_drains_backlog_in_fair_bounded_rounds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = RequestEventRecorder(queue_capacity=64)
+    writer_entered = threading.Event()
+    release_setup = threading.Event()
+    all_events_drained = threading.Event()
+    accepted_count = 128
+    active_round_sizes: list[int] = []
+    active_round_buffer_counts: list[list[int]] = []
+    backlog_wait_intervals: list[float | None] = []
+    last_drain_had_backlog = False
+
+    def pause_writer(run_state: RecorderRunState) -> None:
+        writer_entered.set()
+        if not release_setup.wait(timeout=5):
+            raise AssertionError("test did not release the runtime writer")
+        run_state.writer_scheduling = "SCHED_IDLE"
+
+    original_drain = recorder.drain_runtime_buffers
+
+    def track_drain(
+        run_state: RecorderRunState, file_handle: TextIOWrapper | None
+    ) -> int:
+        nonlocal last_drain_had_backlog
+        before_counts = [
+            len(producer_buffer.events)
+            for producer_buffer in run_state.producer_buffers
+        ]
+        count = original_drain(run_state, file_handle)
+        after_counts = [
+            len(producer_buffer.events)
+            for producer_buffer in run_state.producer_buffers
+        ]
+        last_drain_had_backlog = any(after_counts)
+        if count:
+            active_round_sizes.append(count)
+            active_round_buffer_counts.append(
+                [before - after for before, after in zip(before_counts, after_counts)]
+            )
+            if run_state.processed_events == accepted_count:
+                all_events_drained.set()
+            else:
+                pass
+        else:
+            pass
+        return count
+
+    monkeypatch.setattr(recorder, "set_writer_scheduling", pause_writer)
+    monkeypatch.setattr(recorder, "drain_runtime_buffers", track_drain)
+    path = recorder.start(
+        "runtime-backlog",
+        str(tmp_path),
+        "stage",
+        mode="runtime",
+        sampling_unit="request",
+        sample_rate=1.0,
+    )
+    assert writer_entered.wait(timeout=5)
+    run_state = recorder.active_state
+    assert run_state is not None
+    original_wait = run_state.stop_requested.wait
+
+    def track_stop_wait(timeout: float | None = None) -> bool:
+        if last_drain_had_backlog:
+            backlog_wait_intervals.append(timeout)
+        else:
+            pass
+        return original_wait(timeout)
+
+    monkeypatch.setattr(run_state.stop_requested, "wait", track_stop_wait)
+
+    def produce_events(producer_number: int) -> None:
+        for event_number in range(64):
+            recorder.emit(
+                request_id=f"producer-{producer_number}",
+                stage="stage",
+                event_name="event",
+                metadata={"number": event_number},
+            )
+
+    for producer_number in range(2):
+        producer = threading.Thread(target=produce_events, args=(producer_number,))
+        producer.start()
+        producer.join(timeout=5)
+        assert producer.is_alive() is False
+
+    release_setup.set()
+    assert all_events_drained.wait(timeout=5)
+    assert recorder.stop(wait=False) == path
+    assert recorder.wait_for_finalizations(timeout_seconds=5) is True
+
+    assert len(active_round_sizes) >= 2
+    assert all(
+        0 < round_size <= RUNTIME_WRITER_MAX_EVENTS_PER_ROUND
+        for round_size in active_round_sizes
+    )
+    assert active_round_buffer_counts[0] == [16, 16]
+    assert len(backlog_wait_intervals) >= 2
+    assert all(
+        interval is not None
+        and 0 < interval <= RUNTIME_WRITER_BACKLOG_YIELD_INTERVAL_SECONDS
+        and interval < RUNTIME_WRITER_POLL_INTERVAL_SECONDS
+        for interval in backlog_wait_intervals
+    )
+
+    events = read_events(path)
+    assert len(events) == accepted_count
+    first_round = events[:RUNTIME_WRITER_MAX_EVENTS_PER_ROUND]
+    assert sum(event["request_id"] == "producer-0" for event in first_round) == 16
+    assert sum(event["request_id"] == "producer-1" for event in first_round) == 16
+    for producer_number in range(2):
+        producer_events = [
+            event
+            for event in events
+            if event["request_id"] == f"producer-{producer_number}"
+        ]
+        assert [event["metadata"]["number"] for event in producer_events] == list(
+            range(64)
+        )
+    status = read_status(path)
+    assert status["accepted_events"] == accepted_count
+    assert status["processed_events"] == accepted_count
+    assert status["written_events"] == accepted_count
+    assert status["dropped_events"] == 0
+    assert status["complete"] is True
+
+
+def test_runtime_final_drain_is_batched_and_asynchronous(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     recorder = RequestEventRecorder(queue_capacity=96)
     writer_entered = threading.Event()
     release_setup = threading.Event()
-    pacing_entered = threading.Event()
-    release_pacing = threading.Event()
     final_batch_sizes: list[int] = []
-    pacing_intervals: list[float] = []
 
     def pause_writer(run_state: RecorderRunState) -> None:
         writer_entered.set()
@@ -433,15 +680,8 @@ def test_runtime_final_drain_is_batched_paced_and_asynchronous(
             final_batch_sizes.append(count)
         return count
 
-    def pause_between_batches(interval: float) -> None:
-        pacing_intervals.append(interval)
-        pacing_entered.set()
-        if not release_pacing.wait(timeout=5):
-            raise AssertionError("test did not release final-drain pacing")
-
     monkeypatch.setattr(recorder, "set_writer_scheduling", pause_writer)
     monkeypatch.setattr(recorder, "drain_runtime_buffers", track_drain)
-    monkeypatch.setattr(event_recorder_writer.time, "sleep", pause_between_batches)
     path = recorder.start(
         "runtime-final-drain",
         str(tmp_path),
@@ -465,21 +705,14 @@ def test_runtime_final_drain_is_batched_paced_and_asynchronous(
     finalization = recorder.draining_state.finalization
     assert finalization.completion_event.is_set() is False
     release_setup.set()
-    assert pacing_entered.wait(timeout=5)
-    assert finalization.completion_event.is_set() is False
+    assert finalization.wait(timeout_seconds=5) is True
+
     assert final_batch_sizes
     assert all(
         0 < batch_size <= RUNTIME_WRITER_MAX_EVENTS_PER_ROUND
         for batch_size in final_batch_sizes
     )
-    assert sum(final_batch_sizes) < accepted_count
-
-    release_pacing.set()
-    assert finalization.wait(timeout_seconds=5) is True
-
     assert sum(final_batch_sizes) == accepted_count
-    assert pacing_intervals
-    assert all(interval > 0 for interval in pacing_intervals)
     assert len(read_events(path)) == accepted_count
     status = read_status(path)
     assert status["accepted_events"] == accepted_count
