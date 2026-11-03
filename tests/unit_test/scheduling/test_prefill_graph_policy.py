@@ -140,12 +140,15 @@ def test_breakable_accepts_a_derived_ladder(caplog) -> None:
     assert not caplog.records
 
 
-def test_breakable_rejects_non_increasing_buckets() -> None:
+@pytest.mark.parametrize("token_buckets", [(256, 128), (1, 2, 1, 4)])
+def test_breakable_rejects_non_increasing_buckets(
+    token_buckets: tuple[int, ...],
+) -> None:
     with pytest.raises(ValueError, match="strictly increasing"):
         validate(
             make_server_args(
                 prefill_backend="breakable",
-                prefill_bs=(256, 128),
+                prefill_bs=token_buckets,
             )
         )
 
@@ -351,19 +354,24 @@ def test_unset_or_disabled_prefill_caps_leave_the_ladder_to_sglang(
     assert "cuda_graph_bs_prefill" not in overrides
 
 
-@pytest.mark.parametrize(("cap", "expected_top"), [(128, 128), (100, 100)])
+@pytest.mark.parametrize(
+    ("cap", "expected_top"), [(1, 1), (2, 2), (128, 128), (100, 100)]
+)
 def test_nested_prefill_max_bs_trims_a_stage_default_ladder(
     cap: int, expected_top: int
 ) -> None:
     overrides = build_generation_batch_overrides(
         max_running_requests=4,
-        cuda_graph_bs_prefill=build_default_prefill_cuda_graph_bs(512),
+        cuda_graph_bs_prefill=build_default_prefill_cuda_graph_bs(
+            512, extra_token_buckets=(2,)
+        ),
         server_args_overrides={"cuda_graph_config": {"prefill": {"max_bs": cap}}},
     )
 
     assert overrides["cuda_graph_max_bs_prefill"] == cap
     assert overrides["cuda_graph_bs_prefill"][-1] == expected_top
     assert all(bucket <= cap for bucket in overrides["cuda_graph_bs_prefill"])
+    assert overrides["cuda_graph_bs_prefill"][:2] == ([1] if cap == 1 else [1, 2])
 
 
 def test_operator_prefill_cap_below_its_own_list_is_rejected() -> None:
@@ -461,6 +469,32 @@ def test_default_prefill_ladder_replays_single_token_cache_hits(
     )
     assert padded_token_count == 1
     assert token_buckets[-1] == max_num_tokens
+
+
+@pytest.mark.parametrize(
+    ("max_num_tokens", "expected_token_buckets"),
+    [(1, [1]), (2, [1, 2]), (8, [1, 2, 4, 8]), (10, [1, 2, 4, 8, 10])],
+)
+def test_default_prefill_ladder_composes_extra_buckets_within_the_cap(
+    max_num_tokens: int, expected_token_buckets: list[int]
+) -> None:
+    """Overlapping model buckets must not produce the duplicate ladder that prevented MOSS-TD startup."""
+    token_buckets = build_default_prefill_cuda_graph_bs(
+        max_num_tokens, extra_token_buckets=(16, 2, 1, 4, 2)
+    )
+    assert token_buckets == expected_token_buckets
+    assert all(left < right for left, right in zip(token_buckets, token_buckets[1:]))
+    assert PrefillCudaGraphRunner._pad_to_bucket(  # noqa: leading-underscore  # upstream spelling
+        min(2, max_num_tokens), token_buckets
+    ) == min(
+        2, max_num_tokens
+    )
+
+
+@pytest.mark.parametrize("max_num_tokens", [0, -1])
+def test_default_prefill_ladder_rejects_non_positive_caps(max_num_tokens: int) -> None:
+    with pytest.raises(ValueError, match="max_num_tokens must be >= 1"):
+        build_default_prefill_cuda_graph_bs(max_num_tokens)
 
 
 @pytest.mark.parametrize("cap", [16384])
@@ -726,40 +760,61 @@ def test_builder_rejects_breakable_without_model_opt_in(monkeypatch) -> None:
         )
 
 
-def test_raised_operator_cap_extends_a_stage_ladder_without_dropping_buckets() -> None:
+@pytest.mark.parametrize("max_num_tokens", [513, 1024, 1100])
+def test_raised_operator_cap_extends_a_stage_ladder_without_dropping_buckets(
+    max_num_tokens: int,
+) -> None:
     """A raised cap must grow a stage ladder, not replace it with the shared one.
 
     Stage ladders can carry additional buckets such as 2 tokens, and losing
     them can send those shapes back to eager.
     """
-    stage_ladder = sorted({1, 2, *build_default_prefill_cuda_graph_bs(512)})
+    stage_ladder = [1, 2, 64, 512]
     overrides = build_generation_batch_overrides(
         max_running_requests=4,
         cuda_graph_backend_prefill="breakable",
-        cuda_graph_bs_prefill=list(stage_ladder),
-        server_args_overrides={"cuda_graph_max_bs_prefill": 1024},
+        cuda_graph_bs_prefill=stage_ladder,
+        server_args_overrides={"cuda_graph_max_bs_prefill": max_num_tokens},
     )
 
     result = overrides["cuda_graph_bs_prefill"]
-    assert overrides["cuda_graph_max_bs_prefill"] == 1024
+    assert overrides["cuda_graph_max_bs_prefill"] == max_num_tokens
     # Every stage bucket survives, including the ones the shared ladder lacks.
     assert set(stage_ladder) <= set(result)
     assert 1 in result and 2 in result
-    assert max(result) == 1024
+    assert result[: len(stage_ladder)] == stage_ladder == [1, 2, 64, 512]
+    assert all(token_count > 512 for token_count in result[len(stage_ladder) :])
+    assert 4 not in result
+    assert max(result) == max_num_tokens
+    assert (max_num_tokens < 576) or (576 in result)
     assert result == sorted(result)
     assert len(result) == len(set(result))
 
 
-def test_raised_operator_cap_leaves_an_operator_declared_ladder_alone() -> None:
+@pytest.mark.parametrize("token_buckets", [[128, 256], [256, 128], [128, 128, 256]])
+def test_raised_operator_cap_leaves_an_operator_declared_ladder_alone(
+    token_buckets: list[int],
+) -> None:
     """When the operator declares both, they own the pair."""
     overrides = build_generation_batch_overrides(
         max_running_requests=4,
         server_args_overrides={
             "cuda_graph_backend_prefill": "breakable",
-            "cuda_graph_bs_prefill": [128, 256],
+            "cuda_graph_bs_prefill": token_buckets,
             "cuda_graph_max_bs_prefill": 1024,
         },
     )
 
-    assert overrides["cuda_graph_bs_prefill"] == [128, 256]
+    assert overrides["cuda_graph_bs_prefill"] == token_buckets
     assert overrides["cuda_graph_max_bs_prefill"] == 1024
+    if token_buckets != [128, 256]:
+        with pytest.raises(ValueError, match="strictly increasing"):
+            validate(
+                make_server_args(
+                    prefill_backend="breakable",
+                    prefill_bs=overrides["cuda_graph_bs_prefill"],
+                    prefill_max_bs=1024,
+                )
+            )
+    else:
+        pass

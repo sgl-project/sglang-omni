@@ -85,7 +85,8 @@ def test_moss_transcribe_diarize_prefill_backend_policy(
         left < right for left, right in zip(prefill_buckets, prefill_buckets[1:])
     )
     assert (
-        max(defaults["cuda_graph_bs_prefill"])
+        prefill_buckets[-1]
+        == resolved["cuda_graph_max_bs_prefill"]
         == defaults["max_prefill_tokens"]
         == defaults["chunked_prefill_size"]
         == 4096

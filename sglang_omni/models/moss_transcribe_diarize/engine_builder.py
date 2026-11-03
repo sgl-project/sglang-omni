@@ -135,7 +135,9 @@ class MossTranscribeDiarizeEngineBuilder(
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         # note (Yuhao): cached-prefix extends also need an exact two-token bucket alongside the shared one-token bucket.
-        prefill_cuda_graph_bs = sorted({2, *build_default_prefill_cuda_graph_bs(4096)})
+        prefill_cuda_graph_bs = build_default_prefill_cuda_graph_bs(
+            4096, extra_token_buckets=(2,)
+        )
         return {
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,
