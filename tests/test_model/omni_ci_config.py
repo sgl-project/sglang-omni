@@ -79,9 +79,14 @@ QWEN3_OMNI_MMSU_P95 = {
         "throughput_qps": 118.685,
         "output_tok_per_req_s": 15.4,
         "latency_mean_s": 0.134,
-    }
+    },
+    96: {
+        "throughput_qps": 235.483,
+        "output_tok_per_req_s": 5.1,
+        "latency_mean_s": 0.402,
+    },
 }
-QWEN3_OMNI_MMSU_MIN_ACCURACY = 0.708
+QWEN3_OMNI_MMSU_MIN_ACCURACY = 0.71
 
 QWEN3_OMNI_MMSU_TALKER_P95 = {
     16: {
