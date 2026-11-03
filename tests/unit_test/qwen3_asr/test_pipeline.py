@@ -965,6 +965,41 @@ def test_qwen3_asr_glue_graph_stage_override_is_preserved() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "is_xpu, device, expected_enabled",
+    [(True, "xpu", False), (False, "cuda", True)],
+    ids=["xpu_turns_it_off", "other_non_cuda_platform_keeps_it"],
+)
+def test_qwen3_asr_metadata_graph_is_off_only_on_xpu(
+    monkeypatch: pytest.MonkeyPatch, is_xpu: bool, device: str, expected_enabled: bool
+) -> None:
+    """The stage default enables the glue graph everywhere and it records through
+    torch.cuda. On XPU that raises at the first replay, so XPU has to end up with it
+    off; ROCm reaches torch.cuda through HIP and keeps the path it already had."""
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: False)
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_xpu", lambda: is_xpu)
+    monkeypatch.setenv("SGLANG_ENABLE_METADATA_GLUE_GRAPH", "1")
+    monkeypatch.setattr(
+        qwen3_asr_builder.metadata_glue,
+        "apply_thread_local_glue_capture",
+        lambda: pytest.fail("the CUDA-only glue capture must not be installed"),
+    )
+    builder = make_engine_builder()
+
+    builder.setup_model(
+        model_worker=SimpleNamespace(model_runner=SimpleNamespace()),
+        checkpoint_dir="dummy",
+        device=device,
+        gpu_id=0,
+        server_args=None,
+    )
+
+    assert (
+        qwen3_asr_builder.envs.SGLANG_ENABLE_METADATA_GLUE_GRAPH.get()
+        is expected_enabled
+    )
+
+
 @pytest.mark.parametrize("decode_backend", ["fa3", "flashinfer"])
 def test_qwen3_asr_metadata_graph_rejects_host_planned_backends(
     monkeypatch: pytest.MonkeyPatch, decode_backend: str
