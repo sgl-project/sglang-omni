@@ -53,6 +53,7 @@ from sglang_omni.models.fun_cosyvoice3.dspark_sampling import (
     EMPTY_HISTORY_TOKEN,
     LARGEST_FLOAT32_BELOW_ONE,
     RESIDUAL_NOISE_SEED_SALT,
+    TOP_K_BOUND,
     DraftSamplingState,
     ExactAccept,
     exact_accept,
@@ -74,6 +75,7 @@ class StepSamplingState:
     recent_tokens: torch.Tensor
     top_ks: torch.Tensor
     top_ps: torch.Tensor
+    is_top_k_bounded: bool
 
 
 class RequestHistories:
@@ -193,6 +195,12 @@ def build_step_sampling_state(
         recent_tokens=recent_tokens.to(device),
         top_ks=top_ks,
         top_ps=top_ps,
+        # max_top_k stays an upper bound after filter_batch, and is None when a
+        # request keeps every token.
+        is_top_k_bounded=(
+            sampling_info.max_top_k is not None
+            and sampling_info.max_top_k <= TOP_K_BOUND
+        ),
     )
 
 
@@ -259,6 +267,7 @@ class ExactVerifyExecutor(TargetVerifyExecutor):
             state.recent_tokens,
             uniform_noise,
             exponential_noise,
+            state.is_top_k_bounded,
         )
         finalized = FinalizeAcceptLens.execute(
             correct_len=accepted_count,
@@ -426,7 +435,8 @@ class FunCosyVoice3DSparkWorker(DSparkWorkerV2):
         """Compile the draft block and the exact verify before the first request.
 
         Dynamic shapes still specialize a single running request, so both one and two
-        requests are traced here instead of on the serving thread.
+        requests, each on both top-k paths, are traced here instead of on the serving
+        thread.
         """
         markov_head = self.draft_model.markov_head
         draft_count = self.gamma
@@ -457,35 +467,37 @@ class FunCosyVoice3DSparkWorker(DSparkWorkerV2):
                 one_per_request,
                 greedy,
             )
-            self.exact_verify_executor.accept_function(
-                torch.zeros(
-                    (batch_size * (draft_count + 1), TOTAL_VOCAB_SIZE),
-                    device=self.device,
-                ),
-                shaped_logits,
-                draft_tokens,
-                presence_mask,
-                one_per_request,
-                zero_per_request,
-                zero_per_request,
-                one_per_request,
-                greedy,
-                torch.full(
-                    (batch_size,),
-                    TOTAL_VOCAB_SIZE,
-                    dtype=torch.int32,
-                    device=self.device,
-                ),
-                one_per_request,
-                torch.full(
-                    (batch_size, COSYVOICE3_RAS_WINDOW_SIZE),
-                    EMPTY_HISTORY_TOKEN,
-                    dtype=torch.long,
-                    device=self.device,
-                ),
-                torch.zeros((batch_size, draft_count), device=self.device),
-                torch.ones((batch_size, TOTAL_VOCAB_SIZE), device=self.device),
-            )
+            for is_top_k_bounded in (False, True):
+                self.exact_verify_executor.accept_function(
+                    torch.zeros(
+                        (batch_size * (draft_count + 1), TOTAL_VOCAB_SIZE),
+                        device=self.device,
+                    ),
+                    shaped_logits,
+                    draft_tokens,
+                    presence_mask,
+                    one_per_request,
+                    zero_per_request,
+                    zero_per_request,
+                    one_per_request,
+                    greedy,
+                    torch.full(
+                        (batch_size,),
+                        TOP_K_BOUND if is_top_k_bounded else TOTAL_VOCAB_SIZE,
+                        dtype=torch.int32,
+                        device=self.device,
+                    ),
+                    one_per_request,
+                    torch.full(
+                        (batch_size, COSYVOICE3_RAS_WINDOW_SIZE),
+                        EMPTY_HISTORY_TOKEN,
+                        dtype=torch.long,
+                        device=self.device,
+                    ),
+                    torch.zeros((batch_size, draft_count), device=self.device),
+                    torch.ones((batch_size, TOTAL_VOCAB_SIZE), device=self.device),
+                    is_top_k_bounded,
+                )
 
     def _maybe_build_draft_sampler(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         self,

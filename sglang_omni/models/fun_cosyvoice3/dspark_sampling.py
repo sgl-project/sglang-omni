@@ -19,6 +19,9 @@ from sglang_omni.models.fun_cosyvoice3.sglang_model import TOTAL_VOCAB_SIZE, VOC
 
 # Pads a request's repetition window before it has that many output tokens.
 EMPTY_HISTORY_TOKEN = -1
+# note (YifanLi3): covers the stage default top_k of 20 and the SpeechSpec 15; a batch
+# with a larger top_k sorts the whole vocabulary.
+TOP_K_BOUND = 64
 # note (YifanLi3): a seeded step keys every draw by the committed length, which grows
 # each step, so no draw is reused; the salts keep the three draws of a step apart.
 DRAFT_NOISE_SEED_SALT = 0x68E31DA4
@@ -164,11 +167,13 @@ def target_probabilities(
     top_ks: torch.Tensor,
     top_ps: torch.Tensor,
     recent_tokens: torch.Tensor,
+    is_top_k_bounded: bool,
 ) -> torch.Tensor:
     """The distribution the stage samples each row's next token from.
 
     A row with top_k 1 is greedy; every other row redraws a sampled speech token found
-    in recent_tokens from the tempered distribution without it.
+    in recent_tokens from the tempered distribution without it. is_top_k_bounded
+    promises every top_k is at most TOP_K_BOUND.
     """
     logits = shape_logits(
         logits.float(),
@@ -181,9 +186,14 @@ def target_probabilities(
         1, logits.argmax(dim=-1, keepdim=True), 1.0
     )
     tempered = torch.softmax(logits / temperatures.unsqueeze(1), dim=-1)
-    sorted_probabilities, sorted_ids = tempered.sort(dim=-1, descending=True)
+    if is_top_k_bounded:
+        sorted_probabilities, sorted_ids = tempered.topk(TOP_K_BOUND, dim=-1)
+    else:
+        sorted_probabilities, sorted_ids = tempered.sort(dim=-1, descending=True)
     cumulative = sorted_probabilities.cumsum(dim=-1)
-    ranks = torch.arange(logits.shape[1], device=logits.device).unsqueeze(0)
+    ranks = torch.arange(sorted_probabilities.shape[1], device=logits.device).unsqueeze(
+        0
+    )
     kept = (ranks < top_ks.unsqueeze(1)) & (
         (cumulative - sorted_probabilities) <= top_ps.unsqueeze(1)
     )
@@ -313,6 +323,7 @@ def exact_accept(
     recent_tokens: torch.Tensor,
     uniform_noise: torch.Tensor,
     exponential_noise: torch.Tensor,
+    is_top_k_bounded: bool,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Verify one block per request against the stage's exact sampling.
 
@@ -352,6 +363,7 @@ def exact_accept(
         top_ks=top_ks.repeat_interleave(rows_per_request),
         top_ps=top_ps.repeat_interleave(rows_per_request),
         recent_tokens=row_recent.reshape(-1, COSYVOICE3_RAS_WINDOW_SIZE),
+        is_top_k_bounded=is_top_k_bounded,
     ).view(batch_size, rows_per_request, TOTAL_VOCAB_SIZE)
     return rejection_sample(
         target=target,
@@ -381,4 +393,5 @@ class ExactAccept(Protocol):
         recent_tokens: torch.Tensor,
         uniform_noise: torch.Tensor,
         exponential_noise: torch.Tensor,
+        is_top_k_bounded: bool,
     ) -> tuple[torch.Tensor, torch.Tensor]: ...

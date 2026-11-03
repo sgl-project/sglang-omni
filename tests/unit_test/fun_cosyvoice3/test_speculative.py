@@ -31,6 +31,7 @@ from sglang_omni.models.fun_cosyvoice3.dspark_sampling import (
     EMPTY_HISTORY_TOKEN,
     LARGEST_FLOAT32_BELOW_ONE,
     RESIDUAL_NOISE_SEED_SALT,
+    TOP_K_BOUND,
     exact_accept,
     rejection_sample,
     sample_draft_block,
@@ -116,8 +117,11 @@ def stage_distribution(
     return distribution
 
 
+@pytest.mark.parametrize("is_top_k_bounded", [False, True])
 @pytest.mark.parametrize("seed", [0, 1, 2])
-def test_target_probabilities_match_the_stage_sampling_procedure(seed: int) -> None:
+def test_target_probabilities_match_the_stage_sampling_procedure(
+    seed: int, is_top_k_bounded: bool
+) -> None:
     generator = torch.Generator().manual_seed(seed)
     rows = 6
     logits = torch.randn(rows, TOTAL_VOCAB_SIZE, generator=generator) * 3
@@ -129,8 +133,12 @@ def test_target_probabilities_match_the_stage_sampling_procedure(seed: int) -> N
     stop_suppressed = torch.tensor([True, False, False, True, False, False])
     repetition_penalties = torch.tensor([1.21, 1.1, 1.0, 1.3, 1.21, 1.21])
     temperatures = torch.tensor([0.7, 0.8, 1.0, 0.7, 0.7, 0.7])
-    top_ks = torch.tensor([20, 15, 25, 1, 20, TOTAL_VOCAB_SIZE])
-    top_ps = torch.tensor([0.8, 0.95, 0.9, 0.8, 1.0, 0.8])
+    # The last row filters by top_p alone, or on the bounded path keeps exactly
+    # TOP_K_BOUND tokens.
+    top_ks = torch.tensor(
+        [20, 15, 25, 1, 20, TOP_K_BOUND if is_top_k_bounded else TOTAL_VOCAB_SIZE]
+    )
+    top_ps = torch.tensor([0.8, 0.95, 0.9, 0.8, 1.0, 1.0 if is_top_k_bounded else 0.8])
     recent_tokens = torch.full((rows, COSYVOICE3_RAS_WINDOW_SIZE), EMPTY_HISTORY_TOKEN)
     recent_tokens[:, :4] = hot_tokens
     recent_tokens[:, 4] = hot_tokens[:, 0]
@@ -145,6 +153,7 @@ def test_target_probabilities_match_the_stage_sampling_procedure(seed: int) -> N
         top_ks=top_ks,
         top_ps=top_ps,
         recent_tokens=recent_tokens,
+        is_top_k_bounded=is_top_k_bounded,
     )
 
     for row in range(rows):
@@ -189,7 +198,7 @@ def test_target_probabilities_redraw_a_repeated_token_that_holds_all_the_mass(
     recent_tokens[0, -1] = 42
 
     probabilities = target_probabilities(
-        logits, recent_tokens=recent_tokens, **arguments
+        logits, recent_tokens=recent_tokens, is_top_k_bounded=True, **arguments
     )
 
     expected = stage_distribution(
@@ -384,6 +393,7 @@ def test_exact_accept_verifies_each_row_with_the_drafts_before_it() -> None:
         **arguments,
         uniform_noise=torch.zeros(batch, drafts),
         exponential_noise=torch.ones(batch, TOTAL_VOCAB_SIZE),
+        is_top_k_bounded=True,
     )
 
     assert accepted_count.tolist() == [drafts, drafts]
@@ -402,6 +412,7 @@ def test_exact_accept_verifies_each_row_with_the_drafts_before_it() -> None:
             top_ks=arguments["top_ks"][row : row + 1],
             top_ps=arguments["top_ps"][row : row + 1],
             recent_tokens=torch.tensor([window]),
+            is_top_k_bounded=False,
         )
         assert int(next_tokens[row]) == int(expected.argmax())
 
@@ -426,8 +437,12 @@ def test_greedy_rows_accept_only_the_target_argmax() -> None:
 
 @pytest.mark.accelerator
 @REQUIRES_CUDA
-@pytest.mark.parametrize("batch_size", [1, 3])
-def test_compiled_exact_accept_matches_eager(batch_size: int) -> None:
+@pytest.mark.parametrize(
+    ("batch_size", "is_top_k_bounded"), [(1, True), (3, True), (3, False)]
+)
+def test_compiled_exact_accept_matches_eager(
+    batch_size: int, is_top_k_bounded: bool
+) -> None:
     """The worker compiles the verify into one graph, rejection sampling included."""
     generator = torch.Generator().manual_seed(batch_size)
     drafts = DRAFT_TOKENS_PER_STEP
@@ -469,9 +484,9 @@ def test_compiled_exact_accept_matches_eager(batch_size: int) -> None:
     ]
     inputs = [tensor.cuda() for tensor in inputs]
 
-    eager_accepted, eager_next_tokens = exact_accept(*inputs)
+    eager_accepted, eager_next_tokens = exact_accept(*inputs, is_top_k_bounded)
     compiled_accepted, compiled_next_tokens = torch.compile(exact_accept, dynamic=True)(
-        *inputs
+        *inputs, is_top_k_bounded
     )
 
     assert eager_accepted.tolist() == expected_accepted.tolist()
@@ -515,6 +530,7 @@ def run_speculative_step(
         top_ps=torch.ones(request_count, device=device),
         need_top_p_sampling=False,
         need_top_k_sampling=False,
+        max_top_k=None,
     )
     state = build_step_sampling_state(
         batch, sampling_info, RequestHistories(slot_count=4, device=device)
@@ -632,7 +648,13 @@ def test_request_histories_track_each_slot_through_reuse() -> None:
     assert presence(same_id) == [[4]]
 
 
-def test_target_keeps_every_token_when_no_request_filters() -> None:
+@pytest.mark.parametrize(
+    ("top_k", "max_top_k"),
+    [(TOTAL_VOCAB_SIZE, None), (TOP_K_BOUND + 1, TOP_K_BOUND + 1)],
+)
+def test_target_keeps_every_token_the_request_admits(
+    top_k: int, max_top_k: int | None
+) -> None:
     request = SimpleNamespace(
         rid="a",
         kv=SimpleNamespace(req_pool_idx=0),
@@ -644,10 +666,11 @@ def test_target_keeps_every_token_when_no_request_filters() -> None:
     batch = SimpleNamespace(reqs=[request], req_pool_indices=torch.tensor([0]))
     sampling_info = SimpleNamespace(
         temperatures=torch.tensor([[0.7]]),
-        top_ks=torch.tensor([TOTAL_VOCAB_SIZE]),
+        top_ks=torch.tensor([top_k]),
         top_ps=torch.tensor([1.0]),
         need_top_p_sampling=False,
-        need_top_k_sampling=False,
+        need_top_k_sampling=max_top_k is not None,
+        max_top_k=max_top_k,
     )
     state = build_step_sampling_state(
         batch,
@@ -667,12 +690,23 @@ def test_target_keeps_every_token_when_no_request_filters() -> None:
         top_ks=state.top_ks,
         top_ps=state.top_ps,
         recent_tokens=torch.full((1, COSYVOICE3_RAS_WINDOW_SIZE), EMPTY_HISTORY_TOKEN),
+        is_top_k_bounded=state.is_top_k_bounded,
     )
 
-    # The stage samples the full softmax here, tail included.
-    assert bool((probabilities > 0).all())
+    # With no top_k the stage samples the full softmax, tail included.
+    assert int((probabilities > 0).sum()) == top_k
+    expected = stage_distribution(
+        logits[0] * 3,
+        presence_mask=state.draft.presence_mask[0],
+        stop_suppressed=False,
+        repetition_penalty=1.0,
+        temperature=0.7,
+        top_k=top_k,
+        top_p=float(state.top_ps[0]),
+        recent_tokens=[],
+    )
     torch.testing.assert_close(
-        probabilities, torch.softmax(logits * 3 / 0.7, dim=-1), atol=1e-8, rtol=1e-5
+        probabilities[0].double(), expected, atol=1e-8, rtol=1e-5
     )
 
 
