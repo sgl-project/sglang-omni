@@ -14,6 +14,5 @@ Qwen is licensed under the Qwen RESEARCH LICENSE AGREEMENT, Copyright (c) Alibab
 See qwen-research.txt and the original checkpoint license:
 https://huggingface.co/Qwen/Qwen2.5-Omni-3B/blob/f75b40e3da2003cdd6e1829b1f420ca70797c34e/LICENSE
 
-Built with Qwen. Prepared conditioner/model.safetensors contains only the
-Thinker text and audio tensors, extracted and repackaged for native serving.
-This modification does not change the original weights' license.
+Built with Qwen. The runtime ships no weights; it loads the published
+Qwen2.5-Omni-3B checkpoint as distributed.

@@ -44,8 +44,20 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/civetweb/civetweb.git
   GIT_TAG d7ba35bbb649209c66e582d5a0244ba988a15159 # v1.16
   EXCLUDE_FROM_ALL)
+# The released AuK checkpoints describe themselves in config.yaml.
+set(YAML_CPP_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_FORMAT_SOURCE OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_INSTALL OFF CACHE BOOL "" FORCE)
+set(YAML_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  yaml_cpp
+  GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
+  GIT_TAG f7320141120f720aecc4c32be25586e7da9eb978 # 0.8.0
+  EXCLUDE_FROM_ALL)
 set(BUILD_SHARED_LIBS OFF)
-FetchContent_MakeAvailable(nlohmann_json pcre2 civetweb)
+FetchContent_MakeAvailable(nlohmann_json pcre2 civetweb yaml_cpp)
 
 add_library(common STATIC
   src/common/audio.cpp
@@ -56,7 +68,7 @@ add_library(common STATIC
   src/common/tokenizer.cpp)
 target_include_directories(common PUBLIC src)
 target_link_libraries(common PUBLIC mlx nlohmann_json::nlohmann_json pcre2-8-static
-  "-framework CoreFoundation")
+  "-framework CoreFoundation" PRIVATE yaml-cpp::yaml-cpp)
 target_compile_options(common PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 # Note (Jiaxin Deng): npz keeps the no-fused-multiply-add rounding it was built
 # with as part of whisper_asr.
@@ -255,14 +267,12 @@ target_link_libraries(auk_model PUBLIC qwen3_asr audio_resample)
 target_compile_options(auk_model PRIVATE -Wall -Wextra)
 add_executable(auk_server src/auk/auk_server.cpp src/auk/auk_request.cpp)
 target_link_libraries(auk_server PRIVATE auk_model speech_service)
-add_executable(auk_probe tools/auk_probe.cpp)
-target_link_libraries(auk_probe PRIVATE auk_model)
 add_executable(auk_synthesize tools/auk_synthesize.cpp)
 target_link_libraries(auk_synthesize PRIVATE auk_model)
-set_target_properties(auk_server auk_probe auk_synthesize PROPERTIES
+set_target_properties(auk_server auk_synthesize PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
   INSTALL_RPATH "@loader_path")
-install(TARGETS auk_server auk_probe auk_synthesize RUNTIME DESTINATION bin)
+install(TARGETS auk_server auk_synthesize RUNTIME DESTINATION bin)
 install(TARGETS soxr LIBRARY DESTINATION bin)
 install(FILES "${soxr_SOURCE_DIR}/LICENCE" DESTINATION share/licenses/soxr)
 install(FILES licenses/qwen-research.txt licenses/NOTICE DESTINATION share/licenses/auk)

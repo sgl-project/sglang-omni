@@ -9,7 +9,7 @@ To add or change a model here, read the
 [MLX path policy and contribution requirements](../../docs/mlx/index.md)
 first.
 
-The runtime also includes `auk_server` for AuK and AuK-Flash speech generation, voice cloning and editing. It uses the same supervisor protocol, `/health` and `/v1/models`, with `/v1/audio/speech` and `/generate` for synthesis. It is a standalone server; Voxt's ASR model selection does not launch it. See the [AuK cookbook](../../docs/cookbook/auk.md#apple-silicon) for checkpoint preparation and launch commands.
+The runtime also includes `auk_server` for AuK and AuK-Flash speech generation, voice cloning and editing. It uses the same supervisor protocol, `/health` and `/v1/models`, with `/v1/audio/speech` and `/generate` for synthesis. It is a standalone server; Voxt's ASR model selection does not launch it. See the [AuK cookbook](../../docs/cookbook/auk.md#apple-silicon) for its checkpoints and launch commands.
 
 | Checkpoint | Runtime | Voxt behavior kept |
 | --- | --- | --- |

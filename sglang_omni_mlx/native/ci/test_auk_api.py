@@ -21,9 +21,10 @@ import pytest
 
 RUNTIME_BIN = os.environ.get("NATIVE_RUNTIME_BIN")
 MODEL_DIRECTORY = os.environ.get("AUK_MODEL_DIRECTORY")
+TEXT_ENCODER_DIRECTORY = os.environ.get("AUK_TEXT_ENCODER_DIRECTORY")
 pytestmark = pytest.mark.skipif(
-    not RUNTIME_BIN or not MODEL_DIRECTORY,
-    reason="set NATIVE_RUNTIME_BIN and AUK_MODEL_DIRECTORY",
+    not RUNTIME_BIN or not MODEL_DIRECTORY or not TEXT_ENCODER_DIRECTORY,
+    reason="set NATIVE_RUNTIME_BIN, AUK_MODEL_DIRECTORY and AUK_TEXT_ENCODER_DIRECTORY",
 )
 
 
@@ -44,6 +45,8 @@ def server(server_log: Path) -> Iterator[httpx.Client]:
                 "auk",
                 "--model-directory",
                 MODEL_DIRECTORY,
+                "--text-encoder-path",
+                TEXT_ENCODER_DIRECTORY,
                 "--max-queued-requests",
                 "0",
             ],
@@ -289,13 +292,15 @@ def test_wrong_model_kind_fails_before_loading() -> None:
 
 
 def test_wrong_checkpoint_fails_before_listening(tmp_path: Path) -> None:
-    (tmp_path / "config.json").write_text('{"model_type":"qwen3_asr"}')
+    (tmp_path / "config.yaml").write_text("model:\n  name: OtherModel\n")
     with subprocess.Popen(
         [
             str(Path(RUNTIME_BIN) / "auk_server"),
             "--supervised",
             "--model-path",
             str(tmp_path),
+            "--text-encoder-path",
+            TEXT_ENCODER_DIRECTORY,
         ],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,

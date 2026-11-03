@@ -23,6 +23,8 @@ struct QuantizationConfig {
 using WeightMap = std::unordered_map<std::string, mlx::core::array>;
 
 nlohmann::json ReadJson(const std::filesystem::path &path);
+// A YAML file as JSON, its plain scalars typed as YAML reads them.
+nlohmann::json ReadYaml(const std::filesystem::path &path);
 // Every .safetensors file in the directory, names as stored.
 WeightMap LoadSafetensors(const std::filesystem::path &model_directory);
 

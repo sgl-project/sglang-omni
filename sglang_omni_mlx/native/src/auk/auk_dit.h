@@ -13,7 +13,9 @@ namespace auk {
 
 class DiT {
 public:
-  DiT(const std::filesystem::path &model_directory, mlx::core::Dtype dtype);
+  // A released checkpoint's weights and its config.yaml arch section.
+  DiT(omni_common::WeightMap weights, const nlohmann::json &architecture,
+      int latent_channels, mlx::core::Dtype dtype);
   void ValidateInputDimensions(int text_layers, int text_hidden_channels,
                                int latent_channels) const;
 

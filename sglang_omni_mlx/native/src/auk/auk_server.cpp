@@ -3,10 +3,15 @@
 // or PCM file, POST /generate with a raw AuK instruction answered with JSON
 // around a base64 WAV, and Voxt's supervisor protocol.
 //
-//   auk_server --model-path DIR [--model-name NAME] [--host H] [--port P]
-//       [--dtype bfloat16|float32] [--max-seconds S] [--cache-limit-gb G]
-//       [--max-queued-requests N] [--request-timeout-s T]
-//   auk_server --supervised --model-kind auk --model-directory DIR [...]
+//   auk_server --model-path DIR --text-encoder-path QWEN_DIR
+//       [--model-name NAME] [--host H] [--port P] [--dtype bfloat16|float32]
+//       [--max-seconds S] [--cache-limit-gb G] [--max-queued-requests N]
+//       [--request-timeout-s T]
+//   auk_server --supervised --model-kind auk --model-directory DIR
+//       --text-encoder-path QWEN_DIR [...]
+//
+// DIR is a released AuK or AuK-Flash checkpoint and QWEN_DIR is
+// Qwen2.5-Omni-3B, both as published.
 //
 // One request runs at a time and N more (2 by default) may wait; the rest get
 // 503. A request not done T seconds (600 by default) after it arrives gets
@@ -35,12 +40,13 @@ constexpr size_t kMaxRequestBodyBytes = 16 * 1024 * 1024;
 class AukSpeechService : public speech_service::SpeechServedModel {
 public:
   AukSpeechService(const std::filesystem::path &model_directory,
+                   const std::filesystem::path &text_encoder_directory,
                    mlx::core::Dtype dtype, float max_seconds,
                    int max_queued_requests, double request_timeout_seconds)
       : SpeechServedModel(kMaxRequestBodyBytes, max_queued_requests,
                           request_timeout_seconds),
-        max_seconds_(max_seconds), model_(model_directory, dtype, max_seconds) {
-  }
+        max_seconds_(max_seconds),
+        model_(model_directory, text_encoder_directory, dtype, max_seconds) {}
 
   void AddHandlers(mg_context *context,
                    qwen3_asr::TranscriptionWorker &worker) override {
@@ -102,16 +108,25 @@ int main(int argc, char **argv) {
   mlx::core::Dtype dtype = mlx::core::bfloat16;
   float max_seconds = 30.0f;
   size_t cache_limit_bytes = GIBIBYTE;
+  std::filesystem::path text_encoder_directory;
   asr_service::ServedKind kind;
   kind.model_kind = "auk";
   speech_service::AddSpeechFlags(
       kind, [&](const std::filesystem::path &model_directory,
                 int max_queued_requests, double request_timeout_seconds) {
+        if (text_encoder_directory.empty()) {
+          throw std::invalid_argument(
+              "--text-encoder-path must name the Qwen2.5-Omni-3B directory");
+        } else {
+        }
         mlx::core::set_cache_limit(cache_limit_bytes);
         return std::make_unique<AukSpeechService>(
-            model_directory, dtype, max_seconds, max_queued_requests,
-            request_timeout_seconds);
+            model_directory, text_encoder_directory, dtype, max_seconds,
+            max_queued_requests, request_timeout_seconds);
       });
+  kind.flags["--text-encoder-path"] = [&](const std::string &value) {
+    text_encoder_directory = value;
+  };
   kind.flags["--dtype"] = [&](const std::string &value) {
     if (value == "bfloat16") {
       dtype = mlx::core::bfloat16;

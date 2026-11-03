@@ -7,11 +7,44 @@
 #include <stdexcept>
 #include <vector>
 
+#include "yaml-cpp/yaml.h"
+
 namespace omni_common {
 
 namespace mx = mlx::core;
 
 namespace {
+
+nlohmann::json YamlToJson(const YAML::Node &node) {
+  if (node.IsMap()) {
+    nlohmann::json object = nlohmann::json::object();
+    for (const auto &entry : node) {
+      object[entry.first.as<std::string>()] = YamlToJson(entry.second);
+    }
+    return object;
+  } else if (node.IsSequence()) {
+    nlohmann::json array = nlohmann::json::array();
+    for (const auto &element : node) {
+      array.push_back(YamlToJson(element));
+    }
+    return array;
+  } else if (!node.IsScalar()) {
+    return nullptr;
+  } else {
+  }
+  bool flag = false;
+  long long integer = 0;
+  double number = 0.0;
+  if (YAML::convert<bool>::decode(node, flag)) {
+    return flag;
+  } else if (YAML::convert<long long>::decode(node, integer)) {
+    return integer;
+  } else if (YAML::convert<double>::decode(node, number)) {
+    return number;
+  } else {
+    return node.Scalar();
+  }
+}
 
 std::vector<mx::array> GeluGraph(const std::vector<mx::array> &inputs) {
   // Note (Jiaxin Deng): mlx.nn.gelu's op order, kept for bit identity.
@@ -60,6 +93,15 @@ nlohmann::json ReadJson(const std::filesystem::path &path) {
   } else {
   }
   return nlohmann::json::parse(stream);
+}
+
+nlohmann::json ReadYaml(const std::filesystem::path &path) {
+  std::ifstream stream(path);
+  if (!stream) {
+    throw std::runtime_error("cannot read " + path.string());
+  } else {
+  }
+  return YamlToJson(YAML::Load(stream));
 }
 
 WeightMap LoadSafetensors(const std::filesystem::path &model_directory) {

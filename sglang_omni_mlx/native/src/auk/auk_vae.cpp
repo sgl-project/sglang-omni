@@ -19,10 +19,35 @@ constexpr int kActivationFilterSize = 12;
 constexpr float kSnakeEpsilon = 1e-9f;
 constexpr int kEncoderResidualStacks = 6;
 
-omni_common::WeightMap LoadVAEWeights(const std::filesystem::path &directory) {
-  auto weights = omni_common::LoadSafetensors(directory);
-  for (auto &[name, weight] : weights) {
-    weight = mx::astype(weight, mx::float32);
+// Released weights in float32, with weight normalization folded and Torch
+// convolution layouts moved to MLX's; the training-only flow is dropped.
+omni_common::WeightMap ConvertVAEWeights(const omni_common::WeightMap &stored) {
+  omni_common::WeightMap weights;
+  for (const auto &[stored_name, stored_weight] : stored) {
+    if (stored_name.starts_with("flow.") ||
+        stored_name.ends_with(".weight_g")) {
+      continue;
+    } else {
+    }
+    std::string name = stored_name;
+    mx::array weight = mx::astype(stored_weight, mx::float32);
+    if (name.ends_with(".weight_v")) {
+      name.resize(name.size() - 2);
+      const mx::array magnitude =
+          mx::astype(stored.at(name + "_g"), mx::float32);
+      weight = weight * (magnitude /
+                         mx::sqrt(mx::sum(weight * weight, {1, 2}, true)));
+    } else {
+    }
+    if (name.ends_with(".weight") && weight.ndim() == 3) {
+      weight = mx::transpose(weight, name.starts_with("ups.")
+                                         ? std::vector<int>{1, 2, 0}
+                                         : std::vector<int>{0, 2, 1});
+    } else if (name.ends_with(".filter")) {
+      weight = mx::transpose(weight, {0, 2, 1});
+    } else {
+    }
+    weights.emplace(std::move(name), std::move(weight));
   }
   return weights;
 }
@@ -33,9 +58,8 @@ mx::array LeakyRelu(const mx::array &hidden_states, float negative_slope) {
 
 } // namespace
 
-VAE::VAE(const std::filesystem::path &vae_directory)
-    : checkpoint_(LoadVAEWeights(vae_directory), nlohmann::json::object()) {
-  const auto config = omni_common::ReadJson(vae_directory / "config.json");
+VAE::VAE(const omni_common::WeightMap &weights, const nlohmann::json &config)
+    : checkpoint_(ConvertVAEWeights(weights), nlohmann::json::object()) {
   latent_dimension_ = config.at("latent_dim").get<int>();
   causal_ = config.at("causal").get<bool>();
   activation_causal_ = config.at("act_causal").get<bool>();

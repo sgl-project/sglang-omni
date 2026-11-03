@@ -19,7 +19,8 @@ struct PosteriorStats {
 
 class VAE {
 public:
-  explicit VAE(const std::filesystem::path &vae_directory);
+  // A released vae.safetensors and its config.yaml model_init_kwargs.
+  VAE(const omni_common::WeightMap &weights, const nlohmann::json &config);
   int HopSize() const { return hop_size_; }
   int LatentDimension() const { return latent_dimension_; }
 

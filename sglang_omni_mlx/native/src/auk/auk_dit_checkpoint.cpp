@@ -14,13 +14,17 @@ using omni_common::Checkpoint;
 
 namespace {
 
-omni_common::WeightMap LoadWeights(const std::filesystem::path &directory,
-                                   mx::Dtype dtype) {
-  auto weights = omni_common::LoadSafetensors(directory);
+omni_common::WeightMap ConvertWeights(omni_common::WeightMap weights,
+                                      mx::Dtype dtype) {
   for (auto &[name, weight] : weights) {
     const bool preserve_float = name == "layer_weights" ||
                                 name == "layer_scale" ||
                                 name == "transformer.rotary_embed.inv_freq";
+    if (name.ends_with("conv_pos_embed.conv1d.0.weight") ||
+        name.ends_with("conv_pos_embed.conv1d.2.weight")) {
+      weight = mx::transpose(weight, {0, 2, 1});
+    } else {
+    }
     weight = mx::astype(weight, preserve_float ? mx::float32 : dtype);
   }
   return weights;
@@ -82,9 +86,11 @@ void RequireBlock(const Checkpoint &checkpoint, const std::string &prefix,
 
 } // namespace
 
-DiT::DiT(const std::filesystem::path &model_directory, mx::Dtype dtype)
-    : config_(omni_common::ReadJson(model_directory / "config.json")),
-      checkpoint_(LoadWeights(model_directory, dtype), config_), dtype_(dtype),
+DiT::DiT(omni_common::WeightMap weights, const nlohmann::json &architecture,
+         int latent_channels, mx::Dtype dtype)
+    : config_({{"arch", architecture}, {"latent_dim", latent_channels}}),
+      checkpoint_(ConvertWeights(std::move(weights), dtype), config_),
+      dtype_(dtype),
       head_count_(config_.at("arch").at("heads").get<int>()),
       joint_layer_count_(config_.at("arch").at("num_layers").get<int>()),
       single_layer_count_(

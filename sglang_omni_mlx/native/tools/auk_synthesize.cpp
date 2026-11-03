@@ -13,6 +13,7 @@ namespace {
 
 struct Arguments {
   std::filesystem::path model_directory;
+  std::filesystem::path text_encoder_directory;
   std::filesystem::path requests;
   std::filesystem::path output_directory;
   mlx::core::Dtype dtype = mlx::core::bfloat16;
@@ -29,6 +30,8 @@ Arguments ParseArguments(int argc, char **argv) {
     const std::string value = argv[++i];
     if (flag == "--model-path") {
       arguments.model_directory = value;
+    } else if (flag == "--text-encoder-path") {
+      arguments.text_encoder_directory = value;
     } else if (flag == "--requests") {
       arguments.requests = value;
     } else if (flag == "--output-directory") {
@@ -42,10 +45,11 @@ Arguments ParseArguments(int argc, char **argv) {
                                   value);
     }
   }
-  if (arguments.model_directory.empty() || arguments.requests.empty() ||
-      arguments.output_directory.empty()) {
-    throw std::invalid_argument(
-        "--model-path, --requests and --output-directory are required");
+  if (arguments.model_directory.empty() ||
+      arguments.text_encoder_directory.empty() ||
+      arguments.requests.empty() || arguments.output_directory.empty()) {
+    throw std::invalid_argument("--model-path, --text-encoder-path, --requests "
+                                "and --output-directory are required");
   } else {
     return arguments;
   }
@@ -62,7 +66,8 @@ int main(int argc, char **argv) {
     } else {
     }
     std::filesystem::create_directories(arguments.output_directory);
-    auk::Model model(arguments.model_directory, arguments.dtype, 30.0f);
+    auk::Model model(arguments.model_directory,
+                     arguments.text_encoder_directory, arguments.dtype, 30.0f);
     std::set<std::string> request_ids;
     std::string line;
     while (std::getline(requests, line)) {

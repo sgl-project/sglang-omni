@@ -2,11 +2,14 @@
 #include "auk/auk_model.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <random>
 #include <stdexcept>
+#include <string_view>
 
 #include "common/audio_resample.h"
+#include "common/layers.h"
 
 namespace auk {
 
@@ -16,59 +19,102 @@ namespace {
 
 constexpr int SAMPLES_PER_FRAME = 480;
 constexpr int LATENT_CHANNELS = 64;
+// Note (XXXXRT666): the released sampling recipes, as
+// sglang_omni/models/auk/constants.py has them.
+constexpr int kAukSteps = 32;
+constexpr float kAukGuidanceStrength = 2.0f;
+constexpr float kAukSwayCoefficient = -1.0f;
+constexpr int kFlashSteps = 4;
+constexpr float kFlashGuidanceStrength = 0.0f;
+constexpr std::array<float, kFlashSteps + 1> kFlashTimeGrid = {
+    0.0f, 0.07612049579620361f, 0.2928932309150696f, 0.6173166036605835f,
+    1.0f};
+// The wrappers training saved the released weights under.
+constexpr std::array<std::string_view, 4> kTrainingPrefixes = {
+    "ema_model.", "module.", "model.", "net."};
+
+// The model section of a released checkpoint's config.yaml.
+nlohmann::json ReadCheckpointConfig(const std::filesystem::path &directory) {
+  const nlohmann::json root = omni_common::ReadYaml(directory / "config.yaml");
+  return root.contains("model") ? root.at("model") : root;
+}
+
+// The VAE's constructor arguments, whose latent_dim config.yaml interpolates
+// from model.vae.latent_dim.
+nlohmann::json VaeConfig(const nlohmann::json &config) {
+  nlohmann::json vae_config = config.at("vae").at("model_init_kwargs");
+  vae_config["latent_dim"] = config.at("vae").at("latent_dim");
+  return vae_config;
+}
+
+omni_common::WeightMap LoadCheckpointWeights(const std::filesystem::path &path) {
+  const auto stored = mx::load_safetensors(path.string()).first;
+  omni_common::WeightMap weights;
+  for (const auto &[stored_name, weight] : stored) {
+    std::string name = stored_name;
+    for (const std::string_view prefix : kTrainingPrefixes) {
+      if (name.starts_with(prefix)) {
+        name.erase(0, prefix.size());
+        break;
+      } else {
+      }
+    }
+    if (!weights.emplace(name, weight).second) {
+      throw std::invalid_argument("duplicate AuK checkpoint weight: " + name);
+    } else {
+    }
+  }
+  return weights;
+}
 
 } // namespace
 
-Model::SamplingRecipe
-Model::ReadSamplingRecipe(const std::filesystem::path &directory,
-                          mx::Dtype dtype, float max_seconds) {
-  const auto config = omni_common::ReadJson(directory / "config.json");
-  if (config.value("model_type", std::string()) != "auk" ||
-      (config.at("name") != "AuK" && config.at("name") != "AuK-Flash") ||
-      config.at("sample_rate") != kSampleRate ||
-      config.at("downsample_rate") != SAMPLES_PER_FRAME ||
-      config.at("latent_dim") != LATENT_CHANNELS ||
+Model::SamplingRecipe Model::ReadSamplingRecipe(const nlohmann::json &config,
+                                                mx::Dtype dtype,
+                                                float max_seconds) {
+  if ((config.at("name") != "AuK" && config.at("name") != "AuK-Flash") ||
+      config.at("vae").at("target_sample_rate") != kSampleRate ||
+      config.at("vae").at("downsample_rate") != SAMPLES_PER_FRAME ||
+      config.at("vae").at("latent_dim") != LATENT_CHANNELS ||
       (dtype != mx::float32 && dtype != mx::bfloat16) ||
       !std::isfinite(max_seconds) || max_seconds <= 0 || max_seconds > 30) {
     throw std::invalid_argument("unsupported AuK runtime configuration");
+  } else if (config.at("name") == "AuK-Flash") {
+    return {kFlashSteps, kFlashGuidanceStrength, std::nullopt,
+            std::vector<float>(kFlashTimeGrid.begin(), kFlashTimeGrid.end())};
   } else {
-  }
-  SamplingRecipe recipe{
-      config.at("nfe").get<int>(), config.at("cfg_strength").get<float>(),
-      config.at("sway_sampling_coef").is_null()
-          ? std::nullopt
-          : std::optional<float>(config.at("sway_sampling_coef").get<float>()),
-      config.at("time_grid").get<std::vector<float>>()};
-  const auto &grid = recipe.time_grid;
-  if (recipe.steps <= 0 || !std::isfinite(recipe.guidance_strength) ||
-      recipe.guidance_strength < 0 ||
-      (recipe.sway_coefficient && !std::isfinite(*recipe.sway_coefficient)) ||
-      (!grid.empty() &&
-       (grid.size() != static_cast<size_t>(recipe.steps + 1) ||
-        grid.front() != 0 || grid.back() != 1 ||
-        std::any_of(grid.begin(), grid.end(),
-                    [](float time) { return !std::isfinite(time); }) ||
-        std::adjacent_find(grid.begin(), grid.end(),
-                           std::greater_equal<float>()) != grid.end()))) {
-    throw std::invalid_argument("invalid AuK sampling recipe");
-  } else {
-    return recipe;
+    return {kAukSteps, kAukGuidanceStrength, kAukSwayCoefficient, {}};
   }
 }
 
-Model::Model(const std::filesystem::path &directory, mx::Dtype dtype,
-             float maximum_seconds)
-    : sampling_recipe(ReadSamplingRecipe(directory, dtype, maximum_seconds)),
+Model::Model(const std::filesystem::path &model_directory,
+             const std::filesystem::path &text_encoder_directory,
+             mx::Dtype dtype, float max_seconds)
+    : Model(ReadCheckpointConfig(model_directory), model_directory,
+            text_encoder_directory, dtype, max_seconds) {}
+
+Model::Model(const nlohmann::json &config,
+             const std::filesystem::path &model_directory,
+             const std::filesystem::path &text_encoder_directory,
+             mx::Dtype dtype, float maximum_seconds)
+    : sampling_recipe(ReadSamplingRecipe(config, dtype, maximum_seconds)),
       max_seconds(maximum_seconds),
-      conditioner(directory / "conditioner", dtype),
-      diffusion(directory / "dit", dtype), vae(directory / "vae") {
+      conditioner(text_encoder_directory, dtype),
+      diffusion(LoadCheckpointWeights(
+                    model_directory / (config.at("name") == "AuK-Flash"
+                                           ? "auk_flash.safetensors"
+                                           : "auk_base.safetensors")),
+                config.at("arch"),
+                config.at("vae").at("latent_dim").get<int>(), dtype),
+      vae(LoadCheckpointWeights(model_directory / "vae.safetensors"),
+          VaeConfig(config)) {
   diffusion.ValidateInputDimensions(conditioner.TextLayerCount(),
                                     conditioner.TextHiddenChannels(),
                                     vae.LatentDimension());
   if (vae.HopSize() != SAMPLES_PER_FRAME ||
       vae.LatentDimension() != LATENT_CHANNELS) {
     throw std::invalid_argument(
-        "AuK artifact components have inconsistent dimensions");
+        "AuK checkpoint components have inconsistent dimensions");
   } else {
   }
 }

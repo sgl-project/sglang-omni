@@ -32,8 +32,11 @@ struct SynthesisResult {
 
 class Model {
 public:
-  Model(const std::filesystem::path &model_directory, mlx::core::Dtype dtype,
-        float max_seconds);
+  // A released AuK or AuK-Flash checkpoint directory as published, and the
+  // Qwen2.5-Omni-3B directory its conditioner runs.
+  Model(const std::filesystem::path &model_directory,
+        const std::filesystem::path &text_encoder_directory,
+        mlx::core::Dtype dtype, float max_seconds);
   SynthesisResult Synthesize(const SynthesisRequest &request,
                              const std::function<void()> &check_cancelled);
 
@@ -44,9 +47,13 @@ private:
     std::optional<float> sway_coefficient;
     std::vector<float> time_grid;
   };
-  static SamplingRecipe
-  ReadSamplingRecipe(const std::filesystem::path &directory,
-                     mlx::core::Dtype dtype, float max_seconds);
+  Model(const nlohmann::json &config,
+        const std::filesystem::path &model_directory,
+        const std::filesystem::path &text_encoder_directory,
+        mlx::core::Dtype dtype, float max_seconds);
+  static SamplingRecipe ReadSamplingRecipe(const nlohmann::json &config,
+                                           mlx::core::Dtype dtype,
+                                           float max_seconds);
 
   SamplingRecipe sampling_recipe;
   float max_seconds;
