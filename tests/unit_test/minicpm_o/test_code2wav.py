@@ -47,6 +47,7 @@ from sglang_omni.serve.openai_api import (
     ChatCompletionRequest,
     build_chat_generate_request,
 )
+from sglang_omni.serve.openai_errors import generation_error_status_code
 from sglang_omni.utils.device import resolve_concrete_device
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -432,6 +433,7 @@ def test_source_module_noise_leaves_the_global_generator_unchanged() -> None:
 
 @pytest.mark.accelerator
 def test_native_vocoder_with_checkpoint() -> None:
+    """On XPU the configured high-priority decode stream segfaulted the first reference."""
     model = load_checkpoint_model(require_checkpoint_dir())
     device_module = torch.get_device_module(model.token2wav.device)
     if model.token2wav.device.type == "cuda":
@@ -439,6 +441,10 @@ def test_native_vocoder_with_checkpoint() -> None:
             model.decode_stream.priority
             == code2wav_stage_factory().decode_stream_priority
         )
+    elif model.token2wav.device.type == "xpu":
+        assert model.decode_stream.priority == 0
+    else:
+        pass
     device_generator_state = device_module.get_rng_state(model.token2wav.device)
     output = model(codec_tokens=torch.tensor(CHECKPOINT_CODEC_TOKENS))
     assert torch.equal(
@@ -707,10 +713,23 @@ def test_chat_api_forwards_reference_to_vocoder() -> None:
     assert code2wav_reference_audio(project_talker_to_code2wav(payload)) == b"reference"
 
 
-def test_invalid_reference_does_not_silently_use_default() -> None:
-    payload = talker_payload(params={"ref_audio": "/tmp/ref.wav"})
-    with pytest.raises(ValueError, match="inline audio"):
+@pytest.mark.parametrize(
+    ("reference_audio", "error_message"),
+    [
+        ("/tmp/ref.wav", "inline audio"),
+        ("data:audio/wav;base64,@@@", "Invalid base64 audio data URI"),
+        ("data:audio/wav,abcd", "Invalid base64 audio data URI"),
+    ],
+    ids=["local_path", "malformed_base64", "missing_base64_marker"],
+)
+def test_invalid_reference_is_a_bad_request_not_the_default_voice(
+    reference_audio: str, error_message: str
+) -> None:
+    """An unusable ref_audio answered HTTP 500, blaming the server for a client error."""
+    payload = talker_payload(params={"ref_audio": reference_audio})
+    with pytest.raises(ValueError, match=error_message) as raised:
         code2wav_reference_audio(payload)
+    assert generation_error_status_code(raised.value) == 400
 
 
 @pytest.mark.parametrize(
