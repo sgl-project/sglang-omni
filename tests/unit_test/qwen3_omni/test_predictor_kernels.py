@@ -484,6 +484,24 @@ def test_resolver_keeps_the_plain_path_for_a_quantized_projection() -> None:
 @accelerator
 @pytest.mark.accelerator
 @pytest.mark.usefixtures("published_server_args")
+def test_launches_beyond_the_shared_memory_pipeline_fewer_stages_with_the_same_bits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At 64 rows the qkv and gate_up launches need more shared memory over three stages
+    than SM 8.6, 8.9 and 12.x GPUs give a block, and the predictor failed to load there;
+    a launch beyond the GPU's shared memory must step down and give the same bits."""
+    device = torch.device("cuda")
+    steps = predictor_inputs(device, MAX_FUSED_ROWS // 2, seed=27)
+    expected = run_sequence(fuse(build_talker(device, seed=26)), steps)
+    monkeypatch.setattr(predictor_layers, "NUM_STAGES", 6)
+    actual = run_sequence(fuse(build_talker(device, seed=26)), steps)
+    for expected_output, actual_output in zip(expected, actual, strict=True):
+        assert torch.equal(actual_output, expected_output)
+
+
+@accelerator
+@pytest.mark.accelerator
+@pytest.mark.usefixtures("published_server_args")
 def test_split_launches_leave_the_tile_counters_at_zero() -> None:
     """The last program of a tile resets its counter; a missed reset would make the
     next launch reduce with the wrong program and corrupt that launch, not this one."""
