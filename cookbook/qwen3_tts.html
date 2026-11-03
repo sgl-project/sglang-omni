@@ -62,7 +62,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.2.0" />
-    <meta name="docbuild:last-update" content="Nov 02, 2026"/>
+    <meta name="docbuild:last-update" content="Nov 03, 2026"/>
   
     
     <script src="../_static/searchtools.js"></script>
@@ -567,6 +567,7 @@
                 <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#optional-cutedsl-decode">Optional CuTeDSL decode</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ascend-npu-baseline">Ascend NPU baseline</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#deterministic-inference">Deterministic Inference</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#overload-admission-policy">Overload / admission policy</a></li>
@@ -674,6 +675,17 @@ sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\<
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
+<section id="optional-cutedsl-decode">
+<h3>Optional CuTeDSL decode<a class="headerlink" href="#optional-cutedsl-decode" title="Link to this heading">#</a></h3>
+<p>Install the optional dependency with <code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">-e</span> <span class="pre">'.[qwen3-tts-cutedsl]'</span></code>, then set <code class="docutils literal notranslate"><span class="pre">SGLANG_OMNI_QTTS_BACKEND=cutedsl</span></code> before launching the server. Leave it unset, or set it to <code class="docutils literal notranslate"><span class="pre">default</span></code>, for the existing implementation. Both talker and code predictor use the same selector.</p>
+<p>The kernels fuse input RMSNorm, QKV projection, Q/K normalization, RoPE and cache stores before attention, and output projection, residual addition, RMSNorm and the MLP after attention. Weights are packed once after loading; these copies add GPU memory because the originals remain for prefill and fallback. Online weight updates are rejected while this backend is active. K/V writes use the existing cache directly.</p>
+<p>Compiled attention kernels are shared within each 16/32-row tile bucket; live batch size, K/V capacity and RoPE table length are symbolic. Sampling and embedding kernels also reuse binaries across batch sizes. Model dimensions, dtypes, layouts, tail masking, fusion flags and scheduling choices remain specialization keys. CUDA graphs and per-batch workspaces are separate from this compilation cache.</p>
+<p>Warm each batch size before CUDA graph capture so workspace initialization stays outside replay. Norm weights are borrowed immutable tensors, and input/Q/K norms use the model’s common RMSNorm epsilon. Gumbel draws deliberately remain FP64, including endpoint handling, to preserve the default CUDA sampler’s behavior even on Blackwell; the faster FP32 variant changes seeded draws.</p>
+<p>On Hopper and datacenter Blackwell, the same selector also enables predictor sampling/embedding fusion and BF16 SnakeBeta in the vocoder. Greedy and top-k buckets 50/64/128 fuse token selection, code-buffer writes, embedding accumulation and optional projected lookup; other sampling settings retain their filtering/tie order and use separate embedding lookup. Prefiltered sampling supports up to 2048 candidates. SnakeBeta prepares immutable coefficients after weight loading and preserves eager BF16 rounding, including an exact BF16 sine table for large tensors. Unsupported layouts, dtypes and devices retain the existing implementations. Attention, preprocessing and scheduling are unchanged.</p>
+<p>With fused vocoder activation enabled, BF16 full/window decoding also uses causal Conv1D + bias + SnakeBeta and Conv1D + bias + residual kernels. Supported convolutions have stride/groups one and channel counts divisible by 32; transposed convolutions and the final one-channel convolution use channels-last cuDNN. Weights are packed after loading and remain immutable. Batch size and audio length are runtime parameters, so graph buckets reuse compiled kernels. Stateful incremental decoding uses CuTeDSL pointwise Conv1D and retains the default fused bias/residual/SnakeBeta activation. Convolution history and KV rings stay in place; remaining BF16 state gathers/scatters are batched into one kernel each. BF16 convolution reduction order can change waveform values; this is not bitwise-equivalent decoding.</p>
+<p>The transformer blocks support BF16, TP1, 0.6B/1.7B Qwen3-TTS, decode batches of 1–32 on full SM90/SM100/SM103 GPUs with at least 96 SMs. Devices below this minimum, including H20, keep the default transformer blocks; eligible auxiliary and vocoder kernels can still use CuTeDSL. The predictor’s two-token prefix also uses these blocks for batches up to 16, with causal attention. The post-attention kernels require a cooperative grid of 24 resident four-CTA clusters; MIG and SM-partitioned contexts are not supported. Talker prefill, larger batches, unsupported weight layouts and other GPU architectures keep the default transformer blocks. Deterministic and batch-invariant modes also keep the default transformer blocks. The custom kernels are imported only when this backend is selected.</p>
+<p>The predictor follows the default fused predictor’s rounding, norm accumulation and split-K order, and reuses its attention kernel. The 0.6B talker preserves the FP32 residual sum through RMSNorm and stores a separate BF16 residual carry; the 1.7B talker retains BF16-rounded residuals. GEMM accumulation and convolution reduction can still differ, so generated tokens and waveforms need not match exactly. Validate speech quality for your workload before deployment.</p>
+</section>
 <section id="ascend-npu-baseline">
 <h3>Ascend NPU baseline<a class="headerlink" href="#ascend-npu-baseline" title="Link to this heading">#</a></h3>
 <p>All four NPU examples enable Talker graphs, asynchronous vocoder decoding, and
@@ -1599,6 +1611,7 @@ CustomVoice and VoiceDesign loop far less often (2 runaways in about 121,000 Chi
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#optional-cutedsl-decode">Optional CuTeDSL decode</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ascend-npu-baseline">Ascend NPU baseline</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#deterministic-inference">Deterministic Inference</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#overload-admission-policy">Overload / admission policy</a></li>
@@ -1660,7 +1673,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Nov 02, 2026.
+  Last updated on Nov 03, 2026.
   <br/>
 </p>
   </div>
