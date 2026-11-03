@@ -9,6 +9,7 @@ import pytest
 import torch
 from sglang.multimodal_gen.runtime.managers.forward_context import set_forward_context
 from sglang.multimodal_gen.runtime.platforms import AttentionBackendEnum
+from sglang.srt.models.qwen3 import Qwen3ForCausalLM
 from torch.nn import functional as F
 
 from sglang_omni.models.minimax_music3.acoustic import (
@@ -29,9 +30,12 @@ from sglang_omni.models.minimax_music3.dit import (
     apply_rope,
     resolve_attention_backend,
 )
+from sglang_omni.models.minimax_music3.engine_builder import MiniMaxMusic3EngineBuilder
 from sglang_omni.models.minimax_music3.model_runner import HiddenFrameBuffer
 from sglang_omni.models.minimax_music3.rvq_cuda_graph import RVQDepthCudaGraphRunner
 from sglang_omni.models.minimax_music3.rvq_decoder import sample_topk_seeded
+from sglang_omni.models.minimax_music3.serial_offload import SerialOffloadCoordinator
+from sglang_omni.models.minimax_music3.weight_cache import checkpoint_identity
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.device_graph import DeviceGraphBackend
@@ -580,10 +584,6 @@ def test_engine_builder_selects_native_backbone_without_mutating_legacy_config(
     tmp_path: Path,
 ) -> None:
     """The native language model is loadable without changing the legacy copy."""
-    from sglang_omni.models.minimax_music3.engine_builder import (
-        MiniMaxMusic3EngineBuilder,
-    )
-
     root = tmp_path / "checkpoint"
     language_model_dir = root / "language_model"
     language_model_dir.mkdir(parents=True)
@@ -602,21 +602,19 @@ def test_engine_builder_selects_native_backbone_without_mutating_legacy_config(
 
     builder = MiniMaxMusic3EngineBuilder()
     resolved = Path(builder.resolve_checkpoint(str(root)))
+    load_weights = Qwen3ForCausalLM.load_weights
 
+    builder.pre_infra_setup(str(resolved))
     assert resolved == language_model_dir
     assert builder.model_arch_override is None
-    assert "pre_infra_setup" not in type(builder).__dict__
     assert legacy_config_path.is_symlink()
     assert legacy_config_path.resolve() == blob
     assert legacy_config_path.read_bytes() == original_config
     assert not (legacy_dir / "config.json.bak").exists()
+    assert Qwen3ForCausalLM.load_weights is load_weights
 
 
 def test_checkpoint_requires_native_qwen3_backbone(tmp_path: Path) -> None:
-    from sglang_omni.models.minimax_music3.engine_builder import (
-        MiniMaxMusic3EngineBuilder,
-    )
-
     root = tmp_path / "checkpoint"
     legacy_dir = root / "qwen_7B" / "qwen_7B"
     legacy_dir.mkdir(parents=True)
@@ -630,10 +628,6 @@ def test_checkpoint_requires_native_qwen3_backbone(tmp_path: Path) -> None:
 
 
 def test_checkpoint_rejects_non_qwen3_native_config(tmp_path: Path) -> None:
-    from sglang_omni.models.minimax_music3.engine_builder import (
-        MiniMaxMusic3EngineBuilder,
-    )
-
     root = tmp_path / "checkpoint"
     language_model_dir = root / "language_model"
     language_model_dir.mkdir(parents=True)
@@ -652,10 +646,6 @@ def test_checkpoint_rejects_non_qwen3_native_config(tmp_path: Path) -> None:
 
 
 def test_checkpoint_rejects_hidden_size_mismatch(tmp_path: Path) -> None:
-    from sglang_omni.models.minimax_music3.engine_builder import (
-        MiniMaxMusic3EngineBuilder,
-    )
-
     root = tmp_path / "checkpoint"
     language_model_dir = root / "language_model"
     language_model_dir.mkdir(parents=True)
@@ -671,3 +661,47 @@ def test_checkpoint_rejects_hidden_size_mismatch(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="hidden_size mismatch"):
         MiniMaxMusic3EngineBuilder().resolve_checkpoint(str(root))
+
+
+def test_serial_offload_identity_includes_native_backbone_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "checkpoint"
+    native_config = root / "language_model" / "config.json"
+    native_config.parent.mkdir(parents=True)
+    native_config.write_text(json.dumps({"model_type": "qwen3", "hidden_size": 4096}))
+    audio_config = root / "qwen_7B" / "qwen_7B" / "config.json"
+    audio_config.parent.mkdir(parents=True)
+    audio_config.write_text(json.dumps({"model_type": "mixtral", "hidden_size": 4096}))
+    (audio_config.parent / "model.safetensors").write_bytes(b"weights")
+
+    builder = MiniMaxMusic3EngineBuilder(
+        enable_serial_offload=True,
+        serial_offload_source="ram",
+    )
+    builder.checkpoint_root = str(root)
+    coordinator = SerialOffloadCoordinator()
+    checkpoint_paths: list[Path] = []
+
+    def record_checkpoint_identity(paths: list[Path]) -> dict[str, str]:
+        checkpoint_paths.extend(paths)
+        return checkpoint_identity(paths)
+
+    monkeypatch.setattr(
+        "sglang_omni.models.minimax_music3.engine_builder.get_coordinator",
+        lambda: coordinator,
+    )
+    monkeypatch.setattr(
+        "sglang_omni.models.minimax_music3.engine_builder.checkpoint_identity",
+        record_checkpoint_identity,
+    )
+
+    builder.setup_model_resources(
+        torch.nn.Linear(1, 1),
+        None,  # type: ignore[arg-type]
+        generation_cuda_graph_enabled=False,
+    )
+
+    assert coordinator.ar_residency is not None
+    assert native_config in checkpoint_paths

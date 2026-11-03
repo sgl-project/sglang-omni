@@ -208,6 +208,7 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder["MiniMaxMusic3SGLangRequestDat
             paths.append(
                 Path(self.checkpoint_root) / "qwen_7B" / "qwen_7B" / "config.json"
             )
+            paths.append(Path(self.checkpoint_root) / "language_model" / "config.json")
             get_coordinator().register_ar(
                 model,
                 next(model.parameters()).device,
