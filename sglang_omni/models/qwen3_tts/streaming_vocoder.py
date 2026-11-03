@@ -3700,10 +3700,10 @@ class Qwen3TTSStreamingVocoderScheduler(
         del request_id
         final_state = Qwen3TTSState.from_dict(payload.data)
         if state.whole_audio is not None:
-            samples = state.whole_generated_frames * self.samples_per_frame
+            generated_samples = state.whole_generated_frames * self.samples_per_frame
             return self.audio_result_data(
                 final_state,
-                torch.cat(state.whole_audio)[:samples].numpy(),
+                torch.cat(state.whole_audio)[:generated_samples].numpy(),
                 self.sample_rate,
             )
         else:
