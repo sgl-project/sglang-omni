@@ -14,6 +14,7 @@ from typing import Protocol
 import torch
 from sglang.kernels.ops.sampling.murmur_hash import murmur_hash32
 
+from sglang_omni.models.fun_cosyvoice3.dspark_noise import draw_seeded_noise
 from sglang_omni.models.fun_cosyvoice3.model_runner import COSYVOICE3_RAS_WINDOW_SIZE
 from sglang_omni.models.fun_cosyvoice3.sglang_model import TOTAL_VOCAB_SIZE, VOCAB_SIZE
 
@@ -46,11 +47,52 @@ def seeded_exponential_noise(
     seeds: torch.Tensor, output_lengths: torch.Tensor, *, salt: int, column_count: int
 ) -> torch.Tensor:
     """Float32 Exp(1) draws fixed by each row's seed and output length."""
-    return (
-        -seeded_uniform_noise(
-            seeds, output_lengths, salt=salt, column_count=column_count
-        ).log()
-    ).float()
+    if seeds.device.type == "cuda":
+        return draw_seeded_noise(
+            seeds,
+            output_lengths,
+            exponential_columns=column_count,
+            exponential_salt=salt,
+        )[0]
+    else:
+        return (
+            -seeded_uniform_noise(
+                seeds, output_lengths, salt=salt, column_count=column_count
+            ).log()
+        ).float()
+
+
+def seeded_verify_noise(
+    seeds: torch.Tensor, output_lengths: torch.Tensor, *, draft_count: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Draw the residual exponential and clamped acceptance uniform together."""
+    if seeds.device.type == "cuda":
+        return draw_seeded_noise(
+            seeds,
+            output_lengths,
+            exponential_columns=TOTAL_VOCAB_SIZE,
+            exponential_salt=RESIDUAL_NOISE_SEED_SALT,
+            acceptance_columns=draft_count,
+            acceptance_salt=ACCEPTANCE_NOISE_SEED_SALT,
+        )
+    else:
+        exponential_noise = seeded_exponential_noise(
+            seeds,
+            output_lengths,
+            salt=RESIDUAL_NOISE_SEED_SALT,
+            column_count=TOTAL_VOCAB_SIZE,
+        )
+        uniform_noise = (
+            seeded_uniform_noise(
+                seeds,
+                output_lengths,
+                salt=ACCEPTANCE_NOISE_SEED_SALT,
+                column_count=draft_count,
+            )
+            .float()
+            .clamp_(max=LARGEST_FLOAT32_BELOW_ONE)
+        )
+        return exponential_noise, uniform_noise
 
 
 @dataclass(kw_only=True)
