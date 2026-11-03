@@ -8,6 +8,7 @@ import contextlib
 import gc
 import hashlib
 import logging
+import math
 import multiprocessing
 import os
 import pickle
@@ -233,7 +234,9 @@ async def run_samples(
         raise ValueError("dataset_revision must be nonempty")
     else:
         pass
-    if not 0 < timeout_s <= MAX_TIMEOUT_S:
+    if not math.isfinite(timeout_s) or timeout_s <= 0:
+        raise ValueError("timeout_s must be finite and positive")
+    elif profile != "personaplex" and timeout_s > MAX_TIMEOUT_S:
         raise ValueError(f"timeout_s must be positive and at most {MAX_TIMEOUT_S}")
     else:
         pass

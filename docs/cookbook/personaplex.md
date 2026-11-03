@@ -89,6 +89,10 @@ python -m benchmarks.eval.benchmark_duplex_serving sweep \
 
 The serving report counts input units at 24 kHz, measures lag from input-send completion, and excludes empty end-of-input units. Inspect `serving.json` and `SERVING.md` for the 80 ms serving deadline verdict. FDB `reference-export` requires 16 kHz recorded input and rejects this profile.
 
+For long-call serving measurements, pass a finite `--timeout` longer than the complete input plus drain time after the sweep's `--` separator, for example `--timeout 600` for a 360-second input. The FDB recorder accepts deadlines above 230 seconds for `personaplex`; other profiles retain their existing ceiling. Repeated audio supplies a reproducible serving load for long-call measurements.
+
+See the [H100 serving baseline](https://github.com/yaourt137/sglang-omni/issues/1) for measured deadline misses, latency, cold and warm behavior, and the MPS comparison.
+
 ## Request parameters
 
 | Parameter | Effect |

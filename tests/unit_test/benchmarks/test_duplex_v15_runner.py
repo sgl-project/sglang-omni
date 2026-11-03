@@ -561,6 +561,26 @@ def test_run_samples_rejects_timeouts_past_the_session_deadline(
     assert not (tmp_path / "never").exists()
 
 
+@pytest.mark.parametrize("timeout_seconds", [0, -1, float("inf"), float("nan")])
+def test_personaplex_rejects_unbounded_or_nonpositive_deadlines(
+    tmp_path: Path, timeout_seconds: float
+) -> None:
+    """Long-call support must keep the recorder's deadline finite and positive."""
+    with pytest.raises(ValueError, match="finite and positive"):
+        asyncio.run(
+            run_samples(
+                tmp_path,
+                url="ws://127.0.0.1:1/v1/realtime",
+                output=tmp_path / "never",
+                server=SERVER,
+                dataset_revision="fixture",
+                timeout_s=timeout_seconds,
+                profile="personaplex",
+            )
+        )
+    assert not (tmp_path / "never").exists()
+
+
 # note (wenyao): the real server counts a closing session until its teardown ends.
 SESSION_TEARDOWN_HOLD_S = 1.5
 

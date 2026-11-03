@@ -390,7 +390,7 @@ def test_minicpmo_pair_capture_and_replay(tmp_path: Path) -> None:
 def test_personaplex_capture_replay_and_serving(
     tmp_path: Path, input_samples: int
 ) -> None:
-    """24 kHz input and the initial extra output frame must survive recording and replay."""
+    """PersonaPlex recording must accept a long-call deadline and preserve its 24 kHz audio."""
     dataset = tmp_path / "dataset"
     write_dataset(dataset)
     metadata_path = dataset / "user_interruption" / "1" / "metadata.json"
@@ -429,7 +429,7 @@ def test_personaplex_capture_replay_and_serving(
                 output=tmp_path / "recording",
                 server={"revision": "a" * 40},
                 dataset_revision="pinned",
-                timeout_s=5,
+                timeout_s=600,
                 sample_ids=["user_interruption/1"],
                 profile="personaplex",
             )
@@ -503,6 +503,43 @@ def personaplex_trace() -> list[dict[str, JsonValue]]:
         else:
             pass
     return records
+
+
+@pytest.mark.parametrize("padding_samples", [1, 2])
+def test_personaplex_fractional_millisecond_padding(padding_samples: int) -> None:
+    """Valid 24 kHz tail padding was rejected by subtracting rounded millisecond totals."""
+    records = [
+        record
+        for record in personaplex_trace()
+        if not (
+            record["event"]["type"] == "sglang.unit.done"
+            and record["event"]["unit_id"] == "unit_2"
+        )
+    ]
+    for record in records:
+        event = record["event"]
+        if event["type"] == "input_audio_buffer.append" and event["sglang"]["seq"] == 1:
+            event["audio"] = base64.b64encode(bytes(1919 * 2)).decode()
+        elif event["type"] == "sglang.input_audio.accepted" and event["seq"] == 1:
+            event["accepted_end_ms"] = 3839 / 24
+        elif event["type"] == "sglang.input_audio.ended":
+            event["accepted_end_ms"] = 3839 / 24
+        elif event["type"] == "sglang.input_audio.drained":
+            event.update(
+                accepted_end_ms=3839 / 24,
+                consumed_ms=3839 / 24,
+                padding_ms=padding_samples / 24,
+            )
+        elif event["type"] == "sglang.unit.done" and event["unit_id"] == "unit_1":
+            event["sglang"]["media_time"]["duration_ms"] = 3839 / 24 - 80
+        else:
+            pass
+    result = evaluate_trace(records, profile="personaplex")
+    if padding_samples == 1:
+        assert result["status"] == "pass", result
+    else:
+        assert result["status"] == "fail", result
+        assert "drained padding mismatch" in result["violations"]
 
 
 @pytest.mark.parametrize("extra_samples", [-1920, 1920])
