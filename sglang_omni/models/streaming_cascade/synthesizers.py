@@ -254,7 +254,7 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
             # Note (ruoyu): Qwen3-TTS answers 500 to a sentence with no word in it, which would close the session.
             if re.search(r"\w", sentence):
                 if audio_ms and pause_samples:
-                    # Note (Haoling Pu): Each request ends at its last word, so back-to-back requests leave about 0.12 s between sentences, against about 0.35 s when one request reads the whole reply.
+                    # note (Haoling Pu): each request ends at its last word, so back-to-back requests leave about 0.12 s between sentences, against about 0.35 s when one request reads the whole reply.
                     audio_ms += pause_samples * 1000 / self.sample_rate_hz
                     emit(
                         audio_chunk(
