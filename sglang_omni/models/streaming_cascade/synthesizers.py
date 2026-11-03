@@ -42,7 +42,7 @@ MARKDOWN_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 UNSPOKEN_SYMBOLS = re.compile(
     "[\U0001f000-\U0001faff\u2600-\u27bf\u2b50\u2b55\ufe0e\ufe0f\u200d\u20e3*`]"
 )
-# Note (Haoling Pu): Qwen3-TTS reads a heading, list or quote marker as a word, garbles a table row and can run on for 40 s or more after either, and reads a bare URL out symbol by symbol.
+# note (Haoling Pu): Qwen3-TTS reads a heading, list or quote marker as a word, garbles a table row and can run on for 40 s or more after either, and reads a bare URL out symbol by symbol.
 LINE_MARKER = re.compile(r"(?m)^[ \t]*(?:#{1,6}|[-+\u2022>])[ \t]+")
 TABLE_EDGE_PIPE = re.compile(r"(?m)^[ \t]*\||\|[ \t]*$")
 TABLE_PIPE = re.compile(r"[ \t]*\|[ \t]*")
@@ -319,7 +319,7 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
             )
             # Note (ruoyu): Qwen3-TTS answers 500 to a sentence with no word in it, which would close the session.
             if re.search(r"\w", sentence):
-                # Note (Haoling Pu): A span starts with the spacing after the sentence before it, which the model wrote before the tag of this one.
+                # note (Haoling Pu): a span starts with the spacing after the sentence before it, which the model wrote before the tag of this one.
                 spoken_start = text_end + len(span) - len(span.lstrip())
                 style = next(
                     delta_style

@@ -172,7 +172,7 @@ class Dialog(StreamComponent):
         # Waiting utterances as (turn, transcript, language the recognizer heard).
         self.waiting: deque[tuple[int, str, str | None]] = deque()
         self.reply: list[str] | None = None
-        # The open reply's style changes as (characters of the reply before the style, style).
+        # note (Haoling Pu): the open reply's style changes, each as (characters of the reply before it, style).
         self.reply_style_starts: list[tuple[int, str]] = []
         self.reply_turn = 0
         self.turns = 0

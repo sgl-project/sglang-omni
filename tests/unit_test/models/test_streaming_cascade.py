@@ -1042,6 +1042,15 @@ def test_extra_body_cannot_set_the_fields_the_chat_kind_sets():
         }
     )
     assert config.extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
+    with pytest.raises(ValueError, match="extra_body cannot set regex"):
+        COMPONENTS.parse(
+            {
+                "kind": "openai_chat",
+                **HTTP_SERVICE,
+                "extra_body": {"regex": ".*"},
+                "constrain_style_tags": True,
+            }
+        )
 
 
 def declared(nodes=None, publish=None, **fields) -> StreamingCascadePipelineConfig:
@@ -2674,7 +2683,7 @@ async def test_a_style_tag_leaves_the_reply_text_and_picks_the_recording_of_the_
 def test_the_styles_profile_holds_every_reply_to_a_tag_its_synthesizer_clones():
     """Without the regex Qwen3.8-27B left the brackets off a tag or named a style the speech node lacks, and the speech service read the word out."""
     graph = profile_config("qwen3-asr-qwen3.8-27b-vivian-styles").component_graph()
-    regex = str(graph.node("llm").component.extra_body["regex"])
+    regex = str(ComponentSession("llm", graph).component.request_body([])["regex"])
     for style in graph.node("tts").component.styles:
         assert re.fullmatch(regex, f"[{style}] Take a slow breath.")
         assert f"[{style}]" in graph.node("dialog").component.system_prompt
@@ -2689,7 +2698,7 @@ def test_the_styles_profile_holds_every_reply_to_a_tag_its_synthesizer_clones():
 
 @pytest.mark.asyncio
 async def test_a_configure_that_changes_the_speech_styles_reaches_the_chat_node():
-    """A configure that gave the speech node a style left the chat node's style list as it was, so the new tag stayed in the reply and was spoken."""
+    """A configure that gave the speech node a style left the chat node's style list and the profile's regex as they were, so the regex still forced a tag the speech node no longer had and it was spoken."""
     graph = profile_config("qwen3-asr-qwen3.8-27b-vivian-styles").component_graph()
     session = ComponentSession("llm", graph)
     session.emit = lambda chunk: None
@@ -2701,7 +2710,10 @@ async def test_a_configure_that_changes_the_speech_styles_reaches_the_chat_node(
             },
         )
     )
-    assert "whisper" in session.component.styles
+    assert session.component.styles == ["whisper"]
+    regex = str(session.component.request_body([])["regex"])
+    assert re.fullmatch(regex, "[whisper] Hush.")
+    assert not re.fullmatch(regex, "[calm] Take a breath.")
 
 
 @pytest.mark.asyncio

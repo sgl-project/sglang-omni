@@ -1,4 +1,4 @@
-# The qwen3-asr-qwen3.8-27b-vivian cascade with speaking styles: Qwen3.8-27B starts every reply with a style tag such as [calm], held to the five styles by a regex, and Qwen3-TTS Base speaks it by cloning the Vivian recording of that style with its transcript; [neutral] clones vivian.wav.
+# The qwen3-asr-qwen3.8-27b-vivian cascade with speaking styles: Qwen3.8-27B starts every reply with a style tag such as [calm], held to the speech node's styles by a regex, and Qwen3-TTS Base speaks it by cloning the Vivian recording of that style with its transcript; [neutral] clones vivian.wav.
 config_cls: StreamingCascadePipelineConfig
 model_path: examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian-styles
 
@@ -48,8 +48,8 @@ session_nodes:
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
-      # Qwen3.8-27B left the brackets off or named another style in 6 to 8 percent of replies, which the speech service then read out.
-      regex: '\[(neutral|cheerful|sympathetic|excited|calm)\] [^\[\]]*'
+    # note (Haoling Pu): without the regex Qwen3.8-27B left the brackets off or named another style in 6 to 8 percent of replies, which the speech service then read out.
+    constrain_style_tags: true
   tts:
     kind: openai_speech
     inputs:

@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Literal
 
 import httpx
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from sglang_omni.models.streaming_cascade.base import (
     ChatMessage,
@@ -48,6 +48,7 @@ class OpenAIChatGeneratorConfig(ComponentConfig):
     temperature: float | None = Field(default=None, ge=0, le=2)
     api_key_env: str = "OPENAI_API_KEY"
     extra_body: dict[str, object] = Field(default_factory=dict)
+    constrain_style_tags: bool = False
 
     @field_validator("extra_body")
     @classmethod
@@ -58,6 +59,15 @@ class OpenAIChatGeneratorConfig(ComponentConfig):
             )
         else:
             return extra_body
+
+    @model_validator(mode="after")
+    def check_style_tag_regex(self) -> "OpenAIChatGeneratorConfig":
+        if self.constrain_style_tags and "regex" in self.extra_body:
+            raise ValueError(
+                "extra_body cannot set regex when constrain_style_tags builds it"
+            )
+        else:
+            return self
 
 
 class ChatDelta(BaseModel):
@@ -174,6 +184,13 @@ class OpenAIChatGenerator(Replier):
         }
         if self.config.temperature is not None:
             body["temperature"] = self.config.temperature
+        else:
+            pass
+        if self.config.constrain_style_tags and self.styles:
+            # note (Haoling Pu): built from the styles where the node is placed, so a configure that changes them changes the regex too.
+            body["regex"] = (
+                r"\[(" + "|".join(map(re.escape, self.styles)) + r")\] [^\[\]]*"
+            )
         else:
             pass
         return {**body, **self.config.extra_body}
