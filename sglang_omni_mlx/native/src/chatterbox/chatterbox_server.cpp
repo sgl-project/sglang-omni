@@ -835,9 +835,10 @@ private:
       }
     };
     check_deadline();
-    const chatterbox::Voice voice = request.reference.has_value()
-                                        ? model_.CloneVoice(*request.reference)
-                                        : model_.builtin_voice();
+    const chatterbox::Voice voice =
+        request.reference.has_value()
+            ? model_.CloneVoice(*request.reference, check_deadline)
+            : model_.builtin_voice();
     check_deadline();
     mlx::core::random::seed(request.seed);
     std::vector<int> speech_tokens;
@@ -850,7 +851,8 @@ private:
         });
     result.generated_token_count = static_cast<int>(speech_tokens.size());
     check_deadline();
-    std::vector<float> samples = model_.Synthesize(speech_tokens, voice);
+    std::vector<float> samples =
+        model_.Synthesize(speech_tokens, voice, check_deadline);
     check_deadline();
     std::lock_guard<std::mutex> lock(channel.mutex);
     channel.samples = std::move(samples);

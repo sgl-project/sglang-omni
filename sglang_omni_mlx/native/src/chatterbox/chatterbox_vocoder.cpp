@@ -217,10 +217,15 @@ mx::array Vocoder::OverlapAdd(const mx::array &frames) const {
                    {1, start + (frame_count - 1) * kHopSamples});
 }
 
-mx::array Vocoder::Waveform(const mx::array &mel) const {
+mx::array Vocoder::Waveform(const mx::array &mel,
+                            const std::function<void()> &on_step) const {
   const std::string prefix = kPrefix;
   const mx::array mel_frames = mx::transpose(mel, {0, 2, 1});
 
+  if (on_step) {
+    on_step();
+  } else {
+  }
   mx::array hidden = mel_frames;
   for (int layer = 0; layer < kF0PredictorLayers; ++layer) {
     hidden = Convolution(hidden,
@@ -236,6 +241,10 @@ mx::array Vocoder::Waveform(const mx::array &mel) const {
       mx::abs(checkpoint_.Linear(hidden, prefix + ".f0_predictor.classifier"));
   const mx::array source = Source(mx::repeat(f0_hz, kSamplesPerMelFrame, 1));
   const mx::array source_spectrum = SourceSpectrum(source);
+  if (on_step) {
+    on_step();
+  } else {
+  }
 
   mx::array x = Convolution(mel_frames, prefix + ".conv_pre.conv", 1, 3, 1);
   const int stage_count = std::size(kUpsampleRates);
@@ -283,6 +292,12 @@ mx::array Vocoder::Waveform(const mx::array &mel) const {
   }
   x = mx::maximum(mx::multiply(mx::array(0.01f), x), x);
   x = Convolution(x, prefix + ".conv_post.conv", 1, 3, 1);
+  // One evaluation here lets on_step interrupt before the final synthesis.
+  mx::eval(x);
+  if (on_step) {
+    on_step();
+  } else {
+  }
 
   const int frame_count = x.shape(1);
   const mx::array magnitude = mx::clip(

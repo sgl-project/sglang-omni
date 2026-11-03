@@ -47,8 +47,10 @@ public:
   // Throws std::invalid_argument unless wav_bytes is a WAV file whose
   // header gives more than 5 s and at most 60 s of audio; reads no samples.
   static void CheckReference(std::string_view wav_bytes);
-  // A voice cloned from a recording CheckReference accepts.
-  Voice CloneVoice(std::string_view wav_bytes) const;
+  // A voice cloned from a recording CheckReference accepts. on_step, when
+  // given, runs between the frontend stages and may throw to cancel cloning.
+  Voice CloneVoice(std::string_view wav_bytes,
+                   const std::function<void()> &on_step = {}) const;
   // T3's text ids for text after NormalizePunctuation; throws
   // std::invalid_argument past kMaxTextTokens.
   std::vector<int> EncodeText(const std::string &text) const;
@@ -63,7 +65,8 @@ public:
   }
   // 24 kHz samples for T3's speech tokens in voice.
   std::vector<float> Synthesize(const std::vector<int> &speech_tokens,
-                                const Voice &voice) const;
+                                const Voice &voice,
+                                const std::function<void()> &on_step = {}) const;
 
 private:
   omni_common::Checkpoint checkpoint_;
