@@ -9,6 +9,7 @@ import platform
 import subprocess
 import sys
 import threading
+import types
 import wave
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
@@ -17,6 +18,7 @@ import pytest
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.server import ServerConnection, serve
 
+from sglang_omni_mlx.native.ci import long_audio_client
 from sglang_omni_mlx.native.ci.long_audio_client import (
     MemorySampler,
     compare_cancellation_timing,
@@ -186,6 +188,59 @@ def test_realtime_silent_audio_does_not_time_out_before_input_ends(
         finally:
             server.shutdown()
             thread.join(timeout=5)
+
+
+def test_realtime_pacing_starts_after_session_setup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A slow handshake must not cause the audio to be sent in a burst."""
+    recording = tmp_path / "silence.wav"
+    with wave.open(str(recording), "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(16000)
+        writer.writeframes(b"\x00\x00" * 16000)
+
+    clock = [0.0]
+    sent_at: list[float] = []
+
+    class Socket:
+        def __enter__(self) -> Socket:
+            return self
+
+        def __exit__(self, *arguments: object) -> None:
+            pass
+
+        def send(self, payload: str) -> None:
+            if json.loads(payload)["type"] == "input_audio_buffer.append":
+                sent_at.append(clock[0])
+            else:
+                pass
+
+        def recv(self, timeout: float | None = None) -> str:
+            if timeout is not None:
+                clock[0] += 5
+                return json.dumps({"type": "transcription_session.updated"})
+            else:
+                return json.dumps({"type": "transcription.completed", "text": ""})
+
+        def close(self) -> None:
+            pass
+
+    def sleep(seconds: float) -> None:
+        clock[0] += seconds
+
+    monkeypatch.setattr(
+        long_audio_client,
+        "time",
+        types.SimpleNamespace(monotonic=lambda: clock[0], sleep=sleep),
+    )
+    monkeypatch.setattr(
+        long_audio_client, "connect", lambda *arguments, **options: Socket()
+    )
+    stream_recording(1234, recording, "en", 1, 1, tmp_path / "events.jsonl")
+    assert len(sent_at) == 10
+    assert sent_at[1] - sent_at[0] == pytest.approx(0.1)
 
 
 @pytest.mark.skipif(platform.system() != "Darwin", reason="macOS process accounting")

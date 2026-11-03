@@ -342,6 +342,7 @@ def stream_recording(
         receiver.start()
         with wave.open(str(path), "rb") as reader:
             sent_frames = 0
+            send_started = time.monotonic()
             while pcm := reader.readframes(SAMPLE_RATE // 10):
                 if errors:
                     raise RuntimeError(errors[0])
@@ -359,7 +360,9 @@ def stream_recording(
                 time.sleep(
                     max(
                         0,
-                        started + sent_frames / SAMPLE_RATE / speed - time.monotonic(),
+                        send_started
+                        + sent_frames / SAMPLE_RATE / speed
+                        - time.monotonic(),
                     )
                 )
         finished_sending = time.monotonic()
