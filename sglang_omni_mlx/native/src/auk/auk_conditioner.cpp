@@ -40,12 +40,7 @@ LoadConditionerWeights(const std::filesystem::path &directory,
     mx::array value = mx::astype(weight, dtype);
     if (normalized == "audio_tower.conv1.weight" ||
         normalized == "audio_tower.conv2.weight") {
-      if (value.ndim() != 3 || value.shape(2) != 3) {
-        throw std::invalid_argument(
-            "AuK audio convolutions must use Torch layout");
-      } else {
-        value = mx::transpose(value, {0, 2, 1});
-      }
+      value = mx::transpose(value, {0, 2, 1});
     } else {
     }
     if (!weights.emplace(normalized, std::move(value)).second) {
@@ -55,15 +50,6 @@ LoadConditionerWeights(const std::filesystem::path &directory,
     }
   }
   return weights;
-}
-
-void RequireWeight(const omni_common::Checkpoint &checkpoint,
-                   const std::string &name, const mx::Shape &shape) {
-  if (checkpoint.Weight(name).shape() != shape) {
-    throw std::invalid_argument("invalid AuK conditioner weight shape: " +
-                                name);
-  } else {
-  }
 }
 
 mx::array HalfRoPE(const mx::array &value, const mx::array &cosine,
@@ -86,8 +72,6 @@ Conditioner::Config::Read(const std::filesystem::path &directory) {
   const auto &audio = thinker.at("audio_config");
   const auto processor =
       omni_common::ReadJson(directory / "preprocessor_config.json");
-  const auto rope = text.value(
-      "rope_parameters", text.value("rope_scaling", nlohmann::json::object()));
   Config config;
   config.hidden_size = text.at("hidden_size");
   config.vocabulary_size = text.at("vocab_size");
@@ -97,11 +81,7 @@ Conditioner::Config::Read(const std::filesystem::path &directory) {
   config.text_intermediate_size = text.at("intermediate_size");
   config.max_tokens = text.at("max_position_embeddings");
   config.rms_norm_epsilon = text.at("rms_norm_eps");
-  config.rope_theta =
-      rope.value("rope_theta", text.value("rope_theta", 1000000.0f));
-  config.sliding_window = text.value("use_sliding_window", false)
-                              ? text.at("sliding_window").get<int>()
-                              : 0;
+  config.rope_theta = text.at("rope_theta");
   config.audio_hidden_size = audio.at("d_model");
   config.audio_layer_count = audio.at("encoder_layers");
   config.audio_head_count = audio.at("encoder_attention_heads");
@@ -112,8 +92,8 @@ Conditioner::Config::Read(const std::filesystem::path &directory) {
   config.image_token_id = thinker.at("image_token_index");
   config.video_token_id = thinker.at("video_token_index");
   if (text.at("hidden_act") != "silu" ||
-      rope.value("rope_type", rope.value("type", std::string("default"))) !=
-          "default" ||
+      text.at("rope_scaling").at("rope_type") != "default" ||
+      text.at("use_sliding_window") != false ||
       audio.at("activation_function") != "gelu" ||
       audio.at("num_mel_bins") != omni_common::kMelBinCount ||
       audio.at("output_dim") != config.hidden_size ||
@@ -122,8 +102,6 @@ Conditioner::Config::Read(const std::filesystem::path &directory) {
       processor.at("n_fft") != omni_common::kFftSize ||
       processor.at("hop_length") != omni_common::kHopLength ||
       processor.at("padding_side") != "right" ||
-      audio.value("num_hidden_layers", config.audio_layer_count) !=
-          config.audio_layer_count ||
       processor.value("dither", 0.0f) != 0.0f ||
       processor.value("padding_value", 0.0f) != 0.0f) {
     throw std::invalid_argument("unsupported AuK conditioner configuration");
@@ -150,30 +128,8 @@ Conditioner::Config::Read(const std::filesystem::path &directory) {
     throw std::invalid_argument(
         "incompatible AuK conditioner attention dimensions");
   } else {
+    return config;
   }
-  const bool explicit_layers =
-      text.contains("layer_types") && !text.at("layer_types").is_null();
-  if (explicit_layers && text.at("layer_types").size() !=
-                             static_cast<size_t>(config.text_layer_count)) {
-    throw std::invalid_argument("AuK layer_types must name every text layer");
-  } else {
-  }
-  for (int layer = 0; layer < config.text_layer_count; ++layer) {
-    const std::string type =
-        explicit_layers ? text.at("layer_types").at(layer).get<std::string>()
-        : config.sliding_window > 0 &&
-                layer >=
-                    text.value("max_window_layers", config.text_layer_count)
-            ? "sliding_attention"
-            : "full_attention";
-    if (type != "full_attention" &&
-        (type != "sliding_attention" || config.sliding_window <= 0)) {
-      throw std::invalid_argument("unsupported AuK text attention type");
-    } else {
-      config.sliding_layers.push_back(type == "sliding_attention");
-    }
-  }
-  return config;
 }
 
 Conditioner::Conditioner(const std::filesystem::path &directory,
@@ -185,67 +141,66 @@ Conditioner::Conditioner(const std::filesystem::path &directory,
   const int hidden = config_.hidden_size;
   const int head_size = hidden / config_.text_head_count;
   const int key_width = config_.text_kv_head_count * head_size;
-  RequireWeight(checkpoint_, "model.embed_tokens.weight",
-                {config_.vocabulary_size, hidden});
-  RequireWeight(checkpoint_, "model.norm.weight", {hidden});
+  checkpoint_.RequireShape("model.embed_tokens.weight",
+                           {config_.vocabulary_size, hidden});
+  checkpoint_.RequireShape("model.norm.weight", {hidden});
   for (int layer = 0; layer < config_.text_layer_count; ++layer) {
     const std::string prefix = "model.layers." + std::to_string(layer);
     for (const auto &[name, width] :
          std::vector<std::pair<std::string, int>>{{"q_proj", hidden},
                                                   {"k_proj", key_width},
                                                   {"v_proj", key_width}}) {
-      RequireWeight(checkpoint_, prefix + ".self_attn." + name + ".weight",
-                    {width, hidden});
-      RequireWeight(checkpoint_, prefix + ".self_attn." + name + ".bias",
-                    {width});
+      checkpoint_.RequireShape(prefix + ".self_attn." + name + ".weight",
+                               {width, hidden});
+      checkpoint_.RequireShape(prefix + ".self_attn." + name + ".bias",
+                               {width});
     }
-    RequireWeight(checkpoint_, prefix + ".self_attn.o_proj.weight",
-                  {hidden, hidden});
-    RequireWeight(checkpoint_, prefix + ".input_layernorm.weight", {hidden});
-    RequireWeight(checkpoint_, prefix + ".post_attention_layernorm.weight",
-                  {hidden});
+    checkpoint_.RequireShape(prefix + ".self_attn.o_proj.weight",
+                             {hidden, hidden});
+    checkpoint_.RequireShape(prefix + ".input_layernorm.weight", {hidden});
+    checkpoint_.RequireShape(prefix + ".post_attention_layernorm.weight",
+                             {hidden});
     for (const std::string name : {"gate_proj", "up_proj"}) {
-      RequireWeight(checkpoint_, prefix + ".mlp." + name + ".weight",
-                    {config_.text_intermediate_size, hidden});
+      checkpoint_.RequireShape(prefix + ".mlp." + name + ".weight",
+                               {config_.text_intermediate_size, hidden});
     }
-    RequireWeight(checkpoint_, prefix + ".mlp.down_proj.weight",
-                  {hidden, config_.text_intermediate_size});
+    checkpoint_.RequireShape(prefix + ".mlp.down_proj.weight",
+                             {hidden, config_.text_intermediate_size});
   }
   const int audio_hidden = config_.audio_hidden_size;
-  RequireWeight(checkpoint_, "audio_tower.conv1.weight",
-                {audio_hidden, 3, omni_common::kMelBinCount});
-  RequireWeight(checkpoint_, "audio_tower.conv2.weight",
-                {audio_hidden, 3, audio_hidden});
+  checkpoint_.RequireShape("audio_tower.conv1.weight",
+                           {audio_hidden, 3, omni_common::kMelBinCount});
+  checkpoint_.RequireShape("audio_tower.conv2.weight",
+                           {audio_hidden, 3, audio_hidden});
   for (const std::string name : {"conv1", "conv2", "ln_post"}) {
-    RequireWeight(checkpoint_, "audio_tower." + name + ".bias", {audio_hidden});
+    checkpoint_.RequireShape("audio_tower." + name + ".bias", {audio_hidden});
   }
-  RequireWeight(checkpoint_, "audio_tower.ln_post.weight", {audio_hidden});
-  RequireWeight(checkpoint_, "audio_tower.proj.weight", {hidden, audio_hidden});
-  RequireWeight(checkpoint_, "audio_tower.proj.bias", {hidden});
+  checkpoint_.RequireShape("audio_tower.ln_post.weight", {audio_hidden});
+  checkpoint_.RequireShape("audio_tower.proj.weight", {hidden, audio_hidden});
+  checkpoint_.RequireShape("audio_tower.proj.bias", {hidden});
   for (int layer = 0; layer < config_.audio_layer_count; ++layer) {
     const std::string prefix = "audio_tower.layers." + std::to_string(layer);
     for (const std::string name : {"q_proj", "k_proj", "v_proj", "out_proj"}) {
-      RequireWeight(checkpoint_, prefix + ".self_attn." + name + ".weight",
-                    {audio_hidden, audio_hidden});
+      checkpoint_.RequireShape(prefix + ".self_attn." + name + ".weight",
+                               {audio_hidden, audio_hidden});
       if (name != "k_proj") {
-        RequireWeight(checkpoint_, prefix + ".self_attn." + name + ".bias",
-                      {audio_hidden});
+        checkpoint_.RequireShape(prefix + ".self_attn." + name + ".bias",
+                                 {audio_hidden});
       } else {
       }
     }
     for (const std::string name :
          {"self_attn_layer_norm", "final_layer_norm"}) {
-      RequireWeight(checkpoint_, prefix + "." + name + ".weight",
-                    {audio_hidden});
-      RequireWeight(checkpoint_, prefix + "." + name + ".bias", {audio_hidden});
+      checkpoint_.RequireShape(prefix + "." + name + ".weight", {audio_hidden});
+      checkpoint_.RequireShape(prefix + "." + name + ".bias", {audio_hidden});
     }
-    RequireWeight(checkpoint_, prefix + ".fc1.weight",
-                  {config_.audio_intermediate_size, audio_hidden});
-    RequireWeight(checkpoint_, prefix + ".fc1.bias",
-                  {config_.audio_intermediate_size});
-    RequireWeight(checkpoint_, prefix + ".fc2.weight",
-                  {audio_hidden, config_.audio_intermediate_size});
-    RequireWeight(checkpoint_, prefix + ".fc2.bias", {audio_hidden});
+    checkpoint_.RequireShape(prefix + ".fc1.weight",
+                             {config_.audio_intermediate_size, audio_hidden});
+    checkpoint_.RequireShape(prefix + ".fc1.bias",
+                             {config_.audio_intermediate_size});
+    checkpoint_.RequireShape(prefix + ".fc2.weight",
+                             {audio_hidden, config_.audio_intermediate_size});
+    checkpoint_.RequireShape(prefix + ".fc2.bias", {audio_hidden});
   }
   if (tokenizer_.AddedTokenId("<|AUDIO|>") != config_.audio_token_id ||
       tokenizer_.AddedTokenId("<|im_start|>") < 0 ||
@@ -301,9 +256,9 @@ mx::array Conditioner::Encode(
           "AuK reference audio must fit the checkpoint's audio window");
     } else {
     }
-    // Note (XXXXRT666): the processor zero-pads to 30 s before its centered
-    // STFT, so the final frames see zeros; padding past the last window is
-    // enough for the same frames.
+    // Note (XXXXRT666): the processor zero-pads to n_samples, 300 s for
+    // Qwen2.5-Omni-3B, before its centered STFT, so the final frames see
+    // zeros; padding past the last window is enough for the same frames.
     std::vector<float> padded = *reference_audio;
     const int frames = static_cast<int>(
         (reference_audio->size() + omni_common::kHopLength - 1) /
@@ -447,12 +402,7 @@ Conditioner::EncodeInputs(const std::vector<int> &token_ids,
   std::vector<mx::array> states;
   for (int layer = 0; layer < config_.text_layer_count; ++layer) {
     states.push_back(hidden);
-    const mx::array layer_mask =
-        config_.sliding_layers[layer]
-            ? mx::logical_and(
-                  mask, mx::less(distances, mx::array(config_.sliding_window)))
-            : mask;
-    hidden = TextLayer(hidden, layer, layer_mask, cosine, sine);
+    hidden = TextLayer(hidden, layer, mask, cosine, sine);
     mx::eval(hidden);
   }
   states.push_back(

@@ -35,8 +35,8 @@ omni_common::WeightMap ConvertVAEWeights(const omni_common::WeightMap &stored) {
       name.resize(name.size() - 2);
       const mx::array magnitude =
           mx::astype(stored.at(name + "_g"), mx::float32);
-      weight = weight * (magnitude /
-                         mx::sqrt(mx::sum(weight * weight, {1, 2}, true)));
+      weight = weight *
+               (magnitude / mx::sqrt(mx::sum(weight * weight, {1, 2}, true)));
     } else {
     }
     if (name.ends_with(".weight") && weight.ndim() == 3) {
@@ -115,39 +115,29 @@ VAE::VAE(const omni_common::WeightMap &weights, const nlohmann::json &config)
   }
   if (hop_size_ != decoder_hop_size ||
       std::any_of(encoder_channels.begin(), encoder_channels.end(),
-                  [](int channels) { return channels <= 0; }) ||
-      checkpoint_.Weight("global_mean").shape() !=
-          mx::Shape{latent_dimension_} ||
-      checkpoint_.Weight("global_log_std").shape() !=
-          mx::Shape{latent_dimension_}) {
+                  [](int channels) { return channels <= 0; })) {
     throw std::invalid_argument("inconsistent VAE encoder/decoder dimensions");
   } else {
   }
-  const auto require_shape = [&](const std::string &name,
-                                 const mx::Shape &shape) {
-    if (checkpoint_.Weight(name).shape() != shape) {
-      throw std::invalid_argument("invalid VAE tensor shape: " + name);
-    } else {
-    }
-  };
+  checkpoint_.RequireShape("global_mean", {latent_dimension_});
+  checkpoint_.RequireShape("global_log_std", {latent_dimension_});
   const auto require_convolution = [&](const std::string &prefix,
                                        int input_channels, int output_channels,
                                        int kernel_size, bool bias = true) {
-    require_shape(prefix + ".weight",
-                  {output_channels, kernel_size, input_channels});
+    checkpoint_.RequireShape(prefix + ".weight",
+                             {output_channels, kernel_size, input_channels});
     if (bias) {
-      require_shape(prefix + ".bias", {output_channels});
-    } else if (checkpoint_.Has(prefix + ".bias")) {
-      throw std::invalid_argument("unexpected VAE bias: " + prefix);
+      checkpoint_.RequireShape(prefix + ".bias", {output_channels});
     } else {
     }
   };
   const auto require_activation = [&](const std::string &prefix, int channels) {
-    require_shape(prefix + ".act.alpha", {channels});
-    require_shape(prefix + ".act.beta", {channels});
-    require_shape(prefix + ".upsample.filter", {1, kActivationFilterSize, 1});
-    require_shape(prefix + ".downsample.lowpass.filter",
-                  {1, kActivationFilterSize, 1});
+    checkpoint_.RequireShape(prefix + ".act.alpha", {channels});
+    checkpoint_.RequireShape(prefix + ".act.beta", {channels});
+    checkpoint_.RequireShape(prefix + ".upsample.filter",
+                             {1, kActivationFilterSize, 1});
+    checkpoint_.RequireShape(prefix + ".downsample.lowpass.filter",
+                             {1, kActivationFilterSize, 1});
   };
   const std::string encoder = "audio_encoder.generator.";
   require_convolution(encoder + "0.layer", 1, encoder_channels[0], 3);

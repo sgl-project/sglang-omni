@@ -35,8 +35,7 @@ constexpr std::array<std::string_view, 4> kTrainingPrefixes = {
 
 // The model section of a released checkpoint's config.yaml.
 nlohmann::json ReadCheckpointConfig(const std::filesystem::path &directory) {
-  const nlohmann::json root = omni_common::ReadYaml(directory / "config.yaml");
-  return root.contains("model") ? root.at("model") : root;
+  return omni_common::ReadYaml(directory / "config.yaml").at("model");
 }
 
 // The VAE's constructor arguments, whose latent_dim config.yaml interpolates
@@ -74,7 +73,6 @@ Model::SamplingRecipe Model::ReadSamplingRecipe(const nlohmann::json &config,
                                                 mx::Dtype dtype) {
   if ((config.at("name") != "AuK" && config.at("name") != "AuK-Flash") ||
       config.at("vae").at("target_sample_rate") != kSampleRate ||
-      config.at("vae").at("downsample_rate") != SAMPLES_PER_FRAME ||
       config.at("vae").at("latent_dim") != LATENT_CHANNELS ||
       (dtype != mx::float32 && dtype != mx::bfloat16)) {
     throw std::invalid_argument("unsupported AuK runtime configuration");
@@ -107,12 +105,9 @@ Model::Model(const nlohmann::json &config,
       vae(LoadCheckpointWeights(model_directory / "vae.safetensors"),
           VaeConfig(config)) {
   diffusion.ValidateInputDimensions(conditioner.TextLayerCount(),
-                                    conditioner.TextHiddenChannels(),
-                                    vae.LatentDimension());
-  if (vae.HopSize() != SAMPLES_PER_FRAME ||
-      vae.LatentDimension() != LATENT_CHANNELS) {
-    throw std::invalid_argument(
-        "AuK checkpoint components have inconsistent dimensions");
+                                    conditioner.TextHiddenChannels());
+  if (vae.HopSize() != SAMPLES_PER_FRAME) {
+    throw std::invalid_argument("unsupported AuK VAE hop size");
   } else {
   }
 }

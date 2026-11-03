@@ -16,8 +16,9 @@ public:
   // A released checkpoint's weights and its config.yaml arch section.
   DiT(omni_common::WeightMap weights, const nlohmann::json &architecture,
       int latent_channels, mlx::core::Dtype dtype);
-  void ValidateInputDimensions(int text_layers, int text_hidden_channels,
-                               int latent_channels) const;
+  // The conditioner's text layers and width, which a separate checkpoint
+  // sets.
+  void ValidateInputDimensions(int text_layers, int text_hidden_channels) const;
 
   // All Qwen hidden states [layers + 1, tokens, hidden], including embeddings.
   mlx::core::array

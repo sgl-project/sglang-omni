@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Tencent. All rights reserved.
 #include "auk/auk_dit.h"
 
-#include <cmath>
-#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -30,29 +28,13 @@ omni_common::WeightMap ConvertWeights(omni_common::WeightMap weights,
   return weights;
 }
 
-void RequireWeight(const Checkpoint &checkpoint, const std::string &name,
-                   const mx::Shape &shape) {
-  if (checkpoint.Weight(name).shape() != shape) {
-    throw std::invalid_argument("AuK checkpoint has an invalid shape for " +
-                                name);
-  } else {
-  }
-}
-
 void RequireLinear(const Checkpoint &checkpoint, const std::string &prefix,
                    int output_channels, int input_channels,
                    bool has_bias = true) {
-  RequireWeight(checkpoint, prefix + ".weight",
-                {output_channels, input_channels});
-  if (checkpoint.Has(prefix + ".scales") ||
-      checkpoint.Has(prefix + ".biases")) {
-    throw std::invalid_argument("AuK quantized weights are unsupported: " +
-                                prefix);
-  } else if (has_bias) {
-    RequireWeight(checkpoint, prefix + ".bias", {output_channels});
-  } else if (checkpoint.Has(prefix + ".bias")) {
-    throw std::invalid_argument("AuK bias-free layer has an unexpected bias: " +
-                                prefix);
+  checkpoint.RequireShape(prefix + ".weight",
+                          {output_channels, input_channels});
+  if (has_bias) {
+    checkpoint.RequireShape(prefix + ".bias", {output_channels});
   } else {
   }
 }
@@ -79,8 +61,8 @@ void RequireBlock(const Checkpoint &checkpoint, const std::string &prefix,
                   hidden_channels, hidden_channels);
     const std::string norm_prefix =
         prefix + (stream.empty() ? ".attn." : ".attn.c_");
-    RequireWeight(checkpoint, norm_prefix + "q_norm.weight", {head_channels});
-    RequireWeight(checkpoint, norm_prefix + "k_norm.weight", {head_channels});
+    checkpoint.RequireShape(norm_prefix + "q_norm.weight", {head_channels});
+    checkpoint.RequireShape(norm_prefix + "k_norm.weight", {head_channels});
   }
 }
 
@@ -105,36 +87,20 @@ void DiT::ValidateWeights() const {
   const int head_channels = architecture.value("dim_head", 64);
   const int text_channels = architecture.at("text_hidden_dim").get<int>();
   const int latent_channels = config_.at("latent_dim").get<int>();
-  const double feed_forward_channels =
-      hidden_channels * architecture.at("ff_mult").get<double>();
-  if (head_count_ <= 0 || hidden_channels <= 0 ||
-      hidden_channels > std::numeric_limits<int>::max() / 6 ||
-      hidden_channels % head_count_ != 0 || head_channels <= 0 ||
-      head_channels % 2 != 0 ||
-      hidden_channels / head_count_ != head_channels || text_channels <= 0 ||
-      latent_channels <= 0 || joint_layer_count_ < 0 ||
-      single_layer_count_ < 0 ||
-      (joint_layer_count_ == 0 && single_layer_count_ == 0) ||
-      !std::isfinite(feed_forward_channels) || feed_forward_channels < 1 ||
-      feed_forward_channels > std::numeric_limits<int>::max() / 2 ||
-      config_.contains("quantization") ||
-      config_.contains("quantization_config")) {
-    throw std::invalid_argument(
-        "unsupported AuK DiT architecture or precision");
+  const int feed_forward_channels = static_cast<int>(
+      hidden_channels * architecture.at("ff_mult").get<double>());
+  if (head_count_ <= 0 || hidden_channels % head_count_ != 0 ||
+      hidden_channels / head_count_ != head_channels ||
+      head_channels % 2 != 0) {
+    throw std::invalid_argument("unsupported AuK DiT architecture");
   } else {
   }
-  const auto &layer_weights = checkpoint_.Weight("layer_weights");
-  if (layer_weights.ndim() != 1 || layer_weights.size() == 0) {
-    throw std::invalid_argument(
-        "AuK layer fusion requires a nonempty weight vector");
-  } else {
-  }
-  RequireWeight(checkpoint_, "layer_scale", {1});
-  RequireWeight(checkpoint_, "transformer.rotary_embed.inv_freq",
-                {head_channels / 2});
+  checkpoint_.RequireShape("layer_scale", {1});
+  checkpoint_.RequireShape("transformer.rotary_embed.inv_freq",
+                           {head_channels / 2});
   RequireLinear(checkpoint_, "transformer.txt_proj", hidden_channels,
                 text_channels);
-  RequireWeight(checkpoint_, "transformer.txt_norm.weight", {hidden_channels});
+  checkpoint_.RequireShape("transformer.txt_norm.weight", {hidden_channels});
   RequireLinear(checkpoint_, "transformer.audio_embed.linear", hidden_channels,
                 latent_channels);
   for (int layer : {0, 2}) {
@@ -149,7 +115,7 @@ void DiT::ValidateWeights() const {
           "AuK positional convolution has incompatible geometry: " + prefix);
     } else {
     }
-    RequireWeight(checkpoint_, prefix + ".bias", {hidden_channels});
+    checkpoint_.RequireShape(prefix + ".bias", {hidden_channels});
   }
   const auto &time_weight =
       checkpoint_.Weight("transformer.time_embed.time_mlp.0.weight");
@@ -166,15 +132,13 @@ void DiT::ValidateWeights() const {
   for (int layer = 0; layer < joint_layer_count_; ++layer) {
     RequireBlock(checkpoint_,
                  "transformer.transformer_blocks." + std::to_string(layer),
-                 hidden_channels, head_channels,
-                 static_cast<int>(feed_forward_channels), true);
+                 hidden_channels, head_channels, feed_forward_channels, true);
   }
   for (int layer = 0; layer < single_layer_count_; ++layer) {
     RequireBlock(checkpoint_,
                  "transformer.single_transformer_blocks." +
                      std::to_string(layer),
-                 hidden_channels, head_channels,
-                 static_cast<int>(feed_forward_channels), false);
+                 hidden_channels, head_channels, feed_forward_channels, false);
   }
   RequireLinear(checkpoint_, "transformer.norm_out.linear", 2 * hidden_channels,
                 hidden_channels);
@@ -182,15 +146,13 @@ void DiT::ValidateWeights() const {
                 hidden_channels);
 }
 
-void DiT::ValidateInputDimensions(int text_layers, int text_hidden_channels,
-                                  int latent_channels) const {
-  if (text_layers != checkpoint_.Weight("layer_weights").shape(0) ||
-      text_hidden_channels !=
-          checkpoint_.Weight("transformer.txt_proj.weight").shape(1) ||
-      latent_channels !=
-          checkpoint_.Weight("transformer.proj_out.weight").shape(0)) {
+void DiT::ValidateInputDimensions(int text_layers,
+                                  int text_hidden_channels) const {
+  if (checkpoint_.Weight("layer_weights").shape() != mx::Shape{text_layers} ||
+      checkpoint_.Weight("transformer.txt_proj.weight").shape(1) !=
+          text_hidden_channels) {
     throw std::invalid_argument(
-        "AuK conditioner, DiT and VAE dimensions do not match");
+        "AuK conditioner and DiT dimensions do not match");
   } else {
   }
 }

@@ -48,8 +48,6 @@ private:
     int max_tokens;
     float rms_norm_epsilon;
     float rope_theta;
-    int sliding_window;
-    std::vector<bool> sliding_layers;
     int audio_hidden_size;
     int audio_layer_count;
     int audio_head_count;

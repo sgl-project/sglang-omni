@@ -4,7 +4,9 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <set>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "yaml-cpp/yaml.h"
@@ -30,13 +32,24 @@ nlohmann::json YamlToJson(const YAML::Node &node) {
     return array;
   } else if (!node.IsScalar()) {
     return nullptr;
+  } else if (node.Tag() == "!") {
+    // A quoted scalar is a string whatever it spells.
+    return node.Scalar();
   } else {
   }
-  bool flag = false;
+  // Note (XXXXRT666): PyYAML's safe loader, which OmegaConf reads config.yaml
+  // with, takes these as booleans; yaml-cpp's own decoding adds y, n and any
+  // casing.
+  static const std::set<std::string> true_words{
+      "true", "True", "TRUE", "yes", "Yes", "YES", "on", "On", "ON"};
+  static const std::set<std::string> false_words{
+      "false", "False", "FALSE", "no", "No", "NO", "off", "Off", "OFF"};
   long long integer = 0;
   double number = 0.0;
-  if (YAML::convert<bool>::decode(node, flag)) {
-    return flag;
+  if (true_words.contains(node.Scalar())) {
+    return true;
+  } else if (false_words.contains(node.Scalar())) {
+    return false;
   } else if (YAML::convert<long long>::decode(node, integer)) {
     return integer;
   } else if (YAML::convert<double>::decode(node, number)) {
@@ -166,6 +179,15 @@ const mx::array &Checkpoint::Weight(const std::string &name) const {
 
 bool Checkpoint::Has(const std::string &name) const {
   return weights_.count(name) > 0;
+}
+
+void Checkpoint::RequireShape(const std::string &name,
+                              const mx::Shape &shape) const {
+  if (Weight(name).shape() != shape) {
+    throw std::invalid_argument("checkpoint tensor has an unexpected shape: " +
+                                name);
+  } else {
+  }
 }
 
 const QuantizationConfig &
