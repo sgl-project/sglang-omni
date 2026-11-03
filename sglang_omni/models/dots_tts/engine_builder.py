@@ -8,6 +8,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from sglang_omni.model_runner.model_worker import ModelWorker
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.engine_factory import (
     GenerationDefaults,
@@ -30,6 +31,10 @@ else:
 
 
 logger = logging.getLogger(__name__)
+
+
+def supports_dit_compile() -> bool:
+    return current_platform.is_cuda() or current_platform.is_rocm()
 
 
 class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
@@ -72,7 +77,11 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
         # tail is eager, so skip the process-global compile policy otherwise.
         # The policy must exist before SGLang builds the model; applying it in
         # setup_model nests Dynamo under FX.
-        if self.optimize and int(cfg.max_running_requests) == 1:
+        if (
+            self.optimize
+            and int(cfg.max_running_requests) == 1
+            and supports_dit_compile()
+        ):
             from sglang_omni.models.dots_tts.stages import configure_optimized_kernels
 
             configure_optimized_kernels()
@@ -166,11 +175,12 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
         else:
             pass
         if max_running_requests == 1:
-            tail_backend = (
-                "compiled single-request DiT/semantic encoder"
-                if model.flow.optimize
-                else "eager single-request DiT/semantic encoder"
-            )
+            if model.flow.optimize and supports_dit_compile():
+                tail_backend = "compiled single-request DiT/semantic encoder"
+            elif model.flow.optimize:
+                tail_backend = "cached single-request DiT/semantic encoder"
+            else:
+                tail_backend = "eager single-request DiT/semantic encoder"
         else:
             tail_backend = model.flow.batched_tail.backend
         logger.info(
@@ -184,7 +194,7 @@ class DotsTTSEngineBuilder(TtsEngineBuilder["DotsTTSSGLangRequestData"]):
         logger.info(
             "dots.tts backbone decode: %s",
             (
-                "SGLang CUDA graph with model-owned feedback buffer"
+                "SGLang device graph with model-owned feedback buffer"
                 if not bool(get_exec().graph.disable_cuda_graph)
                 else "eager"
             ),

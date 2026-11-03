@@ -15,7 +15,10 @@ import threading
 import pytest
 import torch
 
+from sglang_omni.models.dots_tts import stages
 from sglang_omni.models.dots_tts.codec import DotsAudioCodec
+from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.cuda import CUDAOmniPlatform
 
 HOP_SIZE = 8
 PATCH_SIZE = 4
@@ -345,6 +348,103 @@ def test_reference_executor_stop_closes_batch_worker(
     scheduler.stop()
 
     assert not encoder.service.batch_thread.is_alive()
+
+
+@pytest.mark.parametrize("allow_reduced_precision", [False, True])
+def test_reference_precision_option_rejects_cpu(
+    allow_reduced_precision: bool,
+) -> None:
+    with pytest.raises(ValueError, match="requires a CUDA or NPU reference worker"):
+        stages.create_reference_encode_executor(
+            "stub",
+            device="cpu",
+            reference_convolution_allow_reduced_precision=allow_reduced_precision,
+        )
+
+
+@pytest.mark.parametrize(
+    "allow_reduced_precision,initial_precision",
+    [(None, True), (None, False), (False, True), (True, False)],
+)
+def test_cuda_convolution_precision_is_set_before_codec_loading(
+    monkeypatch: pytest.MonkeyPatch,
+    allow_reduced_precision: bool | None,
+    initial_precision: bool,
+) -> None:
+    codec = make_codec()
+    set_tf32(monkeypatch, enabled=initial_precision)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    platform = CUDAOmniPlatform()
+    monkeypatch.setattr(stages, "current_platform", platform)
+    monkeypatch.setattr("sglang_omni.platforms.current_platform", platform)
+    expected_precision = (
+        initial_precision
+        if allow_reduced_precision is None
+        else allow_reduced_precision
+    )
+
+    def load_codec(model_path: str, *, device: str) -> DotsAudioCodec:
+        assert model_path == "stub"
+        assert device == "cuda:0"
+        assert torch.backends.cudnn.allow_tf32 == expected_precision
+        assert torch.backends.cuda.matmul.allow_tf32 == initial_precision
+        return codec
+
+    monkeypatch.setattr(stages, "load_dots_audio_codec", load_codec)
+    scheduler = stages.create_reference_encode_executor(
+        "stub",
+        device="cuda",
+        gpu_id=0,
+        reference_convolution_allow_reduced_precision=allow_reduced_precision,
+    )
+    try:
+        assert scheduler.fn.__self__.codec is codec
+    finally:
+        scheduler.stop()
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(current_platform.device_type != "npu", reason="requires NPU")
+@pytest.mark.parametrize(
+    "allow_reduced_precision,initial_precision",
+    [(None, True), (None, False), (False, True), (True, False)],
+)
+def test_reference_precision_is_configured_before_codec_loading(
+    monkeypatch: pytest.MonkeyPatch,
+    allow_reduced_precision: bool | None,
+    initial_precision: bool,
+) -> None:
+    device_module = torch.get_device_module("npu")
+    if not device_module.is_available():
+        pytest.skip("NPU is unavailable")
+    else:
+        pass
+    codec = make_codec()
+    codec.device = torch.device("npu", device_module.current_device())
+    monkeypatch.setattr(device_module.conv, "allow_hf32", initial_precision)
+    expected_precision = (
+        initial_precision
+        if allow_reduced_precision is None
+        else allow_reduced_precision
+    )
+
+    def load_codec(model_path: str, *, device: str) -> DotsAudioCodec:
+        assert model_path == "stub"
+        assert device == str(codec.device)
+        assert device_module.conv.allow_hf32 == expected_precision
+        return codec
+
+    monkeypatch.setattr(stages, "load_dots_audio_codec", load_codec)
+    scheduler = stages.create_reference_encode_executor(
+        "stub",
+        device="npu",
+        gpu_id=codec.device.index,
+        reference_convolution_allow_reduced_precision=allow_reduced_precision,
+    )
+    try:
+        assert scheduler.fn.__self__.codec is codec
+    finally:
+        scheduler.stop()
 
 
 # --------------------------------------------------------------------------
