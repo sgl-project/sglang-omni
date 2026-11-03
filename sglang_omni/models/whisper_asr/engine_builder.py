@@ -483,7 +483,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
-            "enable_torch_compile": True,
+            "enable_torch_compile": not current_platform.is_cpu(),
             "mem_fraction_static": self.mem_fraction_static,
             "max_prefill_tokens": 6144,
             "chunked_prefill_size": 0,
@@ -522,7 +522,8 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
             "stream_output_builder": ExactWhisperStreamOutputBuilder(
                 self.tokenizer, self.stream_emit_interval_s
             ),
-            "enable_async_decode": self.enable_async_decode,
+            "enable_async_decode": self.enable_async_decode
+            and not current_platform.is_cpu(),
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
             "request_build_max_workers": self.request_build_max_workers,
             "request_build_max_pending": self.request_build_max_pending,
