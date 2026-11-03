@@ -68,7 +68,9 @@ class FakeTokenizer:
         return [SOT_PREV] + [1000 + i for i in range(len(text))]
 
 
-def make_request_builder(tokenizer: FakeTokenizer | None = None):
+def make_request_builder(
+    tokenizer: FakeTokenizer | None = None, speculative_num_steps: int = 0
+):
     fake_processor = SimpleNamespace(
         feature_extractor=lambda audio, *, sampling_rate, return_tensors: (
             SimpleNamespace(input_features=torch.zeros((1, 128, 3000)))
@@ -80,6 +82,7 @@ def make_request_builder(tokenizer: FakeTokenizer | None = None):
         generation_config=generation_config(),
         encoder_token_count=ENCODER_TOKEN_COUNT,
         max_new_tokens=32,
+        speculative_num_steps=speculative_num_steps,
     )
     return request_builder
 
@@ -190,6 +193,37 @@ def test_request_builder_drops_prompt_when_generation_fills_context(
     assert data.prompt_token_ids == PREFIX
     # note (jiannan-17): The four-token prefix leaves 444 decoder positions for generation.
     assert data.max_new_tokens == 448 - len(PREFIX)
+
+
+def test_speculative_request_leaves_the_draft_chain_inside_the_position_table(
+    monkeypatch,
+) -> None:
+    """A verify reads seven positions past the newest token, which ran off the 448-position table."""
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
+    )
+
+    data = make_request_builder(speculative_num_steps=7)(
+        make_payload({"max_new_tokens": 500})
+    )
+
+    assert len(data.prompt_token_ids) + data.max_new_tokens + 7 == 448
+
+
+@pytest.mark.parametrize("params", [{"temperature": 0.7}, {"segment_timestamps": True}])
+def test_speculative_request_refuses_sampling_and_timestamps(
+    monkeypatch, params: dict
+) -> None:
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
+    )
+
+    with pytest.raises(ValueError, match="greedy transcription"):
+        make_request_builder(speculative_num_steps=7)(make_payload(params))
 
 
 def test_decoder_budget_invariant_exhaustive() -> None:

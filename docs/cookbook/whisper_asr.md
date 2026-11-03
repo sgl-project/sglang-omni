@@ -115,6 +115,37 @@ sgl-omni serve \
   --port 8000
 ```
 
+## Speculative Decoding
+
+Whisper large-v3 can draft with [wilsonzheng0327/Whisper-large-v3-distil-draft](https://huggingface.co/wilsonzheng0327/Whisper-large-v3-distil-draft), distil-large-v3 fine-tuned on large-v3's own transcripts in English, Chinese, Japanese and Cantonese. The draft shares the target's encoder, so it reads the target's encoder states through its own two-layer decoder. Each round it proposes `speculative_num_steps` tokens (7 by default) and the target checks them in one forward:
+
+```bash
+sgl-omni serve \
+  --config examples/configs/whisper_large_v3_speculative.yaml \
+  --port 8000
+```
+
+Speculative decoding is greedy: a request with a nonzero temperature or with segment timestamps is rejected. It runs synchronously, so async decode is off. The first startup compiles the verify graphs for every decode batch size, about 15 minutes on an H200; later startups reuse the compile cache.
+
+On one H200 with the default 64 running requests, 1,000 English clips of 1 to 16 s (pipecat-ai/stt-benchmark-data), one warmup and one measured pass per concurrency, against the same server without a draft:
+
+| Concurrency | No draft req/s | Draft req/s | Throughput gain | No draft mean latency (s) | Draft mean latency (s) | Corpus WER |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 10.86 | 13.95 | 28.4% | 0.092 | 0.072 | 0.0365 |
+| 8 | 43.90 | 55.01 | 25.3% | 0.182 | 0.145 | 0.0365 |
+| 32 | 84.32 | 114.19 | 35.4% | 0.373 | 0.274 | 0.0365 |
+| 64 | 115.19 | 138.99 | 20.7% | 0.548 | 0.451 | 0.0365 |
+
+The draft accepted 7.0 tokens per round. 992 to 995 of the 1,000 transcripts matched the no-draft run, which matched itself on 995 to 998 across concurrencies. The same setup on the draft's other languages and on long audio:
+
+| Set | Concurrency | No draft req/s | Draft req/s | Throughput gain | Error rate, no draft / draft |
+|---|---:|---:|---:|---:|---:|
+| FLEURS ja test, 300 clips | 1 / 8 / 32 | 6.35 / 31.68 / 62.34 | 9.13 / 38.52 / 83.87 | 44% / 22% / 35% | CER 0.0496 / 0.0495 |
+| FLEURS yue test, 300 clips | 1 / 8 / 32 | 6.86 / 32.55 / 63.34 | 8.44 / 36.31 / 78.36 | 23% / 12% / 24% | CER 0.1074 / 0.1069 |
+| LongLibriHeavy 60 s, 200 clips | 1 / 4 | 3.35 / 9.53 | 4.54 / 12.63 | 35% / 33% | WER 0.1021 / 0.1022 |
+
+Chinese transcripts are shorter, so the gain is smaller: on 500 SeedTTS ZH clips with 16 running requests, 14% to 18% at concurrency 1 and none at 16. The draft was trained on transcription in these four languages only and has not been measured on translation or on other languages.
+
 ## Transcribe Audio
 
 ```bash

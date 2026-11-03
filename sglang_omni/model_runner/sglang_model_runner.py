@@ -771,6 +771,7 @@ class SGLModelRunner(ModelRunner):
             "Zonos2SGLangModel": "sglang_omni.models.zonos2.sglang_model:Zonos2SGLangModel",
             "LLaDA2MoeModelLM": "sglang_omni.models.llada2_uni.components.thinker:LLaDA2MoeModelLM",
             "WhisperForConditionalGeneration": "sglang_omni.models.whisper_asr.sglang_model:WhisperForConditionalGeneration",
+            "WhisperDraftForCausalLM": "sglang_omni.models.whisper_asr.speculative:WhisperDraftForCausalLM",
             "Qwen3ASRForConditionalGeneration": "sglang_omni.models.qwen3_asr.sglang_model:Qwen3ASRForConditionalGeneration",
             "FunAsrNanoForConditionalGeneration": "sglang_omni.models.fun_asr.sglang_model:FunAsrNanoForConditionalGeneration",
             "ArkasrForConditionalGeneration": "sglang_omni.models.arkasr.sglang_model:ArkasrForConditionalGeneration",

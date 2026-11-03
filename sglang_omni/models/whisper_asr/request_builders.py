@@ -175,6 +175,7 @@ def make_whisper_scheduler_adapters(
     max_new_tokens: int,
     decoder_context_len: int | None = None,
     audio_encoder_service: WhisperPreLMEncoderService | None = None,
+    speculative_num_steps: int = 0,
 ) -> tuple[
     Callable[[StagePayload], WhisperASRRequestData],
     Callable[[WhisperASRRequestData], StagePayload],
@@ -211,6 +212,9 @@ def make_whisper_scheduler_adapters(
         or generation_config.max_length
         or _DEFAULT_DECODER_CONTEXT_LEN
     )
+    # note (wilsonzheng0327): a speculative verify reads speculative_num_steps
+    # positions past a request's newest token, so the request leaves them free.
+    decoder_context_len -= speculative_num_steps
 
     def request_builder(payload: StagePayload) -> WhisperASRRequestData:
         params = payload.request.params or {}
@@ -302,6 +306,15 @@ def make_whisper_scheduler_adapters(
             pass
 
         temperature = float(params.get("temperature") or 0.0)
+        # note (wilsonzheng0327): the speculative verify accepts greedy tokens only,
+        # and the timestamp processor is not applied to its rows.
+        if speculative_num_steps > 0 and (temperature != 0.0 or segment_timestamps):
+            raise ValueError(
+                "Whisper speculative decoding supports greedy transcription "
+                "without segment timestamps; set temperature=0"
+            )
+        else:
+            pass
         sampling_params = SamplingParams(
             max_new_tokens=request_max_new_tokens,
             temperature=temperature,
