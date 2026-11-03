@@ -2864,7 +2864,6 @@ class Qwen3TTSStreamingVocoderScheduler(
             else:
                 pass
             self.pending_done.discard(request_id)
-            self.completed_non_streaming_request_ids.discard(request_id)
             self.ingest(request_id, state, codes)
             self.stream_payloads[request_id] = payload
             self.stream_states[request_id] = state
