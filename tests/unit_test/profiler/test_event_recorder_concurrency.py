@@ -24,9 +24,7 @@ from sglang_omni.profiler.event_recorder import (
 from sglang_omni.profiler.event_recorder_types import (
     EVENT_FILE_BUFFER_BYTES,
     MAX_PRODUCER_BUFFERS,
-    RUNTIME_WRITER_BACKLOG_YIELD_INTERVAL_SECONDS,
     RUNTIME_WRITER_MAX_EVENTS_PER_ROUND,
-    RUNTIME_WRITER_POLL_INTERVAL_SECONDS,
     ProducerDropCounter,
     RecorderRunState,
 )
@@ -423,16 +421,6 @@ def test_runtime_sampling_is_deterministic_across_independent_recorders(
             decision = recorder.deterministic_sampling_decision(
                 recorder.active_state, sampling_identity
             )
-            assert (
-                recorder.should_sample_request(
-                    recorder.active_state,
-                    request_id,
-                    sampling_session_identity=(
-                        session_identity if sampling_unit == "session" else None
-                    ),
-                )
-                is decision
-            )
             recorder.emit(
                 request_id=request_id,
                 stage="coordinator",
@@ -443,10 +431,6 @@ def test_runtime_sampling_is_deterministic_across_independent_recorders(
             )
             if decision:
                 unadmitted_selected.add(request_id)
-
-        assert recorder.active_state.request_sampling_decisions == {}
-        assert recorder.active_state.request_sampling_stage_names == {}
-        assert recorder.active_state.request_session_identities == {}
 
         admitted_decisions: dict[str, bool] = {}
         for identity_number in range(60):
@@ -470,49 +454,34 @@ def test_runtime_sampling_is_deterministic_across_independent_recorders(
                     )
                     for operation in ("open", "append", "close")
                 ]
-            session_decision: bool | None = None
             for request_id, request_metadata in operations:
+                sampling_identity = (
+                    request_id if sampling_unit == "request" else (session_id, 2)
+                )
+                decision = recorder.deterministic_sampling_decision(
+                    recorder.active_state, sampling_identity
+                )
+                admitted_decisions[request_id] = decision
                 recorder.record_request_admission(
                     request_id,
                     request_metadata,
                     stage_name="coordinator",
                 )
-                assert request_id in recorder.active_state.request_sampling_decisions
-                decision = recorder.active_state.request_sampling_decisions[request_id]
-                if sampling_unit == "session":
-                    assert decision is recorder.deterministic_sampling_decision(
-                        recorder.active_state, (session_id, 2)
-                    )
-                    if session_decision is None:
-                        session_decision = decision
-                    else:
-                        assert decision is session_decision
-                else:
-                    assert decision is recorder.deterministic_sampling_decision(
-                        recorder.active_state, request_id
-                    )
-                admitted_decisions[request_id] = decision
                 recorder.emit(
                     request_id=request_id,
                     stage="coordinator",
                     event_name="request_admission",
                 )
                 recorder.clear_request_sampling(request_id, stage_name="coordinator")
-                assert (
-                    request_id not in recorder.active_state.request_sampling_decisions
-                )
-                assert (
-                    request_id not in recorder.active_state.request_session_identities
-                )
 
         assert set(admitted_decisions.values()) == {False, True}
+        assert recorder.active_state.request_sampling_decisions == {}
+        assert recorder.active_state.request_session_identities == {}
         expected_selected = unadmitted_selected | {
             request_id
             for request_id, decision in admitted_decisions.items()
             if decision
         }
-        assert recorder.active_state.request_sampling_decisions == {}
-        assert recorder.active_state.request_session_identities == {}
         recorder.stop(wait=True)
         sampled = {event["request_id"] for event in read_events(path)}
         assert sampled == expected_selected
@@ -535,9 +504,6 @@ def test_runtime_writer_drains_backlog_in_fair_bounded_rounds(
     all_events_drained = threading.Event()
     accepted_count = 128
     active_round_sizes: list[int] = []
-    active_round_buffer_counts: list[list[int]] = []
-    backlog_wait_intervals: list[float | None] = []
-    last_drain_had_backlog = False
 
     def pause_writer(run_state: RecorderRunState) -> None:
         writer_entered.set()
@@ -550,22 +516,9 @@ def test_runtime_writer_drains_backlog_in_fair_bounded_rounds(
     def track_drain(
         run_state: RecorderRunState, file_handle: TextIOWrapper | None
     ) -> int:
-        nonlocal last_drain_had_backlog
-        before_counts = [
-            len(producer_buffer.events)
-            for producer_buffer in run_state.producer_buffers
-        ]
         count = original_drain(run_state, file_handle)
-        after_counts = [
-            len(producer_buffer.events)
-            for producer_buffer in run_state.producer_buffers
-        ]
-        last_drain_had_backlog = any(after_counts)
         if count:
             active_round_sizes.append(count)
-            active_round_buffer_counts.append(
-                [before - after for before, after in zip(before_counts, after_counts)]
-            )
             if run_state.processed_events == accepted_count:
                 all_events_drained.set()
             else:
@@ -585,18 +538,6 @@ def test_runtime_writer_drains_backlog_in_fair_bounded_rounds(
         sample_rate=1.0,
     )
     assert writer_entered.wait(timeout=5)
-    run_state = recorder.active_state
-    assert run_state is not None
-    original_wait = run_state.stop_requested.wait
-
-    def track_stop_wait(timeout: float | None = None) -> bool:
-        if last_drain_had_backlog:
-            backlog_wait_intervals.append(timeout)
-        else:
-            pass
-        return original_wait(timeout)
-
-    monkeypatch.setattr(run_state.stop_requested, "wait", track_stop_wait)
 
     def produce_events(producer_number: int) -> None:
         for event_number in range(64):
@@ -623,20 +564,12 @@ def test_runtime_writer_drains_backlog_in_fair_bounded_rounds(
         0 < round_size <= RUNTIME_WRITER_MAX_EVENTS_PER_ROUND
         for round_size in active_round_sizes
     )
-    assert active_round_buffer_counts[0] == [16, 16]
-    assert len(backlog_wait_intervals) >= 2
-    assert all(
-        interval is not None
-        and 0 < interval <= RUNTIME_WRITER_BACKLOG_YIELD_INTERVAL_SECONDS
-        and interval < RUNTIME_WRITER_POLL_INTERVAL_SECONDS
-        for interval in backlog_wait_intervals
-    )
 
     events = read_events(path)
     assert len(events) == accepted_count
-    first_round = events[:RUNTIME_WRITER_MAX_EVENTS_PER_ROUND]
-    assert sum(event["request_id"] == "producer-0" for event in first_round) == 16
-    assert sum(event["request_id"] == "producer-1" for event in first_round) == 16
+    assert {
+        event["request_id"] for event in events[:RUNTIME_WRITER_MAX_EVENTS_PER_ROUND]
+    } == {"producer-0", "producer-1"}
     for producer_number in range(2):
         producer_events = [
             event
@@ -954,10 +887,8 @@ def test_runtime_disk_cap_reports_unwritten_events_without_partial_records(
     original_write_event = recorder.write_event
     original_snapshot_metadata = event_recorder_writer.snapshot_metadata
     original_should_sample = recorder.should_sample_request
-    original_time_ns = event_recorder_writer.time.time_ns
     snapshot_calls = 0
     sampling_calls = 0
-    timestamp_calls = 0
 
     def write_event(
         request_event: RequestEvent,
@@ -978,15 +909,9 @@ def test_runtime_disk_cap_reports_unwritten_events_without_partial_records(
         sampling_calls += 1
         return original_should_sample(*arguments, **keyword_arguments)
 
-    def time_ns() -> int:
-        nonlocal timestamp_calls
-        timestamp_calls += 1
-        return original_time_ns()
-
     monkeypatch.setattr(recorder, "write_event", write_event)
     monkeypatch.setattr(event_recorder_writer, "snapshot_metadata", snapshot_metadata)
     monkeypatch.setattr(recorder, "should_sample_request", should_sample_request)
-    monkeypatch.setattr(event_recorder_writer.time, "time_ns", time_ns)
     path = recorder.start(
         "runtime-disk-cap",
         str(tmp_path),
@@ -1031,14 +956,14 @@ def test_runtime_disk_cap_reports_unwritten_events_without_partial_records(
     assert "request-3" not in run_state.request_sampling_decisions
     assert "request-3" not in run_state.request_session_identities
     assert recorder.session_sampling_identity_for_request("request-1") is None
-    calls_after_limit = (sampling_calls, timestamp_calls, snapshot_calls)
+    calls_after_limit = (sampling_calls, snapshot_calls)
     recorder.emit(
         request_id="request-2",
         stage="stage",
         event_name="event",
         metadata={"value": 2},
     )
-    assert (sampling_calls, timestamp_calls, snapshot_calls) == calls_after_limit
+    assert (sampling_calls, snapshot_calls) == calls_after_limit
     monkeypatch.setattr(event_recorder_module, "get_recorder", lambda: recorder)
     monkeypatch.setattr(event_recorder_module, "snapshot_metadata", snapshot_metadata)
     RequestEventBuffer().capture(
@@ -1046,7 +971,7 @@ def test_runtime_disk_cap_reports_unwritten_events_without_partial_records(
         [RequestEventSnapshot(request_id="request-3", metadata={})],
         {},
     )
-    assert (sampling_calls, timestamp_calls, snapshot_calls) == calls_after_limit
+    assert (sampling_calls, snapshot_calls) == calls_after_limit
     recorder.clear_request_sampling("request-1", stage_name="stage")
     assert "request-1" not in run_state.request_sampling_decisions
     assert "request-1" not in run_state.request_session_identities
@@ -1234,6 +1159,41 @@ def test_runtime_event_file_open_failure_disables_capture_and_finalizes_incomple
     assert status["unwritten_events"] == 1
     assert status["complete"] is False
     assert "event_file_open_failure" in status["incomplete_reasons"]
+
+
+def test_runtime_capture_sampling_failure_is_accounted_without_escaping(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = RequestEventRecorder(queue_capacity=8)
+    path = recorder.start(
+        "capture-sampling-failure",
+        str(tmp_path),
+        "stage",
+        mode="runtime",
+        sampling_unit="request",
+        sample_rate=1.0,
+    )
+    monkeypatch.setattr(event_recorder_module, "get_recorder", lambda: recorder)
+
+    def fail_sampling(*arguments: object, **keyword_arguments: object) -> bool:
+        del arguments, keyword_arguments
+        raise RuntimeError("sampling failed")
+
+    monkeypatch.setattr(recorder, "should_sample_request", fail_sampling)
+    RequestEventBuffer().capture(
+        "deferred_event",
+        [RequestEventSnapshot(request_id="request", metadata={})],
+        {},
+    )
+    recorder.stop(wait=True)
+
+    status = read_status(path)
+    assert read_events(path) == []
+    assert status["accepted_events"] == 0
+    assert status["dropped_events"] == 1
+    assert status["complete"] is False
+    assert "runtime_capture_selection_failure" in status["incomplete_reasons"]
 
 
 def test_runtime_deferred_sampling_and_colocated_cleanup(

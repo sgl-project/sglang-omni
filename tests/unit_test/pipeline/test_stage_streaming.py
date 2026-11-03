@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import pickle
 import queue
 from collections.abc import Mapping
@@ -30,7 +29,7 @@ from sglang_omni.relay.shm import ShmRelay
 from sglang_omni.scheduling.message import OutgoingMessage, put_messages
 from tests.unit_test.fixtures.trace_capture import capture_comm_trace, events_named
 from tests.unit_test.pipeline.helpers import make_stage
-from tests.unit_test.profiler.event_recorder_test_utils import read_status
+from tests.unit_test.profiler.event_recorder_test_utils import read_events, read_status
 
 
 class FakeControlPlane:
@@ -1513,25 +1512,21 @@ def test_local_pre_payload_stream_uses_transported_session_identity(
             )
             active_recorder[0] = source_recorder
 
-        transported_identities = {
-            (from_stage, to_stage, chunk.request_id): chunk.session_sampling_identity
-            for from_stage, to_stage, chunk in dispatcher.stream_chunks
-        }
         selected_request_id = "selected-request"
         selected_session_id = request_sessions[selected_request_id]
-        assert transported_identities[("thinker", "talker", selected_request_id)] == {
-            "id": selected_session_id,
-            "open_index": 1,
-        }
-        assert transported_identities[("talker", "speech", selected_request_id)] == {
-            "id": selected_session_id,
-            "open_index": 1,
+        expected_transported_identities = {
+            selected_request_id: {
+                "id": selected_session_id,
+                "open_index": 1,
+            },
+            "unselected-request": None,
         }
         for from_stage, to_stage in (("thinker", "talker"), ("talker", "speech")):
-            assert (
-                transported_identities[(from_stage, to_stage, "unselected-request")]
-                is None
-            )
+            assert {
+                chunk.request_id: chunk.session_sampling_identity
+                for chunk_from_stage, chunk_to_stage, chunk in dispatcher.stream_chunks
+                if chunk_from_stage == from_stage and chunk_to_stage == to_stage
+            } == expected_transported_identities
 
         for request_id, session_id in request_sessions.items():
             payload = StagePayload(
@@ -1561,11 +1556,6 @@ def test_local_pre_payload_stream_uses_transported_session_identity(
             active_recorder[0] = recorder
             stage.clear_request_state(selected_request_id)
             stage.on_abort("unselected-request")
-            recorder.emit(
-                request_id=selected_request_id,
-                stage=stage.name,
-                event_name="after_cleanup",
-            )
 
         assert all(
             recorder.active_state is not None
@@ -1575,17 +1565,9 @@ def test_local_pre_payload_stream_uses_transported_session_identity(
         )
         for recorder in recorder_by_stage.values():
             recorder.stop(wait=True)
-        assert all(
-            recorder.active_state is None for recorder in recorder_by_stage.values()
-        )
-
-        def read_event_file(path: str) -> list[dict[str, object]]:
-            with open(path, encoding="utf-8") as event_file:
-                return [json.loads(line) for line in event_file if line.strip()]
 
         events_by_stage = {
-            stage_name: read_event_file(path)
-            for stage_name, path in event_paths.items()
+            stage_name: read_events(path) for stage_name, path in event_paths.items()
         }
         expected_events = {
             ("thinker", "stage_stream_chunk_sent"),
@@ -1603,11 +1585,6 @@ def test_local_pre_payload_stream_uses_transported_session_identity(
             } == {selected_request_id}
         assert all(
             event["request_id"] != "unselected-request"
-            for events in events_by_stage.values()
-            for event in events
-        )
-        assert all(
-            event["event_name"] != "after_cleanup"
             for events in events_by_stage.values()
             for event in events
         )

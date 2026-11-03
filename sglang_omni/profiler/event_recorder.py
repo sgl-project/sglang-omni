@@ -82,46 +82,59 @@ class RequestEventBuffer(threading.local):
             else:
                 pass
             expected_run_state = observed_state
-            snapshot_iterator = iter(snapshots)
-            selected_snapshot: RequestEventSnapshot | None = None
-            for snapshot in snapshot_iterator:
-                if (
-                    observed_state.writer_failed
-                    or observed_state.file_size_limit_reached
-                ):
+            try:
+                snapshot_iterator = iter(snapshots)
+                for snapshot in snapshot_iterator:
+                    if (
+                        observed_state.writer_failed
+                        or observed_state.file_size_limit_reached
+                    ):
+                        return
+                    else:
+                        pass
+                    if recorder.should_sample_request(
+                        observed_state,
+                        snapshot.request_id,
+                        event_metadata=metadata,
+                        request_metadata=snapshot.metadata,
+                    ):
+                        break
+                    else:
+                        pass
+                else:
+                    return
+            except Exception:
+                try:
+                    producer_buffer = recorder.begin_buffer_operation(
+                        expected_run_state=observed_state
+                    )
+                except Exception:
+                    return
+                if producer_buffer is None:
                     return
                 else:
                     pass
-                if recorder.should_sample_request(
-                    observed_state,
-                    snapshot.request_id,
-                    event_metadata=metadata,
-                    request_metadata=snapshot.metadata,
-                ):
-                    selected_snapshot = snapshot
-                    break
-                else:
-                    pass
-            else:
-                return
-            if selected_snapshot is None:
-                return
-            else:
-                snapshots = chain(
-                    (selected_snapshot,),
-                    (
-                        snapshot
-                        for snapshot in snapshot_iterator
-                        if not observed_state.writer_failed
-                        and not observed_state.file_size_limit_reached
-                        and recorder.should_sample_request(
-                            observed_state,
-                            snapshot.request_id,
-                            event_metadata=metadata,
-                            request_metadata=snapshot.metadata,
-                        )
-                    ),
+                producer_buffer.dropped_events += 1
+                producer_buffer.incomplete_reasons.add(
+                    "runtime_capture_selection_failure"
                 )
+                producer_buffer.in_flight -= 1
+                return
+            snapshots = chain(
+                (snapshot,),
+                (
+                    snapshot
+                    for snapshot in snapshot_iterator
+                    if not observed_state.writer_failed
+                    and not observed_state.file_size_limit_reached
+                    and recorder.should_sample_request(
+                        observed_state,
+                        snapshot.request_id,
+                        event_metadata=metadata,
+                        request_metadata=snapshot.metadata,
+                    )
+                ),
+            )
         else:
             pass
         try:

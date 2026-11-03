@@ -423,15 +423,6 @@ class RequestEventRecorder:
                 return None
             else:
                 pass
-            producer_buffer = getattr(self.producer_local, "buffer", None)
-            if (
-                producer_buffer is not None
-                and producer_buffer.run_state is observed_state
-            ):
-                producer_buffer.in_flight += 1
-                return producer_buffer
-            else:
-                pass
             if len(observed_state.producer_buffers) >= MAX_PRODUCER_BUFFERS:
                 producer_drop_counter = observed_state.producer_drop_counter
                 if producer_drop_counter is None:
