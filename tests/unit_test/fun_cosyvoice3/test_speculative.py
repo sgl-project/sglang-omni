@@ -25,6 +25,7 @@ from sglang_omni.models.fun_cosyvoice3.dspark_draft import (
     MirroredMarkovHead,
     materialize_draft_checkpoint,
 )
+from sglang_omni.models.fun_cosyvoice3.dspark_noise import draw_seeded_noise
 from sglang_omni.models.fun_cosyvoice3.dspark_sampling import (
     ACCEPTANCE_NOISE_SEED_SALT,
     DRAFT_NOISE_SEED_SALT,
@@ -36,7 +37,6 @@ from sglang_omni.models.fun_cosyvoice3.dspark_sampling import (
     sample_draft_block,
     seeded_exponential_noise,
     seeded_uniform_noise,
-    seeded_verify_noise,
     target_probabilities,
 )
 from sglang_omni.models.fun_cosyvoice3.dspark_worker import (
@@ -80,8 +80,13 @@ def test_fused_seeded_noise_preserves_the_existing_draws(
             salt=DRAFT_NOISE_SEED_SALT,
             column_count=draft_columns,
         )
-        residual, uniform = seeded_verify_noise(
-            seeds, output_lengths, draft_count=DRAFT_TOKENS_PER_STEP
+        residual, uniform = draw_seeded_noise(
+            seeds,
+            output_lengths,
+            exponential_columns=TOTAL_VOCAB_SIZE,
+            exponential_salt=RESIDUAL_NOISE_SEED_SALT,
+            acceptance_columns=DRAFT_TOKENS_PER_STEP,
+            acceptance_salt=ACCEPTANCE_NOISE_SEED_SALT,
         )
         return draft, residual, uniform
 

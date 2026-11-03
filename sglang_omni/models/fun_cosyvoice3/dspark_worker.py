@@ -48,13 +48,18 @@ from sglang_omni.models.fun_cosyvoice3.dspark_draft import (
     FunCosyVoice3DSparkDraftModel,
     MirroredMarkovHead,
 )
+from sglang_omni.models.fun_cosyvoice3.dspark_noise import draw_seeded_noise
 from sglang_omni.models.fun_cosyvoice3.dspark_sampling import (
+    ACCEPTANCE_NOISE_SEED_SALT,
     EMPTY_HISTORY_TOKEN,
+    LARGEST_FLOAT32_BELOW_ONE,
+    RESIDUAL_NOISE_SEED_SALT,
     DraftSamplingState,
     ExactAccept,
     exact_accept,
     sample_draft_block,
-    seeded_verify_noise,
+    seeded_exponential_noise,
+    seeded_uniform_noise,
 )
 from sglang_omni.models.fun_cosyvoice3.model_runner import COSYVOICE3_RAS_WINDOW_SIZE
 from sglang_omni.models.fun_cosyvoice3.sglang_model import TOTAL_VOCAB_SIZE
@@ -223,11 +228,31 @@ class ExactVerifyExecutor(TargetVerifyExecutor):
             exponential_noise = torch.empty(
                 (bs, TOTAL_VOCAB_SIZE), device=draft_tokens.device
             ).exponential_()
-        else:
-            exponential_noise, uniform_noise = seeded_verify_noise(
+        elif draft_state.seeds.device.type == "cuda":
+            exponential_noise, uniform_noise = draw_seeded_noise(
                 draft_state.seeds,
                 draft_state.output_lengths,
-                draft_count=draft_tokens.shape[1],
+                exponential_columns=TOTAL_VOCAB_SIZE,
+                exponential_salt=RESIDUAL_NOISE_SEED_SALT,
+                acceptance_columns=draft_tokens.shape[1],
+                acceptance_salt=ACCEPTANCE_NOISE_SEED_SALT,
+            )
+        else:
+            uniform_noise = (
+                seeded_uniform_noise(
+                    draft_state.seeds,
+                    draft_state.output_lengths,
+                    salt=ACCEPTANCE_NOISE_SEED_SALT,
+                    column_count=draft_tokens.shape[1],
+                )
+                .float()
+                .clamp_(max=LARGEST_FLOAT32_BELOW_ONE)
+            )
+            exponential_noise = seeded_exponential_noise(
+                draft_state.seeds,
+                draft_state.output_lengths,
+                salt=RESIDUAL_NOISE_SEED_SALT,
+                column_count=TOTAL_VOCAB_SIZE,
             )
         accepted_count, next_tokens = self.accept_function(
             target_logits,

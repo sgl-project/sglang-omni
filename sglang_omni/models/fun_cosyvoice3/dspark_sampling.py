@@ -62,39 +62,6 @@ def seeded_exponential_noise(
         ).float()
 
 
-def seeded_verify_noise(
-    seeds: torch.Tensor, output_lengths: torch.Tensor, *, draft_count: int
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Draw the residual exponential and clamped acceptance uniform together."""
-    if seeds.device.type == "cuda":
-        return draw_seeded_noise(
-            seeds,
-            output_lengths,
-            exponential_columns=TOTAL_VOCAB_SIZE,
-            exponential_salt=RESIDUAL_NOISE_SEED_SALT,
-            acceptance_columns=draft_count,
-            acceptance_salt=ACCEPTANCE_NOISE_SEED_SALT,
-        )
-    else:
-        exponential_noise = seeded_exponential_noise(
-            seeds,
-            output_lengths,
-            salt=RESIDUAL_NOISE_SEED_SALT,
-            column_count=TOTAL_VOCAB_SIZE,
-        )
-        uniform_noise = (
-            seeded_uniform_noise(
-                seeds,
-                output_lengths,
-                salt=ACCEPTANCE_NOISE_SEED_SALT,
-                column_count=draft_count,
-            )
-            .float()
-            .clamp_(max=LARGEST_FLOAT32_BELOW_ONE)
-        )
-        return exponential_noise, uniform_noise
-
-
 @dataclass(kw_only=True)
 class DraftSamplingState:
     """Per-request sampling inputs one speculative step mirrors on the draft.
