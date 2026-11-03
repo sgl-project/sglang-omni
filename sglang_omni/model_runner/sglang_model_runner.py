@@ -751,6 +751,7 @@ class SGLModelRunner(ModelRunner):
             "PersonaPlexForCausalLM": "sglang_omni.models.personaplex.sglang_model:PersonaPlexForCausalLM",
             "MiniCPMO": "sglang_omni.models.minicpm_o.components.sglang_thinker:MiniCPMOThinkerForCausalLM",
             "LlamaForCausalLMEagle3": "sglang_omni.speculative.eagle3_draft:OmniLlamaForCausalLMEagle3",
+            "ReducedVocabularyDFlashDraftModel": "sglang_omni.speculative.dflash_draft:ReducedVocabularyDFlashDraftModel",
         }
         for arch, path in sglang_omni_models.items():
             module_path, _, attr = path.partition(":")
