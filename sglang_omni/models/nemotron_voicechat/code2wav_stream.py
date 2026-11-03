@@ -107,6 +107,19 @@ class NemotronCode2WavScheduler(StreamingSimpleScheduler):
         self.device = device
         self.states: dict[str, StreamState] = {}
 
+    @torch.inference_mode()
+    def warm_up_serving_thread(self) -> None:
+        super().warm_up_serving_thread()
+        # note (Junnan Li): a window ramp asks for ever larger blocks than the allocator has
+        # cached; decoding the largest batch first leaves blocks every later decode can split.
+        codes_TQ = torch.zeros(
+            DECODE_WINDOW_FRAMES,
+            self.decoder.num_quantizers,
+            dtype=torch.long,
+            device=self.device,
+        )
+        self.decode_windows([DecodeWindow(codes_TQ, 0, 0)] * self.max_batch_size)
+
     def new_state(self) -> StreamState:
         return StreamState(self.decoder, self.device)
 
