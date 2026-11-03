@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from threading import Lock
 
 import torch
+from sglang.srt.configs.draft_parallel import DraftParallelLayout
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.layers.radix_attention import RadixAttention
 from sglang.srt.layers.sampler import (
@@ -19,6 +20,7 @@ from sglang.srt.layers.sampler import (
     top_k_top_p_min_p_sampling_from_probs_torch,
 )
 from sglang.srt.mem_cache.kv_cache_configurator import KVCacheConfigurator
+from sglang.srt.mem_cache.memory_pool import KVCache, MHATokenToKVPool
 from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBackend
 from sglang.srt.model_executor.model_runner import ModelRunner
 from sglang.srt.model_executor.model_runner_components.layer_setup import (
@@ -27,6 +29,7 @@ from sglang.srt.model_executor.model_runner_components.layer_setup import (
 from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
     PrefillCudaGraphRunner,
 )
+from sglang.srt.platforms.interface import KVPoolKind
 from sglang.srt.runtime_context import get_exec, get_parallel, get_schedule
 from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 from sglang.srt.server_args import ServerArgs
@@ -148,6 +151,26 @@ def free_gpu_memory_bytes(device: str, gpu_id: int) -> int:
     return int(free_gib * (1 << 30))
 
 
+class SeparateKVAllocationsPool(MHATokenToKVPool):
+    """MHA pool for a compiled engine, with K and V in separate allocations."""
+
+    # note (ratish): the compiled KV store mutates K and V; inductor writes in place to one input per storage, so sharing an allocation clones all of it every decode step.
+    def _create_buffers_normal(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self,
+    ) -> None:
+        k_shape, v_shape = (
+            self._kv_buffer_shapes()
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self.k_buffer = [
+            torch.zeros(k_shape, dtype=self.store_dtype, device=self.device)
+            for _ in range(self.layer_num)
+        ]
+        self.v_buffer = [
+            torch.zeros(v_shape, dtype=self.store_dtype, device=self.device)
+            for _ in range(self.layer_num)
+        ]
+
+
 @dataclass(slots=True, kw_only=True)
 class OmniKVCacheConfigurator(KVCacheConfigurator):
     """KV-cache configurator that honors an Omni colocated-stage memory budget.
@@ -159,6 +182,17 @@ class OmniKVCacheConfigurator(KVCacheConfigurator):
 
     total_gpu_memory_fraction: float | None = None
     kv_cache_bytes: int | None = None
+
+    def _resolve_kv_pool_class(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self, *, kind: KVPoolKind, default: type[KVCache]
+    ) -> type[KVCache]:
+        pool_class = KVCacheConfigurator._resolve_kv_pool_class(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            self, kind=kind, default=default
+        )
+        if pool_class is MHATokenToKVPool and get_exec().graph.enable_torch_compile:
+            return SeparateKVAllocationsPool
+        else:
+            return pool_class
 
     def _profile_available_bytes(self, pre_model_load_memory: float) -> int:
         """Profile KV-cache headroom for colocated SGLang AR stages.
@@ -723,7 +757,6 @@ class SGLModelRunner(ModelRunner):
         from sglang.srt.models.registry import ModelRegistry
 
         sglang_omni_models = {
-            "Qwen3ASRDFlashDraftModel": "sglang_omni.models.qwen3_asr.dflash:Qwen3ASRDFlashDraftModel",
             "S2ProSGLangTextModel": "sglang_omni.models.fishaudio_s2_pro.sglang_model:S2ProSGLangTextModel",
             "Qwen3OmniTalker": "sglang_omni.models.qwen3_omni.components.talker:Qwen3OmniTalker",
             "Qwen3OmniThinkerForCausalLM": "sglang_omni.models.qwen3_omni.components.sglang_thinker:Qwen3OmniThinkerForCausalLM",
@@ -773,7 +806,9 @@ class SGLModelRunner(ModelRunner):
         except Exception as exc:
             logger.warning(f"sglang-omni: skipping Ming-Omni registration ({exc})")
 
-    def init_kv_cache_configurator(self):
+    def init_kv_cache_configurator(
+        self, draft_parallel_layout: DraftParallelLayout | None = None
+    ) -> None:
         """Swap in the Omni configurator so the colocated budget stays hooked.
 
         Upstream keeps _profile_available_bytes on the composed
@@ -781,7 +816,7 @@ class SGLModelRunner(ModelRunner):
         the Omni subclass, copying every declared field so upstream can add
         fields without silently dropping them here.
         """
-        super().init_kv_cache_configurator()
+        super().init_kv_cache_configurator(draft_parallel_layout)
         base = self.kv_cache_configurator
         self.kv_cache_configurator = OmniKVCacheConfigurator(
             **{

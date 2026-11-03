@@ -248,6 +248,7 @@ def test_start_runs_the_loop_on_the_top_priority_stream_only_when_asked(
     scheduler.pending_request_admissions = {}
     scheduler.shutdown_lock = threading.Lock()
     scheduler.shutdown_callback = None
+    scheduler.async_d2h_worker = None
     outer_stream = torch.cuda.current_stream()
     loop_streams: list[torch.cuda.Stream] = []
 
@@ -265,6 +266,35 @@ def test_start_runs_the_loop_on_the_top_priority_stream_only_when_asked(
     else:
         assert loop_streams == [outer_stream]
     assert torch.cuda.current_stream() == outer_stream
+
+
+def test_shutdown_resources_stops_the_borrowed_d2h_copy_worker_once() -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.shutdown_lock = threading.Lock()
+    calls: list[str] = []
+    scheduler.shutdown_callback = lambda: calls.append("callback")
+    scheduler.async_d2h_worker = SimpleNamespace(
+        shutdown=lambda: calls.append("worker")
+    )
+
+    scheduler.shutdown_resources()
+    scheduler.shutdown_resources()
+
+    assert calls == ["worker", "callback"]
+    assert scheduler.async_d2h_worker is None
+    assert scheduler.shutdown_callback is None
+
+
+def test_shutdown_resources_without_a_d2h_copy_worker_runs_only_the_callback() -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.shutdown_lock = threading.Lock()
+    calls: list[str] = []
+    scheduler.shutdown_callback = lambda: calls.append("callback")
+    scheduler.async_d2h_worker = None
+
+    scheduler.shutdown_resources()
+
+    assert calls == ["callback"]
 
 
 def make_abortable_req(request_id: str, **attributes):
@@ -646,6 +676,7 @@ def test_upstream_queue_limit_abort_is_translated_to_omni_output() -> None:
     scheduler.disaggregation_mode = DisaggregationMode.NULL
     scheduler.enable_priority_scheduling = False
     scheduler.abort_on_priority_when_disabled = False
+    scheduler.rust_server = None
     scheduler.max_queued_requests = 0
     scheduler.waiting_queue = []
     scheduler.enable_hicache_storage = False
@@ -698,6 +729,7 @@ def requeue_scheduler() -> OmniScheduler:
     scheduler.disaggregation_mode = DisaggregationMode.NULL
     scheduler.enable_priority_scheduling = False
     scheduler.abort_on_priority_when_disabled = False
+    scheduler.rust_server = None
     scheduler.max_queued_requests = None
     scheduler.waiting_queue = []
     scheduler.enable_hicache_storage = False
@@ -963,6 +995,7 @@ def enqueue_limit_scheduler(monkeypatch):
     scheduler.enable_priority_scheduling = True
     scheduler.schedule_low_priority_values_first = False
     scheduler.abort_on_priority_when_disabled = False
+    scheduler.rust_server = None
     scheduler.max_queued_requests = 1
     scheduler.waiting_queue = []
     scheduler.enable_hicache_storage = False
@@ -1207,6 +1240,7 @@ def test_upstream_kv_exhaustion_abort_is_translated_to_omni_output() -> None:
     scheduler.enable_hierarchical_cache = False
     scheduler.forward_ct = 1
     scheduler.enable_skip_finishing_decode = False
+    scheduler.rust_server = None
     scheduler.server_args = SimpleNamespace()
     scheduler.decode_offload_manager = None
     scheduler.token_to_kv_pool_allocator = SimpleNamespace(available_size=lambda: 0)
@@ -3384,6 +3418,7 @@ def construct_omni_scheduler(
         enable_metrics=False,
         enable_metrics_for_all_schedulers=False,
         prefill_decode_interval=prefill_decode_interval,
+        prefill_decode_interval_min_bs=0,
     )
 
     class StrictParallelContext:
@@ -3526,7 +3561,7 @@ def test_unset_prefill_decode_interval_never_defers_prefill(monkeypatch) -> None
     )  # noqa: leading-underscore  # upstream name
 
     assert (
-        scheduler._should_defer_prefill() is False
+        scheduler._should_defer_prefill(scheduler.running_batch) is False
     )  # noqa: leading-underscore  # upstream name
 
 
@@ -3706,6 +3741,7 @@ def test_omni_scheduler_binds_one_execution_bridge_to_any_runner(
         enable_metrics=False,
         enable_metrics_for_all_schedulers=False,
         prefill_decode_interval=0,
+        prefill_decode_interval_min_bs=0,
     )
     monkeypatch.setattr(
         "sglang.srt.managers.scheduler_components.new_token_ratio_tracker.get_schedule",
@@ -3792,6 +3828,7 @@ def test_omni_scheduler_refuses_spec_overlap_without_a_draft(monkeypatch) -> Non
         enable_metrics=False,
         enable_metrics_for_all_schedulers=False,
         prefill_decode_interval=0,
+        prefill_decode_interval_min_bs=0,
     )
     monkeypatch.setattr(
         "sglang.srt.runtime_context.get_parallel",
@@ -3932,7 +3969,9 @@ def spec_prefill_scheduler(
         disaggregation_mode=DisaggregationMode.NULL,
         enable_overlap=True,
         enable_overlap_mlx=False,
-        model_config=None,
+        model_config=SimpleNamespace(
+            think_end_ids=None, self_opened_think_start_ids=None
+        ),
         token_to_kv_pool_allocator=scheduler.token_to_kv_pool_allocator,
         tree_cache=scheduler.tree_cache,
         hisparse_coordinator=None,
@@ -4225,6 +4264,7 @@ def test_omni_scheduler_stop_runs_shutdown_callback_once() -> None:
     scheduler.pending_request_admissions = {}
     scheduler.shutdown_lock = threading.Lock()
     scheduler.shutdown_callback = lambda: shutdowns.append(None)
+    scheduler.async_d2h_worker = None
 
     scheduler.stop()
     scheduler.stop()
@@ -4262,6 +4302,7 @@ def test_omni_scheduler_start_closes_active_model_paths(
     scheduler.pending_request_admissions = {}
     scheduler.shutdown_lock = threading.Lock()
     scheduler.shutdown_callback = None
+    scheduler.async_d2h_worker = None
 
     def run_loop() -> None:
         if loop_error is not None:
