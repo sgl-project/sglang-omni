@@ -20,6 +20,7 @@ from sglang.srt.layers.sampler import (
     top_k_top_p_min_p_sampling_from_probs_torch,
 )
 from sglang.srt.mem_cache.kv_cache_configurator import KVCacheConfigurator
+from sglang.srt.mem_cache.memory_pool import KVCache, MHATokenToKVPool
 from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBackend
 from sglang.srt.model_executor.model_runner import ModelRunner
 from sglang.srt.model_executor.model_runner_components.layer_setup import (
@@ -28,6 +29,7 @@ from sglang.srt.model_executor.model_runner_components.layer_setup import (
 from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
     PrefillCudaGraphRunner,
 )
+from sglang.srt.platforms.interface import KVPoolKind
 from sglang.srt.runtime_context import get_exec, get_parallel, get_schedule
 from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 from sglang.srt.server_args import ServerArgs
@@ -149,6 +151,26 @@ def free_gpu_memory_bytes(device: str, gpu_id: int) -> int:
     return int(free_gib * (1 << 30))
 
 
+class SeparateKVAllocationsPool(MHATokenToKVPool):
+    """MHA pool for a compiled engine, with K and V in separate allocations."""
+
+    # note (ratish): the compiled KV store mutates K and V; inductor writes in place to one input per storage, so sharing an allocation clones all of it every decode step.
+    def _create_buffers_normal(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self,
+    ) -> None:
+        k_shape, v_shape = (
+            self._kv_buffer_shapes()
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self.k_buffer = [
+            torch.zeros(k_shape, dtype=self.store_dtype, device=self.device)
+            for _ in range(self.layer_num)
+        ]
+        self.v_buffer = [
+            torch.zeros(v_shape, dtype=self.store_dtype, device=self.device)
+            for _ in range(self.layer_num)
+        ]
+
+
 @dataclass(slots=True, kw_only=True)
 class OmniKVCacheConfigurator(KVCacheConfigurator):
     """KV-cache configurator that honors an Omni colocated-stage memory budget.
@@ -160,6 +182,17 @@ class OmniKVCacheConfigurator(KVCacheConfigurator):
 
     total_gpu_memory_fraction: float | None = None
     kv_cache_bytes: int | None = None
+
+    def _resolve_kv_pool_class(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        self, *, kind: KVPoolKind, default: type[KVCache]
+    ) -> type[KVCache]:
+        pool_class = KVCacheConfigurator._resolve_kv_pool_class(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            self, kind=kind, default=default
+        )
+        if pool_class is MHATokenToKVPool and get_exec().graph.enable_torch_compile:
+            return SeparateKVAllocationsPool
+        else:
+            return pool_class
 
     def _profile_available_bytes(self, pre_model_load_memory: float) -> int:
         """Profile KV-cache headroom for colocated SGLang AR stages.
