@@ -150,6 +150,51 @@ def test_a_reply_cut_before_its_thinker_ended_still_flags_it(
     assert adapter.replies == {}
 
 
+def thinker_truncation() -> StreamItem:
+    return StreamItem(
+        0, torch.empty(0, dtype=torch.long), "thinker", {REPLY_TRUNCATED: True}
+    )
+
+
+def test_a_reply_the_thinker_cut_at_its_token_budget_is_flagged_for_code2wav(
+    adapter: QwenTalkerSessionAdapter,
+) -> None:
+    """The thinker's item carries no text: it reaches code2wav as the flag, never the talker's prompt."""
+    chunk, payload = unit(1, [0])
+    request_data = adapter.build(IDENTITY, chunk, payload)
+    request_data.stage_payload = payload
+    assert relayed(adapter) == [("unit-1", "a", 1)]
+    adapter.append_text_chunk(request_data, thinker_truncation())
+    adapter.prefill_builder.append_text_chunk.assert_not_called()
+    assert flagged(adapter) == [("unit-1", True)]
+
+
+def test_a_thinker_cut_that_arrived_before_the_talker_started_is_flagged_and_not_spoken(
+    adapter: QwenTalkerSessionAdapter,
+) -> None:
+    chunk, payload = unit(1, [0, 1])
+    payload.prefetched_chunks.append(thinker_truncation())
+    adapter.build(IDENTITY, chunk, payload)
+    built = talker_session.build_talker_request_data.call_args.args[0]
+    assert [item.metadata for item in built.prefetched_chunks] == [
+        {"token_id": 0},
+        {"token_id": 1},
+    ]
+    assert relayed_and_flagged(adapter) == ["a", "b", True]
+
+
+def relayed_and_flagged(adapter: QwenTalkerSessionAdapter) -> list[str | bool]:
+    out = []
+    while not adapter.outbox.empty():
+        message = adapter.outbox.get_nowait()
+        assert message.target == CODE2WAV_STAGE
+        if REPLY_TRUNCATED in message.metadata:
+            out.append(message.metadata[REPLY_TRUNCATED])
+        else:
+            out.append(TimedChunk.from_dict(message.metadata["chunk"]).payload["text"])
+    return out
+
+
 def test_a_reply_that_stopped_on_its_own_puts_no_flag(
     adapter: QwenTalkerSessionAdapter,
 ) -> None:

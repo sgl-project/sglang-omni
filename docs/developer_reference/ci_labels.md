@@ -18,11 +18,11 @@ In this sense, two kinds of labels exist and they combine: a stage label decides
 | Omni CI: PR Test | H100 | The unit test suite twice: once with CUDA hidden, once for the tests that need a GPU | Any stage label |
 | Omni CI: ASR | H100 | Multi-speaker transcription and diarization with MOSS-Transcribe-Diarize, then SeedTTS English and Chinese word error rate and speed on Fun-ASR-Nano-2512, Qwen3-ASR-1.7B or Whisper-large-v3 | `run-asr-ci` or `run-all-ci` |
 | Omni CI: TTS | H100 | Voice cloning on SeedTTS with Higgs-TTS, MOSS-TTS, Qwen3-TTS or Fun-CosyVoice3: non-streaming and streaming speed, word error rate, speaker similarity and UTMOS, streaming consistency, first-audio latency for Qwen3-TTS, and a serving stress test on Higgs-TTS | `run-tts-ci` or `run-all-ci` |
-| Omni CI: MPS | H100 | Two Higgs-TTS or MOSS-TTS workers sharing one H100 through CUDA MPS, with the TTS quality assertions | `run-mps-ci` or `run-all-ci` |
+| Omni CI: MPS | H100 | External CUDA MPS DP2 non-streaming validation, native MPS lifecycle validation, and native CUDA IPC weight-sharing lifecycle validation | `run-mps-ci` or `run-all-ci` |
 | Omni CI: Omni | H100 | Qwen3-Omni or MiniCPM-o 4.5: thinker length limits, SeedTTS voice cloning, accuracy and speed on MMMU, MMSU, Video-MME and Video-AMME with text and spoken answers, a tensor parallel thinker, and Qwen3-Omni process replicas | `run-omni-ci` or `run-all-ci` |
 | CPU CI | Intel Xeon (`intel-omni-spr`) | Job `intel-cpu-ci (unit_test/cpu)`: `pytest tests/unit_test/cpu/` | `run-intel-cpu-ci` or `run-all-ci` |
 | XPU CI | Intel GPU (`intel-omni-bmg`) | Intel GPU device layer tests | `run-intel-xpu-ci` or `run-all-ci` |
-| Voxt Mac CI | Apple Silicon | MLX native runtime and Voxt app tests | `run-mac-ci` or `run-all-ci` |
+| Voxt Mac CI | GitHub macOS | MLX native runtime build and protocol, Voxt app tests | `run-mac-ci` or `run-all-ci` |
 
 The Omni CI stages are the core of the project's CI: they serve the main ASR, TTS and omni models end to end on H100 and gate their accuracy and speed.
 
@@ -43,9 +43,9 @@ These workflows run on GitHub-hosted runners for every pull request, drafts incl
 
 Omni CI runs PR Test and the four H100 model stages. Its preflight job waits for lint, resolves the labels and draws the models once. A shared setup job then builds the virtualenv and downloads model weights. With `run-all-ci`, the stages run in this order:
 
-PR Test → ASR → TTS → MPS → Omni
+PR Test → ASR, TTS and Omni side by side → MPS
 
-Only PR Test and the selected stages actually run; a stage that is not selected is skipped at once. With `run-omni-ci` alone, Omni starts as soon as PR Test finishes, and with `run-tts-ci` and `run-mps-ci`, the order is PR Test → TTS → MPS. Each stage waits for the previous one to finish, and a stage that fails does not stop the stages after it. A failed setup job blocks every stage.
+Only PR Test and the selected stages actually run; a stage that is not selected is skipped at once. ASR, TTS and Omni start together as soon as PR Test finishes, whether it passed or not, and their jobs spread over whichever H100 runners are free. Jobs within a stage run side by side as well, except TTS stage 3, which waits for TTS stages 1 and 2 because it compares their results. MPS starts after the other selected stages finish: it tests the PR head commit instead of the merge commit, so it may rebuild the PR's shared virtualenv, and that must not happen while another stage is using it. With `run-tts-ci` and `run-mps-ci`, the order is PR Test → TTS → MPS. A stage that fails does not stop any other stage. A failed setup job blocks every stage.
 
 ### PR Test
 
@@ -53,11 +53,12 @@ Only PR Test and the selected stages actually run; a stage that is not selected 
 | --- | --- |
 | `unit-test-a` | First runtime-balanced partition of `pytest tests/ -m "not benchmark and not accelerator"`, with CUDA hidden |
 | `unit-test-b` | Second runtime-balanced partition of the same CPU unit-test suite, with CUDA hidden |
+| `unit-test-c` | Third runtime-balanced partition of the same CPU unit-test suite, with CUDA hidden |
 | `unit-test-accelerator` | `pytest tests/ -m "accelerator and not benchmark"`, the unit tests that need a GPU |
 
 The CPU partitions run as independent matrix jobs with fail-fast disabled. Files stay intact and are balanced using `.github/unit_test_durations.json`. Pytest discovers new tests automatically; files without a timing entry receive a one-second estimate, and new cases in an existing file stay in that file's partition. Local pytest remains unpartitioned unless the CI plugin is explicitly loaded.
 
-The initial weights are per-file p90 elapsed estimates from three successful H100 CPU jobs: [118185861718](https://github.com/sgl-project/sglang-omni/actions/runs/39288752772/job/118185861718), [118197139172](https://github.com/sgl-project/sglang-omni/actions/runs/39292142439/job/118197139172) and [118244967308](https://github.com/sgl-project/sglang-omni/actions/runs/39305977181/job/118244967308). Each file has three observations. The estimates aggregate timestamp intervals between completed pytest cases, excluding initial collection; they are not isolated setup/call/teardown measurements. These are PR runs with different revisions, not scheduled main-branch observations. The weights are a committed snapshot, not an automatically refreshed model.
+The weights are per-file p90 elapsed estimates from three successful H100 A/B runs: [41197670240](https://github.com/sgl-project/sglang-omni/actions/runs/41197670240), [41161315193](https://github.com/sgl-project/sglang-omni/actions/runs/41161315193) and [41140707601](https://github.com/sgl-project/sglang-omni/actions/runs/41140707601). Each file has three observations. The estimates aggregate timestamp intervals between completed pytest cases, excluding initial collection; they are not isolated setup/call/teardown measurements. These are PR runs with different revisions, not scheduled main-branch observations. The weights are a committed snapshot, not an automatically refreshed model.
 
 `run-unit-test-ci-only` selects PR Test on H100 without selecting model or hardware stages. It does not run the Intel Xeon job `intel-cpu-ci (unit_test/cpu)`; that job needs `run-intel-cpu-ci` or `run-all-ci`, and the CPU path filter. Other stage labels remain additive, so keep them and `run-all-ci` absent for unit tests only. Shared setup still runs, including model-weight provisioning. PR Test also runs whenever any other stage label selects a stage, the hardware stages included. `run-lint-only` does not run PR Test or setup.
 
@@ -100,9 +101,13 @@ Qwen3-TTS CustomVoice uses a named voice instead of a reference clip, and its th
 
 ### MPS
 
-MPS has one job, stage 1 - MPS non-streaming. It runs two TTS router workers on a single H100 that share the GPU through CUDA MPS, and checks three things: the two workers are separate MPS clients on the intended GPU, they actually execute at the same time, and the non-streaming word error rate, speaker similarity, UTMOS and audio integrity match the TTS stage's assertions.
+`run-mps-ci` runs three sequential validations on H100:
 
-The stage label is `run-mps-ci`. MPS has no model labels of its own. It accepts `run-higgs-tts-3-4b` and `run-moss-tts-local-transformer-v1.5`. A model label does not run MPS. With `run-tts-ci` and `run-mps-ci`, one of these labels selects that model for both stages. With only `run-tts-ci`, MPS does not run. With no Higgs or MOSS label, MPS draws from its own pool.
+1. External CUDA MPS DP2 non-streaming validation checks that two TTS router workers share one H100 through CUDA MPS and meet the TTS word error rate, speaker similarity, UTMOS and audio integrity assertions.
+2. Native MPS lifecycle validation uses Higgs-TTS to check daemon sharing, recovery behavior and clean teardown.
+3. Native CUDA IPC weight-sharing lifecycle validation uses MOSS-TTS Local to check shared-weight memory savings, process startup order and leader failure handling.
+
+All three validations run under the existing `run-mps-ci` label. The label accepts `run-higgs-tts-3-4b` and `run-moss-tts-local-transformer-v1.5` for the external CUDA MPS DP2 validation; those labels do not change the fixed models used by the native lifecycle validations. A model label does not run MPS. With `run-tts-ci` and `run-mps-ci`, one of these labels selects the external MPS model and the TTS model. With only `run-tts-ci`, MPS does not run. With no Higgs or MOSS label, the external MPS validation draws from its own pool.
 
 | Model label | Checkpoint | MPS config | In the random pool |
 | --- | --- | --- | --- |
@@ -149,7 +154,7 @@ The stage label is `run-intel-xpu-ci`.
 
 ### Voxt Mac CI
 
-Voxt Mac CI has two jobs on Apple Silicon. The native runtime job builds the MLX runtime, checks its golden outputs on a frozen corpus for Qwen3-ASR and the other native models, and runs the server API tests. The Voxt unit test job builds the Voxt app with Xcode and runs its Omni and MLX test classes. The workflow starts only when the pull request touches `Voxt/`, `sglang_omni_mlx/` or the workflow itself; otherwise it does not appear on the pull request at all.
+Voxt Mac CI has two jobs on GitHub's macOS runners. The native runtime job builds the MLX runtime and a stub server, then tests the protocol every native server shares on the stub server, each server's startup checks, and that the installed runtime links only the system and itself. The Voxt unit test job builds the Voxt app with Xcode and runs its Omni and MLX test classes. Model outputs are checked by hand per model PR with the tools in `sglang_omni_mlx/native/ci`. The workflow starts only when the pull request touches `Voxt/`, `sglang_omni_mlx/` or the workflow itself; otherwise it does not appear on the pull request at all.
 
 The stage label is `run-mac-ci`.
 

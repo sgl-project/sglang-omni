@@ -723,6 +723,7 @@ class SGLModelRunner(ModelRunner):
         from sglang.srt.models.registry import ModelRegistry
 
         sglang_omni_models = {
+            "Qwen3ASRDFlashDraftModel": "sglang_omni.models.qwen3_asr.dflash:Qwen3ASRDFlashDraftModel",
             "S2ProSGLangTextModel": "sglang_omni.models.fishaudio_s2_pro.sglang_model:S2ProSGLangTextModel",
             "Qwen3OmniTalker": "sglang_omni.models.qwen3_omni.components.talker:Qwen3OmniTalker",
             "Qwen3OmniThinkerForCausalLM": "sglang_omni.models.qwen3_omni.components.sglang_thinker:Qwen3OmniThinkerForCausalLM",
@@ -740,13 +741,17 @@ class SGLModelRunner(ModelRunner):
             "Qwen3ASRForConditionalGeneration": "sglang_omni.models.qwen3_asr.sglang_model:Qwen3ASRForConditionalGeneration",
             "FunAsrNanoForConditionalGeneration": "sglang_omni.models.fun_asr.sglang_model:FunAsrNanoForConditionalGeneration",
             "ArkasrForConditionalGeneration": "sglang_omni.models.arkasr.sglang_model:ArkasrForConditionalGeneration",
+            "HYV3SpeechForCausalLM": "sglang_omni.models.hy_simulmt.sglang_model:HYV3SpeechForCausalLM",
+            "NemotronTranscribeForConditionalGeneration": "sglang_omni.models.nemotron_transcribe.sglang_model:NemotronTranscribeForConditionalGeneration",
             "DotsTTSForConditionalGeneration": "sglang_omni.models.dots_tts.sglang_model:DotsTTSSGLangModel",
             "FunCosyVoice3SGLangModel": "sglang_omni.models.fun_cosyvoice3.sglang_model:FunCosyVoice3SGLangModel",
+            "FunCosyVoice3DSparkDraftModel": "sglang_omni.models.fun_cosyvoice3.dspark_draft:FunCosyVoice3DSparkDraftModel",
             "NemotronVoiceChatForCausalLM": "sglang_omni.models.nemotron_voicechat.thinker:NemotronVoiceChatForCausalLM",
             "NemotronVoiceChatTalker": "sglang_omni.models.nemotron_voicechat.talker:NemotronVoiceChatTalker",
             "PersonaPlexForCausalLM": "sglang_omni.models.personaplex.sglang_model:PersonaPlexForCausalLM",
             "MiniCPMO": "sglang_omni.models.minicpm_o.components.sglang_thinker:MiniCPMOThinkerForCausalLM",
-            "LlamaForCausalLMEagle3": "sglang_omni.model_runner.eagle3_draft:OmniLlamaForCausalLMEagle3",
+            "LlamaForCausalLMEagle3": "sglang_omni.speculative.eagle3_draft:OmniLlamaForCausalLMEagle3",
+            "ReducedVocabularyDFlashDraftModel": "sglang_omni.speculative.dflash_draft:ReducedVocabularyDFlashDraftModel",
         }
         for arch, path in sglang_omni_models.items():
             module_path, _, attr = path.partition(":")

@@ -17,6 +17,7 @@ from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.pipeline.session_delivery import DeliveryPacer
 from sglang_omni.pipeline.session_graph import SessionGraphRunner
 from sglang_omni.pipeline.sessions import NodeInbox, Session, SessionGraphRuntime
+from sglang_omni.pipeline.types import SessionOutputBudgetError
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
     ControlEdge,
@@ -260,7 +261,9 @@ def test_graph_outputs_count_against_max_output_bytes_until_the_client_takes_the
     sessions = SessionGraphRunner()
     assert sessions.reserve_graph_output(graph, "right", output) == size
     assert graph.output_bytes == size
-    with pytest.raises(RuntimeError, match="node 'right' exceeds max_output_bytes"):
+    with pytest.raises(
+        SessionOutputBudgetError, match="node 'right' exceeds max_output_bytes"
+    ):
         sessions.reserve_graph_output(graph, "right", output)
 
 
@@ -755,6 +758,26 @@ async def test_a_report_reaches_the_client_only_from_a_node_no_node_reads():
     assert graph.outputs.empty()
 
 
+@pytest.mark.asyncio
+async def test_the_synthesizer_language_of_a_sentence_reaches_its_readers_but_never_the_client():
+    """reply.sentence is only for the aligner; as an ordinary control the client would get it before every sentence as an event the realtime API does not define."""
+    sentence = {"type": "reply.sentence", "language": "English"}
+    sessions = NodeOutputsRunner(
+        [
+            reply_output("session", sentence, 1),
+            reply_output("session", {"type": "turn.started"}, 1),
+        ]
+    )
+    graph = report_runtime(sessions)
+    await sessions.route_graph_outputs(graph, "tts")
+    assert graph.outputs.get_nowait()[0].payload == {"type": "turn.started"}
+    assert graph.outputs.empty()
+    assert [chunk.payload for _, chunk, _ in graph.inboxes["aligner"].queued] == [
+        sentence,
+        {"type": "turn.started"},
+    ]
+
+
 def input_runtime(
     nodes: dict[str, SessionNode], limits: SessionLimits
 ) -> SessionGraphRuntime:
@@ -812,6 +835,18 @@ def test_a_drop_oldest_append_that_cannot_confirm_the_dropped_input_changes_noth
     confirmed = graph.outputs.get_nowait()[0]
     assert (confirmed.kind, confirmed.input_seq) == ("input_done", 0)
     assert graph.pending_input_done == {1: 2}
+
+
+def test_an_input_confirmation_that_finds_the_output_queue_full_exhausts_the_output_budget():
+    sessions = SessionGraphRunner()
+    graph = input_runtime(
+        {name: SessionNode((name,), ("input",)) for name in NODES},
+        SessionLimits(max_output_chunks=1),
+    )
+    graph.outputs.put_nowait(None)
+    with pytest.raises(SessionOutputBudgetError, match="confirmed input seq 0"):
+        sessions.emit_graph_input_done(graph, "left", chunk(0))
+    assert graph.next_output == 0
 
 
 def test_control_edge_does_not_address_internal_stages():
@@ -967,6 +1002,52 @@ async def test_an_interrupt_tells_the_paced_node_readers_the_audio_it_delivered(
     assert source == "speaker" and delivered.turn == 2
     assert delivered.payload == {"type": REPLY_DELIVERED, "audio_ms": 200}
     await outputs.aclose()
+
+
+@pytest.mark.asyncio
+async def test_an_interrupt_naming_a_turn_keeps_the_reply_delivered_its_target_has_not_taken():
+    """A dialog interrupted a reply, and a client interrupt of the same turn then dropped the reply.delivered still queued for the dialog with the turn's other chunks, so a dialog waiting for it never answered again."""
+    runner = NodeOutputsRunner([])
+    nodes = {
+        "speaker": SessionNode(
+            ("speaker",), ("input",), controls=(ControlEdge("dialog", INTERRUPT),)
+        ),
+        "dialog": SessionNode(
+            ("dialog",),
+            ("input", "speaker:session"),
+            controls=(ControlEdge("input", INTERRUPT),),
+        ),
+    }
+    identities = {name: SessionIdentity(f"graph:{name}", 1) for name in nodes}
+    for name, identity in identities.items():
+        runner.sessions[identity.id] = Session(
+            session_identity=identity,
+            request=OmniRequest(None),
+            stages=(name,),
+            bindings={},
+            limits=SessionLimits(),
+            is_node=True,
+        )
+    graph = SessionGraphRuntime(
+        session_identity=SessionIdentity("graph", 1),
+        graph=SessionGraph(nodes=nodes, publish={"speaker": ("pcm16", "session")}),
+        nodes=identities,
+        limits=SessionLimits(),
+        inboxes={name: NodeInbox() for name in nodes},
+        outputs=asyncio.Queue(),
+        pacers={"speaker": DeliveryPacer(250, asyncio.Event())},
+        client_sequences={name: {} for name in nodes},
+    )
+    interrupt = control_chunk(INTERRUPT, turn=1)
+    await runner.put_graph_inbox(
+        graph, "dialog", "speaker", control_chunk("turn.done", turn=1)
+    )
+    [(_, edge)] = graph.graph.control_targets("dialog", INTERRUPT)
+    await runner.control_edge(graph, "speaker", edge, interrupt)
+    await runner.control_graph(graph, interrupt, None, False)
+    assert [
+        (source, chunk.payload) for source, chunk, _ in graph.inboxes["dialog"].queued
+    ] == [("speaker", {"type": REPLY_DELIVERED, "audio_ms": 0.0})]
 
 
 def speaker_audio(turn: int, t_start_ms: float) -> OutputChunk:
