@@ -681,7 +681,7 @@ def test_qwen3_asr_stage_import_without_dflash() -> None:
             sys.executable,
             "-c",
             "import sys; "
-            "sys.modules['sglang_omni.models.qwen3_asr.dflash'] = None; "
+            "sys.modules['sglang_omni.speculative.dflash_draft'] = None; "
             "from sglang_omni.models.qwen3_asr.stages import "
             "create_sglang_qwen3_asr_executor",
         ],
@@ -691,12 +691,13 @@ def test_qwen3_asr_stage_import_without_dflash() -> None:
     )
 
 
+@pytest.mark.parametrize("non_causal", [False, True])
 def test_qwen3_asr_dflash_build_uses_sync_runtime_and_cleans_resources(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, non_causal: bool
 ) -> None:
     """DFlash must release its temporary checkpoint after both successful and failed builds."""
     # note (WilsonZheng0327): Only DFlash tests require the Triton-dependent worker.
-    from sglang_omni.models.qwen3_asr.dflash import Qwen3ASRDFlashWorker
+    from sglang_omni.speculative.dflash_draft import ReducedVocabularyDFlashWorker
 
     recorded = patch_engine_dependencies(monkeypatch, want_cuda_graph=True)
     monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: True)
@@ -704,7 +705,7 @@ def test_qwen3_asr_dflash_build_uses_sync_runtime_and_cleans_resources(
     source_config = {
         "speculators_model_type": "dflash",
         "sample_from_anchor": False,
-        "sliding_window_non_causal": False,
+        "sliding_window_non_causal": non_causal,
         "dtype": "bfloat16",
         "draft_vocab_size": 32000,
         "aux_hidden_state_layer_ids": [2, 14, 25],
@@ -731,6 +732,8 @@ def test_qwen3_asr_dflash_build_uses_sync_runtime_and_cleans_resources(
             "block_size": 8,
             "sample_from_anchor": False,
         }
+        assert config["architectures"] == ["ReducedVocabularyDFlashDraftModel"]
+        assert config.get("is_causal", True) is not non_causal
         assert config["draft_vocab_size"] == 32000
         assert (
             draft_path / "model.safetensors"
@@ -753,7 +756,10 @@ def test_qwen3_asr_dflash_build_uses_sync_runtime_and_cleans_resources(
     draft_path = Path(recorded.build_kwargs["speculative_draft_model_path"])
     assert not draft_path.exists()
     assert recorded.infra_kwargs[-1]["supports_speculative_decoding"] is True
-    assert recorded.infra_kwargs[-1]["speculative_worker_class"] is Qwen3ASRDFlashWorker
+    assert (
+        recorded.infra_kwargs[-1]["speculative_worker_class"]
+        is ReducedVocabularyDFlashWorker
+    )
     assert scheduler.enable_async_decode is False
     assert scheduler.async_prefill is False
     assert recorded.adapter_kwargs["greedy_only"] is True

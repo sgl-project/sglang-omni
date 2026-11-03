@@ -26,12 +26,16 @@ DRAFT_ARCHITECTURE = "ReducedVocabularyDFlashDraftModel"
 
 
 def materialize_draft_checkpoint(
-    draft_model_path: str, revision: str | None
+    draft_model_path: str,
+    revision: str | None,
+    *,
+    allow_non_causal: bool = False,
 ) -> TemporaryDirectory[str]:
     """Write a loadable copy of a speculators-format DFlash draft.
 
     The copy has a flat qwen3 config that names the reduced-vocabulary draft class and
-    links the original weights. The caller releases it once the engine has loaded.
+    links the original weights. Non-causal windows require the caller's opt-in.
+    The caller releases it once the engine has loaded.
     """
     source_dir = (
         draft_model_path
@@ -44,7 +48,7 @@ def materialize_draft_checkpoint(
         raise ValueError(f"{draft_model_path} is not a speculators DFlash checkpoint")
     elif source_config["sample_from_anchor"]:
         raise ValueError(f"{draft_model_path} samples from the anchor token")
-    elif source_config["sliding_window_non_causal"]:
+    elif source_config["sliding_window_non_causal"] and not allow_non_causal:
         raise ValueError(f"{draft_model_path} uses non-causal sliding windows")
     else:
         pass
@@ -67,6 +71,10 @@ def materialize_draft_checkpoint(
             "sample_from_anchor": False,
         },
     }
+    if source_config["sliding_window_non_causal"]:
+        draft_config["is_causal"] = False
+    else:
+        pass
     draft_checkpoint = TemporaryDirectory(prefix="dflash-draft-")
     with open(os.path.join(draft_checkpoint.name, "config.json"), "w") as config_file:
         json.dump(draft_config, config_file, indent=2)
