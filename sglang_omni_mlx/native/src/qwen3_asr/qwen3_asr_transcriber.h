@@ -78,6 +78,15 @@ SpeakerSegmentsJson(const std::vector<SpeakerSegment> &segments);
 // Voxt's Swift port, a name outside the table is used as given; blank is none.
 std::optional<std::string> NormalizeLanguage(const std::string &language);
 
+// Verifies greedy proposals against the target; callbacks own the stop rules.
+// A positive prefill_step_tokens bounds prompt chunks, leaving the last token
+// for the first logits. Zero prefills the prompt in one pass.
+int DecodeWithDraft(const Qwen3Decoder &decoder, const DFlashDraft &draft,
+                    const mlx::core::array &embeddings,
+                    const std::function<bool(int)> &commit,
+                    const std::function<int()> &remaining,
+                    const std::atomic<bool> &cancel, int prefill_step_tokens);
+
 class Qwen3ASRTranscriber {
 public:
   // With a DFlash draft directory, decoding verifies the draft's proposals
@@ -97,14 +106,6 @@ public:
                                  const std::atomic<bool> &cancel) const;
 
 private:
-  // Greedy decoding with the draft: each round the target verifies the block
-  // the draft proposed, cut to the tokens remaining allows, and commits the
-  // accepted tokens plus one more. Tokens go to commit until it reports the
-  // output complete; returns the rounds.
-  int DecodeWithDraft(const mlx::core::array &embeddings,
-                      const std::function<bool(int)> &commit,
-                      const std::function<int()> &remaining,
-                      const std::atomic<bool> &cancel) const;
   std::pair<std::string, std::optional<std::string>>
   SplitOutput(const std::vector<int> &output_ids,
               const TranscriptionOptions &options) const;

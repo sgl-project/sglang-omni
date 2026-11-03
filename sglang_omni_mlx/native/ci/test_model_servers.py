@@ -53,6 +53,7 @@ VAD_FIELDS = {
     "vad_max_chunk_seconds": "24.0",
 }
 MOSS_REPO = "OpenMOSS-Team/MOSS-Transcribe-Diarize"
+MOSS_DRAFT_REPO = "wilsonzheng0327/MOSS-Transcribe-Diarize-dflash"
 NEMOTRON_REPO = "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
 PARAKEET_REPO = "mlx-community/parakeet-tdt-0.6b-v3"
 SENSEVOICE_REPO = "mlx-community/SenseVoiceSmall"
@@ -366,10 +367,18 @@ def test_cohere_rejects_a_bad_temperature(
     assert "temperature" in json.loads(body)["detail"]
 
 
-@pytest.fixture(scope="module")
-def moss_server() -> Iterator[ModelServer]:
+@pytest.fixture(scope="module", params=[False, True], ids=["plain", "dflash"])
+def moss_server(request: pytest.FixtureRequest) -> Iterator[ModelServer]:
+    flags = (
+        (
+            "--draft-model-path",
+            str(Path(DATA_ROOT) / "models" / MOSS_DRAFT_REPO.replace("/", "_")),
+        )
+        if request.param
+        else ()
+    )
     running = ModelServer(
-        "moss_transcribe_diarize_server", "moss_transcribe_diarize", MOSS_REPO
+        "moss_transcribe_diarize_server", "moss_transcribe_diarize", MOSS_REPO, flags
     )
     yield running
     running.stop()
@@ -404,6 +413,31 @@ def test_moss_request_returns_speaker_segments(moss_server: ModelServer) -> None
     assert "Socrates begins the timaeus" in segments[0]["text"]
     assert "no signs here" in segments[1]["text"]
     assert "[S01]" in result["text"] and "[S02]" in result["text"]
+
+
+@pytest.mark.parametrize("budget", [1, 2, 8, 9])
+def test_moss_draft_stops_at_the_token_budget(budget: int) -> None:
+    """A budget ending inside a draft block must not commit extra tokens."""
+    result = subprocess.run(
+        [
+            str(Path(RUNTIME_BIN) / "moss_transcribe"),
+            "--model-path",
+            str(Path(DATA_ROOT) / "models" / MOSS_REPO.replace("/", "_")),
+            "--draft-model-path",
+            str(Path(DATA_ROOT) / "models" / MOSS_DRAFT_REPO.replace("/", "_")),
+            "--max-new-tokens",
+            str(budget),
+            str(Path(DATA_ROOT) / "corpus" / "v1" / "clips" / "0006_en_short.wav"),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=120,
+    )
+    output = json.loads(result.stdout)
+    assert output["generated_token_count"] == budget
+    assert output["finish_reason"] == "length"
+    assert (output["verify_rounds"] > 0) == (budget > 1)
 
 
 def test_moss_streamed_request_ends_with_segments(moss_server: ModelServer) -> None:

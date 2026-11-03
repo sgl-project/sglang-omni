@@ -251,7 +251,8 @@ Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
   // position with the block's own earlier tokens; a request that asks for one
   // decodes without the draft.
   if (draft_.has_value() && options.repetition_penalty == 1.0f) {
-    verify_round_count = DecodeWithDraft(embeddings, commit, remaining, cancel);
+    verify_round_count = DecodeWithDraft(model_.decoder(), *draft_, embeddings,
+                                         commit, remaining, cancel, 0);
   } else {
     std::vector<KVCache> caches = model_.NewCaches();
     const mx::array prefill_logits = model_.Decode(embeddings, caches);
@@ -303,20 +304,48 @@ Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
           verify_round_count};
 }
 
-int Qwen3ASRTranscriber::DecodeWithDraft(
-    const mx::array &embeddings, const std::function<bool(int)> &commit,
-    const std::function<int()> &remaining,
-    const std::atomic<bool> &cancel) const {
-  const Qwen3Decoder &decoder = model_.decoder();
-  const int block_size = draft_->block_size();
-  std::vector<KVCache> caches = model_.NewCaches();
-  std::vector<KVCache> draft_caches = draft_->NewCaches();
+int DecodeWithDraft(const Qwen3Decoder &decoder, const DFlashDraft &draft,
+                    const mx::array &embeddings,
+                    const std::function<bool(int)> &commit,
+                    const std::function<int()> &remaining,
+                    const std::atomic<bool> &cancel, int prefill_step_tokens) {
+  const int block_size = draft.block_size();
+  std::vector<KVCache> caches = decoder.NewCaches();
+  std::vector<KVCache> draft_caches = draft.NewCaches();
   std::vector<mx::array> aux_hidden_states;
+  int processed = 0;
+  while (prefill_step_tokens > 0 && embeddings.shape(1) - processed > 1) {
+    if (cancel.load()) {
+      throw TranscriptionCancelled();
+    } else {
+    }
+    const int token_count =
+        std::min(prefill_step_tokens, embeddings.shape(1) - processed - 1);
+    const mx::array hidden = decoder.Forward(
+        mx::slice(embeddings, {0, processed, 0},
+                  {1, processed + token_count, embeddings.shape(2)}),
+        caches, draft.aux_layers(), &aux_hidden_states);
+    draft.AppendContext(aux_hidden_states, token_count, draft_caches);
+    std::vector<mx::array> evaluated = {hidden};
+    for (const KVCache &cache : draft_caches) {
+      const auto arrays = cache.Arrays();
+      evaluated.insert(evaluated.end(), arrays.begin(), arrays.end());
+    }
+    mx::eval(evaluated);
+    aux_hidden_states.clear();
+    processed += token_count;
+  }
+  if (cancel.load()) {
+    throw TranscriptionCancelled();
+  } else {
+  }
   int anchor_id;
   {
     const mx::array prompt_hidden = decoder.Forward(
-        embeddings, caches, draft_->aux_layers(), &aux_hidden_states);
-    draft_->AppendContext(aux_hidden_states, embeddings.shape(1), draft_caches);
+        mx::slice(embeddings, {0, processed, 0}, embeddings.shape()), caches,
+        draft.aux_layers(), &aux_hidden_states);
+    draft.AppendContext(aux_hidden_states, embeddings.shape(1) - processed,
+                        draft_caches);
     anchor_id = static_cast<int>(
         mx::argmax(decoder.LastLogits(prompt_hidden)).item<uint32_t>());
   }
@@ -331,12 +360,12 @@ int Qwen3ASRTranscriber::DecodeWithDraft(
       throw TranscriptionCancelled();
     } else {
     }
-    std::vector<int> block_ids(block_size, draft_->mask_token_id());
+    std::vector<int> block_ids(block_size, draft.mask_token_id());
     block_ids[0] = anchor_id;
     const mx::array proposed_ids =
-        draft_->ProposeBlock(model_.EmbedTokens(mx::array(
-                                 block_ids.data(), {1, block_size}, mx::int32)),
-                             draft_caches);
+        draft.ProposeBlock(decoder.EmbedTokens(mx::array(
+                               block_ids.data(), {1, block_size}, mx::int32)),
+                           draft_caches);
     // note (wilsonzheng0327): the block is cut to the tokens the budget still
     // allows, so the caches never hold a position plain decoding would not
     // have reached.
@@ -347,8 +376,8 @@ int Qwen3ASRTranscriber::DecodeWithDraft(
                   {0}, {verify_count});
     aux_hidden_states.clear();
     const mx::array hidden = decoder.Forward(
-        model_.EmbedTokens(mx::reshape(verify_ids, {1, verify_count})), caches,
-        draft_->aux_layers(), &aux_hidden_states);
+        decoder.EmbedTokens(mx::reshape(verify_ids, {1, verify_count})), caches,
+        draft.aux_layers(), &aux_hidden_states);
     const mx::array predictions = mx::argmax(decoder.Logits(hidden), -1);
     mx::eval({proposed_ids, predictions});
     ++round_count;
@@ -375,7 +404,7 @@ int Qwen3ASRTranscriber::DecodeWithDraft(
     for (KVCache &cache : caches) {
       cache.Trim(verify_count - 1 - accepted_count);
     }
-    draft_->AppendContext(aux_hidden_states, accepted_count + 1, draft_caches);
+    draft.AppendContext(aux_hidden_states, accepted_count + 1, draft_caches);
   }
   return round_count;
 }
