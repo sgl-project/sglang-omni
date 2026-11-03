@@ -2194,6 +2194,7 @@ interruption or reply-boundary detection to VoiceChat.</p>
 </table>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">JUDGE=gpt</span></code> needs <code class="docutils literal notranslate"><span class="pre">OPENAI_API_KEY</span></code>. With <code class="docutils literal notranslate"><span class="pre">JUDGE=qwen</span></code> the labels and ratings are not the paper’s, but the judge is local and pinned, so runs with the same settings stay comparable with each other. The semantic judge sends six control cases (<code class="docutils literal notranslate"><span class="pre">benchmarks/duplex/semantic/</span></code>) together with its first grading batches and keeps the grades only if all 18 control axis statuses match <code class="docutils literal notranslate"><span class="pre">control-expected.json</span></code>; otherwise it discards them and stops. The controls check the rubric, not the judge’s accuracy.</p>
+<p><code class="docutils literal notranslate"><span class="pre">--skip-semantic-judge</span></code> on <code class="docutils literal notranslate"><span class="pre">judge</span></code>, or on <code class="docutils literal notranslate"><span class="pre">generate</span></code> with <code class="docutils literal notranslate"><span class="pre">--all-stages</span></code>, leaves the semantic judge out because it is the slowest judge phase, ~5 minutes for 20 pairs on one H100.</p>
 <p>A judge starts only when the step has a request for it: the v1.5 pairs and the v1.0 interruption subset need one, while the other v1.0 subsets are scored without an LLM. A run with only those subsets starts no judge server and needs no API key.</p>
 </section>
 <section id="run-the-benchmark">
@@ -2560,28 +2561,31 @@ python<span class="w"> </span>-m<span class="w"> </span>benchmarks.duplex.fdb<sp
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">recording/shard-*/</span></code>, <code class="docutils literal notranslate"><span class="pre">v10/recording/shard-*/</span></code></p></td>
 <td><p>Raw session traces, input and output audio, protocol reports</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">logs/</span></code>, <code class="docutils literal notranslate"><span class="pre">v10/logs/</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">warmup/</span></code></p></td>
+<td><p>The unscored warmup sessions recorded before them, with their recorder logs; nothing reads them</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">logs/</span></code>, <code class="docutils literal notranslate"><span class="pre">v10/logs/</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">logs/</span></code> has the server logs and the v1.5 recorder logs, <code class="docutils literal notranslate"><span class="pre">v10/logs/</span></code> the v1.0 recorder logs; the v1.5 ASR and timing logs are in <code class="docutils literal notranslate"><span class="pre">scores/logs/</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">reference-audio/</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">reference-audio/</span></code></p></td>
 <td><p>v1.5 fixed-window WAVs and <code class="docutils literal notranslate"><span class="pre">reference-manifest.json</span></code> with eligibility</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">scores/summary.json</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">scores/summary.json</span></code></p></td>
 <td><p>v1.5 timing, ASR coverage and, with <code class="docutils literal notranslate"><span class="pre">JUDGE=gpt</span></code>, behavior labels</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">judge-qwen/summary.json</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">judge-qwen/summary.json</span></code></p></td>
 <td><p>v1.5 behavior labels with <code class="docutils literal notranslate"><span class="pre">JUDGE=qwen</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">semantic-qwen/</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">semantic-qwen/</span></code></p></td>
 <td><p>Semantic judge: control comparison, the exact packets sent, raw responses, per-pair outcomes and <code class="docutils literal notranslate"><span class="pre">summary.json</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">report.txt</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">report.txt</span></code></p></td>
 <td><p>Readable v1.5 report: coverage, timing and semantic quality</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">listening/</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">listening/</span></code></p></td>
 <td><p>One 16 kHz WAV per reply in <code class="docutils literal notranslate"><span class="pre">wav/</span></code> and its scored 3 s window in <code class="docutils literal notranslate"><span class="pre">voice-window/</span></code>, <code class="docutils literal notranslate"><span class="pre">replies.json</span></code> with each reply’s status, transcript and Parakeet text, <code class="docutils literal notranslate"><span class="pre">scores.json</span></code> with each reply’s scores, and the per-category <code class="docutils literal notranslate"><span class="pre">summary.json</span></code> with the checkpoint hashes</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">v10/reference/</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">v10/reference/</span></code></p></td>
 <td><p>v1.0 windows (<code class="docutils literal notranslate"><span class="pre">&lt;subset&gt;/&lt;id&gt;/output.wav</span></code>), <code class="docutils literal notranslate"><span class="pre">manifest.json</span></code>, the ASR receipt <code class="docutils literal notranslate"><span class="pre">asr.json</span></code>, per-repeat <code class="docutils literal notranslate"><span class="pre">unified.json</span></code> and <code class="docutils literal notranslate"><span class="pre">unified-samples.jsonl</span></code>, official <code class="docutils literal notranslate"><span class="pre">summary.json</span></code>, the judge ledger in <code class="docutils literal notranslate"><span class="pre">judge/</span></code> and evaluator logs in <code class="docutils literal notranslate"><span class="pre">logs/</span></code></p></td>
 </tr>
 </tbody>
@@ -2792,6 +2796,7 @@ python<span class="w"> </span>-m<span class="w"> </span>benchmarks.eval.benchmar
 <li><p><strong>Keep the settings fixed across the repeats of a run.</strong> Mixing repeats with different selections, <code class="docutils literal notranslate"><span class="pre">--num-shards</span></code> or judges makes their mean meaningless; use a new run name instead.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">--num-shards</span></code> changes what you measure.</strong> With <code class="docutils literal notranslate"><span class="pre">--num-shards</span> <span class="pre">2</span></code>, two sessions share the GPU, so the latencies are measured under load and do not compare with one shard. The model server keeps <code class="docutils literal notranslate"><span class="pre">max_sessions</span></code> at 2, so <code class="docutils literal notranslate"><span class="pre">generate</span></code> refuses more than 2 shards per server up front.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">--gpus</span></code> spreads the shards over GPUs.</strong> <code class="docutils literal notranslate"><span class="pre">--gpus</span> <span class="pre">0,1</span></code> starts one model server on each listed GPU, each with its own port (<code class="docutils literal notranslate"><span class="pre">8097</span> <span class="pre">+</span> <span class="pre">10×GPU</span></code>) and caches, and sends shard i to the i-th server modulo their count. With as many shards as GPUs every session has a GPU to itself, so the timing compares with one shard. <code class="docutils literal notranslate"><span class="pre">asr</span></code> and <code class="docutils literal notranslate"><span class="pre">judge</span></code> still run on the job GPU, the first index of <code class="docutils literal notranslate"><span class="pre">CUDA_VISIBLE_DEVICES</span></code>, so <code class="docutils literal notranslate"><span class="pre">CUDA_VISIBLE_DEVICES=0,1</span></code> with <code class="docutils literal notranslate"><span class="pre">--gpus</span> <span class="pre">0,1</span></code> records on both GPUs and transcribes on GPU 0.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">generate</span></code> warms the model servers up first.</strong> Once the servers are ready, every shard records the first selected sample, the first v1.5 pair or, with v1.5 left out, the first v1.0 sample, before any scored session starts. A fresh server pays its first-use costs in its first sessions, and with every shard starting at once those sessions answered seconds late, after the overlap they were meant to test had ended. These sessions go to <code class="docutils literal notranslate"><span class="pre">warmup/</span></code> and are never scored, and a failed one only logs a warning. <code class="docutils literal notranslate"><span class="pre">--skip-warmup</span></code> leaves them out, for example to compare a cold start with a warm one; keep that choice the same across the repeats of a run.</p></li>
 <li><p><strong>The first N samples are not a random sample.</strong> They give fast numbers that compare between runs, not estimates for the full dataset.</p></li>
 <li><p><strong>Failed sessions are never dropped.</strong> They stay in the denominators as ineligible, and an empty set of intervals shows as <code class="docutils literal notranslate"><span class="pre">n/a</span></code>, not as zero.</p></li>
 </ul>

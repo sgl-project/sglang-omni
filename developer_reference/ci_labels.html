@@ -573,6 +573,7 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tts">TTS</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#mps">MPS</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#omni">Omni</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#duplex">Duplex</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hardware-workflows">Hardware workflows</a><ul class="pst-show_toc_level nav section-nav flex-column">
@@ -662,17 +663,22 @@
 <td><p>Qwen3-Omni or MiniCPM-o 4.5: thinker length limits, SeedTTS voice cloning, accuracy and speed on MMMU, MMSU, Video-MME and Video-AMME with text and spoken answers, a tensor parallel thinker, and Qwen3-Omni process replicas</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">run-omni-ci</span></code> or <code class="docutils literal notranslate"><span class="pre">run-all-ci</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p>CPU CI</p></td>
+<tr class="row-even"><td><p>Omni CI: Duplex</p></td>
+<td><p>H100</p></td>
+<td><p>Full-Duplex-Bench v1.0 and v1.5 on three interaction strategies: native full duplex (MiniCPM-o 4.5), turn based (Qwen3-Omni with server VAD) and cascaded (Qwen3-ASR-1.7B, Qwen3.8-27B and Qwen3-TTS Base cloning one Vivian recording). Each gates turn taking, overlap behavior, latency and listening quality against its own baseline</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">run-native-duplex</span></code>, <code class="docutils literal notranslate"><span class="pre">run-turn-based-duplex</span></code>, <code class="docutils literal notranslate"><span class="pre">run-cascaded-duplex</span></code> or <code class="docutils literal notranslate"><span class="pre">run-all-ci</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p>CPU CI</p></td>
 <td><p>Intel Xeon (<code class="docutils literal notranslate"><span class="pre">intel-omni-spr</span></code>)</p></td>
 <td><p>Job <code class="docutils literal notranslate"><span class="pre">intel-cpu-ci</span> <span class="pre">(unit_test/cpu)</span></code>: <code class="docutils literal notranslate"><span class="pre">pytest</span> <span class="pre">tests/unit_test/cpu/</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">run-intel-cpu-ci</span></code> or <code class="docutils literal notranslate"><span class="pre">run-all-ci</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p>XPU CI</p></td>
+<tr class="row-even"><td><p>XPU CI</p></td>
 <td><p>Intel GPU (<code class="docutils literal notranslate"><span class="pre">intel-omni-bmg</span></code>)</p></td>
 <td><p>Intel GPU device layer tests</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">run-intel-xpu-ci</span></code> or <code class="docutils literal notranslate"><span class="pre">run-all-ci</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p>Voxt Mac CI</p></td>
+<tr class="row-odd"><td><p>Voxt Mac CI</p></td>
 <td><p>GitHub macOS</p></td>
 <td><p>MLX native runtime build and protocol, Voxt app tests</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">run-mac-ci</span></code> or <code class="docutils literal notranslate"><span class="pre">run-all-ci</span></code></p></td>
@@ -723,9 +729,9 @@
 </section>
 <section id="the-omni-ci-workflow">
 <h2>The Omni CI workflow<a class="headerlink" href="#the-omni-ci-workflow" title="Link to this heading">#</a></h2>
-<p>Omni CI runs PR Test and the four H100 model stages. Its preflight job waits for lint, resolves the labels and draws the models once. A shared setup job then builds the virtualenv and downloads model weights. With <code class="docutils literal notranslate"><span class="pre">run-all-ci</span></code>, the stages run in this order:</p>
-<p>PR Test → ASR, TTS and Omni side by side → MPS</p>
-<p>Only PR Test and the selected stages actually run; a stage that is not selected is skipped at once. ASR, TTS and Omni start together as soon as PR Test finishes, whether it passed or not, and their jobs spread over whichever H100 runners are free. Jobs within a stage run side by side as well, except TTS stage 3, which waits for TTS stages 1 and 2 because it compares their results. MPS starts after the other selected stages finish: it tests the PR head commit instead of the merge commit, so it may rebuild the PR’s shared virtualenv, and that must not happen while another stage is using it. With <code class="docutils literal notranslate"><span class="pre">run-tts-ci</span></code> and <code class="docutils literal notranslate"><span class="pre">run-mps-ci</span></code>, the order is PR Test → TTS → MPS. A stage that fails does not stop any other stage. A failed setup job blocks every stage.</p>
+<p>Omni CI runs PR Test and the seven H100 model stages. Its preflight job waits for lint, resolves the labels and draws the models once. A shared setup job then builds the virtualenv and downloads model weights. With <code class="docutils literal notranslate"><span class="pre">run-all-ci</span></code>, the stages run in this order:</p>
+<p>PR Test → ASR, TTS, Omni and Duplex side by side → MPS</p>
+<p>Only PR Test and the selected stages actually run; a stage that is not selected is skipped at once. ASR, TTS, Omni and Duplex start together as soon as PR Test finishes, whether it passed or not, and their jobs spread over whichever H100 runners are free. Jobs within a stage run side by side as well, except TTS stage 3, which waits for TTS stages 1 and 2 because it compares their results. MPS starts after the other selected stages finish: it tests the PR head commit instead of the merge commit, so it may rebuild the PR’s shared virtualenv, and that must not happen while another stage is using it. With <code class="docutils literal notranslate"><span class="pre">run-tts-ci</span></code> and <code class="docutils literal notranslate"><span class="pre">run-mps-ci</span></code>, the order is PR Test → TTS → MPS. A stage that fails does not stop any other stage. A failed setup job blocks every stage.</p>
 <section id="pr-test">
 <h3>PR Test<a class="headerlink" href="#pr-test" title="Link to this heading">#</a></h3>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -948,6 +954,34 @@
 </table>
 </div>
 </section>
+<section id="duplex">
+<h3>Duplex<a class="headerlink" href="#duplex" title="Link to this heading">#</a></h3>
+<p>Each job runs a fixed Full-Duplex-Bench selection on one interaction strategy, the first samples of every v1.5 category and v1.0 subset, then scores it with the <a class="reference internal" href="full_duplex_guide.html#full-duplex-bench-runbook"><span class="std std-ref">runbook</span></a>: Parakeet transcripts, the official timing, unified v1.0 metrics, listening quality, and the Qwen3.8-27B behavior and semantic judges. The three strategies behave differently by design, so each job gates only regressions from its own baseline, calibrated on H100. A run must first exercise the v1.5 overlaps: the model has to be speaking when the event begins in at least three of the five pairs of every category and fifteen of the twenty in all, or the overlap scores say nothing about the model. The seven behavior and v1.0 rates score five cases each and are gated together: the run fails when a rate scored fewer than five cases, when it has more than five fewer cases on target than the baseline in all, or when a rate whose baseline met three or more of its five cases meets none. A baseline rate is the mean count over repeated runs, so it may stand for a fraction of a case. The latency and listening metrics each have their own bound, and the semantic judge’s two rates are reported but not gated.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Stage label</p></th>
+<th class="head"><p>Job</p></th>
+<th class="head"><p>System</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-native-duplex</span></code></p></td>
+<td><p>Full-Duplex-Bench - full duplex</p></td>
+<td><p>MiniCPM-o 4.5, native full duplex, one server on each of two GPUs</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-turn-based-duplex</span></code></p></td>
+<td><p>Full-Duplex-Bench - turn based</p></td>
+<td><p>Qwen3-Omni with server VAD turn detection (<code class="docutils literal notranslate"><span class="pre">examples/qwen3_omni/session_h100.yaml</span></code>)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-cascaded-duplex</span></code></p></td>
+<td><p>Full-Duplex-Bench - cascaded</p></td>
+<td><p>Qwen3-ASR-1.7B, Qwen3.8-27B with thinking off and Qwen3-TTS Base cloning one Vivian recording, with server VAD, on two GPUs (<code class="docutils literal notranslate"><span class="pre">examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian</span></code>)</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The three jobs share the pull request’s Full-Duplex-Bench assets, so they run one after another, and a failed job does not skip the next. Each stage has one system and no model label. Turn based and cascaded fail by design until they are calibrated, so <code class="docutils literal notranslate"><span class="pre">run-all-ci</span></code> runs only the native full duplex job.</p>
+</section>
 </section>
 <section id="hardware-workflows">
 <h2>Hardware workflows<a class="headerlink" href="#hardware-workflows" title="Link to this heading">#</a></h2>
@@ -971,7 +1005,7 @@
 <section id="label-rules">
 <h2>Label rules<a class="headerlink" href="#label-rules" title="Link to this heading">#</a></h2>
 <ol class="arabic simple">
-<li><p>A stage runs only when its stage label or <code class="docutils literal notranslate"><span class="pre">run-all-ci</span></code> is on the pull request. <code class="docutils literal notranslate"><span class="pre">run-all-ci</span></code> selects every stage.</p></li>
+<li><p>A stage runs only when its stage label or <code class="docutils literal notranslate"><span class="pre">run-all-ci</span></code> is on the pull request. <code class="docutils literal notranslate"><span class="pre">run-all-ci</span></code> selects every stage except duplex turn based and cascaded, which run only with their own labels until they are calibrated.</p></li>
 <li><p>Self-hosted CI needs <code class="docutils literal notranslate"><span class="pre">run-all-ci</span></code>, a stage label, or <code class="docutils literal notranslate"><span class="pre">run-lint-only</span></code>. Without one, the Omni CI gate fails with <code class="docutils literal notranslate"><span class="pre">No</span> <span class="pre">CI</span> <span class="pre">label</span> <span class="pre">found</span></code>; unselected hardware workflows skip their tests without failing. The checks on GitHub-hosted runners do not depend on labels. <code class="docutils literal notranslate"><span class="pre">run-lint-only</span></code> runs no self-hosted job, so a green lint check leaves no self-hosted failure. It does not turn off a stage label that is also present.</p></li>
 <li><p>Any stage label also runs PR Test. A pull request labeled only <code class="docutils literal notranslate"><span class="pre">run-mac-ci</span></code> still runs PR Test on H100.</p></li>
 <li><p>A model label names a model, not a stage. It picks that model for every selected stage that accepts it, and never selects a stage by itself. Higgs and MOSS labels are accepted by TTS and MPS. If no selected stage accepts the label, the gate prints a warning.</p></li>
@@ -987,7 +1021,7 @@
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-all-ci</span></code></p></td>
-<td><p>Every stage</p></td>
+<td><p>Every stage except duplex turn based and cascaded</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-lint-only</span></code></p></td>
 <td><p>No self-hosted job. The gates succeed.</p></td>
@@ -1007,13 +1041,22 @@
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-omni-ci</span></code></p></td>
 <td><p>Omni in Omni CI</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-intel-cpu-ci</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-native-duplex</span></code></p></td>
+<td><p>Duplex full duplex in Omni CI</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-turn-based-duplex</span></code></p></td>
+<td><p>Duplex turn based in Omni CI</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-cascaded-duplex</span></code></p></td>
+<td><p>Duplex cascaded in Omni CI</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-intel-cpu-ci</span></code></p></td>
 <td><p>Intel Xeon job <code class="docutils literal notranslate"><span class="pre">intel-cpu-ci</span> <span class="pre">(unit_test/cpu)</span></code>, when the CPU paths match</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-intel-xpu-ci</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-intel-xpu-ci</span></code></p></td>
 <td><p>XPU CI</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-mac-ci</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-mac-ci</span></code></p></td>
 <td><p>Voxt Mac CI</p></td>
 </tr>
 </tbody>
@@ -1097,7 +1140,7 @@
 /tag-and-rerun-ci mps-higgs
 </pre></div>
 </div>
-<p>Stage targets are <code class="docutils literal notranslate"><span class="pre">lint</span></code>, <code class="docutils literal notranslate"><span class="pre">unit-test</span></code>, <code class="docutils literal notranslate"><span class="pre">asr</span></code>, <code class="docutils literal notranslate"><span class="pre">tts</span></code>, <code class="docutils literal notranslate"><span class="pre">mps</span></code>, <code class="docutils literal notranslate"><span class="pre">omni</span></code>, <code class="docutils literal notranslate"><span class="pre">intel-cpu</span></code>, <code class="docutils literal notranslate"><span class="pre">intel-xpu</span></code> and <code class="docutils literal notranslate"><span class="pre">mac</span></code>. <code class="docutils literal notranslate"><span class="pre">lint</span></code> adds <code class="docutils literal notranslate"><span class="pre">run-lint-only</span></code>. Model targets are <code class="docutils literal notranslate"><span class="pre">fun-asr</span></code>, <code class="docutils literal notranslate"><span class="pre">qwen3-asr</span></code>, <code class="docutils literal notranslate"><span class="pre">whisper-asr</span></code>, <code class="docutils literal notranslate"><span class="pre">higgs</span></code>, <code class="docutils literal notranslate"><span class="pre">moss</span></code>, <code class="docutils literal notranslate"><span class="pre">qwen3-tts</span></code>, <code class="docutils literal notranslate"><span class="pre">qwen3-tts-custom-voice</span></code>, <code class="docutils literal notranslate"><span class="pre">cosyvoice3</span></code>, <code class="docutils literal notranslate"><span class="pre">qwen3-omni</span></code>, <code class="docutils literal notranslate"><span class="pre">minicpmo</span></code>, <code class="docutils literal notranslate"><span class="pre">mps-higgs</span></code> and <code class="docutils literal notranslate"><span class="pre">mps-moss</span></code>. <code class="docutils literal notranslate"><span class="pre">higgs</span></code> and <code class="docutils literal notranslate"><span class="pre">moss</span></code> add <code class="docutils literal notranslate"><span class="pre">run-tts-ci</span></code> plus <code class="docutils literal notranslate"><span class="pre">run-higgs-tts-3-4b</span></code> or <code class="docutils literal notranslate"><span class="pre">run-moss-tts-local-transformer-v1.5</span></code>. <code class="docutils literal notranslate"><span class="pre">mps-higgs</span></code> and <code class="docutils literal notranslate"><span class="pre">mps-moss</span></code> add <code class="docutils literal notranslate"><span class="pre">run-mps-ci</span></code> plus that same model label. <code class="docutils literal notranslate"><span class="pre">qwen3-tts</span></code> adds <code class="docutils literal notranslate"><span class="pre">run-tts-ci</span></code> plus <code class="docutils literal notranslate"><span class="pre">run-qwen3-tts-12hz-1.7b-base</span></code>. A short model target adds its stage label and its model label. The model label itself never includes the stage name.</p>
+<p>Stage targets are <code class="docutils literal notranslate"><span class="pre">lint</span></code>, <code class="docutils literal notranslate"><span class="pre">unit-test</span></code>, <code class="docutils literal notranslate"><span class="pre">asr</span></code>, <code class="docutils literal notranslate"><span class="pre">tts</span></code>, <code class="docutils literal notranslate"><span class="pre">mps</span></code>, <code class="docutils literal notranslate"><span class="pre">omni</span></code>, <code class="docutils literal notranslate"><span class="pre">full-duplex</span></code>, <code class="docutils literal notranslate"><span class="pre">turn-based</span></code>, <code class="docutils literal notranslate"><span class="pre">cascaded</span></code>, <code class="docutils literal notranslate"><span class="pre">intel-cpu</span></code>, <code class="docutils literal notranslate"><span class="pre">intel-xpu</span></code> and <code class="docutils literal notranslate"><span class="pre">mac</span></code>. <code class="docutils literal notranslate"><span class="pre">lint</span></code> adds <code class="docutils literal notranslate"><span class="pre">run-lint-only</span></code>. Model targets are <code class="docutils literal notranslate"><span class="pre">fun-asr</span></code>, <code class="docutils literal notranslate"><span class="pre">qwen3-asr</span></code>, <code class="docutils literal notranslate"><span class="pre">whisper-asr</span></code>, <code class="docutils literal notranslate"><span class="pre">higgs</span></code>, <code class="docutils literal notranslate"><span class="pre">moss</span></code>, <code class="docutils literal notranslate"><span class="pre">qwen3-tts</span></code>, <code class="docutils literal notranslate"><span class="pre">qwen3-tts-custom-voice</span></code>, <code class="docutils literal notranslate"><span class="pre">cosyvoice3</span></code>, <code class="docutils literal notranslate"><span class="pre">qwen3-omni</span></code>, <code class="docutils literal notranslate"><span class="pre">minicpmo</span></code>, <code class="docutils literal notranslate"><span class="pre">mps-higgs</span></code> and <code class="docutils literal notranslate"><span class="pre">mps-moss</span></code>. <code class="docutils literal notranslate"><span class="pre">higgs</span></code> and <code class="docutils literal notranslate"><span class="pre">moss</span></code> add <code class="docutils literal notranslate"><span class="pre">run-tts-ci</span></code> plus <code class="docutils literal notranslate"><span class="pre">run-higgs-tts-3-4b</span></code> or <code class="docutils literal notranslate"><span class="pre">run-moss-tts-local-transformer-v1.5</span></code>. <code class="docutils literal notranslate"><span class="pre">mps-higgs</span></code> and <code class="docutils literal notranslate"><span class="pre">mps-moss</span></code> add <code class="docutils literal notranslate"><span class="pre">run-mps-ci</span></code> plus that same model label. <code class="docutils literal notranslate"><span class="pre">qwen3-tts</span></code> adds <code class="docutils literal notranslate"><span class="pre">run-tts-ci</span></code> plus <code class="docutils literal notranslate"><span class="pre">run-qwen3-tts-12hz-1.7b-base</span></code>. A short model target adds its stage label and its model label. The model label itself never includes the stage name.</p>
 <p>Use <code class="docutils literal notranslate"><span class="pre">/tag-and-rerun-full-ci</span></code> to add <code class="docutils literal notranslate"><span class="pre">run-all-ci</span></code> and select all stages. It also accepts short model targets, for example <code class="docutils literal notranslate"><span class="pre">/tag-and-rerun-full-ci</span> <span class="pre">qwen3-tts</span> <span class="pre">qwen3-asr</span> <span class="pre">qwen3-omni</span></code>. <code class="docutils literal notranslate"><span class="pre">higgs</span></code> or <code class="docutils literal notranslate"><span class="pre">mps-higgs</span></code> selects Higgs for every selected stage that accepts it, TTS and MPS included. Model choices not specified by the command keep their existing labels or use the normal random selection. Bare <code class="docutils literal notranslate"><span class="pre">/tag-and-rerun-ci</span></code> and full GitHub label arguments, such as <code class="docutils literal notranslate"><span class="pre">run-tts-ci</span></code> or <code class="docutils literal notranslate"><span class="pre">run-all-ci</span></code>, are not accepted. Manual dispatch still accepts full labels through its <code class="docutils literal notranslate"><span class="pre">ci_labels</span></code> input.</p>
 <p>The command replaces a conflicting Higgs or MOSS label for both TTS and MPS, because those labels are shared. It replaces other model labels only in the requested stages, and keeps other labels, including an existing <code class="docutils literal notranslate"><span class="pre">run-all-ci</span></code>. Existing stage labels still apply, so arguments do not narrow an already broader selection. It re-runs all jobs of the newest completed selected parent workflows on the current PR commit, unless GitHub requires workflow approval. If the newest run is active, the command leaves it running rather than retrying an older run. To apply changed labels after preflight has resolved the selection, run the command again after the active workflow finishes. Path filters and PR gates still apply.</p>
 <p><code class="docutils literal notranslate"><span class="pre">/tag-run-ci-label</span></code> accepts the same short targets but only updates labels; without arguments, it adds <code class="docutils literal notranslate"><span class="pre">run-all-ci</span></code>. Labels added by the bot do not start workflows; push a commit or use a tag-and-rerun command to start them. <code class="docutils literal notranslate"><span class="pre">/rerun-failed-ci</span></code> retries failed jobs without changing labels or stopping active runs. PR authors can use it on their own PRs.</p>
@@ -1188,6 +1231,7 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tts">TTS</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#mps">MPS</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#omni">Omni</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#duplex">Duplex</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hardware-workflows">Hardware workflows</a><ul class="pst-show_toc_level nav section-nav flex-column">
