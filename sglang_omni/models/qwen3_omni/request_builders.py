@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, TypedDict, overload
 
 import torch
 import xxhash
+from sglang.srt.managers.schedule_batch import Req
+from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
 from sglang.srt.tokenizer.tiktoken_tokenizer import TiktokenTokenizer
 from transformers import PreTrainedTokenizerBase
 
@@ -29,12 +31,14 @@ from sglang_omni.scheduling.pending_text_queue import (
     PendingTextTensorQueue,
     coerce_pending_text_queue,
 )
-from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 from sglang_omni.scheduling.sglang_backend.prompt_hidden import (
     PromptHiddenRequest,
     PromptHiddenStore,
 )
-from sglang_omni.scheduling.sglang_backend.request_data import validate_prompt_token_ids
+from sglang_omni.scheduling.sglang_backend.request_data import (
+    SGLangARRequestData,
+    validate_prompt_token_ids,
+)
 from sglang_omni.scheduling.types import ARRequestData, RequestOutput
 
 if TYPE_CHECKING:
@@ -61,6 +65,58 @@ MM_AGGREGATE_STAGE = "mm_aggregate"
 
 # Note(Chenchen Hong): PyTorch sampling_seed must fit a positive int32.
 MAX_INT32_POSITIVE = 0x7FFFFFFF
+
+
+class QwenThinkerRequest(Req):
+    """Restore multimodal inputs and generated-text positions when rebuilding KV."""
+
+    omni_data: SGLangARRequestData
+
+    def reset_for_retract(self) -> None:
+        super().reset_for_retract()
+        self.omni_model_inputs = self.omni_data.model_inputs or None
+        self._omni_consumed = (
+            None  # noqa: leading-underscore  # thinker runner contract
+        )
+        self._omni_mm_positions = (
+            None  # noqa: leading-underscore  # thinker runner contract
+        )
+
+    def init_next_round_input(
+        self,
+        tree_cache: BasePrefixCache | None = None,
+        cow_mamba: bool | None = None,
+    ) -> None:
+        super().init_next_round_input(tree_cache, cow_mamba)
+        if not self.is_retracted:
+            return
+        else:
+            pass
+        multimodal_inputs = self.multimodal_inputs
+        if multimodal_inputs is None:
+            return
+        else:
+            pass
+        prompt_token_count = len(self.origin_input_ids)
+        prompt_positions = multimodal_inputs.mrope_positions[:, :prompt_token_count]
+        # note (YzXiao): audio-in-video resumes from the prompt's maximum position, which can exceed its last position.
+        output_positions = torch.arange(
+            prompt_token_count,
+            prompt_token_count + len(self.output_ids),
+            dtype=torch.int64,
+            device=prompt_positions.device,
+        )
+        position_delta = multimodal_inputs.mrope_position_delta.to(
+            device=prompt_positions.device, dtype=torch.int64
+        )
+        output_positions = output_positions.unsqueeze(0) + position_delta
+        multimodal_inputs.mrope_positions = torch.cat(
+            (prompt_positions, output_positions.expand(3, -1)), dim=1
+        )
+
+
+class QwenPromptHiddenRequest(QwenThinkerRequest, PromptHiddenRequest):
+    """Restore multimodal state on retraction for requests that also capture prompt rows."""
 
 
 class OptionalTalkerSamplingConfig(TypedDict, total=False):
@@ -705,7 +761,7 @@ def build_sglang_thinker_request(
     Constructs a SGLang Req with normalized SamplingParams, then wraps it
     in SGLangARRequestData (which inherits ARRequestData).
     """
-    from sglang.srt.managers.schedule_batch import MultimodalInputs, Req
+    from sglang.srt.managers.schedule_batch import MultimodalInputs
     from sglang.srt.sampling.sampling_params import SamplingParams
 
     # SGLangARRequestData already imported at module level
@@ -803,7 +859,7 @@ def build_sglang_thinker_request(
     has_prompt_rows = multimodal_positions is not None and bool(
         multimodal_positions.numel()
     )
-    request_class = PromptHiddenRequest if has_prompt_rows else Req
+    request_class = QwenPromptHiddenRequest if has_prompt_rows else QwenThinkerRequest
     req = request_class(
         rid=rid,
         origin_input_text="",
@@ -867,6 +923,7 @@ def build_sglang_thinker_request(
         req=req,
     )
     data.return_logprob = bool(params.get("return_logprob"))
+    req.omni_data = data
     return data
 
 
