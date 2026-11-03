@@ -466,6 +466,7 @@ def test_stage_stop_waits_for_scheduler_model_path_terminalization(
         scheduler.pending_request_admissions = {}
         scheduler.shutdown_lock = threading.Lock()
         scheduler.shutdown_callback = None
+        scheduler.async_d2h_worker = None
 
         def run_loop() -> None:
             entered.set()
@@ -516,6 +517,7 @@ def test_stage_stop_warns_but_succeeds_on_a_stuck_scheduler_thread(
         scheduler.pending_request_admissions = {}
         scheduler.shutdown_lock = threading.Lock()
         scheduler.shutdown_callback = None
+        scheduler.async_d2h_worker = None
 
         def run_loop() -> None:
             entered.set()

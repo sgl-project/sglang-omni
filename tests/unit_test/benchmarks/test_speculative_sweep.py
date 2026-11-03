@@ -7,6 +7,7 @@ import json
 import wave
 from argparse import Namespace
 from pathlib import Path
+from typing import Literal
 
 import pytest
 from aiohttp import web
@@ -63,7 +64,7 @@ def test_server_log_gives_the_pool_usage_retractions_acceptance_and_cached_share
 def client_result(
     concurrency: int,
     throughput: float,
-    latency_p95_s: float,
+    latency_p95_s: float | None,
     skipped: int = 0,
     failed: int = 0,
 ) -> ClientResult:
@@ -152,6 +153,42 @@ def test_a_load_with_failed_requests_keeps_its_numbers_but_qualifies_nothing() -
     assert comparison.worse_concurrencies == []
     roadmap_row = render(comparison, legs, title="draft").splitlines()[-1]
     assert "| 1.50x | – | – | invalid | – | – |" in roadmap_row
+
+
+@pytest.mark.parametrize("failed_side", ["baseline", "draft", "both"])
+def test_all_failed_legs_still_render_an_incomplete_load(
+    failed_side: Literal["baseline", "draft", "both"],
+) -> None:
+    """Two zero-throughput legs previously prevented the entire sweep summary from rendering."""
+    legs = []
+    for index, side in enumerate(("baseline", "draft", "draft", "baseline"), 1):
+        failed = failed_side in (side, "both")
+        results = [
+            client_result(1, 15.0 if side == "draft" else 10.0, 0.5),
+            client_result(
+                16,
+                0.0 if failed else 100.0,
+                None if failed else 1.0,
+                skipped=100 if failed else 0,
+                failed=100 if failed else 0,
+            ),
+        ]
+        legs.append(leg(f"{index}_{side}", 5.0 if side == "draft" else None, results))
+
+    comparison = compare(legs, k_gain=1.2)
+    summary = render(comparison, legs, title="failed load")
+
+    assert comparison.k == 1
+    assert comparison.incomplete_concurrencies == [16]
+    assert comparison.worse_concurrencies == []
+    row = next(line for line in summary.splitlines() if line.startswith("| 16 "))
+    cells = [cell.strip() for cell in row.split("|")[1:-1]]
+    assert cells[0] == "16 (incomplete)"
+    for side, gap_column, failed_column in (("baseline", 4, 11), ("draft", 5, 12)):
+        failed = failed_side in (side, "both")
+        assert cells[gap_column] == ("–" if failed else "0.0%")
+        assert cells[failed_column] == ("200" if failed else "0")
+    assert "| 1.50x | – | – | invalid | – | – |" in summary.splitlines()[-1]
 
 
 REQUIRED = ["--model-path", "m", "--draft-config", "d.yaml", "--output-dir", "out"]

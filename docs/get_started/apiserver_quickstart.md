@@ -60,9 +60,17 @@ sglang serve --model-type omni --config path/to/config.yaml
 
 SGLang-Omni intentionally does not install another `sglang` executable. It
 registers an `omni` serve backend with SGLang core, while `sgl-omni serve`
-remains available as a backward-compatible alias. Automatic Omni model
-detection is not enabled yet; select the backend explicitly with
-`--model-type omni`.
+remains available as a backward-compatible alias. Both commands accept the same
+arguments, including the positional model path, so these two launches are
+equivalent:
+
+```bash
+sglang serve <model-name-or-path> --model-type omni --port 8000
+sgl-omni serve <model-name-or-path> --port 8000
+```
+
+Automatic Omni model detection is not enabled yet; select the backend
+explicitly with `--model-type omni`.
 
 ## Check That It Works
 

@@ -43,6 +43,10 @@ from sglang_omni.models.qwen3_tts.sglang_model import (
 from sglang_omni.utils.predictor_layers import resolve_fused_predictor_layers
 from sglang_omni.vendor.sglang.layers import RMSNorm
 from sglang_omni.vendor.sglang.models import apply_qk_norm
+from tests.unit_test.fixtures.torch_backend_flags import (  # noqa: F401  # fixture
+    CublasFlagSetter,
+    cublas_flags,
+)
 
 if find_spec("cutlass") is not None:
     from sglang_omni.models.qwen3_tts.cutedsl.argmax_embedding import argmax_embedding
@@ -618,12 +622,10 @@ def test_sampled_codebook_steps_match_the_separate_sampler_and_gather(
 
 @pytest.mark.accelerator
 def test_projected_tables_hold_each_codebook_projection_at_checkpoint_width(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, cublas_flags: CublasFlagSetter
 ):
-    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
-    monkeypatch.setattr(
-        torch.backends.cuda.matmul, "allow_bf16_reduced_precision_reduction", False
-    )
+    cublas_flags("allow_tf32", False)
+    cublas_flags("allow_bf16_reduced_precision_reduction", False)
     device = torch.device("cuda")
     talker = build_talker(device)
     projection = nn.Linear(
