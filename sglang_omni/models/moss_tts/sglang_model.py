@@ -208,7 +208,8 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
                     int(self.config.audio_assistant_delay_slot_token_id),
                 ],
                 dtype=torch.long,
-            ),
+                device="cpu",
+            ).to(torch.get_default_device()),
             persistent=False,
         )
 
