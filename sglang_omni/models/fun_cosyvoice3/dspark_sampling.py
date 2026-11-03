@@ -207,34 +207,51 @@ def target_probabilities(
         & ~is_repeat
     )
     window_ids = sorted_recent.clamp_min(0)
-    tempered_double = tempered.double()
-    nucleus_double = nucleus.double()
-    window_tempered = torch.where(valid, tempered_double.gather(1, window_ids), 0.0)
-    window_nucleus = torch.where(valid, nucleus_double.gather(1, window_ids), 0.0)
-    in_window = (
-        torch.zeros_like(tempered_double).scatter_add(1, window_ids, valid.double()) > 0
+    window_tempered = torch.where(valid, tempered.gather(1, window_ids).double(), 0.0)
+    window_nucleus = torch.where(valid, nucleus.gather(1, window_ids).double(), 0.0)
+    window_slot_count = window_ids.shape[1]
+    # Each id's window slot, or -1; invalid slots write to one extra column.
+    window_slots = (
+        torch.full(
+            (window_ids.shape[0], TOTAL_VOCAB_SIZE + 1),
+            -1,
+            dtype=torch.int8,
+            device=window_ids.device,
+        )
+        .scatter(
+            1,
+            torch.where(valid, window_ids, TOTAL_VOCAB_SIZE),
+            torch.arange(window_slot_count, dtype=torch.int8, device=window_ids.device)
+            .unsqueeze(0)
+            .expand_as(window_ids),
+        )[:, :TOTAL_VOCAB_SIZE]
+        .long()
     )
+    in_window = window_slots >= 0
     # note (wilsonzheng0327): the redraw normalizes by the mass left after zeroing the
     # candidate, and keeps the candidate only when nothing is left. Summing the mass
     # outside the window directly avoids cancelling it against a near-1 candidate.
-    outside_window = torch.where(in_window, 0.0, tempered_double).sum(
-        dim=-1, keepdim=True
+    outside_window = torch.where(in_window, 0.0, tempered).sum(
+        dim=-1, keepdim=True, dtype=torch.float64
     )
     other_window_slots = ~torch.eye(
-        window_ids.shape[1], dtype=torch.bool, device=window_ids.device
+        window_slot_count, dtype=torch.bool, device=window_ids.device
     )
     remaining = outside_window + (
         window_tempered.unsqueeze(1) * other_window_slots
     ).sum(dim=-1)
     redraw_weight = torch.where(remaining > 0, window_nucleus / remaining, 0.0)
     kept_weight = torch.where(remaining > 0, 0.0, window_nucleus)
-    redrawn = torch.where(in_window, 0.0, nucleus_double) + tempered_double * (
-        redraw_weight.sum(dim=-1, keepdim=True)
+    # note (YifanLi3): a window token sums the other candidates' redraw weights, so
+    # a dominant candidate never cancels against the total; only the window is float64.
+    other_redraw_weight = (redraw_weight.unsqueeze(1) * other_window_slots).sum(dim=-1)
+    window_probabilities = window_tempered * other_redraw_weight + kept_weight
+    redrawn = torch.where(
+        in_window,
+        window_probabilities.gather(1, window_slots.clamp_min(0)).float(),
+        nucleus + (tempered.double() * redraw_weight.sum(dim=-1, keepdim=True)).float(),
     )
-    redrawn = redrawn.scatter_add(
-        1, window_ids, kept_weight - redraw_weight * window_tempered
-    )
-    return torch.where(greedy.unsqueeze(1), greedy_probabilities, redrawn.float())
+    return torch.where(greedy.unsqueeze(1), greedy_probabilities, redrawn)
 
 
 def rejection_sample(

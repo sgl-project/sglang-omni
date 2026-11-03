@@ -163,12 +163,20 @@ def test_target_probabilities_match_the_stage_sampling_procedure(seed: int) -> N
         )
 
 
-@pytest.mark.parametrize("logit_gap", [28.0, 33.0])
+@pytest.mark.parametrize(
+    ("logit_gap", "is_redraw_weight_above_float32"),
+    [(28.0, False), (33.0, False), (70.0, True)],
+)
 def test_target_probabilities_redraw_a_repeated_token_that_holds_all_the_mass(
-    logit_gap: float,
+    logit_gap: float, is_redraw_weight_above_float32: bool
 ) -> None:
     logits = torch.zeros(1, TOTAL_VOCAB_SIZE)
     logits[0, 42] = logit_gap
+    tempered = torch.softmax(logits / 0.7, dim=-1)
+    tempered[0, 42] = 0.0
+    redraw_weight = 1 / tempered.double().sum()
+    assert bool(redraw_weight.isfinite())
+    assert bool(redraw_weight.float().isinf()) == is_redraw_weight_above_float32
     arguments = dict(
         presence_mask=torch.zeros(1, TOTAL_VOCAB_SIZE, dtype=torch.bool),
         stop_suppressed=torch.tensor([False]),
