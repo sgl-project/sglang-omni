@@ -30,6 +30,26 @@ PCM_CHANNELS = 1
 STREAMING_WAV_SIZE = 0xFFFFFFFF
 
 
+def create_streaming_wav_header(sample_rate: int) -> bytes:
+    """Describe a mono PCM stream whose final size is not known yet."""
+    return struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF",
+        STREAMING_WAV_SIZE,
+        b"WAVE",
+        b"fmt ",
+        16,
+        1,
+        PCM_CHANNELS,
+        sample_rate,
+        sample_rate * PCM_CHANNELS * PCM_SAMPLE_WIDTH_BYTES,
+        PCM_CHANNELS * PCM_SAMPLE_WIDTH_BYTES,
+        PCM_SAMPLE_WIDTH_BYTES * 8,
+        b"data",
+        STREAMING_WAV_SIZE,
+    )
+
+
 def speech_pcm_chunk_bytes(
     chunk: GenerateChunk,
     *,
@@ -76,23 +96,10 @@ def create_speech_sse_response(
             async for pcm_bytes in pcm_chunks:
                 audio_packets: tuple[bytes, ...]
                 if not emitted_audio and response_format == "wav":
-                    header = struct.pack(
-                        "<4sI4s4sIHHIIHH4sI",
-                        b"RIFF",
-                        STREAMING_WAV_SIZE,
-                        b"WAVE",
-                        b"fmt ",
-                        16,
-                        1,
-                        PCM_CHANNELS,
-                        sample_rate,
-                        sample_rate * PCM_CHANNELS * PCM_SAMPLE_WIDTH_BYTES,
-                        PCM_CHANNELS * PCM_SAMPLE_WIDTH_BYTES,
-                        PCM_SAMPLE_WIDTH_BYTES * 8,
-                        b"data",
-                        STREAMING_WAV_SIZE,
+                    audio_packets = (
+                        create_streaming_wav_header(sample_rate),
+                        pcm_bytes,
                     )
-                    audio_packets = (header, pcm_bytes)
                 else:
                     audio_packets = (pcm_bytes,)
 

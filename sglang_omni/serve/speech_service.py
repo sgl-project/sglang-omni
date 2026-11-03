@@ -332,16 +332,11 @@ class SpeechRequestValidator:
     ) -> SpeechRequestUpdates:
         self.validate_input_text(request.input)
         updates: SpeechRequestUpdates = {}
-        response_format = normalize_response_format(request.response_format)
         stream = request.stream or request.stream_format == "sse"
-        if request.stream_format == "sse" and response_format not in ("pcm", "wav"):
+        response_format = normalize_response_format(request.response_format)
+        if stream and response_format not in ("pcm", "wav"):
             raise bad_request(
-                "SSE streaming requires response_format='pcm' or 'wav'",
-                param="response_format",
-            )
-        elif stream and request.stream_format == "audio" and response_format != "pcm":
-            raise bad_request(
-                "stream=true requires response_format='pcm'",
+                "Streaming requires response_format='pcm' or 'wav'",
                 param="response_format",
             )
         else:

@@ -133,6 +133,7 @@ from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.serve.speech_stream_outcomes import SpeechStreamOutcomes
 from sglang_omni.serve.speech_streaming import (
     create_speech_sse_response,
+    create_streaming_wav_header,
     speech_pcm_chunk_bytes,
 )
 from sglang_omni.serve.speech_to_text import complete_unless_disconnected
@@ -2106,7 +2107,7 @@ async def speech_audio_response(
     *,
     speech_stream_outcomes: SpeechStreamOutcomes,
 ) -> StreamingResponse:
-    """Stream PCM or SSE once the first audio chunk sets the headers."""
+    """Stream PCM/WAV bytes or SSE after the first audio sets the headers."""
     emitted_samples = 0
     stream_outcome = SpeechStreamOutcome(
         request_id=request_id, finish_reason=UNKNOWN_FINISH_REASON
@@ -2205,6 +2206,10 @@ async def speech_audio_response(
         nonlocal emitted_samples
         active_request = True
         try:
+            if stream_format == "audio" and response_format == "wav":
+                yield create_streaming_wav_header(stream_sample_rate)
+            else:
+                pass
             yield first_audio_bytes
 
             async for chunk in chunk_stream:
@@ -2263,7 +2268,9 @@ async def speech_audio_response(
         )
     else:
         headers["X-SGLang-Omni-Speech-Id"] = request_id
-        return StreamingResponse(_body(), media_type="audio/pcm", headers=headers)
+        return _ClosableStreamingResponse(
+            _body(), media_type=f"audio/{response_format}", headers=headers
+        )
 
 
 async def await_speech_response(

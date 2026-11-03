@@ -313,8 +313,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 2. Streaming
 
-Enable streaming to receive raw PCM audio chunks in real time. HTTP streaming
-requires both `"stream": true` and `"response_format": "pcm"`:
+Set `"stream": true` to receive raw audio chunks in real time. `stream_format` defaults to `"audio"`, and `response_format` defaults to `"wav"` in every HTTP mode:
 
 ```bash
 curl -N -X POST http://localhost:8000/v1/audio/speech \
@@ -327,28 +326,22 @@ curl -N -X POST http://localhost:8000/v1/audio/speech \
       "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
       "text": "We asked over twenty different people, and they all said it was his."
     }],
-    "stream": true,
-    "response_format": "pcm"
+    "stream": true
   }' \
-  --output output.pcm
+  --output output.wav
 ```
 
-Streaming returns 16-bit mono PCM bytes (`audio/pcm`) with sample-rate metadata in response headers. It does not include in-band JSON events, final usage, or a terminal sentinel.
+Raw WAV streaming returns `audio/wav` with one file header followed by 16-bit mono PCM chunks. Set `"response_format": "pcm"` to receive the same PCM bytes without a file header (`audio/pcm`). Both formats include sample-rate metadata in response headers and carry no in-band JSON events, final usage, or terminal sentinel.
 
-Set `"stream_format": "sse"` to receive Server-Sent Events; `sse` streams even when `stream` is omitted. SSE accepts `response_format="pcm"` or `"wav"` (the default) and supports the same `speed` range as raw PCM streaming. Each named `speech.audio.delta` event carries base64 audio in `audio` and its `response_format`. WAV sends one file header before the PCM chunks. Both transports keep `X-Request-Id`, `X-Sample-Rate`, `X-Channels`, and `X-Bit-Depth` response headers.
+Set `"stream_format": "sse"` to receive Server-Sent Events; `sse` streams even when `stream` is omitted. SSE accepts `response_format="pcm"` or `"wav"` (the default) and supports the same `speed` range as raw audio streaming. Each named `speech.audio.delta` event carries base64 audio in `audio` and its `response_format`. WAV sends one file header before the PCM chunks. Both transports keep `X-Request-Id`, `X-Sample-Rate`, `X-Channels`, and `X-Bit-Depth` response headers.
+
+Omitting both `stream` and `stream_format` keeps the response non-streaming, with WAV as the default audio format. An explicit `response_format` overrides the format default in every mode.
 
 The stream ends with one `speech.audio.done` event carrying `finish_reason`, emitted audio `duration` in seconds after speed adjustment, and `usage`. Missing usage remains `null`; actual zero counts remain zero. Qwen3-TTS counts target text tokens, nonblank instructions, and reference audio frames used for in-context cloning as input, and generated Talker steps including EOS as output. Other models use their reported prompt and completion counts. SSE does not include a `[DONE]` sentinel.
 
 Request validation and generation failures before the first audio chunk remain HTTP JSON errors. Failures after SSE starts emit `speech.audio.error` instead of `speech.audio.done`. An error after any audio delta includes `partial_audio=true` and `action="discard"`.
 
-
-For raw PCM, use the response's `X-SGLang-Omni-Speech-Id` with
-`GET /v1/audio/speech/{request_id}` after the stream ends to retrieve its
-`finish_reason` and `usage`. This generated speech ID is independent of the
-`X-Request-Id` correlation header. Behind a router, also echo the response's
-`X-SGLang-Omni-Worker` as `X-SGLang-Omni-Route-Worker` on the GET.
-Only the most recent outcomes are retained; missing outcomes do not establish
-a natural stop or a cap hit.
+For raw WAV or PCM, use the response's `X-SGLang-Omni-Speech-Id` with `GET /v1/audio/speech/{request_id}` after the stream ends to retrieve its `finish_reason` and `usage`. This generated speech ID is independent of the `X-Request-Id` correlation header. Behind a router, also echo the response's `X-SGLang-Omni-Worker` as `X-SGLang-Omni-Route-Worker` on the GET. Only the most recent outcomes are retained; missing outcomes do not establish a natural stop or a cap hit.
 
 The SeedTTS benchmark collects raw PCM outcomes over a separate connection pool.
 Collection still consumes server resources during generation. Use
@@ -655,10 +648,10 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `model` | string | served model | Served model identifier |
 | `input` | string | (required) | Text to synthesize |
 | `voice` | string | `"default"` | Preset or uploaded voice identifier |
-| `response_format` | string | `"wav"` | Output audio format: `wav`, `mp3`, `flac`, `pcm`, `aac`, or `opus` |
+| `response_format` | string | `"wav"` | Output audio format: `wav`, `mp3`, `flac`, `pcm`, `aac`, or `opus`. Explicit values override the default in every mode. HTTP streaming accepts only `wav` or `pcm` |
 | `speed` | float | `1.0` | Playback speed multiplier from `0.25` to `4.0` |
-| `stream` | bool | `false` | Enable streaming. Raw audio streaming requires `response_format="pcm"`; SSE also accepts `"wav"` |
-| `stream_format` | string | `"audio"` | Streaming transport: `audio` for raw PCM bytes, `sse` for named audio delta, done, and error events. `sse` streams without `stream=true` and accepts `response_format="pcm"` or `"wav"` |
+| `stream` | bool | `false` | Enable raw WAV streaming by default. Set `response_format="pcm"` for raw PCM, or `stream_format="sse"` for SSE events |
+| `stream_format` | string | `"audio"` | Streaming transport: `audio` for raw WAV or PCM bytes, `sse` for named audio delta, done, and error events. `sse` streams without `stream=true` |
 | `initial_codec_chunk_frames` | int | `null` | Optional first codec chunk size for streaming TTFA / playback-continuity tuning. When omitted, each model applies its own default: Qwen3-TTS ramps `1 -> 2 -> 4` into the steady stride, Higgs TTS uses `20`, MOSS-TTS Local uses `5`, and ZONOS2 uses `40`. An explicit `0` uses the model's steady chunk size from the start. Ming-Omni-TTS rejects the field entirely |
 | `stream_codec_output` | bool | `true` | Qwen3-TTS only. Forward codec frames to the vocoder as they are generated. Set `false` to restore whole-utterance decoding for CustomVoice / VoiceDesign |
 | `suppress_bootstrap_silence` | bool | `true` | Qwen3-TTS only. Withhold the silent bootstrap codec frame's audio from streamed CustomVoice output on validated voice/language pairs; an audible first frame is always emitted unchanged. Set `false` to keep the leading silence |
@@ -678,12 +671,12 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `repetition_penalty` | float | `null` | Repetition penalty |
 | `seed` | int | `null` | Model-specific. Qwen3-TTS Base accepts request-scoped seed, Voxtral TTS currently rejects seed |
 
-Invalid speech requests return an OpenAI-style error envelope:
+Invalid speech requests return an OpenAI-style error envelope. For example, streaming with `response_format="mp3"` or `"flac"` returns HTTP 400:
 
 ```json
 {
   "error": {
-    "message": "stream=true requires response_format='pcm'",
+    "message": "Streaming requires response_format='pcm' or 'wav'",
     "type": "BadRequestError",
     "param": "response_format",
     "code": 400

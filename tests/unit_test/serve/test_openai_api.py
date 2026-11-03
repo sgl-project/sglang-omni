@@ -940,14 +940,14 @@ def test_speech_endpoint_rejects_invalid_request_with_openai_error() -> None:
             "input": "hello",
             "voice": "default",
             "stream": True,
-            "response_format": "wav",
+            "response_format": "mp3",
         },
     )
 
     assert response.status_code == 400
     assert response.json() == {
         "error": {
-            "message": "stream=true requires response_format='pcm'",
+            "message": "Streaming requires response_format='pcm' or 'wav'",
             "type": "BadRequestError",
             "param": "response_format",
             "code": 400,
@@ -961,10 +961,7 @@ def test_speech_endpoint_returns_binary_audio() -> None:
 
     response = client.post(
         "/v1/audio/speech",
-        json={
-            "input": "hello",
-            "response_format": "wav",
-        },
+        json={"input": "hello"},
     )
 
     assert response.status_code == 200
@@ -1682,7 +1679,11 @@ def test_chat_request_ignores_undeclared_fields() -> None:
     assert "max_new_tokens" not in params
 
 
-def test_speech_stream_defaults_to_raw_pcm() -> None:
+@pytest.mark.parametrize("response_format", [None, "wav", "pcm"])
+def test_speech_stream_defaults_to_audio_with_wav_or_pcm(
+    response_format: Literal["wav", "pcm"] | None,
+) -> None:
+    """Audio streaming defaults to WAV and honors explicit WAV or PCM."""
     client = TestClient(
         create_app(SuccessfulSpeechClient(), model_name="higgs-audio-v2")
     )
@@ -1692,19 +1693,41 @@ def test_speech_stream_defaults_to_raw_pcm() -> None:
         "input": "hello",
         "voice": "default",
         "stream": True,
-        "response_format": "pcm",
     }
+    if response_format is not None:
+        payload["response_format"] = response_format
+    else:
+        pass
     response = client.post(
         "/v1/audio/speech", json=payload, headers={"x-request-id": "caller-1"}
     )
 
+    selected_format = response_format or "wav"
     expected = encode_pcm([0.0, 0.1, -0.1, 0.0], sample_rate=24000)
     assert response.status_code == 200
-    assert response.headers["content-type"].startswith("audio/pcm")
+    assert response.headers["content-type"].startswith(f"audio/{selected_format}")
     assert response.headers["x-sample-rate"] == "24000"
     assert response.headers["x-channels"] == "1"
     assert response.headers["x-bit-depth"] == "16"
-    assert response.content == expected
+    if selected_format == "wav":
+        assert struct.unpack("<4sI4s4sIHHIIHH4sI", response.content[:44]) == (
+            b"RIFF",
+            0xFFFFFFFF,
+            b"WAVE",
+            b"fmt ",
+            16,
+            1,
+            1,
+            24000,
+            48000,
+            2,
+            16,
+            b"data",
+            0xFFFFFFFF,
+        )
+        assert response.content[44:] == expected
+    else:
+        assert response.content == expected
     outcome_id = response.headers["x-sglang-omni-speech-id"]
     assert client.get(f"/v1/audio/speech/{outcome_id}").json() == {
         "request_id": outcome_id,
@@ -1747,20 +1770,25 @@ def test_speech_stream_headers_use_chunk_sample_rate() -> None:
             "input": "hello",
             "voice": "default",
             "stream": True,
-            "response_format": "pcm",
+            "response_format": "wav",
         },
     )
 
     expected = encode_pcm([0.0, 0.1, -0.1, 0.0], sample_rate=44100)
     assert response.status_code == 200
-    assert response.headers["content-type"].startswith("audio/pcm")
+    assert response.headers["content-type"].startswith("audio/wav")
     assert response.headers["x-sample-rate"] == "44100"
     assert response.headers["x-channels"] == "1"
     assert response.headers["x-bit-depth"] == "16"
-    assert response.content == expected
+    assert response.content[:4] == b"RIFF"
+    assert struct.unpack("<I", response.content[24:28]) == (44100,)
+    assert response.content[44:] == expected
 
 
-def test_speech_stream_records_terminal_state_from_a_later_chunk() -> None:
+@pytest.mark.parametrize("response_format", ["wav", "pcm"])
+def test_speech_stream_records_terminal_state_from_a_later_chunk(
+    response_format: Literal["wav", "pcm"],
+) -> None:
     client = TestClient(
         create_app(TerminalChunkStreamingSpeechClient(), model_name="s2-pro")
     )
@@ -1772,10 +1800,16 @@ def test_speech_stream_records_terminal_state_from_a_later_chunk() -> None:
             "input": "hello",
             "voice": "default",
             "stream": True,
-            "response_format": "pcm",
+            "response_format": response_format,
         },
     )
     assert response.status_code == 200
+    expected_audio = encode_pcm([0.0, 0.1, -0.1, 0.0], sample_rate=24000)
+    if response_format == "wav":
+        assert response.content[:4] == b"RIFF"
+        assert response.content[44:] == expected_audio
+    else:
+        assert response.content == expected_audio
 
     outcome = client.get(
         f"/v1/audio/speech/{response.headers['x-sglang-omni-speech-id']}"
@@ -1797,7 +1831,12 @@ def test_store_evicts_the_oldest_outcome_past_max_entries() -> None:
     assert newest.usage is not None and newest.usage.completion_tokens == 120
 
 
-def test_raw_pcm_response_close_aborts_inner_speech_stream() -> None:
+@pytest.mark.parametrize("response_format", ["wav", "pcm"])
+def test_raw_audio_send_failure_aborts_inner_speech_stream(
+    response_format: Literal["wav", "pcm"],
+) -> None:
+    """A disconnect while sending the WAV header must release generation."""
+
     async def drive() -> None:
         client = PrefetchedBlockingStreamingSpeechClient()
         speech_stream_outcomes = SpeechStreamOutcomes(max_entries=8)
@@ -1807,11 +1846,31 @@ def test_raw_pcm_response_close_aborts_inner_speech_stream() -> None:
             gen_req=GenerateRequest(model="s2-pro", prompt="hello", stream=True),
             request_id="req-1",
             speed=1.0,
+            response_format=response_format,
             speech_stream_outcomes=speech_stream_outcomes,
         )
-        body = response.body_iterator
-        assert await anext(body) == encode_pcm([0.0, 0.1, -0.1, 0.0], 24000)
-        await body.aclose()
+
+        async def receive() -> Message:
+            await asyncio.Event().wait()
+            return {"type": "http.disconnect"}
+
+        async def send(message: Message) -> None:
+            if message["type"] == "http.response.body" and message.get("body"):
+                if response_format == "wav":
+                    assert message["body"][:4] == b"RIFF"
+                    assert len(message["body"]) == 44
+                else:
+                    assert message["body"] == encode_pcm([0.0, 0.1, -0.1, 0.0], 24000)
+                raise RuntimeError("client disconnected during audio send")
+            else:
+                pass
+
+        with pytest.raises(RuntimeError, match="client disconnected during audio send"):
+            await response(
+                http_scope(path="/v1/audio/speech", spec_version="2.4"),
+                receive,
+                send,
+            )
         assert client.aborted == ["req-1"]
         assert speech_stream_outcomes.get("req-1") is None
 
