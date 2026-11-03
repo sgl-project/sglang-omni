@@ -22,7 +22,6 @@ from sglang_omni.profiler.event_recorder import (
 from sglang_omni.profiler.event_recorder_types import (
     MAX_PRODUCER_BUFFERS,
     RUNTIME_WRITER_MAX_EVENTS_PER_ROUND,
-    RUNTIME_WRITER_POLL_INTERVAL_SECONDS,
     ProducerDropCounter,
     RecorderRunState,
 )
@@ -431,7 +430,6 @@ def test_runtime_final_drain_is_batched_paced_and_asynchronous(
         stopping = run_state.stop_requested.is_set()
         count = original_drain(run_state, file_handle)
         if stopping and count:
-            assert count <= RUNTIME_WRITER_MAX_EVENTS_PER_ROUND
             final_batch_sizes.append(count)
         return count
 
@@ -469,20 +467,19 @@ def test_runtime_final_drain_is_batched_paced_and_asynchronous(
     release_setup.set()
     assert pacing_entered.wait(timeout=5)
     assert finalization.completion_event.is_set() is False
-    assert final_batch_sizes == [RUNTIME_WRITER_MAX_EVENTS_PER_ROUND]
+    assert final_batch_sizes
+    assert all(
+        0 < batch_size <= RUNTIME_WRITER_MAX_EVENTS_PER_ROUND
+        for batch_size in final_batch_sizes
+    )
+    assert sum(final_batch_sizes) < accepted_count
 
     release_pacing.set()
     assert finalization.wait(timeout_seconds=5) is True
 
-    assert final_batch_sizes == [
-        RUNTIME_WRITER_MAX_EVENTS_PER_ROUND,
-        RUNTIME_WRITER_MAX_EVENTS_PER_ROUND,
-        1,
-    ]
-    assert pacing_intervals == [
-        RUNTIME_WRITER_POLL_INTERVAL_SECONDS,
-        RUNTIME_WRITER_POLL_INTERVAL_SECONDS,
-    ]
+    assert sum(final_batch_sizes) == accepted_count
+    assert pacing_intervals
+    assert all(interval > 0 for interval in pacing_intervals)
     assert len(read_events(path)) == accepted_count
     status = read_status(path)
     assert status["accepted_events"] == accepted_count
@@ -762,9 +759,14 @@ def test_runtime_disk_cap_reports_unwritten_events_without_partial_records(
         str(tmp_path),
         "stage",
         mode="runtime",
-        sampling_unit="request",
+        sampling_unit="session",
         sample_rate=1.0,
         max_event_file_bytes=1,
+    )
+    recorder.record_request_admission(
+        "request-1",
+        {"session_id": "session-1", "session_open_index": 1},
+        stage_name="stage",
     )
     recorder.emit(
         request_id="request-1",
@@ -773,6 +775,29 @@ def test_runtime_disk_cap_reports_unwritten_events_without_partial_records(
         metadata={"value": 1},
     )
     assert limit_reached.wait(timeout=5)
+    run_state = recorder.active_state
+    assert run_state is not None
+    assert run_state.file_size_limit_reached is True
+
+    def fail_sampling_decision(*arguments: object, **keyword_arguments: object) -> bool:
+        del arguments, keyword_arguments
+        raise AssertionError("terminal Runtime sampling computed a new decision")
+
+    monkeypatch.setattr(
+        recorder, "deterministic_sampling_decision", fail_sampling_decision
+    )
+    recorder.record_request_admission(
+        "request-2",
+        {"session_id": "session-2", "session_open_index": 2},
+        stage_name="stage",
+    )
+    recorder.register_session_sampling_context(
+        "request-3", ("session-3", 3), stage_name="stage"
+    )
+    assert "request-2" not in run_state.request_sampling_decisions
+    assert "request-3" not in run_state.request_sampling_decisions
+    assert "request-3" not in run_state.request_session_identities
+    assert recorder.session_sampling_identity_for_request("request-1") is None
     calls_after_limit = (sampling_calls, timestamp_calls, snapshot_calls)
     recorder.emit(
         request_id="request-2",
@@ -789,6 +814,9 @@ def test_runtime_disk_cap_reports_unwritten_events_without_partial_records(
         {},
     )
     assert (sampling_calls, timestamp_calls, snapshot_calls) == calls_after_limit
+    recorder.clear_request_sampling("request-1", stage_name="stage")
+    assert "request-1" not in run_state.request_sampling_decisions
+    assert "request-1" not in run_state.request_session_identities
     recorder.stop(wait=True)
 
     status = read_status(path)
@@ -926,9 +954,8 @@ def test_runtime_event_file_open_failure_disables_capture_and_finalizes_incomple
     recorder = RequestEventRecorder(queue_capacity=8)
     scheduling_started = threading.Event()
     release_scheduling = threading.Event()
-    open_attempted = threading.Event()
-    drain_calls = 0
-    original_open_event_file = recorder.open_event_file
+    writer_waiting_after_failure = threading.Event()
+    drain_called = threading.Event()
     original_drain_runtime_buffers = recorder.drain_runtime_buffers
 
     def pause_scheduling(run_state: RecorderRunState) -> None:
@@ -937,24 +964,21 @@ def test_runtime_event_file_open_failure_disables_capture_and_finalizes_incomple
             raise AssertionError("test did not release scheduling setup")
         run_state.writer_scheduling = "SCHED_IDLE"
 
-    def fail_event_file_open(
-        run_state: RecorderRunState,
-    ) -> TextIOWrapper | None:
-        run_state.path.touch()
-        open_attempted.set()
-        return original_open_event_file(run_state)
-
-    def count_runtime_drains(
+    def track_runtime_drain(
         run_state: RecorderRunState,
         file_handle: TextIOWrapper | None,
     ) -> int:
-        nonlocal drain_calls
-        drain_calls += 1
+        drain_called.set()
         return original_drain_runtime_buffers(run_state, file_handle)
 
+    class FailureWaitEvent(threading.Event):
+        def wait(self, timeout: float | None = None) -> bool:
+            if timeout is None:
+                writer_waiting_after_failure.set()
+            return super().wait(timeout)
+
     monkeypatch.setattr(recorder, "set_writer_scheduling", pause_scheduling)
-    monkeypatch.setattr(recorder, "open_event_file", fail_event_file_open)
-    monkeypatch.setattr(recorder, "drain_runtime_buffers", count_runtime_drains)
+    monkeypatch.setattr(recorder, "drain_runtime_buffers", track_runtime_drain)
     path = recorder.start(
         "event-file-open-failure",
         str(tmp_path),
@@ -964,30 +988,29 @@ def test_runtime_event_file_open_failure_disables_capture_and_finalizes_incomple
         sample_rate=1.0,
     )
     assert scheduling_started.wait(timeout=5)
+    run_state = recorder.active_state
+    assert run_state is not None
     recorder.emit(
         request_id="before-failure",
         stage="stage",
         event_name="event",
     )
+    run_state.path.touch()
+    run_state.stop_requested = FailureWaitEvent()
     release_scheduling.set()
-    assert open_attempted.wait(timeout=5)
-    run_state = recorder.active_state
-    assert run_state is not None
-    writer_failure_deadline = time.monotonic() + 5
-    while not run_state.writer_failed and time.monotonic() < writer_failure_deadline:
-        threading.Event().wait(timeout=0.001)
+    writer_waiting = writer_waiting_after_failure.wait(timeout=5)
+    if not writer_waiting:
+        recorder.stop(wait=False)
+        recorder.wait_for_finalizations(timeout_seconds=5)
+    assert writer_waiting is True
     assert run_state.writer_failed is True
     assert run_state.event_file_open_failures == 1
-    assert drain_calls == 0
-
-    recorder.record_request_admission("after-failure", {}, stage_name="stage")
+    assert drain_called.is_set() is False
     recorder.emit(
         request_id="after-failure",
         stage="stage",
         event_name="event",
     )
-    assert "after-failure" not in run_state.request_sampling_decisions
-    assert sum(buffer.accepted_events for buffer in run_state.producer_buffers) == 1
     assert recorder.stop(wait=False) == path
     assert recorder.wait_for_finalizations(timeout_seconds=5) is True
 

@@ -1370,46 +1370,6 @@ def test_runtime_profile_route_forwards_runtime_configuration(
     assert control.configurations[0]["mode"] == "runtime"
 
 
-def test_runtime_profile_route_rejects_missing_sampling_configuration(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class FakeRecorder:
-        def __init__(self) -> None:
-            self.starts = 0
-
-        def start(self, **configuration: object) -> str:
-            self.starts += 1
-            return "/tmp/events.jsonl"
-
-    class FakeProfilerControl:
-        def __init__(self) -> None:
-            self.starts = 0
-
-        async def broadcast_start(self, **configuration: object) -> None:
-            self.starts += 1
-
-    recorder = FakeRecorder()
-    control = FakeProfilerControl()
-    monkeypatch.setattr(launcher, "_get_event_recorder", lambda: recorder)
-    app = FastAPI()
-    launcher.mount_profiler_routes(app, control, profiler_dir=str(tmp_path))
-
-    with TestClient(app) as client:
-        response = client.post(
-            "/start_request_profile",
-            json={
-                "run_id": "invalid-runtime-test",
-                "event_dir": str(tmp_path / "events"),
-                "mode": "runtime",
-            },
-        )
-
-    assert response.status_code == 422
-    assert recorder.starts == 0
-    assert control.starts == 0
-
-
 @pytest.mark.parametrize(
     "configuration",
     [

@@ -143,6 +143,7 @@ class RequestEventRecorder:
             or run_state.mode != "runtime"
             or run_state.sampling_unit != "session"
             or run_state.writer_failed
+            or run_state.file_size_limit_reached
             or run_state.request_sampling_decisions.get(request_id) is not True
         ):
             return None
@@ -162,6 +163,7 @@ class RequestEventRecorder:
             or run_state.mode != "runtime"
             or run_state.sampling_unit != "session"
             or run_state.writer_failed
+            or run_state.file_size_limit_reached
         ):
             return
         has_registered_session_sampling_context = (
@@ -181,6 +183,7 @@ class RequestEventRecorder:
                 or run_state.mode != "runtime"
                 or run_state.sampling_unit != "session"
                 or run_state.writer_failed
+                or run_state.file_size_limit_reached
             ):
                 return
             has_registered_session_sampling_context = (
@@ -207,12 +210,20 @@ class RequestEventRecorder:
         *,
         stage_name: str,
     ) -> None:
+        run_state = self.active_state
+        if (
+            run_state is None
+            or run_state.mode != "runtime"
+            or run_state.writer_failed
+            or run_state.file_size_limit_reached
+        ):
+            return
         with self.control_lock:
-            run_state = self.active_state
             if (
-                run_state is None
+                self.active_state is not run_state
                 or run_state.mode != "runtime"
                 or run_state.writer_failed
+                or run_state.file_size_limit_reached
             ):
                 return
             session_identity = None
