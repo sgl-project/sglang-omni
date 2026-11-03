@@ -15,7 +15,6 @@ namespace omni_server {
 class Service {
 public:
   virtual ~Service() = default;
-  // Called before Register; true only for a nonempty --model-name value.
   virtual void SetModelName(const std::string &, bool) {}
   virtual void Register(mg_context *context, const std::string &model_name) = 0;
   virtual std::map<std::string, int> RequestStates() const = 0;

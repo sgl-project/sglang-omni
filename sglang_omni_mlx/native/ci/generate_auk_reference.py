@@ -193,7 +193,6 @@ def main() -> None:
         "mlx_version": version("mlx"),
         "tf32": False,
         "requests_sha256": sha256(arguments.requests),
-        "prepared_manifest_sha256": sha256(directory / "manifest.json"),
         "outputs": records,
     }
     (arguments.output_directory / "manifest.json").write_text(

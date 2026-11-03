@@ -7,15 +7,9 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-  "${CMAKE_CURRENT_SOURCE_DIR}/scripts/build-tools.lock")
-file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/build-tools.lock" mlx_pins
-  REGEX "^mlx==")
-list(LENGTH mlx_pins mlx_pin_count)
-if(NOT mlx_pin_count EQUAL 1 OR NOT mlx_pins MATCHES "^mlx==([0-9]+\\.[0-9]+\\.[0-9]+)$")
-  message(FATAL_ERROR "build-tools.lock must contain exactly one mlx==X.Y.Z pin")
-endif()
-set(SGLANG_OMNI_MLX_VERSION "${CMAKE_MATCH_1}")
+# Note (Jiaxin Deng): exactly the MLX build the Python reference server runs
+# on, so both produce bit-identical outputs.
+set(SGLANG_OMNI_MLX_VERSION 0.32.3)
 if(NOT MLX_DIR OR NOT EXISTS "${MLX_DIR}/MLXConfig.cmake")
   message(FATAL_ERROR "Set MLX_DIR to <mlx ${SGLANG_OMNI_MLX_VERSION} wheel>/share/cmake/MLX")
 endif()
@@ -103,10 +97,6 @@ target_compile_options(omni_service PRIVATE -Wall -Wextra)
 add_library(asr_service STATIC src/qwen3_asr/asr_service.cpp)
 target_link_libraries(asr_service PUBLIC qwen3_asr omni_service)
 target_compile_options(asr_service PRIVATE -Wall -Wextra)
-
-add_executable(asr_service_probe EXCLUDE_FROM_ALL ci/asr_service_probe.cpp)
-target_link_libraries(asr_service_probe PRIVATE asr_service)
-target_compile_options(asr_service_probe PRIVATE -Wall -Wextra)
 
 # The /v1/audio/speech API the TTS servers share.
 add_library(speech_service STATIC src/qwen3_asr/speech_service.cpp)
@@ -275,9 +265,10 @@ set_target_properties(auk_server auk_probe auk_synthesize PROPERTIES
 install(TARGETS auk_server auk_probe auk_synthesize RUNTIME DESTINATION bin)
 install(TARGETS soxr LIBRARY DESTINATION bin)
 install(FILES "${soxr_SOURCE_DIR}/LICENCE" DESTINATION share/licenses/soxr)
-install(FILES licenses/auk.txt licenses/Apache-2.0.txt licenses/qwen-research.txt
-  licenses/NOTICE
-  DESTINATION share/licenses/auk)
+install(FILES licenses/qwen-research.txt licenses/NOTICE DESTINATION share/licenses/auk)
+install(FILES ../../sglang_omni/models/auk/LICENSE DESTINATION share/licenses/auk
+  RENAME auk.txt)
+install(FILES ../../LICENSE DESTINATION share/licenses/auk RENAME Apache-2.0.txt)
 
 # Note (Minyi Tang): Voxtral 4B TTS: voxtral_tts_server, with the CUDA server's
 # /v1/audio/speech API, and its parity tool; the text decoder reuses Qwen3's.

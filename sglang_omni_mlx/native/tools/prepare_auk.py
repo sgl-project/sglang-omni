@@ -6,29 +6,20 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
-import hashlib
 import json
-import logging
 import math
-import os
 import re
 import shutil
 import tempfile
-from collections.abc import Iterator
-from contextlib import contextmanager
 from importlib.metadata import version
 from pathlib import Path
-from typing import TypedDict
 
 import mlx.core as mx
 from omegaconf import DictConfig, OmegaConf
 
-logger = logging.getLogger(__name__)
-
+NATIVE_DIRECTORY = Path(__file__).resolve().parents[1]
 WEIGHT_PREFIXES = ("ema_model.", "module.", "model.", "net.")
 CONDITIONER_PREFIXES = ("thinker.model.", "thinker.audio_tower.")
-ARTIFACT_FORMAT_VERSION = 3
 FLASH_TIME_GRID = [
     0.0,
     0.07612049579620361,
@@ -37,32 +28,17 @@ FLASH_TIME_GRID = [
     1.0,
 ]
 
-
-class FileDigest(TypedDict):
-    path: str
-    size: int
-    mtime_ns: int
-    sha256: str
-
-
-class SourceManifest(TypedDict):
-    revision: str | None
-    files: list[FileDigest]
-
-
-class ArtifactManifest(TypedDict):
-    format_version: int
-    mlx_version: str
-    sources: dict[str, SourceManifest]
-    outputs: list[FileDigest]
-
-
-class StaleArtifact(ValueError):
-    """A prepared artifact no longer matches its inputs or recorded outputs."""
+# Copied into each artifact under the names the runtime installs them as.
+ARTIFACT_LICENSES = {
+    "NOTICE": NATIVE_DIRECTORY / "licenses/NOTICE",
+    "qwen-research.txt": NATIVE_DIRECTORY / "licenses/qwen-research.txt",
+    "auk.txt": NATIVE_DIRECTORY.parents[1] / "sglang_omni/models/auk/LICENSE",
+    "Apache-2.0.txt": NATIVE_DIRECTORY.parents[1] / "LICENSE",
+}
 
 
 def pinned_mlx_version() -> str:
-    lock = Path(__file__).resolve().parents[1] / "scripts/build-tools.lock"
+    lock = NATIVE_DIRECTORY / "scripts/build-tools.lock"
     pins = [
         line.removeprefix("mlx==")
         for line in lock.read_text().splitlines()
@@ -74,74 +50,11 @@ def pinned_mlx_version() -> str:
         return pins[0]
 
 
-def file_digest(path: Path, directory: Path, previous: object = None) -> FileDigest:
-    relative_path = path.relative_to(directory).as_posix()
-    status = path.stat()
-    if (
-        isinstance(previous, dict)
-        and previous.get("path") == relative_path
-        and previous.get("size") == status.st_size
-        and previous.get("mtime_ns") == status.st_mtime_ns
-        and isinstance(previous.get("sha256"), str)
-        and re.fullmatch(r"[0-9a-f]{64}", previous["sha256"])
-    ):
-        checksum = previous["sha256"]
-    else:
-        digest = hashlib.sha256()
-        with path.open("rb") as stream:
-            for block in iter(lambda: stream.read(8 * 1024 * 1024), b""):
-                digest.update(block)
-        checksum = digest.hexdigest()
-    return {
-        "path": relative_path,
-        "size": status.st_size,
-        "mtime_ns": status.st_mtime_ns,
-        "sha256": checksum,
-    }
-
-
-def file_digests(
-    paths: list[Path], directory: Path, previous: object = None
-) -> list[FileDigest]:
-    recorded = (
-        {
-            digest["path"]: digest
-            for digest in previous
-            if isinstance(digest, dict) and isinstance(digest.get("path"), str)
-        }
-        if isinstance(previous, list)
-        else {}
+def write_json(path: Path, value: DictConfig) -> None:
+    path.write_text(
+        json.dumps(OmegaConf.to_container(value, resolve=True), indent=2) + "\n",
+        encoding="utf-8",
     )
-    return [
-        file_digest(
-            path, directory, recorded.get(path.relative_to(directory).as_posix())
-        )
-        for path in paths
-    ]
-
-
-def same_files(recorded: object, current: list[FileDigest]) -> bool:
-    return (
-        isinstance(recorded, list)
-        and len(recorded) == len(current)
-        and all(
-            isinstance(before, dict)
-            and all(
-                before.get(field) == after[field]
-                for field in ("path", "size", "sha256")
-            )
-            for before, after in zip(recorded, current, strict=True)
-        )
-    )
-
-
-def write_json(path: Path, value: DictConfig | ArtifactManifest) -> None:
-    content = (
-        OmegaConf.to_container(value, resolve=True)
-        if isinstance(value, DictConfig)
-        else value
-    )
-    path.write_text(json.dumps(content, indent=2) + "\n", encoding="utf-8")
 
 
 def read_config(path: Path) -> DictConfig:
@@ -320,6 +233,8 @@ def prepare_conditioner(
         pass
     for path in metadata:
         shutil.copyfile(path, directory / path.name)
+    # Note (XXXXRT666): the Qwen tensors keep their stored values and Torch
+    # convolution layout; the runtime transposes the two convolutions itself.
     mx.save_safetensors(
         str(directory / "model.safetensors"),
         weights,
@@ -372,193 +287,9 @@ def frontend_constants() -> dict[str, mx.array]:
     }
 
 
-def read_manifest(output: Path, revisions: dict[str, str | None]) -> dict[str, object]:
-    try:
-        manifest: object = json.loads(
-            (output / "manifest.json").read_text(encoding="utf-8")
-        )
-    except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
-        return {}
-    if (
-        not isinstance(manifest, dict)
-        or manifest.get("format_version") != ARTIFACT_FORMAT_VERSION
-        or manifest.get("mlx_version") != version("mlx")
-        or not isinstance(manifest.get("outputs"), list)
-    ):
-        return {}
-    else:
-        recorded_sources = manifest.get("sources")
-    if (
-        not isinstance(recorded_sources, dict)
-        or recorded_sources.keys() != revisions.keys()
-    ):
-        return {}
-    else:
-        pass
-    for role, revision in revisions.items():
-        recorded = recorded_sources[role]
-        if (
-            not isinstance(recorded, dict)
-            or not isinstance(recorded.get("files"), list)
-            or (
-                recorded.get("revision") is not None
-                and not isinstance(recorded["revision"], str)
-            )
-            or (revision is not None and recorded.get("revision") != revision)
-        ):
-            return {}
-        else:
-            pass
-    return manifest
-
-
-def verify_reuse(
-    output: Path,
-    sources: dict[str, SourceManifest],
-    manifest: dict[str, object],
-) -> ArtifactManifest:
-    recorded_sources = manifest.get("sources")
-    if not isinstance(recorded_sources, dict):
-        raise StaleArtifact(f"Incompatible artifact manifest in {output}")
-    else:
-        pass
-    for role, source in sources.items():
-        recorded = recorded_sources[role]
-        if not isinstance(recorded, dict) or not same_files(
-            recorded.get("files"), source["files"]
-        ):
-            raise StaleArtifact(f"Artifact {role} source files changed in {output}")
-        else:
-            pass
-    actual_outputs = file_digests(
-        [
-            path
-            for path in sorted(output.rglob("*"))
-            if path.is_file() and path != output / "manifest.json"
-        ],
-        output,
-        manifest["outputs"],
-    )
-    if not same_files(manifest["outputs"], actual_outputs):
-        raise StaleArtifact(f"Artifact output files changed in {output}")
-    else:
-        return {
-            "format_version": ARTIFACT_FORMAT_VERSION,
-            "mlx_version": version("mlx"),
-            "sources": sources,
-            "outputs": actual_outputs,
-        }
-
-
-def remove_temporary(path: Path) -> None:
-    try:
-        if path.is_symlink():
-            return
-        elif path.is_dir():
-            shutil.rmtree(path)
-        else:
-            path.unlink(missing_ok=True)
-    except OSError as error:
-        logger.warning(f"Could not remove temporary artifact {path}: {error}")
-
-
-@contextmanager
-def preparation_output(output: Path) -> Iterator[None]:
-    output.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(
-        output.parent / f".prepare-{output.name}.lock",
-        os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW,
-        0o600,
-    )
-    with os.fdopen(descriptor, "w") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as error:
-            raise RuntimeError(
-                f"Artifact preparation is already running: {output}"
-            ) from error
-        if output.is_symlink() or (output.exists() and not output.is_dir()):
-            raise ValueError(
-                f"Expected an artifact directory, not a file or symlink: {output}"
-            )
-        else:
-            pass
-        siblings = list(output.parent.iterdir())
-        previous = [
-            path
-            for path in siblings
-            if re.fullmatch(
-                rf"\.{re.escape(output.name)}\.previous-[a-z0-9_]{{8}}", path.name
-            )
-            and not path.is_symlink()
-            and path.is_dir()
-        ]
-        if not output.exists() and len(previous) > 1:
-            raise RuntimeError(
-                f"Multiple artifact backups require manual recovery: {previous}"
-            )
-        elif previous and not output.exists():
-            previous[0].rename(output)
-        else:
-            pass
-        for path in siblings:
-            match = re.fullmatch(
-                rf"\.{re.escape(output.name)}\.(?P<kind>prepare-|manifest-)?[a-z0-9_]{{8}}",
-                path.name,
-            )
-            if not match or path.is_symlink():
-                continue
-            elif match["kind"] == "manifest-" and path.is_file():
-                remove_temporary(path)
-            elif path.is_dir() and (
-                match["kind"] == "prepare-"
-                or (
-                    (path / "config.json").is_file()
-                    and all(
-                        (path / component).is_dir()
-                        for component in ("dit", "vae", "conditioner")
-                    )
-                )
-            ):
-                remove_temporary(path)
-            else:
-                pass
-        yield
-        for path in previous:
-            remove_temporary(path)
-
-
-def prepare(
-    auk_directory: Path,
-    conditioner_directory: Path,
-    output: Path,
-    auk_revision: str | None,
-    conditioner_revision: str | None,
-    *,
-    reuse: bool = False,
-) -> None:
-    with preparation_output(output):
-        _prepare_locked(
-            auk_directory,
-            conditioner_directory,
-            output,
-            auk_revision,
-            conditioner_revision,
-            reuse=reuse,
-        )
-
-
-def _prepare_locked(
-    auk_directory: Path,
-    conditioner_directory: Path,
-    output: Path,
-    auk_revision: str | None,
-    conditioner_revision: str | None,
-    *,
-    reuse: bool,
-) -> None:
+def prepare(auk_directory: Path, conditioner_directory: Path, output: Path) -> None:
     required_mlx_version = pinned_mlx_version()
-    if (output.exists() or output.is_symlink()) and not reuse:
+    if output.exists() or output.is_symlink():
         raise FileExistsError(f"Refusing to overwrite existing output {output}")
     elif version("mlx") != required_mlx_version:
         raise RuntimeError(
@@ -566,7 +297,6 @@ def _prepare_locked(
         )
     else:
         pass
-    original_output = output.stat() if output.exists() else None
     config_path = find_file(auk_directory, ("config.yaml", "config.yml", "config.json"))
     config = read_config(config_path)
     model = config.get("model", config)
@@ -603,6 +333,7 @@ def _prepare_locked(
         conditioner_directory
     )
     is_flash = name == "AuK-Flash"
+    # Note (XXXXRT666): released recipes, matching sglang_omni/models/auk/constants.py.
     runtime_config = OmegaConf.create(
         {
             "model_type": "auk",
@@ -616,74 +347,12 @@ def _prepare_locked(
             "time_grid": FLASH_TIME_GRID if is_flash else [],
         }
     )
-    conditioner_files = conditioner_weights + conditioner_metadata
-    conditioner_index = conditioner_directory / "model.safetensors.index.json"
-    if conditioner_index.is_file():
-        conditioner_files.append(conditioner_index)
-    else:
-        pass
-    licenses = Path(__file__).resolve().parents[1] / "licenses"
-    source_paths = {
-        "auk": (auk_directory, [config_path, weight_source, vae_source]),
-        "conditioner": (conditioner_directory, sorted(conditioner_files)),
-        "licenses": (
-            licenses,
-            sorted(path for path in licenses.iterdir() if path.is_file()),
-        ),
-    }
-    revisions = {
-        "auk": auk_revision,
-        "conditioner": conditioner_revision,
-        "licenses": None,
-    }
-    recorded_manifest = read_manifest(output, revisions) if reuse else {}
-    recorded_sources = recorded_manifest.get("sources", {})
-    sources: dict[str, SourceManifest] = {}
-    for role, (source_directory, paths) in source_paths.items():
-        recorded = (
-            recorded_sources.get(role) if isinstance(recorded_sources, dict) else None
-        )
-        recorded_revision = (
-            recorded.get("revision") if isinstance(recorded, dict) else None
-        )
-        sources[role] = {
-            "revision": (
-                revisions[role]
-                if revisions[role] is not None
-                else recorded_revision if isinstance(recorded_revision, str) else None
-            ),
-            "files": file_digests(
-                paths,
-                source_directory,
-                recorded.get("files") if isinstance(recorded, dict) else None,
-            ),
-        }
-    if recorded_manifest:
-        try:
-            manifest = verify_reuse(output, sources, recorded_manifest)
-        except StaleArtifact:
-            pass
-        else:
-            if manifest != recorded_manifest:
-                with tempfile.NamedTemporaryFile(
-                    dir=output.parent, prefix=f".{output.name}.manifest-", delete=False
-                ) as temporary_manifest:
-                    manifest_path = Path(temporary_manifest.name)
-                try:
-                    write_json(manifest_path, manifest)
-                    manifest_path.replace(output / "manifest.json")
-                finally:
-                    remove_temporary(manifest_path)
-            else:
-                pass
-            return
-    else:
-        pass
+    output.parent.mkdir(parents=True, exist_ok=True)
     directory = Path(
         tempfile.mkdtemp(prefix=f".{output.name}.prepare-", dir=output.parent)
     )
     try:
-        for component in ("dit", "vae", "conditioner"):
+        for component in ("dit", "vae", "conditioner", "licenses"):
             (directory / component).mkdir()
         write_json(directory / "config.json", runtime_config)
         prepare_diffusion(
@@ -693,41 +362,12 @@ def _prepare_locked(
         prepare_conditioner(
             conditioner_weights, conditioner_metadata, directory / "conditioner"
         )
-        shutil.copytree(licenses, directory / "licenses")
-        manifest: ArtifactManifest = {
-            "format_version": ARTIFACT_FORMAT_VERSION,
-            "mlx_version": version("mlx"),
-            "sources": sources,
-            "outputs": file_digests(
-                [path for path in sorted(directory.rglob("*")) if path.is_file()],
-                directory,
-            ),
-        }
-        write_json(directory / "manifest.json", manifest)
-        if (
-            output.exists()
-            and original_output is not None
-            and output.lstat().st_ino == original_output.st_ino
-        ):
-            previous = Path(
-                tempfile.mkdtemp(prefix=f".{output.name}.previous-", dir=output.parent)
-            )
-            previous.rmdir()
-            output.rename(previous)
-            try:
-                directory.rename(output)
-            except OSError:
-                previous.rename(output)
-                raise
-            else:
-                remove_temporary(previous)
-        elif output.exists() or output.is_symlink():
-            raise FileExistsError(f"Output was created during preparation: {output}")
-        else:
-            directory.rename(output)
-
-    finally:
-        remove_temporary(directory)
+        for license_name, license_path in ARTIFACT_LICENSES.items():
+            shutil.copyfile(license_path, directory / "licenses" / license_name)
+    except BaseException:
+        shutil.rmtree(directory)
+        raise
+    directory.rename(output)
 
 
 def main() -> None:
@@ -735,27 +375,9 @@ def main() -> None:
     parser.add_argument("--auk-directory", type=Path, required=True)
     parser.add_argument("--conditioner-directory", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument(
-        "--reuse",
-        action="store_true",
-        help="Reuse unchanged local artifacts; rebuild stale ones before replacing them",
-    )
-    parser.add_argument(
-        "--auk-revision", help="Source revision, if known; recorded verbatim"
-    )
-    parser.add_argument(
-        "--conditioner-revision", help="Source revision, if known; recorded verbatim"
-    )
     arguments = parser.parse_args()
     mx.set_default_device(mx.cpu)
-    prepare(
-        arguments.auk_directory,
-        arguments.conditioner_directory,
-        arguments.output,
-        arguments.auk_revision,
-        arguments.conditioner_revision,
-        reuse=arguments.reuse,
-    )
+    prepare(arguments.auk_directory, arguments.conditioner_directory, arguments.output)
     print(f"Artifact ready: {arguments.output}")
 
 
