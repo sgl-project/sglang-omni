@@ -607,6 +607,7 @@ def test_load_codec_constructs_a_local_directory_snapshot(
     loaded: list[tuple[dict[str, object], bool]] = []
     loaded_device: list[str] = []
     calls: list[tuple[str, object, bool]] = []
+    load_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     class FakeCodecWithState:
         def __init__(self, sample_rate: int, hop_length: int) -> None:
@@ -650,15 +651,16 @@ def test_load_codec_constructs_a_local_directory_snapshot(
     monkeypatch.setitem(sys.modules, "neucodec.model", fake_model_module)
     fake_w2v_from_pretrained = FakeWav2Vec2BertModel.from_pretrained.__func__
     fake_feature_from_pretrained = FakeFeatureExtractor.from_pretrained.__func__
-    monkeypatch.setattr(
-        stages.torch,
-        "load",
-        lambda *args, **kwargs: {
+
+    def fake_load(*args: object, **kwargs: object) -> dict[str, object]:
+        load_calls.append((args, kwargs))
+        return {
             "kept": object(),
             "model.fc_post_s.weight": object(),
             "SemanticDecoder.weight": object(),
-        },
-    )
+        }
+
+    monkeypatch.setattr(stages.torch, "load", fake_load)
     stages.load_codec.cache_clear()
     try:
         codec = stages.load_codec(str(codec_dir), "ignored", "cpu")
@@ -670,6 +672,12 @@ def test_load_codec_constructs_a_local_directory_snapshot(
     assert list(loaded[0][0]) == ["kept"]
     assert loaded[0][1] is False
     assert loaded_device == ["cpu"]
+    assert load_calls == [
+        (
+            (codec_dir / "pytorch_model.bin",),
+            {"map_location": "cpu", "weights_only": True},
+        )
+    ]
     assert calls == [("w2v", w2v_dir, True), ("feature_extractor", w2v_dir, True)]
     assert FakeWav2Vec2BertModel.from_pretrained.__func__ is fake_w2v_from_pretrained
     assert FakeFeatureExtractor.from_pretrained.__func__ is fake_feature_from_pretrained
@@ -716,6 +724,34 @@ def test_load_codec_restores_pretrained_methods_after_constructor_failure(
         PretrainedModel.from_pretrained.__func__ is original_feature_extractor.__func__
     )
     assert PretrainedModel.from_pretrained.__func__ is original_w2v_model.__func__
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["pytorch_model.bin", "facebook_w2v_bert_2_0"],
+)
+def test_load_codec_rejects_incomplete_local_snapshot(
+    tmp_path: Path,
+    missing: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    codec_dir = tmp_path / "neucodec"
+    codec_dir.mkdir()
+    if missing != "pytorch_model.bin":
+        (codec_dir / "pytorch_model.bin").touch()
+    else:
+        pass
+    if missing != "facebook_w2v_bert_2_0":
+        (tmp_path / "facebook_w2v_bert_2_0").mkdir()
+    else:
+        pass
+    monkeypatch.setitem(sys.modules, "neucodec", types.SimpleNamespace(NeuCodec=object))
+    stages.load_codec.cache_clear()
+    try:
+        with pytest.raises(FileNotFoundError, match=missing):
+            stages.load_codec(str(codec_dir), "ignored", "cpu")
+    finally:
+        stages.load_codec.cache_clear()
 
 
 def test_llama_cpp_stage_keeps_a_cpu_resolution_off_the_gpu(
