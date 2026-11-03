@@ -77,14 +77,14 @@ admit a larger prefill batch. The tuned defaults are 16 requests / 32 ms:
 ```bash
 sgl-omni serve \
   --model-path AutoArk-AI/ARK-ASR-3B \
-  --prefill-coalesce-requests 16 \
-  --prefill-coalesce-wait-ms 32 \
+  --asr.factory.prefill_coalesce_requests 16 \
+  --asr.factory.prefill_coalesce_wait_ms 32 \
   --port 8000
 ```
 
 Admission is released after either the request threshold or wait deadline is
 reached; it can release earlier when pending request-build work drains. Set
-`--prefill-coalesce-requests 0` to disable coalescing. Tune these values for the
+`--asr.factory.prefill_coalesce_requests 0` to disable coalescing. Tune these values for the
 target request distribution and latency requirements.
 
 ## Transcribe Audio

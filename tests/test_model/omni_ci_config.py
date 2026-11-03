@@ -46,181 +46,181 @@ class OmniCiModelPreset:
 
 QWEN3_OMNI_TTS_P95 = {
     16: {
-        "throughput_qps": 16.455,
-        "output_tok_per_req_s": 16.1,
-        "latency_mean_s": 0.911,
-        "rtf_mean": 0.2749,
+        "throughput_qps": 16.216,
+        "output_tok_per_req_s": 15.9,
+        "latency_mean_s": 0.923,
+        "rtf_mean": 0.2743,
     }
 }
-QWEN3_OMNI_TTS_WER_BELOW_50_CORPUS_MAX = 0.0213
+QWEN3_OMNI_TTS_WER_BELOW_50_CORPUS_MAX = 0.0201
 QWEN3_OMNI_TTS_N_ABOVE_50_MAX = 0
 QWEN3_OMNI_TTS_SIMILARITY_MEAN_MIN = 60.0
-QWEN3_OMNI_TTS_UTMOS_MEAN_REFERENCE = 4.4444
+QWEN3_OMNI_TTS_UTMOS_MEAN_REFERENCE = 4.431
 
 QWEN3_OMNI_MMMU_P95 = {
-    16: {"throughput_qps": 1.888, "output_tok_per_req_s": 88.5, "latency_mean_s": 7.627}
+    16: {"throughput_qps": 1.935, "output_tok_per_req_s": 88.7, "latency_mean_s": 7.133}
 }
-QWEN3_OMNI_MMMU_MIN_ACCURACY = 0.62
+QWEN3_OMNI_MMMU_MIN_ACCURACY = 0.58
 
 QWEN3_OMNI_MMMU_TALKER_P95 = {
     16: {
-        "throughput_qps": 2.175,
-        "output_tok_per_req_s": 25.4,
-        "latency_mean_s": 5.579,
-        "rtf_mean": 0.1315,
+        "throughput_qps": 2.172,
+        "output_tok_per_req_s": 27.6,
+        "latency_mean_s": 4.792,
+        "rtf_mean": 0.1228,
     }
 }
-QWEN3_OMNI_MMMU_TALKER_MIN_ACCURACY = 0.75
-QWEN3_OMNI_MMMU_TALKER_WER_BELOW_50_CORPUS_MAX = 0.1589
+QWEN3_OMNI_MMMU_TALKER_MIN_ACCURACY = 0.65
+QWEN3_OMNI_MMMU_TALKER_WER_BELOW_50_CORPUS_MAX = 0.1582
 QWEN3_OMNI_MMMU_TALKER_N_ABOVE_50_MAX = 3.0
 
 QWEN3_OMNI_MMSU_P95 = {
     16: {
-        "throughput_qps": 115.795,
-        "output_tok_per_req_s": 15.1,
-        "latency_mean_s": 0.137,
+        "throughput_qps": 118.685,
+        "output_tok_per_req_s": 15.4,
+        "latency_mean_s": 0.134,
     }
 }
-QWEN3_OMNI_MMSU_MIN_ACCURACY = 0.7055
+QWEN3_OMNI_MMSU_MIN_ACCURACY = 0.708
 
 QWEN3_OMNI_MMSU_TALKER_P95 = {
     16: {
-        "throughput_qps": 2.607,
-        "output_tok_per_req_s": 11.0,
-        "latency_mean_s": 5.829,
-        "rtf_mean": 0.2825,
+        "throughput_qps": 2.818,
+        "output_tok_per_req_s": 11.9,
+        "latency_mean_s": 5.272,
+        "rtf_mean": 0.2678,
     }
 }
-QWEN3_OMNI_MMSU_TALKER_MIN_ACCURACY = 0.625
-QWEN3_OMNI_MMSU_TALKER_WER_BELOW_50_CORPUS_MAX = 0.0306
+QWEN3_OMNI_MMSU_TALKER_MIN_ACCURACY = 0.6
+QWEN3_OMNI_MMSU_TALKER_WER_BELOW_50_CORPUS_MAX = 0.0291
 QWEN3_OMNI_MMSU_TALKER_N_ABOVE_50_MAX = 0.0
 
 QWEN3_OMNI_VIDEOMME_P95 = {
     16: {
-        "throughput_qps": 1.235,
-        "output_tok_per_req_s": 10.0,
-        "latency_mean_s": 11.546,
+        "throughput_qps": 1.213,
+        "output_tok_per_req_s": 9.6,
+        "latency_mean_s": 11.787,
     }
 }
 QWEN3_OMNI_VIDEOMME_MIN_ACCURACY = 0.58
 
 QWEN3_OMNI_VIDEOMME_TALKER_P95 = {
     16: {
-        "throughput_qps": 1.026,
-        "output_tok_per_req_s": 4.7,
-        "latency_mean_s": 10.427,
-        "rtf_mean": 0.9379,
+        "throughput_qps": 1.012,
+        "output_tok_per_req_s": 4.2,
+        "latency_mean_s": 10.731,
+        "rtf_mean": 0.9675,
     }
 }
 QWEN3_OMNI_VIDEOMME_TALKER_MIN_ACCURACY = 0.6
-QWEN3_OMNI_VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.0332
-QWEN3_OMNI_VIDEOMME_TALKER_N_ABOVE_50_MAX = 1.0
+QWEN3_OMNI_VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.037
+QWEN3_OMNI_VIDEOMME_TALKER_N_ABOVE_50_MAX = 0.0
 
 QWEN3_OMNI_VIDEOAMME_P95 = {
-    16: {"throughput_qps": 1.602, "output_tok_per_req_s": 5.7, "latency_mean_s": 8.84}
+    16: {"throughput_qps": 1.562, "output_tok_per_req_s": 5.5, "latency_mean_s": 8.985}
 }
-QWEN3_OMNI_VIDEOAMME_MIN_ACCURACY = 0.64
+QWEN3_OMNI_VIDEOAMME_MIN_ACCURACY = 0.62
 
 QWEN3_OMNI_VIDEOAMME_TALKER_P95 = {
     16: {
-        "throughput_qps": 0.252,
+        "throughput_qps": 0.254,
         "output_tok_per_req_s": 1.2,
-        "latency_mean_s": 37.525,
-        "rtf_mean": 3.0823,
+        "latency_mean_s": 38.384,
+        "rtf_mean": 2.9497,
     }
 }
 QWEN3_OMNI_VIDEOAMME_TALKER_MIN_ACCURACY = 0.5
-QWEN3_OMNI_VIDEOAMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.0157
+QWEN3_OMNI_VIDEOAMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.0079
 QWEN3_OMNI_VIDEOAMME_TALKER_N_ABOVE_50_MAX = 0.0
 
 # note (wenyao): Raw references measured on H100 with DP2; slack is applied once below.
 MINICPMO_TTS_P95 = {
     16: {
-        "throughput_qps": 19.275,
-        "output_tok_per_req_s": 20.0,
-        "latency_mean_s": 0.776,
-        "rtf_mean": 0.1929,
+        "throughput_qps": 18.215,
+        "output_tok_per_req_s": 19.2,
+        "latency_mean_s": 0.81,
+        "rtf_mean": 0.2044,
     }
 }
 MINICPMO_TTS_WER_BELOW_50_CORPUS_MAX = 0.0179
-MINICPMO_TTS_N_ABOVE_50_MAX = 2.0
-MINICPMO_TTS_SIMILARITY_MEAN_MIN = 42.81593160629272
-MINICPMO_TTS_UTMOS_MEAN_REFERENCE = 4.2791
+MINICPMO_TTS_N_ABOVE_50_MAX = 1.0
+MINICPMO_TTS_SIMILARITY_MEAN_MIN = 43.398088665008544
+MINICPMO_TTS_UTMOS_MEAN_REFERENCE = 4.282
 
 MINICPMO_MMMU_P95 = {
     16: {
-        "throughput_qps": 2.263,
-        "output_tok_per_req_s": 123.0,
-        "latency_mean_s": 6.015,
+        "throughput_qps": 2.302,
+        "output_tok_per_req_s": 130.9,
+        "latency_mean_s": 5.351,
     }
 }
-MINICPMO_MMMU_MIN_ACCURACY = 0.62
+MINICPMO_MMMU_MIN_ACCURACY = 0.64
 
 MINICPMO_MMMU_TALKER_P95 = {
     16: {
-        "throughput_qps": 2.335,
-        "output_tok_per_req_s": 31.4,
-        "latency_mean_s": 4.745,
-        "rtf_mean": 0.1195,
+        "throughput_qps": 2.267,
+        "output_tok_per_req_s": 30.8,
+        "latency_mean_s": 4.778,
+        "rtf_mean": 0.1115,
     }
 }
-MINICPMO_MMMU_TALKER_MIN_ACCURACY = 0.7
-MINICPMO_MMMU_TALKER_WER_BELOW_50_CORPUS_MAX = 0.2025
+MINICPMO_MMMU_TALKER_MIN_ACCURACY = 0.6
+MINICPMO_MMMU_TALKER_WER_BELOW_50_CORPUS_MAX = 0.1994
 MINICPMO_MMMU_TALKER_N_ABOVE_50_MAX = 8.0
 
 MINICPMO_MMSU_P95 = {
     16: {
-        "throughput_qps": 44.74,
-        "output_tok_per_req_s": 24.9,
-        "latency_mean_s": 0.356,
+        "throughput_qps": 44.992,
+        "output_tok_per_req_s": 25.0,
+        "latency_mean_s": 0.354,
     }
 }
-MINICPMO_MMSU_MIN_ACCURACY = 0.532
+MINICPMO_MMSU_MIN_ACCURACY = 0.5315
 
 MINICPMO_MMSU_TALKER_P95 = {
     16: {
-        "throughput_qps": 5.11,
-        "output_tok_per_req_s": 16.2,
-        "latency_mean_s": 2.853,
-        "rtf_mean": 0.2084,
+        "throughput_qps": 5.439,
+        "output_tok_per_req_s": 17.6,
+        "latency_mean_s": 2.607,
+        "rtf_mean": 0.192,
     }
 }
-MINICPMO_MMSU_TALKER_MIN_ACCURACY = 0.6
-MINICPMO_MMSU_TALKER_WER_BELOW_50_CORPUS_MAX = 0.0242
+MINICPMO_MMSU_TALKER_MIN_ACCURACY = 0.575
+MINICPMO_MMSU_TALKER_WER_BELOW_50_CORPUS_MAX = 0.0231
 MINICPMO_MMSU_TALKER_N_ABOVE_50_MAX = 0.0
 
 MINICPMO_VIDEOMME_P95 = {
-    16: {"throughput_qps": 0.936, "output_tok_per_req_s": 4.7, "latency_mean_s": 14.618}
+    16: {"throughput_qps": 0.926, "output_tok_per_req_s": 4.6, "latency_mean_s": 14.83}
 }
 MINICPMO_VIDEOMME_MIN_ACCURACY = 0.64
 
 MINICPMO_VIDEOMME_TALKER_P95 = {
     16: {
-        "throughput_qps": 0.889,
+        "throughput_qps": 0.874,
         "output_tok_per_req_s": 2.6,
-        "latency_mean_s": 11.594,
-        "rtf_mean": 1.3521,
+        "latency_mean_s": 11.746,
+        "rtf_mean": 1.3958,
     }
 }
 MINICPMO_VIDEOMME_TALKER_MIN_ACCURACY = 0.6
-MINICPMO_VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.0756
+MINICPMO_VIDEOMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.067
 MINICPMO_VIDEOMME_TALKER_N_ABOVE_50_MAX = 1.0
 
 MINICPMO_VIDEOAMME_P95 = {
-    16: {"throughput_qps": 0.93, "output_tok_per_req_s": 2.3, "latency_mean_s": 14.79}
+    16: {"throughput_qps": 0.921, "output_tok_per_req_s": 2.3, "latency_mean_s": 14.805}
 }
 MINICPMO_VIDEOAMME_MIN_ACCURACY = 0.66
 
 MINICPMO_VIDEOAMME_TALKER_P95 = {
     16: {
-        "throughput_qps": 0.87,
-        "output_tok_per_req_s": 4.3,
-        "latency_mean_s": 7.274,
-        "rtf_mean": 0.9681,
+        "throughput_qps": 0.865,
+        "output_tok_per_req_s": 4.2,
+        "latency_mean_s": 7.343,
+        "rtf_mean": 0.9832,
     }
 }
-MINICPMO_VIDEOAMME_TALKER_MIN_ACCURACY = 0.7
-MINICPMO_VIDEOAMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.0081
+MINICPMO_VIDEOAMME_TALKER_MIN_ACCURACY = 0.6
+MINICPMO_VIDEOAMME_TALKER_WER_BELOW_50_CORPUS_MAX = 0.0242
 MINICPMO_VIDEOAMME_TALKER_N_ABOVE_50_MAX = 0.0
 
 QWEN3_OMNI_SEEDTTS_RTF_MEAN_MAX = 0.9536

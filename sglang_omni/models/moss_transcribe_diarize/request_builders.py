@@ -25,6 +25,7 @@ from transformers import PreTrainedTokenizerBase, ProcessorMixin
 from sglang_omni.models.moss_transcribe_diarize.encoder_service import (
     BatchedAudioEncoderService,
 )
+from sglang_omni.models.moss_transcribe_diarize.fast_features import TrimmedWhisperFbank
 from sglang_omni.preprocessing.transcription import prepare_audio
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
@@ -379,6 +380,31 @@ def extract_audio_features(
     )
 
 
+def extract_audio_features_fast(
+    processor: ProcessorMixin,
+    audio: np.ndarray,
+    fast_fbank: TrimmedWhisperFbank | None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
+    """extract_audio_features, using the verified single-window fast log-mel."""
+    if fast_fbank is None or not fast_fbank.supports(int(audio.shape[0])):
+        return extract_audio_features(processor, audio)
+    else:
+        pass
+    audio_feature_lengths = audio_feature_lengths_from_waveform(
+        processor,
+        int(audio.shape[0]),
+    )
+    input_features = torch.from_numpy(
+        fast_fbank.compute(np.asarray(audio, dtype=np.float32))
+    ).unsqueeze(0)
+    return (
+        input_features,
+        audio_feature_lengths,
+        torch.zeros_like(audio_feature_lengths),
+        int(audio_feature_lengths.sum().item()),
+    )
+
+
 def make_moss_transcribe_diarize_scheduler_adapters(
     processor: ProcessorMixin,
     tokenizer: PreTrainedTokenizerBase,
@@ -386,6 +412,7 @@ def make_moss_transcribe_diarize_scheduler_adapters(
     context_length: int,
     duration_scaled_default: bool = True,
     audio_encoder_service: BatchedAudioEncoderService | None = None,
+    enable_trimmed_fbank: bool = True,
 ) -> tuple[
     Callable[[StagePayload], MossTranscribeDiarizeRequestData],
     Callable[[MossTranscribeDiarizeRequestData], StagePayload],
@@ -399,6 +426,11 @@ def make_moss_transcribe_diarize_scheduler_adapters(
     eos_token_id = int(tokenizer.eos_token_id)
     vocab_size = int(tokenizer.vocab_size)
     audio_token = str(processor.audio_token)
+    fast_fbank = (
+        TrimmedWhisperFbank.verified(processor.feature_extractor)
+        if enable_trimmed_fbank
+        else None
+    )
     default_prompt = render_prompt(processor, DEFAULT_TRANSCRIBE_DIARIZE_PROMPT)
     default_prompt_parts = prompt_token_parts(
         default_prompt,
@@ -449,7 +481,7 @@ def make_moss_transcribe_diarize_scheduler_adapters(
                 audio_feature_lengths,
                 audio_chunk_mapping,
                 audio_token_count,
-            ) = extract_audio_features(processor, audio)
+            ) = extract_audio_features_fast(processor, audio, fast_fbank)
         else:
             features = None
             audio_chunk_mapping = torch.zeros_like(audio_feature_lengths)

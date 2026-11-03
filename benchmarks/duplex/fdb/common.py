@@ -2,7 +2,7 @@
 """Pinned inputs and settings shared by every FDB v1.5 and v1.0 step.
 
 Settings come from environment variables; see the Settings table in
-docs/developer_reference/full_duplex_bench.md.
+docs/developer_reference/full_duplex_guide.md.
 """
 
 from __future__ import annotations

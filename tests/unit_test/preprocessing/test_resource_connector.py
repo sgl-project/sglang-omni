@@ -87,8 +87,12 @@ def test_chat_media_follows_the_server_media_policy(
     for load in (
         ensure_image_list_async([str(outside)], media_connector=connector),
         ensure_audio_list_async([str(outside)], resource_connector=connector),
-        ensure_video_list_async([str(outside)], resource_connector=connector),
-        ensure_video_list_async([missing], resource_connector=connector),
+        ensure_video_list_async(
+            [str(outside)], resource_connector=connector, video_decode_threads=16
+        ),
+        ensure_video_list_async(
+            [missing], resource_connector=connector, video_decode_threads=16
+        ),
     ):
         with pytest.raises(ValueError, match="not within allowed directory"):
             asyncio.run(load)

@@ -309,6 +309,7 @@ async def transcribe_planned_upload(
             architectures=getattr(app.state, "architectures", None),
             duration_s=duration_s,
             response_formats=TRANSCRIPTION_RESPONSE_FORMATS,
+            finish_reason=result.finish_reason,
         )
     else:
         pass
@@ -317,7 +318,7 @@ async def transcribe_planned_upload(
         adapter = speech_to_text.resolve_speech_to_text_adapter(
             getattr(app.state, "architectures", None)
         )
-        chunk_texts = await await_transcription_with_disconnect_abort(
+        chunk_texts, finish_reason = await await_transcription_with_disconnect_abort(
             request,
             transcribe_audio_chunks(
                 client,
@@ -356,7 +357,16 @@ async def transcribe_planned_upload(
         plan=plan,
         chunk_texts=chunk_texts,
         architectures=getattr(app.state, "architectures", None),
+        finish_reason=finish_reason,
     )
+
+
+def chunked_finish_reason(reasons: list[str | None]) -> str | None:
+    """A chunked upload is truncated when any kept chunk stops on length."""
+    if any(reason == "length" for reason in reasons):
+        return "length"
+    else:
+        return None
 
 
 def assemble_chunked_response(
@@ -367,6 +377,7 @@ def assemble_chunked_response(
     plan: ChunkPlan,
     chunk_texts: list[str],
     architectures: list[str] | None,
+    finish_reason: str | None = None,
 ) -> Response:
     """Chunk-aware sibling of speech_to_text.assemble_speech_to_text_response.
 
@@ -382,8 +393,10 @@ def assemble_chunked_response(
     )
     adapter = speech_to_text.resolve_speech_to_text_adapter(architectures)
     raw_text = text
+    headers = speech_to_text.truncation_headers(finish_reason)
+    visible_finish_reason = speech_to_text.reported_truncation(finish_reason)
     if normalized_response_format == "text":
-        return PlainTextResponse(raw_text)
+        return PlainTextResponse(raw_text, headers=headers)
     else:
         pass
 
@@ -405,13 +418,17 @@ def assemble_chunked_response(
         )
         response.task = "transcribe"
         response.usage = usage
-        return JSONResponse(content=response.model_dump(exclude_none=True))
+        response.finish_reason = visible_finish_reason
+        return JSONResponse(
+            content=response.model_dump(exclude_none=True), headers=headers
+        )
     else:
         pass
     return JSONResponse(
-        content=TranscriptionResponse(text=text, usage=usage).model_dump(
-            exclude_none=True
-        )
+        content=TranscriptionResponse(
+            text=text, usage=usage, finish_reason=visible_finish_reason
+        ).model_dump(exclude_none=True),
+        headers=headers,
     )
 
 
@@ -458,8 +475,11 @@ async def transcribe_audio_chunks(
     max_concurrent: int,
     condition_on_previous_text: bool,
     adapter: TranscriptionAdapter,
-) -> list[str]:
+) -> tuple[list[str], str | None]:
     """Transcribe the chunks of a plan, returning one text per chunk.
+
+    The second value is length when any kept chunk stopped on the token
+    budget. A retried chunk keeps the retry's reason.
 
     Independent chunks run up to max_concurrent at once and return in span
     order. When previous-text conditioning is enabled, capable adapters instead
@@ -477,9 +497,9 @@ async def transcribe_audio_chunks(
         *,
         chunk_prompt: str | None,
         retry: bool = False,
-    ) -> str:
+    ) -> tuple[str, str | None]:
         if not span.has_speech:
-            return ""
+            return "", None
         else:
             pass
         async with semaphore:
@@ -516,17 +536,19 @@ async def transcribe_audio_chunks(
                     f"({span.start_s:.1f}s-{span.end_s:.1f}s): {exc}"
                 ) from exc
             in_flight.discard(chunk_request_id)
-            return result.text
+            return result.text, result.finish_reason
 
-    tasks: list[asyncio.Task[str]] = []
+    tasks: list[asyncio.Task[tuple[str, str | None]]] = []
     try:
         if condition_on_previous_text and adapter.requires_ordered_chunk_decoding:
             texts: list[str] = []
+            reasons: list[str | None] = []
             previous_text: str | None = None
             is_first_decoded_chunk = True
             for span in plan.spans:
                 if not span.has_speech:
                     texts.append("")
+                    reasons.append(None)
                     continue
                 else:
                     pass
@@ -535,13 +557,13 @@ async def transcribe_audio_chunks(
                     previous_text=previous_text,
                     is_first_decoded_chunk=is_first_decoded_chunk,
                 )
-                text = await run_chunk(span, chunk_prompt=chunk_prompt)
+                text, reason = await run_chunk(span, chunk_prompt=chunk_prompt)
                 should_retry = await asyncio.to_thread(
                     adapter.should_retry_chunk_without_context,
                     text,
                 )
                 if should_retry:
-                    text = await run_chunk(
+                    text, reason = await run_chunk(
                         span,
                         chunk_prompt=None,
                         retry=True,
@@ -549,9 +571,10 @@ async def transcribe_audio_chunks(
                 else:
                     pass
                 texts.append(text)
+                reasons.append(reason)
                 previous_text = text
                 is_first_decoded_chunk = False
-            return texts
+            return texts, chunked_finish_reason(reasons)
         else:
             pass
 
@@ -559,7 +582,11 @@ async def transcribe_audio_chunks(
             asyncio.create_task(run_chunk(span, chunk_prompt=prompt))
             for span in plan.spans
         ]
-        return await asyncio.gather(*tasks)
+        outcomes = await asyncio.gather(*tasks)
+        return (
+            [text for text, _reason in outcomes],
+            chunked_finish_reason([reason for _text, reason in outcomes]),
+        )
     except BaseException:
         # One chunk failed (or we were cancelled by a client disconnect).
         # in_flight holds every chunk whose engine request has not finished,
@@ -579,8 +606,8 @@ async def transcribe_audio_chunks(
 
 async def await_transcription_with_disconnect_abort(
     request: Request,
-    work: Awaitable[list[str]],
-) -> list[str]:
+    work: Awaitable[tuple[list[str], str | None]],
+) -> tuple[list[str], str | None]:
     """Run chunked transcription while watching for client disconnect.
 
     The non-stream handler has no response-owned disconnect watcher, so

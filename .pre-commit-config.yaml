@@ -105,9 +105,9 @@ repos:
         types: [markdown]
         files: ^docs/
       - id: doc-style
-        name: document emoji style
+        name: document style
         entry: python3 scripts/check_doc_style.py
         language: python
         additional_dependencies: [emoji==2.15.0]
-        files: ^(docs/.*\.md$|scripts/check_doc_style\.py$|tests/unit_test/scripts/test_check_doc_style\.py$)
+        files: ^(docs/.*\.(md|rst)$|scripts/check_doc_style\.py$|tests/unit_test/scripts/test_check_doc_style.*\.py$)
         pass_filenames: false
