@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from pydantic import Field
 
@@ -20,6 +20,17 @@ _PKG = "sglang_omni.models.fishaudio_s2_pro"
 PREPROCESSING_TOTAL_RESERVE_BYTES = "6GiB"
 
 
+class S2ProVocoderFactoryArgs(FactoryArgs):
+    """Codec decoding on CUDA; other devices decode with the float32 codec module."""
+
+    decode_dtype: Literal["float32", "float16"] = "float16"
+    window_cuda_graphs: bool = True
+
+
+class S2ProVocoderStageConfig(StageConfig):
+    factory: S2ProVocoderFactoryArgs = Field(default_factory=S2ProVocoderFactoryArgs)
+
+
 class S2ProPipelineConfig(PipelineConfig):
     """3-stage TTS pipeline: preprocessing → tts_engine → vocoder."""
 
@@ -28,6 +39,7 @@ class S2ProPipelineConfig(PipelineConfig):
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         "tts_engine": EngineStageConfig,
+        "vocoder": S2ProVocoderStageConfig,
     }
 
     model_path: str
@@ -56,7 +68,7 @@ class S2ProPipelineConfig(PipelineConfig):
             next="vocoder",
             stream_to=["vocoder"],
         ),
-        StageConfig(
+        S2ProVocoderStageConfig(
             name="vocoder",
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_vocoder_executor",

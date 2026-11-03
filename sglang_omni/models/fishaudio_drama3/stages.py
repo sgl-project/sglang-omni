@@ -14,9 +14,6 @@ import torch
 from huggingface_hub import hf_hub_download
 from tokenizers import Tokenizer
 
-from sglang_omni.models.fishaudio_drama3.channels_last_decoder import (
-    ChannelsLastDecoder,
-)
 from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
     DEFAULT_CONTEXT_LENGTH,
@@ -39,10 +36,9 @@ from sglang_omni.models.fishaudio_drama3.engine_builder import Drama3EngineBuild
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
 from sglang_omni.models.fishaudio_drama3.request_builders import Drama3RequestData
 from sglang_omni.models.fishaudio_drama3.speech_request import Drama3SpeechPreprocessor
-from sglang_omni.models.fishaudio_drama3.stream_windows import stream_window_lengths
-from sglang_omni.models.fishaudio_drama3.vocoder import (
-    Drama3VocoderScheduler,
-    WindowGraphDecoder,
+from sglang_omni.models.fishaudio_drama3.vocoder import Drama3VocoderScheduler
+from sglang_omni.models.fishaudio_s2_pro.channels_last_decoder import (
+    ChannelsLastDecoder,
 )
 from sglang_omni.models.fishaudio_s2_pro.stages import (
     FishReferenceEncodeHook,
@@ -51,6 +47,10 @@ from sglang_omni.models.fishaudio_s2_pro.stages import (
 from sglang_omni.scheduling.audio_stream import WindowDecoder
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
+from sglang_omni.scheduling.stream_windows import (
+    WindowGraphDecoder,
+    stream_window_lengths,
+)
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 from sglang_omni.utils.device import resolve_concrete_device

@@ -13,9 +13,7 @@ from sglang_omni.models.fishaudio_drama3.sampling import (
     EMPTY_RAS_SLOT,
     RAS_WINDOW_FRAMES,
 )
-from sglang_omni.models.fishaudio_drama3.stream_windows import (
-    frames_in_complete_windows,
-)
+from sglang_omni.scheduling.stream_windows import frames_in_complete_windows
 from tests.unit_test.fishaudio_drama3.graph_fixtures import (
     CUDA_GRAPH_BATCH_SIZES,
     PREFILL_CUDA_GRAPH_PADDING_FACTOR,

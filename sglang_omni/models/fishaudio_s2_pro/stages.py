@@ -14,10 +14,13 @@ import time
 from collections.abc import Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import torch
 
+from sglang_omni.models.fishaudio_s2_pro.channels_last_decoder import (
+    ChannelsLastDecoder,
+)
 from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
 from sglang_omni.preprocessing.audio import decode_audio_bytes_av, parse_wav_bytes
 from sglang_omni.preprocessing.cache_key import hash_bytes as _hash_bytes
@@ -25,12 +28,20 @@ from sglang_omni.preprocessing.cache_key import (
     reference_path_cache_key as _reference_path_cache_key,
 )
 from sglang_omni.proto import StagePayload
+from sglang_omni.scheduling.audio_stream import (
+    WindowDecoder,
+    resolve_stream_overlap_tokens,
+)
 from sglang_omni.scheduling.pipeline_state import load_state as _load_pipeline_state
 from sglang_omni.scheduling.pipeline_state import store_state as _store_pipeline_state
 from sglang_omni.scheduling.reference_encoder import (
     ReferenceEncodeKey,
     ReferenceEncodeService,
     TensorReferenceEncodeHook,
+)
+from sglang_omni.scheduling.stream_windows import (
+    WindowGraphDecoder,
+    stream_window_lengths,
 )
 from sglang_omni.utils.audio import load_audio
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
@@ -523,6 +534,8 @@ def create_vocoder_executor(
     stream_followup_stride: int = 45,
     stream_overlap_tokens: int | None = 20,
     stream_crossfade_samples: int = 512,
+    decode_dtype: Literal["float32", "float16"],
+    window_cuda_graphs: bool,
 ):
     from sglang_omni.models.fishaudio_s2_pro.streaming_vocoder import (
         S2ProVocoderScheduler,
@@ -530,8 +543,45 @@ def create_vocoder_executor(
     from sglang_omni.utils.device import resolve_concrete_device
 
     device = str(resolve_concrete_device(device, gpu_id))
+    torch_device = torch.device(device)
     checkpoint_dir = _resolve_checkpoint(model_path)
     codec = load_codec(checkpoint_dir, device)
+    if torch_device.type != "cuda":
+        logger.info(
+            f"S2-Pro vocoder decodes with the float32 codec module on {device}; the "
+            f"float16 channels-last decoder and its window CUDA graphs need CUDA"
+        )
+        decode_window: WindowDecoder | None = None
+    else:
+        if decode_dtype == "float16":
+            codec.fold_weight_norm()
+            decode: WindowDecoder = ChannelsLastDecoder(codec, dtype=torch.float16)
+        else:
+            decode = codec.from_indices
+        if window_cuda_graphs:
+            decode_window = WindowGraphDecoder(
+                decode,
+                num_codebooks=(
+                    codec.quantizer.semantic_quantizer.n_codebooks
+                    + codec.quantizer.quantizer.n_codebooks
+                ),
+                frame_length=int(codec.frame_length),
+                device=torch_device,
+                window_lengths=stream_window_lengths(
+                    stream_stride=stream_stride,
+                    stream_followup_stride_ramp=(),
+                    stream_followup_stride=stream_followup_stride,
+                    stream_overlap_tokens=resolve_stream_overlap_tokens(
+                        codec, stream_overlap_tokens
+                    ),
+                ),
+            )
+        else:
+            decode_window = decode
+        logger.info(
+            f"S2-Pro vocoder decodes in {decode_dtype}, window CUDA graphs "
+            f"{'on' if window_cuda_graphs else 'off'}"
+        )
 
     return S2ProVocoderScheduler(
         codec,
@@ -542,4 +592,5 @@ def create_vocoder_executor(
         stream_crossfade_samples=stream_crossfade_samples,
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
+        decode_window=decode_window,
     )

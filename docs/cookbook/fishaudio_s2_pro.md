@@ -50,6 +50,8 @@ sgl-omni serve \
   --port 8000
 ```
 
+On CUDA the vocoder decodes codes into audio in float16 with a channels-last decoder over the weight-norm-folded codec, and replays each streaming window length (40 and 65 frames) from its own CUDA graph; batched and longer decodes run eagerly. Other devices decode with the checkpoint's float32 codec module. `--vocoder.factory.decode_dtype float32` decodes with the float32 module, and `--vocoder.factory.window_cuda_graphs false` decodes every window eagerly.
+
 ## Synthesize Speech
 
 Plain TTS:
