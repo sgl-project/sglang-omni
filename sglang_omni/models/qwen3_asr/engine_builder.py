@@ -8,6 +8,7 @@ import os
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Callable
 
+import torch
 from sglang.srt.environ import envs
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 from sglang.srt.server_args import ServerArgs
@@ -67,6 +68,7 @@ logger = logging.getLogger(__name__)
 
 
 QWEN3_ASR_FULL_PREFILL_MAX_REQUESTS = 32
+CONSUMER_RDNA_GCN_ARCH_PREFIXES = ("gfx11", "gfx120")
 
 
 class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
@@ -178,8 +180,6 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         self.context_length = max_prompt_tokens + max_output_budget + 8
 
     def uses_torch_mps(self) -> bool:
-        import torch
-
         return self.device is not None and torch.device(self.device).type == "mps"
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
@@ -236,6 +236,13 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             and get_hip_version()[:2] == (7, 2)
         ):
             defaults["prefill_attention_backend"] = "triton"
+        else:
+            pass
+        # note (Xinyu Zhang): the ROCm attention default is AITER, whose CK kernels fail to compile for consumer RDNA.
+        if current_platform.is_rocm() and torch.cuda.get_device_properties(
+            self.gpu_id
+        ).gcnArchName.startswith(CONSUMER_RDNA_GCN_ARCH_PREFIXES):
+            defaults["attention_backend"] = "triton"
         else:
             pass
         if self.mm_attention_backend is not None:
