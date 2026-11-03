@@ -725,6 +725,7 @@ class FakeBatch:
 
 def new_scheduler_for_async_loop():
     s = OmniScheduler.__new__(OmniScheduler)
+    s.enable_overlap = False
     s.sleep_during_idle = lambda: None
     s.admin_lock = threading.Lock()
     s.admin_queue = queue.Queue()
@@ -1155,6 +1156,7 @@ def test_drain_resolve_failure_calls_handle_batch_failure():
     failures = []
     stranded_batch = FakeBatch(2)
     s = OmniScheduler.__new__(OmniScheduler)
+    s.enable_overlap = False
     s.async_pending = PendingDecode(
         batch=stranded_batch, scheduler_output="sched", device_step="step"
     )

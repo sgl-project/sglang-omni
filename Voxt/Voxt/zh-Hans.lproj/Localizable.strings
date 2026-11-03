@@ -2382,3 +2382,11 @@
 "API Format" = "API 格式";
 
 "Automatic keeps OpenAI on Responses and respects explicit Chat Completions URLs for custom endpoints." = "自动模式下，官方 OpenAI 使用 Responses；自定义端点按明确填写的 Chat Completions 地址调用。";
+
+"Speculative Decoding" = "推测解码";
+"A small draft model proposes several tokens per step and the model verifies them: the same transcript, decoded faster." = "一个小型草稿模型每步提出多个词元，由主模型校验：转写结果不变，解码更快。";
+"Draft model installed (%@)" = "草稿模型已安装（%@）";
+"Draft model not downloaded (%@)" = "草稿模型未下载（%@）";
+"Checking draft model…" = "正在检查草稿模型…";
+"Download Draft" = "下载草稿模型";
+"Remove Draft" = "移除草稿模型";

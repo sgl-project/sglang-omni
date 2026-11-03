@@ -263,7 +263,12 @@ def set_qwen3_tts_preprocessing_context(
         get_qwen3_tts_adhoc_reference_service_locked(
             model,
             wrapper,
-            graph_bucket_frames=reference_encoder_graph_bucket_frames,
+            # note (ratish): only Base checkpoints encode references, so the others capture no encoder graphs.
+            graph_bucket_frames=(
+                reference_encoder_graph_bucket_frames
+                if model.tts_model_type == "base"
+                else ()
+            ),
         )
         _PREPROCESSING_CONTEXT = Qwen3TTSPreprocessingContext(
             model=model,

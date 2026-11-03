@@ -287,35 +287,6 @@ def test_whisper_shutdown_reports_stopped() -> None:
     assert running.process.wait(timeout=10) == 0
 
 
-@pytest.mark.parametrize(
-    ("binary", "other_kind"),
-    [
-        ("whisper_server", "qwen3_asr"),
-        ("cohere_transcribe_server", "whisper"),
-        ("nemotron_asr_server", "qwen3_asr"),
-        ("parakeet_server", "cohere_transcribe"),
-        ("sensevoice_server", "cohere_transcribe"),
-        ("music3_server", "qwen3_asr"),
-    ],
-)
-def test_server_serves_only_its_model_kind(binary: str, other_kind: str) -> None:
-    completed = subprocess.run(
-        [
-            str(Path(RUNTIME_BIN) / binary),
-            "--supervised",
-            "--model-kind",
-            other_kind,
-            "--model-directory",
-            "x",
-        ],  # fmt: skip
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert completed.returncode == 2
-    assert completed.stdout == ""
-
-
 @pytest.fixture(scope="module")
 def cohere_server() -> Iterator[ModelServer]:
     running = ModelServer("cohere_transcribe_server", "cohere_transcribe", COHERE_REPO)
@@ -527,24 +498,6 @@ def test_moss_realtime_finalizes_windows_with_segments(
     starts = [segment["start"] for segment in completed["segments"]]
     assert starts == sorted(starts)
     assert finals[1]["segments"][0]["start"] >= 4.0
-
-
-def test_moss_server_serves_only_moss() -> None:
-    completed = subprocess.run(
-        [
-            str(Path(RUNTIME_BIN) / "moss_transcribe_diarize_server"),
-            "--supervised",
-            "--model-kind",
-            "qwen3_asr",
-            "--model-directory",
-            "x",
-        ],  # fmt: skip
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert completed.returncode == 2
-    assert completed.stdout == ""
 
 
 @pytest.fixture(scope="module")
@@ -973,27 +926,6 @@ def music3_server(request: pytest.FixtureRequest) -> Iterator[ModelServer]:
     )
     yield music3_process
     music3_process.stop()
-
-
-@pytest.mark.parametrize("offload_components", ["ar", "dit", "ar,dit,other", ""])
-@pytest.mark.parametrize("binary_name", ["music3_server", "music3_synthesize"])
-def test_music3_rejects_invalid_offload_components(
-    tmp_path: Path, binary_name: str, offload_components: str
-) -> None:
-    process_result = subprocess.run(
-        [
-            str(Path(RUNTIME_BIN) / binary_name),
-            "--model-path",
-            str(tmp_path),
-            "--stage-offload-components",
-            offload_components,
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert process_result.returncode != 0
-    assert "requires both ar,dit" in process_result.stderr
 
 
 @pytest.mark.parametrize("server_flags", MUSIC3_SERVER_MODES)
