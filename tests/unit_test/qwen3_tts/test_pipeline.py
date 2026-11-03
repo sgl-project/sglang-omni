@@ -3697,19 +3697,19 @@ class FakeWindowRunner:
     ) -> None:
         self.arena = scheduler.codec_arena
         self.decoder = decoder
-        self.widths = widths
+        self.fresh_frames = widths
         self.bucket = bucket
         self.miss_on_call = miss_on_call
         self.calls: list[tuple[tuple[int, ...], list[int]]] = []
 
     def split_frames(self, total_frames: int) -> tuple[int, ...] | None:
-        return split_frames_by_width(total_frames, self.widths)
+        return split_frames_by_width(total_frames, self.fresh_frames)
 
     def largest_batch_bucket(self) -> int:
         return self.bucket
 
     def available_batch_sizes(self, fresh_frames: int) -> tuple[int, ...]:
-        return (self.bucket, 1) if fresh_frames in self.widths else ()
+        return (self.bucket, 1) if fresh_frames in self.fresh_frames else ()
 
     def stats(self) -> dict:
         return {
@@ -3793,7 +3793,6 @@ def whole_request_scheduler(
         monkeypatch, widths=(1, 2, 4), miss_on_call=miss_on_call
     )
     scheduler.decodes_whole_requests = True
-    scheduler.whole_request_widths = (1, 2, 4)
     return scheduler, incremental, runner
 
 

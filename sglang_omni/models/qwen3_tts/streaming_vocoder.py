@@ -901,17 +901,12 @@ class Qwen3TTSStreamingVocoderScheduler(
                 else bool(async_decode)
             )
         )
-        self.whole_request_widths = tuple(
-            sorted(
-                {int(frames) for frames in incremental_codec_cuda_graph_window_frames}
-            )
-        )
         # note (ratish): a whole-utterance graph runs the conv stack eagerly on every padded
         # frame; the window graphs decode the same frames with the codec's fused kernels.
         self.decodes_whole_requests = bool(
             self.async_decode
             and incremental_codec_cuda_graph
-            and self.whole_request_widths
+            and incremental_codec_cuda_graph_window_frames
             and self.device.type == "cuda"
             and whole_requests_on_codec_state
         )
@@ -2844,7 +2839,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         """
         codes = torch.as_tensor(final_state.audio_codes, dtype=torch.long)
         frames = int(codes.shape[0])
-        widths = self.whole_request_widths
+        widths = self.initial_window_decode_graphs.fresh_frames
         # note (ratish): the widths double, so a row decodes under twice its own frames.
         rounded_frames = (
             widths[bisect.bisect_left(widths, frames)]
