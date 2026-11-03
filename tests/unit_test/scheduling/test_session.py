@@ -385,7 +385,7 @@ def test_fragment_assembly_failure_fences_successors_and_preserves_other_session
     compute_registered(
         scheduler, operation_payload("healthy-open", "open", healthy_identity)
     )
-    for index, fragment in enumerate(leading_fragments):
+    for index, (fragment, _) in enumerate(leading_fragments):
         compute_registered(
             scheduler,
             operation_payload(

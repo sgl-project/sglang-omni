@@ -1103,9 +1103,16 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
                             session_operation.session_identity
                         )
                     if session is None:
-                        results[payload.request_id] = ValueError(
-                            "unknown session open index"
-                        )
+                        if self.operation_is_terminal(
+                            payload.request_id, session_operation.session_identity
+                        ):
+                            results[payload.request_id] = RuntimeError(
+                                "session is terminal after an uncommitted operation"
+                            )
+                        else:
+                            results[payload.request_id] = ValueError(
+                                "unknown session open index"
+                            )
                     else:
                         held_locks.enter_context(session.lock)
                         if self.is_shutting_down:
