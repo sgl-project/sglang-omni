@@ -465,6 +465,12 @@ class DuplexPeer:
                             "model": "fixture",
                             "output_modalities": ["audio"],
                             "sglang": {"granted": self.granted},
+                            "audio": {
+                                "input": {"format": self.granted["input_audio_format"]},
+                                "output": {
+                                    "format": self.granted["output_audio_format"]
+                                },
+                            },
                         },
                     },
                 )
@@ -842,6 +848,7 @@ def make_session_trace(
     *,
     audio_deltas: Sequence[tuple[float, bytes | str]] = (),
     output_sample_rate: int = SAMPLE_RATE,
+    input_sample_rate: int = SAMPLE_RATE,
     server_error_offsets_s: Sequence[float] = (),
     client_error_offsets_s: Sequence[float] = (),
     close_offset_s: float | Literal[False] | None = None,
@@ -853,7 +860,8 @@ def make_session_trace(
 ) -> str:
     """Records in time order; deltas are (elapsed_s, bytes or raw base64 string)."""
     input_samples = np.frombuffer(input_pcm, "<i2")
-    window_s = len(input_samples) / SAMPLE_RATE
+    window_s = len(input_samples) / input_sample_rate
+    packet_samples = round(input_sample_rate * 0.08)
     rows: list[tuple[float, TraceDirection, dict[str, JsonValue]]] = []
     append_delays_s = append_delays_s or {}
     rows.append(
@@ -872,13 +880,15 @@ def make_session_trace(
             },
         )
     )
-    frame_indexes = range(-(-len(input_samples) // 1280))
+    frame_indexes = range(-(-len(input_samples) // packet_samples))
     for index in frame_indexes:
         if omit_last_append and index == frame_indexes[-1]:
             continue
         else:
             pass
-        input_chunk = input_samples[index * 1280 : (index + 1) * 1280]
+        input_chunk = input_samples[
+            index * packet_samples : (index + 1) * packet_samples
+        ]
         audio_payload = (
             input_chunk.tobytes()
             if corrupted_append_index != index
@@ -888,7 +898,7 @@ def make_session_trace(
             "type": "input_audio_buffer.append",
             "event_id": f"a{index}",
             "audio": encode_audio(audio_payload),
-            "sglang": {"seq": index, "t_start_ms": index * 1280 / SAMPLE_RATE * 1000},
+            "sglang": {"seq": index, "t_start_ms": index * 80},
         }
         rows.append(
             (

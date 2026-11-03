@@ -22,6 +22,7 @@ from benchmarks.duplex.serving import score_session, summarize_level
 from benchmarks.duplex.v15_audio import reconstruct_output
 from benchmarks.duplex.v15_runner import run_samples
 from benchmarks.duplex.v15_transcribe import transcribe_run
+from benchmarks.eval.benchmark_personaplex_parity import compare_pcm
 from tests.unit_test.fixtures.duplex_fakes import (
     GRANTED,
     DuplexPeer,
@@ -436,8 +437,18 @@ def test_personaplex_capture_replay_and_serving(
 
     result = asyncio.run(exercise())
     assert result["summary"]["pairs_qualified"] == 1, result
-    with pytest.raises(ValueError, match="Reference export requires 16000 Hz"):
-        export_runs([tmp_path / "recording"], tmp_path / "quality-export", "sglang")
+    exported = export_runs(
+        [tmp_path / "recording"],
+        tmp_path / "quality-export",
+        "personaplex",
+        dataset_root=dataset,
+    )
+    assert exported["counts"]["eligible_pairs"] == 1, exported
+    scoring_audio = soundfile.info(
+        tmp_path / "quality-export/user_interruption/1/input.wav"
+    )
+    assert scoring_audio.samplerate == 16000
+    assert scoring_audio.frames == input_samples
     expected_input_samples = input_samples * 3 // 2
     for peer, variant in zip(peers, result["samples"][0]["variants"].values()):
         directory = tmp_path / "recording" / variant["directory"]
@@ -560,3 +571,25 @@ def test_input_end_terminal_reason_is_profile_specific(
     result = evaluate_trace(records, profile=profile)
     assert result["status"] == "fail", result
     assert any(reason in violation for violation in result["violations"])
+
+
+@pytest.mark.parametrize(
+    ("session_samples", "offline_samples", "first_difference"),
+    [
+        ([1, 2], [1, 2], None),
+        ([1, 3], [1, 2], 1),
+        ([1, 2, 3], [1, 2], 2),
+        ([1], [1, 2], 1),
+    ],
+)
+def test_personaplex_parity_reports_content_and_length_changes(
+    session_samples: list[int], offline_samples: list[int], first_difference: int | None
+) -> None:
+    report = compare_pcm(
+        np.array(session_samples, dtype="<i2").tobytes(),
+        np.array(offline_samples, dtype="<i2").tobytes(),
+    )
+    assert report["byte_identical"] == (first_difference is None)
+    assert report["first_differing_sample"] == first_difference
+    assert report["session_samples"] == len(session_samples)
+    assert report["offline_samples"] == len(offline_samples)

@@ -13,11 +13,13 @@ from benchmarks.duplex.reference_audio import (
     FILES,
     POLICY,
     POLICY_VERSION,
+    RATE,
     SCHEMA,
     SEND_RECEIPTS,
     analyze_variant,
     diagnostics,
     load_runs,
+    resample_pcm16,
     sha_bytes,
     write_wav,
 )
@@ -97,6 +99,8 @@ def export_runs(
             if capture_format is TraceFormat.LEGACY_PCM16
             else None
         )
+        source_profile = PROFILES.get(source_manifest.get("profile"))
+        input_sample_rate = source_profile.input_sample_rate if source_profile else RATE
         sidecar = send_receipts_required(run)
         target = output / sample_id
         target.mkdir(parents=True)
@@ -113,6 +117,7 @@ def export_runs(
                 (state.get("input") or {}).get("sha256"),
                 receipts_required=sidecar,
                 profile_rate=profile_rate,
+                input_sample_rate=input_sample_rate,
             )
             reasons = record["window"]["reasons"]
             # note (luojiaxuan): A legacy or turn-based session that failed its
@@ -131,7 +136,9 @@ def export_runs(
                 source = dataset_root / state["source"]["file"]
                 if file_sha256(source) != state["source"]["sha256"]:
                     reasons.append("dataset source sha256 differs from run.json")
-                elif sha_bytes(normalize_audio(source)[0]) != sha_bytes(pcm):
+                elif sha_bytes(
+                    normalize_audio(source, sample_rate=input_sample_rate)[0]
+                ) != sha_bytes(pcm):
                     reasons.append("renormalized dataset source differs from input.pcm")
                 else:
                     pass
@@ -149,7 +156,8 @@ def export_runs(
                 record.pop("boundary", None)
             else:
                 row["files"][input_name] = write_wav(
-                    target / input_name, np.frombuffer(pcm, "<i2")
+                    target / input_name,
+                    resample_pcm16(np.frombuffer(pcm, "<i2"), input_sample_rate)[0],
                 )
                 row["files"][output_name] = write_wav(target / output_name, audio)
             row["variants"][variant] = record

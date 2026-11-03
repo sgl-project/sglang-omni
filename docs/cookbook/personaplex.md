@@ -87,7 +87,47 @@ python -m benchmarks.eval.benchmark_duplex_serving sweep \
   --model nvidia/personaplex-7b-v1
 ```
 
-The serving report counts input units at 24 kHz, measures lag from input-send completion, and excludes empty end-of-input units. Inspect `serving.json` and `SERVING.md` for the 80 ms serving deadline verdict. FDB `reference-export` requires 16 kHz recorded input and rejects this profile.
+The serving report counts input units at 24 kHz, measures lag from input-send completion, and excludes empty end-of-input units. Inspect `serving.json` and `SERVING.md` for the 80 ms serving deadline verdict. FDB reference export validates the transmitted 24 kHz PCM and packet times, then resamples the scoring audio to mono 16 kHz PCM16. The scoring window keeps the original input duration.
+
+### Quality baseline
+
+Record FDB v1.0 and v1.5 at concurrency 1 with the same checkpoint, voice, role prompt and sampling configuration. Set `FDB10_ROOT` and `FDB15_ROOT` to the extracted datasets, and `FDB10_REVISION` and `FDB15_REVISION` to their archive digests. The following selection records three samples from each subset; the run manifests retain their IDs and source hashes.
+
+```bash
+python -m benchmarks.eval.benchmark_duplex_v15 record \
+  --url ws://localhost:8000/v1/realtime --profile personaplex \
+  --dataset-root "$FDB15_ROOT" --dataset-revision "$FDB15_REVISION" \
+  --server-revision "$SERVER_REVISION" --model nvidia/personaplex-7b-v1 \
+  --model-revision "$MODEL_REVISION" --concurrency 1 --max-per-subset 3 \
+  --timeout 230 --output quality-v15
+python -m benchmarks.eval.benchmark_duplex_v10 record \
+  --url ws://localhost:8000/v1/realtime --profile personaplex \
+  --dataset-root "$FDB10_ROOT" --dataset-revision "$FDB10_REVISION" \
+  --server-revision "$SERVER_REVISION" --model nvidia/personaplex-7b-v1 \
+  --model-revision "$MODEL_REVISION" --concurrency 1 --max-per-subset 3 \
+  --timeout 230 --output quality-v10
+python -m benchmarks.eval.benchmark_duplex_reference export \
+  --run quality-v15 --dataset-root "$FDB15_ROOT" \
+  --engine personaplex --out quality-v15-reference
+python -m benchmarks.eval.benchmark_duplex_v10 reference-export \
+  --run quality-v10 --dataset-root "$FDB10_ROOT" --out quality-v10-reference
+```
+
+Use the [FDB scoring commands](../developer_reference/full_duplex_guide.md) on these reference trees. Record the ASR checkpoint, evaluator revision, judge model and revision with the scores. Audio reconstruction uses receipt-time FIFO playout over the input duration, including initial silence and cropping audio at the observation window's end.
+
+### Greedy session and offline comparison
+
+Start the session server with `--sampling.temperature 0 --sampling.audio_temperature 0`, record a single call with the recorder above, then start the offline server from the same revision and checkpoint. Save the session's role prompt in `instructions.txt` and pass its voice to the comparison command:
+
+```bash
+python -m benchmarks.eval.benchmark_personaplex_parity \
+  --session-run personaplex-smoke --offline-url http://localhost:8001 \
+  --voice NATF2 --instructions instructions.txt --output greedy-parity \
+  --server-revision "$SERVER_REVISION" --model nvidia/personaplex-7b-v1 \
+  --model-revision "$MODEL_REVISION"
+```
+
+The command sends the recorded 24 kHz PCM to the offline endpoint as a WAV data URI. It saves the request, response, both audio outputs and `parity.json`, including the first differing sample and SHA-256 of each PCM stream. Its exit status is zero when the complete PCM replies are byte-identical. The report also compares the session prefix covering the caller's duration, matching offline's length convention. Session output includes one initial extra frame and any final unit padding.
 
 ## Request parameters
 

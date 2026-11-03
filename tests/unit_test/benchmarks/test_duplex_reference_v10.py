@@ -60,11 +60,14 @@ def sha256_bytes(data: bytes) -> str:
 
 
 def build_capture(
-    root: Path, sample_ids: list[str], unrecorded: str
+    root: Path,
+    sample_ids: list[str],
+    unrecorded: str,
+    input_sample_rate: int = SAMPLE_RATE,
 ) -> tuple[Path, Path]:
     """Dataset plus one v1.0 run; the unrecorded sample stays invalid without a trace."""
     dataset, run = root / "dataset", root / "run"
-    input_pcm = make_input_pcm(INPUT_SAMPLES)
+    input_pcm = make_input_pcm(2 * input_sample_rate)
     samples = []
     for sample_id in [*sample_ids, unrecorded]:
         subset = sample_id.split("/")[0]
@@ -73,7 +76,7 @@ def build_capture(
         soundfile.write(
             str(sample_dir / "input.wav"),
             np.frombuffer(input_pcm, "<i2"),
-            SAMPLE_RATE,
+            input_sample_rate,
             subtype="PCM_16",
         )
         paths = {"input": f"{sample_id}/input.wav"}
@@ -92,7 +95,11 @@ def build_capture(
             (run / directory).mkdir(parents=True)
             (run / directory / "input.pcm").write_bytes(input_pcm)
             (run / directory / "continuous.jsonl").write_text(
-                make_session_trace(input_pcm, audio_deltas=OUTPUT_DELTAS)
+                make_session_trace(
+                    input_pcm,
+                    audio_deltas=OUTPUT_DELTAS,
+                    input_sample_rate=input_sample_rate,
+                )
             )
             status, recorded_input = "pass", {"sha256": sha256_bytes(input_pcm)}
         samples.append(
@@ -521,3 +528,26 @@ def test_reference_asr_crops_interruption_and_evaluation_runs_pinned_code(
         "synthetic_user_interruption",
         "synthetic_pause_handling",
     }
+
+
+def test_personaplex_v10_export_checks_source_at_recorded_rate(tmp_path: Path) -> None:
+    """24 kHz input must be checked against the source at its transmitted rate."""
+    dataset, run = build_capture(
+        tmp_path,
+        ["synthetic_pause_handling/1"],
+        "synthetic_pause_handling/2",
+        input_sample_rate=24000,
+    )
+    manifest_path = run / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["profile"] = "personaplex"
+    manifest_path.write_text(json.dumps(manifest))
+    exported = reference_v10.export([run], dataset, tmp_path / "export")
+    sample = exported["samples"][0]
+    assert sample["eligible"], sample["reasons"]
+    assert sample["window"]["T_s"] == 2.0
+    audio, sample_rate = soundfile.read(
+        tmp_path / "export/synthetic_pause_handling/1/output.wav"
+    )
+    assert sample_rate == 16000
+    assert len(audio) == 32000

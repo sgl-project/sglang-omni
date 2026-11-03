@@ -351,6 +351,47 @@ class TraceClock(AudioFixture):
 
 
 class ReferenceExport(AudioFixture):
+    def test_personaplex_scoring_window_uses_recorded_input_rate(self) -> None:
+        """24 kHz captures were rejected instead of exporting duration-matched scoring audio."""
+        input_sample_rate = 24000
+        input_pcm = make_input_pcm(12501)
+        trace = make_session_trace(
+            input_pcm,
+            input_sample_rate=input_sample_rate,
+            output_sample_rate=input_sample_rate,
+            audio_deltas=[(0.1, make_constant_pcm(0.6, input_sample_rate))],
+        )
+        run = self.make_run(
+            {"overlap": (input_pcm, trace), "clean": (input_pcm, trace)}
+        )
+        (run / "manifest.json").write_text(json.dumps({"profile": "personaplex"}))
+        manifest = export_runs([run], self.root / "scoring", "personaplex")
+        self.assertEqual(manifest["counts"]["eligible_variants"], 2)
+        for variant in manifest["samples"][0]["variants"].values():
+            self.assertEqual(variant["input"]["sample_rate"], 24000)
+            self.assertAlmostEqual(variant["window"]["T_s"], 12501 / 24000)
+            self.assertEqual(variant["input_check"]["expected_appends"], 7)
+        for filename in (
+            "input.wav",
+            "output.wav",
+            "clean_input.wav",
+            "clean_output.wav",
+        ):
+            audio, sample_rate = soundfile.read(
+                self.root / "scoring/user_interruption/1" / filename, dtype="int16"
+            )
+            self.assertEqual(sample_rate, 16000)
+            self.assertEqual(len(audio), 8334)
+        output, _ = soundfile.read(
+            self.root / "scoring/user_interruption/1/output.wav", dtype="int16"
+        )
+        self.assertTrue(np.all(output[:1500] == 0))
+        self.assertTrue(np.all(output[1800:8000] == 1000))
+        self.assertEqual(
+            (run / "samples/user_interruption/1/overlap/input.pcm").read_bytes(),
+            input_pcm,
+        )
+
     def test_engine_label_is_metadata_only(self) -> None:
         pcm = make_input_pcm(7681)
         run = self.make_run(
