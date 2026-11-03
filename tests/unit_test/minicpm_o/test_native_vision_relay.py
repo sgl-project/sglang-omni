@@ -13,7 +13,10 @@ from sglang_omni.models.minicpm_o.components.streaming_perception import (
     MiniCPMOPerceptionState,
     PerceptionStepPlan,
 )
-from sglang_omni.models.minicpm_o.native_config import MiniCPMODuplexSampling
+from sglang_omni.models.minicpm_o.native_config import (
+    DEFAULT_WINDOW_SETTINGS,
+    MiniCPMODuplexSampling,
+)
 from sglang_omni.models.minicpm_o.native_stages import PerceptionHooks
 from sglang_omni.models.minicpm_o.session_adapters import ThinkerAdapter
 from sglang_omni.models.minicpm_o.special_tokens import REQUIRED_SPECIAL_TOKENS
@@ -92,6 +95,17 @@ def append_unit(
     return result
 
 
+def thinker_adapter(tokenizer: Mock) -> ThinkerAdapter:
+    return ThinkerAdapter(
+        tokenizer,
+        100,
+        window=DEFAULT_WINDOW_SETTINGS,
+        rotary_embedding=SimpleNamespace(
+            head_size=64, rotary_dim=64, is_neox_style=True, cos_sin_cache=None
+        ),
+    )
+
+
 def unit_payload(data: PerceptionStepPlan | None = None) -> StagePayload:
     return StagePayload(
         "unit", OmniRequest(None, params=MiniCPMODuplexSampling().model_dump()), data
@@ -126,7 +140,7 @@ def test_append_and_thinker_splice(
     else:
         perception.prepare_image.assert_not_called()
         perception.encode_images.assert_called_once_with(())
-    adapter = ThinkerAdapter(perception.tokenizer, 100)
+    adapter = thinker_adapter(perception.tokenizer)
     adapter.open(IDENTITY, payload.request)
     adapter.states[IDENTITY].is_prefix_pending = first_unit
     request = adapter.build(IDENTITY, chunk, payload)
@@ -258,7 +272,7 @@ def test_image_audio_commit_atomically(
             torch.full((10, 4), 9.0), (torch.full((64, 4), 6.0),)
         )
     )
-    adapter = ThinkerAdapter(perception.tokenizer, 100)
+    adapter = thinker_adapter(perception.tokenizer)
     adapter.open(IDENTITY, payload.request)
     request = adapter.build(IDENTITY, TimedChunk("audio", 0, 1000, 0, b""), payload)
     history = EmbeddingSpan(start=1, end=3, input_embeds=torch.ones(2, 4))
@@ -266,7 +280,7 @@ def test_image_audio_commit_atomically(
         session_identity=IDENTITY, session_request=None, embedding_spans=[]
     )
     session = SimpleNamespace(unit=unit, embedding_spans=[history])
-    native = Mock(session_id=IDENTITY.id)
+    native = Mock(session_id=IDENTITY.id, req_nodes={})
     native.create_req.return_value = Mock(
         origin_input_ids=[7] * 12 + list(request.req.origin_input_ids), to_finish=None
     )
@@ -275,7 +289,7 @@ def test_image_audio_commit_atomically(
     bridge.drain = Mock()
     bridge.sessions = {IDENTITY.id: session}
     bridge.units_by_request_id = {"unit": unit}
-    bridge.bridge_scheduler = Mock()
+    bridge.bridge_scheduler = Mock(max_req_len=8191)
     bridge.bridge_scheduler.session_controller.get.return_value = native
     bridge.create_session_request(payload, request)
     assert session.embedding_spans == [history]

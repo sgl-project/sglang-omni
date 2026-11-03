@@ -102,6 +102,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+qwen3-tts-cutedsl = [
+    "nvidia-cutlass-dsl==4.8.0",
+]
+
 audar-tts = [
     "llama-cpp-python==0.3.34",
     "neucodec==0.0.6",
@@ -202,4 +206,5 @@ version = {attr = "sglang_omni.__version__"}
 "sglang_omni.models.fishaudio_s2_pro" = ["fish_speech/configs/*.yaml"]
 "sglang_omni.models.higgs_tts" = ["configs/*.json"]
 "sglang_omni.models.minicpm_o.components.token2wav" = ["THIRD_PARTY_NOTICES.md", "licenses/*.txt"]
+"sglang_omni.models.qwen3_tts.cutedsl" = ["LICENSE"]
 "sglang_omni.models.zonos2" = ["moe_configs/*/*.json"]
