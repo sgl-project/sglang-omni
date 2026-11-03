@@ -176,7 +176,6 @@ class Qwen3TTSStreamState:
     suppress_bootstrap: bool = False
     # note (ratish): a non-streaming request's audio collects here instead of being emitted.
     whole_audio: list[torch.Tensor] | None = None
-    whole_generated_frames: int = 0
 
 
 def decode_event_snapshots(
@@ -2866,7 +2865,6 @@ class Qwen3TTSStreamingVocoderScheduler(
             final_pending=True,
             pending_ref_frames=final_state.ref_code_len,
             whole_audio=[],
-            whole_generated_frames=frames - final_state.ref_code_len,
         )
         with self.state_lock:
             # note (ratish): an abort clears state under this lock, so one it has missed is seen here.
@@ -3700,7 +3698,8 @@ class Qwen3TTSStreamingVocoderScheduler(
         del request_id
         final_state = Qwen3TTSState.from_dict(payload.data)
         if state.whole_audio is not None:
-            generated_samples = state.whole_generated_frames * self.samples_per_frame
+            generated_frames = len(final_state.audio_codes) - final_state.ref_code_len
+            generated_samples = generated_frames * self.samples_per_frame
             return self.audio_result_data(
                 final_state,
                 torch.cat(state.whole_audio)[:generated_samples].numpy(),
