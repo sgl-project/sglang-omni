@@ -18,6 +18,11 @@ inline constexpr int kMelBinCount = 128;
 // Log-mel floor and the dynamic range kept below the loudest bin.
 inline constexpr float kLogMelFloor = 1e-10f;
 inline constexpr float kLogMelDynamicRange = 8.0f;
+
+// PCM16 bytes must be little-endian, with complete interleaved channel frames.
+std::string EncodeWavPcm16(std::string_view pcm_bytes, int sample_rate,
+                           int channels);
+
 // Mono PCM16 or float32 WAV at sample_rate to float32 samples; throws
 // std::invalid_argument for anything else.
 std::vector<float> DecodeWav(std::string_view wav_bytes,
