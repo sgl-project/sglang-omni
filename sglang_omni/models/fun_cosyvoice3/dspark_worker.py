@@ -49,14 +49,20 @@ from sglang_omni.models.fun_cosyvoice3.dspark_draft import (
     MirroredMarkovHead,
 )
 from sglang_omni.models.fun_cosyvoice3.dspark_sampling import (
+    ACCEPTANCE_NOISE_SEED_SALT,
     EMPTY_HISTORY_TOKEN,
+    LARGEST_FLOAT32_BELOW_ONE,
+    RESIDUAL_NOISE_SEED_SALT,
     DraftSamplingState,
     ExactAccept,
     exact_accept,
     sample_draft_block,
+    seeded_exponential_noise,
+    seeded_uniform_noise,
 )
 from sglang_omni.models.fun_cosyvoice3.model_runner import COSYVOICE3_RAS_WINDOW_SIZE
 from sglang_omni.models.fun_cosyvoice3.sglang_model import TOTAL_VOCAB_SIZE
+from sglang_omni.sampling.seed import SAMPLING_SEED_MASK, derive_sampling_seed
 from sglang_omni.speculative.target_worker import SpeculativeTargetWorker
 
 
@@ -138,15 +144,32 @@ def build_step_sampling_state(
         ],
         dtype=torch.long,
     )
-    # One host-to-device copy carries the three per-request values.
+    is_seeded = any(
+        request.sampling_params.sampling_seed is not None for request in batch.reqs
+    )
+    row_seeds: list[int] = []
+    for request in batch.reqs:
+        if request.sampling_params.sampling_seed is not None:
+            row_seeds.append(request.sampling_params.sampling_seed)
+        elif is_seeded:
+            # note (YifanLi3): as in plain decode, an unseeded request in a seeded
+            # batch hashes its id.
+            row_seeds.append(
+                derive_sampling_seed("sglang-omni-unseeded-row", request.rid)
+            )
+        else:
+            row_seeds.append(0)
+    # note (YifanLi3): one host-to-device copy carries the four per-request values;
+    # a masked seed fits in 31 bits, so float64 holds it exactly.
     request_values = torch.tensor(
         [
             [
                 request.sampling_params.repetition_penalty,
                 len(request.output_ids),
                 request.sampling_params.min_new_tokens,
+                seed & SAMPLING_SEED_MASK,
             ]
-            for request in batch.reqs
+            for request, seed in zip(batch.reqs, row_seeds, strict=True)
         ],
         dtype=torch.float64,
     ).to(device)
@@ -165,6 +188,7 @@ def build_step_sampling_state(
             min_new_tokens=request_values[:, 2].long(),
             temperatures=sampling_info.temperatures.view(-1).float(),
             greedy=top_ks == 1,
+            seeds=request_values[:, 3].long() if is_seeded else None,
         ),
         recent_tokens=recent_tokens.to(device),
         top_ks=top_ks,
@@ -198,6 +222,28 @@ class ExactVerifyExecutor(TargetVerifyExecutor):
         assert state is not None, "a verify step needs its sampling state"
         draft_state = state.draft
         draft_tokens = draft_tokens.long()
+        if draft_state.seeds is None:
+            uniform_noise = torch.rand(draft_tokens.shape, device=draft_tokens.device)
+            exponential_noise = torch.empty(
+                (bs, TOTAL_VOCAB_SIZE), device=draft_tokens.device
+            ).exponential_()
+        else:
+            uniform_noise = (
+                seeded_uniform_noise(
+                    draft_state.seeds,
+                    draft_state.output_lengths,
+                    salt=ACCEPTANCE_NOISE_SEED_SALT,
+                    column_count=draft_tokens.shape[1],
+                )
+                .float()
+                .clamp_(max=LARGEST_FLOAT32_BELOW_ONE)
+            )
+            exponential_noise = seeded_exponential_noise(
+                draft_state.seeds,
+                draft_state.output_lengths,
+                salt=RESIDUAL_NOISE_SEED_SALT,
+                column_count=TOTAL_VOCAB_SIZE,
+            )
         accepted_count, next_tokens = self.accept_function(
             target_logits,
             draft_block.corrected_logits,
@@ -211,10 +257,8 @@ class ExactVerifyExecutor(TargetVerifyExecutor):
             state.top_ks,
             state.top_ps,
             state.recent_tokens,
-            torch.rand(draft_tokens.shape, device=draft_tokens.device),
-            torch.empty(
-                (bs, TOTAL_VOCAB_SIZE), device=draft_tokens.device
-            ).exponential_(),
+            uniform_noise,
+            exponential_noise,
         )
         finalized = FinalizeAcceptLens.execute(
             correct_len=accepted_count,

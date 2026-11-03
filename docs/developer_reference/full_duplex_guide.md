@@ -271,7 +271,7 @@ To use services you already run, drop their `services` entries and point the nod
 **One command with a profile**
 
 
-The default CustomVoice cascade uses Qwen3.8-27B with thinking off on GPU 0 and Qwen3-ASR/Qwen3-TTS on GPU 1. The audio-file example in `examples/streaming_cascade/run.py` uses this profile when `--config` is omitted.
+The default Vivian cascade profile uses Qwen3.8-27B with thinking off on GPU 0 and Qwen3-ASR/Qwen3-TTS Base on GPU 1. The audio-file example in `examples/streaming_cascade/run.py` uses this profile when `--config` is omitted.
 
 ```bash
 sgl-omni serve --config examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-vivian/launch.yaml --enable-realtime --port 8765
@@ -664,6 +664,8 @@ Streams one chat completion from `<base_url>/chat/completions` per turn.
 Cuts the reply text into sentences and sends one streaming request per sentence to `<base_url>/audio/speech` with `model`, `voice`, `input`, `response_format: pcm`, `stream: true`, `language` when `language` is set, and `references: [{audio_path, text}]` when `reference_audio_path` is set. A sentence ends after a word ending in `.`, `!`, `?`, `;` or `…` (closing quotes and brackets included), after Chinese end punctuation followed by more text, or at a line end; a sentence longer than `max_sentence_words` is cut as that setting describes.
 
 Every sentence is its own request, and Qwen3-TTS samples each request with a fresh seed. A CustomVoice speaker given by `voice` is held only by its speaker token, so its timbre moves from sentence to sentence and from turn to turn; a Base model cloning one `reference_audio_path` for every request keeps one voice, which is why the English profiles clone `examples/streaming_cascade/voices/vivian.wav`, a recording of the CustomVoice speaker Vivian. They leave `reference_text` empty, so Base clones from the recording's speaker embedding alone: with the transcript it continues the recording itself and opens each sentence with a pause of about half a second, which a listener hears as a later reply.
+
+**TTS quality.** In a controlled, single-reviewer comparison, the 1.7B Base profile with `voices/vivian.wav` and no reference transcript reduced unacceptable timing-related anomalies from 5/60 CustomVoice/Vivian outputs to 0/60 Base outputs. This supports the tested configuration as a mitigation for slowdowns and abnormal pauses.
 
 `openai_speech` sends each sentence without its emoji, asterisks and backticks, a markdown link as its text alone, a bare URL as its host alone, and a markdown line without its heading, list or quote marker and with its table cells separated by commas, because a speech service reads them as stray sounds or a spelled-out URL, and can run on for 40 s or more after a marker or a table row. A sentence with no word left, such as one of only emoji or punctuation or a table's separator row, is not sent because the speech service answers it with an error, and its end still counts in `reply.progress`. A sentence tagged `English` is sent with its numbers written out as words, the way the forced-alignment worker reads them: a year as two pairs, spaced digit groups such as a phone number digit by digit, a decimal with `point`, and an ordinal such as `21st` as `twenty first`. The reply text and the `reply.progress` offsets keep everything the model wrote. The profiles' system prompts also tell the language model to use neither markdown nor emoji.
 

@@ -2376,3 +2376,11 @@
 "API Format" = "API 形式";
 
 "Automatic keeps OpenAI on Responses and respects explicit Chat Completions URLs for custom endpoints." = "自動では OpenAI に Responses を使用し、カスタムエンドポイントに明示した Chat Completions URL を維持します。";
+
+"Speculative Decoding" = "投機的デコーディング";
+"A small draft model proposes several tokens per step and the model verifies them: the same transcript, decoded faster." = "小さなドラフトモデルが1ステップで複数トークンを提案し、本体モデルが検証します。文字起こし結果は同じで、デコードが速くなります。";
+"Draft model installed (%@)" = "ドラフトモデルはインストール済み（%@）";
+"Draft model not downloaded (%@)" = "ドラフトモデルは未ダウンロード（%@）";
+"Checking draft model…" = "ドラフトモデルを確認中…";
+"Download Draft" = "ドラフトをダウンロード";
+"Remove Draft" = "ドラフトを削除";
