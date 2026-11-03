@@ -17,6 +17,124 @@ Get Started
 - :doc:`Installation <get_started/installation>` — Choose an installation method for your hardware.
 - :doc:`Examples <get_started/examples>` — Stream a transcript, generate speech, or send an audio chat request.
 
+News and latest blogs
+---------------------
+
+Scroll sideways for more updates.
+
+.. raw:: html
+
+   <style>
+     .omni-news {
+       display: flex;
+       gap: 1rem;
+       overflow-x: auto;
+       scroll-snap-type: x mandatory;
+       list-style: none;
+       margin: 0 0 0.75rem;
+       padding: 0 0 0.75rem;
+     }
+
+     .omni-news > li {
+       flex: 0 0 calc((100% - 2rem) / 2.12);
+       min-width: 0;
+       scroll-snap-align: start;
+     }
+
+     .omni-news a {
+       display: flex;
+       flex-direction: column;
+       height: 100%;
+       overflow: hidden;
+       border: 1px solid var(--pst-color-border, #bbb);
+       border-radius: 0.75rem;
+       background: var(--pst-color-surface, transparent);
+       color: var(--pst-color-text-base, inherit);
+       text-decoration: none;
+     }
+
+     .omni-news a:hover strong {
+       text-decoration: underline;
+     }
+
+     .omni-news:focus-visible,
+     .omni-news a:focus-visible {
+       outline: 3px solid var(--pst-color-primary, #176a96);
+       outline-offset: -3px;
+     }
+
+     .omni-news img {
+       display: block;
+       width: 100%;
+       aspect-ratio: 16 / 8;
+       object-fit: contain;
+       background: #fff;
+     }
+
+     .omni-news img.omni-news-logo {
+       padding: 1.25rem;
+       background: #fff6ef;
+     }
+
+     .omni-news strong {
+       padding: 0.75rem 0.875rem 0.25rem;
+       line-height: 1.35;
+     }
+
+     .omni-news time {
+       margin-top: auto;
+       padding: 0 0.875rem 0.75rem;
+       color: var(--pst-color-text-muted, inherit);
+       font-size: 0.85rem;
+     }
+
+     @media (max-width: 600px) {
+       .omni-news > li {
+         flex-basis: 85%;
+       }
+     }
+   </style>
+
+   <ul class="omni-news" role="list" tabindex="0" aria-label="News and latest blogs">
+     <li>
+       <a href="https://github.com/sgl-project/sglang-omni/releases/tag/v0.2.0">
+         <img class="omni-news-logo" src="_static/image/sgl-omni-logo.svg" alt="" loading="lazy">
+         <strong>SGLang-Omni v0.2.0</strong>
+         <time datetime="2026-10-27">October 27, 2026</time>
+       </a>
+     </li>
+     <li>
+       <a href="https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v1.16.3">
+         <img class="omni-news-logo" src="https://raw.githubusercontent.com/sgl-project/sglang-omni/7be1317/Voxt/Voxt/VoxtIcon.icon/Assets/Voxt.png" alt="" loading="lazy">
+         <strong>Voxt v1.16.3</strong>
+         <time datetime="2026-10-23">October 23, 2026</time>
+       </a>
+     </li>
+     <li>
+       <a href="https://www.sglang.io/blog/omni-interactive-runtime">
+         <img src="https://www.sglang.io/images/omni-interactive-runtime/interaction-approaches.png" alt="" loading="lazy">
+         <strong>A unified runtime for full-duplex interaction</strong>
+         <time datetime="2026-10-20">October 20, 2026</time>
+       </a>
+     </li>
+     <li>
+       <a href="https://www.sglang.io/blog/spg-topology">
+         <img src="https://www.sglang.io/images/spg-topology/spg-qwen3-omni-stage-graph.png" alt="" loading="lazy">
+         <strong>Serving multi-stage omni models with SPG</strong>
+         <time datetime="2026-10-13">October 13, 2026</time>
+       </a>
+     </li>
+     <li>
+       <a href="https://fish.audio/blog/fish-audio-drama-3/">
+         <img src="https://public-platform.r2.fish.audio/media/blog-images/d42b7127d9f24eb3b222388bf81d6885" alt="" loading="lazy">
+         <strong>Fish Audio Drama 3 launches with Omni support</strong>
+         <time datetime="2026-10-13">October 13, 2026</time>
+       </a>
+     </li>
+   </ul>
+
+`View all releases <https://github.com/sgl-project/sglang-omni/releases>`_
+
 About
 -----
 
