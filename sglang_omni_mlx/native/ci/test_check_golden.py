@@ -1,6 +1,4 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for check_golden.py's per-chip gat. """
-
 from __future__ import annotations
 
 import hashlib

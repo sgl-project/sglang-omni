@@ -7,7 +7,6 @@
 #include <stdexcept>
 
 #include "common/audio.h"
-#include "qwen3_asr/qwen3_audio.h"
 
 namespace auk {
 
@@ -314,7 +313,7 @@ mx::array Conditioner::Encode(
                  frames * omni_common::kHopLength + omni_common::kFftSize),
         0.0f);
     const mx::array full =
-        qwen3_asr::LogMel(padded, qwen3_asr::AudioLayout::kReference);
+        omni_common::LogMel(padded, omni_common::FinalStftFrame::kDropped);
     features = mx::slice(full, {0, 0}, {omni_common::kMelBinCount, frames});
     mx::eval(*features);
   } else {
