@@ -18,27 +18,14 @@ namespace {
 
 constexpr float kLayerNormEps = 1e-5f;
 // Note (Yucheng Hu): audio longer than this many chunks is encoded in groups
-// evaluated as they go, so the large activations are bounded by the group size
-// instead of the audio length. Shorter audio keeps one lazy graph, so its
-// kernels and output stay as they were.
+// so its activations stay bounded; shorter audio keeps one lazy graph.
 constexpr int kLongAudioChunks = 64;
-// Note (Yucheng Hu): 8-chunk conv groups cut the encoder's peak by up to a
-// fifth more but ran up to 3% slower (M2 Pro).
 constexpr int kMinimumConvChunksPerGroup = 16;
-// Note (Yucheng Hu): smaller groups would change the output bits, since MLX
-// sums a matmul with split-K while K >= 3 * max(M, N) on NAX GPUs: conv_out
-// (13 rows per chunk, K = 7680) up to 7680 / (3 * 13) = 196 chunks, and the
-// attention fc2 (104 rows per window, K <= 4096) up to 13 windows. Older GPUs
-// stop splitting at smaller sizes, so these minimums also run the ungrouped
-// encoder's kernels there.
+// Note (Yucheng Hu): these minimums keep conv_out and the attention fc2 on
+// the ungrouped encoder's matmul kernels, since split-K changes output bits.
 constexpr int kMinimumConvOutChunksPerGroup = 197;
-// Note (Yucheng Hu): 14 to 23 windows per group, above the split-K bound, split
-// 5-minute audio into two groups that ran 2-6% slower (M2 Pro).
 constexpr int kMinimumWindowsPerGroup = 24;
 
-// Note (Yucheng Hu): as many groups as keep the minimum in each, split evenly,
-// so a group holds at least the minimum and fewer than twice it, never a short
-// remainder; fewer members than the minimum make one group.
 std::vector<std::pair<int, int>> GroupBounds(int member_count,
                                              int minimum_group_size) {
   const int group_count = std::max(1, member_count / minimum_group_size);
@@ -152,9 +139,6 @@ mx::array Qwen3ASR::EncodeAudio(const mx::array &mel,
     mx::eval(mel);
   } else {
   }
-  // Note (Yucheng Hu): the conv activations are the largest tensors, so the
-  // convs run one group of chunks at a time; conv_out runs on larger groups of
-  // the flattened conv output.
   std::vector<mx::array> kept_row_groups;
   const std::vector<std::pair<int, int>> conv_out_groups =
       group_bounds(chunk_count, kMinimumConvOutChunksPerGroup);
