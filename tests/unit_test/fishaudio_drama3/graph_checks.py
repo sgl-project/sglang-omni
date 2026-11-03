@@ -27,6 +27,7 @@ from tests.unit_test.fishaudio_drama3.graph_fixtures import (
     bits,
 )
 from tests.unit_test.fishaudio_drama3.mtp_fixtures import (
+    EOS_CANDIDATE_COLUMN,
     EOS_TOKEN_ID,
     PROMPTS,
     SEMANTIC_END_TOKEN_ID,
@@ -191,9 +192,9 @@ def finite_problems(run: GraphEngineRun) -> list[str]:
     for record in run.forwards:
         for step in record.steps:
             semantic_logits = step.semantic_logits
-            is_masked_eos = (torch.arange(semantic_logits.numel()) == EOS_TOKEN_ID) & (
-                semantic_logits == float("-inf")
-            )
+            is_masked_eos = (
+                torch.arange(semantic_logits.numel()) == EOS_CANDIDATE_COLUMN
+            ) & (semantic_logits == float("-inf"))
             is_finite = {
                 "written key/value cache": bool(step.written_cache.isfinite().all()),
                 "head logits": bool(step.head_logits.isfinite().all()),
