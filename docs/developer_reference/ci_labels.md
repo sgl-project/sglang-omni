@@ -20,7 +20,7 @@ In this sense, two kinds of labels exist and they combine: a stage label decides
 | Omni CI: TTS | H100 | Voice cloning on SeedTTS with Higgs-TTS, MOSS-TTS, Qwen3-TTS or Fun-CosyVoice3: non-streaming and streaming speed, word error rate, speaker similarity and UTMOS, streaming consistency, first-audio latency for Qwen3-TTS, and a serving stress test on Higgs-TTS | `run-tts-ci` or `run-all-ci` |
 | Omni CI: MPS | H100 | External CUDA MPS DP2 non-streaming validation, native MPS lifecycle validation, and native CUDA IPC weight-sharing lifecycle validation | `run-mps-ci` or `run-all-ci` |
 | Omni CI: Omni | H100 | Qwen3-Omni or MiniCPM-o 4.5: thinker length limits, SeedTTS voice cloning, accuracy and speed on MMMU, MMSU, Video-MME and Video-AMME with text and spoken answers, a tensor parallel thinker, and Qwen3-Omni process replicas | `run-omni-ci` or `run-all-ci` |
-| Omni CI: Duplex | H100 | Full-Duplex-Bench v1.0 and v1.5 on three interaction strategies: native full duplex (MiniCPM-o 4.5), turn based (Qwen3-Omni with server VAD) and cascaded (Qwen3-ASR-1.7B, Qwen3.8-27B and Qwen3-TTS Base cloning one Vivian recording). Each gates turn taking, overlap behavior, latency and listening quality against its own baseline | `run-full-duplex`, `run-turn-based`, `run-cascaded` or `run-all-ci` |
+| Omni CI: Duplex | H100 | Full-Duplex-Bench v1.0 and v1.5 on three interaction strategies: native full duplex (MiniCPM-o 4.5), turn based (Qwen3-Omni with server VAD) and cascaded (Qwen3-ASR-1.7B, Qwen3.8-27B and Qwen3-TTS Base cloning one Vivian recording). Each gates turn taking, overlap behavior, latency and listening quality against its own baseline | `run-native-duplex`, `run-turn-based-duplex`, `run-cascaded-duplex` or `run-all-ci` |
 | CPU CI | Intel Xeon (`intel-omni-spr`) | Job `intel-cpu-ci (unit_test/cpu)`: `pytest tests/unit_test/cpu/` | `run-intel-cpu-ci` or `run-all-ci` |
 | XPU CI | Intel GPU (`intel-omni-bmg`) | Intel GPU device layer tests | `run-intel-xpu-ci` or `run-all-ci` |
 | Voxt Mac CI | GitHub macOS | MLX native runtime build and protocol, Voxt app tests | `run-mac-ci` or `run-all-ci` |
@@ -143,11 +143,11 @@ Each job runs a fixed Full-Duplex-Bench selection on one interaction strategy, t
 
 | Stage label | Job | System |
 | --- | --- | --- |
-| `run-full-duplex` | Full-Duplex-Bench - full duplex | MiniCPM-o 4.5, native full duplex, one server on each of two GPUs |
-| `run-turn-based` | Full-Duplex-Bench - turn based | Qwen3-Omni with server VAD turn detection (`examples/qwen3_omni/session_h100.yaml`) |
-| `run-cascaded` | Full-Duplex-Bench - cascaded | Qwen3-ASR-1.7B, Qwen3.8-27B with thinking off and Qwen3-TTS Base cloning one Vivian recording, with server VAD, on two GPUs (`examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian`) |
+| `run-native-duplex` | Full-Duplex-Bench - full duplex | MiniCPM-o 4.5, native full duplex, one server on each of two GPUs |
+| `run-turn-based-duplex` | Full-Duplex-Bench - turn based | Qwen3-Omni with server VAD turn detection (`examples/qwen3_omni/session_h100.yaml`) |
+| `run-cascaded-duplex` | Full-Duplex-Bench - cascaded | Qwen3-ASR-1.7B, Qwen3.8-27B with thinking off and Qwen3-TTS Base cloning one Vivian recording, with server VAD, on two GPUs (`examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian`) |
 
-The three jobs share the pull request's Full-Duplex-Bench assets, so they run one after another, and a failed job does not skip the next. Each stage has one system and no model label.
+The three jobs share the pull request's Full-Duplex-Bench assets, so they run one after another, and a failed job does not skip the next. Each stage has one system and no model label. Turn based and cascaded fail by design until they are calibrated, so `run-all-ci` runs only the native full duplex job.
 
 ## Hardware workflows
 
@@ -173,7 +173,7 @@ The stage label is `run-mac-ci`.
 
 ## Label rules
 
-1. A stage runs only when its stage label or `run-all-ci` is on the pull request. `run-all-ci` selects every stage.
+1. A stage runs only when its stage label or `run-all-ci` is on the pull request. `run-all-ci` selects every stage except duplex turn based and cascaded, which run only with their own labels until they are calibrated.
 2. Self-hosted CI needs `run-all-ci`, a stage label, or `run-lint-only`. Without one, the Omni CI gate fails with `No CI label found`; unselected hardware workflows skip their tests without failing. The checks on GitHub-hosted runners do not depend on labels. `run-lint-only` runs no self-hosted job, so a green lint check leaves no self-hosted failure. It does not turn off a stage label that is also present.
 3. Any stage label also runs PR Test. A pull request labeled only `run-mac-ci` still runs PR Test on H100.
 4. A model label names a model, not a stage. It picks that model for every selected stage that accepts it, and never selects a stage by itself. Higgs and MOSS labels are accepted by TTS and MPS. If no selected stage accepts the label, the gate prints a warning.
@@ -183,16 +183,16 @@ The stage label is `run-mac-ci`.
 
 | Stage label | Selects |
 | --- | --- |
-| `run-all-ci` | Every stage |
+| `run-all-ci` | Every stage except duplex turn based and cascaded |
 | `run-lint-only` | No self-hosted job. The gates succeed. |
 | `run-unit-test-ci-only` | PR Test on H100. Not `intel-cpu-ci (unit_test/cpu)`. |
 | `run-asr-ci` | ASR in Omni CI |
 | `run-tts-ci` | TTS in Omni CI |
 | `run-mps-ci` | MPS in Omni CI |
 | `run-omni-ci` | Omni in Omni CI |
-| `run-full-duplex` | Duplex full duplex in Omni CI |
-| `run-turn-based` | Duplex turn based in Omni CI |
-| `run-cascaded` | Duplex cascaded in Omni CI |
+| `run-native-duplex` | Duplex full duplex in Omni CI |
+| `run-turn-based-duplex` | Duplex turn based in Omni CI |
+| `run-cascaded-duplex` | Duplex cascaded in Omni CI |
 | `run-intel-cpu-ci` | Intel Xeon job `intel-cpu-ci (unit_test/cpu)`, when the CPU paths match |
 | `run-intel-xpu-ci` | XPU CI |
 | `run-mac-ci` | Voxt Mac CI |
