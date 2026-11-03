@@ -2818,10 +2818,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         without_frames: list[IncomingMessage] = []
         for message in batch:
             final_state = Qwen3TTSState.from_dict(message.data.data)
-            if (
-                final_state.audio_codes is None
-                or len(final_state.audio_codes) <= final_state.ref_code_len
-            ):
+            if len(final_state.audio_codes) <= final_state.ref_code_len:
                 without_frames.append(message)
             else:
                 self.start_whole_request(message.request_id, message.data, final_state)
