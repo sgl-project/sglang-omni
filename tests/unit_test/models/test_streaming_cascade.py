@@ -9,6 +9,7 @@ import re
 import threading
 import time
 import wave
+from collections.abc import AsyncIterator
 from dataclasses import replace
 from pathlib import Path
 
@@ -2534,8 +2535,8 @@ def test_a_short_switch_after_a_cut_reply_adds_both_notes():
 
 
 @pytest.mark.asyncio
-async def test_an_explicit_dialog_language_overrides_the_recognizer_until_cleared():
-    """With language configured on the dialog, every turn carries it and a short utterance in another language asks for it even on the first turn; clearing it in a replacement falls back to the language the recognizer heard."""
+async def test_an_explicit_dialog_language_applies_only_to_short_utterances_until_cleared():
+    """A clear utterance carries its recognized language, while a short one prefers the configured language until it is cleared."""
     dialog = build({"kind": "dialog", "language": "English"})
     outputs = await drain(
         dialog,
@@ -2544,26 +2545,26 @@ async def test_an_explicit_dialog_language_overrides_the_recognizer_until_cleare
             text_chunk("Hi.", 1),
             control_chunk(TURN_DONE, turn=1),
             control_chunk(COMMIT),
-            transcript_chunk("我们换个话题吧。", True, "Chinese"),
-            text_chunk("好的。", 2),
+            transcript_chunk("Quel temps fait-il aujourd'hui ?", True, "French"),
+            text_chunk("Il fait beau.", 2),
             control_chunk(TURN_DONE, turn=2),
             control_chunk(COMMIT),
         ],
     )
     chunks = [o for o in outputs if o.format == MESSAGES]
     note = SHORT_UTTERANCE_NOTE.format(language="English")
-    assert [o.payload.get("language") for o in chunks] == ["English", "English"]
+    assert [o.payload.get("language") for o in chunks] == ["English", "French"]
     assert [messages_of(o)[-1].content for o in chunks] == [
         f"嗯。\n\n[{note}]",
-        "我们换个话题吧。",
+        "Quel temps fait-il aujourd'hui ?",
     ]
     cleared = build({"kind": "dialog"})
     cleared.adopt(dialog)
-    _, chunk = cleared.respond(3, "嗯。", "English")
-    assert chunk.payload.get("language") == "Chinese"
+    _, chunk = cleared.respond(3, "Okay.", "English")
+    assert chunk.payload.get("language") == "French"
     assert (
         messages_of(chunk)[-1].content
-        == f"嗯。\n\n[{SHORT_UTTERANCE_NOTE.format(language='Chinese')}]"
+        == f"Okay.\n\n[{SHORT_UTTERANCE_NOTE.format(language='French')}]"
     )
 
 
