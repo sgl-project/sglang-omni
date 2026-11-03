@@ -220,6 +220,7 @@ def create_talker_executor(
 def create_code2wav_executor(
     model_path: str,
     *,
+    max_batch_size: int = 1,
     dtype: str | None = None,
     device: str | None = None,
     gpu_id: int | None = None,
@@ -272,7 +273,9 @@ def create_code2wav_executor(
         )
         return payload
 
-    return NemotronCode2WavScheduler(stream_decoder, device, compute_fn=decode)
+    return NemotronCode2WavScheduler(
+        stream_decoder, device, compute_fn=decode, max_batch_size=max_batch_size
+    )
 
 
 def create_decode_executor(model_path, **_):
