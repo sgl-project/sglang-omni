@@ -5,6 +5,7 @@ import base64
 import copy
 import itertools
 import json
+import math
 import types
 from pathlib import Path
 
@@ -387,11 +388,11 @@ def test_minicpmo_pair_capture_and_replay(tmp_path: Path) -> None:
     assert result["run"]["kind"] == "full-duplex-bench-v1.5-paired"
 
 
-@pytest.mark.parametrize("input_samples", [2560, 1600])
+@pytest.mark.parametrize("input_samples", [2560, 1600, 1601])
 def test_personaplex_capture_replay_and_serving(
     tmp_path: Path, input_samples: int
 ) -> None:
-    """24 kHz input and the initial extra output frame must survive recording and replay."""
+    """24 kHz captures must conserve the first extra frame and accept fractional-millisecond tail padding."""
     dataset = tmp_path / "dataset"
     write_dataset(dataset)
     metadata_path = dataset / "user_interruption" / "1" / "metadata.json"
@@ -448,8 +449,8 @@ def test_personaplex_capture_replay_and_serving(
         tmp_path / "quality-export/user_interruption/1/input.wav"
     )
     assert scoring_audio.samplerate == 16000
-    assert scoring_audio.frames == input_samples
-    expected_input_samples = input_samples * 3 // 2
+    expected_input_samples = math.ceil(input_samples * 3 / 2)
+    assert 0 <= scoring_audio.duration - expected_input_samples / 24000 < 1 / 16000
     for peer, variant in zip(peers, result["samples"][0]["variants"].values()):
         directory = tmp_path / "recording" / variant["directory"]
         manifest = json.loads((directory / "manifest.json").read_text())
@@ -476,7 +477,10 @@ def test_personaplex_capture_replay_and_serving(
         assert [event["sglang"]["t_start_ms"] for event in appends] == [0, 80]
         replay = replay_run(directory)
         assert replay["summary"]["passed"] == 1, replay
-        assert replay["cases"][0]["metrics"]["input_audio_s"] == input_samples / 16000
+        assert (
+            replay["cases"][0]["metrics"]["input_audio_s"]
+            == expected_input_samples / 24000
+        )
         assert replay["cases"][0]["metrics"]["output_audio_s"] == pytest.approx(0.24)
         assert soundfile.info(directory / "output-media.wav").frames == 5760
         session = score_session(directory, "personaplex", 0.3)

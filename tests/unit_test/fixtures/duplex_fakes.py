@@ -551,7 +551,8 @@ class DuplexPeer:
                         "accepted_end_ms": accepted_ms,
                         "consumed_ms": accepted_ms,
                         "discarded_ms": 0,
-                        "padding_ms": units * PACKET_MS - accepted_ms,
+                        "padding_ms": (-len(self.pcm) % self.unit_bytes)
+                        / self.input_bytes_per_ms,
                         "client_event_id": event["event_id"],
                     },
                 )

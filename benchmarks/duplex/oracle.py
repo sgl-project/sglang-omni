@@ -410,8 +410,8 @@ def evaluate_trace(
                 # note (luojiaxuan): pad fills the last unit with silence; flush
                 # processes it short.
                 expected_padding = (
-                    math.ceil(expected_ms / unit_duration_ms) * unit_duration_ms
-                    - expected_ms
+                    (-input_byte_count % round(unit_duration_ms * input_bytes_per_ms))
+                    / input_bytes_per_ms
                     if required_capabilities["tail_policy"] == "pad"
                     else 0
                 )
