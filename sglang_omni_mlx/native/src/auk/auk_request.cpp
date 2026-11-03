@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <set>
 #include <stdexcept>
 #include <string_view>
@@ -162,11 +163,16 @@ SynthesisRequest ParseRequest(const Json &request, bool raw_instruction,
     bytes.resize(length - 1);
     auto audio = omni_common::DecodeAudioWav(bytes);
     if (audio.samples.size() <
-            static_cast<size_t>((audio.sample_rate * 3 + 99) / 100) ||
+            static_cast<size_t>(
+                (static_cast<int64_t>(audio.sample_rate) * 3 + 99) / 100) ||
         audio.samples.size() >
             static_cast<size_t>(audio.sample_rate * max_seconds)) {
       throw std::invalid_argument(
           "ref_audio must contain at least 30 ms and fit --max-seconds");
+    } else if (!std::all_of(
+                   audio.samples.begin(), audio.samples.end(),
+                   [](float sample) { return std::isfinite(sample); })) {
+      throw std::invalid_argument("ref_audio samples must be finite");
     } else {
     }
     synthesis.reference_audio = std::move(audio.samples);

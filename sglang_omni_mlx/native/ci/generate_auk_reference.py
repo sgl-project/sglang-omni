@@ -173,7 +173,7 @@ def main() -> None:
         else:
             pass
         output_path = arguments.output_directory / f"{request['id']}.wav"
-        pcm = np.clip(waveform * np.float32(32768), -32768, 32767).astype("<i2")
+        pcm = (np.clip(waveform, -1, 1) * np.float32(32767)).astype("<i2")
         with wave.open(str(output_path), "wb") as output:
             output.setnchannels(1)
             output.setsampwidth(2)

@@ -24,7 +24,7 @@ for case in en-text en-clone zh-text zh-clone; do
 done
 ```
 
-Set `PREPARED_MODEL` to AuK, then AuK-Flash, and use fresh output directories. Repeat the commands into separate directories to check request reproducibility. The comparison uses identical instructions, seeds, model sampling recipes, and 24 kHz reference WAVs. Both WAV writers clip and truncate FP32 audio to PCM16; the Python generator preserves the former pipeline's CPU tensor boundaries. Run the two implementations sequentially on the same device and MLX version.
+Set `PREPARED_MODEL` to AuK, then AuK-Flash, and use fresh output directories. Repeat the commands into separate directories to check request reproducibility. The comparison uses identical instructions, seeds, model sampling recipes, and 24 kHz reference WAVs. Both WAV writers clip FP32 audio to [-1, 1], scale it by 32767 and truncate it to PCM16, as the native speech servers do; the Python generator preserves the former pipeline's CPU tensor boundaries. Run the two implementations sequentially on the same device and MLX version.
 
 This is a migration reference. It is not a run of Tencent's separate MLX branch or an MPS quality benchmark. Tensor-level DiT, VAE and conditioner comparisons exercise numerical precision separately from the endpoint PCM16 comparison. For other input sample rates, the former VAE frontend uses Torch resampling while the native frontend uses SoXR; identical seeds alone do not imply identical audio.
 

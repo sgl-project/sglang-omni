@@ -107,8 +107,8 @@ int main(int argc, char **argv) {
               .count();
       const auto output_path =
           arguments.output_directory / (request_id + ".wav");
-      const std::string wav_bytes =
-          omni_common::EncodeWavPcm16(result.samples, result.sample_rate);
+      const std::string wav_bytes = omni_common::WavBytes(
+          omni_common::Pcm16Bytes(result.samples), result.sample_rate);
       std::ofstream output(output_path, std::ios::binary);
       output.write(wav_bytes.data(), wav_bytes.size());
       output.close();
