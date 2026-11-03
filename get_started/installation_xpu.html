@@ -688,7 +688,7 @@ cp<span class="w"> </span>-f<span class="w"> </span>.pyproject.cuda.bak<span cla
 It cannot be pinned even as a range: every published wheel requires <code class="docutils literal notranslate"><span class="pre">flashinfer_python[cu13]</span></code> and the
 <code class="docutils literal notranslate"><span class="pre">nvidia-*</span></code> runtime, so <strong>any</strong> specifier pulls the CUDA stack over <code class="docutils literal notranslate"><span class="pre">torch+xpu</span></code>. Build from source:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/sgl-project/sglang<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>sglang
-git<span class="w"> </span>checkout<span class="w"> </span>v0.5.22<span class="w">   </span><span class="c1"># the pinned release</span>
+git<span class="w"> </span>checkout<span class="w"> </span>v0.5.23<span class="w">   </span><span class="c1"># the pinned release</span>
 <span class="nb">cd</span><span class="w"> </span>python<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>cp<span class="w"> </span>pyproject_xpu.toml<span class="w"> </span>pyproject.toml
 pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span>.<span class="w"> </span>--no-build-isolation<span class="w"> </span>--extra-index-url<span class="w"> </span>https://download.pytorch.org/whl/xpu
 pip<span class="w"> </span>install<span class="w"> </span>--no-deps<span class="w"> </span><span class="nv">xgrammar</span><span class="o">==</span><span class="m">0</span>.1.33
@@ -1177,7 +1177,7 @@ so concurrent requests raise throughput almost linearly.</p>
 <p>The bf16 AR backbone does not fit one 24 GB card, so <code class="docutils literal notranslate"><span class="pre">tts_engine</span></code> runs with TP=2. Its joint
 RoPE is sgl-kernel’s SYCL JIT kernel, which needs <code class="docutils literal notranslate"><span class="pre">icpx</span></code> on <code class="docutils literal notranslate"><span class="pre">PATH</span></code>; add the compiler directory
 alone rather than sourcing <code class="docutils literal notranslate"><span class="pre">setvars.sh</span></code>. Its fp32 MoE routing needs the <code class="docutils literal notranslate"><span class="pre">sglang-kernel-xpu</span></code>
-wheel that SGLang v0.5.22 pins (0.4.0); sgl-kernel builds older than 0.3.0 fail with
+wheel that SGLang v0.5.23 pins (0.5.0); sgl-kernel builds older than 0.3.0 fail with
 <code class="docutils literal notranslate"><span class="pre">&quot;fused_topk_softmax_kernel&quot;</span> <span class="pre">not</span> <span class="pre">implemented</span> <span class="pre">for</span> <span class="pre">'Float'</span></code>.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">PATH</span><span class="o">=</span><span class="s2">"/opt/intel/oneapi/compiler/latest/bin:</span><span class="nv">$PATH</span><span class="s2">"</span><span class="w"> </span><span class="nv">SGLANG_OMNI_STARTUP_TIMEOUT</span><span class="o">=</span><span class="m">1800</span>
 sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>/path/to/Ming-omni-tts-16.8B-A3B<span class="w"> </span><span class="se">\</span>

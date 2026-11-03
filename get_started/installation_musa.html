@@ -592,21 +592,21 @@ base SGLang environment, follow the SGLang Moore Threads GPU installation guide.
 </section>
 <section id="option-a-docker">
 <h2>Option A: Docker<a class="headerlink" href="#option-a-docker" title="Link to this heading">#</a></h2>
-<p>Clone SGLang-Omni first. The installation below is pinned to SGLang <code class="docutils literal notranslate"><span class="pre">v0.5.22</span></code>.</p>
+<p>Clone SGLang-Omni first. The installation below is pinned to SGLang <code class="docutils literal notranslate"><span class="pre">v0.5.23</span></code>.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/sgl-project/sglang-omni.git<span class="w"> </span>sglang-omni
 <span class="nv">omni_root</span><span class="o">=</span><span class="s2">"</span><span class="k">$(</span><span class="nb">cd</span><span class="w"> </span>sglang-omni<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">pwd</span><span class="k">)</span><span class="s2">"</span>
-git<span class="w"> </span>clone<span class="w"> </span>--branch<span class="w"> </span>v0.5.22<span class="w"> </span>--single-branch<span class="w"> </span><span class="se">\</span>
+git<span class="w"> </span>clone<span class="w"> </span>--branch<span class="w"> </span>v0.5.23<span class="w"> </span>--single-branch<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>https://github.com/sgl-project/sglang.git<span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">omni_root</span><span class="si">}</span><span class="s2">/../sglang"</span>
 <span class="nb">cd</span><span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">omni_root</span><span class="si">}</span><span class="s2">/../sglang"</span>
 docker<span class="w"> </span>build<span class="w"> </span>-f<span class="w"> </span>docker/musa.Dockerfile<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-t<span class="w"> </span>sglang:v0.5.22-musa520-s5000<span class="w"> </span>.
+<span class="w">  </span>-t<span class="w"> </span>sglang:v0.5.23-musa520-s5000<span class="w"> </span>.
 <span class="nb">cd</span><span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">omni_root</span><span class="si">}</span><span class="s2">"</span>
 docker<span class="w"> </span>build<span class="w"> </span>-f<span class="w"> </span>docker/musa.Dockerfile<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--build-arg<span class="w"> </span><span class="nv">SGLANG_MUSA_IMAGE</span><span class="o">=</span>sglang:v0.5.22-musa520-s5000<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--build-arg<span class="w"> </span><span class="nv">SGLANG_MUSA_IMAGE</span><span class="o">=</span>sglang:v0.5.23-musa520-s5000<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-t<span class="w"> </span>sglang-omni:main-musa520-s5000<span class="w"> </span>.
 </pre></div>
 </div>
-<p>The base image is built from the immutable <code class="docutils literal notranslate"><span class="pre">v0.5.22</span></code> release tag, which
+<p>The base image is built from the immutable <code class="docutils literal notranslate"><span class="pre">v0.5.23</span></code> release tag, which
 includes <code class="docutils literal notranslate"><span class="pre">docker/musa.Dockerfile</span></code>.</p>
 <p>Run the image with MUSA devices exposed by the host runtime. If <code class="docutils literal notranslate"><span class="pre">mthreads</span></code> is
 already configured as the Docker default runtime on your host, omit
@@ -625,10 +625,10 @@ already configured as the Docker default runtime on your host, omit
 </section>
 <section id="option-b-install-from-source">
 <h2>Option B: Install from Source<a class="headerlink" href="#option-b-install-from-source" title="Link to this heading">#</a></h2>
-<p>Start from an environment where SGLang <code class="docutils literal notranslate"><span class="pre">v0.5.22</span></code> has been installed with MUSA
+<p>Start from an environment where SGLang <code class="docutils literal notranslate"><span class="pre">v0.5.23</span></code> has been installed with MUSA
 support. If you build SGLang from source, clone the pinned tag rather than
 <code class="docutils literal notranslate"><span class="pre">main</span></code>:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>--depth<span class="w"> </span><span class="m">1</span><span class="w"> </span>--branch<span class="w"> </span>v0.5.22<span class="w"> </span><span class="se">\</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>--depth<span class="w"> </span><span class="m">1</span><span class="w"> </span>--branch<span class="w"> </span>v0.5.23<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>https://github.com/sgl-project/sglang.git<span class="w"> </span>sglang
 </pre></div>
 </div>

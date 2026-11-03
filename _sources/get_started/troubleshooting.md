@@ -40,6 +40,6 @@ cd sglang-omni   # the root of the source checkout
 python .github/scripts/check_omni_installed_requirements.py
 ```
 
-`--prerelease=allow` is required because SGLang 0.5.22 pins `cuda-tile==1.6.0rc5`. The flag also lets uv take a pre-release of any other package when one is newer than the latest release on PyPI, which is why `uv pip freeze` can list development or release-candidate versions of packages such as `einops`, `safetensors` or `grpcio`.
+The install commands keep `--prerelease=allow` from the releases that pinned `cuda-tile==1.6.0rc5`; SGLang 0.5.23 pins no pre-release package and the CUDA path resolves without the flag. With the flag, uv may take a pre-release of any package when one is newer than the latest release on PyPI, which is why `uv pip freeze` can list development or release-candidate versions of packages such as `einops`, `safetensors` or `grpcio`.
 
-SGLang 0.5.22 ships `manylinux_2_34` wheels, so the CUDA path needs glibc 2.34 or newer, as on Ubuntu 22.04. On an older system uv stops with `sglang==0.5.22 has no wheels with a matching platform tag`.
+SGLang 0.5.23 ships `manylinux_2_34` wheels, so the CUDA path needs glibc 2.34 or newer, as on Ubuntu 22.04. On an older system uv stops with `sglang==0.5.23 has no wheels with a matching platform tag`.

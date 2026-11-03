@@ -643,6 +643,12 @@ comment that says a pin matches the sglang stack marks a line to revisit.</p>
 </div>
 <p>Search the tree for the old versions and the old image digest; the table is
 what past bumps touched.</p>
+<p>List the registry’s tags for the new version before saying that a provider
+image does not exist: <code class="docutils literal notranslate"><span class="pre">https://hub.docker.com/v2/repositories/lmsysorg/sglang/tags?name=v&lt;tag&gt;</span></code>
+names every <code class="docutils literal notranslate"><span class="pre">-xeon</span></code>, <code class="docutils literal notranslate"><span class="pre">-xpu</span></code>, <code class="docutils literal notranslate"><span class="pre">-rocm*</span></code> and <code class="docutils literal notranslate"><span class="pre">-cann*</span></code> tag with its digest, and
+the device set follows upstream’s <code class="docutils literal notranslate"><span class="pre">release-docker-*.yml</span></code> matrices at the tag.
+One bump declared the NPU image absent when it had been published five days
+earlier under a new CANN and device suffix.</p>
 <p>The Intel CPU and XPU stacks pin their own SGLang tag and base images, and
 their CI workflows build <code class="docutils literal notranslate"><span class="pre">docker/cpu.Dockerfile</span></code> and <code class="docutils literal notranslate"><span class="pre">docker/xpu.Dockerfile</span></code>
 on every PR that touches <code class="docutils literal notranslate"><span class="pre">sglang_omni/</span></code>. <code class="docutils literal notranslate"><span class="pre">sglang_omni/platforms/</span></code> imports the
@@ -656,10 +662,11 @@ torch and torchvision pins, which move independently of the CUDA manifest:
 one release moved the SYCL kernel from a git
 requirement to a pinned wheel and added <code class="docutils literal notranslate"><span class="pre">setuptools-rust</span></code> to the build
 requirements, which the image avoids by building without isolation.</p>
-<p>The ROCm, NPU and MUSA stacks (<code class="docutils literal notranslate"><span class="pre">docker/rocm.Dockerfile</span></code>, <code class="docutils literal notranslate"><span class="pre">pyproject_rocm.toml</span></code>)
-pin their own SGLang tag and base images. No project CI builds them, so a bump
-PR leaves them alone, says so in its description, and hands the provider owners
-the new tag, the matching provider image digest if one exists, and any platform
+<p>The ROCm, NPU and MUSA stacks (<code class="docutils literal notranslate"><span class="pre">docker/rocm.Dockerfile</span></code>, <code class="docutils literal notranslate"><span class="pre">docker/musa.Dockerfile</span></code>,
+<code class="docutils literal notranslate"><span class="pre">pyproject_npu.toml</span></code>) pin their own SGLang tag and base images. No project CI
+builds them. A bump PR moves their tags and digests when the registry has an
+image for the new tag, says in its description that they are untested here,
+and hands the provider owners the list of what moved and any platform
 dispatch change made in <code class="docutils literal notranslate"><span class="pre">sglang_omni/platforms/</span></code>.</p>
 </section>
 <section id="where-omni-depends-on-sglang">
@@ -676,7 +683,11 @@ re-export resolves to the same origin, and that the signature or dataclass
 fields are unchanged. An import behind <code class="docutils literal notranslate"><span class="pre">except</span> <span class="pre">ImportError</span></code> gets the
 same check: the MOSS-TTS flash attention import was guarded that way, and
 when <code class="docutils literal notranslate"><span class="pre">sglang.jit_kernel</span></code> became <code class="docutils literal notranslate"><span class="pre">sglang.kernels.ops</span></code> it would have fallen
-back to SDPA without a word.</p>
+back to SDPA without a word. A bare kernel imported from <code class="docutils literal notranslate"><span class="pre">sglang.kernels.ops.*</span></code>
+is not a stable surface either: one release dropped the <code class="docutils literal notranslate"><span class="pre">rmsnorm</span></code> dispatcher
+from that package while the kernel itself stayed in <code class="docutils literal notranslate"><span class="pre">sgl_kernel</span></code>. Take a
+kernel from the layer that wraps it, from <code class="docutils literal notranslate"><span class="pre">sgl_kernel</span></code>, or from the Omni
+platform, which carries the per-device forms.</p>
 <p><strong>Borrowed and subclassed classes.</strong> <code class="docutils literal notranslate"><span class="pre">OmniScheduler</span></code> looks up the upstream
 <code class="docutils literal notranslate"><span class="pre">Scheduler</span></code> methods it does not override through <code class="docutils literal notranslate"><span class="pre">__getattr__</span></code> and runs them
 with itself as <code class="docutils literal notranslate"><span class="pre">self</span></code>, and builds the scheduler components those methods
@@ -690,9 +701,25 @@ wrapped <code class="docutils literal notranslate"><span class="pre">get_next_ba
 attribute only upstream’s <code class="docutils literal notranslate"><span class="pre">__init__</span></code> set. Upstream also moves work between
 methods: request timeout aborts left <code class="docutils literal notranslate"><span class="pre">get_next_batch_to_run</span></code> for an intake
 method Omni’s event loops never call, which disables them without an error.
+A borrowed body also writes state Omni reads before calling it: one release
+made <code class="docutils literal notranslate"><span class="pre">get_next_batch_to_run</span></code> drop finished requests from the running batch and
+clear its <code class="docutils literal notranslate"><span class="pre">batch_is_full</span></code> flag on every pass, so the async decode loop, which
+read the flag first to decide whether to drain its pending step, built a mixed
+prefill batch it could not reslice and died under load; audit the state a
+borrowed body writes as closely as the state it reads, and test the loop
+predicates against the builder’s view.
 When a constructor gains or loses fields, pass the new shape;
 a helper that filters kwargs by signature or branches on field layout keeps
 two versions alive.</p>
+<p>A method Omni overrides on, or shadows for, an upstream class is called by
+upstream with upstream’s argument list, so a parameter or a return value
+added upstream is a break that neither the import check nor the call-site
+check sees. Diff the upstream signature and return annotation of every such
+method between the tags with a script that walks Omni’s classes for upstream
+bases and borrowed classes, and read the body of each one that changed. One
+bump changed <code class="docutils literal notranslate"><span class="pre">init_kv_cache_configurator</span></code>, <code class="docutils literal notranslate"><span class="pre">get_num_allocatable_reqs</span></code> and
+the prefill graph runner’s <code class="docutils literal notranslate"><span class="pre">load_batch</span></code> this way, and every stage failed at
+boot, at admission or at the first graph replay.</p>
 <p><strong>The boot sequence.</strong> <code class="docutils literal notranslate"><span class="pre">ModelWorker</span></code> runs upstream’s worker
 boot itself: publish the resolved config together with the process
 placement, run the parallel runtime phase, run the layer runtime phase, then

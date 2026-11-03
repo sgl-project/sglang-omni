@@ -594,7 +594,7 @@ and the <a class="reference external" href="https://github.com/sgl-project/sglan
 </div>
 <p>The script is idempotent and creates (or reuses) <code class="docutils literal notranslate"><span class="pre">.venv-apple</span></code>, installs the
 Homebrew formulae <code class="docutils literal notranslate"><span class="pre">ffmpeg&#64;7</span></code> and <code class="docutils literal notranslate"><span class="pre">uv</span></code> (and <code class="docutils literal notranslate"><span class="pre">git</span></code> only when a working git is not
-already available), installs SGLang <code class="docutils literal notranslate"><span class="pre">v0.5.22</span></code> from source with its <code class="docutils literal notranslate"><span class="pre">all_mps</span></code>
+already available), installs SGLang <code class="docutils literal notranslate"><span class="pre">v0.5.23</span></code> from source with its <code class="docutils literal notranslate"><span class="pre">all_mps</span></code>
 extra, and installs this checkout with <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">pip</span></code>. SGLang’s optional Rust
 extensions are not needed by this Apple Silicon path and are skipped.
 <code class="docutils literal notranslate"><span class="pre">ffmpeg&#64;7</span></code> is intentional: the installer pins one FFmpeg major, and
@@ -609,7 +609,7 @@ Homebrew’s bootstrapper. Use <code class="docutils literal notranslate"><span 
 disable Homebrew auto-update in CI, <code class="docutils literal notranslate"><span class="pre">SGLANG_OMNI_VENV=/path/to/venv</span></code> to choose a virtualenv, and
 <code class="docutils literal notranslate"><span class="pre">SGLANG_OMNI_EXTRAS=audar-tts,fun-cosyvoice3</span></code> to enable optional extras.
 The persistent SGLang source checkout defaults to
-<code class="docutils literal notranslate"><span class="pre">~/.cache/sglang-omni/sglang-v0.5.22</span></code> and can be changed with
+<code class="docutils literal notranslate"><span class="pre">~/.cache/sglang-omni/sglang-v0.5.23</span></code> and can be changed with
 <code class="docutils literal notranslate"><span class="pre">SGLANG_SOURCE_DIR</span></code>. Slow or proxied networks can override the installer’s uv
 defaults with <code class="docutils literal notranslate"><span class="pre">UV_HTTP_TIMEOUT</span></code> and <code class="docutils literal notranslate"><span class="pre">UV_HTTP_RETRIES</span></code>.</p>
 <p>This path currently supports macOS 14 or newer on <code class="docutils literal notranslate"><span class="pre">arm64</span></code> only (the pinned
