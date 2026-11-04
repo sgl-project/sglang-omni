@@ -2,7 +2,7 @@
 
 This experiment implements P0-4 of [the PersonaPlex serving roadmap](https://github.com/sgl-project/sglang-omni/issues/3083). It records three samples from each FDB subset at concurrency 1 and compares a greedy realtime reply with the offline reply to the same transmitted PCM.
 
-The [session reference experiment](#full-reply-consistency) achieves complete PCM and text equality on two FDB inputs, a repeated call and two short frame-boundary cases. The original quality baselines below retain their serving configurations and comparison results.
+The [expanded experiment](personaplex_expanded_baseline.md) verifies complete PCM and text equality on all 39 selected calls across nine subsets and records the performance cost and new quality scores. The initial [session reference experiment](#full-reply-consistency) covers two FDB inputs, a repeated call and two short frame-boundary cases. The original quality baselines below retain their serving configurations and comparison results.
 
 ## Configuration
 

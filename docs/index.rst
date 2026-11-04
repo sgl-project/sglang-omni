@@ -177,6 +177,7 @@ Supported Models
    developer_reference/full_duplex_guide.md
    developer_reference/duplex_load_generator_pacing.md
    developer_reference/personaplex_quality_baseline.md
+   developer_reference/personaplex_expanded_baseline.md
    developer_reference/tts_bench.md
    developer_reference/tts_model_integration.md
    developer_reference/asr_bench.md

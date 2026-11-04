@@ -602,28 +602,31 @@ def test_personaplex_parity_reports_content_and_length_changes(
     assert report["offline_samples"] == len(offline_samples)
 
 
-@pytest.mark.parametrize("offline_text", ["", "different transcript"])
+@pytest.mark.parametrize("offline_text", ["Hello there.", "different transcript"])
 def test_parity_cli_records_offline_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline_text: str
 ) -> None:
-    """The CLI previously passed its Namespace to the keyword-only identity API."""
+    """The CLI preserves server identity and compares text across audio transcript chunks."""
     run = tmp_path / "session"
     run.mkdir()
     pcm = np.array([1, -2], dtype="<i2").tobytes()
     (run / "manifest.json").write_text('{"profile": "personaplex"}')
     (run / "input.pcm").write_bytes(pcm)
     (run / "continuous.jsonl").write_text(
-        json.dumps(
-            {
-                "time_s": 0.0,
-                "direction": "receive",
-                "event": {
+        "".join(
+            json.dumps({"time_s": 0.0, "direction": "receive", "event": event}) + "\n"
+            for event in [
+                {
                     "type": "response.output_audio.delta",
                     "delta": base64.b64encode(pcm).decode(),
                 },
-            }
+                {"type": "response.output_audio_transcript.delta", "delta": "Hello"},
+                {
+                    "type": "response.output_audio_transcript.delta",
+                    "delta": " there.",
+                },
+            ]
         )
-        + "\n"
     )
     instructions = tmp_path / "instructions.txt"
     instructions.write_text("Speak clearly.")
@@ -690,7 +693,7 @@ def test_parity_cli_records_offline_identity(
             "pinned-image",
         ],
     )
-    if offline_text:
+    if offline_text != "Hello there.":
         with pytest.raises(SystemExit) as failure:
             parity_main()
         assert failure.value.code == 1
@@ -701,6 +704,10 @@ def test_parity_cli_records_offline_identity(
     assert report["offline_server"]["model_revision"] == "b" * 40
     assert report["offline_server"]["runtime"] == "pinned-image"
     assert report["offline_mode"] == "session-reference"
-    assert report["text"]["equal"] == (offline_text == "")
+    assert report["text"] == {
+        "session": "Hello there.",
+        "offline": offline_text,
+        "equal": offline_text == "Hello there.",
+    }
     assert report["offline_request_seconds"] >= 0
     assert report["full_reply"]["byte_identical"] is True
