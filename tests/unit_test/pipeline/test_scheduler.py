@@ -35,6 +35,7 @@ from sglang.srt.managers.scheduler_components.batch_result_processor import (
     SchedulerBatchResultProcessor,
 )
 from sglang.srt.mem_cache.allocator.paged import PagedTokenToKVPoolAllocator
+from sglang.srt.mem_cache.allocator.swa import PureSWATokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import (
     CacheRequestHandle,
     CacheRequestOutcome,
@@ -44,7 +45,7 @@ from sglang.srt.runtime_context import get_context
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
-from sglang_omni.admission import QueueFullError
+from sglang_omni.admission import ContextExhaustedError, QueueFullError
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
@@ -1011,7 +1012,7 @@ def enqueue_limit_scheduler(monkeypatch):
     scheduler.abort = lambda rid, *, defer_running_cleanup=True: aborts.append(rid)
     scheduler.send_to_detokenizer = omni_scheduler_module.NoOpSender()
     scheduler.ipc_channels = omni_scheduler_module.OmniIpcChannels(scheduler)
-    scheduler.request_kv_capacity_error = lambda req: None
+    scheduler.request_kv_capacity_error = lambda req, **_kwargs: None
     scheduler.initialize_request_stream_state = lambda req_data, payload: None
     scheduler.append_stream_chunk = lambda *args, **kwargs: None
     scheduler.mark_stream_done = lambda *args, **kwargs: None
@@ -1080,6 +1081,10 @@ def test_enqueue_built_request_admits_an_empty_session_append_with_history(
     monkeypatch,
 ) -> None:
     scheduler, _, aborts = enqueue_limit_scheduler(monkeypatch)
+    capacity_checks = []
+    scheduler.request_kv_capacity_error = lambda req, **kwargs: (
+        capacity_checks.append((req, kwargs)) or None
+    )
     unit = SimpleNamespace(is_enqueued=False)
     session_request = admission_req("req-append", [1, 2, 3])
 
@@ -1105,6 +1110,7 @@ def test_enqueue_built_request_admits_an_empty_session_append_with_history(
     assert unit.is_enqueued
     assert scheduler.outbox.empty()
     assert aborts == []
+    assert capacity_checks == [(session_request, {"session_capacity_checked": True})]
 
 
 def test_process_input_requests_rejects_before_build_when_waiting_queue_is_full() -> (
@@ -2218,6 +2224,8 @@ def test_speculative_reserve_rejection_names_the_reserve(monkeypatch) -> None:
     scheduler = object.__new__(OmniScheduler)
     scheduler.draft_worker = SimpleNamespace()
     scheduler.max_req_len = 100
+    scheduler.model_config = SimpleNamespace(context_len=200)
+    scheduler.token_to_kv_pool_allocator = Mock()
     monkeypatch.setattr(
         omni_scheduler_module, "get_alloc_reserve_per_decode", lambda: 16
     )
@@ -2226,6 +2234,7 @@ def test_speculative_reserve_rejection_names_the_reserve(monkeypatch) -> None:
         return SimpleNamespace(
             origin_input_ids=[0] * 50,
             sampling_params=SimpleNamespace(max_new_tokens=max_new_tokens),
+            session=None,
         )
 
     assert scheduler.request_kv_capacity_error(request(34)) is None
@@ -2233,6 +2242,59 @@ def test_speculative_reserve_rejection_names_the_reserve(monkeypatch) -> None:
     assert "16-token speculative decoding reserve" in message
     assert "Lower max_tokens" in message
     assert_refusal_is_a_caller_error(message)
+
+
+def test_streaming_pure_swa_uses_context_instead_of_physical_kv_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.draft_worker = None
+    scheduler.max_req_len = 3404
+    scheduler.model_config = SimpleNamespace(context_len=8192)
+    scheduler.tp_worker = SimpleNamespace(kv_cache_bytes=1)
+    scheduler.token_to_kv_pool_allocator = object.__new__(PureSWATokenToKVPoolAllocator)
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_schedule",
+        lambda: SimpleNamespace(mem_fraction_static=0.76),
+    )
+
+    def request(input_tokens: int, *, streaming: bool) -> SimpleNamespace:
+        return SimpleNamespace(
+            origin_input_ids=[0] * input_tokens,
+            sampling_params=SimpleNamespace(max_new_tokens=1),
+            session=SimpleNamespace(streaming=streaming),
+        )
+
+    assert (
+        scheduler.request_kv_capacity_error(
+            request(3404, streaming=True), session_capacity_checked=True
+        )
+        is None
+    )
+    context_error = scheduler.request_kv_capacity_error(
+        request(8191, streaming=True), session_capacity_checked=True
+    )
+    assert context_error.startswith("context_exhausted:")
+    assert ContextExhaustedError.matches(ValueError(context_error))
+    assert "thinker context" in context_error
+    assert "context_capacity=8191" in context_error
+
+    for kv_error in (
+        scheduler.request_kv_capacity_error(request(3404, streaming=False)),
+        scheduler.request_kv_capacity_error(request(3404, streaming=True)),
+    ):
+        assert "thinker KV cache" in kv_error
+        assert "kv_capacity=3404" in kv_error
+
+    scheduler.draft_worker = SimpleNamespace()
+    monkeypatch.setattr(
+        omni_scheduler_module, "get_alloc_reserve_per_decode", lambda: 16
+    )
+    speculative_error = scheduler.request_kv_capacity_error(
+        request(3404, streaming=True), session_capacity_checked=True
+    )
+    assert "thinker KV cache" in speculative_error
+    assert "kv_capacity=3404" in speculative_error
 
 
 @pytest.mark.parametrize(
