@@ -3,17 +3,20 @@ import VoxtNewHelperKit
 import CoreGraphics
 import Foundation
 
-// The global hotkey event tap. A modifying (.defaultTap) session tap: macOS
-// authorizes it with Accessibility alone (a listen-only or HID tap would
-// need Input Monitoring), checked against VoxtNew.app, the helper's
-// responsible process. It runs on its own thread with its own run loop;
-// the callback decides synchronously, with the recognizer, whether to
-// swallow the event, and queues hotkey.event notifications, each with the
-// app in front (the session's context snapshot).
+// The global hotkey event tap. A modifying (.defaultTap) session tap:
+// Accessibility lets the helper create it (checked against VoxtNew.app,
+// the helper's responsible process), but macOS may still strip the
+// unauthorized keyboard events from a created tap, so the granted event
+// mask is read back and verified before the tap counts as installed
+// (EventTapValidation, Voxt's #2996). It runs on its own thread with its
+// own run loop; the callback decides synchronously, with the recognizer,
+// whether to swallow the event, and queues hotkey.event notifications,
+// each with the app in front (the session's context snapshot).
 //
-// Without Accessibility the tap cannot be created: it retries every 2 s
-// and sends hotkey.state once in (no restart needed after the user grants
-// it). Accessibility taken away removes the tap, and it retries again.
+// Without Accessibility, or with a tap that lost keyboard events, the tap
+// is not installed: it retries every 2 s and sends hotkey.state once in
+// (no restart needed after the user grants it). Accessibility taken away
+// removes the tap, and it retries again.
 //
 // Events VoxtNew posts itself (⌘V, ⌘C, Return) carry InjectedEvent.marker
 // ("VOXT") in eventSourceUserData and pass untouched; other apps' posted
@@ -61,7 +64,8 @@ final class HotkeyTap: @unchecked Sendable {
         }
     }
 
-    /// Creates the tap on its thread; without Accessibility it retries.
+    /// Creates the tap on its thread and verifies its granted events;
+    /// without Accessibility, or with stripped keyboard events, it retries.
     private func install() {
         let ready = DispatchSemaphore(value: 0)
         let thread = Thread { [self] in
@@ -75,14 +79,7 @@ final class HotkeyTap: @unchecked Sendable {
                 let me = Unmanaged<HotkeyTap>.fromOpaque(refcon).takeUnretainedValue()
                 return me.handle(type, event) ? nil : Unmanaged.passUnretained(event)
             }
-            guard let port = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
-                                               eventsOfInterest: mask, callback: callback,
-                                               userInfo: Unmanaged.passUnretained(self).toOpaque()) else {
-                let trusted = AXIsProcessTrusted()
-                lock.withLock {
-                    lastError = trusted ? "CGEvent.tapCreate failed; retrying every 2 s"
-                        : "CGEvent.tapCreate failed: VoxtNew may not use Accessibility; retrying every 2 s"
-                }
+            guard let port = createVerifiedTap(mask: mask, callback: callback) else {
                 ready.signal()
                 scheduleRetry()
                 return
@@ -107,6 +104,48 @@ final class HotkeyTap: @unchecked Sendable {
         thread.qualityOfService = .userInteractive
         thread.start()
         _ = ready.wait(timeout: .now() + 1)
+    }
+
+    /// Creates the session tap and reads its granted event mask back: macOS
+    /// can create a nonnil tap while stripping unauthorized keyboard events
+    /// (Voxt's #2996), and a partial tap must not count as installed. The
+    /// tap stays disabled until install() enables it, so no callback can
+    /// fire before the owner is registered. A refused tap leaves lastError
+    /// and the caller retries; the next attempt succeeds once the user
+    /// grants the missing authorization.
+    private func createVerifiedTap(mask: CGEventMask, callback: CGEventTapCallBack) -> CFMachPort? {
+        guard let previousTaps = EventTapValidation.currentTaps() else {
+            lock.withLock { lastError = "Cannot inspect the event taps; retrying every 2 s" }
+            return nil
+        }
+        let previousTapIDs = Set(previousTaps.map(\.eventTapID))
+        guard let port = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
+                                           eventsOfInterest: mask, callback: callback,
+                                           userInfo: Unmanaged.passUnretained(self).toOpaque()) else {
+            let trusted = AXIsProcessTrusted()
+            lock.withLock {
+                lastError = trusted ? "CGEvent.tapCreate failed; retrying every 2 s"
+                    : "CGEvent.tapCreate failed: VoxtNew may not use Accessibility; retrying every 2 s"
+            }
+            return nil
+        }
+        CGEvent.tapEnable(tap: port, enable: false)
+        guard let installedTaps = EventTapValidation.currentTaps(),
+              EventTapValidation.newTapHasRequiredEvents(
+                  eventMask: mask,
+                  location: .cgSessionEventTap,
+                  processIdentifier: ProcessInfo.processInfo.processIdentifier,
+                  previousTapIDs: previousTapIDs,
+                  installedTaps: installedTaps
+              ) else {
+            CFMachPortInvalidate(port)
+            let monitoring = CGPreflightListenEventAccess() ? "on" : "off"
+            lock.withLock {
+                lastError = "The event tap could not keep every requested event (inputMonitoring=\(monitoring)); check VoxtNew's Input Monitoring authorization in System Settings and relaunch it. Retrying every 2 s"
+            }
+            return nil
+        }
+        return port
     }
 
     private func scheduleRetry() {
