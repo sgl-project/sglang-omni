@@ -170,6 +170,8 @@ class AuKFlowMatching(nn.Module):
         )
 
         ref = pack(references, ref_rows).to(weight_dtype)
+        # note (guozhihao-224): Eager fallback must match captured buffers without changing unpadded sampling.
+        ref = ref.contiguous() if padding is not None else ref
         ref_mask = (
             torch.arange(ref.shape[1], device=device)[None, :]
             < torch.tensor([item.ref_length for item in items], device=device)[:, None]

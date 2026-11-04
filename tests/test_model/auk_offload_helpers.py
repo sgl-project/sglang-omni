@@ -56,6 +56,22 @@ class ServerMeasurements:
     samples: list[tuple[float, int, int, int, int]] = field(default_factory=list)
 
 
+def deterministic_worker_environment(output_directory: Path) -> dict[str, str]:
+    """Use deterministic algorithms only in test workers for exact comparisons."""
+    startup_directory = output_directory / "worker-startup"
+    startup_directory.mkdir(exist_ok=True)
+    # note (guozhihao-224): Python startup applies the test policy to every spawned worker.
+    (startup_directory / "sitecustomize.py").write_text(
+        "import torch\n\ntorch.use_deterministic_algorithms(True)\n"
+    )
+    python_path = os.environ.get("PYTHONPATH", "")
+    return {
+        "PYTHONPATH": str(startup_directory.resolve())
+        + (os.pathsep + python_path if python_path else ""),
+        "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
+    }
+
+
 @contextmanager
 def measured_server(
     command: list[str],
@@ -130,7 +146,10 @@ def measured_server(
                 port,
                 timeout=STARTUP_TIMEOUT_SECONDS,
                 strip_proxy=True,
-                env={"TORCH_LOGS": "dynamo"} if compilation else None,
+                env={
+                    **deterministic_worker_environment(output_directory),
+                    **({"TORCH_LOGS": "dynamo"} if compilation else {}),
+                },
             )
             measurements.startup_seconds = time.monotonic() - started_seconds
             yield measurements

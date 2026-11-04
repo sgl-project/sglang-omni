@@ -152,8 +152,6 @@ def warmup_flow(
     dtype: torch.dtype,
     sampling: Mapping[str, int | float | tuple[float, ...] | None],
     step_graph: AuKStepCudaGraphRunner | None = None,
-    *,
-    serial: bool = False,
 ) -> None:
     """Pay the block compile, and every declared graph capture, at startup.
 
@@ -172,8 +170,8 @@ def warmup_flow(
         # item carries no rope positions, and without a reference it carries no
         # attention bias either. The frame count shares no model axis, so
         # dynamo cannot duck-size it to one and guard the audio length on it.
-        shapes = ((1, 0), (1, 32)) if serial else ((1, 0), (1, 32), (2, 32))
-        for batch, ref in shapes:
+        # note (guozhihao-224): Offload shares these shapes to avoid changing the compiled execution path.
+        for batch, ref in ((1, 0), (1, 32), (2, 32)):
             items = warmup_items(flow, device, batch=batch, frames=72, ref=ref, text=16)
             flow.sample_batch(items, **one_step)
         if step_graph is not None:

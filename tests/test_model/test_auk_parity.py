@@ -3,15 +3,26 @@
 
 import os
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 import torch
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from sglang_omni.models.auk import batch_compute
 
 pytestmark = pytest.mark.accelerator
+
+
+@pytest.fixture(scope="module", autouse=True)
+def reproducible_attention() -> Iterator[None]:
+    """Compare implementations without cuDNN execution plan initialization variance."""
+    with sdpa_kernel(
+        [SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
+    ):
+        yield
 
 
 def capture(monkeypatch, obj, method, output, key, *, argument=False, first=False):

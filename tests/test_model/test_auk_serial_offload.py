@@ -25,7 +25,11 @@ pytest.importorskip("pynvml", reason="CUDA measurements require nvidia-ml-py")
 
 from sglang_omni.scheduling.stage_residency import offload_environment
 from sglang_omni.utils.connection import find_available_port
-from tests.test_model.auk_offload_helpers import generate_audio, measured_server
+from tests.test_model.auk_offload_helpers import (
+    deterministic_worker_environment,
+    generate_audio,
+    measured_server,
+)
 
 REPEAT_REQUESTS = 5
 
@@ -39,6 +43,7 @@ REPEAT_REQUESTS = 5
 def test_auk_serial_offload_http_parity_and_memory(
     tmp_path: Path, compilation: bool, graphs: bool
 ) -> None:
+    """Offloading must preserve seeded outputs, including compiled graph replay."""
     checkpoint = os.environ.get("AUK_OFFLOAD_CHECKPOINT")
     reference = os.environ.get("AUK_OFFLOAD_REFERENCE")
     if not checkpoint or not reference:
@@ -242,7 +247,13 @@ def test_auk_serial_offload_accelerated_recovery(
                 source,
                 str(tmp_path),
             ],
-            env=offload_environment({**os.environ, "TORCH_LOGS": "dynamo"}),
+            env=offload_environment(
+                {
+                    **os.environ,
+                    **deterministic_worker_environment(tmp_path),
+                    "TORCH_LOGS": "dynamo",
+                }
+            ),
             stdout=log,
             stderr=subprocess.STDOUT,
             timeout=1800,

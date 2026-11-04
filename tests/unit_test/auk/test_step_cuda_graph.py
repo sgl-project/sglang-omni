@@ -1,16 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0
 """Shape declaration, lookup, and the eager fallbacks the step graph runner takes."""
 
-from unittest.mock import Mock
+from dataclasses import replace
+from unittest.mock import Mock, patch
 
 import pytest
 import torch
 
-from sglang_omni.models.auk.dit import AudioPromptEmbedding
+from sglang_omni.models.auk.dit import AuKDit
+from sglang_omni.models.auk.flow_matching import AuKFlowMatching, AuKSampleItem
 from sglang_omni.models.auk.step_cuda_graph import (
     DEFAULT_CAPTURE_SHAPES,
     AuKGraphShape,
     AuKStepCudaGraphRunner,
+    build_step_graph_runner,
     verify_capture_shapes,
 )
 
@@ -138,25 +141,77 @@ def test_a_shape_that_fails_to_capture_is_left_out_rather_than_raising(caplog):
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_reference_embedding_matches_graph_for_strided_latents() -> None:
-    """A reference's memory layout must not change its graph-replayed embedding."""
+@pytest.mark.parametrize("weight_dtype", [torch.float32, torch.bfloat16])
+def test_graph_replay_matches_eager_fallback_for_strided_reference(
+    weight_dtype: torch.dtype, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A strided reference must produce the same sampled latents on replay and fallback."""
     torch.manual_seed(42)
-    embedding = AudioPromptEmbedding(64, 128).cuda().to(torch.bfloat16).eval()
-    reference = torch.randn(1, 64, 195, device="cuda", dtype=torch.bfloat16).transpose(
-        1, 2
+    flow = (
+        AuKFlowMatching(
+            AuKDit(
+                dim=32,
+                heads=2,
+                dim_head=16,
+                latent_dim=8,
+                text_hidden_dim=16,
+                num_layers=1,
+                num_single_layers=1,
+            ),
+            num_llm_layers=2,
+        )
+        .cuda()
+        .to(weight_dtype)
+        .eval()
+        .requires_grad_(False)
     )
-    static_reference = reference.contiguous()
-    stream = torch.cuda.Stream()
-    stream.wait_stream(torch.cuda.current_stream())
-    with torch.inference_mode(), torch.cuda.stream(stream):
-        for _ in range(3):
-            embedding.embed(static_reference)
-    torch.cuda.current_stream().wait_stream(stream)
-    graph = torch.cuda.CUDAGraph()
-    with torch.inference_mode():
-        with torch.cuda.graph(graph, stream=stream):
-            captured = embedding.embed(static_reference)
-        expected = embedding.embed(reference)
-        graph.replay()
-        torch.cuda.synchronize()
-    torch.testing.assert_close(captured, expected, rtol=0, atol=0)
+    for parameter in flow.parameters():
+        torch.nn.init.uniform_(parameter, -0.2, 0.2)
+    sample_item = AuKSampleItem(
+        conditioning=torch.randn(8, 16, device="cuda"),
+        text_mask=torch.ones(8, dtype=torch.bool, device="cuda"),
+        target_frames=24,
+        ref_latent=torch.randn(8, 16, device="cuda").transpose(0, 1),
+        seed=1234,
+        ref_length=16,
+    )
+    graph_runner = build_step_graph_runner(torch.device("cuda:0"), [(1, 32, 16, 8)])
+    assert graph_runner is not None
+    replay_count = 0
+    original_replay = torch.cuda.CUDAGraph.replay
+
+    def replay(graph: torch.cuda.CUDAGraph) -> None:
+        nonlocal replay_count
+        original_replay(graph)
+        replay_count += 1
+
+    with (
+        torch.inference_mode(),
+        torch.autocast(
+            "cuda", dtype=torch.bfloat16, enabled=weight_dtype == torch.float32
+        ),
+    ):
+        graph_runner.capture_declared(
+            lambda shape: flow.sample_batch(
+                [
+                    replace(
+                        sample_item,
+                        target_frames=shape.frames,
+                        ref_latent=sample_item.ref_latent.contiguous(),
+                    )
+                ],
+                steps=2,
+                cfg_strength=2.0,
+                step_graph=graph_runner,
+            )
+        )
+        monkeypatch.setattr(torch.cuda.CUDAGraph, "replay", replay)
+        captured = flow.sample_batch(
+            [sample_item], steps=2, cfg_strength=2.0, step_graph=graph_runner
+        )
+        assert replay_count > 0
+        with patch.object(graph_runner, "bind", return_value=None):
+            expected = flow.sample_batch(
+                [sample_item], steps=2, cfg_strength=2.0, step_graph=graph_runner
+            )
+    torch.testing.assert_close(captured[0], expected[0], rtol=0, atol=0)

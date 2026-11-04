@@ -105,9 +105,9 @@ def create_conditioning_executor(
     compute_dtype = resolve_dtype(field="dtype", name=dtype)
     device = resolve_concrete_device(device, gpu_id)
     checkpoint = resolve_checkpoint(model_path)
-    fusion = load_fusion(checkpoint, str(device))
     offload = None
     if enable_serial_offload:
+        fusion = load_fusion(checkpoint, str(device))
         if device.type != "cuda" or torch_memory_saver is None:
             raise ValueError("AuK offload requires CUDA and torch_memory_saver==0.0.10")
         elif version("torch_memory_saver") != "0.0.10":
@@ -152,6 +152,7 @@ def create_conditioning_executor(
             text_encoder_path, device=device, dtype=torch.bfloat16
         )
         vae = load_vae(checkpoint, str(device))
+        fusion = load_fusion(checkpoint, str(device))
     compute = lambda payloads: condition_batch(
         payloads, encoder, vae, fusion, device, compute_dtype, offload
     )
@@ -252,10 +253,7 @@ def create_auk_engine_executor(
     else:
         pass
     if enable_dit_torch_compile or step_graph is not None:
-        if enable_serial_offload:
-            warmup_flow(flow, device, autocast_dtype, sampling, step_graph, serial=True)
-        else:
-            warmup_flow(flow, device, autocast_dtype, sampling, step_graph)
+        warmup_flow(flow, device, autocast_dtype, sampling, step_graph)
     else:
         pass
     if step_graph is not None:
