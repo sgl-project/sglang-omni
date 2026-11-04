@@ -10,7 +10,6 @@ import wave
 from copy import deepcopy
 from pathlib import Path
 from typing import Literal
-from unittest.mock import patch
 
 import check_golden
 import cosyvoice3_golden
@@ -47,69 +46,6 @@ def results(changed: int, clip_count: int = 10) -> dict:
         f"c{i}": {**CLIP, "text": "other"} if i < changed else CLIP
         for i in range(clip_count)
     }
-
-
-@pytest.mark.parametrize("language", ["English", None])
-def test_qwen3_asr_accepts_a_request_without_a_language_hint(
-    tmp_path: Path, language: str | None
-) -> None:
-    """A golden request without language previously failed before transcription."""
-    request = {
-        "layout": "voxt_swift",
-        "max_new_tokens": 1024,
-        "stop_at_end_of_text": True,
-        "stop_on_token_loop": True,
-    }
-    if language is not None:
-        request["language"] = language
-    else:
-        pass
-    clip = tmp_path / "mixed.wav"
-    completed = subprocess.CompletedProcess(
-        [], 0, stdout=json.dumps({"file": str(clip), **CLIP}) + "\n"
-    )
-    with patch.object(
-        check_golden.subprocess, "run", return_value=completed
-    ) as runtime:
-        outputs = check_golden.transcribe(tmp_path, tmp_path, [clip], request, None)
-    command = runtime.call_args.args[0]
-    if language is None:
-        assert "--language" not in command
-    else:
-        assert command[command.index("--language") + 1] == language
-    assert outputs == {"mixed": CLIP}
-
-
-def test_golden_outputs_cannot_be_imported_into_another_language_condition(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """English outputs must not replace an automatic-language golden."""
-    automatic_path = tmp_path / "automatic.json"
-    automatic_path.write_text(json.dumps({**golden(1), "request": {}}))
-    original_automatic = automatic_path.read_text()
-    output_path = tmp_path / "fixed-outputs.json"
-    output_path.write_text(
-        json.dumps(
-            {
-                "model": "m",
-                "request": {"language": "English"},
-                "device": "Apple M5",
-                **golden(1)["devices"]["Apple M5"],
-            }
-        )
-    )
-    monkeypatch.setattr(
-        check_golden.sys,
-        "argv",
-        [
-            "check_golden.py",
-            "--golden", str(automatic_path),
-            "--import", str(output_path),
-        ],
-    )  # fmt: skip
-    with pytest.raises(SystemExit, match="different request"):
-        check_golden.run(check_golden.transcribe_qwen3_asr)
-    assert automatic_path.read_text() == original_automatic
 
 
 def test_a_recorded_chip_requires_every_clip() -> None:

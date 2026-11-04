@@ -55,23 +55,25 @@ Both drafts are pinned in `ci/models.json`. A draft for another target is one pi
 
 The frozen corpus contains 147 English clips, 173 Chinese clips, 64 Chinese-English mixed clips and 8 silence/noise controls. Evaluate fixed English and automatic language identification separately with the same checkpoint, audio layout and decoding limits. English WER, Chinese CER and mixed MER use the same normalization and edit distance in both runs.
 
-The existing `ci/golden/qwen3-asr-0.6b-4bit.json` keeps its fixed-English request and outputs. The separate `ci/golden/qwen3-asr-0.6b-4bit-auto.json` omits `request.language`, so the runtime receives no `--language` flag and identifies the language itself. Its Swift baseline is pending because there is no Swift measurement under the same language condition; its native per-chip golden still checks regressions.
+The existing golden keeps its fixed-English request and regression outputs. Passing `--automatic-language` reuses its model and decoding settings, omits the language hint and scores against the same corpus reference texts. This accuracy evaluation reports its own error rates; the historical fixed-English outputs are only used by the default regression check.
 
 From the repository root, set `NATIVE_RUNTIME_BIN` to the installed runtime's `bin` directory and `NATIVE_DATA_ROOT` to the directory prepared by `ci/provision.py`, then run:
 
 ```bash
 omni_native=sglang_omni_mlx/native
+omni_outputs=$(mktemp -d)
 python "$omni_native/ci/check_golden.py" \
   --runtime-bin "$NATIVE_RUNTIME_BIN" --data-root "$NATIVE_DATA_ROOT" \
   --golden "$omni_native/ci/golden/qwen3-asr-0.6b-4bit.json" \
-  --outputs results/fixed-english
+  --outputs "$omni_outputs/fixed-english"
 python "$omni_native/ci/check_golden.py" \
   --runtime-bin "$NATIVE_RUNTIME_BIN" --data-root "$NATIVE_DATA_ROOT" \
-  --golden "$omni_native/ci/golden/qwen3-asr-0.6b-4bit-auto.json" \
-  --outputs results/automatic
+  --golden "$omni_native/ci/golden/qwen3-asr-0.6b-4bit.json" \
+  --automatic-language \
+  --outputs "$omni_outputs/automatic"
 ```
 
-Each command runs all 392 clips and reports its golden filename. Exported outputs include the request, and importing outputs recorded with another request is rejected. To record another chip, add `--write` to the corresponding command, keeping the two language conditions in their own golden files. Other Qwen3-ASR checkpoints can use the same automatic request by omitting `language` in their own golden.
+Each command runs all 392 clips. With `--outputs`, the default check exports `qwen3-asr-0.6b-4bit.json` and automatic evaluation exports `qwen3-asr-0.6b-4bit-auto.json`; these generated files stay outside the committed goldens. Exports include the effective request, and importing outputs recorded with another request is rejected. Automatic evaluation rejects `--write` and `--import`, preserving the source golden. Other Qwen3-ASR checkpoints use the same flag with their existing golden.
 
 Measured on Apple M5 with 24 GB unified memory, macOS 26.4.1 and MLX 0.32.3, using the 0.6B 4-bit checkpoint pinned in `ci/models.json` at revision `313d850181767edf09f00a9c289becca70e58cd0`:
 
