@@ -6,6 +6,7 @@ package permission
 // cgo. Frameworks are opened at the first use.
 
 import (
+	"runtime"
 	"sync"
 	"unsafe"
 
@@ -61,9 +62,13 @@ func constant(lib uintptr, name string) uintptr {
 	return **(**uintptr)(unsafe.Pointer(&p))
 }
 
-// pooled runs fn inside an autorelease pool: objects autoreleased on a
-// goroutine's thread are freed at its end.
+// pooled runs fn inside an autorelease pool, on one OS thread: objects
+// autoreleased on a goroutine's thread are freed at its end, and the pool
+// is the thread's (popped on another one, it crashed the app's permission
+// checks), as in internal/macx.
 func pooled(fn func()) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	p := mac.poolPush()
 	defer mac.poolPop(p)
 	fn()
