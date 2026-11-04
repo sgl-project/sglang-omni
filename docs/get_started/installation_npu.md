@@ -1,5 +1,8 @@
 # Installation — NPU
 
+Install SGLang-Omni on ARM64 Linux with Ascend A3 or A2 / 910B devices.
+Choose the Docker image for your device or install into an existing Ascend environment.
+
 ## Prerequisites
 
 Both installation methods require Ascend host drivers and firmware compatible
@@ -15,10 +18,12 @@ Verify the host installation before continuing:
 npu-smi info
 ```
 
-## Option A: Docker (recommended)
+<a id="option-a-docker-recommended"></a>
+
+## Docker (recommended)
 
 The ARM64 image includes SGLang-Omni source, the SGLang/CANN/PyTorch runtime
-selected by [`pyproject_npu.toml`](../../pyproject_npu.toml), and common audio
+selected by [`pyproject_npu.toml`](https://github.com/sgl-project/sglang-omni/blob/main/pyproject_npu.toml), and common audio
 dependencies. Model weights, host drivers and TorchCodec are not included.
 Model support on NPU and optional dependencies must be checked separately.
 
@@ -83,8 +88,7 @@ When selecting another device, update both `/dev/davinci0` and
 `ASCEND_RT_VISIBLE_DEVICES`. Device indices in the pipeline configuration are
 relative to the visible devices (`gpu: 0` selects the first visible device).
 
-<details>
-<summary>A2 image installation details (click)</summary>
+### A2 / 910B image installation
 
 Use an ARM64 Linux host with Docker and Ascend A2 / 910B devices.
 
@@ -136,32 +140,22 @@ When selecting another device, update both `/dev/davinci0` and
 `ASCEND_RT_VISIBLE_DEVICES`. Pipeline device indices are relative to the
 visible devices (`gpu: 0` selects the first visible device).
 
-</details>
+<a id="option-b-manual-install"></a>
 
-### Launch the server
-
-The runtime is already installed. Skip the source installation below and do
-not run the TorchCodec stack-upgrade script inside this image.
-Qwen3-TTS dependencies are included; skip its cookbook's dependency installation.
-Continue with the [API Server Quickstart](apiserver_quickstart.md) to launch
-`sgl-omni serve` and send requests. Use the container model path under `/models`
-and pass the selected model's NPU pipeline configuration with `--config` when
-required. Model-specific inputs belong in the corresponding cookbook, such as
-the [Qwen3-TTS guide](../cookbook/qwen3_tts.md); GPU-specific configurations
-there should not be assumed to work unchanged on NPU.
-
-## Option B: Manual install
+## Manual install
 
 Install the Ascend software stack and NPU build of SGLang before installing
 `sglang-omni`. The helper script
-[`install_npu.sh`](../../scripts/npu/install_npu.sh) installs only
+[`install_npu.sh`](https://github.com/sgl-project/sglang-omni/blob/main/scripts/npu/install_npu.sh) installs only
 `sglang-omni` and the Python dependencies declared in
-[`pyproject_npu.toml`](../../pyproject_npu.toml), using the
+[`pyproject_npu.toml`](https://github.com/sgl-project/sglang-omni/blob/main/pyproject_npu.toml), using the
 same installation flow as Docker. Prepare
 FFmpeg, libsndfile and SoX separately, or pass `--install-system-deps` as root.
 The Ascend software stack and SGLang must already be installed.
 
-### Prerequisites
+<a id="id1"></a>
+
+### Manual installation prerequisites
 
 Select mutually compatible versions for your Ascend hardware by following the
 linked documentation. Python 3.11 is the verified configuration.
@@ -173,7 +167,7 @@ linked documentation. Python 3.11 is the verified configuration.
 | `triton-ascend` | Match the selected PyTorch and CANN releases | Yes | Yes | [Official documentation](https://gitcode.com/Ascend/triton-ascend/blob/main/docs/en/quick_start.md) |
 | `sgl-kernel-npu` | Match PyTorch, Python, CANN, hardware, and architecture | Yes | Yes | [Official documentation](https://github.com/sgl-project/sgl-kernel-npu/releases) |
 | `memfabric-hybrid` | Compatible release | No (PD disaggregation only) | Yes | [Official documentation](https://docs.sglang.io/docs/hardware-platforms/ascend-npus/ascend_npu) |
-| SGLang for NPU | `sglang-version` in [`pyproject_npu.toml`](../../pyproject_npu.toml) | Yes | Yes | [Official documentation](https://docs.sglang.io/docs/hardware-platforms/ascend-npus/ascend_npu) |
+| SGLang for NPU | `sglang-version` in [`pyproject_npu.toml`](https://github.com/sgl-project/sglang-omni/blob/main/pyproject_npu.toml) | Yes | Yes | [Official documentation](https://docs.sglang.io/docs/hardware-platforms/ascend-npus/ascend_npu) |
 
 ### Install sglang-omni
 
@@ -202,21 +196,24 @@ small NPU matrix multiplication. Run `bash scripts/npu/install_npu.sh --help`
 for optional extras, non-editable installation, and environments where devices
 are intentionally not exposed during the build.
 
-### TorchCodec installation for TTS models
+## Verify the installation
 
-Models in the TTS models utilize **`torchcodec`** for high-efficiency, native-streaming audio decoding directly into PyTorch tensors.
-
-The helper script `scripts/npu/install_npu_torchcodec.sh` automatically installs:
-* **Audio codec:** `ffmpeg`
-* **CANN 9.1.0 stack:** `toolkit`, `A3-ops`, `nnal`
-* **PyTorch 2.11 stack:** `torch`, `torchvision`, `torchaudio`, `torch_npu`, `torchcodec`
-
-To run the installation:
+Run these checks inside the container or the manual installation environment:
 
 ```bash
-# Specify your device type as the first argument (910b or A3)
-bash scripts/npu/install_npu_torchcodec.sh A3
+npu-smi info
+python -c 'import sglang_omni, torch, torch_npu; print(torch.npu.is_available())'
+sgl-omni --help
 ```
+
+Check that `npu-smi` lists your device, the import prints `True`, and the CLI
+prints its help.
+
+### Launch the server
+
+Use the NPU configuration for your model. For Docker, use the container model
+path under `/models`. See the [API server reference](apiserver_quickstart.md#start-the-server)
+for CLI flags and the [model notes](#model-notes) below for NPU examples and requirements.
 
 ## Qwen3-ASR graph execution
 
@@ -229,6 +226,24 @@ When pre-LM encoding and any encoder, decode, or prefill graph backend are enabl
 Use a torch_npu build that supports per-stream Host task queues. The feature is experimental and does not support process-level online recovery. Although per-stream queues support TaskQueue modes `1` and `2`, NPU graph capture rejects mode `2`; this graph configuration therefore requires mode `1`. Mode `0` disables the per-stream queues required by this path. Additional queue threads and cross-stream event ordering may add overhead. See the [TorchNPU stream-level TaskQueue documentation](https://www.hiascend.com/document/detail/en/Pytorch/2610/devguide/fwfeatures/docs/en/framework_feature_guide_pytorch/stream_taskqueue_parallel_delivery.md) for runtime constraints.
 
 ## Model notes
+
+### TorchCodec installation for TTS models
+
+Some TTS models use `torchcodec` for audio decoding. The NPU Docker images
+already include the Qwen3-TTS dependencies; skip the Cookbook dependency
+installation and do not run this stack upgrade inside those containers.
+
+The helper script `scripts/npu/install_npu_torchcodec.sh` automatically installs:
+* **Audio codec:** `ffmpeg`
+* **CANN 9.1.0 stack:** `toolkit`, `A3-ops`, `nnal`
+* **PyTorch 2.11 stack:** `torch`, `torchvision`, `torchaudio`, `torch_npu`, `torchcodec`
+
+To run the installation:
+
+```bash
+# Specify your device type as the first argument (910b or A3)
+bash scripts/npu/install_npu_torchcodec.sh A3
+```
 
 ### MiniCPM-o
 
