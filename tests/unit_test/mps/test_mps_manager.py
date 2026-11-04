@@ -197,6 +197,22 @@ def test_first_owner_uses_native_pid_file_and_returns_one_lease(short_root):
     assert not (manager.paths.state_dir / "manifest").exists()
 
 
+def test_acquire_refuses_a_root_whose_privileged_socket_overflows_sun_path(
+    short_root: Path,
+) -> None:
+    # note (0xtoward): pad the root until the control socket takes all 107 bytes, so only control_privileged overflows.
+    shortest_socket = MpsGpuPaths(
+        state_root=short_root, gpu_uuid=GPU_UUID
+    ).control_socket
+    root = short_root / ("x" * (107 - len(str(shortest_socket)) - 1))
+    client = FakeControlClient()
+
+    with pytest.raises(ValueError, match="sun_path"):
+        make_manager(root, client).acquire({"worker": "owner-worker"})
+
+    assert not client.daemons, "no daemon starts when a socket path cannot fit"
+
+
 def test_second_owner_joins_only_when_every_existing_lease_is_held(short_root):
     client = FakeControlClient()
     paths = seed_shared_dir(
