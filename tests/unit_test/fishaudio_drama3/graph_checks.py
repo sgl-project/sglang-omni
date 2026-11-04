@@ -34,12 +34,6 @@ from tests.unit_test.fishaudio_drama3.mtp_fixtures import (
     SEMANTIC_START_TOKEN_ID,
 )
 
-BFLOAT16_MANTISSA_BITS = 7
-# cuBLAS picks the bfloat16 lm_head GEMM by row count, so an eager decode of 5 rows
-# and its replay padded to 8 can round one logit apart (measured: 1 ulp, once in
-# 739 unfused-main steps on H100); everything downstream stays bit for bit.
-ROW_COUNT_DEPENDENT_FIELDS = {"semantic logits"}
-
 
 @dataclass(frozen=True, kw_only=True)
 class EnginePair:
@@ -56,28 +50,37 @@ def same_bits(left: torch.Tensor, right: torch.Tensor) -> bool:
     )
 
 
-def within_one_bfloat16_ulp(left: torch.Tensor, right: torch.Tensor) -> bool:
-    """Equal non-finite entries, finite ones at most one bfloat16 ulp apart."""
+def bfloat16_steps(tensor: torch.Tensor) -> torch.Tensor:
+    """Bfloat16 bit patterns as integers ordered like the values they encode."""
+    signed_bits = bits(tensor.to(torch.bfloat16)).to(torch.int32)
+    magnitude = signed_bits & 0x7FFF
+    return torch.where(signed_bits < 0, -magnitude, magnitude)
+
+
+def is_bfloat16_exact(tensor: torch.Tensor) -> bool:
+    return torch.equal(tensor.to(torch.bfloat16).to(tensor.dtype), tensor)
+
+
+def within_one_bfloat16_step(left: torch.Tensor, right: torch.Tensor) -> bool:
+    """Equal non-finite entries; finite ones bfloat16 values at most one step apart."""
     if left.dtype != right.dtype or left.shape != right.shape:
         return False
     else:
-        pass
-    is_finite = left.isfinite()
-    if not torch.equal(is_finite, right.isfinite()) or not same_bits(
-        left[~is_finite], right[~is_finite]
-    ):
-        return False
-    else:
-        pass
-    finite_left = left[is_finite].float()
-    finite_right = right[is_finite].float()
-    magnitude = torch.maximum(finite_left.abs(), finite_right.abs())
-    one_ulp = torch.where(
-        magnitude > 0,
-        torch.exp2(torch.floor(torch.log2(magnitude)) - BFLOAT16_MANTISSA_BITS),
-        0.0,
-    )
-    return bool(((finite_left - finite_right).abs() <= one_ulp).all())
+        is_finite = left.isfinite()
+        finite_left = left[is_finite]
+        finite_right = right[is_finite]
+        return (
+            torch.equal(is_finite, right.isfinite())
+            and same_bits(left[~is_finite], right[~is_finite])
+            and is_bfloat16_exact(finite_left)
+            and is_bfloat16_exact(finite_right)
+            and bool(
+                (
+                    (bfloat16_steps(finite_left) - bfloat16_steps(finite_right)).abs()
+                    <= 1
+                ).all()
+            )
+        )
 
 
 def forward_name(record: GraphForwardRecord) -> str:
@@ -187,12 +190,15 @@ def tensor_fields(step: GraphRequestStep) -> dict[str, torch.Tensor]:
 
 
 def bit_problems(pair: EnginePair) -> list[str]:
-    """Every value the graph engine recorded that differs from the eager engine's;
-    the lm_head logits may differ by one bfloat16 ulp, every other value by none."""
+    """Every value the graph engine recorded that differs from the eager engine's."""
     problems = []
     for eager_record, graph_record in zip(
         pair.eager.forwards, pair.graph.forwards, strict=True
     ):
+        # note (zengjiahua): cuBLAS picks the bfloat16 lm_head GEMM by row count, so a decode padded to a larger graph batch can round a semantic logit one step apart.
+        is_lm_head_row_count_different = (
+            eager_record.graph_batch_size or len(eager_record.steps)
+        ) != (graph_record.graph_batch_size or len(graph_record.steps))
         for eager_step, graph_step in zip(
             eager_record.steps, graph_record.steps, strict=True
         ):
@@ -211,16 +217,13 @@ def bit_problems(pair: EnginePair) -> list[str]:
                 for name in eager_tensors.keys() | graph_tensors.keys()
                 if name not in eager_tensors
                 or name not in graph_tensors
-                or not tensors_match(name, eager_tensors[name], graph_tensors[name])
+                or not (
+                    within_one_bfloat16_step(eager_tensors[name], graph_tensors[name])
+                    if name == "semantic logits" and is_lm_head_row_count_different
+                    else same_bits(eager_tensors[name], graph_tensors[name])
+                )
             )
     return problems
-
-
-def tensors_match(name: str, eager: torch.Tensor, graph: torch.Tensor) -> bool:
-    if name in ROW_COUNT_DEPENDENT_FIELDS:
-        return within_one_bfloat16_ulp(eager, graph)
-    else:
-        return same_bits(eager, graph)
 
 
 def finite_problems(run: GraphEngineRun) -> list[str]:
