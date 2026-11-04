@@ -15,7 +15,6 @@ from sglang.kernels.ops.attention.rope import (
     apply_rope_inplace,
     apply_rope_inplace_with_kvcache,
 )
-from sglang.kernels.ops.layernorm import rmsnorm
 from sglang.srt.utils.custom_op import register_custom_op
 
 from sglang_omni.platforms import current_platform
@@ -26,6 +25,8 @@ from sglang_omni.utils.channels_last_conv import (
     is_channels_last_conv_device,
 )
 from sglang_omni.utils.merged_projections import merge_projection_weights
+
+rmsnorm = current_platform.get_rmsnorm()
 
 if current_platform.is_cuda():
     from sglang.kernels.ops.attention.flash_attention import flash_attn_with_kvcache

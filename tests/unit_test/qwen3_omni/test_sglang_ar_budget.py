@@ -11,6 +11,9 @@ from unittest.mock import Mock
 import pytest
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.mem_cache.kv_cache_configurator import KVCacheConfigurator
+from sglang.srt.model_executor.model_runner_components.spec_aux_hidden_state import (
+    SpecAuxHiddenStateConfig,
+)
 from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
     PrefillCudaGraphRunner,
 )
@@ -382,6 +385,8 @@ def make_hybrid_configurator(
     configurator.pp_size = 1
     configurator.attn_dp_size = 1
     configurator.spec_algorithm = SimpleNamespace(is_none=lambda: True)
+    configurator.spec_aux_config = SpecAuxHiddenStateConfig()
+    configurator.is_hybrid_swa = False
     configurator.model_config = SimpleNamespace(hf_config=SimpleNamespace())
     configurator.extra_mamba_cache_bytes_per_req = 0
     return configurator
