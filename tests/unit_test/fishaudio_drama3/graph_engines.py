@@ -14,6 +14,7 @@ from pathlib import Path
 
 import torch
 from sglang.kernels.ops.attention import decode_attention
+from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.layers import radix_attention
 from sglang.srt.layers.attention.hybrid_linear_attn_backend import (
     HybridLinearAttnBackend,
@@ -28,6 +29,7 @@ from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
 from sglang.srt.models.registry import ModelRegistry
 from sglang.srt.server_args import ServerArgs
 
+from benchmarks.drama3_expert_trace import ExpertTrace
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.fishaudio_drama3 import sampling
 from sglang_omni.models.fishaudio_drama3.engine_builder import (
@@ -106,6 +108,7 @@ class GraphRecordingEngineBuilder(Drama3EngineBuilder):
             decode_attention.lean_decode_seqlen_gate,
         )
         self.first_frame_capture_written_kv_slots: list[int] = []
+        self.expert_trace: ExpertTrace | None = None
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         super().pre_infra_setup(checkpoint_dir)
@@ -150,12 +153,23 @@ class GraphRecordingEngineBuilder(Drama3EngineBuilder):
         model.allocate_recording_buffers(
             model_worker.model_runner.req_to_token_pool.size, torch.device(device)
         )
+        tower_prefill = model.model.tower_prefill
+        assert tower_prefill is not None
+        if self.spec.expert_trace_dir is None:
+            pass
+        else:
+            # Hooked before CUDA graph capture, like the trace engine builder.
+            self.expert_trace = ExpertTrace.attach(
+                model.model,
+                max_token_count=tower_prefill.input_frames.shape[0],
+                trace_dir=Path(self.spec.expert_trace_dir),
+                checkpoint_path=checkpoint_dir,
+                quantization=resolved_view(server_args).quantization,
+            )
         sampling.sample_top_k_top_p = DrawRecorder(model, sampling.sample_top_k_top_p)
         radix_attention.breakable_unified_attention_with_output = (
             self.capture_break_recorder
         )
-        tower_prefill = model.model.tower_prefill
-        assert tower_prefill is not None
         model.model.tower_prefill = CountingTowerPrefill(
             audio_decoder=tower_prefill.audio_decoder,
             tower_attention=tower_prefill.tower_attention,
@@ -209,7 +223,9 @@ class GraphRecordingEngineBuilder(Drama3EngineBuilder):
     def make_model_runner(
         self, model_worker: ModelWorker, output_proc: SGLangOutputProcessor
     ) -> GraphRecordingRunner:
-        return GraphRecordingRunner(model_worker, output_proc)
+        runner = GraphRecordingRunner(model_worker, output_proc)
+        runner.expert_trace = self.expert_trace
+        return runner
 
 
 class GraphSchedulerDriver:

@@ -17,6 +17,7 @@ from sglang.srt.layers.attention.triton_backend import TritonAttnBackend
 from sglang.srt.mem_cache.memory_pool import HybridLinearKVPool, HybridReqToTokenPool
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
+from benchmarks.drama3_expert_trace import ExpertTrace
 from sglang_omni.model_runner.model_worker import ModelWorker, PrefillCudaGraphUsage
 from sglang_omni.models.fishaudio_drama3.model_runner import (
     Drama3ModelRunner,
@@ -98,6 +99,7 @@ class GraphRecordingRunner(Drama3ModelRunner):
         self.scenario_name = ""
         self.abort_inbox: queue.Queue[IncomingMessage] | None = None
         self.aborted_after_frames: dict[str, int] = {}
+        self.expert_trace: ExpertTrace | None = None
         self.forwards: list[GraphForwardRecord] = []
         self.staged_ras_windows: list[list[int]] = []
         self.staged_prefill_inputs: Drama3StepInputs | None = None
@@ -212,6 +214,10 @@ class GraphRecordingRunner(Drama3ModelRunner):
     ) -> None:
         super().post_prefill(result, forward_batch, schedule_batch, requests)
         assert forward_batch is not None
+        if self.expert_trace is None:
+            pass
+        else:
+            self.expert_trace.record_prefill(forward_batch)
         self.record_forward(
             result,
             forward_batch,
@@ -231,6 +237,10 @@ class GraphRecordingRunner(Drama3ModelRunner):
     ) -> None:
         super().post_decode(result, forward_batch, schedule_batch, requests)
         assert forward_batch is not None
+        if self.expert_trace is None:
+            pass
+        else:
+            self.expert_trace.record_decode(requests)
         self.record_forward(
             result,
             forward_batch,
