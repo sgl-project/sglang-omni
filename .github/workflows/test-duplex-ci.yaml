@@ -98,6 +98,10 @@ jobs:
     if: always() && !cancelled() && inputs.run_turn_based
     runs-on: [self-hosted, h100]
     timeout-minutes: 45
+    # The engine runs one server on two GPUs and reads them from
+    # CUDA_VISIBLE_DEVICES; the container sees them as 0 and 1.
+    env:
+      CUDA_VISIBLE_DEVICES: "0,1"
     container:
       image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
       options: >-
@@ -147,6 +151,10 @@ jobs:
     if: always() && !cancelled() && inputs.run_cascaded
     runs-on: [self-hosted, h100]
     timeout-minutes: 45
+    # The engine runs one server on two GPUs and reads them from
+    # CUDA_VISIBLE_DEVICES; the container sees them as 0 and 1.
+    env:
+      CUDA_VISIBLE_DEVICES: "0,1"
     container:
       image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
       options: >-
