@@ -16,6 +16,7 @@ pip install -r requirements.txt
 Edit the Markdown (or RST) under `docs/`. New pages must be listed in `index.rst` (or the relevant toctree).
 
 - Run `pre-commit run --all-files` before opening a PR. Re-run once if the first pass auto-fixes files.
+- If the pull request changes `docs/` or claims a performance difference, paste the checklist from [CONTRIBUTING.md](../CONTRIBUTING.md). The fields are self-reported. Missing evidence is a follow-up, not an automatic rejection.
 - Preview locally:
 
 ```bash
