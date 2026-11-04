@@ -295,29 +295,97 @@ def normalize_block_name_to_quantize(
     return True
 
 
-def make_stage_prefix_optional(
-    pattern: str, stage_prefix: str, escaped_prefix: str
-) -> str:
-    """Rewrite each stage-prefix occurrence in `pattern` as an optional group.
+def split_top_level_alternatives(pattern: str) -> list[str]:
+    """Split a regex on its top-level `|`, skipping escapes, groups and classes.
 
-    Deleting the prefix from a regex by string surgery is not sound: it strips
-    only the leading branch of an alternation, misses an occurrence sitting
-    behind a wildcard, and turns `thinker.*` into the uncompilable `*`. Making
-    each occurrence optional instead leaves the rest of the expression exactly
-    as written and matches both the checkpoint's prefixed name and the
-    stage-local one.
+    `re.match` anchors every top-level alternative at the start of the name, so
+    each one can be translated on its own.
     """
-    rewritten = pattern
+    branches: list[str] = []
+    start = 0
+    depth = 0
+    escaped = False
+    in_class = False
+    for index, char in enumerate(pattern):
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif in_class:
+            if char == "]":
+                in_class = False
+            else:
+                pass
+        elif char == "[":
+            in_class = True
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif char == "|" and depth == 0:
+            branches.append(pattern[start:index])
+            start = index + 1
+        else:
+            pass
+    branches.append(pattern[start:])
+    return branches
+
+
+def strip_leading_stage_prefix(
+    branch: str, stage_prefix: str, escaped_prefix: str
+) -> str | None:
+    """Drop a stage prefix sitting at the front of one alternative, or `None`.
+
+    This is the only position where removing the prefix is an exact
+    translation: a stage-local name *is* the checkpoint name minus the prefix,
+    and `re.match` anchors the alternative at the start, so what the prefix
+    matched cannot move elsewhere. A leading `.*` can only ever have absorbed
+    the empty string there, so it goes with the prefix.
+    """
+    anchor = "^" if branch.startswith("^") else ""
+    rest = branch[len(anchor) :]
+    wildcard = ".*" if rest.startswith(".*") else ""
+    rest = rest[len(wildcard) :]
     for form in (escaped_prefix, stage_prefix):
-        # A trailing dot owned by a quantifier is not a literal separator: in
-        # `thinker.*` the dot belongs to the `*`. Leave those occurrences be;
-        # the caller reports them rather than guessing at the intent.
-        rewritten = re.sub(
-            re.escape(form) + r"(?![*+?{])",
-            lambda match: f"(?:{match.group(0)})?",
-            rewritten,
-        )
-    return rewritten
+        if not rest.startswith(form):
+            continue
+        else:
+            pass
+        # A separator owned by a quantifier is not a literal separator: in
+        # `thinker.*` the dot belongs to the `*`, so there is no prefix here.
+        if rest[len(form) : len(form) + 1] in ("*", "+", "?", "{"):
+            continue
+        else:
+            pass
+        return anchor + rest[len(form) :]
+    return None
+
+
+def normalize_ignore_regex(
+    pattern: str, stage_prefix: str, escaped_prefix: str
+) -> str | None:
+    """Translate a regex `ignore` pattern onto stage-local module names.
+
+    Returns `None` when some part of the pattern still refers to the stage
+    after translation, so the caller leaves the entry exactly as written. That
+    is deliberately conservative: a half-translated regex is worse than an
+    untranslated one. Making the prefix optional instead of removing it looks
+    more general but is unsound — `.*thinker\\.(?!model\\.).*` excludes the
+    thinker's quantized text layers, and with the prefix optional the leading
+    `.*` walks past the lookahead and matches them, which hands packed weights
+    to an unquantized method.
+    """
+    stage_name = stage_prefix.rstrip(".")
+    translated: list[str] = []
+    for branch in split_top_level_alternatives(pattern):
+        stripped = strip_leading_stage_prefix(branch, stage_prefix, escaped_prefix)
+        candidate = branch if stripped is None else stripped
+        if stage_name in candidate:
+            return None
+        else:
+            pass
+        translated.append(candidate)
+    return "|".join(translated)
 
 
 def normalize_ignore_entry(
@@ -343,19 +411,20 @@ def normalize_ignore_entry(
         pass
 
     pattern = entry[len(IGNORE_REGEX_MARKER) :]
-    rewritten = make_stage_prefix_optional(pattern, stage_prefix, escaped_prefix)
     stage_name = stage_prefix.rstrip(".")
+    rewritten = normalize_ignore_regex(pattern, stage_prefix, escaped_prefix)
+    if rewritten is None:
+        logger.warning(
+            f"compressed-tensors ignore entry {entry!r} refers to the "
+            f"{stage_name!r} stage somewhere this code will not rewrite, so it "
+            "is left as written and will not match stage-local module names. "
+            "Put the stage prefix at the front of each alternative with an "
+            f"escaped separator, e.g. 're:{stage_name}\\..*'."
+        )
+        return entry
+    else:
+        pass
     if rewritten == pattern:
-        if stage_name in pattern:
-            logger.warning(
-                f"compressed-tensors ignore entry {entry!r} names the "
-                f"{stage_name!r} stage in a form that cannot be rewritten for "
-                "stage-local module names, so it will not match and the "
-                "modules it covers will be treated as quantized. Write the "
-                f"separator as an escaped dot, e.g. 're:{stage_name}\\..*'."
-            )
-        else:
-            pass
         return entry
     else:
         pass

@@ -316,10 +316,10 @@ class TestNormalizeCompressedTensorsIgnoreList:
             "audio_tower.layers.0.fc1"
         ]
 
-    def test_rewrites_stage_prefix_as_optional_in_regex_entries(self) -> None:
+    def test_translates_stage_prefix_in_regex_entries(self) -> None:
         """compressed-tensors also accepts `re:` entries, which SGLang matches
-        with `re.match`. Deleting the prefix from a regex is unsound, so each
-        occurrence is made optional instead and the rest is left as written."""
+        with `re.match`. A prefix at the front of an alternative is removed; a
+        prefix anywhere else is left as written rather than half-translated."""
         quant_config = {
             "quant_method": "compressed-tensors",
             "format": "pack-quantized",
@@ -330,6 +330,7 @@ class TestNormalizeCompressedTensorsIgnoreList:
                 r"re:.*thinker\.audio_tower\.conv.*",
                 r"re:.*thinker.audio_tower.*",
                 r"re:thinker\.audio_tower\..*|thinker\.visual\..*",
+                r"re:.*thinker\.(?!model\.).*",
                 r"re:talker\.model\..*",
                 "re:lm_head",
             ],
@@ -339,12 +340,13 @@ class TestNormalizeCompressedTensorsIgnoreList:
         normalize_quant_config(model_config)
 
         assert quant_config["ignore"] == [
-            r"re:(?:thinker\.)?audio_tower\..*",
-            r"re:^(?:thinker\.)?visual\..*",
-            "re:(?:thinker.)?audio_tower.*",
-            r"re:.*(?:thinker\.)?audio_tower\.conv.*",
-            r"re:.*(?:thinker.)?audio_tower.*",
-            r"re:(?:thinker\.)?audio_tower\..*|(?:thinker\.)?visual\..*",
+            r"re:audio_tower\..*",
+            r"re:^visual\..*",
+            "re:audio_tower.*",
+            r"re:audio_tower\.conv.*",
+            "re:audio_tower.*",
+            r"re:audio_tower\..*|visual\..*",
+            r"re:(?!model\.).*",
             r"re:talker\.model\..*",
             "re:lm_head",
         ]
@@ -361,6 +363,7 @@ class TestNormalizeCompressedTensorsIgnoreList:
                 r"re:thinker\.audio_tower\..*|thinker\.visual\..*",
                 "visual.blocks.0.mlp.fc1",
             ),
+            (r"re:.*thinker\.(?!model\.).*", "audio_tower.conv2d1"),
         ],
         ids=[
             "escaped",
@@ -369,14 +372,15 @@ class TestNormalizeCompressedTensorsIgnoreList:
             "escaped_leading_wildcard",
             "unescaped_leading_wildcard",
             "second_alternative",
+            "negative_lookahead",
         ],
     )
-    def test_rewritten_regex_matches_a_stage_local_layer(
+    def test_translated_regex_matches_a_stage_local_layer(
         self, raw: str, layer: str
     ) -> None:
         """The point of the rewrite: SGLang's own matcher must exclude the
-        stage-local module that the raw checkpoint entry missed, and must still
-        exclude the prefixed spelling."""
+        stage-local module the raw checkpoint entry missed, and must still not
+        exclude a quantized text layer."""
         assert not check_equal_or_regex_match(layer, [raw])
 
         quant_config = {
@@ -387,60 +391,77 @@ class TestNormalizeCompressedTensorsIgnoreList:
         normalize_quant_config(
             make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
         )
-        rewritten = quant_config["ignore"]
+        translated = quant_config["ignore"]
 
-        assert check_equal_or_regex_match(layer, rewritten)
-        assert check_equal_or_regex_match(f"thinker.{layer}", rewritten)
+        assert check_equal_or_regex_match(layer, translated)
         assert not check_equal_or_regex_match(
-            "model.layers.0.self_attn.q_proj", rewritten
+            "model.layers.0.self_attn.q_proj", translated
         )
 
-    @pytest.mark.parametrize("raw", ["re:thinker.*", "re:^thinker.*", r"re:thinker\.*"])
-    def test_quantifier_owned_separator_is_left_as_written(self, raw: str) -> None:
-        """In `thinker.*` the dot belongs to the quantifier, so the entry has no
-        unambiguous stage prefix to make optional. Deleting one produced the
-        uncompilable `re:*`; it is now reported and left alone instead."""
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "re:thinker.*",
+            "re:^thinker.*",
+            r"re:thinker\.*",
+            r"re:(thinker\.audio_tower|thinker\.visual)\..*",
+            r"re:.*thinker\.audio_tower\..*thinker\..*",
+        ],
+        ids=[
+            "quantifier_owns_the_dot",
+            "anchored_quantifier",
+            "quantifier_owns_escaped_dot",
+            "prefix_inside_a_group",
+            "second_occurrence_mid_pattern",
+        ],
+    )
+    def test_untranslatable_regex_is_reported_and_left_alone(
+        self, raw: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A prefix this code will not rewrite must not be half-translated.
+        Deleting it blindly produced the uncompilable `re:*`, and making it
+        optional let `.*thinker\\.(?!model\\.).*` swallow the quantized text
+        layers it was written to exclude."""
         quant_config = {
             "quant_method": "compressed-tensors",
             "format": "pack-quantized",
             "ignore": [raw],
-        }
-        normalize_quant_config(
-            make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
-        )
-
-        assert quant_config["ignore"] == [raw]
-        re.compile(quant_config["ignore"][0][len("re:") :])
-
-    def test_quantifier_owned_separator_is_reported_not_salvaged(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """The quantifier guard has to skip the occurrence outright. Without it
-        the rewrite still produces an uncompilable pattern and only the compile
-        fallback saves the load, which is defence in depth, not the design."""
-        quant_config = {
-            "quant_method": "compressed-tensors",
-            "format": "pack-quantized",
-            "ignore": ["re:thinker.*"],
         }
         with caplog.at_level(logging.WARNING, logger="sglang_omni.quantization"):
             normalize_quant_config(
                 make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
             )
 
-        assert quant_config["ignore"] == ["re:thinker.*"]
-        assert "cannot be rewritten" in caplog.text
-        assert "did not survive" not in caplog.text
+        assert quant_config["ignore"] == [raw]
+        assert "will not rewrite" in caplog.text
+        re.compile(quant_config["ignore"][0][len("re:") :])
 
-    def test_every_rewritten_entry_compiles(self) -> None:
+    def test_whole_stage_entry_translates_to_match_everything(self) -> None:
+        """`.*thinker\..*` names every module in the stage, so the faithful
+        stage-local translation really is `.*`. Kept out of the over-match
+        guard below because excluding everything is what it asked for."""
+        quant_config = {
+            "quant_method": "compressed-tensors",
+            "format": "pack-quantized",
+            "ignore": [r"re:.*thinker\..*"],
+        }
+        normalize_quant_config(
+            make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
+        )
+
+        assert quant_config["ignore"] == ["re:.*"]
+
+    def test_no_selective_entry_excludes_a_quantized_text_layer(self) -> None:
+        """The failure that matters: an over-broad ignore entry hands a packed
+        weight to an unquantized method and the load dies."""
         quant_config = {
             "quant_method": "compressed-tensors",
             "format": "pack-quantized",
             "ignore": [
                 r"re:thinker\.audio_tower\..*",
+                r"re:.*thinker\.(?!model\.).*",
                 "re:thinker.*",
                 r"re:^thinker\.(audio_tower|visual)\..*",
-                r"re:.*thinker.audio_tower.*",
                 "thinker.audio_tower.fc1",
             ],
         }
@@ -453,6 +474,11 @@ class TestNormalizeCompressedTensorsIgnoreList:
                 re.compile(entry[len("re:") :])
             else:
                 pass
+        for layer in (
+            "model.layers.0.self_attn.q_proj",
+            "model.layers.0.mlp.experts.0.gate_proj",
+        ):
+            assert not check_equal_or_regex_match(layer, quant_config["ignore"])
 
     def test_non_string_ignore_entries_are_preserved(self) -> None:
         quant_config = {
