@@ -1396,6 +1396,54 @@ python -m benchmarks.eval.benchmark_duplex_serving sweep \
 
 The reported results came from one C1 and C2 screen, five C4 runs, two C8 runs, and two C16 runs. C32, C48, and C64 were attempted once each; their failed recordings remain part of the observation. The complete raw traces remain in the original experiment storage, and the selected local audit copy cannot rescore every session. Neither raw tree is hosted with this runbook.
 
+(qwen3-omni-on-one-h200)=
+
+**Qwen3-Omni on one H200 (interim)**
+
+One H200 141 GB ran the same 128-session v1.5 cohort as the MiniCPM-o campaign above (16 pairs per subset, 1,676.565 seconds of input, the longest 15.763 seconds) against the Qwen3-Omni session graph, with the `turn-based` profile, `server_vad` at `silence_duration_ms` 800 (the VAD node default) and no system prompt. The server used `examples/qwen3_omni/session_h200.yaml` with only `max_sessions` changed. The image and audio encoders each ran one request at a time (`max_concurrency` 1 since #3111), so no session received another session's encoder output. Client and server shared one host with about 27 CPUs by cgroup quota. Each level is one recording, and no warm-up was excluded.
+
+| N | `max_sessions` | Mean open | Failed | First audio p50 / p90 (ms) | Underrun replies | RTF p90 | Meets targets |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 1 | 16 | 1.0 | 0/128 | 131 / 152 | 0/179 | 0.80 | yes |
+| 2 | 16 | 2.0 | 0/128 | 141 / 184 | 0/178 | 0.79 | yes |
+| 4 | 16 | 3.9 | 0/128 | 130 / 154 | 0/179 | 0.80 | yes |
+| 8 | 16 | 7.8 | 0/128 | 144 / 182 | 0/179 | 0.80 | yes |
+| 16 | 16 | 15.2 | 0/128 | 176 / 246 | 0/179 | 0.80 | yes |
+| 16 | 64 | 15.4 | 0/128 | 183 / 345 | 0/171 | 0.80 | yes |
+| 24 | 64 | 22.4 | 0/128 | 213 / 348 | 0/179 | 0.79 | yes |
+| 32 | 64 | 29.0 | 0/128 | 248 / 408 | 0/179 | 0.79 | yes |
+| 48 | 64 | 38.6 | 0/128 | 317 / 853 | 2/179 | 0.78 | yes |
+
+No level had an admission denial, an `admission_rejected` session or an input pacing violation. Every level met the serving targets, so the capacity at `max_sessions` 64 is at least 48 and the knee was not reached. At N=48 the level averaged 38.6 open sessions, because 128 sessions with a 14-second median do not fill three waves; first audio p90 doubled from N=32 and the first two underruns appeared, both on the same long reply. The decode `#running-req` of the server log peaked at N at every level, with `#queue-req` 0 throughout.
+
+The RTF column does not measure headroom here. While a session's input is still streaming, the delivery pacer releases reply audio at most `max_output_lead_ms` (1,000 ms) ahead of real time from the reply's first audio, so a reply of about 5 seconds arrives over about 4 seconds at any load; after `sglang.input_audio.end` the pacer releases everything it holds. The delivery rate after the input end, taken as the 10th percentile over replies with at least 10 seconds of audio after it, follows generation speed instead: 20.4x real time at N=1, 14.8x at 2, 10.0x at 4, 7.9x at 8, 5.3x and 4.6x at 16 (`max_sessions` 16 and 64), 4.2x at 24, 4.1x at 32 and 3.5x at 48.
+
+Without a system prompt, Qwen3-Omni answers some prompts at length. The median reply carries 6.9 seconds of audio, but at N=16 32 replies exceed 60 seconds, and 3 to 7 replies per level stop at the talker's 4,096-token limit (327.7 seconds) as `incomplete` with `max_output_tokens`. These replies account for most of the generation work.
+
+The recorder opens all N sessions at once, and most inputs end their first utterance 3.5 to 4 seconds in, so every level starts with a burst of simultaneous first turns. On a freshly started server the first replies are slower as well. Replies over 1 second to first audio occur only in that burst: up to 4.4 seconds at N=16 on a fresh server and about 1 second at N=48 on a warm one.
+
+The thinker's KV pool held 549,460 tokens, 16.8 sessions at `max_seq_len` 32,768, and the talker's 540,458 tokens; raising `max_sessions` to 64 left the thinker pool unchanged and the talker's at 539,229, so the raised cap overcommits the same KV. `nvidia-smi` read 136,136 to 136,838 MiB used on an idle fresh server. The first request allocates the `thinker_relay` CUDA-IPC pool of 1,024 MB, which `nvidia-smi` sees as 1,340 MiB; usage then rises by about 1.8 GiB more in steps the first time each larger batch appears, and stays flat after that. The steady peak at N=48 was 140,402 of 143,771 MiB, about 3.3 GiB free. A transient 527 MiB rise for about 2 seconds every 15 minutes, also on an idle server, is not part of these figures. No run reported a CUDA out-of-memory or cuDNN error. These sessions are short, so the results do not qualify sessions near `max_seq_len`, levels above 48, repeated recordings, reference-audio voices, or response quality.
+
+The runs used commit [`3cb3c6ccb6ca9aa40dc5fa58773d6e773c2b9189`](https://github.com/sgl-project/sglang-omni/commit/3cb3c6ccb6ca9aa40dc5fa58773d6e773c2b9189), model snapshot `26291f793822fb6be9555850f06dfe95f2d7e695`, Python 3.12.3, torch 2.14.1+cu130, sglang 0.5.22, flashinfer-python 0.7.1, transformers 5.19.0 and websockets 17.4. Copy `examples/qwen3_omni/session_h200.yaml` with `max_sessions: 64` to `session_h200_max64.yaml` and start the server:
+
+```bash
+sgl-omni serve --config session_h200_max64.yaml --enable-realtime --port 8765
+```
+
+Then record a sweep. The `max_sessions` 16 rows used the stock config and `--timeout 90`; replies up to 328 seconds arrive within about 70 seconds at N=16, so the higher levels used `--timeout 230`:
+
+```bash
+export FDB_WORK="${FDB_WORK:-$HOME/fdb}"
+python -m benchmarks.eval.benchmark_duplex_serving sweep \
+  --dataset v1.5 --concurrency 16,24,32,48 --output "$FDB_WORK/serving/qwen3-omni-h200" -- \
+  --url ws://127.0.0.1:8765/v1/realtime --profile turn-based \
+  --turn-detection '{"type": "server_vad", "silence_duration_ms": 800}' \
+  --dataset-root "$FDB_WORK/dataset/v1.5" --dataset-revision "$(cat $FDB_WORK/dataset/v1.5.revision)" \
+  --server-revision "$(git rev-parse HEAD)" --model Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --model-revision 26291f793822fb6be9555850f06dfe95f2d7e695 \
+  --timeout 230 --max-per-subset 16
+```
+
 ### Notes
 
 - **Keep the settings fixed across the repeats of a run.** Mixing repeats with different selections, `--num-shards` or judges makes their mean meaningless; use a new run name instead.
