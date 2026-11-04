@@ -688,7 +688,7 @@
 </section>
 <section id="stream-transcription">
 <h2>Stream transcription<a class="headerlink" href="#stream-transcription" title="Link to this heading">#</a></h2>
-<p>Set <code class="docutils literal notranslate"><span class="pre">stream=true</span></code> to receive the transcript as server-sent events. Use <code class="docutils literal notranslate"><span class="pre">curl</span> <span class="pre">-N</span></code> so curl does not buffer the response. This recording returns the finished transcript and then the <code class="docutils literal notranslate"><span class="pre">[DONE]</span></code> sentinel.</p>
+<p>Set <code class="docutils literal notranslate"><span class="pre">stream=true</span></code> to receive incremental transcript text as server-sent events. Use <code class="docutils literal notranslate"><span class="pre">curl</span> <span class="pre">-N</span></code> so curl does not buffer the response. Append the text from each <code class="docutils literal notranslate"><span class="pre">transcript.text.delta</span></code> event. The final <code class="docutils literal notranslate"><span class="pre">transcript.text.done</span></code> event repeats the complete transcript, followed by the <code class="docutils literal notranslate"><span class="pre">[DONE]</span></code> sentinel.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-N<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://127.0.0.1:8000/v1/audio/transcriptions<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-F<span class="w"> </span><span class="nv">model</span><span class="o">=</span>inclusionAI/Ming-3.0-asr-tiny<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-F<span class="w"> </span><span class="nv">file</span><span class="o">=</span>@tests/data/query_to_cars.wav<span class="w"> </span><span class="se">\</span>
@@ -697,6 +697,15 @@
 <span class="w">  </span>-F<span class="w"> </span><span class="nv">stream</span><span class="o">=</span><span class="nb">true</span>
 </pre></div>
 </div>
+<p>An illustrative response is:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>data: {"type":"transcript.text.delta","delta":"..."}
+
+data: {"type":"transcript.text.done","text":"...","usage":{"type":"duration","seconds":5}}
+
+data: [DONE]
+</pre></div>
+</div>
+<p>The first stable text is emitted immediately; later updates use a 50 ms interval (<code class="docutils literal notranslate"><span class="pre">--thinker.factory.stream_emit_interval_seconds</span></code>). Completion flushes pending text, the language header is removed, and concatenated deltas equal the done event’s <code class="docutils literal notranslate"><span class="pre">text</span></code>. When <code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code> is reached, <code class="docutils literal notranslate"><span class="pre">transcript.text.done</span></code> includes <code class="docutils literal notranslate"><span class="pre">&quot;finish_reason&quot;:&quot;length&quot;</span></code> and the partial transcript.</p>
 </section>
 </section>
 
