@@ -13,7 +13,9 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    SerializerFunctionWrapHandler,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
@@ -26,6 +28,23 @@ class UsageResponse(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+
+
+class SpecTokensDetails(BaseModel):
+    """Per-request speculative decoding statistics."""
+
+    spec_accept_rate: float
+    spec_accept_length: float
+    spec_num_correct_drafts: int
+    spec_num_proposed_drafts: int
+    spec_verify_ct: int
+    spec_correct_drafts_histogram: list[int]
+
+
+class SglExt(BaseModel):
+    """Response-level extension fields outside the OpenAI schema."""
+
+    spec_tokens_details: SpecTokensDetails
 
 
 class ChatMessage(BaseModel):
@@ -137,6 +156,7 @@ class ChatCompletionRequest(BaseModel):
     talker_max_new_tokens: int | None = None
 
     # Misc
+    return_spec_tokens_details: bool = False
     request_id: str | None = None
     user: str | None = None
 
@@ -172,6 +192,18 @@ class ChatCompletionResponse(BaseModel):
     model: str
     choices: list[ChatCompletionChoice]
     usage: UsageResponse | None = None
+    sglext: SglExt | None = None
+
+    @model_serializer(mode="wrap")
+    def drop_unset_sglext(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, object]:
+        data = handler(self)
+        if self.sglext is None:
+            data.pop("sglext")
+        else:
+            pass
+        return data
 
 
 class ChatCompletionStreamDelta(BaseModel):
@@ -199,6 +231,7 @@ class ChatCompletionStreamResponse(BaseModel):
     model: str
     choices: list[ChatCompletionStreamChoice]
     usage: UsageResponse | None = None
+    sglext: SglExt | None = None
 
 
 class RolloutSamplingParams(BaseModel):
@@ -448,6 +481,8 @@ class CreateSpeechRequest(BaseModel):
     # Per-stage overrides (sglang-omni specific)
     stage_params: dict[str, dict[str, object]] | None = None
 
+    return_spec_tokens_details: bool = False
+
 
 class SpeechBatchItem(BaseModel):
     """One item in a batch text-to-speech request."""
@@ -539,6 +574,18 @@ class SpeechStreamOutcome(BaseModel):
     request_id: str
     finish_reason: str
     usage: UsageInfo | None = None
+    sglext: SglExt | None = None
+
+    @model_serializer(mode="wrap")
+    def drop_unset_sglext(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, object]:
+        data = handler(self)
+        if self.sglext is None:
+            data.pop("sglext")
+        else:
+            pass
+        return data
 
 
 class SpeechBatchResponse(BaseModel):
