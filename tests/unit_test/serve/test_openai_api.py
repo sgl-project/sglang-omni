@@ -34,7 +34,12 @@ from sglang_omni.serve.openai_api import (
     chat_stream,
     speech_audio_response,
 )
-from sglang_omni.serve.protocol import ChatCompletionRequest, CreateSpeechRequest
+from sglang_omni.serve.protocol import (
+    ChatCompletionRequest,
+    ChatCompletionResponse,
+    CreateSpeechRequest,
+    SpeechStreamOutcome,
+)
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.serve.speech_stream_outcomes import SpeechStreamOutcomes
 from sglang_omni.serve.speech_to_text import complete_speech_to_text_request
@@ -1417,6 +1422,14 @@ def test_spec_tokens_details_without_a_rate_omit_the_rate_fields() -> None:
     assert speech.headers["x-sglang-omni-spec-accept-length"] == "2.5"
     assert "x-sglang-omni-spec-accept-rate" not in speech.headers
     assert "x-sglang-omni-spec-num-proposed-drafts" not in speech.headers
+
+
+def test_responses_without_sglext_serialize_with_exclude_none() -> None:
+    chat = ChatCompletionResponse(id="chat-1", created=0, model="m", choices=[])
+    outcome = SpeechStreamOutcome(request_id="speech-1", finish_reason="stop")
+
+    assert "sglext" not in chat.model_dump(exclude_none=True)
+    assert "sglext" not in outcome.model_dump(exclude_none=True)
 
 
 def test_chat_answer_excludes_the_matched_stop_string() -> None:

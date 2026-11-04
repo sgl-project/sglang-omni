@@ -223,7 +223,7 @@ class ChatCompletionResponse(BaseModel):
     ) -> dict[str, object]:
         data = handler(self)
         if self.sglext is None:
-            data.pop("sglext")
+            data.pop("sglext", None)
         else:
             pass
         return data
@@ -605,7 +605,7 @@ class SpeechStreamOutcome(BaseModel):
     ) -> dict[str, object]:
         data = handler(self)
         if self.sglext is None:
-            data.pop("sglext")
+            data.pop("sglext", None)
         else:
             pass
         return data
