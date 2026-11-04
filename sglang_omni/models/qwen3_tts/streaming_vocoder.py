@@ -2750,8 +2750,10 @@ class Qwen3TTSStreamingVocoderScheduler(
         else:
             pass
         batch = [queued]
+        # note (ratish): only first chunks fill a batch, so whole requests queued ahead of one never hold it back a pass.
+        first_chunks = int(not self.is_whole_request_row(queued[1]))
         deadline = time.monotonic() + batch_wait_s
-        while len(batch) < max_batch_size:
+        while first_chunks < max_batch_size:
             remaining = deadline - time.monotonic()
             # note (ratish): a worker with replays due takes all that has queued, and waits for no more.
             if remaining <= 0 and should_block:
@@ -2767,7 +2769,12 @@ class Qwen3TTSStreamingVocoderScheduler(
             else:
                 pass
             batch.append(next_queued)
+            first_chunks += int(not self.is_whole_request_row(next_queued[1]))
         return batch
+
+    @staticmethod
+    def is_whole_request_row(state: Qwen3TTSStreamState) -> bool:
+        return state.whole_audio is not None and not state.incremental_codec_fallback
 
     def note_incremental_planning_failure(
         self, request_id: str, state: Qwen3TTSStreamState, exc: BaseException
@@ -2937,10 +2944,10 @@ class Qwen3TTSStreamingVocoderScheduler(
         """First chunks, then one replay of whole requests, so a first chunk waits for at most one replay."""
         first_chunks: list[tuple[str, Qwen3TTSStreamState]] = []
         for entry in batch:
-            if entry[1].whole_audio is None or entry[1].incremental_codec_fallback:
-                first_chunks.append(entry)
-            else:
+            if self.is_whole_request_row(entry[1]):
                 self.whole_request_rows.append(entry)
+            else:
+                first_chunks.append(entry)
         if first_chunks:
             self.run_initial_batch(first_chunks)
         else:

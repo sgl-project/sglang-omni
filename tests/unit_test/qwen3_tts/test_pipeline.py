@@ -3951,6 +3951,64 @@ def test_qwen3_tts_long_whole_request_replays_one_window_between_first_chunks(
     assert scheduler.codec_arena.active_slots() == 0
 
 
+def test_qwen3_tts_first_chunk_behind_more_whole_requests_than_a_batch_runs_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler, _, runner = whole_request_scheduler(monkeypatch)
+    scheduler.run_non_streaming_batch(
+        [
+            whole_request_message(f"whole-{index}", 4)
+            for index in range(2 * scheduler.initial_max_batch_size)
+        ],
+        asyncio.new_event_loop(),
+    )
+    stream = ("stream", scheduler.create_stream_state("stream"))
+    scheduler.initial_queue.put(stream)
+    replays_before_first_chunks = []
+    monkeypatch.setattr(
+        scheduler,
+        "run_initial_batch",
+        lambda batch: replays_before_first_chunks.append((batch, len(runner.calls))),
+    )
+
+    scheduler.run_initial_work(
+        scheduler.collect_async_batch(
+            scheduler.initial_queue,
+            max_batch_size=scheduler.initial_max_batch_size,
+            batch_wait_s=0.0,
+            should_block=False,
+        )
+    )
+
+    assert replays_before_first_chunks == [([stream], 0)]
+    assert len(runner.calls) == 1
+
+
+def test_qwen3_tts_initial_batch_counts_only_first_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler, _, _ = whole_request_scheduler(monkeypatch)
+    scheduler.run_non_streaming_batch(
+        [whole_request_message("whole", 4)], asyncio.new_event_loop()
+    )
+    streams = [
+        (name, scheduler.create_stream_state(name))
+        for name in ("first", "second", "third")
+    ]
+    for stream in streams:
+        scheduler.initial_queue.put(stream)
+
+    batch = scheduler.collect_async_batch(
+        scheduler.initial_queue,
+        max_batch_size=2,
+        batch_wait_s=0.0,
+        should_block=False,
+    )
+
+    assert [entry[0] for entry in batch] == ["whole", "first", "second"]
+    assert scheduler.initial_queue.get_nowait() == streams[2]
+
+
 def test_qwen3_tts_worker_with_replays_due_takes_every_queued_first_chunk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
