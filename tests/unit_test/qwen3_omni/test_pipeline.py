@@ -328,6 +328,7 @@ def test_qwen_apply_thinker_result_omits_missing_optional_fields() -> None:
 
     assert "finish_reason" not in thinker_out
     assert "weight_version" not in thinker_out
+    assert "spec_tokens_details" not in thinker_out
     assert "output_token_logprobs" not in thinker_out
     assert state.thinker_out is thinker_out
     assert state.engine_outputs["thinker"] is thinker_out
