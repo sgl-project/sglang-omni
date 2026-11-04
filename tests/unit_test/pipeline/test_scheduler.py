@@ -2003,7 +2003,7 @@ def test_speculative_stream_output_emits_each_committed_token_before_the_result(
     scheduler.first_emit_done = set()
     scheduler.prefill_start_done = {"req-spec"}
     scheduler.prefill_end_done = set()
-    scheduler.draft_worker = SimpleNamespace()
+    scheduler.draft_worker = SimpleNamespace(speculative_num_draft_tokens=4)
     monkeypatch.setattr(
         omni_scheduler_module, "_emit_model_path_end", lambda rid, *, status: None
     )
@@ -2032,6 +2032,9 @@ def test_speculative_stream_output_emits_each_committed_token_before_the_result(
         finished=lambda: finished,
         finished_reason=None,
         _omni_terminal_claimed=False,
+        spec_verify_ct=0,
+        spec_num_correct_drafts=0,
+        spec_correct_drafts_histogram=[],
     )
     request_data.req = req
 
@@ -2049,6 +2052,9 @@ def test_speculative_stream_output_emits_each_committed_token_before_the_result(
     finished = True
     req.output_ids = [5, 6, 7, 9, 8, 8]
     req.output_ids_through_stop = [5, 6, 7, 9]
+    req.spec_verify_ct = 2
+    req.spec_num_correct_drafts = 2
+    req.spec_correct_drafts_histogram = [1, 0, 1]
     scheduler.stream_output([req])
 
     assert calls == [
@@ -2068,6 +2074,15 @@ def test_speculative_stream_output_emits_each_committed_token_before_the_result(
         "stream",
         "result",
     ]
+    # Drafts accepted past the stop token are trimmed, so they do not count.
+    assert request_data.spec_tokens_details == {
+        "spec_accept_rate": 2 / 6,
+        "spec_accept_length": 4 / 2,
+        "spec_num_correct_drafts": 2,
+        "spec_num_proposed_drafts": 6,
+        "spec_verify_ct": 2,
+        "spec_correct_drafts_histogram": [1, 0, 1],
+    }
 
 
 def test_speculative_emission_failure_fails_only_its_request() -> None:

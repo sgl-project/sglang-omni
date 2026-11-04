@@ -119,6 +119,7 @@ from sglang_omni.scheduling.types import (
     RequestOutput,
     SchedulerOutput,
     SchedulerRequest,
+    SpecTokensDetailsDict,
     StreamOutputBuilder,
 )
 from sglang_omni.utils.process import terminate_gpu_worker
@@ -2855,6 +2856,25 @@ class OmniScheduler(Generic[RequestDataT]):
                     else req.output_ids_through_stop
                 )
                 data.weight_version = get_serving().weight_version
+                if self.draft_worker is not None and req.spec_verify_ct > 0:
+                    # note (detemmienation): every verify commits the bonus token, so the accept length counts it while the accept rate does not.
+                    num_proposed_drafts = req.spec_verify_ct * (
+                        self.draft_worker.speculative_num_draft_tokens - 1
+                    )
+                    data.spec_tokens_details = SpecTokensDetailsDict(
+                        spec_accept_rate=req.spec_num_correct_drafts
+                        / num_proposed_drafts,
+                        spec_accept_length=len(req.output_ids_through_stop)
+                        / req.spec_verify_ct,
+                        spec_num_correct_drafts=req.spec_num_correct_drafts,
+                        spec_num_proposed_drafts=num_proposed_drafts,
+                        spec_verify_ct=req.spec_verify_ct,
+                        spec_correct_drafts_histogram=list(
+                            req.spec_correct_drafts_histogram
+                        ),
+                    )
+                else:
+                    pass
                 self.flush_stream_output(rid, data)
                 session_unit = self.active_session_unit(rid)
                 if session_unit is None:
