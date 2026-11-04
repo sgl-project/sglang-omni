@@ -51,7 +51,7 @@ SGLang tag from source with its `all_mps` dependencies before installing
 SGLang-Omni:
 
 ```bash
-git clone --branch v0.5.22 https://github.com/sgl-project/sglang.git
+git clone --branch v0.5.23 https://github.com/sgl-project/sglang.git
 git clone https://github.com/sgl-project/sglang-omni.git
 
 uv venv -p 3.12 sglang-omni/.venv-apple
@@ -158,6 +158,19 @@ sgl-omni serve \
   --asr.factory.enable_async_decode false \
   --port 8000
 ```
+
+## DFlash speculative decoding
+
+Enable experimental DFlash decoding for Qwen3-ASR-1.7B on one CUDA GPU with the pinned draft model:
+
+```bash
+sgl-omni serve \
+  --config examples/configs/qwen3_asr_1_7b_dflash.yaml \
+  --asr.engine.max_running_requests 8 \
+  --port 8000
+```
+
+DFlash requires greedy decoding (`temperature=0`), uses synchronous scheduling, and retains CUDA graphs. Realtime sessions are not validated.
 
 ## Transcribe Audio
 

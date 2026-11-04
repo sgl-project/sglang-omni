@@ -422,6 +422,9 @@ def test_cosyvoice3_speech_head_returns_float32_logits() -> None:
             hidden_states
         )
     )
+    # note (wilsonzheng0327): SGLang's Qwen2ForCausalLM.__init__ sets this, and
+    # object.__new__ above skips that constructor.
+    model.capture_aux_hidden_states = False
     forward_batch = SimpleNamespace(
         forward_mode=SimpleNamespace(is_decode=lambda: True, is_extend=lambda: False)
     )
@@ -452,6 +455,7 @@ def test_cosyvoice3_precompile_leaves_the_first_penalized_samples_nothing_to_com
             input_embeds
         )
     )
+    model.capture_aux_hidden_states = False
     torch.compiler.reset()
 
     with get_context().override_server_args(sampling_backend="flashinfer"):
@@ -462,7 +466,9 @@ def test_cosyvoice3_precompile_leaves_the_first_penalized_samples_nothing_to_com
         for rows in (1, 3):
             forward_batch = SimpleNamespace(
                 forward_mode=SimpleNamespace(
-                    is_decode=lambda: False, is_extend=lambda: True
+                    is_decode=lambda: False,
+                    is_extend=lambda: True,
+                    is_target_verify=lambda: False,
                 ),
                 extend_seq_lens=torch.full((rows,), 2, device="cuda"),
             )

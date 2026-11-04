@@ -10,8 +10,9 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from contextvars import ContextVar
+from dataclasses import replace
 
-from sglang_omni.admission import ContextExhaustedError
+from sglang_omni.admission import ContextExhaustedError, QueueFullError
 from sglang_omni.profiler.duplex_events import (
     SessionUnitReadyObservation,
     capture_session_unit_ready,
@@ -54,7 +55,9 @@ from sglang_omni.serve.realtime.types import (
     InteractionAdapter,
     ProtocolError,
     RuntimeLimits,
+    SessionOpenTimeoutError,
     Unit,
+    failure_code,
 )
 
 logger = logging.getLogger(__name__)
@@ -94,6 +97,11 @@ class SessionRuntime:
         self.pending_frames: dict[int, list[tuple[float, bytes]]] = {}
         self.ready_observations: dict[int, SessionUnitReadyObservation] | None = None
         self.next_unit_index = 0
+        # note (wenyao): A turn-based session ends turns with its own VAD, so holding audio until a unit fills would end turns up to a unit late.
+        self.forwards_partial_units = capabilities.interaction == "turn_based"
+        self.open_unit_samples = 0
+        self.open_unit_start_sample = 0
+        self.cleared_unit_receipt: Unit | None = None
         self.is_input_ended = False
         self.end_event_id: str | None = None
         self.command_lock = asyncio.Lock()
@@ -115,6 +123,11 @@ class SessionRuntime:
     @property
     def pending_samples(self) -> int:
         return len(self.pending_pcm) // PCM16_BYTES_PER_SAMPLE
+
+    @property
+    def uncut_unit_bytes(self) -> int:
+        """Bytes from the start of the next unit to cut, including its audio already handed to the adapter."""
+        return self.open_unit_samples * PCM16_BYTES_PER_SAMPLE + len(self.pending_pcm)
 
     def mark_ready_units(
         self, first_ready_unit_index: int, ready_unit_count: int
@@ -269,7 +282,7 @@ class SessionRuntime:
         candidate: SessionConfiguration,
         event_id: str,
     ) -> bool:
-        """Open the adapter; return False if failed admission expires after cleanup."""
+        """Open the adapter and clean up if admission fails."""
         try:
             await asyncio.wait_for(
                 adapter.open(self.session_id, candidate, self.emit),
@@ -277,16 +290,21 @@ class SessionRuntime:
             )
             return True
         except Exception as exc:
-            logger.exception(f"Realtime session {self.session_id} admission failed")
             try:
                 await asyncio.wait_for(adapter.close(), self.limits.cleanup_timeout_s)
-            except Exception:
+            except Exception as cleanup_error:
                 self.abandon_admission(adapter, "admission cleanup failed", event_id)
-                raise RuntimeError("admission cleanup failed") from exc
-            if self.expire_admission_if_due():
-                return False
+                raise RuntimeError("admission cleanup failed") from cleanup_error
+            if QueueFullError.matches(exc):
+                if self.expire_admission_if_due():
+                    return False
+                else:
+                    raise ProtocolError("admission_rejected", str(exc)) from exc
+            elif isinstance(exc, TimeoutError):
+                message = str(exc) or "session open timed out"
+                raise SessionOpenTimeoutError(message) from exc
             else:
-                raise ProtocolError("admission_rejected", str(exc)) from exc
+                raise
 
     def abandon_admission(
         self, adapter: InteractionAdapter, message: str, event_id: str
@@ -331,13 +349,13 @@ class SessionRuntime:
             else:
                 pass
             pending_unit_count_before = (
-                len(self.pending_pcm) // self.capabilities.native_unit_bytes
+                self.uncut_unit_bytes // self.capabilities.native_unit_bytes
             )
             self.pending_pcm.extend(pcm)
             self.accepted_samples += len(pcm) // PCM16_BYTES_PER_SAMPLE
             self.next_append_sequence += 1
             pending_unit_count_after = (
-                len(self.pending_pcm) // self.capabilities.native_unit_bytes
+                self.uncut_unit_bytes // self.capabilities.native_unit_bytes
             )
             newly_ready_unit_count = (
                 pending_unit_count_after - pending_unit_count_before
@@ -363,14 +381,14 @@ class SessionRuntime:
         async with self.command_lock:
             self.require_open()
             pending_start_ms = self.capabilities.input_duration_ms(
-                self.accepted_samples - self.pending_samples
+                self.accepted_samples - self.pending_samples - self.open_unit_samples
             )
             pending_unit_offset = math.floor(
                 (t_ms - pending_start_ms) / self.capabilities.native_unit_ms
             )
             unit_index = self.next_unit_index + pending_unit_offset
             pending_units = math.ceil(
-                len(self.pending_pcm) / self.capabilities.native_unit_bytes
+                self.uncut_unit_bytes / self.capabilities.native_unit_bytes
             )
             if "image" not in self.capabilities.input_modalities:
                 raise ProtocolError("not_supported", "image input is not granted")
@@ -405,6 +423,23 @@ class SessionRuntime:
             cleared_samples = self.pending_samples + await self.adapter.clear()
             self.pending_pcm.clear()
             self.pending_frames.clear()
+            if self.open_unit_samples:
+                receipt = Unit(
+                    self.next_unit_index,
+                    self.open_unit_start_sample,
+                    b"",
+                    self.open_unit_samples,
+                )
+                self.next_unit_index += 1
+                self.open_unit_samples = 0
+                if self.is_unit_in_flight:
+                    self.cleared_unit_receipt = receipt
+                else:
+                    self.output_buffer.enqueue(
+                        Envelope(event=UnitCompleted(receipt.unit_id), unit=receipt)
+                    )
+            else:
+                pass
             self.ready_observations = None
             self.discarded_samples += cleared_samples
             self.notify(
@@ -449,7 +484,7 @@ class SessionRuntime:
             if self.is_input_ended:
                 raise ProtocolError("invalid_state", "audio input already ended")
             elif self.capabilities.tail_policy == "reject" and (
-                len(self.pending_pcm) % self.capabilities.native_unit_bytes
+                self.uncut_unit_bytes % self.capabilities.native_unit_bytes
             ):
                 raise ProtocolError(
                     "invalid_state", "partial native unit; append more audio before EOS"
@@ -458,10 +493,10 @@ class SessionRuntime:
                 pass
             self.is_input_ended = True
             pending_unit_count = (
-                len(self.pending_pcm) // self.capabilities.native_unit_bytes
+                self.uncut_unit_bytes // self.capabilities.native_unit_bytes
             )
             has_partial_unit = bool(
-                len(self.pending_pcm) % self.capabilities.native_unit_bytes
+                self.uncut_unit_bytes % self.capabilities.native_unit_bytes
             )
             if has_partial_unit:
                 self.mark_ready_units(self.next_unit_index + pending_unit_count, 1)
@@ -480,13 +515,32 @@ class SessionRuntime:
             self.mark_activity()
             self.input_ready.set()
 
-    def cut_next_unit(self) -> Unit:
+    def cut_next_unit(self) -> tuple[Unit, Unit | None]:
+        """The next audio for the adapter, and the receipt of its unit when that audio ends the unit.
+
+        A session forwarding partial units cuts the pending audio up to the end of its unit; any other session cuts whole units.
+        """
         unit_bytes = self.capabilities.native_unit_bytes
-        unit_pcm_bytes = min(unit_bytes, len(self.pending_pcm))
+        unit_pcm_bytes = min(
+            unit_bytes - self.open_unit_samples * PCM16_BYTES_PER_SAMPLE,
+            len(self.pending_pcm),
+        )
         start_sample = self.accepted_samples - self.pending_samples
         pcm = bytes(self.pending_pcm[:unit_pcm_bytes])
         del self.pending_pcm[:unit_pcm_bytes]
         real_samples = len(pcm) // PCM16_BYTES_PER_SAMPLE
+        is_eos = self.is_input_ended and not self.pending_pcm
+        if self.open_unit_samples:
+            unit_start_sample = self.open_unit_start_sample
+        else:
+            unit_start_sample = start_sample
+        unit_samples = self.open_unit_samples + real_samples
+        ends_unit = (
+            not self.forwards_partial_units
+            or unit_samples * PCM16_BYTES_PER_SAMPLE == unit_bytes
+            or is_eos
+            or bool(self.pending_commits and not self.pending_pcm)
+        )
         if (
             real_samples
             and unit_pcm_bytes < unit_bytes
@@ -510,7 +564,7 @@ class SessionRuntime:
             start_sample,
             pcm,
             real_samples,
-            self.is_input_ended and not self.pending_pcm,
+            is_eos,
             tuple(self.granted["output_modalities"]),
             images=tuple(
                 image
@@ -521,8 +575,17 @@ class SessionRuntime:
             ),
             ready_observation=ready_observation,
         )
-        self.next_unit_index += 1
-        return unit
+        if ends_unit:
+            self.next_unit_index += 1
+            self.open_unit_samples = 0
+            receipt = replace(
+                unit, start_sample=unit_start_sample, real_samples=unit_samples
+            )
+        else:
+            self.open_unit_start_sample = unit_start_sample
+            self.open_unit_samples = unit_samples
+            receipt = None
+        return unit, receipt
 
     async def pump(self) -> None:
         assert self.adapter is not None
@@ -534,16 +597,25 @@ class SessionRuntime:
                     if self.state != "OPEN":
                         return
                     elif (
-                        len(self.pending_pcm) < self.capabilities.native_unit_bytes
-                        and not self.is_input_ended
+                        not self.is_input_ended
                         and not self.pending_commits
+                        and (
+                            not self.pending_pcm
+                            if self.forwards_partial_units
+                            else len(self.pending_pcm)
+                            < self.capabilities.native_unit_bytes
+                        )
                     ):
                         continue
-                    elif not self.pending_pcm and self.pending_commits:
+                    elif (
+                        not self.pending_pcm
+                        and self.pending_commits
+                        and not self.open_unit_samples
+                    ):
                         self.pending_commits -= 1
                         unit = None
                     else:
-                        unit = self.cut_next_unit()
+                        unit, receipt = self.cut_next_unit()
                     self.is_unit_in_flight = True
                 if unit is None:
                     try:
@@ -584,12 +656,22 @@ class SessionRuntime:
                     pass
                 self.consumed_samples += consumed_samples
                 self.discarded_samples += discarded_samples
-                if self.close_task is None:
+                if self.close_task is not None:
+                    pass
+                elif receipt is not None:
                     self.output_buffer.enqueue(
-                        Envelope(event=UnitCompleted(unit.unit_id), unit=unit)
+                        Envelope(event=UnitCompleted(receipt.unit_id), unit=receipt)
+                    )
+                elif self.cleared_unit_receipt is not None:
+                    self.output_buffer.enqueue(
+                        Envelope(
+                            event=UnitCompleted(self.cleared_unit_receipt.unit_id),
+                            unit=self.cleared_unit_receipt,
+                        )
                     )
                 else:
                     pass
+                self.cleared_unit_receipt = None
                 if not unit.eos:
                     self.input_ready.set()
                 elif self.close_task is not None:
@@ -618,14 +700,14 @@ class SessionRuntime:
             self.fail(str(exc), exc.code)
         except Exception as exc:
             if ContextExhaustedError.matches(exc):
-                logger.error(f"Realtime session {self.session_id} closed: {exc}")
-                failure_code = ContextExhaustedError.CODE
+                code = ContextExhaustedError.CODE
             else:
-                logger.exception(
-                    f"Realtime session {self.session_id} input pump failed"
-                )
-                failure_code = CLOSE_REASON_INTERNAL
-            self.fail(str(exc), failure_code)
+                code = failure_code(exc)
+            logger.error(
+                f"Realtime session {self.session_id} input pump failed: {exc}",
+                exc_info=code == CLOSE_REASON_INTERNAL,
+            )
+            self.fail(str(exc), code)
 
     async def watch_activity(self) -> None:
         # note (Haiyang Luo): OPEN has no wake-up event; cap waits at the idle timeout.
