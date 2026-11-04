@@ -1,0 +1,48 @@
+config_cls: FireRedTTS3PipelineConfig
+model_path: FireRedTeam/FireRedTTS3
+
+# The speaker variant conditions on a speaker token, so this deployment has
+# no reference_encode stage; the pipeline config derives the 3-stage topology
+# from the checkpoint config at load time. max_patches follows the speaker
+# checkpoint default (600, ~96 s of audio).
+shared:
+  - select:
+      stages: [preprocessing, talker]
+    factory:
+      n_timesteps: 10
+      max_patches: 600
+
+stages:
+  # GPU stages warm their cold-start paths at factory time (talker side
+  # path, vocoder decoder paths); pin factory.warmup_on_init: false on a
+  # stage to skip it.
+  talker:
+    # Talker factory kill switches, all default on: flow_cuda_graph
+    # (whole-Euler-loop graph) and flow_batching (one batched DiT
+    # replay per engine step across concurrent requests).
+    # factory.flow_mode selects the DiT execution stack inside the flow
+    # loop: fp32 (bit-exact reference) / compile_fp32 / bf16 /
+    # compile_bf16 (default; throughput stack — the bf16 modes lower only
+    # the DiT matmul body, the Euler state, noise, CFG blend, and t_span
+    # stay fp32). The speaker variant has no ICL anchor, so its trajectory is
+    # chaotic by construction (the reference stack's own decode forms
+    # self-compare at mel p50 0.704); the default stays inside that envelope.
+    engine:
+      mem_fraction_static: 0.20
+      max_running_requests: 16
+      # The backbone decode CUDA graph (default on) reads the per-step latent
+      # feedback through the model-owned persistent buffer; pin
+      # disable_cuda_graph: true here only to force eager decode.
+  vocoder:
+    factory:
+      max_batch_size: 4
+      max_batch_wait_ms: 2
+      # Equal-progress stream coalescing (default on): lockstep streaming
+      # requests share one batched RedAE decoder forward per step; size-1
+      # groups keep the serial decode bit-exact. Pin stream_batching: false
+      # to force the serial path. Warm steady-state chunk decodes replay
+      # self-captured CUDA graphs (default on; B=1 bit-exact with eager);
+      # pin incremental_cuda_graph: false to force eager.
+      # Cold joint prompt+first-chunk decodes replay left-padded bucket
+      # graphs (default on; batch buckets cap at 2, wider groups eager);
+      # pin cold_cuda_graph: false to force eager.

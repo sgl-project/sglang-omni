@@ -1,0 +1,51 @@
+config_cls: FireRedTTS3PipelineConfig
+model_path: FireRedTeam/FireRedTTS3
+
+# Same shared-knob contract as the Base config: the talker owns the
+# generation schedule, preprocessing derives from it.
+shared:
+  - select:
+      stages: [preprocessing, talker]
+    factory:
+      n_timesteps: 10
+      max_patches: 400
+
+stages:
+  # Every GPU stage warms its cold-start paths at factory time (RedAE
+  # encoder on reference_encode, side path on the talker, decoder paths on
+  # the vocoder); pin factory.warmup_on_init: false on a stage to skip it.
+  talker:
+    # Talker factory kill switches, all default on: flow_cuda_graph
+    # (whole-Euler-loop graph) and flow_batching (one batched DiT
+    # replay per engine step across concurrent requests).
+    # factory.flow_mode selects the DiT execution stack inside the flow
+    # loop: fp32 (bit-exact reference) / compile_fp32 / bf16 /
+    # compile_bf16 (the Base/speaker default). Instruct pins fp32: its tts
+    # trajectory is knife-edge — measured: EVERY non-bit-exact mode
+    # flipping the near-threshold stop head (compile_bf16 2/2 utterances,
+    # compile_fp32 1/3, stopping 2-3 patches early with mel-band corr
+    # 0.30-0.62 vs fp32).
+    factory:
+      flow_mode: fp32
+    engine:
+      mem_fraction_static: 0.20
+      max_running_requests: 16
+      # The backbone decode CUDA graph (default on) bakes the real-logits
+      # branch for this lm_head checkpoint, so text-AR steps stay samplable
+      # under replay; every decode step pays one discarded lm_head GEMM.
+      # Pin disable_cuda_graph: true to force eager decode.
+  vocoder:
+    factory:
+      max_batch_size: 4
+      max_batch_wait_ms: 2
+      # Equal-progress stream coalescing (default on): lockstep streaming
+      # requests share one batched RedAE decoder forward per step; size-1
+      # groups keep the serial decode bit-exact. Pin stream_batching: false
+      # to force the serial path. Warm steady-state chunk decodes replay
+      # self-captured CUDA graphs (default on; B=1 bit-exact with eager);
+      # pin incremental_cuda_graph: false to force eager.
+      # Cold joint prompt+first-chunk decodes replay left-padded bucket
+      # graphs (default on; batch buckets cap at 2, wider groups eager);
+      # pin cold_cuda_graph: false to force eager.
+  # reference_encode keeps a content-addressed artifact cache (default on);
+  # pin factory.reference_cache: false on that stage to disable it.

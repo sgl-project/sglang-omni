@@ -515,6 +515,7 @@ class Client:
                 if last_chunk
                 else UNKNOWN_FINISH_REASON
             ),
+            text=last_chunk.text if last_chunk else None,
         )
 
     # ------------------------------------------------------------------

@@ -13,6 +13,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    JsonValue,
     field_validator,
     model_validator,
 )
@@ -447,6 +448,7 @@ class CreateSpeechRequest(BaseModel):
 
     # Per-stage overrides (sglang-omni specific)
     stage_params: dict[str, dict[str, object]] | None = None
+    extra_params: dict[str, JsonValue] | None = None
 
 
 class SpeechBatchItem(BaseModel):
@@ -483,6 +485,7 @@ class SpeechBatchItem(BaseModel):
     repetition_penalty: object = None
     seed: object = None
     stage_params: object = None
+    extra_params: object = None
 
 
 class CreateSpeechBatchRequest(BaseModel):
@@ -519,6 +522,7 @@ class CreateSpeechBatchRequest(BaseModel):
     repetition_penalty: float | None = None
     seed: int | None = None
     stage_params: dict[str, dict[str, object]] | None = None
+    extra_params: dict[str, JsonValue] | None = None
 
 
 class SpeechBatchResult(BaseModel):
@@ -530,6 +534,7 @@ class SpeechBatchResult(BaseModel):
     format: str | None = None
     media_type: str | None = None
     finish_reason: str | None = None
+    text: str | None = None
     error: dict[str, object] | None = None
 
 
@@ -585,6 +590,7 @@ class SpeechStreamSessionConfig(BaseModel):
     repetition_penalty: float | None = None
     seed: int | None = None
     stage_params: dict[str, dict[str, object]] | None = None
+    extra_params: dict[str, JsonValue] | None = None
 
 
 class UploadedVoiceMetadata(BaseModel):
