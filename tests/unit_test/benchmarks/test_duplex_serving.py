@@ -347,7 +347,7 @@ def test_level_counts_every_unit_of_a_failed_session_as_missed(tmp_path: Path) -
 
 
 def test_level_counts_rejected_sessions_apart_from_failures(tmp_path: Path) -> None:
-    """Rejected sessions send no audio but still contribute their expected missed units."""
+    """Final rejection used to inflate unit misses alongside runtime failures."""
     run_dir = record_run(
         tmp_path / "run",
         3,
@@ -378,8 +378,9 @@ def test_level_counts_rejected_sessions_apart_from_failures(tmp_path: Path) -> N
     assert level["sessions_with_admission_rejections"] == 3
     assert "admission_rejections" not in level
     assert level["admission_denial_events"] == 8
-    assert level["units_expected"] == 9
-    assert level["units_missed"] == 6
+    assert level["units_expected"] == 6
+    assert level["units_missed"] == 3
+    assert level["unit_miss_rate"] == 0.5
     assert cells["rejected"] == "1"
     assert cells["affected"] == "3"
     assert cells["denial events"] == "8"
@@ -405,6 +406,40 @@ def test_level_counts_rejected_sessions_apart_from_failures(tmp_path: Path) -> N
     )
     assert verdict["failure_kind"] == "admission_rejected", verdict
     assert verdict["metrics"]["admission_rejections"] == ADMISSION_RETRIES + 1
+
+
+@pytest.mark.parametrize("has_admitted_session", [False, True])
+def test_rejection_fails_targets_without_counting_unit_misses(
+    tmp_path: Path, has_admitted_session: bool
+) -> None:
+    """Rejected sessions used to contribute units even when none were admitted."""
+    sessions = (
+        [("pass", ON_TIME), ("fail", [])] if has_admitted_session else [("fail", [])]
+    )
+    run_dir = record_run(
+        tmp_path / "run",
+        len(sessions),
+        sessions,
+        rejected_session_index=len(sessions) - 1,
+    )
+    report = serving_report([run_dir], PLAYBACK_RESERVE_S)
+    level = report["levels"][0]
+    assert level["sessions"] == len(sessions)
+    assert level["sessions_failed"] == 0
+    assert level["sessions_rejected"] == 1
+    assert level["units_expected"] == (3 if has_admitted_session else 0)
+    assert level["units_missed"] == 0
+    assert level["unit_miss_rate"] == (0.0 if has_admitted_session else None)
+    assert level["unmet_targets"] == ["no admission rejections"]
+    assert report["max_concurrency_meeting_targets"] is None
+    header, _, row = benchmark_duplex_serving.format_table(report).splitlines()[:3]
+    cells = dict(
+        zip(
+            [cell.strip() for cell in header.split("|")],
+            [cell.strip() for cell in row.split("|")],
+        )
+    )
+    assert cells["unit miss"] == ("0.0%" if has_admitted_session else "-")
 
 
 @pytest.mark.parametrize(

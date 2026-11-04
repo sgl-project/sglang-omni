@@ -1283,7 +1283,7 @@ Each level is one row:
 | `rejected` | Sessions whose complete trace shows final admission rejection without another failure |
 | `affected`, `denial events` | Unique sessions encountering either rejection type, including recovered sessions; and total rejection events, including the final exhausted attempt |
 | `pacing violations` | Sessions whose input drifted more than one 80 ms packet from its schedule. A pacing violation means the load generator fell behind, so the level does not measure the server |
-| `unit miss` | Native profiles only. Units whose lag exceeds one nominal unit (1000 ms for MiniCPM-o), plus every expected unit of a failed or rejected session |
+| `unit miss` | Native profiles only. Units whose lag exceeds one nominal unit (1000 ms for MiniCPM-o), plus every expected unit of a runtime or protocol failure. Final admission rejections are excluded from both missed and expected units; the rate is `-` when no expected units remain |
 | `unit lag` | Native profiles only. Receipt of `sglang.unit.done` minus the time the client finished sending the packet holding the unit's last audio; the short last unit, which the server fills with silence, starts at the input end instead. On MiniCPM-o it matches the server-side `ready_to_finished_ms` of the request event recorder within a few milliseconds |
 | `first audio` | Native: from the unit carrying a reply's first audio being ready to that audio's receipt. Turn-based: from `response.created`, which arrives when the server ends the user's turn, to the first audio |
 | `buffer needed` | The smallest startup buffer with which a reply plays without a gap. It does not depend on `--playback-reserve-ms` |
@@ -1388,7 +1388,7 @@ The reported results came from one C1 and C2 screen, five C4 runs, two C8 runs, 
 | `ERROR: --num-shards N leaves model servers idle` | Use at least as many shards as GPUs in `--gpus` |
 | `ERROR: SERVER_PORT gives every model server the same port` | Unset `SERVER_PORT` when `--gpus` lists several GPUs; each server then derives its port from its GPU |
 | HTTP 503 in a record log | Another client may hold the server's sessions; check for competing recordings |
-| `failure_kind: admission_rejected` | The shared retry budget was exhausted without admission. Inspect the HTTP and `admission_rejected` records for the cause; in-session rejection can reflect backend-open errors as well as occupied session slots. In a serving sweep this is part of the level's result. Outside a serving sweep, lower `--concurrency` when the records indicate capacity pressure |
+| `failure_kind: admission_rejected` | The shared retry budget was exhausted without admission. Inspect the HTTP and `admission_rejected` records for the cause; in-session `admission_rejected` is emitted only for `QueueFullError`. In a serving sweep this is part of the level's result. Outside a serving sweep, lower `--concurrency` when the records indicate capacity pressure |
 | `ERROR: CUDA_VISIBLE_DEVICES must list distinct numeric GPU indices` | Export indices such as `0` or `0,1`, not GPU UUIDs |
 | `ERROR: --gpus ... reaches outside CUDA_VISIBLE_DEVICES` | List only GPUs that `CUDA_VISIBLE_DEVICES` names, or widen it |
 | `--device cuda needs exactly one visible GPU` (manual ASR command) | Export a single index for that command |

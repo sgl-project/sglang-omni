@@ -224,12 +224,17 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
         for variant_state in attempted
         if variant_state["status"] in SCORED_STATUSES
     ]
+    failed_variants = [
+        variant_state
+        for variant_state in attempted
+        if variant_state["status"] in FAILED_STATUSES
+        and variant_state.get("failure_kind") != "admission_rejected"
+    ]
     # note (jeffro): every unit of a session that broke off is missed, so a failure
     # cannot lower the miss rate.
     failed_units = sum(
         input_units(run_dir / variant_state["directory"], unit_ms)
-        for variant_state in attempted
-        if variant_state["status"] in FAILED_STATUSES
+        for variant_state in failed_variants
     )
     trace_spans_s: list[tuple[float, float]] = []
     sessions_with_admission_events = 0
@@ -277,11 +282,7 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
         sessions_with_admission_rejections += bool(session_rejections)
     replies = [reply for session in sessions for reply in session["replies"]]
     load = run["load"]
-    sessions_failed = sum(
-        variant_state["status"] in FAILED_STATUSES
-        and variant_state.get("failure_kind") != "admission_rejected"
-        for variant_state in attempted
-    )
+    sessions_failed = len(failed_variants)
     sessions_rejected = sum(
         variant_state.get("failure_kind") == "admission_rejected"
         for variant_state in attempted
@@ -306,10 +307,10 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
         units_missed = failed_units + sum(
             session["units_missed"] for session in sessions
         )
-        unit_miss_rate = units_missed / units_expected
+        unit_miss_rate = units_missed / units_expected if units_expected else None
         pacing_target = (
             f"unit miss rate at most {MAX_UNIT_MISS_RATE:.0%}",
-            unit_miss_rate > MAX_UNIT_MISS_RATE,
+            unit_miss_rate is not None and unit_miss_rate > MAX_UNIT_MISS_RATE,
         )
     else:
         units_expected = units_missed = unit_miss_rate = None
