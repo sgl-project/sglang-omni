@@ -162,11 +162,15 @@ def test_unsupported_deployments_fail_before_loading(
         raise LookupError("loaded")
 
     for device, profile, message in [
-        (torch.device("cpu"), "offline", "CUDA device"),
+        (torch.device("cpu"), "offline", "CUDA or XPU device"),
         (torch.device("cuda:0"), "live", "Unknown diarization profile"),
     ]:
         with pytest.raises(ValueError, match=message):
             load_diarization_model("missing/repository", device=device, profile=profile)
+    with pytest.raises(FileNotFoundError):
+        load_diarization_model(
+            "missing/repository.nemo", device=torch.device("xpu"), profile="offline"
+        )
     monkeypatch.setattr(stages, "load_diarization_model", load)
     for concurrency in [0, True]:
         with pytest.raises(ValueError, match="max_concurrency must be a positive"):
@@ -240,6 +244,95 @@ def test_failed_inference_waits_for_gpu_before_propagating_error(
         finished.set()
         thread.join(timeout=5)
     assert "inference failed" in str(errors[0])
+
+
+class StreamProbe:
+    def __init__(self) -> None:
+        self.waited: list[torch.cuda.Event] = []
+        self.synchronized = 0
+
+    def wait_event(self, event: torch.cuda.Event) -> None:
+        self.waited.append(event)
+
+    def synchronize(self) -> None:
+        self.synchronized += 1
+
+
+class DeviceModuleProbe:
+    def __init__(self) -> None:
+        self.current = StreamProbe()
+        self.requested: list[str] = []
+        self.created: list[StreamProbe] = []
+        self.events: list[SimpleNamespace] = []
+        self.entered: list[StreamProbe] = []
+
+    def Event(self) -> SimpleNamespace:
+        event = SimpleNamespace(recorded=[])
+        event.record = event.recorded.append
+        self.events.append(event)
+        return event
+
+    def current_stream(self, device: torch.device) -> StreamProbe:
+        return self.current
+
+    def Stream(self, device: torch.device) -> StreamProbe:
+        stream = StreamProbe()
+        self.created.append(stream)
+        return stream
+
+    @contextmanager
+    def stream(self, stream: StreamProbe) -> Iterator[None]:
+        self.entered.append(stream)
+        yield
+
+
+def dispatch_probe(
+    monkeypatch: pytest.MonkeyPatch, device_type: str
+) -> DeviceModuleProbe:
+    monkeypatch.setattr(
+        platforms, "current_platform", SimpleNamespace(device_type=device_type)
+    )
+    module = DeviceModuleProbe()
+
+    def get_device_module(target: str | torch.device) -> DeviceModuleProbe:
+        module.requested.append(str(target))
+        return module
+
+    monkeypatch.setattr(torch, "get_device_module", get_device_module)
+    return module
+
+
+@pytest.mark.parametrize("device_type", ["cuda", "xpu"])
+def test_single_stream_worker_settles_the_platform_stream(
+    monkeypatch: pytest.MonkeyPatch, device_type: str
+) -> None:
+    module = dispatch_probe(monkeypatch, device_type)
+    worker = stages.DiarizationWorker(RecordingModel(), torch.device("cpu"), 1, 1)
+    with worker.compute_context():
+        pass
+    assert module.requested == [device_type]
+    assert module.created == []
+    assert module.entered == []
+    assert module.current.synchronized == 1
+
+
+@pytest.mark.parametrize("device_type", ["cuda", "xpu"])
+def test_concurrent_worker_stream_waits_for_the_load_event(
+    monkeypatch: pytest.MonkeyPatch, device_type: str
+) -> None:
+    module = dispatch_probe(monkeypatch, device_type)
+    worker = stages.DiarizationWorker(RecordingModel(), torch.device("cpu"), 2, 1)
+    assert module.requested == [device_type]
+    assert module.events[0].recorded == [module.current]
+    with worker.compute_context():
+        pass
+    assert module.created[0].waited == [module.events[0]]
+    assert module.entered == [module.created[0]]
+    assert module.created[0].synchronized == 1
+    with worker.compute_context():
+        pass
+    assert len(module.created) == 1
+    assert module.created[0].synchronized == 2
 
 
 @pytest.mark.parametrize(
