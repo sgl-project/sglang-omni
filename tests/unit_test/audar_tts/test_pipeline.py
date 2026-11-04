@@ -35,6 +35,7 @@ from sglang_omni.pipeline.mp_runner import build_stage_groups
 from sglang_omni.pipeline.runtime_config import prepare_pipeline_runtime
 from sglang_omni.proto import DataReadyMessage, OmniRequest, StagePayload
 from sglang_omni.relay.shm import ShmRelay
+from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.serve.speech_errors import SpeechAPIError
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.utils.imports import import_string
@@ -407,6 +408,40 @@ def test_request_lowering_requires_one_transcribed_reference() -> None:
                 }
             )
         )
+
+
+@pytest.mark.parametrize(
+    "params", [{"temperature": -1.0}, {"top_p": 1.5}, {"repetition_penalty": 0.0}]
+)
+def test_out_of_range_sampling_is_a_caller_error(params: dict[str, float]) -> None:
+    """An out-of-range sampling value was answered with HTTP 500."""
+    reference = {"bytes": five_second_wav(), "text": "reference transcript"}
+    payload = make_payload(
+        inputs={"text": "target", "references": [reference]}, params=params
+    )
+
+    with pytest.raises(ValueError) as refusal:
+        build_audar_state(payload)
+
+    # The refusal crosses the stage boundary as text.
+    assert is_bad_request_error(RuntimeError(str(refusal.value)))
+
+
+def test_short_reference_audio_is_a_caller_error() -> None:
+    """A reference shorter than 5 seconds was answered with HTTP 500."""
+    output = io.BytesIO()
+    with wave.open(output, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16000)
+        wav.writeframes(np.zeros(32000, dtype="<i2").tobytes())
+
+    with pytest.raises(ValueError, match="5-15 seconds") as refusal:
+        stages.load_reference_waveform(
+            stages.ReferenceInput("bytes", output.getvalue())
+        )
+
+    assert is_bad_request_error(RuntimeError(str(refusal.value)))
 
 
 def test_reference_encoder_builds_prompt_and_caches(
