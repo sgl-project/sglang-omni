@@ -985,7 +985,7 @@
 </tbody>
 </table>
 </div>
-<p>The three jobs share the pull request’s Full-Duplex-Bench assets, so they run one after another, and a failed job does not skip the next. Each stage has one system and no model label. Turn based and cascaded fail by design until they are calibrated, so <code class="docutils literal notranslate"><span class="pre">run-all-ci</span></code> runs only the native full duplex job.</p>
+<p>The three jobs share the pull request’s Full-Duplex-Bench assets, so they run one after another, and a failed job does not skip the next. Each stage has one system and no model label. Turn based fails by design until it is calibrated, so <code class="docutils literal notranslate"><span class="pre">run-all-ci</span></code> runs the native full duplex and cascaded jobs.</p>
 </section>
 </section>
 <section id="hardware-workflows">
@@ -1010,7 +1010,7 @@
 <section id="label-rules">
 <h2>Label rules<a class="headerlink" href="#label-rules" title="Link to this heading">#</a></h2>
 <ol class="arabic simple">
-<li><p>A stage runs only when its stage label or <code class="docutils literal notranslate"><span class="pre">run-all-ci</span></code> is on the pull request. <code class="docutils literal notranslate"><span class="pre">run-all-ci</span></code> selects every stage except duplex turn based and cascaded, which run only with their own labels until they are calibrated.</p></li>
+<li><p>A stage runs only when its stage label or <code class="docutils literal notranslate"><span class="pre">run-all-ci</span></code> is on the pull request. <code class="docutils literal notranslate"><span class="pre">run-all-ci</span></code> selects every stage except duplex turn based, which runs only with its own label until it is calibrated.</p></li>
 <li><p>Self-hosted CI needs <code class="docutils literal notranslate"><span class="pre">run-all-ci</span></code>, a stage label, or <code class="docutils literal notranslate"><span class="pre">run-lint-only</span></code>. Without one, the Omni CI gate fails with <code class="docutils literal notranslate"><span class="pre">No</span> <span class="pre">CI</span> <span class="pre">label</span> <span class="pre">found</span></code>; unselected hardware workflows skip their tests without failing. The checks on GitHub-hosted runners do not depend on labels. <code class="docutils literal notranslate"><span class="pre">run-lint-only</span></code> runs no self-hosted job, so a green lint check leaves no self-hosted failure. It does not turn off a stage label that is also present.</p></li>
 <li><p>Any stage label also runs PR Test. A pull request labeled only <code class="docutils literal notranslate"><span class="pre">run-mac-ci</span></code> still runs PR Test on H100.</p></li>
 <li><p>A model label names a model, not a stage. It picks that model for every selected stage that accepts it, and never selects a stage by itself. Higgs and MOSS labels are accepted by TTS and MPS. If no selected stage accepts the label, the gate prints a warning.</p></li>
@@ -1026,7 +1026,7 @@
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-all-ci</span></code></p></td>
-<td><p>Every stage except duplex turn based and cascaded</p></td>
+<td><p>Every stage except duplex turn based</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-lint-only</span></code></p></td>
 <td><p>No self-hosted job. The gates succeed.</p></td>
