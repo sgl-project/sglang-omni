@@ -2569,6 +2569,37 @@ async def test_an_explicit_dialog_language_applies_only_to_short_utterances_unti
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "configured, tag, content",
+    [
+        (
+            "English",
+            "English",
+            f"Merci.\n\n[{SHORT_UTTERANCE_NOTE.format(language='English')}]",
+        ),
+        ("", "French", "Merci."),
+    ],
+)
+async def test_an_untagged_short_utterance_asks_for_the_configured_language(
+    configured, tag, content
+):
+    """With dialog.language set, a short utterance the recognizer named no language for was tagged with the configured language while its prompt asked for none, so a reply in the remembered language was spoken in the configured one."""
+    dialog = build({"kind": "dialog", "language": configured})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("Quel temps fait-il aujourd'hui ?", True, "French"),
+            text_chunk("Il fait beau.", 1),
+            control_chunk(TURN_DONE, turn=1),
+            transcript_chunk("Merci.", True),
+        ],
+    )
+    chunk = [o for o in outputs if o.format == MESSAGES][-1]
+    assert chunk.payload.get("language") == tag
+    assert messages_of(chunk)[-1].content == content
+
+
+@pytest.mark.asyncio
 async def test_chat_deltas_carry_the_language_of_their_messages():
     generator = build({"kind": "openai_chat", **HTTP_SERVICE})
 
