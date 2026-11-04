@@ -61,7 +61,8 @@ def pcm16_to_waveform(chunk: TimedChunk) -> torch.Tensor:
 
 
 def waveform_to_pcm16(waveform: torch.Tensor) -> bytes:
-    samples = (waveform.float().clamp(-1.0, 1.0) * (PCM16_SCALE - 1)).round()
+    # note (yaourt137): Match the truncation used by the offline PCM/WAV encoder.
+    samples = waveform.float().clamp(-1.0, 1.0) * (PCM16_SCALE - 1)
     return samples.to(torch.int16).cpu().numpy().astype("<i2").tobytes()
 
 

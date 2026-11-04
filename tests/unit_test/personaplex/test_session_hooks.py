@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 import torch
 
+from sglang_omni.client.audio import encode_pcm
 from sglang_omni.models.personaplex.architecture import SAMPLES_PER_FRAME
 from sglang_omni.models.personaplex.mimi_decode_graph import MimiDecodeSlots
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
@@ -23,6 +24,12 @@ from sglang_omni.scheduling.session import SessionAppend, SessionContext
 
 CALL = SessionIdentity("call")
 PROMPT_IDS = [11, 12, 13]
+
+
+def test_session_and_offline_pcm_quantization_match() -> None:
+    """Identical float waveforms previously differed by one PCM unit across routes."""
+    waveform = torch.linspace(-1.1, 1.1, 65537, dtype=torch.float32)
+    assert waveform_to_pcm16(waveform) == encode_pcm(waveform.numpy(), 24000)
 
 
 def context(emitted: list[TimedChunk]) -> SessionContext:
