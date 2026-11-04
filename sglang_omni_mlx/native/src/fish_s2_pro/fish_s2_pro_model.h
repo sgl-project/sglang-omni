@@ -6,6 +6,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -23,6 +24,9 @@ namespace fish_s2_pro {
 
 // Codes per residual codebook; the semantic codebook has the model's 4096.
 inline constexpr int kResidualCodebookSize = 1024;
+// The buffers MLX keeps for reuse during a request; the worker clears them once
+// idle, so an idle server holds only the model.
+inline constexpr size_t kCacheLimitBytes = 2ULL * 1024 * 1024 * 1024;
 
 // The CUDA server's sampling of the semantic code; seed is the request's
 // seed already masked to 31 bits.

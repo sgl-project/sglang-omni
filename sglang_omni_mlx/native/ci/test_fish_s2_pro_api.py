@@ -14,6 +14,7 @@ import io
 import json
 import re
 import socket
+import struct
 import time
 import wave
 from collections.abc import Iterator
@@ -66,6 +67,18 @@ def wav_bytes(sample_rate: int, seconds: float = 0.5, channels: int = 1) -> byte
         writer.setframerate(sample_rate)
         writer.writeframes(np.repeat(tone, channels).tobytes())
     return buffer.getvalue()
+
+
+def nan_wav_bytes() -> bytes:
+    """A 32-bit float WAV of NaN samples, which the wave module cannot write."""
+    samples = np.full(SAMPLE_RATE // 2, np.nan, dtype="<f4").tobytes()
+    format_chunk = struct.pack(
+        "<IHHIIHH", 16, 3, 1, SAMPLE_RATE, SAMPLE_RATE * 4, 4, 32
+    )
+    body = (
+        b"WAVEfmt " + format_chunk + b"data" + struct.pack("<I", len(samples)) + samples
+    )
+    return b"RIFF" + struct.pack("<I", len(body)) + body
 
 
 def data_url(wav: bytes) -> str:
@@ -613,6 +626,11 @@ def test_fish_rejects_another_model_than_its_chosen_name() -> None:
                 ),
             },
             "ref_audio: reference WAV has an unsupported channel count",
+        ),
+        # NaN samples passed the empty check and reached the codec.
+        (
+            {"input": "hi", "ref_audio": data_url(nan_wav_bytes())},
+            "ref_audio: reference audio has non-finite samples",
         ),
         (
             {"input": "hi", "repetition_penalty": 0},

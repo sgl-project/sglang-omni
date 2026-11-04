@@ -288,10 +288,7 @@ public:
       : SpeechServedModel(kMaxRequestBodyBytes, max_queued_requests,
                           request_timeout_seconds),
         model_(model_directory) {
-    // Note (Jiaxin Deng): freed MLX buffers go back to the system; MLX's
-    // cache of them grows with each request's length, to twice the model's
-    // memory, and an idle server then holds only the model.
-    mlx::core::set_cache_limit(0);
+    mlx::core::set_cache_limit(fish_s2_pro::kCacheLimitBytes);
   }
 
 private:
