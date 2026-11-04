@@ -179,7 +179,7 @@ sgl-omni serve \
   --port 8000
 ```
 
-- **Acceptance length.** Send `return_spec_tokens_details: true` with a chat request to get its `sglext.spec_tokens_details`: `spec_accept_length` (committed tokens per verify, the per-request counterpart of the scheduler log's `accept len`), `spec_accept_rate`, the draft counts and the per-verify histogram. A streamed response sends it in a chunk with empty `choices` before `[DONE]`.
+- **Acceptance length.** Send `return_spec_tokens_details: true` with a chat request to get its `sglext.spec_tokens_details`: `spec_accept_length` (committed tokens per verify, the per-request counterpart of the scheduler log's `accept len`), `spec_accept_rate`, the draft counts and the per-verify histogram. A streamed response sends it in a chunk with empty `choices` before `[DONE]`. Only the Thinker draft is reported for now, including on speech responses; a per-stage field can follow once the Talker has a draft too.
 - **Context.** The drafts shown above have an 8,192-token context. The prompt, output budget and speculative reservations must fit within it. Use `--preprocessing.factory.max_seq_len 8192` to reject oversized prompts early.
 - **Sampling.** Keep `repetition_penalty=1`, `frequency_penalty=0`, `presence_penalty=0`, and `min_p=0`. Disable logprobs and `return_hidden_states`. For `/generate`, send `return_logprob: false`.
 - **Scheduling.** Speculative decoding is synchronous by default. Add `--thinker.factory.enable_async_decode true` to either command to enable overlap, keeping `async_decode_min_batch_size=1`. Mixed prefill/decode batches (`enable_mixed_chunk=true`), sessions and weight updates are unsupported with a draft.

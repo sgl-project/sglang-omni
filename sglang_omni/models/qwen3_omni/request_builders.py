@@ -1069,9 +1069,8 @@ def apply_thinker_result(
     else:
         pass
 
-    spec_tokens_details = getattr(result, "spec_tokens_details", None)
-    if spec_tokens_details is not None:
-        thinker_out["spec_tokens_details"] = spec_tokens_details
+    if result.spec_tokens_details is not None:
+        thinker_out["spec_tokens_details"] = result.spec_tokens_details
     else:
         pass
 

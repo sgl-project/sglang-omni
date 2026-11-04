@@ -20,6 +20,7 @@ from pydantic import (
 )
 
 from sglang_omni.client.types import UsageInfo
+from sglang_omni.scheduling.types import SpecTokensDetailsDict
 
 
 class UsageResponse(BaseModel):
@@ -45,6 +46,16 @@ class SglExt(BaseModel):
     """Response-level extension fields outside the OpenAI schema."""
 
     spec_tokens_details: SpecTokensDetails
+
+
+def build_sglext(
+    return_spec_tokens_details: bool,
+    spec_tokens_details: SpecTokensDetailsDict | None,
+) -> SglExt | None:
+    if return_spec_tokens_details and spec_tokens_details is not None:
+        return SglExt(spec_tokens_details=SpecTokensDetails(**spec_tokens_details))
+    else:
+        return None
 
 
 class ChatMessage(BaseModel):

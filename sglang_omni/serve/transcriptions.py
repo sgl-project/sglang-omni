@@ -17,10 +17,9 @@ from sglang_omni.config import ResolvedAudioChunking
 from sglang_omni.serve import speech_to_text
 from sglang_omni.serve.openai_errors import generation_error_status_code
 from sglang_omni.serve.protocol import (
-    SglExt,
-    SpecTokensDetails,
     TranscriptionResponse,
     TranscriptionUsage,
+    build_sglext,
 )
 from sglang_omni.serve.transcription_adapters import TranscriptionAdapter
 from sglang_omni.serve.transcription_chunking import (
@@ -316,13 +315,8 @@ async def transcribe_planned_upload(
             duration_s=duration_s,
             response_formats=TRANSCRIPTION_RESPONSE_FORMATS,
             finish_reason=result.finish_reason,
-            sglext=(
-                SglExt(
-                    spec_tokens_details=SpecTokensDetails(**result.spec_tokens_details)
-                )
-                if form.return_spec_tokens_details
-                and result.spec_tokens_details is not None
-                else None
+            sglext=build_sglext(
+                form.return_spec_tokens_details, result.spec_tokens_details
             ),
         )
     else:

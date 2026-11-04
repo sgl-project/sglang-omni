@@ -309,6 +309,7 @@ def test_qwen_apply_thinker_result_preserves_empty_logprob_list() -> None:
         extra_model_outputs={},
         finish_reason=None,
         weight_version=None,
+        spec_tokens_details=None,
         output_token_logprobs=[],
     )
 
@@ -322,7 +323,9 @@ def test_qwen_apply_thinker_result_preserves_empty_logprob_list() -> None:
 
 def test_qwen_apply_thinker_result_omits_missing_optional_fields() -> None:
     state = Qwen3OmniPipelineState()
-    result = SimpleNamespace(output_ids=[8], extra_model_outputs={})
+    result = SimpleNamespace(
+        output_ids=[8], extra_model_outputs={}, spec_tokens_details=None
+    )
 
     thinker_out = apply_thinker_result(state, stage_name="thinker", result=result)
 

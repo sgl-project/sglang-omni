@@ -114,13 +114,13 @@ from sglang_omni.serve.protocol import (
     RolloutGenerateRequest,
     RolloutSamplingParams,
     SglExt,
-    SpecTokensDetails,
     SpeechBatchResponse,
     UpdateWeightFromDiskRequest,
     UpdateWeightsFromDistributedRequest,
     UsageResponse,
     VoiceListResponse,
     WeightsCheckerRequest,
+    build_sglext,
 )
 from sglang_omni.serve.realtime.manager import RealtimeDeployment
 from sglang_omni.serve.realtime.schema import CapabilityResponse
@@ -1166,11 +1166,7 @@ async def chat_non_stream(
             )
         ],
         usage=usage,
-        sglext=(
-            SglExt(spec_tokens_details=SpecTokensDetails(**result.spec_tokens_details))
-            if req.return_spec_tokens_details and result.spec_tokens_details is not None
-            else None
-        ),
+        sglext=build_sglext(req.return_spec_tokens_details, result.spec_tokens_details),
     )
 
     return JSONResponse(content=response.model_dump())
@@ -1366,13 +1362,14 @@ async def chat_stream_events(
         choice.setdefault("finish_reason", None)
     yield f"data: {json.dumps(data)}\n\n"
 
-    if req.return_spec_tokens_details and spec_tokens_details is not None:
+    sglext = build_sglext(req.return_spec_tokens_details, spec_tokens_details)
+    if sglext is not None:
         sglext_resp = ChatCompletionStreamResponse(
             id=response_id,
             created=created,
             model=model,
             choices=[],
-            sglext=SglExt(spec_tokens_details=SpecTokensDetails(**spec_tokens_details)),
+            sglext=sglext,
         )
         yield f"data: {sglext_resp.model_dump_json(exclude_none=True)}\n\n"
     else:
@@ -2198,10 +2195,11 @@ async def speech_audio_response(
             final_usage = chunk.usage
         else:
             pass
-        if return_spec_tokens_details and chunk.spec_tokens_details is not None:
-            sglext = SglExt(
-                spec_tokens_details=SpecTokensDetails(**chunk.spec_tokens_details)
-            )
+        chunk_sglext = build_sglext(
+            return_spec_tokens_details, chunk.spec_tokens_details
+        )
+        if chunk_sglext is not None:
+            sglext = chunk_sglext
         else:
             pass
 

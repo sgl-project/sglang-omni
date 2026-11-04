@@ -28,11 +28,11 @@ from sglang_omni.client import (
 from sglang_omni.serve.openai_errors import generation_error_status_code
 from sglang_omni.serve.protocol import (
     SglExt,
-    SpecTokensDetails,
     TranscriptionResponse,
     TranscriptionTextDeltaEvent,
     TranscriptionTextDoneEvent,
     TranscriptionUsage,
+    build_sglext,
 )
 from sglang_omni.serve.streaming import (
     STREAM_DONE_SENTINEL,
@@ -608,10 +608,11 @@ async def speech_to_text_stream(
 
     def _event_for(chunk: GenerateChunk) -> str | None:
         nonlocal final_text, finish_reason, sglext
-        if return_spec_tokens_details and chunk.spec_tokens_details is not None:
-            sglext = SglExt(
-                spec_tokens_details=SpecTokensDetails(**chunk.spec_tokens_details)
-            )
+        chunk_sglext = build_sglext(
+            return_spec_tokens_details, chunk.spec_tokens_details
+        )
+        if chunk_sglext is not None:
+            sglext = chunk_sglext
         else:
             pass
         if chunk.finish_reason is not None:
