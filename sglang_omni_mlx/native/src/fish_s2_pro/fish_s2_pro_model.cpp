@@ -107,12 +107,7 @@ FishS2ProModel::FishS2ProModel(const std::filesystem::path &model_directory,
             return omni_common::WeightMap(weights.begin(), weights.end());
           }(),
           config),
-      codec_([&] {
-        auto [weights, metadata] = mx::load_safetensors(
-            (model_directory / "codec.safetensors").string());
-        return omni_common::WeightMap(weights.begin(), weights.end());
-      }()),
-      tokenizer_(model_directory),
+      codec_(model_directory), tokenizer_(model_directory),
       slow_rotary_{mx::array(0.0f), mx::array(0.0f)},
       fast_rotary_{mx::array(0.0f), mx::array(0.0f)} {
   const nlohmann::json &text = config.at("text_config");

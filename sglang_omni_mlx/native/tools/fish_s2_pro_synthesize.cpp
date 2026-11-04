@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "common/audio.h"
+#include "common/reference_audio.h"
 #include "fish_s2_pro/fish_s2_pro_model.h"
 #include "nlohmann/json.hpp"
 
@@ -99,12 +100,12 @@ int main(int argc, char **argv) {
     std::ifstream stream(reference_audio_path, std::ios::binary);
     std::ostringstream contents;
     contents << stream.rdbuf();
-    const fish_s2_pro::DecodedWav wav =
-        fish_s2_pro::DecodeAnyWav(contents.str());
+    const omni_common::DecodedAudio wav =
+        omni_common::DecodeAnyWav(contents.str());
     references.push_back(
         {reference_text,
-         model.codec().Encode(fish_s2_pro::Resample(
-             wav.samples, wav.sample_rate, model.codec().sample_rate()))});
+         model.codec().Encode(omni_common::Resample(
+             wav.samples, wav.sample_rate, fish_dac::kSampleRate))});
   } else {
   }
   const fish_s2_pro::SpeechPrompt prompt = model.BuildPrompt(text, references);
@@ -138,11 +139,11 @@ int main(int argc, char **argv) {
   }
   const double seconds = SecondsSince(started);
   const double audio_seconds =
-      static_cast<double>(samples.size()) / model.codec().sample_rate();
+      static_cast<double>(samples.size()) / fish_dac::kSampleRate;
 
   if (!output_path.empty()) {
     std::ofstream(output_path, std::ios::binary) << omni_common::WavBytes(
-        omni_common::Pcm16Bytes(samples), model.codec().sample_rate());
+        omni_common::Pcm16Bytes(samples), fish_dac::kSampleRate);
   } else {
   }
   if (!codes_output_path.empty()) {

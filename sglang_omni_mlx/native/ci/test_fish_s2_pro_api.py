@@ -448,7 +448,7 @@ def test_fish_refuses_a_rate_it_cannot_resample(fish_server: Server) -> None:
     )
     assert status == 400
     assert json.loads(response)["detail"] == (
-        "reference audio at 44101 Hz cannot be resampled to 44100 Hz"
+        "reference WAV sample rate 44101 Hz is not supported"
     )
 
 
@@ -612,7 +612,7 @@ def test_fish_rejects_another_model_than_its_chosen_name() -> None:
                     wav_bytes(16000)[:22] + b"\x00\x00" + wav_bytes(16000)[24:]
                 ),
             },
-            "ref_audio: reference audio WAV has no channels",
+            "ref_audio: reference WAV has an unsupported channel count",
         ),
         (
             {"input": "hi", "repetition_penalty": 0},

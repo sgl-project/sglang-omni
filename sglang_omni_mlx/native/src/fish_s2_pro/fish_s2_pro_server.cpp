@@ -36,8 +36,10 @@
 #include <string_view>
 #include <vector>
 
+#include "common/reference_audio.h"
 #include "common/text.h"
 #include "fish_s2_pro/fish_s2_pro_model.h"
+#include "fish_s2_pro/fish_s2_pro_stream.h"
 #include "qwen3_asr/asr_service.h"
 #include "qwen3_asr/speech_service.h"
 
@@ -85,7 +87,7 @@ constexpr std::array<CollectionField, 1> kUnsupportedCollectionFields = {{
 // the client gave, in plain values so that only the worker makes MLX arrays.
 struct ParsedReference {
   std::string text;
-  fish_s2_pro::DecodedWav wav;
+  omni_common::DecodedAudio wav;
   std::vector<int32_t> codes;
   int frame_count = 0;
 };
@@ -184,20 +186,19 @@ std::string ReferencePayload(const std::string &audio,
   }
 }
 
-// The WAV of a reference audio string, at its own rate, checked to resample
-// to target_rate; the worker resamples it once the request is admitted.
-fish_s2_pro::DecodedWav DecodeReference(const std::string &audio,
-                                        const std::string &field,
-                                        int target_rate) {
+// The WAV of a reference audio string, at its own rate, checked to resample;
+// the worker resamples it once the request is admitted.
+omni_common::DecodedAudio DecodeReference(const std::string &audio,
+                                          const std::string &field) {
   const std::optional<std::vector<uint8_t>> bytes =
       omni_common::DecodeBase64(ReferencePayload(audio, field));
   if (!bytes.has_value() || bytes->empty()) {
     throw std::invalid_argument(field + " is not valid base64");
   } else {
   }
-  fish_s2_pro::DecodedWav wav;
+  omni_common::DecodedAudio wav;
   try {
-    wav = fish_s2_pro::DecodeAnyWav(std::string_view(
+    wav = omni_common::DecodeAnyWav(std::string_view(
         reinterpret_cast<const char *>(bytes->data()), bytes->size()));
   } catch (const std::invalid_argument &error) {
     throw std::invalid_argument(field + ": " + error.what());
@@ -206,7 +207,7 @@ fish_s2_pro::DecodedWav DecodeReference(const std::string &audio,
     throw std::invalid_argument(field + " has no samples");
   } else {
   }
-  fish_s2_pro::CheckResampleRates(wav.sample_rate, target_rate);
+  omni_common::CheckResampleRates(wav.sample_rate, fish_dac::kSampleRate);
   return wav;
 }
 
@@ -270,8 +271,7 @@ ParsedReference ParseReference(const Json &item, int index,
     const Json audio = FieldOr(item, name, Json());
     if (audio.is_string()) {
       reference.wav =
-          DecodeReference(audio.get<std::string>(), field + "." + name,
-                          model.codec().sample_rate());
+          DecodeReference(audio.get<std::string>(), field + "." + name);
       return reference;
     } else if (!audio.is_null()) {
       throw std::invalid_argument(field + "." + name + " must be a string");
@@ -295,7 +295,7 @@ public:
   }
 
 private:
-  int SampleRate() const override { return model_.codec().sample_rate(); }
+  int SampleRate() const override { return fish_dac::kSampleRate; }
 
   // Every reference's audio is decoded, and the totals checked, before the
   // request is admitted and any is resampled.
@@ -323,8 +323,7 @@ private:
                      ? static_cast<double>(reference.wav.samples.size()) /
                            reference.wav.sample_rate
                      : static_cast<double>(reference.frame_count) *
-                           model_.codec().samples_per_frame() /
-                           model_.codec().sample_rate();
+                           fish_dac::kFrameSamples / fish_dac::kSampleRate;
       characters += omni_common::CodePointCount(reference.text);
       if (seconds > kMaxReferenceSeconds) {
         throw std::invalid_argument(
@@ -344,8 +343,7 @@ private:
     }
     if (reference_audio.is_string()) {
       add({reference_text.is_string() ? reference_text.get<std::string>() : "",
-           DecodeReference(reference_audio.get<std::string>(), "ref_audio",
-                           model_.codec().sample_rate()),
+           DecodeReference(reference_audio.get<std::string>(), "ref_audio"),
            {},
            0});
     } else {
@@ -474,9 +472,9 @@ private:
       if (reference.codes.empty()) {
         references.push_back(
             {reference.text,
-             model_.codec().Encode(fish_s2_pro::Resample(
+             model_.codec().Encode(omni_common::Resample(
                  reference.wav.samples, reference.wav.sample_rate,
-                 model_.codec().sample_rate()))});
+                 fish_dac::kSampleRate))});
       } else {
         references.push_back(
             {reference.text,
@@ -493,7 +491,7 @@ private:
         request.max_frames, std::max(model_.max_positions() - 1 -
                                          static_cast<int>(prompt.ids.size()),
                                      1));
-    fish_s2_pro::CodecStream stream(model_.codec());
+    fish_s2_pro::VocoderStream stream(model_.codec());
     std::vector<mlx::core::array> frames;
     int frame_count = 0;
     const qwen3_asr::FinishReason finish_reason =
