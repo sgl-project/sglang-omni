@@ -693,14 +693,12 @@ class OmniScheduler(Generic[RequestDataT]):
                 or self.pp_size != 1
                 or self.enable_overlap
                 or self.enable_async_decode
-                or not server_args.disable_cuda_graph
-                or not server_args.disable_radix_cache
                 or server_args.enable_mixed_chunk
                 or get_parallel().attn_dp_enabled
             ):
                 raise ValueError(
                     "Plain fallback requires DFLASH, CUDA, TP=1, PP=1, "
-                    "synchronous execution, disabled CUDA graphs and radix cache, "
+                    "synchronous execution, "
                     "and disabled mixed chunks and DP attention"
                 )
             else:
@@ -710,6 +708,10 @@ class OmniScheduler(Generic[RequestDataT]):
                         running_batch=ScheduleBatch(reqs=[], batch_is_full=False)
                     ),
                 }
+                if not server_args.disable_cuda_graph:
+                    tp_worker.model_runner.init_plain_decode_graphs()
+                else:
+                    pass
         else:
             pass
         # note (ratish): the borrowed init_overlap starts this copy thread under confidential compute; shutdown_resources stops it.
@@ -2123,6 +2125,9 @@ class OmniScheduler(Generic[RequestDataT]):
             return fallback_reason
         request_data.fallback_reason = fallback_reason
         if self.enable_plain_fallback:
+            request.cache_salt = (
+                f"omni:{request_data.decode_path}:{request.cache_salt!r}"
+            )
             logger.info(
                 f"Request {request.rid}: decode_path={request_data.decode_path} "
                 f"fallback_reason={fallback_reason}"

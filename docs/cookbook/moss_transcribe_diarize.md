@@ -242,7 +242,7 @@ sgl-omni serve \
   --port 8000
 ```
 
-This profile reuses the same admission, batch scheduling, token relay, and cleanup code as Qwen3-ASR. It requires one CUDA GPU, synchronous execution, and disabled CUDA graphs and radix cache. The H200 GPU probe verifies that repetition-penalty batches call the ordinary sampler with zero draft forwards, target verifies, or draft KV writes, then cancel, retract, resume, and recover every request/KV slot. See [per-request plain fallback](qwen3_asr.md#per-request-plain-fallback) for the probe, execution restrictions, and remaining graph/cache work. The corpus measurements below describe the existing DFlash path.
+This profile reuses the same admission, batch scheduling, token relay, and cleanup code as Qwen3-ASR. It requires one CUDA GPU and synchronous execution. The profile starts with graphs and radix disabled; ordinary-decode/verify graph separation and path-isolated radix reuse can be enabled with the same engine overrides as Qwen3-ASR. The H200 GPU probe verifies that repetition-penalty batches call the ordinary sampler with zero draft forwards, target verifies, or draft KV writes, then cancel, retract, resume, and recover every request/KV slot. See [per-request plain fallback](qwen3_asr.md#per-request-plain-fallback) for the probe, execution restrictions, graph/cache switches, and remaining validation scope. The corpus measurements below describe the existing DFlash path.
 
 Paired runs on one H200 140GB with FA3 and SGLang 0.5.22, `max_running_requests=16`, `cuda_graph_max_bs=16` and `mem_fraction_static=0.80`, each on a fresh server, in audio seconds per second. Concurrency 1 rows are the mean of both orders; the other rows are one pair.
 

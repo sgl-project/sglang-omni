@@ -185,7 +185,7 @@ Send the form field `return_spec_tokens_details=true` to get `sglext.spec_tokens
 
 ### Per-request plain fallback
 
-The eager prototype keeps one target worker and one draft resident in a single scheduler. Admission fixes each request's `decode_path` before prefill and records its `fallback_reason`. A sampled Qwen3-ASR request uses the ordinary runner and sampler from prefill onward; compatible greedy requests use DFlash. Each batch contains one path, and ready paths alternate while sharing the request pool and KV allocator. Retracted requests retain their original path.
+The prototype keeps one target worker and one draft resident in a single scheduler. Admission fixes each request's `decode_path` before prefill and records its `fallback_reason`. A sampled Qwen3-ASR request uses the ordinary runner and sampler from prefill onward; compatible greedy requests use DFlash. Each batch contains one path, and ready paths alternate while sharing the request pool and KV allocator. Retracted requests retain their original path.
 
 Enable the prototype with the dedicated profile:
 
@@ -195,13 +195,32 @@ sgl-omni serve \
   --port 8000
 ```
 
-`asr.factory.enable_plain_fallback` defaults to false. The prototype requires CUDA, TP=1, PP=1, synchronous DFlash execution, disabled CUDA graphs and radix cache, and disabled mixed chunks and DP attention. The profile sets these restrictions explicitly. Other profiles continue to reject unsupported draft sampling options during shared admission.
+`asr.factory.enable_plain_fallback` defaults to false. The prototype requires CUDA, TP=1, PP=1, synchronous DFlash execution, and disabled mixed chunks and DP attention. The checked-in profile starts with graphs and radix disabled. Other profiles continue to reject unsupported draft sampling options during shared admission.
 
-The H200 eager probe wraps the actual target sampler, draft forward, target verify, and draft KV writes. It checks Qwen3-ASR temperature fallback and MOSS-TD repetition-penalty fallback through the same scheduler, including streaming, cancellation followed by a replacement request, retraction, unchanged target identity and runtime configuration, and full request/KV slot recovery:
+The H200 probe wraps the actual target sampler, draft forward, target verify, and draft KV writes. It checks Qwen3-ASR temperature fallback and MOSS-TD repetition-penalty fallback through the same scheduler, including streaming, cancellation followed by a replacement request, retraction, unchanged target identity and runtime configuration, and full request/KV slot recovery:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 pytest -s -x tests/test_model/test_plain_fallback.py
 ```
+
+Enable independent ordinary-decode and target-verify graphs plus path-isolated radix caching with:
+
+```bash
+sgl-omni serve \
+  --config examples/configs/qwen3_asr_1_7b_plain_fallback.yaml \
+  --asr.engine.disable_cuda_graph false \
+  --asr.engine.cuda_graph_backend_prefill disabled \
+  --asr.engine.disable_radix_cache false \
+  --port 8000
+```
+
+Omni creates an ordinary-decode execution view with the same model object, request pool, KV pool, and sampler. It owns separate attention metadata, graph inputs, and an eager fallback runner. Forward dispatch chooses the view from the batch's algorithm; target verification keeps the original runner. The published runtime configuration stays unchanged, and SGLang source and dependencies remain unmodified. Plain graph capture memory/time are included in the owning runner's graph accounting.
+
+Radix namespaces combine `decode_path` with the caller's existing cache salt. A speculative request therefore cannot treat a plain-only target prefix as valid draft KV. Both paths can reuse their own prefixes, at the cost of storing separate prefix KV entries in the shared allocator. Retraction preserves the namespace; cache flush remains blocked while either path has live requests.
+
+The GPU suite runs both models across all four graph/radix switch combinations. With graphs enabled it counts real ordinary-decode and verify replays and forces one graph-eligibility rejection to exercise ordinary eager fallback. With radix enabled it completes a plain request before admitting the same audio to spec, asserts a cold first spec prefill, then requires cache hits for repeats of both paths. It also checks the reference words for cold and repeated greedy transcripts, cancellation/replacement, retraction, and complete slot recovery after cache flush. Target prefill graphs, overlap, TP>1, and corpus accuracy/performance remain outside this validation. Additional padded-batch checks run three plain requests through a four-row capture bucket while sharing the four-request admission cap with spec.
+
+An additional HTTP smoke run completed 1,200 measured Qwen3-ASR SSE requests across concurrency 1/16/32/64 and fallback 0%/5%/100%, with graphs and radix enabled. MOSS-TD completed 24 interleaved penalty-1.0/1.2 SSE requests at concurrency 8. The client requires a terminal transcript event and rejects stream errors; these runs use the repeated short fixture and establish endpoint completion for that workload.
 
 To measure sparse fallback latency, run the same audio against separately started plain, DFlash, and prototype servers on the same GPU. The client below interleaves 0%, 5%, and 100% sampled requests at concurrency 1, 16, 32, and 64. Its JSON retains each request's first-token latency, completion latency, sampling class, and WER. Repeating this short fixture checks routing and liveness; corpus accuracy and deployment performance require representative audio and repeated runs.
 
@@ -216,7 +235,7 @@ python -m benchmarks.eval.benchmark_plain_fallback \
 
 For the plain baseline, add `--asr.factory.enable_plain_fallback false --asr.engine.disable_speculative_decoding true` to the server command. For the existing DFlash baseline, add only `--asr.factory.enable_plain_fallback false` and pass `--fallback-percentages 0` to the client.
 
-Both eager probes passed on H200 with SGLang 0.5.23 (`297e54fd105e974cdf401e5b4d20253a22c16f90`), Torch 2.14.1, and `hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a`. In the recorded runs, Qwen3-ASR's 20 plain batches called the ordinary sampler 20 times and MOSS-TD's 46 plain batches called it 46 times. Draft forward, target verify, and draft KV write counts were zero for every plain batch; speculative batches performed actual draft and verify work.
+The initial eager probes passed on H200 with SGLang 0.5.23 (`297e54fd105e974cdf401e5b4d20253a22c16f90`), Torch 2.14.1, and `hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a`. In the recorded runs, Qwen3-ASR's 20 plain batches called the ordinary sampler 20 times and MOSS-TD's 46 plain batches called it 46 times. Draft forward, target verify, and draft KV write counts were zero for every plain batch; speculative batches performed actual draft and verify work.
 
 A warmed, single-pass routing smoke sweep repeated `query_to_draw.wav` 100 times per cell. All three server configurations ran sequentially on H200 0, with the image above, FA3, disabled graphs/radix, and a 32,768-token KV cap. Throughput is requests per second. The 5% column measures the five sampled requests in each prototype cell; all five completed. These few observations establish liveness for this fixture, not a latency bound or a statistically established speed comparison.
 
@@ -229,7 +248,7 @@ A warmed, single-pass routing smoke sweep repeated `query_to_draw.wav` 100 times
 
 The 0% concurrency-32 cell measured about 9% lower throughput than existing DFlash and needs repeated representative runs before attributing the difference. Greedy fixture transcripts had zero WER; sampled fixture WER varied between runs. These measurements do not qualify corpus accuracy or default-on speculative decoding.
 
-CUDA graph support is gated off: on SGLang 0.5.23, a target runner captured for eight-token DFlash verification selected its decode graph for a two-request plain decode and failed in `cuda_graph_buffer_registry.fill_from` with a 16-versus-2 tensor length mismatch. Separate per-path graph capture and replay selection must be validated before enabling graphs. Radix reuse also needs draft-KV validity tracking before a plain-prefilled prefix may be reused by a speculative request. Corpus qualification remains a subsequent validation stage.
+The earlier single-graph experiment on SGLang 0.5.23 failed with a 16-versus-2 buffer length mismatch when plain decode selected the DFlash verify graph. The separate downstream execution views above resolve that dispatch boundary without changing SGLang. The table records the earlier eager-only sweep; it does not measure the new graph/radix configuration.
 
 ## Transcribe Audio
 

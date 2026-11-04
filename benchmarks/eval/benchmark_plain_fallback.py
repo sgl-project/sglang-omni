@@ -51,6 +51,7 @@ async def run_sweep(arguments: argparse.Namespace) -> None:
                 started = time.perf_counter()
                 first_token_seconds = None
                 transcript = ""
+                completed = False
                 async with client.stream(
                     "POST",
                     f"{arguments.base_url.rstrip('/')}/v1/audio/transcriptions",
@@ -65,7 +66,14 @@ async def run_sweep(arguments: argparse.Namespace) -> None:
                     async for line in response.aiter_lines():
                         if line.startswith("data: ") and line != "data: [DONE]":
                             event = json.loads(line[6:])
-                            if event.get("type") == "transcript.text.delta":
+                            if (
+                                event.get("type") == "error"
+                                or event.get("error") is not None
+                            ):
+                                raise RuntimeError(
+                                    f"Transcription stream failed: {event}"
+                                )
+                            elif event.get("type") == "transcript.text.delta":
                                 if first_token_seconds is None:
                                     first_token_seconds = time.perf_counter() - started
                                 else:
@@ -73,12 +81,13 @@ async def run_sweep(arguments: argparse.Namespace) -> None:
                                 transcript += event["delta"]
                             elif event.get("type") == "transcript.text.done":
                                 transcript = event["text"]
+                                completed = True
                             else:
                                 pass
                         else:
                             pass
-                if first_token_seconds is None:
-                    raise RuntimeError(f"No transcript delta received: {transcript}")
+                if first_token_seconds is None or not completed:
+                    raise RuntimeError(f"Incomplete transcription stream: {transcript}")
                 else:
                     return RequestMeasurement(
                         sampled=sampled,

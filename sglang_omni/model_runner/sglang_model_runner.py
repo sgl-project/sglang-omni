@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import dataclasses
 import functools
 import logging
@@ -22,10 +23,20 @@ from sglang.srt.layers.sampler import (
 from sglang.srt.mem_cache.kv_cache_configurator import KVCacheConfigurator
 from sglang.srt.mem_cache.memory_pool import KVCache, MHATokenToKVPool
 from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBackend
-from sglang.srt.model_executor.model_runner import ModelRunner
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
+from sglang.srt.model_executor.forward_context import ForwardContext, forward_context
+from sglang.srt.model_executor.graph_memory_usage import (
+    replace_graph_memory_usage,
+    replace_graph_time_usage,
+)
+from sglang.srt.model_executor.model_runner import ModelRunner, ModelRunnerOutput
+from sglang.srt.model_executor.model_runner_components.attention_backend_setup import (
+    build_attention_backends,
+)
 from sglang.srt.model_executor.model_runner_components.layer_setup import (
     AttentionAndMoeLayers,
 )
+from sglang.srt.model_executor.runner.eager_runner import EagerRunner
 from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
     PrefillCudaGraphRunner,
 )
@@ -33,6 +44,7 @@ from sglang.srt.platforms.interface import KVPoolKind
 from sglang.srt.runtime_context import get_exec, get_parallel, get_schedule
 from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 from sglang.srt.server_args import ServerArgs
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from torch import nn
 
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
@@ -379,6 +391,68 @@ class OmniKVCacheConfigurator(KVCacheConfigurator):
 
 class SGLModelRunner(ModelRunner):
     """Thin wrapper to bootstrap SGLang ModelRunner from backend args."""
+
+    plain_decode_runner: SGLModelRunner | None = None
+
+    def init_plain_decode_graphs(self) -> None:
+        """Capture ordinary decode with shared weights and separate attention state."""
+        if self.plain_decode_runner is not None:
+            return
+        else:
+            plain_runner = copy.copy(self)
+            plain_runner.spec_algorithm = SpeculativeAlgorithm.NONE
+            plain_runner.plain_decode_runner = None
+            backends = build_attention_backends(model_runner=plain_runner)
+            plain_runner.attn_backend = backends.attn_backend
+            plain_runner.decode_attn_backend = backends.decode_attn_backend
+            plain_runner.decode_attn_backend_group = backends.decode_attn_backend_group
+            plain_runner.kv_index_translator.bind_and_verify_backends(
+                [plain_runner.attn_backend, plain_runner.decode_attn_backend]
+            )
+            plain_runner.eager_runner = EagerRunner(plain_runner, run_warmup=False)
+            plain_runner.init_decode_cuda_graph()
+            self.plain_decode_runner = plain_runner
+            self.graph_memory_usage = replace_graph_memory_usage(
+                self.graph_memory_usage,
+                {"decode": plain_runner.graph_memory_usage["decode"]},
+                phases=("decode",),
+            )
+            self.graph_time_usage = replace_graph_time_usage(
+                self.graph_time_usage,
+                {"decode": plain_runner.graph_time_usage["decode"]},
+                phases=("decode",),
+            )
+
+    def _forward_raw(  # noqa: leading-underscore  # native forward interface
+        self,
+        forward_batch: ForwardBatch,
+        pp_proxy_tensors: PPProxyTensors | None,
+        reinit_attn_backend: bool = False,
+        split_forward_count: int = 1,
+    ) -> ModelRunnerOutput:
+        if (
+            self.plain_decode_runner is not None
+            and forward_batch.forward_mode.is_decode()
+            and forward_batch.spec_algorithm.is_none()
+        ):
+            forward_batch.attn_backend = self.plain_decode_runner.attn_backend
+            with forward_context(
+                ForwardContext(attn_backend=self.plain_decode_runner.attn_backend),
+                forward_batch=forward_batch,
+            ):
+                return self.plain_decode_runner._forward_raw(  # noqa: leading-underscore  # native forward interface
+                    forward_batch,
+                    pp_proxy_tensors,
+                    reinit_attn_backend,
+                    split_forward_count,
+                )
+        else:
+            return super()._forward_raw(  # noqa: leading-underscore  # native forward interface
+                forward_batch,
+                pp_proxy_tensors,
+                reinit_attn_backend,
+                split_forward_count,
+            )
 
     def __init__(
         self,
