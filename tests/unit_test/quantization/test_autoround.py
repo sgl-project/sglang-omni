@@ -240,3 +240,73 @@ class TestObjectShapedConfig:
         assert model_config.hf_config.quantization_config["extra_config"] == {
             r"model\.layers\.0": {"bits": 8}
         }
+
+
+class TestNormalizeCompressedTensorsIgnoreList:
+    """Tests for stripping the stage prefix from a compressed-tensors `ignore`."""
+
+    def test_strips_thinker_prefix_from_ignore_entries(self) -> None:
+        quant_config = {
+            "quant_method": "compressed-tensors",
+            "format": "pack-quantized",
+            "ignore": [
+                "thinker.audio_tower.layers.0.fc1",
+                "thinker.visual.blocks.0.mlp.down_proj",
+                "lm_head",
+            ],
+        }
+        model_config = make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
+
+        normalize_quant_config(model_config)
+
+        assert quant_config["ignore"] == [
+            "audio_tower.layers.0.fc1",
+            "visual.blocks.0.mlp.down_proj",
+            "lm_head",
+        ]
+
+    def test_leaves_another_stage_prefix_alone(self) -> None:
+        """A talker entry cannot match a thinker module either way, so stripping
+        it would only invent a name the stage does not have."""
+        quant_config = {
+            "quant_method": "compressed-tensors",
+            "format": "pack-quantized",
+            "ignore": ["talker.model.layers.0.mlp.gate"],
+        }
+        model_config = make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
+
+        normalize_quant_config(model_config)
+
+        assert quant_config["ignore"] == ["talker.model.layers.0.mlp.gate"]
+
+    def test_compressed_tensors_needs_normalization(self) -> None:
+        assert needs_quant_config_normalization({"quant_method": "compressed_tensors"})
+
+    def test_unprefixed_ignore_list_is_untouched(self) -> None:
+        quant_config = {
+            "quant_method": "compressed-tensors",
+            "format": "pack-quantized",
+            "ignore": ["audio_tower.layers.0.fc1"],
+        }
+        model_config = make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
+
+        normalize_quant_config(model_config)
+
+        assert quant_config["ignore"] == ["audio_tower.layers.0.fc1"]
+
+    def test_object_ignore_list_is_written_back(self) -> None:
+        """An object-valued quant config is copied before mutation, so the
+        normalized ignore list only reaches SGLang via the write-back."""
+        quant_config = SimpleNamespace(
+            quant_method="compressed-tensors",
+            format="pack-quantized",
+            ignore=["thinker.audio_tower.layers.0.fc1"],
+        )
+        model_config = make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
+
+        normalize_quant_config(model_config)
+
+        assert isinstance(model_config.hf_config.quantization_config, dict)
+        assert model_config.hf_config.quantization_config["ignore"] == [
+            "audio_tower.layers.0.fc1"
+        ]

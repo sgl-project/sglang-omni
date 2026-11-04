@@ -10,6 +10,9 @@ from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.platforms.xpu import XpuDeviceMixin
 
 from sglang_omni.platforms.interface import JointRopeInplaceKernel, OmniPlatform
+from sglang_omni.quantization import is_pack_quantized_weight_only, resolve_quant_config
+from sglang_omni.utils.misc import model_config_has_moe
+from sglang_omni.vendor.sglang.server_args import override_server_args
 
 logger = logging.getLogger(__name__)
 
@@ -115,15 +118,44 @@ class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
 
         cfg = resolved_view(server_args)
         moe_runner_backend = cfg.moe_runner_backend
-        if model_arch_override in (
+        is_qwen3_omni_arch = model_arch_override in (
             "Qwen3OmniTalker",
             "Qwen3OmniThinkerForCausalLM",
-        ) and moe_runner_backend in ("flashinfer_cutlass", "cutlass"):
+        )
+        if is_qwen3_omni_arch and moe_runner_backend in (
+            "flashinfer_cutlass",
+            "cutlass",
+        ):
             raise ValueError(
                 f"Qwen3-Omni on Intel XPU cannot use "
                 f"moe_runner_backend={moe_runner_backend!r}; the CUTLASS "
                 "MoE runners are CUDA-only. Leave the backend as 'auto' or pass "
                 "'triton'."
+            )
+        else:
+            pass
+
+        # SGLang resolves a weight-only group-packed MoE to the Marlin runner,
+        # which has no XPU kernel; Triton is the one Intel implements. Block-FP8
+        # is left alone: its XPU fused_experts path is reached only while the
+        # runner is not triton.
+        if (
+            is_qwen3_omni_arch
+            and moe_runner_backend == "auto"
+            and model_config_has_moe(model_config)
+            and is_pack_quantized_weight_only(
+                resolve_quant_config(model_config.hf_config)
+            )
+        ):
+            override_server_args(
+                server_args,
+                "sglang-omni-xpu-backend-policy",
+                moe_runner_backend="triton",
+            )
+            logger.info(
+                "Intel XPU: selected moe_runner_backend=triton for the "
+                "group-packed weight-only checkpoint; the default Marlin "
+                "runner for this scheme is CUDA-only"
             )
         else:
             pass
