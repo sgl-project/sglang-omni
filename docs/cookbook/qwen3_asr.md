@@ -172,6 +172,8 @@ sgl-omni serve \
 
 DFlash requires greedy decoding (`temperature=0`), uses synchronous scheduling, and retains CUDA graphs. Realtime sessions are not validated.
 
+On one H200 over SeedTTS clips, the draft gives no speedup at 32 concurrent requests and is about 10% slower at 64. To serve such a load without it, run the same config without `--asr.engine.max_running_requests 8` and add `--asr.engine.disable_speculative_decoding true`, which drops every `speculative_*` key from the stage.
+
 ## Transcribe Audio
 
 ```bash
