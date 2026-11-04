@@ -164,6 +164,44 @@ class TailCoordinator(FakeSessionClient):
         )
 
 
+class DelayedReplyCoordinator(TailCoordinator):
+    """A completed first reply leaves listening units before the next reply starts."""
+
+    def __init__(
+        self, second_reply_start_unit: int = 3, second_reply_end_unit: int = 4
+    ) -> None:
+        super().__init__(end_on_unit=None)
+        self.second_reply_start_unit = second_reply_start_unit
+        self.second_reply_end_unit = second_reply_end_unit
+
+    def answer(self, chunk: TimedChunk) -> None:
+        if chunk.seq == 0:
+            payload = voice(HEARD_PCM, end_of_turn=True)
+            turn = 1
+        elif chunk.seq == self.second_reply_start_unit:
+            payload = voice(NEXT_REPLY_PCM)
+            turn = 2
+        elif chunk.seq == self.second_reply_end_unit:
+            payload = voice(TAIL_PCM, end_of_turn=True)
+            turn = 2
+        else:
+            payload = voice(b"")
+            turn = None
+        self.outputs.put_nowait(
+            OutputChunk(
+                self.identity,
+                0,
+                chunk.seq,
+                "voice",
+                0,
+                0,
+                payload,
+                eos=chunk.eos,
+                turn=turn,
+            )
+        )
+
+
 async def open_adapter(
     coordinator: VoiceCoordinator,
 ) -> tuple[InteractionAdapter, list[OutputEvent]]:
@@ -260,6 +298,65 @@ async def test_natural_tail_starts_after_a_padded_final_input_unit() -> None:
         1000.0,
         2000.0,
     ]
+
+
+@pytest.mark.asyncio
+async def test_natural_tail_waits_for_reply_to_latest_input_after_listening_units() -> (
+    None
+):
+    """A reply completed before later listening input must not make natural finish skip the next reply."""
+    coordinator = DelayedReplyCoordinator()
+    adapter, events = await open_adapter(coordinator)
+    for input_seq in range(3):
+        await adapter.process(unit(input_seq))
+    await adapter.finish_tail(replace(unit(2), eos=True), 3)
+    await adapter.close()
+
+    assert [chunk.seq for chunk in coordinator.appended] == list(range(6))
+    assert [chunk.eos for chunk in coordinator.appended] == [
+        False,
+        False,
+        False,
+        False,
+        False,
+        True,
+    ]
+    assert [event for event in events if isinstance(event, ResponseFinished)] == [
+        ResponseFinished(FIRST_RESPONSE, FIRST_ITEM, "", True, "completed", "stop"),
+        ResponseFinished(SECOND_RESPONSE, SECOND_ITEM, "", True, "completed", "stop"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_natural_tail_cap_marks_a_late_reply_incomplete() -> None:
+    """If the latest reply starts only as EOS is sent after the tail cap, it reports the cap rather than input end."""
+    coordinator = DelayedReplyCoordinator(
+        second_reply_start_unit=4, second_reply_end_unit=5
+    )
+    adapter, events = await open_adapter(coordinator)
+    for input_seq in range(3):
+        await adapter.process(unit(input_seq))
+    await adapter.finish_tail(replace(unit(2), eos=True), 1)
+    await adapter.close()
+
+    assert [chunk.seq for chunk in coordinator.appended] == list(range(5))
+    assert [chunk.eos for chunk in coordinator.appended] == [
+        False,
+        False,
+        False,
+        False,
+        True,
+    ]
+    assert [event for event in events if isinstance(event, ResponseFinished)][-1] == (
+        ResponseFinished(
+            SECOND_RESPONSE,
+            SECOND_ITEM,
+            "",
+            True,
+            "incomplete",
+            "max_output_tokens",
+        )
+    )
 
 
 @pytest.mark.asyncio

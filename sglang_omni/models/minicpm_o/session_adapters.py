@@ -387,6 +387,7 @@ class Reply:
     is_cancelled: bool = False
     delivered_units: list[DeliveredUnit] = field(default_factory=list)
     keep_through_unit: int | None = None
+    completed_input_unit_index: int | None = None
 
     @property
     def last_delivered_unit(self) -> int:
@@ -443,7 +444,11 @@ class OutputConverter:
                 return KeptReply(turn=reply.turn, keep_through_unit=keep_through_unit)
 
     def finish(
-        self, is_speech_cut: bool, *, is_input_end: bool = False
+        self,
+        is_speech_cut: bool,
+        *,
+        input_unit_index: int,
+        is_input_end: bool = False,
     ) -> list[OutputEvent]:
         """End the open response: cancelled when the client stopped it, incomplete when the talker's budget cut its speech."""
         reply = self.reply
@@ -480,6 +485,7 @@ class OutputConverter:
                 )
             )
             reply.is_open = False
+            reply.completed_input_unit_index = input_unit_index
             return events
 
     def __call__(self, output: OutputChunk) -> list[OutputEvent]:
@@ -537,7 +543,13 @@ class OutputConverter:
         else:
             pass
         if value["end_of_turn"] or output.eos:
-            events.extend(self.finish(value["is_speech_cut"], is_input_end=output.eos))
+            events.extend(
+                self.finish(
+                    value["is_speech_cut"],
+                    input_unit_index=output.input_seq,
+                    is_input_end=output.eos,
+                )
+            )
         else:
             pass
         return events
@@ -557,7 +569,14 @@ class RealtimeAdapter(CoordinatorAdapter):
         )
         reply = self.output_converter.reply
         for _ in range(max_tail_units):
-            if reply is not None and (not reply.is_open or reply.is_cancelled):
+            if reply is not None and (
+                reply.is_cancelled
+                or (
+                    not reply.is_open
+                    and reply.completed_input_unit_index is not None
+                    and reply.completed_input_unit_index >= last_unit.index
+                )
+            ):
                 break
             else:
                 pass
@@ -574,7 +593,11 @@ class RealtimeAdapter(CoordinatorAdapter):
             start_sample += UNIT_SAMPLES
             reply = self.output_converter.reply
         self.output_converter.tail_cap_reached = reply is None or (
-            reply.is_open and not reply.is_cancelled
+            not reply.is_cancelled
+            and (
+                reply.completed_input_unit_index is None
+                or reply.completed_input_unit_index < last_unit.index
+            )
         )
         try:
             await super().process(
