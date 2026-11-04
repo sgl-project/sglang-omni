@@ -782,7 +782,8 @@ eager, so a transcript is never at stake.</p>
 <span class="w">  </span>-F<span class="w"> </span><span class="s2">"response_format=verbose_json"</span>
 </pre></div>
 </div>
-<p>See the <a class="reference internal" href="../cookbook/nemotron3_5_asr.html"><span class="std std-doc">Nemotron cookbook</span></a> for request parameters.</p>
+<p>Add <code class="docutils literal notranslate"><span class="pre">--enable-realtime</span></code> to accept native 16 kHz mono PCM16 over <code class="docutils literal notranslate"><span class="pre">/v1/realtime</span></code>.</p>
+<p>The streaming encoder captures its subsequent-window batch sizes at startup on XPU as on CUDA, which roughly halves the steady-state streaming window; pass <code class="docutils literal notranslate"><span class="pre">--asr.factory.enable_encoder_cuda_graph</span> <span class="pre">false</span></code> to run entirely eager. See the <a class="reference internal" href="../cookbook/nemotron3_5_asr.html"><span class="std std-doc">Nemotron cookbook</span></a> for request parameters.</p>
 <p><strong>Expected result:</strong> The JSON response contains the transcription and segment timestamps.</p>
 </section>
 <section id="qwen3-tts-text-to-speech-single-xpu">
