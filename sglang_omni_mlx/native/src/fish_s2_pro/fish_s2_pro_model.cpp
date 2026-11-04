@@ -50,34 +50,6 @@ uint32_t MurmurHash(uint64_t seed, uint32_t step, uint32_t column) {
   return hash;
 }
 
-// Rotates adjacent pairs of heads [batch, heads, length, head_dim] in float32
-// by the bfloat16 phases cosines and sines [1, 1, length, head_dim / 2].
-std::vector<mx::array> RotateGraph(const std::vector<mx::array> &inputs) {
-  const mx::array &heads = inputs[0];
-  const mx::array &cosines = inputs[1];
-  const mx::array &sines = inputs[2];
-  const int length = heads.shape(2);
-  const int half = heads.shape(3) / 2;
-  const mx::array pairs =
-      mx::reshape(mx::astype(heads, mx::float32),
-                  {heads.shape(0), heads.shape(1), length, half, 2});
-  const mx::Shape stop = {pairs.shape(0), pairs.shape(1), length, half};
-  const mx::array even = mx::squeeze(
-      mx::slice(pairs, {0, 0, 0, 0, 0}, {stop[0], stop[1], length, half, 1}),
-      -1);
-  const mx::array odd = mx::squeeze(
-      mx::slice(pairs, {0, 0, 0, 0, 1}, {stop[0], stop[1], length, half, 2}),
-      -1);
-  return {mx::astype(
-      mx::reshape(mx::stack({mx::subtract(mx::multiply(even, cosines),
-                                          mx::multiply(odd, sines)),
-                             mx::add(mx::multiply(odd, cosines),
-                                     mx::multiply(even, sines))},
-                            -1),
-                  heads.shape()),
-      heads.dtype())};
-}
-
 // float32 softmax of values, in place; each exponential is rounded from
 // float64, so the result does not depend on the platform's expf.
 void Softmax(std::vector<float> &values) {
@@ -107,9 +79,7 @@ FishS2ProModel::FishS2ProModel(const std::filesystem::path &model_directory,
             return omni_common::WeightMap(weights.begin(), weights.end());
           }(),
           config),
-      codec_(model_directory), tokenizer_(model_directory),
-      slow_rotary_{mx::array(0.0f), mx::array(0.0f)},
-      fast_rotary_{mx::array(0.0f), mx::array(0.0f)} {
+      codec_(model_directory), tokenizer_(model_directory) {
   const nlohmann::json &text = config.at("text_config");
   const nlohmann::json &audio = config.at("audio_decoder_config");
   if (text.value("use_moe", false) || audio.value("use_moe", false) ||
@@ -126,6 +96,7 @@ FishS2ProModel::FishS2ProModel(const std::filesystem::path &model_directory,
                              settings.at("n_local_heads").get<int>(),
                              settings.at("head_dim").get<int>(),
                              settings.at("norm_eps").get<float>(),
+                             settings.at("rope_base").get<float>(),
                              settings.at("attention_qk_norm").get<bool>()};
   };
   slow_ = transformer(kSlowPrefix, text);
@@ -133,10 +104,6 @@ FishS2ProModel::FishS2ProModel(const std::filesystem::path &model_directory,
   codebook_count_ = audio.at("num_codebooks").get<int>();
   codebook_size_ = audio.at("vocab_size").get<int>();
   max_positions_ = text.at("max_seq_len").get<int>();
-  slow_rotary_ = BuildRotaryTable(max_positions_, slow_.head_dim,
-                                  text.at("rope_base").get<float>());
-  fast_rotary_ = BuildRotaryTable(codebook_count_, fast_.head_dim,
-                                  audio.at("rope_base").get<float>());
   semantic_begin_id_ = tokenizer_.AddedTokenId(kFirstSemanticToken);
   semantic_end_id_ = semantic_begin_id_ + codebook_size_ - 1;
   im_end_id_ = tokenizer_.AddedTokenId(kImEndToken);
@@ -150,27 +117,9 @@ FishS2ProModel::FishS2ProModel(const std::filesystem::path &model_directory,
         "the tokenizer's semantic tokens do not match config.json");
   } else {
   }
-  mx::eval({slow_rotary_.cosines, slow_rotary_.sines, fast_rotary_.cosines,
-            fast_rotary_.sines});
   // Note (Jiaxin Deng): the codec's raw weight-norm tensors, freed once
   // folded, would otherwise stay in MLX's buffer cache for the process's life.
   mx::clear_cache();
-}
-
-FishS2ProModel::RotaryTable
-FishS2ProModel::BuildRotaryTable(int positions, int head_dim, float base) {
-  const mx::array frequencies = mx::divide(
-      mx::array(1.0f),
-      mx::power(mx::array(base),
-                mx::divide(mx::arange(0, head_dim, 2, mx::float32),
-                           mx::array(static_cast<float>(head_dim)))));
-  const mx::array angles =
-      mx::multiply(mx::reshape(mx::arange(positions, mx::float32), {-1, 1}),
-                   mx::reshape(frequencies, {1, -1}));
-  // Note (Jiaxin Deng): the checkpoint's reference caches the rotary phases in
-  // bfloat16, and the model was trained with them.
-  return {mx::astype(mx::cos(angles), mx::bfloat16),
-          mx::astype(mx::sin(angles), mx::bfloat16)};
 }
 
 SpeechPrompt FishS2ProModel::BuildPrompt(
@@ -251,11 +200,9 @@ mx::array FishS2ProModel::Embed(const mx::array &ids,
 
 mx::array
 FishS2ProModel::Forward(const mx::array &x, const TransformerConfig &config,
-                        const RotaryTable &rotary,
                         std::vector<qwen3_asr::KVCache> &caches) const {
   const int batch = x.shape(0);
   const int length = x.shape(1);
-  const int half = config.head_dim / 2;
   const int query_size = config.head_count * config.head_dim;
   const int key_value_size = config.key_value_head_count * config.head_dim;
   const auto layer_prefix = [&](int layer) {
@@ -265,14 +212,11 @@ FishS2ProModel::Forward(const mx::array &x, const TransformerConfig &config,
            std::to_string(layer);
   };
   const int offset = caches[0].offset();
-  const mx::Shape table_stop = {offset + length, half};
-  const mx::array cosines = mx::reshape(
-      mx::slice(rotary.cosines, {offset, 0}, table_stop), {1, 1, length, half});
-  const mx::array sines = mx::reshape(
-      mx::slice(rotary.sines, {offset, 0}, table_stop), {1, 1, length, half});
   const auto rotate = [&](const mx::array &heads) {
-    static const auto compiled = mx::compile(RotateGraph);
-    return compiled({heads, cosines, sines})[0];
+    return mx::astype(mx::fast::rope(mx::astype(heads, mx::float32),
+                                     config.head_dim, true, config.rope_base,
+                                     1.0f, offset),
+                      heads.dtype());
   };
   const auto split_heads = [&](const mx::array &projection, int start, int size,
                                int head_count) {
@@ -336,16 +280,19 @@ FishS2ProModel::Forward(const mx::array &x, const TransformerConfig &config,
 
 std::vector<mx::array>
 FishS2ProModel::ResidualCodes(const mx::array &hidden,
-                              const mx::array &semantic_code) const {
-  std::vector<qwen3_asr::KVCache> caches(fast_.layer_count);
+                              const mx::array &semantic_code,
+                              std::vector<qwen3_asr::KVCache> &caches) const {
+  for (qwen3_asr::KVCache &cache : caches) {
+    cache.Trim(cache.offset());
+  }
   // The slow hidden state fills the first position; its logits are unused.
-  Forward(mx::expand_dims(hidden, 1), fast_, fast_rotary_, caches);
+  Forward(mx::expand_dims(hidden, 1), fast_, caches);
   std::vector<mx::array> codes;
   mx::array code = semantic_code;
   for (int codebook = 1; codebook < codebook_count_; ++codebook) {
     const mx::array fast_hidden = Forward(
         mx::expand_dims(checkpoint_.Embed(code, "model.fast_embeddings"), 1),
-        fast_, fast_rotary_, caches);
+        fast_, caches);
     code = mx::astype(
         mx::argmax(checkpoint_.Linear(fast_hidden, "model.fast_output"), -1),
         mx::int32);
@@ -470,12 +417,13 @@ qwen3_asr::FinishReason FishS2ProModel::Generate(
   std::vector<uint8_t> audio_flags(prompt.is_audio.begin(),
                                    prompt.is_audio.end());
   std::vector<qwen3_asr::KVCache> caches(slow_.layer_count);
+  std::vector<qwen3_asr::KVCache> fast_caches(fast_.layer_count);
   mx::array hidden = Forward(
       Embed(mx::array(prompt.ids.begin(), {1, length}, mx::int32),
             mx::array(rows.begin(), {codebook_count_, length}, mx::int32),
             mx::astype(mx::array(audio_flags.begin(), {length}, mx::uint8),
                        mx::bool_)),
-      slow_, slow_rotary_, caches);
+      slow_, caches);
   const auto candidates = [&](const mx::array &last_hidden) {
     const mx::array logits =
         checkpoint_.TiedProjection(last_hidden, "model.embeddings");
@@ -509,7 +457,8 @@ qwen3_asr::FinishReason FishS2ProModel::Generate(
     }
     std::vector<mx::array> codes = {
         mx::array({token - semantic_begin_id_}, mx::int32)};
-    for (const mx::array &code : ResidualCodes(hidden, codes.front())) {
+    for (const mx::array &code :
+         ResidualCodes(hidden, codes.front(), fast_caches)) {
       codes.push_back(code);
     }
     const mx::array frame_codes = mx::concatenate(codes, 0);
@@ -517,7 +466,7 @@ qwen3_asr::FinishReason FishS2ProModel::Generate(
       hidden = Forward(Embed(mx::array({token}, {1, 1}, mx::int32),
                              mx::reshape(frame_codes, {codebook_count_, 1}),
                              mx::array({true})),
-                       slow_, slow_rotary_, caches);
+                       slow_, caches);
       candidate_logits = candidates(hidden);
       // Note (Minyi Tang): the decoder steps on the GPU while on_frame
       // handles this frame.

@@ -62,7 +62,7 @@ public:
   int codebook_count() const { return codebook_count_; }
   // Codes per codebook the prompt's audio positions take.
   int codebook_size() const { return codebook_size_; }
-  // The positions the slow transformer's rotary table covers.
+  // The positions the slow transformer takes, max_seq_len in config.json.
   int max_positions() const { return max_positions_; }
 
   // The CUDA server's chat prompt: a system turn with the references'
@@ -88,17 +88,13 @@ private:
     int key_value_head_count;
     int head_dim;
     float norm_eps;
+    float rope_base;
     bool has_query_key_norm;
-  };
-  struct RotaryTable {
-    mlx::core::array cosines;
-    mlx::core::array sines;
   };
 
   FishS2ProModel(const std::filesystem::path &model_directory,
                  const nlohmann::json &config);
 
-  static RotaryTable BuildRotaryTable(int positions, int head_dim, float base);
   // Rows of prompt ids [1, length] with each audio position's codebook
   // embeddings mixed in; codebook_rows [codebooks, length] are 0 elsewhere.
   mlx::core::array Embed(const mlx::core::array &ids,
@@ -108,12 +104,13 @@ private:
   // final-normed hidden state of the last position, [1, dim].
   mlx::core::array Forward(const mlx::core::array &x,
                            const TransformerConfig &config,
-                           const RotaryTable &rotary,
                            std::vector<qwen3_asr::KVCache> &caches) const;
-  // The residual codes after semantic_code, chosen greedily from hidden.
+  // The residual codes after semantic_code, chosen greedily from hidden; caches
+  // are the fast transformer's, reused from frame to frame.
   std::vector<mlx::core::array>
   ResidualCodes(const mlx::core::array &hidden,
-                const mlx::core::array &semantic_code) const;
+                const mlx::core::array &semantic_code,
+                std::vector<qwen3_asr::KVCache> &caches) const;
   // The semantic token for candidate logits (semantic codes, then
   // <|im_end|>), as the CUDA server's sampler draws it.
   int SampleSemanticToken(const float *candidate_logits,
@@ -125,8 +122,6 @@ private:
   omni_common::Tokenizer tokenizer_;
   TransformerConfig slow_;
   TransformerConfig fast_;
-  RotaryTable slow_rotary_;
-  RotaryTable fast_rotary_;
   int codebook_count_;
   int codebook_size_;
   int max_positions_;
