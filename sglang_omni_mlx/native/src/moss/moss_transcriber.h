@@ -33,8 +33,8 @@ struct MossOptions {
 class MossTranscriber {
 public:
   explicit MossTranscriber(const std::filesystem::path &model_directory,
-                           const std::filesystem::path &draft_directory = {},
-                           int draft_quantization_bits = 0);
+                           const std::filesystem::path &draft_directory,
+                           int draft_quantization_bits);
 
   qwen3_asr::TranscriptionResult
   Transcribe(const std::vector<float> &samples, const MossOptions &options,
