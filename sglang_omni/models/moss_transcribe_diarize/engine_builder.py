@@ -83,6 +83,7 @@ class MossTranscribeDiarizeEngineBuilder(
         request_build_max_pending: int | None,
         stream_emit_interval_s: float,
         enable_trimmed_fbank: bool = True,
+        enable_plain_fallback: bool = False,
     ) -> None:
         self.max_running_requests = max_running_requests
         self.requested_max_new_tokens = max_new_tokens
@@ -93,6 +94,7 @@ class MossTranscribeDiarizeEngineBuilder(
         self.enable_torch_compile = enable_torch_compile
         self.torch_compile_max_bs = torch_compile_max_bs
         self.enable_async_decode = enable_async_decode
+        self.enable_plain_fallback = enable_plain_fallback
         self.async_decode_min_batch_size = async_decode_min_batch_size
         self.prefill_coalesce_requests = prefill_coalesce_requests
         self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
@@ -315,6 +317,7 @@ class MossTranscribeDiarizeEngineBuilder(
                 )
             ),
             "enable_async_decode": self.enable_async_decode,
+            "enable_plain_fallback": self.enable_plain_fallback,
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
             # The scheduler otherwise idles on every prefill's sampled-token
             # copy while the next decode could already launch.

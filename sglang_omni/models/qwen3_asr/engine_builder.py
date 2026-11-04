@@ -102,6 +102,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         pre_lm_max_batch_wait_ms: int = 0,
         enable_encoder_cuda_graph: bool = True,
         max_audio_clip_s: float | None = None,
+        enable_plain_fallback: bool = False,
     ) -> None:
         if pre_lm_max_batch_size < 1:
             raise ValueError(
@@ -123,6 +124,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         self.draft_checkpoint: TemporaryDirectory[str] | None = None
         self.max_new_tokens = max_new_tokens
         self.enable_async_decode = enable_async_decode
+        self.enable_plain_fallback = enable_plain_fallback
         self.async_decode_min_batch_size = async_decode_min_batch_size
         self.mem_fraction_static = mem_fraction_static
         self.mm_embedding_cache_size_bytes = mm_embedding_cache_size_bytes
@@ -265,7 +267,9 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             return self.torch_mps_model_runner
         else:
             pass
-        return super().make_model_runner(model_worker, output_proc)
+        model_runner = super().make_model_runner(model_worker, output_proc)
+        model_runner.speculative_requires_greedy = True
+        return model_runner
 
     def setup_model(
         self,
@@ -549,7 +553,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             context_length=self.context_length,
             audio_encoder_service=self.audio_encoder_service,
             should_wait_for_encode=self.should_wait_for_encode,
-            greedy_only=self.uses_torch_mps() or self.draft_checkpoint is not None,
+            greedy_only=self.uses_torch_mps(),
         )
 
     def make_abort_callback(self) -> Callable[[str], None] | None:
@@ -583,6 +587,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
     def extra_scheduler_kwargs(self) -> SchedulerExtras[Qwen3ASRRequestData]:
         use_torch_mps = self.uses_torch_mps()
         return {
+            "enable_plain_fallback": self.enable_plain_fallback,
             "stream_output_builder": request_builders.make_qwen3_asr_stream_output_builder(
                 tokenizer=self.tokenizer,
                 min_emit_interval_s=self.stream_emit_interval_s,

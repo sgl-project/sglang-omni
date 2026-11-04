@@ -632,6 +632,7 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
         is_prefill_only=True,
         is_extend_in_batch=False,
         extend_num_tokens=None,
+        spec_algorithm=SpeculativeAlgorithm.NONE,
     )
     failed_reqs = list(batch.reqs)
     for req in failed_reqs:
@@ -901,6 +902,8 @@ def retract_scheduler(
     scheduler.token_to_kv_pool_allocator = Mock()
     scheduler.tree_cache = Mock()
     scheduler.hisparse_coordinator = None
+    scheduler.async_pending = None
+    scheduler.result_queue = deque()
     scheduler.running_batch = RunningBatchStub(
         reqs=running_requests,
         req_to_token_pool=scheduler.req_to_token_pool,
@@ -1110,7 +1113,9 @@ def test_enqueue_built_request_admits_an_empty_session_append_with_history(
     assert unit.is_enqueued
     assert scheduler.outbox.empty()
     assert aborts == []
-    assert capacity_checks == [(session_request, {"session_capacity_checked": True})]
+    assert capacity_checks == [
+        (session_request, {"session_capacity_checked": True, "decode_path": "plain"})
+    ]
 
 
 def test_process_input_requests_rejects_before_build_when_waiting_queue_is_full() -> (
@@ -1369,6 +1374,7 @@ def test_omni_scheduler_custom_runner_stamps_upstream_launch_metadata() -> None:
             is_prefill_only=False,
             is_extend_in_batch=False,
             extend_num_tokens=extend_num_tokens,
+            spec_algorithm=SpeculativeAlgorithm.NONE,
         )
 
     sync_batch = batch(extend_num_tokens=7)
@@ -1784,6 +1790,7 @@ def test_stream_builder_failure_preserves_other_requests(
         is_prefill_only=False,
         is_extend_in_batch=False,
         extend_num_tokens=0,
+        spec_algorithm=SpeculativeAlgorithm.NONE,
     )
     scheduler.running_batch = batch
     scheduler.cur_batch = batch
@@ -2360,7 +2367,9 @@ def test_speculative_admission_refuses_sampling_the_draft_cannot_reproduce(
     scheduler = object.__new__(OmniScheduler)
     scheduler.draft_worker = SimpleNamespace()
     scheduler.spec_algorithm = SpeculativeAlgorithm.DSPARK
+    scheduler.draft_algorithm = SpeculativeAlgorithm.DSPARK
     scheduler.model_runner = SimpleNamespace(
+        speculative_requires_greedy=False,
         speculative_verifies_repetition_penalty=verifies_repetition_penalty,
         speculative_ignores_request_seed=True,
     )
@@ -2393,6 +2402,111 @@ def test_speculative_admission_refuses_sampling_the_draft_cannot_reproduce(
     ), "only a runner whose verify ignores the seed refuses it"
     scheduler.draft_worker = None
     assert scheduler.speculative_request_error(request, request_data) is None
+
+
+@pytest.mark.parametrize(
+    ("temperature", "repetition_penalty", "expected_path", "reason"),
+    [
+        (0.0, 1.0, "spec", None),
+        (0.7, 1.0, "plain", "temperature"),
+        (0.0, 1.2, "plain", "repetition_penalty"),
+    ],
+)
+def test_plain_fallback_admission_preserves_sampling_contract(
+    temperature: float,
+    repetition_penalty: float,
+    expected_path: str,
+    reason: str | None,
+) -> None:
+    """Unsupported sampling must select plain before any draft prefill runs."""
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.enable_plain_fallback = True
+    scheduler.draft_worker = SimpleNamespace()
+    scheduler.draft_algorithm = SpeculativeAlgorithm.DFLASH
+    scheduler.model_runner = SimpleNamespace(
+        speculative_requires_greedy=True,
+        speculative_verifies_repetition_penalty=False,
+        speculative_ignores_request_seed=False,
+    )
+    request = Req(
+        rid="fallback",
+        origin_input_text="",
+        origin_input_ids=[1, 2],
+        sampling_params=SamplingParams(
+            temperature=temperature,
+            repetition_penalty=repetition_penalty,
+            max_new_tokens=8,
+        ),
+    )
+    request_data = SGLangARRequestData(req=request, temperature=temperature)
+    normalized_temperature = request.sampling_params.temperature
+    assert scheduler.select_decode_path(request, request_data) is None
+    assert request_data.decode_path == expected_path
+    if reason is None:
+        assert request_data.fallback_reason is None
+    else:
+        assert reason in request_data.fallback_reason
+    assert request.sampling_params.repetition_penalty == repetition_penalty
+    assert request.sampling_params.temperature == normalized_temperature
+
+
+def test_plain_fallback_rotates_paths_and_cancels_parked_requests() -> None:
+    """A sparse plain request must run while a speculative request stays live."""
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.enable_plain_fallback = True
+    scheduler.decode_path = "spec"
+    scheduler.draft_algorithm = SpeculativeAlgorithm.DFLASH
+    scheduler.speculative_future_map = Mock()
+    scheduler.plain_future_map = Mock()
+    request = Req(
+        rid="spec",
+        origin_input_text="",
+        origin_input_ids=[1],
+        sampling_params=SamplingParams(max_new_tokens=8),
+    )
+    request.omni_data = SGLangARRequestData(req=request, decode_path="spec")
+    request._omni_terminal_claimed = (
+        False  # noqa: leading-underscore  # scheduler request contract
+    )
+    scheduler.running_batch = ScheduleBatch(reqs=[request], batch_is_full=False)
+    scheduler.last_batch = scheduler.running_batch
+    scheduler.cur_batch = None
+    scheduler.chunked_req = None
+    scheduler._pending_chunked_abort_req = (
+        None  # noqa: leading-underscore  # upstream scheduler contract
+    )
+    scheduler.async_pending = None
+    scheduler.result_queue = deque()
+    scheduler.decode_batch_states = {
+        "spec": omni_scheduler_module.DecodeBatchState(
+            running_batch=scheduler.running_batch
+        ),
+        "plain": omni_scheduler_module.DecodeBatchState(
+            running_batch=ScheduleBatch(reqs=[], batch_is_full=False)
+        ),
+    }
+    plain_request = Req(
+        rid="plain",
+        origin_input_text="",
+        origin_input_ids=[1],
+        sampling_params=SamplingParams(max_new_tokens=8),
+    )
+    plain_request.omni_data = SGLangARRequestData(
+        req=plain_request, decode_path="plain"
+    )
+    scheduler.waiting_queue = [plain_request]
+    init_sync_request_build_state(scheduler)
+    scheduler.select_next_decode_path()
+    assert scheduler.spec_algorithm.is_none()
+    assert scheduler.future_map is scheduler.plain_future_map
+    assert scheduler.find_request_data("spec") is request.omni_data
+    assert scheduler.flush_cache() is False
+    assert scheduler.mark_running_request_aborted("spec")
+    assert request.to_finish is not None
+    scheduler.select_next_decode_path()
+    assert scheduler.running_batch.reqs == [request]
+    assert scheduler.spec_algorithm == SpeculativeAlgorithm.DFLASH
+    assert scheduler.future_map is scheduler.speculative_future_map
 
 
 def test_omni_scheduler_fish_abort_during_step_suppresses_chunk_and_result() -> None:

@@ -546,7 +546,7 @@ def patch_engine_dependencies(
     monkeypatch.setattr(
         model_runner_base,
         "ModelRunner",
-        lambda *args, **kwargs: object(),
+        lambda *args, **kwargs: SimpleNamespace(),
     )
     monkeypatch.setattr(
         omni_scheduler,
@@ -763,7 +763,7 @@ def test_qwen3_asr_dflash_build_uses_sync_runtime_and_cleans_resources(
     )
     assert scheduler.enable_async_decode is False
     assert scheduler.async_prefill is False
-    assert recorded.adapter_kwargs["greedy_only"] is True
+    assert recorded.adapter_kwargs["greedy_only"] is False
     assert recorded.build_kwargs["enable_mixed_chunk"] is False
     assert recorded.build_kwargs["disable_overlap_schedule"] is True
     assert not recorded.build_kwargs.get("disable_cuda_graph", False)

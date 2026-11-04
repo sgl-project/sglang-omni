@@ -167,6 +167,7 @@ class ModelRunner(Generic[RequestDataInput]):
     speculative_verify_takes_logits_hooks: bool = False
     # True when the model's sampled DFlash or DSpark verify draws without the request seed.
     speculative_ignores_request_seed: bool = False
+    speculative_requires_greedy: bool = False
     # An EAGLE draft extends on the embeddings the target prefilled with, which a
     # runner composing multimodal inputs keeps here for one prefill.
     retain_prefill_input_embeds: bool = False

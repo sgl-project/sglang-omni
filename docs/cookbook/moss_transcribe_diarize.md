@@ -234,6 +234,16 @@ sgl-omni serve \
 - **Sampling.** Requests with `repetition_penalty`, `frequency_penalty`, `presence_penalty`, `min_p` or logprobs are rejected, because the draft worker applies penalties once per verify block, drops `min_p`, and skips the sampler that records logprobs.
 - **Scheduling.** Async decode and async prefill are turned off, because async decode under a draft means speculative overlap, which MOSS-TD has not opted into. Setting `enable_mixed_chunk` is rejected.
 
+The optional eager plain-fallback profile routes unsupported sampling options through the ordinary target runner from prefill onward. For example, a request with `repetition_penalty=1.2` takes the plain path while a compatible request uses DFlash in the same scheduler, sharing one target worker and the request/KV pools:
+
+```bash
+sgl-omni serve \
+  --config examples/configs/moss_td_plain_fallback.yaml \
+  --port 8000
+```
+
+This profile reuses the same admission, batch scheduling, token relay, and cleanup code as Qwen3-ASR. It requires one CUDA GPU, synchronous execution, and disabled CUDA graphs and radix cache. The H200 GPU probe verifies that repetition-penalty batches call the ordinary sampler with zero draft forwards, target verifies, or draft KV writes, then cancel, retract, resume, and recover every request/KV slot. See [per-request plain fallback](qwen3_asr.md#per-request-plain-fallback) for the probe, execution restrictions, and remaining graph/cache work. The corpus measurements below describe the existing DFlash path.
+
 Paired runs on one H200 140GB with FA3 and SGLang 0.5.22, `max_running_requests=16`, `cuda_graph_max_bs=16` and `mem_fraction_static=0.80`, each on a fresh server, in audio seconds per second. Concurrency 1 rows are the mean of both orders; the other rows are one pair.
 
 | Dataset | Concurrency | Baseline | DFlash | Speedup | Baseline CER / DER | DFlash CER / DER |
