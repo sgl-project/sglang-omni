@@ -5,7 +5,7 @@ name: CPU CI
 # DAG:
 #   check-changes -> preflight -> cpu-ci -> finish
 #                                             ^
-#                        (finish always runs, aggregates the result)
+#                        (finish aggregates the result unless cancelled)
 #
 # Design notes / why this differs from omni-xpu-ci.yaml:
 #
@@ -115,8 +115,10 @@ jobs:
               repo: context.repo.repo,
               pull_number: context.issue.number,
             });
-            core.setOutput("labels", JSON.stringify(pr.data.labels.map((label) => label.name)));
+            const labels = pr.data.labels.map((label) => label.name);
+            core.setOutput("labels", JSON.stringify(labels));
             core.setOutput("draft", pr.data.draft ? "true" : "false");
+            core.setOutput("is_selected", labels.includes("run-all-ci") || labels.includes("run-intel-cpu-ci"));
 
       - name: Log PR gate state
         if: ${{ github.event_name == 'pull_request' }}
@@ -125,16 +127,17 @@ jobs:
           echo "PR draft: ${{ steps.pr.outputs.draft }}"
 
       - name: Block draft PR
-        if: ${{ github.event_name == 'pull_request' && fromJson(steps.pr.outputs.draft) }}
+        if: ${{ steps.pr.outputs.is_selected == 'true' && fromJson(steps.pr.outputs.draft) }}
         run: |
           echo "PR is draft. Blocking CPU CI."
           exit 1
 
       - name: Checkout workflow scripts
+        if: ${{ github.event_name == 'workflow_dispatch' || steps.pr.outputs.is_selected == 'true' }}
         uses: actions/checkout@v4
 
       - name: Resolve CI stages
-        if: ${{ github.event_name == 'pull_request' }}
+        if: ${{ steps.pr.outputs.is_selected == 'true' }}
         id: plan
         env:
           LABELS_JSON: ${{ steps.pr.outputs.labels }}
@@ -272,7 +275,7 @@ jobs:
   finish:
     name: CPU CI Status
     needs: [check-changes, preflight, cpu-ci]
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -282,9 +285,7 @@ jobs:
           echo "check-changes: ${{ needs.check-changes.result }}"
           echo "preflight:     ${{ needs.preflight.result }}"
           echo "cpu-ci:        ${{ needs.cpu-ci.result }}"
-          # Jobs skipped because the PR did not touch CPU paths are a valid
-          # "nothing to do" -> success. Preflight gate failures and cancellations
-          # remain real failures and fail the aggregate status.
+          # Jobs skipped by paths or labels are valid; failed jobs are not.
           if ${{ contains(needs.*.result, 'failure') }}; then
             echo "A required CPU CI job failed."
             exit 1

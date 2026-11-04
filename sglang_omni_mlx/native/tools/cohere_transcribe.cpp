@@ -41,7 +41,7 @@ int main(int argc, char **argv) {
     } else if (argument == "--language") {
       options.language = value();
     } else if (argument == "--use-punctuation") {
-      options.use_punctuation = qwen3_asr::FormFlag(value());
+      options.use_punctuation = omni_common::FormFlag(value());
     } else if (argument == "--max-new-tokens") {
       options.max_new_tokens = std::stoi(value());
     } else if (argument == "--temperature") {
@@ -101,7 +101,7 @@ int main(int argc, char **argv) {
     bytes << stream.rdbuf();
     const auto started = std::chrono::steady_clock::now();
     const auto result = transcriber.Transcribe(
-        qwen3_asr::DecodeWav(bytes.str()), options, cancel);
+        omni_common::DecodeWav(bytes.str()), options, cancel);
     const nlohmann::json line = {
         {"file", file},
         {"text", result.text},

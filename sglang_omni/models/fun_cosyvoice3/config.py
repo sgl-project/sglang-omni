@@ -115,9 +115,22 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
             factory=FactoryArgs(max_concurrency=8),
             next="tts_engine",
         ),
-        # note(ratish): stages in one process are built in list order; the
-        # vocoder comes before the engine so Flow, HiFT and their graphs are
-        # resident when sglang sizes the KV pool from free memory.
+        # note (ratish): stages in one process are built in list order. The engine's KV
+        # pool is max_running_requests x context_length tokens, not free memory, so it
+        # comes first and the vocoder sizes its Flow prefix pool from what is left.
+        EngineStageConfig(
+            name="tts_engine",
+            process="pipeline",
+            factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
+            factory=FactoryArgs(
+                dtype="bfloat16",
+                onnx_intra_op_threads=16,
+                token_hop_len=25,
+            ),
+            gpu=0,
+            next="vocoder",
+            stream_to=["vocoder"],
+        ),
         StageConfig(
             name="vocoder",
             process="pipeline",
@@ -143,24 +156,11 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
                 token_hop_len=25,
                 token_max_hop_len=100,
                 disable_hop_growth=False,
-                flow_prefix_cache_gb=24.0,
+                flow_prefix_cache_gb=None,
             ),
             gpu=0,
             terminal=True,
             can_accept_stream_before_payload=True,
-        ),
-        EngineStageConfig(
-            name="tts_engine",
-            process="pipeline",
-            factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
-            factory=FactoryArgs(
-                dtype="bfloat16",
-                onnx_intra_op_threads=16,
-                token_hop_len=25,
-            ),
-            gpu=0,
-            next="vocoder",
-            stream_to=["vocoder"],
         ),
     ]
 

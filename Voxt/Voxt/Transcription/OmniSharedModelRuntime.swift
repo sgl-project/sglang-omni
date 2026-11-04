@@ -20,6 +20,7 @@ actor OmniSharedModelRuntime {
 
     /// A ready endpoint, held until `release()`.
     func acquire(modelDirectory directory: URL) async throws -> OmniServerEndpoint {
+        let directory = directory.resolvingSymlinksInPath().standardizedFileURL
         guard let configuration = configuration() else {
             throw OmniASRRuntimeError.launchFailed("The native runtime is not configured.")
         }
@@ -27,7 +28,7 @@ actor OmniSharedModelRuntime {
         // Note (Jiaxin Deng): checking a runtime suspends and another acquire may replace it meanwhile,
         // so re-read it after every suspension and drop only the runtime that was checked.
         while let current = self.runtime {
-            let usable = modelDirectory == directory
+            let usable = modelDirectory?.path == directory.path
             if usable, await current.canServe {
                 break
             } else if self.runtime === current {

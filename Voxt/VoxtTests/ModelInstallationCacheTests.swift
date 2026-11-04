@@ -1,4 +1,5 @@
 import Foundation
+import OmniModelArtifacts
 import XCTest
 @testable import Voxt
 
@@ -87,6 +88,67 @@ final class ModelInstallationCacheTests: XCTestCase {
         try Data(#"{"weight_map":{"a":"../outside.safetensors"}}"#.utf8)
             .write(to: root.appendingPathComponent("model.safetensors.index.json"))
         XCTAssertFalse(ModelWeightFileValidation.hasCompleteIndex(in: root))
+    }
+
+    func testPublicationForwardsCancellationBeforeCommitWithoutLosingOldWeights() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("model")
+        let staging = root.appendingPathComponent("staging")
+        try seedPublicationFixture(at: destination, value: 1)
+        try seedPublicationFixture(at: staging, value: 2)
+        let lease = try await ModelDiskOperations.prepareStagingDirectory(at: staging)
+        let validating = expectation(description: "validation on disk queue")
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let publication = Task {
+            try await ModelDiskOperations.publish(stagingLease: lease, to: destination) { directory in
+                try OmniModelArtifactValidation.validateSafetensorsDirectory(at: directory)
+                validating.fulfill()
+                release.wait()
+            }
+        }
+        await fulfillment(of: [validating], timeout: 2)
+        publication.cancel()
+        release.signal()
+        do {
+            _ = try await publication.value
+            XCTFail("Cancelled publication committed")
+        } catch is CancellationError {} catch { XCTFail("Unexpected error: \(error)") }
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("weights.safetensors")).last, 1)
+        XCTAssertEqual(try Data(contentsOf: staging.appendingPathComponent("weights.safetensors")).last, 2)
+    }
+
+    func testPublicationResultRemainsInstalledAfterLateParentCancellation() async throws {
+        let root = try TestDoubles.canonicalTemporaryDirectory().appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("model")
+        let staging = root.appendingPathComponent("staging")
+        try seedPublicationFixture(at: staging, value: 2)
+        let lease = try await ModelDiskOperations.prepareStagingDirectory(at: staging)
+        let publication = Task {
+            let outcome = try await ModelDiskOperations.publish(stagingLease: lease, to: destination) { directory in
+                try OmniModelArtifactValidation.validateSafetensorsDirectory(at: directory)
+            }
+            withUnsafeCurrentTask { $0?.cancel() }
+            return outcome
+        }
+        let outcome = try await publication.value
+        XCTAssertTrue(publication.isCancelled)
+        XCTAssertEqual(outcome.directory.path, destination.path)
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("weights.safetensors")).last, 2)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path))
+    }
+
+    private func seedPublicationFixture(at directory: URL, value: UInt8) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: directory.appendingPathComponent("config.json"))
+        let header = Data(#"{"weight":{"dtype":"U8","shape":[1],"data_offsets":[0,1]}}"#.utf8)
+        var headerByteCount = UInt64(header.count).littleEndian
+        var weights = withUnsafeBytes(of: &headerByteCount) { Data($0) }
+        weights.append(header)
+        weights.append(value)
+        try weights.write(to: directory.appendingPathComponent("weights.safetensors"))
     }
 
     func testCheckingSnapshotCannotOfferInstallAction() {

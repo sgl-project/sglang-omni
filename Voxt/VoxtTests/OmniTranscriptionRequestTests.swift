@@ -183,7 +183,7 @@ final class OmniTranscriptionRequestTests: XCTestCase {
         let segment = OmniSpeakerSegment(startSeconds: 0, endSeconds: 2, speakerID: "", text: "hi")
 
         XCTAssertNil(segment.transcriptSegment.speakerID)
-        XCTAssertEqual(segment.transcriptSegment.endTime, 2)
+        XCTAssertEqual(segment.transcriptSegment.endSeconds, 2)
     }
 }
 

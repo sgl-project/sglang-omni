@@ -41,7 +41,8 @@ tests/
     │   └── qwen_fakes.py
     ├── utils/
     │   ├── test_audio.py
-    │   └── test_g711.py
+    │   ├── test_g711.py
+    │   └── test_managed_workers.py
     ├── preprocessing/
     │   ├── test_cache_key.py
     │   ├── test_resample_cache.py
@@ -216,9 +217,6 @@ tests/
     │   ├── test_s0_gate.py
     │   ├── test_state_pool.py
     │   └── test_streaming_vocoder.py
-    ├── router/
-    │   ├── test_app.py
-    │   └── test_core.py
     ├── profiler/
     │   ├── test_event_recorder.py
     │   ├── test_stop_run_id.py
@@ -375,12 +373,12 @@ Relevant model CI ownership:
   benchmarks retain concurrency 32.
 - CI env alignment on the H100 repro host: `source .github/scripts/ci_env.sh`
   then `source omni/bin/activate`.
-  Omni CI (`omni-ci.yaml`) runs benchmark suites sequentially after one shared
-  setup: PR Test (`test.yaml` unit tests) → ASR CI → TTS CI → MPS CI → Omni
-  model CI. Any CI stage label runs PR Test; each other suite runs only when
-  its stage is selected (see the CI section of the pull request template). A
-  failed or skipped suite does not skip later ones; only a failed setup blocks
-  the chain.
+  Omni CI (`omni-ci.yaml`) runs PR Test (`test.yaml` unit tests) after one
+  shared setup. When PR Test finishes, ASR CI, TTS CI and Omni model CI start
+  together and their stages run in parallel; MPS CI runs after them. Any CI
+  stage label runs PR Test; each other suite runs only when its stage is
+  selected (see the CI section of the pull request template). A failed or
+  skipped suite does not skip any other; only a failed setup blocks them.
   Full WER sweep: `.github/scripts/run_all_wer_ci_aligned.sh` (milestones on
   stdout; details in `/tmp/wer_ci_qwen3.log` and `/tmp/wer_ci_tts.log`).
 - GPU handoff between stages: `.github/scripts/delete_gpu_process.sh --kill-orphans` (kills orphan
@@ -847,12 +845,8 @@ that happened to contain an older version of the test.
   - scheduler terminal/abort cleanup, complete row reset and reuse, mixed-batch
     ownership, and async resolve contracts.
 
-- `unit_test/router/`: SGLang-Omni Router unit tests:
-  - router CLI/config behavior
-  - worker metadata and health-state contracts
-  - request routing, proxying, and streaming relay
-  - worker selection policy behavior
-  - managed launcher command construction and cleanup.
+- `unit_test/utils/test_managed_workers.py`: CI worker command construction, GPU placement, parallel readiness, and process-group cleanup for `tests/utils/managed_workers.py`.
+- `sglang_omni_router/tests/` (from the repository root): Rust router process, HTTP, media, WebSocket, and voice integration tests. Unit tests live next to the Rust implementation.
 
 - `unit_test/serve/`: In-process serving API unit tests:
   - generation-stage SGLang server-args role mapping and CLI override capability boundaries
@@ -910,7 +904,8 @@ that happened to contain an older version of the test.
   and 24 kHz vocoder output contracts.
 
 - `unit_test/cli/`: SGLang backend registration, option forwarding,
-  configuration-only launch behavior, and backend-specific help ownership.
+  configuration-only launch behavior, and parity between
+  `sglang serve --model-type omni` and `sgl-omni serve`.
 
 - `unit_test/client/`: Audio conversion, resampling, channel preservation, and
   response decoding for completion, speech, log-probability, and rollout fields.
@@ -941,8 +936,15 @@ that happened to contain an older version of the test.
   channel, `audios` input, role prompt, voice resolution, `stage_params`),
   voice-archive unpacking (read-only fallback, no partial folder), and
   request lowering (decode budget, reference sampling defaults over client
-  filler values, seeds, stream chunks, context limit, input validation). CPU
-  only, no weights; runner and request tests need SGLang but start no engine.
+  filler values, seeds, stream chunks, context limit, input validation), and
+  full-duplex sessions (a session stepped unit by unit through the LM session
+  adapter matches one offline request row for row, frame for frame and word
+  for word, however the audio is cut into units; per-session Mimi encode and
+  batched decode on the offline decode slots; the prompt handed on once; stage
+  sizes and settings resolved through the session config; deployment and
+  session voice, role prompt and sampling; the `/v1/realtime` events, and a
+  session over the WebSocket against a scripted pipeline). CPU only, no
+  weights; runner and request tests need SGLang but start no engine.
 
 - `unit_test/llada2_uni/`: LLaDA2-Uni request lowering to the upstream
   diffusion-language-model token-array contract.
@@ -1018,7 +1020,7 @@ that happened to contain an older version of the test.
 
 ### Streaming cascade
 
-`unit_test/models/test_streaming_cascade.py`, `unit_test/pipeline/test_streaming_cascade.py`, `unit_test/serve/test_session_bridge.py`, `unit_test/serve/test_session_wire.py`, `unit_test/serve/test_realtime_turn_based.py`, `unit_test/pipeline/test_session_graph.py` and `unit_test/scheduling/test_streaming_vocoder_session.py` cover the cascade and the turn-based realtime interaction on CPU with loopback services; `test_model/test_streaming_cascade_realtime.py` runs against live services as described in the [Full Duplex Interactive Model](../docs/developer_reference/full_duplex_interactive_model.md#streaming-cascade).
+`unit_test/models/test_streaming_cascade.py`, `unit_test/pipeline/test_streaming_cascade.py`, `unit_test/serve/test_session_bridge.py`, `unit_test/serve/test_session_wire.py`, `unit_test/serve/test_realtime_turn_based.py`, `unit_test/pipeline/test_session_graph.py` and `unit_test/scheduling/test_streaming_vocoder_session.py` cover the cascade and the turn-based realtime interaction on CPU with loopback services; `test_model/test_streaming_cascade_realtime.py` runs against live services as described in the [Full Duplex Interactive Model](../docs/developer_reference/full_duplex_guide.md#streaming-cascade).
 
 ```bash
 python -m pytest tests/unit_test/models/test_streaming_cascade.py tests/unit_test/pipeline/test_streaming_cascade.py tests/unit_test/serve/test_session_bridge.py tests/unit_test/serve/test_session_wire.py tests/unit_test/serve/test_realtime_turn_based.py tests/unit_test/pipeline/test_session_graph.py -q

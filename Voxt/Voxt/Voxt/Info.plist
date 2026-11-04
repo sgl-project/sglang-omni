@@ -17,7 +17,7 @@
     <key>CFBundleVersion</key>
     <string>$(CURRENT_PROJECT_VERSION)</string>
     <key>CFBundleDisplayName</key>
-    <string>Voxt</string>
+    <string>$(PRODUCT_NAME)</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.utilities</string>
     <!-- Prevent released MLX weight pages from remaining in libmalloc's large-object cache. -->

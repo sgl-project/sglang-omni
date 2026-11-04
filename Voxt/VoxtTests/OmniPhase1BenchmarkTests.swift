@@ -216,7 +216,7 @@ final class OmniPhase1BenchmarkTests: XCTestCase {
             manager.beginActiveUse()
 
             timeline.request = .now
-            let session: any MLXNativeStreamingSession
+            let session: any ASRStreamingSession
             do {
                 session = try await transcriber.makeMeetingNativeStreamingConfiguration().session
             } catch {
@@ -237,7 +237,7 @@ final class OmniPhase1BenchmarkTests: XCTestCase {
                         if timeline.firstPreview == nil { timeline.firstPreview = .now }
                     case .failed:
                         timeline.liveFailed = true
-                    default:
+                    case .ended:
                         continue
                     }
                 }

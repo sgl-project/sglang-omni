@@ -1,14 +1,15 @@
 name: Voxt Mac CI
 
-# Correctness of Voxt's native MLX runtime (sglang_omni_mlx/native) on the
-# Apple Silicon runner: every model with a golden file must reproduce it on the
-# frozen corpus, the server API tests must pass, and Voxt's Omni unit tests must
-# pass. Performance against the original Swift backend is measured by hand per
-# model PR, not here.
+# Builds Voxt's native MLX runtime (sglang_omni_mlx/native) and Voxt on GitHub's
+# macOS runners, then checks what Voxt relies on without running a model: the
+# supervisor protocol, the transcription, speech and realtime APIs (served by
+# the stub server around stand-in models), each server's startup checks, and
+# Voxt's Omni unit tests. No checkpoint is downloaded. Model outputs are checked
+# by hand per model PR with the tools in sglang_omni_mlx/native/ci.
 #
-# VOXT_CI_ROOT persists on the runner: the pinned checkpoints and the corpus are
-# fetched once and reused while their SHA-256 match (provision.py), and the
-# runtime's CMake build directory is reused across runs.
+# The package job runs only when the repository variable
+# VOXT_ENABLE_CI_PACKAGE is true. Local development should use
+# Voxt/tools/package_local_app.sh instead.
 
 on:
   pull_request:
@@ -19,10 +20,7 @@ on:
       - ".github/workflows/voxt-mac-ci.yaml"
   workflow_dispatch:
 
-# One run per pull request; a new push replaces it. The single Apple Silicon
-# runner takes one job at a time, so runs of different pull requests queue
-# there. (One shared group would keep only the newest pending run and cancel
-# the other pull requests' runs.)
+# One run per pull request; a new push replaces it.
 concurrency:
   group: voxt-mac-ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -32,7 +30,7 @@ permissions:
   pull-requests: read
 
 env:
-  VOXT_CI_ROOT: /Users/Shared/voxt-ci
+  DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
 
 jobs:
   preflight:
@@ -54,23 +52,23 @@ jobs:
               repo: context.repo.repo,
               pull_number: context.issue.number,
             });
-            core.setOutput("labels", JSON.stringify(pr.data.labels.map((label) => label.name)));
+            const labels = pr.data.labels.map((label) => label.name);
+            core.setOutput("labels", JSON.stringify(labels));
             core.setOutput("draft", pr.data.draft ? "true" : "false");
+            core.setOutput("is_selected", labels.includes("run-all-ci") || labels.includes("run-mac-ci"));
 
       - name: Block draft PR
-        if: ${{ github.event_name == 'pull_request' && fromJson(steps.pr.outputs.draft) }}
+        if: ${{ steps.pr.outputs.is_selected == 'true' && fromJson(steps.pr.outputs.draft) }}
         run: |
           echo "PR is draft. Blocking Voxt Mac CI."
           exit 1
 
       - name: Checkout CI label rules
-        if: ${{ github.event_name == 'pull_request' }}
+        if: ${{ steps.pr.outputs.is_selected == 'true' }}
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Resolve CI stages
-        if: ${{ github.event_name == 'pull_request' }}
+        if: ${{ steps.pr.outputs.is_selected == 'true' }}
         id: plan
         env:
           LABELS_JSON: ${{ steps.pr.outputs.labels }}
@@ -87,168 +85,84 @@ jobs:
         run: python .github/scripts/pr_ci_gate.py
 
   native-runtime:
-    name: native runtime (golden + API)
+    name: native runtime (build + protocol)
     needs: [preflight]
     if: needs.preflight.outputs.run_mac == 'true'
-    runs-on: [self-hosted, macOS, ARM64]
-    timeout-minutes: 60
+    runs-on: macos-26
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-
-      # Checkpoints, corpus and builds need about 14 GB under VOXT_CI_ROOT and
-      # the runner's work directory; say so plainly instead of failing midway.
-      - name: Check free disk space
-        run: |
-          mkdir -p "$VOXT_CI_ROOT"
-          free_gb=$(df -g "$VOXT_CI_ROOT" | awk 'NR == 2 {print $4}')
-          echo "Free under $VOXT_CI_ROOT: ${free_gb} GB"
-          if [ "$free_gb" -lt 17 ]; then
-            echo "::error::Only ${free_gb} GB free on the runner; the Voxt Mac CI needs at least 17 GB."
-            exit 1
-          else
-            :
-          fi
 
       - uses: astral-sh/setup-uv@v6
 
-      - name: Set up the CI Python
+      - name: Build the runtime and the stub server
         run: |
-          uv venv -q -p 3.12 --allow-existing "$VOXT_CI_ROOT/venv"
-          VIRTUAL_ENV="$VOXT_CI_ROOT/venv" uv pip install -q -r sglang_omni_mlx/native/ci/requirements.lock
+          sglang_omni_mlx/native/scripts/build_runtime.sh "$RUNNER_TEMP/runtime" "$RUNNER_TEMP/runtime-build"
+          "$RUNNER_TEMP/runtime-build/venv/bin/cmake" --build "$RUNNER_TEMP/runtime-build/cmake" --target stub_server
 
-      - name: Provision checkpoints and corpus
+      - name: Set up the test Python
         run: |
-          "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision.py "$VOXT_CI_ROOT/data"
+          uv venv -q -p 3.12 "$RUNNER_TEMP/test-venv"
+          VIRTUAL_ENV="$RUNNER_TEMP/test-venv" uv pip install -q -r sglang_omni_mlx/native/tests/requirements.lock
 
-      - name: Build the runtime
-        run: |
-          sglang_omni_mlx/native/scripts/build_runtime.sh "$RUNNER_TEMP/runtime" "$VOXT_CI_ROOT/runtime-build"
-
-      # Every golden file is checked, even after one fails, and this chip's
-      # outputs are uploaded so they can be recorded as its golden outputs.
-      - name: Golden outputs on the frozen corpus
-        run: |
-          status=0
-          for golden in sglang_omni_mlx/native/ci/golden/*.json; do
-            "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/check_golden.py \
-              --runtime-bin "$RUNNER_TEMP/runtime/bin" --data-root "$VOXT_CI_ROOT/data" --golden "$golden" \
-              --outputs "$RUNNER_TEMP/golden-outputs" || status=1
-          done
-          exit $status
-
-      - name: Server API tests
+      - name: Protocol and startup tests
         env:
+          NATIVE_STUB_SERVER: ${{ runner.temp }}/runtime-build/cmake/stub_server
           NATIVE_RUNTIME_BIN: ${{ runner.temp }}/runtime/bin
-          CI_DATA_ROOT: ${{ env.VOXT_CI_ROOT }}/data
         run: |
-          "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_check_golden.py sglang_omni_mlx/native/ci/test_server_api.py sglang_omni_mlx/native/ci/test_vad_api.py \
-            sglang_omni_mlx/native/ci/test_sortformer_api.py
+          "$RUNNER_TEMP/test-venv/bin/python" -m pytest -q sglang_omni_mlx/native/tests
 
-      # The models beside Qwen3-ASR, each with its own server: their pinned
-      # checkpoints, their golden outputs and their servers' API tests.
-      - name: Provision the other models' checkpoints
-        if: ${{ always() }}
+      - name: Archive tested native runtime
         run: |
-          "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/provision_models.py "$VOXT_CI_ROOT/data"
+          set -euo pipefail
+          tar -czf "$RUNNER_TEMP/voxt-native-runtime.tar.gz" -C "$RUNNER_TEMP/runtime" .
 
-      - name: Other models' golden outputs on the frozen corpus
-        if: ${{ always() }}
-        run: |
-          result=0
-          for golden in sglang_omni_mlx/native/ci/model_golden/*.json; do
-            "$VOXT_CI_ROOT/venv/bin/python" sglang_omni_mlx/native/ci/check_model_golden.py \
-              --runtime-bin "$RUNNER_TEMP/runtime/bin" --data-root "$VOXT_CI_ROOT/data" --golden "$golden" \
-              --outputs "$RUNNER_TEMP/golden-outputs" || result=1
-          done
-          exit "$result"
-
-      - name: Upload this chip's outputs
-        if: always()
+      - name: Upload tested native runtime
         uses: actions/upload-artifact@v4
         with:
-          name: golden-outputs
-          path: ${{ runner.temp }}/golden-outputs
-          if-no-files-found: ignore
-
-      - name: Other model servers' API tests
-        if: ${{ always() }}
-        env:
-          NATIVE_RUNTIME_BIN: ${{ runner.temp }}/runtime/bin
-          CI_DATA_ROOT: ${{ env.VOXT_CI_ROOT }}/data
-        run: |
-          "$VOXT_CI_ROOT/venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_model_servers.py
+          name: voxt-native-runtime
+          path: ${{ runner.temp }}/voxt-native-runtime.tar.gz
+          if-no-files-found: error
 
   voxt-unit:
     name: Voxt Omni unit tests
     needs: [preflight]
     if: needs.preflight.outputs.run_mac == 'true'
-    runs-on: [self-hosted, macOS, ARM64]
+    runs-on: macos-26
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      # Checkpoints, corpus and builds need about 14 GB under VOXT_CI_ROOT and
-      # the runner's work directory; say so plainly instead of failing midway.
-      - name: Check free disk space
+      # mlx-swift needs it to build its kernels.
+      - name: Install the Metal toolchain
         run: |
-          mkdir -p "$VOXT_CI_ROOT"
-          free_gb=$(df -g "$VOXT_CI_ROOT" | awk 'NR == 2 {print $4}')
-          echo "Free under $VOXT_CI_ROOT: ${free_gb} GB"
-          if [ "$free_gb" -lt 17 ]; then
-            echo "::error::Only ${free_gb} GB free on the runner; the Voxt Mac CI needs at least 17 GB."
-            exit 1
-          else
-            :
-          fi
-
-      # The runner's active developer directory may be the Command Line Tools,
-      # which have no xcodebuild: use the newest Xcode installed anywhere the
-      # runner's user can read (Spotlight, /Applications, ~/Applications).
-      - name: Select Xcode
-        run: |
-          if /usr/bin/xcrun --find xcodebuild >/dev/null 2>&1 && xcodebuild -version >/dev/null 2>&1; then
-            :
-          else
-            candidates="$( { mdfind "kMDItemCFBundleIdentifier == 'com.apple.dt.Xcode'" 2>/dev/null; \
-              ls -d /Applications/Xcode*.app "$HOME"/Applications/Xcode*.app 2>/dev/null; } | sort -u )"
-            xcode=""
-            while IFS= read -r app; do
-              if [ -n "$app" ] && [ -x "$app/Contents/Developer/usr/bin/xcodebuild" ]; then
-                xcode="$app"
-              else
-                :
-              fi
-            done <<< "$(echo "$candidates" | sort -V)"
-            if [ -z "$xcode" ]; then
-              echo "runner user: $(whoami); xcode-select -p: $(xcode-select -p 2>&1)"
-              echo "Xcode bundles found: ${candidates:-none}"
-              echo "::error::No usable Xcode for the runner's user; install Xcode in /Applications or run sudo xcode-select -s <Xcode.app> on the runner."
-              exit 1
-            else
-              echo "DEVELOPER_DIR=$xcode/Contents/Developer" >> "$GITHUB_ENV"
-              export DEVELOPER_DIR="$xcode/Contents/Developer"
-            fi
-          fi
+          set -euo pipefail
           xcodebuild -version
-          # Since Xcode 26 the Metal compiler is a separate component, which
-          # mlx-swift needs for its kernels; it stays installed once fetched.
-          if ! xcrun --find metal >/dev/null 2>&1 || ! xcrun metal --version >/dev/null 2>&1; then
-            xcodebuild -downloadComponent MetalToolchain
-          else
+          if xcrun metal --version > /dev/null 2>&1; then
             :
+          else
+            xcodebuild -downloadComponent MetalToolchain
           fi
           xcrun metal --version
+
+      - name: Restore the Swift package checkouts
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/swift-packages
+          key: voxt-swift-packages-${{ hashFiles('Voxt/Voxt.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+
+      - name: Standalone model artifact package tests
+        run: swift test --package-path Voxt/Packages/OmniModelArtifacts
+
+      - name: Voxt tooling tests
+        run: python3 -B -m unittest discover -s Voxt/tools -p 'test_*.py'
 
       - name: Build for testing
         working-directory: Voxt
         run: |
           xcodebuild build-for-testing -project Voxt.xcodeproj -scheme Voxt -configuration TestDebug \
             -destination platform=macOS -derivedDataPath "$RUNNER_TEMP/voxt-derived" \
-            -clonedSourcePackagesDirPath "$VOXT_CI_ROOT/swift-packages" \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/swift-packages" \
             -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO > "$RUNNER_TEMP/voxt-build.log" 2>&1 \
             || { tail -100 "$RUNNER_TEMP/voxt-build.log"; exit 1; }
 
@@ -259,8 +173,13 @@ jobs:
             -only-testing:VoxtTests/OmniTranscriptionRequestTests \
             -only-testing:VoxtTests/OmniRealtimeSessionUpdateTests \
             -only-testing:VoxtTests/OmniASRRuntimeLaunchTests \
+            -only-testing:VoxtTests/OmniASRRuntimeStorageOwnershipTests \
             -only-testing:VoxtTests/OmniVoiceActivityTests \
             -only-testing:VoxtTests/OmniSpeakerDiarizationTests \
+            -only-testing:VoxtTests/MeetingSortformerConfigurationTests \
+            -only-testing:VoxtTests/MeetingSortformerModelStorageTests \
+            -only-testing:VoxtTests/MeetingLocalInferenceCoordinatorTests \
+            -only-testing:VoxtTests/MeetingSpeakerFeedPolicyTests \
             -only-testing:VoxtTests/OmniModelManagerRecoveryTests \
             -only-testing:VoxtTests/OmniFailurePathTests \
             -only-testing:VoxtTests/MLXModelManagerLifecycleTests \
@@ -270,3 +189,81 @@ jobs:
             -only-testing:VoxtTests/RecordingSessionLifecycleTests \
             -only-testing:VoxtTests/RemoteLLMRuntimeClientGenerationSettingsTests \
             -only-testing:VoxtTests/RemoteLLMRuntimeClientResponsesRequestTests
+
+  package:
+    name: Voxt native runtime package
+    if: ${{ vars.VOXT_ENABLE_CI_PACKAGE == 'true' }}
+    needs: [native-runtime, voxt-unit]
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Metal toolchain
+        run: |
+          set -euo pipefail
+          if xcrun metal --version > /dev/null 2>&1; then
+            :
+          else
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Download tested native runtime
+        uses: actions/download-artifact@v4
+        with:
+          name: voxt-native-runtime
+          path: ${{ runner.temp }}/voxt-native-runtime-artifact
+
+      - name: Extract tested native runtime
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/voxt-native-runtime"
+          tar -xzf "$RUNNER_TEMP/voxt-native-runtime-artifact/voxt-native-runtime.tar.gz" \
+            -C "$RUNNER_TEMP/voxt-native-runtime"
+
+      - name: Validate native runtime artifact
+        run: |
+          set -euo pipefail
+          bash Voxt/tools/validate_native_runtime.sh "$RUNNER_TEMP/voxt-native-runtime"
+
+      - name: Build unsigned PR package
+        working-directory: Voxt
+        run: |
+          set -euo pipefail
+          tools/package_local_app.sh \
+            --native-runtime "$RUNNER_TEMP/voxt-native-runtime" \
+            --output-dir "$RUNNER_TEMP/voxt-package" \
+            --no-sign
+
+      - name: Validate package contents
+        run: |
+          set -euo pipefail
+          package_dir="$(find "$RUNNER_TEMP/voxt-package" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          test -n "$package_dir"
+          zip_path="$(find "$package_dir" -maxdepth 1 -name 'Voxt-*-macOS.zip' -type f -print -quit)"
+          dmg_path="$(find "$package_dir" -maxdepth 1 -name 'Voxt-*.dmg' -type f -print -quit)"
+          pkg_path="$(find "$package_dir" -maxdepth 1 -name 'Voxt-*.pkg' -type f -print -quit)"
+          test -f "$zip_path"
+          test -f "$dmg_path"
+          test -f "$pkg_path"
+          package_contents="$(mktemp -d "$RUNNER_TEMP/voxt-package-contents.XXXXXX")"
+          trap 'rm -rf "$package_contents"' EXIT
+          unzip -q "$zip_path" -d "$package_contents"
+          bash Voxt/tools/validate_native_runtime.sh "$package_contents/Voxt.app/Contents/Resources/OmniRuntime"
+          hdiutil verify "$dmg_path"
+          shasum -a 256 -c "$zip_path.sha256"
+          shasum -a 256 -c "$pkg_path.sha256"
+
+      - name: Upload PR package
+        uses: actions/upload-artifact@v4
+        with:
+          name: voxt-native-runtime-package-${{ github.event.pull_request.number || github.run_id }}
+          path: |
+            ${{ runner.temp }}/voxt-package/*/Voxt-*-macOS.zip
+            ${{ runner.temp }}/voxt-package/*/Voxt-*.dmg
+            ${{ runner.temp }}/voxt-package/*/Voxt-*.pkg
+            ${{ runner.temp }}/voxt-package/*/*.sha256
+          if-no-files-found: error

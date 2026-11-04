@@ -150,7 +150,7 @@ def main() -> None:
         type=Path,
         default=Path(__file__).parent
         / "profiles"
-        / "qwen3-asr-qwen3-tts-customvoice"
+        / "qwen3-asr-qwen3-tts-vivian"
         / "launch.yaml",
     )
     parser.add_argument("--output", type=Path, default=Path("cascade-response.wav"))

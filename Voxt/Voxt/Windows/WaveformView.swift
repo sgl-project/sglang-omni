@@ -537,12 +537,6 @@ struct WaveformView: View {
         return WaveformBarVisuals.glowOpacity(level: level, base: 0.04, gain: 0.26, cap: 0.24)
     }
 
-    private func normalizedAudioLevel(_ raw: Float) -> CGFloat {
-        let clamped = max(0, min(raw, 1))
-        let gained = min(1.0, pow(Double(clamped), 1.08) * 0.56)
-        return CGFloat(gained)
-    }
-
     private func waveformBarHeight(for index: Int) -> CGFloat {
         barHeight(for: index)
     }

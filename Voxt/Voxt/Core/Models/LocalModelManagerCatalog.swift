@@ -83,7 +83,8 @@ extension MLXModelManager {
     }
 
     nonisolated static func catalogTagKeys(for repo: String) -> [String] {
-        MLXModelCatalog.catalogTagKeys(for: repo)
+        let tags = MLXModelCatalog.catalogTagKeys(for: repo)
+        return isRealtimeCapableModelRepo(repo) ? tags : tags.filter { $0 != "Realtime" }
     }
 
     nonisolated static func fallbackRemoteSizeText(repo: String) -> String? {
@@ -105,11 +106,12 @@ extension MLXModelManager {
     /// Auxiliary VAD artifacts share download/storage handling, not the ASR
     /// catalog or STT loader. Never reopen arbitrary retired repo loading.
     nonisolated static func isManagedArtifactRepo(_ repo: String) -> Bool {
-        repo == SileroVADModelSupport.repo || availableModels.contains { $0.id == repo }
+        repo == SileroVADModelSupport.repo || OmniASRBackend.isDraftModelRepo(repo)
+            || availableModels.contains { $0.id == repo }
     }
 
     nonisolated static func isAvailableModelRepo(_ repo: String) -> Bool {
-        MLXModelCatalog.isAvailableModelRepo(repo)
+        OmniASRBackend.unavailability(for: repo) == nil
     }
 
     nonisolated static func isRealtimeCapableModelRepo(_ repo: String) -> Bool {
@@ -117,10 +119,7 @@ extension MLXModelManager {
     }
 
     nonisolated static func liveMode(for repo: String) -> MLXLiveMode {
-        if OmniASRBackend.modelKind(for: repo) == .cohereTranscribe {
-            return .batchPreview
-        }
-        return MLXModelCatalog.liveMode(for: repo)
+        MLXModelCatalog.liveMode(for: repo)
     }
 
     nonisolated static func transcriptionBehavior(for _: String) -> TranscriptionBehavior {

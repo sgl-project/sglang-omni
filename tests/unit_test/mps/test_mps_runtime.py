@@ -24,10 +24,30 @@ from sglang_omni.mps.manager import (
     MpsDirtyStateError,
     MpsError,
 )
-from sglang_omni.mps.runtime import MpsPipelineRuntime, create_for_pipeline
+from sglang_omni.mps.runtime import (
+    MpsPipelineRuntime,
+    create_for_pipeline,
+    default_state_root,
+)
+from sglang_omni.mps.state import MpsGpuPaths, pipe_sockets_fit
 from tests.unit_test.mps.test_mps_manager import FakeControlClient
 
 FACTORY = f"{__name__}.unused_factory"
+
+
+def test_deep_temporary_directory_keeps_both_mps_sockets_usable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The control daemon could exit when TMPDIR overflowed control_privileged."""
+    monkeypatch.delenv("SGLANG_OMNI_MPS_STATE_ROOT", raising=False)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: "/tmp/" + "deep" * 40)
+    first_root = default_state_root([gpu_uuid(0)])
+    assert pipe_sockets_fit(MpsGpuPaths(state_root=first_root, gpu_uuid=gpu_uuid(0)))
+    assert default_state_root([gpu_uuid(0)]) == first_root
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: "/tmp/" + "other" * 40)
+    assert default_state_root([gpu_uuid(0)]) != first_root
+    monkeypatch.setenv("SGLANG_OMNI_MPS_STATE_ROOT", "/chosen/mps")
+    assert default_state_root([gpu_uuid(0)]) == Path("/chosen/mps")
 
 
 @dataclass

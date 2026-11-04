@@ -1,13 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "qwen3_asr/qwen3_asr_transcriber.h"
+#include "common/text.h"
 
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <map>
-#include <set>
 
 namespace qwen3_asr {
+
+using omni_common::CollapseTokenLoop;
+using omni_common::IsTokenLoop;
+using omni_common::IsUnicodeSpace;
 
 namespace mx = mlx::core;
 
@@ -15,8 +20,6 @@ namespace {
 
 constexpr const char *kAsrTextMarker = "<asr_text>";
 constexpr const char *kAudioPad = "<|audio_pad|>";
-constexpr size_t kTokenLoopWindow = 24;
-constexpr size_t kTokenLoopMaxDistinct = 3;
 constexpr int kOutputTokensPerAudioSecond = 10;
 constexpr int kMinDefaultOutputTokens = 128;
 
@@ -96,77 +99,6 @@ SpeakerSegmentsJson(const std::vector<SpeakerSegment> &segments) {
   return array;
 }
 
-bool IsUnicodeSpace(uint32_t code_point) {
-  return code_point == ' ' || (code_point >= 0x09 && code_point <= 0x0D) ||
-         (code_point >= 0x1C && code_point <= 0x1F) || code_point == 0x85 ||
-         code_point == 0xA0 || code_point == 0x1680 ||
-         (code_point >= 0x2000 && code_point <= 0x200A) ||
-         code_point == 0x2028 || code_point == 0x2029 || code_point == 0x202F ||
-         code_point == 0x205F || code_point == 0x3000;
-}
-
-// Note (Jiaxin Deng): assumes valid UTF-8, the only kind the tokenizer emits.
-std::vector<uint32_t> CodePoints(const std::string &text) {
-  std::vector<uint32_t> code_points;
-  size_t i = 0;
-  while (i < text.size()) {
-    const auto byte = [&](size_t k) { return static_cast<uint8_t>(text[k]); };
-    const uint8_t lead = byte(i);
-    uint32_t cp = lead;
-    size_t length = 1;
-    if (lead >= 0xF0 && i + 3 < text.size()) {
-      cp = ((lead & 0x07) << 18) | ((byte(i + 1) & 0x3F) << 12) |
-           ((byte(i + 2) & 0x3F) << 6) | (byte(i + 3) & 0x3F);
-      length = 4;
-    } else if (lead >= 0xE0 && i + 2 < text.size()) {
-      cp = ((lead & 0x0F) << 12) | ((byte(i + 1) & 0x3F) << 6) |
-           (byte(i + 2) & 0x3F);
-      length = 3;
-    } else if (lead >= 0xC0 && i + 1 < text.size()) {
-      cp = ((lead & 0x1F) << 6) | (byte(i + 1) & 0x3F);
-      length = 2;
-    } else {
-    }
-    code_points.push_back(cp);
-    i += length;
-  }
-  return code_points;
-}
-
-std::string StripUnicodeWhitespace(const std::string &text) {
-  const std::vector<uint32_t> code_points = CodePoints(text);
-  size_t begin_cp = 0;
-  size_t end_cp = code_points.size();
-  while (begin_cp < end_cp && IsUnicodeSpace(code_points[begin_cp]))
-    ++begin_cp;
-  while (end_cp > begin_cp && IsUnicodeSpace(code_points[end_cp - 1]))
-    --end_cp;
-  size_t byte = 0;
-  size_t begin_byte = 0;
-  size_t end_byte = 0;
-  for (size_t cp = 0; cp <= code_points.size(); ++cp) {
-    if (cp == begin_cp)
-      begin_byte = byte;
-    if (cp == end_cp)
-      end_byte = byte;
-    if (cp == code_points.size())
-      break;
-    const uint8_t lead = static_cast<uint8_t>(text[byte]);
-    byte += lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
-  }
-  return text.substr(begin_byte, end_byte - begin_byte);
-}
-
-bool IsTokenLoop(const std::vector<int> &output_ids) {
-  if (output_ids.size() < kTokenLoopWindow) {
-    return false;
-  } else {
-  }
-  const std::set<int> distinct(output_ids.end() - kTokenLoopWindow,
-                               output_ids.end());
-  return distinct.size() <= kTokenLoopMaxDistinct;
-}
-
 std::optional<std::string> NormalizeLanguage(const std::string &language) {
   const std::string stripped = Strip(language);
   const std::string normalized = Lowercase(stripped);
@@ -192,12 +124,19 @@ std::optional<std::string> NormalizeLanguage(const std::string &language) {
 }
 
 Qwen3ASRTranscriber::Qwen3ASRTranscriber(
-    const std::filesystem::path &model_directory)
+    const std::filesystem::path &model_directory,
+    const std::filesystem::path &draft_directory, int draft_quantization_bits)
     : model_(model_directory), tokenizer_(model_directory),
       audio_pad_id_(tokenizer_.AddedTokenId(kAudioPad)),
       end_of_text_id_(tokenizer_.AddedTokenId("<|endoftext|>")),
       im_end_id_(tokenizer_.AddedTokenId("<|im_end|>")),
-      asr_text_ids_(tokenizer_.Encode(kAsrTextMarker)) {}
+      asr_text_ids_(tokenizer_.Encode(kAsrTextMarker)) {
+  if (!draft_directory.empty()) {
+    draft_.emplace(draft_directory, draft_quantization_bits,
+                   model_.decoder().config());
+  } else {
+  }
+}
 
 std::vector<int>
 Qwen3ASRTranscriber::PromptIds(int audio_token_count,
@@ -277,48 +216,168 @@ Qwen3ASRTranscriber::Transcribe(const std::vector<float> &samples,
   const int max_new_tokens =
       options.max_new_tokens.value_or(0) != 0
           ? *options.max_new_tokens
-          : std::max(kMinDefaultOutputTokens,
-                     static_cast<int>(
-                         std::ceil(static_cast<double>(samples.size()) /
-                                   kSampleRate * kOutputTokensPerAudioSecond)));
+          : std::max(
+                kMinDefaultOutputTokens,
+                static_cast<int>(std::ceil(static_cast<double>(samples.size()) /
+                                           omni_common::kSampleRate *
+                                           kOutputTokensPerAudioSecond)));
   const auto is_stop = [&](int token_id) {
     return token_id == im_end_id_ ||
            (options.stop_at_end_of_text && token_id == end_of_text_id_);
   };
-  std::vector<KVCache> caches = model_.NewCaches();
-  mx::array next_token = mx::argmax(model_.Decode(embeddings, caches));
-  mx::async_eval({next_token});
   std::vector<int> output_ids;
   FinishReason finish_reason = FinishReason::kLength;
-  while (static_cast<int>(output_ids.size()) < max_new_tokens) {
+  bool stopped_on_token_loop = false;
+  // Adds a token to the output; true once the output is complete.
+  const auto commit = [&](int token_id) {
+    output_ids.push_back(token_id);
+    if (is_stop(token_id)) {
+      finish_reason = FinishReason::kStop;
+      return true;
+    } else if (options.stop_on_token_loop && IsTokenLoop(output_ids)) {
+      finish_reason = FinishReason::kStop;
+      stopped_on_token_loop = true;
+      return true;
+    } else {
+      return static_cast<int>(output_ids.size()) >= max_new_tokens;
+    }
+  };
+  // How many more tokens the output may take.
+  const auto remaining = [&]() {
+    return max_new_tokens - static_cast<int>(output_ids.size());
+  };
+  int verify_round_count = 0;
+  // note (wilsonzheng0327): a penalty would have to be applied per block
+  // position with the block's own earlier tokens; a request that asks for one
+  // decodes without the draft.
+  if (draft_.has_value() && options.repetition_penalty == 1.0f) {
+    verify_round_count = DecodeWithDraft(embeddings, commit, remaining, cancel);
+  } else {
+    std::vector<KVCache> caches = model_.NewCaches();
+    const mx::array prefill_logits = model_.Decode(embeddings, caches);
+    mx::array next_token = mx::argmax(prefill_logits);
+    mx::async_eval({next_token});
+    // Note (Minyi Tang): only generated tokens are penalized, as on CUDA; the
+    // scales stay lazy so penalizing adds no host sync to the queued step.
+    mx::array penalty_by_token_id =
+        mx::ones(prefill_logits.shape(), mx::float32);
+    bool finished = false;
+    while (!finished) {
+      if (cancel.load()) {
+        throw TranscriptionCancelled();
+      } else {
+      }
+      const mx::array token = next_token;
+      // Note (Jiaxin Deng): queue the next step before reading this token, so
+      // the GPU decodes while the stop rules are checked.
+      mx::array logits =
+          model_.Decode(model_.EmbedTokens(mx::reshape(token, {1, 1})), caches);
+      if (options.repetition_penalty != 1.0f) {
+        penalty_by_token_id =
+            mx::put_along_axis(penalty_by_token_id, mx::reshape(token, {1}),
+                               mx::array(options.repetition_penalty), 0);
+        logits = mx::astype(logits, mx::float32);
+        logits = mx::where(mx::less(logits, mx::array(0.0f)),
+                           mx::multiply(logits, penalty_by_token_id),
+                           mx::divide(logits, penalty_by_token_id));
+      } else {
+      }
+      next_token = mx::argmax(logits);
+      mx::async_eval({next_token});
+      finished = commit(static_cast<int>(token.item<uint32_t>()));
+    }
+  }
+  const bool ended_on_stop = !output_ids.empty() && is_stop(output_ids.back());
+  const int generated_token_count =
+      static_cast<int>(output_ids.size()) - (ended_on_stop ? 1 : 0);
+  // Note (Minyi Tang): the repeats are the model feeding on its own output,
+  // not speech, so the transcript keeps one copy of the looping unit.
+  auto [text, language] = SplitOutput(
+      stopped_on_token_loop ? CollapseTokenLoop(output_ids) : output_ids,
+      options);
+  return {options.prefix_text + text,
+          language,
+          generated_token_count,
+          finish_reason,
+          {},
+          verify_round_count};
+}
+
+int Qwen3ASRTranscriber::DecodeWithDraft(
+    const mx::array &embeddings, const std::function<bool(int)> &commit,
+    const std::function<int()> &remaining,
+    const std::atomic<bool> &cancel) const {
+  const Qwen3Decoder &decoder = model_.decoder();
+  const int block_size = draft_->block_size();
+  std::vector<KVCache> caches = model_.NewCaches();
+  std::vector<KVCache> draft_caches = draft_->NewCaches();
+  std::vector<mx::array> aux_hidden_states;
+  int anchor_id;
+  {
+    const mx::array prompt_hidden = decoder.Forward(
+        embeddings, caches, draft_->aux_layers(), &aux_hidden_states);
+    draft_->AppendContext(aux_hidden_states, embeddings.shape(1), draft_caches);
+    anchor_id = static_cast<int>(
+        mx::argmax(decoder.LastLogits(prompt_hidden)).item<uint32_t>());
+  }
+  if (cancel.load()) {
+    throw TranscriptionCancelled();
+  } else {
+  }
+  bool finished = commit(anchor_id);
+  int round_count = 0;
+  while (!finished) {
     if (cancel.load()) {
       throw TranscriptionCancelled();
     } else {
     }
-    const mx::array token = next_token;
-    // Note (Jiaxin Deng): queue the next step before reading this token, so
-    // the GPU decodes while the stop rules are checked.
-    next_token = mx::argmax(
-        model_.Decode(model_.EmbedTokens(mx::reshape(token, {1, 1})), caches));
-    mx::async_eval({next_token});
-    const int token_id = static_cast<int>(token.item<uint32_t>());
-    output_ids.push_back(token_id);
-    if (is_stop(token_id)) {
-      finish_reason = FinishReason::kStop;
-      break;
-    } else if (options.stop_on_token_loop && IsTokenLoop(output_ids)) {
-      finish_reason = FinishReason::kStop;
-      break;
+    std::vector<int> block_ids(block_size, draft_->mask_token_id());
+    block_ids[0] = anchor_id;
+    const mx::array proposed_ids =
+        draft_->ProposeBlock(model_.EmbedTokens(mx::array(
+                                 block_ids.data(), {1, block_size}, mx::int32)),
+                             draft_caches);
+    // note (wilsonzheng0327): the block is cut to the tokens the budget still
+    // allows, so the caches never hold a position plain decoding would not
+    // have reached.
+    const int verify_count = std::min(block_size, remaining());
+    const mx::array verify_ids =
+        mx::slice(mx::concatenate(
+                      {mx::array(&anchor_id, {1}, mx::int32), proposed_ids}, 0),
+                  {0}, {verify_count});
+    aux_hidden_states.clear();
+    const mx::array hidden = decoder.Forward(
+        model_.EmbedTokens(mx::reshape(verify_ids, {1, verify_count})), caches,
+        draft_->aux_layers(), &aux_hidden_states);
+    const mx::array predictions = mx::argmax(decoder.Logits(hidden), -1);
+    mx::eval({proposed_ids, predictions});
+    ++round_count;
+    // note (wilsonzheng0327): prediction i follows block token i, so proposal
+    // i is accepted while every earlier one was and it matches prediction i;
+    // the prediction after the last accepted token is committed as well.
+    const int32_t *proposed = proposed_ids.data<int32_t>();
+    const uint32_t *predicted = predictions.data<uint32_t>();
+    int accepted_count = 0;
+    while (!finished && accepted_count < verify_count - 1 &&
+           proposed[accepted_count] ==
+               static_cast<int>(predicted[accepted_count])) {
+      finished = commit(proposed[accepted_count]);
+      ++accepted_count;
+    }
+    if (!finished) {
+      anchor_id = static_cast<int>(predicted[accepted_count]);
+      finished = commit(anchor_id);
     } else {
     }
+    // note (wilsonzheng0327): the caches keep the anchor and the accepted
+    // proposals; the committed positions' hidden states become the draft's
+    // context.
+    for (KVCache &cache : caches) {
+      cache.Trim(verify_count - 1 - accepted_count);
+    }
+    draft_->AppendContext(aux_hidden_states, accepted_count + 1, draft_caches);
   }
-  auto [text, language] = SplitOutput(output_ids, options);
-  const bool ended_on_stop = !output_ids.empty() && is_stop(output_ids.back());
-  return {options.prefix_text + text,
-          language,
-          static_cast<int>(output_ids.size()) - (ended_on_stop ? 1 : 0),
-          finish_reason,
-          {}};
+  return round_count;
 }
 
 std::pair<std::string, std::optional<std::string>>

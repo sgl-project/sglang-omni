@@ -41,9 +41,11 @@ For local signing, copy `Config/Signing.local.xcconfig.example` to `Config/Signi
 
 ## Dependencies
 
-Swift package dependencies are resolved through the Xcode project. Direct package references include MLXAudio, mlx-swift-lm, llama.swift, GRDB, swift-log, Sparkle, PermissionFlow, and FaviconFinder; mlx-swift is part of the model dependency graph. The MLX Audio dependency policy is documented in `docs/MLXAudioDependency.md`.
+Swift package dependencies are resolved through the Xcode project. Direct package references include mlx-swift-lm, mlx-swift, Tokenizers, HuggingFace, OmniModelArtifacts, llama.swift, GRDB, swift-log, Sparkle, PermissionFlow, and FaviconFinder. MLX Audio is retired; do not restore its products or package pin. The MLX Audio dependency policy is documented in `docs/MLXAudioDependency.md`.
 
 ## Architecture And Documentation
+
+Local ASR/VAD/diarization use the existing Native HTTP/WebSocket subprocesses. Do not add XPC helpers or modify the shared `sglang_omni_mlx/native` package for Voxt integration; process/request/storage adaptation belongs to Voxt. Preserve the official Native implementation and synchronize only through normal official-main merges.
 
 - Documentation index: `docs/index.md`.
 - Current source map: `docs/Architecture.md`.

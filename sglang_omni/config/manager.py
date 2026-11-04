@@ -39,7 +39,10 @@ def resolve_config_cls_for_model_path(model_path: str):
     hf_kwargs = {"revision": revision} if revision else {}
     hf_config = None
     try:
-        hf_config = AutoConfig.from_pretrained(repo_id, **hf_kwargs)
+        # Checkpoints with custom code fall through to the config.json readers below, so transformers never prompts.
+        hf_config = AutoConfig.from_pretrained(
+            repo_id, trust_remote_code=False, **hf_kwargs
+        )
     except (OSError, ValueError, KeyError):
         hf_config = None
 

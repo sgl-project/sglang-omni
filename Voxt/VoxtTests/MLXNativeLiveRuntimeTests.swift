@@ -1,5 +1,4 @@
 import XCTest
-import MLXAudioSTT
 @testable import Voxt
 
 @MainActor
@@ -123,16 +122,16 @@ final class MLXNativeLiveRuntimeTests: XCTestCase {
 }
 
 /// Counters are lock protected because the production session contract is nonisolated.
-nonisolated private final class RuntimeTestStreamingSession: MLXNativeStreamingSession, @unchecked Sendable {
-    let events: AsyncStream<TranscriptionEvent>
-    private let continuation: AsyncStream<TranscriptionEvent>.Continuation
+nonisolated private final class RuntimeTestStreamingSession: ASRStreamingSession, @unchecked Sendable {
+    let events: AsyncStream<ASRStreamingEvent>
+    private let continuation: AsyncStream<ASRStreamingEvent>.Continuation
     private let lock = NSLock()
     private var cancellations = 0
     private var feeds = 0
     private var stops = 0
 
     init() {
-        let pair = AsyncStream<TranscriptionEvent>.makeStream()
+        let pair = AsyncStream<ASRStreamingEvent>.makeStream()
         events = pair.stream
         continuation = pair.continuation
     }

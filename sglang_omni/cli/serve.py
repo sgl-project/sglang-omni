@@ -3,8 +3,10 @@ from __future__ import annotations
 import logging
 from typing import Annotated, Literal, NoReturn
 
+import click
 import typer
 import yaml
+from typer.core import TyperCommand
 
 from sglang_omni.config import PipelineConfig
 from sglang_omni.config.manager import ConfigManager
@@ -22,6 +24,7 @@ from sglang_omni.preprocessing.resource_connector import (
     resolve_allowed_local_media_path,
 )
 from sglang_omni.serve.protocol import DEFAULT_TTS_BATCH_MAX_ITEMS
+from sglang_omni.serve.realtime.types import RuntimeLimits
 from sglang_omni.utils.gpu_compat import should_disable_custom_all_reduce_for_gpus
 from sglang_omni.utils.logging import configure_dependency_loggers
 from sglang_omni.utils.process import exit_without_teardown
@@ -30,6 +33,20 @@ logger = logging.getLogger(__name__)
 
 
 _QWEN_COLOCATED_CONFIG_CLASS = "Qwen3OmniSpeechColocatedPipelineConfig"
+LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+
+
+class ServeCommand(TyperCommand):
+    """Serve command that also takes the model path as its first argument."""
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        # note (Chenyang): sglang serve rewrites a leading positional the same
+        # way, so both CLIs parse one command line identically.
+        if args and not args[0].startswith("-"):
+            args = ["--model-path", *args]
+        else:
+            pass
+        return super().parse_args(ctx, args)
 
 
 def launch_server(*args: object, **kwargs: object) -> NoReturn:
@@ -123,6 +140,17 @@ def normalize_allowed_media_domains(values: list[str] | None) -> list[str]:
             part.strip().lower() for part in value.split(",") if part.strip()
         )
     return domains
+
+
+def validate_realtime_timeout(timeout_seconds: float | None) -> float | None:
+    if timeout_seconds is None:
+        return None
+    else:
+        try:
+            RuntimeLimits(idle_timeout_s=timeout_seconds)
+        except ValueError as error:
+            raise typer.BadParameter(str(error)) from error
+        return timeout_seconds
 
 
 def validate_tts_batch_max_items(value: int) -> int:
@@ -348,6 +376,7 @@ def serve(
         typer.Option(
             help=(
                 "The Hugging Face model ID or the path to the model directory. "
+                "May also be given as the first positional argument. "
                 "Required unless --config provides model_path."
             )
         ),
@@ -461,9 +490,33 @@ def serve(
         typer.Option(
             "--skip-server-warmup",
             "--skip_server_warmup",
-            help="Report ready without sending the pipeline's warmup requests first.",
+            help="Report ready without running the pipeline's warmup first.",
         ),
     ] = False,
+    realtime_session_update_timeout_s: Annotated[
+        float | None,
+        typer.Option(
+            "--realtime-session-update-timeout-s",
+            callback=validate_realtime_timeout,
+            help=(
+                "Set the timeout for the first session.update, in seconds. "
+                "Use --enable-realtime with this option. "
+                "If you do not set this option, the server uses the pipeline configuration."
+            ),
+        ),
+    ] = None,
+    realtime_idle_timeout_s: Annotated[
+        float | None,
+        typer.Option(
+            "--realtime-idle-timeout-s",
+            callback=validate_realtime_timeout,
+            help=(
+                "Set the idle timeout for shared sessions, in seconds. "
+                "Use --enable-realtime with this option. "
+                "If you do not set this option, the server uses the pipeline configuration."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Serve the pipeline.
 
@@ -473,10 +526,17 @@ def serve(
     ``--vocoder.factory.max_concurrency 8``, ``--talker_ar.gpu 1``,
     ``--thinker.process thinker``.
     """
-    logging.basicConfig(
-        level=getattr(logging, log_level.upper()),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
+    root_logger = logging.getLogger()
+    logging.basicConfig(level=log_level.upper(), format=LOG_FORMAT)
+    # note (Chenyang): sglang serve installs a root console handler before this
+    # runs, which makes basicConfig a no-op. Set the level and the console
+    # format directly so both CLIs log alike, and keep plugin handlers intact.
+    root_logger.setLevel(log_level.upper())
+    for root_handler in root_logger.handlers:
+        if type(root_handler) is logging.StreamHandler:
+            root_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+        else:
+            pass
     configure_dependency_loggers()
 
     validate_colocate_cli_request(
@@ -581,6 +641,8 @@ def serve(
         model_name=model_name,
         log_level=log_level,
         enable_realtime=enable_realtime,
+        realtime_session_update_timeout_s=realtime_session_update_timeout_s,
+        realtime_idle_timeout_s=realtime_idle_timeout_s,
         allowed_local_media_path=validate_allowed_local_media_path(
             allowed_local_media_path
         ),

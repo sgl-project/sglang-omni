@@ -12,12 +12,12 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parent.parent
-FORBIDDEN = re.compile(r"fluidaudio|nemotextprocessing|sherpa[-_]?onnx|onnxruntime", re.I)
+FORBIDDEN = re.compile(r"fluidaudio|nemotextprocessing|sherpa[-_]?onnx|onnxruntime|mlx[-_]?audio(?:[-_]?swift|core|stt|vad)|OmniXPC|OmniInference|libOmniCore", re.I)
 RETIRED_API = re.compile(
     r"\b(?:FluidAudioMeetingSpeakerDiarizationEngine|MeetingOfflineVBxModelStorage|"
     r"VoxtralRealtimeModel|CanaryModel|MoonshineModel|Wav2Vec2CTCModel|LasrCTCModel|"
     r"GraniteSpeechModel|FireRedASR2Model|GLMASRModel|MMSLanguageAdapterOption|"
-    r"nativeVoxtralLive|hiddenSupport)\b"
+    r"nativeVoxtralLive|hiddenSupport|OmniXPC\w+|OmniNativeCore|VOXT_OMNI_XPC_VALIDATION)\b"
 )
 
 
@@ -26,18 +26,30 @@ def source_errors(root):
     project = (root / "Voxt.xcodeproj/project.pbxproj").read_text()
     if FORBIDDEN.search(project):
         errors.append("Retired dependency in Xcode project")
-    required_revisions = [
-        "2a6e75d28ae6a399ba7c7aec842384ef7a3142b5",
-        "c6446cf7bfb7cea76408013b614d4b2c530eaa03",
-    ]
+    required_revisions = ["c6446cf7bfb7cea76408013b614d4b2c530eaa03"]
     for revision in required_revisions:
         if f"revision = {revision};" not in project:
             errors.append(f"Missing fixed model dependency revision: {revision}")
-    if "XCLocalSwiftPackageReference" in project:
+    for repository, version in [("https://github.com/ml-explore/mlx-swift", "0.31.6"),
+                                ("https://github.com/huggingface/swift-huggingface.git", "0.10.2"),
+                                ("https://github.com/huggingface/swift-transformers.git", "1.3.4")]:
+        requirement = rf'repositoryURL = "{re.escape(repository)}";\s*requirement = \{{\s*kind = exactVersion;\s*version = {re.escape(version)};'
+        if not re.search(requirement, project):
+            errors.append(f"Missing explicit fixed model dependency: {repository} {version}")
+        else:
+            pass
+    local_packages = re.findall(
+        r"isa = XCLocalSwiftPackageReference;\s*relativePath = ([^;]+);", project
+    )
+    allowed_local_packages = {"Packages/OmniModelArtifacts"}
+    if (len(local_packages) != project.count("isa = XCLocalSwiftPackageReference;")
+            or any(path.strip('"') not in allowed_local_packages for path in local_packages)):
         errors.append("Local package override in shared release project")
+    else:
+        pass
     for path in (root / "Voxt").rglob("*.swift"):
         text = path.read_text()
-        if RETIRED_API.search(text) or re.search(r"(?:import|canImport\()\s*FluidAudio", text):
+        if RETIRED_API.search(text) or re.search(r"(?:import|canImport\()\s*(?:FluidAudio|MLXAudio(?:Core|STT|VAD))", text):
             errors.append(f"Retired runtime API: {path.relative_to(root)}")
     for name, count in [("Voxt/Transcription/MLXModelSupport.swift", 11),
                         ("Voxt/Core/Models/CustomLLMModelSupport.swift", 12)]:
@@ -57,7 +69,6 @@ def resolved_errors(path):
             errors.append(f"Retired resolved dependency: {pin['identity']}")
     # Update only together with the tested MLX compatibility set.
     expected = {
-        "mlx-audio-swift": ("revision", "2a6e75d28ae6a399ba7c7aec842384ef7a3142b5"),
         "mlx-swift": ("version", "0.31.6"),
         "mlx-swift-lm": ("revision", "c6446cf7bfb7cea76408013b614d4b2c530eaa03"),
         "swift-transformers": ("version", "1.3.4"),

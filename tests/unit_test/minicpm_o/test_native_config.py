@@ -35,6 +35,7 @@ from sglang_omni.models.minicpm_o.native_config import (
     MiniCPMODuplexPipelineConfig,
     MiniCPMODuplexVision,
 )
+from sglang_omni.models.minicpm_o.native_stages import SpeechHooks
 from sglang_omni.models.minicpm_o.session_adapters import build_realtime_deployment
 from sglang_omni.scheduling.session import BatchedSessionHooks
 from sglang_omni.scheduling.stage_kv_budget import consume_stage_kv_cache_bytes
@@ -516,7 +517,72 @@ def test_duplex_speech_settings_reach_the_vocoder(
     assert codec_kwargs["enable_hift_torch_compile"] is True
     assert codec_kwargs["n_timesteps"] == 6
     native_stages.MiniCPMOVocoderRuntime.return_value.warm_up.assert_called_once_with(
-        b"reference"
+        b"reference", capture_chunk_graphs=True
     )
     runtime_kwargs = native_stages.MiniCPMOVocoderRuntime.call_args.kwargs
     assert runtime_kwargs["max_open_sessions"] == config.max_sessions
+
+
+def test_duplex_speech_decodes_five_flow_steps_by_default(
+    tmp_path: Path, stub_stage_models: None
+) -> None:
+    """A deployment without speech settings streams with the reference demo's five flow steps."""
+    reference_path = tmp_path / "reference.wav"
+    reference_path.write_bytes(b"reference")
+    config = MiniCPMODuplexPipelineConfig(model_path="unused")
+    native_stages.MiniCPMOCode2Wav.return_value.default_prompt_wav = str(reference_path)
+    native_stages.create_speech_scheduler(
+        config.model_path, device="cpu", **config.stage_factory_kwargs("speech")
+    )
+    assert native_stages.MiniCPMOCode2Wav.call_args.kwargs["n_timesteps"] == 5
+
+
+@pytest.mark.parametrize(
+    ("flags", "batch_size", "gather_window_seconds", "captures_chunk_graphs"),
+    [
+        ([], 2, 0.0225, True),
+        (["--batch_sessions", "false"], 1, 0.0, True),
+        (["--speech.gather_window_ms", "0"], 2, 0.0, True),
+        (["--speech.enable_chunk_cuda_graph", "false"], 2, 0.0225, False),
+    ],
+    ids=["defaults", "no-session-batches", "no-gather-window", "eager-flow-chunks"],
+)
+def test_each_duplex_session_optimization_turns_off_alone(
+    flags: list[str],
+    batch_size: int,
+    gather_window_seconds: float,
+    captures_chunk_graphs: bool,
+    tmp_path: Path,
+    stub_stage_models: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(native_stages, "SpeechHooks", SpeechHooks)
+    reference_path = tmp_path / "reference.wav"
+    reference_path.write_bytes(b"reference")
+    manager = ConfigManager(
+        MiniCPMODuplexPipelineConfig(
+            model_path="unused", reference_audio=str(reference_path)
+        )
+    )
+    config = manager.merge_config(manager.parse_extra_args(flags))
+    native_stages.MiniCPMOCode2Wav.return_value.default_prompt_wav = str(reference_path)
+
+    perception = native_stages.create_perception_scheduler(
+        config.model_path,
+        device="cpu",
+        dtype="float32",
+        **config.stage_factory_kwargs("perception"),
+    )
+    speech = native_stages.create_speech_scheduler(
+        config.model_path, device="cpu", **config.stage_factory_kwargs("speech")
+    )
+
+    for scheduler in (perception, speech):
+        assert scheduler.max_open_sessions == config.max_sessions
+        assert scheduler.max_batch_size == batch_size
+        assert scheduler.max_concurrency == 1
+    assert perception.gather_window_seconds == 0
+    assert speech.gather_window_seconds == pytest.approx(gather_window_seconds)
+    native_stages.MiniCPMOVocoderRuntime.return_value.warm_up.assert_called_once_with(
+        b"reference", capture_chunk_graphs=captures_chunk_graphs
+    )

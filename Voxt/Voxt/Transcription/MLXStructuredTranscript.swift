@@ -1,12 +1,11 @@
 // Shared reliability rules for live-ended and batch transcript segments.
 
 import Foundation
-import MLXAudioSTT
 
 extension MLXTranscriber {
-    /// Maps a live `.ended(STTOutput)` payload using the same reliability rules as batch.
+    /// Maps a live ended payload using the same reliability rules as batch.
     nonisolated static func structuredSegmentsForLiveEnded(
-        output: STTOutput,
+        output: ASRTranscriptionResult,
         modelFamily: MLXModelFamily,
         timingGranularity: MLXASRTimingGranularity
     ) -> [MLXStructuredTranscriptSegment] {
@@ -20,14 +19,14 @@ extension MLXTranscriber {
     }
 
     nonisolated static func reliableStructuredSegments(
-        from rawSegments: [STTTranscriptSegment]?,
+        from rawSegments: [ASRTranscriptSegment],
         timingGranularity: MLXASRTimingGranularity
     ) -> [MLXStructuredTranscriptSegment] {
         guard timingGranularity.providesReliableSegments else { return [] }
 
-        return (rawSegments ?? []).compactMap { segment in
-            guard let start = segment.startTime,
-                  let end = segment.endTime,
+        return rawSegments.compactMap { segment in
+            guard let start = segment.startSeconds,
+                  let end = segment.endSeconds,
                   start.isFinite,
                   end.isFinite,
                   end > start
@@ -46,11 +45,11 @@ extension MLXTranscriber {
     }
 
     nonisolated static func mossStructuredSegments(
-        from rawSegments: [STTTranscriptSegment]?
+        from rawSegments: [ASRTranscriptSegment]
     ) -> [MLXStructuredTranscriptSegment] {
-        (rawSegments ?? []).compactMap { segment in
-            guard let start = segment.startTime,
-                  let end = segment.endTime,
+        rawSegments.compactMap { segment in
+            guard let start = segment.startSeconds,
+                  let end = segment.endSeconds,
                   start.isFinite,
                   end.isFinite,
                   end >= start,

@@ -2,7 +2,6 @@
 // Provides Meeting Live Session Support for meeting session behavior.
 
 import Foundation
-import MLXAudioSTT
 
 enum MeetingLiveSessionState: Equatable, Sendable {
     case connecting
@@ -71,7 +70,7 @@ nonisolated enum MeetingNativeLiveSegmentationPolicy {
 
 nonisolated enum MeetingNativeLiveStructuredFinalization {
     static func meetingSegments(
-        from rawSegments: [STTTranscriptSegment],
+        from rawSegments: [ASRTranscriptSegment],
         timingGranularity: MLXASRTimingGranularity,
         modelFamily: MLXModelFamily,
         timelineOffsetSeconds: TimeInterval,
@@ -80,7 +79,7 @@ nonisolated enum MeetingNativeLiveStructuredFinalization {
         replacingSegmentID: UUID? = nil
     ) -> [MeetingTranscriptSegment] {
         let structured = MLXTranscriber.structuredSegmentsForLiveEnded(
-            output: STTOutput(text: "", segments: rawSegments),
+            output: ASRTranscriptionResult(text: "", segments: rawSegments),
             modelFamily: modelFamily,
             timingGranularity: timingGranularity
         )

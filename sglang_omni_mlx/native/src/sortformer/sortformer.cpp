@@ -14,11 +14,7 @@ namespace mx = mlx::core;
 
 namespace {
 
-// Note (Jiaxin Deng): mlx-swift casts a scalar operand to the array's dtype
-// (float16 stays float16); a C++ float32 scalar would promote it.
-mx::array Scalar(float value, const mx::array &like) {
-  return mx::array(value, like.dtype());
-}
+using omni_common::Scalar;
 
 std::vector<mx::array> ReluGraph(const std::vector<mx::array> &inputs) {
   return {mx::maximum(inputs[0], Scalar(0.0f, inputs[0]))};
@@ -170,7 +166,7 @@ SortformerModel::RelativePositionAttention(const mx::array &x,
       mx::matmul(q_with_bias_u, mx::transpose(k, {0, 1, 3, 2}));
   mx::array matrix_bd =
       mx::matmul(q_with_bias_v, mx::transpose(p, {0, 1, 3, 2}));
-  matrix_bd = qwen3_asr::RelativeShift(matrix_bd);
+  matrix_bd = omni_common::RelativeShift(matrix_bd);
   matrix_bd = mx::slice(matrix_bd, {0, 0, 0, 0},
                         {matrix_bd.shape(0), matrix_bd.shape(1),
                          matrix_bd.shape(2), matrix_ac.shape(3)});

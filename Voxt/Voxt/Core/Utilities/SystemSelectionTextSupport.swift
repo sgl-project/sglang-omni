@@ -64,15 +64,3 @@ enum SystemSelectionTextSupport {
         dictionaryIsHanLike(scalar) || dictionaryIsKana(scalar) || dictionaryIsHangul(scalar)
     }
 }
-
-/// Compatibility facade for existing dictionary hotkey call sites / tests.
-enum SelectedTextDictionaryHotkeySupport {
-    static let maxWhitespaceSeparatedWordCount =
-        SystemSelectionTextSupport.maxDictionaryWhitespaceSeparatedWordCount
-    static let maxConsecutiveCJKCharacterCount =
-        SystemSelectionTextSupport.maxDictionaryConsecutiveCJKCharacterCount
-
-    static func candidateTerm(from selectedText: String?) -> String? {
-        SystemSelectionTextSupport.dictionaryCandidateTerm(from: selectedText)
-    }
-}
