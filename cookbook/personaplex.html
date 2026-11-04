@@ -62,7 +62,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.2.0" />
-    <meta name="docbuild:last-update" content="Nov 03, 2026"/>
+    <meta name="docbuild:last-update" content="Nov 04, 2026"/>
   
     
     <script src="../_static/searchtools.js"></script>
@@ -573,6 +573,7 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#stage-sampling">Stage sampling</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#opt-in-fp8-inference">Opt-in FP8 inference</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known limitations</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#all-platforms">All platforms</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#cuda">CUDA</a></li>
@@ -693,6 +694,50 @@ request values. Stage sampling also takes precedence for <code class="docutils l
 The fixed caller-frame budget still determines the number of generated frames.</p>
 </section>
 </section>
+<section id="opt-in-fp8-inference">
+<h2>Opt-in FP8 inference<a class="headerlink" href="#opt-in-fp8-inference" title="Link to this heading">#</a></h2>
+<p>BF16 is the default. Two LM engine flags switch the backbone to FP8, separately or together; the text head, embeddings, Depformer and Mimi keep their precision.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Flags</p></th>
+<th class="head text-right"><p>Backbone weights</p></th>
+<th class="head text-right"><p>KV positions in 8 GiB</p></th>
+<th class="head text-right"><p>Audio s/s, C1 / C8</p></th>
+<th class="head text-right"><p>First audio, C1 / C8</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>None (BF16)</p></td>
+<td class="text-right"><p>13.15 GB</p></td>
+<td class="text-right"><p>16,384</p></td>
+<td class="text-right"><p>6.95 / 44.40</p></td>
+<td class="text-right"><p>58.2 / 172.7 ms</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--lm.engine.quantization</span> <span class="pre">fp8</span></code></p></td>
+<td class="text-right"><p>6.58 GB</p></td>
+<td class="text-right"><p>16,384</p></td>
+<td class="text-right"><p>8.23 / 50.66</p></td>
+<td class="text-right"><p>66.5 / 179.1 ms</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--lm.engine.kv_cache_dtype</span> <span class="pre">fp8_e4m3</span></code></p></td>
+<td class="text-right"><p>13.15 GB</p></td>
+<td class="text-right"><p>32,768</p></td>
+<td class="text-right"><p>6.82 / 44.68</p></td>
+<td class="text-right"><p>59.8 / 171.8 ms</p></td>
+</tr>
+<tr class="row-odd"><td><p>Both</p></td>
+<td class="text-right"><p>6.58 GB</p></td>
+<td class="text-right"><p>32,768</p></td>
+<td class="text-right"><p>7.89 / 50.14</p></td>
+<td class="text-right"><p>69.3 / 176.6 ms</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><em>Offline requests on one H100 with FA3, SGLang 0.5.22, <code class="docutils literal notranslate"><span class="pre">--lm.engine.max_running_requests</span> <span class="pre">8</span></code>.</em></p>
+<p>FP8 weights are the speed option: they halve the weight memory and raise throughput by 14–18%, at 6–10 ms more first-audio latency. On A100 they run as weight-only Marlin and raise C1 throughput by 27%. FP8 KV is the capacity option: a KV budget holds twice the positions, with no speed gain. On 416 English prompts at C8, every FP8 option stayed within 0.10 UTMOS and 1 WER point of BF16.</p>
+<p>These results cover offline requests, not full-duplex sessions. FP8 KV was tested only on H100 with FA3, and its scales are fixed at 1.0.</p>
+</section>
 <section id="known-limitations">
 <h2>Known limitations<a class="headerlink" href="#known-limitations" title="Link to this heading">#</a></h2>
 <section id="all-platforms">
@@ -808,6 +853,7 @@ python<span class="w"> </span>-m<span class="w"> </span>pytest<span class="w"> <
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#stage-sampling">Stage sampling</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#opt-in-fp8-inference">Opt-in FP8 inference</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known limitations</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#all-platforms">All platforms</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#cuda">CUDA</a></li>
@@ -851,7 +897,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Nov 03, 2026.
+  Last updated on Nov 04, 2026.
   <br/>
 </p>
   </div>
