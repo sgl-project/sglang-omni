@@ -77,7 +77,13 @@ def main() -> None:
     parser.add_argument("--timeout-seconds", type=float, default=900)
     add_server_identity_args(parser)
     arguments = parser.parse_args()
-    offline_identity = server_identity(arguments)
+    offline_identity = server_identity(
+        arguments.offline_url,
+        revision=arguments.server_revision,
+        model=arguments.model,
+        model_revision=arguments.model_revision,
+        runtime=arguments.runtime,
+    )
     manifest = json.loads((arguments.session_run / "manifest.json").read_text())
     if manifest["profile"] != "personaplex":
         raise ValueError("Session recording must use the personaplex profile")

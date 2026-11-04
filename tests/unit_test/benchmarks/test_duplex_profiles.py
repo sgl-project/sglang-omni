@@ -3,12 +3,14 @@
 import asyncio
 import base64
 import copy
+import io
 import itertools
 import json
 import math
 import types
 from pathlib import Path
 
+import httpx
 import numpy as np
 import pytest
 import soundfile
@@ -24,6 +26,7 @@ from benchmarks.duplex.v15_audio import reconstruct_output
 from benchmarks.duplex.v15_runner import run_samples
 from benchmarks.duplex.v15_transcribe import transcribe_run
 from benchmarks.eval.benchmark_personaplex_parity import compare_pcm
+from benchmarks.eval.benchmark_personaplex_parity import main as parity_main
 from tests.unit_test.fixtures.duplex_fakes import (
     GRANTED,
     DuplexPeer,
@@ -597,3 +600,96 @@ def test_personaplex_parity_reports_content_and_length_changes(
     assert report["first_differing_sample"] == first_difference
     assert report["session_samples"] == len(session_samples)
     assert report["offline_samples"] == len(offline_samples)
+
+
+def test_parity_cli_records_offline_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The CLI previously passed its Namespace to the keyword-only identity API."""
+    run = tmp_path / "session"
+    run.mkdir()
+    pcm = np.array([1, -2], dtype="<i2").tobytes()
+    (run / "manifest.json").write_text('{"profile": "personaplex"}')
+    (run / "input.pcm").write_bytes(pcm)
+    (run / "continuous.jsonl").write_text(
+        json.dumps(
+            {
+                "time_s": 0.0,
+                "direction": "receive",
+                "event": {
+                    "type": "response.output_audio.delta",
+                    "delta": base64.b64encode(pcm).decode(),
+                },
+            }
+        )
+        + "\n"
+    )
+    instructions = tmp_path / "instructions.txt"
+    instructions.write_text("Speak clearly.")
+    output = tmp_path / "comparison"
+    wave = io.BytesIO()
+    soundfile.write(
+        wave, np.frombuffer(pcm, dtype="<i2"), 24000, format="WAV", subtype="PCM_16"
+    )
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["stage_params"]["preprocessing"] == {
+            "voice": "NATF2",
+            "text_prompt": "Speak clearly.",
+        }
+        return httpx.Response(
+            200,
+            json={
+                "text": "",
+                "audio": {
+                    "format": "wav",
+                    "data": base64.b64encode(wave.getvalue()).decode(),
+                },
+            },
+        )
+
+    client = httpx.Client
+    monkeypatch.setattr(
+        "benchmarks.duplex.artifacts.served_models",
+        lambda url: {"url": url, "ids": ["checkpoint"]},
+    )
+    monkeypatch.setattr(
+        "benchmarks.eval.benchmark_personaplex_parity.replay_run",
+        lambda path: {"summary": {"selected": 1, "passed": 1}},
+    )
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **options: client(transport=httpx.MockTransport(respond), **options),
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "parity",
+            "--session-run",
+            str(run),
+            "--offline-url",
+            "http://offline.test",
+            "--voice",
+            "NATF2",
+            "--instructions",
+            str(instructions),
+            "--output",
+            str(output),
+            "--server-revision",
+            "a" * 40,
+            "--model",
+            "checkpoint",
+            "--model-revision",
+            "b" * 40,
+            "--runtime",
+            "pinned-image",
+        ],
+    )
+    parity_main()
+    report = json.loads((output / "parity.json").read_text())
+    assert report["offline_server"]["revision"] == "a" * 40
+    assert report["offline_server"]["model_revision"] == "b" * 40
+    assert report["offline_server"]["runtime"] == "pinned-image"
+    assert report["full_reply"]["byte_identical"] is True
