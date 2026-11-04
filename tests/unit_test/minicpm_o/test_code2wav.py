@@ -663,78 +663,81 @@ def test_compiled_hift_matches_eager(compiled_vocoder: MiniCPMOCode2Wav) -> None
 @pytest.mark.parametrize("compile_body", [False, True])
 def test_hift_graph_matches_decode_across_shapes_and_replays(
     compile_body: bool,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Graphs preserve waveform boundaries, new inputs and earlier pooled outputs."""
-    # note (MayDomine): compare padding boundaries without shape-dependent TF32 rounding.
-    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
-    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
-    monkeypatch.setattr(torch.backends.cudnn, "benchmark", False)
-    monkeypatch.setattr(torch.backends.cudnn, "deterministic", True)
-    torch.manual_seed(7)
-    hift = HiFTGenerator(base_channels=32).cuda().eval()
-    if compile_body:
-        hift.decode_body = torch.compile(
-            hift.decode_body,
-            dynamic=True,
-            fullgraph=True,
-            options={"triton.cudagraphs": False},
-        )
-    else:
-        pass
-    runner = HiftBodyCudaGraphRunner(hift.decode_body)
-    device = hift.stft_window.device
-    runner.capture(
-        ((1, 4), (2, 6)),
-        device=device,
-        mel_channels=80,
-        samples_per_frame=int(hift.f0_upsamp.scale_factor),
-        fft_samples=hift.istft_params["n_fft"],
-        hop_samples=hift.istft_params["hop_len"],
-    )
-    fallback = MagicMock(wraps=runner.decode_body)
-    runner.decode_body = fallback
-    saved_outputs: list[tuple[torch.Tensor, torch.Tensor]] = []
-    with torch.inference_mode():
-        # note (MayDomine): alternating tails expose stale padding and missing masks.
-        for batch_size, mel_frames in (
-            (1, 4),
-            (2, 6),
-            (1, 3),
-            (1, 5),
-            (1, 1),
-            (3, 4),
-            (1, 7),
-            (1, 4),
+    # note (MayDomine): backend flags are dynamic attributes; restore values instead of monkeypatching them.
+    previous_matmul_tf32 = torch.backends.cuda.matmul.allow_tf32
+    try:
+        torch.backends.cuda.matmul.allow_tf32 = False
+        with torch.backends.cudnn.flags(
+            benchmark=False, deterministic=True, allow_tf32=False
         ):
-            mel = torch.randn(batch_size, 80, mel_frames, device=device)
-            source = (
-                torch.randn(
-                    batch_size,
-                    1,
-                    mel_frames * int(hift.f0_upsamp.scale_factor),
-                    device=device,
+            torch.manual_seed(7)
+            hift = HiFTGenerator(base_channels=32).cuda().eval()
+            if compile_body:
+                hift.decode_body = torch.compile(
+                    hift.decode_body,
+                    dynamic=True,
+                    fullgraph=True,
+                    options={"triton.cudagraphs": False},
                 )
-                * 0.01
+            else:
+                pass
+            runner = HiftBodyCudaGraphRunner(hift.decode_body)
+            device = hift.stft_window.device
+            runner.capture(
+                ((1, 4), (2, 6)),
+                device=device,
+                mel_channels=80,
+                samples_per_frame=int(hift.f0_upsamp.scale_factor),
+                fft_samples=hift.istft_params["n_fft"],
+                hop_samples=hift.istft_params["hop_len"],
             )
-            hift.body_graph_runner = None
-            expected_waveform = hift.decode(mel, source)
-            hift.body_graph_runner = runner
-            actual_waveform = hift.decode(mel, source)
-            torch.testing.assert_close(
-                actual_waveform, expected_waveform, rtol=1e-4, atol=1e-5
-            )
-            real, imaginary = hift.stft(source.squeeze(1))
-            spectrum = torch.cat((real, imaginary), dim=1)
-            magnitude, phase = runner.run(mel, spectrum)
-            expected_magnitude, expected_phase = hift.decode_body(mel, spectrum)
-            saved_outputs.extend(
-                ((magnitude, expected_magnitude), (phase, expected_phase))
-            )
-        for actual, expected in saved_outputs:
-            torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-5)
-    assert runner.graphs.keys() == {(1, 4), (2, 6)}
-    assert fallback.call_count == 4
+            fallback = MagicMock(wraps=runner.decode_body)
+            runner.decode_body = fallback
+            saved_outputs: list[tuple[torch.Tensor, torch.Tensor]] = []
+            with torch.inference_mode():
+                # note (MayDomine): alternating tails expose stale padding and missing masks.
+                for batch_size, mel_frames in (
+                    (1, 4),
+                    (2, 6),
+                    (1, 3),
+                    (1, 5),
+                    (1, 1),
+                    (3, 4),
+                    (1, 7),
+                    (1, 4),
+                ):
+                    mel = torch.randn(batch_size, 80, mel_frames, device=device)
+                    source = (
+                        torch.randn(
+                            batch_size,
+                            1,
+                            mel_frames * int(hift.f0_upsamp.scale_factor),
+                            device=device,
+                        )
+                        * 0.01
+                    )
+                    hift.body_graph_runner = None
+                    expected_waveform = hift.decode(mel, source)
+                    hift.body_graph_runner = runner
+                    actual_waveform = hift.decode(mel, source)
+                    torch.testing.assert_close(
+                        actual_waveform, expected_waveform, rtol=1e-4, atol=1e-5
+                    )
+                    real, imaginary = hift.stft(source.squeeze(1))
+                    spectrum = torch.cat((real, imaginary), dim=1)
+                    magnitude, phase = runner.run(mel, spectrum)
+                    expected_magnitude, expected_phase = hift.decode_body(mel, spectrum)
+                    saved_outputs.extend(
+                        ((magnitude, expected_magnitude), (phase, expected_phase))
+                    )
+                for actual, expected in saved_outputs:
+                    torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-5)
+            assert runner.graphs.keys() == {(1, 4), (2, 6)}
+            assert fallback.call_count == 4
+    finally:
+        torch.backends.cuda.matmul.allow_tf32 = previous_matmul_tf32
 
 
 def test_hift_graph_without_capture_preserves_cpu_decode() -> None:
