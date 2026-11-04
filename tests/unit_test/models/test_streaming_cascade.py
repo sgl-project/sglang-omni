@@ -1070,6 +1070,28 @@ def test_settings_merge_and_standard_names():
             settings.apply(update)
 
 
+def test_a_dialog_language_is_one_every_speech_node_takes():
+    """dialog.language="zh-CN" was accepted at load and by configure, and Qwen3-TTS answered 400 to the first sentence tagged with it, which failed the session."""
+    dialog = yaml.safe_load(HTTP_PROFILE.read_text())["session_nodes"]["dialog"]
+    unsupported = "supported_languages of node 'tts'"
+    with pytest.raises(ValueError, match=unsupported):
+        declared(nodes={"dialog": {**dialog, "language": "zh-CN"}})
+    settings = declared().component_graph()
+    with pytest.raises(ValueError, match=unsupported):
+        settings.apply({"nodes": {"dialog": {"language": "zh-CN"}}})
+    chinese = settings.apply({"nodes": {"dialog": {"language": "Chinese"}}})
+    assert chinese.node("dialog").component.language == "Chinese"
+    cantonese = settings.apply(
+        {
+            "nodes": {
+                "tts": {"supported_languages": ["Cantonese"]},
+                "dialog": {"language": "Cantonese"},
+            }
+        }
+    )
+    assert cantonese.node("dialog").component.language == "Cantonese"
+
+
 TEXT_ONLY = """
 nodes:
   - {name: asr, kind: openai_transcription, base_url: "http://127.0.0.1:8000/v1", model: test-model, inputs: [input]}
