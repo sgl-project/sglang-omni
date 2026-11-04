@@ -602,8 +602,9 @@ def test_personaplex_parity_reports_content_and_length_changes(
     assert report["offline_samples"] == len(offline_samples)
 
 
+@pytest.mark.parametrize("offline_text", ["", "different transcript"])
 def test_parity_cli_records_offline_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline_text: str
 ) -> None:
     """The CLI previously passed its Namespace to the keyword-only identity API."""
     run = tmp_path / "session"
@@ -641,7 +642,7 @@ def test_parity_cli_records_offline_identity(
         return httpx.Response(
             200,
             json={
-                "text": "",
+                "text": offline_text,
                 "audio": {
                     "format": "wav",
                     "data": base64.b64encode(wave.getvalue()).decode(),
@@ -689,10 +690,17 @@ def test_parity_cli_records_offline_identity(
             "pinned-image",
         ],
     )
-    parity_main()
+    if offline_text:
+        with pytest.raises(SystemExit) as failure:
+            parity_main()
+        assert failure.value.code == 1
+    else:
+        parity_main()
     report = json.loads((output / "parity.json").read_text())
     assert report["offline_server"]["revision"] == "a" * 40
     assert report["offline_server"]["model_revision"] == "b" * 40
     assert report["offline_server"]["runtime"] == "pinned-image"
     assert report["offline_mode"] == "session-reference"
+    assert report["text"]["equal"] == (offline_text == "")
+    assert report["offline_request_seconds"] >= 0
     assert report["full_reply"]["byte_identical"] is True

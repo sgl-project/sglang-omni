@@ -9,6 +9,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+from time import perf_counter
 from typing import Literal
 
 import httpx
@@ -102,6 +103,7 @@ def main() -> None:
         pass
     input_pcm = (arguments.session_run / "input.pcm").read_bytes()
     session_chunks: list[bytes] = []
+    session_text_parts: list[str] = []
     for line in (arguments.session_run / "continuous.jsonl").read_text().splitlines():
         row = TraceRow.model_validate_json(line)
         if (
@@ -109,6 +111,15 @@ def main() -> None:
             and row.event["type"] == "response.output_audio.delta"
         ):
             session_chunks.append(decode_b64(row.event["delta"]))
+        elif (
+            row.direction == "receive"
+            and row.event["type"] == "response.output_audio_transcript.delta"
+        ):
+            delta = row.event["delta"]
+            if not isinstance(delta, str):
+                raise ValueError("Transcript delta must be a string")
+            else:
+                session_text_parts.append(delta)
         else:
             pass
     session_pcm = b"".join(session_chunks)
@@ -136,9 +147,11 @@ def main() -> None:
     }
     arguments.output.mkdir(parents=True, exist_ok=False)
     with httpx.Client(timeout=arguments.timeout_seconds) as client:
+        request_started_seconds = perf_counter()
         response = client.post(
             arguments.offline_url.rstrip("/") + "/generate", json=request
         )
+        request_seconds = perf_counter() - request_started_seconds
         response.raise_for_status()
     result = OfflineReply.model_validate_json(response.content)
     offline_wav = base64.b64decode(result.audio.data, validate=True)
@@ -150,12 +163,19 @@ def main() -> None:
     else:
         pass
     offline_pcm = offline_samples.astype("<i2").tobytes()
+    session_text = "".join(session_text_parts)
     (arguments.output / "offline.wav").write_bytes(offline_wav)
     (arguments.output / "session.pcm").write_bytes(session_pcm)
     (arguments.output / "request.json").write_text(json.dumps(request, indent=2) + "\n")
     (arguments.output / "response.json").write_bytes(response.content)
     report = {
         "offline_mode": arguments.offline_mode,
+        "offline_request_seconds": request_seconds,
+        "text": {
+            "session": session_text,
+            "offline": result.text,
+            "equal": session_text == result.text,
+        },
         "session_manifest": manifest,
         "offline_server": offline_identity,
         "session_replay": replay,
@@ -166,7 +186,7 @@ def main() -> None:
     }
     (arguments.output / "parity.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report["full_reply"], indent=2))
-    if not report["full_reply"]["byte_identical"]:
+    if not report["full_reply"]["byte_identical"] or not report["text"]["equal"]:
         raise SystemExit(1)
     else:
         pass

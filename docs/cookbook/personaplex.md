@@ -151,7 +151,7 @@ python -m benchmarks.eval.benchmark_personaplex_parity \
   --model-revision "$MODEL_REVISION"
 ```
 
-The command sends the recorded 24 kHz PCM to the offline endpoint as a WAV data URI. It saves the request, response, both audio outputs and `parity.json`, including the first differing sample and SHA-256 of each PCM stream. Its exit status is zero when the complete PCM replies are byte-identical. `--offline-mode` records the server mode in the report; the serving command selects that mode. The report also compares the prefix covering the caller's duration.
+The command sends the recorded 24 kHz PCM to the offline endpoint as a WAV data URI. It saves the request, response, both audio outputs and `parity.json`, including the first differing sample and SHA-256 of each PCM stream. It also records exact text equality and the elapsed HTTP request time in seconds. Its exit status is zero when the complete PCM replies are byte-identical and the text replies match. `--offline-mode` records the server mode in the report; the serving command selects that mode. The report also compares the prefix covering the caller's duration.
 
 Default offline serving generates one frame per caller frame and trims output to the caller's duration. To measure that contract, omit `--session_reference true` at launch and use `--offline-mode default` in the comparison. The [quality baseline report](../developer_reference/personaplex_quality_baseline.md) retains those measurements separately from the session reference experiment.
 
