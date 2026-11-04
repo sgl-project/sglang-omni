@@ -310,3 +310,65 @@ class TestNormalizeCompressedTensorsIgnoreList:
         assert model_config.hf_config.quantization_config["ignore"] == [
             "audio_tower.layers.0.fc1"
         ]
+
+    def test_strips_thinker_prefix_from_regex_entries(self) -> None:
+        """compressed-tensors also accepts `re:` entries, which SGLang matches
+        with `re.match` — anchored, so a retained prefix never matches."""
+        quant_config = {
+            "quant_method": "compressed-tensors",
+            "format": "pack-quantized",
+            "ignore": [
+                r"re:thinker\.audio_tower\..*",
+                r"re:^thinker\.visual\..*",
+                "re:thinker.audio_tower.*",
+                r"re:.*thinker\.audio_tower\.conv.*",
+                r"re:talker\.model\..*",
+                "re:lm_head",
+            ],
+        }
+        model_config = make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
+
+        normalize_quant_config(model_config)
+
+        assert quant_config["ignore"] == [
+            r"re:audio_tower\..*",
+            r"re:^visual\..*",
+            "re:audio_tower.*",
+            r"re:.*audio_tower\.conv.*",
+            r"re:talker\.model\..*",
+            "re:lm_head",
+        ]
+
+    def test_normalized_regex_matches_a_stage_local_layer(self) -> None:
+        """The point of the rewrite: SGLang's own matcher must now exclude the
+        stage-local audio tower that the raw checkpoint entry missed."""
+        from sglang.srt.layers.quantization.compressed_tensors.utils import (
+            check_equal_or_regex_match,
+        )
+
+        raw = r"re:thinker\.audio_tower\..*"
+        layer = "audio_tower.layers.0.fc1"
+        assert not check_equal_or_regex_match(layer, [raw])
+
+        quant_config = {
+            "quant_method": "compressed-tensors",
+            "format": "pack-quantized",
+            "ignore": [raw],
+        }
+        normalize_quant_config(
+            make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
+        )
+
+        assert check_equal_or_regex_match(layer, quant_config["ignore"])
+
+    def test_non_string_ignore_entries_are_preserved(self) -> None:
+        quant_config = {
+            "quant_method": "compressed-tensors",
+            "format": "pack-quantized",
+            "ignore": ["thinker.audio_tower.fc1", None, 7],
+        }
+        model_config = make_model_config("Qwen3OmniThinkerForCausalLM", quant_config)
+
+        normalize_quant_config(model_config)
+
+        assert quant_config["ignore"] == ["audio_tower.fc1", None, 7]

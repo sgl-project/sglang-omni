@@ -23,6 +23,8 @@ else:
 WeightPreprocessor = Callable[[str, "torch.Tensor"], "torch.Tensor"]
 
 _QUANT_METADATA_KEYS: tuple[str, ...] = ("quantization_config", "compression_config")
+# compressed-tensors marks a regex `ignore`/`targets` entry with this prefix.
+IGNORE_REGEX_MARKER = "re:"
 _NESTED_QUANT_CONFIG_ATTRS: tuple[str, ...] = (
     "text_config",
     "thinker_config",
@@ -289,14 +291,44 @@ def normalize_block_name_to_quantize(
     return True
 
 
+def normalize_ignore_entry(
+    entry: object, stage_prefix: str, escaped_prefix: str
+) -> object:
+    """Strip `stage_prefix` from one compressed-tensors `ignore` entry.
+
+    An entry is either a plain module name or, when it carries the `re:`
+    marker, a regex that SGLang matches with `re.match` — anchored at the
+    start, so a retained prefix stops matching just as surely as it does for a
+    plain name.
+    """
+    if not isinstance(entry, str):
+        return entry
+    else:
+        pass
+    if not entry.startswith(IGNORE_REGEX_MARKER):
+        if entry.startswith(stage_prefix):
+            return entry[len(stage_prefix) :]
+        else:
+            return entry
+    else:
+        pass
+
+    pattern = entry[len(IGNORE_REGEX_MARKER) :]
+    # `re.match` already anchors, so a leading `^` is redundant but legal;
+    # keep it where the checkpoint wrote it rather than rewriting the regex.
+    anchor = "^" if pattern.startswith("^") else ""
+    body = strip_stage_prefix(pattern[len(anchor) :], stage_prefix, escaped_prefix)
+    return f"{IGNORE_REGEX_MARKER}{anchor}{body}"
+
+
 def normalize_ignore_list(quant_config: dict[str, object], stage_prefix: str) -> bool:
     """Strip `stage_prefix` from every entry of a compressed-tensors `ignore`.
 
-    `ignore` holds plain module names rather than regexes, and it is what keeps
-    an unquantized submodule (the Qwen3-Omni audio tower, for instance) off the
-    quantized scheme. A stage that loads a sub-model sees those names without
-    the checkpoint's stage prefix, so an unstripped entry silently stops
-    matching and the submodule is handed a scheme its weights cannot satisfy.
+    `ignore` is what keeps an unquantized submodule (the Qwen3-Omni audio
+    tower, for instance) off the quantized scheme. A stage that loads a
+    sub-model sees those module names without the checkpoint's stage prefix, so
+    an unstripped entry silently stops matching and the submodule is handed a
+    scheme its weights cannot satisfy.
     """
     ignored = quant_config.get("ignore")
     if not isinstance(ignored, list) or not ignored:
@@ -304,13 +336,9 @@ def normalize_ignore_list(quant_config: dict[str, object], stage_prefix: str) ->
     else:
         pass
 
+    escaped_prefix = stage_prefix.replace(".", r"\.")
     normalized = [
-        (
-            entry[len(stage_prefix) :]
-            if isinstance(entry, str) and entry.startswith(stage_prefix)
-            else entry
-        )
-        for entry in ignored
+        normalize_ignore_entry(entry, stage_prefix, escaped_prefix) for entry in ignored
     ]
     if normalized == ignored:
         return False
