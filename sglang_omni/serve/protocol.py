@@ -669,6 +669,7 @@ class TranscriptionResponse(BaseModel):
     text: str
     usage: TranscriptionUsage | None = None
     finish_reason: str | None = None
+    sglext: SglExt | None = None
 
 
 class TranscriptionSegment(BaseModel):
@@ -690,6 +691,7 @@ class TranscriptionVerboseResponse(BaseModel):
     segments: list[TranscriptionSegment] = Field(default_factory=list)
     usage: TranscriptionUsage | None = None
     finish_reason: str | None = None
+    sglext: SglExt | None = None
 
 
 class TranscriptionTextDeltaEvent(BaseModel):
@@ -706,6 +708,7 @@ class TranscriptionTextDoneEvent(BaseModel):
     text: str
     usage: TranscriptionUsage | None = None
     finish_reason: str | None = None
+    sglext: SglExt | None = None
 
 
 class ModelPermission(BaseModel):

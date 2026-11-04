@@ -473,8 +473,11 @@ class ConnectedRequest:
 
 
 class SuccessfulTranscriptionClient:
-    def __init__(self) -> None:
+    def __init__(
+        self, *, spec_tokens_details: SpecTokensDetailsDict | None = None
+    ) -> None:
         self.requests: list[GenerateRequest] = []
+        self.spec_tokens_details = spec_tokens_details
 
     def health(self) -> dict[str, Any]:
         return {"running": True}
@@ -490,7 +493,11 @@ class SuccessfulTranscriptionClient:
 
         del request_id, audio_format
         self.requests.append(request)
-        return CompletionResult(request_id="transcription-1", text="hello world")
+        return CompletionResult(
+            request_id="transcription-1",
+            text="hello world",
+            spec_tokens_details=self.spec_tokens_details,
+        )
 
     async def generate(
         self,
@@ -505,6 +512,7 @@ class SuccessfulTranscriptionClient:
             request_id="transcription-1",
             text="hello world",
             finish_reason="stop",
+            spec_tokens_details=self.spec_tokens_details,
         )
 
 
@@ -4007,6 +4015,46 @@ def test_transcription_stream_emits_delta_done_and_sentinel() -> None:
     assert '"delta":"hello "' in body
     assert '"delta":"world"' in body
     assert '"text":"hello world"' in body
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("return_spec_tokens_details", [False, True])
+def test_transcription_returns_spec_tokens_details_only_when_requested(
+    stream: bool, return_spec_tokens_details: bool
+) -> None:
+    client = TestClient(
+        create_app(
+            SuccessfulTranscriptionClient(spec_tokens_details=SPEC_TOKENS_DETAILS),
+            model_name="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={
+            "stream": str(stream).lower(),
+            "return_spec_tokens_details": str(return_spec_tokens_details).lower(),
+        },
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    if stream:
+        events = [
+            json.loads(line.removeprefix("data: "))
+            for line in response.iter_lines()
+            if line and line != "data: [DONE]"
+        ]
+        body = events[-1]
+        assert body["type"] == "transcript.text.done"
+    else:
+        body = response.json()
+    expected = (
+        {"spec_tokens_details": SPEC_TOKENS_DETAILS}
+        if return_spec_tokens_details
+        else None
+    )
+    assert body.get("sglext") == expected
 
 
 def test_transcription_stream_maps_input_length_error_to_400() -> None:
