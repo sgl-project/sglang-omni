@@ -2907,9 +2907,8 @@ class Qwen3TTSStreamingVocoderScheduler(
             self.run_initial_batch(first_chunks)
         else:
             pass
-        group = self.plan_whole_request_replay()
-        if group:
-            self.run_whole_request_replay(group)
+        if self.whole_request_rows:
+            self.run_whole_request_replay(self.plan_whole_request_replay())
         else:
             pass
 

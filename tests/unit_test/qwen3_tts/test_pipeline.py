@@ -3895,8 +3895,8 @@ def test_qwen3_tts_whole_requests_that_round_to_one_width_share_replays(
 
     assert [(call[0][0], call[0][2]) for call in runner.calls] == [
         (3, 4),
-        (3, 4),
         (1, 2),
+        (3, 4),
     ]
     for name, frames in (("five", 5), ("eight", 8), ("six", 6), ("two", 2)):
         assert chunk_samples(results[name].data) == expected_whole_samples(
