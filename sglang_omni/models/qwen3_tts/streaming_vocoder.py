@@ -3067,6 +3067,16 @@ class Qwen3TTSStreamingVocoderScheduler(
             pass
 
     def run_whole_request_replay(self) -> None:
+        # note (ratish): a replay failure tears the window graphs down, and a stateful decode of a row's width without them faults on the device, so rows finish as new requests do.
+        if not self.initial_window_decode_graphs.enabled:
+            rows, self.whole_request_rows = self.whole_request_rows, deque()
+            for row in rows:
+                self.finish_whole_request_eagerly(
+                    row, RuntimeError("the window graphs are disabled")
+                )
+            return
+        else:
+            pass
         group, tail_runner = self.plan_whole_request_replay()
         if not group:
             return
@@ -3141,13 +3151,17 @@ class Qwen3TTSStreamingVocoderScheduler(
         self, row: Qwen3TTSWholeRequest, cause: BaseException
     ) -> None:
         """A row that cannot finish on the graphs decodes whole, as the batch path does; it has every code."""
+        self.free_whole_request_slot(row)
+        if self.is_aborted(row.request_id):
+            return
+        else:
+            pass
         logger.warning(
             "Qwen3-TTS window graph decode failed for %r (%s); decoding the whole request eagerly",
             row.request_id,
             cause,
             exc_info=cause,
         )
-        self.free_whole_request_slot(row)
         try:
             self.wait_codes_ready(row)
             row.payload.data = self.audio_result_data(

@@ -4189,6 +4189,22 @@ def test_qwen3_tts_whole_request_failed_replay_decodes_the_request_whole(
     assert results["whole"].data.data["usage"]["completion_tokens"] == generated_frames
 
 
+def test_qwen3_tts_whole_requests_finish_whole_once_the_window_graphs_are_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler, _, runner = whole_request_scheduler(monkeypatch)
+    messages = [whole_request_message("started", 8), whole_request_message("next", 8)]
+
+    scheduler.run_non_streaming_batch(messages, asyncio.new_event_loop())
+    run_initial_worker_pass(scheduler)
+    runner.enabled = False
+    results = run_whole_requests(scheduler)
+
+    assert len(runner.calls) == 1
+    for name in ("started", "next"):
+        assert chunk_samples(results[name].data) == expected_whole_samples(scheduler, 8)
+
+
 def test_qwen3_tts_whole_request_device_fault_on_its_slot_keeps_the_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
