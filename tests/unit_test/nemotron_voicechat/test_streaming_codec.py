@@ -68,6 +68,9 @@ class FrameLocalDecoder:
         self.calls: list[int] = []
         self.batch_shapes: list[tuple[int, int]] = []
 
+    def required_context_frames(self, holdback_samples: int) -> int:
+        return (holdback_samples + self.samples_per_frame - 1) // self.samples_per_frame
+
     def __call__(self, codes_TQ: torch.Tensor) -> torch.Tensor:
         self.calls.append(int(codes_TQ.shape[0]))
         frame_id = codes_TQ[:, 0].to(torch.float32)  # quantizer 0 carries the id
@@ -91,7 +94,7 @@ def test_streaming_matches_whole_utterance_decode():
     full = FrameLocalDecoder()(codes)
 
     decoder = FrameLocalDecoder()
-    codec = StreamingCodec(decoder, "cpu")
+    codec = StreamingCodec(decoder, "cpu", chunk_frames=(1,))
     parts = [codec.push(row[None, :]) for row in codes]
     parts.append(codec.flush())
     streamed = torch.cat(parts)
@@ -102,7 +105,7 @@ def test_streaming_matches_whole_utterance_decode():
 
 
 def test_each_push_holds_back_the_tail_until_the_next_frame():
-    codec = StreamingCodec(FrameLocalDecoder(), "cpu")
+    codec = StreamingCodec(FrameLocalDecoder(), "cpu", chunk_frames=(1,))
     first = codec.push(make_codes(1))
     assert first.numel() == SAMPLES_PER_FRAME - TAIL_HOLDBACK_SAMPLES
     second = codec.push(make_codes(2)[1:])
@@ -112,16 +115,32 @@ def test_each_push_holds_back_the_tail_until_the_next_frame():
 
 
 def test_multi_row_push_and_empty_flush():
-    codec = StreamingCodec(FrameLocalDecoder(), "cpu")
+    codec = StreamingCodec(FrameLocalDecoder(), "cpu", chunk_frames=(1,))
     assert codec.flush().numel() == 0
     out = codec.push(make_codes(3))
     assert out.numel() == 3 * SAMPLES_PER_FRAME - TAIL_HOLDBACK_SAMPLES
     assert codec.emitted_samples == out.numel()
 
 
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graph requires a GPU")
+def test_ramp_through_graph_runner_matches_eager_streaming():
+    decoder, runner = make_graph_runner()
+    chunk_frames = (1, 1, 1, 1, 2, 2, 4)
+    NemotronCode2WavScheduler(
+        runner, "cuda", chunk_frames=chunk_frames, compute_fn=None, max_batch_size=1
+    )
+    codes_TQ = make_random_codes(37)
+    eager = StreamingCodec(decoder, "cuda", chunk_frames=chunk_frames)
+    graphed = StreamingCodec(runner, "cuda", chunk_frames=chunk_frames)
+    expected = torch.cat([eager.push(codes_TQ), eager.flush()])
+    actual = torch.cat([graphed.push(codes_TQ), graphed.flush()])
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
 @pytest.mark.parametrize("rows_per_push", [1, DECODE_WINDOW_FRAMES + 1])
 def test_retained_codes_stay_within_the_decode_window(rows_per_push):
-    codec = StreamingCodec(FrameLocalDecoder(), "cpu")
+    codec = StreamingCodec(FrameLocalDecoder(), "cpu", chunk_frames=(1,))
     codes = make_codes(DECODE_WINDOW_FRAMES * 3)
     for start in range(0, codes.shape[0], rows_per_push):
         codec.push(codes[start : start + rows_per_push])
@@ -273,7 +292,7 @@ def streamed_audio(outputs: list[OutgoingMessage], request_id: str) -> torch.Ten
 def test_one_talker_step_decodes_equal_windows_together_and_exactly() -> None:
     decoder = FrameLocalDecoder()
     scheduler = NemotronCode2WavScheduler(
-        decoder, "cpu", compute_fn=None, max_batch_size=8
+        decoder, "cpu", chunk_frames=(1,), compute_fn=None, max_batch_size=8
     )
     start_steps = {"early": 0, "late_a": 3, "late_b": 3}
     total_steps = DECODE_WINDOW_FRAMES + 6
@@ -327,7 +346,11 @@ class FailingFrameDecoder(FrameLocalDecoder):
 @pytest.mark.parametrize("failing_phase", ["plan", "decode"])
 def test_a_failure_errors_only_its_own_request(failing_phase: str) -> None:
     scheduler = NemotronCode2WavScheduler(
-        FailingFrameDecoder(), "cpu", compute_fn=None, max_batch_size=8
+        FailingFrameDecoder(),
+        "cpu",
+        chunk_frames=(1,),
+        compute_fn=None,
+        max_batch_size=8,
     )
     if failing_phase == "plan":
         bad_codes = torch.zeros(1, NUM_QUANTIZERS + 1, dtype=torch.long)
@@ -369,7 +392,7 @@ def test_decode_runs_without_the_state_lock() -> None:
             return super().decode_batch(codes_BTQ)
 
     scheduler = NemotronCode2WavScheduler(
-        LockProbeDecoder(), "cpu", compute_fn=None, max_batch_size=8
+        LockProbeDecoder(), "cpu", chunk_frames=(1,), compute_fn=None, max_batch_size=8
     )
     deliver(
         scheduler,
@@ -385,7 +408,7 @@ def test_a_request_aborted_during_decode_gets_no_audio() -> None:
             return super().decode_batch(codes_BTQ)
 
     scheduler = NemotronCode2WavScheduler(
-        AbortingDecoder(), "cpu", compute_fn=None, max_batch_size=8
+        AbortingDecoder(), "cpu", chunk_frames=(1,), compute_fn=None, max_batch_size=8
     )
     outputs = deliver(
         scheduler,
@@ -404,7 +427,7 @@ def test_graph_runner_batches_match_each_request_decoded_alone(
     monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
     decoder, runner = make_graph_runner()
     scheduler = NemotronCode2WavScheduler(
-        runner, "cuda", compute_fn=None, max_batch_size=8
+        runner, "cuda", chunk_frames=(1,), compute_fn=None, max_batch_size=8
     )
     start_steps = {"early": 0, "late_a": 3, "late_b": 3}
     codes_by_request = {
@@ -413,7 +436,7 @@ def test_graph_runner_batches_match_each_request_decoded_alone(
     }
     outputs = stream_interleaved(scheduler, codes_by_request, start_steps)
     for request_id, codes in codes_by_request.items():
-        alone = StreamingCodec(decoder, "cuda")
+        alone = StreamingCodec(decoder, "cuda", chunk_frames=(1,))
         expected = torch.cat([alone.push(row[None]) for row in codes])
         torch.testing.assert_close(
             streamed_audio(outputs, request_id),
@@ -421,3 +444,185 @@ def test_graph_runner_batches_match_each_request_decoded_alone(
             rtol=0,
             atol=1e-5 * expected.abs().max().item(),
         )
+
+
+@pytest.mark.parametrize("chunk_frames", [(1,), (1, 2, 4), (1, 1, 1, 1, 2, 2, 4)])
+@pytest.mark.parametrize("frame_count", [0, 1, 15, 16, 17, 37])
+@pytest.mark.parametrize("input_frames", [1, 3, 20])
+def test_ramp_preserves_all_samples(
+    chunk_frames: tuple[int, ...], frame_count: int, input_frames: int
+) -> None:
+    decoder = FrameLocalDecoder()
+    codec = StreamingCodec(decoder, "cpu", chunk_frames=chunk_frames)
+    codes = make_codes(frame_count)
+    audio_parts = [
+        codec.push(codes[start : start + input_frames])
+        for start in range(0, frame_count, input_frames)
+    ]
+    audio_parts.append(codec.flush())
+    torch.testing.assert_close(
+        torch.cat(audio_parts), FrameLocalDecoder()(codes), rtol=0, atol=0
+    )
+    assert all(frames <= DECODE_WINDOW_FRAMES for frames in decoder.calls)
+
+
+def test_two_frame_push_crosses_chunk_boundary() -> None:
+    """A push crossing the target must emit a chunk before the final flush."""
+    codec = StreamingCodec(FrameLocalDecoder(), "cpu", chunk_frames=(4,))
+    codes = make_codes(5)
+    assert codec.push(codes[:3]).numel() == 0
+    audio = codec.push(codes[3:])
+    assert audio.numel() == 4 * SAMPLES_PER_FRAME - TAIL_HOLDBACK_SAMPLES
+    tail = codec.flush()
+    assert tail.numel() == SAMPLES_PER_FRAME + TAIL_HOLDBACK_SAMPLES
+    torch.testing.assert_close(
+        torch.cat((audio, tail)), FrameLocalDecoder()(codes), rtol=0, atol=0
+    )
+
+
+def test_ramp_chunk_boundaries_and_partial_flush() -> None:
+    codec = StreamingCodec(
+        FrameLocalDecoder(), "cpu", chunk_frames=(1, 1, 1, 1, 2, 2, 4)
+    )
+    windows = codec.plan(make_codes(14))
+    assert [codec.decode([window]).numel() for window in windows] == [
+        SAMPLES_PER_FRAME - TAIL_HOLDBACK_SAMPLES,
+        SAMPLES_PER_FRAME,
+        SAMPLES_PER_FRAME,
+        SAMPLES_PER_FRAME,
+        2 * SAMPLES_PER_FRAME,
+        2 * SAMPLES_PER_FRAME,
+        4 * SAMPLES_PER_FRAME,
+    ]
+    assert codec.flush().numel() == 2 * SAMPLES_PER_FRAME + TAIL_HOLDBACK_SAMPLES
+
+
+@pytest.mark.parametrize("chunk_frames", [(16, 1), (1, 16)])
+def test_reject_unsafe_chunks(chunk_frames: tuple[int, ...]) -> None:
+    with pytest.raises(ValueError, match="context"):
+        NemotronCode2WavScheduler(
+            FrameLocalDecoder(),
+            "cpu",
+            chunk_frames=chunk_frames,
+            compute_fn=None,
+            max_batch_size=1,
+        )
+
+
+def test_invalid_codec_ratio_reports_config_values() -> None:
+    """A checkpoint with inconsistent frame sizes must report its config values."""
+    decoder = RVQVAEDecoder({**SMALL_CODEC_CONFIG, "wav_to_token_ratio": 1765})
+    with pytest.raises(ValueError) as error:
+        decoder.required_context_frames(TAIL_HOLDBACK_SAMPLES)
+    for field in ("wav_to_token_ratio=1765", "rates product=441", "hop_length=4"):
+        assert field in str(error.value)
+
+
+@pytest.mark.parametrize("chunk_frames", [(1, 2, 4), (1, 1, 1, 1, 2, 2, 4), (1, 13)])
+@torch.inference_mode()
+def test_ramp_preserves_causal_decoder_waveform(chunk_frames: tuple[int, ...]) -> None:
+    torch.manual_seed(2459)
+    decoder = RVQVAEDecoder(SMALL_CODEC_CONFIG).eval()
+    for codebook in decoder.prvq.mus_list:
+        codebook.normal_(std=0.1)
+    decoder.control_codes.fill_(1000)
+    decoder.silence_codes.zero_()
+    codes = torch.randint(CODEBOOK_SIZE, (37, NUM_QUANTIZERS))
+    baseline = StreamingCodec(decoder, "cpu", chunk_frames=(1,))
+    candidate = StreamingCodec(decoder, "cpu", chunk_frames=chunk_frames)
+    expected = torch.cat(
+        [baseline.push(row[None]) for row in codes] + [baseline.flush()]
+    )
+    actual = torch.cat([candidate.push(codes), candidate.flush()])
+    torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
+    NemotronCode2WavScheduler(
+        decoder, "cpu", chunk_frames=chunk_frames, compute_fn=None, max_batch_size=1
+    )
+    with pytest.raises(ValueError, match="context"):
+        NemotronCode2WavScheduler(
+            decoder, "cpu", chunk_frames=(1, 14), compute_fn=None, max_batch_size=1
+        )
+
+
+def test_scheduler_preserves_chunks_and_request_isolation() -> None:
+    scheduler = NemotronCode2WavScheduler(
+        FrameLocalDecoder(),
+        "cpu",
+        chunk_frames=(1, 2, 4),
+        compute_fn=None,
+        max_batch_size=8,
+    )
+    first = deliver(scheduler, [stream_chunk("first", 0, make_codes(1))])
+    assert [output.type for output in first] == ["stream"]
+    assert deliver(scheduler, [stream_chunk("first", 1, make_codes(2)[1:])]) == []
+    second = deliver(scheduler, [stream_chunk("second", 0, make_codes(3))])
+    assert [output.type for output in second] == ["stream", "stream"]
+    scheduler.abort("first")
+    assert "first" not in scheduler.states
+    assert "second" in scheduler.states
+    third = deliver(scheduler, [stream_chunk("third", 0, make_codes(2))])
+    assert [output.type for output in third] == ["stream"]
+    tail, result = deliver(
+        scheduler,
+        [
+            IncomingMessage("third", "stream_done"),
+            IncomingMessage(
+                "third", "new_request", StagePayload("third", OmniRequest(None), {})
+            ),
+        ],
+    )
+    assert tail.type == "stream"
+    assert tail.data["audio_waveform_shape"] == [
+        SAMPLES_PER_FRAME + TAIL_HOLDBACK_SAMPLES
+    ]
+    assert result.type == "result"
+    assert result.data.data["audio_waveform_shape"] == [2 * SAMPLES_PER_FRAME]
+    assert "third" not in scheduler.states
+    assert "second" in scheduler.states
+
+
+@pytest.mark.parametrize(
+    ("frame_count", "cancel_after_eos"), [(0, False), (2, False), (5, False), (2, True)]
+)
+def test_end_of_stream_before_payload(frame_count: int, cancel_after_eos: bool) -> None:
+    """EOS must deliver the complete waveform before a delayed terminal payload."""
+    decoder = FrameLocalDecoder()
+    scheduler = NemotronCode2WavScheduler(
+        decoder, "cpu", chunk_frames=(1, 2, 4), compute_fn=None, max_batch_size=8
+    )
+    codes = make_codes(frame_count)
+    outputs = deliver(
+        scheduler,
+        [
+            stream_chunk("request", 0, codes),
+            IncomingMessage("request", "stream_done"),
+        ],
+    )
+    assert all(output.type == "stream" for output in outputs)
+    audio = torch.cat([waveform(output.data) for output in outputs] + [torch.zeros(0)])
+    torch.testing.assert_close(audio, FrameLocalDecoder()(codes), rtol=0, atol=0)
+    decode_calls = len(decoder.calls)
+    if cancel_after_eos:
+        scheduler.abort("request")
+        assert "request" not in scheduler.pending_done
+        assert scheduler.outbox.empty()
+    else:
+        (result,) = deliver(
+            scheduler,
+            [
+                IncomingMessage(
+                    "request",
+                    "new_request",
+                    StagePayload("request", OmniRequest(None), {}),
+                )
+            ],
+        )
+        assert result.type == "result"
+        torch.testing.assert_close(waveform(result.data.data), audio, rtol=0, atol=0)
+        assert result.data.data["audio_waveform_shape"] == [
+            frame_count * SAMPLES_PER_FRAME
+        ]
+        assert len(decoder.calls) == decode_calls
+        assert "request" not in scheduler.stream_payloads
+        assert "request" not in scheduler.pending_done
+    assert "request" not in scheduler.states
