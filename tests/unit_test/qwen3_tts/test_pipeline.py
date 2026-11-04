@@ -3937,6 +3937,36 @@ def test_qwen3_tts_long_whole_request_replays_one_window_between_first_chunks(
     assert scheduler.codec_arena.active_slots() == 0
 
 
+def test_qwen3_tts_worker_with_replays_due_takes_every_queued_first_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler, _, _ = whole_request_scheduler(monkeypatch)
+    streams = [
+        (name, scheduler.create_stream_state(name)) for name in ("first", "second")
+    ]
+    for stream in streams:
+        scheduler.initial_queue.put(stream)
+
+    assert (
+        scheduler.collect_async_batch(
+            scheduler.initial_queue,
+            max_batch_size=8,
+            batch_wait_s=0.0,
+            should_block=False,
+        )
+        == streams
+    )
+    assert (
+        scheduler.collect_async_batch(
+            scheduler.initial_queue,
+            max_batch_size=8,
+            batch_wait_s=0.0,
+            should_block=False,
+        )
+        == []
+    )
+
+
 def test_qwen3_tts_whole_requests_of_different_lengths_share_a_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -908,6 +908,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         # frame; the window graphs decode the same frames with the codec's fused kernels.
         self.decodes_whole_requests = bool(
             self.async_decode
+            and self.enable_stateful_codec_decoder
             and incremental_codec_cuda_graph
             and incremental_codec_cuda_graph_window_frames
             and self.device.type == "cuda"
@@ -2743,12 +2744,13 @@ class Qwen3TTSStreamingVocoderScheduler(
         deadline = time.monotonic() + batch_wait_s
         while len(batch) < max_batch_size:
             remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            # note (ratish): a worker with replays due takes all that has queued, and waits for no more.
+            if remaining <= 0 and should_block:
                 break
             else:
                 pass
             try:
-                next_queued = work_queue.get(timeout=remaining)
+                next_queued = work_queue.get(timeout=max(0.0, remaining))
             except queue.Empty:
                 break
             if next_queued is None:
@@ -2967,11 +2969,10 @@ class Qwen3TTSStreamingVocoderScheduler(
                     bool(state.whole_tail_frames) and not state.decoded_chunks
                 )
                 remaining_frames = state.total_frames - state.codec_frame_position
-                index = bisect.bisect_right(widths, remaining_frames)
                 row_frames = (
                     state.whole_tail_frames
                     if is_first_decode
-                    else widths[index - 1] if index else remaining_frames
+                    else widths[bisect.bisect_right(widths, remaining_frames) - 1]
                 )
                 row_tail_runner = (
                     self.initial_tail_decode_graphs if is_first_decode else None
@@ -2992,8 +2993,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                     slot = self.codec_arena.acquire()
                     if slot is None:
                         logger.warning(
-                            "Qwen3-TTS incremental Codec state arena is full (%d slots); this request uses the left-context decoder",
-                            self.codec_arena.num_slots,
+                            f"Qwen3-TTS incremental Codec state arena is full ({self.codec_arena.num_slots} slots); this request uses the left-context decoder"
                         )
                         state.incremental_codec_fallback = True
                         self.codec_fallback_count += 1
