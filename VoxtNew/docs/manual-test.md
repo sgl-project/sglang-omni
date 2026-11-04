@@ -15,7 +15,7 @@
 |---|---|
 | 日志面板 | VoxtNew 里按 ⇧⌘L（来源 `session`、`omni`、`llm`、`helper`） |
 | 日志文件 | `~/Library/Logs/VoxtNew/voxtnew.log`（app，含 Omni 服务的启动、退出、卸载）、`helper.log`（辅助进程：热键、AX、粘贴、URL）、`llm.log`（voxtnew-llm 的 stderr） |
-| 模型文件 | 家族模型库 `$HUB`（默认 `~/.cache/huggingface/hub`）的 `models--<owner>--<name>/snapshots/<commit>/`；VoxtNew 的声明在 `~/Library/Application Support/ActNow/models/claims/dev.hehehai.voxtnew.json` |
+| 模型文件 | 家族模型库 `$HUB`（默认 `~/Library/Application Support/ActNow/models/hub`）的 `models--<owner>--<name>/snapshots/<commit>/`；VoxtNew 的声明在 `~/Library/Application Support/ActNow/models/claims/dev.hehehai.voxtnew.json` |
 | 模型进程 | `pgrep -fl 'qwen3_asr_server\|voxtnew-llm\|voxtnew-helper'`：`qwen3_asr_server` 每个模型一个（命令行里的 `--model-directory …/models--<owner>--<name>/snapshots/<commit>` 说明是哪个：语音识别模型或 `vad.silero`），`voxtnew-llm` 最多一个 |
 | 历史详情 | 每次会话的识别原文、结果、交付方式、用的语音识别模型和语言模型、各阶段耗时、命中的规则 |
 | 系统设置 | 隐私与安全 → 辅助功能 / 麦克风；网络 → 代理 |
@@ -44,7 +44,7 @@
 
 **0.2 数据和模型**
 - 第 1 节要从“第一次打开”开始：先退出 VoxtNew，把旧数据挪开（`mv ~/Library/Application\ Support/VoxtNew ~/voxtnew-data-old`），测完可以挪回来。
-- mac-air 的磁盘紧（约 25 GB 空闲）。第 1 节真实下载的只有推荐的两个模型（5.8 GB）；其他三个用常驻的副本装进来（APFS 克隆，不占空间，第 1.5 步）。**不要删除或改动 `~/voxtnew-models` 和 `~/voxtnew-runtime`**，它们是各线程共用的。测完在 app 里删掉下载的模型，或者删掉整个数据目录。
+- mac-air 的磁盘紧（约 25 GB 空闲）。第 1 节真实下载的只有推荐的两个模型（5.8 GB）；其他三个在第 1.5 步装。**不要删除或改动 `~/voxtnew-models` 和 `~/voxtnew-runtime`**，它们是各线程共用的。测完在 app 里删掉下载的模型，或者删掉整个数据目录。
 - mac-air 的扬声器保持静音：测试都用真人对着麦克风说话，不要用扬声器放样本。
 
 **0.3 打开 app 并授权**
@@ -74,7 +74,7 @@
 - **不对时看**：截图。
 
 **1.1b 〔可选〕其他 ActNow app 装过的模型**
-- **准备**：这台 Mac 上装着 AudioSmith（或另一个 ActNow app），它下载过 Qwen3-ASR-1.7B-8bit（或 0.6B-4bit），模型在家族的模型库（默认 `~/.cache/huggingface/hub`）。
+- **准备**：这台 Mac 上装着 AudioSmith（或另一个 ActNow app），它下载过 Qwen3-ASR-1.7B-8bit（或 0.6B-4bit），模型在家族的模型库（默认 `~/Library/Application Support/ActNow/models/hub`）。
 - **做**：第一次打开 VoxtNew（或 设置 → 通用 →“打开设置引导”），到“本地模型”一步。
 - **应看到**：
   - 1.7B 在时：顶部卡片“已在这台 Mac 上找到 N 个模型 / 由 AudioSmith 安装 · 2.5 GB · 无需下载”，下面是“精准语音识别 · 声音检测”，主按钮“直接使用”和“选择模型…”；页脚的“继续”是次要按钮。语言模型那一行写“还需下载 3.3 GB”。点“直接使用”：卡片消失，语音识别那一行变成“可用：精准语音识别”，没有开始任何下载；`~/Library/Application Support/ActNow/models/claims/<VoxtNew 的 bundle id>.json` 里有这两个模型，`origin` 是 `reused`。
@@ -91,7 +91,7 @@
   - 日志面板（来源 app）有一行 `models: system proxy https 127.0.0.1:7897`：没有 `https_proxy` 环境变量时，下载用系统代理。
   - mac-air 上走 7897 代理时约 16 MB/s（M3 用同一条路下载 8.6 GB 用了 9 分钟），推荐的两个模型大约 6 分钟。
   - 装好一个时出现提示“<名字> 已安装。”，引导里那一行变成“可用：<名字>”。
-- **不对时看**：本地模型页的错误提示和它的 ⓘ（完整错误）；`ls ~/Library/Application\ Support/VoxtNew/models/.partial/`。
+- **不对时看**：本地模型页的错误提示和它的 ⓘ（完整错误）；`ls ~/Library/Application\ Support/ActNow/models/hub/models--*/blobs/*.incomplete`（下载中的文件）。
 
 **1.3 取消和继续下载**（在 1.2 的下载过程中做，或者下载另一个模型时做）
 - **做**：
@@ -100,9 +100,9 @@
   3. 点“继续下载”。
 - **应看到**：
   - 取消后卡片显示“已暂停：已下载 x / 2.5 GB”，有“继续下载”和“删除”（删除已下载的部分）。
-  - 重启后仍是“已暂停”，数字不变：已下载的部分保留在 `models/.partial/` 里。
+  - 重启后仍是“已暂停”，数字不变：已下载的部分保留在 `$HUB` 里（`models--<owner>--<name>/blobs/<blob>.incomplete`）。
   - 继续下载从原来的位置接着走，不从 0 开始；完成后卡片变成“已安装”和“占用 2.5 GB”。
-- **不对时看**：日志面板；`du -sh ~/Library/Application\ Support/VoxtNew/models/.partial`。
+- **不对时看**：日志面板；`du -sh ~/Library/Application\ Support/ActNow/models/hub/models--*/blobs/*.incomplete`。
 
 **1.4 〔可选〕连不上 Hugging Face 时用镜像**
 - **做**：在 系统设置 → 网络 → Wi-Fi → 详细信息 → 代理 里把“安全网页代理（HTTPS）”关掉（中国大陆的网络通常直连不了 huggingface.co），然后在本地模型页下载“快速语音识别”（713 MB）。做完把代理打开。
@@ -112,18 +112,14 @@
 **1.5 本地模型页**
 - **做**：
   1. 引导先关掉（右上角 ×），打开本地模型页。
-  2. 把其余的模型装进来（mac-air 上不下载，用常驻副本的 APFS 克隆，然后重启 VoxtNew）：
-     ```sh
-     M=~/Library/Application\ Support/VoxtNew/models
-     for id in asr.fast llm.fast llm.translate; do [ -e "$M/$id" ] || cp -Rc ~/voxtnew-models/$id "$M/"; done
-     ```
-  3. 看每张卡片；在“快速语言模型”上点“删除”，先点“取消”，再点一次“删除”并确认。然后把它装回来（再执行一次第 2 步的命令并重启，或者点“下载”）。
+  2. 把其余的模型装进来：在每张“需下载”的卡片上点“下载”，等进度条走满。
+  3. 看每张卡片；在“快速语言模型”上点“删除”，先点“取消”，再点一次“删除”并确认。然后点“下载”把它装回来。
 - **应看到**：
   - 两节：“语音识别”和“语言模型”。推荐的两个带“默认”标签。每张卡片有名字、擅长什么、语言（地球图标）和大小：没装的是“需下载 x”，装好的是“已安装”和“占用 x”。
   - Silero（声音检测）不单独列出。
   - 删除前弹出确认：“删除快速语言模型？”“将释放 1.7 GB。之后可以重新下载。”取消什么都不删；确认后卡片回到“需下载 1.7 GB”，文件夹不见了。
-  - 设置 → 存储 的“模型文件夹”一行是 `~/.cache/huggingface/hub`，“由所有 ActNow app 共用”；下面“仅 VoxtNew”和“与其他 ActNow app 共享”两项加起来和装的模型对得上。没有装别的 ActNow app 时不写“由所有 ActNow app 共用”，只有一行“VoxtNew 使用”；“网络…”对话框里也没有“应用于所有 ActNow app”那一行。
-- **不对时看**：`ls -la ~/Library/Application\ Support/VoxtNew/models/`（装好的模型文件夹里有 `.voxtnew-model.json`）。
+  - 设置 → 存储 的“模型文件夹”一行是 `~/Library/Application Support/ActNow/models/hub`，“由所有 ActNow app 共用”；下面“仅 VoxtNew”和“与其他 ActNow app 共享”两项加起来和装的模型对得上。没有装别的 ActNow app 时不写“由所有 ActNow app 共用”，只有一行“VoxtNew 使用”；“网络…”对话框里也没有“应用于所有 ActNow app”那一行。
+- **不对时看**：`ls -la ~/Library/Application\ Support/ActNow/models/hub/`（装好的模型在 `models--<owner>--<name>/snapshots/<commit>/` 里，VoxtNew 的声明在 `~/Library/Application Support/ActNow/models/claims/dev.hehehai.voxtnew.json`）。
 
 **1.5b 与其他 ActNow app 共用模型**（需要装了 AudioSmith 或 Dicta；没有就跳过）
 - **做**：
@@ -134,7 +130,7 @@
   5. 本地模型页右上角点“网络…”：选“自定义”，填 `ftp://x` 点“保存”；改成 `http://127.0.0.1:7897` 保存；再打开，点“仅为此 app 单独设置”，选“不使用代理”保存。终端里 `open voxtnew://models/network`。
 - **应看到**：
   - 第 1 步后卡片写“与 AudioSmith 共用”。装了 Dicta 的 Qwen3 4B / Gemma 4 E4B 时，语言模型里多一张“由 Dicta 安装”的卡片，只有“使用它”，没有“下载”。
-  - 第 2 步弹“从 VoxtNew 移除“快速语音识别”？”“AudioSmith 也在使用这个模型，文件（712.8 MB）会保留在这台 Mac 上。”；移除后提示文件为 AudioSmith 保留，`ls ~/.cache/huggingface/hub/models--mlx-community--Qwen3-ASR-0.6B-4bit/snapshots/` 还在。
+  - 第 2 步弹“从 VoxtNew 移除“快速语音识别”？”“AudioSmith 也在使用这个模型，文件（712.8 MB）会保留在这台 Mac 上。”；移除后提示文件为 AudioSmith 保留，`ls ~/Library/Application\ Support/ActNow/models/hub/models--mlx-community--Qwen3-ASR-0.6B-4bit/snapshots/` 还在。
   - 第 3 步再确认一次“AudioSmith 再次使用时需要重新下载（712.8 MB）。”；删除后文件夹不见了，AudioSmith 的模型页显示“已在 VoxtNew 中删除 · 重新下载”。
   - 第 4 步卡片写“正在由 AudioSmith 下载…”，“下载”按钮是灰的，下完后自动变成“已安装”；下载时删除提示“AudioSmith 正在下载或使用这个模型，请稍后再试。”。
   - 第 5 步：`ftp://x` 不保存，提示要以 http://、https:// 或 socks5:// 开头；保存后 AudioSmith 的代理设置也变了（跟随家族）；单独设置后行下写“此设置只用于 VoxtNew。”，AudioSmith 的不变；深链打开本地模型页和这个对话框。
@@ -518,7 +514,7 @@
   - 第 4 步：不录音，浮窗提示“语音识别模型未安装。”（›“打开本地模型”）；侧边栏底部出现“没有语音识别模型”的卡片，首页的就绪清单也提示。
   - 第 5 步：`voxtnew-llm` 退出（它加载的是被删的模型）；转录改用快速语言模型整理；翻译用剩下的模型中能翻译的那个（“自动”）。
   - 第 6 步：装回来以后一切照旧，卡片和提示都消失。
-- **不对时看**：日志面板（来源 omni、llm）；`ls ~/Library/Application\ Support/VoxtNew/models/`（删除中的文件夹先移到 `models/.trash/`）。
+- **不对时看**：日志面板（来源 omni、llm）；`ls ~/Library/Application\ Support/ActNow/models/hub/`；删除的过程看日志面板（来源 app）。
 
 **7.3 运行时崩溃：两次会话之间**
 - **做**：
@@ -760,7 +756,7 @@
 **9.7 设置 → 存储、隐私、诊断与关于**
 - **做**：看 设置 → 存储、隐私、诊断与关于；点“复制诊断信息”，粘到 TextEdit 里看一眼。
 - **应看到**：
-  - 存储：数据文件夹、所在磁盘的剩余空间；“模型文件夹”（`~/.cache/huggingface/hub`，由所有 ActNow app 共用）和“仅 VoxtNew”/“与其他 ActNow app 共享”的大小。
+  - 存储：数据文件夹、所在磁盘的剩余空间；“模型文件夹”（`~/Library/Application Support/ActNow/models/hub`，由所有 ActNow app 共用）和“仅 VoxtNew”/“与其他 ActNow app 共享”的大小。
   - 在“清除全部”一行点“清除…”（看完点“取消”，不要真的清除）：说明里写的是“没有其他 ActNow app 使用的本地模型”；有和其他 app 共用的模型时多一行“以下模型也被其他 ActNow app 使用，将被保留：…（x GB）”。
   - 隐私：说明语音识别和语言模型在本机运行、只在检查更新和下载模型时联网。
   - 诊断与关于：版本号、辅助进程的版本和协议、系统、芯片、内存；Beta 更新开关（当前是 beta 时默认打开）。诊断信息里没有说的话（除非打开了“记录说话内容”）。
