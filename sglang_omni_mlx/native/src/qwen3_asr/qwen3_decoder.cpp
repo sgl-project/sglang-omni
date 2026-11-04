@@ -154,20 +154,16 @@ mx::array Qwen3Decoder::Forward(const mx::array &embeddings,
   mx::array hidden = embeddings;
   // Note (Yucheng Hu): MLX frees temporaries per buffer, so eval per layer.
   const bool is_prefill = embeddings.shape(1) > 1;
-  std::optional<mx::array> previous_layer_output;
   for (int layer = 0; layer < config_.num_hidden_layers; ++layer) {
     if (std::count(capture_layers.begin(), capture_layers.end(), layer) > 0) {
       captured->push_back(hidden);
     } else {
     }
+    const mx::array layer_input = hidden;
     hidden = Layer(hidden, layer, caches[layer], rotary);
     if (is_prefill) {
       mx::async_eval(hidden);
-      if (previous_layer_output.has_value()) {
-        previous_layer_output->wait();
-      } else {
-      }
-      previous_layer_output = hidden;
+      mx::eval(layer_input);
     } else {
     }
   }
