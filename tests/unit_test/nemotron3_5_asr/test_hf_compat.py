@@ -28,6 +28,11 @@ from sglang_omni.models.nemotron3_5_asr.model_runner import (
     Nemotron3_5ASRModelRunner,
     Nemotron3_5ASRPreparedChunk,
 )
+from sglang_omni.platforms.device_graph import (
+    CudaDeviceGraphBackend,
+    DeviceGraphBackend,
+    XpuDeviceGraphBackend,
+)
 from sglang_omni.vendor.nemotron3_5_asr import processing_nemotron3_5_asr as processing
 from sglang_omni.vendor.nemotron3_5_asr.configuration_nemotron3_5_asr import (
     Nemotron3_5AsrConfig,
@@ -386,18 +391,41 @@ def test_conformer_pointwise_linear_matches_conv1d(
 
 
 @pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize(
+    "device_type,graph_backend",
+    [
+        pytest.param(
+            "cuda",
+            CudaDeviceGraphBackend(),
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available(), reason="CUDA required"
+            ),
+            id="cuda",
+        ),
+        pytest.param(
+            "xpu",
+            XpuDeviceGraphBackend(),
+            marks=pytest.mark.skipif(
+                not torch.xpu.is_available(), reason="XPU required"
+            ),
+            id="xpu",
+        ),
+    ],
+)
 @torch.inference_mode()
 def test_streaming_encoder_graph_replay_matches_eager(
     tiny_model_config: Nemotron3_5AsrConfig,
+    device_type: str,
+    graph_backend: DeviceGraphBackend,
 ) -> None:
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(7)
-        model = Nemotron3_5AsrForRNNT(tiny_model_config).eval().cuda()
+        model = Nemotron3_5AsrForRNNT(tiny_model_config).eval().to(device_type)
     pool = NemotronEncoderStatePool(EncoderPoolLayout.from_model(model), 6)
     graph_runner = NemotronStreamingEncoderGraphRunner(
         model,
         pool,
+        graph_backend=graph_backend,
         subsequent_mel_frames=8,
         num_lookahead_tokens=3,
         max_batch_size=2,
@@ -405,13 +433,15 @@ def test_streaming_encoder_graph_replay_matches_eager(
     assert set(graph_runner.captured_batches) == {1, 2}
     graph_slots = [pool.acquire(), pool.acquire()]
     eager_slots = [pool.acquire(), pool.acquire()]
-    prompt_ids = torch.tensor([0, 1], device="cuda")
+    prompt_ids = torch.tensor([0, 1], device=device_type)
     generator = torch.Generator().manual_seed(11)
     for step in range(5):
         mel_frames = 7 if step == 0 else 8
         features = []
         for _ in graph_slots:
-            features.append(torch.randn(1, mel_frames, 4, generator=generator).cuda())
+            features.append(
+                torch.randn(1, mel_frames, 4, generator=generator).to(device_type)
+            )
         graph_output = encode_pooled_streaming_batch(
             model,
             features,
