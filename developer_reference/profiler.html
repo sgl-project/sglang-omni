@@ -745,15 +745,19 @@ first executable prefill / extend batch is selected.</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">scheduler_first_emit</span></code></p></td>
 <td><p>First <code class="docutils literal notranslate"><span class="pre">stream_output_builder</span></code> emission per request</p></td>
 </tr>
-<tr class="row-odd"><td><p>Code2Wav</p></td>
+<tr class="row-odd"><td><p>AR scheduler</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">session_kv_snapshot</span></code></p></td>
+<td><p>Streaming-session KV after a completed Unit has checkpointed: logical/session-window lengths, allocated/available pool positions and cache-evictable positions</p></td>
+</tr>
+<tr class="row-even"><td><p>Code2Wav</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">code2wav_decode_start</span></code></p></td>
 <td><p>Each window’s decode start: trigger, start/end/new/context/window frames, <code class="docutils literal notranslate"><span class="pre">rows</span></code> (the windows its replay decodes together), active and threshold-ready requests, inbox depth</p></td>
 </tr>
-<tr class="row-even"><td><p>Code2Wav</p></td>
+<tr class="row-odd"><td><p>Code2Wav</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">code2wav_decode_launched</span></code></p></td>
 <td><p>Pipelined window whose vocoder work and asynchronous D2H copy have been enqueued; includes execution mode, window/new-frame counts and <code class="docutils literal notranslate"><span class="pre">rows</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p>Code2Wav</p></td>
+<tr class="row-even"><td><p>Code2Wav</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">code2wav_decode_end</span></code></p></td>
 <td><p>Repeats start metadata and adds the current decode’s <code class="docutils literal notranslate"><span class="pre">audio_samples</span></code> plus execution metadata; output-overlap runs also include <code class="docutils literal notranslate"><span class="pre">pipelined</span></code> and the previous window’s post-EOS-scan <code class="docutils literal notranslate"><span class="pre">d2h_wait_ns</span></code></p></td>
 </tr>
@@ -789,6 +793,7 @@ metadata to name the Unit as <code class="docutils literal notranslate"><span cl
 Unit lifecycle and start events carry the input modality and media clock.
 Output events carry the output sequence, modality, media clock, duration, and
 kind. Payload bytes are never stored.</p>
+<p><code class="docutils literal notranslate"><span class="pre">session_kv_snapshot</span></code> is emitted after a completed AR Unit releases its request row into the streaming-session cache. Its <code class="docutils literal notranslate"><span class="pre">cache_type</span></code> and <code class="docutils literal notranslate"><span class="pre">kv_allocator_type</span></code> fields identify the active cache path. <code class="docutils literal notranslate"><span class="pre">session_logical_length</span></code> is the record’s logical sequence length and can exceed the physical pool for a sliding-window model. <code class="docutils literal notranslate"><span class="pre">session_swa_evicted_length</span></code> is the record’s SWA eviction cursor, and <code class="docutils literal notranslate"><span class="pre">session_window_kv_positions</span></code> is their difference. <code class="docutils literal notranslate"><span class="pre">kv_pool_capacity_positions</span></code>, <code class="docutils literal notranslate"><span class="pre">kv_pool_allocated_positions</span></code>, <code class="docutils literal notranslate"><span class="pre">available_kv_positions</span></code>, and <code class="docutils literal notranslate"><span class="pre">evictable_kv_positions</span></code> describe the allocator at that boundary. For a single PureSWA session with radix caching disabled, the session-window and pool-allocated counts must agree; their plateau, not the logical length or process GPU memory, shows whether the pool reuses expired slots during a long call.</p>
 <p>The event boundaries have these meanings:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">session_unit_ready</span></code> is declared by the ingress owner when a logical Unit
