@@ -252,9 +252,7 @@ def calculate_asr_speed_metrics(
     wall_time_s: float | None = None,
 ) -> dict:
     """Compute speed metrics for the ASR transcription phase."""
-    transcribed = [
-        output for output in outputs if output.is_transcribed or output.is_success
-    ]
+    transcribed = [output for output in outputs if output.is_transcribed]
     successes = [output for output in transcribed if output.asr_latency_s > 0]
     failed_requests = len(outputs) - len(transcribed)
     if not successes:

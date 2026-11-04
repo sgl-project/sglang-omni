@@ -754,9 +754,14 @@ async def test_sustained_overshoot_uses_open_loop_and_unique_output_dir(
 
 
 def test_asr_speed_counts_scored_and_unscorable_transcriptions() -> None:
-    """Legacy scored samples and successful unscorable clips both contribute to speed, unlike request failures."""
+    """Scored and unscorable transcriptions both contribute to speed, unlike request failures."""
     outputs = [
-        SampleOutput(is_success=True, asr_latency_s=0.25, audio_duration_s=1.0),
+        SampleOutput(
+            is_transcribed=True,
+            is_success=True,
+            asr_latency_s=0.25,
+            audio_duration_s=1.0,
+        ),
         SampleOutput(is_transcribed=True, asr_latency_s=0.75, audio_duration_s=3.0),
         SampleOutput(error="Transcription failed", asr_latency_s=9.0),
     ]

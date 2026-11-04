@@ -393,7 +393,7 @@ def _aggregate(repeats: list[dict]) -> dict:
         "evaluated": evaluated,
         "total": total_requests,
         "skipped": skipped,
-        "failed": sum(repeat.get("failed", repeat["skipped"]) for repeat in repeats),
+        "failed": sum(repeat["failed"] for repeat in repeats),
         "corpus_wer": _stat("corpus_wer"),
         "per_sample_wer_max": _stat("per_sample_wer_max"),
         "wall_clock_s": _stat("wall_clock_s"),

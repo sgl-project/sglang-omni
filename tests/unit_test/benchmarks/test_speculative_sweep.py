@@ -353,15 +353,3 @@ def test_missing_results_and_request_errors_are_not_scoring_skips() -> None:
     assert report["speed"]["throughput_samples_per_s"] == 1.0
     assert report["speed"]["latency_p95_s"] == 0.2
     assert report["speed"]["failed_requests"] == 2
-
-
-@pytest.mark.parametrize("skipped", [0, 3])
-def test_legacy_client_json_keeps_its_conservative_failure_count(skipped: int) -> None:
-    """Saved sweeps without failed must remain readable without assuming their skips succeeded."""
-    payload = client_result(1, 10.0, 0.5, skipped=skipped).model_dump()
-    payload.pop("failed")
-    result = ClientResult.model_validate_json(json.dumps(payload))
-    comparison = compare([leg("A", None, [result]), leg("B", 5, [result])], k_gain=1.0)
-    assert comparison.rows[0].baseline.failed_requests == skipped
-    assert comparison.rows[0].is_complete is (skipped == 0)
-    assert comparison.k == (1 if skipped == 0 else None)
