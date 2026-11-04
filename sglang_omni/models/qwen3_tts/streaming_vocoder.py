@@ -175,8 +175,10 @@ class Qwen3TTSStreamState:
     codec_slot: int | None = None
     codec_frame_position: int = 0
     suppress_bootstrap: bool = False
-    # note (ratish): a non-streaming request's audio collects here instead of being emitted.
-    whole_audio: list[torch.Tensor] | None = None
+    # note (ratish): a non-streaming request's audio collects here instead of being emitted; the
+    # result carries this buffer, so finishing a long request copies no samples on the first-audio worker.
+    whole_audio: bytearray | None = None
+    whole_audio_samples: int = 0
     whole_tail_frames: int = 0
 
 
@@ -2882,7 +2884,11 @@ class Qwen3TTSStreamingVocoderScheduler(
         state = Qwen3TTSStreamState(
             final_pending=True,
             pending_ref_frames=reference_frames,
-            whole_audio=[],
+            whole_audio=bytearray(
+                (frames - reference_frames)
+                * self.samples_per_frame
+                * torch.float32.itemsize
+            ),
             whole_tail_frames=tail_frames,
             codec_frame_position=start_frame,
         )
@@ -3059,11 +3065,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                 state.codec_frame_position += plan.fresh_frames
                 state.emitted_generated_frames = plan.generated_frames
                 state.decoded_chunks += 1
-                # note (ratish): a window of only reference frames has no samples to keep.
-                if delta.numel():
-                    state.whole_audio.append(delta)
-                else:
-                    pass
+                self.store_whole_audio(state, delta)
                 if state.codec_frame_position < state.total_frames:
                     self.whole_request_rows.append((request_id, state))
                 else:
@@ -3464,9 +3466,18 @@ class Qwen3TTSStreamingVocoderScheduler(
         self, request_id: str, state: Qwen3TTSStreamState, delta: torch.Tensor
     ) -> None:
         if state.whole_audio is not None:
-            state.whole_audio.append(delta)
+            self.store_whole_audio(state, delta)
         else:
             self.outbox.put(self.stream_chunk_message(request_id, delta))
+
+    @staticmethod
+    def store_whole_audio(state: Qwen3TTSStreamState, delta: torch.Tensor) -> None:
+        """Write a decode's samples into the request's buffer; the padded frames' samples have no room there."""
+        audio = np.frombuffer(state.whole_audio, dtype=np.float32)
+        kept_samples = audio[state.whole_audio_samples :]
+        samples = delta[: kept_samples.shape[0]].numpy()
+        kept_samples[: samples.shape[0]] = samples
+        state.whole_audio_samples += samples.shape[0]
 
     def commit_initial(
         self,
@@ -3861,16 +3872,19 @@ class Qwen3TTSStreamingVocoderScheduler(
 
     def final_result_data(
         self, request_id: str, payload: StagePayload, state: Qwen3TTSStreamState
-    ) -> dict[str, bytes | list[int] | str | int | dict[str, int | float]]:
+    ) -> dict[str, bytes | bytearray | list[int] | str | int | dict[str, int | float]]:
         del request_id
         final_state = Qwen3TTSState.from_dict(payload.data)
         if state.whole_audio is not None:
-            generated_frames = len(final_state.audio_codes) - final_state.ref_code_len
-            generated_samples = generated_frames * self.samples_per_frame
             return self.audio_result_data(
                 final_state,
-                torch.cat(state.whole_audio)[:generated_samples].numpy(),
-                self.sample_rate,
+                {
+                    "audio_waveform": state.whole_audio,
+                    "audio_waveform_shape": [state.whole_audio_samples],
+                    "audio_waveform_dtype": "float32",
+                    "sample_rate": self.sample_rate,
+                    "modality": "audio",
+                },
             )
         else:
             pass
@@ -4009,23 +4023,25 @@ class Qwen3TTSStreamingVocoderScheduler(
             waveform = waveform[cut:]
         else:
             pass
-        payload.data = self.audio_result_data(state, waveform, sample_rate)
-        return payload
-
-    def audio_result_data(
-        self,
-        state: Qwen3TTSState,
-        waveform: np.ndarray[tuple[int, ...], np.dtype[np.float32]],
-        sample_rate: int,
-    ) -> dict[str, bytes | list[int] | str | int | dict[str, int | float]]:
-        data: dict[str, bytes | list[int] | str | int | dict[str, int | float]] = dict(
+        payload.data = self.audio_result_data(
+            state,
             audio_waveform_payload(
                 waveform,
                 sample_rate=int(sample_rate),
                 modality="audio",
                 source_hint="Qwen3-TTS",
-            )
+            ),
         )
+        return payload
+
+    def audio_result_data(
+        self,
+        state: Qwen3TTSState,
+        audio_payload: dict[str, bytes | bytearray | list[int] | str | int],
+    ) -> dict[str, bytes | bytearray | list[int] | str | int | dict[str, int | float]]:
+        data: dict[
+            str, bytes | bytearray | list[int] | str | int | dict[str, int | float]
+        ] = dict(audio_payload)
         usage = build_usage(state)
         if usage is not None:
             data["usage"] = usage

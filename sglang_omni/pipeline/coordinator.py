@@ -95,7 +95,11 @@ def stream_message_payload_bytes(msg: CompleteMessage | StreamMessage) -> int:
     else:
         payload = msg.chunk
     if isinstance(payload, dict):
-        return sum(len(value) for value in payload.values() if isinstance(value, bytes))
+        return sum(
+            len(value)
+            for value in payload.values()
+            if isinstance(value, bytes | bytearray)
+        )
     else:
         return 0
 
