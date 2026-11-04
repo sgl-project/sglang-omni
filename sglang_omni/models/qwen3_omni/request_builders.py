@@ -90,7 +90,7 @@ class QwenThinkerRequest(Req):
         else:
             pass
         prompt_token_count = len(self.origin_input_ids)
-        # note (evanderfan): the base hook appends generated positions from the prompt's last position on every call, but decode resumes past the prompt's maximum, which audio-in-video puts above the last.
+        # note (evanderfan): the base hook appends generated positions from the prompt's last position on every call, but decode resumes past the prompt's maximum, which audio-in-video can put above the last when nothing follows its block.
         prompt_positions = multimodal_inputs.mrope_positions[:, :prompt_token_count]
         generated_positions = (
             torch.arange(
