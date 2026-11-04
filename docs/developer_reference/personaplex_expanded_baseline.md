@@ -96,7 +96,7 @@ The 12 valid Qwen labels total seven respond and five resume, compared with six 
 | Talking to other | 2 | 1 | 0 | 0 |
 | Background speech | 2 | 1 | 0 | 0 |
 
-The expanded cohort establishes exact complete-output consistency. The next quality experiment can hold the host and sampling draws fixed while separating attention execution from deterministic sampling, and measure whether reducing output backlog restores the earlier timing results.
+The expanded cohort establishes exact complete-output consistency. The [latency attribution follow-up](personaplex_latency_attribution.md) holds the host and sampling seeds fixed, separates attention splitting from batch-invariant operations, and measures stage processing alongside FDB timing.
 
 ## Evidence and reproduction
 
