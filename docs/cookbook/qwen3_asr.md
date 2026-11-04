@@ -181,6 +181,8 @@ sgl-omni serve \
   --port 8000
 ```
 
+Send the form field `return_spec_tokens_details=true` to get `sglext.spec_tokens_details` (`spec_accept_length`, `spec_accept_rate`, the draft counts and the per-verify histogram) on `json` and `verbose_json` responses and on the streamed `transcript.text.done` event. Audio long enough to be transcribed in chunks returns none.
+
 ## Transcribe Audio
 
 ```bash

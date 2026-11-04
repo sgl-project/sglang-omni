@@ -227,6 +227,7 @@ sgl-omni serve \
   --port 8000
 ```
 
+- **Acceptance length.** Send the form field `return_spec_tokens_details=true` to get `sglext.spec_tokens_details` (`spec_accept_length`, `spec_accept_rate`, the draft counts and the per-verify histogram) on `json` and `verbose_json` responses and on the streamed `transcript.text.done` event. Audio long enough to be transcribed in chunks returns none.
 - **Transcripts.** The target verifies every proposed token, so accuracy stays at the target's level, but the text is not byte-identical to a run without the draft. MOSS-TD has many near-tied decisions, mostly the hundredths digits of timestamps and the odd filler word or comma, which any numeric change can flip. Without a draft, 229 of 800 `movies800times` clips differ between concurrency 1 and 16, and on an H200 all 20 `aishell4_long` transcripts differ between two identical runs, though they match on an H100.
 - **Context.** The duration-scaled budget leaves room for the few tokens each step reserves. An explicit `max_new_tokens` that leaves no such room is rejected instead of clamped.
 - **Capacity.** The draft's KV shares the pool, so one H100 80GB at `mem_fraction_static=0.80` holds about 480k tokens instead of 570k. Long audio at high concurrency fills it, and the scheduler then retracts requests and finishes them later: every `aishell4_long` file still completed at concurrency 16 and 32.
