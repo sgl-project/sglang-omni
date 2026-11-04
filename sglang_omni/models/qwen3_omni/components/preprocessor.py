@@ -9,6 +9,7 @@ import json
 import logging
 import math
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TypedDict, TypeGuard
 
@@ -330,8 +331,10 @@ class Qwen3OmniPreprocessor:
         video_min_pixels: int | None = None,
         video_max_pixels: int | None = None,
         video_total_pixels: int | None = None,
+        video_decode_threads: int,
     ) -> None:
         self.model_path = model_path
+        self.video_decode_threads = video_decode_threads
         self.default_video_fps = float(video_fps) if video_fps is not None else None
         self.default_video_max_frames = (
             int(video_max_frames) if video_max_frames is not None else None
@@ -832,6 +835,7 @@ class Qwen3OmniPreprocessor:
                     extract_audio=extract_audio_from_video_flag,
                     audio_target_sr=audio_target_sr,
                     resource_connector=connector,
+                    video_decode_threads=self.video_decode_threads,
                 ),
                 ensure_audio_list_async(
                     request_audios,
@@ -894,7 +898,6 @@ class Qwen3OmniPreprocessor:
         audio_cache_key = compute_audio_cache_key(audios)
         # Image and video keys follow the same rule and hash the loaded media.
         image_cache_key = compute_image_cache_key(images)
-        video_cache_key = compute_video_cache_key(videos)
 
         videos_kwargs: VideoProcessorKwargs = {}
         if sampled_video_fps:
@@ -947,14 +950,28 @@ class Qwen3OmniPreprocessor:
         else:
             pass
 
-        hf_inputs: BatchFeature = self.processor(
-            text=prompt_text,
-            images=images or None,
-            videos=videos or None,
-            audio=audios or None,
-            add_special_tokens=False,
-            return_tensors="pt",
-            **processor_kwargs,
+        # note (ratish): the video key only tags the encoder inputs, and the HF processor reads float32 frames without writing them, so the request's own thread hashes them while the processor runs; leaving the block waits for the hash on every exit.
+        with ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="qwen3-omni-video-cache-key"
+        ) as video_cache_key_executor:
+            video_cache_key_future = (
+                video_cache_key_executor.submit(compute_video_cache_key, videos)
+                if videos
+                else None
+            )
+            hf_inputs: BatchFeature = self.processor(
+                text=prompt_text,
+                images=images or None,
+                videos=videos or None,
+                audio=audios or None,
+                add_special_tokens=False,
+                return_tensors="pt",
+                **processor_kwargs,
+            )
+        video_cache_key = (
+            video_cache_key_future.result()
+            if video_cache_key_future is not None
+            else None
         )
 
         input_ids = hf_inputs["input_ids"][0]

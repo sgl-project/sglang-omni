@@ -32,13 +32,18 @@ class Drama3StepInputs:
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Drama3DecodeBuffers:
     """Decode inputs and sampled frames at fixed addresses, one row per batch slot;
-    rows past a batch keep earlier valid values that only padded graph rows read."""
+    rows past a batch keep earlier valid values that only padded graph rows read.
+
+    A prefill stages its requests' epsilon_cutoff rows here too, where the first-frame
+    step reads them.
+    """
 
     frames: torch.Tensor
     ras_windows: torch.Tensor
     temperature: torch.Tensor
     top_k: torch.Tensor
     top_p: torch.Tensor
+    epsilon_cutoff: torch.Tensor
     sampled_frames: torch.Tensor
 
     @classmethod
@@ -58,6 +63,7 @@ class Drama3DecodeBuffers:
             temperature=torch.ones(row_count, dtype=torch.float32, device=device),
             top_k=torch.ones(row_count, dtype=torch.int64, device=device),
             top_p=torch.ones(row_count, dtype=torch.float32, device=device),
+            epsilon_cutoff=torch.zeros(row_count, dtype=torch.float32, device=device),
             sampled_frames=torch.zeros_like(frames),
         )
 

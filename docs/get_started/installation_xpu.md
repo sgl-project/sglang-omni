@@ -17,7 +17,9 @@ Core deps cover the supported models (Qwen3-ASR / TTS / Omni / MiniMax Music 3, 
 that model's CosyVoice dependencies — see
 [Fun-CosyVoice3](#fun-cosyvoice3-text-to-speech-single-xpu). ZONOS2 also serves here,
 but its DAC codec is not a core dep on any platform — see
-[ZONOS2](#zonos2-moe-tts-single-xpu) for the XPU-safe way to add it. Other model
+[ZONOS2](#zonos2-moe-tts-single-xpu) for the XPU-safe way to add it. Audar-TTS also
+serves here, on a SYCL build of llama.cpp that is not a core dep — see
+[Audar-TTS](#audar-tts-v1-turbo-arabic-tts-with-voice-cloning-single-xpu). Other model
 families (S2-Pro, Voxtral-TTS) are CUDA-only and are not offered here.
 
 > **`--no-build-isolation` is required** — without it pip emits a legacy in-tree
@@ -30,7 +32,7 @@ families (S2-Pro, Voxtral-TTS) are CUDA-only and are not offered here.
 
 ## Prerequisites
 
-- Python ≥ 3.10, and an Intel GPU driver (`/dev/dri/renderD*` present).
+- Python 3.11 or 3.12, and an Intel GPU driver (`/dev/dri/renderD*` present).
 - `setuptools` ≥ 77.0.0 in the target environment (see the note above).
 - The **PyTorch XPU stack** and an **XPU SGLang build** — reuse an existing working
   `torch+xpu` env if you have one. See [Runtime environment](#runtime-environment-important)
@@ -87,7 +89,7 @@ It cannot be pinned even as a range: every published wheel requires `flashinfer_
 
 ```bash
 git clone https://github.com/sgl-project/sglang && cd sglang
-git checkout v0.5.22   # the pinned release
+git checkout v0.5.23   # the pinned release
 cd python && cp pyproject_xpu.toml pyproject.toml
 pip install -e . --no-build-isolation --extra-index-url https://download.pytorch.org/whl/xpu
 pip install --no-deps xgrammar==0.1.33
@@ -120,9 +122,9 @@ on the library path, conflicting with the bundled `libccl` and crashing multi-XP
 
 No extra environment variables are needed — the XPU backend is auto-detected. If a Triton JIT
 build reports `fatal error: sycl/sycl.hpp: No such file or directory`, point the compiler at the
-`intel-sycl-rt` wheel's headers:
+`intel-sycl-rt` wheel's headers, which it installs under the environment's `include/` directory:
 ```bash
-export CPATH="$(python -c 'import sysconfig; print(sysconfig.get_paths()["include"])')"
+export CPATH="$(python -c 'import sys; print(sys.prefix)')/include"
 ```
 
 ### Qwen3-ASR (speech-to-text, single XPU)
@@ -515,6 +517,39 @@ curl -s -X POST http://localhost:8000/v1/chat/completions \
        "messages":[{"role":"user","content":"What is Intel XPU?"}],"max_tokens":64}'
 ```
 
+### MiniCPM-o 4.5 (omni chat and speech, single XPU)
+
+On a 24 GB card the defaults need four changes. The thinker's weights take about 15 GB and
+its default memory fraction leaves the KV cache no room, so raise it. The talker reserves
+KV for 131072 tokens (7.5 GB) unless capped. Code2Wav's `torch.compile` is validated on CUDA
+only and refuses to start on XPU. And on `torch==2.14.0+xpu`, matmuls and convolutions on
+Code2Wav's default high-priority decode stream crash the process on the first device, so
+give that stream normal priority:
+
+```bash
+ZE_AFFINITY_MASK=0 sgl-omni serve --model-path openbmb/MiniCPM-o-4_5 \
+  --thinker.engine.mem_fraction_static 0.80 \
+  --talker.engine.max_total_tokens 8192 \
+  --code2wav.factory.decode_stream_priority 0 \
+  --code2wav.factory.enable_dit_torch_compile false \
+  --code2wav.factory.enable_hift_torch_compile false \
+  --host 0.0.0.0 --port 8000
+curl -s -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model":"openbmb/MiniCPM-o-4_5","input":"Hello from Intel XPU.","voice":"default","language":"English"}' \
+  -o out.wav
+```
+
+Keep the thinker at 0.80 when the talker and Code2Wav share its card: at 0.88 an image request
+ran the card out of memory. For text output only, serve with `--text-only` and
+`--thinker.engine.mem_fraction_static 0.85` instead.
+
+The talker's sampling graph does not capture on XPU: startup logs
+`MiniCPM-o talker sampling graph capture failed; sampling eagerly` with a
+`UR_RESULT_ERROR_UNSUPPORTED_FEATURE` traceback, and the talker then samples eagerly. See
+the [MiniCPM-o cookbook](../cookbook/minicpm_o.md) for chat with speech output, image and
+audio input, and voice cloning.
+
 ### MiniMax Music 3 (text-to-music, two XPUs)
 ```bash
 # server
@@ -573,7 +608,7 @@ so concurrent requests raise throughput almost linearly.
 The bf16 AR backbone does not fit one 24 GB card, so `tts_engine` runs with TP=2. Its joint
 RoPE is sgl-kernel's SYCL JIT kernel, which needs `icpx` on `PATH`; add the compiler directory
 alone rather than sourcing `setvars.sh`. Its fp32 MoE routing needs the `sglang-kernel-xpu`
-wheel that SGLang v0.5.22 pins (0.4.0); sgl-kernel builds older than 0.3.0 fail with
+wheel that SGLang v0.5.23 pins (0.5.0); sgl-kernel builds older than 0.3.0 fail with
 `"fused_topk_softmax_kernel" not implemented for 'Float'`.
 ```bash
 export PATH="/opt/intel/oneapi/compiler/latest/bin:$PATH" SGLANG_OMNI_STARTUP_TIMEOUT=1800
@@ -597,8 +632,8 @@ Health check for any of the above: `curl http://localhost:8000/v1/models`.
 > — those CUDA-only transfer backends are omitted; tensors move through the `shm` relay instead.
 
 > Support status: **Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, ZONOS2,
-> Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni, Ming-Omni-TTS, Nemotron VoiceChat, PersonaPlex, AuK/AuK-Flash and dots.tts all serve end-to-end on Intel XPU**
-> (Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, MiniCPM-o, PersonaPlex, AuK/AuK-Flash and dots.tts single-card;
+> Audar-TTS, Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni, Ming-Omni-TTS, Nemotron VoiceChat, PersonaPlex, AuK/AuK-Flash and dots.tts all serve end-to-end on Intel XPU**
+> (Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, Audar-TTS, MiniCPM-o, PersonaPlex, AuK/AuK-Flash and dots.tts single-card;
 > ZONOS2 single-card with decode graphs; MiniMax Music 3, Ming-Omni-TTS and Nemotron VoiceChat need two cards;
 > Ming-Omni chat single-card and speech two-card, with the thinker offloaded to host memory;
 > Qwen3-Omni thinker across 8 cards with tensor parallelism).

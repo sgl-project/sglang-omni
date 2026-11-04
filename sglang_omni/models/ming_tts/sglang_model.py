@@ -493,6 +493,10 @@ class MingBailingMoeSparseMoeBlock(nn.Module):
             routed_scaling_factor=self.routed_scaling_factor,
             prefix=add_prefix("experts", prefix),
         )
+        self.topk.bind_runner_backend(
+            self.experts.runner_backend,
+            routing_method_type=self.experts.routing_method_type,
+        )
 
         num_shared_experts = int(getattr(config, "num_shared_experts", 0) or 0)
         if num_shared_experts > 0:

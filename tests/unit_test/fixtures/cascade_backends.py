@@ -211,6 +211,69 @@ def realtime_transcription_server():
             thread.join(5)
 
 
+@pytest.fixture
+def transcription_session_server():
+    """A transcription-intent session that refreshes its partial every two appended frames and names the language in its final transcript."""
+    appended: list[bytes] = []
+    client_events: list[dict[str, object]] = []
+    spoken = ["hello", "there", "general", "kenobi"]
+
+    def transcribe(websocket):
+        path = "/v1/realtime?intent=transcription&model=Qwen%2FQwen3-ASR-1.7B"
+        assert websocket.request.path == path
+
+        def send(kind: str, **fields) -> None:
+            websocket.send(json.dumps({"type": kind, **fields}))
+
+        send("session.created", session={"id": "s0", "decode_interval_ms": 2000})
+        for encoded in websocket:
+            event = json.loads(encoded)
+            assert event["event_id"]
+            client_events.append(event)
+            if event["type"] == "session.update":
+                send("session.updated", session={"id": "s0", **event["session"]})
+            elif event["type"] == "input_audio_buffer.append":
+                appended.append(base64.b64decode(event["audio"]))
+                if len(appended) % 2 == 0:
+                    text = " ".join(spoken[: len(appended) // 2])
+                    send(
+                        "transcription.segment",
+                        segment_id=0,
+                        audio_start_ms=0,
+                        audio_end_ms=len(appended) * 20,
+                        text=text,
+                        is_final=False,
+                        language="English",
+                    )
+                else:
+                    pass
+            elif event["type"] == "transcription.done":
+                text = " ".join(spoken[: len(appended) // 2])
+                send("input_audio_buffer.committed", segment_id=0)
+                send(
+                    "transcription.segment",
+                    segment_id=0,
+                    audio_start_ms=0,
+                    audio_end_ms=len(appended) * 20,
+                    text=text,
+                    is_final=True,
+                    language="English",
+                )
+                send("transcription.completed", text=text, language="English")
+            else:
+                raise AssertionError(event)
+
+    with serve(transcribe, "127.0.0.1", 0) as server:
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            port = server.socket.getsockname()[1]
+            yield f"ws://127.0.0.1:{port}", appended, client_events
+        finally:
+            server.shutdown()
+            thread.join(5)
+
+
 LOOPBACK_GRAPH = """
 session_nodes:
   asr:
