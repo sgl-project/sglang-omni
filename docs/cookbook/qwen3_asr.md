@@ -192,6 +192,20 @@ The target is the ordinary `Qwen/Qwen3-ASR-1.7B` checkpoint, which can be reused
 
 The [NPU DFlash validation packet](../../scripts/npu/DFLASH_VALIDATION.md) defines the initial server checks and required evidence. An eager pass does not qualify NPU graphs or demonstrate a speedup.
 
+### Experimental Ascend DFlash decode graphs
+
+To validate graph capture of the draft block, its reduced-vocabulary head and the target verification forward, use the separate graph example on the SGLang version required by `pyproject_npu.toml`:
+
+```bash
+sgl-omni serve \
+  --config examples/configs/qwen3_asr_1_7b_dflash_npu_graph.yaml \
+  --port 8000
+```
+
+This configuration captures decode request buckets 1 and 2, with eight tokens per DFlash block. It keeps prefill and encoder execution eager, Torch Compile disabled and scheduling synchronous. It uses the same pinned 48k draft and the context/window restrictions above. The existing SGLang NPU runner executes the shared worker's capture-tail hook, which writes mapped proposal IDs to fixed storage; no separate ASR graph worker is required. Do not set `SGLANG_DFLASH_EAGER_DRAFT_SAMPLER=1` when validating the captured head.
+
+Graph capture and replay remain unqualified on native Ascend for this candidate. Follow the [DFlash graph validation packet](../../scripts/npu/DFLASH_GRAPH_VALIDATION.md): first replay the sampler component with changed inputs, then verify actual draft and target replay on real audio, including transitions between request buckets. The component test alone does not qualify ASR attention or KV/auxiliary hidden-state reuse. Keep the eager example as the paired reference; enabling decode graphs does not establish encoder graphs, overlap, realtime support or a speedup.
+
 ## Transcribe Audio
 
 ```bash
