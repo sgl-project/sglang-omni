@@ -52,6 +52,7 @@ add_library(common STATIC
   src/common/form.cpp
   src/common/layers.cpp
   src/common/npz.cpp
+  src/common/reference_audio.cpp
   src/common/text.cpp
   src/common/tokenizer.cpp)
 target_include_directories(common PUBLIC src)
@@ -59,8 +60,9 @@ target_link_libraries(common PUBLIC mlx nlohmann_json::nlohmann_json pcre2-8-sta
   "-framework CoreFoundation")
 target_compile_options(common PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 # Note (Jiaxin Deng): npz keeps the no-fused-multiply-add rounding it was built
-# with as part of whisper_asr.
-set_source_files_properties(src/common/npz.cpp PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
+# with as part of whisper_asr, and reference_audio as part of cosyvoice3.
+set_source_files_properties(src/common/npz.cpp src/common/reference_audio.cpp
+  PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 
 add_library(qwen3_asr STATIC
   src/qwen3_asr/qwen3_audio.cpp
@@ -291,19 +293,22 @@ set_target_properties(cosyvoice3_server cosyvoice3_synthesize PROPERTIES
   INSTALL_RPATH "@loader_path")
 install(TARGETS cosyvoice3_server cosyvoice3_synthesize RUNTIME DESTINATION bin)
 
+# Fish Audio's DAC codec, which Drama 3 and S2-Pro share.
+add_library(fish_dac STATIC src/fish_dac/fish_dac.cpp src/fish_dac/fish_dac_stream.cpp)
+target_link_libraries(fish_dac PUBLIC common)
+target_compile_options(fish_dac PRIVATE -Wall -Wextra -ffp-contract=off)
+
 # Note (Yitong Li): Fish Audio Drama 3: fishaudio_drama3_server, with the CUDA
 # server's /v1/audio/speech API, and its parity tool; attention layers keep
 # Qwen3's KV cache.
 add_library(fishaudio_drama3 STATIC
   src/fishaudio_drama3/fishaudio_drama3_text.cpp
   src/fishaudio_drama3/fishaudio_drama3_prompt.cpp
-  src/fishaudio_drama3/fishaudio_drama3_codec.cpp
-  src/fishaudio_drama3/fishaudio_drama3_codec_stream.cpp
   src/fishaudio_drama3/fishaudio_drama3_model.cpp
   src/fishaudio_drama3/fishaudio_drama3_backbone.cpp
   src/fishaudio_drama3/fishaudio_drama3_tower.cpp
   src/fishaudio_drama3/fishaudio_drama3_generation.cpp)
-target_link_libraries(fishaudio_drama3 PUBLIC qwen3_asr)
+target_link_libraries(fishaudio_drama3 PUBLIC qwen3_asr fish_dac)
 target_compile_options(fishaudio_drama3 PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(fishaudio_drama3_server src/fishaudio_drama3/fishaudio_drama3_server.cpp)
 target_link_libraries(fishaudio_drama3_server PRIVATE fishaudio_drama3 speech_service)
@@ -320,9 +325,9 @@ install(FILES licenses/music3-MIT.txt licenses/fishaudio_drama3-MIT.txt
 
 # Note (Jiaxin Deng): Fish S2-Pro: fish_s2_pro_server, with the CUDA server's
 # /v1/audio/speech API and reference-audio voice cloning, and its parity tool.
-add_library(fish_s2_pro STATIC src/fish_s2_pro/fish_s2_pro_codec.cpp
+add_library(fish_s2_pro STATIC src/fish_s2_pro/fish_s2_pro_stream.cpp
   src/fish_s2_pro/fish_s2_pro_model.cpp)
-target_link_libraries(fish_s2_pro PUBLIC qwen3_asr)
+target_link_libraries(fish_s2_pro PUBLIC qwen3_asr fish_dac)
 target_compile_options(fish_s2_pro PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(fish_s2_pro_server src/fish_s2_pro/fish_s2_pro_server.cpp)
 target_link_libraries(fish_s2_pro_server PRIVATE fish_s2_pro speech_service)

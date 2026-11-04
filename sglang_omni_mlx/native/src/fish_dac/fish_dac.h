@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// Drama 3's codec (Fish S1 DAC): 44.1 kHz audio to ten codebooks of codes per
-// 2048-sample frame, and codes back to audio, streamed frame by frame.
+// Fish Audio's DAC codec, which Drama 3 and S2-Pro share: 44.1 kHz audio to ten
+// codebooks of codes per 2048-sample frame, and codes back to audio, whole or
+// streamed frame by frame.
 #pragma once
 
 #include <filesystem>
@@ -14,10 +15,10 @@
 #include "common/layers.h"
 #include "mlx/mlx.h"
 
-namespace fishaudio_drama3 {
+namespace fish_dac {
 
-inline constexpr int kCodecSampleRate = 44100;
-inline constexpr int kCodecFrameSamples = 2048;
+inline constexpr int kSampleRate = 44100;
+inline constexpr int kFrameSamples = 2048;
 
 // A convolution's kernel with its weight norm folded, in MLX layout.
 struct ConvolutionWeights {
@@ -29,8 +30,10 @@ class AudioCodec {
 public:
   explicit AudioCodec(const std::filesystem::path &model_directory);
 
-  // Codes [codebooks, frames] int32 of mono samples at kCodecSampleRate.
+  // Codes [codebooks, frames] int32 of mono samples at kSampleRate.
   mlx::core::array Encode(const std::vector<float> &samples) const;
+  // Float32 samples [frames * kFrameSamples] of codes [codebooks, frames].
+  mlx::core::array Decode(const mlx::core::array &codes) const;
 
 private:
   friend class CodecStream;
@@ -86,12 +89,17 @@ private:
       const mlx::core::array &freqs_cis, const mlx::core::array &mask,
       std::optional<std::pair<mlx::core::array, mlx::core::array>> &cache)
       const;
+  // The transformer under prefix over a whole sequence, NCL in and out.
+  mlx::core::array Transformer(const mlx::core::array &x,
+                               const std::string &prefix, int window) const;
   // A quantizer's codes [batch, time] of latents [batch, dim, time], and its
   // quantized output [batch, input_dim, time].
   std::pair<mlx::core::array, mlx::core::array>
   Quantize(const mlx::core::array &latents, const std::string &prefix) const;
   mlx::core::array DecodeCode(const mlx::core::array &codes,
                               const std::string &prefix) const;
+  // The summed quantizer outputs [1, dim, frames] of codes [codebooks, frames].
+  mlx::core::array QuantizedFeatures(const mlx::core::array &codes) const;
 
   omni_common::Checkpoint checkpoint_;
   // Each convolution's weights by prefix, sharing checkpoint_'s arrays.
@@ -103,7 +111,7 @@ private:
 class CodecStream {
 public:
   explicit CodecStream(const AudioCodec &codec) : codec_(codec) {}
-  // Audio [frames * kCodecFrameSamples] of codes [codebooks, frames], lazy.
+  // Audio [frames * kFrameSamples] of codes [codebooks, frames], lazy.
   mlx::core::array Push(const mlx::core::array &codes);
 
 private:
@@ -127,4 +135,4 @@ private:
   int transformer_position_ = 0;
 };
 
-} // namespace fishaudio_drama3
+} // namespace fish_dac

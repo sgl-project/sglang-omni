@@ -53,9 +53,9 @@ constexpr int kMaxReferenceSeconds = 30;
 constexpr size_t kMaxReferenceCharacters = 1024;
 // The frames of kMaxReferenceSeconds of audio.
 constexpr size_t kMaxReferenceFrames =
-    (kMaxReferenceSeconds * fishaudio_drama3::kCodecSampleRate +
-     fishaudio_drama3::kCodecFrameSamples - 1) /
-    fishaudio_drama3::kCodecFrameSamples;
+    (kMaxReferenceSeconds * fish_dac::kSampleRate + fish_dac::kFrameSamples -
+     1) /
+    fish_dac::kFrameSamples;
 // Room for kMaxReferenceSeconds of float32 WAV as base64.
 constexpr size_t kMaxRequestBodyBytes = 16 * 1024 * 1024;
 constexpr int kMaxFrames = 4096;
@@ -102,7 +102,7 @@ std::vector<float> DecodeReferenceAudio(const std::string &encoded,
     samples = omni_common::DecodeWav(
         std::string_view(reinterpret_cast<const char *>(bytes->data()),
                          bytes->size()),
-        fishaudio_drama3::kCodecSampleRate);
+        fish_dac::kSampleRate);
   } catch (const std::invalid_argument &error) {
     throw std::invalid_argument(location + ": " + error.what());
   }
@@ -111,9 +111,8 @@ std::vector<float> DecodeReferenceAudio(const std::string &encoded,
   } else if (!std::all_of(samples.begin(), samples.end(),
                           [](float sample) { return std::isfinite(sample); })) {
     throw std::invalid_argument(location + " audio must be finite");
-  } else if (samples.size() >
-             static_cast<size_t>(kMaxReferenceSeconds *
-                                 fishaudio_drama3::kCodecSampleRate)) {
+  } else if (samples.size() > static_cast<size_t>(kMaxReferenceSeconds *
+                                                  fish_dac::kSampleRate)) {
     throw std::invalid_argument(location + " audio must be at most " +
                                 std::to_string(kMaxReferenceSeconds) +
                                 " seconds");
@@ -147,7 +146,7 @@ public:
         model_(model_directory) {}
 
 private:
-  int SampleRate() const override { return fishaudio_drama3::kCodecSampleRate; }
+  int SampleRate() const override { return fish_dac::kSampleRate; }
 
   std::vector<fishaudio_drama3::ReferenceInput>
   ParseReferences(const Json &body) const {
@@ -224,11 +223,11 @@ private:
     size_t frame_count = 0;
     size_t character_count = 0;
     for (const fishaudio_drama3::ReferenceInput &reference : references) {
-      frame_count += reference.codes.has_value()
-                         ? reference.codes->front().size()
-                         : (reference.samples.size() +
-                            fishaudio_drama3::kCodecFrameSamples - 1) /
-                               fishaudio_drama3::kCodecFrameSamples;
+      frame_count +=
+          reference.codes.has_value()
+              ? reference.codes->front().size()
+              : (reference.samples.size() + fish_dac::kFrameSamples - 1) /
+                    fish_dac::kFrameSamples;
       character_count += omni_common::CodePointCount(reference.text);
     }
     // Note (Yitong Li): each reference's audio is padded to whole frames, so

@@ -14,12 +14,15 @@
 
 #include "common/layers.h"
 #include "common/tokenizer.h"
-#include "fish_s2_pro/fish_s2_pro_codec.h"
+#include "fish_dac/fish_dac.h"
 #include "mlx/mlx.h"
 #include "qwen3_asr/qwen3_asr_transcriber.h"
 #include "qwen3_asr/qwen3_decoder.h"
 
 namespace fish_s2_pro {
+
+// Codes per residual codebook; the semantic codebook has the model's 4096.
+inline constexpr int kResidualCodebookSize = 1024;
 
 // The CUDA server's sampling of the semantic code; seed is the request's
 // seed already masked to 31 bits.
@@ -51,7 +54,7 @@ class FishS2ProModel {
 public:
   explicit FishS2ProModel(const std::filesystem::path &model_directory);
 
-  const AudioCodec &codec() const { return codec_; }
+  const fish_dac::AudioCodec &codec() const { return codec_; }
   int codebook_count() const { return codebook_count_; }
   // Codes per codebook the prompt's audio positions take.
   int codebook_size() const { return codebook_size_; }
@@ -114,7 +117,7 @@ private:
                           const SamplingOptions &sampling) const;
 
   omni_common::Checkpoint checkpoint_;
-  AudioCodec codec_;
+  fish_dac::AudioCodec codec_;
   omni_common::Tokenizer tokenizer_;
   TransformerConfig slow_;
   TransformerConfig fast_;
