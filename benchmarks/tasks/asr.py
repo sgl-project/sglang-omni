@@ -56,6 +56,9 @@ FUN_ASR_MODEL_PATH = "FunAudioLLM/Fun-ASR-Nano-2512-hf"
 DEFAULT_ASR_TRANSCRIBE_CONCURRENCY = 32
 # note (aaron): warmup requests sent before the timed window, per unit of concurrency.
 ASR_WARMUP_MULTIPLIER = 2
+# note (wilsonzheng0327): languages written without spaces between words are scored per character.
+CHARACTER_ERROR_LANGUAGES = frozenset({"zh", "ja", "yue"})
+ASR_LANGUAGES = ("en", *sorted(CHARACTER_ERROR_LANGUAGES))
 
 
 @functools.lru_cache(maxsize=1)
@@ -74,12 +77,12 @@ def _get_en_normalizer():
 
 
 def normalize_text(text: str, lang: str) -> str:
-    if lang == "zh":
+    if lang in CHARACTER_ERROR_LANGUAGES:
         try:
             from zhon.hanzi import punctuation as zh_punct
         except ImportError as exc:
             raise RuntimeError(
-                "Chinese WER requires zhon (zhon.hanzi.punctuation). "
+                "Character error rate requires zhon (zhon.hanzi.punctuation). "
                 "Install pinned deps with uv pip install -e ."
             ) from exc
 
@@ -262,7 +265,7 @@ def load_asr_model(lang: str, device: str, generation_mode: str | None = None):
     """
     mode_suffix = f" for {generation_mode} generation" if generation_mode else ""
     del device
-    if lang not in {"en", "zh"}:
+    if lang not in ASR_LANGUAGES:
         raise ValueError(f"Unsupported language: {lang}")
     raise ValueError(
         "WER transcription requires a running SGLang Omni ASR server"

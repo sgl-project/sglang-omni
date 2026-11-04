@@ -53,6 +53,9 @@ class CodecDecodeGraphRunner:
             f"in {time.perf_counter() - started:.1f}s, reserved {reserved_mib:.0f} MiB"
         )
 
+    def required_context_frames(self, holdback_samples: int) -> int:
+        return self.decoder.required_context_frames(holdback_samples)
+
     def __call__(self, codes_TQ: torch.Tensor) -> torch.Tensor:
         window_frames = codes_TQ.shape[0]
         graph = self.graph_by_window_frames.get(window_frames)

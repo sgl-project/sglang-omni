@@ -31,9 +31,12 @@ class DecodeWindow:
 
 
 class StreamingCodec:
-    def __init__(self, decoder, device) -> None:
+    def __init__(self, decoder, device, *, chunk_frames: tuple[int, ...]) -> None:
         self.decoder = decoder
         self.device = device
+        self.chunk_frames: tuple[int, ...] = chunk_frames
+        self.chunk_index: int = 0
+        self.decoded_frames: int = 0
         self.window_codes_TQ: torch.Tensor = torch.empty(
             0, decoder.num_quantizers, dtype=torch.long, device=device
         )
@@ -46,17 +49,28 @@ class StreamingCodec:
 
     @torch.inference_mode()
     def flush(self) -> torch.Tensor:
-        if not self.pushed_frames:
+        if self.emitted_samples == self.pushed_frames * self.decoder.samples_per_frame:
             return torch.zeros(0)
         else:
             pass
         return self.decode([self.next_window(final=True)])
 
     def plan(self, codes_TQ: torch.Tensor) -> list[DecodeWindow]:
-        window_codes_TQ = torch.cat((self.window_codes_TQ, codes_TQ.to(self.device)))
-        self.window_codes_TQ = window_codes_TQ[-DECODE_WINDOW_FRAMES:]
-        self.pushed_frames += codes_TQ.shape[0]
-        return [self.next_window(final=False)]
+        windows: list[DecodeWindow] = []
+        for codes_Q in codes_TQ.to(self.device):
+            self.window_codes_TQ = torch.cat((self.window_codes_TQ, codes_Q[None]))[
+                -DECODE_WINDOW_FRAMES:
+            ]
+            self.pushed_frames += 1
+            chunk_frames = self.chunk_frames[
+                min(self.chunk_index, len(self.chunk_frames) - 1)
+            ]
+            if self.pushed_frames - self.decoded_frames >= chunk_frames:
+                windows.append(self.next_window(final=False))
+                self.chunk_index += 1
+            else:
+                pass
+        return windows
 
     def next_window(self, *, final: bool) -> DecodeWindow:
         samples_per_frame = self.decoder.samples_per_frame
@@ -67,10 +81,15 @@ class StreamingCodec:
         window = DecodeWindow(
             self.window_codes_TQ, self.emitted_samples - first, available - first
         )
+        self.decoded_frames = self.pushed_frames
         self.emitted_samples = available
         return window
 
     def decode(self, windows: list[DecodeWindow]) -> torch.Tensor:
+        if not windows:
+            return torch.zeros(0)
+        else:
+            pass
         return (
             torch.cat([window.fresh(self.decoder(window.codes)) for window in windows])
             .float()
@@ -79,8 +98,8 @@ class StreamingCodec:
 
 
 class StreamState:
-    def __init__(self, decoder, device) -> None:
-        self.codec = StreamingCodec(decoder, device)
+    def __init__(self, decoder, device, chunk_frames: tuple[int, ...]) -> None:
+        self.codec = StreamingCodec(decoder, device, chunk_frames=chunk_frames)
         self.audio_parts: list[torch.Tensor] = []
 
 
@@ -100,11 +119,20 @@ class NemotronCode2WavScheduler(StreamingSimpleScheduler):
             ]
             | None
         ),
+        chunk_frames: tuple[int, ...],
         max_batch_size: int,
     ) -> None:
+        if (
+            max(chunk_frames) + decoder.required_context_frames(TAIL_HOLDBACK_SAMPLES)
+            > DECODE_WINDOW_FRAMES
+        ):
+            raise ValueError("Chunk plus required context exceeds the decoder window")
+        else:
+            pass
         super().__init__(compute_fn, max_batch_size=max_batch_size)
         self.decoder = decoder
         self.device = device
+        self.chunk_frames: tuple[int, ...] = chunk_frames
         self.states: dict[str, StreamState] = {}
 
     @torch.inference_mode()
@@ -121,7 +149,7 @@ class NemotronCode2WavScheduler(StreamingSimpleScheduler):
         self.decode_windows([DecodeWindow(codes_TQ, 0, 0)] * self.max_batch_size)
 
     def new_state(self) -> StreamState:
-        return StreamState(self.decoder, self.device)
+        return StreamState(self.decoder, self.device, self.chunk_frames)
 
     def is_streaming_payload(self, payload: StagePayload) -> bool:
         return payload.request_id in self.states
@@ -240,7 +268,7 @@ class NemotronCode2WavScheduler(StreamingSimpleScheduler):
             self.cleanup_aborted_request(request_id)
 
     @torch.inference_mode()
-    def on_stream_done(self, request_id: str) -> list[OutgoingMessage]:
+    def on_stream_done_before_payload(self, request_id: str) -> list[OutgoingMessage]:
         state = self.states.get(request_id)
         if state is None:
             return []
@@ -248,12 +276,24 @@ class NemotronCode2WavScheduler(StreamingSimpleScheduler):
             pass
         messages: list[OutgoingMessage] = []
         if state.codec.pushed_frames:
+            # note (yaourt137): flush the tail on EOS rather than wait for the terminal
+            # payload; finalization calls this hook again and the flush returns empty.
             tail = state.codec.flush()
             if tail.numel():
                 state.audio_parts.append(tail)
                 messages.append(self.audio_message(request_id, tail))
             else:
                 pass
+        else:
+            pass
+        return messages
+
+    @torch.inference_mode()
+    def on_stream_done(self, request_id: str) -> list[OutgoingMessage]:
+        messages = self.on_stream_done_before_payload(request_id)
+        state = self.states.get(request_id)
+        if state is None:
+            return messages
         else:
             pass
         waveform = torch.cat(state.audio_parts) if state.audio_parts else torch.zeros(0)
