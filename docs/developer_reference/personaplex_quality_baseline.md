@@ -35,7 +35,7 @@ An input ending between scoring samples retains the last partial sample through 
 
 ## Quality scores
 
-Scoring used PyTorch/torchaudio 2.11.0+cu130, NeMo 3.0.0 and Silero VAD 6.2.1. All 48 v1.5 audio files and 15 v1.0 output files were transcribed successfully. All 24 v1.5 variants produced timing results, and all 12 pairs received valid Qwen behavior labels. The [machine-readable results](personaplex_quality_baseline.json) retain the metrics, denominators, confidence intervals and artifact hashes.
+Scoring used PyTorch/torchaudio 2.11.0+cu130, NeMo 3.0.0 and Silero VAD 6.2.1. All 48 v1.5 audio files and 15 v1.0 output files were transcribed successfully. All 24 v1.5 variants produced timing results, and all 12 pairs received valid Qwen behavior labels. The machine-readable results (`personaplex_quality_baseline.json`) retain the metrics, denominators, confidence intervals and artifact hashes.
 
 ### FDB v1.0
 
@@ -95,6 +95,18 @@ A component experiment on the same padded waveform compares Mimi whole-waveform 
 
 The [PersonaPlex cookbook](../cookbook/personaplex.md#quality-baseline) provides the recording, export and greedy comparison commands. The comparison command writes the original offline request and response, both audio outputs, PCM hashes and the first differing sample to its output directory. It exits with status 1 for the session/offline result above.
 
+### Saved report files
+
+The four complete report JSONs and three reconstruction input bundles are packaged as `personaplex-p0-4-reports-20261104-v1.zip` for attachment to [PR #3469](https://github.com/sgl-project/sglang-omni/pull/3469). The ZIP has SHA-256 `6084cec44de9d69b03113de2ad417c12afb6eb95d41d61ff8c960b1a6b1b2ec5`. [Report checksums](personaplex_reports.sha256) identify the individual JSON files. Extract the attachment from the repository root:
+
+```bash
+mkdir -p results/p0-4-reports
+unzip personaplex-p0-4-reports-20261104-v1.zip -d results/p0-4-reports
+(cd results/p0-4-reports && shasum -a 256 -c ../../docs/developer_reference/personaplex_reports.sha256)
+```
+
+The attachment's `README.md` contains reconstruction commands for its `inputs/` bundles. The commands below use the original local artifact directories.
+
 ### Rebuilding the retained report
 
 The report generator reads the saved scoring and comparison results without starting a model or contacting a service. Experiment conditions are recorded in `benchmarks/duplex/personaplex-baseline-conditions.json`; the generator requires the hardware, serving, generation, selection and evaluation identities. The original run used operator-recorded hardware and launch settings, with source manifests and evaluator receipts retained alongside the measurements.
@@ -103,12 +115,12 @@ The report generator reads the saved scoring and comparison results without star
 python -m benchmarks.eval.benchmark_personaplex_report \
   --artifacts results/p0-4 \
   --conditions benchmarks/duplex/personaplex-baseline-conditions.json \
-  --output docs/developer_reference/personaplex_quality_baseline.json \
+  --output results/p0-4-reports/personaplex_quality_baseline.json \
   --bundle results/p0-4-followup/report-inputs.tar.gz
 python -m benchmarks.eval.benchmark_personaplex_report \
   --artifacts results/p0-4 \
   --conditions benchmarks/duplex/personaplex-baseline-conditions.json \
-  --output docs/developer_reference/personaplex_quality_baseline.json --check
+  --output results/p0-4-reports/personaplex_quality_baseline.json --check
 ```
 
 The portable input bundle contains the exact source JSON files and `conditions.json`. When the artifact directory contains `diagnostics.json`, the report and bundle also include those control experiments. Extract the bundle into an empty directory, then pass that directory as `--artifacts` and its `conditions.json` as `--conditions`. The bundle and full recording archives are retained locally with this experiment.
@@ -142,7 +154,7 @@ The length difference follows the existing request contracts: session executes o
 
 ## Full-reply consistency
 
-On 2026-11-04, a third H100 experiment achieved complete PCM byte equality and exact text equality with offline `session_reference` enabled and SGLang deterministic inference enabled on both routes. [The consistency JSON](personaplex_consistency.json) records the runtime, source hashes, controls and individual comparisons. The serving files match local implementation commit `8a7df9f46`; the launch receipts retain the base revision plus the exact candidate patch.
+On 2026-11-04, a third H100 experiment achieved complete PCM byte equality and exact text equality with offline `session_reference` enabled and SGLang deterministic inference enabled on both routes. The consistency JSON (`personaplex_consistency.json`) records the runtime, source hashes, controls and individual comparisons. The serving files match local implementation commit `8a7df9f46`; the launch receipts retain the base revision plus the exact candidate patch.
 
 ### Attention controls
 
@@ -174,7 +186,7 @@ Validation passed 90 configuration, stage, request-builder and LM-session tests,
 
 ## Follow-up quality run
 
-The 2026-11-04 run uses serving revision `377a86fb97eb9d1a57eb982dd0bee3c75022ab46`, which changes session PCM quantization to truncation. All 24 v1.5 calls and 15 v1.0 calls pass protocol replay and reference export. All 63 ASR files, 24 v1.5 timing evaluations, 12 paired behavior labels and five v1.0 subset evaluations complete successfully. The [follow-up JSON](personaplex_quality_followup.json) records the scores, conditions, layer comparisons and source hashes separately from the original baseline.
+The 2026-11-04 run uses serving revision `377a86fb97eb9d1a57eb982dd0bee3c75022ab46`, which changes session PCM quantization to truncation. All 24 v1.5 calls and 15 v1.0 calls pass protocol replay and reference export. All 63 ASR files, 24 v1.5 timing evaluations, 12 paired behavior labels and five v1.0 subset evaluations complete successfully. The follow-up JSON (`personaplex_quality_followup.json`) records the scores, conditions, layer comparisons and source hashes separately from the original baseline.
 
 Both runs use the same sample IDs, model checkpoints, prompts, sampling settings and reference evaluator revision. Quality generation uses default sampling without an explicit seed. The OpenAI client package is 3.45.0 in the follow-up and 3.42.1 in the original run; the retained scoring environments record the complete package versions. The score differences describe these two small runs. The greedy waveform comparison above isolates the PCM conversion change.
 
@@ -213,7 +225,7 @@ All per-subset Qwen behavior counts match the original table: six respond, five 
 
 ### Follow-up report reconstruction
 
-The complete local evidence archive is `results/p0-4-followup/followup-evidence.tar.gz`, SHA-256 `39faec4c6d7337e9b64bb7d1ef70850c7c268013c2a04e10a8da061c5890f6ad`. It contains recordings, scores, diagnostic tensors, temporary capture scripts and the serving source used in the experiment. The smaller `followup-report-inputs.tar.gz` contains the JSON inputs needed to reconstruct the checked-in follow-up report.
+The complete local evidence archive is `results/p0-4-followup/followup-evidence.tar.gz`, SHA-256 `39faec4c6d7337e9b64bb7d1ef70850c7c268013c2a04e10a8da061c5890f6ad`. It contains recordings, scores, diagnostic tensors, temporary capture scripts and the serving source used in the experiment. The smaller `followup-report-inputs.tar.gz` contains the JSON inputs needed to reconstruct the saved follow-up report.
 
 ```bash
 mkdir -p /tmp/personaplex-followup-report
@@ -222,7 +234,7 @@ tar -xzf results/p0-4-followup/followup-report-inputs.tar.gz \
 python -m benchmarks.eval.benchmark_personaplex_report \
   --artifacts /tmp/personaplex-followup-report \
   --conditions /tmp/personaplex-followup-report/conditions.json \
-  --output docs/developer_reference/personaplex_quality_followup.json --check
+  --output results/p0-4-reports/personaplex_quality_followup.json --check
 ```
 
 The fixed greedy recording's original manifest retains its pre-fix source label. The follow-up conditions record the actual serving revision, matching source-file hashes and the saved offline comparison source. The new quality recordings carry the fixed serving revision directly. The parity CLI also now passes explicit identity fields to `server_identity`; the earlier call failed before sending the offline request.
