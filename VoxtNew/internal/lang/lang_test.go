@@ -1,7 +1,10 @@
 package lang
 
 import (
+	"os"
+	"regexp"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -172,4 +175,47 @@ func TestModels(t *testing.T) {
 			t.Errorf("aao should be unsupported: %+v", o)
 		}
 	}
+}
+
+// The trailing-whitespace hook once stripped the trailing tab of every
+// languages.tsv row (the whisper column is empty for most languages),
+// and the table then panicked on the 10-column lines. The hook's exclude
+// must keep covering the file. A diff that drops the exclusion turns
+// this red.
+func TestLanguagesTSVExcludedFromTrailingWhitespace(t *testing.T) {
+	config, err := os.ReadFile("../../../.pre-commit-config.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	exclude := ""
+	inHook := false
+	for _, line := range strings.Split(string(config), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, "- id: trailing-whitespace") {
+			inHook = true
+			continue
+		}
+		if inHook && strings.HasPrefix(trimmed, "- id:") {
+			break
+		}
+		if inHook && strings.HasPrefix(trimmed, "exclude:") {
+			exclude = strings.TrimSpace(strings.TrimPrefix(trimmed, "exclude:"))
+			break
+		}
+	}
+	if exclude == "" {
+		t.Fatal("the trailing-whitespace hook has no exclude: it would strip the trailing tabs of languages.tsv")
+	}
+	// The full pattern uses Python lookaheads that Go's regexp cannot
+	// compile; an alternative that compiles and matches is enough.
+	for _, alternative := range strings.Split(strings.Trim(exclude, "()"), "|") {
+		pattern, err := regexp.Compile(alternative)
+		if err != nil {
+			continue
+		}
+		if pattern.MatchString("VoxtNew/internal/lang/languages.tsv") {
+			return
+		}
+	}
+	t.Fatalf("trailing-whitespace exclude does not match VoxtNew/internal/lang/languages.tsv: %s", exclude)
 }

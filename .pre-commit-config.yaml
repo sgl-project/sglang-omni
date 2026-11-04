@@ -17,7 +17,7 @@ repos:
       # The Voxt/ import stays byte-identical to upstream; Voxt files added
       # here (backend, Omni bridge, dev build settings) are checked normally.
       - id: trailing-whitespace
-        exclude: (^Voxt/(?!backend/|Config/OmniDev\.xcconfig$|Voxt/VoxtOmniDev\.entitlements$|Voxt/Transcription/Omni)|^VoxtNew/third_party/)
+        exclude: (^Voxt/(?!backend/|Config/OmniDev\.xcconfig$|Voxt/VoxtOmniDev\.entitlements$|Voxt/Transcription/Omni)|^VoxtNew/third_party/|^VoxtNew/internal/lang/.*\.tsv$)
       - id: end-of-file-fixer
         exclude: (^Voxt/(?!backend/|Config/OmniDev\.xcconfig$|Voxt/VoxtOmniDev\.entitlements$|Voxt/Transcription/Omni)|^VoxtNew/third_party/)
       - id: check-yaml

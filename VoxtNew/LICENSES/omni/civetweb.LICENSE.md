@@ -66,7 +66,7 @@ http://www.lua.org/license.html
 > THE SOFTWARE.
 
 
-Additional components Copyright (C) Lua.org, PUC-Rio, with MIT license: 
+Additional components Copyright (C) Lua.org, PUC-Rio, with MIT license:
 http://www.inf.puc-rio.br/~roberto/struct/
 
 
@@ -249,4 +249,3 @@ https://www.zlib.net/zlib_license.html
 >
 > Jean-loup Gailly        Mark Adler
 > jloup@gzip.org          madler@alumni.caltech.edu
-
