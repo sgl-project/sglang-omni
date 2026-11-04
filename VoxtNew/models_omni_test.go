@@ -13,7 +13,9 @@ import (
 	"github.com/sgl-project/sglang-omni/VoxtNew/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/VoxtNew/internal/local"
 	"github.com/sgl-project/sglang-omni/VoxtNew/internal/models"
+	"github.com/sgl-project/sglang-omni/VoxtNew/internal/omni"
 	"github.com/sgl-project/sglang-omni/VoxtNew/internal/omni/omnitest"
+	"github.com/sgl-project/sglang-omni/VoxtNew/internal/resident"
 	"github.com/sgl-project/sglang-omni/VoxtNew/internal/session"
 	"github.com/sgl-project/sglang-omni/VoxtNew/internal/settings"
 )
@@ -42,22 +44,28 @@ func fakeOmni(t *testing.T, o omnitest.Opts) string {
 // quitting stops the servers.
 func TestSessionOmni(t *testing.T) {
 	log := fakeOmni(t, omnitest.Opts{Text: "来自 Omni 的文本"})
-	ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(2500, "transcribe/0", proto.PhaseTrigger))
+	unloaded := unloadedModels(t)
+	ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger))
 	a := newSessionApp(t, ev, func(s *settings.Settings) {
 		s.Features.Transcribe.Enhance = false
 		s.General.MainLanguage = "zh"
 	}, realLocal{installed: []string{models.ASRFast, models.VADSilero}})
+	// The live text comes while recording: stop once the first partial
+	// showed and the recording is longer than the shortest one kept. The
+	// fake helper sends a level before each 100 ms frame, so five levels
+	// are at least 400 ms recorded, whether or not the preview goes on
+	// (it may stop on a busy Mac: no later partial comes, and the shown
+	// one may go).
 	partial := false
-	a.pump("the end", func() bool {
+	a.pump("a live partial", func() bool {
 		partial = partial || a.sess.State == session.Recording && strings.HasPrefix(a.sess.Partial, "partial ")
-		return a.sess.State.Ended()
+		return partial && a.sess.State == session.Recording && len(a.sess.Levels) >= 5
 	})
+	a.stopSession()
+	a.pump("the end", func() bool { return a.sess.State.Ended() })
 	end := a.sess
 	if end.State != session.Done || end.Raw != "来自 Omni 的文本" || end.ASR.ID != models.ASRFast {
 		t.Fatalf("end %s %+v %q", end.State, end.Problem, end.Raw)
-	}
-	if !partial {
-		t.Error("no live partial")
 	}
 	rs := omnitest.Records(log)
 	finals := omnitest.Of(rs, "final")
@@ -69,13 +77,49 @@ func TestSessionOmni(t *testing.T) {
 	if _, err := a.local.(*local.Library).Delete(context.Background(), models.ASRFast, fammodels.ThisApp); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, "the unload", func() bool { return len(omnitest.Of(omnitest.Records(log), "shutdown")) == 1 })
+	waitUnloaded(t, unloaded, models.ASRFast)
+	if n := len(omnitest.Of(omnitest.Records(log), "shutdown")); n != 1 {
+		t.Errorf("%d servers shut down after the delete", n)
+	}
 	a.quit()
 	if n := len(omnitest.Of(omnitest.Records(log), "shutdown")); n != 2 {
 		t.Errorf("%d servers shut down", n)
 	}
 	if _, err := a.openOmniASR(context.Background(), models.ASRFast, t.TempDir()); !errors.Is(err, local.ErrNoRuntime) {
 		t.Errorf("an open after quit: %v", err)
+	}
+}
+
+// unloadedModels reports the ids of the omni runtime's models as their
+// processes exit (resident.Unloaded), for the runtimes made from now on.
+func unloadedModels(t *testing.T) <-chan string {
+	ch := make(chan string, 16)
+	newRT := omniNewRuntime
+	omniNewRuntime = func(c omni.Config) *omni.Runtime {
+		on := c.OnModel
+		c.OnModel = func(ev resident.Event) {
+			if on != nil {
+				on(ev)
+			}
+			if ev.Kind == resident.Unloaded {
+				ch <- ev.ID
+			}
+		}
+		return newRT(c)
+	}
+	t.Cleanup(func() { omniNewRuntime = newRT })
+	return ch
+}
+
+// waitUnloaded waits until id's process exited.
+func waitUnloaded(t *testing.T, unloaded <-chan string, id string) {
+	t.Helper()
+	for got := ""; got != id; {
+		select {
+		case got = <-unloaded:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s did not stop", id)
+		}
 	}
 }
 
