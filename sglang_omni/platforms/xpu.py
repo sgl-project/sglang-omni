@@ -29,6 +29,9 @@ class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
         index = device.index if isinstance(device, torch.device) else int(device)
         torch.xpu.set_device(0 if index is None else index)
 
+    def enable_async_prefill(self) -> bool:
+        return True
+
     def enable_code2wav_graph(self):
         return True
 

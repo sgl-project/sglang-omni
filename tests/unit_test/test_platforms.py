@@ -279,6 +279,16 @@ def test_the_pin_receives_exactly_the_backends_the_hook_names(
     assert calls[0], "an empty set would leave dispatch on the uncapturable default"
 
 
+def test_launch_first_prefill_is_enabled_only_where_it_was_measured() -> None:
+    """CUDA and XPU both resolve a launched prefill's tokens through a device
+    event; the remaining platforms have never run that path, so they keep the
+    synchronous prefill."""
+    for platform_type in (CUDAOmniPlatform, XPUOmniPlatform):
+        assert platform_type().enable_async_prefill() is True, platform_type
+    for platform_type in (CPUOmniPlatform, ROCMOmniPlatform, NPUOmniPlatform):
+        assert platform_type().enable_async_prefill() is False, platform_type
+
+
 def test_cpu_cuda_rocm_xpu_and_musa_implement_the_shared_device_operations() -> None:
     for platform_type in (
         CPUOmniPlatform,
