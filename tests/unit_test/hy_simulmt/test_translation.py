@@ -3,10 +3,12 @@
 
 import io
 import wave
+from typing import Literal
 
 import numpy as np
 import pytest
 import torch
+from numpy.typing import NDArray
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from transformers import PreTrainedTokenizerFast, WhisperFeatureExtractor
@@ -17,6 +19,8 @@ from sglang_omni.models.hy_simulmt.request_builders import (
     AUDIO_START,
     AUDIO_TOKEN,
     PROMPT_PREFIX,
+    SIMULTANEOUS_INSTRUCTIONS,
+    TRANSLATION_INSTRUCTIONS,
     TURN_END,
     USER_TOKEN,
     HySimulMTRequestBuilder,
@@ -28,12 +32,16 @@ from sglang_omni.proto.request import OmniRequest, StagePayload
 
 
 def wav_bytes(sample_count: int, value: int = 100) -> bytes:
+    return waveform_to_wav(np.full(sample_count, value, dtype=np.int16))
+
+
+def waveform_to_wav(waveform_samples: NDArray[np.int16]) -> bytes:
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as waveform:
         waveform.setnchannels(1)
         waveform.setsampwidth(2)
         waveform.setframerate(16000)
-        waveform.writeframes(np.full(sample_count, value, dtype=np.int16).tobytes())
+        waveform.writeframes(waveform_samples.tobytes())
     return buffer.getvalue()
 
 
@@ -48,6 +56,8 @@ def builder() -> HySimulMTRequestBuilder:
         AUDIO_END,
         AUDIO_TOKEN,
         TURN_END,
+        TRANSLATION_INSTRUCTIONS["en"],
+        SIMULTANEOUS_INSTRUCTIONS["en"],
     ]
     tokenizer = PreTrainedTokenizerFast(
         tokenizer_object=Tokenizer(
@@ -58,6 +68,7 @@ def builder() -> HySimulMTRequestBuilder:
         unk_token="<unk>",
         additional_special_tokens=markers[1:],
     )
+    tokenizer.add_tokens(["first", "second", " has left. "])
     return HySimulMTRequestBuilder(
         tokenizer=tokenizer,
         feature_extractor=WhisperFeatureExtractor(feature_size=128),
@@ -143,21 +154,34 @@ def test_history_preserves_empty_turns_and_separate_audio_spans(
 
 
 @pytest.mark.parametrize(
-    "history",
+    "is_final,history",
     [
-        [{"end_sample": 51200, "text": ""}],
-        [{"end_sample": 25600, "text": ""}, {"end_sample": 16000, "text": ""}],
+        (False, [{"end_sample": 51200, "text": ""}]),
+        (False, [{"end_sample": 25600, "text": ""}, {"end_sample": 16000, "text": ""}]),
+        (True, [{"end_sample": 51201, "text": ""}]),
+        (True, [{"end_sample": 25600, "text": ""}, {"end_sample": 16000, "text": ""}]),
     ],
 )
-def test_history_cannot_rewind_or_consume_the_new_turn(
-    builder: HySimulMTRequestBuilder, history: list[dict[str, int | str]]
+def test_history_rejects_invalid_audio_boundaries(
+    builder: HySimulMTRequestBuilder,
+    is_final: bool,
+    history: list[dict[str, int | str]],
 ) -> None:
+    """Incremental and final prompts must reject rewound or out-of-range audio history."""
     with pytest.raises(ValueError, match="increasing boundaries"):
-        builder(payload(wav_bytes(51200), {"hy_simulmt_history": history}))
+        builder(
+            payload(
+                wav_bytes(51200),
+                {"hy_simulmt_history": history, "hy_simulmt_final": is_final},
+            )
+        )
 
 
-@pytest.mark.parametrize("parameters", [{"language": "fr"}, {"target_language": "de"}])
-def test_unsupported_translation_direction_is_rejected(
+@pytest.mark.parametrize(
+    "parameters",
+    [{"language": "fr"}, {"target_language": "de"}, {"hy_simulmt_final": 1}],
+)
+def test_invalid_translation_parameters_are_rejected(
     builder: HySimulMTRequestBuilder, parameters: dict[str, object]
 ) -> None:
     with pytest.raises(ValueError):
@@ -205,45 +229,267 @@ def test_native_stage_parameters_preserve_translation_direction_and_history(
     assert len(request.req.multimodal_inputs.mm_items) == 2
 
 
-def test_realtime_history_is_committed_after_success_and_final_flush_is_complete() -> (
-    None
-):
-    strategy = HySimulMTStreamingStrategy()
-    first = strategy.create_state(model_name="translation", language="en")
-    second = strategy.create_state(model_name="translation", language="zh")
-    request = strategy.build_decode_request(
-        audio=wav_bytes(25600),
-        state=first,
-        is_final=False,
-        request_id="first",
+@pytest.mark.parametrize(
+    "history,sample_count,context_start_sample,assistant_prefix",
+    [
+        ([], 25600, 0, ""),
+        ([{"end_sample": 25600, "text": ""}], 25600, 0, ""),
+        ([{"end_sample": 25600, "text": "first"}], 25600, 0, "first"),
+        (
+            [
+                {"end_sample": 12800, "text": ""},
+                {"end_sample": 25600, "text": "second"},
+                {"end_sample": 38400, "text": ""},
+            ],
+            51200,
+            12800,
+            "second",
+        ),
+        (
+            [
+                {"end_sample": 12800, "text": "first"},
+                {"end_sample": 25600, "text": ""},
+                {"end_sample": 38400, "text": "second"},
+                {"end_sample": 51200, "text": ""},
+            ],
+            64000,
+            25600,
+            "second",
+        ),
+        ([{"end_sample": 25600, "text": "   "}], 51200, 0, ""),
+    ],
+)
+def test_final_continues_the_last_submitted_text_over_its_audio(
+    builder: HySimulMTRequestBuilder,
+    history: list[dict[str, int | str]],
+    sample_count: int,
+    context_start_sample: int,
+    assistant_prefix: str,
+) -> None:
+    """EOF continues the last submitted text over that turn's audio and speech after it."""
+    waveform_samples = np.arange(sample_count, dtype=np.int16)
+    request = builder(
+        payload(
+            waveform_to_wav(waveform_samples),
+            {"hy_simulmt_history": history, "hy_simulmt_final": True},
+        )
     )
-    assert first.history == second.history == []
+    audio_items = request.req.multimodal_inputs.mm_items
+    assert len(audio_items) == 1
+    expected_waveform = (
+        waveform_samples[context_start_sample:].astype(np.float32) / 32768
+    )
+    extracted = builder.feature_extractor(
+        expected_waveform,
+        sampling_rate=16000,
+        padding="longest",
+        pad_to_multiple_of=160,
+        truncation=False,
+        return_attention_mask=True,
+        return_tensors="pt",
+    )
+    mel_frames = int(extracted.attention_mask.sum())
+    torch.testing.assert_close(
+        audio_items[0].feature, extracted.input_features[0, :, :mel_frames]
+    )
+    tokens = request.input_ids.tolist()
+    expected_suffix = builder.tokenizer.encode(
+        AUDIO_END + ASSISTANT_PREFIX + assistant_prefix, add_special_tokens=False
+    )
+    assert tokens[-len(expected_suffix) :] == expected_suffix
+    assert builder.tokenizer.convert_tokens_to_ids(TURN_END) not in tokens
+    assert (
+        builder.tokenizer.convert_tokens_to_ids(TRANSLATION_INSTRUCTIONS["en"])
+        in tokens
+    )
+    assert (
+        builder.tokenizer.convert_tokens_to_ids(SIMULTANEOUS_INSTRUCTIONS["en"])
+        not in tokens
+    )
+    first_token_id = builder.tokenizer.convert_tokens_to_ids("first")
+    if assistant_prefix == "first":
+        assert tokens.count(first_token_id) == 1
+    else:
+        assert first_token_id not in tokens
+
+
+@pytest.mark.parametrize(
+    "parameters,finish_reason,expected_text",
+    [
+        (
+            {
+                "hy_simulmt_history": [{"end_sample": 25600, "text": "first"}],
+                "hy_simulmt_final": True,
+            },
+            "stop",
+            " has left.",
+        ),
+        (
+            {
+                "hy_simulmt_history": [{"end_sample": 25600, "text": "first"}],
+                "hy_simulmt_final": True,
+            },
+            "length",
+            " has left.",
+        ),
+        (
+            {
+                "hy_simulmt_history": [{"end_sample": 25600, "text": "first"}],
+                "hy_simulmt_final": False,
+            },
+            "length",
+            "has left. ",
+        ),
+        (
+            {
+                "hy_simulmt_history": [{"end_sample": 25600, "text": "first"}],
+                "hy_simulmt_final": False,
+            },
+            "stop",
+            "has left.",
+        ),
+        ({"hy_simulmt_final": True}, "stop", "has left."),
+        ({}, "length", "has left."),
+    ],
+)
+def test_result_keeps_only_the_whitespace_needed_to_resume_text(
+    builder: HySimulMTRequestBuilder,
+    parameters: dict[str, object],
+    finish_reason: Literal["stop", "length"],
+    expected_text: str,
+) -> None:
+    """A suffix keeps its leading space, and a truncated partial keeps its trailing space."""
+    request = builder(payload(wav_bytes(51200), parameters))
+    request.output_ids = builder.tokenizer.encode(
+        " has left. ", add_special_tokens=False
+    )
+    request.finish_reason = finish_reason
+    result = HySimulMTResultAdapter(tokenizer=builder.tokenizer)(request)
+    assert result.data["text"] == expected_text
+
+
+@pytest.mark.parametrize(
+    "language,first_text,tail_text,has_wait,expected_text",
+    [
+        ("en", "The train", " has left.", True, "The train has left."),
+        ("en", "Hello", ".", False, "Hello."),
+        ("en", "trans", "lation", False, "translation"),
+        ("zh", "你好", "，世界。", True, "你好，世界。"),
+        ("en", "The train", "", True, "The train"),
+    ],
+)
+def test_final_decodes_unchanged_audio_and_preserves_committed_text(
+    language: str,
+    first_text: str,
+    tail_text: str,
+    has_wait: bool,
+    expected_text: str,
+) -> None:
+    """EOF must decode unchanged audio and retain submitted text when appending or receiving no suffix."""
+    strategy = HySimulMTStreamingStrategy()
+    source_language = "zh" if language == "en" else "en"
+    state = strategy.create_state(model_name="translation", language=source_language)
+    other_state = strategy.create_state(model_name="translation", language="en")
+    request = strategy.build_decode_request(
+        audio=wav_bytes(25600), state=state, is_final=False, request_id="first"
+    )
     assert request.extra_params["hy_simulmt_history"] == []
     assert (
-        strategy.update_hypothesis(generated_text="你好", language="zh", state=first)
-        == "你好"
+        strategy.update_hypothesis(
+            generated_text=first_text, language=language, state=state
+        )
+        == first_text
     )
-    next_request = strategy.build_decode_request(
-        audio=wav_bytes(51200),
-        state=first,
-        is_final=False,
-        request_id="next",
+    assert other_state.history == []
+    history = [{"end_sample": 25600, "text": first_text}]
+    sample_count = 51200 if has_wait else 25600
+    if has_wait:
+        strategy.build_decode_request(
+            audio=wav_bytes(sample_count),
+            state=state,
+            is_final=False,
+            request_id="wait",
+        )
+        assert (
+            strategy.update_hypothesis(
+                generated_text="", language=language, state=state
+            )
+            == first_text
+        )
+        history.append({"end_sample": sample_count, "text": ""})
+    else:
+        pass
+    request = strategy.build_decode_request(
+        audio=wav_bytes(sample_count), state=state, is_final=True, request_id="final"
     )
-    assert next_request.extra_params["language"] == "en"
-    assert next_request.extra_params["hy_simulmt_history"] == [
-        {"end_sample": 25600, "text": "你好"}
-    ]
-    assert second.history == []
-    final_request = strategy.build_decode_request(
-        audio=wav_bytes(51200),
-        state=first,
-        is_final=True,
-        request_id="final",
-    )
-    assert "hy_simulmt_history" not in final_request.extra_params
+    assert request.extra_params["language"] == source_language
+    assert request.extra_params["hy_simulmt_history"] == history
+    assert request.extra_params["hy_simulmt_final"] is True
     assert (
         strategy.update_hypothesis(
-            generated_text="你好，世界。", language="zh", state=first
+            generated_text=tail_text, language=language, state=state
         )
-        == "你好，世界。"
+        == expected_text
+    )
+
+
+def test_truncated_partial_joins_english_with_one_space(
+    builder: HySimulMTRequestBuilder,
+) -> None:
+    """A truncated partial must not add a second space when the next turn is joined."""
+    request = builder(
+        payload(
+            wav_bytes(51200),
+            {
+                "hy_simulmt_history": [{"end_sample": 25600, "text": "Hello"}],
+                "hy_simulmt_final": False,
+            },
+        )
+    )
+    request.output_ids = builder.tokenizer.encode(
+        " has left. ", add_special_tokens=False
+    )
+    request.finish_reason = "length"
+    suffix = HySimulMTResultAdapter(tokenizer=builder.tokenizer)(request).data["text"]
+    strategy = HySimulMTStreamingStrategy()
+    state = strategy.create_state(model_name="translation", language="zh")
+    strategy.build_decode_request(
+        audio=wav_bytes(25600), state=state, is_final=False, request_id="first"
+    )
+    strategy.update_hypothesis(generated_text="Hello", language="en", state=state)
+    strategy.build_decode_request(
+        audio=wav_bytes(51200), state=state, is_final=False, request_id="next"
+    )
+    assert (
+        strategy.update_hypothesis(generated_text=suffix, language="en", state=state)
+        == "Hello has left. "
+    )
+    strategy.build_decode_request(
+        audio=wav_bytes(64000), state=state, is_final=False, request_id="tail"
+    )
+    assert (
+        strategy.update_hypothesis(
+            generated_text=" station", language="en", state=state
+        )
+        == "Hello has left. station"
+    )
+
+
+def test_blank_partial_does_not_prefix_the_final_suffix() -> None:
+    """A whitespace-only partial is a wait, so the final suffix stands alone."""
+    strategy = HySimulMTStreamingStrategy()
+    state = strategy.create_state(model_name="translation", language="zh")
+    strategy.build_decode_request(
+        audio=wav_bytes(25600), state=state, is_final=False, request_id="blank"
+    )
+    assert (
+        strategy.update_hypothesis(generated_text="   ", language="en", state=state)
+        == ""
+    )
+    strategy.build_decode_request(
+        audio=wav_bytes(51200), state=state, is_final=True, request_id="final"
+    )
+    assert (
+        strategy.update_hypothesis(generated_text="tail", language="en", state=state)
+        == "tail"
     )

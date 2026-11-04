@@ -53,7 +53,7 @@ With `--enable-realtime`, connect to `/v1/realtime?intent=transcription`. The sh
 3. Receive `transcription.segment` translation hypotheses, refreshed every 1.6 seconds by default.
 4. Send `input_audio_buffer.commit` to finish a segment or `transcription.done` to finish input.
 
-Each partial request retains earlier audio turns and their translations, including turns that emitted no text. Audio embeddings and prefix tokens use the existing multimodal and radix-cache paths. At a segment boundary, the final hypothesis translates the complete segment to cover speech deferred by earlier turns; it may revise partial translations. The shared runtime splits segments at 30 seconds, after which translation context starts fresh. This initial policy does not reproduce SimulInfer's VAD and recovery heuristics.
+Each partial request retains earlier audio turns and their translations, including turns that emitted no text. Audio embeddings and prefix tokens use the existing multimodal and radix-cache paths. At a segment boundary, final decoding continues the latest submitted translation over the audio of that turn and speech that arrived after it. Submitted text is preserved, and final decoding also runs when no new audio has arrived. Each decode, including the final decode, is subject to the configured output token limit. The shared runtime splits segments at 30 seconds, after which translation context starts fresh. This policy does not reproduce SimulInfer's VAD and recovery heuristics.
 
 Outputs are text. Speech synthesis requires a separate TTS stage. Interleave checkpoints and quantized checkpoints are outside this implementation.
 
@@ -63,7 +63,7 @@ Use identical 16 kHz waveforms, greedy decoding, and the checkpoint's audio-wind
 
 Validation used checkpoint revision `8461c998403d10a4c30bcb0e55bfb0c981b92774` and 13 requests derived from two speech clips: seven offline inputs covering short audio, an 8-second window boundary, and the 30-second limit, plus three successive streaming turns in each direction. Prompt tokens and BF16 mel features match exactly. Audio-embedding relative L2 error is at most 0.00414. Greedy output token sequences match on 11 of 13 requests; the 8-second and repeated 30-second inputs diverge at near-tied choices with an HF top-two logit gap of 0.125. At those positions, both implementations retain the same top-two token set. Across 15 aligned next-token distributions, maximum HF-to-Omni KL divergence is 0.0193. This establishes basic implementation agreement; it does not establish translation quality on a representative corpus.
 
-Decode CUDA graphs produce identical token sequences to eager Omni execution on all 13 requests. Concurrent Chinese and English realtime sessions produce partial translations and final text matching offline decoding of the same PCM16 audio. The 30-second automatic segment boundary also produces the same final translation.
+Decode CUDA graphs produce identical token sequences to eager Omni execution on all 13 requests. Realtime output preserves submitted translations and can differ from independent offline decoding of the same audio.
 
 ### Latency check
 

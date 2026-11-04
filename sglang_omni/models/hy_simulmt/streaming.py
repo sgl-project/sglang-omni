@@ -2,6 +2,7 @@
 """Retain audio turns and translations in the shared realtime ASR session."""
 
 import io
+import logging
 import wave
 from dataclasses import dataclass, field
 
@@ -9,6 +10,8 @@ from pydantic import BaseModel, Field
 
 from sglang_omni.client.types import GenerateRequest
 from sglang_omni.serve.speech_to_text import build_speech_to_text_generate_request
+
+logger = logging.getLogger(__name__)
 
 
 class TranslationTurn(BaseModel):
@@ -23,6 +26,13 @@ class HySimulMTStreamingState:
     history: list[TranslationTurn] = field(default_factory=list)
     pending_end_sample: int = 0
     pending_final: bool = False
+
+    @property
+    def committed_end_sample(self) -> int:
+        return next(
+            (turn.end_sample for turn in reversed(self.history) if turn.text.strip()),
+            0,
+        )
 
 
 class HySimulMTStreamingStrategy:
@@ -60,13 +70,13 @@ class HySimulMTStreamingStrategy:
             stream=False,
         )
         request.metadata["request_id"] = request_id
+        request.extra_params["hy_simulmt_history"] = [
+            turn.model_dump() for turn in state.history
+        ]
         if is_final:
-            # note (JingwenGu0829): The final hypothesis translates the complete segment, including speech deferred by an empty turn.
-            pass
+            request.extra_params["hy_simulmt_final"] = True
         else:
-            request.extra_params["hy_simulmt_history"] = [
-                turn.model_dump() for turn in state.history
-            ]
+            pass
         return request
 
     def update_hypothesis(
@@ -78,13 +88,44 @@ class HySimulMTStreamingStrategy:
     ) -> str:
         if not isinstance(state, HySimulMTStreamingState):
             raise TypeError("Hy-SimulMT requires its own streaming state")
-        elif state.pending_final:
-            return generated_text
         else:
-            state.history.append(
-                TranslationTurn(
-                    end_sample=state.pending_end_sample, text=generated_text
+            pass
+        if state.pending_final and not generated_text.strip():
+            if state.pending_end_sample > state.committed_end_sample:
+                logger.warning(
+                    f"Hy-SimulMT final decode left audio untranslated: "
+                    f"start_sample={state.committed_end_sample} "
+                    f"end_sample={state.pending_end_sample}"
                 )
-            )
-            separator = " " if language == "en" else ""
-            return separator.join(turn.text for turn in state.history if turn.text)
+            else:
+                pass
+        else:
+            if state.pending_final:
+                while state.history and not state.history[-1].text.strip():
+                    state.history.pop()
+            else:
+                pass
+            if state.pending_final and state.history:
+                state.history[-1].text += generated_text
+                state.history[-1].end_sample = state.pending_end_sample
+            else:
+                state.history.append(
+                    TranslationTurn(
+                        end_sample=state.pending_end_sample, text=generated_text
+                    )
+                )
+        parts = [turn.text for turn in state.history if turn.text.strip()]
+        if language == "en":
+            translation = ""
+            for part in parts:
+                if not translation:
+                    translation = part
+                elif translation[-1].isspace() and part[0].isspace():
+                    translation += part.lstrip()
+                elif translation[-1].isspace() or part[0].isspace():
+                    translation += part
+                else:
+                    translation += f" {part}"
+        else:
+            translation = "".join(parts)
+        return translation

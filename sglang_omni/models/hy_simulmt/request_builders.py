@@ -19,7 +19,10 @@ from transformers import PreTrainedTokenizerBase, WhisperFeatureExtractor
 from sglang_omni.models.hy_simulmt.streaming import TranslationTurn
 from sglang_omni.preprocessing.transcription import prepare_audio
 from sglang_omni.proto.request import StagePayload
-from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+from sglang_omni.scheduling.sglang_backend.request_data import (
+    FINISH_LENGTH_KIND,
+    SGLangARRequestData,
+)
 from sglang_omni.scheduling.token_text_streaming import (
     make_token_text_stream_output_builder,
 )
@@ -60,6 +63,8 @@ class HySimulMTRequestData(SGLangARRequestData):
     audio_duration_s: float = 0.0
     target_language: Literal["en", "zh"] = "en"
     engine_start_s: float = 0.0
+    is_text_continuation: bool = False
+    is_partial_turn: bool = False
 
 
 @dataclass(kw_only=True)
@@ -108,12 +113,20 @@ class HySimulMTRequestBuilder:
             max_duration_s=MAX_AUDIO_SECONDS,
         )
         history_value = parameters.get("hy_simulmt_history")
+        is_final = parameters.get("hy_simulmt_final", False)
+        if not isinstance(is_final, bool):
+            raise ValueError("hy_simulmt_final must be a boolean")
+        else:
+            pass
         if history_value is None:
             history: list[TranslationTurn] = []
-            instruction = TRANSLATION_INSTRUCTIONS[target_language]
         else:
             history = TypeAdapter(list[TranslationTurn]).validate_python(history_value)
-            instruction = SIMULTANEOUS_INSTRUCTIONS[target_language]
+        instruction = (
+            SIMULTANEOUS_INSTRUCTIONS[target_language]
+            if history_value is not None and not is_final
+            else TRANSLATION_INSTRUCTIONS[target_language]
+        )
         prompt = parameters.get("prompt")
         if prompt:
             if not isinstance(prompt, str):
@@ -125,7 +138,24 @@ class HySimulMTRequestBuilder:
         input_ids = self.tokenizer.encode(PROMPT_PREFIX, add_special_tokens=False)
         audio_items: list[MultimodalDataItem] = []
         start_sample = 0
-        turns = [*history, TranslationTurn(end_sample=len(prepared.waveform), text="")]
+        assistant_prefix = ""
+        if is_final:
+            previous_end_sample = 0
+            for turn in history:
+                if not previous_end_sample < turn.end_sample <= len(prepared.waveform):
+                    raise ValueError("Audio history must contain increasing boundaries")
+                elif turn.text.strip():
+                    start_sample = previous_end_sample
+                    assistant_prefix = turn.text
+                else:
+                    pass
+                previous_end_sample = turn.end_sample
+            turns = [TranslationTurn(end_sample=len(prepared.waveform), text="")]
+        else:
+            turns = [
+                *history,
+                TranslationTurn(end_sample=len(prepared.waveform), text=""),
+            ]
         for turn_index, turn in enumerate(turns):
             if not start_sample < turn.end_sample <= len(prepared.waveform):
                 raise ValueError(
@@ -166,7 +196,7 @@ class HySimulMTRequestBuilder:
                     AUDIO_END + ASSISTANT_PREFIX, add_special_tokens=False
                 )
             )
-            if turn_index < len(history):
+            if turn_index < len(turns) - 1:
                 input_ids.extend(
                     self.tokenizer.encode(
                         turn.text + TURN_END, add_special_tokens=False
@@ -176,6 +206,9 @@ class HySimulMTRequestBuilder:
                 pass
             audio_items.append(audio_item)
             start_sample = turn.end_sample
+        input_ids.extend(
+            self.tokenizer.encode(assistant_prefix, add_special_tokens=False)
+        )
         max_new_tokens = int(parameters.get("max_new_tokens") or self.max_new_tokens)
         if len(input_ids) + max_new_tokens > self.context_length:
             raise ValueError("Hy-SimulMT input and output exceed the context length")
@@ -215,6 +248,8 @@ class HySimulMTRequestBuilder:
             audio_duration_s=prepared.duration_s,
             target_language=target_language,
             engine_start_s=time.perf_counter(),
+            is_text_continuation=bool(assistant_prefix),
+            is_partial_turn=history_value is not None and not is_final,
         )
 
 
@@ -231,11 +266,19 @@ class HySimulMTResultAdapter:
         payload = request.stage_payload
         assert payload is not None
         elapsed_seconds = time.perf_counter() - request.engine_start_s
+        generated_text = self.decode(request.output_ids or [])
+        # Continuation text is concatenated. A truncated partial is joined with a separator and may be resumed, so only its trailing space stays.
+        if request.is_text_continuation:
+            generated_text = generated_text.rstrip()
+        elif request.is_partial_turn and request.finish_reason == FINISH_LENGTH_KIND:
+            generated_text = generated_text.lstrip()
+        else:
+            generated_text = generated_text.strip()
         return StagePayload(
             request_id=payload.request_id,
             request=payload.request,
             data={
-                "text": self.decode(request.output_ids or []).strip(),
+                "text": generated_text,
                 "token_ids": list(request.output_ids or []),
                 "output_token_logprobs": (
                     request.output_token_logprobs if request.return_logprob else None
