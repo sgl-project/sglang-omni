@@ -2,8 +2,12 @@
 """Ming transcript deltas preserve final text across token and request boundaries."""
 
 from array import array
+from collections.abc import AsyncIterator
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from fastapi.testclient import TestClient
 from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.sampling.sampling_params import SamplingParams
 from tokenizers import Tokenizer
@@ -12,14 +16,25 @@ from tokenizers.models import BPE
 from tokenizers.pre_tokenizers import ByteLevel
 from transformers import PreTrainedTokenizerFast
 
+from sglang_omni.client.client import Client
+from sglang_omni.client.types import GenerateChunk, GenerateRequest
 from sglang_omni.models.ming3_asr.preprocessing import extract_transcript
 from sglang_omni.models.ming3_asr.text_streaming import (
     Ming3ASRRequestData,
     Ming3ASRStreamOutputBuilder,
 )
+from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.types import RequestOutput
+from sglang_omni.serve.openai_api import create_app
+from sglang_omni.serve.protocol import (
+    TranscriptionTextDeltaEvent,
+    TranscriptionTextDoneEvent,
+)
+
+MODEL_NAME = "inclusionAI/Ming-3.0-asr-tiny"
+AUDIO_FIXTURE = Path(__file__).resolve().parents[2] / "data" / "query_to_cars.wav"
 
 
 @pytest.fixture
@@ -194,3 +209,101 @@ def test_invalid_stream_intervals_are_rejected(
 ) -> None:
     with pytest.raises(ValueError, match="finite and nonnegative"):
         Ming3ASRStreamOutputBuilder(tokenizer, interval_seconds=interval_seconds)
+
+
+def test_sse_detected_language_preserves_deltas_on_token_limit(
+    tokenizer: PreTrainedTokenizerFast,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Truncated auto-detected transcripts must stream without the language header."""
+    token_ids = tokenizer.encode("English\thello world", add_special_tokens=False)
+    token_limit = len(tokenizer.encode("English\thello wor", add_special_tokens=False))
+    builder = Ming3ASRStreamOutputBuilder(tokenizer, interval_seconds=0.05)
+    monkeypatch.setattr(
+        "sglang_omni.models.ming3_asr.text_streaming.time",
+        SimpleNamespace(perf_counter=lambda: 1.0),
+    )
+    backend = Client(
+        Coordinator(
+            completion_endpoint="inproc://ming3-sse-complete",
+            abort_endpoint="inproc://ming3-sse-abort",
+            entry_stage="preprocessing",
+            terminal_stages=["thinker"],
+        )
+    )
+
+    async def replay_tokens(
+        request: GenerateRequest, *, request_id: str
+    ) -> AsyncIterator[GenerateChunk]:
+        assert request.stream
+        assert request.extra_params.get("language") is None
+        assert request.sampling.max_new_tokens is not None
+        current = request_data(request_id=request_id)
+        assert current.req is not None
+        current.req.sampling_params.max_new_tokens = request.sampling.max_new_tokens
+        current.req.sampling_params.normalize(tokenizer)
+        for token_id in token_ids:
+            current.req.output_ids.append(token_id)
+            current.req.update_finish_state()
+            for message in builder(
+                request_id, current, RequestOutput(request_id, token_id)
+            ):
+                yield GenerateChunk(request_id=request_id, text=message.data["text"])
+            if current.req.finished():
+                break
+            else:
+                pass
+        current.output_ids = list(current.req.output_ids)
+        assert current.req.finished_reason is not None
+        current.finish_reason = current.req.finished_reason.to_json()["type"]
+        for message in builder.flush(request_id, current):
+            yield GenerateChunk(request_id=request_id, text=message.data["text"])
+        yield GenerateChunk(
+            request_id=request_id,
+            text=extract_transcript(
+                tokenizer.decode(current.output_ids, skip_special_tokens=True)
+            ),
+            finish_reason=current.finish_reason,
+        )
+
+    monkeypatch.setattr(backend, "generate", replay_tokens)
+    with TestClient(
+        create_app(
+            backend,
+            model_name=MODEL_NAME,
+            architectures=["MingV3ASRForConditionalGeneration"],
+        )
+    ) as client:
+        response = client.post(
+            "/v1/audio/transcriptions",
+            files={
+                "file": (AUDIO_FIXTURE.name, AUDIO_FIXTURE.read_bytes(), "audio/wav")
+            },
+            data={"stream": "true", "max_new_tokens": str(token_limit)},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("text/event-stream")
+    records = [
+        line.removeprefix("data: ")
+        for line in response.iter_lines()
+        if line.startswith("data: ")
+    ]
+
+    assert len(records) >= 3, records
+    assert records[-1] == "[DONE]"
+    done = TranscriptionTextDoneEvent.model_validate_json(records[-2])
+    assert done.type == "transcript.text.done"
+    assert done.finish_reason == "length"
+    deltas = [
+        TranscriptionTextDeltaEvent.model_validate_json(record)
+        for record in records[:-2]
+    ]
+    assert all(
+        event.type == "transcript.text.delta" and event.delta for event in deltas
+    )
+    assert [event.delta for event in deltas] == ["hello", " wor"]
+    assert "".join(event.delta for event in deltas) == done.text
+    assert done.text == "hello wor"
+    assert "\t" not in done.text
+    assert not done.text.startswith(("English", "Chinese"))
