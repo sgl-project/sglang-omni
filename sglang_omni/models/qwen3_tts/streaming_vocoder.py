@@ -177,6 +177,7 @@ class Qwen3TTSStreamState:
     suppress_bootstrap: bool = False
     # note (ratish): a non-streaming request's audio collects here instead of being emitted.
     whole_audio: list[torch.Tensor] | None = None
+    whole_tail_frames: int = 0
 
 
 def decode_event_snapshots(
@@ -2837,33 +2838,53 @@ class Qwen3TTSStreamingVocoderScheduler(
     def start_whole_request(
         self, request_id: str, payload: StagePayload, final_state: Qwen3TTSState
     ) -> None:
-        """Queue a finished request as one decode, rounded up to a width that rows of other lengths share.
+        """Queue a finished request: its first decode as a stream's, then its other frames on the window widths.
 
-        The decoder is causal, so the zero frames leave the leading samples alone; their samples are dropped at the end.
+        The decoder is causal, so zero frames after the last window leave the samples before them alone; theirs are dropped at the end.
         """
         codes = torch.as_tensor(final_state.audio_codes, dtype=torch.long)
         frames = int(codes.shape[0])
-        widths = self.initial_window_decode_graphs.fresh_frames
-        # note (ratish): the widths double, so a row decodes under twice its own frames.
-        rounded_frames = (
-            widths[bisect.bisect_left(widths, frames)]
-            if frames <= widths[-1]
-            else frames + (-frames % widths[-1])
-        )
-        codes = torch.nn.functional.pad(codes, (0, 0, 0, rounded_frames - frames))
         reference_frames = final_state.ref_code_len
+        tail_runner = self.initial_tail_decode_graphs
+        start_frame = 0
+        tail_frames = 0
+        if (
+            reference_frames
+            and tail_runner is not None
+            and tail_runner.enabled
+            and frames - reference_frames >= tail_runner.emit_frames
+        ):
+            first_chunk_frames = (
+                min(
+                    reference_frames,
+                    self.incremental_decoder.first_chunk_reference_frames(
+                        tail_runner.emit_frames
+                    ),
+                )
+                + tail_runner.emit_frames
+            )
+            if tail_runner.tail_frames <= first_chunk_frames:
+                tail_frames = first_chunk_frames
+                start_frame = reference_frames + tail_runner.emit_frames - tail_frames
+            else:
+                pass
+        else:
+            pass
+        widths = self.initial_window_decode_graphs.fresh_frames
+        # note (ratish): rows of any length share the widest window, so only a row's last window rounds up.
+        last_window_frames = (frames - start_frame - tail_frames) % widths[-1]
+        padding_frames = (
+            widths[bisect.bisect_left(widths, last_window_frames)] - last_window_frames
+            if last_window_frames
+            else 0
+        )
+        codes = torch.nn.functional.pad(codes, (0, 0, 0, padding_frames))
         state = Qwen3TTSStreamState(
             final_pending=True,
             pending_ref_frames=reference_frames,
             whole_audio=[],
-            # note (ratish): the emitted samples and kept state read no frame before this one.
-            codec_frame_position=max(
-                0,
-                reference_frames
-                - self.incremental_decoder.first_chunk_reference_frames(
-                    rounded_frames - reference_frames
-                ),
-            ),
+            whole_tail_frames=tail_frames,
+            codec_frame_position=start_frame,
         )
         with self.state_lock:
             # note (ratish): an abort clears state under this lock, so one it has missed is seen here.
@@ -2908,21 +2929,23 @@ class Qwen3TTSStreamingVocoderScheduler(
         else:
             pass
         if self.whole_request_rows:
-            self.run_whole_request_replay(self.plan_whole_request_replay())
+            self.run_whole_request_replay(*self.plan_whole_request_replay())
         else:
             pass
 
     def plan_whole_request_replay(
         self,
-    ) -> list[tuple[str, Qwen3TTSStreamState, IncrementalDecodePlan]]:
-        """Take the oldest row's next window for every row whose next window is that wide.
+    ) -> tuple[
+        list[tuple[str, Qwen3TTSStreamState, IncrementalDecodePlan]],
+        Qwen3TTSIncrementalCodecCudaGraphRunner | None,
+    ]:
+        """Take the oldest row's next decode for every row whose next decode replays the same graph.
 
         A row keeps its slot until its last window, so only the slots the arena holds for whole requests admit new rows.
         """
-        window_runner = self.initial_window_decode_graphs
-        widths = window_runner.fresh_frames
-        bucket = window_runner.largest_batch_bucket()
+        widths = self.initial_window_decode_graphs.fresh_frames
         group: list[tuple[str, Qwen3TTSStreamState, IncrementalDecodePlan]] = []
+        group_tail_runner: Qwen3TTSIncrementalCodecCudaGraphRunner | None = None
         with self.state_lock:
             live_rows = [
                 row
@@ -2932,12 +2955,25 @@ class Qwen3TTSStreamingVocoderScheduler(
             rows_with_slots = sum(row[1].codec_slot is not None for row in live_rows)
             waiting_rows: deque[tuple[str, Qwen3TTSStreamState]] = deque()
             window_frames = 0
+            largest_bucket = 0
             for request_id, state in live_rows:
+                is_first_decode = (
+                    bool(state.whole_tail_frames) and not state.decoded_chunks
+                )
                 remaining_frames = state.total_frames - state.codec_frame_position
                 index = bisect.bisect_right(widths, remaining_frames)
-                row_frames = widths[index - 1] if index else remaining_frames
-                if len(group) == bucket or (
-                    window_frames and row_frames != window_frames
+                row_frames = (
+                    state.whole_tail_frames
+                    if is_first_decode
+                    else widths[index - 1] if index else remaining_frames
+                )
+                row_tail_runner = (
+                    self.initial_tail_decode_graphs if is_first_decode else None
+                )
+                if group and (
+                    row_tail_runner is not group_tail_runner
+                    or (row_tail_runner is None and row_frames != window_frames)
+                    or len(group) == largest_bucket
                 ):
                     waiting_rows.append((request_id, state))
                     continue
@@ -2965,7 +3001,14 @@ class Qwen3TTSStreamingVocoderScheduler(
                         self.codec_arena.start_slot(slot, state.codec_frame_position)
                     else:
                         pass
-                window_frames = row_frames
+                if not group:
+                    window_frames = row_frames
+                    group_tail_runner = row_tail_runner
+                    largest_bucket = (
+                        row_tail_runner or self.initial_window_decode_graphs
+                    ).largest_batch_bucket()
+                else:
+                    pass
                 self.wait_codes_ready(state)
                 end_frame = state.codec_frame_position + row_frames
                 group.append(
@@ -2990,12 +3033,16 @@ class Qwen3TTSStreamingVocoderScheduler(
                 )
             self.whole_request_rows = waiting_rows
             self.mark_codec_slots_in_flight([entry[2].slot for entry in group])
-        return group
+        return (group, group_tail_runner)
 
     def run_whole_request_replay(
-        self, group: list[tuple[str, Qwen3TTSStreamState, IncrementalDecodePlan]]
+        self,
+        group: list[tuple[str, Qwen3TTSStreamState, IncrementalDecodePlan]],
+        tail_runner: Qwen3TTSIncrementalCodecCudaGraphRunner | None,
     ) -> None:
-        pending = self.launch_incremental_group(group, stream=self.decode_stream)
+        pending = self.launch_incremental_group(
+            group, stream=self.decode_stream, tail_runner=tail_runner
+        )
         decoded = (
             self.finish_incremental_group(pending) if pending is not None else None
         )

@@ -3848,7 +3848,14 @@ def run_whole_requests(
 
 @pytest.mark.parametrize(
     "generated_frames,ref_code_len,replayed_widths",
-    [(5, 3, [4, 4]), (6, 3, [4, 4, 4]), (1, 3, [4]), (5, 0, [4, 4]), (2, 0, [2])],
+    [
+        (5, 3, [4, 4]),
+        (6, 3, [4, 4, 1]),
+        (1, 3, [4]),
+        (5, 0, [4, 1]),
+        (3, 0, [4]),
+        (2, 0, [2]),
+    ],
 )
 def test_qwen3_tts_whole_request_decodes_every_frame_in_one_plan(
     monkeypatch: pytest.MonkeyPatch,
@@ -3879,7 +3886,7 @@ def test_qwen3_tts_whole_request_decodes_every_frame_in_one_plan(
     assert not scheduler.stream_states
 
 
-def test_qwen3_tts_whole_requests_that_round_to_one_width_share_replays(
+def test_qwen3_tts_whole_requests_share_every_window_of_one_width(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scheduler, _, runner = whole_request_scheduler(monkeypatch)
@@ -3895,8 +3902,9 @@ def test_qwen3_tts_whole_requests_that_round_to_one_width_share_replays(
 
     assert [(call[0][0], call[0][2]) for call in runner.calls] == [
         (3, 4),
-        (1, 2),
-        (3, 4),
+        (2, 2),
+        (1, 1),
+        (1, 4),
     ]
     for name, frames in (("five", 5), ("eight", 8), ("six", 6), ("two", 2)):
         assert chunk_samples(results[name].data) == expected_whole_samples(
@@ -3924,7 +3932,7 @@ def test_qwen3_tts_long_whole_request_replays_one_window_between_first_chunks(
     assert first_chunks == [[stream]]
     assert [call[0][2] for call in runner.calls] == [4, 4]
     results = run_whole_requests(scheduler)
-    assert [call[0][2] for call in runner.calls] == [4, 4, 4]
+    assert [call[0][2] for call in runner.calls] == [4, 4, 2]
     assert chunk_samples(results["whole"].data) == expected_whole_samples(scheduler, 10)
     assert scheduler.codec_arena.active_slots() == 0
 
@@ -3995,19 +4003,48 @@ def test_qwen3_tts_whole_request_after_a_failed_capture_keeps_the_batch_path(
     assert scheduler.initial_queue.empty()
 
 
-def test_qwen3_tts_whole_request_long_reference_starts_at_its_reach(
+def test_qwen3_tts_whole_request_first_decode_takes_the_tail_graphs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    scheduler, incremental, _ = whole_request_scheduler(monkeypatch)
+    scheduler, incremental, window = whole_request_scheduler(monkeypatch)
+    tail = FakeTailRunner(scheduler, incremental, widths=(4, 6), bucket=2)
+    scheduler.initial_tail_decode_graphs = tail
     incremental.first_chunk_reach = 2
-    message = whole_request_message("whole", 2, ref_code_len=5)
+    messages = [
+        whole_request_message("long", 5, ref_code_len=5),
+        whole_request_message("short", 1, ref_code_len=1),
+    ]
+
+    scheduler.run_non_streaming_batch(messages, asyncio.new_event_loop())
+    results = run_whole_requests(scheduler)
+
+    assert [call[2] for call in tail.calls] == [[3, 2]]
+    assert [call[0][2] for call in window.calls] == [4]
+    assert chunk_samples(results["long"].data) == expected_whole_samples(
+        scheduler, 5, 5
+    )
+    assert chunk_samples(results["short"].data) == expected_whole_samples(
+        scheduler, 1, 1
+    )
+    assert scheduler.codec_arena.active_slots() == 0
+
+
+def test_qwen3_tts_whole_request_reference_under_the_tail_uses_the_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler, incremental, window = whole_request_scheduler(monkeypatch)
+    tail = FakeTailRunner(scheduler, incremental, widths=(4, 6), bucket=2)
+    tail.tail_frames = 4
+    scheduler.initial_tail_decode_graphs = tail
+    message = whole_request_message("whole", 2, ref_code_len=2)
 
     scheduler.run_non_streaming_batch([message], asyncio.new_event_loop())
     results = run_whole_requests(scheduler)
 
-    assert incremental.decode_positions[0] == [3]
+    assert tail.calls == []
+    assert [call[0][2] for call in window.calls] == [4]
     assert chunk_samples(results["whole"].data) == expected_whole_samples(
-        scheduler, 2, 5
+        scheduler, 2, 2
     )
 
 
