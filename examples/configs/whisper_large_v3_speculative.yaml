@@ -1,4 +1,3 @@
-# Speculative decoding with a multilingual distil-large-v3 draft, validated on one H200.
 config_cls: WhisperASRPipelineConfig
 name: whisper-large-v3-speculative
 model_path: openai/whisper-large-v3

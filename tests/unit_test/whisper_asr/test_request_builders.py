@@ -19,6 +19,7 @@ from sglang_omni.models.whisper_asr.request_builders import (
     make_whisper_scheduler_adapters,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.serve.openai_errors import is_bad_request_error
 
 SOT_PREV = 50361
 PREFIX = [50258, 50259, 50359, 50363]
@@ -213,17 +214,21 @@ def test_speculative_request_leaves_the_draft_chain_inside_the_position_table(
 
 
 @pytest.mark.parametrize("params", [{"temperature": 0.7}, {"segment_timestamps": True}])
-def test_speculative_request_refuses_sampling_and_timestamps(
+def test_speculative_request_refuses_sampling_and_timestamps_as_a_bad_request(
     monkeypatch, params: dict
 ) -> None:
-    monkeypatch.setattr(
-        transcription,
-        "load_audio",
-        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
-    )
+    """The refusal came after the audio was decoded and encoded, and clients got a 500."""
 
-    with pytest.raises(ValueError, match="greedy transcription"):
+    def load_audio(source, **kwargs) -> np.ndarray:
+        raise AssertionError("the request was refused after its audio was decoded")
+
+    monkeypatch.setattr(transcription, "load_audio", load_audio)
+
+    with pytest.raises(ValueError, match="supports only greedy decoding") as refusal:
         make_request_builder(speculative_num_steps=7)(make_payload(params))
+
+    # note (wilsonzheng0327): the refusal crosses the stage boundary as text.
+    assert is_bad_request_error(RuntimeError(str(refusal.value)))
 
 
 def test_decoder_budget_invariant_exhaustive() -> None:

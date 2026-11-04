@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import json
 import os
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch
 from safetensors.torch import save_file
+from sglang.srt.layers.attention.flashinfer_backend import (
+    FlashInferIndicesUpdaterPrefill,
+)
+from sglang.srt.mem_cache.kv_loc_plan import IdSpaceKind
 from torch import nn
 from transformers import WhisperConfig
 
@@ -45,7 +51,8 @@ def test_materialized_draft_names_the_decoder_only_class(tmp_path) -> None:
     with open(os.path.join(checkpoint.name, "config.json")) as config_file:
         config = json.load(config_file)
 
-    # The second name keeps SGLang's encoder-decoder handling for the draft.
+    # note (wilsonzheng0327): the second name keeps SGLang's encoder-decoder
+    # handling for the draft.
     assert config["architectures"] == [
         speculative.DRAFT_ARCHITECTURE,
         "WhisperForConditionalGeneration",
@@ -86,59 +93,94 @@ def test_draft_loads_decoder_weights_and_skips_the_encoder(monkeypatch) -> None:
         draft.run_encoder(torch.zeros(1))
 
 
-class RecordingTranslator:
-    def __init__(self) -> None:
-        self.calls: list[dict] = []
+class ReqToTokenTranslator:
+    """Packs each row's KV slots from a req_to_token table, as the backend's translator does on the GPU."""
 
-    def pack_read_stream(self, plan, **kwargs) -> None:
-        del plan
-        self.calls.append(kwargs)
+    def __init__(self, req_to_token: torch.Tensor) -> None:
+        self.req_to_token = req_to_token
+
+    def pack_read_stream(
+        self,
+        plan: None,
+        *,
+        req_pool_indices: torch.Tensor,
+        seq_lens: torch.Tensor,
+        indptr: torch.Tensor,
+        out: torch.Tensor,
+        kv_start_idx: torch.Tensor,
+        kind: IdSpaceKind,
+    ) -> None:
+        for row, pool_index in enumerate(req_pool_indices.tolist()):
+            start_column = int(kv_start_idx[row])
+            out[indptr[row] : indptr[row + 1]] = self.req_to_token[
+                pool_index, start_column : start_column + int(seq_lens[row])
+            ]
 
 
-def chain_of_three() -> speculative.WhisperVerifyInput:
-    """Two requests with five encoder slots each, verifying three tokens each."""
-    return speculative.WhisperVerifyInput(
-        draft_token=torch.zeros(6, dtype=torch.long),
-        positions=torch.zeros(6, dtype=torch.long),
-        draft_token_num=3,
-        custom_mask=None,
-        encoder_token_count=10,
+def planned_kv_slots(plan_wrapper: SimpleNamespace) -> list[list[int]]:
+    _, kv_indptr, kv_indices = plan_wrapper.begin_forward.call_args.args[:3]
+    return [
+        kv_indices[kv_indptr[row] : kv_indptr[row + 1]].tolist()
+        for row in range(kv_indptr.numel() - 1)
+    ]
+
+
+@pytest.mark.parametrize("padding_rows", [0, 1], ids=["eager", "replay_9_in_10"])
+def test_verify_reads_the_encoder_slots_in_cross_attention_and_the_chain_in_self_attention(
+    padding_rows: int,
+) -> None:
+    """Graph replay padded 9 requests to 10 rows, and cross-attention then read past each request's encoder slots into its decoder slots."""
+    encoder_len, draft_token_num, max_decoder_len = 4, 3, 9
+    req_to_token = torch.arange(10 * 16).view(10, 16)
+    decoder_lens = list(range(1, max_decoder_len + 1))
+    # note (wilsonzheng0327): the decode graph runner pads with request slot 0,
+    # sequence length 1 and encoder length max_source_positions.
+    req_pool_indices = torch.tensor(list(range(1, 10)) + [0] * padding_rows)
+    seq_lens = torch.tensor(decoder_lens + [1] * padding_rows, dtype=torch.int32)
+    encoder_lens = torch.full((9 + padding_rows,), encoder_len, dtype=torch.int32)
+    updater = object.__new__(FlashInferIndicesUpdaterPrefill)
+    updater.attn_backend = SimpleNamespace(
+        kv_index_translator=ReqToTokenTranslator(req_to_token)
+    )
+    updater.prefill_wrapper_ragged = None
+    updater.kv_indptr = updater.qo_indptr = [torch.zeros(11, dtype=torch.int32)] * 2
+    updater.kv_last_page_len = torch.ones(10, dtype=torch.int32)
+    updater.num_qo_heads = updater.num_kv_heads = updater.head_dim = 1
+    updater.q_data_type = updater.data_type = torch.float16
+    self_attention, cross_attention = (
+        SimpleNamespace(
+            begin_forward=Mock(),
+            is_cuda_graph_enabled=False,
+            _custom_mask_buf=None,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        )
+        for _ in range(2)
     )
 
-
-def test_verify_cross_attention_reads_only_the_encoder_slots() -> None:
-    encoder_lens = torch.tensor([5, 5])
-    translator = RecordingTranslator()
-
-    kv_indices, kv_indptr, qo_indptr, mask = chain_of_three().generate_attn_arg_prefill(
-        req_pool_indices=torch.tensor([0, 1]),
-        paged_kernel_lens=encoder_lens,
-        paged_kernel_lens_sum=10,
-        translator=translator,
+    updater.update_cross_attention(
+        req_pool_indices,
+        seq_lens,
+        seq_lens,
+        int(seq_lens.sum()),
+        None,
+        [self_attention, cross_attention],
+        False,
+        encoder_lens,
+        speculative.WhisperVerifyInput(
+            draft_token=None,
+            positions=None,
+            draft_token_num=draft_token_num,
+            custom_mask=None,
+        ),
         plan=None,
-        kv_start_idx=torch.zeros_like(encoder_lens),
     )
 
-    assert kv_indptr.tolist() == [0, 5, 10]
-    assert qo_indptr.tolist() == [0, 3, 6]
-    assert kv_indices.numel() == 10 and mask is None
-    assert translator.calls[0]["seq_lens"] is encoder_lens
-
-
-def test_verify_self_attention_widens_by_the_chain() -> None:
-    translator = RecordingTranslator()
-
-    _, kv_indptr, _, _ = chain_of_three().generate_attn_arg_prefill(
-        req_pool_indices=torch.tensor([0, 1]),
-        paged_kernel_lens=torch.tensor([4, 5]),
-        paged_kernel_lens_sum=9,
-        translator=translator,
-        plan=None,
-        kv_start_idx=torch.tensor([5, 5]),
-    )
-
-    assert kv_indptr.tolist() == [0, 7, 15]
-    assert translator.calls[0]["kv_start_idx"].tolist() == [5, 5]
+    for row, decoder_len in enumerate(decoder_lens):
+        slots = req_to_token[row + 1]
+        assert planned_kv_slots(cross_attention)[row] == slots[:encoder_len].tolist()
+        assert (
+            planned_kv_slots(self_attention)[row]
+            == slots[encoder_len : encoder_len + decoder_len + draft_token_num].tolist()
+        )
 
 
 def tiny_target() -> nn.Module:
@@ -185,3 +227,21 @@ def test_shared_encoder_refuses_a_different_or_unknown_encoder(
 
     with pytest.raises(ValueError, match=message):
         speculative.check_shared_encoder(target, str(tmp_path))
+
+
+def test_draft_decode_graphs_are_captured_without_torch_compile(monkeypatch) -> None:
+    """A compiled draft decode copies its layer's whole K and V buffer on every KV store."""
+    flags = SimpleNamespace(capture=SimpleNamespace(enable_torch_compile=True))
+    monkeypatch.setattr(speculative, "get_flags", lambda: flags)
+    seen = []
+    worker = object.__new__(speculative.WhisperDraftWorker)
+    worker.draft_worker = SimpleNamespace(
+        init_cuda_graphs=lambda *, capture_decode_cuda_graph: seen.append(
+            (capture_decode_cuda_graph, flags.capture.enable_torch_compile)
+        )
+    )
+
+    worker.init_cuda_graphs()
+
+    assert seen == [(True, False)]
+    assert flags.capture.enable_torch_compile is True

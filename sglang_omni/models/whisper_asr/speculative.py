@@ -11,7 +11,6 @@ import glob
 import json
 import os
 from collections.abc import Iterable
-from dataclasses import dataclass
 from tempfile import TemporaryDirectory
 from typing import Protocol
 
@@ -37,7 +36,7 @@ from sglang.srt.model_executor.pool_configurator import MemoryPoolConfig
 from sglang.srt.model_executor.runner.decode_cuda_graph_runner import (
     DecodeCudaGraphRunner,
 )
-from sglang.srt.runtime_context import get_device, get_spec
+from sglang.srt.runtime_context import get_device, get_flags, get_spec
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.speculative.base_spec_worker import BaseSpecWorker, EagleDraftWorkerBase
 from sglang.srt.speculative.dflash_info import DFlashVerifyInput
@@ -55,7 +54,6 @@ from sglang_omni.models.whisper_asr.sglang_model import (
 from sglang_omni.speculative.target_worker import SpeculativeTargetWorker
 
 DRAFT_ARCHITECTURE = "WhisperDraftForCausalLM"
-# Weights from both ends of the encoder, compared to check that a draft shares the target's encoder.
 SHARED_ENCODER_TENSOR_NAMES = (
     "model.encoder.conv1.weight",
     "model.encoder.layer_norm.weight",
@@ -122,7 +120,7 @@ class WhisperDraftForCausalLM(WhisperForConditionalGeneration):
         self.start_layer = 0
         self.end_layer = int(config.decoder_layers) * 2
         self.encoder_graph_runner = None
-        # The worker sets this to the target's encoder, which a distil draft shares.
+        # note (wilsonzheng0327): the worker points this at the target's encoder.
         self.target_encoder: AudioEncoder | None = None
 
     def run_encoder(self, audio_features: torch.Tensor) -> torch.Tensor:
@@ -139,15 +137,11 @@ class WhisperDraftForCausalLM(WhisperForConditionalGeneration):
         )
 
 
-@dataclass
 class WhisperVerifyInput(DFlashVerifyInput):
     """A causal chain of tokens per request, after the request's committed decoder tokens.
 
     Cross-attention reads the encoder slots alone, so its lengths are not widened by the chain.
     """
-
-    # The batch's encoder slots, which only the cross-attention wrapper's plan covers.
-    encoder_token_count: int = 0
 
     def generate_attn_arg_prefill(
         self,
@@ -161,48 +155,44 @@ class WhisperVerifyInput(DFlashVerifyInput):
         kv_indices_buf: torch.Tensor | None = None,
         kind: IdSpaceKind = IdSpaceKind.FULL,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
-        # note (wilsonzheng0327): the cross-attention wrapper is planned over the
-        # encoder lengths, and a decoder row is always shorter than its encoder part.
-        if paged_kernel_lens_sum != self.encoder_token_count:
-            return super().generate_attn_arg_prefill(
-                req_pool_indices=req_pool_indices,
-                paged_kernel_lens=paged_kernel_lens,
-                paged_kernel_lens_sum=paged_kernel_lens_sum,
-                translator=translator,
-                plan=plan,
-                kv_start_idx=kv_start_idx,
-                kv_indices_buf=kv_indices_buf,
-                kind=kind,
-            )
-        else:
-            device = req_pool_indices.device
-            batch_size = req_pool_indices.numel()
-            query_indptr = torch.arange(
-                0,
-                (batch_size + 1) * self.draft_token_num,
-                step=self.draft_token_num,
+        assert kv_start_idx is not None, "a Whisper verify row starts at a KV column"
+        device = req_pool_indices.device
+        batch_size = req_pool_indices.numel()
+        query_indptr = torch.arange(
+            0,
+            (batch_size + 1) * self.draft_token_num,
+            step=self.draft_token_num,
+            dtype=torch.int32,
+            device=device,
+        )
+        # note (wilsonzheng0327): self-attention rows start past the encoder slots and
+        # cross-attention rows at 0, CUDA graph padding rows included.
+        kv_lengths = torch.where(
+            kv_start_idx > 0,
+            paged_kernel_lens + self.draft_token_num,
+            paged_kernel_lens,
+        )
+        kv_indptr = torch.zeros((batch_size + 1,), dtype=torch.int32, device=device)
+        kv_indptr[1:] = torch.cumsum(kv_lengths, dim=0)
+        kv_indices = (
+            kv_indices_buf
+            if kv_indices_buf is not None
+            else torch.empty(
+                paged_kernel_lens_sum + batch_size * self.draft_token_num,
                 dtype=torch.int32,
                 device=device,
             )
-            kv_indptr = torch.zeros((batch_size + 1,), dtype=torch.int32, device=device)
-            kv_indptr[1:] = torch.cumsum(paged_kernel_lens, dim=0)
-            kv_indices = (
-                kv_indices_buf
-                if kv_indices_buf is not None
-                else torch.empty(
-                    paged_kernel_lens_sum, dtype=torch.int32, device=device
-                )
-            )
-            translator.pack_read_stream(
-                plan,
-                req_pool_indices=req_pool_indices,
-                seq_lens=paged_kernel_lens,
-                indptr=kv_indptr,
-                out=kv_indices,
-                kv_start_idx=kv_start_idx,
-                kind=kind,
-            )
-            return kv_indices, kv_indptr, query_indptr, None
+        )
+        translator.pack_read_stream(
+            plan,
+            req_pool_indices=req_pool_indices,
+            seq_lens=kv_lengths,
+            indptr=kv_indptr,
+            out=kv_indices,
+            kv_start_idx=kv_start_idx,
+            kind=kind,
+        )
+        return kv_indices, kv_indptr, query_indptr, None
 
 
 def check_shared_encoder(
@@ -216,7 +206,8 @@ def check_shared_encoder(
             for name in unchecked_names & set(checkpoint.keys()):
                 draft_weight = checkpoint.get_tensor(name).float()
                 target_weight = target_parameters[name].detach().float().cpu()
-                # The two checkpoints may store the same weights in different half precisions.
+                # note (wilsonzheng0327): the two checkpoints may hold the same
+                # weights in different half precisions.
                 if draft_weight.shape != target_weight.shape or not torch.allclose(
                     draft_weight, target_weight, rtol=1e-2, atol=1e-5
                 ):
@@ -277,7 +268,13 @@ class WhisperDraftWorker(EagleDraftWorkerBase):
         self.draft_worker.init_attention_backends()
 
     def init_cuda_graphs(self) -> None:
+        # note (wilsonzheng0327): a compiled draft decode copies the layer's whole K/V
+        # buffer on every KV store.
+        flags = get_flags().capture
+        enable_torch_compile = flags.enable_torch_compile
+        flags.enable_torch_compile = False
         self.draft_worker.init_cuda_graphs(capture_decode_cuda_graph=True)
+        flags.enable_torch_compile = enable_torch_compile
 
 
 class WhisperSpeculativeWorker(BaseSpecWorker):
@@ -321,7 +318,8 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
             draft_tp_worker
         )
         self.draft_runner: ModelRunner = draft_tp_worker.model_runner
-        # The draft decodes plainly, so its runner captures ordinary decode graphs.
+        # note (wilsonzheng0327): the draft decodes plainly, so it captures plain
+        # decode graphs rather than EAGLE draft graphs.
         self.draft_runner.spec_algorithm = SpeculativeAlgorithm.NONE
         install_verify_graph_input(
             target_worker.model_runner, self.speculative_num_draft_tokens
@@ -350,7 +348,6 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
         )
         self.req_to_token_pool = req_to_token_pool
         self.token_to_kv_pool_allocator = token_to_kv_pool_allocator
-        # The committed token before each request's newest token, by request slot.
         self.previous_token_ids = torch.zeros(
             req_to_token_pool.req_to_token.shape[0],
             dtype=torch.int64,
@@ -364,7 +361,6 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
             return self.forward_decode(batch)
 
     def forward_prefill(self, batch: ScheduleBatch) -> GenerationBatchResult:
-        # The draft fills its KV first, from the encoder states the target reads.
         draft_batch = ForwardBatch.init_new(
             batch,
             self.draft_runner,
@@ -375,7 +371,8 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
         result = self.target_worker.forward_batch_generation(
             batch, capture_hidden_mode=CaptureHiddenMode.NULL
         )
-        # The sampled token has no KV yet, so the committed length is the prompt's.
+        # note (wilsonzheng0327): the sampled token has no KV yet, so the committed
+        # length is the prompt's.
         result.new_seq_lens = batch.seq_lens
         last_prompt_rows = torch.cumsum(draft_batch.extend_seq_lens, dim=0) - 1
         self.previous_token_ids[batch.req_pool_indices] = draft_batch.input_ids[
@@ -385,14 +382,16 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
         return result
 
     def forward_decode(self, batch: ScheduleBatch) -> GenerationBatchResult:
-        # The request builder refuses sampled requests under speculation.
-        assert batch.sampling_info.is_all_greedy
+        assert (
+            batch.sampling_info.is_all_greedy
+        ), "the request builder refuses sampled requests under speculation"
         batch_size = len(batch.reqs)
         draft_steps = self.speculative_num_steps
         verify_width = draft_steps + 1
         newest_token_ids = batch.spec_info.bonus_tokens.long()
         previous_token_ids = self.previous_token_ids[batch.req_pool_indices]
-        # Slots of the previous token, the newest token, and the draft_steps drafts.
+        # note (wilsonzheng0327): columns of the previous token, the newest token
+        # and the draft_steps drafts.
         newest_columns = (batch.encoder_lens + batch.seq_lens).long()
         column_offsets = torch.arange(-1, verify_width, device=self.device)
         slots = (
@@ -524,7 +523,6 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
             draft_token_num=tokens_per_request,
             custom_mask=None,
             capture_hidden_mode=CaptureHiddenMode.NULL,
-            encoder_token_count=int(sum(batch.encoder_lens_cpu)),
         )
         step = self.step_batch(
             batch,
