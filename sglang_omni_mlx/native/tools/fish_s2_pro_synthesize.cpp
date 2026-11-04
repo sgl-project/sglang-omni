@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "common/audio.h"
 #include "fish_s2_pro/fish_s2_pro_model.h"
 #include "nlohmann/json.hpp"
 
@@ -140,8 +141,8 @@ int main(int argc, char **argv) {
       static_cast<double>(samples.size()) / model.codec().sample_rate();
 
   if (!output_path.empty()) {
-    std::ofstream(output_path, std::ios::binary) << fish_s2_pro::WavBytes(
-        fish_s2_pro::Pcm16Bytes(samples), model.codec().sample_rate());
+    std::ofstream(output_path, std::ios::binary) << omni_common::WavBytes(
+        omni_common::Pcm16Bytes(samples), model.codec().sample_rate());
   } else {
   }
   if (!codes_output_path.empty()) {

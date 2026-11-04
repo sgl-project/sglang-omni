@@ -448,8 +448,8 @@ qwen3_asr::FinishReason FishS2ProModel::Generate(
     const std::function<void(const mx::array &)> &on_frame) const {
   const int length = static_cast<int>(prompt.ids.size());
   if (length + max_frames > max_positions_) {
-    throw PromptTooLong("the prompt and its audio exceed the model's " +
-                        std::to_string(max_positions_) + " positions");
+    throw std::runtime_error("the prompt and its audio exceed the model's " +
+                             std::to_string(max_positions_) + " positions");
   } else {
   }
   std::vector<int32_t> rows(static_cast<size_t>(codebook_count_) * length, 0);

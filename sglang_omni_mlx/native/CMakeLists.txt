@@ -325,7 +325,7 @@ add_library(fish_s2_pro STATIC src/fish_s2_pro/fish_s2_pro_codec.cpp
 target_link_libraries(fish_s2_pro PUBLIC qwen3_asr)
 target_compile_options(fish_s2_pro PRIVATE -Wall -Wextra -ffp-contract=off)
 add_executable(fish_s2_pro_server src/fish_s2_pro/fish_s2_pro_server.cpp)
-target_link_libraries(fish_s2_pro_server PRIVATE fish_s2_pro asr_service)
+target_link_libraries(fish_s2_pro_server PRIVATE fish_s2_pro speech_service)
 target_compile_options(fish_s2_pro_server PRIVATE -Wall -Wextra)
 add_executable(fish_s2_pro_synthesize tools/fish_s2_pro_synthesize.cpp)
 target_link_libraries(fish_s2_pro_synthesize PRIVATE fish_s2_pro)
