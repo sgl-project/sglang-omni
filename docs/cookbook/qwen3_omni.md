@@ -164,6 +164,7 @@ sgl-omni serve \
   --text-only \
   --thinker.engine.speculative_algorithm DFLASH \
   --thinker.engine.speculative_draft_model_path yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8 \
+  --thinker.engine.speculative_draft_model_revision 47029d797b43f6fb8fba8948784ad221a55aafd6 \
   --thinker.engine.speculative_num_draft_tokens 8 \
   --port 8000
 
@@ -173,6 +174,7 @@ sgl-omni serve \
   --text-only \
   --thinker.engine.speculative_algorithm EAGLE3 \
   --thinker.engine.speculative_draft_model_path yuekai/qwen3_omni_30b_a3b_instruct_eagle3_audio \
+  --thinker.engine.speculative_draft_model_revision 4c197a033a9ffec3f4fe693edc4e5e65a9d7fe89 \
   --thinker.engine.speculative_num_steps 3 \
   --thinker.engine.speculative_eagle_topk 1 \
   --thinker.engine.speculative_num_draft_tokens 4 \
