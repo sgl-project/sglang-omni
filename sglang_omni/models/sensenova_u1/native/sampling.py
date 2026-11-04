@@ -85,10 +85,6 @@ class SenseNovaU1SamplingParams(SamplingParams):
         return set(PUBLIC_OVERRIDE_FIELDS)
 
     @classmethod
-    def image_request_extra_fields(cls) -> frozenset[str]:
-        return frozenset({"img_cfg_scale"})
-
-    @classmethod
     def get_cli_args(
         cls, args: Namespace
     ) -> dict[str, str | bool | int | float | list[str] | list[int] | None]:
@@ -110,14 +106,23 @@ class SenseNovaU1SamplingParams(SamplingParams):
         self,
     ) -> None:  # noqa: leading-underscore -- SamplingParams validation hook.
         super()._validate()  # noqa: leading-underscore -- SamplingParams validation hook.
-        edit_parameters = SenseNovaEditParameters.model_validate(
-            {"img_cfg_scale": self.img_cfg_scale}
-        )
-        self.img_cfg_scale = edit_parameters.img_cfg_scale
         if self.image_path:
+            edit_parameters = SenseNovaEditParameters.model_validate(
+                {"img_cfg_scale": self.img_cfg_scale}
+            )
+            self.img_cfg_scale = edit_parameters.img_cfg_scale
             if not isinstance(self.prompt, str):
                 raise ValueError(
                     "SenseNova editing requires one text prompt per request"
+                )
+            else:
+                pass
+            reference_count = (
+                len(self.image_path) if isinstance(self.image_path, list) else 1
+            )
+            if self.prompt.count("<image>") > reference_count:
+                raise ValueError(
+                    "Prompt has more image placeholders than reference images"
                 )
             else:
                 pass

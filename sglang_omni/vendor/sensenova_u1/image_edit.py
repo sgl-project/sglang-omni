@@ -70,10 +70,6 @@ def build_it2i_queries(
     img_cfg_scale: float,
 ) -> list[str]:
     image_placeholders = prompt.count("<image>")
-    if len(reference_sizes) < image_placeholders:
-        raise ValueError("Prompt has more image placeholders than reference images")
-    else:
-        pass
     if len(reference_sizes) > image_placeholders:
         if image_placeholders == 0 and len(reference_sizes) > 1:
             prompt = (
@@ -124,7 +120,7 @@ def build_it2i_inputs(
     model: NEOChatModel,
     tokenizer: PreTrainedTokenizerBase,
     query: str,
-    pixel_values: torch.Tensor | None = None,
+    reference_embeddings: torch.Tensor | None = None,
     grid_hw: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
     input_ids = tokenizer(query, return_tensors="pt")["input_ids"].to(model.device)
@@ -135,15 +131,14 @@ def build_it2i_inputs(
 
     input_embeds = model.language_model.get_input_embeddings()(input_ids)
     B, N, C = input_embeds.shape
-    if pixel_values is not None:
-        vit_embeds = model.extract_feature(
-            pixel_values, grid_hw=grid_hw, gen_model=False
-        )
+    if reference_embeddings is not None:
         input_embeds = input_embeds.reshape(B * N, C)
         input_ids = input_ids.reshape(B * N)
         selected = input_ids == model.img_context_token_id
         assert selected.sum() != 0
-        input_embeds[selected] = vit_embeds.reshape(-1, C).to(input_embeds.device)
+        input_embeds[selected] = reference_embeddings.reshape(-1, C).to(
+            input_embeds.device
+        )
         input_embeds = input_embeds.reshape(B, N, C)
     else:
         pass
@@ -217,6 +212,9 @@ def it2i_generate(
         model, prompt, [image.size for image in images], cfg_scale, img_cfg_scale
     )
     image_patch_size = model.patch_size * int(1 / model.downsample_ratio)
+    reference_embeddings = model.extract_feature(
+        pixel_values, grid_hw=grid_shape, gen_model=False
+    )
     prefixes: list[ImagePrefix] = []
     for query in queries:
         has_references = "<IMG_CONTEXT>" in query
@@ -224,7 +222,7 @@ def it2i_generate(
             model,
             tokenizer,
             query,
-            pixel_values if has_references else None,
+            reference_embeddings if has_references else None,
             grid_shape if has_references else None,
         )
         prefix_output = model.language_model.model(
@@ -250,21 +248,16 @@ def it2i_generate(
         )
     del reference_patches, reference_grids, image_patches, image_grid
     del pixel_values, grid_shape, input_embeddings, indexes, attention_mask
-    del prefix_output
+    del prefix_output, reference_embeddings
     batch_size = 1
     device = prefixes[0].cache.layers[0].keys.device
     dtype = prefixes[0].cache.layers[0].keys.dtype
-    merge_size = int(1 / model.downsample_ratio)
-    image_patch_size = model.patch_size * merge_size
     image_token_rows = image_size[1] // image_patch_size
     image_token_columns = image_size[0] // image_patch_size
     image_token_count = image_token_rows * image_token_columns
     attention_masks: list[dict[str, torch.Tensor | None]] = []
     try:
         for prefix in prefixes:
-            for layer in prefix.cache.layers:
-                layer.keys = layer.keys.expand(batch_size, *layer.keys.shape[1:])
-                layer.values = layer.values.expand(batch_size, *layer.values.shape[1:])
             prepare_flash_kv_cache(
                 prefix.cache,
                 current_len=image_token_count,
@@ -341,9 +334,9 @@ def it2i_generate(
             if len(predicted_velocities) == 1:
                 predicted_velocity = predicted_velocities[0]
             elif len(predicted_velocities) == 2:
-                conditioned, unconditioned = predicted_velocities
-                predicted_velocity = unconditioned + cfg_scale * (
-                    conditioned - unconditioned
+                conditioned, baseline_velocity = predicted_velocities
+                predicted_velocity = baseline_velocity + cfg_scale * (
+                    conditioned - baseline_velocity
                 )
             else:
                 conditioned, image_conditioned, unconditioned = predicted_velocities

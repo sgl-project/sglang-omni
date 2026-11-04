@@ -1,16 +1,21 @@
 """Exercise reference preprocessing, native editing and sequential outputs."""
 
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 pytest.importorskip("sglang")
 
 import torch
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from PIL import Image
 from pydantic import ValidationError
+from sglang.multimodal_gen.runtime.entrypoints.openai import image_api
+from sglang.multimodal_gen.runtime.entrypoints.openai import utils as image_api_utils
 from sglang.multimodal_gen.runtime.pipelines_core.schedule_batch import Req
 from sglang.multimodal_gen.runtime.pipelines_core.stages import base as stage_base
 from tokenizers import Tokenizer
@@ -20,9 +25,7 @@ from transformers import PreTrainedTokenizerFast
 
 from sglang_omni.models.sensenova_u1.native import generation
 from sglang_omni.models.sensenova_u1.native.generation import SenseNovaU1GenerationStage
-from sglang_omni.models.sensenova_u1.native.image_edit import (
-    SenseNovaInputValidationStage,
-)
+from sglang_omni.models.sensenova_u1.native.image_edit import SenseNovaU1InputStage
 from sglang_omni.models.sensenova_u1.native.pipeline_config import (
     SenseNovaU1PipelineConfig,
 )
@@ -53,7 +56,7 @@ def test_reference_preparation_preserves_alpha_and_size_contract(
     request = Req(sampling_params=sampling)
     sampling.apply_request_extra(request)
     request.extra["explicit_fields"] = ["width", "height"] if explicit_size else []
-    stage = SenseNovaInputValidationStage()
+    stage = SenseNovaU1InputStage()
     request.condition_image = stage.load_condition_image(str(reference_path))
     stage.preprocess_condition_image(request, None, 64, 32)
     prepared = request.condition_image[0]
@@ -83,7 +86,7 @@ def test_reference_order_is_preserved(monkeypatch: pytest.MonkeyPatch) -> None:
     request.condition_image = [
         Image.new("RGB", (64, 64), color) for color in ["red", "blue"]
     ]
-    SenseNovaInputValidationStage().preprocess_condition_image(request, None, 64, 64)
+    SenseNovaU1InputStage().preprocess_condition_image(request, None, 64, 64)
     assert [image.size for image in request.condition_image] == [(512, 512)] * 2
     assert [image.getpixel((0, 0)) for image in request.condition_image] == [
         (255, 0, 0),
@@ -106,6 +109,58 @@ def test_invalid_edit_parameters_are_rejected(
         SenseNovaU1SamplingParams(
             prompt="edit", image_path="reference.png", **parameters
         )
+
+
+@pytest.mark.parametrize("image_path", ["reference.png", ["first.png", "second.png"]])
+def test_edit_rejects_excess_image_placeholders(image_path: str | list[str]) -> None:
+    with pytest.raises(
+        ValueError, match="more image placeholders than reference images"
+    ):
+        SenseNovaU1SamplingParams(prompt="<image><image><image>", image_path=image_path)
+
+
+@pytest.mark.parametrize("prompt", ["edit", "<image> edit", "<image><image> edit"])
+def test_edit_accepts_implicit_and_explicit_references(prompt: str) -> None:
+    SenseNovaU1SamplingParams(prompt=prompt, image_path=["first.png", "second.png"])
+
+
+def test_edit_api_rejects_excess_placeholders_before_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Excess placeholders used to fail in the worker and surface as HTTP 500."""
+    server_args = SimpleNamespace(
+        model_path=str(tmp_path),
+        pipeline_class_name="SenseNovaU1Pipeline",
+        pipeline_config=SenseNovaU1PipelineConfig(),
+        input_save_path=None,
+        output_path=None,
+    )
+    monkeypatch.setattr(image_api, "get_global_server_args", lambda: server_args)
+    monkeypatch.setattr(image_api_utils, "get_global_server_args", lambda: server_args)
+    dispatch = AsyncMock()
+    monkeypatch.setattr(image_api.async_scheduler_client, "forward", dispatch)
+    image_bytes = BytesIO()
+    Image.new("RGB", (32, 32)).save(image_bytes, format="PNG")
+    app = FastAPI()
+    app.include_router(image_api.router)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/v1/images/edits",
+            data={"prompt": "<image><image> edit", "generator_device": "cpu"},
+            files={"image": ("reference.png", image_bytes.getvalue(), "image/png")},
+        )
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == (
+        "Prompt has more image placeholders than reference images"
+    )
+    dispatch.assert_not_called()
+
+
+def test_t2i_does_not_validate_unused_edit_guidance() -> None:
+    sampling = SenseNovaU1SamplingParams(prompt="a landscape", img_cfg_scale=-1)
+    request = Req(sampling_params=sampling)
+    sampling.apply_request_extra(request)
+    assert request.image_path is None
 
 
 @pytest.mark.parametrize("output_count", [1, 2])
@@ -136,7 +191,7 @@ def test_edit_parameters_reach_each_sequential_output(
     server_args = SimpleNamespace(pipeline_config=SenseNovaU1PipelineConfig())
     generation_stage = SenseNovaU1GenerationStage(model, Mock())
     expanded_requests = list(
-        SenseNovaInputValidationStage().iter_sequential_requests(request, server_args)
+        SenseNovaU1InputStage().iter_sequential_requests(request, server_args)
     )
     assert len(expanded_requests) == output_count
     for output_index, expanded_request in enumerate(expanded_requests):
@@ -202,6 +257,8 @@ def test_edit_denoising_uses_references_and_is_repeatable(
         noise_scale_max_value=10.0,
     )
     model = NEOChatModel(config).eval()
+    extract_feature = Mock(wraps=model.extract_feature)
+    monkeypatch.setattr(model, "extract_feature", extract_feature)
     timestep_forward = Mock(wraps=model.fm_modules["timestep_embedder"].forward)
     noise_forward = Mock(wraps=model.fm_modules["noise_scale_embedder"].forward)
     monkeypatch.setattr(
@@ -254,6 +311,12 @@ def test_edit_denoising_uses_references_and_is_repeatable(
         **(parameters | {"img_cfg_scale": img_cfg_scale + 0.5}),
     )
     assert not torch.equal(first, changed_guidance)
+    reference_encoding_calls = [
+        call
+        for call in extract_feature.call_args_list
+        if call.kwargs["gen_model"] is False
+    ]
+    assert len(reference_encoding_calls) == 4
 
 
 @pytest.mark.parametrize(
@@ -284,9 +347,7 @@ def test_reference_pixels_match_native_preprocessing(
     sampling.apply_request_extra(request)
     request.extra["explicit_fields"] = ["width", "height"]
     request.condition_image = [reference] * reference_count
-    SenseNovaInputValidationStage().preprocess_condition_image(
-        request, None, *reference_size
-    )
+    SenseNovaU1InputStage().preprocess_condition_image(request, None, *reference_size)
     # note (Wes): Sizes were checked against native SGLang baa9befa; native resize uses Pillow's default interpolation.
     expected = reference.resize(expected_size)
     for prepared in request.condition_image:

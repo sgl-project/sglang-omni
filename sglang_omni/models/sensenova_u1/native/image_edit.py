@@ -73,7 +73,7 @@ def flatten_reference_image(image: Image.Image) -> Image.Image:
         return image.convert("RGB")
 
 
-class SenseNovaInputValidationStage(InputValidationStage):
+class SenseNovaU1InputStage(InputValidationStage):
     def load_condition_image(self, image: str) -> Image.Image:
         return load_image(image, convert_method=flatten_reference_image)
 

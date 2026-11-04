@@ -26,9 +26,31 @@ Single-GPU CUDA editing accepts one or more reference images. Editing requests r
 
 HTTP editing uses `img_cfg_scale=1.0` and the reference preprocessing described below. Custom image guidance is not exposed through this HTTP endpoint.
 
-```bash
-sglang serve --model-path "$MODEL_PATH" --port 30000
+Use the same explicit shared-stage configuration as #3260. Save the following as sensenova.yaml and replace the model path with your checkpoint directory:
+
+```yaml
+config_cls: Cosmos3PipelineConfig
+model_path: /path/to/SenseNova-U1.5-8B-MoT
+stages:
+  generation:
+    factory:
+      output_dir: outputs/sensenova
+      server_args_overrides:
+        enable_torch_compile: false
 ```
+
+Cosmos3PipelineConfig supplies the shared native generation stage; the model path and external package select SenseNova. Automatic Omni model-path discovery is tracked in #3277.
+
+With the external package environment variable above set, start the server:
+
+```bash
+python -m sglang_omni.cli serve \
+  --config sensenova.yaml \
+  --host 127.0.0.1 --port 30000 \
+  --skip-server-warmup
+```
+
+The same server handles text-to-image requests at /v1/images/generations and editing requests at /v1/images/edits.
 
 ```bash
 curl http://localhost:30000/v1/images/edits \
