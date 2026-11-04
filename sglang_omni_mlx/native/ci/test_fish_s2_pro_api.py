@@ -12,8 +12,6 @@ import base64
 import http.client
 import io
 import json
-import re
-import socket
 import struct
 import time
 import wave
@@ -22,15 +20,22 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from speech_api import (
+    open_speech_stream,
+    request_states,
+    speak,
+    transcript_words,
+    wait_until_idle,
+    word_errors,
+    words,
+)
 from test_server_api import DATA_ROOT, RUNTIME_BIN, Server
 
 pytestmark = pytest.mark.skipif(
     not RUNTIME_BIN or not DATA_ROOT, reason="set NATIVE_RUNTIME_BIN and CI_DATA_ROOT"
 )
 FISH_REPO = "mlx-community/fish-audio-s2-pro-8bit"
-CHOSEN_MODEL_NAME = "fishaudio/s2-pro"
 SAMPLE_RATE = 44100
-ASR_SAMPLE_RATE = 16000
 # One audio frame is 2048 16-bit samples.
 FRAME_BYTES = 2048 * 2
 # A corpus clip to clone and its transcript.
@@ -45,7 +50,6 @@ PASSAGE = " ".join([SENTENCE] * 50)
 # Note (Minyi Tang): generation samples, so the audio differs on every unseeded
 # request; the transcript may miss one word without the speech being wrong.
 MAX_WORD_ERRORS = 1
-MAX_QUEUED_REQUESTS = 1
 REQUEST_TIMEOUT_SECONDS = 20
 MAX_REQUEST_BODY_BYTES = 16 * 1024 * 1024
 # A cancelled generation stops at its next frame.
@@ -105,12 +109,7 @@ def fish_server() -> Iterator[Server]:
         "fish_s2_pro_server",
         "fish_s2_pro",
         fish_directory(),
-        (
-            "--max-queued-requests",
-            str(MAX_QUEUED_REQUESTS),
-            "--request-timeout-s",
-            str(REQUEST_TIMEOUT_SECONDS),
-        ),
+        ("--request-timeout-s", str(REQUEST_TIMEOUT_SECONDS)),
     )
     yield running
     running.stop()
@@ -121,113 +120,6 @@ def asr_server() -> Iterator[Server]:
     running = Server()
     yield running
     running.stop()
-
-
-def speak(server: Server, body: dict) -> tuple[int, dict[str, str], bytes]:
-    connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=300)
-    connection.request("POST", "/v1/audio/speech", body=json.dumps(body))
-    response = connection.getresponse()
-    return response.status, dict(response.getheaders()), response.read()
-
-
-def send_speech_request(
-    server: Server, body: dict, receive_buffer_bytes: int | None = None
-) -> socket.socket:
-    """Sends a speech request on a socket of its own, without reading the answer."""
-    encoded_body = json.dumps(body)
-    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    # The receive buffer is sized before connecting, so the window follows it.
-    if receive_buffer_bytes is not None:
-        client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, receive_buffer_bytes)
-    else:
-        pass
-    client.settimeout(300)
-    client.connect(("127.0.0.1", server.port))
-    client.sendall(
-        b"POST /v1/audio/speech HTTP/1.1\r\nHost: test\r\n"
-        b"Content-Type: application/json\r\n"
-        + f"Content-Length: {len(encoded_body)}\r\n\r\n{encoded_body}".encode()
-    )
-    return client
-
-
-def open_speech_stream(
-    server: Server, text: str, receive_buffer_bytes: int | None = None
-) -> socket.socket:
-    """Sends a streamed speech request; returns once its 200 headers arrive."""
-    client = send_speech_request(
-        server,
-        {"input": text, "response_format": "pcm", "stream": True},
-        receive_buffer_bytes,
-    )
-    received = b""
-    while b"\r\n\r\n" not in received:
-        chunk = client.recv(65536)
-        if not chunk:
-            client.close()
-            raise ConnectionError(f"stream closed before its headers: {received!r}")
-        else:
-            received += chunk
-    if not received.startswith(b"HTTP/1.1 200 "):
-        client.close()
-        raise AssertionError(f"stream was refused: {received!r}")
-    else:
-        pass
-    return client
-
-
-def request_states(server: Server) -> dict[str, int]:
-    return json.loads(server.request("GET", "/health")[1])["request_states"]
-
-
-def wait_until_running(server: Server) -> None:
-    started_at = time.monotonic()
-    while request_states(server) != {"running": 1}:
-        assert time.monotonic() - started_at < CANCEL_SECONDS
-        time.sleep(0.05)
-
-
-def wait_until_idle(server: Server, timeout_seconds: float = CANCEL_SECONDS) -> None:
-    started_at = time.monotonic()
-    while request_states(server):
-        assert (
-            time.monotonic() - started_at < timeout_seconds
-        ), "generation kept running after it was cancelled"
-        time.sleep(0.05)
-
-
-def transcript_words(asr_server: Server, pcm: bytes) -> list[str]:
-    samples = np.frombuffer(pcm, dtype="<i2").astype(np.float64)
-    resampled_count = len(samples) * ASR_SAMPLE_RATE // SAMPLE_RATE
-    # Band-limited resampling: keep the spectrum below the new Nyquist rate.
-    spectrum = np.fft.rfft(samples)[: resampled_count // 2 + 1]
-    resampled = np.fft.irfft(spectrum, resampled_count) * resampled_count / len(samples)
-    buffer = io.BytesIO()
-    with wave.open(buffer, "wb") as writer:
-        writer.setnchannels(1)
-        writer.setsampwidth(2)
-        writer.setframerate(ASR_SAMPLE_RATE)
-        writer.writeframes(np.clip(resampled, -32768, 32767).astype("<i2").tobytes())
-    status, body = asr_server.post_form({"language": "en"}, buffer.getvalue())
-    assert status == 200
-    return words(json.loads(body)["text"])
-
-
-def words(text: str) -> list[str]:
-    return re.findall(r"[a-z0-9]+", text.lower())
-
-
-def word_errors(reference: list[str], hypothesis: list[str]) -> int:
-    distances = list(range(len(hypothesis) + 1))
-    for row, expected in enumerate(reference, 1):
-        diagonal, distances[0] = distances[0], row
-        for column, heard in enumerate(hypothesis, 1):
-            diagonal, distances[column] = distances[column], min(
-                distances[column] + 1,
-                distances[column - 1] + 1,
-                diagonal + (expected != heard),
-            )
-    return distances[-1]
 
 
 def test_fish_wav_speaks_its_input(fish_server: Server, asr_server: Server) -> None:
@@ -253,7 +145,7 @@ def test_fish_wav_speaks_its_input(fish_server: Server, asr_server: Server) -> N
         assert reader.getframerate() == SAMPLE_RATE
         pcm = reader.readframes(reader.getnframes())
     assert len(pcm) == frame_count * FRAME_BYTES
-    heard = transcript_words(asr_server, pcm)
+    heard = transcript_words(asr_server, pcm, SAMPLE_RATE)
     assert word_errors(words(SENTENCE), heard) <= MAX_WORD_ERRORS, heard
 
 
@@ -292,7 +184,7 @@ def test_fish_streams_pcm_while_it_speaks(
     assert pcm and len(pcm) % FRAME_BYTES == 0
     # The first chunk is 40 frames of 129: it arrives well before the last.
     assert first_audio_at - started_at < (finished_at - started_at) / 2
-    heard = transcript_words(asr_server, pcm)
+    heard = transcript_words(asr_server, pcm, SAMPLE_RATE)
     assert word_errors(words(TWO_SENTENCES), heard) <= MAX_WORD_ERRORS, heard
 
 
@@ -310,61 +202,10 @@ def test_fish_stops_at_max_new_tokens(fish_server: Server) -> None:
 
 
 def test_fish_disconnect_stops_its_generation(fish_server: Server) -> None:
-    with open_speech_stream(fish_server, LONG_SENTENCE) as client:
+    with open_speech_stream(fish_server, {"input": LONG_SENTENCE}) as client:
         assert client.recv(65536)
         assert request_states(fish_server) == {"running": 1}
-    wait_until_idle(fish_server)
-
-
-def test_fish_disconnect_stops_a_generation_it_has_not_answered(
-    fish_server: Server,
-) -> None:
-    """A WAV request kept generating after its client disconnected."""
-    with send_speech_request(fish_server, {"input": PASSAGE}):
-        wait_until_running(fish_server)
-    wait_until_idle(fish_server)
-
-
-def test_fish_disconnect_is_seen_past_bytes_sent_after_the_request(
-    fish_server: Server,
-) -> None:
-    """Bytes a client sent after its request hid that it then disconnected."""
-    with send_speech_request(fish_server, {"input": PASSAGE}) as client:
-        wait_until_running(fish_server)
-        client.sendall(b"GET /health HTTP/1.1\r\nHost: test\r\n\r\n")
-    wait_until_idle(fish_server)
-
-
-def test_fish_half_closed_client_counts_as_gone(fish_server: Server) -> None:
-    """uvicorn closes a connection whose client shuts down its sending side, so
-    CUDA cancels that request and sends nothing; this server must match it."""
-    with send_speech_request(fish_server, {"input": PASSAGE}) as client:
-        client.shutdown(socket.SHUT_WR)
-        received = b""
-        while chunk := client.recv(65536):
-            received += chunk
-        assert received == b""
-    wait_until_idle(fish_server)
-
-
-def test_fish_refuses_requests_beyond_its_queue(fish_server: Server) -> None:
-    queued_body = {"input": LONG_SENTENCE, "response_format": "pcm", "stream": True}
-    with (
-        open_speech_stream(fish_server, LONG_SENTENCE) as running,
-        send_speech_request(fish_server, queued_body),
-    ):
-        assert running.recv(65536)
-        assert request_states(fish_server) == {
-            "running": 1,
-            "queued": MAX_QUEUED_REQUESTS,
-        }
-        status, _, body = speak(fish_server, {"input": "hi"})
-        assert (status, json.loads(body)) == (
-            503,
-            {"detail": "The request queue is full."},
-        )
-    # Each close cancels its request, whether it runs or waits in the queue.
-    wait_until_idle(fish_server, 2 * CANCEL_SECONDS)
+    wait_until_idle(fish_server, CANCEL_SECONDS)
 
 
 def test_fish_times_out_a_request_past_its_deadline(
@@ -377,32 +218,7 @@ def test_fish_times_out_a_request_past_its_deadline(
         {"detail": "Speech generation timed out."},
     )
     assert time.monotonic() - started_at >= REQUEST_TIMEOUT_SECONDS
-    wait_until_idle(fish_server)
-
-
-def test_fish_stops_a_stream_its_client_stops_reading_at_its_deadline(
-    fish_server: Server,
-) -> None:
-    # Note (Minyi Tang): seconds of audio fill a 4 KB receive window and the
-    # server's send buffer, so the server's write blocks while generation runs.
-    with open_speech_stream(fish_server, PASSAGE, receive_buffer_bytes=4096):
-        assert request_states(fish_server) == {"running": 1}
-        wait_until_idle(fish_server, REQUEST_TIMEOUT_SECONDS + CANCEL_SECONDS)
-
-
-def test_fish_accepts_any_model_without_a_chosen_name(
-    fish_server: Server,
-) -> None:
-    status, _, _ = speak(
-        fish_server,
-        {
-            "input": "hi",
-            "model": "tts-1",
-            "response_format": "pcm",
-            "max_new_tokens": 1,
-        },
-    )
-    assert status == 200
+    wait_until_idle(fish_server, CANCEL_SECONDS)
 
 
 def test_fish_ignores_unsupported_fields_left_empty(
@@ -438,7 +254,7 @@ def test_fish_clones_a_reference_voice(fish_server: Server, asr_server: Server) 
     assert (status, headers["X-Finish-Reason"]) == (200, "stop")
     # The prompt holds the reference's 21.5 frames a second.
     assert int(headers["X-Prompt-Tokens"]) > 11 * 21
-    heard = transcript_words(asr_server, pcm)
+    heard = transcript_words(asr_server, pcm, SAMPLE_RATE)
     assert word_errors(words(SENTENCE), heard) <= MAX_WORD_ERRORS, heard
 
 
@@ -450,6 +266,15 @@ def test_fish_seed_repeats_its_speech(fish_server: Server) -> None:
     assert first[0] == second[0] == other[0] == 200
     assert first[2] == second[2]
     assert first[2] != other[2]
+
+
+def test_fish_masks_a_seed_to_31_bits(fish_server: Server) -> None:
+    """As the CUDA sampler reads it; a seed past int64 got 400."""
+    body = {"input": "Good morning.", "response_format": "pcm", "max_new_tokens": 8}
+    masked = speak(fish_server, {**body, "seed": 2**31 - 1})
+    unmasked = speak(fish_server, {**body, "seed": 2**64 - 1})
+    assert masked[0] == unmasked[0] == 200
+    assert masked[2] == unmasked[2]
 
 
 def test_fish_refuses_a_rate_it_cannot_resample(fish_server: Server) -> None:
@@ -556,59 +381,24 @@ def test_fish_takes_reference_codes(fish_server: Server) -> None:
     assert int(headers["X-Prompt-Tokens"]) > 20
 
 
-def test_fish_caps_max_new_tokens_as_cuda(fish_server: Server) -> None:
+@pytest.mark.parametrize("max_new_tokens", [100000, 2**64 - 1])
+def test_fish_takes_max_new_tokens_past_its_cap(
+    fish_server: Server, max_new_tokens: int
+) -> None:
+    """The cap applies without an error, as on CUDA, even past int64."""
     status, headers, _ = speak(
         fish_server,
-        {"input": "hi", "response_format": "pcm", "max_new_tokens": 100000},
+        {"input": "hi", "response_format": "pcm", "max_new_tokens": max_new_tokens},
     )
     assert (status, headers["X-Finish-Reason"]) == (200, "stop")
-
-
-def test_fish_trims_and_lowercases_its_response_format(
-    fish_server: Server,
-) -> None:
-    status, headers, _ = speak(
-        fish_server,
-        {"input": "hi", "response_format": "\u3000PCM\u00a0", "max_new_tokens": 1},
-    )
-    assert (status, headers["Content-Type"]) == (200, "audio/pcm")
-
-
-def test_fish_rejects_another_model_than_its_chosen_name() -> None:
-    named_server = Server(
-        "fish_s2_pro_server",
-        "fish_s2_pro",
-        fish_directory(),
-        ("--model-name", CHOSEN_MODEL_NAME),
-    )
-    try:
-        status, _, _ = speak(
-            named_server,
-            {
-                "input": "hi",
-                "model": CHOSEN_MODEL_NAME,
-                "response_format": "pcm",
-                "max_new_tokens": 1,
-            },
-        )
-        assert status == 200
-        status, _, body = speak(named_server, {"input": "hi", "model": "tts-1"})
-        assert (status, json.loads(body)) == (
-            404,
-            {"detail": "Unknown model: tts-1"},
-        )
-    finally:
-        named_server.stop()
 
 
 @pytest.mark.parametrize(
     ("body", "detail"),
     [
-        ([1], "speech request body must be a JSON object"),
         ({"input": "  "}, "input must be a non-empty string"),
         ({"input": "\u3000\u00a0\u2028"}, "input must be a non-empty string"),
         ({"input": "x" * 4097}, "input must be at most 4096 characters"),
-        ({"input": "hi", "model": 5}, "model must be a string"),
         ({"input": "hi", "voice": "nobody"}, "Unknown voice 'nobody'. "),
         ({"input": "hi", "temperature": -1}, "temperature must be a non-negative"),
         ({"input": "hi", "temperature": "hot"}, "temperature must be a number"),
@@ -638,7 +428,6 @@ def test_fish_rejects_another_model_than_its_chosen_name() -> None:
         ),
         ({"input": "hi", "seed": "1"}, "seed must be an integer"),
         ({"input": "hi", "seed": -1}, "seed must be greater than or equal to 0"),
-        ({"input": "hi", "seed": 2**64 - 1}, "seed must be in [-2**63, 2**63 - 1]"),
         (
             {"input": "hi", "ref_audio": wav_data_url(16000), "ref_text": "x" * 2049},
             "reference transcripts must total at most 2048 characters",
@@ -668,6 +457,10 @@ def test_fish_rejects_another_model_than_its_chosen_name() -> None:
         ({"input": "hi", "references": [5]}, "references[0] must be an object"),
         ({"input": "hi", "references": [{}]}, "references[0] has no audio"),
         (
+            {"input": "hi", "references": [{"speaker_embedding": [0.5]}]},
+            "references[0].speaker_embedding is not supported by this model",
+        ),
+        (
             {"input": "hi", "references": [{"audio_path": "/tmp/a.wav"}]},
             "references[0].audio_path is not supported",
         ),
@@ -687,9 +480,6 @@ def test_fish_rejects_another_model_than_its_chosen_name() -> None:
             {"input": "hi", "references": [{"data": "", "text": 5}]},
             "references[0].text must be a string",
         ),
-        ({"input": "hi", "response_format": "mp3"}, "response_format must be one of"),
-        ({"input": "hi", "response_format": "p c m"}, "response_format must be one of"),
-        ({"input": "hi", "stream": True}, "stream=true requires response_format='pcm'"),
         ({"input": "hi", "max_new_tokens": 0}, "max_new_tokens must be greater than 0"),
         ({"input": "hi", "speed": 2.0}, "speed must be 1.0 on this model"),
         ({"input": "hi", "voice": None}, "voice must be a string"),
@@ -698,9 +488,6 @@ def test_fish_rejects_another_model_than_its_chosen_name() -> None:
             {"input": "hi", "voice": None, "speaker": "casual_male"},
             "voice must be a string",
         ),
-        ({"input": "hi", "response_format": None}, "response_format must be a string"),
-        ({"input": "hi", "stream": None}, "stream must be a boolean"),
-        ({"input": "hi", "stream_format": None}, "stream_format must be audio"),
         ({"input": "hi", "speed": None}, "speed must be 1.0 on this model"),
         ({"input": "hi", "references": False}, "references must be a list"),
         ({"input": "hi", "references": {}}, "references must be a list"),
@@ -713,7 +500,7 @@ def test_fish_rejects_another_model_than_its_chosen_name() -> None:
     ],
 )
 def test_fish_rejects_invalid_requests(
-    fish_server: Server, body: object, detail: str
+    fish_server: Server, body: dict[str, object], detail: str
 ) -> None:
     status, response = fish_server.request(
         "POST", "/v1/audio/speech", json.dumps(body).encode()
@@ -737,41 +524,3 @@ def test_fish_refuses_a_declared_body_too_large_without_reading_it(
         {"detail": f"request body must be at most {MAX_REQUEST_BODY_BYTES} bytes"},
     )
     connection.close()
-
-
-@pytest.mark.parametrize(
-    ("body_bytes", "status", "detail"),
-    [
-        (MAX_REQUEST_BODY_BYTES, 400, "input must be at most 4096 characters"),
-        (
-            MAX_REQUEST_BODY_BYTES + 1,
-            413,
-            f"request body must be at most {MAX_REQUEST_BODY_BYTES} bytes",
-        ),
-    ],
-)
-def test_fish_caps_a_chunked_body_it_cannot_size_in_advance(
-    fish_server: Server,
-    body_bytes: int,
-    status: int,
-    detail: str,
-) -> None:
-    prefix = '{"input": "'
-    body = (prefix + "x" * (body_bytes - len(prefix) - 2) + '"}').encode()
-    assert len(body) == body_bytes
-    connection = http.client.HTTPConnection("127.0.0.1", fish_server.port, timeout=60)
-    # Note (Minyi Tang): a body of one chunk is read to its end before the
-    # answer, so the socket closes with nothing unread and is not reset.
-    connection.request("POST", "/v1/audio/speech", body=[body])
-    response = connection.getresponse()
-    assert response.status == status
-    assert json.loads(response.read())["detail"].startswith(detail)
-    connection.close()
-
-
-def test_fish_server_serves_no_transcriptions(fish_server: Server) -> None:
-    # Note (Minyi Tang): civetweb answers a path it does not serve without
-    # reading the request's body, and a socket closed with bytes unread is
-    # reset, which can drop the answer; so the request has no body.
-    status, _ = fish_server.request("POST", "/v1/audio/transcriptions")
-    assert status == 404

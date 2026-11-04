@@ -10,8 +10,9 @@
 // and max_new_tokens fields as its generation metadata, and serves
 // /v1/realtime, where transcription.done answers the sample count appended.
 // stub_speech answers chunks chunks of chunk_samples silent samples. Both
-// read an outcome field: "fail" throws, "block" runs until it is cancelled or
-// its deadline passes, and stub_asr's "segments" returns one speaker segment.
+// read an outcome field: "fail" throws, "block" runs, past any chunks, until it
+// is cancelled or its deadline passes, and stub_asr's "segments" returns one
+// speaker segment.
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -144,16 +145,18 @@ protected:
                          const speech_service::SpeechContext &context) {
       if (outcome == "fail") {
         throw std::runtime_error("stub speech failed");
-      } else if (outcome == "block") {
+      } else {
+      }
+      for (int chunk = 0; chunk < chunk_count; ++chunk) {
+        context.send(std::vector<float>(chunk_sample_count, 0.0f));
+      }
+      if (outcome == "block") {
         while (!context.cancel.load()) {
           context.check_deadline();
           std::this_thread::sleep_for(kBlockPollInterval);
         }
         throw qwen3_asr::TranscriptionCancelled();
       } else {
-      }
-      for (int chunk = 0; chunk < chunk_count; ++chunk) {
-        context.send(std::vector<float>(chunk_sample_count, 0.0f));
       }
       speech_service::SpeechResult result;
       result.finish_reason = qwen3_asr::FinishReason::kStop;

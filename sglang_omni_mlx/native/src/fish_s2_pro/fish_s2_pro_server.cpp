@@ -57,31 +57,17 @@ constexpr double kMaxReferenceSeconds = 60.0;
 constexpr size_t kMaxReferenceCharacters = 2048;
 // Room for 60 s of 48 kHz stereo 16-bit reference audio in base64.
 constexpr size_t kMaxRequestBodyBytes = 16 * 1024 * 1024;
-// Note (Jiaxin Deng): the CUDA server's defaults (stages.py) and its engine's
-// cap on max_new_tokens, which it applies without an error.
-constexpr int kDefaultMaxFrames = 1024;
-constexpr int kMaxFrames = 2048;
 constexpr int kMaxTopK = 30;
 constexpr double kMaxRepetitionPenalty = 2.0;
-constexpr uint32_t kSeedMask = 0x7FFFFFFF;
-// A collection field of CUDA's CreateSpeechRequest and the JSON type it takes.
-struct CollectionField {
-  const char *name;
-  Json::value_t type;
-  const char *type_description;
-};
 // Fields of CUDA's CreateSpeechRequest this model does not use, each counted
 // as given by the CUDA server's rule: text fields when not null or "", flags
-// and counts when not null, and collections when not empty.
+// and counts when not null, and stage_params when not empty.
 constexpr std::array<const char *, 3> kUnsupportedTextFields = {
     "instructions", "language", "task_type"};
 constexpr std::array<const char *, 6> kUnsupportedValueFields = {
     "duration_tokens",     "initial_codec_chunk_frames",
     "stream_codec_output", "suppress_bootstrap_silence",
     "token_count",         "x_vector_only_mode"};
-constexpr std::array<CollectionField, 1> kUnsupportedCollectionFields = {{
-    {"stage_params", Json::value_t::object, "an object"},
-}};
 
 // A reference as the request gives it: its WAV at its own rate, or the codes
 // the client gave, in plain values so that only the worker makes MLX arrays.
@@ -95,7 +81,7 @@ struct ParsedReference {
 struct SpeechRequest {
   std::string text;
   bool stream = false;
-  int max_frames = kDefaultMaxFrames;
+  int max_frames = fish_s2_pro::kDefaultMaxFrames;
   fish_s2_pro::SamplingOptions sampling;
   std::vector<ParsedReference> references;
 };
@@ -116,15 +102,12 @@ void RejectUnsupportedFields(const Json &body) {
     } else {
     }
   }
-  for (const CollectionField &field : kUnsupportedCollectionFields) {
-    const Json value = FieldOr(body, field.name, Json());
-    if (!value.is_null() && value.type() != field.type) {
-      throw std::invalid_argument(std::string(field.name) + " must be " +
-                                  field.type_description);
-    } else if (!value.is_null() && !value.empty()) {
-      given.push_back(field.name);
-    } else {
-    }
+  const Json stage_params = FieldOr(body, "stage_params", Json());
+  if (!stage_params.is_null() && !stage_params.is_object()) {
+    throw std::invalid_argument("stage_params must be an object");
+  } else if (!stage_params.is_null() && !stage_params.empty()) {
+    given.push_back("stage_params");
+  } else {
   }
   if (given.empty()) {
     return;
@@ -218,6 +201,9 @@ ParsedReference ParseReference(const Json &item, int index,
   const std::string field = "references[" + std::to_string(index) + "]";
   if (!item.is_object()) {
     throw std::invalid_argument(field + " must be an object");
+  } else if (!FieldOr(item, "speaker_embedding", Json()).is_null()) {
+    throw std::invalid_argument(field + ".speaker_embedding is not supported "
+                                        "by this model");
   } else {
   }
   ParsedReference reference;
@@ -386,20 +372,20 @@ private:
     } else {
     }
     const Json max_new_tokens =
-        FieldOr(body, "max_new_tokens", Json(kDefaultMaxFrames));
+        FieldOr(body, "max_new_tokens", Json(fish_s2_pro::kDefaultMaxFrames));
     if (!max_new_tokens.is_number_integer()) {
       throw std::invalid_argument("max_new_tokens must be an integer");
     } else if (IsAboveInt64(max_new_tokens)) {
-      request->max_frames = kMaxFrames;
+      request->max_frames = fish_s2_pro::kMaxFrames;
     } else if (max_new_tokens.get<int64_t>() <= 0) {
       throw std::invalid_argument("max_new_tokens must be greater than 0");
     } else {
-      request->max_frames = static_cast<int>(
-          std::min<int64_t>(max_new_tokens.get<int64_t>(), kMaxFrames));
+      request->max_frames = static_cast<int>(std::min<int64_t>(
+          max_new_tokens.get<int64_t>(), fish_s2_pro::kMaxFrames));
     }
 
-    // Note (Jiaxin Deng): the bounds SGLang's SamplingParams.verify and the
-    // CUDA model's top_k check put on these fields.
+    // Note (Jiaxin Deng): temperature, top_p and top_k take the bounds SGLang's
+    // SamplingParams.verify and the CUDA model's top_k check put on them.
     fish_s2_pro::SamplingOptions &sampling = request->sampling;
     const double temperature =
         NumberOr(body, "temperature", sampling.temperature);
@@ -423,6 +409,8 @@ private:
     } else {
     }
     sampling.top_k = top_k.get<int>();
+    // CUDA bounds repetition_penalty nowhere, and its SamplingParams get a
+    // fixed 1.0; this range is this server's.
     const double repetition_penalty =
         NumberOr(body, "repetition_penalty", sampling.repetition_penalty);
     if (!(repetition_penalty > 0.0 &&
@@ -434,17 +422,16 @@ private:
     const Json seed = FieldOr(body, "seed", Json());
     if (seed.is_null()) {
       static thread_local std::mt19937 generator{std::random_device{}()};
-      sampling.seed = static_cast<uint32_t>(generator()) & kSeedMask;
-    } else if (IsAboveInt64(seed)) {
-      throw std::invalid_argument("seed must be in [-2**63, 2**63 - 1]");
-    } else if (seed.is_number_integer() && seed.get<int64_t>() < 0) {
+      sampling.seed =
+          static_cast<uint32_t>(generator()) & fish_s2_pro::kSeedMask;
+    } else if (!seed.is_number_integer()) {
+      throw std::invalid_argument("seed must be an integer");
+    } else if (!seed.is_number_unsigned() && seed.get<int64_t>() < 0) {
       // Note (Jiaxin Deng): as the CUDA server's validate_non_negative_int.
       throw std::invalid_argument("seed must be greater than or equal to 0");
-    } else if (seed.is_number_integer()) {
-      sampling.seed = static_cast<uint32_t>(
-          static_cast<uint64_t>(seed.get<int64_t>()) & kSeedMask);
     } else {
-      throw std::invalid_argument("seed must be an integer");
+      sampling.seed =
+          static_cast<uint32_t>(seed.get<uint64_t>() & fish_s2_pro::kSeedMask);
     }
 
     request->references = ParseReferences(body);
@@ -482,18 +469,12 @@ private:
     }
     const fish_s2_pro::SpeechPrompt prompt =
         model_.BuildPrompt(request.text, references);
-    // Note (Jiaxin Deng): as the CUDA engine, the frames stop where the
-    // prompt and its audio would outrun the model's positions.
-    const int max_frames = std::min(
-        request.max_frames, std::max(model_.max_positions() - 1 -
-                                         static_cast<int>(prompt.ids.size()),
-                                     1));
     fish_s2_pro::VocoderStream stream(model_.codec());
     std::vector<mlx::core::array> frames;
     int frame_count = 0;
     const qwen3_asr::FinishReason finish_reason =
-        model_.Generate(prompt, max_frames, request.sampling, context.cancel,
-                        [&](const mlx::core::array &codes) {
+        model_.Generate(prompt, request.max_frames, request.sampling,
+                        context.cancel, [&](const mlx::core::array &codes) {
                           context.check_deadline();
                           ++frame_count;
                           if (request.stream) {

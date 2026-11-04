@@ -27,6 +27,11 @@ inline constexpr int kResidualCodebookSize = 1024;
 // The buffers MLX keeps for reuse during a request; the worker clears them once
 // idle, so an idle server holds only the model.
 inline constexpr size_t kCacheLimitBytes = 2ULL * 1024 * 1024 * 1024;
+// Note (Jiaxin Deng): the CUDA server's default (stages.py) and its engine's
+// cap on max_new_tokens, which it applies without an error.
+inline constexpr int kDefaultMaxFrames = 1024;
+inline constexpr int kMaxFrames = 2048;
+inline constexpr uint32_t kSeedMask = 0x7FFFFFFF;
 
 // The CUDA server's sampling of the semantic code; seed is the request's
 // seed already masked to 31 bits.
@@ -71,10 +76,10 @@ public:
   SpeechPrompt BuildPrompt(const std::string &text,
                            const std::vector<VoiceReference> &references) const;
 
-  // Generates up to max_frames frames, passing each frame's evaluated int32
-  // codes [codebooks] to on_frame. Stops at <|im_end|>; throws
-  // TranscriptionCancelled once cancel is set, and std::runtime_error when
-  // the prompt and max_frames outrun max_positions().
+  // Generates up to max_frames frames, or as many as fit in max_positions()
+  // after the prompt, passing each frame's evaluated int32 codes [codebooks] to
+  // on_frame. Stops at <|im_end|>; throws TranscriptionCancelled once cancel is
+  // set, and std::runtime_error for a prompt that leaves no position.
   qwen3_asr::FinishReason
   Generate(const SpeechPrompt &prompt, int max_frames,
            const SamplingOptions &sampling, const std::atomic<bool> &cancel,

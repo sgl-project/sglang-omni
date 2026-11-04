@@ -389,7 +389,11 @@ qwen3_asr::FinishReason FishS2ProModel::Generate(
     const std::atomic<bool> &cancel,
     const std::function<void(const mx::array &)> &on_frame) const {
   const int length = static_cast<int>(prompt.ids.size());
-  if (length + max_frames > max_positions_) {
+  // Note (Jiaxin Deng): as the CUDA engine, the frames stop where the prompt
+  // and its audio would outrun the model's positions.
+  const int frame_limit =
+      std::min(max_frames, std::max(max_positions_ - 1 - length, 1));
+  if (length + frame_limit > max_positions_) {
     throw std::runtime_error("the prompt and its audio exceed the model's " +
                              std::to_string(max_positions_) + " positions");
   } else {
@@ -438,7 +442,7 @@ qwen3_asr::FinishReason FishS2ProModel::Generate(
   };
   mx::array candidate_logits = candidates(hidden);
   std::vector<int> history;
-  for (int frame = 0; frame < max_frames; ++frame) {
+  for (int frame = 0; frame < frame_limit; ++frame) {
     if (cancel.load()) {
       throw qwen3_asr::TranscriptionCancelled();
     } else {
@@ -462,7 +466,7 @@ qwen3_asr::FinishReason FishS2ProModel::Generate(
       codes.push_back(code);
     }
     const mx::array frame_codes = mx::concatenate(codes, 0);
-    if (frame + 1 < max_frames) {
+    if (frame + 1 < frame_limit) {
       hidden = Forward(Embed(mx::array({token}, {1, 1}, mx::int32),
                              mx::reshape(frame_codes, {codebook_count_, 1}),
                              mx::array({true})),
