@@ -97,6 +97,13 @@ every `speculative_*` key from the stage's `engine.*` block, whether the
 model's defaults, a config file or the CLI set it, so one setting turns off
 the stage's draft.
 
+The switch relies on one rule: a stage's draft is set only through its
+`engine.speculative_*` keys, and its engine builder reads the draft from the
+overrides, as every current draft does. A draft set under `factory.*`, or
+turned on by an engine builder's own defaults, would stay on. A new drafter
+follows the same rule, including one that is the model's own code rather than
+an SGLang draft worker.
+
 ## Setting Values: YAML and CLI
 
 There are exactly two user-facing spellings of one path language.
