@@ -9,9 +9,12 @@ import wave
 from pathlib import Path
 from types import ModuleType
 
+import librosa
 import numpy as np
 import pybase64
 import pytest
+import torch
+import torchaudio
 
 from sglang_omni.utils import audio
 from sglang_omni.utils.audio import AudioDecodeError, load_audio
@@ -302,10 +305,6 @@ def test_load_audio_fast_path_resamples(monkeypatch) -> None:
 
 
 def test_load_audio_trims_before_resampling() -> None:
-    import librosa
-    import torch
-    import torchaudio
-
     sample_rate = 16000
     tone = np.sin(2 * np.pi * 440 * np.arange(sample_rate // 2) / sample_rate)
     values = np.pad(tone, (sample_rate, sample_rate))

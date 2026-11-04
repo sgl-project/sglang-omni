@@ -289,6 +289,7 @@ def make_fun_asr_scheduler_adapters(
             target_sample_rate=_SAMPLE_RATE,
             max_duration_s=_MAX_AUDIO_DURATION_S,
             max_duration_message=_MAX_AUDIO_DURATION_MESSAGE,
+            resampling_backend="soxr_hq",
         )
         audio = prepared.waveform
         audio_duration_s = prepared.duration_s

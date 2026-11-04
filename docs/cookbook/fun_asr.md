@@ -39,13 +39,23 @@ sgl-omni serve \
 
 ## Server Configuration
 
-Fun-ASR-Nano runs a single ASR stage on one GPU.
+Fun-ASR-Nano runs a single ASR stage on one accelerator.
 
 ```bash
 sgl-omni serve \
   --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf \
   --port 8000
 ```
+
+### Ascend NPU
+
+Prepare the runtime using the [NPU installation guide](../get_started/installation_npu.md), then launch with the NPU configuration:
+
+```bash
+sgl-omni serve --config examples/configs/fun_asr_npu.yaml --port 8000
+```
+
+The configuration uses BF16, Ascend attention, PyTorch sampling, and encoder and language-model graphs. Torch compilation is disabled. Use `--model-path` to select a local checkpoint directory. The stage's `gpu` value selects a logical device among the visible NPUs; for example, `--asr.gpu 1` selects the second visible NPU.
 
 ## Transcribe Audio
 
