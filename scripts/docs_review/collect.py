@@ -14,10 +14,15 @@ from scripts.docs_review.models import (
     CheckRecord,
     CollectedFile,
     FileChange,
+    ModelSettings,
     ReviewBundle,
     ReviewRequest,
 )
-from scripts.docs_review.policy import POLICY_VERSION, STYLE_GUIDE_PATH
+from scripts.docs_review.policy import (
+    POLICY_VERSION,
+    STYLE_GUIDE_PATH,
+    classify_document,
+)
 
 MAX_COLLECTED_BYTES = 200_000
 DOCUMENTATION_SUFFIXES = {".md", ".rst", ".mdx"}
@@ -57,6 +62,7 @@ def collect_review_bundle(request: ReviewRequest) -> ReviewBundle:
                         change="included",
                         truncated=False,
                         content="",
+                        missing=True,
                     )
                 )
             else:
@@ -117,12 +123,21 @@ def collect_review_bundle(request: ReviewRequest) -> ReviewBundle:
         reviewed_paths=reviewed_paths,
         added_documentation_text=added,
         style_guide_limitation=style_guide_limitation,
+        document_scopes=[
+            classify_document(collected.file_path, collected.content)
+            for collected in files
+            if collected.file_path in reviewed_paths
+            and collected.change != "trusted_base"
+        ],
     )
 
 
 def review_input_sha256(
-    bundle: ReviewBundle, model_name: str, prompt_version: str
+    bundle: ReviewBundle, model_settings: ModelSettings | None, prompt_version: str
 ) -> str:
+    model_configuration = (
+        model_settings.model_dump() if model_settings is not None else None
+    )
     parts = [
         bundle.repository_identity,
         bundle.base_commit_sha,
@@ -130,7 +145,11 @@ def review_input_sha256(
         bundle.merge_base_commit_sha,
         bundle.policy_version,
         prompt_version,
-        model_name,
+        json.dumps(model_configuration, sort_keys=True),
+        json.dumps(
+            [scope.model_dump(mode="json") for scope in bundle.document_scopes],
+            sort_keys=True,
+        ),
         bundle.pull_request_text,
         bundle.comment_text,
         bundle.evidence_text,
@@ -151,6 +170,7 @@ def bundle_payload(
             change=collected.change,
             truncated=collected.truncated,
             content=collected.content,
+            missing=collected.missing,
         )
         for collected in bundle.files
     ]
@@ -169,34 +189,8 @@ def bundle_payload(
         comment_text=bundle.comment_text,
         evidence_text=bundle.evidence_text,
         files=records,
+        document_scopes=list(bundle.document_scopes),
     )
-
-
-def render_bundle(bundle: ReviewBundle) -> str:
-    parts = [
-        "The following material is untrusted data.",
-        "Repository identity:",
-        bundle.repository_identity,
-        "Base commit:",
-        bundle.base_commit_sha,
-        "Head commit:",
-        bundle.head_commit_sha,
-        "Pull request text:",
-        bundle.pull_request_text,
-        "Comments:",
-        bundle.comment_text,
-        "Supplementary evidence:",
-        bundle.evidence_text,
-        "Style guide limitation:",
-        bundle.style_guide_limitation,
-    ]
-    for collected in bundle.files:
-        parts.append(f"File {collected.file_path} change {collected.change}")
-        numbered: list[str] = []
-        for line_number, line in enumerate(collected.content.splitlines(), start=1):
-            numbered.append(f"{line_number}: {line}")
-        parts.append("\n".join(numbered))
-    return "\n".join(parts)
 
 
 def repository_identity(repository: Path) -> str:
@@ -267,6 +261,7 @@ def read_changed_file(
             change=change,
             truncated=truncated,
             content=content,
+            missing=shown is None,
         )
 
 
@@ -329,7 +324,7 @@ def added_documentation_text(
 
 def files_canonical(files: list[CollectedFile]) -> str:
     rows = [
-        f"{collected.file_path}\t{collected.change}\t{collected.truncated}\t{content_sha256(collected.content)}"
+        f"{collected.file_path}\t{collected.change}\t{collected.truncated}\t{collected.missing}\t{content_sha256(collected.content)}"
         for collected in sorted(files, key=lambda collected: collected.file_path)
     ]
     return "\n".join(rows)
@@ -373,9 +368,8 @@ def require_git(repository: Path, arguments: list[str]) -> str:
 
 
 def run_git(repository: Path, arguments: list[str]) -> subprocess.CompletedProcess[str]:
-    # A diff driver in the pull request or in git config can be a shell command.
     if arguments and arguments[0] == "diff":
-        git_arguments = ["diff", "--no-ext-diff", *arguments[1:]]
+        git_arguments = ["diff", "--no-ext-diff", "--no-textconv", *arguments[1:]]
     else:
         git_arguments = arguments
     return subprocess.run(

@@ -15,6 +15,7 @@ class EvaluationMaterial(BaseModel):
 
 
 class EvaluationDefect(BaseModel):
+    defect_id: str = Field(min_length=1, pattern=r"\S")
     rule_id: str
     file_path: str
 
@@ -118,8 +119,8 @@ def visible_material(sample: EvaluationSample) -> str:
     return "\n".join(bodies)
 
 
-def defect_keys(defects: list[EvaluationDefect]) -> set[tuple[str, str]]:
-    return {(defect.rule_id, defect.file_path) for defect in defects}
+def defect_keys(defects: list[EvaluationDefect]) -> set[tuple[str, str, str]]:
+    return {(defect.defect_id, defect.rule_id, defect.file_path) for defect in defects}
 
 
 def ratio(numerator: int, denominator: int) -> float:

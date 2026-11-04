@@ -5,10 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -22,28 +19,21 @@ from scripts.docs_review.audit import (
 from scripts.docs_review.collect import (
     bundle_payload,
     collect_review_bundle,
-    render_bundle,
     review_input_sha256,
 )
 from scripts.docs_review.ledger import ReviewLedger
 from scripts.docs_review.models import (
     BundlePayload,
-    CheckView,
     Clock,
     DocumentationReviewer,
     Finding,
-    ModelSettings,
     Report,
     ReviewBundle,
     ReviewRequest,
 )
 from scripts.docs_review.policy import KNOWN_RULE_IDS, read_prompt
-
-MODEL_TIMEOUT_SECONDS = 60
-
-
-class ReviewerError(Exception):
-    """The model call or its response could not be used."""
+from scripts.docs_review.reporting import render_bundle
+from scripts.docs_review.transport import OpenAICompatibleReviewer, ReviewerError
 
 
 class SystemClock:
@@ -51,128 +41,11 @@ class SystemClock:
         return datetime.now(timezone.utc)
 
 
-@dataclass(frozen=True, kw_only=True)
-class ChatMessage:
-    role: str
-    content: str
-
-
-class ChatRequest:
-    """JSON body sent to an OpenAI-compatible chat endpoint."""
-
-    def __init__(
-        self, model_name: str, messages: list[ChatMessage], max_output_tokens: int
-    ) -> None:
-        self.model_name = model_name
-        self.messages = messages
-        self.max_output_tokens = max_output_tokens
-
-    def to_json(self) -> str:
-        return json.dumps(
-            {
-                "model": self.model_name,
-                "messages": [
-                    {"role": message.role, "content": message.content}
-                    for message in self.messages
-                ],
-                "temperature": 0,
-                "max_tokens": self.max_output_tokens,
-            }
-        )
-
-
 @dataclass(kw_only=True)
 class ReviewRun:
     bundle: ReviewBundle
     payload: BundlePayload
     report: Report
-
-
-class OpenAICompatibleReviewer:
-    """Read-only model call. No shell, web search, or GitHub writes."""
-
-    def __init__(self, settings: ModelSettings, prompt_text: str) -> None:
-        self.settings = settings
-        self.prompt_text = prompt_text
-
-    def review(self, bundle_text: str) -> str:
-        request = build_chat_request(bundle_text, self.settings, self.prompt_text)
-        http_request = urllib.request.Request(
-            self.settings.endpoint_url,
-            data=request.to_json().encode(),
-            headers={
-                "Authorization": authorization_header(self.settings),
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(
-                http_request, timeout=MODEL_TIMEOUT_SECONDS
-            ) as response:
-                payload_bytes = response.read()
-        except urllib.error.URLError as error:
-            raise ReviewerError("model request failed") from error
-        else:
-            return parse_chat_content(payload_bytes)
-
-
-def build_chat_request(
-    bundle_text: str, settings: ModelSettings, prompt_text: str
-) -> ChatRequest:
-    return ChatRequest(
-        model_name=settings.model_name,
-        messages=[
-            ChatMessage(role="system", content=prompt_text),
-            ChatMessage(role="user", content=bundle_text),
-        ],
-        max_output_tokens=settings.max_output_tokens,
-    )
-
-
-def authorization_header(settings: ModelSettings) -> str:
-    variable_name = settings.api_key_environment_variable
-    try:
-        secret = os.environ[variable_name]
-    except KeyError as error:
-        raise ReviewerError(
-            f"Missing API key environment variable {variable_name}"
-        ) from error
-    else:
-        return f"Bearer {secret}"
-
-
-def parse_chat_content(payload_bytes: bytes) -> str:
-    try:
-        payload: object = json.loads(payload_bytes)
-    except json.JSONDecodeError as error:
-        raise ReviewerError("model response was not JSON") from error
-    else:
-        pass
-    if not isinstance(payload, dict):
-        raise ReviewerError("model response was not an object")
-    else:
-        pass
-    if "choices" not in payload:
-        raise ReviewerError("model response has no choices")
-    else:
-        choices: object = payload["choices"]
-    if not isinstance(choices, list) or not choices:
-        raise ReviewerError("model response has no choices")
-    else:
-        first: object = choices[0]
-    if not isinstance(first, dict) or "message" not in first:
-        raise ReviewerError("model response has no message")
-    else:
-        message: object = first["message"]
-    if not isinstance(message, dict) or "content" not in message:
-        raise ReviewerError("model response has no content")
-    else:
-        content: object = message["content"]
-    if not isinstance(content, str):
-        raise ReviewerError("model response content was not text")
-    else:
-        return content
 
 
 def run_review(
@@ -187,11 +60,7 @@ def run_review(
     bundle = collect_review_bundle(request)
     prompt_text = read_prompt()
     prompt_version = hashlib.sha256(prompt_text.encode()).hexdigest()
-    if request.model_settings is None:
-        model_name = ""
-    else:
-        model_name = request.model_settings.model_name
-    input_hash = review_input_sha256(bundle, model_name, prompt_version)
+    input_hash = review_input_sha256(bundle, request.model_settings, prompt_version)
     payload = bundle_payload(bundle, prompt_version, input_hash)
     ledger = ReviewLedger(request.ledger_path)
     try:
@@ -379,7 +248,18 @@ def assemble_report(
         combined, bundle
     )
     check_results = interpret_checks(bundle.checks, bundle.head_commit_sha)
-    if model_failed:
+    coverage_limitations = [
+        f"{collected.file_path}: {'missing' if collected.missing else 'truncated'}"
+        for collected in bundle.files
+        if collected.missing or collected.truncated
+    ]
+    if coverage_limitations:
+        incomplete_reason = "; ".join(
+            filter(None, [incomplete_reason, *coverage_limitations])
+        )
+    else:
+        pass
+    if model_failed or coverage_limitations:
         execution = "incomplete"
         outcome = "incomplete"
     elif kept or pre_existing:
@@ -409,6 +289,8 @@ def assemble_report(
         incomplete_reason=incomplete_reason,
         dropped_citation_count=dropped_citations,
         dropped_unsupported_absence_count=dropped_absence,
+        document_scopes=list(bundle.document_scopes),
+        coverage_limitations=coverage_limitations,
     )
 
 
@@ -421,6 +303,12 @@ def validate_findings(
     dropped_absence = 0
     for finding in findings:
         if finding.rule_id not in KNOWN_RULE_IDS:
+            dropped_citations += 1
+        elif any(
+            scope.file_path == finding.file_path
+            and finding.rule_id not in scope.rule_ids
+            for scope in bundle.document_scopes
+        ):
             dropped_citations += 1
         elif not citation_matches(
             bundle,
@@ -493,91 +381,3 @@ def parameter_defined(bundle: ReviewBundle, parameter_name: str) -> bool:
             else:
                 pass
         return False
-
-
-def render_markdown(report: Report) -> str:
-    lines = [
-        "# Documentation review",
-        "",
-        "This report is advisory. It does not approve, merge, or close the pull request.",
-        "",
-        f"Input hash: `{report.review_input_sha256}`",
-        f"Policy: `{report.policy_version}`",
-        f"Base: `{report.base_commit_sha}`",
-        f"Head: `{report.head_commit_sha}`",
-        f"Author confirmation: {report.author_confirmation}",
-        "",
-        "## Reviewed paths",
-        "",
-    ]
-    if report.reviewed_paths:
-        for file_path in report.reviewed_paths:
-            lines.append(f"- `{file_path}`")
-    else:
-        lines.append("- None.")
-    if report.style_guide_limitation:
-        lines.extend(["", "## Style guide", "", report.style_guide_limitation])
-    else:
-        pass
-    lines.extend(["", "## Checks", ""])
-    if report.check_results:
-        for check in report.check_results:
-            lines.append(format_check(check))
-    else:
-        lines.append("No check results were selected. That is not a pass.")
-    lines.extend(["", "## Findings", ""])
-    if report.execution == "incomplete":
-        lines.append(f"This review is incomplete. {report.incomplete_reason}")
-        lines.append("")
-    else:
-        pass
-    lines.extend(format_finding_section(report.findings))
-    lines.extend(["", "## Pre-existing", ""])
-    lines.extend(format_finding_section(report.pre_existing_findings))
-    if (
-        report.execution == "complete"
-        and not report.findings
-        and not report.pre_existing_findings
-    ):
-        lines.extend(["", "No findings."])
-    else:
-        pass
-    if report.dropped_citation_count or report.dropped_unsupported_absence_count:
-        lines.extend(
-            [
-                "",
-                "## Dropped",
-                "",
-                f"Dropped citations: {report.dropped_citation_count}.",
-                f"Dropped unsupported parameter-absence claims: {report.dropped_unsupported_absence_count}.",
-            ]
-        )
-    else:
-        pass
-    return "\n".join(lines) + "\n"
-
-
-def format_check(check: CheckView) -> str:
-    passed = "counted as passed" if check.counted_as_passed else "not counted as passed"
-    return (
-        f"- {check.name}: {check.status.value}, {check.freshness.value}, "
-        f"commit {check.execution_commit_sha}, coverage {check.coverage}, {passed}. {check.explanation}"
-    )
-
-
-def format_finding_section(findings: list[Finding]) -> list[str]:
-    if not findings:
-        return ["None."]
-    else:
-        lines: list[str] = []
-        for finding in findings:
-            lines.append(
-                f"- `{finding.rule_id}` ({finding.certainty}, {finding.change_relation}) "
-                f"`{finding.file_path}`:{finding.line_start}: {finding.claim}"
-            )
-            lines.append(
-                f"  Evidence: `{finding.evidence_file_path}` `{finding.evidence_quote}`"
-            )
-            lines.append(f"  Impact: {finding.impact}")
-            lines.append(f"  Fix: {finding.suggested_fix}")
-        return lines

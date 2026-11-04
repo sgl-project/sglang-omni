@@ -30,7 +30,8 @@ from scripts.docs_review.models import (
     ModelSettings,
     ReviewRequest,
 )
-from scripts.docs_review.review import SystemClock, render_markdown, run_review
+from scripts.docs_review.reporting import render_markdown
+from scripts.docs_review.review import SystemClock, run_review
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -47,7 +48,12 @@ def run_command(argv: list[str] | None) -> int:
     review_parser = subcommands.add_parser("review")
     add_review_arguments(review_parser)
     evaluate_parser = subcommands.add_parser("evaluate")
-    evaluate_parser.add_argument("--dataset", required=True, type=Path)
+    evaluate_parser.add_argument(
+        "--dataset",
+        required=True,
+        type=Path,
+        help="JSON samples with a stable defect_id for each labeled or predicted defect.",
+    )
     evaluate_parser.add_argument("--precision-minimum", required=True, type=float)
     evaluate_parser.add_argument("--recall-minimum", required=True, type=float)
     evaluate_parser.add_argument("--output-directory", required=True, type=Path)

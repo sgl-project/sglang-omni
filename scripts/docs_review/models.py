@@ -36,6 +36,21 @@ class RuleKind(Enum):
     CONTRIBUTOR_CHECKLIST = "contributor_checklist"
 
 
+class DocumentType(Enum):
+    GENERAL = "general"
+    COOKBOOK = "cookbook"
+    API_REFERENCE = "api_reference"
+    DEVELOPER_REFERENCE = "developer_reference"
+    BENCHMARK = "benchmark"
+
+
+class DocumentScope(BaseModel):
+    file_path: str
+    document_types: list[DocumentType]
+    classification_basis: str
+    rule_ids: list[str]
+
+
 FileChange = Literal[
     "added",
     "modified",
@@ -118,6 +133,8 @@ class Report(BaseModel):
     incomplete_reason: str
     dropped_citation_count: int = Field(ge=0)
     dropped_unsupported_absence_count: int = Field(ge=0)
+    document_scopes: list[DocumentScope] = Field(default_factory=list)
+    coverage_limitations: list[str] = Field(default_factory=list)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -126,6 +143,7 @@ class ReviewRule:
     kind: RuleKind
     summary: str
     required_evidence: str
+    document_types: tuple[DocumentType, ...] = tuple(DocumentType)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -134,6 +152,7 @@ class CollectedFile:
     change: FileChange
     truncated: bool
     content: str
+    missing: bool = False
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -151,6 +170,7 @@ class ReviewBundle:
     reviewed_paths: list[str]
     added_documentation_text: str
     style_guide_limitation: str
+    document_scopes: list[DocumentScope] = field(default_factory=list)
 
 
 @dataclass(kw_only=True)
@@ -192,6 +212,7 @@ class BundleFileRecord(BaseModel):
     change: FileChange
     truncated: bool
     content: str
+    missing: bool = False
 
 
 class BundlePayload(BaseModel):
@@ -209,3 +230,4 @@ class BundlePayload(BaseModel):
     comment_text: str
     evidence_text: str
     files: list[BundleFileRecord]
+    document_scopes: list[DocumentScope] = Field(default_factory=list)

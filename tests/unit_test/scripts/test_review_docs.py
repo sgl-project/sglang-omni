@@ -7,7 +7,11 @@ import json
 import subprocess
 import sys
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
+from urllib.request import Request
+
+import pytest
 
 from scripts.docs_review.evaluate import (
     EvaluationDefect,
@@ -22,26 +26,30 @@ from scripts.docs_review.models import (
     CheckFreshness,
     CheckRecord,
     CheckStatus,
+    DocumentType,
     Finding,
     ModelSettings,
     ReviewRequest,
     RuleKind,
 )
 from scripts.docs_review.policy import (
+    API_CONTRACT,
+    ARCHITECTURE_CONSISTENCY,
     CONTRIBUTOR_CHECKLIST,
+    COOKBOOK_RECIPE,
     DOCS_MATCH_CODE,
     KNOWN_RULE_IDS,
     PERFORMANCE_EVIDENCE,
     REVIEW_RULES,
+    classify_document,
     read_prompt,
 )
-from scripts.docs_review.review import (
+from scripts.docs_review.reporting import render_bundle, render_markdown
+from scripts.docs_review.review import ReviewRun, run_review
+from scripts.docs_review.transport import (
     ReviewerError,
-    ReviewRun,
     build_chat_request,
     parse_chat_content,
-    render_markdown,
-    run_review,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -51,9 +59,11 @@ class ScriptedReviewer:
     def __init__(self, responses: list[str]) -> None:
         self.responses = responses
         self.call_count = 0
+        self.bundle_texts: list[str] = []
 
     def review(self, bundle_text: str) -> str:
         self.call_count += 1
+        self.bundle_texts.append(bundle_text)
         response = self.responses[self.call_count - 1]
         if response == "RAISE":
             raise ReviewerError("model failed")
@@ -765,12 +775,22 @@ def test_evaluation_hides_material_after_the_cutoff() -> None:
         sample_id="pr-1",
         review_cutoff_time=cutoff,
         labeled_defects=[
-            EvaluationDefect(rule_id=DOCS_MATCH_CODE, file_path="docs/guide.md"),
-            EvaluationDefect(rule_id=PERFORMANCE_EVIDENCE, file_path="docs/bench.md"),
+            EvaluationDefect(
+                defect_id="first", rule_id=DOCS_MATCH_CODE, file_path="docs/guide.md"
+            ),
+            EvaluationDefect(
+                defect_id="second",
+                rule_id=PERFORMANCE_EVIDENCE,
+                file_path="docs/bench.md",
+            ),
         ],
         predicted_defects=[
-            EvaluationDefect(rule_id=DOCS_MATCH_CODE, file_path="docs/guide.md"),
-            EvaluationDefect(rule_id=DOCS_MATCH_CODE, file_path="docs/other.md"),
+            EvaluationDefect(
+                defect_id="first", rule_id=DOCS_MATCH_CODE, file_path="docs/guide.md"
+            ),
+            EvaluationDefect(
+                defect_id="third", rule_id=DOCS_MATCH_CODE, file_path="docs/other.md"
+            ),
         ],
         materials=[
             EvaluationMaterial(
@@ -797,3 +817,332 @@ def test_evaluation_hides_material_after_the_cutoff() -> None:
     assert "training" in report.limitation
     assert report.meets_precision_threshold is True
     assert report.meets_recall_threshold is True
+
+
+def test_real_reviewer_request_includes_rules_schema_and_produces_a_finding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = tmp_path / "repo"
+    base_commit_sha = start_repository(repository)
+    write_file(
+        repository, "docs/api_reference/audio.md", "# Audio API\n\nReturns WAV.\n"
+    )
+    write_file(repository, "audio.py", "response_format = 'PCM'\n")
+    head_commit_sha = commit_all(repository, "document audio response")
+    finding = Finding(
+        rule_id=API_CONTRACT,
+        file_path="docs/api_reference/audio.md",
+        line_start=3,
+        line_end=3,
+        quote="Returns WAV.",
+        claim="The documented format disagrees with the implementation.",
+        evidence_file_path="audio.py",
+        evidence_line_start=1,
+        evidence_line_end=1,
+        evidence_quote="response_format = 'PCM'",
+        impact="Readers use the wrong decoder.",
+        suggested_fix="Document PCM.",
+        change_relation="introduced",
+        certainty="supported",
+    )
+    captured_requests: list[Request] = []
+
+    def fake_urlopen(request: Request, timeout: int) -> BytesIO:
+        captured_requests.append(request)
+        return BytesIO(
+            json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {"content": finding_json(finding)},
+                            "finish_reason": "stop",
+                        }
+                    ]
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(
+        "scripts.docs_review.transport.urllib.request.urlopen", fake_urlopen
+    )
+    monkeypatch.setenv("DOCS_REVIEW_TEST_KEY", "local-test-secret")
+    request = ReviewRequest(
+        repository=repository,
+        base_commit_sha=base_commit_sha,
+        head_commit_sha=head_commit_sha,
+        pull_request_number=7,
+        pull_request_text=checklist("Document audio."),
+        budget=sample_budget(),
+        model_settings=ModelSettings(
+            model_name="reviewer",
+            endpoint_url="https://example.invalid/chat",
+            max_output_tokens=512,
+            api_key_environment_variable="DOCS_REVIEW_TEST_KEY",
+        ),
+        ledger_path=tmp_path / "ledger.sqlite",
+    )
+    result = run_review(request, None, FixedClock())
+    assert result.report.execution == "complete"
+    assert result.report.findings == [finding]
+    sent_body = captured_requests[0].data
+    assert isinstance(sent_body, bytes)
+    messages = json.loads(sent_body)["messages"]
+    contract = json.loads(messages[0]["content"].split("Trusted review contract:\n")[1])
+    assert {rule["rule_id"] for rule in contract["rules"]} == KNOWN_RULE_IDS
+    properties = contract["output_schema"]["$defs"]["Finding"]
+    assert {"certainty", "change_relation", "evidence_quote"} <= set(
+        properties["required"]
+    )
+    assert "local-test-secret" not in sent_body.decode()
+    assert "api_reference" in messages[1]["content"]
+
+
+@pytest.mark.parametrize(
+    "payload_json",
+    [
+        "null",
+        "{}",
+        '{"choices": []}',
+        '{"choices": [{}]}',
+        '{"choices": [{"message": {"content": null}}]}',
+        '{"choices": [{"message": {"content": 42}}]}',
+        '{"choices": [{"message": {"content": "[]"}, "finish_reason": "length"}]}',
+    ],
+)
+def test_invalid_or_truncated_chat_responses_are_rejected(payload_json: str) -> None:
+    with pytest.raises(ReviewerError):
+        parse_chat_content(payload_json.encode())
+
+
+def test_truncated_document_cannot_produce_a_clean_report(tmp_path: Path) -> None:
+    repository = tmp_path / "repo"
+    base_commit_sha = start_repository(repository)
+    write_file(
+        repository, "docs/guide.md", "# Guide\n" + "Ordinary instructions.\n" * 12_000
+    )
+    head_commit_sha = commit_all(repository, "long guide")
+    reviewer = ScriptedReviewer(["[]"])
+    result = review_change(
+        repository,
+        base_commit_sha,
+        head_commit_sha,
+        tmp_path / "ledger.sqlite",
+        checklist("Add guide."),
+        reviewer,
+    )
+    assert result.report.execution == "incomplete"
+    assert result.report.outcome == "incomplete"
+    assert "docs/guide.md: truncated" in result.report.coverage_limitations
+    assert "truncated=True" in reviewer.bundle_texts[0]
+    assert "No findings." not in render_markdown(result.report)
+    assert "docs/guide.md: truncated" in render_markdown(result.report)
+
+
+def test_missing_selected_evidence_marks_review_incomplete(tmp_path: Path) -> None:
+    repository = tmp_path / "repo"
+    base_commit_sha = start_repository(repository)
+    write_file(repository, "docs/guide.md", "# Guide\n\nInstall the package.\n")
+    head_commit_sha = commit_all(repository, "guide")
+    request = ReviewRequest(
+        repository=repository,
+        base_commit_sha=base_commit_sha,
+        head_commit_sha=head_commit_sha,
+        pull_request_number=7,
+        pull_request_text=checklist("Document install."),
+        budget=sample_budget(),
+        include_paths=["missing.py"],
+        ledger_path=tmp_path / "ledger.sqlite",
+    )
+    result = run_review(request, ScriptedReviewer(["[]"]), FixedClock())
+    assert result.report.execution == "incomplete"
+    assert "missing.py: missing" in result.report.coverage_limitations
+    assert "missing=True" in render_bundle(result.bundle)
+    assert next(
+        record for record in result.payload.files if record.file_path == "missing.py"
+    ).missing
+
+
+def test_collector_disables_textconv_scripts(tmp_path: Path) -> None:
+    repository = tmp_path / "repo"
+    base_commit_sha = start_repository(repository)
+    marker = tmp_path / "converter-ran.txt"
+    write_file(
+        repository,
+        "convert.py",
+        f"from pathlib import Path\nPath({str(marker)!r}).touch()\nprint('converted')\n",
+    )
+    write_file(repository, ".gitattributes", "docs/*.md diff=review_probe\n")
+    write_file(repository, "docs/guide.md", "# Guide\n\nInstall the package.\n")
+    git_command(
+        repository,
+        "config",
+        "diff.review_probe.textconv",
+        f"{sys.executable} convert.py",
+    )
+    head_commit_sha = commit_all(repository, "textconv probe")
+    result = review_change(
+        repository,
+        base_commit_sha,
+        head_commit_sha,
+        tmp_path / "ledger.sqlite",
+        checklist("Document install."),
+        ScriptedReviewer(["[]"]),
+    )
+    assert not marker.exists()
+    assert "Install the package." in result.bundle.added_documentation_text
+
+
+@pytest.mark.parametrize(
+    ("file_path", "content", "expected_types", "expected_rule"),
+    [
+        (
+            "docs/cookbook/model.md",
+            "# Model\n",
+            [DocumentType.COOKBOOK],
+            COOKBOOK_RECIPE,
+        ),
+        (
+            "docs/api_reference/audio.md",
+            "# Audio\n",
+            [DocumentType.API_REFERENCE],
+            API_CONTRACT,
+        ),
+        (
+            "docs/user_guide/serving/speech_api.md",
+            "# Speech\n",
+            [DocumentType.API_REFERENCE],
+            API_CONTRACT,
+        ),
+        (
+            "docs/developer_reference/scheduler.md",
+            "# Scheduler\n",
+            [DocumentType.DEVELOPER_REFERENCE],
+            ARCHITECTURE_CONSISTENCY,
+        ),
+        (
+            "docs/benchmarks/audio.md",
+            "# Audio\n",
+            [DocumentType.BENCHMARK],
+            PERFORMANCE_EVIDENCE,
+        ),
+        (
+            "docs/other.md",
+            "# API reference\n",
+            [DocumentType.API_REFERENCE],
+            API_CONTRACT,
+        ),
+        (
+            "docs/other.rst",
+            "Architecture\n============\n",
+            [DocumentType.DEVELOPER_REFERENCE],
+            ARCHITECTURE_CONSISTENCY,
+        ),
+        (
+            "docs/cookbook/model.md",
+            "# Model\n\n## Benchmark\n",
+            [DocumentType.COOKBOOK, DocumentType.BENCHMARK],
+            PERFORMANCE_EVIDENCE,
+        ),
+        ("docs/other.md", "# Notes\n", [DocumentType.GENERAL], DOCS_MATCH_CODE),
+    ],
+)
+def test_document_type_selects_applicable_rules(
+    file_path: str, content: str, expected_types: list[DocumentType], expected_rule: str
+) -> None:
+    scope = classify_document(file_path, content)
+    assert scope.document_types == expected_types
+    assert expected_rule in scope.rule_ids
+    if DocumentType.BENCHMARK not in expected_types:
+        assert PERFORMANCE_EVIDENCE not in scope.rule_ids
+    else:
+        pass
+
+
+def test_report_contains_mixed_and_unknown_document_scopes(tmp_path: Path) -> None:
+    repository = tmp_path / "repo"
+    base_commit_sha = start_repository(repository)
+    write_file(repository, "docs/cookbook/audio.md", "# Audio\n\n## Benchmark\n")
+    write_file(repository, "docs/notes.md", "# Notes\n\nInstall the package.\n")
+    head_commit_sha = commit_all(repository, "mixed scopes")
+    result = review_change(
+        repository,
+        base_commit_sha,
+        head_commit_sha,
+        tmp_path / "ledger.sqlite",
+        checklist("Add docs."),
+        ScriptedReviewer(["[]"]),
+    )
+    by_path = {scope.file_path: scope for scope in result.report.document_scopes}
+    assert by_path["docs/cookbook/audio.md"].document_types == [
+        DocumentType.COOKBOOK,
+        DocumentType.BENCHMARK,
+    ]
+    assert PERFORMANCE_EVIDENCE in by_path["docs/cookbook/audio.md"].rule_ids
+    assert by_path["docs/notes.md"].document_types == [DocumentType.GENERAL]
+    assert "undetermined" in by_path["docs/notes.md"].classification_basis
+    assert result.payload.document_scopes == result.report.document_scopes
+    assert "cookbook, benchmark" in render_markdown(result.report)
+    assert "PERFORMANCE_EVIDENCE" in render_bundle(result.bundle)
+
+
+@pytest.mark.parametrize("changed_field", ["endpoint_url", "max_output_tokens"])
+def test_model_configuration_change_invalidates_cached_report(
+    tmp_path: Path, changed_field: str
+) -> None:
+    repository = tmp_path / "repo"
+    base_commit_sha = start_repository(repository)
+    write_file(repository, "docs/guide.md", "# Guide\n\nInstall the package.\n")
+    head_commit_sha = commit_all(repository, "guide")
+    settings = ModelSettings(
+        model_name="reviewer",
+        endpoint_url="https://example.invalid/one",
+        max_output_tokens=512,
+        api_key_environment_variable="TEST_KEY",
+    )
+    request = ReviewRequest(
+        repository=repository,
+        base_commit_sha=base_commit_sha,
+        head_commit_sha=head_commit_sha,
+        pull_request_number=7,
+        pull_request_text=checklist("Document install."),
+        budget=sample_budget(),
+        model_settings=settings,
+        ledger_path=tmp_path / "ledger.sqlite",
+    )
+    reviewer = ScriptedReviewer(["[]", "[]"])
+    first = run_review(request, reviewer, FixedClock())
+    cached = run_review(request, reviewer, FixedClock())
+    assert cached.report.review_input_sha256 == first.report.review_input_sha256
+    assert reviewer.call_count == 1
+    if changed_field == "endpoint_url":
+        settings.endpoint_url = "https://example.invalid/two"
+    else:
+        settings.max_output_tokens = 1024
+    request.follow_up_authorized = True
+    second = run_review(request, reviewer, FixedClock())
+    assert second.report.review_input_sha256 != first.report.review_input_sha256
+    assert reviewer.call_count == 2
+
+
+def test_evaluation_counts_distinct_defects_in_the_same_file() -> None:
+    first = EvaluationDefect(
+        defect_id="parameter-a", rule_id=DOCS_MATCH_CODE, file_path="docs/api.md"
+    )
+    second = EvaluationDefect(
+        defect_id="parameter-b", rule_id=DOCS_MATCH_CODE, file_path="docs/api.md"
+    )
+    sample = EvaluationSample(
+        sample_id="pr-1",
+        review_cutoff_time=datetime(2026, 11, 5, tzinfo=timezone.utc),
+        labeled_defects=[first, second],
+        predicted_defects=[first, first],
+        materials=[],
+    )
+    report = evaluate_samples(
+        [sample], EvaluationThresholds(precision_minimum=0.9, recall_minimum=0.9)
+    )
+    assert report.true_positive_count == 1
+    assert report.false_negative_count == 1
+    assert report.labeled_defect_count == 2
+    assert report.recall == 0.5
+    assert not report.meets_recall_threshold
