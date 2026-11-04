@@ -692,17 +692,57 @@ def test_qwen3_asr_stage_import_without_dflash() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("platform", "tp_size", "algorithm", "message"),
+    [
+        ("cpu", 1, "DFLASH", "one CUDA GPU or Ascend NPU"),
+        ("mps", 1, "DFLASH", "one CUDA GPU or Ascend NPU"),
+        ("cuda", 2, "DFLASH", "one CUDA GPU or Ascend NPU"),
+        ("npu", 2, "DFLASH", "one CUDA GPU or Ascend NPU"),
+        ("npu", 1, "EAGLE3", "supports DFLASH only"),
+    ],
+)
+def test_qwen3_asr_dflash_rejects_unsupported_runtime_before_loading_draft(
+    monkeypatch: pytest.MonkeyPatch,
+    platform: str,
+    tp_size: int,
+    algorithm: str,
+    message: str,
+) -> None:
+    monkeypatch.setattr(
+        qwen3_asr_builder.current_platform, "is_cuda", lambda: platform == "cuda"
+    )
+    monkeypatch.setattr(
+        qwen3_asr_builder.current_platform, "is_npu", lambda: platform == "npu"
+    )
+    builder = make_engine_builder()
+    with pytest.raises(ValueError, match=message):
+        builder.adjust_overrides(
+            {"speculative_algorithm": algorithm, "tp_size": tp_size}
+        )
+    assert builder.draft_checkpoint is None
+
+
+@pytest.mark.parametrize("platform", ["cuda", "npu"])
 @pytest.mark.parametrize("non_causal", [False, True])
 def test_qwen3_asr_dflash_build_uses_sync_runtime_and_cleans_resources(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, non_causal: bool
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, non_causal: bool, platform: str
 ) -> None:
     """DFlash must release its temporary checkpoint after both successful and failed builds."""
     # note (WilsonZheng0327): Only DFlash tests require the Triton-dependent worker.
     from sglang_omni.speculative.dflash_draft import ReducedVocabularyDFlashWorker
 
     recorded = patch_engine_dependencies(monkeypatch, want_cuda_graph=True)
-    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: True)
+    monkeypatch.setattr(
+        qwen3_asr_builder.current_platform, "is_cuda", lambda: platform == "cuda"
+    )
+    monkeypatch.setattr(
+        qwen3_asr_builder.current_platform, "is_npu", lambda: platform == "npu"
+    )
     monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cpu", lambda: False)
+    monkeypatch.setenv("PER_STREAM_QUEUE", "1")
+    monkeypatch.setenv("TASK_QUEUE_ENABLE", "1")
+    monkeypatch.delenv("ASCEND_LAUNCH_BLOCKING", raising=False)
     source_config = {
         "speculators_model_type": "dflash",
         "sample_from_anchor": False,

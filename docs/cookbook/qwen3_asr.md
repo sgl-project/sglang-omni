@@ -172,6 +172,26 @@ sgl-omni serve \
 
 DFlash requires greedy decoding (`temperature=0`), uses synchronous scheduling, and retains CUDA graphs. Realtime sessions are not validated.
 
+### Experimental Ascend NPU validation
+
+The shared DFlash worker has an Ascend path, but the checkpoint pinned in this example has not yet been qualified on NPU. Start with the single-device eager configuration below to check the draft's hidden states, checkpoint attention semantics and accepted-token/KV handoff before testing graphs or concurrency. Follow the [NPU installation guide](../get_started/installation_npu.md) for the supported stack; this example does not enable DFlash by default.
+
+```bash
+sgl-omni serve \
+  --config examples/configs/qwen3_asr_1_7b_dflash_npu.yaml \
+  --port 8000
+```
+
+The NPU example disables encoder and generation graphs and Torch Compile, sets both target and draft attention to `ascend`, and limits running requests to one. The builder keeps the existing greedy-only, synchronous DFlash scheduling policy. These settings define the initial validation scope; graph, overlap, realtime and higher-concurrency support remain unqualified. Direct factory callers must pass the same engine overrides and `enable_encoder_cuda_graph=False`; the launcher loads them from the example.
+
+Set `speculative_draft_attention_backend: ascend` explicitly on NPU, including for direct factory calls. For this initial validation, keep the effective engine `context_length` at or below the pinned draft's 32,768-token sliding window, including the audio/text prefix and verification reserve; do not increase it to the draft's larger `max_position_embeddings`. The current builder's default context fits within this bound with its default output budget, but an explicit context override or a larger `max_new_tokens` floor can exceed it. Full-context causal attention and sliding-window attention agree only while all visible keys fit in the window, so this bounded run cannot qualify window eviction or longer contexts.
+
+The pinned draft is causal (`sliding_window_non_causal=false`). Check that the converted configuration retains causal attention; only a checkpoint declaring `sliding_window_non_causal=true` should produce `is_causal=false`. A 32k-vocabulary draft is a separate weight identity from the pinned 48k-vocabulary draft, and vocabulary size does not determine the attention window. Record its own revision, config and weight hashes before using its results to qualify a configuration.
+
+The target is the ordinary `Qwen/Qwen3-ASR-1.7B` checkpoint, which can be reused if already present. DFlash additionally loads `wilsonzheng0327/Qwen3-ASR-1.7B-dflash` at the revision pinned in the example (about 726 MB of weights). The 0.6B draft is not interchangeable with the 1.7B target. No retraining or NPU-specific weight conversion is required by this integration: the shared loader writes a temporary flat configuration and links the original safetensors, including the draft's trained output head and token mapping. Supply local target/draft snapshot paths for an offline server; use `--asr.engine.speculative_draft_model_path` for the draft path. The temporary configuration is released after engine construction, including build failures; the original weight cache is retained.
+
+The [NPU DFlash validation packet](../../scripts/npu/DFLASH_VALIDATION.md) defines the initial server checks and required evidence. An eager pass does not qualify NPU graphs or demonstrate a speedup.
+
 ## Transcribe Audio
 
 ```bash
