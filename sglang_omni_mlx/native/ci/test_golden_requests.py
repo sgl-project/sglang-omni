@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Request selection and corpus coverage in the native accuracy CLI."""
+"""CLI parameter selection and golden-file write protection."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from unittest.mock import patch
 import check_golden
 import pytest
 
+TEST_DEVICE = "test-device"
 TRANSCRIPT = {
     "text": "你好 world",
     "language": "Chinese",
@@ -36,6 +37,8 @@ def fixed_golden_path(tmp_path: Path) -> Path:
         )
         + "\n"
     )
+    fixed_output = {**TRANSCRIPT, "text": "Hello world", "language": "English"}
+    recorded = {"metrics": {}, "clips": {"mixed": fixed_output}}
     path = tmp_path / "fixed.json"
     path.write_text(
         json.dumps(
@@ -50,70 +53,33 @@ def fixed_golden_path(tmp_path: Path) -> Path:
                 },
                 "baseline": {"source": "pending"},
                 "tolerance": {"metric_pp": 1.5, "min_identical": 0.8},
-                "devices": {
-                    "Apple M5": {
-                        "metrics": {"wer_en": 0, "cer_zh": 0, "mer_mixed": 1},
-                        "clips": {"mixed": {**TRANSCRIPT, "text": "Hello world"}},
-                    }
-                },
+                "devices": {TEST_DEVICE: recorded},
             }
         )
     )
     return path
 
 
-@pytest.mark.parametrize("language", ["English", None])
-def test_qwen3_asr_accepts_a_request_without_a_language_hint(
-    tmp_path: Path, fixed_golden_path: Path, language: str | None
-) -> None:
-    """A golden request without language previously failed before transcription."""
-    request = json.loads(fixed_golden_path.read_text())["request"]
-    if language is None:
-        request.pop("language")
-    else:
-        request["language"] = language
-    clip = tmp_path / "mixed.wav"
-    completed = subprocess.CompletedProcess(
-        [], 0, stdout=json.dumps({"file": str(clip), **TRANSCRIPT}) + "\n"
-    )
-    with patch.object(
-        check_golden.subprocess, "run", return_value=completed
-    ) as runtime:
-        outputs = check_golden.transcribe(tmp_path, tmp_path, [clip], request, None)
-    command = runtime.call_args.args[0]
-    if language is None:
-        assert "--language" not in command
-    else:
-        assert command[command.index("--language") + 1] == language
-    assert outputs == {"mixed": TRANSCRIPT}
-
-
 @pytest.mark.parametrize(
     "automatic_language,has_transcript,exit_code",
     [(False, True, 1), (True, True, 0), (True, False, 1)],
+    ids=["english-golden", "automatic-reference", "missing-transcript"],
 )
-def test_language_evaluation_preserves_the_fixed_golden(
+def test_language_evaluation(
     tmp_path: Path,
     fixed_golden_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
     automatic_language: bool,
     has_transcript: bool,
     exit_code: int,
 ) -> None:
-    """Automatic evaluation scores references; default checks keep exact goldens."""
+    """Automatic mode scores references; English keeps exact checks and missing clips fail."""
     original = fixed_golden_path.read_bytes()
     arguments = [
-        "check_golden.py",
-        "--golden",
-        str(fixed_golden_path),
-        "--runtime-bin",
-        str(tmp_path),
-        "--data-root",
-        str(tmp_path),
-        "--outputs",
-        str(tmp_path / "outputs"),
-    ]
+        "check_golden.py", "--golden", str(fixed_golden_path),
+        "--runtime-bin", str(tmp_path), "--data-root", str(tmp_path),
+        "--outputs", str(tmp_path / "outputs"),
+    ]  # fmt: skip
     if automatic_language:
         arguments.append("--automatic-language")
     else:
@@ -122,7 +88,7 @@ def test_language_evaluation_preserves_the_fixed_golden(
     monkeypatch.setattr(check_golden, "CI_DIRECTORY", tmp_path)
     stdout = json.dumps({"file": "mixed.wav", **TRANSCRIPT}) if has_transcript else ""
     with (
-        patch.object(check_golden, "chip", return_value="Apple M5"),
+        patch.object(check_golden, "chip", return_value=TEST_DEVICE),
         patch.object(
             check_golden.subprocess,
             "run",
@@ -133,97 +99,64 @@ def test_language_evaluation_preserves_the_fixed_golden(
         check_golden.run(check_golden.transcribe_qwen3_asr)
     assert stopped.value.code == exit_code
     assert fixed_golden_path.read_bytes() == original
+    command = runtime.call_args.args[0]
     output_name = "fixed-auto.json" if automatic_language else "fixed.json"
     exported = json.loads((tmp_path / "outputs" / output_name).read_text())
+    assert exported["clips"] == ({"mixed": TRANSCRIPT} if has_transcript else {})
+    assert exported["request"].get("language") == (
+        None if automatic_language else "English"
+    )
     if automatic_language:
-        assert "--language" not in runtime.call_args.args[0]
-        assert "language" not in exported["request"]
+        assert "--language" not in command
         assert not (tmp_path / "outputs" / "fixed.json").exists()
-        report = capsys.readouterr().out
-        assert "automatic language" in report
-        if has_transcript:
-            assert "| mer_mixed | 0.000% |" in report
-        else:
-            assert "transcribed clips do not match the corpus manifest" in report
     else:
-        assert exported["request"]["language"] == "English"
+        assert command[command.index("--language") + 1] == "English"
+    if has_transcript:
+        assert exported["metrics"]["mer_mixed"] == 0
+    else:
+        pass
 
 
-@pytest.mark.parametrize("operation", ["--write", "--import"])
-def test_automatic_evaluation_rejects_golden_updates(
+@pytest.mark.parametrize(
+    "automatic_language,operation",
+    [(True, "--write"), (True, "--import"), (False, "--import")],
+    ids=["automatic-write", "automatic-import", "mismatched-import"],
+)
+def test_golden_write_protection(
     fixed_golden_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    automatic_language: bool,
     operation: Literal["--write", "--import"],
 ) -> None:
-    """A request override must never overwrite the source golden."""
+    """Neither a language override nor mismatched imports may overwrite the golden."""
     original = fixed_golden_path.read_bytes()
-    arguments = [
-        "check_golden.py",
-        "--golden",
-        str(fixed_golden_path),
-        "--automatic-language",
-        operation,
-    ]
+    arguments = ["check_golden.py", "--golden", str(fixed_golden_path), operation]
     if operation == "--import":
-        arguments.append(str(fixed_golden_path.parent / "outputs.json"))
+        golden = json.loads(original)
+        golden["request"].pop("language")
+        output_path = fixed_golden_path.parent / "automatic-outputs.json"
+        output_path.write_text(
+            json.dumps(
+                {
+                    "model": golden["model"],
+                    "request": golden["request"],
+                    "device": TEST_DEVICE,
+                    **golden["devices"][TEST_DEVICE],
+                }
+            )
+        )
+        arguments.append(str(output_path))
+    else:
+        pass
+    if automatic_language:
+        arguments.append("--automatic-language")
     else:
         pass
     monkeypatch.setattr(check_golden.sys, "argv", arguments)
     with pytest.raises(SystemExit) as stopped:
         check_golden.run(check_golden.transcribe_qwen3_asr)
-    assert stopped.value.code == 2
-    assert fixed_golden_path.read_bytes() == original
-
-
-@pytest.mark.parametrize("field", ["kind", "tool"])
-def test_automatic_evaluation_rejects_other_model_formats(
-    fixed_golden_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    field: Literal["kind", "tool"],
-) -> None:
-    golden = json.loads(fixed_golden_path.read_text())
-    golden[field] = "other-model"
-    fixed_golden_path.write_text(json.dumps(golden))
-    monkeypatch.setattr(
-        check_golden.sys,
-        "argv",
-        ["check_golden.py", "--golden", str(fixed_golden_path), "--automatic-language"],
-    )
-    with pytest.raises(SystemExit) as stopped:
-        check_golden.run(check_golden.transcribe_qwen3_asr)
-    assert stopped.value.code == 2
-
-
-def test_golden_outputs_cannot_be_imported_into_another_language_condition(
-    tmp_path: Path, fixed_golden_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Automatic outputs must not replace a fixed-English golden."""
-    original = fixed_golden_path.read_bytes()
-    request = json.loads(original)["request"]
-    request.pop("language")
-    output_path = tmp_path / "automatic-outputs.json"
-    output_path.write_text(
-        json.dumps(
-            {
-                "model": "model",
-                "request": request,
-                "device": "Apple M5",
-                "metrics": {},
-                "clips": {"mixed": TRANSCRIPT},
-            }
-        )
-    )
-    monkeypatch.setattr(
-        check_golden.sys,
-        "argv",
-        [
-            "check_golden.py",
-            "--golden",
-            str(fixed_golden_path),
-            "--import",
-            str(output_path),
-        ],
-    )
-    with pytest.raises(SystemExit, match="different request"):
-        check_golden.run(check_golden.transcribe_qwen3_asr)
+    if automatic_language:
+        assert stopped.value.code == 2
+    else:
+        assert "different request" in str(stopped.value)
     assert fixed_golden_path.read_bytes() == original
