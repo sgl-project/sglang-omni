@@ -19,19 +19,6 @@ enum TranscriptionHistoryConversationSupport {
         return now.timeIntervalSince(lastUpdatedAt) <= continuationTimeout
     }
 
-    static func mergedTranscriptText(existing: String, incoming: String) -> String {
-        let trimmedExisting = existing.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedIncoming = incoming.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if trimmedExisting.isEmpty {
-            return trimmedIncoming
-        }
-        if trimmedIncoming.isEmpty {
-            return trimmedExisting
-        }
-        return "\(trimmedExisting)\n\(trimmedIncoming)"
-    }
-
     static func mergedChatMessages(
         for entry: TranscriptionHistoryEntry,
         appendingTranscript text: String,

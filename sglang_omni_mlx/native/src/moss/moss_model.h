@@ -48,7 +48,7 @@ private:
   float adaptor_norm_eps_ = 0.0f;
   int audio_token_id_ = 0;
   int audio_merge_size_ = 0;
-  qwen3_asr::Checkpoint checkpoint_;
+  omni_common::Checkpoint checkpoint_;
   qwen3_asr::Qwen3Decoder decoder_;
 };
 

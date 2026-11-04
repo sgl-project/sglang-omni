@@ -70,10 +70,6 @@ final class VoxtNotificationStore: ObservableObject {
         userDefaults.set(Array(viewedNotificationIDs), forKey: Self.viewedNotificationIDsKey)
     }
 
-    func refreshIfNeeded() async {
-        await refresh()
-    }
-
     func refresh(force: Bool = false) async {
         guard !isLoading else { return }
 

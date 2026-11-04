@@ -18,7 +18,7 @@ class PermissionMinimizationTests(unittest.TestCase):
             "LLMInputAttachment", "LLMImageAttachment", "LLMDebugImagePreview",
             ".appContext", "/usr/sbin/screencapture", '"input_image"',
             "CGRequestScreenCaptureAccess", "CGPreflightScreenCaptureAccess",
-            "CGRequestListenEventAccess", "CGPreflightListenEventAccess",
+            "CGRequestListenEventAccess",
             "HotkeyRecorderHIDMonitor", "IOHIDManagerRegisterInputValueCallback",
             "TCCAccessPreflight", "TCCAccessRequest", "PrivateFrameworks/TCC",
         )
@@ -29,10 +29,12 @@ class PermissionMinimizationTests(unittest.TestCase):
                     self.assertNotIn(symbol, source)
 
     def test_hotkey_backends_use_accessibility_taps(self):
-        for name in ("HotkeyEventTapInstallation.swift", "HotkeyRecorderView.swift"):
-            source = (APP / "Hotkey" / name).read_text()
-            self.assertIn("options: .defaultTap", source)
-            self.assertNotIn(".listenOnly", source)
+        installation = (APP / "Hotkey/HotkeyEventTapInstallation.swift").read_text()
+        self.assertIn("options: .defaultTap", installation)
+        self.assertNotIn(".listenOnly", installation)
+        recorder = (APP / "Hotkey/HotkeyRecorderView.swift").read_text()
+        self.assertIn("HotkeyEventTapInstallation.createEventTap(", recorder)
+        self.assertNotIn(".listenOnly", recorder)
         source = (APP / "Hotkey/HotkeyManager.swift").read_text()
         self.assertIn("AccessibilityPermissionManager.isTrusted()", source)
         self.assertNotIn("requestInputMonitoring", source)

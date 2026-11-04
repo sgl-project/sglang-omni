@@ -3,11 +3,6 @@
 
 import SwiftUI
 
-struct ModelSettingsProviderOption: Identifiable {
-    let id: String
-    let title: String
-}
-
 enum ModelSettingsPromptVariables {
     static let enhancement = [
         PromptTemplateVariableDescriptor(
@@ -172,100 +167,5 @@ struct ResettablePromptSection: View {
         } else {
             text = defaultText
         }
-    }
-}
-
-struct ModelTaskSettingsCard: View {
-    let title: LocalizedStringKey
-    let providerPickerTitle: LocalizedStringKey
-    let providerOptions: [ModelSettingsProviderOption]
-    @Binding var selectedProviderID: String
-    let modelLabelText: String
-    let modelPickerTitle: LocalizedStringKey
-    let modelOptions: [TranslationModelOption]
-    let selectedModelBinding: Binding<String>
-    let modelDisplayText: String?
-    let emptyStateText: String
-    let statusMessage: String?
-    let statusIsWarning: Bool
-    let promptTitle: LocalizedStringKey
-    @Binding var promptText: String
-    let defaultPromptText: String
-    let variables: [PromptTemplateVariableDescriptor]
-    let promptGuidance: String
-
-    var body: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(title)
-                    .font(.headline)
-
-                HStack(alignment: .center, spacing: 12) {
-                    SettingsMenuPicker(
-                        selection: $selectedProviderID,
-                        options: providerOptions.map { provider in
-                            SettingsMenuOption(value: provider.id, title: provider.title)
-                        },
-                        selectedTitle: selectedProviderTitle,
-                        width: 236
-                    )
-
-                    if let modelDisplayText {
-                        Text(modelDisplayText)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .settingsFieldSurface(minHeight: 34, horizontalPadding: 12)
-                    } else if modelOptions.isEmpty {
-                        Text(AppLocalization.localizedString("Not available"))
-                            .foregroundStyle(.tertiary)
-                            .settingsFieldSurface(minHeight: 34, horizontalPadding: 12)
-                    } else {
-                        SettingsMenuPicker(
-                            selection: selectedModelBinding,
-                            options: modelOptions.map { option in
-                                SettingsMenuOption(value: option.id, title: option.title)
-                            },
-                            selectedTitle: selectedModelTitle,
-                            width: 260
-                        )
-                        .id("model-picker-\(selectedProviderID)")
-                    }
-                }
-
-                if modelOptions.isEmpty {
-                    Text(emptyStateText)
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-
-                if let statusMessage {
-                    Text(statusMessage)
-                        .font(.caption)
-                        .foregroundStyle(statusIsWarning ? .orange : .secondary)
-                }
-
-                ResettablePromptSection(
-                    title: promptTitle,
-                    text: $promptText,
-                    defaultText: defaultPromptText,
-                    variables: variables,
-                    guidance: promptGuidance,
-                    variablesTitle: PromptAuthoringGuidance.optionalVariablesTitle
-                )
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-}
-
-private extension ModelTaskSettingsCard {
-    var selectedProviderTitle: String {
-        providerOptions.first(where: { $0.id == selectedProviderID }).map(\.title)
-            ?? selectedProviderID
-    }
-
-    var selectedModelTitle: String {
-        modelOptions.first(where: { $0.id == selectedModelBinding.wrappedValue })?.title
-            ?? selectedModelBinding.wrappedValue
     }
 }

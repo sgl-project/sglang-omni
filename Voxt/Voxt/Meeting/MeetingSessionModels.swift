@@ -102,17 +102,6 @@ enum MeetingCaptureMode: String, Codable, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    var detailBadgeTitle: String {
-        switch self {
-        case .meeting:
-            return AppLocalization.localizedString("Meeting Mode")
-        case .subtitles:
-            return AppLocalization.localizedString("Subtitles Mode")
-        case .recording:
-            return AppLocalization.localizedString("Recording Mode")
-        }
-    }
-
     var accessibilityDescription: String {
         switch self {
         case .meeting:
@@ -201,10 +190,6 @@ struct MeetingModeCapabilities: Equatable, Sendable {
         case (.recording, .systemAudio):
             return .them
         }
-    }
-
-    nonisolated func shouldRunRealtimeDiarization(for source: TranscriptAudioSource) -> Bool {
-        realtimeDiarizationSources.contains(source)
     }
 
     nonisolated func shouldRunFinalDiarization(for source: TranscriptAudioSource) -> Bool {

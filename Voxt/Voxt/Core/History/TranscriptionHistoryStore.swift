@@ -17,11 +17,6 @@ final class TranscriptionHistoryStore: ObservableObject {
     private var nextPageRequestGeneration = 0
     private var isLoadingNextPage = false
     private let pageSize = 40
-    private let retentionCleanupKinds: Set<TranscriptionHistoryKind> = [
-        .normal,
-        .translation,
-        .rewrite
-    ]
 
     private let fileManager = FileManager.default
     private let defaults = UserDefaults.standard
@@ -494,12 +489,10 @@ final class TranscriptionHistoryStore: ObservableObject {
         var didChange = false
         for (historyID, correctedTerms) in correctedTermsByHistoryID {
             guard let existingEntry = entry(id: historyID) else { continue }
-            let merged = mergeUniqueTerms(
-                existing: existingEntry.dictionaryCorrectedTerms,
+            guard let updatedEntry = HistoryEntryPolicy.mergingCorrectedTerms(
+                for: existingEntry,
                 incoming: correctedTerms
-            )
-            guard merged != existingEntry.dictionaryCorrectedTerms else { continue }
-            let updatedEntry = existingEntry.updatingDictionaryCorrectedTerms(merged)
+            ) else { continue }
             cacheUpdatedEntry(updatedEntry)
             persistEntry(updatedEntry)
             didChange = true
@@ -518,27 +511,13 @@ final class TranscriptionHistoryStore: ObservableObject {
     ) {
         guard let existingEntry = entry(id: historyID) else { return }
 
-        let trimmedUpdatedText = updatedText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let mergedTerms = mergeUniqueTerms(
-            existing: existingEntry.dictionaryCorrectedTerms,
-            incoming: correctedTerms
-        )
-        let mergedSnapshots = mergeCorrectionSnapshots(
-            existing: existingEntry.dictionaryCorrectionSnapshots,
-            incoming: correctionSnapshots
-        )
-
-        guard !trimmedUpdatedText.isEmpty else { return }
-        let didTextChange = trimmedUpdatedText != existingEntry.text
-        let didTermsChange = mergedTerms != existingEntry.dictionaryCorrectedTerms
-        let didSnapshotsChange = mergedSnapshots != existingEntry.dictionaryCorrectionSnapshots
-        guard didTextChange || didTermsChange || didSnapshotsChange else { return }
-
-        let updatedEntry = existingEntry.updatingDictionaryCorrectionResult(
-            text: trimmedUpdatedText,
-            dictionaryCorrectedTerms: mergedTerms,
-            dictionaryCorrectionSnapshots: mergedSnapshots
-        )
+        guard let updatedEntry = HistoryEntryPolicy.correctionResult(
+            for: existingEntry,
+            updatedText: updatedText,
+            correctedTerms: correctedTerms,
+            correctionSnapshots: correctionSnapshots,
+            replacingSnapshots: false
+        ) else { return }
         cacheUpdatedEntry(updatedEntry)
 
         refreshEntryIndexes()
@@ -554,23 +533,13 @@ final class TranscriptionHistoryStore: ObservableObject {
     ) {
         guard let existingEntry = entry(id: historyID) else { return }
 
-        let trimmedUpdatedText = updatedText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let mergedTerms = mergeUniqueTerms(
-            existing: existingEntry.dictionaryCorrectedTerms,
-            incoming: correctedTerms
-        )
-
-        guard !trimmedUpdatedText.isEmpty else { return }
-        let didTextChange = trimmedUpdatedText != existingEntry.text
-        let didTermsChange = mergedTerms != existingEntry.dictionaryCorrectedTerms
-        let didSnapshotsChange = correctionSnapshots != existingEntry.dictionaryCorrectionSnapshots
-        guard didTextChange || didTermsChange || didSnapshotsChange else { return }
-
-        let updatedEntry = existingEntry.updatingDictionaryCorrectionResult(
-            text: trimmedUpdatedText,
-            dictionaryCorrectedTerms: mergedTerms,
-            dictionaryCorrectionSnapshots: correctionSnapshots
-        )
+        guard let updatedEntry = HistoryEntryPolicy.correctionResult(
+            for: existingEntry,
+            updatedText: updatedText,
+            correctedTerms: correctedTerms,
+            correctionSnapshots: correctionSnapshots,
+            replacingSnapshots: true
+        ) else { return }
         cacheUpdatedEntry(updatedEntry)
 
         refreshEntryIndexes()
@@ -618,14 +587,11 @@ final class TranscriptionHistoryStore: ObservableObject {
         allowsEmptyText: Bool = false
     ) -> TranscriptionHistoryEntry? {
         guard let existingEntry = entry(id: entryID) else { return nil }
-        let text = TranscriptFormatter.joinedText(for: segments)
-        let canStoreEmptyMeetingTranscript = allowsEmptyText
-            && existingEntry.meetingCaptureMode != nil
-            && existingEntry.audioRelativePath != nil
-        guard canStoreEmptyMeetingTranscript
-            || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else { return nil }
-        let updatedEntry = existingEntry.updatingTranscriptSegments(segments, text: text)
+        guard let updatedEntry = HistoryEntryPolicy.transcriptSegmentsUpdate(
+            for: existingEntry,
+            segments: segments,
+            allowsEmptyText: allowsEmptyText
+        ) else { return nil }
         cacheUpdatedEntry(updatedEntry)
         refreshEntryIndexes()
         publishVisibleEntries()
@@ -766,7 +732,7 @@ final class TranscriptionHistoryStore: ObservableObject {
         totalCount: Int,
         resetPagination: Bool
     ) {
-        allEntries = uniqueSortedEntries(loadedEntries.filter { $0.kind != .transcript })
+        allEntries = HistoryEntryPolicy.uniqueSortedEntries(loadedEntries.filter { $0.kind != .transcript })
         totalEntryCount = max(0, totalCount)
 
         let targetLoadedCount: Int
@@ -785,21 +751,25 @@ final class TranscriptionHistoryStore: ObservableObject {
     private func cleanupRetainedEntriesIfNeeded(referenceDate: Date = Date()) {
         guard historyCleanupEnabled else { return }
 
+        let retention = HistoryEntryPolicy.RetentionPlan(
+            period: historyRetentionPeriod,
+            referenceDate: referenceDate,
+            calendar: .current
+        )
         var removedEntries: [TranscriptionHistoryEntry] = []
 
-        if let days = historyRetentionPeriod.days {
-            let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: referenceDate) ?? referenceDate
+        if let cutoff = retention.cutoff {
             let removedByAge = (
                 try? repository.deleteEntries(
                     olderThan: cutoff,
-                    kinds: retentionCleanupKinds
+                    kinds: retention.kinds
                 )
             ) ?? []
             removedEntries.append(contentsOf: removedByAge)
         }
 
         if let keepCount = historyRetentionCount.count {
-            for kind in retentionCleanupKinds.sorted(by: { $0.rawValue < $1.rawValue }) {
+            for kind in retention.orderedKinds {
                 let removedByCount = (
                     try? repository.deleteEntries(
                         keepingNewest: keepCount,
@@ -848,7 +818,7 @@ final class TranscriptionHistoryStore: ObservableObject {
         } else {
             allEntries.append(entry)
         }
-        allEntries = uniqueSortedEntries(allEntries)
+        allEntries = HistoryEntryPolicy.uniqueSortedEntries(allEntries)
         if loadedCount == 0 {
             loadedCount = min(pageSize, allEntries.count)
         } else {
@@ -857,18 +827,11 @@ final class TranscriptionHistoryStore: ObservableObject {
     }
 
     private func mergeLoadedEntries(_ entries: [TranscriptionHistoryEntry]) {
-        allEntries = uniqueSortedEntries(allEntries + entries.filter { $0.kind != .transcript })
+        allEntries = HistoryEntryPolicy.uniqueSortedEntries(allEntries + entries.filter { $0.kind != .transcript })
     }
 
     private func removeCachedEntry(id: UUID) {
         allEntries.removeAll { $0.id == id }
-    }
-
-    private func uniqueSortedEntries(_ entries: [TranscriptionHistoryEntry]) -> [TranscriptionHistoryEntry] {
-        var seen = Set<UUID>()
-        return entries
-            .sorted { $0.createdAt > $1.createdAt }
-            .filter { seen.insert($0.id).inserted }
     }
 
     private func forEachHistoryBatch(_ body: ([TranscriptionHistoryEntry]) -> Void) {
@@ -896,39 +859,5 @@ final class TranscriptionHistoryStore: ObservableObject {
 
     private func legacyHistoryFileExists() -> Bool {
         (try? historyFileURL()).map { fileManager.fileExists(atPath: $0.path) } ?? false
-    }
-
-    private func mergeCorrectionSnapshots(
-        existing: [DictionaryCorrectionSnapshot],
-        incoming: [DictionaryCorrectionSnapshot]
-    ) -> [DictionaryCorrectionSnapshot] {
-        guard !incoming.isEmpty else { return existing }
-        var merged = existing
-        var seen = Set(existing)
-        for snapshot in incoming where seen.insert(snapshot).inserted {
-            merged.append(snapshot)
-        }
-        return merged.sorted { lhs, rhs in
-            if lhs.finalLocation == rhs.finalLocation {
-                return lhs.finalLength < rhs.finalLength
-            }
-            return lhs.finalLocation < rhs.finalLocation
-        }
-    }
-
-    private func mergeUniqueTerms(existing: [String], incoming: [String]) -> [String] {
-        var merged = existing
-        let existingNormalized = Set(existing.map(DictionaryStore.normalizeTerm))
-        var appended = Set<String>()
-
-        for term in incoming {
-            let normalized = DictionaryStore.normalizeTerm(term)
-            guard !normalized.isEmpty else { continue }
-            guard !existingNormalized.contains(normalized) else { continue }
-            guard appended.insert(normalized).inserted else { continue }
-            merged.append(term)
-        }
-
-        return merged
     }
 }

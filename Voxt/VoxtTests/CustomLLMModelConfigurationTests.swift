@@ -2,7 +2,6 @@ import XCTest
 @testable import Voxt
 import HuggingFace
 import MLX
-import MLXAudioSTT
 
 @MainActor
 final class CustomLLMModelConfigurationTests: MLXModelManagerTestCase {
@@ -218,6 +217,53 @@ final class CustomLLMModelConfigurationTests: MLXModelManagerTestCase {
         XCTAssertEqual(plan.conversationHistory, history)
         XCTAssertFalse(plan.instructions.contains("Previous conversation:"))
         XCTAssertEqual(plan.prompt, "对")
+    }
+
+    func testDiagnosticsWithoutCompletionMetricsPreservesTimingAndLoadSource() {
+        let plan = CustomLLMRequestPlanBuilder.userPromptEnhancement(prompt: "prompt", repo: "test/repo")
+        let diagnostics = CustomLLMRequestDiagnostics.make(
+            for: plan, containerLoadSource: .loadedFromDisk,
+            containerLoadMilliseconds: 120, setupMilliseconds: 30,
+            modelElapsedMilliseconds: 200, totalElapsedMilliseconds: 350,
+            firstChunkMilliseconds: 40, completionInfo: nil
+        )
+        XCTAssertEqual(diagnostics.repo, "test/repo")
+        XCTAssertEqual(diagnostics.taskLabel, "enhance")
+        XCTAssertEqual(diagnostics.containerLoadSource, .loadedFromDisk)
+        XCTAssertEqual(diagnostics.containerLoadMs, 120)
+        XCTAssertEqual(diagnostics.setupMs, 30)
+        XCTAssertEqual(diagnostics.modelElapsedMs, 200)
+        XCTAssertEqual(diagnostics.totalElapsedMs, 350)
+        XCTAssertEqual(diagnostics.firstChunkMs, 40)
+        XCTAssertEqual(diagnostics.overallFirstChunkMs, 190)
+        XCTAssertNil(diagnostics.promptTokens)
+        XCTAssertNil(diagnostics.completionTokens)
+        XCTAssertNil(diagnostics.prefillMs)
+        XCTAssertNil(diagnostics.generationMs)
+        XCTAssertNil(diagnostics.modelOverheadMs)
+        XCTAssertNil(diagnostics.totalOverheadMs)
+    }
+
+    func testDiagnosticsClampsSetupAndDoesNotInventFirstChunkForEmptyOutput() {
+        let plan = CustomLLMRequestPlanBuilder.userPromptEnhancement(prompt: "prompt", repo: "test/repo")
+        let empty = CustomLLMRequestDiagnostics.make(
+            for: plan, containerLoadSource: .reusedLoaded,
+            containerLoadMilliseconds: 0, setupMilliseconds: -5,
+            modelElapsedMilliseconds: 10, totalElapsedMilliseconds: 10,
+            firstChunkMilliseconds: nil, completionInfo: nil
+        )
+        XCTAssertEqual(empty.setupMs, 0)
+        XCTAssertEqual(empty.containerLoadSource, .reusedLoaded)
+        XCTAssertNil(empty.firstChunkMs)
+        XCTAssertNil(empty.overallFirstChunkMs)
+        let measured = CustomLLMRequestDiagnostics.make(
+            for: plan, containerLoadSource: .reusedLoaded,
+            containerLoadMilliseconds: 2, setupMilliseconds: -5,
+            modelElapsedMilliseconds: 10, totalElapsedMilliseconds: 10,
+            firstChunkMilliseconds: 3, completionInfo: nil
+        )
+        XCTAssertEqual(measured.firstChunkMs, 3)
+        XCTAssertEqual(measured.overallFirstChunkMs, 5)
     }
 
     func testCustomLLMNormalizeResultTextStripsThinkBlocksAndMarkers() {

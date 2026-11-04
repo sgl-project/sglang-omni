@@ -5,6 +5,30 @@ import XCTest
 final class MeetingImportedFileAnalyzerTests: XCTestCase {
     private let url = URL(fileURLWithPath: "/unused-test-input.wav")
 
+    func testUnavailableLocalModelFailsBeforePreparingImportedAudio() async throws {
+        let repo = "unknown/model"
+        let expected = try XCTUnwrap(OmniASRBackend.unavailability(for: repo))
+        let manager = MLXModelManager(modelRepo: repo)
+        let context = MeetingASREngineContext(
+            engine: .mlxAudio,
+            historyModelDescription: repo,
+            resolvedMode: .chunk(profile: .quality),
+            needsModelInitialization: true,
+            mlxModelRepo: repo
+        )
+        let pipeline = MeetingImportedFilePipeline(modelManager: manager, engineContext: context)
+        var reportedProgress = false
+        do {
+            _ = try await pipeline.analyze(at: url) { _ in reportedProgress = true }
+            XCTFail("An unavailable model must fail before reading the input file")
+        } catch {
+            XCTAssertEqual(error as? OmniASRBackend.Unavailability, expected)
+        }
+        XCTAssertFalse(reportedProgress)
+        XCTAssertFalse(manager.hasActiveUse)
+        await manager.shutdownForApplicationTermination()
+    }
+
     func testCancelWhileWaitingForPreviousCleanupNeverStartsPipeline() async throws {
         let analyzer = MeetingImportedFileAnalyzer()
         let cleanupGate = ManualTaskBarrier()

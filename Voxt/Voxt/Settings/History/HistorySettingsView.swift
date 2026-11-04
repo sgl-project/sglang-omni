@@ -381,123 +381,39 @@ struct HistorySettingsView: View {
         }
     }
 
-    @ViewBuilder
     private var notesList: some View {
-        switch noteViewMode {
-        case .list:
-            groupedNotesList
-        case .linearCard:
-            linearNotesList
-        }
-    }
-
-    private var groupedNotesList: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 14) {
-                ForEach(visibleNoteSections) { section in
-                    VStack(alignment: .leading, spacing: 4) {
-                        NoteHistorySectionHeader(
-                            status: section.status,
-                            count: allNotes.lazy.filter { $0.status == section.status }.count
-                        )
-
-                        LazyVStack(spacing: noteListRowSpacing) {
-                            ForEach(section.items) { note in
-                                noteHistoryRow(note, fixedHeight: noteHistoryRowHeight)
-                            }
-                        }
-                    }
-                }
-
-                if HistorySettingsData.hasMoreItems(in: allNotes, visibleLimit: noteVisibleLimit) {
-                    Button(localized("Load More")) {
-                        noteVisibleLimit = HistorySettingsData.nextVisibleLimit(
-                            currentLimit: noteVisibleLimit,
-                            pageSize: notePageSize,
-                            totalCount: allNotes.count
-                        )
-                    }
-                    .buttonStyle(SettingsPillButtonStyle())
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                }
+        HistorySettingsNotesList(
+            noteViewMode: noteViewMode,
+            allNotes: allNotes,
+            visibleNoteSections: visibleNoteSections,
+            linearNoteStatuses: linearNoteStatuses,
+            linearCompletedVisibleLimit: linearCompletedVisibleLimit,
+            hasMoreNotes: HistorySettingsData.hasMoreItems(in: allNotes, visibleLimit: noteVisibleLimit),
+            noteHistoryRowHeight: noteHistoryRowHeight,
+            noteListRowSpacing: noteListRowSpacing,
+            historyRowSpacing: historyRowSpacing,
+            onLoadMoreNotes: {
+                noteVisibleLimit = HistorySettingsData.nextVisibleLimit(
+                    currentLimit: noteVisibleLimit,
+                    pageSize: notePageSize,
+                    totalCount: allNotes.count
+                )
+            },
+            onLoadMoreCompletedNotes: { totalCount in
+                linearCompletedVisibleLimit = HistorySettingsData.nextVisibleLimit(
+                    currentLimit: linearCompletedVisibleLimit,
+                    pageSize: linearCompletedPageSize,
+                    totalCount: totalCount
+                )
+            },
+            row: { note, contentLineLimit, fixedHeight in
+                noteHistoryRow(note, contentLineLimit: contentLineLimit, fixedHeight: fixedHeight)
             }
-            .padding(.bottom, 8)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-    }
-
-    private var linearNotesList: some View {
-        GeometryReader { geometry in
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(alignment: .top, spacing: 12) {
-                    ForEach(linearNoteStatuses) { status in
-                        linearNoteColumn(status)
-                    }
-                }
-                .frame(height: geometry.size.height, alignment: .top)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        )
     }
 
     private var linearNoteStatuses: [VoxtNoteStatus] {
         HistorySettingsData.linearNoteSectionOrder.filter(selectedNoteStatuses.contains)
-    }
-
-    private func linearNoteColumn(_ status: VoxtNoteStatus) -> some View {
-        let allStatusNotes = allNotes.filter { $0.status == status }
-        let visibleStatusNotes = HistorySettingsData.visibleLinearNotes(
-            from: allNotes,
-            status: status,
-            completedVisibleLimit: linearCompletedVisibleLimit
-        )
-
-        return VStack(alignment: .leading, spacing: 4) {
-            NoteHistorySectionHeader(status: status, count: allStatusNotes.count)
-                .padding(.horizontal, 4)
-
-            ScrollView {
-                LazyVStack(spacing: historyRowSpacing) {
-                    if visibleStatusNotes.isEmpty {
-                        Text(localized("No notes yet"))
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 20)
-                    } else {
-                        ForEach(visibleStatusNotes) { note in
-                            noteHistoryRow(note, contentLineLimit: 5)
-                        }
-                    }
-
-                    if status == .done, visibleStatusNotes.count < allStatusNotes.count {
-                        NoteHistoryMoreButton {
-                            linearCompletedVisibleLimit = HistorySettingsData.nextVisibleLimit(
-                                currentLimit: linearCompletedVisibleLimit,
-                                pageSize: linearCompletedPageSize,
-                                totalCount: allStatusNotes.count
-                            )
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 4)
-                    }
-                }
-                .padding(.horizontal, 4)
-                .padding(.bottom, 4)
-            }
-        }
-        .padding(6)
-        .frame(width: 260)
-        .frame(maxHeight: .infinity, alignment: .top)
-        .background(
-            SettingsUIStyle.groupedFillColor,
-            in: RoundedRectangle(cornerRadius: SettingsUIStyle.compactCornerRadius, style: .continuous)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: SettingsUIStyle.compactCornerRadius, style: .continuous)
-                .strokeBorder(SettingsUIStyle.subtleBorderColor, lineWidth: 1)
-        )
     }
 
     @ViewBuilder
@@ -564,63 +480,43 @@ struct HistorySettingsView: View {
         )
     }
 
-    @ViewBuilder
     private var historyList: some View {
-        let items = historyListItems
-        let list = PagedVerticalList(
-            items: items,
+        HistorySettingsEntriesList(
+            items: historyListItems,
             totalCount: historyListTotalCount,
-            rowHeight: historyRowFallbackHeight,
-            rowSpacing: historyRowSpacing,
+            historyRowFallbackHeight: historyRowFallbackHeight,
+            historyRowSpacing: historyRowSpacing,
+            historyRowVerticalInset: historyRowVerticalInset,
+            isLoading: isLoadingHistoryEntries,
             rowHeightForItemAtWidth: { item, width in
                 historyRowHeight(for: item, width: width)
             },
-            isLoading: isLoadingHistoryEntries,
-            onLoadMore: { reloadHistoryEntries(reset: false) }
-        ) { item in
-            switch item {
-            case .dayHeader(let date):
-                HistoryDayHeader(date: date)
-            case .entry(let entry):
-                HistoryRow(
-                    entry: entry,
-                    audioURL: historyStore.audioURL(for: entry),
-                    isCompact: false,
-                    onCopy: {
-                        copyStringToPasteboard(
-                            HistoryCorrectionPresentation.correctedText(
-                                for: entry.text,
-                                snapshots: entry.dictionaryCorrectionSnapshots
-                            )
-                        )
-                        copiedEntryID = entry.id
-                        showCopyToast()
-                        Task {
-                            try? await Task.sleep(for: .seconds(1.2))
-                            if copiedEntryID == entry.id {
-                                copiedEntryID = nil
-                            }
-                        }
-                    },
-                    onShowInfo: {
-                        showHistoryDetail(for: entry)
-                    },
-                    onDelete: { deleteHistoryEntry(entry) }
+            audioURL: { entry in historyStore.audioURL(for: entry) },
+            onLoadMore: { reloadHistoryEntries(reset: false) },
+            onCopyEntry: { entry in
+                copyStringToPasteboard(
+                    HistoryCorrectionPresentation.correctedText(
+                        for: entry.text,
+                        snapshots: entry.dictionaryCorrectionSnapshots
+                    )
                 )
-                .padding(.vertical, historyRowVerticalInset)
-            case .meetingEntry(let entry):
-                HistoryListRow(
-                    timeText: RelativeNoteTimestampFormatter.historyListTime(for: entry.createdAt),
-                    displayText: entry.displayText,
-                    onCopy: { copyHistoryEntry(id: entry.id) },
-                    onShowInfo: { showHistoryDetail(for: entry) },
-                    onDelete: { deleteHistoryEntry(id: entry.id) }
-                )
-                .padding(.vertical, historyRowVerticalInset)
-            }
-        }
-
-        list.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                copiedEntryID = entry.id
+                showCopyToast()
+                Task {
+                    try? await Task.sleep(for: .seconds(1.2))
+                    if copiedEntryID == entry.id {
+                        copiedEntryID = nil
+                    }
+                }
+            },
+            onShowEntryInfo: { entry in
+                showHistoryDetail(for: entry)
+            },
+            onDeleteEntry: { entry in deleteHistoryEntry(entry) },
+            onCopyMeetingEntry: { entryID in copyHistoryEntry(id: entryID) },
+            onShowMeetingEntryInfo: { entry in showHistoryDetail(for: entry) },
+            onDeleteMeetingEntry: { entryID in deleteHistoryEntry(id: entryID) }
+        )
     }
 
     private func historyRowHeight(for item: HistoryListItem, width: CGFloat) -> CGFloat {

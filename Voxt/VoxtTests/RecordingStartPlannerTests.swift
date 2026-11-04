@@ -5,6 +5,40 @@ import XCTest
 @testable import Voxt
 
 final class RecordingStartPlannerTests: XCTestCase {
+    func testUnavailableSavedModelsBlockRecordingRegardlessOfInstallationState() {
+        let states: [MLXModelManager.ModelState] = [.notDownloaded, .downloaded, .ready, .loading]
+        for repo in ["unknown/model", "unknown/Qwen3-ASR-0.6B-8bit"] {
+            for state in states {
+                let decision = RecordingStartPlanner.resolve(
+                    selectedEngine: .mlxAudio,
+                    selectedMLXRepo: repo,
+                    isSelectedMLXModelDownloaded: true,
+                    mlxModelState: state
+                )
+                XCTAssertEqual(decision, .blocked(.mlxModelUnavailable(detail: OmniASRBackend.unavailabilityReason(for: repo))))
+            }
+        }
+    }
+
+    func testInstalledNativeCatalogModelsUsePlatformGateForRecording() {
+        let states: [MLXModelManager.ModelState] = [.downloaded, .ready, .loading]
+        let repos: [String] = MLXModelCatalog.availableModels.map(\.id) + ["mlx-community/Parakeet-0.6B"]
+        for repo in repos {
+            for state in states {
+                let decision = RecordingStartPlanner.resolve(
+                    selectedEngine: .mlxAudio,
+                    selectedMLXRepo: repo,
+                    isSelectedMLXModelDownloaded: true,
+                    mlxModelState: state
+                )
+                let expected: RecordingStartDecision = OmniASRBackend.isAppleSilicon
+                    ? .start(.mlxAudio)
+                    : .blocked(.mlxModelUnavailable(detail: OmniASRBackend.unavailabilityReason(for: repo)))
+                XCTAssertEqual(decision, expected, repo)
+            }
+        }
+    }
+
     func testMLXAudioNotDownloadedBlocksRecordingStart() {
         let decision = RecordingStartPlanner.resolve(
             selectedEngine: .mlxAudio,
@@ -47,13 +81,13 @@ final class RecordingStartPlannerTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(decision, .blocked(.mlxModelDownloading))
+        XCTAssertEqual(decision, OmniASRBackend.isAppleSilicon ? .blocked(.mlxModelDownloading) : .blocked(.mlxModelUnavailable(detail: OmniASRBackend.unavailabilityReason(for: MLXModelManager.defaultModelRepo))))
     }
 
     func testMLXAudioDownloadingDifferentRepoDoesNotBlockInstalledSelection() {
         let decision = RecordingStartPlanner.resolve(
             selectedEngine: .mlxAudio,
-            selectedMLXRepo: "mlx-community/parakeet-tdt-0.6b-v3",
+            selectedMLXRepo: "mlx-community/whisper-small-mlx",
             activeMLXDownloadRepo: "mlx-community/Qwen3-ASR-0.6B-4bit",
             isSelectedMLXModelDownloaded: true,
             mlxModelState: .downloading(
@@ -66,7 +100,7 @@ final class RecordingStartPlannerTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(decision, .start(.mlxAudio))
+        XCTAssertEqual(decision, OmniASRBackend.isAppleSilicon ? .start(.mlxAudio) : .blocked(.mlxModelUnavailable(detail: OmniASRBackend.unavailabilityReason(for: "mlx-community/whisper-small-mlx"))))
     }
 
     func testMLXAudioPausedSelectedModelBlocksRecordingStart() {
@@ -84,7 +118,7 @@ final class RecordingStartPlannerTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(decision, .blocked(.mlxModelDownloading))
+        XCTAssertEqual(decision, OmniASRBackend.isAppleSilicon ? .blocked(.mlxModelDownloading) : .blocked(.mlxModelUnavailable(detail: OmniASRBackend.unavailabilityReason(for: MLXModelManager.defaultModelRepo))))
     }
 
     func testDictationStartIgnoresMLXModelState() {

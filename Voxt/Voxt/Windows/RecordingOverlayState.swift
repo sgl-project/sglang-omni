@@ -201,10 +201,6 @@ class OverlayState: ObservableObject {
         transcribedText = transformedTranscribedText(from: latestSourceTranscribedText)
     }
 
-    func clearDisplayedTranscribedText() {
-        transcribedText = ""
-    }
-
     func presentRecording(iconMode: OverlaySessionIconMode? = nil) {
         displayMode = .recording
         if let iconMode {

@@ -100,5 +100,106 @@
       "config.json": "32b996111892031dfe4b73751864d93c769391aa213427ea65daf2ecdef7caa5",
       "model.safetensors": "7abe356045684ae374ea60e6b8dbc967222d7d1e35cc222be870c94630b1c38a"
     }
+  },
+  "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit": {
+    "revision": "f98fc91b9cb5adc7dab56102c690458276c14c6a",
+    "files": {
+      "config.json": "f4eb9188409df1394eeec817d5f2f8e5b9dddb81c9b8653e6757733993120c7e",
+      "tekken.json": "587989c9f56676b35e7d16d6fc61461301e402d908392a8ce16f0349f61b56d7",
+      "model.safetensors": "a62a28f02ce54f9157877df44ce2da92bed97159ab19c2878445d3ec4d357786",
+      "voice_embedding/ar_male.safetensors": "f4c480657b730c169614c66dcb26684bc234ee2829cb2a9e490c300f60b1782a",
+      "voice_embedding/casual_female.safetensors": "9a2027d9265fd7ef4a55294b10ae8b2095dcad7547d50762a5012a3955ca0860",
+      "voice_embedding/casual_male.safetensors": "2056ade898f6f1b04c1af764f54d705038ac046f0b4967457a36989b69730fa8",
+      "voice_embedding/cheerful_female.safetensors": "35441e3030ba0076356ef1ad54fbfd5adfbde9e34bbf8a1a6535d6efabe63af1",
+      "voice_embedding/de_female.safetensors": "a89197fe5e77a2dd3cfc4ac0ed1cb5248e4e1ac26fdb13500e9782e43a90a69e",
+      "voice_embedding/de_male.safetensors": "cabfeeb98db0b713a80f234e11d90c3105fe83e64de75876509c3cda43946656",
+      "voice_embedding/es_female.safetensors": "52bca0b4e770afaccc3f2899d7396009422a0b3fdb5a6a96c523bcdc2f35c165",
+      "voice_embedding/es_male.safetensors": "b63fd5dff4dbc5070d470a364b8691f63fd6c10412a2692101bf6a90549c36e1",
+      "voice_embedding/fr_female.safetensors": "e8be0f673696dc1bf668fa6cc9999ab09ab43b29a6d6e85c5ac3f9f8ed43c449",
+      "voice_embedding/fr_male.safetensors": "d34fde0b57acaea4c3f78e841c93dd290f104a167dd0bea9e0673d9cdfedadd5",
+      "voice_embedding/hi_female.safetensors": "01e987092046cf5dc1041f00d10b0763f9ab4080c3bf124d97a01ccb04428e26",
+      "voice_embedding/hi_male.safetensors": "342d40fcda1e2a6ded081f0d2d8eefadcc7b8102a20da6e7e803ef4b4a21785c",
+      "voice_embedding/it_female.safetensors": "378b9bab596a68780ca07f4bf2032a9c70847825772aed9ee148ba8173b477d3",
+      "voice_embedding/it_male.safetensors": "05e313648254a57e4ca7e503b416590a4c832a106f7201efd4dea02ecce79035",
+      "voice_embedding/neutral_female.safetensors": "e229d5646ab8c2cad1b4e24cd63b88192f34da61de8f0595291799232460752f",
+      "voice_embedding/neutral_male.safetensors": "b114132e7301b2d2308ff7b0c1843574bab9ffeac5fc2dd48ca27db70a24ea0c",
+      "voice_embedding/nl_female.safetensors": "0124a62762a89b9a4ef0ff0c016db045ccfe30ed9fa3d886db0e78e444673ea3",
+      "voice_embedding/nl_male.safetensors": "6f931e4c34cf496cce4ed7ce5d8af286140c4969860f9410b12237ff28de2d33",
+      "voice_embedding/pt_female.safetensors": "ce23b97302fe6ca58507b1ae2c2fe1d0a472268b1faf597901cbf75e326a08f9",
+      "voice_embedding/pt_male.safetensors": "4ccd63a39d35f483c89485112d35a8a2121cbb0e6d5d124e403e40d03e0c0e82"
+    }
+  },
+  "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16": {
+    "revision": "6415d95f88be018ff9e46813119dc3bc12261328",
+    "files": {
+      "config.json": "69c1b78421a5e408b5e91a74a9995213546613ffe2a1d87a00c7743900ead6ee",
+      "merges.txt": "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3",
+      "model.safetensors": "e6eb20e645c5a28ee66bf8434edb5b67a5f151530dab63afe22787d71bcf5382",
+      "speech_tokenizer/config.json": "ee65bb901c876664ab8707c487157aa1a6ee57c65969b28fb5ec9dc211e68167",
+      "speech_tokenizer/model.safetensors": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258",
+      "tokenizer_config.json": "dc3c31c3bdaedd5016382bb3cbe07323026775ad51f5a4fb564505992ae4a670",
+      "vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+    }
+  },
+  "mlx-community/MiniMax-Music3-mxfp8": {
+    "revision": "d00a12c3c7f80eb66379dd02dd0f30ed0ce2d96e",
+    "files": {
+      "config.json": "843a7e7affe6f348a7b087c39e7c26b4e0baced492d391dfc955760a1d9c91dc",
+      "model-00001-of-00003.safetensors": "bf401989345219258b1a9b3eb10e74faa619a626f92d089a9d6c1949d63a2817",
+      "model-00002-of-00003.safetensors": "54117b8658e1d1981b5fcd550992cd72e246bdd7433ec891bdda0033bf204a98",
+      "model-00003-of-00003.safetensors": "a71aa696d66edbe08972aece48d6304b6ae7a6ce3229dab1b496549c69ce816c",
+      "tokenizer/tokenizer.json": "b1537fa9e59a537276ecbc2e12d0438edff635a1f4a4948e679774b5feb3e610",
+      "tokenizer/tokenizer_config.json": "1689852cc9c45010de040c8302a8acdc0d2c4c6c740dd7e9dd0a8c704e16eada"
+    }
+  },
+  "mlx-community/fish-audio-drama-3-4bit": {
+    "revision": "1ac1b2108b63c2ef5bade463a121569363e293ce",
+    "files": {
+      "config.json": "e980dfd9128edeb5f5d066fd7c322a2dfc08fedcbea58019d8d2e8e5cf7b50d5",
+      "tokenizer.json": "0e9b9db76b2f0389b04b6ef057a2ac3b89100b7e96f2dd7034d19580a09654d6",
+      "codec.safetensors": "6ff9d6f07920b2155e3a48ada21956004b96df9114d255ed9f0788484ba73040",
+      "model-00001.safetensors": "de6eeebdd8c09316acd4f5fdd05482221e8596a19a6e8384d7fd129d70e894bf",
+      "model-00002.safetensors": "cdd874495884ba7a1f9ae5b2baf7fc8fed85f73799556e87a6406184b4f8cf9f",
+      "model-00003.safetensors": "eefa12cee1d032b511869de2a71666b4f07c82ca2fd8c94c3c5bcd1da431ef11",
+      "model-00004.safetensors": "cd4960872fc5ceff7c719bd5be9d9f770f3357068eca83af065db6ba68927a8a",
+      "model-00005.safetensors": "e0dbbeb7f66a2168fd744df15987b145780213d65cb6b3579a2531a78e92774e",
+      "model-00006.safetensors": "0b3e0b1b620080e4f4db53cc3b9c697c4179964be0e2172b339b605459470a7e"
+    }
+  },
+  "mlx-community/fish-audio-drama-3-8bit": {
+    "revision": "fedc7cc92bab5a180709cbaae6208d10b390bb97",
+    "files": {
+      "config.json": "076e54412c52b8d9f41197b07e8deb89d65fcf01853801a314632f7e7a12ffc0",
+      "tokenizer.json": "0e9b9db76b2f0389b04b6ef057a2ac3b89100b7e96f2dd7034d19580a09654d6",
+      "codec.safetensors": "6ff9d6f07920b2155e3a48ada21956004b96df9114d255ed9f0788484ba73040",
+      "model-00001.safetensors": "c29814a41d79e452c0e9c03a106ac7b7b2ac07b43b8f4f723bbe2f367d54d066",
+      "model-00002.safetensors": "4f457ebde3ccc3956c7c9300a56a8c1a6db64ee1417246e45c5dd18421304d6e",
+      "model-00003.safetensors": "29886d23ddacba4dd9a5d461fcbf51c04dcd1f5f967a592f08f748f8393283d2",
+      "model-00004.safetensors": "8c004deba5a0b760c7da81543a19d52db555a2edd45de2725d54566cbec038b5",
+      "model-00005.safetensors": "98e25de091972867f607397efb47126c3ea0528ec8d4f1aededa0ea4c829dd66",
+      "model-00006.safetensors": "a3d97fef461aec6fc78a99192e7bba7f45b7c8ba0733ce10d1ad766371eff227",
+      "model-00007.safetensors": "bf06dbda13a539e13936742b542d579ec76e5a2943ecfbeed4dc7821fb989b9a",
+      "model-00008.safetensors": "4d215a0b8bdda65cb56c942b8dbc8429b7974288cf064c499b789cde9c2babfd",
+      "model-00009.safetensors": "4483f5e06ff17f06cb8860fac6e9c3c7b7993a0af6156001bdb9b8023b975d20",
+      "model-00010.safetensors": "5a391679632c4f8cb94d990fa9e609ad3f693f66938c533f603d19c13234eb91"
+    }
+  },
+  "mlx-community/Fun-CosyVoice3-0.5B-2512-fp16": {
+    "revision": "18ccb7fbd7246e8cd3420d02f5dd28595cc0fcd9",
+    "files": {
+      "config.json": "9cc01133150556729617139abb8da29515badce819930e35c7da11a88b595a03",
+      "model.safetensors": "d7dc16402d2086e8b0996fe52462d9616e3eecd64f7cdb62f5c1acc898701374",
+      "tokenizer.json": "5e3855f008ece7e02f09bad5c0aa492cd1594529a796b80193f4ef640200e58b",
+      "tokenizer_config.json": "46a369aa40642d4be780e4842ea299e08764ff8edc64c2ad7738e04d94a51637"
+    },
+    "tokenizer": {
+      "repo": "mlx-community/S3TokenizerV3",
+      "revision": "b143914b3e912278104824da706edc9c2d317c4e",
+      "subdirectory": "speech_tokenizer",
+      "files": {
+        "config.json": "355c1cc1337107c89c786d7c2675d7a30322b204456f1a273acc037e291111cc",
+        "model.safetensors": "ee05a65d4472f089d55b5dfcd9e19f42e3245f4f19d612b90c04cb051a80105e"
+      }
+    }
   }
 }

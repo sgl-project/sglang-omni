@@ -21,53 +21,6 @@ nonisolated enum HotkeyEventSupport {
         eventSourceUserData == voxtInjectedEventUserData
     }
 
-    static func shouldLogFlagsChangedEvent(
-        keyCode: UInt16,
-        flags: CGEventFlags,
-        triggerMode: HotkeyPreference.TriggerMode,
-        transcriptionHotkey: HotkeyPreference.Hotkey,
-        translationHotkey: HotkeyPreference.Hotkey,
-        rewriteHotkey: HotkeyPreference.Hotkey?,
-        isKeyDown: Bool,
-        isTranslationKeyDown: Bool,
-        isRewriteKeyDown: Bool,
-        hasTranscriptionModifierTapCandidate: Bool,
-        hasTranslationModifierTapCandidate: Bool,
-        hasRewriteModifierTapCandidate: Bool,
-        sawNonModifierKeyDuringFunctionChord: Bool
-    ) -> Bool {
-        guard typeRequiresTapFlagsLog(
-            triggerMode: triggerMode,
-            transcriptionHotkey: transcriptionHotkey,
-            translationHotkey: translationHotkey,
-            rewriteHotkey: rewriteHotkey
-        ) else {
-            return false
-        }
-
-        return HotkeyModifierInterpreter.isFunctionKeyEvent(keyCode) ||
-            flags.contains(.maskSecondaryFn) ||
-            isKeyDown ||
-            isTranslationKeyDown ||
-            isRewriteKeyDown ||
-            hasTranscriptionModifierTapCandidate ||
-            hasTranslationModifierTapCandidate ||
-            hasRewriteModifierTapCandidate ||
-            sawNonModifierKeyDuringFunctionChord
-    }
-
-    static func typeRequiresTapFlagsLog(
-        triggerMode: HotkeyPreference.TriggerMode,
-        transcriptionHotkey: HotkeyPreference.Hotkey,
-        translationHotkey: HotkeyPreference.Hotkey,
-        rewriteHotkey: HotkeyPreference.Hotkey?
-    ) -> Bool {
-        guard triggerMode == .tap else { return false }
-        return HotkeyModifierInterpreter.isModifierOnly(transcriptionHotkey)
-            || HotkeyModifierInterpreter.isModifierOnly(translationHotkey)
-            || (rewriteHotkey.map { HotkeyModifierInterpreter.isModifierOnly($0) } ?? false)
-    }
-
     static func isModifierKeyCode(_ keyCode: UInt16) -> Bool {
         switch Int(keyCode) {
         case kVK_Command,

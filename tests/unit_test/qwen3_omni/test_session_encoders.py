@@ -6,6 +6,7 @@ import threading
 import pytest
 import torch
 
+from sglang_omni.models.qwen3_omni import native_stages
 from sglang_omni.models.qwen3_omni.native_stages import QwenEncoderHooks
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
@@ -101,3 +102,16 @@ def test_cancelled_encoder_unit_skips_the_model(cancel_before: bool) -> None:
     model.cancellation = None
     hooks.append(chunk, encoder_payload(1), session_context)
     assert model.forward_call_count == (1 if cancel_before else 2)
+
+
+def test_audio_encoder_scheduler_runs_one_unit_at_a_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Overlapping audio encoder units could return another session's embeddings."""
+    monkeypatch.setattr(
+        native_stages, "Qwen3OmniAudioEncoder", lambda **kwargs: AudioEncoder()
+    )
+    scheduler = native_stages.create_encoder_scheduler(
+        "unused", stage_name="audio_encoder", max_open_sessions=4, device="cpu"
+    )
+    assert scheduler.max_concurrency == 1

@@ -9,6 +9,7 @@ import pytest
 import torch
 from sglang.multimodal_gen.runtime.managers.forward_context import set_forward_context
 from sglang.multimodal_gen.runtime.platforms import AttentionBackendEnum
+from sglang.srt.models.qwen3 import Qwen3ForCausalLM
 from torch.nn import functional as F
 
 from sglang_omni.models.minimax_music3.acoustic import (
@@ -29,9 +30,12 @@ from sglang_omni.models.minimax_music3.dit import (
     apply_rope,
     resolve_attention_backend,
 )
+from sglang_omni.models.minimax_music3.engine_builder import MiniMaxMusic3EngineBuilder
 from sglang_omni.models.minimax_music3.model_runner import HiddenFrameBuffer
 from sglang_omni.models.minimax_music3.rvq_cuda_graph import RVQDepthCudaGraphRunner
 from sglang_omni.models.minimax_music3.rvq_decoder import sample_topk_seeded
+from sglang_omni.models.minimax_music3.serial_offload import SerialOffloadCoordinator
+from sglang_omni.models.minimax_music3.weight_cache import checkpoint_identity
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.device_graph import DeviceGraphBackend
@@ -244,6 +248,7 @@ def test_minimax_music3_default_follows_the_visible_gpus(
     assert stages["dit_dav"].gpu == acoustic_gpu
     assert stages["dit_dav"].factory.dtype == acoustic_dtype
     assert stages["dit_dav"].factory.compile_acoustic is True
+    assert stages["dit_dav"].factory.fp32_flex_attention is None
     assert config.placement.require_memory_fraction_for_colocation is colocation_check
     assert MiniMaxMusic3PipelineConfig.stage_config_cls(
         "minimax_music3_ar"
@@ -303,6 +308,7 @@ def test_native_sdpa_matches_reference_without_diffusion_server_args() -> None:
             dim_heads=64,
             compute_dtype=torch.float32,
             attention_backend="torch_sdpa",
+            fp32_flex_attention=False,
         )
         .to(device)
         .eval()
@@ -574,27 +580,128 @@ def test_acoustic_scheduler_accepts_the_relay_tensor_shape() -> None:
     assert decoder.hidden_shape == (1, 32768)
 
 
-def test_backbone_config_rewrite_does_not_write_through_a_symlink(
+def test_engine_builder_selects_native_backbone_without_mutating_legacy_config(
     tmp_path: Path,
 ) -> None:
-    """A Hub snapshot symlinks config.json into the shared blob store.
+    """The native language model is loadable without changing the legacy copy."""
+    root = tmp_path / "checkpoint"
+    language_model_dir = root / "language_model"
+    language_model_dir.mkdir(parents=True)
+    (language_model_dir / "config.json").write_text(
+        json.dumps({"model_type": "qwen3", "hidden_size": 4096})
+    )
+    (root / "flowmatching_vae.pth").touch()
 
-    Writing through the link would rewrite a blob whose filename is its own
-    content hash, corrupting it for every other snapshot that shares it.
-    """
-    from sglang_omni.models.minimax_music3.engine_builder import (
-        MiniMaxMusic3EngineBuilder,
+    legacy_dir = root / "qwen_7B" / "qwen_7B"
+    legacy_dir.mkdir(parents=True)
+    blob = tmp_path / "config-blob"
+    original_config = b'{"model_type":"mixtral","hidden_size":4096}'
+    blob.write_bytes(original_config)
+    legacy_config_path = legacy_dir / "config.json"
+    legacy_config_path.symlink_to(blob)
+
+    builder = MiniMaxMusic3EngineBuilder()
+    resolved = Path(builder.resolve_checkpoint(str(root)))
+    load_weights = Qwen3ForCausalLM.load_weights
+
+    builder.pre_infra_setup(str(resolved))
+    assert resolved == language_model_dir
+    assert builder.model_arch_override is None
+    assert legacy_config_path.is_symlink()
+    assert legacy_config_path.resolve() == blob
+    assert legacy_config_path.read_bytes() == original_config
+    assert not (legacy_dir / "config.json.bak").exists()
+    assert Qwen3ForCausalLM.load_weights is load_weights
+
+
+def test_checkpoint_requires_native_qwen3_backbone(tmp_path: Path) -> None:
+    root = tmp_path / "checkpoint"
+    legacy_dir = root / "qwen_7B" / "qwen_7B"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "config.json").write_text(
+        json.dumps({"model_type": "mixtral", "hidden_size": 4096})
+    )
+    (root / "flowmatching_vae.pth").touch()
+
+    with pytest.raises(ValueError, match="language_model/config.json"):
+        MiniMaxMusic3EngineBuilder().resolve_checkpoint(str(root))
+
+
+def test_checkpoint_rejects_non_qwen3_native_config(tmp_path: Path) -> None:
+    root = tmp_path / "checkpoint"
+    language_model_dir = root / "language_model"
+    language_model_dir.mkdir(parents=True)
+    (language_model_dir / "config.json").write_text(
+        json.dumps({"model_type": "mixtral", "hidden_size": 4096})
+    )
+    legacy_dir = root / "qwen_7B" / "qwen_7B"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "config.json").write_text(
+        json.dumps({"model_type": "mixtral", "hidden_size": 4096})
+    )
+    (root / "flowmatching_vae.pth").touch()
+
+    with pytest.raises(ValueError, match="model_type='qwen3'"):
+        MiniMaxMusic3EngineBuilder().resolve_checkpoint(str(root))
+
+
+def test_checkpoint_rejects_hidden_size_mismatch(tmp_path: Path) -> None:
+    root = tmp_path / "checkpoint"
+    language_model_dir = root / "language_model"
+    language_model_dir.mkdir(parents=True)
+    (language_model_dir / "config.json").write_text(
+        json.dumps({"model_type": "qwen3", "hidden_size": 4096})
+    )
+    legacy_dir = root / "qwen_7B" / "qwen_7B"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "config.json").write_text(
+        json.dumps({"model_type": "mixtral", "hidden_size": 3584})
+    )
+    (root / "flowmatching_vae.pth").touch()
+
+    with pytest.raises(ValueError, match="hidden_size mismatch"):
+        MiniMaxMusic3EngineBuilder().resolve_checkpoint(str(root))
+
+
+def test_serial_offload_identity_includes_native_backbone_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "checkpoint"
+    native_config = root / "language_model" / "config.json"
+    native_config.parent.mkdir(parents=True)
+    native_config.write_text(json.dumps({"model_type": "qwen3", "hidden_size": 4096}))
+    audio_config = root / "qwen_7B" / "qwen_7B" / "config.json"
+    audio_config.parent.mkdir(parents=True)
+    audio_config.write_text(json.dumps({"model_type": "mixtral", "hidden_size": 4096}))
+    (audio_config.parent / "model.safetensors").write_bytes(b"weights")
+
+    builder = MiniMaxMusic3EngineBuilder(
+        enable_serial_offload=True,
+        serial_offload_source="ram",
+    )
+    builder.checkpoint_root = str(root)
+    coordinator = SerialOffloadCoordinator()
+    checkpoint_paths: list[Path] = []
+
+    def record_checkpoint_identity(paths: list[Path]) -> dict[str, str]:
+        checkpoint_paths.extend(paths)
+        return checkpoint_identity(paths)
+
+    monkeypatch.setattr(
+        "sglang_omni.models.minimax_music3.engine_builder.get_coordinator",
+        lambda: coordinator,
+    )
+    monkeypatch.setattr(
+        "sglang_omni.models.minimax_music3.engine_builder.checkpoint_identity",
+        record_checkpoint_identity,
     )
 
-    blob = tmp_path / "blob"
-    blob.write_text(json.dumps({"model_type": "mixtral", "hidden_size": 4096}))
-    snapshot = tmp_path / "snapshot"
-    snapshot.mkdir()
-    config_path = snapshot / "config.json"
-    config_path.symlink_to(blob)
+    builder.setup_model_resources(
+        torch.nn.Linear(1, 1),
+        None,  # type: ignore[arg-type]
+        generation_cuda_graph_enabled=False,
+    )
 
-    MiniMaxMusic3EngineBuilder.normalize_backbone_config(config_path)
-
-    assert json.loads(blob.read_text())["model_type"] == "mixtral"
-    assert not config_path.is_symlink()
-    assert json.loads(config_path.read_text())["model_type"] == "qwen3"
+    assert coordinator.ar_residency is not None
+    assert native_config in checkpoint_paths

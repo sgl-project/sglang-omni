@@ -50,6 +50,22 @@ sgl-omni serve \
   --port 8000
 ```
 
+### Async Decode
+
+On CUDA, enable one-step async decode to overlap CPU result collection with the next GPU decode step:
+
+```bash
+sgl-omni serve \
+  --model-path fishaudio/s2-pro \
+  --config examples/configs/s2pro_tts.yaml \
+  --tts_engine.factory.enable_async_decode true \
+  --port 8000
+```
+
+This is opt-in. A decode batch enters the lookahead path only after its request rows stabilize; prefill and batch changes use synchronous decoding. Before selecting an expected prefill batch, the scheduler resolves any pending decode so selection uses the updated request state. The GPU updates the previous codebooks, semantic repetition history, and sampling step before the next forward starts. The existing overlap scheduler remains disabled.
+
+One decode step may already be in flight when the host observes a request completion. The effective CUDA Graph batch size can therefore shrink one step later than in synchronous decoding. Different batch sizes can produce different floating-point results and generated codes, even with the same seed.
+
 ## Synthesize Speech
 
 Plain TTS:
@@ -67,39 +83,11 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 Voice cloning:
 
-```bash
-curl -X POST http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "fishaudio/s2-pro",
-    "voice": "default",
-    "input": "Get the trust fund to the bank early.",
-    "references": [{
-      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-      "text": "We asked over twenty different people, and they all said it was his."
-    }]
-  }' \
-  --output output.wav
-```
+See the [non-streaming Fish Speech voice cloning request](../basic_usage/tts.md#fish-speech-voice-cloning).
 
 Streaming:
 
-```bash
-curl -N -X POST http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "fishaudio/s2-pro",
-    "voice": "default",
-    "input": "Get the trust fund to the bank early.",
-    "references": [{
-      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-      "text": "We asked over twenty different people, and they all said it was his."
-    }],
-    "stream": true,
-    "response_format": "pcm"
-  }' \
-  --output output.pcm
-```
+See the [streaming Fish Speech voice cloning request](../basic_usage/tts.md#fish-speech-voice-cloning).
 
 ## Request Parameters
 

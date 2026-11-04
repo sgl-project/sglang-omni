@@ -107,6 +107,13 @@ enum ModelConfigurationIssueResolver {
             customLLMManager: customLLMManager
         )
 
+        appendASRIssues(
+            for: featureSettings.meeting.asrSelectionID,
+            issues: &issues,
+            remoteASR: remoteASR,
+            mlxModelManager: mlxModelManager
+        )
+
         return Array(Set(issues)).sorted { $0.id < $1.id }
     }
 
@@ -121,6 +128,10 @@ enum ModelConfigurationIssueResolver {
             return
         case .mlx(let repo):
             let canonicalRepo = MLXModelManager.canonicalModelRepo(repo)
+            if let reason = OmniASRBackend.unavailabilityReason(for: canonicalRepo) {
+                issues.append(.init(scope: .mlxModel(canonicalRepo), message: reason))
+                return
+            }
             // Unknown is a pending background scan, not evidence of a missing model.
             if !mlxModelManager.isCheckingInstallation(repo: canonicalRepo),
                !mlxModelManager.isModelDownloaded(repo: canonicalRepo) {

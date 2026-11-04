@@ -14,6 +14,19 @@ struct ASRDebugModelOption: Identifiable, Hashable {
     let title: String
     let subtitle: String
     let selection: Selection
+    var isInstalled: Bool = true
+
+    var disabledReason: String? {
+        switch selection {
+        case .mlx(let repo):
+            return OmniASRBackend.unavailabilityReason(for: repo)
+                ?? (isInstalled ? nil : AppLocalization.localizedString("Install this model in Model settings first."))
+        case .remote:
+            return nil
+        }
+    }
+
+    var isSelectable: Bool { disabledReason == nil }
 }
 
 struct LLMDebugModelOption: Identifiable, Hashable {
@@ -225,13 +238,14 @@ enum ModelDebugCatalog {
     ) -> [ASRDebugModelOption] {
         var options: [ASRDebugModelOption] = []
 
-        let localMLX = MLXModelManager.availableModels.compactMap { model -> ASRDebugModelOption? in
-            guard downloadedMLXRepos.contains(model.id) else { return nil }
-            return ASRDebugModelOption(
+        let installedRepos = Set(downloadedMLXRepos.map(MLXModelManager.canonicalModelRepo))
+        let localMLX = MLXModelManager.availableModels.map { model in
+            ASRDebugModelOption(
                 id: "mlx:\(model.id)",
                 title: MLXModelCatalog.displayTitle(for: model.id),
-                subtitle: AppLocalization.localizedString("Local MLX Audio"),
-                selection: .mlx(repo: model.id)
+                subtitle: ModelCatalogEngineSupport.asrTitle(for: model.id),
+                selection: .mlx(repo: model.id),
+                isInstalled: installedRepos.contains(model.id)
             )
         }
         options.append(contentsOf: localMLX)

@@ -27,6 +27,9 @@ from benchmarks.duplex.run_artifacts import file_sha256
 from benchmarks.duplex.v15_audio import write_json
 
 REPLY_SAMPLE_RATE = 16000
+# note (luojiaxuan): Parakeet's 25 ms analysis window; a reply cut at barge-in to less
+# audio than this cannot be transcribed and is not heard, so it counts as no audio.
+MIN_REPLY_SAMPLES = 400
 REPLIES_FILE = "replies.json"
 
 
@@ -167,7 +170,7 @@ def extract_replies(manifests: list[Path], out_dir: Path) -> list[dict[str, Json
         for index, reply in enumerate(variant_replies(directory)):
             samples = to_reply_rate(reply["samples"], reply["sample_rate"])
             wav = None
-            if len(samples):
+            if len(samples) >= MIN_REPLY_SAMPLES:
                 wav = (
                     Path("wav")
                     / variant["dataset"]

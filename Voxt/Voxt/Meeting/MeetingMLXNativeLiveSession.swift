@@ -2,7 +2,6 @@
 // Reuses visible MLX models' native streaming state for local meeting transcription.
 
 import Foundation
-import MLXAudioSTT
 
 @MainActor
 struct MeetingMLXNativeLiveSessionFactory: MeetingLiveSessionFactory {
@@ -86,7 +85,7 @@ private final class MeetingMLXNativeLiveSession: MeetingLiveTranscribingSession 
                 self.handle(event)
                 switch event {
                 case .ended, .failed: return
-                default: break
+                case .displayUpdate: break
                 }
             }
             guard !Task.isCancelled, let self, !self.isCancelled else { return }
@@ -192,7 +191,7 @@ private final class MeetingMLXNativeLiveSession: MeetingLiveTranscribingSession 
         release()
     }
 
-    private func handle(_ event: TranscriptionEvent) {
+    private func handle(_ event: ASRStreamingEvent) {
         switch event {
         case .displayUpdate(let confirmedText, let provisionalText):
             let cumulative = visibleCumulativeText(
@@ -200,9 +199,6 @@ private final class MeetingMLXNativeLiveSession: MeetingLiveTranscribingSession 
                 provisionalText: provisionalText
             )
             publishPartial(cumulative: cumulative)
-        case .confirmed, .provisional:
-            // displayUpdate carries the coherent cumulative confirmed + provisional view.
-            break
         case .ended(let output):
             let cumulative = visibleFinalText(output.text)
             if finalizeWithEndedOutputIfPossible(output, cumulativeText: cumulative) {
@@ -215,8 +211,6 @@ private final class MeetingMLXNativeLiveSession: MeetingLiveTranscribingSession 
             Task { @MainActor [self] in
                 await failAndCancel(message: failure.localizedDescription)
             }
-        case .stats:
-            break
         }
     }
 
@@ -283,17 +277,16 @@ private final class MeetingMLXNativeLiveSession: MeetingLiveTranscribingSession 
     }
 
     @discardableResult
-    private func finalizeWithEndedOutputIfPossible(_ output: STTOutput, cumulativeText: String) -> Bool {
+    private func finalizeWithEndedOutputIfPossible(_ output: ASRTranscriptionResult, cumulativeText: String) -> Bool {
         guard defersSilenceFinalization,
-              let segments = output.segments,
-              !segments.isEmpty
+              !output.segments.isEmpty
         else {
             return false
         }
 
         let capability = MLXModelCatalog.capability(for: modelManager.currentModelRepo)
         let structured = MeetingNativeLiveStructuredFinalization.meetingSegments(
-            from: segments,
+            from: output.segments,
             timingGranularity: capability.timingGranularity,
             modelFamily: capability.family,
             timelineOffsetSeconds: timelineOffsetSeconds,

@@ -382,6 +382,7 @@ struct MLXModelCatalog {
             languages: qwenLanguageCodes,
             routing: .languageName,
             liveMode: .nativeQwenLive,
+            realtime: true,
             outputs: [.text, .timestamps],
             timingGranularity: .chunk,
             configuration: [.recognitionPreset, .languageRouting, .qwenContext],
@@ -392,8 +393,7 @@ struct MLXModelCatalog {
             family: .cohereTranscribe,
             languages: cohereLanguageCodes,
             routing: .iso6391(requiresExplicitPrimaryLanguage: true),
-            liveMode: .nativeStreamingLive,
-            realtime: true,
+            liveMode: .batchPreview,
             configuration: [.recognitionPreset, .languageRouting, .cohereLongForm],
             vadPolicy: .modelManaged
         )
@@ -468,6 +468,8 @@ struct MLXModelCatalog {
         "mlx-community/parakeet-tdt-0.6b-v3": 2_509_044_141,
         "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit": 760_000_000,
         "mlx-community/SenseVoiceSmall": 936_491_235,
+        "wilsonzheng0327/Qwen3-ASR-1.7B-dflash": 725_684_336,
+        "wilsonzheng0327/Qwen3-ASR-0.6B-dflash": 262_453_106,
     ]
 
     nonisolated static func canonicalModelRepo(_ repo: String) -> String {
@@ -520,11 +522,27 @@ struct MLXModelCatalog {
     }
 
     nonisolated static func isRealtimeCapableModelRepo(_ repo: String) -> Bool {
-        capability(for: repo).isRealtimeCapable
+        guard OmniASRBackend.unavailability(for: repo) == nil else { return false }
+        switch OmniASRBackend.nativeModelKind(for: repo) {
+        case .qwen3ASR, .mossTranscribeDiarize, .nemotronASR:
+            return true
+        default:
+            return false
+        }
     }
 
     nonisolated static func liveMode(for repo: String) -> MLXLiveMode {
-        capability(for: repo).liveMode
+        guard OmniASRBackend.unavailability(for: repo) == nil else { return .batchPreview }
+        switch OmniASRBackend.nativeModelKind(for: repo) {
+        case .qwen3ASR:
+            return .nativeQwenLive
+        case .mossTranscribeDiarize:
+            return .nativeStreamingLive
+        case .nemotronASR:
+            return .nativeNemotronLive
+        default:
+            return .batchPreview
+        }
     }
 
     nonisolated static func ratingText(for repo: String) -> String {

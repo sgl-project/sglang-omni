@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import threading
 from queue import Queue
 from types import SimpleNamespace
 from typing import Any
@@ -14,9 +15,12 @@ from sglang_omni.models.qwen3_omni.components.code2wav_scheduler import (
     Code2WavScheduler,
 )
 from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
+from sglang_omni.models.qwen3_omni.session_input import QwenInputHooks
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.scheduling.session import SessionContext
 
 
 class RecordingOutbox(Queue[OutgoingMessage]):
@@ -78,6 +82,24 @@ def make_qwen_payload(
         ),
         data=(state or make_qwen_state()).to_dict(),
     )
+
+
+def make_dialog(
+    session_identity: SessionIdentity,
+) -> tuple[QwenInputHooks, list[TimedChunk], SessionContext]:
+    """An open dialog stage whose emitted chunks a test reads back in order."""
+    hooks = QwenInputHooks(
+        max_utterance_seconds=1, max_queued_turns=2, max_utterance_frames=4
+    )
+    outputs: list[TimedChunk] = []
+    hooks.open(session_identity, OmniRequest(None))
+    hooks.attach_output_stream(session_identity, outputs.append)
+    context = SessionContext(
+        session_identity=session_identity,
+        cancelled=threading.Event(),
+        emit=outputs.append,
+    )
+    return hooks, outputs, context
 
 
 class FakeCodecEmbedding(nn.Module):

@@ -144,7 +144,7 @@ final class DictionaryStore: ObservableObject {
 
     func createCategory(name: String) throws -> DictionaryCategory {
         guard completePendingReloadIfNeeded() else { throw DictionaryStoreError.dataUnavailable }
-        let preparedName = try prepareCategoryName(name)
+        let preparedName = try DictionaryEntryPolicy.prepareCategoryName(name, categories: categories)
         let now = Date()
         let category = DictionaryCategory(
             name: preparedName.display,
@@ -184,7 +184,7 @@ final class DictionaryStore: ObservableObject {
     func updateCategory(id: UUID, name: String) throws {
         guard completePendingReloadIfNeeded() else { throw DictionaryStoreError.dataUnavailable }
         guard let index = categories.firstIndex(where: { $0.id == id }) else { return }
-        let preparedName = try prepareCategoryName(name, excluding: id)
+        let preparedName = try DictionaryEntryPolicy.prepareCategoryName(name, categories: categories, excluding: id)
         var category = categories[index]
         category.name = preparedName.display
         category.normalizedName = preparedName.normalized
@@ -269,27 +269,28 @@ final class DictionaryStore: ObservableObject {
         groupNameSnapshot: String?
     ) throws {
         guard completePendingReloadIfNeeded() else { throw DictionaryStoreError.dataUnavailable }
-        let trimmedTerm = term.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalized = Self.normalizeTerm(trimmedTerm)
-        guard !trimmedTerm.isEmpty, !normalized.isEmpty else {
-            throw DictionaryStoreError.emptyTerm
-        }
+        let preparedTerm = try DictionaryEntryPolicy.prepareTerm(term)
 
-        if let existingIndex = existingTermIndex(normalizedTerm: normalized, groupID: groupID) {
+        if let existingIndex = existingTermIndex(normalizedTerm: preparedTerm.normalized, groupID: groupID) {
             let existingEntry = entries[existingIndex]
             let combinedReplacementTerms = existingEntry.replacementTerms.map(\.text) + replacementTerms
-            let prepared = try prepareEntryInput(
+            let prepared = try DictionaryEntryPolicy.prepareEntryInput(
                 term: existingEntry.term,
                 replacementTerms: combinedReplacementTerms,
                 groupID: existingEntry.groupID,
-                excluding: existingEntry.id
+                excluding: existingEntry.id,
+                entries: entries,
+                validationIndex: validationIndex
             )
             var updatedEntry = existingEntry
             updatedEntry.replacementTerms = prepared.replacementTerms
             updatedEntry.updatedAt = Date()
 
-            let reservedKeys = Set([existingEntry.normalizedTerm] + prepared.replacementTerms.map(\.normalizedText))
-            updatedEntry.observedVariants.removeAll { reservedKeys.contains($0.normalizedText) }
+            updatedEntry.observedVariants = DictionaryEntryPolicy.unreservedVariants(
+                from: updatedEntry.observedVariants,
+                normalizedTerm: existingEntry.normalizedTerm,
+                replacementTerms: prepared.replacementTerms
+            )
             try upsertPersistedEntry(updatedEntry)
 
             var updatedEntries = entries
@@ -376,10 +377,12 @@ final class DictionaryStore: ObservableObject {
         source: DictionaryEntrySource
     ) throws {
         guard completePendingReloadIfNeeded() else { throw DictionaryStoreError.dataUnavailable }
-        let prepared = try prepareEntryInput(
+        let prepared = try DictionaryEntryPolicy.prepareEntryInput(
             term: term,
             replacementTerms: replacementTerms,
-            groupID: groupID
+            groupID: groupID,
+            entries: entries,
+            validationIndex: validationIndex
         )
         let now = Date()
         let entry = DictionaryEntry(
@@ -410,13 +413,9 @@ final class DictionaryStore: ObservableObject {
         source: DictionaryEntrySource
     ) throws -> DictionaryEntryUpsertResult {
         guard completePendingReloadIfNeeded() else { throw DictionaryStoreError.dataUnavailable }
-        let trimmedTerm = term.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalized = Self.normalizeTerm(trimmedTerm)
-        guard !trimmedTerm.isEmpty, !normalized.isEmpty else {
-            throw DictionaryStoreError.emptyTerm
-        }
+        let preparedTerm = try DictionaryEntryPolicy.prepareTerm(term)
 
-        if let existingIndex = existingTermIndex(normalizedTerm: normalized, groupID: groupID) {
+        if let existingIndex = existingTermIndex(normalizedTerm: preparedTerm.normalized, groupID: groupID) {
             let reinforcedEntry = reinforceEntry(at: existingIndex, by: 1)
             return DictionaryEntryUpsertResult(
                 term: reinforcedEntry.term,
@@ -435,7 +434,7 @@ final class DictionaryStore: ObservableObject {
             source: source
         )
         return DictionaryEntryUpsertResult(
-            term: trimmedTerm,
+            term: preparedTerm.display,
             added: true,
             reinforcedCount: 0
         )
@@ -451,11 +450,13 @@ final class DictionaryStore: ObservableObject {
         groupNameSnapshot: String?
     ) throws {
         guard completePendingReloadIfNeeded() else { throw DictionaryStoreError.dataUnavailable }
-        let prepared = try prepareEntryInput(
+        let prepared = try DictionaryEntryPolicy.prepareEntryInput(
             term: term,
             replacementTerms: replacementTerms,
             groupID: groupID,
-            excluding: id
+            excluding: id,
+            entries: entries,
+            validationIndex: validationIndex
         )
         guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
         var updatedEntry = entries[index]
@@ -468,8 +469,11 @@ final class DictionaryStore: ObservableObject {
         updatedEntry.replacementTerms = prepared.replacementTerms
         updatedEntry.updatedAt = Date()
 
-        let reservedKeys = Set([prepared.normalized] + prepared.replacementTerms.map(\.normalizedText))
-        updatedEntry.observedVariants.removeAll { reservedKeys.contains($0.normalizedText) }
+        updatedEntry.observedVariants = DictionaryEntryPolicy.unreservedVariants(
+            from: updatedEntry.observedVariants,
+            normalizedTerm: prepared.normalized,
+            replacementTerms: prepared.replacementTerms
+        )
         try upsertPersistedEntry(updatedEntry)
 
         var updatedEntries = entries
@@ -512,7 +516,7 @@ final class DictionaryStore: ObservableObject {
         var incrementsByID: [UUID: Int] = [:]
         for entry in activeEntries {
             let needles = [entry.normalizedTerm] + entry.replacementTerms.map(\.normalizedText)
-            guard needles.contains(where: { sourceContainsNeedle($0, normalizedSource: normalizedSource) }) else {
+            guard needles.contains(where: { DictionaryEntryPolicy.sourceContainsNeedle($0, normalizedSource: normalizedSource) }) else {
                 continue
             }
             incrementsByID[entry.id, default: 0] += 1
@@ -552,34 +556,6 @@ final class DictionaryStore: ObservableObject {
         DictionaryTermNormalizer.normalize(input)
     }
 
-    private func prepareEntryInput(
-        term: String,
-        replacementTerms: [String],
-        groupID: UUID?,
-        excluding excludedID: UUID? = nil,
-        existingEntries: [DictionaryEntry]? = nil,
-        validationIndex providedValidationIndex: DictionaryValidationIndex? = nil
-    ) throws -> DictionaryPreparedEntryInput {
-        let resolvedEntries: [DictionaryEntry]?
-        if providedValidationIndex == nil, existingEntries == nil, excludedID != nil {
-            resolvedEntries = entries
-        } else {
-            resolvedEntries = existingEntries
-        }
-
-        let resolvedValidationIndex = providedValidationIndex
-            ?? (resolvedEntries == nil ? validationIndex : nil)
-
-        return try DictionaryEntryInputPreparer.prepare(
-            term: term,
-            replacementTerms: replacementTerms,
-            groupID: groupID,
-            excluding: excludedID,
-            entries: resolvedEntries,
-            validationIndex: resolvedValidationIndex
-        )
-    }
-
     private func importTransferEntries(
         _ transferEntries: [DictionaryTransferManager.Entry],
         categories transferCategories: [DictionaryCategory]
@@ -592,10 +568,11 @@ final class DictionaryStore: ObservableObject {
 
         for transferEntry in transferEntries {
             do {
-                let prepared = try prepareEntryInput(
+                let prepared = try DictionaryEntryPolicy.prepareEntryInput(
                     term: transferEntry.term,
                     replacementTerms: transferEntry.replacementTerms,
                     groupID: transferEntry.groupID,
+                    entries: entries,
                     validationIndex: importValidationIndex
                 )
                 let now = Date()
@@ -694,7 +671,7 @@ final class DictionaryStore: ObservableObject {
                     into: &entries[index],
                     text: candidate.matchedText,
                     normalizedText: candidate.normalizedMatchedText,
-                    confidence: confidence(for: candidate)
+                    confidence: DictionaryEntryPolicy.confidence(for: candidate)
                 )
             }
             updatedEntries.append(entries[index])
@@ -713,7 +690,7 @@ final class DictionaryStore: ObservableObject {
         if let variantIndex = entry.observedVariants.firstIndex(where: { $0.normalizedText == normalizedText }) {
             entry.observedVariants[variantIndex].count += 1
             entry.observedVariants[variantIndex].lastSeenAt = Date()
-            entry.observedVariants[variantIndex].confidence = higherConfidence(
+            entry.observedVariants[variantIndex].confidence = DictionaryEntryPolicy.higherConfidence(
                 lhs: entry.observedVariants[variantIndex].confidence,
                 rhs: confidence
             )
@@ -727,76 +704,6 @@ final class DictionaryStore: ObservableObject {
             )
             entry.observedVariants.sort { $0.count > $1.count }
         }
-    }
-
-    private func confidence(for candidate: DictionaryMatchCandidate) -> DictionaryVariantConfidence {
-        if candidate.score >= 0.985 {
-            return .high
-        }
-        if candidate.score >= 0.92 {
-            return .medium
-        }
-        return .low
-    }
-
-    private func higherConfidence(lhs: DictionaryVariantConfidence, rhs: DictionaryVariantConfidence) -> DictionaryVariantConfidence {
-        let rank: [DictionaryVariantConfidence: Int] = [
-            .low: 0,
-            .medium: 1,
-            .high: 2
-        ]
-        return (rank[lhs] ?? 0) >= (rank[rhs] ?? 0) ? lhs : rhs
-    }
-
-    private func sourceContainsNeedle(_ needle: String, normalizedSource: String) -> Bool {
-        let normalizedNeedle = Self.normalizeTerm(needle)
-        guard !normalizedNeedle.isEmpty else { return false }
-
-        var searchRange: Range<String.Index>? = normalizedSource.startIndex..<normalizedSource.endIndex
-        while let range = normalizedSource.range(of: normalizedNeedle, options: [], range: searchRange) {
-            if hasValidBoundary(
-                before: range.lowerBound,
-                after: range.upperBound,
-                needle: normalizedNeedle,
-                source: normalizedSource
-            ) {
-                return true
-            }
-            searchRange = range.upperBound..<normalizedSource.endIndex
-        }
-        return false
-    }
-
-    private func hasValidBoundary(
-        before lowerBound: String.Index,
-        after upperBound: String.Index,
-        needle: String,
-        source: String
-    ) -> Bool {
-        let needsLeadingBoundary = needle.unicodeScalars.first.map(Self.isASCIIAlphaNumeric) ?? false
-        let needsTrailingBoundary = needle.unicodeScalars.last.map(Self.isASCIIAlphaNumeric) ?? false
-
-        if needsLeadingBoundary,
-           lowerBound > source.startIndex,
-           let previous = source[..<lowerBound].unicodeScalars.last,
-           Self.isASCIIAlphaNumeric(previous) {
-            return false
-        }
-
-        if needsTrailingBoundary,
-           upperBound < source.endIndex,
-           let next = source[upperBound...].unicodeScalars.first,
-           Self.isASCIIAlphaNumeric(next) {
-            return false
-        }
-
-        return true
-    }
-
-    private nonisolated static func isASCIIAlphaNumeric(_ scalar: UnicodeScalar) -> Bool {
-        (65...90).contains(Int(scalar.value))
-            || (97...122).contains(Int(scalar.value))
-            || (48...57).contains(Int(scalar.value))
     }
 
     private func persist() {
@@ -892,10 +799,6 @@ final class DictionaryStore: ObservableObject {
             .appendingPathComponent("dictionary.json")
     }
 
-    private func sortEntries(_ values: [DictionaryEntry]) -> [DictionaryEntry] {
-        DictionaryEntryCollection.sortedEntries(values)
-    }
-
     private func sortCategories(_ values: [DictionaryCategory]) -> [DictionaryCategory] {
         values.sorted {
             if $0.isDefault != $1.isDefault {
@@ -917,7 +820,7 @@ final class DictionaryStore: ObservableObject {
     }
 
     private func replaceEntries(_ values: [DictionaryEntry], sort: Bool = true) {
-        let resolvedEntries = sort ? sortEntries(values) : values
+        let resolvedEntries = sort ? DictionaryEntryCollection.sortedEntries(values) : values
         entries = resolvedEntries
         filteredEntriesCache = DictionaryEntryCollection.filteredEntriesCache(for: resolvedEntries)
         validationIndex = DictionaryValidationIndex(entries: resolvedEntries)
@@ -963,24 +866,6 @@ final class DictionaryStore: ObservableObject {
         }
         replaceEntries(updatedEntries)
         persistEntries(updatedEntries.filter { $0.categoryID == category.id })
-    }
-
-    private func prepareCategoryName(
-        _ name: String,
-        excluding excludedID: UUID? = nil
-    ) throws -> (display: String, normalized: String) {
-        let display = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalized = Self.normalizeTerm(display)
-        guard !display.isEmpty, !normalized.isEmpty else {
-            throw DictionaryStoreError.emptyCategoryName
-        }
-        let duplicate = categories.contains {
-            $0.id != excludedID && $0.normalizedName == normalized
-        }
-        if duplicate {
-            throw DictionaryStoreError.duplicateCategory
-        }
-        return (display, normalized)
     }
 
     private func categoryIDForImportedEntry(_ entry: DictionaryTransferManager.Entry) -> UUID {

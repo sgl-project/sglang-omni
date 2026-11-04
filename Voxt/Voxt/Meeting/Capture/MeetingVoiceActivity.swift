@@ -3,8 +3,6 @@
 
 import Foundation
 import HuggingFace
-import MLX
-import MLXAudioVAD
 
 struct MeetingVoiceActivityDecision: Equatable, Sendable {
     let isSpeech: Bool
@@ -269,8 +267,10 @@ actor MeetingVoiceActivityDetector {
     private func shouldLogSileroFallback(_ error: Error) -> Bool {
         if let modelError = error as? MeetingVADModelError {
             switch modelError {
-            case .modelNotDownloaded, .runtimeUnavailable:
+            case .modelNotDownloaded:
                 return false
+            case .runtimeUnavailable:
+                break
             }
         }
         return !sileroFallbackWarningLogged
@@ -280,53 +280,57 @@ actor MeetingVoiceActivityDetector {
 actor ASRSileroStreamingVoiceActivityDetector {
     private let omniRuntime: OmniSharedModelRuntime
     private let sampleRate = 16_000
-    private let chunkSize = 512
-    private var model: SileroVAD?
-    private var states: [String: SileroVADStreamingState] = [:]
-    private var pendingSamples: [String: [Float]] = [:]
-    private var pendingSampleOffsets: [String: Int] = [:]
     private var lastProbabilities: [String: Float] = [:]
     /// On the native runtime: one server stream per streamID, which holds the
     /// Silero state and the unfinished chunk.
     private var omniStreams: [String: OmniVoiceActivityStream] = [:]
     private var omniEndpoint: OmniServerEndpoint?
-    private var unloadGeneration = 0
+    private var generation = 0
+    private var commandTail: Task<Void, Never>?
 
     init(omniRuntime: OmniSharedModelRuntime = OmniSileroVADRuntime.shared) {
         self.omniRuntime = omniRuntime
     }
 
     deinit {
-        // Note (Chenyang Zhao): discarded recording owners must return their sockets and runtime lease.
         let streams = Array(omniStreams.values)
         let runtime = omniRuntime
-        let hasLease = omniEndpoint != nil
+        let hasEndpoint = omniEndpoint != nil
         Task {
             for stream in streams { await stream.close() }
-            if hasLease { await runtime.release() }
+            if hasEndpoint { await runtime.release() }
         }
     }
 
-    func reset() {
-        states.removeAll()
-        pendingSamples.removeAll()
-        pendingSampleOffsets.removeAll()
-        lastProbabilities.removeAll()
-        let streams = omniStreams.values
-        omniStreams.removeAll()
-        for stream in streams {
-            Task { await stream.close() }
-        }
+    func reset() async {
+        await retireStreams(unload: false)
     }
 
     func unload() async {
-        unloadGeneration += 1
-        reset()
-        model = nil
-        if omniEndpoint != nil {
-            omniEndpoint = nil
-            await omniRuntime.release()
+        await retireStreams(unload: true)
+    }
+
+    private func retireStreams(unload: Bool) async {
+        generation += 1
+        let previous = commandTail
+        // Note (assistant): replacements wait for old exchanges, closes and endpoint release.
+        let retirement = Task {
+            await previous?.value
+            await self.closeStreams()
+            if unload, self.omniEndpoint != nil {
+                self.omniEndpoint = nil
+                await self.omniRuntime.release()
+            }
         }
+        commandTail = retirement
+        await retirement.value
+    }
+
+    private func closeStreams() async {
+        lastProbabilities.removeAll()
+        let streams = Array(omniStreams.values)
+        omniStreams.removeAll()
+        for stream in streams { await stream.close() }
     }
 
     func probability(
@@ -336,54 +340,31 @@ actor ASRSileroStreamingVoiceActivityDetector {
     ) async throws -> Float? {
         guard !samples.isEmpty else { return nil }
         guard inputSampleRate.isFinite, inputSampleRate > 0 else { return nil }
-        if OmniSileroVADRuntime.isEnabled {
-            return try await omniProbability(samples: samples, sampleRate: inputSampleRate, streamID: streamID)
+        guard OmniSileroVADRuntime.isEnabled else {
+            throw MeetingVADModelError.runtimeUnavailable("The Native Silero VAD runtime is unavailable.")
         }
-        let model = try await loadModelIfAvailable()
-        let prepared = ASRVoiceActivitySampleRateConverter.resample(
-            samples: samples,
-            from: inputSampleRate,
-            to: Double(sampleRate)
-        )
-        guard !prepared.isEmpty else { return lastProbabilities[streamID] }
-
-        var pending = pendingSamples[streamID] ?? []
-        pending.append(contentsOf: prepared)
-        var pendingOffset = min(pendingSampleOffsets[streamID] ?? 0, pending.count)
-        var latestProbability: Float?
-
-        while pending.count - pendingOffset >= chunkSize {
-            let endOffset = pendingOffset + chunkSize
-            let chunk = Array(pending[pendingOffset..<endOffset])
-            pendingOffset = endOffset
-            let state = states[streamID]
-            let (probability, nextState) = try withError {
-                let (probabilityArray, nextState) = try model.feed(
-                    chunk: MLXArray(chunk),
-                    state: state,
-                    sampleRate: sampleRate
-                )
-                eval(probabilityArray)
-                return (probabilityArray.asArray(Float.self).first, nextState)
-            }
-            if let probability {
-                latestProbability = probability
-            }
-            states[streamID] = nextState
+        let generation = generation
+        let previous = commandTail
+        let command = Task {
+            await previous?.value
+            try Task.checkCancellation()
+            guard generation == self.generation else { throw CancellationError() }
+            return try await self.omniProbability(
+                samples: samples, sampleRate: inputSampleRate, streamID: streamID, generation: generation
+            )
         }
-
-        Self.compactPendingSamples(&pending, offset: &pendingOffset, chunkSize: chunkSize)
-        pendingSamples[streamID] = pending
-        pendingSampleOffsets[streamID] = pendingOffset
-        if let latestProbability {
-            lastProbabilities[streamID] = latestProbability
-            return latestProbability
+        commandTail = Task { _ = try? await command.value }
+        return try await withTaskCancellationHandler {
+            try await command.value
+        } onCancel: {
+            command.cancel()
         }
-        return nil
     }
 
-    private func omniProbability(samples: [Float], sampleRate inputSampleRate: Double, streamID: String) async throws -> Float? {
-        let endpoint = try await omniEndpointIfAvailable()
+    private func omniProbability(
+        samples: [Float], sampleRate inputSampleRate: Double, streamID: String, generation: Int
+    ) async throws -> Float? {
+        let endpoint = try await omniEndpointIfAvailable(generation: generation)
         let prepared = ASRVoiceActivitySampleRateConverter.resample(
             samples: samples,
             from: inputSampleRate,
@@ -399,16 +380,14 @@ actor ASRSileroStreamingVoiceActivityDetector {
         }
         do {
             let probability = try await stream.probability(samples16k: prepared)
+            guard generation == self.generation else { return nil }
+            try Task.checkCancellation()
             if let probability {
                 lastProbabilities[streamID] = probability
             }
             return probability
         } catch {
-            guard omniStreams[streamID] === stream else {
-                // Note (Jiaxin Deng): reset() or a sibling failure already dropped this stream; the server is not at fault.
-                await stream.close()
-                return nil
-            }
+            guard generation == self.generation else { return nil }
             // Note (Jiaxin Deng): a broken stream starts over on the next call, as after reset().
             omniStreams[streamID] = nil
             await stream.close()
@@ -423,109 +402,78 @@ actor ASRSileroStreamingVoiceActivityDetector {
         // Note (Jiaxin Deng): a call that started on an endpoint already replaced has nothing to release.
         guard omniEndpoint == endpoint, !(error is CancellationError), !(error is OmniVoiceActivityError) else { return }
         omniEndpoint = nil
-        let streams = omniStreams.values
-        omniStreams.removeAll()
-        for stream in streams {
-            await stream.close()
-        }
+        await closeStreams()
         await omniRuntime.release()
     }
 
-    private func omniEndpointIfAvailable() async throws -> OmniServerEndpoint {
-        if let omniEndpoint {
-            return omniEndpoint
-        }
-        let generation = unloadGeneration
+    private func omniEndpointIfAvailable(generation: Int) async throws -> OmniServerEndpoint {
+        if let omniEndpoint { return omniEndpoint }
         let directory = try await SileroVADModelProvisioner.shared.ensureModelDirectory()
+        try Task.checkCancellation()
+        guard generation == self.generation else { throw CancellationError() }
         let endpoint = try await omniRuntime.acquire(modelDirectory: directory)
-        if unloadGeneration != generation {
-            // Note (Jiaxin Deng): unload() ran while this call waited, so it could not return this lease.
+        guard generation == self.generation, !Task.isCancelled else {
             await omniRuntime.release()
             throw CancellationError()
         }
-        if let omniEndpoint {
-            // Note (Jiaxin Deng): another call acquired one while this one waited.
-            await omniRuntime.release()
-            return omniEndpoint
-        }
         omniEndpoint = endpoint
         return endpoint
-    }
-
-    private nonisolated static func compactPendingSamples(
-        _ samples: inout [Float],
-        offset: inout Int,
-        chunkSize: Int
-    ) {
-        if offset == samples.count {
-            samples.removeAll(keepingCapacity: true)
-            offset = 0
-        } else if offset >= chunkSize * 8 {
-            samples.removeFirst(offset)
-            offset = 0
-        }
-    }
-
-    private func loadModelIfAvailable() async throws -> SileroVAD {
-        if let model {
-            return model
-        }
-        let directory = try await SileroVADModelProvisioner.shared.ensureModelDirectory()
-        let loaded = try SileroVADModelSupport.loadModel(from: directory)
-        model = loaded
-        return loaded
     }
 }
 
 actor ASRSileroOfflineVoiceActivityDetector: ASROfflineVoiceActivityBackend {
     private let sampleRate = 16_000
-    private var model: SileroVAD?
     private var omniEndpoint: OmniServerEndpoint?
     private var unloadGeneration = 0
+    private var commandTail: Task<Void, Never>?
+
+    deinit {
+        if omniEndpoint != nil {
+            Task { await OmniSileroVADRuntime.shared.release() }
+        }
+    }
 
     func unload() async {
         unloadGeneration += 1
-        model = nil
-        if omniEndpoint != nil {
-            omniEndpoint = nil
-            await OmniSileroVADRuntime.shared.release()
+        let previous = commandTail
+        let retirement = Task {
+            await previous?.value
+            if self.omniEndpoint != nil {
+                self.omniEndpoint = nil
+                await OmniSileroVADRuntime.shared.release()
+            }
         }
+        commandTail = retirement
+        await retirement.value
     }
 
     func speechRanges(samples: [Float], sampleRate inputSampleRate: Double) async throws -> [ASROfflineSpeechRange] {
         guard !samples.isEmpty, inputSampleRate.isFinite, inputSampleRate > 0 else { return [] }
-        if OmniSileroVADRuntime.isEnabled {
-            return try await omniSpeechRanges(samples: samples, sampleRate: inputSampleRate)
+        guard OmniSileroVADRuntime.isEnabled else {
+            throw MeetingVADModelError.runtimeUnavailable("The Native Silero VAD runtime is unavailable.")
         }
-        let model = try await loadModelIfAvailable()
-        let prepared = ASRVoiceActivitySampleRateConverter.resample(
-            samples: samples,
-            from: inputSampleRate,
-            to: Double(sampleRate)
-        )
-        guard !prepared.isEmpty else { return [] }
-
-        let profile = MeetingSileroVADSensitivity.stored().configuration()
-        let timestamps = try withError {
-            try model.getSpeechTimestamps(
-                MLXArray(prepared),
-                sampleRate: sampleRate,
-                threshold: profile.onsetProbabilityThreshold,
-                minSpeechDurationMs: Int((profile.minSpeechSeconds * 1_000).rounded(.up)),
-                minSilenceDurationMs: Int((profile.minSilenceSeconds * 1_000).rounded(.up)),
-                speechPadMs: Int((profile.speechPadSeconds * 1_000).rounded(.up))
+        let generation = unloadGeneration
+        let previous = commandTail
+        let command = Task {
+            await previous?.value
+            try Task.checkCancellation()
+            guard generation == self.unloadGeneration else { throw CancellationError() }
+            return try await self.omniSpeechRanges(
+                samples: samples, sampleRate: inputSampleRate, generation: generation
             )
         }
-        return timestamps.compactMap { timestamp in
-            let start = Double(timestamp.start) / Double(sampleRate)
-            let end = Double(timestamp.end) / Double(sampleRate)
-            guard end > start else { return nil }
-            return ASROfflineSpeechRange(startSeconds: start, endSeconds: end)
+        commandTail = Task { _ = try? await command.value }
+        return try await withTaskCancellationHandler {
+            try await command.value
+        } onCancel: {
+            command.cancel()
         }
     }
 
-    private func omniSpeechRanges(samples: [Float], sampleRate inputSampleRate: Double) async throws -> [ASROfflineSpeechRange] {
-        let endpoint = try await omniEndpointIfAvailable()
+    private func omniSpeechRanges(
+        samples: [Float], sampleRate inputSampleRate: Double, generation: Int
+    ) async throws -> [ASROfflineSpeechRange] {
+        let endpoint = try await omniEndpointIfAvailable(generation: generation)
         let prepared = ASRVoiceActivitySampleRateConverter.resample(
             samples: samples,
             from: inputSampleRate,
@@ -550,6 +498,8 @@ actor ASRSileroOfflineVoiceActivityDetector: ASROfflineVoiceActivityBackend {
             await releaseOmniEndpoint(after: error, endpoint: endpoint)
             throw error
         }
+        try Task.checkCancellation()
+        guard generation == unloadGeneration else { throw CancellationError() }
         return ranges.compactMap { range in
             let start = Double(range.lowerBound) / Double(sampleRate)
             let end = Double(range.upperBound) / Double(sampleRate)
@@ -558,22 +508,15 @@ actor ASRSileroOfflineVoiceActivityDetector: ASROfflineVoiceActivityBackend {
         }
     }
 
-    private func omniEndpointIfAvailable() async throws -> OmniServerEndpoint {
-        if let omniEndpoint {
-            return omniEndpoint
-        }
-        let generation = unloadGeneration
+    private func omniEndpointIfAvailable(generation: Int) async throws -> OmniServerEndpoint {
+        if let omniEndpoint { return omniEndpoint }
         let directory = try await SileroVADModelProvisioner.shared.ensureModelDirectory()
+        try Task.checkCancellation()
+        guard generation == unloadGeneration else { throw CancellationError() }
         let endpoint = try await OmniSileroVADRuntime.shared.acquire(modelDirectory: directory)
-        if unloadGeneration != generation {
-            // Note (Jiaxin Deng): unload() ran while this call waited, so it could not return this lease.
+        guard generation == unloadGeneration, !Task.isCancelled else {
             await OmniSileroVADRuntime.shared.release()
             throw CancellationError()
-        }
-        if let omniEndpoint {
-            // Note (Jiaxin Deng): another call acquired one while this one waited.
-            await OmniSileroVADRuntime.shared.release()
-            return omniEndpoint
         }
         omniEndpoint = endpoint
         return endpoint
@@ -586,16 +529,6 @@ actor ASRSileroOfflineVoiceActivityDetector: ASROfflineVoiceActivityBackend {
         guard omniEndpoint == endpoint, !(error is CancellationError), !(error is OmniVoiceActivityError) else { return }
         omniEndpoint = nil
         await OmniSileroVADRuntime.shared.release()
-    }
-
-    private func loadModelIfAvailable() async throws -> SileroVAD {
-        if let model {
-            return model
-        }
-        let directory = try await SileroVADModelProvisioner.shared.ensureModelDirectory()
-        let loaded = try SileroVADModelSupport.loadModel(from: directory)
-        model = loaded
-        return loaded
     }
 }
 

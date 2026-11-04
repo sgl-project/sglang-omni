@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from array import array
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -16,12 +17,14 @@ from sglang.srt.managers.io_struct import (
     TokenizedGenerateReqInput,
 )
 from sglang.srt.managers.schedule_batch import FINISH_ABORT, Req
-from sglang.srt.session.session_controller import SessionController
+from sglang.srt.mem_cache.unified_cache.components import ComponentType
+from sglang.srt.session.session_controller import Session, SessionController
 
 from sglang_omni.admission import (
     REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV,
     QueueFullError,
 )
+from sglang_omni.profiler.event_recorder import get_recorder
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
     SessionIdentity,
@@ -30,6 +33,15 @@ from sglang_omni.proto.session import (
     find_session_operation,
 )
 from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.scheduling.sglang_backend.history_cut import (
+    HistoryCut,
+    LayerKVCache,
+    RetainedKV,
+    SessionRows,
+    cut_retained_kv,
+    cut_token_ids,
+    retained_history_length,
+)
 from sglang_omni.scheduling.sglang_backend.request_data import (
     EmbeddingSpan,
     SGLangARRequestData,
@@ -39,12 +51,17 @@ from sglang_omni.scheduling.types import RequestOutput
 SESSION_STRING_LENGTH_LIMIT_CHARACTERS = 0
 
 
-class SessionKV(Protocol):
-    kv_allocated_len: int
+logger = logging.getLogger(__name__)
+
+
+class SessionKV(RetainedKV, Protocol):
     holds_kv: bool
 
+    def get_evicted_seqlen(self, component_type: ComponentType) -> int:
+        pass
 
-class SessionTreeCache(Protocol):
+
+class SessionTreeCache(SessionRows, Protocol):
     def session_records(self) -> Mapping[str, SessionKV]:
         pass
 
@@ -57,7 +74,12 @@ class RequestToTokenPool(Protocol):
 
 
 class TokenToKVPoolAllocator(Protocol):
+    size: int
+
     def available_size(self) -> int:
+        pass
+
+    def get_kvcache(self) -> LayerKVCache:
         pass
 
 
@@ -76,6 +98,7 @@ class BridgeScheduler(Protocol):
     waiting_queue: list[Req]
     chunked_req: Req | None
     max_running_requests: int
+    max_req_len: int
 
     def abort(self, request_id: str) -> None:
         pass
@@ -106,6 +129,8 @@ def is_close_request(payload: StagePayload) -> bool:
 class ARSessionPreparation:
     reset_history: bool = False
     bypass_generation: bool = False
+    # note (ruoyu): The native tokens to keep before the unit is appended, a prefix of the last unit's prompt that ends between units; the tokens past it leave the session's arrays, spans and KV.
+    kept_token_count: int | None = None
 
 
 class ARSessionAdapter:
@@ -161,6 +186,25 @@ class ARSessionAdapter:
         chunk: TimedChunk,
         payload: StagePayload,
     ) -> SGLangARRequestData:
+        raise NotImplementedError
+
+    def plan_history_cut(
+        self,
+        session_identity: SessionIdentity,
+        request_data: SGLangARRequestData,
+        history_length: int,
+        history_capacity: int,
+    ) -> HistoryCut | None:
+        """Choose whole units of retained history to drop before this unit joins the session.
+
+        history_length tokens come ahead of the unit now; it can still finish with at most history_capacity of them.
+        """
+        return None
+
+    def shift_key_positions(
+        self, keys: torch.Tensor, distances: torch.Tensor
+    ) -> torch.Tensor:
+        """Re-encode each cached key distances[i] positions earlier, in its dtype."""
         raise NotImplementedError
 
     def result(
@@ -323,6 +367,10 @@ class ARSessionBridge:
                 raise RuntimeError("native session reset failed")
             else:
                 pass
+        elif preparation.kept_token_count is not None:
+            self.rewind_streaming_session(
+                unit.session_identity.id, preparation.kept_token_count
+            )
         else:
             pass
         return preparation.bypass_generation
@@ -350,6 +398,36 @@ class ARSessionBridge:
             raise RuntimeError("streaming session close is still pending")
         else:
             pass
+
+    def rewind_streaming_session(self, session_id: str, kept_token_count: int) -> None:
+        """Rewind the native session to its first kept_token_count tokens, a prefix of the last unit's prompt that ends between units: the last request's generated tokens, the session's committed array lengths, its KV record and the retained spans shrink together, so the next unit extends the kept tokens without a re-prefill."""
+        native_session = self.bridge_scheduler.session_controller.get(session_id)
+        [last_request_node] = native_session.req_nodes.values()
+        last_request = last_request_node.req
+        session = self.sessions[session_id]
+        # note (ruoyu): The shared token array may still hold an aborted append's tokens until the next create_req trims it, so the finished prompt's length is the committed one.
+        committed_token_count = native_session.committed_origin_len
+        if committed_token_count is None or not (
+            0 < kept_token_count <= committed_token_count
+        ):
+            raise ValueError(
+                "a session rewind keeps a prefix of the last unit's prompt"
+            )
+        elif any(
+            span.start < kept_token_count < span.end for span in session.embedding_spans
+        ):
+            raise ValueError("a session rewind lands between units, outside every span")
+        else:
+            # note (ruoyu): The streaming session trims its shared token arrays to the committed lengths on the next append and matches its KV by length alone, so all of them shrink to the kept count together or the next unit reuses rows computed for the dropped tokens.
+            last_request.output_ids = last_request.output_ids[:0]
+            native_session.committed_origin_len = kept_token_count
+            native_session.committed_unpadded_len = kept_token_count
+            native_session.committed_fill_len = kept_token_count
+            record = self.bridge_scheduler.tree_cache.session_records()[session_id]
+            record.kv_committed_len = min(record.kv_committed_len, kept_token_count)
+            session.embedding_spans = [
+                span for span in session.embedding_spans if span.end <= kept_token_count
+            ]
 
     def create_session_request(
         self, payload: StagePayload, request_data: SGLangARRequestData
@@ -387,6 +465,23 @@ class ARSessionBridge:
         native_session = self.bridge_scheduler.session_controller.get(
             unit.session_identity.id
         )
+        session = self.sessions[unit.session_identity.id]
+        history_length = retained_history_length(native_session)
+        # note (0xtoward): SGLang grants the whole max_new_tokens only while input plus output stays below max_req_len.
+        history_capacity = (
+            self.bridge_scheduler.max_req_len
+            - 1
+            - len(adapter_request.origin_input_ids)
+            - int(adapter_request.sampling_params.max_new_tokens or 0)
+        )
+        history_cut = self.adapter.plan_history_cut(
+            unit.session_identity, request_data, history_length, history_capacity
+        )
+        if history_cut is not None:
+            self.drop_history(session, native_session, history_cut)
+            history_length -= history_cut.length
+        else:
+            pass
         tokenized_input = TokenizedGenerateReqInput(
             rid=adapter_request.rid,
             input_text=None,
@@ -429,8 +524,13 @@ class ARSessionBridge:
         offset = len(session_request.origin_input_ids) - len(
             adapter_request.origin_input_ids
         )
+        # note (0xtoward): A cut edits SGLang's session in place, so SGLang must put exactly the kept history ahead of the unit.
+        assert (
+            history_cut is None or offset == history_length
+        ), f"SGLang put {offset} history tokens ahead of the unit after a cut, not {history_length}"
         unit.native_offset = offset
         unit.prompt_length = len(adapter_request.origin_input_ids)
+        request_data.session_history_length = offset
         unit.embedding_spans = [
             EmbeddingSpan(
                 start=span.start + offset,
@@ -445,7 +545,6 @@ class ARSessionBridge:
             pass
         # note (Junnan Li): Placeholder ids under embedding spans do not identify their rows, so such a unit stays out of the radix tree.
         session_request.skip_radix_cache_insert = bool(unit.embedding_spans)
-        session = self.sessions[unit.session_identity.id]
         request_data.session_embedding_spans = [
             *session.embedding_spans,
             *unit.embedding_spans,
@@ -461,6 +560,42 @@ class ARSessionBridge:
             # Note (Junnan Li): An adapter that rewrote the unit's request keeps its payload; the stream builder reads the params from it.
             pass
         self.adapter.bind_request(unit.session_identity, request_data, unit)
+
+    def drop_history(
+        self, session: BridgeSession, native_session: Session, cut: HistoryCut
+    ) -> None:
+        """Drop the cut from an idle session's ids, KV and embedding spans; later positions move down."""
+        cut_token_ids(native_session, cut)
+        record = self.bridge_scheduler.tree_cache.session_records().get(
+            native_session.session_id
+        )
+        # note (0xtoward): After an abort the session holds no KV, and the next unit re-prefills the shortened ids.
+        if record is not None and record.holds_kv:
+            cut_retained_kv(
+                self.bridge_scheduler.tree_cache,
+                self.bridge_scheduler.token_to_kv_pool_allocator.get_kvcache(),
+                record,
+                cut,
+                self.adapter.shift_key_positions,
+            )
+        else:
+            pass
+        session.embedding_spans = [
+            EmbeddingSpan(
+                start=cut.new_position(span.start),
+                end=cut.new_position(span.end),
+                input_embeds=span.input_embeds,
+            )
+            for span in session.embedding_spans
+            if not cut.drops(span.start, span.end)
+        ]
+        logger.info(
+            "Session %s: dropped %d history tokens in %d ranges, %d kept",
+            native_session.session_id,
+            cut.length,
+            len(cut.ranges),
+            native_session.committed_origin_len,
+        )
 
     def release_append_unit(self, request_id: str) -> None:
         unit = self.units_by_request_id.pop(request_id, None)
@@ -638,6 +773,51 @@ class ARSessionBridge:
     ) -> None:
         unit = self.units_by_request_id.pop(request_id, None)
         if unit is not None:
+            recorder = get_recorder()
+            if recorder.is_active():
+                record = self.bridge_scheduler.tree_cache.session_records().get(
+                    unit.session_identity.id
+                )
+                allocator = self.bridge_scheduler.token_to_kv_pool_allocator
+                available_kv_positions = int(allocator.available_size())
+                kv_pool_capacity_positions = int(allocator.size)
+                session_logical_length = (
+                    0 if record is None else int(record.kv_allocated_len)
+                )
+                session_swa_evicted_length = (
+                    0
+                    if record is None
+                    else int(record.get_evicted_seqlen(ComponentType.SWA))
+                )
+                recorder.emit(
+                    request_id=request_id,
+                    stage=None,
+                    event_name="session_kv_snapshot",
+                    metadata={
+                        "session_id": unit.session_identity.id,
+                        "session_open_index": unit.session_identity.open_index,
+                        "input_seq": unit.chunk.seq,
+                        "cache_type": type(self.bridge_scheduler.tree_cache).__name__,
+                        "kv_allocator_type": type(
+                            self.bridge_scheduler.token_to_kv_pool_allocator
+                        ).__name__,
+                        "session_logical_length": session_logical_length,
+                        "session_swa_evicted_length": session_swa_evicted_length,
+                        "session_window_kv_positions": (
+                            session_logical_length - session_swa_evicted_length
+                        ),
+                        "kv_pool_capacity_positions": kv_pool_capacity_positions,
+                        "kv_pool_allocated_positions": (
+                            kv_pool_capacity_positions - available_kv_positions
+                        ),
+                        "available_kv_positions": available_kv_positions,
+                        "evictable_kv_positions": int(
+                            self.bridge_scheduler.tree_cache.evictable_size()
+                        ),
+                    },
+                )
+            else:
+                pass
             session = self.sessions[unit.session_identity.id]
             session.unit = None
             session.embedding_spans.extend(unit.embedding_spans)

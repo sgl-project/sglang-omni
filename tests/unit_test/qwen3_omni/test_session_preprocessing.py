@@ -11,12 +11,17 @@ import pytest
 import torch
 from pydantic import ValidationError
 
-from sglang_omni.models.qwen3_omni.session_preprocessing import QwenPreprocessingHooks
+from sglang_omni.models.qwen3_omni.session_node import SESSION_PORTS
+from sglang_omni.models.qwen3_omni.session_preprocessing import (
+    QwenPreprocessingHooks,
+    QwenSessionSampling,
+)
 from sglang_omni.preprocessing.text import ContentMedia, split_content_parts
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.proto.streams import CONFIGURE, CONTROL, INTERRUPT, SESSION_CONTROL
 from sglang_omni.scheduling.session import SessionContext
+from sglang_omni.serve.realtime.schema import SessionUpdateRequest
 
 
 class CharacterTokenizer:
@@ -188,6 +193,43 @@ def test_sampling_updates_apply_to_next_unit_but_instructions_cannot_change_afte
                 format=SESSION_CONTROL,
             ),
         )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "is_accepted"),
+    [
+        ("temperature", 2.0, True),
+        ("temperature", 2.5, False),
+        ("max_new_tokens", 0, False),
+        ("talker_max_new_tokens", 0, False),
+        ("talker_temperature", -0.5, False),
+        ("talker_top_k", -1, True),
+        ("talker_top_k", 0, False),
+        ("talker_top_k", 1, True),
+        ("talker_top_p", 1.0, True),
+        ("talker_top_p", 0.0, False),
+        ("talker_repetition_penalty", 0.9, False),
+        ("seed", -1, False),
+    ],
+)
+def test_the_realtime_schema_takes_exactly_the_sampling_values_the_session_takes(
+    field: str, value: float, is_accepted: bool
+) -> None:
+    """A hot sampling update the realtime layer acknowledged used to fail inside the session when the talker's top_k was 0."""
+    assert field in SESSION_PORTS.sampling_parameters
+    wire = {"session": {"sglang": {"sampling": {field: value}}}}
+    if is_accepted:
+        assert SessionUpdateRequest.model_validate(wire).session["sglang"][
+            "sampling"
+        ] == {field: value}
+        assert getattr(QwenSessionSampling.model_validate({field: value}), field) == (
+            value
+        )
+    else:
+        with pytest.raises(ValidationError):
+            SessionUpdateRequest.model_validate(wire)
+        with pytest.raises(ValidationError):
+            QwenSessionSampling.model_validate({field: value})
 
 
 def test_control_and_reopen_preserve_session_isolation() -> None:

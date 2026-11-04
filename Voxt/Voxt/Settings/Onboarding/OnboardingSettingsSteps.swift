@@ -140,7 +140,8 @@ extension OnboardingSettingsView {
             LocalModelPickerCard(
                 title: "Speech Model",
                 selectionTitle: mlxModelManager.displayTitle(for: mlxModelRepo),
-                selectionDescription: modelDescription(for: mlxModelRepo),
+                selectionDescription: OmniASRBackend.unavailabilityReason(for: mlxModelRepo)
+                    ?? modelDescription(for: mlxModelRepo),
                 isInstalled: mlxModelManager.isModelDownloaded(repo: mlxModelRepo),
                 showsCardSurface: false,
                 isInstalling: isSelectedMLXModelDownloading,
@@ -152,16 +153,25 @@ extension OnboardingSettingsView {
                 errorMessage: selectedMLXDownloadErrorMessage,
                 onChoose: {},
                 pickerContent: {
-                    SettingsMenuPicker(
-                        selection: $mlxModelRepo,
-                        options: mlxModelManager.displayModelsIncludingInstalled().map { model in
-                            SettingsMenuOption(value: model.id, title: model.title)
-                        },
-                        selectedTitle: mlxModelManager.displayTitle(for: mlxModelRepo),
-                        width: 280
-                    )
+                    Menu {
+                        ForEach(mlxModelManager.displayModelsIncludingInstalled()) { model in
+                            let reason = OmniASRBackend.unavailabilityReason(for: model.id)
+                            Button(reason.map { "\(model.title) · \($0)" } ?? model.title) {
+                                guard reason == nil else { return }
+                                mlxModelRepo = model.id
+                            }
+                            .disabled(reason != nil)
+                        }
+                    } label: {
+                        Text(mlxModelManager.displayTitle(for: mlxModelRepo))
+                            .lineLimit(1)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .frame(width: 280)
+                    .settingsFieldSurface()
                 },
                 onInstall: {
+                    guard OmniASRBackend.unavailabilityReason(for: mlxModelRepo) == nil else { return }
                     Task { await mlxModelManager.downloadModel(repo: mlxModelRepo) }
                 },
                 onOpen: {
@@ -172,6 +182,7 @@ extension OnboardingSettingsView {
                     mlxModelManager.pauseDownload(repo: mlxModelRepo)
                 },
                 onResume: {
+                    guard OmniASRBackend.unavailabilityReason(for: mlxModelRepo) == nil else { return }
                     Task { await mlxModelManager.downloadModel(repo: mlxModelRepo) }
                 },
                 onCancel: {

@@ -4,6 +4,49 @@ import XCTest
 
 @MainActor
 final class MeetingDetailViewModelLiveTests: MeetingDetailViewModelTestCase {
+    func testLiveSnapshotPreservesTranslationAndHighlightWhileReplacingMetadata() {
+        let segmentID = UUID()
+        let viewModel = makeHistoryViewModel(
+            initialSettings: .init(autoGenerate: false, promptTemplate: nil, modelSelectionID: nil),
+            modelOptions: [],
+            segments: [.init(
+                id: segmentID,
+                speaker: .them,
+                speakerID: "old-speaker",
+                audioSource: .systemAudio,
+                startSeconds: 0,
+                endSeconds: 1,
+                text: "old text",
+                translatedText: "  saved translation  ",
+                isHighlighted: true
+            )]
+        )
+        viewModel.setTranslationEnabled(false)
+        let incoming = MeetingTranscriptSegment(
+            id: segmentID,
+            speaker: .them,
+            speakerID: "new-speaker",
+            speakerDisplayName: "Alice",
+            audioSource: .microphone,
+            speakerConfidence: 0.8,
+            startSeconds: 2,
+            endSeconds: 4,
+            text: "new text",
+            translatedText: " \n ",
+            preventsAdjacentMerge: true
+        )
+
+        viewModel.updateLiveSegments([incoming])
+
+        let expected = incoming.updatingTranslation(
+            translatedText: "saved translation",
+            isTranslationPending: true
+        ).updatingHighlight(true)
+        XCTAssertEqual(viewModel.segments, [expected])
+        XCTAssertEqual(viewModel.displayedSegments, [expected])
+        XCTAssertEqual(viewModel.speakerGroups.first?.segments, [expected])
+    }
+
     func testLiveViewModelTracksFinalizingState() async {
         let liveState = MeetingOverlayState()
         liveState.isPresented = true

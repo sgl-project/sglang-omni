@@ -8,92 +8,6 @@ private func localized(_ key: String) -> String {
 }
 
 extension ModelSettingsView {
-    var translationSettingsCard: some View {
-        ModelTaskSettingsCard(
-            title: LocalizedStringKey(localized("Translation")),
-            providerPickerTitle: LocalizedStringKey(localized("Translation Provider")),
-            providerOptions: translationProviderOptions,
-            selectedProviderID: $translationModelProviderRaw,
-            modelLabelText: translationModelLabelText,
-            modelPickerTitle: LocalizedStringKey(localized("Translation Model")),
-            modelOptions: translationModelOptions,
-            selectedModelBinding: translationModelSelectionBinding,
-            modelDisplayText: translationModelDisplayText,
-            emptyStateText: translationModelEmptyStateText,
-            statusMessage: translationProviderStatusMessage,
-            statusIsWarning: translationProviderStatusIsWarning,
-            promptTitle: LocalizedStringKey(localized("Translation Prompt")),
-            promptText: promptBinding(for: $translationPrompt, kind: .translation),
-            defaultPromptText: AppPromptDefaults.text(for: .translation),
-            variables: ModelSettingsPromptVariables.translation,
-            promptGuidance: PromptAuthoringGuidance.translation
-        )
-    }
-
-    var rewriteSettingsCard: some View {
-        ModelTaskSettingsCard(
-            title: LocalizedStringKey(localized("Content Rewrite")),
-            providerPickerTitle: LocalizedStringKey(localized("Content Rewrite Provider")),
-            providerOptions: rewriteProviderOptions,
-            selectedProviderID: $rewriteModelProviderRaw,
-            modelLabelText: rewriteModelLabelText,
-            modelPickerTitle: LocalizedStringKey(localized("Content Rewrite Model")),
-            modelOptions: rewriteModelOptions,
-            selectedModelBinding: rewriteModelSelectionBinding,
-            modelDisplayText: nil,
-            emptyStateText: rewriteModelEmptyStateText,
-            statusMessage: nil,
-            statusIsWarning: false,
-            promptTitle: LocalizedStringKey(localized("Content Rewrite Prompt")),
-            promptText: promptBinding(for: $rewritePrompt, kind: .rewrite),
-            defaultPromptText: AppPromptDefaults.text(for: .rewrite),
-            variables: ModelSettingsPromptVariables.rewrite,
-            promptGuidance: PromptAuthoringGuidance.rewrite
-        )
-    }
-
-    @ViewBuilder
-    var mlxModelSection: some View {
-        Divider()
-
-        VStack(alignment: .leading, spacing: 8) {
-            Text(localized("Model"))
-                .font(.subheadline.weight(.medium))
-
-            HStack(alignment: .center, spacing: 12) {
-                SettingsMenuPicker(
-                    selection: $modelRepo,
-                    options: mlxModelManager.displayModelsIncludingInstalled().map { model in
-                        SettingsMenuOption(value: model.id, title: model.title)
-                    },
-                    selectedTitle: mlxModelManager.displayTitle(for: modelRepo),
-                    width: 260
-                )
-
-                Spacer()
-
-                Button(localized("Configure")) {
-                    activeLocalASRConfigurationTarget = .mlx(repo: modelRepo)
-                }
-                .buttonStyle(SettingsPillButtonStyle())
-            }
-
-            Text(modelLocalizedDescription(for: modelRepo))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Text(mlxConfigurationSummary)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-
-        ModelTableView(title: LocalizedStringKey(localized("Models")), rows: mlxRows, viewportHeight: 320)
-
-        if let downloadStatus = mlxInstallSnapshot(for: modelRepo).downloadStatus {
-            ModelDownloadStatusView(status: downloadStatus)
-        }
-    }
-
     @ViewBuilder
     func localASRConfigurationSheet(for target: LocalASRConfigurationTarget) -> some View {
         switch target {
@@ -102,6 +16,7 @@ extension ModelSettingsView {
                 modelRepo: repo,
                 modelTitle: mlxModelManager.displayTitle(for: repo),
                 capability: MLXModelCatalog.capability(for: repo),
+                modelManager: mlxModelManager,
                 hintSettings: asrHintSettingsBinding(for: .mlxAudio),
                 tuningSettings: mlxLocalTuningSettingsBinding(for: repo),
                 userLanguageCodes: selectedUserLanguageCodes
@@ -109,99 +24,6 @@ extension ModelSettingsView {
                 activeLocalASRConfigurationTarget = nil
             }
         }
-    }
-
-    @ViewBuilder
-    var appleIntelligenceSection: some View {
-        Divider()
-
-        if appleIntelligenceAvailable {
-            ResettablePromptSection(
-                title: LocalizedStringKey(localized("System Prompt")),
-                text: promptBinding(for: $systemPrompt, kind: .enhancement),
-                defaultText: AppPromptDefaults.text(for: .enhancement),
-                variables: ModelSettingsPromptVariables.enhancement,
-                guidance: PromptAuthoringGuidance.enhancement,
-                variablesTitle: PromptAuthoringGuidance.optionalVariablesTitle
-            )
-
-            HStack {
-                Text(localized("Customise how Apple Intelligence enhances your transcriptions."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        } else {
-            Text(localized("Apple Intelligence is not available on this Mac, so system prompt enhancement cannot be used."))
-                .font(.caption)
-                .foregroundStyle(.orange)
-        }
-    }
-
-    @ViewBuilder
-    var customLLMSection: some View {
-        Divider()
-
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(localized("Local LLM Configuration"))
-                    .font(.subheadline.weight(.medium))
-                Text(customLLMGenerationSummary)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            if customLLMManager.isModelDownloaded(repo: customLLMRepo) {
-                Button(localized("Configure")) {
-                    isCustomLLMConfigurationPresented = true
-                }
-                .buttonStyle(SettingsPillButtonStyle())
-            }
-        }
-
-        ResettablePromptSection(
-            title: LocalizedStringKey(localized("System Prompt")),
-            text: promptBinding(for: $systemPrompt, kind: .enhancement),
-            defaultText: AppPromptDefaults.text(for: .enhancement),
-            variables: ModelSettingsPromptVariables.enhancement
-        )
-
-        ModelTableView(title: LocalizedStringKey(localized("Custom LLM Models")), rows: customLLMRows, viewportHeight: 260)
-
-        if let downloadStatus = customLLMInstallSnapshot(for: customLLMRepo).downloadStatus {
-            ModelDownloadStatusView(status: downloadStatus)
-        }
-    }
-
-    @ViewBuilder
-    var remoteASRSection: some View {
-        Divider()
-
-        Text(localized("Remote ASR Providers"))
-            .font(.subheadline.weight(.medium))
-
-        ModelTableView(title: LocalizedStringKey(localized("Providers")), rows: remoteASRRows, viewportHeight: 220)
-    }
-
-    @ViewBuilder
-    var remoteLLMSection: some View {
-        Divider()
-
-        ResettablePromptSection(
-            title: LocalizedStringKey(localized("System Prompt")),
-            text: promptBinding(for: $systemPrompt, kind: .enhancement),
-            defaultText: AppPromptDefaults.text(for: .enhancement),
-            variables: ModelSettingsPromptVariables.enhancement
-        )
-
-        HStack {
-            Text(localized("Configure a remote provider and model, then click Use."))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-
-        ModelTableView(title: LocalizedStringKey(localized("Remote LLM Providers")), rows: remoteLLMRows, viewportHeight: 280)
     }
 }
 
@@ -216,9 +38,11 @@ private struct MLXASRConfigurationSheetView: View {
     let modelRepo: String
     let modelTitle: String
     let capability: MLXASRModelCapability
+    @ObservedObject var modelManager: MLXModelManager
     @Binding var hintSettings: ASRHintSettings
     @Binding var tuningSettings: MLXLocalTuningSettings
     @State private var mossUsageScope: MossASRUsageScope = .dictation
+    @State private var draftRemovalError: String?
     let userLanguageCodes: [String]
     let onDone: () -> Void
 
@@ -550,6 +374,10 @@ private struct MLXASRConfigurationSheetView: View {
                             .foregroundStyle(.secondary)
                     }
 
+                    if let draftRepo = OmniASRBackend.draftModelRepo(for: modelRepo) {
+                        speculativeDecodingSection(draftRepo: draftRepo)
+                    }
+
 
                     if configurationCapabilities.contains(.senseVoiceITN) {
                         Toggle(localized("Enable ITN"), isOn: $tuningSettings.senseVoiceUseITN)
@@ -597,6 +425,84 @@ private struct MLXASRConfigurationSheetView: View {
             maxHeight: SettingsUIStyle.modelConfigurationDialogMaxHeight,
             onClose: onDone
         )
+    }
+
+    /// The draft model's toggle and its download; a change restarts an idle
+    /// server so the setting applies at once.
+    private func speculativeDecodingSection(draftRepo: String) -> some View {
+        let sizeText = MLXModelCatalog.fallbackRemoteSizeText(repo: draftRepo) ?? ""
+        let isInstalled = modelManager.isModelDownloaded(repo: draftRepo)
+        let isChecking = modelManager.isCheckingInstallation(repo: draftRepo)
+        let downloadStatus = ModelDownloadStatusSnapshot.fromMLXState(
+            modelManager.state(for: draftRepo),
+            pauseMessage: modelManager.pausedStatusMessage(for: draftRepo)
+        )
+        return VStack(alignment: .leading, spacing: 8) {
+            Toggle(localized("Speculative Decoding"), isOn: $tuningSettings.speculativeDecoding)
+                .toggleStyle(.switch)
+                .onChange(of: tuningSettings.speculativeDecoding) { _, isEnabled in
+                    modelManager.releaseLoadedModelForConfigurationChange(repo: modelRepo)
+                    if isEnabled, !isInstalled, downloadStatus == nil {
+                        Task { await downloadDraft(draftRepo) }
+                    }
+                }
+            Text(localized("A small draft model proposes several tokens per step and the model verifies them: the same transcript, decoded faster."))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if let downloadStatus {
+                ModelDownloadStatusView(status: downloadStatus)
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(
+                        isChecking
+                            ? localized("Checking draft model…")
+                            : isInstalled
+                                ? AppLocalization.format("Draft model installed (%@)", sizeText)
+                                : AppLocalization.format("Draft model not downloaded (%@)", sizeText)
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    Spacer()
+                    if isInstalled {
+                        Button(localized("Remove Draft")) {
+                            Task { await removeDraft(draftRepo) }
+                        }
+                        .buttonStyle(SettingsPillButtonStyle())
+                    } else if !isChecking {
+                        Button(localized("Download Draft")) {
+                            Task { await downloadDraft(draftRepo) }
+                        }
+                        .buttonStyle(SettingsPillButtonStyle())
+                    }
+                }
+            }
+            if let draftRemovalError {
+                Text(draftRemovalError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
+    /// A server that loaded while the draft was still downloading restarts
+    /// with it once the download is done.
+    private func downloadDraft(_ draftRepo: String) async {
+        await modelManager.downloadModel(repo: draftRepo)
+        modelManager.releaseLoadedModelForConfigurationChange(repo: modelRepo)
+    }
+
+    /// The setting turns off only once the draft is gone; a delete refused
+    /// while a transcription runs is shown instead. An idle server still holds
+    /// a read lease on the draft, so it is released first.
+    private func removeDraft(_ draftRepo: String) async {
+        modelManager.releaseLoadedModelForConfigurationChange(repo: modelRepo)
+        switch await modelManager.deleteModel(repo: draftRepo) {
+        case .success:
+            draftRemovalError = nil
+            tuningSettings.speculativeDecoding = false
+        case .failure(let error):
+            draftRemovalError = error.localizedDescription
+        }
     }
 
     private func localInfoRow(label: String, value: String) -> some View {

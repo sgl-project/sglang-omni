@@ -8,6 +8,7 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
+from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.models.nemotron3_5_asr import request_builders, stages
 from sglang_omni.models.nemotron3_5_asr.config import Nemotron3_5ASRPipelineConfig
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
@@ -26,6 +27,11 @@ def test_config_leaves_defaults_to_factory() -> None:
         PIPELINE_CONFIG_REGISTRY.get_config("Nemotron3_5AsrForRNNT")
         is Nemotron3_5ASRPipelineConfig
     )
+    config.stages[0].factory.enable_encoder_cuda_graph = False
+    config.stages[0].factory.encoder_graph_max_batch_size = 4
+    resolved_factory = resolve_stage_factory_args(config.stages[0], config)
+    assert resolved_factory["enable_encoder_cuda_graph"] is False
+    assert resolved_factory["encoder_graph_max_batch_size"] == 4
 
 
 @pytest.mark.parametrize("model_error", [False, True])
@@ -74,6 +80,16 @@ def test_factory_transcribes_single_and_batched_requests(
         ),
     )
     scheduler = stages.create_nemotron3_5_asr_executor("checkpoint", device="cpu")
+    assert (
+        stages.Nemotron3_5ASRModelRunner.call_args.kwargs["enable_encoder_cuda_graph"]
+        is True
+    )
+    assert (
+        stages.Nemotron3_5ASRModelRunner.call_args.kwargs[
+            "encoder_graph_max_batch_size"
+        ]
+        == 8
+    )
     assert scheduler.max_concurrency == 8
     payloads = [
         StagePayload(
