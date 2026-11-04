@@ -51,6 +51,38 @@ agree on it with a maintainer first.
 
 Both drafts are pinned in `ci/models.json`. A draft for another target is one pin, one golden whose request names it under `draft_model_path`, and a row in Voxt's `OmniASRBackend.draftModelReposByRepo`. Verifying a block moves the target's low-precision logits slightly, so a few percent of clips differ from plain decoding in punctuation or a near-tie word; the goldens hold each chip's draft outputs like any other.
 
+## Qwen3-ASR language evaluation
+
+The frozen corpus contains 147 English clips, 173 Chinese clips, 64 Chinese-English mixed clips and 8 silence/noise controls. Evaluate fixed English and automatic language identification separately with the same checkpoint, audio layout and decoding limits. English WER, Chinese CER and mixed MER use the same normalization and edit distance in both runs.
+
+The existing `ci/golden/qwen3-asr-0.6b-4bit.json` keeps its fixed-English request and outputs. The separate `ci/golden/qwen3-asr-0.6b-4bit-auto.json` omits `request.language`, so the runtime receives no `--language` flag and identifies the language itself. Its Swift baseline is pending because there is no Swift measurement under the same language condition; its native per-chip golden still checks regressions.
+
+From the repository root, set `NATIVE_RUNTIME_BIN` to the installed runtime's `bin` directory and `NATIVE_DATA_ROOT` to the directory prepared by `ci/provision.py`, then run:
+
+```bash
+omni_native=sglang_omni_mlx/native
+python "$omni_native/ci/check_golden.py" \
+  --runtime-bin "$NATIVE_RUNTIME_BIN" --data-root "$NATIVE_DATA_ROOT" \
+  --golden "$omni_native/ci/golden/qwen3-asr-0.6b-4bit.json" \
+  --outputs results/fixed-english
+python "$omni_native/ci/check_golden.py" \
+  --runtime-bin "$NATIVE_RUNTIME_BIN" --data-root "$NATIVE_DATA_ROOT" \
+  --golden "$omni_native/ci/golden/qwen3-asr-0.6b-4bit-auto.json" \
+  --outputs results/automatic
+```
+
+Each command runs all 392 clips and reports its golden filename. Exported outputs include the request, and importing outputs recorded with another request is rejected. To record another chip, add `--write` to the corresponding command, keeping the two language conditions in their own golden files. Other Qwen3-ASR checkpoints can use the same automatic request by omitting `language` in their own golden.
+
+Measured on Apple M5 with 24 GB unified memory, macOS 26.4.1 and MLX 0.32.3, using the 0.6B 4-bit checkpoint pinned in `ci/models.json` at revision `313d850181767edf09f00a9c289becca70e58cd0`:
+
+| Metric | Fixed English | Automatic |
+| --- | --- | --- |
+| English WER (147 clips) | 2.985% (171/5729) | 3.020% (173/5729) |
+| Chinese CER (173 clips) | 7.078% (571/8067) | 6.161% (497/8067) |
+| Mixed MER (64 clips) | 15.767% (184/1167) | 11.225% (131/1167) |
+
+Both runs include the 8 silence/noise controls and finish all 392 clips with `stop`. Automatic identification changes 92 transcripts; `0308_mixed` keeps the Chinese-English speech instead of producing an English translation. Its normalized edit errors fall from 17 to 0. The fixed-English run matches 344/392 of the existing Apple M5 golden outputs; the unmodified evaluation script at `55d672a13d75fd57479649d94784a303ab1bda0e` produces identical outputs on all 392 clips. The fixed-English golden is unchanged.
+
 ## Rule 2: Contribution requirements
 
 **Placement and reuse**

@@ -123,9 +123,13 @@ def transcribe(
         str(runtime_bin / "qwen3_asr_transcribe"),
         "--model-path", str(model_directory),
         "--layout", request["layout"],
-        "--language", request["language"],
         "--max-new-tokens", str(request["max_new_tokens"]),
     ]  # fmt: skip
+    language = request.get("language")
+    if language is not None:
+        command += ["--language", language]
+    else:
+        pass
     if draft_directory is not None:
         command += ["--draft-model-path", str(draft_directory)]
     else:
@@ -257,10 +261,15 @@ def run(transcribe_corpus: TranscribeCorpus) -> None:
     arguments = parser.parse_args()
 
     golden = json.loads(arguments.golden.read_text())
+    print(f"Golden: {arguments.golden.name}")
     if arguments.import_path:
         outputs = json.loads(arguments.import_path.read_text())
         if outputs["model"] != golden["model"]:
             raise SystemExit(f"{arguments.import_path} is not {golden['model']}")
+        elif "request" in outputs and outputs["request"] != golden.get("request", {}):
+            raise SystemExit(
+                f"{arguments.import_path} was recorded with a different request"
+            )
         else:
             pass
         if golden.get("kind") == "minimax_music3":
@@ -350,6 +359,7 @@ def run(transcribe_corpus: TranscribeCorpus) -> None:
             json.dumps(
                 {
                     "model": golden["model"],
+                    "request": golden.get("request", {}),
                     "device": device,
                     "metrics": metrics,
                     "clips": results,
