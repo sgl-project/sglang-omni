@@ -904,7 +904,8 @@ that happened to contain an older version of the test.
   and 24 kHz vocoder output contracts.
 
 - `unit_test/cli/`: SGLang backend registration, option forwarding,
-  configuration-only launch behavior, and backend-specific help ownership.
+  configuration-only launch behavior, and parity between
+  `sglang serve --model-type omni` and `sgl-omni serve`.
 
 - `unit_test/client/`: Audio conversion, resampling, channel preservation, and
   response decoding for completion, speech, log-probability, and rollout fields.
