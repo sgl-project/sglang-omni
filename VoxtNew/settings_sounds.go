@@ -18,10 +18,10 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"github.com/hehehai/actnowkit/sounds"
 	"github.com/sgl-project/sglang-omni/VoxtNew/internal/i18n"
 	"github.com/sgl-project/sglang-omni/VoxtNew/internal/icons"
 	"github.com/sgl-project/sglang-omni/VoxtNew/internal/settings"
-	"github.com/hehehai/actnowkit/sounds"
 )
 
 // The recording's cues: the family's Tally and Wrap (a clear double beep
