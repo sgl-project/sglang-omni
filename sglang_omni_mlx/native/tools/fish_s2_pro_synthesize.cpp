@@ -88,8 +88,8 @@ int main(int argc, char **argv) {
       return 2;
     }
   }
-  // Freed MLX buffers go back to the system, as the server's do.
-  mlx::core::set_cache_limit(0);
+  // The server's limit, so the tool's time and memory match its.
+  mlx::core::set_cache_limit(fish_s2_pro::kCacheLimitBytes);
   const auto load_started = std::chrono::steady_clock::now();
   const fish_s2_pro::FishS2ProModel model(model_path);
   std::cerr << "loaded in " << SecondsSince(load_started) << " s\n";
