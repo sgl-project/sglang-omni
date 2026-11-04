@@ -3871,7 +3871,7 @@ def run_whole_requests(
         (2, 0, [2]),
     ],
 )
-def test_qwen3_tts_whole_request_decodes_every_frame_in_one_plan(
+def test_qwen3_tts_whole_request_decodes_every_frame(
     monkeypatch: pytest.MonkeyPatch,
     generated_frames: int,
     ref_code_len: int,
@@ -4223,7 +4223,7 @@ def test_qwen3_tts_whole_request_invalid_codes_fail_only_their_row(
     assert scheduler.codec_arena.active_slots() == 0
 
 
-def test_qwen3_tts_whole_request_aborted_in_flight_publishes_nothing(
+def test_qwen3_tts_whole_request_aborted_while_queued_publishes_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scheduler, _, _ = whole_request_scheduler(monkeypatch)
@@ -4233,6 +4233,29 @@ def test_qwen3_tts_whole_request_aborted_in_flight_publishes_nothing(
     scheduler.abort("whole")
 
     assert run_whole_requests(scheduler) == {}
+    assert scheduler.codec_arena.active_slots() == 0
+
+
+def test_qwen3_tts_whole_request_aborted_in_flight_publishes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler, _, _ = whole_request_scheduler(monkeypatch)
+    message = whole_request_message("whole", 8)
+    finish_group = scheduler.finish_incremental_group
+    slots_held_at_abort = []
+
+    def abort_then_finish(pending: PendingIncrementalGroup):
+        scheduler.abort("whole")
+        slots_held_at_abort.append(scheduler.codec_arena.active_slots())
+        return finish_group(pending)
+
+    monkeypatch.setattr(scheduler, "finish_incremental_group", abort_then_finish)
+
+    scheduler.run_non_streaming_batch([message], asyncio.new_event_loop())
+
+    assert run_whole_requests(scheduler) == {}
+    assert slots_held_at_abort == [1]
+    assert not scheduler.whole_request_rows
     assert scheduler.codec_arena.active_slots() == 0
 
 
