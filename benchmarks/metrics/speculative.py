@@ -43,6 +43,7 @@ class ClientResult(BaseModel):
     concurrency: int
     total: int
     skipped: int
+    failed: int
     throughput_samples_per_s: MetricMean
     latency_p95_s: MetricMean
     corpus_wer: MetricMean
@@ -168,7 +169,7 @@ def compare(legs: list[Leg], *, k_gain: float) -> Comparison:
                     values.append(value)
                 else:
                     pass
-            measured.failed_requests += result.skipped
+            measured.failed_requests += result.failed
     rows = []
     for concurrency in concurrencies:
         baseline = sides[("baseline", concurrency)]
