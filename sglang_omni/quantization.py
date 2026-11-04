@@ -10,7 +10,11 @@ custom weight loaders.
 
 from __future__ import annotations
 
+import logging
+import re
 from typing import TYPE_CHECKING, Callable
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     import torch
@@ -291,6 +295,31 @@ def normalize_block_name_to_quantize(
     return True
 
 
+def make_stage_prefix_optional(
+    pattern: str, stage_prefix: str, escaped_prefix: str
+) -> str:
+    """Rewrite each stage-prefix occurrence in `pattern` as an optional group.
+
+    Deleting the prefix from a regex by string surgery is not sound: it strips
+    only the leading branch of an alternation, misses an occurrence sitting
+    behind a wildcard, and turns `thinker.*` into the uncompilable `*`. Making
+    each occurrence optional instead leaves the rest of the expression exactly
+    as written and matches both the checkpoint's prefixed name and the
+    stage-local one.
+    """
+    rewritten = pattern
+    for form in (escaped_prefix, stage_prefix):
+        # A trailing dot owned by a quantifier is not a literal separator: in
+        # `thinker.*` the dot belongs to the `*`. Leave those occurrences be;
+        # the caller reports them rather than guessing at the intent.
+        rewritten = re.sub(
+            re.escape(form) + r"(?![*+?{])",
+            lambda match: f"(?:{match.group(0)})?",
+            rewritten,
+        )
+    return rewritten
+
+
 def normalize_ignore_entry(
     entry: object, stage_prefix: str, escaped_prefix: str
 ) -> object:
@@ -314,11 +343,32 @@ def normalize_ignore_entry(
         pass
 
     pattern = entry[len(IGNORE_REGEX_MARKER) :]
-    # `re.match` already anchors, so a leading `^` is redundant but legal;
-    # keep it where the checkpoint wrote it rather than rewriting the regex.
-    anchor = "^" if pattern.startswith("^") else ""
-    body = strip_stage_prefix(pattern[len(anchor) :], stage_prefix, escaped_prefix)
-    return f"{IGNORE_REGEX_MARKER}{anchor}{body}"
+    rewritten = make_stage_prefix_optional(pattern, stage_prefix, escaped_prefix)
+    stage_name = stage_prefix.rstrip(".")
+    if rewritten == pattern:
+        if stage_name in pattern:
+            logger.warning(
+                f"compressed-tensors ignore entry {entry!r} names the "
+                f"{stage_name!r} stage in a form that cannot be rewritten for "
+                "stage-local module names, so it will not match and the "
+                "modules it covers will be treated as quantized. Write the "
+                f"separator as an escaped dot, e.g. 're:{stage_name}\\..*'."
+            )
+        else:
+            pass
+        return entry
+    else:
+        pass
+
+    try:
+        re.compile(rewritten)
+    except re.error as exc:
+        logger.warning(
+            f"compressed-tensors ignore entry {entry!r} did not survive "
+            f"stage-prefix rewriting ({exc}); keeping it as written."
+        )
+        return entry
+    return IGNORE_REGEX_MARKER + rewritten
 
 
 def normalize_ignore_list(quant_config: dict[str, object], stage_prefix: str) -> bool:
