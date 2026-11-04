@@ -363,7 +363,7 @@ def test_nested_prefill_max_bs_trims_a_stage_default_ladder(
     overrides = build_generation_batch_overrides(
         max_running_requests=4,
         cuda_graph_bs_prefill=build_default_prefill_cuda_graph_bs(
-            512, extra_token_buckets=(1, 2)
+            512, extra_token_buckets=(2,)
         ),
         server_args_overrides={"cuda_graph_config": {"prefill": {"max_bs": cap}}},
     )
