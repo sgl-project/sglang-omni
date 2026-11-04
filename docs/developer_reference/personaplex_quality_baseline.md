@@ -2,6 +2,8 @@
 
 This experiment implements P0-4 of [the PersonaPlex serving roadmap](https://github.com/sgl-project/sglang-omni/issues/3083). It records three samples from each FDB subset at concurrency 1 and compares a greedy realtime reply with the offline reply to the same transmitted PCM.
 
+The [session reference experiment](#full-reply-consistency) achieves complete PCM and text equality on two FDB inputs, a repeated call and two short frame-boundary cases. The original quality baselines below retain their serving configurations and comparison results.
+
 ## Configuration
 
 The run used one RunPod H100 80 GB on 2026-11-03 UTC. Serving ran SGLang 0.5.22, PyTorch 2.14.1+cu130 and NVIDIA driver 595.91.07 from the repository's pinned CI image, `hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985`.
@@ -83,7 +85,7 @@ The input is FDB v1.5 `user_interruption/1/input.wav`. The recorder resamples it
 | Offline reply length | 349,632 samples |
 | Session excess length | 3,648 samples: one initial frame plus final unit padding |
 
-The session PCM SHA-256 is `d8163b0b05b3c463a0f6dc252bf435428af3b272922505c79de4498bdf5bfa08`. The offline PCM SHA-256 is `2c0c6829d44df2541bf67fc2aa4e4cef103ffbfe0953f6bd1dfe3edb3ec32aec`. The text replies also differ. The byte-identical session/offline acceptance condition is currently failing.
+The session PCM SHA-256 is `d8163b0b05b3c463a0f6dc252bf435428af3b272922505c79de4498bdf5bfa08`. The offline PCM SHA-256 is `2c0c6829d44df2541bf67fc2aa4e4cef103ffbfe0953f6bd1dfe3edb3ec32aec`. The text replies also differ. The byte-identical session/offline acceptance condition fails in this original baseline.
 
 The original serving paths used different PCM quantization: the session's `waveform_to_pcm16` rounded scaled samples, while the offline WAV encoder truncated them. This produced one-unit differences even for identical floating-point samples. The follow-up below unifies that conversion.
 
@@ -128,7 +130,7 @@ A second H100 run on 2026-11-04 used the same GPU model, driver, image and check
 | Generated agent codes | First difference at frame 45, codebook 7 |
 | Generated text tokens | First difference at frame 53 |
 
-The first generated-code difference precedes the caller-code difference. A control run supplied the session's exact caller codes to the offline LM. The generated-code and text-token differences still began at frames 45 and 53. Actual LM input embeddings matched through the first 45 steps, while hidden states first differed at step 39. The session executes subsequent units as retained-history prefills; offline executes decode steps. This places the first observed generation divergence in LM execution before token selection, with matching caller codes and prompt tensors. The capture identifies the execution-path difference; a kernel-level attribution would require comparing attention positions, masks and KV state.
+The first generated-code difference precedes the caller-code difference. A control run supplied the session's exact caller codes to the offline LM. The generated-code and text-token differences still began at frames 45 and 53. Actual LM input embeddings matched through the first 45 steps, while hidden states first differed at step 39. The session executes subsequent units as retained-history prefills; offline executes decode steps. This places the first observed generation divergence in LM execution before token selection, with matching caller codes and prompt tensors. The subsequent attention controls below locate the numerical difference.
 
 The decoder also produces different floating-point samples while the generated code prefix still matches. Over the first 45 generated frames, the maximum absolute waveform difference was 0.0006243438. Applying the same truncation rule to both waveforms leaves the first PCM difference at sample 9, with a maximum difference of 20 PCM units in that prefix.
 
@@ -136,7 +138,39 @@ A decoder-only control supplies the same 184 generated code frames to both chunk
 
 The PCM fix uses the offline encoder's truncation rule for session output. A fresh greedy session on the fixed code passes protocol replay and exactly matches truncating the captured original session waveform. Its PCM SHA-256 is `b5a516f6962d3dca08a88cd74d3e6c289e77eeef8643314a12d4824d0137912c`; its first difference from the unchanged offline output moves from sample 1 to sample 9.
 
-The length difference follows the existing request contracts: session executes one extra LM step and emits all 184 frames, while offline generates 183 frames and trims to the caller's 349,632 samples. Full reply equality remains false. Achieving it requires aligning the output-length contract and the numerical execution of the LM and codec in addition to PCM quantization.
+The length difference follows the existing request contracts: session executes one extra LM step and emits all 184 frames, while offline generates 183 frames and trims to the caller's 349,632 samples. Full reply equality is false in this follow-up. The session reference mode below aligns the output-length contract and numerical execution of the LM and codec.
+
+## Full-reply consistency
+
+On 2026-11-04, a third H100 experiment achieved complete PCM byte equality and exact text equality with offline `session_reference` enabled and SGLang deterministic inference enabled on both routes. [The consistency JSON](personaplex_consistency.json) records the runtime, source hashes, controls and individual comparisons. The serving files match local implementation commit `8a7df9f46`; the launch receipts retain the base revision plus the exact candidate patch.
+
+### Attention controls
+
+Two controls use the session's captured caller codes to isolate the LM. Disabling the offline LM CUDA graph makes all 183 common frames of input embeddings, hidden states, generated audio codes and text tokens exactly equal to the session. A second control retains CUDA graphs and changes only FlashAttention's `num_splits` from automatic selection (`0`) to `1`; it produces the same exact equality across all 183 common frames. The session has one additional frame under its output contract. These controls locate the observed LM divergence in attention split selection in this environment.
+
+SGLang's supported `enable_deterministic_inference` setting selects a fixed attention split and batch-invariant operations. The end-to-end runs use that setting with the original SGLang backend restored; its SHA-256 is `efa751c504ec92fbaebd376f38a33b715b3e650df00516e11fde2ed7c1023b02`. Offline decode retains CUDA graphs. Both pipelines independently encode the actual caller waveform and run the LM.
+
+### Reference mode and measured results
+
+The new offline mode encodes caller audio in 80 ms chunks, generates the session's extra initial frame, decodes two frames first and one frame per chunk afterward, and returns all generated samples. The realtime first-packet behavior and default offline output-length contract keep their existing definitions. The [cookbook commands](../cookbook/personaplex.md#greedy-session-and-offline-comparison) reproduce the launch and strict comparison.
+
+| Case | Transmitted input samples | Complete output samples, each route | PCM bytes | Text |
+|---|---:|---:|---|---|
+| FDB v1.5 `user_interruption/1` | 349,632 | 353,280 | Identical | Identical |
+| Same input, warm repeat | 349,632 | 353,280 | Identical | Identical |
+| FDB v1.5 `user_interruption/2` | 316,353 | 318,720 | Identical | Identical |
+| One 80 ms input frame | 1,920 | 3,840 | Identical | Identical, empty |
+| Partial second input frame | 1,940 | 5,760 | Identical | Identical, empty |
+
+All samples are mono 24 kHz PCM16. The first input and its repeat produce SHA-256 `824015250f0901a2cf0e2111589afefb84706a51d828a6a26fac636220587c11` on both routes. The second FDB input produces `a42ecca4d01491aab19952566b4f2836e0bde2e67594fa36f6d44aabe7ba95b9`. Every comparison includes the complete output, with zero differing bytes and equal lengths.
+
+The three full-length calls pass protocol replay. The two short calls have zero protocol violations and are marked `not_exercised` for input/output overlap coverage; their separately recorded boundary comparisons establish output length and byte equality. The tested scope is greedy generation, concurrency 1, this pinned checkpoint and this H100 runtime. Full-dataset coverage and quality scoring under the deterministic configuration are subsequent experiments; the earlier 39-call quality measurements below retain their original sampling and serving settings.
+
+### Evidence and validation
+
+The local archive `results/p0-4-parity/parity-evidence.tar.gz` has SHA-256 `b3d5314cf67892a606769454b8adae8b4a9390128dd3eb5e1a8b6bb7e91b3d17`. It contains 2,069 entries with no symlinks: both diagnostic tensor captures, the reference capture, server logs, five session recordings, all requests and responses, comparisons, launch scripts and the exact serving patch. Extract it with `tar -xzf results/p0-4-parity/parity-evidence.tar.gz -C results/p0-4-parity`; the summary is `parity/consistency-summary.json` and the end-to-end artifacts are under `parity/final/`.
+
+Validation passed 90 configuration, stage, request-builder and LM-session tests, seven session-hook tests using the real Mimi codec, and 66 benchmark report, profile and artifact tests. Repository pre-commit checks pass. The regression cases cover the extra frame's context budget, matching LM inputs from the same caller frames, per-request encoder state, codec chunk scheduling and the recorded comparison mode. The evidence archive was verified locally before the RunPod H100 instance was deleted; a subsequent API query returned no instance.
 
 ## Follow-up quality run
 

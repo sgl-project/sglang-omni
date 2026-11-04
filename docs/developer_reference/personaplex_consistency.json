@@ -1,0 +1,364 @@
+{
+  "schema_version": 1,
+  "date_utc": "2026-11-04",
+  "scope": "Concurrency 1, greedy session versus independent offline session reference",
+  "serving_source": {
+    "base_revision": "14876cb4762de0b55b2a2b97a72f409098a25d04",
+    "patch_sha256": "0ec6aaea3d94420967aba771d9ed4f55da23aa2ea786bdf5be7ae4f2cc2e70d6",
+    "files_sha256": {
+      "sglang_omni/models/personaplex/config.py": "e73b730fd28a3dae92d421d599920b7822b846a00c6ad48d08bc661fca073e36",
+      "sglang_omni/models/personaplex/payload_types.py": "f7264d77ed70392b6040d49f9b4df525ca454dc7a8c99eb284e5e524a0978299",
+      "sglang_omni/models/personaplex/request_builders.py": "7c7cf9b431c79a11792d4895c150377517befee8b9aea071d8e0a0a0e483994c",
+      "sglang_omni/models/personaplex/stages.py": "1a710dd8a50449d94e56132c346f630c0e30c8bb316268b8b0b4b8ffb23b5fb8",
+      "sglang_omni/models/personaplex/session_hooks.py": "d15705645d1e66bc2ff79bde8b4d83db21cce185d4e7e2e2b80ea09442aa593b",
+      "sglang_omni/models/personaplex/lm_session.py": "a90a924a2c2cda4ff58061b14670391b83ebf401c73be8a47c4e36cf9fe352d2",
+      "sglang_omni/models/personaplex/model_runner.py": "d4a2464ae57768776383eada12af027603c1dd430b17df3b0b58ec95af291904",
+      "sglang_omni/models/personaplex/code2wav_stream.py": "9ef7431782a97fa3cbf1849e9c1bedbe93751a216a847d4b25d9b4acc985974f",
+      "benchmarks/eval/benchmark_personaplex_parity.py": "f778f2891cbbe3a5ece95811e80ac1c981cc30210f4f42ff50bfe3a56a3fe38c"
+    },
+    "matched_local_revision": "8a7df9f4613c0508a80d8e5724a5378d1977596b",
+    "manifest_revision_note": "Recording manifests identify the base checkout. The archived patch and serving file hashes identify the executed candidate; those files match the local implementation commit."
+  },
+  "runtime": {
+    "packages": {
+      "torch": "2.14.1+cu130",
+      "sglang": "0.5.22",
+      "numpy": "2.3.5",
+      "soundfile": "0.13.1",
+      "websockets": "17.2"
+    },
+    "gpu": "NVIDIA H100 80GB HBM3, 595.91.07",
+    "image": "hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985",
+    "flashattention_backend_sha256": "efa751c504ec92fbaebd376f38a33b715b3e650df00516e11fde2ed7c1023b02",
+    "flashattention_backend_matches_original": true
+  },
+  "generation": {
+    "model": "nvidia/personaplex-7b-v1",
+    "model_revision": "fdaf4090a61cb315c138a1faee287ffd6c716309",
+    "voice": "NATF2",
+    "instructions": "You are a wise and friendly teacher. Answer questions or provide advice in a clear and engaging way.",
+    "temperature": 0,
+    "audio_temperature": 0,
+    "concurrency": 1,
+    "enable_deterministic_inference": true,
+    "disable_cuda_graph": false,
+    "session_reference": true,
+    "caller_encode_frames_per_chunk": 1,
+    "reply_decode_chunk_ramp_frames": [
+      2,
+      1
+    ]
+  },
+  "controls": {
+    "offline-eager": {
+      "encoded_user_codes": {
+        "left_shape": [
+          183,
+          8
+        ],
+        "right_shape": [
+          183,
+          8
+        ],
+        "equal": true,
+        "different_elements": 0,
+        "first_difference": null,
+        "max_absolute_difference": 0.0
+      },
+      "generated_codes": {
+        "left_shape": [
+          184,
+          8
+        ],
+        "right_shape": [
+          183,
+          8
+        ],
+        "equal": false,
+        "different_elements": 0,
+        "first_difference": null,
+        "max_absolute_difference": 0.0
+      },
+      "generated_text_ids": {
+        "left_shape": [
+          184
+        ],
+        "right_shape": [
+          183
+        ],
+        "equal": false,
+        "different_elements": 0,
+        "first_difference": null,
+        "max_absolute_difference": 0.0
+      },
+      "hidden_hidden": {
+        "left_shape": [
+          184,
+          4096
+        ],
+        "right_shape": [
+          183,
+          4096
+        ],
+        "equal": false,
+        "different_elements": 0,
+        "first_difference": null,
+        "max_absolute_difference": 0.0
+      },
+      "lm_input_embedding": {
+        "left_shape": [
+          184,
+          4096
+        ],
+        "right_shape": [
+          183,
+          4096
+        ],
+        "equal": false,
+        "different_elements": 0,
+        "first_difference": null,
+        "max_absolute_difference": 0.0
+      },
+      "compared_frames": 183,
+      "common_prefix_exact": true
+    },
+    "offline-single-split": {
+      "encoded_user_codes": {
+        "left_shape": [
+          183,
+          8
+        ],
+        "right_shape": [
+          183,
+          8
+        ],
+        "equal": true,
+        "different_elements": 0,
+        "first_difference": null,
+        "max_absolute_difference": 0.0
+      },
+      "generated_codes": {
+        "left_shape": [
+          184,
+          8
+        ],
+        "right_shape": [
+          183,
+          8
+        ],
+        "equal": false,
+        "different_elements": 0,
+        "first_difference": null,
+        "max_absolute_difference": 0.0
+      },
+      "generated_text_ids": {
+        "left_shape": [
+          184
+        ],
+        "right_shape": [
+          183
+        ],
+        "equal": false,
+        "different_elements": 0,
+        "first_difference": null,
+        "max_absolute_difference": 0.0
+      },
+      "hidden_hidden": {
+        "left_shape": [
+          184,
+          4096
+        ],
+        "right_shape": [
+          183,
+          4096
+        ],
+        "equal": false,
+        "different_elements": 0,
+        "first_difference": null,
+        "max_absolute_difference": 0.0
+      },
+      "lm_input_embedding": {
+        "left_shape": [
+          184,
+          4096
+        ],
+        "right_shape": [
+          183,
+          4096
+        ],
+        "equal": false,
+        "different_elements": 0,
+        "first_difference": null,
+        "max_absolute_difference": 0.0
+      },
+      "compared_frames": 183,
+      "common_prefix_exact": true
+    }
+  },
+  "cases": [
+    {
+      "id": "original",
+      "input_samples": 349632,
+      "input_sample_rate": 24000,
+      "input_sha256": "826f2d5ebb4facddc60ebfb01ff0a8babe6621a70c386aee547dea419d07049d",
+      "protocol_summary": {
+        "selected": 1,
+        "passed": 1,
+        "failed": 0,
+        "not_exercised": 0
+      },
+      "protocol_violations": [],
+      "full_reply": {
+        "byte_identical": true,
+        "session_samples": 353280,
+        "offline_samples": 353280,
+        "session_sha256": "824015250f0901a2cf0e2111589afefb84706a51d828a6a26fac636220587c11",
+        "offline_sha256": "824015250f0901a2cf0e2111589afefb84706a51d828a6a26fac636220587c11",
+        "first_differing_sample": null
+      },
+      "text": {
+        "session": "Hey, let me Hmm, you could start by tracking every expense, then cut out the stuff you don't need, Okay, some good goals are to pay off high interest debt first, then save a 3 to 6",
+        "offline": "Hey, let me Hmm, you could start by tracking every expense, then cut out the stuff you don't need, Okay, some good goals are to pay off high interest debt first, then save a 3 to 6",
+        "equal": true
+      },
+      "comparison": "final/parity-original/parity.json",
+      "input_source": "FDB v1.5 user_interruption/1/input.wav"
+    },
+    {
+      "id": "repeat",
+      "input_samples": 349632,
+      "input_sample_rate": 24000,
+      "input_sha256": "826f2d5ebb4facddc60ebfb01ff0a8babe6621a70c386aee547dea419d07049d",
+      "protocol_summary": {
+        "selected": 1,
+        "passed": 1,
+        "failed": 0,
+        "not_exercised": 0
+      },
+      "protocol_violations": [],
+      "full_reply": {
+        "byte_identical": true,
+        "session_samples": 353280,
+        "offline_samples": 353280,
+        "session_sha256": "824015250f0901a2cf0e2111589afefb84706a51d828a6a26fac636220587c11",
+        "offline_sha256": "824015250f0901a2cf0e2111589afefb84706a51d828a6a26fac636220587c11",
+        "first_differing_sample": null
+      },
+      "text": {
+        "session": "Hey, let me Hmm, you could start by tracking every expense, then cut out the stuff you don't need, Okay, some good goals are to pay off high interest debt first, then save a 3 to 6",
+        "offline": "Hey, let me Hmm, you could start by tracking every expense, then cut out the stuff you don't need, Okay, some good goals are to pay off high interest debt first, then save a 3 to 6",
+        "equal": true
+      },
+      "comparison": "final/parity-repeat/parity.json",
+      "input_source": "FDB v1.5 user_interruption/1/input.wav, warm repeat"
+    },
+    {
+      "id": "second",
+      "input_samples": 316353,
+      "input_sample_rate": 24000,
+      "input_sha256": "b5d516d9d124df24355162891257b071374290fbff0aae51b0e0d4cb7f23d014",
+      "protocol_summary": {
+        "selected": 1,
+        "passed": 1,
+        "failed": 0,
+        "not_exercised": 0
+      },
+      "protocol_violations": [],
+      "full_reply": {
+        "byte_identical": true,
+        "session_samples": 318720,
+        "offline_samples": 318720,
+        "session_sha256": "a42ecca4d01491aab19952566b4f2836e0bde2e67594fa36f6d44aabe7ba95b9",
+        "offline_sha256": "a42ecca4d01491aab19952566b4f2836e0bde2e67594fa36f6d44aabe7ba95b9",
+        "first_differing_sample": null
+      },
+      "text": {
+        "session": "Well these days the big thing is 5G networks, they' rolling out faster than ever Alright, a typical laptop these days has a 16 inch screen, an Intel core processor",
+        "offline": "Well these days the big thing is 5G networks, they' rolling out faster than ever Alright, a typical laptop these days has a 16 inch screen, an Intel core processor",
+        "equal": true
+      },
+      "comparison": "final/parity-second/parity.json",
+      "input_source": "FDB v1.5 user_interruption/2/input.wav"
+    },
+    {
+      "id": "one-frame",
+      "input_samples": 1920,
+      "input_sample_rate": 24000,
+      "input_sha256": "a0f781a6201dbacd3f8d159fd35581f9a13dc7968f488121ab456be9cdc613b0",
+      "protocol_summary": {
+        "selected": 1,
+        "passed": 0,
+        "failed": 0,
+        "not_exercised": 1
+      },
+      "protocol_violations": [],
+      "full_reply": {
+        "byte_identical": true,
+        "session_samples": 3840,
+        "offline_samples": 3840,
+        "session_sha256": "dee8f69f76cce4d6cf2b1ffc5a531b0b0804c8e8670cf3c16c068359df77754b",
+        "offline_sha256": "dee8f69f76cce4d6cf2b1ffc5a531b0b0804c8e8670cf3c16c068359df77754b",
+        "first_differing_sample": null
+      },
+      "text": {
+        "session": "",
+        "offline": "",
+        "equal": true
+      },
+      "comparison": "final/boundary-one-frame/parity.json",
+      "input_source": "First 1280 samples of user_interruption/1/input.wav at 16 kHz"
+    },
+    {
+      "id": "partial-frame",
+      "input_samples": 1940,
+      "input_sample_rate": 24000,
+      "input_sha256": "b832a587bc683d4c0fa0969aae1077b311db76b259fd8f8818e7a3f9118704e8",
+      "protocol_summary": {
+        "selected": 1,
+        "passed": 0,
+        "failed": 0,
+        "not_exercised": 1
+      },
+      "protocol_violations": [],
+      "full_reply": {
+        "byte_identical": true,
+        "session_samples": 5760,
+        "offline_samples": 5760,
+        "session_sha256": "b9850533d5ed981867026bd83153c503f2cb0c41df4e5abf84c9e96bc7c716bb",
+        "offline_sha256": "b9850533d5ed981867026bd83153c503f2cb0c41df4e5abf84c9e96bc7c716bb",
+        "first_differing_sample": null
+      },
+      "text": {
+        "session": "",
+        "offline": "",
+        "equal": true
+      },
+      "comparison": "final/boundary-partial-frame/parity.json",
+      "input_source": "First 1293 samples of user_interruption/1/input.wav at 16 kHz"
+    }
+  ],
+  "controls_scope": "Diagnostic controls fix caller codes to isolate LM computation. End-to-end cases encode the actual caller waveform independently in each pipeline.",
+  "validation": {
+    "personaplex_config_stages_request_and_session_tests": 90,
+    "personaplex_session_hook_tests": 7,
+    "benchmark_report_profile_and_artifact_tests": 66,
+    "pre_commit_all_files": "passed",
+    "total_unique_tests": 163
+  },
+  "evidence": {
+    "archive": "results/p0-4-parity/parity-evidence.tar.gz",
+    "sha256": "b3d5314cf67892a606769454b8adae8b4a9390128dd3eb5e1a8b6bb7e91b3d17",
+    "bytes": 27961667,
+    "archive_entries": 2069,
+    "symlinks": 0
+  },
+  "gpu_cleanup": {
+    "pod_id": "7xg2mygdb3eyax",
+    "deleted": true,
+    "api_verification": {
+      "data": {
+        "pod": null
+      }
+    }
+  }
+}
