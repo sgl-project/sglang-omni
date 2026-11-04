@@ -12,7 +12,7 @@ endpoint.
 
 Install `sglang-omni` by following [Installation](../get_started/installation.md).
 
-The Python pipeline does not run Qwen3-TTS on Apple Silicon (Torch/MPS) and rejects it at startup. On a Mac, use the native MLX `qwen3_tts_server` described in the [Voxt backend guide](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/backend/README.md).
+The Python pipeline does not run Qwen3-TTS on Apple Silicon (Torch/MPS) and rejects it at startup. On a Mac, use the native MLX `qwen3_tts_server` described in [Apple Silicon (Native MLX)](#apple-silicon-native-mlx).
 
 Qwen3-TTS Base uses the upstream `qwen-tts` package. Install it without
 dependencies so the SGLang-Omni Transformers 5.19 / SGLang 0.5.22 stack remains

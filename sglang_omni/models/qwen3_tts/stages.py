@@ -138,7 +138,8 @@ def load_qwen3_tts_tokenizer(
     if torch.device(device).type == "mps":
         raise ValueError(
             "Qwen3-TTS does not run on Torch/MPS; on Apple Silicon, serve it "
-            "with the native MLX qwen3_tts_server (see Voxt/backend/README.md)"
+            "with the native MLX qwen3_tts_server; see Apple Silicon (Native MLX) "
+            "in docs/cookbook/qwen3_tts.md"
         )
     else:
         pass
