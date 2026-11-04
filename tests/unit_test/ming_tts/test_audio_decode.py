@@ -206,7 +206,9 @@ def make_scripted_runner(
     runner.terminal_mask = torch.empty(2, dtype=torch.bool)
     runner.host_waveform = torch.empty((2, 4), dtype=torch.float32)
     runner.host_sample_lengths = torch.empty(2, dtype=torch.long)
+    transition.stream = stream
     monkeypatch.setattr(torch.cuda, "device", lambda _device: nullcontext())
+    monkeypatch.setattr(torch.cuda, "stream", lambda _stream: nullcontext())
     monkeypatch.setattr(torch.cuda, "current_stream", lambda _device: stream)
     return runner, transition, graph, stream
 

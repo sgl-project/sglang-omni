@@ -88,3 +88,52 @@ def test_acoustic_components_select_norm_layer(
     assert type(optimized.blocks[0].attn.q_norm) is MingRMSNorm
     assert type(optimized.blocks[0].attn.k_norm) is MingRMSNorm
     optimized.load_state_dict(native.state_dict(), strict=True)
+
+
+@pytest.mark.parametrize("component", [Aggregator, DiT])
+def test_fused_residual_norm_matches_the_unfused_block_chain(
+    component: type[Aggregator] | type[DiT],
+) -> None:
+    torch.manual_seed(0)
+    if component is DiT:
+        component_kwargs = {"llm_cond_dim": 6, "cfg_dropout_prob": 0}
+        inputs = (
+            torch.randn(3, 4, 4),
+            torch.rand(3),
+            torch.randn(3, 1, 6),
+            torch.randn(3, 2, 4),
+        )
+    else:
+        component_kwargs = {"llm_input_dim": 6}
+        inputs = (torch.randn(3, 4, 4),)
+    norm_layer = partial(SGLangRMSNorm, cast_x_before_out_mul=True)
+    unfused = component(
+        in_channels=4,
+        hidden_size=8,
+        depth=3,
+        num_heads=2,
+        execution_config=TalkerExecutionConfig(
+            attn_backend="torch", norm_layer=norm_layer
+        ),
+        **component_kwargs,
+    ).eval()
+    fused = component(
+        in_channels=4,
+        hidden_size=8,
+        depth=3,
+        num_heads=2,
+        execution_config=TalkerExecutionConfig(
+            attn_backend="torch", norm_layer=norm_layer, fuse_residual_norm=True
+        ),
+        **component_kwargs,
+    ).eval()
+    with torch.no_grad():
+        for parameter in unfused.parameters():
+            parameter.normal_(std=0.5)
+    fused.load_state_dict(unfused.state_dict(), strict=True)
+
+    with torch.no_grad():
+        expected = unfused(*inputs)
+        actual = fused(*inputs)
+
+    torch.testing.assert_close(actual, expected)

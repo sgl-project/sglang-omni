@@ -20,6 +20,20 @@ def adjust_overrides(key: str, value: Any) -> dict[str, Any]:
     return overrides
 
 
+def test_ming_tts_default_prefill_backend_is_declared_supported() -> None:
+    from sglang_omni.models.ming_tts import CAPABILITIES
+    from sglang_omni.scheduling.generation_batch_policy import (
+        build_default_prefill_cuda_graph_bs,
+    )
+
+    defaults = MingTtsEngineBuilder().generation_defaults(dtype="bfloat16")
+
+    assert defaults["cuda_graph_backend_prefill"] == "breakable"
+    assert CAPABILITIES.supports_breakable_prefill_cuda_graph is True
+    assert MingTtsEngineBuilder.supports_breakable_prefill_cuda_graph is True
+    assert defaults["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(512)
+
+
 def test_ming_tts_abort_callback_resets_runner_state() -> None:
     runner = object.__new__(MingTTSModelRunner)
     runner.request_states = {"req-ming-tts": object()}

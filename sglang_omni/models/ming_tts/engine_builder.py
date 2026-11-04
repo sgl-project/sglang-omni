@@ -11,6 +11,7 @@ from transformers import PretrainedConfig
 
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.ming_omni.tp_utils import validate_attention_tp_config
+from sglang_omni.models.ming_tts import CAPABILITIES
 from sglang_omni.models.ming_tts.tokenizer import MingTTSTokenizerBundle
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.bootstrap import InfrastructureOptions
@@ -19,7 +20,11 @@ from sglang_omni.scheduling.engine_factory import (
     SchedulerExtras,
     TtsEngineBuilder,
 )
-from sglang_omni.scheduling.generation_batch_policy import get_decode_cuda_graph_bs
+from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
+    build_default_prefill_cuda_graph_bs,
+    get_decode_cuda_graph_bs,
+)
 
 if TYPE_CHECKING:
     from sglang.srt.server_args import ServerArgs
@@ -56,6 +61,9 @@ def is_truthy(value: object) -> bool:
 class MingTtsEngineBuilder(TtsEngineBuilder["MingTTSSGLangRequestData"]):
     model_name = "Ming-Omni-TTS"
     context_length = 0
+    supports_breakable_prefill_cuda_graph = (
+        CAPABILITIES.supports_breakable_prefill_cuda_graph
+    )
 
     def __init__(
         self,
@@ -151,6 +159,9 @@ class MingTtsEngineBuilder(TtsEngineBuilder["MingTTSSGLangRequestData"]):
             "max_running_requests": 8,
             "dtype": dtype,
             "disable_cuda_graph": True,
+            # note (Dayuxiaoshui): Measured on Seed-TTS; longer prefills run eager.
+            "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
+            "cuda_graph_bs_prefill": build_default_prefill_cuda_graph_bs(512),
             "disable_overlap_schedule": True,
             "disable_radix_cache": True,
             "enable_torch_compile": False,
