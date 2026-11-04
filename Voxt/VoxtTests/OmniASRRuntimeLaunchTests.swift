@@ -166,12 +166,12 @@ final class OmniASRRuntimeLaunchTests: XCTestCase {
     }
 
     /// Launches a server script that records its command line and environment.
-    private func recordedLaunch(withDraft: Bool) async throws -> RecordedLaunch {
+    private func recordedLaunch(withDraft: Bool, kind: OmniASRModelKind = .qwen3ASR) async throws -> RecordedLaunch {
         let scratch = try TestDoubles.canonicalTemporaryDirectory()
             .appendingPathComponent("voxt-omni-launch-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: scratch) }
-        let runtimeExecutable = scratch.appendingPathComponent("qwen3_asr_server")
+        let runtimeExecutable = scratch.appendingPathComponent("\(kind.rawValue)_server")
         let arguments = scratch.appendingPathComponent("arguments")
         let environment = scratch.appendingPathComponent("environment")
         let script = """
@@ -189,7 +189,7 @@ final class OmniASRRuntimeLaunchTests: XCTestCase {
             startupTimeoutSeconds: 42
         )
         let runtime = OmniASRRuntime(
-            kind: .qwen3ASR,
+            kind: kind,
             modelDirectory: modelDirectory,
             draftDirectory: draftDirectory,
             configuration: configuration
@@ -241,35 +241,40 @@ final class OmniASRRuntimeLaunchTests: XCTestCase {
 
     /// A draft directory reaches the server as --draft-model-path after the model's flags.
     func testLaunchPassesTheDraftDirectoryToTheServer() async throws {
-        let launch = try await recordedLaunch(withDraft: true)
-        let draftDirectory = try XCTUnwrap(launch.draftDirectory)
-        XCTAssertEqual(launch.commandLine, [
-            launch.runtimeExecutable.resolvingSymlinksInPath().path,
-            "--supervised",
-            "--model-kind", "qwen3_asr",
-            "--model-directory", launch.modelDirectory.path,
-            "--startup-timeout-s", "42.0",
-            "--draft-model-path", draftDirectory.path,
-        ])
+        for kind in [OmniASRModelKind.qwen3ASR, .mossTranscribeDiarize] {
+            let launch = try await recordedLaunch(withDraft: true, kind: kind)
+            let draftDirectory = try XCTUnwrap(launch.draftDirectory)
+            XCTAssertEqual(launch.commandLine, [
+                launch.runtimeExecutable.resolvingSymlinksInPath().path,
+                "--supervised",
+                "--model-kind", kind.rawValue,
+                "--model-directory", launch.modelDirectory.path,
+                "--startup-timeout-s", "42.0",
+                "--draft-model-path", draftDirectory.path,
+            ])
+        }
     }
 
-    /// Each Qwen3-ASR size has one draft, reached through the canonical repo
+    /// Each supported target has one draft, reached through the canonical repo
     /// and managed like a checkpoint.
-    func testDraftModelsBelongToTheQwen3ASRCheckpoints() {
+    func testDraftModelsBelongToTheirASRCheckpoints() {
         let smallDraft = "wilsonzheng0327/Qwen3-ASR-0.6B-dflash"
         let largeDraft = "wilsonzheng0327/Qwen3-ASR-1.7B-dflash"
+        let mossDraft = "wilsonzheng0327/MOSS-Transcribe-Diarize-dflash"
         XCTAssertEqual(
             OmniASRBackend.draftModelReposByRepo,
             [
                 "mlx-community/Qwen3-ASR-0.6B-4bit": smallDraft,
                 "mlx-community/Qwen3-ASR-1.7B-6bit": largeDraft,
                 "mlx-community/Qwen3-ASR-1.7B-8bit": largeDraft,
+                "OpenMOSS-Team/MOSS-Transcribe-Diarize": mossDraft,
             ]
         )
         XCTAssertEqual(OmniASRBackend.draftModelRepo(for: "mlx-community/Qwen3-ASR-0.6B-8bit"), smallDraft)
         XCTAssertEqual(OmniASRBackend.draftModelRepo(for: "mlx-community/Qwen3-ASR-1.7B-bf16"), largeDraft)
+        XCTAssertEqual(OmniASRBackend.draftModelRepo(for: "OpenMOSS-Team/MOSS-Transcribe-Diarize"), mossDraft)
         XCTAssertNil(OmniASRBackend.draftModelRepo(for: "mlx-community/parakeet-tdt-0.6b-v3"))
-        for draft in [smallDraft, largeDraft] {
+        for draft in [smallDraft, largeDraft, mossDraft] {
             XCTAssertTrue(OmniASRBackend.isDraftModelRepo(draft))
             XCTAssertTrue(MLXModelManager.isManagedArtifactRepo(draft))
             XCTAssertNotNil(MLXModelCatalog.fallbackRemoteSizeText(repo: draft))

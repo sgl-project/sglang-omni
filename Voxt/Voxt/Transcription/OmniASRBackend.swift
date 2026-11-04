@@ -61,6 +61,7 @@ nonisolated enum OmniASRBackend {
         "mlx-community/Qwen3-ASR-0.6B-4bit": "wilsonzheng0327/Qwen3-ASR-0.6B-dflash",
         "mlx-community/Qwen3-ASR-1.7B-6bit": "wilsonzheng0327/Qwen3-ASR-1.7B-dflash",
         "mlx-community/Qwen3-ASR-1.7B-8bit": "wilsonzheng0327/Qwen3-ASR-1.7B-dflash",
+        "OpenMOSS-Team/MOSS-Transcribe-Diarize": "wilsonzheng0327/MOSS-Transcribe-Diarize-dflash",
     ]
 
     static var isAppleSilicon: Bool {

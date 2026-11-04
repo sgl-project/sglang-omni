@@ -48,10 +48,11 @@ agree on it with a maintainer first.
 | --- | --- | --- |
 | `mlx-community/Qwen3-ASR-0.6B-4bit` | `wilsonzheng0327/Qwen3-ASR-0.6B-dflash` | `ci/golden/qwen3-asr-0.6b-4bit-dflash.json` |
 | `mlx-community/Qwen3-ASR-1.7B-{6bit,8bit}` | `wilsonzheng0327/Qwen3-ASR-1.7B-dflash` | `ci/golden/qwen3-asr-1.7b-8bit-dflash.json` |
+| `OpenMOSS-Team/MOSS-Transcribe-Diarize` | `wilsonzheng0327/MOSS-Transcribe-Diarize-dflash` | `ci/model_golden/moss-transcribe-diarize-dflash.json` |
 
-Both drafts are pinned in `ci/models.json`. A draft for another target is one pin, one golden whose request names it under `draft_model_path`, and a row in Voxt's `OmniASRBackend.draftModelReposByRepo`. Verifying a block moves the target's low-precision logits slightly, so a few percent of clips differ from plain decoding in punctuation or a near-tie word; the goldens hold each chip's draft outputs like any other.
+The Qwen3-ASR drafts are pinned in `ci/models.json`; the MOSS-TD draft is pinned in `ci/model_pins.json`. A draft for another target is one pin, one golden whose request names it under `draft_model_path`, and a row in Voxt's `OmniASRBackend.draftModelReposByRepo`. Verifying a block moves the target's low-precision logits slightly, so a few percent of clips differ from plain decoding in punctuation or a near-tie word; the goldens hold each chip's draft outputs like any other.
 
-`moss_transcribe_diarize_server` and `moss_transcribe` also accept `--draft-model-path DIR` and `--draft-bits 4|6|8`. Use `wilsonzheng0327/MOSS-Transcribe-Diarize-dflash`, pinned in `native/ci/model_pins.json`. MOSS-TD shares the greedy DFlash verifier with Qwen3-ASR and retains its chunked prefill, timestamp offsets and speaker-segment output. The CLI reports `verify_rounds` summed across audio chunks. Omit the draft path for ordinary decoding.
+`moss_transcribe_diarize_server` and `moss_transcribe` also accept `--draft-model-path DIR` and `--draft-bits 4|6|8`. Voxt offers `wilsonzheng0327/MOSS-Transcribe-Diarize-dflash` as the target's optional draft. MOSS-TD shares the greedy DFlash verifier with Qwen3-ASR and retains its chunked prefill, timestamp offsets and speaker-segment output. The CLI reports `verify_rounds` summed across audio chunks. Omit the draft path for ordinary decoding.
 
 ## Rule 2: Contribution requirements
 

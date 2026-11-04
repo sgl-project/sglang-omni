@@ -470,6 +470,7 @@ struct MLXModelCatalog {
         "mlx-community/SenseVoiceSmall": 936_491_235,
         "wilsonzheng0327/Qwen3-ASR-1.7B-dflash": 725_684_336,
         "wilsonzheng0327/Qwen3-ASR-0.6B-dflash": 262_453_106,
+        "wilsonzheng0327/MOSS-Transcribe-Diarize-dflash": 262_453_136,
     ]
 
     nonisolated static func canonicalModelRepo(_ repo: String) -> String {

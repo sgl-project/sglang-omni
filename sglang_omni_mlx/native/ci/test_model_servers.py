@@ -415,8 +415,8 @@ def test_moss_request_returns_speaker_segments(moss_server: ModelServer) -> None
     assert "[S01]" in result["text"] and "[S02]" in result["text"]
 
 
-@pytest.mark.parametrize("budget", [1, 2, 8, 9])
-def test_moss_draft_stops_at_the_token_budget(budget: int) -> None:
+@pytest.mark.parametrize("max_new_tokens", [1, 2, 8, 9])
+def test_moss_draft_stops_at_the_token_budget(max_new_tokens: int) -> None:
     """A budget ending inside a draft block must not commit extra tokens."""
     result = subprocess.run(
         [
@@ -426,7 +426,7 @@ def test_moss_draft_stops_at_the_token_budget(budget: int) -> None:
             "--draft-model-path",
             str(Path(DATA_ROOT) / "models" / MOSS_DRAFT_REPO.replace("/", "_")),
             "--max-new-tokens",
-            str(budget),
+            str(max_new_tokens),
             str(Path(DATA_ROOT) / "corpus" / "v1" / "clips" / "0006_en_short.wav"),
         ],
         capture_output=True,
@@ -435,9 +435,9 @@ def test_moss_draft_stops_at_the_token_budget(budget: int) -> None:
         timeout=120,
     )
     output = json.loads(result.stdout)
-    assert output["generated_token_count"] == budget
+    assert output["generated_token_count"] == max_new_tokens
     assert output["finish_reason"] == "length"
-    assert (output["verify_rounds"] > 0) == (budget > 1)
+    assert (output["verify_rounds"] > 0) == (max_new_tokens > 1)
 
 
 def test_moss_streamed_request_ends_with_segments(moss_server: ModelServer) -> None:
