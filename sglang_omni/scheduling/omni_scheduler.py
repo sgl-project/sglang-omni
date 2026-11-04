@@ -3840,7 +3840,11 @@ class OmniScheduler(Generic[RequestDataT]):
         """Drain launched steps in order, retaining ownership on failed waits."""
         if self.session_bridge is not None:
             # note (Junnan Li): Wait before clearing ownership; clear before reentrant callbacks.
-            if self.previous_pending_decode is not None:
+            while self.previous_pending_decode is not None or self.async_pending:
+                if self.previous_pending_decode is None:
+                    self.previous_pending_decode = self.async_pending.pop(0)
+                else:
+                    pass
                 self.wait_async_device(
                     self.previous_pending_decode.batch,
                     self.previous_pending_decode.device_step,
@@ -3850,18 +3854,6 @@ class OmniScheduler(Generic[RequestDataT]):
                     None,
                 )
                 self.process_owned_async(pending_decode)
-            else:
-                pass
-            while self.async_pending:
-                pending_decode = self.async_pending.pop(0)
-                self.previous_pending_decode = pending_decode
-                try:
-                    self.wait_async_device(
-                        pending_decode.batch, pending_decode.device_step
-                    )
-                    self.process_owned_async(pending_decode)
-                finally:
-                    self.previous_pending_decode = None
         else:
             while self.async_pending:
                 pending_decode = self.async_pending.pop(0)

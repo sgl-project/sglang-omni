@@ -866,9 +866,7 @@ def test_moss_tts_local_generation_defaults(disable_prefill: bool) -> None:
             3072,
             4096,
         ]
-        assert (
-            overrides["cuda_graph_config"]["prefill"]["full_prefill_max_req"] == 32
-        )
+        assert overrides["cuda_graph_config"]["prefill"]["full_prefill_max_req"] == 32
 
 
 def test_moss_tts_local_prefill_lookahead_follows_async_decode() -> None:
@@ -1273,7 +1271,9 @@ def test_create_preprocessing_executor_uses_shared_encoder(monkeypatch):
     ]
 
 
-def test_preprocess_and_result_adapter():
+def test_preprocess_and_result_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CPU request assembly must not require an available CUDA device."""
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     set_moss_tts_local_preprocessing_context(processor=FakeProcessor())
     try:
         payload = preprocess_moss_tts_local_payload(make_payload())
@@ -2360,15 +2360,11 @@ def test_seeded_sample_attend_matches_standalone_sampler():
     seeds = torch.arange(batch, device=device, dtype=torch.long) * 101
     base = torch.full((batch,), 41, device=device, dtype=torch.long)
     codes = torch.zeros(batch, n_vq, device=device, dtype=torch.long)
-    qkv = torch.randn(
-        vocab, 3 * heads * head_dim, device=device, dtype=torch.bfloat16
-    )
+    qkv = torch.randn(vocab, 3 * heads * head_dim, device=device, dtype=torch.bfloat16)
     embedding = torch.randn(
         vocab, heads * head_dim, device=device, dtype=torch.bfloat16
     )
-    key = torch.zeros(
-        batch, heads, n_vq, head_dim, device=device, dtype=torch.bfloat16
-    )
+    key = torch.zeros(batch, heads, n_vq, head_dim, device=device, dtype=torch.bfloat16)
     value = torch.zeros_like(key)
     _, residual = seeded_sample_attend(
         logits,
@@ -2415,9 +2411,19 @@ def test_seeded_sample_attend_matches_standalone_sampler():
     )
     assert out is None
     assert torch.equal(
-        codes[:, last], sample_seeded_fused(logits, temperature=temperature, top_p=top_p, top_k=top_k, seeds=seeds, positions=base + last + 1)
+        codes[:, last],
+        sample_seeded_fused(
+            logits,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            seeds=seeds,
+            positions=base + last + 1,
+        ),
     )
-    assert torch.equal(residual, torch.nn.functional.embedding(codes[:, last], embedding))
+    assert torch.equal(
+        residual, torch.nn.functional.embedding(codes[:, last], embedding)
+    )
 
 
 @pytest.mark.accelerator
@@ -2470,11 +2476,16 @@ def test_seeded_sample_attend_attention_matches_reference():
     v = qkv[tokens, 2 * hidden :].view(batch, heads, head_dim)
     key_ref[:, :, position] = k
     value_ref[:, :, position] = v
-    reference = torch.nn.functional.scaled_dot_product_attention(
-        q.unsqueeze(2),
-        key_ref[:, :, : position + 1].float(),
-        value_ref[:, :, : position + 1].float(),
-    ).squeeze(2).reshape(batch, hidden).to(torch.bfloat16)
+    reference = (
+        torch.nn.functional.scaled_dot_product_attention(
+            q.unsqueeze(2),
+            key_ref[:, :, : position + 1].float(),
+            value_ref[:, :, : position + 1].float(),
+        )
+        .squeeze(2)
+        .reshape(batch, hidden)
+        .to(torch.bfloat16)
+    )
     torch.testing.assert_close(out, reference, rtol=5e-2, atol=5e-2)
     torch.testing.assert_close(key, key_ref)
     torch.testing.assert_close(value, value_ref)
@@ -2495,5 +2506,9 @@ def test_frame_lookup_attention_position_zero():
     value = torch.zeros_like(key)
     out = frame_lookup_attention(qkv, key, value, 0)
     assert torch.equal(out, qkv[:, 2 * hidden :])
-    assert torch.equal(key[:, :, 0], qkv[:, hidden : 2 * hidden].view(batch, heads, head_dim))
-    assert torch.equal(value[:, :, 0], qkv[:, 2 * hidden :].view(batch, heads, head_dim))
+    assert torch.equal(
+        key[:, :, 0], qkv[:, hidden : 2 * hidden].view(batch, heads, head_dim)
+    )
+    assert torch.equal(
+        value[:, :, 0], qkv[:, 2 * hidden :].view(batch, heads, head_dim)
+    )

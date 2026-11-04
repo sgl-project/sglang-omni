@@ -238,10 +238,87 @@ def test_prepare_active_rows_reports_audio_repetition_penalty_from_pool():
         ),
     ]
 
-    _, rows, has_audio_repetition_penalty = pool.prepare_active_rows(reqs)
+    row_tensor, rows, has_audio_repetition_penalty = pool.prepare_active_rows(reqs)
 
+    assert row_tensor.device.type == "cpu"
+    assert row_tensor.tolist() == rows
+    assert pool.seeds[row_tensor].tolist() == [11, 22]
     assert has_audio_repetition_penalty is True
     assert pool.rows_have_audio_repetition_penalty(rows) is True
+
+
+def test_busy_parameter_upload_buffers_preserve_inflight_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fifth upload must not overwrite any of four unfinished H2D sources."""
+    pool = MossTTSLocalDecodeStatePool(make_model())
+    pool.pinned_parameter_buffers = [
+        (
+            torch.full((1, 5), float(index)),
+            torch.full((1, 3), index, dtype=torch.long),
+        )
+        for index in range(4)
+    ]
+    pool.parameter_buffer_events = [
+        SimpleNamespace(query=lambda: False) for _ in range(4)
+    ]
+    original_values = [
+        (floats.clone(), integers.clone())
+        for floats, integers in pool.pinned_parameter_buffers
+    ]
+    empty_tensor = torch.empty
+
+    def allocate_host_tensor(
+        row_count: int,
+        column_count: int,
+        *,
+        dtype: torch.dtype,
+        pin_memory: bool,
+    ) -> torch.Tensor:
+        assert pin_memory
+        return empty_tensor(row_count, column_count, dtype=dtype)
+
+    monkeypatch.setattr(torch, "empty", allocate_host_tensor)
+    floats, integers, _ = pool.acquire_pinned_parameter_buffers()
+    floats.fill_(100.0)
+    integers.fill_(200)
+
+    for (pending_floats, pending_integers), (expected_floats, expected_integers) in zip(
+        pool.pinned_parameter_buffers[:4], original_values
+    ):
+        assert torch.equal(pending_floats, expected_floats)
+        assert torch.equal(pending_integers, expected_integers)
+
+
+def test_codes_capacity_overrun_preserves_committed_prefix() -> None:
+    """EOS and speculative emits beyond capacity must not overwrite committed codes."""
+    pool = MossTTSLocalDecodeStatePool(make_model(max_running_requests=1))
+    pool.codes_capacity = 2
+    row = pool.acquire_row("a")
+    row_tensor = torch.tensor([row])
+    expected_codes = torch.tensor([[11] * 12, [12] * 12])
+    for codes in expected_codes:
+        pool.accumulate_codes(row_tensor, codes.unsqueeze(0))
+    for token in (21, 22, 23):
+        pool.accumulate_codes(row_tensor, torch.full((1, 12), token))
+
+    assert torch.equal(pool.copy_codes_to_host("a", 2), expected_codes)
+    assert pool.copy_codes_to_host("a", 3) is None
+
+
+def test_host_codes_survive_slot_reuse() -> None:
+    """Returning CPU codes must detach their storage from the reusable slot."""
+    pool = MossTTSLocalDecodeStatePool(make_model(max_running_requests=1))
+    row = pool.acquire_row("a")
+    expected_codes = torch.full((1, 12), 11)
+    pool.accumulate_codes(torch.tensor([row]), expected_codes)
+    previous_codes = pool.copy_codes_to_host("a", 1)
+    pool.release_row("a")
+    next_row = pool.acquire_row("b")
+    pool.accumulate_codes(torch.tensor([next_row]), torch.full((1, 12), 21))
+
+    assert torch.equal(previous_codes, expected_codes)
+    assert torch.equal(pool.copy_codes_to_host("b", 1), torch.full((1, 12), 21))
 
 
 def test_audio_history_updates_pool_presence_mask():
@@ -621,9 +698,12 @@ def test_collect_frame_stages_host_token_ids():
     assert outputs["1"].data == model.config.audio_end_token_id
 
 
+@pytest.mark.parametrize("previous_request_id", ["previous", "rid"])
 def test_collect_frame_uses_eager_path_when_audio_repetition_penalty_active(
-    monkeypatch,
-):
+    monkeypatch: pytest.MonkeyPatch,
+    previous_request_id: str,
+) -> None:
+    """Reusing a pool row must not reuse the previous request's penalty decision."""
     hidden_size = 4
     weight = torch.zeros(2, hidden_size, dtype=torch.bfloat16)
     embedding = SimpleNamespace(weight=weight)
@@ -638,6 +718,8 @@ def test_collect_frame_uses_eager_path_when_audio_repetition_penalty_active(
         ),
         frame_graph_max_bs=1,
         device=torch.device("cpu"),
+        dtype=torch.bfloat16,
+        hidden_size=hidden_size,
     )
     pool = MossTTSLocalDecodeStatePool(model)
     model.state_pool = pool
@@ -682,8 +764,18 @@ def test_collect_frame_uses_eager_path_when_audio_repetition_penalty_active(
     runner = object.__new__(MossTTSLocalModelRunner)
     runner.async_enabled = False
     runner.model = model
+    previous_row = pool.acquire_row(previous_request_id)
+    previous_data = make_params(audio_repetition_penalty=1.0)
+    previous_request = SimpleNamespace(
+        request_id=previous_request_id, data=previous_data
+    )
+    previous_batch = SimpleNamespace(input_ids=torch.zeros(1, dtype=torch.long))
+    runner.before_decode(previous_batch, SimpleNamespace(), [previous_request])
+    pool.release_row(previous_request_id)
     data = SimpleNamespace(
-        req=SimpleNamespace(inflight_middle_chunks=0),
+        req=SimpleNamespace(
+            inflight_middle_chunks=0, extend_len=1, prefix_len=0, rid="rid"
+        ),
         text_temperature=1.0,
         text_top_p=1.0,
         text_top_k=50,
@@ -694,16 +786,23 @@ def test_collect_frame_uses_eager_path_when_audio_repetition_penalty_active(
         generation_steps=0,
         audio_repetition_penalty=2.0,
         output_rows=[],
+        prompt_rows=torch.zeros((1, 13), dtype=torch.long),
     )
     request = SimpleNamespace(request_id="rid", data=data)
     row = pool.acquire_row("rid")
-    pool.ensure_params(row, "rid", data)
+    assert row == previous_row
+    prefill_batch = SimpleNamespace(input_ids=torch.zeros(1, dtype=torch.long))
+    runner.build_prefill_input_embeds(prefill_batch, [request])
+    _, _, has_audio_repetition_penalty = pool.prepare_active_rows([request])
+    assert has_audio_repetition_penalty
+    forward_batch = SimpleNamespace(input_ids=torch.zeros(1, dtype=torch.long))
+    runner.before_decode(forward_batch, SimpleNamespace(), [request])
     pool.audio_token_presence[row, 0, 7] = True
     result = SimpleNamespace(
         logits_output=SimpleNamespace(hidden_states=torch.zeros(1, hidden_size))
     )
 
-    runner.collect_frame(result, SimpleNamespace(), SimpleNamespace(), [request])
+    runner.collect_frame(result, forward_batch, SimpleNamespace(), [request])
 
     assert called["eager"] is True
     assert len(sampled_audio_logits) == 1
@@ -898,6 +997,8 @@ def test_resume_reprefill_overwrites_stranded_feedback():
         row_t = torch.zeros(width, dtype=torch.long)
         row_t[1:] = token
         generated.append(row_t)
+        pool.accumulate_codes(torch.tensor([row]), row_t[1:].unsqueeze(0))
+    pool.accumulate_codes(torch.tensor([row]), torch.full((1, 12), 99))
     data = SimpleNamespace(
         req=SimpleNamespace(extend_len=5, prefix_len=0, rid="a"),
         prompt_rows=prompt_rows,
@@ -911,7 +1012,12 @@ def test_resume_reprefill_overwrites_stranded_feedback():
     forward_batch = SimpleNamespace(input_ids=torch.zeros(5, dtype=torch.long))
 
     runner.build_prefill_input_embeds(forward_batch, [sched_req])
+    pool.accumulate_codes(torch.tensor([row]), torch.full((1, 12), 7))
 
+    assert torch.equal(
+        pool.copy_codes_to_host("a", 4),
+        torch.tensor([[token] * 12 for token in (4, 5, 6, 7)]),
+    )
     assert torch.all(pool.feedback_embeds[row] == 0), "stranded feedback must be wiped"
     assert int(pool.generation_steps[row]) == 3, "resume must preserve sample position"
     assert not bool(pool.audio_token_presence[row, 0, 99])

@@ -149,12 +149,14 @@ def test_pingpong_alternates_slots_and_reuses_backing_buffer(monkeypatch):
     runner = bare_runner()
     like = torch.zeros(3, dtype=torch.long)
 
-    first = runner.next_token_id_host_buf(like, 3)
-    second = runner.next_token_id_host_buf(like, 3)
-    third = runner.next_token_id_host_buf(like, 3)
+    first, first_slot = runner.next_token_id_host_buf(like, 3)
+    second, second_slot = runner.next_token_id_host_buf(like, 3)
+    third, third_slot = runner.next_token_id_host_buf(like, 3)
 
     assert first is not second
     assert third is first
+    assert first_slot != second_slot
+    assert third_slot == first_slot
 
 
 @pytest.mark.accelerator

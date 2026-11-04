@@ -440,12 +440,10 @@ def build_sglang_moss_tts_local_request(
         input_ids=prepared.input_ids,
         max_new_tokens=max_new_tokens,
         temperature=0.0,
-        # Pinned so prefill's H2D is non_blocking: a pageable prompt-rows
-        # transfer waits for the in-flight forward to drain (~5 ms per
-        # prefill at high concurrency).
+        # note (Dino1844): Pin CUDA uploads without requiring CUDA for CPU request assembly.
         prompt_rows=(
             prepared.prompt_rows.pin_memory()
-            if prepared.prompt_rows.is_cpu
+            if prepared.prompt_rows.is_cpu and torch.cuda.is_available()
             else prepared.prompt_rows
         ),
         req=req,
@@ -499,7 +497,6 @@ def apply_sglang_moss_tts_local_result(
         # waited on the launch completion event covering the last scatter.
         state.audio_codes = codes
     else:
-        pass
         generated_rows = torch.stack(data.output_rows, dim=0).to(dtype=torch.long)
         state.audio_codes = generated_rows[:, 1:].detach().cpu()
 

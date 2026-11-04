@@ -425,7 +425,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         )
 
     @staticmethod
-    def _apply_rope_rounded(
+    def apply_rope_rounded(
         x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, dtype: torch.dtype
     ) -> torch.Tensor:
         """Interleaved RoPE with the rotary_cache_kernel's eager rounding.
@@ -469,8 +469,8 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
                 embeds = weight[start : start + 256].to(dtype=self.dtype)
                 qkv = block.attn.c_attn(block.ln_1(embeds))
                 q, k, v = qkv.split(lt.hidden_size, dim=-1)
-                q = self._apply_rope_rounded(q, cos, sin, self.dtype)
-                k = self._apply_rope_rounded(k, cos, sin, self.dtype)
+                q = self.apply_rope_rounded(q, cos, sin, self.dtype)
+                k = self.apply_rope_rounded(k, cos, sin, self.dtype)
                 table[channel, start : start + 256].copy_(
                     torch.cat(
                         (
@@ -495,7 +495,6 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         hidden = hidden + block.attn.c_proj(attn_output)
         hidden = hidden + block.mlp(block.ln_2(hidden))
         return lt.ln_f(hidden)
-
 
     @torch.no_grad()
     def decode_frame_graphable(

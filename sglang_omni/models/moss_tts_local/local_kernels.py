@@ -28,17 +28,17 @@ import torch
 import triton
 import triton.language as tl
 from sglang.kernels.ops.sampling.murmur_hash import fmix32, murmur3_mix
-from sglang_omni.models.moss_tts.sampling_kernels import MAX_FUSED_SAMPLE_VOCAB
 from triton.language.extra import libdevice
+
+from sglang_omni.models.moss_tts.sampling_kernels import MAX_FUSED_SAMPLE_VOCAB
 
 _F64_MIN = tl.constexpr(-1.7976931348623157e308)
 _F64_LOG_CAP = tl.constexpr(-(2.0**-32))
 _UINT32_MAX_F64 = tl.constexpr(4294967295.0)
 
 
-
 @triton.jit
-def _attend_body(
+def attend_prefix(
     QKV,
     row,
     batch,
@@ -87,24 +87,24 @@ def _attend_body(
         scores = tl.where(s[None, :] == POSITION, sp[:, None], scores)
         probs = tl.exp(scores - tl.max(scores, axis=1)[:, None])
         probs = probs / tl.sum(probs, axis=1)[:, None]
-        result = v * tl.sum(tl.where(s[None, :] == POSITION, probs, 0.0), axis=1)[
-            :, None
-        ]
+        result = (
+            v * tl.sum(tl.where(s[None, :] == POSITION, probs, 0.0), axis=1)[:, None]
+        )
         for p in tl.static_range(POSITION):
             vp = tl.load(V + base + p * D, dmask, 0).to(tl.float32)
-            result += vp * tl.sum(
-                tl.where(s[None, :] == p, probs, 0.0), axis=1
-            )[:, None]
+            result += (
+                vp * tl.sum(tl.where(s[None, :] == p, probs, 0.0), axis=1)[:, None]
+            )
     tl.store(Out + batch * H + h[:, None] * D + d[None, :], result, dmask)
     if EMBED:
-        residual = tl.load(
-            Embedding + row * H + h[:, None] * D + d[None, :], dmask, 0
-        )
+        residual = tl.load(Embedding + row * H + h[:, None] * D + d[None, :], dmask, 0)
         tl.store(Residual + batch * H + h[:, None] * D + d[None, :], residual, dmask)
+    else:
+        pass
 
 
 @triton.jit
-def _sample_body(
+def sample_seeded_row(
     logits_ptr,
     temperature_ptr,
     top_p_ptr,
@@ -218,7 +218,6 @@ def _sample_body(
     return tl.where(use_fallback, greedy.to(tl.int64), sampled)
 
 
-
 @triton.jit
 def frame_attention_kernel(
     QKV,
@@ -236,7 +235,7 @@ def frame_attention_kernel(
 ):
     """Depth-0 attention: batch-indexed QKV rows, no lookup, no residual."""
     batch, group = tl.program_id(0), tl.program_id(1)
-    _attend_body(
+    attend_prefix(
         QKV,
         batch,
         batch,
@@ -297,7 +296,7 @@ def seeded_sample_attend_kernel(
     matching the standalone sampler's schedule.
     """
     batch, group = tl.program_id(0), tl.program_id(1)
-    sampled = _sample_body(
+    sampled = sample_seeded_row(
         logits_ptr,
         temperature_ptr,
         top_p_ptr,
@@ -315,7 +314,7 @@ def seeded_sample_attend_kernel(
     else:
         pass
     if ATTEND:
-        _attend_body(
+        attend_prefix(
             QKV,
             sampled,
             batch,
@@ -339,7 +338,9 @@ def seeded_sample_attend_kernel(
         h = group * GROUP + tl.arange(0, GROUP)
         d = tl.arange(0, BD)
         dmask = (h[:, None] < HEADS) & (d[None, :] < D)
-        residual = tl.load(Embedding + sampled * H + h[:, None] * D + d[None, :], dmask, 0)
+        residual = tl.load(
+            Embedding + sampled * H + h[:, None] * D + d[None, :], dmask, 0
+        )
         tl.store(Residual + batch * H + h[:, None] * D + d[None, :], residual, dmask)
     else:
         pass
@@ -419,7 +420,9 @@ def seeded_sample_attend(
     else:
         out = key  # unused pointer (ATTEND=False)
     if embedding is not None:
-        residual = torch.empty((rows, hidden), dtype=embedding.dtype, device=logits.device)
+        residual = torch.empty(
+            (rows, hidden), dtype=embedding.dtype, device=logits.device
+        )
     else:
         residual = out  # unused pointer (EMBED=False)
     if codes.stride(1) != 1:

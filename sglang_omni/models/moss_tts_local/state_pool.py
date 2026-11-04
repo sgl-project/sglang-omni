@@ -20,11 +20,12 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from sglang_omni.scheduling.types import SchedulerRequest
 
 # Device-side generated-codes pool capacity per slot, in frames. Matches the
 # per-request host staging bound it replaces (max_new_tokens default 4096);
 # requests that generate more frames fall back to the stack+D2H finish path.
-_CODES_CAPACITY_FRAMES = 4096
+CODES_CAPACITY_FRAMES = 4096
 
 if TYPE_CHECKING:
     from sglang_omni.models.moss_tts_local.request_builders import (
@@ -122,33 +123,36 @@ class MossTTSLocalDecodeStatePool:
         # device-to-device kernels, unlike ``t[i] = python_scalar`` whose
         # pageable H2D blocks the scheduler thread until the in-flight
         # forward drains.
-        self._zero_row_f32 = torch.zeros(1, device=self.device, dtype=torch.float32)
-        self._zero_row_i64 = torch.zeros(1, device=self.device, dtype=torch.int64)
+        self.zero_row_float32 = torch.zeros(1, device=self.device, dtype=torch.float32)
+        self.zero_row_int64 = torch.zeros(1, device=self.device, dtype=torch.int64)
         # Device-side accumulation of generated audio codes (the Drama3
         # slot-pool pattern): each emit scatters its rows into
         # generated_codes[row, pos] with pos from frame_counts, so the
         # terminal payload's whole-utterance D2H becomes one side-stream
         # pinned copy at finish instead of per-step staging + host scatter.
-        self.codes_capacity = _CODES_CAPACITY_FRAMES
+        self.codes_capacity = CODES_CAPACITY_FRAMES
         self.frame_counts = torch.zeros(
             self.num_rows, device=self.device, dtype=torch.int64
         )
         self.generated_codes = torch.zeros(
             self.num_rows,
-            self.codes_capacity,
+            self.codes_capacity + 1,
             self.n_vq,
             device=self.device,
             dtype=torch.int64,
         )
-        self._codes_stream = (
+        self.codes_copy_stream = (
             torch.cuda.Stream(device=self.device)
             if self.device.type == "cuda"
             else None
         )
+        self.pinned_row_buffers: list[tuple[torch.Tensor, torch.cuda.Event | None]] = []
+        self.pinned_parameter_buffers: list[tuple[torch.Tensor, torch.Tensor]] = []
+        self.parameter_buffer_events: list[torch.cuda.Event | None] = []
 
-    def _acquire_pinned_row_buf(
-        self, n: int
-    ) -> tuple[torch.Tensor, "torch.cuda.Event | None"]:
+    def acquire_pinned_row_buffer(
+        self, row_count: int
+    ) -> tuple[torch.Tensor, torch.cuda.Event | None]:
         """Pinned staging buffer for the per-step row-index H2D, plus the
         event guarding its last enqueue.
 
@@ -165,19 +169,14 @@ class MossTTSLocalDecodeStatePool:
         pipelines can hold several un-waited launches, and the pool self-sizes
         to the realized depth instead of guessing it.
         """
-        entries = getattr(self, "_pool_row_pinned", None)
-        if entries is None:
-            entries = []
-            self._pool_row_pinned = entries
-        else:
-            for buf, event in entries:
-                if buf.numel() >= n and (event is None or event.query()):
-                    return buf, event
-                else:
-                    pass
-        size = max(n, 128)
+        for buf, event in self.pinned_row_buffers:
+            if buf.numel() >= row_count and (event is None or event.query()):
+                return buf, event
+            else:
+                pass
+        size = max(row_count, 128)
         buf = torch.empty(size, dtype=torch.long, pin_memory=True)
-        entries.append((buf, None))
+        self.pinned_row_buffers.append((buf, None))
         return buf, None
 
     def acquire_row(self, rid: str) -> int:
@@ -223,8 +222,8 @@ class MossTTSLocalDecodeStatePool:
         finished request at c=128 once no earlier sync drains the stream).
         """
         self.feedback_embeds[row_idx].zero_()
-        z32 = self._zero_row_f32
-        z64 = self._zero_row_i64
+        z32 = self.zero_row_float32
+        z64 = self.zero_row_int64
         self.text_temp[row_idx : row_idx + 1] = z32
         self.text_top_p[row_idx : row_idx + 1] = z32
         self.audio_temp[row_idx : row_idx + 1] = z32
@@ -259,7 +258,7 @@ class MossTTSLocalDecodeStatePool:
         else:
             self.audio_repetition_penalty_rows.add(int(row_idx))
         if self.device.type == "cuda":
-            fbuf, ibuf, slot = self._acquire_pinned_param_buf()
+            fbuf, ibuf, slot = self.acquire_pinned_parameter_buffers()
             fbuf[0, 0] = float(data.text_temperature)
             fbuf[0, 1] = float(data.text_top_p)
             fbuf[0, 2] = float(data.audio_temperature)
@@ -283,11 +282,12 @@ class MossTTSLocalDecodeStatePool:
             self.audio_top_k[lo:hi] = staged_i[:, 1]
             self.seeds[lo:hi] = staged_i[:, 2]
             self.audio_repetition_penalty[lo:hi] = staged_f[:, 4]
-            if self._param_events[slot] is None:
-                self._param_events[slot] = torch.cuda.Event()
-            self._param_events[slot].record()
+            if self.parameter_buffer_events[slot] is None:
+                self.parameter_buffer_events[slot] = torch.cuda.Event()
+            else:
+                pass
+            self.parameter_buffer_events[slot].record()
         else:
-            pass
             self.text_temp[row_idx] = float(data.text_temperature)
             self.text_top_p[row_idx] = float(data.text_top_p)
             self.audio_temp[row_idx] = float(data.audio_temperature)
@@ -307,33 +307,22 @@ class MossTTSLocalDecodeStatePool:
         else:
             pass
 
-    def _acquire_pinned_param_buf(
+    def acquire_pinned_parameter_buffers(
         self,
     ) -> tuple[torch.Tensor, torch.Tensor, int]:
-        """Pinned staging ring (float32 + int64 halves) for the batched param
-        upload; see ``_acquire_pinned_row_buf`` for the reuse guard."""
-        entries = getattr(self, "_param_pinned", None)
-        if entries is None:
-            count = 4
-            entries = [
-                (
-                    torch.empty(1, 5, dtype=torch.float32, pin_memory=True),
-                    torch.empty(1, 3, dtype=torch.long, pin_memory=True),
-                )
-                for _ in range(count)
-            ]
-            self._param_pinned = entries
-            self._param_events = [None] * count
-        else:
-            pass
-        for slot, (fbuf, ibuf) in enumerate(entries):
-            event = self._param_events[slot]
+        """Reuse completed parameter uploads, growing while all sources remain in flight."""
+        for slot, (fbuf, ibuf) in enumerate(self.pinned_parameter_buffers):
+            event = self.parameter_buffer_events[slot]
             if event is None or event.query():
                 return fbuf, ibuf, slot
             else:
                 pass
-        fbuf, ibuf = entries[0]
-        return fbuf, ibuf, 0
+        fbuf = torch.empty(1, 5, dtype=torch.float32, pin_memory=True)
+        ibuf = torch.empty(1, 3, dtype=torch.long, pin_memory=True)
+        slot = len(self.pinned_parameter_buffers)
+        self.pinned_parameter_buffers.append((fbuf, ibuf))
+        self.parameter_buffer_events.append(None)
+        return fbuf, ibuf, slot
 
     def invalidate_params(self, rid: str) -> None:
         """Force params to be rewritten on the next ``ensure_params`` call."""
@@ -342,19 +331,15 @@ class MossTTSLocalDecodeStatePool:
     def accumulate_codes(self, row_t: torch.Tensor, codes: torch.Tensor) -> None:
         """Scatter one step's emitted code rows into the per-slot pool.
 
-        ``row_t`` [k] pool rows, ``codes`` [k, n_vq] device tensor. Positions
-        come from the device-side ``frame_counts`` counter (clamped to the
-        capacity so an over-long request writes the last slot harmlessly —
-        the host-side frame count gates the finish path to the stack+D2H
-        fallback long before that matters). All device kernels; the caller
-        runs this at launch, before the completion event resolve waits on.
+        The extra frame at codes_capacity absorbs EOS and lookahead overruns
+        without overwriting a committed frame or compacting device tensors.
         """
         k = int(row_t.numel())
         if k == 0:
             return
         else:
             pass
-        pos_t = self.frame_counts[row_t].clamp(max=self.codes_capacity - 1)
+        pos_t = self.frame_counts[row_t].clamp(max=self.codes_capacity)
         self.generated_codes[row_t, pos_t] = codes
         self.frame_counts[row_t] += 1
 
@@ -374,11 +359,11 @@ class MossTTSLocalDecodeStatePool:
         else:
             pass
         codes_dev = self.generated_codes[row_idx, :frame_count]
-        if self._codes_stream is None:
-            return codes_dev.detach().to("cpu", dtype=torch.long)
+        if self.codes_copy_stream is None:
+            return codes_dev.detach().to("cpu", dtype=torch.long, copy=True)
         else:
             pass
-        with torch.cuda.stream(self._codes_stream):
+        with torch.cuda.stream(self.codes_copy_stream):
             host = torch.empty(
                 (frame_count, self.n_vq),
                 dtype=torch.long,
@@ -387,7 +372,7 @@ class MossTTSLocalDecodeStatePool:
             )
             host.copy_(codes_dev, non_blocking=True)
             event = torch.cuda.Event()
-            event.record(self._codes_stream)
+            event.record(self.codes_copy_stream)
         event.synchronize()
         return host
 
@@ -442,7 +427,7 @@ class MossTTSLocalDecodeStatePool:
         )
 
     def rebuild_audio_history(self, rid: str, output_rows: list[torch.Tensor]) -> bool:
-        """Rebuild ``rid``'s pool-resident history after retraction re-prefill."""
+        """Restore committed codes and repetition history after retraction re-prefill."""
         row_idx = self.row_for(rid)
         if row_idx is None:
             return False
@@ -453,7 +438,12 @@ class MossTTSLocalDecodeStatePool:
             return True
         else:
             pass
-        rows = torch.stack(output_rows, dim=0)
+        rows = torch.stack(output_rows, dim=0).to(device=self.device, dtype=torch.long)
+        retained_frames = min(len(output_rows), self.codes_capacity)
+        self.generated_codes[row_idx, :retained_frames].copy_(
+            rows[:retained_frames, 1:]
+        )
+        self.frame_counts[row_idx].fill_(len(output_rows))
         row_t = torch.full(
             (int(rows.shape[0]),),
             int(row_idx),
@@ -482,24 +472,26 @@ class MossTTSLocalDecodeStatePool:
                 has_audio_repetition_penalty = True
             else:
                 pass
-        buf, event = self._acquire_pinned_row_buf(len(pool_rows))
-        buf[: len(pool_rows)] = torch.tensor(pool_rows, dtype=torch.long)
-        row_tensor = torch.empty(
-            len(pool_rows), dtype=torch.long, device=self.device
-        )
-        row_tensor.copy_(buf[: len(pool_rows)], non_blocking=True)
         if self.device.type == "cuda":
+            buf, event = self.acquire_pinned_row_buffer(len(pool_rows))
+            buf[: len(pool_rows)] = torch.tensor(pool_rows, dtype=torch.long)
+            row_tensor = torch.empty(
+                len(pool_rows), dtype=torch.long, device=self.device
+            )
+            row_tensor.copy_(buf[: len(pool_rows)], non_blocking=True)
             if event is None:
                 event = torch.cuda.Event()
+            else:
+                pass
             event.record()
-            for i, (entry_buf, _) in enumerate(self._pool_row_pinned):
+            for i, (entry_buf, _) in enumerate(self.pinned_row_buffers):
                 if entry_buf is buf:
-                    self._pool_row_pinned[i] = (buf, event)
+                    self.pinned_row_buffers[i] = (buf, event)
                     break
                 else:
                     pass
         else:
-            pass
+            row_tensor = torch.tensor(pool_rows, dtype=torch.long, device=self.device)
         return (
             row_tensor,
             pool_rows,

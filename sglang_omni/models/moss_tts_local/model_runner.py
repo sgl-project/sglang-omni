@@ -198,6 +198,8 @@ class MossTTSLocalModelRunner(ModelRunner):
         forward_batch: ForwardBatch,
         requests: list[SchedulerRequest],
     ) -> torch.Tensor:
+        # note (Dino1844): Prefill can reuse a slot with new sampling parameters.
+        self.active_rows_cache = None
         pieces = []
         for sched_req in requests:
             data: MossTTSLocalSGLangRequestData = sched_req.data
@@ -271,31 +273,30 @@ class MossTTSLocalModelRunner(ModelRunner):
             )
         else:
             pass
-        memo_key = tuple(
+        pool_row_indices = tuple(
             pool.rid_to_row.get(sched_req.request_id) for sched_req in requests
         )
-        memo = getattr(self, "_active_rows_memo", None)
+        cached_active_rows = getattr(self, "active_rows_cache", None)
         if (
-            memo is not None
-            and memo[0] == memo_key
-            and memo[1].shape[0] >= batch_size
+            cached_active_rows is not None
+            and cached_active_rows[0] == pool_row_indices
+            and cached_active_rows[1].shape[0] >= batch_size
         ):
             # Same batch membership as the previous step (the steady decode
             # state): params are already written, the row tensor and the
             # penalty verdict are unchanged, so skip the per-request
             # acquire/ensure/penalty loop and the pinned row-index upload.
             row_tensor, pool_rows, has_audio_repetition_penalty = (
-                memo[1][:batch_size],
-                memo[2][:batch_size],
-                memo[3],
+                cached_active_rows[1][:batch_size],
+                cached_active_rows[2][:batch_size],
+                cached_active_rows[3],
             )
         else:
-            pass
             row_tensor, pool_rows, has_audio_repetition_penalty = (
                 pool.prepare_active_rows(requests)
             )
-            self._active_rows_memo = (
-                memo_key,
+            self.active_rows_cache = (
+                pool_row_indices,
                 row_tensor,
                 pool_rows,
                 has_audio_repetition_penalty,
