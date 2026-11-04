@@ -34,11 +34,13 @@ type transcribeState struct {
 
 // featureUI is a feature page's view state.
 type featureUI struct {
-	// rows are the shortcuts' controls, paste paste-last's (Transcribe);
-	// seen is what they were last set from.
-	rows  []keyRow
-	paste keyRow
-	seen  string
+	// rows are the shortcuts' controls, paste paste-last's and cancel
+	// cancel-transcription's (Transcribe); seen is what they were last
+	// set from.
+	rows   []keyRow
+	paste  keyRow
+	cancel keyRow
+	seen   string
 	// asr and llm are the models' selects; svcSeen what they were
 	// last set from.
 	asr, llm string

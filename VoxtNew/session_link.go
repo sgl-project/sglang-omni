@@ -257,7 +257,7 @@ func (a *app) sessionEnded(s session.Snapshot) {
 		a.endRedo(s)
 	case s.Card && (s.Result != "" || s.State == session.Failed):
 		a.openAnswer(s)
-		a.syncHotkeys() // Escape closes the card
+		a.syncHotkeys() // the cancel shortcut closes the card
 	}
 	if s.ID != "" && a.followUp != "" && !s.Card {
 		a.followUp = "" // a follow-up that ended without an answer: the card keeps the last one

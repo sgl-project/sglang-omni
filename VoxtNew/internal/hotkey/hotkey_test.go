@@ -140,6 +140,84 @@ func TestBuildSkipsBadAndDuplicates(t *testing.T) {
 	}
 }
 
+// TestBuildCancel: the cancel shortcut becomes hotkey.configure's cancel
+// (never a regular binding, so its keys are only taken while active);
+// it can be changed, turned off, and a bare key is fine for it. A clash
+// with an earlier binding drops it, as Check reports.
+func TestBuildCancel(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		keys string
+		code int // -1: modifier-only; -2: no cancel in the plan
+		mods map[string]string
+	}{
+		{"default escape", settings.DefaultCancel, 53, map[string]string{}},
+		{"custom key", "Control+.", 47, map[string]string{proto.ModControl: proto.SideAny}},
+		{"modifier only", "RightCommand", -1, map[string]string{proto.ModCommand: proto.SideRight}},
+		{"off", "", -2, nil},
+		{"does not parse", "Hyper", -2, nil},
+		{"clashes with transcribe", settings.DefaultTranscribe, -2, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := settings.Defaults().Features
+			f.Cancel = settings.Hotkey{Keys: tc.keys}
+			p := Build(f, Features)
+			if tc.code == -2 {
+				if p.Cancel != nil {
+					t.Fatalf("cancel %+v, want none", p.Cancel)
+				}
+				return
+			}
+			if p.Cancel == nil {
+				t.Fatal("no cancel in the plan")
+			}
+			c := *p.Cancel
+			if c.ID != CancelID || c.Behavior != proto.BehaviorTap || len(c.Modifiers) != len(tc.mods) {
+				t.Fatalf("cancel %+v", c)
+			}
+			for fam, side := range tc.mods {
+				if c.Modifiers[fam] != side {
+					t.Errorf("cancel %+v", c)
+				}
+			}
+			if tc.code == -1 {
+				if c.Key != nil {
+					t.Errorf("modifier-only cancel has key %+v", c)
+				}
+			} else if c.Key == nil || *c.Key != tc.code {
+				t.Errorf("cancel key %+v, want %d", c.Key, tc.code)
+			}
+			for _, b := range p.Bindings {
+				if b.ID == CancelID {
+					t.Error("cancel must not be a regular binding (it would fire while idle)")
+				}
+			}
+			for _, cb := range p.Carbon {
+				if cb.ID == CancelID {
+					t.Error("cancel must not be a Carbon shortcut (it would take the keys while idle)")
+				}
+			}
+			if cfg := p.Configure(true); cfg.Cancel != p.Cancel {
+				t.Errorf("configure %+v", cfg)
+			}
+		})
+	}
+	// A bare key is fine for cancel (only taken while active); a system
+	// shortcut still warns; the clash is reported on the cancel row.
+	f := settings.Defaults().Features
+	if ps := ProblemsOf(Check(f), CancelID); len(ps[0]) != 0 {
+		t.Errorf("default cancel has problems: %+v", ps[0])
+	}
+	f.Cancel = settings.Hotkey{Keys: "Command+C"}
+	if ps := ProblemsOf(Check(f), CancelID); len(ps[0]) != 1 || ps[0][0].Code != ProblemSystem {
+		t.Errorf("system cancel: %+v", ps[0])
+	}
+	f.Cancel = settings.Hotkey{Keys: settings.DefaultTranscribe}
+	if ps := ProblemsOf(Check(f), CancelID); len(ps[0]) != 1 || ps[0][0].Code != ProblemConflict || ps[0][0].Other != Transcribe {
+		t.Errorf("clashing cancel: %+v", ps[0])
+	}
+}
+
 func TestParseID(t *testing.T) {
 	for id, want := range map[string]struct {
 		f  string
@@ -169,6 +247,7 @@ func TestCheck(t *testing.T) {
 			hk("Control+Command+V", ""),
 		}}},
 		PasteLast: hk("Command+Control+V", ""),
+		Cancel:    hk("Fn", ""),
 	}
 	got := map[string]Problem{}
 	for _, p := range Check(f) {
@@ -182,6 +261,7 @@ func TestCheck(t *testing.T) {
 		"translate/0 conflict":   func(p Problem) bool { return p.Other == Transcribe && p.OtherIndex == 0 },
 		"translate/1 duplicate":  func(p Problem) bool { return p.Other == Translate && p.OtherIndex == 0 },
 		"paste-last/0 conflict":  func(p Problem) bool { return p.Other == Rewrite },
+		"cancel/0 conflict":      func(p Problem) bool { return p.Other == Transcribe && p.OtherIndex == 0 },
 	} {
 		p, ok := got[key]
 		if !ok || !check(p) {
@@ -239,9 +319,9 @@ func TestRoute(t *testing.T) {
 		{"other release does nothing", ev("transcribe/3", proto.PhaseUp), Recording, "transcribe/2", Decision{}},
 		{"long press while recording stops", ev("transcribe/3", proto.PhaseDown), Recording, "", Decision{Action: Stop}},
 		{"busy waits", ev("transcribe/0", proto.PhaseTrigger), Busy, "", Decision{}},
-		{"escape cancels recording", ev(proto.HotkeyEscape, proto.PhaseTrigger), Recording, "", Decision{Action: Cancel}},
-		{"escape cancels busy", ev(proto.HotkeyEscape, proto.PhaseTrigger), Busy, "", Decision{Action: Cancel}},
-		{"escape idle", ev(proto.HotkeyEscape, proto.PhaseTrigger), Idle, "", Decision{}},
+		{"cancel shortcut cancels recording", ev(proto.HotkeyCancel, proto.PhaseTrigger), Recording, "", Decision{Action: Cancel}},
+		{"cancel shortcut cancels busy", ev(proto.HotkeyCancel, proto.PhaseTrigger), Busy, "", Decision{Action: Cancel}},
+		{"cancel shortcut idle", ev(proto.HotkeyCancel, proto.PhaseTrigger), Idle, "", Decision{}},
 		{"paste last", ev(PasteLast, proto.PhaseTrigger), Idle, "", Decision{Action: Paste}},
 		{"paste last while recording", ev(PasteLast, proto.PhaseTrigger), Recording, "", Decision{}},
 		{"unknown binding", ev("try/x", proto.PhaseTrigger), Idle, "", Decision{}},

@@ -223,7 +223,7 @@ snapshots ─▶ a.post ─▶ sessionChanged ─▶ (events.go, in order) the s
                                          at the end: Home, the card or a notice (then the memory notice), then onHistory (Home, the menu bar, History)
 ```
 
-While a session is live (or the answer card shows) the bindings go to the helper with `active`: a tap fires at once and Escape is reported. Without Accessibility the event tap is not installed; the bindings Carbon can express are registered with `mygo.GlobalShortcut` until it is.
+While a session is live (or the answer card shows) the bindings go to the helper with `active`: a tap fires at once and the cancel shortcut (`cancel`, Escape by default) is reported. Without Accessibility the event tap is not installed; the bindings Carbon can express are registered with `mygo.GlobalShortcut` until it is (the cancel shortcut is not: it must only act while active, which Carbon cannot express).
 
 ## 3. Threading and state rules
 

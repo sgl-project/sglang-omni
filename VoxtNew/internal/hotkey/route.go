@@ -10,7 +10,8 @@ const (
 	Idle Phase = iota
 	// Recording: the microphone is on.
 	Recording
-	// Busy: recognising, composing or delivering; only Escape acts.
+	// Busy: recognising, composing or delivering; only the cancel
+	// shortcut acts.
 	Busy
 )
 
@@ -58,13 +59,14 @@ type Decision struct {
 //     press starts it on "down" and its "up" stops it; PasteLast pastes.
 //   - Recording: any feature's binding stops (the "common stop"): a tap
 //     fires at once while active; the "up" of the long press that started
-//     the session stops it, other "up"s do nothing. Escape cancels.
-//   - Busy: Escape cancels; everything else waits.
+//     the session stops it, other "up"s do nothing. The cancel shortcut
+//     cancels.
+//   - Busy: the cancel shortcut cancels; everything else waits.
 //
 // holdBinding is the binding whose long press started the session ("":
 // none).
 func Route(e proto.HotkeyEventParams, phase Phase, holdBinding string) Decision {
-	if e.Binding == proto.HotkeyEscape {
+	if e.Binding == proto.HotkeyCancel {
 		if phase != Idle {
 			return Decision{Action: Cancel}
 		}

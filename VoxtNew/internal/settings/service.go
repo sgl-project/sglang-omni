@@ -183,6 +183,10 @@ func normalize(s Settings) Settings {
 	if f.PasteLast.Keys != "" {
 		f.PasteLast = normalizeHotkey(f.PasteLast)
 	}
+	if f.Cancel.Keys != "" {
+		f.Cancel = normalizeHotkey(f.Cancel)
+		f.Cancel.Trigger = TriggerTap // a cancel is always a single press
+	}
 	for _, f := range []*Feature{&f.Transcribe.Feature, &f.Translate.Feature, &f.Rewrite.Feature} {
 		f.ASR, f.LLM = strings.TrimSpace(f.ASR), strings.TrimSpace(f.LLM)
 	}

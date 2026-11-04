@@ -185,18 +185,23 @@ public struct HotkeyConfig: Codable, Equatable, Sendable {
     /// Swallow fn's own flagsChanged events while an fn chord is bound, so
     /// the 🌐 key's system action (emoji, input source) does not run.
     public var swallowFn: Bool
-    /// While a session records, a tap fires at once (no wait for a double
-    /// tap) and Escape is reported (and swallowed).
+    /// While a session records or the answer card shows, a tap fires at
+    /// once (no wait for a double tap) and the cancel shortcut is reported
+    /// (and swallowed).
     public var active: Bool
+    /// The shortcut that cancels while active (id "cancel", a tap). Nil:
+    /// nothing cancels. Never judged while inactive.
+    public var cancel: Binding?
 
     public init(bindings: [Binding], doubleTapMs: Double = 500, longPressMs: Double = 300, tapMaxMs: Double = 1500,
-                swallowFn: Bool = false, active: Bool = false) {
+                swallowFn: Bool = false, active: Bool = false, cancel: Binding? = nil) {
         self.bindings = bindings
         self.doubleTapMs = doubleTapMs
         self.longPressMs = longPressMs
         self.tapMaxMs = tapMaxMs
         self.swallowFn = swallowFn
         self.active = active
+        self.cancel = cancel
     }
 }
 
@@ -400,6 +405,15 @@ public struct HotkeyRecognizer: Sendable {
             return
         }
         let chord = chordMax
+        // A modifier-only cancel chord fires while active, before the
+        // features' taps; like every modifier-only chord it is never
+        // swallowed.
+        if config.active, let c = config.cancel, c.key == nil, c.matches(chord: chord) {
+            pendingTap = nil
+            doubleArm = nil
+            out.append(HotkeyEvent(binding: c.id, phase: .trigger, behavior: .tap, heldMs: held, t: t))
+            return
+        }
         let matching = chordBindings.filter { $0.matches(chord: chord) }
         let tapB = matching.first { $0.behavior == .tap }
         let dblB = matching.first { $0.behavior == .doubleTap }
@@ -432,12 +446,14 @@ public struct HotkeyRecognizer: Sendable {
     private var keyBindings: [Binding] { config.bindings.filter { $0.key != nil }.sorted { $0.specificity > $1.specificity } }
 
     private mutating func handleKeyDown(keyCode: UInt16, flags: UInt64, isRepeat: Bool, t: Double, _ out: inout [HotkeyEvent]) -> Bool {
-        if config.active, keyCode == KeyCode.escape, RawFlags.families(flags).isEmpty {
-            if !isRepeat { out.append(HotkeyEvent(binding: "escape", phase: .trigger, behavior: .tap, heldMs: nil, t: t)) }
+        let families = RawFlags.families(flags)
+        // The cancel shortcut, only while active: its keys are swallowed
+        // then, and reach the app in front at any other time.
+        if config.active, let c = config.cancel, c.key == keyCode, c.matches(families: families) {
+            if !isRepeat { out.append(HotkeyEvent(binding: c.id, phase: .trigger, behavior: .tap, heldMs: nil, t: t)) }
             swallowedKeys.insert(keyCode)
             return true
         }
-        let families = RawFlags.families(flags)
         guard let b = keyBindings.first(where: { $0.key == keyCode && $0.matches(families: families) }) else {
             if swallowedKeys.contains(keyCode) { return true } // repeats of a swallowed key
             return false

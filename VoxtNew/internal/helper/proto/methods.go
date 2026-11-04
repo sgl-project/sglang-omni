@@ -50,7 +50,7 @@ const (
 	MethodCaptureLevel     = "capture.level"     // input meter of a capture.start job, ~20 Hz
 	MethodCapturePCM       = "capture.pcm"       // audio of a capture.start job, a frame every ~100 ms
 	MethodCaptureRestarted = "capture.restarted" // the job's audio engine was rebuilt (watchdog, device change)
-	MethodHotkeyEvent      = "hotkey.event"      // a binding fired (or Escape while active)
+	MethodHotkeyEvent      = "hotkey.event"      // a binding fired (or the cancel shortcut while active)
 	MethodHotkeyState      = "hotkey.state"      // the event tap was installed or lost (e.g. Accessibility granted)
 	MethodAppActivated     = "app.activated"     // another app came to the front
 	MethodOutputChanged    = "output.changed"    // the default output device or its mute changed (output.watch on)

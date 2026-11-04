@@ -223,13 +223,19 @@ const (
 	TriggerLong   = "long"
 )
 
-// Features: the three features and the shared paste-last shortcut.
+// Features: the three features and the shared paste-last and cancel
+// shortcuts.
 type Features struct {
 	Transcribe Transcribe `json:"transcribe"`
 	Translate  Translate  `json:"translate"`
 	Rewrite    Rewrite    `json:"rewrite"`
 	// PasteLast pastes the latest result again (⌃⌥V by default).
 	PasteLast Hotkey `json:"pasteLast"`
+	// Cancel cancels the session while it records or the answer card
+	// shows (Escape by default; empty keys: off). Only a tap, and only
+	// through the helper's event tap: it never takes the keys while
+	// nothing records.
+	Cancel Hotkey `json:"cancel"`
 }
 
 // Feature is what every feature has: its shortcuts, the local models it
@@ -341,6 +347,9 @@ const (
 	DefaultTranslate  = "RightOption+Shift"
 	DefaultRewrite    = "Control+RightOption"
 	DefaultPasteLast  = "Control+Option+V"
+	// DefaultCancel is the cancel shortcut's default, in one place: it
+	// only acts while a session records or the answer card shows.
+	DefaultCancel = "Escape"
 )
 
 // Defaults returns the settings of a fresh install.
@@ -357,6 +366,7 @@ func Defaults() Settings {
 			Translate:  Translate{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultTranslate, Trigger: TriggerTap}}}, Cleanup: true},
 			Rewrite:    Rewrite{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultRewrite, Trigger: TriggerTap}}}, Cleanup: true},
 			PasteLast:  Hotkey{Keys: DefaultPasteLast, Trigger: TriggerTap},
+			Cancel:     Hotkey{Keys: DefaultCancel, Trigger: TriggerTap},
 		},
 		AppEnhancement: AppEnhancement{Enabled: true},
 		Dictionary:     Dictionary{Enabled: true, ASRHints: true, Glossary: true},

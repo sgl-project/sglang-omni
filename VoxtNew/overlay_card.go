@@ -24,7 +24,7 @@ package main
 // so a short answer leaves no empty space (Voxt's card is always 220 of
 // text high, 295 in all). It grows and shrinks about the overlay's anchor,
 // as the pill does (overlay.go). It does not move, and nothing in it takes
-// the keyboard (a non-activating window): Escape (the helper's event tap)
+// the keyboard (a non-activating window): the cancel shortcut (the helper's event tap)
 // closes it, the Rewrite shortcut follows up.
 
 import (

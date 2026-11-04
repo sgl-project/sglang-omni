@@ -149,7 +149,7 @@ func TestTranslateSpeechCard(t *testing.T) {
 	third := a.sess.ID
 	a.retryAnswer("fr")
 	a.pump("the fourth session", func() bool { return a.sess.ID != third && a.sess.State == session.Composing })
-	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyEscape, Phase: proto.PhaseTrigger})
+	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
 	a.pump("the cancel", func() bool { return a.sess.State.Ended() })
 	if a.answer.open || a.sess.State != session.Cancelled || a.ov.shown {
 		t.Errorf("escape: %+v %s", a.answer, a.sess.State)

@@ -25,7 +25,7 @@ package main
 //	           was not inserted, its actions in the header
 //
 // Nothing shows after an insert: the pill fades out (100 ms). Every
-// action is a shortcut: the feature's shortcut stops, Escape cancels,
+// action is a shortcut: the feature's shortcut stops, the cancel shortcut cancels,
 // releasing a long press stops.
 //
 // The face is a translucent dark fill (Overlay.Opacity) over the window's

@@ -43,9 +43,9 @@ final class HotkeyTap: @unchecked Sendable {
     func configure(_ p: HotkeyConfigureParams) -> HotkeyStatus {
         let c = HotkeyConfig(bindings: p.bindings, doubleTapMs: p.doubleTapMs ?? systemDoubleClickMs(),
                              longPressMs: p.longPressMs ?? 300, tapMaxMs: p.tapMaxMs ?? 1500,
-                             swallowFn: p.swallowFn ?? false, active: p.active ?? false)
+                             swallowFn: p.swallowFn ?? false, active: p.active ?? false, cancel: p.cancel)
         lock.withLock { recognizer.configure(c) }
-        if p.bindings.isEmpty {
+        if p.bindings.isEmpty && p.cancel == nil {
             uninstall()
         } else if lock.withLock({ tap == nil && retry == nil }) {
             install()

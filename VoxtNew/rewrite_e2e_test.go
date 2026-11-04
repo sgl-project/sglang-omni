@@ -127,7 +127,7 @@ func TestRewriteConversation(t *testing.T) {
 		t.Fatal("Continue did nothing")
 	}
 	a.pump("the second follow-up", func() bool { return a.sess.ID != second && a.sess.State == session.Recording })
-	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyEscape, Phase: proto.PhaseTrigger})
+	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
 	a.pump("the cancel", func() bool { return a.sess.State == session.Cancelled })
 	if !a.answer.open || a.ov.mode != ovAnswer || a.answer.text != "Running late." || a.followUp != "" || len(chat.requests()) != 2 {
 		t.Errorf("after Escape: %s %+v", a.ov.mode, a.answer)
@@ -135,7 +135,7 @@ func TestRewriteConversation(t *testing.T) {
 	if v := a.cardNow(); !v.conversation || len(v.bubbles) != 4 || !v.canFollowUp {
 		t.Errorf("the conversation after Escape %+v", v)
 	}
-	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyEscape, Phase: proto.PhaseTrigger})
+	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
 	if a.answer.open || a.ov.shown || len(a.pasted()) != 0 {
 		t.Errorf("the second Escape: %+v", a.answer)
 	}

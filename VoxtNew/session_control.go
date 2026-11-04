@@ -100,7 +100,7 @@ func (a *app) stopSession() {
 	}
 }
 
-// cancelSession cancels the session (Escape, the answer card's Close).
+// cancelSession cancels the session (the cancel shortcut, the answer card's Close).
 func (a *app) cancelSession() {
 	if a.mgr != nil && a.sess.State.Live() {
 		a.mgr.Cancel(a.sess.ID)
