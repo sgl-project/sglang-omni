@@ -6827,6 +6827,32 @@ def test_qwen3_tts_vocoder_latches_bootstrap_suppression_contract() -> None:
     assert state.suppress_bootstrap is False
 
 
+def test_qwen3_tts_bootstrap_suppression_counts_only_streams() -> None:
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        FakeQwen3TTSSpeechTokenizer(),
+        device="cpu",
+        suppress_bootstrap_max_streams=1,
+    )
+    scheduler.stream_states["whole"] = Qwen3TTSStreamState(whole_audio=bytearray(4))
+    state = scheduler.get_or_create_stream_state("stream")
+    scheduler.latch_stream_contract(
+        "stream",
+        state,
+        {"num_quantizers": 2, "bootstrap_silence_suppression": True},
+        origin="metadata",
+    )
+    assert state.suppress_bootstrap is True
+
+    other = scheduler.get_or_create_stream_state("other")
+    scheduler.latch_stream_contract(
+        "other",
+        other,
+        {"num_quantizers": 2, "bootstrap_silence_suppression": True},
+        origin="metadata",
+    )
+    assert other.suppress_bootstrap is False
+
+
 def test_qwen3_tts_bootstrap_suppression_extends_first_chunk_by_one_frame() -> None:
     scheduler = Qwen3TTSStreamingVocoderScheduler(
         FakeQwen3TTSSpeechTokenizer(),

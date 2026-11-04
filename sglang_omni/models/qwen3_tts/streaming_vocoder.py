@@ -1559,9 +1559,13 @@ class Qwen3TTSStreamingVocoderScheduler(
         else:
             pass
         if metadata.get("bootstrap_silence_suppression"):
+            with self.state_lock:
+                stream_count = sum(
+                    entry.whole_audio is None for entry in self.stream_states.values()
+                )
             state.suppress_bootstrap = (
                 self.suppress_bootstrap_silence
-                and len(self.stream_states) <= self.suppress_bootstrap_max_streams
+                and stream_count <= self.suppress_bootstrap_max_streams
             )
             if state.suppress_bootstrap:
                 bumped = min(state.initial_chunk_frames + 1, self.stream_stride)
