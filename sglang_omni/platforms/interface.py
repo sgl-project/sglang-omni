@@ -236,6 +236,11 @@ class OmniPlatform(DeviceMixin):
     def zonos2_bf16_mem_fraction_static(self, device: torch.device) -> float | None:
         return None
 
+    def get_default_stream(self, device: torch.device) -> torch.Stream:
+        """The stream a producer hands its output to, named while the producer's own
+        stream is current and current_stream would therefore return the wrong one."""
+        return torch.get_device_module(device).default_stream(device)
+
     def get_decode_cuda_graph_backend(self) -> str | None:
         return None
 
