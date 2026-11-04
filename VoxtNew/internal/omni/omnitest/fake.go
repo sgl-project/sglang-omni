@@ -69,6 +69,9 @@ type Opts struct {
 	// Echo: a Final with a prompt ends with the prompt's lines, as
 	// Qwen3-ASR echoes its context on silence ("text。A，B。").
 	Echo bool
+	// RecordAudio keeps each Final request's PCM (base64) in its Record,
+	// for tests that check what audio was recognised.
+	RecordAudio bool
 	// Older is a server from before --cache-limit-mb: it refuses the flag
 	// as an unknown argument (a newer one only refuses a value below -1).
 	Older bool
@@ -85,6 +88,7 @@ func Env(o Opts) []string {
 	v.Set("failfrom", strconv.Itoa(o.FailFrom))
 	v.Set("older", strconv.FormatBool(o.Older))
 	v.Set("echo", strconv.FormatBool(o.Echo))
+	v.Set("audio", strconv.FormatBool(o.RecordAudio))
 	return []string{EnvFake + "=" + v.Encode()}
 }
 
@@ -99,6 +103,7 @@ func opts() Opts {
 	o.FailFrom, _ = strconv.Atoi(v.Get("failfrom"))
 	o.Older, _ = strconv.ParseBool(v.Get("older"))
 	o.Echo, _ = strconv.ParseBool(v.Get("echo"))
+	o.RecordAudio, _ = strconv.ParseBool(v.Get("audio"))
 	if o.Text == "" {
 		o.Text = "fake transcript"
 	}
@@ -115,7 +120,9 @@ type Record struct {
 	Fields map[string]string `json:"fields,omitempty"`
 	// Samples is the audio a request carried (a live session: all it got).
 	Samples int `json:"samples,omitempty"`
-	PID     int `json:"pid"`
+	// Audio is the Final request's PCM16 (base64), with Opts.RecordAudio.
+	Audio string `json:"audio,omitempty"`
+	PID   int    `json:"pid"`
 }
 
 var logMu sync.Mutex

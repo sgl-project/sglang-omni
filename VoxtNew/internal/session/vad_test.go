@@ -1,10 +1,12 @@
 package session
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/VoxtNew/internal/asr"
 	"github.com/sgl-project/sglang-omni/VoxtNew/internal/settings"
 )
 
@@ -122,6 +124,65 @@ func TestStreamHeldUntilSpeech(t *testing.T) {
 	}
 	if !h.logged("held back") {
 		t.Errorf("logs %q", h.logs)
+	}
+}
+
+// TestSpeechFromTheFirstToTheLastSample: a user who speaks the moment the
+// recording starts and stops the moment they finish is heard from the
+// first sample to the last (the speech model is already loaded): the
+// skip-silence detection neither holds back speech that starts at once
+// nor cuts the end, nothing of the head is lost on its way to the model,
+// and audio that had not reached it when Stop came is sent before the
+// final recognition.
+func TestSpeechFromTheFirstToTheLastSample(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		stream bool
+		vadOff bool
+	}{
+		{"stream", true, false},
+		{"stream, detection off", true, true},
+		{"file", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &fakeStreamer{final: "hello"}
+			file := &fakeFile{text: "hello"}
+			var prov asr.Provider = st
+			if !tc.stream {
+				prov = file
+			}
+			h := newHarness(t, prov, nil, func(_ *Config, s *settings.Settings) {
+				s.Audio.Clean.Off = true
+				s.Audio.VAD.Off = tc.vadOff
+			})
+			pcm := bytes.Repeat(frame, 10) // speech from the first sample to the last
+			h.audio.file, h.audio.drained = pcm, make(chan struct{})
+			id := h.start()
+			select {
+			case <-h.audio.drained: // the file just ended: the key is released now
+			case <-time.After(5 * time.Second):
+				t.Fatal("the recording did not run")
+			}
+			h.m.Stop(id)
+			end := h.rec.wait(t)
+			if end.State != Done || end.Result != "hello" {
+				t.Fatalf("end %+v", end)
+			}
+			var got []byte
+			if tc.stream {
+				s := st.streams[0]
+				s.mu.Lock()
+				got = append([]byte(nil), s.data...)
+				s.mu.Unlock()
+			} else {
+				file.mu.Lock()
+				got = append([]byte(nil), file.audio...)
+				file.mu.Unlock()
+			}
+			if !bytes.Equal(got, pcm) {
+				t.Errorf("the speech model got %d bytes; want the recording's %d, from its first sample through its last", len(got), len(pcm))
+			}
+		})
 	}
 }
 

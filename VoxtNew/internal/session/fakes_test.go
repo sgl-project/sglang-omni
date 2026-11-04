@@ -54,6 +54,12 @@ type fakeAudio struct {
 	voice []byte
 	// startWait: the microphone gives its first audio this late.
 	startWait time.Duration
+	// file plays a fixed recording instead of the tone: its bytes go out
+	// in 100 ms frames (the last one may be short), drained closes once
+	// the last frame was delivered, and the recording then waits for
+	// Stop, as the helper's file input does.
+	file    []byte
+	drained chan struct{}
 
 	mu      sync.Mutex
 	stops   map[string]chan struct{}
@@ -93,6 +99,22 @@ func (f *fakeAudio) Record(ctx context.Context, id string, p proto.CaptureParams
 	}
 	fn(AudioEvent{Started: &proto.CaptureStartedParams{Job: id, DeviceName: "MacBook Air Microphone", SampleRate: 16000}})
 	n := 0
+	if len(f.file) > 0 {
+		for off := 0; off < len(f.file); off += len(frame) {
+			fn(AudioEvent{PCM: &proto.PCMParams{Job: id, Seq: n, Data: f.file[off:min(off+len(frame), len(f.file))]}})
+			n++
+		}
+		f.mu.Lock()
+		f.frames = n
+		f.mu.Unlock()
+		close(f.drained)
+		select {
+		case <-ctx.Done():
+			return proto.CaptureResult{}, &proto.Error{Code: proto.CodeCancelled, Message: "cancelled"}
+		case <-stop:
+			return proto.CaptureResult{Reason: proto.CaptureStopped, Frames: n}, nil
+		}
+	}
 	t := time.NewTicker(f.tick)
 	defer t.Stop()
 	for {
@@ -243,6 +265,10 @@ func (s *fakeStream) emit(ev asr.Event) {
 
 func (s *fakeStream) Send(pcm []byte) error {
 	s.mu.Lock()
+	if s.done || s.closed {
+		s.mu.Unlock()
+		return &asr.Error{Kind: asr.KindProtocol, Detail: "the stream has ended"}
+	}
 	s.bytes += len(pcm)
 	s.data = append(s.data, pcm...)
 	s.sends++

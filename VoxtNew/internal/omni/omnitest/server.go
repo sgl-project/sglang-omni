@@ -105,11 +105,15 @@ func final(o Opts, w http.ResponseWriter, r *http.Request) {
 		fields[k] = v[0]
 	}
 	samples := 0
+	var audio string
 	if f, _, err := r.FormFile("file"); err == nil {
 		b, _ := io.ReadAll(f)
 		samples = max(len(b)-44, 0) / 2
+		if o.RecordAudio {
+			audio = base64.StdEncoding.EncodeToString(b[min(44, len(b)):])
+		}
 	}
-	record(o, Record{Event: "final", Fields: fields, Samples: samples})
+	record(o, Record{Event: "final", Fields: fields, Samples: samples, Audio: audio})
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
 	fl, _ := w.(http.Flusher)
