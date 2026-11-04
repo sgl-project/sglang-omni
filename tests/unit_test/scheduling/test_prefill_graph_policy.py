@@ -459,13 +459,11 @@ def sglang_prefill_ladder(max_bs: int) -> list[int]:
 
 
 @pytest.mark.parametrize("max_num_tokens", [1, 2, 16, 8192])
-def test_explicit_single_token_bucket_replays_cache_hits(
+def test_default_single_token_bucket_replays_cache_hits(
     max_num_tokens: int,
 ) -> None:
     """Cached single-token prefill was padded to four tokens and ran eager."""
-    token_buckets = build_default_prefill_cuda_graph_bs(
-        max_num_tokens, extra_token_buckets=(1,)
-    )
+    token_buckets = build_default_prefill_cuda_graph_bs(max_num_tokens)
     padded_token_count = PrefillCudaGraphRunner._pad_to_bucket(  # noqa: leading-underscore  # upstream spelling
         1, token_buckets
     )
@@ -500,10 +498,12 @@ def test_default_prefill_ladder_rejects_non_positive_caps(max_num_tokens: int) -
 
 
 @pytest.mark.parametrize("cap", [4, 256, 512, 4096, 8192, 16384])
-def test_default_prefill_ladder_matches_the_sglang_generator_on_grid(
+def test_default_prefill_ladder_adds_single_token_to_sglang_generator_on_grid(
     cap: int,
 ) -> None:
-    assert build_default_prefill_cuda_graph_bs(cap) == sglang_prefill_ladder(cap)
+    assert build_default_prefill_cuda_graph_bs(cap) == sorted(
+        {1, *sglang_prefill_ladder(cap)}
+    )
 
 
 @pytest.mark.parametrize("cap", [2, 4592])
@@ -513,7 +513,7 @@ def test_default_prefill_ladder_appends_the_off_grid_cap_sglang_omits(
     sglang_ladder = sglang_prefill_ladder(cap)
 
     assert not sglang_ladder or sglang_ladder[-1] < cap
-    assert build_default_prefill_cuda_graph_bs(cap) == [*sglang_ladder, cap]
+    assert build_default_prefill_cuda_graph_bs(cap) == sorted({1, *sglang_ladder, cap})
 
 
 def test_disable_overrides_win_over_default_prefill_backend() -> None:

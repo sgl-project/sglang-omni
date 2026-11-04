@@ -978,10 +978,8 @@ def test_qwen3_tts_operator_prefill_cap_ladder_starts_at_one(
         {"cuda_graph_backend_prefill": backend, "cuda_graph_max_bs_prefill": 3000},
     )
 
-    assert resolved_view(server_args).cuda_graph_config.prefill.bs == [
-        1,
-        *build_default_prefill_cuda_graph_bs(3000),
-    ]
+    token_buckets = resolved_view(server_args).cuda_graph_config.prefill.bs
+    assert token_buckets == build_default_prefill_cuda_graph_bs(3000)
 
 
 @pytest.mark.parametrize("backend", ["breakable", "full"])

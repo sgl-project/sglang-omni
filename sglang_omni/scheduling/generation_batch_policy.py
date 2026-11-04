@@ -89,6 +89,7 @@ def build_default_prefill_cuda_graph_bs(
         pass
 
     token_buckets = {
+        1,
         max_num_tokens,
         *generate_prefill_cuda_graph_batch_sizes(max_num_tokens),
         *extra_token_buckets,
