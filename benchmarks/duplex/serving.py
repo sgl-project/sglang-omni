@@ -243,6 +243,7 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
     http_admission_denial_events = session_admission_rejection_events = 0
     for variant_state in attempted:
         variant_dir = run_dir / variant_state["directory"]
+        admission = variant_state.get("admission")
         trace_start_s: float | None = None
         trace_end_s: float | None = None
         http_denials = session_rejections = 0
@@ -257,7 +258,7 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
                 else:
                     pass
                 trace_end_s = record.time_s
-                if "admission" not in variant_state:
+                if admission is None:
                     http_denials += record.direction == "admission"
                     session_rejections += (
                         record.direction == "receive"
@@ -265,9 +266,9 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
                     )
                 else:
                     pass
-        if "admission" in variant_state:
-            http_denials = variant_state["admission"]["admission_denials"]
-            session_rejections = variant_state["admission"]["admission_rejections"]
+        if admission is not None:
+            http_denials = admission["admission_denials"]
+            session_rejections = admission["admission_rejections"]
         else:
             pass
         if trace_start_s is not None:

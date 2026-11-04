@@ -478,6 +478,21 @@ def test_failed_trace_with_bad_rows_preserves_report(
         assert "| 1 | - | 1/1 |" in table
 
 
+def test_failed_session_uses_trace_when_admission_counts_are_unavailable(
+    tmp_path: Path,
+) -> None:
+    run_dir = record_run(tmp_path / "run", 1, [("error", [])], rejected_updates=1)
+    run_path = run_dir / "run.json"
+    run = json.loads(run_path.read_text())
+    variant = run["samples"][0]["variants"]["input"]
+    variant.update(failure_kind="runtime", admission=None)
+    run_path.write_text(json.dumps(run))
+
+    level = summarize_level(run_dir, PLAYBACK_RESERVE_S)
+    assert level["sessions_failed"] == 1
+    assert level["session_admission_rejection_events"] == 1
+
+
 def test_capacity_is_the_level_below_the_first_unmet_target(tmp_path: Path) -> None:
     passing = [("pass", ON_TIME)]
     report = serving_report(
