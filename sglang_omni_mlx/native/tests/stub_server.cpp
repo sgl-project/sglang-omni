@@ -170,8 +170,17 @@ class StubChatService : public omni_server::Service {
 public:
   StubChatService()
       : service_(ming3_audio::CreateChatService(
-            [this](const ming3_audio::ChatRequest &request,
+            [](ming3_audio::ChatRequest request) {
+              if (request.system_prompt == "invalid") {
+                throw std::invalid_argument("stub chat preparation failed");
+              } else {
+                return ming3_audio::PreparedChatRequest{
+                    std::move(request), {}, 0, 0};
+              }
+            },
+            [this](const ming3_audio::PreparedChatRequest &prepared,
                    const ming3_audio::Cancellation &cancelled) {
+              const auto &request = prepared.request;
               if (request.system_prompt == "fail") {
                 throw std::runtime_error("stub chat failed");
               } else if (request.system_prompt == "cancel") {

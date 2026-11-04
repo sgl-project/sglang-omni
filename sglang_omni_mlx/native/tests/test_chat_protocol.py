@@ -98,24 +98,30 @@ def test_a_request_decodes_audio_and_returns_a_chat_completion(
 
 
 @pytest.mark.parametrize(
-    ("limits", "completion_tokens"),
-    [({"max_tokens": 1}, 1), ({"max_tokens": 5, "max_completion_tokens": 2}, 2)],
+    ("limits", "requested_tokens", "completion_tokens", "finish_reason"),
+    [
+        ({"max_tokens": 1}, 1, 1, "length"),
+        ({"max_tokens": 5, "max_completion_tokens": 2}, 2, 2, "length"),
+        ({"max_tokens": 1025}, 1025, 3, "stop"),
+    ],
 )
 def test_token_limits_reach_the_generator(
     chat_server: SupervisedServer,
     chat_body: dict[str, object],
     limits: dict[str, int],
+    requested_tokens: int,
     completion_tokens: int,
+    finish_reason: str,
 ) -> None:
     response = chat_server.post_chat({**chat_body, **limits})
     assert response.status == 200
     reply = response.json()
     choice = reply["choices"][0]
     assert (
-        json.loads(choice["message"]["content"])["max_new_tokens"] == completion_tokens
+        json.loads(choice["message"]["content"])["max_new_tokens"] == requested_tokens
     )
     assert reply["usage"]["completion_tokens"] == completion_tokens
-    assert choice["finish_reason"] == "length"
+    assert choice["finish_reason"] == finish_reason
 
 
 @pytest.mark.parametrize(
@@ -127,7 +133,7 @@ def test_token_limits_reach_the_generator(
         ("stop", ["end"]),
         ("model", "another-model"),
         ("max_completion_tokens", 0),
-        ("max_completion_tokens", 1025),
+        ("max_completion_tokens", 2**32 + 1),
         ("max_completion_tokens", 1.5),
         ("messages", []),
     ],
@@ -249,6 +255,16 @@ def test_busy_rejection_does_not_interrupt_the_active_request(
         assert chat_server.request("GET", "/stub/chat/started").status == 200
         assert chat_server.request_states() == {"running": 1}
         assert chat_server.post_chat({**chat_body, "stream": True}).status == 400
+        messages = chat_body["messages"]
+        assert isinstance(messages, list)
+        invalid = chat_server.post_chat(
+            {
+                **chat_body,
+                "messages": [{"role": "system", "content": "invalid"}, *messages[1:]],
+            }
+        )
+        assert invalid.status == 400
+        assert invalid.json()["error"]["message"] == "stub chat preparation failed"
         refused = chat_server.post_chat(chat_body)
         assert refused.status == 429
         assert refused.json()["error"]["type"] == "rate_limit_error"

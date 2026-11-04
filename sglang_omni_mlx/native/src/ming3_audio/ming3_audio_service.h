@@ -9,10 +9,11 @@
 
 namespace ming3_audio {
 
-using ChatGeneration =
-    std::function<ChatResult(const ChatRequest &, const Cancellation &)>;
+using ChatPreparation = std::function<PreparedChatRequest(ChatRequest)>;
+using ChatGeneration = std::function<ChatResult(const PreparedChatRequest &,
+                                                const Cancellation &)>;
 
 std::unique_ptr<omni_server::Service>
-CreateChatService(ChatGeneration generate);
+CreateChatService(ChatPreparation prepare, ChatGeneration generate);
 
 } // namespace ming3_audio

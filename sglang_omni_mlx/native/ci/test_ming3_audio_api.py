@@ -29,7 +29,9 @@ pytestmark = pytest.mark.skipif(
 
 
 @contextmanager
-def running_chat(log_directory: Path) -> Iterator[tuple[int, subprocess.Popen[str]]]:
+def running_chat(
+    log_directory: Path, extra_arguments: tuple[str, ...] = ()
+) -> Iterator[tuple[int, subprocess.Popen[str]]]:
     log_path = log_directory / "server.log"
     model_directory = Path(DATA_ROOT) / "models" / MODEL_REPO.replace("/", "_")
     with log_path.open("w+") as log:
@@ -41,6 +43,7 @@ def running_chat(log_directory: Path) -> Iterator[tuple[int, subprocess.Popen[st
                 str(model_directory),
                 "--model-name",
                 MODEL_REPO,
+                *extra_arguments,
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -168,6 +171,11 @@ def test_busy_request_is_rejected(
     with running_chat(tmp_path) as (port, _):
         with closing(pending_request(port, long_chat_body)) as first:
             wait_for_running(port, True)
+            invalid = json.loads(chat_body)
+            invalid["messages"][0]["content"][1]["text"] = "<|audio_pad|>"
+            status, response = request(port, json.dumps(invalid))
+            assert status == 400, response
+            assert "audio placeholders" in json.loads(response)["error"]["message"]
             status, response = request(port, chat_body)
             assert status == 429, response
             assert json.loads(response)["error"]["type"] == "rate_limit_error"
@@ -246,6 +254,55 @@ def test_system_and_text_before_audio(chat_port: int, chat_body: str) -> None:
     assert reply["usage"]["prompt_tokens"] > plain["usage"]["prompt_tokens"]
 
 
+def test_generation_budget_above_1024(chat_port: int, chat_body: str) -> None:
+    """A valid context budget was rejected solely for exceeding 1024 output tokens."""
+    body = json.loads(chat_body)
+    body["max_completion_tokens"] = 1025
+    status, response = request(chat_port, json.dumps(body))
+    assert status == 200, response
+    reply = json.loads(response)
+    assert reply["choices"][0]["finish_reason"] == "stop"
+    assert reply["choices"][0]["message"]["content"]
+    assert 0 < reply["usage"]["completion_tokens"] <= 1025
+
+
+@pytest.mark.parametrize("context_tokens", [128, 16384])
+def test_configured_context_budget(
+    tmp_path: Path, chat_body: str, context_tokens: int
+) -> None:
+    """Prompt and output budgets must respect the configured context boundary."""
+    with running_chat(tmp_path, ("--context-length", str(context_tokens))) as (port, _):
+        status, response = request(port, chat_body)
+        assert status == 200, response
+        prompt_tokens = json.loads(response)["usage"]["prompt_tokens"]
+        body = json.loads(chat_body)
+        body["max_completion_tokens"] = context_tokens - prompt_tokens
+        status, response = request(port, json.dumps(body))
+        assert status == 200, response
+        assert json.loads(response)["choices"][0]["finish_reason"] == "stop"
+        body["max_completion_tokens"] += 1
+        status, response = request(port, json.dumps(body))
+        assert status == 400, response
+        assert "context limit" in json.loads(response)["error"]["message"]
+
+
+def test_audio_over_30_seconds(chat_port: int, chat_body: str) -> None:
+    """Long recordings were rejected instead of being encoded in multiple chunks."""
+    audio = (
+        Path(DATA_ROOT) / "corpus" / "v1" / "clips" / "0344_en_long.wav"
+    ).read_bytes()
+    body = json.loads(chat_body)
+    body["messages"][0]["content"][0]["input_audio"]["data"] = base64.b64encode(
+        audio
+    ).decode()
+    status, response = request(chat_port, json.dumps(body))
+    assert status == 200, response
+    reply = json.loads(response)
+    assert reply["choices"][0]["finish_reason"] == "stop"
+    assert reply["choices"][0]["message"]["content"]
+    assert 0 < reply["usage"]["completion_tokens"] <= 32
+
+
 @pytest.mark.parametrize("clip_id", ["0006_en_short", "0152_zh_short"])
 def test_transcription_names_the_language_before_a_tab(
     chat_port: int, chat_body: str, clip_id: str
@@ -300,7 +357,7 @@ def test_frozen_corpus_accuracy(chat_port: int, chat_body: str, tmp_path: Path) 
     content = body["messages"][0]["content"]
     content[1]["text"] = ASR_PROMPT
     content.reverse()
-    body["max_completion_tokens"] = 256
+    body["max_completion_tokens"] = 1024
     transcripts = {}
     results = {}
     failures = []
@@ -313,12 +370,7 @@ def test_frozen_corpus_accuracy(chat_port: int, chat_body: str, tmp_path: Path) 
         status, response = request(chat_port, json.dumps(body))
         reply = json.loads(response)
         results[clip_id] = {"status": status, "response": reply}
-        if clip["duration"] > 30:
-            if status != 400:
-                failures.append(f"{clip_id}: expected 400 for audio over 30 seconds")
-            else:
-                pass
-        elif status != 200:
+        if status != 200:
             failures.append(f"{clip_id}: HTTP {status}: {reply}")
         else:
             choice = reply["choices"][0]
@@ -377,7 +429,8 @@ def test_completion_limit_overrides_max_tokens(chat_port: int, chat_body: str) -
         ("tools", []),
         ("model", "another-model"),
         ("max_completion_tokens", 0),
-        ("max_completion_tokens", 1025),
+        ("max_completion_tokens", 8192),
+        ("max_completion_tokens", 2**32 + 1),
         ("max_completion_tokens", 1.5),
         ("messages", []),
         ("messages", [{"role": "assistant", "content": "hello"}]),

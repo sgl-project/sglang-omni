@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -57,8 +58,11 @@ ChatRequest ParseRequest(const nlohmann::json &request,
       request.contains("max_completion_tokens")
           ? request.at("max_completion_tokens")
           : request.value("max_tokens", nlohmann::json(result.max_new_tokens));
-  if (!limit.is_number_integer() || limit < 1 || limit > 1024) {
-    throw std::invalid_argument("max_tokens must be an integer from 1 to 1024");
+  if (!limit.is_number_integer() || limit < 1) {
+    throw std::invalid_argument("max_tokens must be a positive integer");
+  } else if (limit > std::numeric_limits<int>::max()) {
+    throw std::invalid_argument(
+        "prompt and generation exceed the context limit");
   } else {
     result.max_new_tokens = limit.get<int>();
   }
@@ -116,8 +120,8 @@ ChatRequest ParseRequest(const nlohmann::json &request,
 
 class Ming3AudioService : public omni_server::Service {
 public:
-  explicit Ming3AudioService(ChatGeneration generate)
-      : generate_(std::move(generate)) {}
+  Ming3AudioService(ChatPreparation prepare, ChatGeneration generate)
+      : prepare_(std::move(prepare)), generate_(std::move(generate)) {}
 
   void Register(mg_context *context, const std::string &model_name) override {
     model_name_ = model_name;
@@ -139,6 +143,7 @@ public:
 private:
   int Handle(mg_connection *connection);
 
+  ChatPreparation prepare_;
   ChatGeneration generate_;
   std::string model_name_;
   std::mutex inference_;
@@ -164,7 +169,7 @@ int Ming3AudioService::Handle(mg_connection *connection) {
   };
   try {
     const auto request =
-        ParseRequest(nlohmann::json::parse(*body), model_name_);
+        prepare_(ParseRequest(nlohmann::json::parse(*body), model_name_));
     std::unique_lock lock(inference_, std::try_to_lock);
     if (!lock.owns_lock()) {
       return fail(429, "model busy");
@@ -226,8 +231,9 @@ int Ming3AudioService::Handle(mg_connection *connection) {
 } // namespace
 
 std::unique_ptr<omni_server::Service>
-CreateChatService(ChatGeneration generate) {
-  return std::make_unique<Ming3AudioService>(std::move(generate));
+CreateChatService(ChatPreparation prepare, ChatGeneration generate) {
+  return std::make_unique<Ming3AudioService>(std::move(prepare),
+                                             std::move(generate));
 }
 
 } // namespace ming3_audio

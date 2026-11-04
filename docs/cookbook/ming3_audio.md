@@ -130,8 +130,8 @@ print(response.json()["choices"][0]["message"]["content"])
 The native server supports audio questions with text responses, with these limits:
 
 - One user message containing exactly one audio clip, with an optional leading system message. Text may appear before or after the audio part.
-- Input is 16 kHz mono PCM16 or float32 WAV, from 25 ms to 30 seconds. Top-level `audios`, file paths and `audio_url` are not supported.
-- Generation is greedy (`temperature=0`), with 1–1,024 output tokens and an 8,192-token total context limit. `max_completion_tokens` takes precedence over `max_tokens`.
+- Input is nonempty 16 kHz mono PCM16 or float32 WAV. Audio is encoded in 30-second chunks. Top-level `audios`, file paths and `audio_url` are not supported.
+- Generation is greedy (`temperature=0`), with a positive output token budget. Both `ming3_audio_server` and `ming3_audio_chat` accept `--context-length N` (default: 8,192); the effective limit is the smaller of this value and the checkpoint's `max_position_embeddings`. The prompt, including audio tokens, and the requested output budget must fit within that limit. `max_completion_tokens` takes precedence over `max_tokens`.
 - Streaming, speech output and multi-turn conversations are not supported. The transcription and speech endpoints above are not available on this server.
 - Request bodies are limited to 4 MiB. One generation runs at a time; concurrent requests receive 429. `/health` and `/v1/models` are supported.
 
