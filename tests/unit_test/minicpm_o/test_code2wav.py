@@ -663,8 +663,14 @@ def test_compiled_hift_matches_eager(compiled_vocoder: MiniCPMOCode2Wav) -> None
 @pytest.mark.parametrize("compile_body", [False, True])
 def test_hift_graph_matches_decode_across_shapes_and_replays(
     compile_body: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Graphs preserve waveform boundaries, new inputs and earlier pooled outputs."""
+    # note (MayDomine): compare padding boundaries without shape-dependent TF32 rounding.
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
+    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
+    monkeypatch.setattr(torch.backends.cudnn, "benchmark", False)
+    monkeypatch.setattr(torch.backends.cudnn, "deterministic", True)
     torch.manual_seed(7)
     hift = HiFTGenerator(base_channels=32).cuda().eval()
     if compile_body:
@@ -674,6 +680,8 @@ def test_hift_graph_matches_decode_across_shapes_and_replays(
             fullgraph=True,
             options={"triton.cudagraphs": False},
         )
+    else:
+        pass
     runner = HiftBodyCudaGraphRunner(hift.decode_body)
     device = hift.stft_window.device
     runner.capture(
@@ -688,7 +696,7 @@ def test_hift_graph_matches_decode_across_shapes_and_replays(
     runner.decode_body = fallback
     saved_outputs: list[tuple[torch.Tensor, torch.Tensor]] = []
     with torch.inference_mode():
-        # Alternate tails in one bucket to expose stale padding and missing masks.
+        # note (MayDomine): alternating tails expose stale padding and missing masks.
         for batch_size, mel_frames in (
             (1, 4),
             (2, 6),
