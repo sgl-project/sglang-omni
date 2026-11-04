@@ -93,16 +93,12 @@ struct DecodedWav {
   int sample_rate = 0;
 };
 DecodedWav DecodeAnyWav(std::string_view wav_bytes);
+// Throws std::invalid_argument for a pair of rates whose kernel table would be
+// too large.
+void CheckResampleRates(int source_rate, int target_rate);
 // torchaudio's resample (sinc, Hann window, 6 zero crossings, rolloff 0.99);
-// throws std::invalid_argument for a pair of rates whose kernel table would
-// be too large.
+// throws as CheckResampleRates does.
 std::vector<float> Resample(const std::vector<float> &samples, int source_rate,
                             int target_rate);
-
-// Samples as 16-bit little-endian PCM, clipped to [-1, 1] and scaled by
-// 32767 as the CUDA server's encode_pcm does.
-std::string Pcm16Bytes(const std::vector<float> &samples);
-// A mono 16-bit WAV file around PCM bytes.
-std::string WavBytes(const std::string &pcm, int sample_rate);
 
 } // namespace fish_s2_pro

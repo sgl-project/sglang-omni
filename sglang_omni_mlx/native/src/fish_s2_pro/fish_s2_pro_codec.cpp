@@ -44,7 +44,6 @@ constexpr int kStreamFollowupFrames = 45;
 constexpr int kStreamOverlapFrames = 20;
 constexpr size_t kStreamCrossfadeSamples = 512;
 
-constexpr float kPcm16FullScale = 32767.0f;
 constexpr int kWaveFormatExtensible = 0xFFFE;
 constexpr int kResampleZeroCrossings = 6;
 constexpr double kResampleRolloff = 0.99;
@@ -141,6 +140,32 @@ mx::array Rotate(const mx::array &x, const mx::array &phases) {
                             -1),
                   x.shape()),
       x.dtype());
+}
+
+struct ResampleKernelShape {
+  int source_step;
+  int target_step;
+  double base_rate;
+  int width;
+  int taps;
+};
+
+ResampleKernelShape KernelShape(int source_rate, int target_rate) {
+  const int divisor = std::gcd(source_rate, target_rate);
+  const int source_step = source_rate / divisor;
+  const int target_step = target_rate / divisor;
+  const double base_rate =
+      std::min(source_step, target_step) * kResampleRolloff;
+  const int width = static_cast<int>(
+      std::ceil(kResampleZeroCrossings * source_step / base_rate));
+  const int taps = 2 * width + source_step;
+  if (target_step > kMaxResamplePhases || taps > kMaxResampleTaps) {
+    throw std::invalid_argument(
+        "reference audio at " + std::to_string(source_rate) +
+        " Hz cannot be resampled to " + std::to_string(target_rate) + " Hz");
+  } else {
+  }
+  return {source_step, target_step, base_rate, width, taps};
 }
 
 } // namespace
@@ -691,26 +716,18 @@ DecodedWav DecodeAnyWav(std::string_view wav_bytes) {
   return {std::move(samples), sample_rate};
 }
 
+void CheckResampleRates(int source_rate, int target_rate) {
+  KernelShape(source_rate, target_rate);
+}
+
 std::vector<float> Resample(const std::vector<float> &samples, int source_rate,
                             int target_rate) {
   if (source_rate == target_rate || samples.empty()) {
     return samples;
   } else {
   }
-  const int divisor = std::gcd(source_rate, target_rate);
-  const int source_step = source_rate / divisor;
-  const int target_step = target_rate / divisor;
-  const double base_rate =
-      std::min(source_step, target_step) * kResampleRolloff;
-  const int width = static_cast<int>(
-      std::ceil(kResampleZeroCrossings * source_step / base_rate));
-  const int taps = 2 * width + source_step;
-  if (target_step > kMaxResamplePhases || taps > kMaxResampleTaps) {
-    throw std::invalid_argument(
-        "reference audio at " + std::to_string(source_rate) +
-        " Hz cannot be resampled to " + std::to_string(target_rate) + " Hz");
-  } else {
-  }
+  const auto [source_step, target_step, base_rate, width, taps] =
+      KernelShape(source_rate, target_rate);
   // One kernel per output phase, as torchaudio's sinc_interp_hann builds.
   std::vector<double> kernels(static_cast<size_t>(target_step) * taps);
   for (int phase = 0; phase < target_step; ++phase) {
@@ -751,44 +768,6 @@ std::vector<float> Resample(const std::vector<float> &samples, int source_rate,
     }
   }
   return output;
-}
-
-std::string Pcm16Bytes(const std::vector<float> &samples) {
-  std::string bytes;
-  bytes.reserve(samples.size() * 2);
-  for (const float sample : samples) {
-    // Note (Minyi Tang): NaN becomes silence, since std::clamp passes it
-    // through and casting NaN to an integer is undefined.
-    const float bounded =
-        std::isnan(sample) ? 0.0f : std::clamp(sample, -1.0f, 1.0f);
-    const auto value = static_cast<int16_t>(bounded * kPcm16FullScale);
-    bytes.push_back(static_cast<char>(value & 0xff));
-    bytes.push_back(static_cast<char>((value >> 8) & 0xff));
-  }
-  return bytes;
-}
-
-std::string WavBytes(const std::string &pcm, int sample_rate) {
-  std::string bytes;
-  const auto append = [&](uint32_t value, int size) {
-    for (int index = 0; index < size; ++index) {
-      bytes.push_back(static_cast<char>((value >> (8 * index)) & 0xff));
-    }
-  };
-  const auto data_size = static_cast<uint32_t>(pcm.size());
-  bytes += "RIFF";
-  append(36 + data_size, 4);
-  bytes += "WAVEfmt ";
-  append(16, 4);
-  append(1, 2);
-  append(1, 2);
-  append(sample_rate, 4);
-  append(sample_rate * 2, 4);
-  append(2, 2);
-  append(16, 2);
-  bytes += "data";
-  append(data_size, 4);
-  return bytes + pcm;
 }
 
 } // namespace fish_s2_pro

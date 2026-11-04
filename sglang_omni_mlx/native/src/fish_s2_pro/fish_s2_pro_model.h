@@ -9,7 +9,6 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
-#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -21,13 +20,6 @@
 #include "qwen3_asr/qwen3_decoder.h"
 
 namespace fish_s2_pro {
-
-// A prompt and its frames longer than the model's positions: a request
-// error, found only once the references are encoded.
-class PromptTooLong : public std::invalid_argument {
-public:
-  using std::invalid_argument::invalid_argument;
-};
 
 // The CUDA server's sampling of the semantic code; seed is the request's
 // seed already masked to 31 bits.
@@ -74,8 +66,8 @@ public:
 
   // Generates up to max_frames frames, passing each frame's evaluated int32
   // codes [codebooks] to on_frame. Stops at <|im_end|>; throws
-  // TranscriptionCancelled once cancel is set, and PromptTooLong when the
-  // prompt and max_frames outrun max_positions().
+  // TranscriptionCancelled once cancel is set, and std::runtime_error when
+  // the prompt and max_frames outrun max_positions().
   qwen3_asr::FinishReason
   Generate(const SpeechPrompt &prompt, int max_frames,
            const SamplingOptions &sampling, const std::atomic<bool> &cancel,

@@ -47,7 +47,6 @@ MAX_WORD_ERRORS = 1
 MAX_QUEUED_REQUESTS = 1
 REQUEST_TIMEOUT_SECONDS = 20
 MAX_REQUEST_BODY_BYTES = 16 * 1024 * 1024
-PLAIN_BODY_BYTES = 1024 * 1024
 # A cancelled generation stops at its next frame.
 CANCEL_SECONDS = 8.0
 
@@ -336,8 +335,6 @@ def test_fish_half_closed_client_counts_as_gone(fish_server: Server) -> None:
 
 
 def test_fish_refuses_requests_beyond_its_queue(fish_server: Server) -> None:
-    # A stream's 200 waits for its first audio, so the queued request is
-    # sent without waiting for its answer.
     queued_body = {"input": LONG_SENTENCE, "response_format": "pcm", "stream": True}
     with (
         open_speech_stream(fish_server, LONG_SENTENCE) as running,
@@ -471,30 +468,6 @@ def test_fish_bounds_all_references_before_resampling(fish_server: Server) -> No
 
 
 @pytest.mark.parametrize(
-    "stream_fields",
-    [{}, {"stream": True, "response_format": "pcm"}],
-    ids=["file", "stream"],
-)
-def test_fish_answers_a_prompt_too_long_with_400(
-    fish_server: Server, stream_fields: dict
-) -> None:
-    """A prompt past the model's 32768 positions was a 500, and an empty 200
-    for a stream."""
-    reference = {"vq_codes": [[1]] * 10, "text": "\u4f60" * 4096}
-    status, response = fish_server.request(
-        "POST",
-        "/v1/audio/speech",
-        json.dumps(
-            {"input": "hi", "references": [reference] * 9, **stream_fields}
-        ).encode(),
-    )
-    assert status == 400
-    assert json.loads(response)["detail"].startswith(
-        "the prompt and its audio exceed the model's 32768 positions"
-    )
-
-
-@pytest.mark.parametrize(
     "wav",
     [
         # A streamed WAV declares more data than it holds.
@@ -519,8 +492,8 @@ def test_fish_reads_reference_wavs_cuda_reads(fish_server: Server, wav: bytes) -
 def test_fish_answers_a_stream_with_unusable_audio_with_400(
     fish_server: Server,
 ) -> None:
-    """Reference audio decodes once the request is admitted; a stream whose
-    audio is not a WAV got an empty 200."""
+    """A stream answers 200 once it is admitted, so its reference audio is
+    decoded first; a stream whose audio is not a WAV got an empty 200."""
     status, response = fish_server.request(
         "POST",
         "/v1/audio/speech",
@@ -648,13 +621,24 @@ def test_fish_rejects_another_model_than_its_chosen_name() -> None:
         ({"input": "hi", "seed": "1"}, "seed must be an integer"),
         ({"input": "hi", "seed": -1}, "seed must be greater than or equal to 0"),
         ({"input": "hi", "seed": 2**64 - 1}, "seed must be in [-2**63, 2**63 - 1]"),
-        ({"input": "hi", "ref_text": "x" * 4097}, "ref_text must be at most 4096"),
+        (
+            {"input": "hi", "ref_audio": wav_data_url(16000), "ref_text": "x" * 2049},
+            "reference transcripts must total at most 2048 characters",
+        ),
         (
             {
                 "input": "hi",
-                "references": [{"vq_codes": [[1]] * 10, "text": "x" * 4097}],
+                "references": [{"vq_codes": [[1]] * 10, "text": "x" * 1025}] * 2,
             },
-            "references[0].text must be at most 4096",
+            "reference transcripts must total at most 2048 characters",
+        ),
+        (
+            {"input": "hi", "references": [{"vq_codes": [[1]] * 10}] * 5},
+            "at most 4 references are supported",
+        ),
+        (
+            {"input": "hi", "references": [{"vq_codes": [[0] * 1293] * 10}]},
+            "the references are longer than 60 s in all",
         ),
         ({"input": "hi", "ref_audio": 5}, "ref_audio must be a string"),
         ({"input": "hi", "ref_audio": "/tmp/a.wav"}, "ref_audio must be a WAV file"),
@@ -738,20 +722,11 @@ def test_fish_refuses_a_declared_body_too_large_without_reading_it(
 
 
 @pytest.mark.parametrize(
-    ("body_bytes", "with_references", "status", "detail"),
+    ("body_bytes", "status", "detail"),
     [
-        (PLAIN_BODY_BYTES, False, 400, "input must be at most 4096 characters"),
-        (
-            PLAIN_BODY_BYTES + 1,
-            False,
-            413,
-            f"request body must be at most {PLAIN_BODY_BYTES} bytes without "
-            "ref_audio or references",
-        ),
-        (MAX_REQUEST_BODY_BYTES, True, 400, "input must be at most 4096 characters"),
+        (MAX_REQUEST_BODY_BYTES, 400, "input must be at most 4096 characters"),
         (
             MAX_REQUEST_BODY_BYTES + 1,
-            True,
             413,
             f"request body must be at most {MAX_REQUEST_BODY_BYTES} bytes",
         ),
@@ -760,12 +735,10 @@ def test_fish_refuses_a_declared_body_too_large_without_reading_it(
 def test_fish_caps_a_chunked_body_it_cannot_size_in_advance(
     fish_server: Server,
     body_bytes: int,
-    with_references: bool,
     status: int,
     detail: str,
 ) -> None:
-    """Without reference audio a body holds 1 MiB; with it, 16 MiB."""
-    prefix = '{"references": [], "input": "' if with_references else '{"input": "'
+    prefix = '{"input": "'
     body = (prefix + "x" * (body_bytes - len(prefix) - 2) + '"}').encode()
     assert len(body) == body_bytes
     connection = http.client.HTTPConnection("127.0.0.1", fish_server.port, timeout=60)
@@ -776,21 +749,6 @@ def test_fish_caps_a_chunked_body_it_cannot_size_in_advance(
     assert response.status == status
     assert json.loads(response.read())["detail"].startswith(detail)
     connection.close()
-
-
-def test_fish_bounds_the_json_values_it_parses(fish_server: Server) -> None:
-    """A 16 MiB body of small vq_codes built a document of millions of values
-    before the request was admitted."""
-    codes = [[0] * 7000 for _ in range(10)]
-    status, response = fish_server.request(
-        "POST",
-        "/v1/audio/speech",
-        json.dumps({"input": "hi", "references": [{"vq_codes": codes}]}).encode(),
-    )
-    assert (status, json.loads(response)) == (
-        400,
-        {"detail": "speech request body must hold at most 65536 JSON values"},
-    )
 
 
 def test_fish_server_serves_no_transcriptions(fish_server: Server) -> None:
