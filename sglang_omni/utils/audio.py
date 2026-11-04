@@ -9,11 +9,10 @@ import io
 import logging
 import math
 import os
-from typing import Literal, TypedDict
+from typing import TypedDict
 from urllib.parse import unquote, urlparse
 
 import httpx
-import librosa
 import numpy as np
 import pybase64
 import torch
@@ -206,7 +205,6 @@ def try_fast_wav_decode(
     data: bytes,
     target_sample_rate: int,
     resample_kwargs: ResampleOptions | None = None,
-    resampling_backend: Literal["default", "soxr_hq"] = "default",
 ) -> NDArray[np.float32] | None:
     # Note (akazaakane): Keep unsupported WAV encodings on torchaudio so the fast
     # path never narrows existing format coverage.
@@ -226,14 +224,7 @@ def try_fast_wav_decode(
     else:
         pass
 
-    if resampling_backend == "soxr_hq":
-        return librosa.resample(
-            audio,
-            orig_sr=sample_rate,
-            target_sr=target_sample_rate,
-            res_type="soxr_hq",
-        )
-    elif current_platform.supports_torchaudio_resample():
+    if current_platform.supports_torchaudio_resample():
         resampled = cached_resample(
             torch.from_numpy(audio),
             sample_rate,
@@ -327,7 +318,6 @@ def load_audio(
     mono: bool = True,
     trim_top_db: float | None = None,
     resample_kwargs: ResampleOptions | None = None,
-    resampling_backend: Literal["default", "soxr_hq"] = "default",
 ) -> NDArray[np.float32]:
     if isinstance(source, memoryview):
         source = source.tobytes()
@@ -359,10 +349,7 @@ def load_audio(
         # startup when mono=True without changing channel-preserving loads.
         if mono and trim_top_db is None and is_riff_wav(source):
             fast = try_fast_wav_decode(
-                source,
-                target_sample_rate,
-                resample_kwargs=resample_kwargs,
-                resampling_backend=resampling_backend,
+                source, target_sample_rate, resample_kwargs=resample_kwargs
             )
             if fast is not None:
                 return fast
@@ -388,22 +375,14 @@ def load_audio(
         pass
     audio = audio.to(torch.float32)
     if trim_top_db is not None:
+        import librosa
+
         trimmed, _ = librosa.effects.trim(audio.numpy(), top_db=trim_top_db)
         audio = torch.from_numpy(trimmed)
     else:
         pass
     if sample_rate != target_sample_rate:
-        if resampling_backend == "soxr_hq":
-            audio = torch.from_numpy(
-                librosa.resample(
-                    audio.cpu().numpy(),
-                    orig_sr=int(sample_rate),
-                    target_sr=target_sample_rate,
-                    res_type="soxr_hq",
-                    axis=-1,
-                )
-            )
-        elif current_platform.supports_torchaudio_resample():
+        if current_platform.supports_torchaudio_resample():
             audio = torchaudio.functional.resample(
                 audio,
                 int(sample_rate),

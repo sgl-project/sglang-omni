@@ -268,11 +268,7 @@ def test_fun_asr_load_audio_uses_shared_audio_utility(monkeypatch) -> None:
     assert calls == [
         (
             b"wav",
-            {
-                "source_name": "Fun-ASR",
-                "target_sample_rate": 16000,
-                "resampling_backend": "soxr_hq",
-            },
+            {"source_name": "Fun-ASR", "target_sample_rate": 16000},
         )
     ]
 

@@ -15,7 +15,7 @@ sources beyond the default payload keys (e.g. MOSS-Transcribe-Diarize).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Literal
+from typing import TYPE_CHECKING, Callable
 from urllib.parse import unquote, urlparse
 
 import numpy as np
@@ -125,7 +125,6 @@ def prepare_audio(
     source_resolver: Callable[[StagePayload], object] = resolve_audio_source,
     max_duration_s: float | None = None,
     max_duration_message: str | None = None,
-    resampling_backend: Literal["default", "soxr_hq"] = "default",
 ) -> PreparedAudio:
     """Resolve, load, and fingerprint the payload's audio for one request."""
 
@@ -134,7 +133,6 @@ def prepare_audio(
         source,
         source_name=source_name,
         target_sample_rate=target_sample_rate,
-        resampling_backend=resampling_backend,
     )
     duration_s = float(len(waveform) / target_sample_rate)
     if max_duration_s is not None and duration_s > max_duration_s:
