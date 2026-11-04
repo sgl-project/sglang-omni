@@ -79,13 +79,18 @@ def make_model_config(
     quantization: str | None,
     native_fp8_block_quant: bool = False,
     has_moe: bool = True,
+    pack_quantized: bool = False,
 ) -> SimpleNamespace:
     attrs = {"num_experts_per_tok": 8} if has_moe else {}
-    quantization_config = (
-        {"quant_method": "fp8", "weight_block_size": [128, 128]}
-        if native_fp8_block_quant
-        else None
-    )
+    if pack_quantized:
+        quantization_config = {
+            "quant_method": "compressed-tensors",
+            "format": "pack-quantized",
+        }
+    elif native_fp8_block_quant:
+        quantization_config = {"quant_method": "fp8", "weight_block_size": [128, 128]}
+    else:
+        quantization_config = None
     return SimpleNamespace(
         quantization=quantization,
         hf_text_config=SimpleNamespace(**attrs),
@@ -483,8 +488,8 @@ def test_explicit_cutlass_moe_runner_is_rejected_on_xpu(backend: str) -> None:
         )
 
 
-def test_auto_moe_runner_is_left_to_sglang_on_xpu() -> None:
-    """SGLang resolves 'auto' to its Triton MoE runner on XPU, so Omni leaves it be.
+def test_auto_moe_runner_is_left_to_sglang_on_xpu_for_bf16() -> None:
+    """A bf16 MoE needs no steering: SGLang's unquantized XPU runner handles it.
     Off-CUDA is structural now: the flashinfer_cutlass choice hangs off
     CUDAOmniPlatform, so the XPU hook never reaches a CUDA kernel selection.
     """
@@ -498,6 +503,69 @@ def test_auto_moe_runner_is_left_to_sglang_on_xpu() -> None:
 
     assert effective_quantization is None
     assert resolution_result(server_args, "moe_runner_backend") == "auto"
+
+
+def test_pack_quantized_moe_selects_triton_on_xpu() -> None:
+    """SGLang's weight-only group-packed MoE selector has no XPU branch, so 'auto'
+    lands on the Marlin runner, which has no XPU kernel. Omni names Triton."""
+    server_args = make_server_args(moe_runner_backend="auto")
+
+    effective_quantization = XPUOmniPlatform().apply_model_worker_backend_policy(
+        server_args,
+        make_model_config(
+            quantization="compressed-tensors", has_moe=True, pack_quantized=True
+        ),
+        "Qwen3OmniThinkerForCausalLM",
+    )
+
+    assert effective_quantization == "compressed-tensors"
+    assert resolution_result(server_args, "moe_runner_backend") == "triton"
+
+
+def test_block_fp8_moe_is_left_alone_on_xpu() -> None:
+    """Block-FP8 must stay off Triton: SGLang reaches its XPU fused_experts path
+    only while the runner is not Triton, so steering here would lose the kernel."""
+    server_args = make_server_args(moe_runner_backend="auto")
+
+    XPUOmniPlatform().apply_model_worker_backend_policy(
+        server_args,
+        make_model_config(
+            quantization="fp8", has_moe=True, native_fp8_block_quant=True
+        ),
+        "Qwen3OmniThinkerForCausalLM",
+    )
+
+    assert resolution_result(server_args, "moe_runner_backend") == "auto"
+
+
+def test_pack_quantized_dense_model_is_left_alone_on_xpu() -> None:
+    """The override is about the MoE runner, so a dense checkpoint keeps 'auto'."""
+    server_args = make_server_args(moe_runner_backend="auto")
+
+    XPUOmniPlatform().apply_model_worker_backend_policy(
+        server_args,
+        make_model_config(
+            quantization="compressed-tensors", has_moe=False, pack_quantized=True
+        ),
+        "Qwen3OmniThinkerForCausalLM",
+    )
+
+    assert resolution_result(server_args, "moe_runner_backend") == "auto"
+
+
+def test_pack_quantized_moe_keeps_cuda_default() -> None:
+    """The Marlin default is correct on CUDA; the XPU override must not leak."""
+    server_args = make_server_args(moe_runner_backend="auto")
+
+    cuda_platform.apply_model_worker_backend_policy(
+        server_args,
+        make_model_config(
+            quantization="compressed-tensors", has_moe=True, pack_quantized=True
+        ),
+        "Qwen3OmniThinkerForCausalLM",
+    )
+
+    assert resolution_result(server_args, "moe_runner_backend") != "triton"
 
 
 def test_model_config_has_moe_prefers_effective_text_config() -> None:
