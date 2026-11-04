@@ -1,6 +1,6 @@
 # Installation — MUSA
 
-This document describes how to install SGLang-Omni on Moore Threads GPUs.
+Install SGLang-Omni on Moore Threads GPUs.
 
 SGLang owns the base MUSA runtime environment. Install or build SGLang's MUSA
 environment first, then install SGLang-Omni as an overlay.
@@ -10,7 +10,11 @@ environment first, then install SGLang-Omni as an overlay.
 Install the Moore Threads driver and MUSA runtime on the host first. For the
 base SGLang environment, follow the SGLang Moore Threads GPU installation guide.
 
-## Option A: Docker
+## Install SGLang-Omni
+
+<a id="option-a-docker"></a>
+
+### Docker
 
 Clone SGLang-Omni first. The installation below is pinned to SGLang `v0.5.23`.
 
@@ -47,7 +51,9 @@ docker run -it --rm \
   sglang-omni:main-musa520-s5000
 ```
 
-## Option B: Install from Source
+<a id="option-b-install-from-source"></a>
+
+### From source
 
 Start from an environment where SGLang `v0.5.23` has been installed with MUSA
 support. If you build SGLang from source, clone the pinned tag rather than
@@ -123,7 +129,9 @@ The MUSA pyproject installs only SGLang-Omni overlay dependencies. The base
 MUSA torch stack, SGLang, sgl-kernel, Triton, TileLang, and MATE are inherited
 from the SGLang MUSA environment.
 
-## Verify
+<a id="verify"></a>
+
+## Verify the installation
 
 ```bash
 python - <<'PY'
@@ -139,3 +147,5 @@ print("sglang:", sglang.__version__)
 print("sglang_omni:", sglang_omni.__file__)
 PY
 ```
+
+Check that `devices` is greater than zero and that both SGLang packages import.

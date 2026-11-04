@@ -51,14 +51,14 @@
     <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'get_started/troubleshooting';</script>
     <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
-    <script src="../_static/js/sidebar_company_toggle.js?v=1646c162"></script>
+    <script src="../_static/js/sidebar_company_toggle.js?v=7622d557"></script>
     <script src="../_static/js/qwen3_omni_server_generator.js?v=d7738e8a"></script>
     <script src="../_static/js/ming_omni_server_generator.js?v=7979a72f"></script>
     <link rel="icon" href="../_static/logo.ico"/>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Qwen" href="../cookbook/companies/qwen.html" />
-    <link rel="prev" title="Installation — MUSA" href="installation_musa.html" />
+    <link rel="next" title="Installation — Apple Silicon" href="installation_apple_silicon.html" />
+    <link rel="prev" title="Examples" href="examples.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.2.0" />
@@ -207,13 +207,22 @@
     <div class="bd-toc-item navbar-nav active">
         <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
 <ul class="current nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="installation.html">Installation — CUDA</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_apple_silicon.html">Installation — Apple Silicon</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_npu.html">Installation — NPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_xpu.html">Installation — Intel XPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_cpu.html">Installation — Intel CPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_musa.html">Installation — MUSA</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../index.html">Welcome to SGLang-Omni</a></li>
+<li class="toctree-l1"><a class="reference internal" href="apiserver_quickstart.html">Quickstart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="examples.html">Examples</a></li>
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">Troubleshooting</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Other Platforms</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="installation_apple_silicon.html">Apple Silicon</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../mlx/index.html">Native MLX / Voxt</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_npu.html">Ascend NPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_xpu.html">Intel XPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_cpu.html">Intel CPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_musa.html">Moore Threads MUSA</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Cookbook</span></p>
 <ul class="nav bd-sidenav">
@@ -307,10 +316,6 @@
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/omni_router.html">SGLang-Omni Router</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/mps_dp.html">Same-GPU Data Parallelism with CUDA MPS</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/native_media_routes.html">Native Media Routes</a></li>
-</ul>
-<p aria-level="2" class="caption" role="heading"><span class="caption-text">MLX</span></p>
-<ul class="nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="../mlx/index.html">MLX Path</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Reference</span></p>
 <ul class="nav bd-sidenav">
@@ -582,12 +587,15 @@
 <h1>Troubleshooting<a class="headerlink" href="#troubleshooting" title="Link to this heading">#</a></h1>
 <section id="regional-pypi-mirrors">
 <h2>Regional PyPI mirrors<a class="headerlink" href="#regional-pypi-mirrors" title="Link to this heading">#</a></h2>
-<p>A configured PyPI mirror may be missing a required package version or lag
+<p><strong>Symptom.</strong> A configured PyPI mirror may be missing a required package version or lag
 behind PyPI. For example, if the mirror does not provide
 <code class="docutils literal notranslate"><span class="pre">mooncake-transfer-engine-cuda13&gt;=0.3.10</span></code>, installation fails to resolve the
-requirement in <a class="reference download internal" download="" href="../_downloads/079962c730e6e61f3f9971f670e9cf70/pyproject.toml"><span class="xref download myst"><code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code></span></a>. This is an index
+requirement in <a class="reference external" href="https://github.com/sgl-project/sglang-omni/blob/main/pyproject.toml"><code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code></a>. This is an index
 availability issue; the mirror does not have the required version.</p>
-<p>Download that one wheel from PyPI, then use <code class="docutils literal notranslate"><span class="pre">--find-links</span></code> while keeping your
+<p><strong>Check.</strong> If uv reports that the requirement was not found in the package
+registry, check the configured mirror for the required wheel. To see whether
+PyPI has a wheel for your environment, use the download command below.</p>
+<p><strong>Fix.</strong> Download that one wheel from PyPI, then use <code class="docutils literal notranslate"><span class="pre">--find-links</span></code> while keeping your
 existing uv mirror configuration for the other packages. With the Python 3.12
 virtual environment from the <a class="reference internal" href="installation.html#install-from-source"><span class="std std-ref">installation guide</span></a>
 active, install pip into it so the downloaded wheel matches that environment:</p>
@@ -600,7 +608,13 @@ uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </s
 </section>
 <section id="expected-output-of-uv-pip-check">
 <h2>Expected output of uv pip check<a class="headerlink" href="#expected-output-of-uv-pip-check" title="Link to this heading">#</a></h2>
-<p><code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">pip</span> <span class="pre">check</span></code> and <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">pip</span> <span class="pre">check</span></code> compare the requirements every installed distribution declares with the versions installed next to it. The CUDA install paths leave a few declared ranges unmet on purpose, so the lines in this table are expected and the code they concern runs. Any other line is a real conflict and worth reporting.</p>
+<p><strong>Symptom.</strong> A CUDA installation finishes, but the dependency check reports
+version or platform conflicts.</p>
+<p><strong>Check.</strong> With the SGLang-Omni environment active, run:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>pip<span class="w"> </span>check
+</pre></div>
+</div>
+<p><strong>Interpret the output.</strong> <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">pip</span> <span class="pre">check</span></code> and <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">-m</span> <span class="pre">pip</span> <span class="pre">check</span></code> compare the requirements every installed distribution declares with the versions installed next to it. The CUDA install paths leave a few declared ranges unmet on purpose, so the lines in this table are expected and the code they concern runs. Investigate any other line before serving a model.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Install path</p></th>
@@ -658,20 +672,20 @@ python<span class="w"> </span>.github/scripts/check_omni_installed_requirements.
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="installation_musa.html"
+       href="examples.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Installation — MUSA</p>
+        <p class="prev-next-title">Examples</p>
       </div>
     </a>
     <a class="right-next"
-       href="../cookbook/companies/qwen.html"
+       href="installation_apple_silicon.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Qwen</p>
+        <p class="prev-next-title">Installation — Apple Silicon</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>

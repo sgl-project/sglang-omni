@@ -51,14 +51,14 @@
     <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'get_started/installation';</script>
     <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
-    <script src="../_static/js/sidebar_company_toggle.js?v=1646c162"></script>
+    <script src="../_static/js/sidebar_company_toggle.js?v=7622d557"></script>
     <script src="../_static/js/qwen3_omni_server_generator.js?v=d7738e8a"></script>
     <script src="../_static/js/ming_omni_server_generator.js?v=7979a72f"></script>
     <link rel="icon" href="../_static/logo.ico"/>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Installation — Apple Silicon" href="installation_apple_silicon.html" />
-    <link rel="prev" title="SGLang-Omni" href="../index.html" />
+    <link rel="next" title="Examples" href="examples.html" />
+    <link rel="prev" title="Quickstart" href="apiserver_quickstart.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.2.0" />
@@ -207,13 +207,22 @@
     <div class="bd-toc-item navbar-nav active">
         <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
 <ul class="current nav bd-sidenav">
-<li class="toctree-l1 current active"><a class="current reference internal" href="#">Installation — CUDA</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_apple_silicon.html">Installation — Apple Silicon</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_npu.html">Installation — NPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_xpu.html">Installation — Intel XPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_cpu.html">Installation — Intel CPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_musa.html">Installation — MUSA</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../index.html">Welcome to SGLang-Omni</a></li>
+<li class="toctree-l1"><a class="reference internal" href="apiserver_quickstart.html">Quickstart</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="examples.html">Examples</a></li>
 <li class="toctree-l1"><a class="reference internal" href="troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Other Platforms</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="installation_apple_silicon.html">Apple Silicon</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../mlx/index.html">Native MLX / Voxt</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_npu.html">Ascend NPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_xpu.html">Intel XPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_cpu.html">Intel CPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_musa.html">Moore Threads MUSA</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Cookbook</span></p>
 <ul class="nav bd-sidenav">
@@ -307,10 +316,6 @@
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/omni_router.html">SGLang-Omni Router</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/mps_dp.html">Same-GPU Data Parallelism with CUDA MPS</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/native_media_routes.html">Native Media Routes</a></li>
-</ul>
-<p aria-level="2" class="caption" role="heading"><span class="caption-text">MLX</span></p>
-<ul class="nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="../mlx/index.html">MLX Path</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Reference</span></p>
 <ul class="nav bd-sidenav">
@@ -565,12 +570,15 @@
             </div>
             <nav aria-label="Page">
                 <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#option-a-docker-recommended">Option A: Docker (recommended)</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#option-b-manual-install">Option B: Manual install</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#install-from-source">Install from source</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#other-platforms">Other platforms</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#install-sglang-omni">Install SGLang-Omni</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#docker-recommended">Docker (recommended)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#pip-uv">pip / uv</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#from-source">From source</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#other-platforms">Other platforms</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#next-steps">Next steps</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#troubleshooting">Troubleshooting</a></li>
 </ul>
             </nav>
         </div>
@@ -584,20 +592,40 @@
                   
   <section class="tex2jax_ignore mathjax_ignore" id="installation-cuda">
 <h1>Installation — CUDA<a class="headerlink" href="#installation-cuda" title="Link to this heading">#</a></h1>
-<p>Current stable release: <strong>v0.2.0</strong> on <a class="reference external" href="https://pypi.org/project/sglang-omni/">PyPI</a>.</p>
-<p>This page covers NVIDIA CUDA. Docker is recommended — UCX, flash-attn, SGLang,
-and CUDA are prebuilt.</p>
-<section id="option-a-docker-recommended">
-<h2>Option A: Docker (recommended)<a class="headerlink" href="#option-a-docker-recommended" title="Link to this heading">#</a></h2>
-<p><strong>1. Pull the image</strong></p>
+<p>Install SGLang-Omni on Linux with an NVIDIA GPU. Docker is recommended.
+The current stable release is <a class="reference external" href="https://pypi.org/project/sglang-omni/">v0.2.0 on PyPI</a>.</p>
+<section id="other-platforms">
+<h2>Other platforms<a class="headerlink" href="#other-platforms" title="Link to this heading">#</a></h2>
+<p>Using a different device? Choose the installation guide for your hardware:
+<a class="reference internal" href="installation_apple_silicon.html"><span class="std std-doc">Apple Silicon</span></a>,
+<a class="reference internal" href="installation_npu.html"><span class="std std-doc">Ascend NPU</span></a>,
+<a class="reference internal" href="installation_xpu.html"><span class="std std-doc">Intel XPU</span></a>,
+<a class="reference internal" href="installation_cpu.html"><span class="std std-doc">Intel CPU</span></a>, and
+<a class="reference internal" href="installation_musa.html"><span class="std std-doc">Moore Threads MUSA</span></a>.</p>
+</section>
+<section id="install-sglang-omni">
+<h2>Install SGLang-Omni<a class="headerlink" href="#install-sglang-omni" title="Link to this heading">#</a></h2>
+<p>Choose <a class="reference internal" href="#docker-recommended"><span class="std std-ref">Docker</span></a> for a prebuilt CUDA environment,
+<a class="reference internal" href="#pip-uv"><span class="std std-ref">pip / uv</span></a> to install into your own environment, or
+<a class="reference internal" href="#from-source"><span class="std std-ref">From source</span></a> to work on the code.</p>
+<section id="docker-recommended">
+<span id="option-a-docker-recommended"></span><h3>Docker (recommended)<a class="headerlink" href="#docker-recommended" title="Link to this heading">#</a></h3>
+<p><strong>Prerequisites.</strong> Use a CUDA-compatible NVIDIA driver, Docker, and the
+<a class="reference external" href="https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html">NVIDIA Container Toolkit</a>.
+The image includes UCX, flash-attn, SGLang, and CUDA.</p>
+<p><strong>Pull the image.</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>docker<span class="w"> </span>pull<span class="w"> </span>hongccc/sglang-omni:dev
 </pre></div>
 </div>
-<p>Only the <code class="docutils literal notranslate"><span class="pre">dev</span></code> tag is published today. It moves with main — pin by digest for reproducible runs:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>docker<span class="w"> </span>pull<span class="w"> </span>lmsysorg/sglang-omni@sha256:&lt;digest&gt;
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">:dev</span></code> tag moves with <code class="docutils literal notranslate"><span class="pre">main</span></code>. For reproducible runs, use the pulled image’s
+repository digest in place of <code class="docutils literal notranslate"><span class="pre">hongccc/sglang-omni:dev</span></code> in both the pull and run commands:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>docker<span class="w"> </span>image<span class="w"> </span>inspect<span class="w"> </span>--format<span class="w"> </span><span class="s1">'{{index .RepoDigests 0}}'</span><span class="w"> </span>hongccc/sglang-omni:dev
 </pre></div>
 </div>
-<p><strong>2. Run the container</strong></p>
+</div>
+<p><strong>Start a container.</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>docker<span class="w"> </span>run<span class="w"> </span>-it<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--shm-size<span class="w"> </span>32g<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--gpus<span class="w"> </span>all<span class="w"> </span><span class="se">\</span>
@@ -608,7 +636,7 @@ and CUDA are prebuilt.</p>
 <span class="w">    </span>/bin/zsh
 </pre></div>
 </div>
-<p><strong>3. Install <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> inside the container</strong></p>
+<p><strong>Install SGLang-Omni</strong> inside the container.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>--upgrade<span class="w"> </span>pip
 pip<span class="w"> </span>install<span class="w"> </span>uv
 
@@ -619,31 +647,39 @@ uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </s
 </pre></div>
 </div>
 </section>
-<section id="option-b-manual-install">
-<h2>Option B: Manual install<a class="headerlink" href="#option-b-manual-install" title="Link to this heading">#</a></h2>
-<p>Build prerequisites first:</p>
+<section id="pip-uv">
+<span id="option-b-manual-install"></span><h3>pip / uv<a class="headerlink" href="#pip-uv" title="Link to this heading">#</a></h3>
+<p><strong>Prerequisites.</strong> Use a CUDA environment with glibc 2.34 or newer and install
+these build dependencies first:</p>
 <ul class="simple">
 <li><p><strong>UCX 1.20.x</strong> with CUDA + verbs — <a class="reference external" href="https://github.com/openucx/ucx">upstream</a>, or reuse flags in <a class="reference download internal" download="" href="../_downloads/9c6d2dd30e172995ff9466799d6f77ed/Dockerfile"><span class="xref download myst"><code class="docutils literal notranslate"><span class="pre">docker/Dockerfile</span></code></span></a>.</p></li>
 <li><p><strong>flash-attn-4</strong> <code class="docutils literal notranslate"><span class="pre">&gt;=4.0.0b18</span></code>, matching <code class="docutils literal notranslate"><span class="pre">torch==2.14.1</span></code> and SGLang 0.5.23’s <code class="docutils literal notranslate"><span class="pre">nvidia-cutlass-dsl</span></code> 4.8.0 pin.</p></li>
 </ul>
-<p>Then:</p>
+<p><strong>Prepare the environment.</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>--upgrade<span class="w"> </span>pip
 pip<span class="w"> </span>install<span class="w"> </span>uv
 
 uv<span class="w"> </span>venv<span class="w"> </span>.venv<span class="w"> </span>-p<span class="w"> </span><span class="m">3</span>.12
 <span class="nb">source</span><span class="w"> </span>.venv/bin/activate
-
-uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>--prerelease<span class="o">=</span>allow<span class="w"> </span><span class="s2">"sglang-omni==0.2.0"</span>
 </pre></div>
 </div>
-<p>Latest on the index without a pin: <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">pip</span> <span class="pre">install</span> <span class="pre">--prerelease=allow</span> <span class="pre">sglang-omni</span></code>.</p>
-<section id="install-from-source">
-<h3>Install from source<a class="headerlink" href="#install-from-source" title="Link to this heading">#</a></h3>
-<p>For development or unreleased changes:</p>
+<p><strong>Install SGLang-Omni.</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>--prerelease<span class="o">=</span>allow<span class="w"> </span><span class="s2">"sglang-omni==0.2.0"</span>
+</pre></div>
+</div>
+<p>To install the latest version on the index, run <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">pip</span> <span class="pre">install</span> <span class="pre">--prerelease=allow</span> <span class="pre">sglang-omni</span></code>.</p>
+</section>
+<section id="from-source">
+<span id="install-from-source"></span><h3>From source<a class="headerlink" href="#from-source" title="Link to this heading">#</a></h3>
+<p>Use this path for development or unreleased changes. Start with the
+<a class="reference internal" href="#pip-uv"><span class="std std-ref">pip / uv prerequisites</span></a>.</p>
+<p><strong>Get the source.</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>git@github.com:sgl-project/sglang-omni.git
 <span class="nb">cd</span><span class="w"> </span>sglang-omni
-
-pip<span class="w"> </span>install<span class="w"> </span>--upgrade<span class="w"> </span>pip
+</pre></div>
+</div>
+<p><strong>Install in editable mode.</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>--upgrade<span class="w"> </span>pip
 pip<span class="w"> </span>install<span class="w"> </span>uv
 
 uv<span class="w"> </span>venv<span class="w"> </span>.venv<span class="w"> </span>-p<span class="w"> </span><span class="m">3</span>.12
@@ -652,17 +688,18 @@ uv<span class="w"> </span>venv<span class="w"> </span>.venv<span class="w"> </sp
 uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>--prerelease<span class="o">=</span>allow<span class="w"> </span>-v<span class="w"> </span>-e<span class="w"> </span>.<span class="w">   </span><span class="c1"># drop -e for a non-editable install</span>
 </pre></div>
 </div>
-<p>For installation problems, see <a class="reference internal" href="troubleshooting.html"><span class="std std-doc">Troubleshooting</span></a>. <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">pip</span> <span class="pre">check</span></code> prints a few expected lines on CUDA installs, listed under <a class="reference internal" href="troubleshooting.html#expected-output-of-uv-pip-check"><span class="std std-ref">Expected output of uv pip check</span></a>.</p>
 </section>
 </section>
-<section id="other-platforms">
-<h2>Other platforms<a class="headerlink" href="#other-platforms" title="Link to this heading">#</a></h2>
-<p>For other platforms, use the dedicated pages:
-<a class="reference internal" href="installation_apple_silicon.html"><span class="std std-doc">Apple Silicon</span></a>,
-<a class="reference internal" href="installation_npu.html"><span class="std std-doc">Ascend NPU</span></a>,
-<a class="reference internal" href="installation_xpu.html"><span class="std std-doc">Intel XPU</span></a>,
-<a class="reference internal" href="installation_cpu.html"><span class="std std-doc">Intel CPU</span></a>, and
-<a class="reference internal" href="installation_musa.html"><span class="std std-doc">MUSA</span></a>.</p>
+<section id="next-steps">
+<h2>Next steps<a class="headerlink" href="#next-steps" title="Link to this heading">#</a></h2>
+<p><a class="reference internal" href="apiserver_quickstart.html#install-and-start"><span class="std std-ref">Start the Qwen3-ASR server, send a request, and check the transcript</span></a>.
+For model-specific configuration and other request formats, see the
+<a class="reference internal" href="../cookbook/qwen3_asr.html"><span class="std std-doc">Qwen3-ASR Cookbook</span></a>.</p>
+</section>
+<section id="troubleshooting">
+<h2>Troubleshooting<a class="headerlink" href="#troubleshooting" title="Link to this heading">#</a></h2>
+<p>See <a class="reference internal" href="troubleshooting.html"><span class="std std-doc">Troubleshooting</span></a> for installation errors. Compare
+<code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">pip</span> <span class="pre">check</span></code> output against the <a class="reference internal" href="troubleshooting.html#expected-output-of-uv-pip-check"><span class="std std-ref">expected CUDA dependency messages</span></a>.</p>
 </section>
 </section>
 
@@ -678,20 +715,20 @@ uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </s
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="../index.html"
+       href="apiserver_quickstart.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">SGLang-Omni</p>
+        <p class="prev-next-title">Quickstart</p>
       </div>
     </a>
     <a class="right-next"
-       href="installation_apple_silicon.html"
+       href="examples.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Installation — Apple Silicon</p>
+        <p class="prev-next-title">Examples</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -713,12 +750,15 @@ uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </s
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#option-a-docker-recommended">Option A: Docker (recommended)</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#option-b-manual-install">Option B: Manual install</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#install-from-source">Install from source</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#other-platforms">Other platforms</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#install-sglang-omni">Install SGLang-Omni</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#docker-recommended">Docker (recommended)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#pip-uv">pip / uv</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#from-source">From source</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#other-platforms">Other platforms</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#next-steps">Next steps</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#troubleshooting">Troubleshooting</a></li>
 </ul>
   </nav></div>
 

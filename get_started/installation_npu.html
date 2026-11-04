@@ -51,14 +51,14 @@
     <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'get_started/installation_npu';</script>
     <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
-    <script src="../_static/js/sidebar_company_toggle.js?v=1646c162"></script>
+    <script src="../_static/js/sidebar_company_toggle.js?v=7622d557"></script>
     <script src="../_static/js/qwen3_omni_server_generator.js?v=d7738e8a"></script>
     <script src="../_static/js/ming_omni_server_generator.js?v=7979a72f"></script>
     <link rel="icon" href="../_static/logo.ico"/>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
     <link rel="next" title="Installation — Intel XPU" href="installation_xpu.html" />
-    <link rel="prev" title="Installation — Apple Silicon" href="installation_apple_silicon.html" />
+    <link rel="prev" title="MLX Path" href="../mlx/index.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.2.0" />
@@ -206,14 +206,23 @@
         <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
     <div class="bd-toc-item navbar-nav active">
         <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
-<ul class="current nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="installation.html">Installation — CUDA</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_apple_silicon.html">Installation — Apple Silicon</a></li>
-<li class="toctree-l1 current active"><a class="current reference internal" href="#">Installation — NPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_xpu.html">Installation — Intel XPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_cpu.html">Installation — Intel CPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_musa.html">Installation — MUSA</a></li>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../index.html">Welcome to SGLang-Omni</a></li>
+<li class="toctree-l1"><a class="reference internal" href="apiserver_quickstart.html">Quickstart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="examples.html">Examples</a></li>
 <li class="toctree-l1"><a class="reference internal" href="troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Other Platforms</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="installation_apple_silicon.html">Apple Silicon</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../mlx/index.html">Native MLX / Voxt</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Ascend NPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_xpu.html">Intel XPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_cpu.html">Intel CPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_musa.html">Moore Threads MUSA</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Cookbook</span></p>
 <ul class="nav bd-sidenav">
@@ -307,10 +316,6 @@
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/omni_router.html">SGLang-Omni Router</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/mps_dp.html">Same-GPU Data Parallelism with CUDA MPS</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/native_media_routes.html">Native Media Routes</a></li>
-</ul>
-<p aria-level="2" class="caption" role="heading"><span class="caption-text">MLX</span></p>
-<ul class="nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="../mlx/index.html">MLX Path</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Reference</span></p>
 <ul class="nav bd-sidenav">
@@ -566,19 +571,23 @@
             <nav aria-label="Page">
                 <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#option-a-docker-recommended">Option A: Docker (recommended)</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#docker-recommended">Docker (recommended)</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#a3-image-installation">A3 image installation</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#launch-the-server">Launch the server</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#a2-910b-image-installation">A2 / 910B image installation</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#option-b-manual-install">Option B: Manual install</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id1">Prerequisites</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#manual-install">Manual install</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#manual-installation-prerequisites">Manual installation prerequisites</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#install-sglang-omni">Install sglang-omni</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchcodec-installation-for-tts-models">TorchCodec installation for TTS models</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#verify-the-installation">Verify the installation</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#launch-the-server">Launch the server</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#qwen3-asr-graph-execution">Qwen3-ASR graph execution</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#model-notes">Model notes</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchcodec-installation-for-tts-models">TorchCodec installation for TTS models</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#minicpm-o">MiniCPM-o</a></li>
 </ul>
 </li>
@@ -595,6 +604,8 @@
                   
   <section class="tex2jax_ignore mathjax_ignore" id="installation-npu">
 <h1>Installation — NPU<a class="headerlink" href="#installation-npu" title="Link to this heading">#</a></h1>
+<p>Install SGLang-Omni on ARM64 Linux with Ascend A3 or A2 / 910B devices.
+Choose the Docker image for your device or install into an existing Ascend environment.</p>
 <section id="prerequisites">
 <h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
 <p>Both installation methods require Ascend host drivers and firmware compatible
@@ -607,11 +618,12 @@ the image tag.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>npu-smi<span class="w"> </span>info
 </pre></div>
 </div>
+<p><a id="option-a-docker-recommended"></a></p>
 </section>
-<section id="option-a-docker-recommended">
-<h2>Option A: Docker (recommended)<a class="headerlink" href="#option-a-docker-recommended" title="Link to this heading">#</a></h2>
+<section id="docker-recommended">
+<h2>Docker (recommended)<a class="headerlink" href="#docker-recommended" title="Link to this heading">#</a></h2>
 <p>The ARM64 image includes SGLang-Omni source, the SGLang/CANN/PyTorch runtime
-selected by <a class="reference download internal" download="" href="../_downloads/0d99bcc0f40f47f83d89a01de5d3b447/pyproject_npu.toml"><span class="xref download myst"><code class="docutils literal notranslate"><span class="pre">pyproject_npu.toml</span></code></span></a>, and common audio
+selected by <a class="reference external" href="https://github.com/sgl-project/sglang-omni/blob/main/pyproject_npu.toml"><code class="docutils literal notranslate"><span class="pre">pyproject_npu.toml</span></code></a>, and common audio
 dependencies. Model weights, host drivers and TorchCodec are not included.
 Model support on NPU and optional dependencies must be checked separately.</p>
 <section id="a3-image-installation">
@@ -666,8 +678,9 @@ docker<span class="w"> </span>run<span class="w"> </span>--rm<span class="w"> </
 <p>When selecting another device, update both <code class="docutils literal notranslate"><span class="pre">/dev/davinci0</span></code> and
 <code class="docutils literal notranslate"><span class="pre">ASCEND_RT_VISIBLE_DEVICES</span></code>. Device indices in the pipeline configuration are
 relative to the visible devices (<code class="docutils literal notranslate"><span class="pre">gpu:</span> <span class="pre">0</span></code> selects the first visible device).</p>
-<details>
-<summary>A2 image installation details (click)</summary>
+</section>
+<section id="a2-910b-image-installation">
+<h3>A2 / 910B image installation<a class="headerlink" href="#a2-910b-image-installation" title="Link to this heading">#</a></h3>
 <p>Use an ARM64 Linux host with Docker and Ascend A2 / 910B devices.</p>
 <p><strong>1. Pull the image</strong></p>
 <p>Use <code class="docutils literal notranslate"><span class="pre">v&lt;version&gt;-cann9.0.0-910b</span></code> for a release, or
@@ -709,33 +722,22 @@ docker<span class="w"> </span>run<span class="w"> </span>--rm<span class="w"> </
 <p>When selecting another device, update both <code class="docutils literal notranslate"><span class="pre">/dev/davinci0</span></code> and
 <code class="docutils literal notranslate"><span class="pre">ASCEND_RT_VISIBLE_DEVICES</span></code>. Pipeline device indices are relative to the
 visible devices (<code class="docutils literal notranslate"><span class="pre">gpu:</span> <span class="pre">0</span></code> selects the first visible device).</p>
-</details>
-</section>
-<section id="launch-the-server">
-<h3>Launch the server<a class="headerlink" href="#launch-the-server" title="Link to this heading">#</a></h3>
-<p>The runtime is already installed. Skip the source installation below and do
-not run the TorchCodec stack-upgrade script inside this image.
-Qwen3-TTS dependencies are included; skip its cookbook’s dependency installation.
-Continue with the <a class="reference internal" href="apiserver_quickstart.html"><span class="std std-doc">API Server Quickstart</span></a> to launch
-<code class="docutils literal notranslate"><span class="pre">sgl-omni</span> <span class="pre">serve</span></code> and send requests. Use the container model path under <code class="docutils literal notranslate"><span class="pre">/models</span></code>
-and pass the selected model’s NPU pipeline configuration with <code class="docutils literal notranslate"><span class="pre">--config</span></code> when
-required. Model-specific inputs belong in the corresponding cookbook, such as
-the <a class="reference internal" href="../cookbook/qwen3_tts.html"><span class="std std-doc">Qwen3-TTS guide</span></a>; GPU-specific configurations
-there should not be assumed to work unchanged on NPU.</p>
+<p><a id="option-b-manual-install"></a></p>
 </section>
 </section>
-<section id="option-b-manual-install">
-<h2>Option B: Manual install<a class="headerlink" href="#option-b-manual-install" title="Link to this heading">#</a></h2>
+<section id="manual-install">
+<h2>Manual install<a class="headerlink" href="#manual-install" title="Link to this heading">#</a></h2>
 <p>Install the Ascend software stack and NPU build of SGLang before installing
 <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code>. The helper script
-<a class="reference download internal" download="" href="../_downloads/47812adeb5aad40728a13ebdd72b804d/install_npu.sh"><span class="xref download myst"><code class="docutils literal notranslate"><span class="pre">install_npu.sh</span></code></span></a> installs only
+<a class="reference external" href="https://github.com/sgl-project/sglang-omni/blob/main/scripts/npu/install_npu.sh"><code class="docutils literal notranslate"><span class="pre">install_npu.sh</span></code></a> installs only
 <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> and the Python dependencies declared in
-<a class="reference download internal" download="" href="../_downloads/0d99bcc0f40f47f83d89a01de5d3b447/pyproject_npu.toml"><span class="xref download myst"><code class="docutils literal notranslate"><span class="pre">pyproject_npu.toml</span></code></span></a>, using the
+<a class="reference external" href="https://github.com/sgl-project/sglang-omni/blob/main/pyproject_npu.toml"><code class="docutils literal notranslate"><span class="pre">pyproject_npu.toml</span></code></a>, using the
 same installation flow as Docker. Prepare
 FFmpeg, libsndfile and SoX separately, or pass <code class="docutils literal notranslate"><span class="pre">--install-system-deps</span></code> as root.
 The Ascend software stack and SGLang must already be installed.</p>
-<section id="id1">
-<h3>Prerequisites<a class="headerlink" href="#id1" title="Link to this heading">#</a></h3>
+<p><a id="id1"></a></p>
+<section id="manual-installation-prerequisites">
+<h3>Manual installation prerequisites<a class="headerlink" href="#manual-installation-prerequisites" title="Link to this heading">#</a></h3>
 <p>Select mutually compatible versions for your Ascend hardware by following the
 linked documentation. Python 3.11 is the verified configuration.</p>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -779,7 +781,7 @@ linked documentation. Python 3.11 is the verified configuration.</p>
 <td><p><a class="reference external" href="https://docs.sglang.io/docs/hardware-platforms/ascend-npus/ascend_npu">Official documentation</a></p></td>
 </tr>
 <tr class="row-odd"><td><p>SGLang for NPU</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">sglang-version</span></code> in <a class="reference download internal" download="" href="../_downloads/0d99bcc0f40f47f83d89a01de5d3b447/pyproject_npu.toml"><span class="xref download myst"><code class="docutils literal notranslate"><span class="pre">pyproject_npu.toml</span></code></span></a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">sglang-version</span></code> in <a class="reference external" href="https://github.com/sgl-project/sglang-omni/blob/main/pyproject_npu.toml"><code class="docutils literal notranslate"><span class="pre">pyproject_npu.toml</span></code></a></p></td>
 <td><p>Yes</p></td>
 <td><p>Yes</p></td>
 <td><p><a class="reference external" href="https://docs.sglang.io/docs/hardware-platforms/ascend-npus/ascend_npu">Official documentation</a></p></td>
@@ -814,9 +816,38 @@ small NPU matrix multiplication. Run <code class="docutils literal notranslate">
 for optional extras, non-editable installation, and environments where devices
 are intentionally not exposed during the build.</p>
 </section>
+</section>
+<section id="verify-the-installation">
+<h2>Verify the installation<a class="headerlink" href="#verify-the-installation" title="Link to this heading">#</a></h2>
+<p>Run these checks inside the container or the manual installation environment:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>npu-smi<span class="w"> </span>info
+python<span class="w"> </span>-c<span class="w"> </span><span class="s1">'import sglang_omni, torch, torch_npu; print(torch.npu.is_available())'</span>
+sgl-omni<span class="w"> </span>--help
+</pre></div>
+</div>
+<p>Check that <code class="docutils literal notranslate"><span class="pre">npu-smi</span></code> lists your device, the import prints <code class="docutils literal notranslate"><span class="pre">True</span></code>, and the CLI
+prints its help.</p>
+<section id="launch-the-server">
+<h3>Launch the server<a class="headerlink" href="#launch-the-server" title="Link to this heading">#</a></h3>
+<p>Use the NPU configuration for your model. For Docker, use the container model
+path under <code class="docutils literal notranslate"><span class="pre">/models</span></code>. See the <a class="reference internal" href="apiserver_quickstart.html#start-the-server"><span class="std std-ref">API server reference</span></a>
+for CLI flags and the <a class="reference internal" href="#model-notes"><span class="std std-ref">model notes</span></a> below for NPU examples and requirements.</p>
+</section>
+</section>
+<section id="qwen3-asr-graph-execution">
+<h2>Qwen3-ASR graph execution<a class="headerlink" href="#qwen3-asr-graph-execution" title="Link to this heading">#</a></h2>
+<p>Qwen3-ASR pre-LM encoding and language-model execution submit work on separate NPU streams. With encoder, decode, or prefill graphs enabled, a shared Host task queue can couple those submission paths and cause stalls. Per-stream Host queues let each stream submit work independently; they do not replace device-stream synchronization.</p>
+<p>For normal pipeline launches, <code class="docutils literal notranslate"><span class="pre">PER_STREAM_QUEUE=1</span></code> is set by default before spawning the worker process. Leave <code class="docutils literal notranslate"><span class="pre">TASK_QUEUE_ENABLE</span></code> unset (its runtime default is <code class="docutils literal notranslate"><span class="pre">1</span></code>) or explicitly set it to <code class="docutils literal notranslate"><span class="pre">1</span></code>, and leave <code class="docutils literal notranslate"><span class="pre">ASCEND_LAUNCH_BLOCKING</span></code> unset or set it to <code class="docutils literal notranslate"><span class="pre">0</span></code> to retain asynchronous launches. Existing shell and pipeline environment settings take precedence over the default.</p>
+<p>When pre-LM encoding and any encoder, decode, or prefill graph backend are enabled on NPU, startup rejects incompatible queue or launch-blocking settings instead of silently overriding them. This check does not apply when pre-LM encoding is disabled or all three graph paths are disabled. For direct engine construction outside the pipeline launcher, configure these variables before initializing the NPU runtime; the engine validates them but does not supply the pipeline’s default.</p>
+<p>Use a torch_npu build that supports per-stream Host task queues. The feature is experimental and does not support process-level online recovery. Although per-stream queues support TaskQueue modes <code class="docutils literal notranslate"><span class="pre">1</span></code> and <code class="docutils literal notranslate"><span class="pre">2</span></code>, NPU graph capture rejects mode <code class="docutils literal notranslate"><span class="pre">2</span></code>; this graph configuration therefore requires mode <code class="docutils literal notranslate"><span class="pre">1</span></code>. Mode <code class="docutils literal notranslate"><span class="pre">0</span></code> disables the per-stream queues required by this path. Additional queue threads and cross-stream event ordering may add overhead. See the <a class="reference external" href="https://www.hiascend.com/document/detail/en/Pytorch/2610/devguide/fwfeatures/docs/en/framework_feature_guide_pytorch/stream_taskqueue_parallel_delivery.md">TorchNPU stream-level TaskQueue documentation</a> for runtime constraints.</p>
+</section>
+<section id="model-notes">
+<h2>Model notes<a class="headerlink" href="#model-notes" title="Link to this heading">#</a></h2>
 <section id="torchcodec-installation-for-tts-models">
 <h3>TorchCodec installation for TTS models<a class="headerlink" href="#torchcodec-installation-for-tts-models" title="Link to this heading">#</a></h3>
-<p>Models in the TTS models utilize <strong><code class="docutils literal notranslate"><span class="pre">torchcodec</span></code></strong> for high-efficiency, native-streaming audio decoding directly into PyTorch tensors.</p>
+<p>Some TTS models use <code class="docutils literal notranslate"><span class="pre">torchcodec</span></code> for audio decoding. The NPU Docker images
+already include the Qwen3-TTS dependencies; skip the Cookbook dependency
+installation and do not run this stack upgrade inside those containers.</p>
 <p>The helper script <code class="docutils literal notranslate"><span class="pre">scripts/npu/install_npu_torchcodec.sh</span></code> automatically installs:</p>
 <ul class="simple">
 <li><p><strong>Audio codec:</strong> <code class="docutils literal notranslate"><span class="pre">ffmpeg</span></code></p></li>
@@ -829,16 +860,6 @@ bash<span class="w"> </span>scripts/npu/install_npu_torchcodec.sh<span class="w"
 </pre></div>
 </div>
 </section>
-</section>
-<section id="qwen3-asr-graph-execution">
-<h2>Qwen3-ASR graph execution<a class="headerlink" href="#qwen3-asr-graph-execution" title="Link to this heading">#</a></h2>
-<p>Qwen3-ASR pre-LM encoding and language-model execution submit work on separate NPU streams. With encoder, decode, or prefill graphs enabled, a shared Host task queue can couple those submission paths and cause stalls. Per-stream Host queues let each stream submit work independently; they do not replace device-stream synchronization.</p>
-<p>For normal pipeline launches, <code class="docutils literal notranslate"><span class="pre">PER_STREAM_QUEUE=1</span></code> is set by default before spawning the worker process. Leave <code class="docutils literal notranslate"><span class="pre">TASK_QUEUE_ENABLE</span></code> unset (its runtime default is <code class="docutils literal notranslate"><span class="pre">1</span></code>) or explicitly set it to <code class="docutils literal notranslate"><span class="pre">1</span></code>, and leave <code class="docutils literal notranslate"><span class="pre">ASCEND_LAUNCH_BLOCKING</span></code> unset or set it to <code class="docutils literal notranslate"><span class="pre">0</span></code> to retain asynchronous launches. Existing shell and pipeline environment settings take precedence over the default.</p>
-<p>When pre-LM encoding and any encoder, decode, or prefill graph backend are enabled on NPU, startup rejects incompatible queue or launch-blocking settings instead of silently overriding them. This check does not apply when pre-LM encoding is disabled or all three graph paths are disabled. For direct engine construction outside the pipeline launcher, configure these variables before initializing the NPU runtime; the engine validates them but does not supply the pipeline’s default.</p>
-<p>Use a torch_npu build that supports per-stream Host task queues. The feature is experimental and does not support process-level online recovery. Although per-stream queues support TaskQueue modes <code class="docutils literal notranslate"><span class="pre">1</span></code> and <code class="docutils literal notranslate"><span class="pre">2</span></code>, NPU graph capture rejects mode <code class="docutils literal notranslate"><span class="pre">2</span></code>; this graph configuration therefore requires mode <code class="docutils literal notranslate"><span class="pre">1</span></code>. Mode <code class="docutils literal notranslate"><span class="pre">0</span></code> disables the per-stream queues required by this path. Additional queue threads and cross-stream event ordering may add overhead. See the <a class="reference external" href="https://www.hiascend.com/document/detail/en/Pytorch/2610/devguide/fwfeatures/docs/en/framework_feature_guide_pytorch/stream_taskqueue_parallel_delivery.md">TorchNPU stream-level TaskQueue documentation</a> for runtime constraints.</p>
-</section>
-<section id="model-notes">
-<h2>Model notes<a class="headerlink" href="#model-notes" title="Link to this heading">#</a></h2>
 <section id="minicpm-o">
 <h3>MiniCPM-o<a class="headerlink" href="#minicpm-o" title="Link to this heading">#</a></h3>
 <p>MiniCPM-o runs on Ascend 910 with its NPU pipeline configuration:</p>
@@ -869,12 +890,12 @@ fallback because torchcodec is not usable in NPU images. Validated on Ascend
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="installation_apple_silicon.html"
+       href="../mlx/index.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Installation — Apple Silicon</p>
+        <p class="prev-next-title">MLX Path</p>
       </div>
     </a>
     <a class="right-next"
@@ -905,19 +926,23 @@ fallback because torchcodec is not usable in NPU images. Validated on Ascend
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#option-a-docker-recommended">Option A: Docker (recommended)</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#docker-recommended">Docker (recommended)</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#a3-image-installation">A3 image installation</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#launch-the-server">Launch the server</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#a2-910b-image-installation">A2 / 910B image installation</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#option-b-manual-install">Option B: Manual install</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id1">Prerequisites</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#manual-install">Manual install</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#manual-installation-prerequisites">Manual installation prerequisites</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#install-sglang-omni">Install sglang-omni</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchcodec-installation-for-tts-models">TorchCodec installation for TTS models</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#verify-the-installation">Verify the installation</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#launch-the-server">Launch the server</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#qwen3-asr-graph-execution">Qwen3-ASR graph execution</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#model-notes">Model notes</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torchcodec-installation-for-tts-models">TorchCodec installation for TTS models</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#minicpm-o">MiniCPM-o</a></li>
 </ul>
 </li>

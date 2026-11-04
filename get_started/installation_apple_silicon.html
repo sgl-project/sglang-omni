@@ -51,14 +51,14 @@
     <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'get_started/installation_apple_silicon';</script>
     <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
-    <script src="../_static/js/sidebar_company_toggle.js?v=1646c162"></script>
+    <script src="../_static/js/sidebar_company_toggle.js?v=7622d557"></script>
     <script src="../_static/js/qwen3_omni_server_generator.js?v=d7738e8a"></script>
     <script src="../_static/js/ming_omni_server_generator.js?v=7979a72f"></script>
     <link rel="icon" href="../_static/logo.ico"/>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Installation — NPU" href="installation_npu.html" />
-    <link rel="prev" title="Installation — CUDA" href="installation.html" />
+    <link rel="next" title="MLX Path" href="../mlx/index.html" />
+    <link rel="prev" title="Troubleshooting" href="troubleshooting.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.2.0" />
@@ -206,14 +206,23 @@
         <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
     <div class="bd-toc-item navbar-nav active">
         <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
-<ul class="current nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="installation.html">Installation — CUDA</a></li>
-<li class="toctree-l1 current active"><a class="current reference internal" href="#">Installation — Apple Silicon</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_npu.html">Installation — NPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_xpu.html">Installation — Intel XPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_cpu.html">Installation — Intel CPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_musa.html">Installation — MUSA</a></li>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../index.html">Welcome to SGLang-Omni</a></li>
+<li class="toctree-l1"><a class="reference internal" href="apiserver_quickstart.html">Quickstart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="examples.html">Examples</a></li>
 <li class="toctree-l1"><a class="reference internal" href="troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Other Platforms</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1 current active has-children"><a class="current reference internal" href="#">Apple Silicon</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../mlx/index.html">Native MLX / Voxt</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_npu.html">Ascend NPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_xpu.html">Intel XPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_cpu.html">Intel CPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_musa.html">Moore Threads MUSA</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Cookbook</span></p>
 <ul class="nav bd-sidenav">
@@ -307,10 +316,6 @@
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/omni_router.html">SGLang-Omni Router</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/mps_dp.html">Same-GPU Data Parallelism with CUDA MPS</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/native_media_routes.html">Native Media Routes</a></li>
-</ul>
-<p aria-level="2" class="caption" role="heading"><span class="caption-text">MLX</span></p>
-<ul class="nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="../mlx/index.html">MLX Path</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Reference</span></p>
 <ul class="nav bd-sidenav">
@@ -565,7 +570,9 @@
             </div>
             <nav aria-label="Page">
                 <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#run-from-a-hosted-installer">Run from a hosted installer</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#install-with-the-hosted-installer">Install with the hosted installer</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#install-from-a-checkout">Install from a checkout</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#next-steps">Next steps</a></li>
 </ul>
             </nav>
@@ -581,47 +588,28 @@
   <section class="tex2jax_ignore mathjax_ignore" id="installation-apple-silicon">
 <h1>Installation — Apple Silicon<a class="headerlink" href="#installation-apple-silicon" title="Link to this heading">#</a></h1>
 <p><a id="macos-apple-silicon"></a></p>
-<p>Install the Python Torch/MPS path of <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> for Qwen3-ASR and Fun-ASR
-on macOS Apple Silicon (arm64) with <code class="docutils literal notranslate"><span class="pre">./install.sh</span></code>. CUDA users should follow
-the <a class="reference internal" href="installation.html"><span class="std std-doc">CUDA installation</span></a>.</p>
-<p>The native C++ MLX runtime under <code class="docutils literal notranslate"><span class="pre">sglang_omni_mlx/native/</span></code> has a separate build
-and run workflow. See the <a class="reference internal" href="../mlx/index.html"><span class="std std-doc">MLX path documentation</span></a>
-and the <a class="reference external" href="https://github.com/sgl-project/sglang-omni/blob/main/Voxt/backend/README.md">Voxt backend guide</a> for that path.</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/sgl-project/sglang-omni.git<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>sglang-omni
-./install.sh
-<span class="nb">source</span><span class="w"> </span>.venv-apple/bin/activate
-</pre></div>
+<p>Choose the runtime you want to use on Apple Silicon:</p>
+<ul class="simple">
+<li><p><strong>Torch MPS:</strong> Follow the <a class="reference internal" href="#prerequisites"><span class="std std-ref">installation steps on this page</span></a>
+to run Qwen3-ASR and Fun-ASR with PyTorch on macOS 14 or newer.</p></li>
+<li><p><strong>Native MLX / Voxt:</strong> The C++ runtime in <code class="docutils literal notranslate"><span class="pre">sglang_omni_mlx/native/</span></code> has its
+own build and run workflow. See the <a class="reference internal" href="../mlx/index.html"><span class="std std-doc">Native MLX / Voxt guide</span></a>
+and the <a class="reference external" href="https://github.com/sgl-project/sglang-omni/blob/main/Voxt/backend/README.md">Voxt backend guide</a>.</p></li>
+</ul>
+<p>For NVIDIA GPUs, see the <a class="reference internal" href="installation.html"><span class="std std-doc">CUDA installation</span></a>.</p>
+<div class="toctree-wrapper compound">
 </div>
-<p>The script is idempotent and creates (or reuses) <code class="docutils literal notranslate"><span class="pre">.venv-apple</span></code>, installs the
-Homebrew formulae <code class="docutils literal notranslate"><span class="pre">ffmpeg&#64;7</span></code> and <code class="docutils literal notranslate"><span class="pre">uv</span></code> (and <code class="docutils literal notranslate"><span class="pre">git</span></code> only when a working git is not
-already available), installs SGLang <code class="docutils literal notranslate"><span class="pre">v0.5.23</span></code> from source with its <code class="docutils literal notranslate"><span class="pre">all_mps</span></code>
-extra, and installs this checkout with <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">pip</span></code>. SGLang’s optional Rust
-extensions are not needed by this Apple Silicon path and are skipped.
-<code class="docutils literal notranslate"><span class="pre">ffmpeg&#64;7</span></code> is intentional: the installer pins one FFmpeg major, and
-<code class="docutils literal notranslate"><span class="pre">torchcodec==0.17.0</span></code> ships loaders for FFmpeg 4 through 9. At runtime, expose its libraries:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">DYLD_LIBRARY_PATH</span><span class="o">=</span><span class="s2">"</span><span class="k">$(</span>brew<span class="w"> </span>--prefix<span class="w"> </span>ffmpeg@7<span class="k">)</span><span class="s2">/lib</span><span class="si">${</span><span class="nv">DYLD_LIBRARY_PATH</span><span class="p">:+:</span><span class="nv">$DYLD_LIBRARY_PATH</span><span class="si">}</span><span class="s2">"</span>
-</pre></div>
-</div>
+<section id="prerequisites">
+<h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
 <p>Homebrew must be installed before running the script. If <code class="docutils literal notranslate"><span class="pre">brew</span></code> is missing, the
 script prints an error and exits; install it yourself from
 <a class="reference external" href="https://brew.sh">brew.sh</a>, then rerun. The installer never invokes <code class="docutils literal notranslate"><span class="pre">sudo</span></code> or
-Homebrew’s bootstrapper. Use <code class="docutils literal notranslate"><span class="pre">--non-interactive</span></code> (or <code class="docutils literal notranslate"><span class="pre">NONINTERACTIVE=1</span></code>) to
-disable Homebrew auto-update in CI, <code class="docutils literal notranslate"><span class="pre">SGLANG_OMNI_VENV=/path/to/venv</span></code> to choose a virtualenv, and
-<code class="docutils literal notranslate"><span class="pre">SGLANG_OMNI_EXTRAS=audar-tts,fun-cosyvoice3</span></code> to enable optional extras.
-The persistent SGLang source checkout defaults to
-<code class="docutils literal notranslate"><span class="pre">~/.cache/sglang-omni/sglang-v0.5.23</span></code> and can be changed with
-<code class="docutils literal notranslate"><span class="pre">SGLANG_SOURCE_DIR</span></code>. Slow or proxied networks can override the installer’s uv
-defaults with <code class="docutils literal notranslate"><span class="pre">UV_HTTP_TIMEOUT</span></code> and <code class="docutils literal notranslate"><span class="pre">UV_HTTP_RETRIES</span></code>.</p>
-<p>This path currently supports macOS 14 or newer on <code class="docutils literal notranslate"><span class="pre">arm64</span></code> only (the pinned
-<code class="docutils literal notranslate"><span class="pre">torch==2.14.1</span></code>, <code class="docutils literal notranslate"><span class="pre">torchvision==0.29.1</span></code> and <code class="docutils literal notranslate"><span class="pre">torchcodec==0.17.0</span></code> wheels are built
-for <code class="docutils literal notranslate"><span class="pre">macosx_14_0_arm64</span></code>) and is intended for the Apple-Silicon Qwen3-ASR
-Torch-MPS path and the
-<a class="reference internal" href="../cookbook/fun_asr.html#apple-silicon"><span class="std std-ref">Fun-ASR Torch/MPS path</span></a>.
-Common failures are a missing Homebrew/uv on <code class="docutils literal notranslate"><span class="pre">PATH</span></code>, an unavailable Python 3.12
-toolchain, or forgetting the <code class="docutils literal notranslate"><span class="pre">DYLD_LIBRARY_PATH</span></code> export when starting an audio
-server.</p>
-<section id="run-from-a-hosted-installer">
-<h2>Run from a hosted installer<a class="headerlink" href="#run-from-a-hosted-installer" title="Link to this heading">#</a></h2>
+Homebrew’s bootstrapper.</p>
+<p>The installer uses Python 3.12 and requires the macOS 14 or newer arm64 wheels
+for <code class="docutils literal notranslate"><span class="pre">torch==2.14.1</span></code>, <code class="docutils literal notranslate"><span class="pre">torchvision==0.29.1</span></code>, and <code class="docutils literal notranslate"><span class="pre">torchcodec==0.17.0</span></code>.</p>
+</section>
+<section id="install-with-the-hosted-installer">
+<span id="run-from-a-hosted-installer"></span><h2>Install with the hosted installer<a class="headerlink" href="#install-with-the-hosted-installer" title="Link to this heading">#</a></h2>
 <p>The script also supports a downloaded or <code class="docutils literal notranslate"><span class="pre">curl</span> <span class="pre">|</span> <span class="pre">bash</span></code> invocation: when it is
 not inside an sglang-omni checkout, it clones the repository specified by
 <code class="docutils literal notranslate"><span class="pre">SGLANG_OMNI_REPO</span></code> and <code class="docutils literal notranslate"><span class="pre">SGLANG_OMNI_REF</span></code> into the cache and installs that
@@ -644,8 +632,36 @@ use it only when that trade-off is acceptable:</p>
 <code class="docutils literal notranslate"><span class="pre">~/.cache/sglang-omni/sglang-omni-&lt;ref&gt;</span></code> by default; override it with
 <code class="docutils literal notranslate"><span class="pre">SGLANG_OMNI_PROJECT_DIR</span></code>.</p>
 </section>
+<section id="install-from-a-checkout">
+<h2>Install from a checkout<a class="headerlink" href="#install-from-a-checkout" title="Link to this heading">#</a></h2>
+<p>If you want to work from a local checkout, run the same installer from the
+repository root:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/sgl-project/sglang-omni.git<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">cd</span><span class="w"> </span>sglang-omni
+./install.sh
+<span class="nb">source</span><span class="w"> </span>.venv-apple/bin/activate
+</pre></div>
+</div>
+<p>The script is idempotent and creates (or reuses) <code class="docutils literal notranslate"><span class="pre">.venv-apple</span></code>, installs the
+Homebrew formulae <code class="docutils literal notranslate"><span class="pre">ffmpeg&#64;7</span></code> and <code class="docutils literal notranslate"><span class="pre">uv</span></code> (and <code class="docutils literal notranslate"><span class="pre">git</span></code> only when a working git is not
+already available), installs SGLang <code class="docutils literal notranslate"><span class="pre">v0.5.23</span></code> from source with its <code class="docutils literal notranslate"><span class="pre">all_mps</span></code>
+extra, and installs this checkout with <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">pip</span></code>. SGLang’s optional Rust
+extensions are not needed by this Apple Silicon path and are skipped.</p>
+<p>Use <code class="docutils literal notranslate"><span class="pre">--non-interactive</span></code> (or <code class="docutils literal notranslate"><span class="pre">NONINTERACTIVE=1</span></code>) to
+disable Homebrew auto-update in CI, <code class="docutils literal notranslate"><span class="pre">SGLANG_OMNI_VENV=/path/to/venv</span></code> to choose a virtualenv, and
+<code class="docutils literal notranslate"><span class="pre">SGLANG_OMNI_EXTRAS=audar-tts,fun-cosyvoice3</span></code> to enable optional extras.
+The persistent SGLang source checkout defaults to
+<code class="docutils literal notranslate"><span class="pre">~/.cache/sglang-omni/sglang-v0.5.23</span></code> and can be changed with
+<code class="docutils literal notranslate"><span class="pre">SGLANG_SOURCE_DIR</span></code>. Slow or proxied networks can override the installer’s uv
+defaults with <code class="docutils literal notranslate"><span class="pre">UV_HTTP_TIMEOUT</span></code> and <code class="docutils literal notranslate"><span class="pre">UV_HTTP_RETRIES</span></code>.</p>
+</section>
 <section id="next-steps">
 <h2>Next steps<a class="headerlink" href="#next-steps" title="Link to this heading">#</a></h2>
+<p>Activate the environment printed by the installer if it is not already active.</p>
+<p><code class="docutils literal notranslate"><span class="pre">ffmpeg&#64;7</span></code> is intentional: the installer pins one FFmpeg major, and
+<code class="docutils literal notranslate"><span class="pre">torchcodec==0.17.0</span></code> ships loaders for FFmpeg 4 through 9. At runtime, expose its libraries:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">DYLD_LIBRARY_PATH</span><span class="o">=</span><span class="s2">"</span><span class="k">$(</span>brew<span class="w"> </span>--prefix<span class="w"> </span>ffmpeg@7<span class="k">)</span><span class="s2">/lib</span><span class="si">${</span><span class="nv">DYLD_LIBRARY_PATH</span><span class="p">:+:</span><span class="nv">$DYLD_LIBRARY_PATH</span><span class="si">}</span><span class="s2">"</span>
+</pre></div>
+</div>
 <ul class="simple">
 <li><p><a class="reference internal" href="../cookbook/qwen3_asr.html#apple-silicon"><span class="std std-ref">Run Qwen3-ASR with Torch/MPS</span></a>.</p></li>
 <li><p><a class="reference internal" href="../cookbook/fun_asr.html#apple-silicon"><span class="std std-ref">Run Fun-ASR with Torch/MPS</span></a>.</p></li>
@@ -665,20 +681,20 @@ use it only when that trade-off is acceptable:</p>
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="installation.html"
+       href="troubleshooting.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Installation — CUDA</p>
+        <p class="prev-next-title">Troubleshooting</p>
       </div>
     </a>
     <a class="right-next"
-       href="installation_npu.html"
+       href="../mlx/index.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Installation — NPU</p>
+        <p class="prev-next-title">MLX Path</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -700,7 +716,9 @@ use it only when that trade-off is acceptable:</p>
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#run-from-a-hosted-installer">Run from a hosted installer</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#install-with-the-hosted-installer">Install with the hosted installer</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#install-from-a-checkout">Install from a checkout</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#next-steps">Next steps</a></li>
 </ul>
   </nav></div>

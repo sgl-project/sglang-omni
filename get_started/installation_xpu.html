@@ -51,7 +51,7 @@
     <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'get_started/installation_xpu';</script>
     <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
-    <script src="../_static/js/sidebar_company_toggle.js?v=1646c162"></script>
+    <script src="../_static/js/sidebar_company_toggle.js?v=7622d557"></script>
     <script src="../_static/js/qwen3_omni_server_generator.js?v=d7738e8a"></script>
     <script src="../_static/js/ming_omni_server_generator.js?v=7979a72f"></script>
     <link rel="icon" href="../_static/logo.ico"/>
@@ -206,14 +206,23 @@
         <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
     <div class="bd-toc-item navbar-nav active">
         <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
-<ul class="current nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="installation.html">Installation — CUDA</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_apple_silicon.html">Installation — Apple Silicon</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_npu.html">Installation — NPU</a></li>
-<li class="toctree-l1 current active"><a class="current reference internal" href="#">Installation — Intel XPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_cpu.html">Installation — Intel CPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_musa.html">Installation — MUSA</a></li>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../index.html">Welcome to SGLang-Omni</a></li>
+<li class="toctree-l1"><a class="reference internal" href="apiserver_quickstart.html">Quickstart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="examples.html">Examples</a></li>
 <li class="toctree-l1"><a class="reference internal" href="troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Other Platforms</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="installation_apple_silicon.html">Apple Silicon</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../mlx/index.html">Native MLX / Voxt</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_npu.html">Ascend NPU</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Intel XPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_cpu.html">Intel CPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_musa.html">Moore Threads MUSA</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Cookbook</span></p>
 <ul class="nav bd-sidenav">
@@ -307,10 +316,6 @@
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/omni_router.html">SGLang-Omni Router</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/mps_dp.html">Same-GPU Data Parallelism with CUDA MPS</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/native_media_routes.html">Native Media Routes</a></li>
-</ul>
-<p aria-level="2" class="caption" role="heading"><span class="caption-text">MLX</span></p>
-<ul class="nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="../mlx/index.html">MLX Path</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Reference</span></p>
 <ul class="nav bd-sidenav">
@@ -565,15 +570,14 @@
             </div>
             <nav aria-label="Page">
                 <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#why-a-separate-pyproject">Why a separate pyproject</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#option-a-docker">Option A: Docker</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#option-b-install-into-an-existing-xpu-env-recommended-here">Option B: Install into an existing XPU env (recommended here)</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#docker">Docker</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#install-into-an-existing-xpu-environment">Install into an existing XPU environment</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#sglang-installed-separately">SGLang (installed separately)</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#verify">Verify</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#serve">Serve</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#verify-the-installation">Verify the installation</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#serve-a-model">Serve a model</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#runtime-environment-important">Runtime environment (important)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#qwen3-asr-speech-to-text-single-xpu">Qwen3-ASR (speech-to-text, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#whisper-asr-speech-to-text-single-xpu">Whisper ASR (speech-to-text, single XPU)</a></li>
@@ -607,56 +611,40 @@
                   
   <section class="tex2jax_ignore mathjax_ignore" id="installation-intel-xpu">
 <h1>Installation — Intel XPU<a class="headerlink" href="#installation-intel-xpu" title="Link to this heading">#</a></h1>
-<p>Installs <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> for <strong>Intel GPUs (XPU)</strong>. The default
-<a class="reference internal" href="installation.html"><span class="std std-doc">installation</span></a> pins CUDA-only wheels and would clobber a <code class="docutils literal notranslate"><span class="pre">torch+xpu</span></code> stack.
-Mirroring upstream SGLang (<a class="reference external" href="https://docs.sglang.io/docs/hardware-platforms/xpu">Intel XPU docs</a>,
-<code class="docutils literal notranslate"><span class="pre">docker/xpu.Dockerfile</span></code>), the XPU path uses a <strong>separate <code class="docutils literal notranslate"><span class="pre">pyproject_xpu.toml</span></code></strong> plus the PyTorch
-XPU wheel index.</p>
-<section id="why-a-separate-pyproject">
-<h2>Why a separate pyproject<a class="headerlink" href="#why-a-separate-pyproject" title="Link to this heading">#</a></h2>
-<p><code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">-e</span> <span class="pre">.</span></code> resolves the CUDA <a class="reference download internal" download="" href="../_downloads/079962c730e6e61f3f9971f670e9cf70/pyproject.toml"><span class="xref download myst"><code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code></span></a>, whose torch
-family and CUDA-only wheels would replace the <code class="docutils literal notranslate"><span class="pre">+xpu</span></code> stack.
-<a class="reference download internal" download="" href="../_downloads/e6282636738987ea324fd398b24bcb06/pyproject_xpu.toml"><span class="xref download myst"><code class="docutils literal notranslate"><span class="pre">pyproject_xpu.toml</span></code></span></a> encodes the XPU replacements.</p>
-<p>Core deps cover the supported models (Qwen3-ASR / TTS / Omni / MiniMax Music 3, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, MiniCPM-o, Ming-Omni, Ming-Omni-TTS, Nemotron VoiceChat, PersonaPlex, AuK/AuK-Flash and dots.tts) plus the API server;
-<code class="docutils literal notranslate"><span class="pre">[eval]</span></code> adds SeedTTS/WER tooling and <code class="docutils literal notranslate"><span class="pre">[all]</span></code> aliases it. <code class="docutils literal notranslate"><span class="pre">[fun-cosyvoice3]</span></code> adds
-that model’s CosyVoice dependencies — see
-<a class="reference internal" href="#fun-cosyvoice3-text-to-speech-single-xpu"><span class="std std-ref">Fun-CosyVoice3</span></a>. ZONOS2 also serves here,
-but its DAC codec is not a core dep on any platform — see
-<a class="reference internal" href="#zonos2-moe-tts-single-xpu"><span class="std std-ref">ZONOS2</span></a> for the XPU-safe way to add it. Audar-TTS also
-serves here, on a SYCL build of llama.cpp that is not a core dep — see
-<a class="reference internal" href="#audar-tts-v1-turbo-arabic-tts-with-voice-cloning-single-xpu"><span class="std std-ref">Audar-TTS</span></a>. Other model
-families (S2-Pro, Voxtral-TTS) are CUDA-only and are not offered here.</p>
-<blockquote>
-<div><p><strong><code class="docutils literal notranslate"><span class="pre">--no-build-isolation</span></code> is required</strong> — without it pip emits a legacy in-tree
-<code class="docutils literal notranslate"><span class="pre">egg-info</span></code> instead of a PEP 660 editable install. The installer always passes it.
-Because of that pip does not install build requirements either, so this
-environment’s own <code class="docutils literal notranslate"><span class="pre">setuptools</span></code> must be <strong>≥ 77.0.0</strong>: older releases reject the
-PEP 639 license metadata with <code class="docutils literal notranslate"><span class="pre">invalid</span> <span class="pre">pyproject.toml</span> <span class="pre">config:</span> <span class="pre">`project.license`</span> </code>.
-The installer checks this before building; upgrade with
-<code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">-U</span> <span class="pre">'setuptools&gt;=77.0.0'</span></code>.</p>
-</div></blockquote>
-</section>
+<p>Install SGLang-Omni on Intel GPUs (XPU). For the upstream runtime, see the
+<a class="reference external" href="https://docs.sglang.io/docs/hardware-platforms/xpu">SGLang Intel XPU guide</a>.
+For NVIDIA GPUs, use the <a class="reference internal" href="installation.html"><span class="std std-doc">CUDA installation</span></a>.</p>
 <section id="prerequisites">
 <h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
 <ul class="simple">
 <li><p>Python 3.11 or 3.12, and an Intel GPU driver (<code class="docutils literal notranslate"><span class="pre">/dev/dri/renderD*</span></code> present).</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">setuptools</span></code> ≥ 77.0.0 in the target environment (see the note above).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">setuptools</span></code> ≥ 77.0.0 in the target environment for manual installation.</p></li>
 <li><p>The <strong>PyTorch XPU stack</strong> and an <strong>XPU SGLang build</strong> — reuse an existing working
 <code class="docutils literal notranslate"><span class="pre">torch+xpu</span></code> env if you have one. See <a class="reference internal" href="#runtime-environment-important"><span class="std std-ref">Runtime environment</span></a>
 for the oneAPI caveat.</p></li>
 </ul>
+<p><a id="option-a-docker"></a></p>
 </section>
-<section id="option-a-docker">
-<h2>Option A: Docker<a class="headerlink" href="#option-a-docker" title="Link to this heading">#</a></h2>
+<section id="docker">
+<h2>Docker<a class="headerlink" href="#docker" title="Link to this heading">#</a></h2>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>docker<span class="w"> </span>build<span class="w"> </span>-f<span class="w"> </span>docker/xpu.Dockerfile<span class="w"> </span>-t<span class="w"> </span>sglang-omni:xpu<span class="w"> </span>.
 docker<span class="w"> </span>run<span class="w"> </span>-it<span class="w"> </span>--device<span class="w"> </span>/dev/dri<span class="w"> </span>--shm-size<span class="w"> </span>32g<span class="w"> </span>--ipc<span class="w"> </span>host<span class="w"> </span>--network<span class="w"> </span>host<span class="w"> </span>sglang-omni:xpu
 </pre></div>
 </div>
 <p>Built on Intel Deep Learning Essentials with the <code class="docutils literal notranslate"><span class="pre">+xpu</span></code> torch wheels. It deliberately does <strong>not</strong>
 source oneAPI — see <a class="reference internal" href="#runtime-environment-important"><span class="std std-ref">Runtime environment</span></a>.</p>
+<p><a id="option-b-install-into-an-existing-xpu-env-recommended-here"></a></p>
 </section>
-<section id="option-b-install-into-an-existing-xpu-env-recommended-here">
-<h2>Option B: Install into an existing XPU env (recommended here)<a class="headerlink" href="#option-b-install-into-an-existing-xpu-env-recommended-here" title="Link to this heading">#</a></h2>
+<section id="install-into-an-existing-xpu-environment">
+<h2>Install into an existing XPU environment<a class="headerlink" href="#install-into-an-existing-xpu-environment" title="Link to this heading">#</a></h2>
+<p><a id="why-a-separate-pyproject"></a></p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>A plain editable install reads the CUDA <a class="reference external" href="https://github.com/sgl-project/sglang-omni/blob/main/pyproject.toml"><code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code></a>
+and can replace your <code class="docutils literal notranslate"><span class="pre">torch+xpu</span></code> stack. The helper uses <a class="reference external" href="https://github.com/sgl-project/sglang-omni/blob/main/pyproject_xpu.toml"><code class="docutils literal notranslate"><span class="pre">pyproject_xpu.toml</span></code></a>
+and passes <code class="docutils literal notranslate"><span class="pre">--no-build-isolation</span></code>. Install <code class="docutils literal notranslate"><span class="pre">setuptools&gt;=77.0.0</span></code> in the target
+environment so it can read the project’s license metadata.</p>
+</div>
 <p>The helper swaps in <code class="docutils literal notranslate"><span class="pre">pyproject_xpu.toml</span></code>, installs with the XPU index, then restores the CUDA one:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>git@github.com:sgl-project/sglang-omni.git
 <span class="nb">cd</span><span class="w"> </span>sglang-omni
@@ -668,7 +656,10 @@ source oneAPI — see <a class="reference internal" href="#runtime-environment-i
 <span class="nv">PYTHON</span><span class="o">=</span><span class="k">$(</span>which<span class="w"> </span>python<span class="k">)</span><span class="w"> </span>scripts/xpu/install_xpu.sh
 </pre></div>
 </div>
-<p>Pick extras with <code class="docutils literal notranslate"><span class="pre">--extras</span></code> (comma-separated):</p>
+<p>Pick extras with <code class="docutils literal notranslate"><span class="pre">--extras</span></code> (comma-separated). <code class="docutils literal notranslate"><span class="pre">[eval]</span></code> adds SeedTTS/WER tools
+and tests; <code class="docutils literal notranslate"><span class="pre">[all]</span></code> is an alias. See <a class="reference internal" href="#fun-cosyvoice3-text-to-speech-single-xpu"><span class="std std-ref">Fun-CosyVoice3</span></a>,
+<a class="reference internal" href="#zonos2-moe-tts-single-xpu"><span class="std std-ref">ZONOS2</span></a>, and <a class="reference internal" href="#audar-tts-v1-turbo-arabic-tts-with-voice-cloning-single-xpu"><span class="std std-ref">Audar-TTS</span></a>
+for their optional dependencies.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>scripts/xpu/install_xpu.sh<span class="w"> </span>--extras<span class="w"> </span><span class="nb">eval</span><span class="w">           </span><span class="c1"># core + SeedTTS/WER eval + tests</span>
 scripts/xpu/install_xpu.sh<span class="w"> </span>--extras<span class="w"> </span>all<span class="w">            </span><span class="c1"># alias for eval</span>
 </pre></div>
@@ -698,10 +689,11 @@ pip<span class="w"> </span>install<span class="w"> </span>--no-deps<span class="
 version-compatibility shims. A VCS requirement (<code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">&quot;sglang</span> <span class="pre">&#64;</span> <span class="pre">git+…&quot;</span></code>) does <strong>not</strong> work:
 pip reads the checkout’s <code class="docutils literal notranslate"><span class="pre">python/pyproject.toml</span></code>, which pins CUDA torch; only the swap above
 selects <code class="docutils literal notranslate"><span class="pre">+xpu</span></code>.</p>
+<p><a id="verify"></a></p>
 </section>
 </section>
-<section id="verify">
-<h2>Verify<a class="headerlink" href="#verify" title="Link to this heading">#</a></h2>
+<section id="verify-the-installation">
+<h2>Verify the installation<a class="headerlink" href="#verify-the-installation" title="Link to this heading">#</a></h2>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># import works from anywhere now (package installed, not just cwd-on-path)</span>
 python<span class="w"> </span>-c<span class="w"> </span><span class="s2">"import sglang_omni, torch; print(sglang_omni.__file__, torch.__version__)"</span>
 which<span class="w"> </span>sgl-omni
@@ -711,9 +703,10 @@ which<span class="w"> </span>sgl-omni
 pytest<span class="w"> </span>tests/unit_test/xpu/test_device_layer.py<span class="w"> </span>-v
 </pre></div>
 </div>
+<p><a id="serve"></a></p>
 </section>
-<section id="serve">
-<h2>Serve<a class="headerlink" href="#serve" title="Link to this heading">#</a></h2>
+<section id="serve-a-model">
+<h2>Serve a model<a class="headerlink" href="#serve-a-model" title="Link to this heading">#</a></h2>
 <section id="runtime-environment-important">
 <h3>Runtime environment (important)<a class="headerlink" href="#runtime-environment-important" title="Link to this heading">#</a></h3>
 <p>Run in the <strong>PyTorch-XPU environment as-is</strong> — do <strong>not</strong> <code class="docutils literal notranslate"><span class="pre">source</span> <span class="pre">/opt/intel/oneapi/setvars.sh</span></code>.
@@ -728,46 +721,60 @@ build reports <code class="docutils literal notranslate"><span class="pre">fatal
 </section>
 <section id="qwen3-asr-speech-to-text-single-xpu">
 <h3>Qwen3-ASR (speech-to-text, single XPU)<a class="headerlink" href="#qwen3-asr-speech-to-text-single-xpu" title="Link to this heading">#</a></h3>
+<p><strong>Launch</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>/path/to/Qwen3-ASR-1.7B<span class="w"> </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
-<span class="c1"># transcribe:</span>
-curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/transcriptions<span class="w"> </span><span class="se">\</span>
+</pre></div>
+</div>
+<p><strong>Request</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/transcriptions<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-F<span class="w"> </span><span class="s2">"file=@sample.wav"</span><span class="w"> </span>-F<span class="w"> </span><span class="s2">"model=/path/to/Qwen3-ASR-1.7B"</span>
 </pre></div>
 </div>
+<p><strong>Expected result:</strong> The JSON response contains the transcription in <code class="docutils literal notranslate"><span class="pre">text</span></code>.</p>
 </section>
 <section id="whisper-asr-speech-to-text-single-xpu">
 <h3>Whisper ASR (speech-to-text, single XPU)<a class="headerlink" href="#whisper-asr-speech-to-text-single-xpu" title="Link to this heading">#</a></h3>
+<p><strong>Launch</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>openai/whisper-large-v3<span class="w"> </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
-<span class="c1"># transcribe:</span>
-curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/transcriptions<span class="w"> </span><span class="se">\</span>
+</pre></div>
+</div>
+<p><strong>Request</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/transcriptions<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-F<span class="w"> </span><span class="s2">"file=@sample.wav"</span><span class="w"> </span>-F<span class="w"> </span><span class="s2">"model=openai/whisper-large-v3"</span>
 </pre></div>
 </div>
 <p>See the <a class="reference internal" href="../cookbook/whisper_asr.html"><span class="std std-doc">Whisper cookbook</span></a> for request parameters.</p>
+<p><strong>Expected result:</strong> The JSON response contains the transcription in <code class="docutils literal notranslate"><span class="pre">text</span></code>.</p>
 </section>
 <section id="fun-asr-nano-speech-to-text-single-xpu">
 <h3>Fun-ASR-Nano (speech-to-text, single XPU)<a class="headerlink" href="#fun-asr-nano-speech-to-text-single-xpu" title="Link to this heading">#</a></h3>
 <p>Same endpoint as Qwen3-ASR, one uploaded clip of 30 s or less per request. See
 <a class="reference internal" href="../cookbook/fun_asr.html"><span class="std std-doc">docs/cookbook/fun_asr.md</span></a> for the request parameters.</p>
+<p><strong>Launch</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>/path/to/Fun-ASR-Nano-2512-hf<span class="w"> </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
-<span class="c1"># transcribe:</span>
-curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/transcriptions<span class="w"> </span><span class="se">\</span>
+</pre></div>
+</div>
+<p><strong>Request</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/transcriptions<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-F<span class="w"> </span><span class="s2">"file=@sample.wav"</span><span class="w"> </span>-F<span class="w"> </span><span class="s2">"model=/path/to/Fun-ASR-Nano-2512-hf"</span><span class="w"> </span>-F<span class="w"> </span><span class="s2">"language=en"</span>
 </pre></div>
 </div>
 <p>The audio encoder captures a graph per (batch, length) bucket the first time it
 sees one, on XPU as on CUDA. Buckets that fail to capture log a warning and run
 eager, so a transcript is never at stake.</p>
+<p><strong>Expected result:</strong> The JSON response contains the transcription in <code class="docutils literal notranslate"><span class="pre">text</span></code>.</p>
 </section>
 <section id="nemotron-3-5-asr-speech-to-text-single-xpu">
 <h3>Nemotron 3.5 ASR (speech-to-text, single XPU)<a class="headerlink" href="#nemotron-3-5-asr-speech-to-text-single-xpu" title="Link to this heading">#</a></h3>
 <p>Run from the repository root after the XPU installation above, selecting the device with <code class="docutils literal notranslate"><span class="pre">ZE_AFFINITY_MASK</span></code>:</p>
+<p><strong>Launch</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">ZE_AFFINITY_MASK</span><span class="o">=</span><span class="m">0</span><span class="w"> </span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>nvidia/nemotron-3.5-asr-streaming-0.6b<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
 <p>In another terminal, upload the cookbook’s reference recording:</p>
+<p><strong>Request</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/transcriptions<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-F<span class="w"> </span><span class="s2">"file=@tests/data/query_to_cars.wav"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-F<span class="w"> </span><span class="s2">"model=nvidia/nemotron-3.5-asr-streaming-0.6b"</span><span class="w"> </span><span class="se">\</span>
@@ -776,12 +783,13 @@ eager, so a transcript is never at stake.</p>
 </pre></div>
 </div>
 <p>See the <a class="reference internal" href="../cookbook/nemotron3_5_asr.html"><span class="std std-doc">Nemotron cookbook</span></a> for request parameters.</p>
+<p><strong>Expected result:</strong> The JSON response contains the transcription and segment timestamps.</p>
 </section>
 <section id="qwen3-tts-text-to-speech-single-xpu">
 <h3>Qwen3-TTS (text-to-speech, single XPU)<a class="headerlink" href="#qwen3-tts-text-to-speech-single-xpu" title="Link to this heading">#</a></h3>
 <p>Qwen3-TTS automatically selects the <code class="docutils literal notranslate"><span class="pre">intel_xpu</span></code> attention backend when the platform and the engine stage device are both XPU. Setting any of <code class="docutils literal notranslate"><span class="pre">attention_backend</span></code>, <code class="docutils literal notranslate"><span class="pre">prefill_attention_backend</span></code>, or <code class="docutils literal notranslate"><span class="pre">decode_attention_backend</span></code> in <code class="docutils literal notranslate"><span class="pre">server_args_overrides</span></code> takes precedence over this default. CPU stages on an XPU host are unaffected.</p>
-<p>Qwen3-TTS needs the upstream <code class="docutils literal notranslate"><span class="pre">qwen-tts</span></code> package. Option A already includes it; for
-Option B install it here, because <code class="docutils literal notranslate"><span class="pre">pyproject_xpu.toml</span></code> deliberately does not pin it.
+<p>Qwen3-TTS needs the upstream <code class="docutils literal notranslate"><span class="pre">qwen-tts</span></code> package. The Docker image includes it; in an existing XPU environment,
+install it here, because <code class="docutils literal notranslate"><span class="pre">pyproject_xpu.toml</span></code> deliberately does not pin it.
 <code class="docutils literal notranslate"><span class="pre">--no-deps</span></code> is required on both lines: <code class="docutils literal notranslate"><span class="pre">qwen-tts</span></code> pins Transformers 4.57.3, which
 would replace this project’s 5.19.0, and resolving <code class="docutils literal notranslate"><span class="pre">sox</span></code> lifts <code class="docutils literal notranslate"><span class="pre">numpy</span></code> past the
 <code class="docutils literal notranslate"><span class="pre">numba==0.65.1</span></code> ceiling. See
@@ -792,9 +800,12 @@ pip<span class="w"> </span>install<span class="w"> </span>--no-deps<span class="
 </pre></div>
 </div>
 <p><strong>Base</strong></p>
+<p><strong>Launch</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>/path/to/Qwen3-TTS-12Hz-1.7B-Base<span class="w"> </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
-<span class="c1"># Base checkpoint clones a reference voice — pass ref_audio (+ ref_text):</span>
-curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+</pre></div>
+</div>
+<p><strong>Request</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span><span class="s1">'{"model":"/path/to/Qwen3-TTS-12Hz-1.7B-Base","input":"Hello from Intel XPU.",</span>
 <span class="s1">       "voice":"default","ref_audio":"/path/to/ref.wav","ref_text":"reference transcript",</span>
@@ -803,11 +814,15 @@ curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>
 </div>
 <p><strong>CustomVoice</strong></p>
 <p><code class="docutils literal notranslate"><span class="pre">CustomVoice</span></code> checkpoints synthesize speech with built-in speakers and need no reference audio. Use the matching config and select a speaker in the request:</p>
+<p><strong>Launch</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--config<span class="w"> </span>examples/configs/qwen3_tts_1_7b_customvoice.yaml<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
-curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+</pre></div>
+</div>
+<p><strong>Request</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span><span class="s1">'{"model":"Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice","input":"Hello from Intel XPU.",</span>
 <span class="s1">       "voice":"Ryan","task_type":"CustomVoice","language":"English",</span>
@@ -816,18 +831,22 @@ curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>
 </div>
 <p><strong>VoiceDesign</strong></p>
 <p>The <code class="docutils literal notranslate"><span class="pre">VoiceDesign</span></code> checkpoint synthesizes speech from text and a voice description, so it needs no reference audio. Serve it with its config:</p>
+<p><strong>Launch</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--config<span class="w"> </span>examples/configs/qwen3_tts_1_7b_voicedesign.yaml<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
-<span class="c1"># VoiceDesign requires task_type and non-empty instructions:</span>
-curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+</pre></div>
+</div>
+<p><strong>Request</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span><span class="s1">'{"model":"Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign","input":"Hello, how are you?",</span>
 <span class="s1">       "voice":"default","task_type":"VoiceDesign",</span>
 <span class="s1">       "instructions":"A warm, natural young adult voice.","response_format":"wav"}'</span><span class="w"> </span>-o<span class="w"> </span>out.wav
 </pre></div>
 </div>
+<p><strong>Expected result:</strong> Play <code class="docutils literal notranslate"><span class="pre">out.wav</span></code> to hear the input text in the selected voice.</p>
 <p><strong>Codec decoding on XPU</strong></p>
 <p>The stateful incremental codec decoder runs, but the pipeline starts it with
 <code class="docutils literal notranslate"><span class="pre">async_decode:</span> <span class="pre">false</span></code>, and the vocoder captures its decode graphs during the
@@ -856,17 +875,20 @@ defaults in <a class="reference internal" href="../cookbook/qwen3_tts.html"><spa
 <section id="auk-speech-generation-and-editing-single-xpu">
 <h3>AuK (speech generation and editing, single XPU)<a class="headerlink" href="#auk-speech-generation-and-editing-single-xpu" title="Link to this heading">#</a></h3>
 <p>Run one checkpoint at a time:</p>
+<p><strong>Launch</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">ZE_AFFINITY_MASK</span><span class="o">=</span><span class="m">0</span><span class="w"> </span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>tencent/AuK<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
+<p><strong>Launch</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">ZE_AFFINITY_MASK</span><span class="o">=</span><span class="m">0</span><span class="w"> </span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>tencent/AuK-Flash<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
 <p>With either server, generate a 24 kHz WAV from text and voice instructions. Without reference audio, <code class="docutils literal notranslate"><span class="pre">stage_params.auk_engine.gen_seconds</span></code> is required:</p>
+<p><strong>Request</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span><span class="s1">'{"input":"Welcome home.","instructions":"A warm, relaxed voice.",</span>
@@ -875,6 +897,7 @@ defaults in <a class="reference internal" href="../cookbook/qwen3_tts.html"><spa
 </pre></div>
 </div>
 <p>AuK uses 32 sampling steps by default; AuK-Flash uses its fixed four-step recipe. See the <a class="reference internal" href="../cookbook/auk.html"><span class="std std-doc">AuK cookbook</span></a> for voice cloning and speech editing through <code class="docutils literal notranslate"><span class="pre">/generate</span></code>.</p>
+<p><strong>Expected result:</strong> Play <code class="docutils literal notranslate"><span class="pre">out.wav</span></code> to hear a 24 kHz recording of the input text.</p>
 </section>
 <section id="fun-cosyvoice3-text-to-speech-single-xpu">
 <h3>Fun-CosyVoice3 (text-to-speech, single XPU)<a class="headerlink" href="#fun-cosyvoice3-text-to-speech-single-xpu" title="Link to this heading">#</a></h3>
@@ -887,14 +910,18 @@ resolve the CUDA project file. Then clone CosyVoice with its Matcha-TTS submodul
 <span class="nb">export</span><span class="w"> </span><span class="nv">PYTHONPATH</span><span class="o">=</span><span class="s2">"</span><span class="si">${</span><span class="nv">COSYVOICE_PATH</span><span class="si">}</span><span class="s2">:</span><span class="si">${</span><span class="nv">COSYVOICE_PATH</span><span class="si">}</span><span class="s2">/third_party/Matcha-TTS:</span><span class="nv">$PYTHONPATH</span><span class="s2">"</span>
 </pre></div>
 </div>
+<p><strong>Launch</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>FunAudioLLM/Fun-CosyVoice3-0.5B-2512<span class="w"> </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
-<span class="c1"># clones a reference voice — pass ref_audio (+ ref_text):</span>
-curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+</pre></div>
+</div>
+<p><strong>Request</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span><span class="s1">'{"model":"FunAudioLLM/Fun-CosyVoice3-0.5B-2512","input":"Hello from Intel XPU.",</span>
 <span class="s1">       "ref_audio":"/path/to/ref.wav","ref_text":"reference transcript"}'</span><span class="w"> </span>-o<span class="w"> </span>out.wav
 </pre></div>
 </div>
+<p><strong>Expected result:</strong> Play <code class="docutils literal notranslate"><span class="pre">out.wav</span></code> to hear the input in the reference voice.</p>
 </section>
 <section id="dots-tts-text-to-speech-single-xpu">
 <h3>dots.tts (text-to-speech, single XPU)<a class="headerlink" href="#dots-tts-text-to-speech-single-xpu" title="Link to this heading">#</a></h3>
@@ -929,6 +956,7 @@ All three checkpoints were validated on one 24 GB Intel Arc Pro B60 with bf16,
 </table>
 </div>
 <p>For MF on B60, lower the config’s default 16 request slots to the 4 slots used in validation. Keep the checkpoint revision pinned by the config:</p>
+<p><strong>Launch</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">ZE_AFFINITY_MASK</span><span class="o">=</span><span class="m">0</span><span class="w"> </span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--config<span class="w"> </span>examples/configs/dots_tts.yaml<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--latent_engine.engine.max_running_requests<span class="w"> </span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
@@ -938,6 +966,7 @@ All three checkpoints were validated on one 24 GB Intel Arc Pro B60 with bf16,
 </pre></div>
 </div>
 <p>For SOAR, use its single-request config:</p>
+<p><strong>Launch</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">ZE_AFFINITY_MASK</span><span class="o">=</span><span class="m">0</span><span class="w"> </span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>dots-studio/dots.tts-soar<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--config<span class="w"> </span>examples/configs/dots_tts_soar.yaml<span class="w"> </span><span class="se">\</span>
@@ -957,6 +986,7 @@ Lower <code class="docutils literal notranslate"><span class="pre">max_running_r
 <code class="docutils literal notranslate"><span class="pre">max_generate_length</span></code> explicitly; <code class="docutils literal notranslate"><span class="pre">mem_fraction_static</span></code> only budgets
 the backbone KV cache.</p>
 <p>Each request needs one reference clip and its matching transcript:</p>
+<p><strong>Request</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-sS<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
@@ -975,6 +1005,7 @@ the backbone KV cache.</p>
 48 kHz mono audio and passed ASR checks against the requested text.
 See the <a class="reference internal" href="../cookbook/dots_tts.html"><span class="std std-doc">dots.tts cookbook</span></a> for streaming and
 solver parameters.</p>
+<p><strong>Expected result:</strong> Play <code class="docutils literal notranslate"><span class="pre">output.wav</span></code> to hear the generated 48 kHz mono audio.</p>
 </section>
 <section id="zonos2-moe-tts-single-xpu">
 <h3>ZONOS2 (MoE TTS, single XPU)<a class="headerlink" href="#zonos2-moe-tts-single-xpu" title="Link to this heading">#</a></h3>
@@ -992,9 +1023,12 @@ python<span class="w"> </span>-c<span class="w"> </span><span class="s2">"import
 <p>Voice cloning transcodes the reference clip with <strong>ffmpeg</strong>, so <code class="docutils literal notranslate"><span class="pre">ffmpeg</span></code> must be on
 <code class="docutils literal notranslate"><span class="pre">PATH</span></code>. Then serve — <code class="docutils literal notranslate"><span class="pre">params.json</span></code> auto-selects the architecture, so <code class="docutils literal notranslate"><span class="pre">--model-path</span></code>
 is all that is needed:</p>
+<p><strong>Launch</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>Zyphra/zonos2<span class="w"> </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
-<span class="c1"># clone a voice from a reference clip:</span>
-curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+</pre></div>
+</div>
+<p><strong>Request</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span><span class="s1">'{"input":"Hello from Intel XPU.",</span>
 <span class="s1">       "references":[{"audio_path":"/path/to/ref.wav","text":"reference transcript"}]}'</span><span class="w"> </span><span class="se">\</span>
@@ -1003,6 +1037,7 @@ curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>
 </div>
 <p>On XPU, ZONOS2 keeps its MoE experts in bf16 and leaves <code class="docutils literal notranslate"><span class="pre">torch.compile</span></code> off; decode
 graphs stay on by default. All three are applied automatically.</p>
+<p><strong>Expected result:</strong> Play <code class="docutils literal notranslate"><span class="pre">out.wav</span></code> to hear the input in the reference voice.</p>
 </section>
 <section id="personaplex-speech-to-speech-single-xpu">
 <h3>PersonaPlex (speech-to-speech, single XPU)<a class="headerlink" href="#personaplex-speech-to-speech-single-xpu" title="Link to this heading">#</a></h3>
@@ -1010,6 +1045,7 @@ graphs stay on by default. All three are applied automatically.</p>
 to accept the checkpoint license and download the model. PersonaPlex was
 validated on one 24 GB Intel Arc Pro B60 with
 <code class="docutils literal notranslate"><span class="pre">--lm.engine.mem_fraction_static</span> <span class="pre">0.70</span></code>. Pick the XPU with <code class="docutils literal notranslate"><span class="pre">ZE_AFFINITY_MASK</span></code>:</p>
+<p><strong>Launch and request</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">ZE_AFFINITY_MASK</span><span class="o">=</span><span class="m">0</span><span class="w"> </span>python<span class="w"> </span>examples/run_personaplex.py<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>nvidia/personaplex-7b-v1<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--audio<span class="w"> </span>/path/to/caller.wav<span class="w"> </span><span class="se">\</span>
@@ -1019,6 +1055,7 @@ validated on one 24 GB Intel Arc Pro B60 with
 <span class="w">  </span>--lm.engine.mem_fraction_static<span class="w"> </span><span class="m">0</span>.70
 </pre></div>
 </div>
+<p><strong>Expected result:</strong> Play <code class="docutils literal notranslate"><span class="pre">reply.wav</span></code> to hear the model’s spoken reply.</p>
 </section>
 <section id="nemotron-voicechat-speech-to-speech-two-xpus">
 <h3>Nemotron VoiceChat (speech-to-speech, two XPUs)<a class="headerlink" href="#nemotron-voicechat-speech-to-speech-two-xpus" title="Link to this heading">#</a></h3>
@@ -1026,6 +1063,7 @@ validated on one 24 GB Intel Arc Pro B60 with
 to download the model. Its weights take about 22.6 GB, so on 24 GB Intel Arc Pro B60 cards the
 thinker runs on its own card while perception, the talker and the codec share the other. It
 needs two free XPUs:</p>
+<p><strong>Launch and request</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>examples/run_nemotron_voicechat.py<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>/path/to/NVIDIA-NemotronLabs-VoiceChat-11B<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--audio<span class="w"> </span>/path/to/NVIDIA-NemotronLabs-VoiceChat-11B/turn_taking.wav<span class="w"> </span><span class="se">\</span>
@@ -1035,6 +1073,7 @@ needs two free XPUs:</p>
 <span class="w">  </span>--talker.engine.mem_fraction_static<span class="w"> </span><span class="m">0</span>.50
 </pre></div>
 </div>
+<p><strong>Expected result:</strong> Play <code class="docutils literal notranslate"><span class="pre">reply.wav</span></code> to hear the model’s spoken reply.</p>
 </section>
 <section id="audar-tts-v1-turbo-arabic-tts-with-voice-cloning-single-xpu">
 <h3>Audar-TTS-V1 Turbo (Arabic TTS with voice cloning, single XPU)<a class="headerlink" href="#audar-tts-v1-turbo-arabic-tts-with-voice-cloning-single-xpu" title="Link to this heading">#</a></h3>
@@ -1059,20 +1098,26 @@ pip<span class="w"> </span>install<span class="w"> </span>--no-deps<span class="
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">neuphonic/neucodec</span></code> is gated on Hugging Face, so accept its terms and export
 <code class="docutils literal notranslate"><span class="pre">HF_TOKEN</span></code> before the first start. Reference clips must be 5-15 seconds long.</p>
+<p><strong>Launch</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--config<span class="w"> </span>examples/configs/audar_tts_turbo.yaml<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--allowed-local-media-path<span class="w"> </span>/path/to/references<span class="w"> </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
-curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+</pre></div>
+</div>
+<p><strong>Request</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span><span class="s1">'{"input":"مرحبا، أهلا وسهلا بكم.","response_format":"wav",</span>
 <span class="s1">       "ref_audio":"file:///path/to/references/voice.wav","ref_text":"reference transcript"}'</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-o<span class="w"> </span>out.wav
 </pre></div>
 </div>
+<p><strong>Expected result:</strong> Play <code class="docutils literal notranslate"><span class="pre">out.wav</span></code> to hear the synthesized Arabic speech.</p>
 </section>
 <section id="qwen3-omni-30b-a3b-moe-multi-xpu-tensor-parallel">
 <h3>Qwen3-Omni (30B-A3B MoE, multi-XPU tensor parallel)<a class="headerlink" href="#qwen3-omni-30b-a3b-moe-multi-xpu-tensor-parallel" title="Link to this heading">#</a></h3>
 <p>The 30B MoE does not fit one 24 GB card; shard the thinker across GPUs with tensor parallelism.
 <code class="docutils literal notranslate"><span class="pre">--text-only</span></code> serves the thinker (chat) without the talker/speech stages. The text-only config normally puts every stage in the <code class="docutils literal notranslate"><span class="pre">pipeline</span></code> process, so give the TP thinker an otherwise-unused process name before enabling TP:</p>
+<p><strong>Launch</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># thinker across 8 cards (TP=8). Large shards over shared storage load slowly, so give</span>
 <span class="c1"># startup more headroom than the default 600 s.</span>
 <span class="nb">export</span><span class="w"> </span><span class="nv">SGLANG_OMNI_STARTUP_TIMEOUT</span><span class="o">=</span><span class="m">1800</span>
@@ -1080,13 +1125,16 @@ sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span c
 <span class="w">  </span>--text-only<span class="w"> </span>--thinker.process<span class="w"> </span>thinker<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--thinker.tp_size<span class="w"> </span><span class="m">8</span><span class="w"> </span>--thinker.gpu<span class="w"> </span><span class="s2">"[0, 1, 2, 3, 4, 5, 6, 7]"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
-<span class="c1"># chat:</span>
-curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
+</pre></div>
+</div>
+<p><strong>Request</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span><span class="s1">'{"model":"/path/to/Qwen3-Omni-30B-A3B-Instruct",</span>
 <span class="s1">       "messages":[{"role":"user","content":"What is Intel XPU?"}],"max_tokens":64}'</span>
 </pre></div>
 </div>
+<p><strong>Expected result:</strong> Check <code class="docutils literal notranslate"><span class="pre">choices[0].message.content</span></code> for a text reply.</p>
 </section>
 <section id="minicpm-o-4-5-omni-chat-and-speech-single-xpu">
 <h3>MiniCPM-o 4.5 (omni chat and speech, single XPU)<a class="headerlink" href="#minicpm-o-4-5-omni-chat-and-speech-single-xpu" title="Link to this heading">#</a></h3>
@@ -1096,6 +1144,7 @@ KV for 131072 tokens (7.5 GB) unless capped. Code2Wav’s <code class="docutils 
 only and refuses to start on XPU. And on <code class="docutils literal notranslate"><span class="pre">torch==2.14.0+xpu</span></code>, matmuls and convolutions on
 Code2Wav’s default high-priority decode stream crash the process on the first device, so
 give that stream normal priority:</p>
+<p><strong>Launch</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">ZE_AFFINITY_MASK</span><span class="o">=</span><span class="m">0</span><span class="w"> </span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>openbmb/MiniCPM-o-4_5<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--thinker.engine.mem_fraction_static<span class="w"> </span><span class="m">0</span>.80<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--talker.engine.max_total_tokens<span class="w"> </span><span class="m">8192</span><span class="w"> </span><span class="se">\</span>
@@ -1103,7 +1152,10 @@ give that stream normal priority:</p>
 <span class="w">  </span>--code2wav.factory.enable_dit_torch_compile<span class="w"> </span><span class="nb">false</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--code2wav.factory.enable_hift_torch_compile<span class="w"> </span><span class="nb">false</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
-curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+</pre></div>
+</div>
+<p><strong>Request</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span><span class="s1">'{"model":"openbmb/MiniCPM-o-4_5","input":"Hello from Intel XPU.","voice":"default","language":"English"}'</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-o<span class="w"> </span>out.wav
@@ -1117,13 +1169,16 @@ ran the card out of memory. For text output only, serve with <code class="docuti
 <code class="docutils literal notranslate"><span class="pre">UR_RESULT_ERROR_UNSUPPORTED_FEATURE</span></code> traceback, and the talker then samples eagerly. See
 the <a class="reference internal" href="../cookbook/minicpm_o.html"><span class="std std-doc">MiniCPM-o cookbook</span></a> for chat with speech output, image and
 audio input, and voice cloning.</p>
+<p><strong>Expected result:</strong> Play <code class="docutils literal notranslate"><span class="pre">out.wav</span></code> to hear the input text.</p>
 </section>
 <section id="minimax-music-3-text-to-music-two-xpus">
 <h3>MiniMax Music 3 (text-to-music, two XPUs)<a class="headerlink" href="#minimax-music-3-text-to-music-two-xpus" title="Link to this heading">#</a></h3>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># server</span>
-sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>MiniMaxAI/MiniMax-Music3<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span><span class="w"> </span>--mem-fraction-static<span class="w"> </span><span class="m">0</span>.7
-<span class="c1"># client request - Genre, instrumentation, tempo, and a production note</span>
-curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+<p><strong>Launch</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>MiniMaxAI/MiniMax-Music3<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span><span class="w"> </span>--mem-fraction-static<span class="w"> </span><span class="m">0</span>.7
+</pre></div>
+</div>
+<p><strong>Request</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
 <span class="s1">    "model": "MiniMaxAI/MiniMax-Music3",</span>
@@ -1135,13 +1190,15 @@ curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </spa
 <span class="w">  </span>--output<span class="w"> </span>rock_1.wav
 </pre></div>
 </div>
+<p><strong>Expected result:</strong> Play <code class="docutils literal notranslate"><span class="pre">rock_1.wav</span></code> to hear the generated music.</p>
 </section>
 <section id="ming-omni-omni-chat-and-speech-one-or-two-xpus">
 <h3>Ming-Omni (omni chat and speech, one or two XPUs)<a class="headerlink" href="#ming-omni-omni-chat-and-speech-one-or-two-xpus" title="Link to this heading">#</a></h3>
 <p>Ming-flash-omni-2.0’s thinker holds 194 GiB of bf16 weights, so on 24 GB cards it runs TP=1 with
 <code class="docutils literal notranslate"><span class="pre">cpu_offload_gb</span> <span class="pre">190</span></code>. Offload re-uploads weights inside a captured region and outside the KV budget,
 so disable the decode graph and keep <code class="docutils literal notranslate"><span class="pre">--mem-fraction-static</span></code> at 0.30. Staging the offloaded weights
-can take longer than the default 600 s startup timeout.</p>
+can take longer than the default 600 s startup timeout.
+<strong>Launch</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">SGLANG_OMNI_STARTUP_TIMEOUT</span><span class="o">=</span><span class="m">1800</span>
 <span class="c1"># omni chat (text, image, audio and video in, text out) on one card</span>
 <span class="nv">ZE_AFFINITY_MASK</span><span class="o">=</span><span class="m">0</span><span class="w"> </span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>inclusionAI/Ming-flash-omni-2.0<span class="w"> </span><span class="se">\</span>
@@ -1149,14 +1206,19 @@ can take longer than the default 600 s startup timeout.</p>
 <span class="w">  </span>--thinker.tp_size<span class="w"> </span><span class="m">1</span><span class="w"> </span>--thinker.gpu<span class="w"> </span><span class="m">0</span><span class="w"> </span>--audio_encoder.gpu<span class="w"> </span><span class="m">0</span><span class="w"> </span>--image_encoder.gpu<span class="w"> </span><span class="m">0</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--mem-fraction-static<span class="w"> </span><span class="m">0</span>.30<span class="w"> </span>--thinker.engine.cpu_offload_gb<span class="w"> </span><span class="m">190</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--thinker.engine.cuda_graph_backend_decode<span class="w"> </span>disabled<span class="w"> </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
-curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
+</pre></div>
+</div>
+<p><strong>Request</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span><span class="s1">'{"model":"ming-omni","messages":[{"role":"user","content":"What is Intel XPU?"}],"max_tokens":64}'</span>
 </pre></div>
 </div>
+<p><strong>Expected result:</strong> Check <code class="docutils literal notranslate"><span class="pre">choices[0].message.content</span></code> for a text reply to the chat request.</p>
 <p>Speech needs a voice preset, and the published checkpoint ships no <code class="docutils literal notranslate"><span class="pre">talker/data</span></code>. Register a short
 reference recording and its transcript in the downloaded checkpoint, then select it with
-<code class="docutils literal notranslate"><span class="pre">--talker.factory.voice</span></code>; the talker takes a second card:</p>
+<code class="docutils literal notranslate"><span class="pre">--talker.factory.voice</span></code>; the talker takes a second card:
+<strong>Launch</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">MING</span><span class="o">=</span>/path/to/Ming-flash-omni-2.0
 mkdir<span class="w"> </span>-p<span class="w"> </span><span class="s2">"</span><span class="nv">$MING</span><span class="s2">/talker/data"</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>cp<span class="w"> </span>/path/to/reference.wav<span class="w"> </span><span class="s2">"</span><span class="nv">$MING</span><span class="s2">/talker/data/en_ref.wav"</span>
 cat<span class="w"> </span>&gt;<span class="w"> </span><span class="s2">"</span><span class="nv">$MING</span><span class="s2">/talker/data/voice_name.json"</span><span class="w"> </span><span class="s">&lt;&lt;'EOF'</span>
@@ -1178,7 +1240,8 @@ so concurrent requests raise throughput almost linearly.</p>
 RoPE is sgl-kernel’s SYCL JIT kernel, which needs <code class="docutils literal notranslate"><span class="pre">icpx</span></code> on <code class="docutils literal notranslate"><span class="pre">PATH</span></code>; add the compiler directory
 alone rather than sourcing <code class="docutils literal notranslate"><span class="pre">setvars.sh</span></code>. Its fp32 MoE routing needs the <code class="docutils literal notranslate"><span class="pre">sglang-kernel-xpu</span></code>
 wheel that SGLang v0.5.23 pins (0.5.0); sgl-kernel builds older than 0.3.0 fail with
-<code class="docutils literal notranslate"><span class="pre">&quot;fused_topk_softmax_kernel&quot;</span> <span class="pre">not</span> <span class="pre">implemented</span> <span class="pre">for</span> <span class="pre">'Float'</span></code>.</p>
+<code class="docutils literal notranslate"><span class="pre">&quot;fused_topk_softmax_kernel&quot;</span> <span class="pre">not</span> <span class="pre">implemented</span> <span class="pre">for</span> <span class="pre">'Float'</span></code>.
+<strong>Launch</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">PATH</span><span class="o">=</span><span class="s2">"/opt/intel/oneapi/compiler/latest/bin:</span><span class="nv">$PATH</span><span class="s2">"</span><span class="w"> </span><span class="nv">SGLANG_OMNI_STARTUP_TIMEOUT</span><span class="o">=</span><span class="m">1800</span>
 sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>/path/to/Ming-omni-tts-16.8B-A3B<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--config<span class="w"> </span>examples/configs/ming_omni_tts.yaml<span class="w"> </span><span class="se">\</span>
@@ -1186,7 +1249,10 @@ sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span c
 <span class="w">  </span>--reference_encode.gpu<span class="w"> </span><span class="m">0</span><span class="w"> </span>--audio_decode.gpu<span class="w"> </span><span class="m">0</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--tts_engine.gpu_memory_fraction<span class="w"> </span><span class="m">0</span>.78<span class="w"> </span>--tts_engine.engine.mem_fraction_static<span class="w"> </span><span class="m">0</span>.78<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
-curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+</pre></div>
+</div>
+<p><strong>Request</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span><span class="s1">'{"model":"ming-omni-tts","input":"Hello from Intel XPU.","voice":"default","response_format":"wav"}'</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-o<span class="w"> </span>out.wav
@@ -1194,6 +1260,7 @@ curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>
 </div>
 <p>The config’s AudioVAE streaming graph runs eager on XPU, since oneMKL’s FFT cannot be recorded
 in a graph.</p>
+<p><strong>Expected result:</strong> Play <code class="docutils literal notranslate"><span class="pre">out.wav</span></code> to hear the synthesized sentence.</p>
 <p>Health check for any of the above: <code class="docutils literal notranslate"><span class="pre">curl</span> <span class="pre">http://localhost:8000/v1/models</span></code>.</p>
 <blockquote>
 <div><p><strong>Expected on XPU:</strong> <code class="docutils literal notranslate"><span class="pre">Failed</span> <span class="pre">to</span> <span class="pre">import</span> <span class="pre">mooncake</span></code> / <code class="docutils literal notranslate"><span class="pre">Failed</span> <span class="pre">to</span> <span class="pre">import</span> <span class="pre">nixl</span></code> warnings are harmless
@@ -1258,15 +1325,14 @@ Qwen3-Omni thinker across 8 cards with tensor parallelism).</p>
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#why-a-separate-pyproject">Why a separate pyproject</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#option-a-docker">Option A: Docker</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#option-b-install-into-an-existing-xpu-env-recommended-here">Option B: Install into an existing XPU env (recommended here)</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#docker">Docker</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#install-into-an-existing-xpu-environment">Install into an existing XPU environment</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#sglang-installed-separately">SGLang (installed separately)</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#verify">Verify</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#serve">Serve</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#verify-the-installation">Verify the installation</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#serve-a-model">Serve a model</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#runtime-environment-important">Runtime environment (important)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#qwen3-asr-speech-to-text-single-xpu">Qwen3-ASR (speech-to-text, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#whisper-asr-speech-to-text-single-xpu">Whisper ASR (speech-to-text, single XPU)</a></li>

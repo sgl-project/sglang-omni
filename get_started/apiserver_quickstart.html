@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>API Server Quickstart &#8212; SGLang</title>
+    <title>Quickstart &#8212; SGLang</title>
   
   
   
@@ -51,12 +51,14 @@
     <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'get_started/apiserver_quickstart';</script>
     <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
-    <script src="../_static/js/sidebar_company_toggle.js?v=1646c162"></script>
+    <script src="../_static/js/sidebar_company_toggle.js?v=7622d557"></script>
     <script src="../_static/js/qwen3_omni_server_generator.js?v=d7738e8a"></script>
     <script src="../_static/js/ming_omni_server_generator.js?v=7979a72f"></script>
     <link rel="icon" href="../_static/logo.ico"/>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Installation — CUDA" href="installation.html" />
+    <link rel="prev" title="Welcome to SGLang-Omni" href="../index.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.2.0" />
@@ -159,8 +161,6 @@
       
       
       
-        
-      
       <dialog id="pst-primary-sidebar-modal"></dialog>
       <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
         
@@ -206,14 +206,23 @@
         <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
     <div class="bd-toc-item navbar-nav active">
         <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
-<ul class="nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="installation.html">Installation — CUDA</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_apple_silicon.html">Installation — Apple Silicon</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_npu.html">Installation — NPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_xpu.html">Installation — Intel XPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_cpu.html">Installation — Intel CPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_musa.html">Installation — MUSA</a></li>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../index.html">Welcome to SGLang-Omni</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Quickstart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="examples.html">Examples</a></li>
 <li class="toctree-l1"><a class="reference internal" href="troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Other Platforms</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="installation_apple_silicon.html">Apple Silicon</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../mlx/index.html">Native MLX / Voxt</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_npu.html">Ascend NPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_xpu.html">Intel XPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_cpu.html">Intel CPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_musa.html">Moore Threads MUSA</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Cookbook</span></p>
 <ul class="nav bd-sidenav">
@@ -307,10 +316,6 @@
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/omni_router.html">SGLang-Omni Router</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/mps_dp.html">Same-GPU Data Parallelism with CUDA MPS</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/native_media_routes.html">Native Media Routes</a></li>
-</ul>
-<p aria-level="2" class="caption" role="heading"><span class="caption-text">MLX</span></p>
-<ul class="nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="../mlx/index.html">MLX Path</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Reference</span></p>
 <ul class="nav bd-sidenav">
@@ -555,7 +560,7 @@
               
 
 <div id="jb-print-docs-body" class="onlyprint">
-    <h1>API Server Quickstart</h1>
+    <h1>Quickstart</h1>
     <!-- Table of contents -->
     <div id="print-main-content">
         <div id="jb-print-toc">
@@ -565,25 +570,19 @@
             </div>
             <nav aria-label="Page">
                 <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-this-server-is">What This Server Is</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#start-the-server">Start the Server</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#unified-sglang-cli">Unified SGLang CLI</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#install-and-start">Install and start</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#send-a-request">Send a request</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#api-server-reference">API server reference</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#what-this-server-is">What This Server Is</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#start-the-server">Start the Server</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#check-that-it-works">Check That It Works</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#send-a-minimal-chat-request">Send a Minimal Chat Request</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming-and-multi-modal-requests">Streaming and Multi-modal Requests</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#text-to-speech">Text-to-Speech</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#common-errors">Common Errors</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#next-reading">Next Reading</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#check-that-it-works">Check That It Works</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#health-check">Health check</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#list-the-served-model">List the served model</a></li>
-</ul>
-</li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#send-a-minimal-chat-request">Send a Minimal Chat Request</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming-and-multi-modal-requests">Streaming and Multi-modal Requests</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming">Streaming</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#multi-modal-input-and-output">Multi-modal input and output</a></li>
-</ul>
-</li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#text-to-speech">Text-to-Speech</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#common-errors">Common Errors</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#next-reading">Next Reading</a></li>
 </ul>
             </nav>
         </div>
@@ -595,26 +594,65 @@
 <div id="searchbox"></div>
                 <article class="bd-article">
                   
-  <section class="tex2jax_ignore mathjax_ignore" id="api-server-quickstart">
-<h1>API Server Quickstart<a class="headerlink" href="#api-server-quickstart" title="Link to this heading">#</a></h1>
-<p>This page is the shortest path from “I have the repo” to “the API server responds to a request”.</p>
-<p><code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> exposes an OpenAI-compatible API server on top of its multi-stage pipeline runtime. That server is the main HTTP entry point for:</p>
-<ul class="simple">
-<li><p>chat completions</p></li>
-<li><p>streaming responses</p></li>
-<li><p>model listing</p></li>
-<li><p>health checks</p></li>
-<li><p>text-to-speech</p></li>
-</ul>
-<p>If you want the internal design rather than the usage flow, see <a class="reference internal" href="../developer_reference/apiserver_design.html"><span class="std std-doc">API Server Design</span></a>.</p>
+  <section class="tex2jax_ignore mathjax_ignore" id="quickstart">
+<span id="api-server-quickstart"></span><h1>Quickstart<a class="headerlink" href="#quickstart" title="Link to this heading">#</a></h1>
+<p>Start Qwen3-ASR-1.7B on one CUDA GPU and transcribe a short audio clip.</p>
+<section id="install-and-start">
+<h2>Install and start<a class="headerlink" href="#install-and-start" title="Link to this heading">#</a></h2>
+<p>Use Linux with a compatible NVIDIA GPU and driver. Choose Docker or uv below;
+see <a class="reference internal" href="installation.html"><span class="std std-doc">CUDA Installation</span></a> for the requirements and
+<a class="reference internal" href="installation.html#other-platforms"><span class="std std-ref">other platforms</span></a> for non-CUDA setups.</p>
+<p><strong>Docker (recommended):</strong> Follow <a class="reference internal" href="installation.html#docker-recommended"><span class="std std-ref">Docker installation</span></a>
+to pull the image, start the container, and install SGLang-Omni inside it.
+Run the launch command below in that container.</p>
+<p><strong>uv:</strong> With the <a class="reference internal" href="installation.html#option-b-manual-install"><span class="std std-ref">CUDA prerequisites</span></a> installed,
+create a Python 3.12 environment on the host:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>venv<span class="w"> </span>.venv<span class="w"> </span>-p<span class="w"> </span><span class="m">3</span>.12
+<span class="nb">source</span><span class="w"> </span>.venv/bin/activate
+uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>--prerelease<span class="o">=</span>allow<span class="w"> </span><span class="s2">"sglang-omni==0.2.0"</span>
+</pre></div>
+</div>
+<p>From either environment, start the server:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">CUDA_VISIBLE_DEVICES</span><span class="o">=</span><span class="m">0</span><span class="w"> </span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>Qwen/Qwen3-ASR-1.7B<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-name<span class="w"> </span>Qwen/Qwen3-ASR-1.7B<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--host<span class="w"> </span><span class="m">127</span>.0.0.1<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>The first launch downloads the checkpoint. Wait for the server to finish
+starting. If it does not become ready, check the server log and
+<a class="reference internal" href="#health-check"><span class="std std-ref">/health</span></a>.</p>
+</section>
+<section id="send-a-request">
+<h2>Send a request<a class="headerlink" href="#send-a-request" title="Link to this heading">#</a></h2>
+<p>In a second terminal on the same host, download the sample WAV used in the
+<a class="reference internal" href="../cookbook/qwen3_asr.html#transcribe-audio"><span class="std std-ref">Qwen3-ASR Cookbook</span></a> and upload it:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-fL<span class="w"> </span>-o<span class="w"> </span>query_to_cars.wav<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>https://raw.githubusercontent.com/sgl-project/sglang-omni/7fc1a31850efbc1138e1895b5a3bcbeecf3a8481/tests/data/query_to_cars.wav
+
+curl<span class="w"> </span>-fsS<span class="w"> </span>http://localhost:8000/v1/audio/transcriptions<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-F<span class="w"> </span><span class="nv">model</span><span class="o">=</span>Qwen/Qwen3-ASR-1.7B<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-F<span class="w"> </span><span class="nv">file</span><span class="o">=</span>@query_to_cars.wav<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-F<span class="w"> </span><span class="nv">response_format</span><span class="o">=</span>json
+</pre></div>
+</div>
+<p>Check the JSON response’s <code class="docutils literal notranslate"><span class="pre">text</span></code> field for the spoken question, “How many
+cars are there in the picture?”</p>
+<p>Keep the server running to try <a class="reference internal" href="examples.html#stream-a-transcript"><span class="std std-ref">streaming transcription</span></a>.</p>
+</section>
+<section id="api-server-reference">
+<h2>API server reference<a class="headerlink" href="#api-server-reference" title="Link to this heading">#</a></h2>
+<p>The sections below cover the HTTP server, health checks, and additional API
+requests. For internals, see <a class="reference internal" href="../developer_reference/apiserver_design.html"><span class="std std-doc">API Server Design</span></a>.</p>
 <section id="what-this-server-is">
-<h2>What This Server Is<a class="headerlink" href="#what-this-server-is" title="Link to this heading">#</a></h2>
+<h3>What This Server Is<a class="headerlink" href="#what-this-server-is" title="Link to this heading">#</a></h3>
 <p>The API server is an adapter between HTTP clients and the internal pipeline runtime:</p>
 <p><code class="docutils literal notranslate"><span class="pre">HTTP</span> <span class="pre">request</span></code> → <code class="docutils literal notranslate"><span class="pre">FastAPI</span> <span class="pre">app</span></code> → <code class="docutils literal notranslate"><span class="pre">Client</span></code> → <code class="docutils literal notranslate"><span class="pre">Coordinator</span></code> → <code class="docutils literal notranslate"><span class="pre">Pipeline</span> <span class="pre">stages</span></code></p>
 <p>In other words, it does not run model logic directly. Its job is to translate OpenAI-style requests into internal requests and format the results back into HTTP responses.</p>
 </section>
 <section id="start-the-server">
-<h2>Start the Server<a class="headerlink" href="#start-the-server" title="Link to this heading">#</a></h2>
+<h3>Start the Server<a class="headerlink" href="#start-the-server" title="Link to this heading">#</a></h3>
 <p>The installed CLI entrypoint is <code class="docutils literal notranslate"><span class="pre">sgl-omni</span></code>.</p>
 <p>The simplest way to start the server is to provide a model path and let <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> build the pipeline config for you:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
@@ -632,8 +670,7 @@
 <li><p><code class="docutils literal notranslate"><span class="pre">--log-level</span></code>: logging level for the server process</p></li>
 </ul>
 <p>If you already have a pipeline config file, you can also pass <code class="docutils literal notranslate"><span class="pre">--config</span> <span class="pre">path/to/config.yaml</span></code>. When the config file contains <code class="docutils literal notranslate"><span class="pre">model_path</span></code>, <code class="docutils literal notranslate"><span class="pre">--model-path</span></code> is optional and can be used as an override.</p>
-<section id="unified-sglang-cli">
-<h3>Unified SGLang CLI<a class="headerlink" href="#unified-sglang-cli" title="Link to this heading">#</a></h3>
+<p id="unified-sglang-cli"><strong>Unified SGLang CLI</strong></p>
 <p>When SGLang-Omni is installed alongside an SGLang release that supports serve
 backend plugins, the same server can be launched through the core executable:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sglang<span class="w"> </span>serve<span class="w"> </span>&lt;model-name-or-path&gt;<span class="w"> </span>--model-type<span class="w"> </span>omni<span class="w"> </span><span class="o">[</span>additional-arguments<span class="o">]</span>
@@ -655,11 +692,9 @@ sgl-omni<span class="w"> </span>serve<span class="w"> </span>&lt;model-name-or-p
 <p>Automatic Omni model detection is not enabled yet; select the backend
 explicitly with <code class="docutils literal notranslate"><span class="pre">--model-type</span> <span class="pre">omni</span></code>.</p>
 </section>
-</section>
 <section id="check-that-it-works">
-<h2>Check That It Works<a class="headerlink" href="#check-that-it-works" title="Link to this heading">#</a></h2>
-<section id="health-check">
-<h3>Health check<a class="headerlink" href="#health-check" title="Link to this heading">#</a></h3>
+<h3>Check That It Works<a class="headerlink" href="#check-that-it-works" title="Link to this heading">#</a></h3>
+<p id="health-check"><strong>Health check</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-s<span class="w"> </span>http://localhost:8000/health
 </pre></div>
 </div>
@@ -675,17 +710,14 @@ explicitly with <code class="docutils literal notranslate"><span class="pre">--m
 <li><p><code class="docutils literal notranslate"><span class="pre">200</span></code> when the runtime is healthy</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">503</span></code> when the HTTP server is up but the underlying runtime reports unhealthy status</p></li>
 </ul>
-</section>
-<section id="list-the-served-model">
-<h3>List the served model<a class="headerlink" href="#list-the-served-model" title="Link to this heading">#</a></h3>
+<p id="list-the-served-model"><strong>List the served model</strong></p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-s<span class="w"> </span>http://localhost:8000/v1/models
 </pre></div>
 </div>
 <p>This endpoint returns a single-model list. The model ID comes from <code class="docutils literal notranslate"><span class="pre">--model-name</span></code> if you set it, otherwise from the pipeline name.</p>
 </section>
-</section>
 <section id="send-a-minimal-chat-request">
-<h2>Send a Minimal Chat Request<a class="headerlink" href="#send-a-minimal-chat-request" title="Link to this heading">#</a></h2>
+<h3>Send a Minimal Chat Request<a class="headerlink" href="#send-a-minimal-chat-request" title="Link to this heading">#</a></h3>
 <p>The core endpoint is <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/v1/chat/completions</span></code>.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-s<span class="w"> </span>http://localhost:8000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
@@ -711,9 +743,8 @@ explicitly with <code class="docutils literal notranslate"><span class="pre">--m
 </ul>
 </section>
 <section id="streaming-and-multi-modal-requests">
-<h2>Streaming and Multi-modal Requests<a class="headerlink" href="#streaming-and-multi-modal-requests" title="Link to this heading">#</a></h2>
-<section id="streaming">
-<h3>Streaming<a class="headerlink" href="#streaming" title="Link to this heading">#</a></h3>
+<h3>Streaming and Multi-modal Requests<a class="headerlink" href="#streaming-and-multi-modal-requests" title="Link to this heading">#</a></h3>
+<p id="streaming"><strong>Streaming</strong></p>
 <p>Set <code class="docutils literal notranslate"><span class="pre">stream</span></code> to <code class="docutils literal notranslate"><span class="pre">true</span></code> to receive Server-Sent Events (SSE):</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-N<span class="w"> </span>http://localhost:8000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
@@ -733,9 +764,7 @@ explicitly with <code class="docutils literal notranslate"><span class="pre">--m
 <li><p>the stream ends with <code class="docutils literal notranslate"><span class="pre">data:</span> <span class="pre">[DONE]</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">usage</span></code> is attached to the final completion chunk</p></li>
 </ul>
-</section>
-<section id="multi-modal-input-and-output">
-<h3>Multi-modal input and output<a class="headerlink" href="#multi-modal-input-and-output" title="Link to this heading">#</a></h3>
+<p id="multi-modal-input-and-output"><strong>Multi-modal input and output</strong></p>
 <p><code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> extends the standard OpenAI chat schema with a few extra fields:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">images</span></code></p></li>
@@ -763,9 +792,8 @@ explicitly with <code class="docutils literal notranslate"><span class="pre">--m
 </div>
 <p>The <code class="docutils literal notranslate"><span class="pre">videos</span></code>, <code class="docutils literal notranslate"><span class="pre">images</span></code>, and <code class="docutils literal notranslate"><span class="pre">audios</span></code> fields accept either local file paths or HTTP(S) URLs.</p>
 </section>
-</section>
 <section id="text-to-speech">
-<h2>Text-to-Speech<a class="headerlink" href="#text-to-speech" title="Link to this heading">#</a></h2>
+<h3>Text-to-Speech<a class="headerlink" href="#text-to-speech" title="Link to this heading">#</a></h3>
 <p>The server also exposes <code class="docutils literal notranslate"><span class="pre">POST</span> <span class="pre">/v1/audio/speech</span></code>.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-s<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
@@ -785,7 +813,7 @@ explicitly with <code class="docutils literal notranslate"><span class="pre">--m
 </ul>
 </section>
 <section id="common-errors">
-<h2>Common Errors<a class="headerlink" href="#common-errors" title="Link to this heading">#</a></h2>
+<h3>Common Errors<a class="headerlink" href="#common-errors" title="Link to this heading">#</a></h3>
 <p>When requests fail, the server returns standard HTTP error codes:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">400</span> <span class="pre">Bad</span> <span class="pre">Request</span></code>: malformed request body or invalid parameters</p></li>
@@ -801,11 +829,12 @@ explicitly with <code class="docutils literal notranslate"><span class="pre">--m
 </ul>
 </section>
 <section id="next-reading">
-<h2>Next Reading<a class="headerlink" href="#next-reading" title="Link to this heading">#</a></h2>
+<h3>Next Reading<a class="headerlink" href="#next-reading" title="Link to this heading">#</a></h3>
 <ul class="simple">
 <li><p><a class="reference internal" href="../developer_reference/apiserver_design.html"><span class="std std-doc">API Server Design</span></a></p></li>
 <li><p><a class="reference internal" href="../developer_reference/main.html"><span class="std std-doc">Developer Reference</span></a></p></li>
 </ul>
+</section>
 </section>
 </section>
 
@@ -820,6 +849,24 @@ explicitly with <code class="docutils literal notranslate"><span class="pre">--m
                 <footer class="prev-next-footer d-print-none">
                   
 <div class="prev-next-area">
+    <a class="left-prev"
+       href="../index.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Welcome to SGLang-Omni</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="installation.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Installation — CUDA</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
 </div>
                 </footer>
               
@@ -838,25 +885,19 @@ explicitly with <code class="docutils literal notranslate"><span class="pre">--m
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-this-server-is">What This Server Is</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#start-the-server">Start the Server</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#unified-sglang-cli">Unified SGLang CLI</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#install-and-start">Install and start</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#send-a-request">Send a request</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#api-server-reference">API server reference</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#what-this-server-is">What This Server Is</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#start-the-server">Start the Server</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#check-that-it-works">Check That It Works</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#send-a-minimal-chat-request">Send a Minimal Chat Request</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming-and-multi-modal-requests">Streaming and Multi-modal Requests</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#text-to-speech">Text-to-Speech</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#common-errors">Common Errors</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#next-reading">Next Reading</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#check-that-it-works">Check That It Works</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#health-check">Health check</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#list-the-served-model">List the served model</a></li>
-</ul>
-</li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#send-a-minimal-chat-request">Send a Minimal Chat Request</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming-and-multi-modal-requests">Streaming and Multi-modal Requests</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming">Streaming</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#multi-modal-input-and-output">Multi-modal input and output</a></li>
-</ul>
-</li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#text-to-speech">Text-to-Speech</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#common-errors">Common Errors</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#next-reading">Next Reading</a></li>
 </ul>
   </nav></div>
 

@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>SGLang-Omni &#8212; SGLang</title>
+    <title>Welcome to SGLang-Omni &#8212; SGLang</title>
   
   
   
@@ -51,13 +51,13 @@
     <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'index';</script>
     <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
-    <script src="_static/js/sidebar_company_toggle.js?v=1646c162"></script>
+    <script src="_static/js/sidebar_company_toggle.js?v=7622d557"></script>
     <script src="_static/js/qwen3_omni_server_generator.js?v=d7738e8a"></script>
     <script src="_static/js/ming_omni_server_generator.js?v=7979a72f"></script>
     <link rel="icon" href="_static/logo.ico"/>
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
-    <link rel="next" title="Installation — CUDA" href="get_started/installation.html" />
+    <link rel="next" title="Quickstart" href="get_started/apiserver_quickstart.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.2.0" />
@@ -207,14 +207,23 @@
         <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
     <div class="bd-toc-item navbar-nav active">
         <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
-<ul class="nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="get_started/installation.html">Installation — CUDA</a></li>
-<li class="toctree-l1"><a class="reference internal" href="get_started/installation_apple_silicon.html">Installation — Apple Silicon</a></li>
-<li class="toctree-l1"><a class="reference internal" href="get_started/installation_npu.html">Installation — NPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="get_started/installation_xpu.html">Installation — Intel XPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="get_started/installation_cpu.html">Installation — Intel CPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="get_started/installation_musa.html">Installation — MUSA</a></li>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Welcome to SGLang-Omni</a></li>
+<li class="toctree-l1"><a class="reference internal" href="get_started/apiserver_quickstart.html">Quickstart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="get_started/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="get_started/examples.html">Examples</a></li>
 <li class="toctree-l1"><a class="reference internal" href="get_started/troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Other Platforms</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="get_started/installation_apple_silicon.html">Apple Silicon</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="mlx/index.html">Native MLX / Voxt</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="get_started/installation_npu.html">Ascend NPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="get_started/installation_xpu.html">Intel XPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="get_started/installation_cpu.html">Intel CPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="get_started/installation_musa.html">Moore Threads MUSA</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Cookbook</span></p>
 <ul class="nav bd-sidenav">
@@ -308,10 +317,6 @@
 <li class="toctree-l1"><a class="reference internal" href="basic_usage/omni_router.html">SGLang-Omni Router</a></li>
 <li class="toctree-l1"><a class="reference internal" href="basic_usage/mps_dp.html">Same-GPU Data Parallelism with CUDA MPS</a></li>
 <li class="toctree-l1"><a class="reference internal" href="basic_usage/native_media_routes.html">Native Media Routes</a></li>
-</ul>
-<p aria-level="2" class="caption" role="heading"><span class="caption-text">MLX</span></p>
-<ul class="nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="mlx/index.html">MLX Path</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Reference</span></p>
 <ul class="nav bd-sidenav">
@@ -556,7 +561,7 @@
               
 
 <div id="jb-print-docs-body" class="onlyprint">
-    <h1>SGLang-Omni</h1>
+    <h1>Welcome to SGLang-Omni</h1>
     <!-- Table of contents -->
     <div id="print-main-content">
         <div id="jb-print-toc">
@@ -566,8 +571,12 @@
             </div>
             <nav aria-label="Page">
                 <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#get-started">Get Started</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#news-and-latest-blogs">News and latest blogs</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#about">About</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#supported-models">Supported Models</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#supported-models">Supported Models</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#releases-blog">Releases &amp; Blog</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#community-resources">Community &amp; Resources</a><ul class="pst-show_toc_level nav section-nav flex-column">
 </ul>
 </li>
 </ul>
@@ -581,12 +590,138 @@
 <div id="searchbox"></div>
                 <article class="bd-article">
                   
-  <section id="sglang-omni">
-<h1>SGLang-Omni<a class="headerlink" href="#sglang-omni" title="Link to this heading">#</a></h1>
-<p>SGLang-Omni is a high-performance serving framework for omni and multimodal models, built on top of <a class="reference external" href="https://github.com/sgl-project/sglang">SGLang</a>. It is designed to orchestrate multi-stage pipelines with low latency and OpenAI-compatible APIs.</p>
-<p>Modern omni models — such as speech-output LLMs and multimodal generation systems — decompose into heterogeneous stages with fundamentally different computational profiles: a compute-bound thinker, a memory-bound talker, a latency-sensitive codec. SGLang-Omni is built around a <strong>computation-centric design</strong>: each stage runs its own independent scheduler tuned to its bottleneck, communicates through a shared inbox/outbox abstraction, and transfers tensors via zero-copy shared memory. This prevents any single stage from degrading the others and allows new models to plug into the framework by declaring a pipeline topology rather than building an inference system from scratch.</p>
+  <section id="welcome-to-sglang-omni">
+<span id="sglang-omni"></span><h1>Welcome to SGLang-Omni<a class="headerlink" href="#welcome-to-sglang-omni" title="Link to this heading">#</a></h1>
+<p>Serve speech and multimodal models with SGLang-Omni.</p>
+<ul class="simple">
+<li><p><strong>Speech &amp; Multimodal Models.</strong> Transcribe audio, generate speech, and serve models that accept audio, images, and video through OpenAI-compatible APIs.</p></li>
+<li><p><strong>Streaming &amp; Realtime.</strong> Stream transcripts and speech as they are generated. Use realtime sessions for live audio input and interactive voice applications.</p></li>
+<li><p><strong>Multi-stage Runtime.</strong> Run preprocessing, inference, and audio generation as stages with independent scheduling. The runtime is built on <a class="reference external" href="https://github.com/sgl-project/sglang">SGLang</a>.</p></li>
+<li><p><strong>Hardware Support.</strong> Choose the installation guide for your hardware: <a class="reference internal" href="get_started/installation.html"><span class="doc">CUDA</span></a>, <a class="reference internal" href="get_started/installation_apple_silicon.html"><span class="doc">Apple Silicon</span></a>, <a class="reference internal" href="get_started/installation_npu.html"><span class="doc">Ascend NPU</span></a>, <a class="reference internal" href="get_started/installation_xpu.html"><span class="doc">Intel XPU</span></a>, <a class="reference internal" href="get_started/installation_cpu.html"><span class="doc">Intel CPU</span></a>, or <a class="reference internal" href="get_started/installation_musa.html"><span class="doc">MUSA</span></a>. Model support varies by platform.</p></li>
+</ul>
+<section id="get-started">
+<h2>Get Started<a class="headerlink" href="#get-started" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><a class="reference internal" href="get_started/apiserver_quickstart.html"><span class="doc">Quickstart</span></a> — Start a model server and transcribe one audio clip.</p></li>
+<li><p><a class="reference internal" href="get_started/installation.html"><span class="doc">Installation</span></a> — Choose an installation method for your hardware.</p></li>
+<li><p><a class="reference internal" href="get_started/examples.html"><span class="doc">Examples</span></a> — Stream a transcript, generate speech, or send an audio chat request.</p></li>
+</ul>
+</section>
+<section id="news-and-latest-blogs">
+<h2>News and latest blogs<a class="headerlink" href="#news-and-latest-blogs" title="Link to this heading">#</a></h2>
+<p>Scroll sideways for more updates.</p>
+<style>
+  .omni-news {
+    display: flex;
+    gap: 1rem;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    list-style: none;
+    margin: 0 0 0.75rem;
+    padding: 0 0 0.75rem;
+  }
+
+  .omni-news > li {
+    flex: 0 0 calc((100% - 2rem) / 2.12);
+    min-width: 0;
+    scroll-snap-align: start;
+  }
+
+  .omni-news a {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+    border: 1px solid var(--pst-color-border, #bbb);
+    border-radius: 0.75rem;
+    background: var(--pst-color-surface, transparent);
+    color: var(--pst-color-text-base, inherit);
+    text-decoration: none;
+  }
+
+  .omni-news a:hover strong {
+    text-decoration: underline;
+  }
+
+  .omni-news:focus-visible,
+  .omni-news a:focus-visible {
+    outline: 3px solid var(--pst-color-primary, #176a96);
+    outline-offset: -3px;
+  }
+
+  .omni-news img {
+    display: block;
+    width: 100%;
+    aspect-ratio: 16 / 8;
+    object-fit: contain;
+    background: #fff;
+  }
+
+  .omni-news img.omni-news-logo {
+    padding: 1.25rem;
+    background: #fff6ef;
+  }
+
+  .omni-news strong {
+    padding: 0.75rem 0.875rem 0.25rem;
+    line-height: 1.35;
+  }
+
+  .omni-news time {
+    margin-top: auto;
+    padding: 0 0.875rem 0.75rem;
+    color: var(--pst-color-text-muted, inherit);
+    font-size: 0.85rem;
+  }
+
+  @media (max-width: 600px) {
+    .omni-news > li {
+      flex-basis: 85%;
+    }
+  }
+</style>
+
+<ul class="omni-news" role="list" tabindex="0" aria-label="News and latest blogs">
+  <li>
+    <a href="https://github.com/sgl-project/sglang-omni/releases/tag/v0.2.0">
+      <img class="omni-news-logo" src="_static/image/sgl-omni-logo.svg" alt="" loading="lazy">
+      <strong>SGLang-Omni v0.2.0</strong>
+      <time datetime="2026-10-27">October 27, 2026</time>
+    </a>
+  </li>
+  <li>
+    <a href="https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v1.16.3">
+      <img class="omni-news-logo" src="https://raw.githubusercontent.com/sgl-project/sglang-omni/7be1317/Voxt/Voxt/VoxtIcon.icon/Assets/Voxt.png" alt="" loading="lazy">
+      <strong>Voxt v1.16.3</strong>
+      <time datetime="2026-10-23">October 23, 2026</time>
+    </a>
+  </li>
+  <li>
+    <a href="https://www.sglang.io/blog/omni-interactive-runtime">
+      <img src="https://www.sglang.io/images/omni-interactive-runtime/interaction-approaches.png" alt="" loading="lazy">
+      <strong>A unified runtime for full-duplex interaction</strong>
+      <time datetime="2026-10-20">October 20, 2026</time>
+    </a>
+  </li>
+  <li>
+    <a href="https://www.sglang.io/blog/spg-topology">
+      <img src="https://www.sglang.io/images/spg-topology/spg-qwen3-omni-stage-graph.png" alt="" loading="lazy">
+      <strong>Serving multi-stage omni models with SPG</strong>
+      <time datetime="2026-10-13">October 13, 2026</time>
+    </a>
+  </li>
+  <li>
+    <a href="https://fish.audio/blog/fish-audio-drama-3/">
+      <img src="https://public-platform.r2.fish.audio/media/blog-images/d42b7127d9f24eb3b222388bf81d6885" alt="" loading="lazy">
+      <strong>Fish Audio Drama 3 launches with Omni support</strong>
+      <time datetime="2026-10-13">October 13, 2026</time>
+    </a>
+  </li>
+</ul><p><a class="reference external" href="https://github.com/sgl-project/sglang-omni/releases">View all releases</a></p>
+</section>
 <section id="about">
 <h2>About<a class="headerlink" href="#about" title="Link to this heading">#</a></h2>
+<p>Modern omni models — such as speech-output LLMs and multimodal generation systems — decompose into heterogeneous stages with fundamentally different computational profiles: a compute-bound thinker, a memory-bound talker, a latency-sensitive codec. SGLang-Omni is built around a <strong>computation-centric design</strong>: each stage runs its own independent scheduler tuned to its bottleneck, communicates through a shared inbox/outbox abstraction, and transfers tensors via zero-copy shared memory. This prevents any single stage from degrading the others and allows new models to plug into the framework by declaring a pipeline topology rather than building an inference system from scratch.</p>
 <p>Core features:</p>
 <ul class="simple">
 <li><p><strong>Multi-Stage Pipeline</strong>: Flexible framework for orchestrating preprocessing, AR engine, codec, and vocoder stages across processes and GPUs.</p></li>
@@ -717,16 +852,71 @@
 </tbody>
 </table>
 </div>
+</section>
+<section id="releases-blog">
+<h2>Releases &amp; Blog<a class="headerlink" href="#releases-blog" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><a class="reference external" href="https://github.com/sgl-project/sglang-omni/releases">GitHub releases</a> and <a class="reference external" href="https://pypi.org/project/sglang-omni/">PyPI</a>.</p></li>
+<li><p><a class="reference external" href="https://www.sglang.io/blog/omni-interactive-runtime">The unified interactive runtime</a> and <a class="reference external" href="https://www.sglang.io/blog/spg-topology">the Stage–Process–GPU topology</a>.</p></li>
+</ul>
+</section>
+<section id="community-resources">
+<h2>Community &amp; Resources<a class="headerlink" href="#community-resources" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p><a class="reference external" href="https://slack.sglang.io">SGLang Slack</a> — Ask questions and discuss development.</p></li>
+<li><p><a class="reference external" href="https://github.com/sgl-project/sglang-omni">GitHub</a> and <a class="reference internal" href="developer_reference/main.html"><span class="doc">Developer Reference</span></a> — Find the source and contribution resources.</p></li>
+</ul>
 <div class="toctree-wrapper compound">
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
-<ul>
-<li class="toctree-l1"><a class="reference internal" href="get_started/installation.html">Installation — CUDA</a></li>
-<li class="toctree-l1"><a class="reference internal" href="get_started/installation_apple_silicon.html">Installation — Apple Silicon</a></li>
-<li class="toctree-l1"><a class="reference internal" href="get_started/installation_npu.html">Installation — NPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="get_started/installation_xpu.html">Installation — Intel XPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="get_started/installation_cpu.html">Installation — Intel CPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="get_started/installation_musa.html">Installation — MUSA</a></li>
+<ul class="current">
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Welcome to SGLang-Omni</a></li>
+<li class="toctree-l1"><a class="reference internal" href="get_started/apiserver_quickstart.html">Quickstart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="get_started/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="get_started/examples.html">Examples</a></li>
 <li class="toctree-l1"><a class="reference internal" href="get_started/troubleshooting.html">Troubleshooting</a></li>
+</ul>
+</div>
+<div class="toctree-wrapper compound">
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Other Platforms</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="get_started/installation_apple_silicon.html">Apple Silicon</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="get_started/installation_apple_silicon.html#prerequisites">Prerequisites</a></li>
+<li class="toctree-l2"><a class="reference internal" href="get_started/installation_apple_silicon.html#install-with-the-hosted-installer">Install with the hosted installer</a></li>
+<li class="toctree-l2"><a class="reference internal" href="get_started/installation_apple_silicon.html#install-from-a-checkout">Install from a checkout</a></li>
+<li class="toctree-l2"><a class="reference internal" href="get_started/installation_apple_silicon.html#next-steps">Next steps</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="get_started/installation_npu.html">Ascend NPU</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="get_started/installation_npu.html#prerequisites">Prerequisites</a></li>
+<li class="toctree-l2"><a class="reference internal" href="get_started/installation_npu.html#docker-recommended">Docker (recommended)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="get_started/installation_npu.html#manual-install">Manual install</a></li>
+<li class="toctree-l2"><a class="reference internal" href="get_started/installation_npu.html#verify-the-installation">Verify the installation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="get_started/installation_npu.html#qwen3-asr-graph-execution">Qwen3-ASR graph execution</a></li>
+<li class="toctree-l2"><a class="reference internal" href="get_started/installation_npu.html#model-notes">Model notes</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="get_started/installation_xpu.html">Intel XPU</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="get_started/installation_xpu.html#prerequisites">Prerequisites</a></li>
+<li class="toctree-l2"><a class="reference internal" href="get_started/installation_xpu.html#docker">Docker</a></li>
+<li class="toctree-l2"><a class="reference internal" href="get_started/installation_xpu.html#install-into-an-existing-xpu-environment">Install into an existing XPU environment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="get_started/installation_xpu.html#verify-the-installation">Verify the installation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="get_started/installation_xpu.html#serve-a-model">Serve a model</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="get_started/installation_cpu.html">Intel CPU</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="get_started/installation_cpu.html#prerequisites">Prerequisites</a></li>
+<li class="toctree-l2"><a class="reference internal" href="get_started/installation_cpu.html#docker">Docker</a></li>
+<li class="toctree-l2"><a class="reference internal" href="get_started/installation_cpu.html#manual-install">Manual install</a></li>
+<li class="toctree-l2"><a class="reference internal" href="get_started/installation_cpu.html#verify-the-installation">Verify the installation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="get_started/installation_cpu.html#serve-a-model">Serve a model</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="get_started/installation_musa.html">Moore Threads MUSA</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="get_started/installation_musa.html#prerequisites">Prerequisites</a></li>
+<li class="toctree-l2"><a class="reference internal" href="get_started/installation_musa.html#install-sglang-omni">Install SGLang-Omni</a></li>
+<li class="toctree-l2"><a class="reference internal" href="get_started/installation_musa.html#verify-the-installation">Verify the installation</a></li>
+</ul>
+</li>
 </ul>
 </div>
 <div class="toctree-wrapper compound">
@@ -827,12 +1017,6 @@
 </ul>
 </div>
 <div class="toctree-wrapper compound">
-<p aria-level="2" class="caption" role="heading"><span class="caption-text">MLX</span></p>
-<ul>
-<li class="toctree-l1"><a class="reference internal" href="mlx/index.html">MLX Path</a></li>
-</ul>
-</div>
-<div class="toctree-wrapper compound">
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Reference</span></p>
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="developer_reference/main.html">Architecture</a></li>
@@ -870,11 +1054,11 @@
                   
 <div class="prev-next-area">
     <a class="right-next"
-       href="get_started/installation.html"
+       href="get_started/apiserver_quickstart.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Installation — CUDA</p>
+        <p class="prev-next-title">Quickstart</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -896,8 +1080,12 @@
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#get-started">Get Started</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#news-and-latest-blogs">News and latest blogs</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#about">About</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#supported-models">Supported Models</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#supported-models">Supported Models</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#releases-blog">Releases &amp; Blog</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#community-resources">Community &amp; Resources</a><ul class="pst-show_toc_level nav section-nav flex-column">
 </ul>
 </li>
 </ul>

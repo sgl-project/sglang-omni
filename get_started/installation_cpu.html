@@ -51,7 +51,7 @@
     <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'get_started/installation_cpu';</script>
     <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
-    <script src="../_static/js/sidebar_company_toggle.js?v=1646c162"></script>
+    <script src="../_static/js/sidebar_company_toggle.js?v=7622d557"></script>
     <script src="../_static/js/qwen3_omni_server_generator.js?v=d7738e8a"></script>
     <script src="../_static/js/ming_omni_server_generator.js?v=7979a72f"></script>
     <link rel="icon" href="../_static/logo.ico"/>
@@ -206,14 +206,23 @@
         <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
     <div class="bd-toc-item navbar-nav active">
         <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
-<ul class="current nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="installation.html">Installation — CUDA</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_apple_silicon.html">Installation — Apple Silicon</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_npu.html">Installation — NPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_xpu.html">Installation — Intel XPU</a></li>
-<li class="toctree-l1 current active"><a class="current reference internal" href="#">Installation — Intel CPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_musa.html">Installation — MUSA</a></li>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../index.html">Welcome to SGLang-Omni</a></li>
+<li class="toctree-l1"><a class="reference internal" href="apiserver_quickstart.html">Quickstart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="examples.html">Examples</a></li>
 <li class="toctree-l1"><a class="reference internal" href="troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Other Platforms</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="installation_apple_silicon.html">Apple Silicon</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../mlx/index.html">Native MLX / Voxt</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_npu.html">Ascend NPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_xpu.html">Intel XPU</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Intel CPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_musa.html">Moore Threads MUSA</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Cookbook</span></p>
 <ul class="nav bd-sidenav">
@@ -307,10 +316,6 @@
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/omni_router.html">SGLang-Omni Router</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/mps_dp.html">Same-GPU Data Parallelism with CUDA MPS</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/native_media_routes.html">Native Media Routes</a></li>
-</ul>
-<p aria-level="2" class="caption" role="heading"><span class="caption-text">MLX</span></p>
-<ul class="nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="../mlx/index.html">MLX Path</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Reference</span></p>
 <ul class="nav bd-sidenav">
@@ -565,15 +570,14 @@
             </div>
             <nav aria-label="Page">
                 <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#why-a-separate-pyproject">Why a separate pyproject</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#option-a-docker">Option A: Docker</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#option-b-manual-install">Option B: Manual install</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#verify">Verify</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#docker">Docker</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#manual-install">Manual install</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#verify-the-installation">Verify the installation</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#audio-decoding-fails-with-libtorchcodec-core-so">Audio decoding fails with <code class="docutils literal notranslate"><span class="pre">libtorchcodec_core*.so</span></code></a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#serve">Serve</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#serve-a-model">Serve a model</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#whisper-asr-speech-to-text-intel-xeon-cpu">Whisper ASR (speech-to-text, Intel Xeon CPU)</a></li>
 </ul>
 </li>
@@ -590,19 +594,8 @@
                   
   <section class="tex2jax_ignore mathjax_ignore" id="installation-intel-cpu">
 <h1>Installation — Intel CPU<a class="headerlink" href="#installation-intel-cpu" title="Link to this heading">#</a></h1>
-<p>Installs <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> for <strong>CPU-only inference</strong>. The default
-<a class="reference internal" href="installation.html"><span class="std std-doc">installation</span></a> targets CUDA, so this path uses the separate
-<a class="reference download internal" download="" href="../_downloads/959ec2b004cde39ac406608c01e9684b/pyproject_cpu.toml"><span class="xref download myst"><code class="docutils literal notranslate"><span class="pre">pyproject_cpu.toml</span></code></span></a> and the PyTorch CPU wheel index.</p>
-<blockquote>
-<div><p><strong><code class="docutils literal notranslate"><span class="pre">--no-build-isolation</span></code> is required</strong> for the editable <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> install.</p>
-</div></blockquote>
-<section id="why-a-separate-pyproject">
-<h2>Why a separate pyproject<a class="headerlink" href="#why-a-separate-pyproject" title="Link to this heading">#</a></h2>
-<p><code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">-e</span> <span class="pre">.</span></code> resolves <a class="reference download internal" download="" href="../_downloads/079962c730e6e61f3f9971f670e9cf70/pyproject.toml"><span class="xref download myst"><code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code></span></a>. In CUDA-oriented
-checkouts, that can pull CUDA-only wheels and replace a CPU torch stack.
-<a class="reference download internal" download="" href="../_downloads/959ec2b004cde39ac406608c01e9684b/pyproject_cpu.toml"><span class="xref download myst"><code class="docutils literal notranslate"><span class="pre">pyproject_cpu.toml</span></code></span></a> pins the torch family to CPU wheels and
-omits accelerator-only packages.</p>
-</section>
+<p>Install SGLang-Omni for CPU-only inference on Intel Xeon. For NVIDIA GPUs,
+use the <a class="reference internal" href="installation.html"><span class="std std-doc">CUDA installation</span></a>.</p>
 <section id="prerequisites">
 <h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
 <ul class="simple">
@@ -611,9 +604,10 @@ omits accelerator-only packages.</p>
 <li><p>A CPU build of SGLang from the matching upstream release.</p></li>
 <li><p>Standard audio runtime libraries such as <code class="docutils literal notranslate"><span class="pre">ffmpeg</span></code> and <code class="docutils literal notranslate"><span class="pre">libsndfile</span></code>.</p></li>
 </ul>
+<p><a id="option-a-docker"></a></p>
 </section>
-<section id="option-a-docker">
-<h2>Option A: Docker<a class="headerlink" href="#option-a-docker" title="Link to this heading">#</a></h2>
+<section id="docker">
+<h2>Docker<a class="headerlink" href="#docker" title="Link to this heading">#</a></h2>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Clone the SGLang-omni repository</span>
 git<span class="w"> </span>clone<span class="w"> </span>https://github.com/sgl-project/sglang-omni.git
 <span class="nb">cd</span><span class="w"> </span>sglang-omni
@@ -627,9 +621,19 @@ docker<span class="w"> </span>run<span class="w"> </span>-it<span class="w"> </s
 </div>
 <p>The image installs upstream SGLang with its CPU pyproject, then installs <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code>
 with <code class="docutils literal notranslate"><span class="pre">pyproject_cpu.toml</span></code>. It sets <code class="docutils literal notranslate"><span class="pre">SGLANG_USE_CPU_ENGINE=1</span></code> for the runtime.</p>
+<p><a id="option-b-manual-install"></a></p>
 </section>
-<section id="option-b-manual-install">
-<h2>Option B: Manual install<a class="headerlink" href="#option-b-manual-install" title="Link to this heading">#</a></h2>
+<section id="manual-install">
+<h2>Manual install<a class="headerlink" href="#manual-install" title="Link to this heading">#</a></h2>
+<p><a id="why-a-separate-pyproject"></a></p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p><a class="reference external" href="https://github.com/sgl-project/sglang-omni/blob/main/pyproject_cpu.toml"><code class="docutils literal notranslate"><span class="pre">pyproject_cpu.toml</span></code></a>
+selects CPU wheels. A plain editable install uses the CUDA
+<a class="reference external" href="https://github.com/sgl-project/sglang-omni/blob/main/pyproject.toml"><code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code></a>
+and can replace your CPU torch build. The editable CPU install requires
+<code class="docutils literal notranslate"><span class="pre">--no-build-isolation</span></code>.</p>
+</div>
 <p>Create and activate an environment first:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/sgl-project/sglang-omni.git
 <span class="nb">cd</span><span class="w"> </span>sglang-omni
@@ -659,9 +663,10 @@ uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </s
 bash<span class="w"> </span>scripts/cpu/install_cpu.sh
 </pre></div>
 </div>
+<p><a id="verify"></a></p>
 </section>
-<section id="verify">
-<h2>Verify<a class="headerlink" href="#verify" title="Link to this heading">#</a></h2>
+<section id="verify-the-installation">
+<h2>Verify the installation<a class="headerlink" href="#verify-the-installation" title="Link to this heading">#</a></h2>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-c<span class="w"> </span><span class="s2">"import sglang_omni, torch; print(sglang_omni.__file__, torch.__version__)"</span>
 which<span class="w"> </span>sgl-omni
 </pre></div>
@@ -685,10 +690,11 @@ libraries at import. An unsupported FFmpeg version can surface as the unhelpful
 <p><code class="docutils literal notranslate"><span class="pre">torchcodec</span></code> ships loaders for FFmpeg majors 4–8 only; FFmpeg 9 satisfies none
 of them. Pin an older major if needed. Docker users get a supported major from
 <code class="docutils literal notranslate"><span class="pre">apt</span></code>.</p>
+<p><a id="serve"></a></p>
 </section>
 </section>
-<section id="serve">
-<h2>Serve<a class="headerlink" href="#serve" title="Link to this heading">#</a></h2>
+<section id="serve-a-model">
+<h2>Serve a model<a class="headerlink" href="#serve-a-model" title="Link to this heading">#</a></h2>
 <section id="whisper-asr-speech-to-text-intel-xeon-cpu">
 <h3>Whisper ASR (speech-to-text, Intel Xeon CPU)<a class="headerlink" href="#whisper-asr-speech-to-text-intel-xeon-cpu" title="Link to this heading">#</a></h3>
 <p>Whisper-base and Whisper-large-v3 have been validated on an AMX-capable Intel Xeon CPU. SGLang selects <code class="docutils literal notranslate"><span class="pre">intel_amx</span></code> by default on x86 CPUs and automatically falls back to <code class="docutils literal notranslate"><span class="pre">torch_native</span></code> when AMX is unavailable; graph capture, torch.compile, and async decode are disabled by default on CPU.</p>
@@ -751,15 +757,14 @@ of them. Pin an older major if needed. Docker users get a supported major from
   </div>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#why-a-separate-pyproject">Why a separate pyproject</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#option-a-docker">Option A: Docker</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#option-b-manual-install">Option B: Manual install</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#verify">Verify</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#docker">Docker</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#manual-install">Manual install</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#verify-the-installation">Verify the installation</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#audio-decoding-fails-with-libtorchcodec-core-so">Audio decoding fails with <code class="docutils literal notranslate"><span class="pre">libtorchcodec_core*.so</span></code></a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#serve">Serve</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#serve-a-model">Serve a model</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#whisper-asr-speech-to-text-intel-xeon-cpu">Whisper ASR (speech-to-text, Intel Xeon CPU)</a></li>
 </ul>
 </li>

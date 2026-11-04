@@ -51,13 +51,13 @@
     <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'get_started/installation_musa';</script>
     <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
-    <script src="../_static/js/sidebar_company_toggle.js?v=1646c162"></script>
+    <script src="../_static/js/sidebar_company_toggle.js?v=7622d557"></script>
     <script src="../_static/js/qwen3_omni_server_generator.js?v=d7738e8a"></script>
     <script src="../_static/js/ming_omni_server_generator.js?v=7979a72f"></script>
     <link rel="icon" href="../_static/logo.ico"/>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Troubleshooting" href="troubleshooting.html" />
+    <link rel="next" title="Qwen" href="../cookbook/companies/qwen.html" />
     <link rel="prev" title="Installation — Intel CPU" href="installation_cpu.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -206,14 +206,23 @@
         <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
     <div class="bd-toc-item navbar-nav active">
         <p aria-level="2" class="caption" role="heading"><span class="caption-text">Get Started</span></p>
-<ul class="current nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="installation.html">Installation — CUDA</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_apple_silicon.html">Installation — Apple Silicon</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_npu.html">Installation — NPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_xpu.html">Installation — Intel XPU</a></li>
-<li class="toctree-l1"><a class="reference internal" href="installation_cpu.html">Installation — Intel CPU</a></li>
-<li class="toctree-l1 current active"><a class="current reference internal" href="#">Installation — MUSA</a></li>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../index.html">Welcome to SGLang-Omni</a></li>
+<li class="toctree-l1"><a class="reference internal" href="apiserver_quickstart.html">Quickstart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="examples.html">Examples</a></li>
 <li class="toctree-l1"><a class="reference internal" href="troubleshooting.html">Troubleshooting</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Other Platforms</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="installation_apple_silicon.html">Apple Silicon</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../mlx/index.html">Native MLX / Voxt</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_npu.html">Ascend NPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_xpu.html">Intel XPU</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation_cpu.html">Intel CPU</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Moore Threads MUSA</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Cookbook</span></p>
 <ul class="nav bd-sidenav">
@@ -307,10 +316,6 @@
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/omni_router.html">SGLang-Omni Router</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/mps_dp.html">Same-GPU Data Parallelism with CUDA MPS</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../basic_usage/native_media_routes.html">Native Media Routes</a></li>
-</ul>
-<p aria-level="2" class="caption" role="heading"><span class="caption-text">MLX</span></p>
-<ul class="nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="../mlx/index.html">MLX Path</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Developer Reference</span></p>
 <ul class="nav bd-sidenav">
@@ -566,9 +571,12 @@
             <nav aria-label="Page">
                 <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#option-a-docker">Option A: Docker</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#option-b-install-from-source">Option B: Install from Source</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#verify">Verify</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#install-sglang-omni">Install SGLang-Omni</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#docker">Docker</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#from-source">From source</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#verify-the-installation">Verify the installation</a></li>
 </ul>
             </nav>
         </div>
@@ -582,7 +590,7 @@
                   
   <section class="tex2jax_ignore mathjax_ignore" id="installation-musa">
 <h1>Installation — MUSA<a class="headerlink" href="#installation-musa" title="Link to this heading">#</a></h1>
-<p>This document describes how to install SGLang-Omni on Moore Threads GPUs.</p>
+<p>Install SGLang-Omni on Moore Threads GPUs.</p>
 <p>SGLang owns the base MUSA runtime environment. Install or build SGLang’s MUSA
 environment first, then install SGLang-Omni as an overlay.</p>
 <section id="prerequisites">
@@ -590,8 +598,11 @@ environment first, then install SGLang-Omni as an overlay.</p>
 <p>Install the Moore Threads driver and MUSA runtime on the host first. For the
 base SGLang environment, follow the SGLang Moore Threads GPU installation guide.</p>
 </section>
-<section id="option-a-docker">
-<h2>Option A: Docker<a class="headerlink" href="#option-a-docker" title="Link to this heading">#</a></h2>
+<section id="install-sglang-omni">
+<h2>Install SGLang-Omni<a class="headerlink" href="#install-sglang-omni" title="Link to this heading">#</a></h2>
+<p><a id="option-a-docker"></a></p>
+<section id="docker">
+<h3>Docker<a class="headerlink" href="#docker" title="Link to this heading">#</a></h3>
 <p>Clone SGLang-Omni first. The installation below is pinned to SGLang <code class="docutils literal notranslate"><span class="pre">v0.5.23</span></code>.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/sgl-project/sglang-omni.git<span class="w"> </span>sglang-omni
 <span class="nv">omni_root</span><span class="o">=</span><span class="s2">"</span><span class="k">$(</span><span class="nb">cd</span><span class="w"> </span>sglang-omni<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="nb">pwd</span><span class="k">)</span><span class="s2">"</span>
@@ -622,9 +633,10 @@ already configured as the Docker default runtime on your host, omit
 <span class="w">  </span>sglang-omni:main-musa520-s5000
 </pre></div>
 </div>
+<p><a id="option-b-install-from-source"></a></p>
 </section>
-<section id="option-b-install-from-source">
-<h2>Option B: Install from Source<a class="headerlink" href="#option-b-install-from-source" title="Link to this heading">#</a></h2>
+<section id="from-source">
+<h3>From source<a class="headerlink" href="#from-source" title="Link to this heading">#</a></h3>
 <p>Start from an environment where SGLang <code class="docutils literal notranslate"><span class="pre">v0.5.23</span></code> has been installed with MUSA
 support. If you build SGLang from source, clone the pinned tag rather than
 <code class="docutils literal notranslate"><span class="pre">main</span></code>:</p>
@@ -694,9 +706,11 @@ the source checkout is not left with the MUSA dependency overlay.</p>
 <p>The MUSA pyproject installs only SGLang-Omni overlay dependencies. The base
 MUSA torch stack, SGLang, sgl-kernel, Triton, TileLang, and MATE are inherited
 from the SGLang MUSA environment.</p>
+<p><a id="verify"></a></p>
 </section>
-<section id="verify">
-<h2>Verify<a class="headerlink" href="#verify" title="Link to this heading">#</a></h2>
+</section>
+<section id="verify-the-installation">
+<h2>Verify the installation<a class="headerlink" href="#verify-the-installation" title="Link to this heading">#</a></h2>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-<span class="w"> </span><span class="s">&lt;&lt;'PY'</span>
 <span class="s">import torch</span>
 <span class="s">import torchada  # noqa: F401</span>
@@ -711,6 +725,7 @@ from the SGLang MUSA environment.</p>
 <span class="s">PY</span>
 </pre></div>
 </div>
+<p>Check that <code class="docutils literal notranslate"><span class="pre">devices</span></code> is greater than zero and that both SGLang packages import.</p>
 </section>
 </section>
 
@@ -735,11 +750,11 @@ from the SGLang MUSA environment.</p>
       </div>
     </a>
     <a class="right-next"
-       href="troubleshooting.html"
+       href="../cookbook/companies/qwen.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Troubleshooting</p>
+        <p class="prev-next-title">Qwen</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -762,9 +777,12 @@ from the SGLang MUSA environment.</p>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#option-a-docker">Option A: Docker</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#option-b-install-from-source">Option B: Install from Source</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#verify">Verify</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#install-sglang-omni">Install SGLang-Omni</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#docker">Docker</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#from-source">From source</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#verify-the-installation">Verify the installation</a></li>
 </ul>
   </nav></div>
 
