@@ -1283,6 +1283,8 @@ def create_sglang_thinker_executor_from_config(
         chunked_prefill_size=8192,
         sampling_backend="flashinfer" if current_platform.is_cuda() else "pytorch",
         cuda_graph_backend_prefill=prefill_graph_backend,
+        # note (Yuhao): a full prefix-cache hit leaves one prompt token, which bucket 4 pads past the replay limit.
+        prefill_extra_token_buckets=(1,),
     )
     overrides["tp_size"] = tp_size
     if execution_mode == "session":
