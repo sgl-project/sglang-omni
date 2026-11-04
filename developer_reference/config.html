@@ -698,6 +698,16 @@ to be a <code class="docutils literal notranslate"><span class="pre">factory_arg
 </div>
 <p>A value the factory does not accept is an error at stage construction, not a
 silent no-op.</p>
+<p><code class="docutils literal notranslate"><span class="pre">engine.disable_speculative_decoding:</span> <span class="pre">true</span></code> never reaches SGLang. It drops
+every <code class="docutils literal notranslate"><span class="pre">speculative_*</span></code> key from the stage’s <code class="docutils literal notranslate"><span class="pre">engine.*</span></code> block, whether the
+model’s defaults, a config file or the CLI set it, so one setting turns off
+the stage’s draft.</p>
+<p>The switch relies on one rule: a stage’s draft is set only through its
+<code class="docutils literal notranslate"><span class="pre">engine.speculative_*</span></code> keys, and its engine builder reads the draft from the
+overrides, as every current draft does. A draft set under <code class="docutils literal notranslate"><span class="pre">factory.*</span></code>, or
+turned on by an engine builder’s own defaults, would stay on. A new drafter
+follows the same rule, including one that is the model’s own code rather than
+an SGLang draft worker.</p>
 </section>
 <section id="setting-values-yaml-and-cli">
 <h2>Setting Values: YAML and CLI<a class="headerlink" href="#setting-values-yaml-and-cli" title="Link to this heading">#</a></h2>
