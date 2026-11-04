@@ -51,6 +51,7 @@ SPEECH_SYNTHESIZERS: dict[str, SpeechSynthesizer] = {
     "voxtral_tts": voxtral_golden.synthesize,
     "qwen3_tts": qwen3_tts_golden.synthesize,
     "fishaudio_drama3": fishaudio_drama3_golden.synthesize,
+    "fish_s2_pro": fish_s2_pro_golden.synthesize,
 }
 COMPARED_FIELDS = ("text", "language", "generated_token_count", "finish_reason")
 QUALITY_GROUPS = {
@@ -333,14 +334,6 @@ def run(transcribe_corpus: TranscribeCorpus) -> None:
             arguments.runtime_bin, arguments.data_root, golden, chip()
         )
         metrics = {}
-    elif golden.get("kind") == "fish_s2_pro":
-        results = fish_s2_pro_golden.synthesize_cases(
-            arguments.runtime_bin,
-            arguments.data_root,
-            model_directory(arguments.data_root, golden["model"]),
-            golden["cases"],
-        )
-        metrics = {}
     else:
         results = transcribe_corpus(
             arguments.runtime_bin, arguments.data_root, golden, manifest
@@ -382,8 +375,6 @@ def run(transcribe_corpus: TranscribeCorpus) -> None:
         report(*speech_golden.check(golden, device, results))
     elif golden.get("kind") == "cosyvoice3":
         report(*cosyvoice3_golden.check(golden, device, results))
-    elif golden.get("kind") == "fish_s2_pro":
-        report(*fish_s2_pro_golden.check(golden, device, results))
     else:
         report(*check(golden, device, results, metrics))
 

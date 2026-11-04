@@ -35,8 +35,7 @@ std::vector<float> VocoderStream::Push(const mx::array &frame_codes) {
 
 std::vector<float> VocoderStream::Finish() {
   const int total_frames = first_kept_frame_ + static_cast<int>(frames_.size());
-  if (frames_.empty() ||
-      (total_frames <= emitted_frames_ && pending_tail_.empty())) {
+  if (total_frames <= emitted_frames_) {
     return std::move(pending_tail_);
   } else {
     return DecodeWindow(true);
@@ -45,10 +44,6 @@ std::vector<float> VocoderStream::Finish() {
 
 std::vector<float> VocoderStream::DecodeWindow(bool is_final) {
   const int total_frames = first_kept_frame_ + static_cast<int>(frames_.size());
-  if (total_frames <= emitted_frames_) {
-    return is_final ? std::move(pending_tail_) : std::vector<float>();
-  } else {
-  }
   const int window_start =
       std::max(first_kept_frame_, emitted_frames_ - kStreamOverlapFrames);
   const std::vector<mx::array> window(
@@ -60,31 +55,19 @@ std::vector<float> VocoderStream::DecodeWindow(bool is_final) {
   const size_t overlap_samples =
       static_cast<size_t>(emitted_frames_ - window_start) *
       fish_dac::kFrameSamples;
-  if (decoded_count <= overlap_samples) {
-    return {};
-  } else {
-  }
   std::vector<float> delta;
-  const size_t crossfade_count = std::min(
-      {kStreamCrossfadeSamples, pending_tail_.size(), overlap_samples});
-  if (crossfade_count > 0) {
-    delta.assign(pending_tail_.begin(), pending_tail_.end() - crossfade_count);
-    // Note (Jiaxin Deng): torch.linspace's float32 ramp, stepped from each end.
-    const float step = 1.0f / static_cast<float>(crossfade_count - 1);
-    for (size_t index = 0; index < crossfade_count; ++index) {
-      const float fade_in =
-          crossfade_count == 1 ? 0.0f
-          : index < crossfade_count / 2
-              ? static_cast<float>(index) * step
-              : 1.0f - static_cast<float>(crossfade_count - 1 - index) * step;
-      const float held =
-          pending_tail_[pending_tail_.size() - crossfade_count + index];
-      const float refreshed =
-          decoded[overlap_samples - crossfade_count + index];
-      delta.push_back(held * (1.0f - fade_in) + refreshed * fade_in);
-    }
-  } else {
-    delta = pending_tail_;
+  // The first window has no tail; each later one crossfades the whole of it.
+  const size_t crossfade_count = pending_tail_.size();
+  // Note (Jiaxin Deng): torch.linspace's float32 ramp, stepped from each end.
+  const float step = 1.0f / static_cast<float>(kStreamCrossfadeSamples - 1);
+  for (size_t index = 0; index < crossfade_count; ++index) {
+    const float fade_in =
+        index < crossfade_count / 2
+            ? static_cast<float>(index) * step
+            : 1.0f - static_cast<float>(crossfade_count - 1 - index) * step;
+    const float refreshed = decoded[overlap_samples - crossfade_count + index];
+    delta.push_back(pending_tail_[index] * (1.0f - fade_in) +
+                    refreshed * fade_in);
   }
   delta.insert(delta.end(), decoded + overlap_samples, decoded + decoded_count);
   pending_tail_.clear();
@@ -93,9 +76,8 @@ std::vector<float> VocoderStream::DecodeWindow(bool is_final) {
     return delta;
   } else {
   }
-  const size_t held_count = std::min(kStreamCrossfadeSamples, delta.size());
-  pending_tail_.assign(delta.end() - held_count, delta.end());
-  delta.resize(delta.size() - held_count);
+  pending_tail_.assign(delta.end() - kStreamCrossfadeSamples, delta.end());
+  delta.resize(delta.size() - kStreamCrossfadeSamples);
   const int keep_from = std::max(0, total_frames - kStreamOverlapFrames);
   if (keep_from > first_kept_frame_) {
     frames_.erase(frames_.begin(),
