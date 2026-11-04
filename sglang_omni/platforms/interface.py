@@ -203,6 +203,11 @@ class OmniPlatform(DeviceMixin):
     def _get_device_graph_backend(self) -> DeviceGraphBackend | None:
         return None
 
+    def enable_async_prefill(self) -> bool:
+        """Whether a whole-prompt prefill may join the launch-first lookahead,
+        so the host resolves its sampled tokens after the next step launches."""
+        return False
+
     def enable_code2wav_graph(self):
         """Check if current platform support Graph for code2wav in Qwen3-Omni"""
         return True
