@@ -287,6 +287,64 @@ void Verify(const std::filesystem::path &directory, int bits, mx::Dtype dtype) {
   }
   Require(rejected && too_small.resident_bytes() == 0,
           "oversized expert was loaded");
+  // Note (Codex): replacing a shard must not mix cached and uncached checkpoint
+  // values.
+  drama::ExpertCache replaced(directory, 2 * expert_bytes);
+  const auto cached_expert = replaced.Acquire(kPrefix, 0);
+  auto replacement_weights = weights;
+  for (auto &[name, weight] : replacement_weights) {
+    if (drama::IsRoutedExpertWeight(name) && name.ends_with(".biases")) {
+      weight = mx::add(weight, mx::array(1.0f, weight.dtype()));
+    } else {
+    }
+  }
+  const auto replacement_path = directory / "replacement.tmp.safetensors";
+  mx::save_safetensors(replacement_path.string(), replacement_weights);
+  Require(std::filesystem::file_size(path) ==
+              std::filesystem::file_size(replacement_path),
+          "replacement fixture changed shard size");
+  auto original_reader = std::make_shared<CountingReader>(path.string());
+  auto replacement_reader =
+      std::make_shared<CountingReader>(replacement_path.string());
+  uint64_t original_header_bytes = 0;
+  uint64_t replacement_header_bytes = 0;
+  original_reader->read(reinterpret_cast<char *>(&original_header_bytes), 8);
+  replacement_reader->read(reinterpret_cast<char *>(&replacement_header_bytes),
+                           8);
+  std::string original_header(original_header_bytes, '\0');
+  std::string replacement_header(replacement_header_bytes, '\0');
+  original_reader->read(original_header.data(), original_header.size());
+  replacement_reader->read(replacement_header.data(),
+                           replacement_header.size());
+  Require(original_header == replacement_header,
+          "replacement fixture changed tensor layout");
+  Require(
+      mx::max(
+          mx::abs(mx::subtract(
+              mx::astype(weights.at(kPrefix + ".up_proj.biases"), mx::float32),
+              mx::astype(replacement_weights.at(kPrefix + ".up_proj.biases"),
+                         mx::float32))))
+              .item<float>() > 0.5f,
+      "replacement fixture did not change expert values");
+  std::filesystem::rename(replacement_path, path);
+  Require(replaced.Acquire(kPrefix, 0) == cached_expert,
+          "replacement invalidated cached expert");
+  const auto uncached_expert = replaced.Acquire(kPrefix, 1);
+  for (const auto &[name, weight] : *uncached_expert) {
+    const auto expected =
+        mx::take(weights.at(kPrefix + "." + name), mx::array(1), 0);
+    Require(mx::max(mx::abs(mx::subtract(mx::astype(weight, mx::float32),
+                                         mx::astype(expected, mx::float32))))
+                    .item<float>() == 0.0f,
+            "atomic replacement mixed checkpoint values for uncached expert: " +
+                name);
+  }
+  Require(replaced.hits() == 1 && replaced.misses() == 2 &&
+              replaced.payload_read_bytes() == 2 * expert_bytes,
+          "replacement changed cache hit or payload accounting");
+  std::cout << "atomic replacement retained indexed shard bits=" << bits
+            << " dtype=" << dtype << '\n';
+  mx::save_safetensors(path.string(), weights);
   drama::ExpertCache failing(directory, expert_bytes);
   std::filesystem::resize_file(path, 0);
   rejected = false;
@@ -297,7 +355,8 @@ void Verify(const std::filesystem::path &directory, int bits, mx::Dtype dtype) {
   }
   Require(rejected && failing.resident_bytes() == 0 && failing.misses() == 0,
           "failed read published a cache entry");
-  mx::save_safetensors(path.string(), weights);
+  mx::save_safetensors(std::make_shared<mx::io::FileWriter>(path.string()),
+                       weights);
   Require(failing.Acquire(kPrefix, 0)->size() == 9,
           "failed read prevented retry");
   failing.Acquire(kPrefix, 1);

@@ -57,7 +57,7 @@ public:
 
 private:
   struct TensorSlice {
-    std::filesystem::path path;
+    std::shared_ptr<mlx::core::io::Reader> shard;
     mlx::core::Shape shape;
     mlx::core::Dtype dtype;
     size_t offset_bytes;

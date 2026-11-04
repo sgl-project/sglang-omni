@@ -7,7 +7,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
-#include <fstream>
 #include <iostream>
 #include <iterator>
 #include <limits>
@@ -40,14 +39,80 @@ DramaWeightFiles(const std::filesystem::path &model_directory) {
   return paths;
 }
 
+class ShardReader : public mx::io::Reader {
+public:
+  explicit ShardReader(const std::filesystem::path &path)
+      : path_(path.string()), descriptor_(open(path_.c_str(), O_RDONLY)) {
+    if (descriptor_ < 0) {
+      throw std::runtime_error("cannot open expert shard: " + path_);
+    } else {
+    }
+  }
+  ~ShardReader() override { close(descriptor_); }
+  ShardReader(const ShardReader &) = delete;
+  ShardReader &operator=(const ShardReader &) = delete;
+  bool is_open() const override { return descriptor_ >= 0; }
+  bool good() const override { return is_open(); }
+  std::string label() const override { return path_; }
+  size_t size_bytes() const {
+    struct stat status {};
+    if (fstat(descriptor_, &status) != 0 || !S_ISREG(status.st_mode) ||
+        status.st_size < 0) {
+      throw std::runtime_error("invalid expert shard: " + path_);
+    } else {
+    }
+    return static_cast<size_t>(status.st_size);
+  }
+  size_t tell() override { return position_bytes_; }
+  void seek(int64_t offset, std::ios_base::seekdir direction) override {
+    const int64_t file_bytes = size_bytes();
+    const int64_t base = direction == std::ios_base::end   ? file_bytes
+                         : direction == std::ios_base::cur ? position_bytes_
+                                                           : 0;
+    if (offset < -base || offset > file_bytes - base) {
+      throw std::runtime_error("invalid expert shard seek");
+    } else {
+    }
+    position_bytes_ = base + offset;
+  }
+  void read(char *destination, size_t count) override {
+    read(destination, count, position_bytes_);
+    position_bytes_ += count;
+  }
+  void read(char *destination, size_t count, size_t offset) override {
+    const size_t file_bytes = size_bytes();
+    if (offset > file_bytes || count > file_bytes - offset) {
+      throw std::runtime_error("expert payload exceeds file extent: " + path_);
+    } else {
+    }
+    while (count != 0) {
+      const ssize_t received = pread(descriptor_, destination, count, offset);
+      if (received < 0 && errno == EINTR) {
+        continue;
+      } else if (received <= 0) {
+        throw std::runtime_error("short expert shard read: " + path_);
+      } else {
+      }
+      destination += received;
+      offset += received;
+      count -= received;
+    }
+  }
+
+private:
+  std::string path_;
+  int descriptor_;
+  size_t position_bytes_ = 0;
+};
+
 class ExpertSliceReader : public mx::io::Reader {
 public:
-  ExpertSliceReader(const std::filesystem::path &path, size_t offset_bytes,
+  ExpertSliceReader(std::shared_ptr<mx::io::Reader> shard, size_t offset_bytes,
                     size_t payload_bytes, const mx::Shape &shape,
                     mx::Dtype dtype,
                     std::shared_ptr<std::atomic<size_t>> payload_read_bytes)
       : payload_read_bytes_(std::move(payload_read_bytes)),
-        path_(path.string()), offset_bytes_(offset_bytes),
+        shard_(std::move(shard)), offset_bytes_(offset_bytes),
         payload_bytes_(payload_bytes) {
     const std::string dtype_name = dtype == mx::uint32     ? "U32"
                                    : dtype == mx::float16  ? "F16"
@@ -63,25 +128,10 @@ public:
     header_.resize(8 + header_bytes);
     std::memcpy(header_.data(), &header_bytes, 8);
     std::memcpy(header_.data() + 8, metadata.data(), header_bytes);
-    descriptor_ = open(path_.c_str(), O_RDONLY);
-    struct stat status {};
-    if (descriptor_ < 0 || fstat(descriptor_, &status) != 0 ||
-        !S_ISREG(status.st_mode) || status.st_size < 0 ||
-        offset_bytes > static_cast<size_t>(status.st_size) ||
-        payload_bytes > static_cast<size_t>(status.st_size) - offset_bytes) {
-      if (descriptor_ >= 0) {
-        close(descriptor_);
-        descriptor_ = -1;
-      } else {
-      }
-      throw std::runtime_error("invalid expert file extent: " + path_);
-    } else {
-    }
   }
-  ~ExpertSliceReader() override { close(descriptor_); }
-  bool is_open() const override { return descriptor_ >= 0; }
-  bool good() const override { return is_open(); }
-  std::string label() const override { return path_; }
+  bool is_open() const override { return shard_->is_open(); }
+  bool good() const override { return shard_->good(); }
+  std::string label() const override { return shard_->label(); }
   size_t tell() override { return position_bytes_; }
   void seek(int64_t offset, std::ios_base::seekdir direction) override {
     const int64_t base = direction == std::ios_base::end
@@ -113,27 +163,14 @@ public:
       count -= header_count;
     } else {
     }
-    while (count != 0) {
-      const ssize_t received = pread(descriptor_, destination, count,
-                                     offset_bytes_ + offset - header_.size());
-      if (received < 0 && errno == EINTR) {
-        continue;
-      } else if (received <= 0) {
-        throw std::runtime_error("short expert payload read: " + path_);
-      } else {
-      }
-      payload_read_bytes_->fetch_add(received);
-      destination += received;
-      offset += received;
-      count -= received;
-    }
+    shard_->read(destination, count, offset_bytes_ + offset - header_.size());
+    payload_read_bytes_->fetch_add(count);
   }
 
 private:
   std::shared_ptr<std::atomic<size_t>> payload_read_bytes_;
-  std::string path_;
+  std::shared_ptr<mx::io::Reader> shard_;
   std::string header_;
-  int descriptor_ = -1;
   size_t offset_bytes_;
   size_t payload_bytes_;
   size_t position_bytes_ = 0;
@@ -194,20 +231,17 @@ ExpertCache::ExpertCache(const std::filesystem::path &model_directory,
   for (const auto &path : DramaWeightFiles(model_directory)) {
     // Note (Codex): MLX validates extents and dtypes without evaluating
     // payloads.
-    const auto [weights, metadata] = mx::load_safetensors(path.string());
-    std::ifstream stream(path, std::ios::binary);
+    auto shard = std::make_shared<ShardReader>(path);
+    const auto [weights, metadata] = mx::load_safetensors(shard);
     uint64_t header_bytes = 0;
-    stream.read(reinterpret_cast<char *>(&header_bytes), sizeof(header_bytes));
-    if (!stream || header_bytes == 0 || header_bytes >= 100000000) {
+    shard->read(reinterpret_cast<char *>(&header_bytes), sizeof(header_bytes),
+                0);
+    if (header_bytes == 0 || header_bytes >= 100000000) {
       throw std::runtime_error("invalid safetensors header");
     } else {
     }
     std::string header(header_bytes, '\0');
-    stream.read(header.data(), header.size());
-    if (!stream) {
-      throw std::runtime_error("short safetensors header");
-    } else {
-    }
+    shard->read(header.data(), header.size(), sizeof(header_bytes));
     const auto tensors = nlohmann::json::parse(header);
     for (const auto &[name, weight] : weights) {
       if (!IsRoutedExpertWeight(name)) {
@@ -228,7 +262,7 @@ ExpertCache::ExpertCache(const std::filesystem::path &model_directory,
       }
       const auto offsets =
           tensors.at(name).at("data_offsets").get<std::vector<size_t>>();
-      const size_t file_bytes = std::filesystem::file_size(path);
+      const size_t file_bytes = shard->size_bytes();
       if (offsets.size() != 2 || offsets[1] < offsets[0] ||
           offsets[1] - offsets[0] != expected_bytes ||
           8 + header_bytes > file_bytes ||
@@ -238,7 +272,7 @@ ExpertCache::ExpertCache(const std::filesystem::path &model_directory,
       }
       const size_t offset_bytes = offsets[0];
       if (!slices_
-               .emplace(name, TensorSlice{path, weight.shape(), weight.dtype(),
+               .emplace(name, TensorSlice{shard, weight.shape(), weight.dtype(),
                                           8 + header_bytes + offset_bytes,
                                           weight.nbytes() / weight.shape(0)})
                .second) {
@@ -349,16 +383,10 @@ ExpertCache::Acquire(const std::string &prefix, int expert_id) {
       const auto &tensor = slices_.at(prefix + "." + name);
       const size_t offset_bytes =
           tensor.offset_bytes + expert_id * tensor.expert_bytes;
-      const size_t file_bytes = std::filesystem::file_size(tensor.path);
-      if (offset_bytes > file_bytes ||
-          tensor.expert_bytes > file_bytes - offset_bytes) {
-        throw std::runtime_error("expert payload exceeds file extent");
-      } else {
-      }
       mx::Shape shape(tensor.shape.begin() + 1, tensor.shape.end());
       auto [loaded, metadata] =
           mx::load_safetensors(std::make_shared<ExpertSliceReader>(
-              tensor.path, offset_bytes, tensor.expert_bytes, shape,
+              tensor.shard, offset_bytes, tensor.expert_bytes, shape,
               tensor.dtype, payload_read_bytes_));
       mx::array weight = loaded.at("expert");
       parameters.push_back(weight);
