@@ -2569,15 +2569,20 @@ class Qwen3TTSStreamingVocoderScheduler(
         else:
             pass
         delta = self.apply_bootstrap_suppression(state, delta)
-        state.emitted_generated_frames = plan.generated_frames
-        state.decoded_chunks += 1
-        state.next_decode_generated_frames = (
-            plan.generated_frames + self.next_followup_stride(state)
-        )
+        self.advance_decode_cursor(state, plan.generated_frames)
         now = time.monotonic()
         duration_s = float(delta.numel()) / float(self.sample_rate)
         state.playback_deadline_s = max(state.playback_deadline_s, now) + duration_s
         return delta
+
+    def advance_decode_cursor(
+        self, state: Qwen3TTSStreamState, generated_frames: int
+    ) -> None:
+        state.emitted_generated_frames = generated_frames
+        state.decoded_chunks += 1
+        state.next_decode_generated_frames = (
+            generated_frames + self.next_followup_stride(state)
+        )
 
     def apply_bootstrap_suppression(
         self, state: Qwen3TTSStreamState, delta: torch.Tensor
@@ -3067,8 +3072,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                 else:
                     pass
                 state.codec_frame_position += plan.fresh_frames
-                state.emitted_generated_frames = plan.generated_frames
-                state.decoded_chunks += 1
+                self.advance_decode_cursor(state, plan.generated_frames)
                 self.store_whole_audio(state, delta)
                 if state.codec_frame_position < state.total_frames:
                     self.whole_request_rows.append((request_id, state))

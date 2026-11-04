@@ -3795,6 +3795,7 @@ def whole_request_scheduler(
         monkeypatch, widths=(1, 2, 4), miss_on_call=miss_on_call
     )
     scheduler.decodes_whole_requests = True
+    scheduler.followup_worker = object()
     return scheduler, incremental, runner
 
 
@@ -3834,11 +3835,24 @@ def expected_whole_samples(
 def run_whole_requests(
     scheduler: Qwen3TTSStreamingVocoderScheduler,
 ) -> dict[str, OutgoingMessage]:
-    while not scheduler.initial_queue.empty() or scheduler.whole_request_rows:
-        batch = []
-        while not scheduler.initial_queue.empty():
-            batch.append(scheduler.initial_queue.get_nowait())
-        scheduler.run_initial_work(batch)
+    while (
+        not scheduler.initial_queue.empty()
+        or scheduler.whole_request_rows
+        or not scheduler.followup_queue.empty()
+    ):
+        scheduler.run_initial_work(
+            scheduler.collect_async_batch(
+                scheduler.initial_queue,
+                max_batch_size=scheduler.initial_max_batch_size,
+                batch_wait_s=0.0,
+                should_block=False,
+            )
+        )
+        if not scheduler.followup_queue.empty():
+            scheduler.run_followup_batch(scheduler.collect_followup_batch())
+            scheduler.drain_pending_incremental(keep=0)
+        else:
+            pass
     messages = {}
     while not scheduler.outbox.empty():
         message = scheduler.outbox.get_nowait()
@@ -4088,6 +4102,31 @@ def test_qwen3_tts_whole_request_failed_replay_uses_the_left_context_decoder(
     results = run_whole_requests(scheduler)
 
     assert chunk_samples(results["whole"].data) == expected_whole_samples(scheduler, 5)
+    assert scheduler.codec_fallback_count == 1
+    assert scheduler.codec_arena.active_slots() == 0
+
+
+@pytest.mark.parametrize(
+    "generated_frames,ref_code_len,failed_replay",
+    [(13, 0, 3), (13, 6, 5), (13, 6, 2)],
+)
+def test_qwen3_tts_whole_request_failed_later_replay_resumes_where_it_stopped(
+    monkeypatch: pytest.MonkeyPatch,
+    generated_frames: int,
+    ref_code_len: int,
+    failed_replay: int,
+) -> None:
+    scheduler, _, _ = whole_request_scheduler(monkeypatch, miss_on_call=failed_replay)
+    message = whole_request_message(
+        "whole", generated_frames, ref_code_len=ref_code_len
+    )
+
+    scheduler.run_non_streaming_batch([message], asyncio.new_event_loop())
+    results = run_whole_requests(scheduler)
+
+    assert chunk_samples(results["whole"].data) == expected_whole_samples(
+        scheduler, generated_frames, ref_code_len
+    )
     assert scheduler.codec_fallback_count == 1
     assert scheduler.codec_arena.active_slots() == 0
 
