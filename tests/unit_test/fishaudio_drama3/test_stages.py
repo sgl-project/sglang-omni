@@ -421,7 +421,7 @@ def test_the_vocoder_factory_loads_the_codec_on_its_device_with_the_windows(
         vocoder.stream_overlap_tokens,
         vocoder.stream_crossfade_samples,
         vocoder.max_batch_size,
-    ) == (10, (10, 12, 32), 64, 32, 0, 8)
+    ) == (4, (10, 12, 32), 64, 32, 0, 8)
     assert vocoder.max_padded_frames_per_decode is None
 
 

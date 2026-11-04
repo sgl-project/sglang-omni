@@ -5,10 +5,10 @@
 #   docker build -f docker/xpu.Dockerfile -t sglang-omni:xpu .
 #   docker run -it --device /dev/dri --shm-size 32g sglang-omni:xpu
 
-FROM intel/deep-learning-essentials:2026.1.2-devel-ubuntu24.04 AS base
+FROM intel/deep-learning-essentials:2026.1.3-devel-ubuntu24.04 AS base
 
 ARG SGLANG_XPU_REPO=https://github.com/sgl-project/sglang.git
-ARG SGLANG_XPU_BRANCH=v0.5.22
+ARG SGLANG_XPU_BRANCH=v0.5.23
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PIP_INDEX_URL=https://pypi.org/simple

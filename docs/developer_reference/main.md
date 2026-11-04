@@ -31,6 +31,7 @@ sglang_omni/
 |-- pipeline/       # Inter-stage orchestration, stages, coordinator, processes
 |-- scheduling/     # Scheduler loops and inbox/outbox message types
 |-- model_runner/   # Shared model runner abstractions for AR stages
+|-- speculative/    # Adapters that run SGLang's draft workers on AR stages
 |-- models/         # Model-specific configs, stages, request builders, modules
 |-- config/         # PipelineConfig, StageConfig, config manager, topology
 |-- relay/          # Data transfer backends
@@ -122,11 +123,21 @@ Run `pre-commit run --all-files` before submitting a change.
 
 ## Documentation checks
 
-The `doc-style` hook rejects emoji in `docs/**/*.md`, including inline code and URLs,
-while allowing text presentation. Only top-level fences indented by up to three spaces
-are exempt; fences nested in lists or blockquotes are not supported. Unclosed fences
-are reported at their opening line. The checker reports file/line diagnostics without
-modifying files (exit 0: clean, 1: violations).
+The `doc-style` hook rejects emoji in `docs/**/*.md`, including inline code and URLs, while allowing text presentation. Only top-level fences indented by up to three spaces are exempt; fences nested in lists or blockquotes are not supported. Unclosed fences are reported at their opening line. The checker reports file/line diagnostics without modifying files (exit 0: clean, 1: violations).
+
+Opening code fences must have a non-empty info string, such as `python`, `bash`, `text`, or `mermaid`. Any non-empty value is accepted; there is no language whitelist. This check uses the same top-level fence parsing as the emoji rule and reports missing labels at the opening line.
+
+Markdown basenames in `docs/**/*.md` must match `[a-z0-9_]+\.md`, using lowercase ASCII letters, digits, and underscores. Only `docs/README.md` is exempt; `docs/nested/README.md` is rejected. Directory names are unrestricted. For example, `guide.md`, `model_v2.md`, and `123.md` are valid, while `Guide.md`, `model-v2.md`, and names containing spaces or non-ASCII characters are rejected. The checker reports the file path and line 1 without renaming or rewriting files.
+
+Markdown pages must appear in a toctree in `docs/**/*.rst` or a fenced MyST `{toctree}` directive in `docs/**/*.md`. Entries may use `guide.md`, extensionless `guide`, or a title such as `Guide title <guide>`. Paths beginning with `/` resolve from `docs/`; other paths resolve from the containing document's directory. With `:glob:` (or `glob: true` in MyST YAML options), patterns match extensionless document names: `*` stays within one directory and `**` can cross directories. External URLs, `self`, option values, and examples inside code blocks or comments do not count as page entries. Missing entries are reported at the Markdown file's line 1 as `missing-toctree`. Editing a navigation file triggers the existing `doc-style` hook, alongside Markdown, checker, and test changes.
+
+Only these pages are exempt from navigation inclusion; emoji, fence-label, and filename checks still apply:
+
+- `README.md`: repository overview, separate from the published manual.
+- `design/gpu_radix_hash.md` and `design/refactor_rfc.md`: internal notes outside the user manual.
+- `developer_reference/mlx.md`: excluded redirect; the published page is `mlx/index.md`.
+- `get_started/apiserver_quickstart.md`: legacy exemption; this page is now listed in the Get Started sidebar.
+- `basic_usage/python_router.md`: retained until the Python router is removed separately.
 
 ```bash
 python -m pip install -r scripts/requirements-doc-lint.txt

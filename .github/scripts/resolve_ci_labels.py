@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Resolve the CI stages and models that pull request labels select.
 
-A stage runs with its stage label or run-all-ci. run-lint-only satisfies the
+A stage runs with its stage label or run-all-ci. A stage that is not
+calibrated yet runs only with its own label. run-lint-only satisfies the
 gate and runs no self-hosted job. A model label names a model, not a stage.
 It picks that model for every selected stage that accepts it, and never
 selects a stage. Higgs and MOSS labels are shared by TTS and MPS. A selected
@@ -31,6 +32,7 @@ class CiStage:
     workflow: str
     preset_by_model_label: dict[str, str]
     random_presets: tuple[str, ...]
+    in_run_all: bool = True
 
 
 CI_STAGES: tuple[CiStage, ...] = (
@@ -88,6 +90,31 @@ CI_STAGES: tuple[CiStage, ...] = (
         random_presets=("qwen3-omni", "minicpmo"),
     ),
     CiStage(
+        name="full_duplex",
+        label="run-native-duplex",
+        workflow=OMNI_CI_WORKFLOW,
+        preset_by_model_label={},
+        random_presets=(),
+    ),
+    # note (db-ol): turn based and cascaded fail by design until they are
+    # calibrated on the CI host, so run-all-ci leaves them out.
+    CiStage(
+        name="turn_based",
+        label="run-turn-based-duplex",
+        workflow=OMNI_CI_WORKFLOW,
+        preset_by_model_label={},
+        random_presets=(),
+        in_run_all=False,
+    ),
+    CiStage(
+        name="cascaded",
+        label="run-cascaded-duplex",
+        workflow=OMNI_CI_WORKFLOW,
+        preset_by_model_label={},
+        random_presets=(),
+        in_run_all=False,
+    ),
+    CiStage(
         name="intel_cpu",
         label="run-intel-cpu-ci",
         workflow="CPU CI",
@@ -125,7 +152,11 @@ class CiPlan:
 
 def select_stage_names(labels: frozenset[str]) -> frozenset[str]:
     if RUN_ALL_LABEL in labels:
-        return frozenset(stage.name for stage in CI_STAGES)
+        return frozenset(
+            stage.name
+            for stage in CI_STAGES
+            if stage.in_run_all or stage.label in labels
+        )
     else:
         return frozenset(stage.name for stage in CI_STAGES if stage.label in labels)
 
