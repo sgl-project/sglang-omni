@@ -3036,8 +3036,14 @@ class Qwen3TTSStreamingVocoderScheduler(
             else:
                 pass
             if row.slot is None:
+                row.slot = self.free_whole_request_slots.pop()
                 try:
-                    self.claim_whole_request_slot(row)
+                    self.codec_arena.zero_slot(row.slot)
+                    if row.next_frame:
+                        self.codec_arena.start_slot(row.slot, row.next_frame)
+                    else:
+                        pass
+                    self.wait_codes_ready(row)
                 except Exception as exc:
                     self.finish_whole_request_eagerly(row, exc)
                     continue
@@ -3052,15 +3058,6 @@ class Qwen3TTSStreamingVocoderScheduler(
             group.append((row, row_frames))
         self.whole_request_rows = waiting_rows
         return (group, group_tail_runner)
-
-    def claim_whole_request_slot(self, row: Qwen3TTSWholeRequest) -> None:
-        row.slot = self.free_whole_request_slots.pop()
-        self.codec_arena.zero_slot(row.slot)
-        if row.next_frame:
-            self.codec_arena.start_slot(row.slot, row.next_frame)
-        else:
-            pass
-        self.wait_codes_ready(row)
 
     def free_whole_request_slot(self, row: Qwen3TTSWholeRequest) -> None:
         if row.slot is not None:
@@ -3106,41 +3103,39 @@ class Qwen3TTSStreamingVocoderScheduler(
         for index, ((row, frames), delta) in enumerate(zip(group, deltas)):
             if self.is_aborted(row.request_id):
                 self.free_whole_request_slot(row)
+                continue
             elif index in bad_rows:
                 self.free_whole_request_slot(row)
                 self.emit_error(
                     row.request_id,
                     Qwen3TTSInvalidCodeRows([index], bad_row_message([index])),
                 )
+                continue
             else:
-                self.commit_whole_request_decode(row, frames, delta)
-
-    def commit_whole_request_decode(
-        self, row: Qwen3TTSWholeRequest, frames: int, delta: torch.Tensor
-    ) -> None:
-        audio = np.frombuffer(row.audio, dtype=np.float32)[row.stored_samples :]
-        samples = delta[: audio.shape[0]].numpy()
-        audio[: samples.shape[0]] = samples
-        row.stored_samples += samples.shape[0]
-        row.next_frame += frames
-        row.tail_frames = 0
-        if row.next_frame < int(row.codes.shape[0]):
-            self.whole_request_rows.append(row)
-            return
-        else:
-            pass
-        self.free_whole_request_slot(row)
-        row.payload.data = self.audio_result_data(
-            row.final_state,
-            {
-                "audio_waveform": row.audio,
-                "audio_waveform_shape": [row.stored_samples],
-                "audio_waveform_dtype": "float32",
-                "sample_rate": self.sample_rate,
-                "modality": "audio",
-            },
-        )
-        self.emit_result(row.request_id, row.payload)
+                pass
+            room = np.frombuffer(row.audio, dtype=np.float32)[row.stored_samples :]
+            samples = delta[: room.shape[0]].numpy()
+            room[: samples.shape[0]] = samples
+            row.stored_samples += samples.shape[0]
+            row.next_frame += frames
+            row.tail_frames = 0
+            if row.next_frame < int(row.codes.shape[0]):
+                self.whole_request_rows.append(row)
+                continue
+            else:
+                pass
+            self.free_whole_request_slot(row)
+            row.payload.data = self.audio_result_data(
+                row.final_state,
+                {
+                    "audio_waveform": row.audio,
+                    "audio_waveform_shape": [row.stored_samples],
+                    "audio_waveform_dtype": "float32",
+                    "sample_rate": self.sample_rate,
+                    "modality": "audio",
+                },
+            )
+            self.emit_result(row.request_id, row.payload)
 
     def finish_whole_request_eagerly(
         self, row: Qwen3TTSWholeRequest, cause: BaseException
