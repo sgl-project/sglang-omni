@@ -4,9 +4,13 @@
 from __future__ import annotations
 
 import logging
+import re
 from types import SimpleNamespace
 
 import pytest
+from sglang.srt.layers.quantization.compressed_tensors.utils import (
+    check_equal_or_regex_match,
+)
 
 from sglang_omni.quantization import (
     needs_quant_config_normalization,
@@ -373,10 +377,6 @@ class TestNormalizeCompressedTensorsIgnoreList:
         """The point of the rewrite: SGLang's own matcher must exclude the
         stage-local module that the raw checkpoint entry missed, and must still
         exclude the prefixed spelling."""
-        from sglang.srt.layers.quantization.compressed_tensors.utils import (
-            check_equal_or_regex_match,
-        )
-
         assert not check_equal_or_regex_match(layer, [raw])
 
         quant_config = {
@@ -400,8 +400,6 @@ class TestNormalizeCompressedTensorsIgnoreList:
         """In `thinker.*` the dot belongs to the quantifier, so the entry has no
         unambiguous stage prefix to make optional. Deleting one produced the
         uncompilable `re:*`; it is now reported and left alone instead."""
-        import re as regex
-
         quant_config = {
             "quant_method": "compressed-tensors",
             "format": "pack-quantized",
@@ -412,7 +410,7 @@ class TestNormalizeCompressedTensorsIgnoreList:
         )
 
         assert quant_config["ignore"] == [raw]
-        regex.compile(quant_config["ignore"][0][len("re:") :])
+        re.compile(quant_config["ignore"][0][len("re:") :])
 
     def test_quantifier_owned_separator_is_reported_not_salvaged(
         self, caplog: pytest.LogCaptureFixture
@@ -435,8 +433,6 @@ class TestNormalizeCompressedTensorsIgnoreList:
         assert "did not survive" not in caplog.text
 
     def test_every_rewritten_entry_compiles(self) -> None:
-        import re as regex
-
         quant_config = {
             "quant_method": "compressed-tensors",
             "format": "pack-quantized",
@@ -454,7 +450,7 @@ class TestNormalizeCompressedTensorsIgnoreList:
 
         for entry in quant_config["ignore"]:
             if entry.startswith("re:"):
-                regex.compile(entry[len("re:") :])
+                re.compile(entry[len("re:") :])
             else:
                 pass
 
