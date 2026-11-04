@@ -130,10 +130,11 @@ class Dialog(StreamComponent):
     answered. A clear utterance carries the language the recognizer heard.
     A shorter utterance leaves that remembered language unchanged and carries
     the configured language when set, otherwise the remembered language; when
-    the recognizer heard another language in it, that turn's latest user
-    message asks for a reply in the language it carries. A replacement adopts
-    the history, the open reply and the waiting utterances, so new settings
-    apply at once and reach the next prompt.
+    the recognizer heard another language in it, or named none while a
+    language is configured, that turn's latest user message asks for a reply
+    in the language it carries. A replacement adopts the history, the open
+    reply and the waiting utterances, so new settings apply at once and reach
+    the next prompt.
 
     Speech that started after an utterance ended and has not stopped when
     the utterance's reply begins is speech over that reply, so the reply
@@ -407,9 +408,9 @@ class Dialog(StreamComponent):
             short_utterance_language = self.config.language or self.language
             is_short_switch = (
                 not is_clear
-                and language is not None
                 and short_utterance_language is not None
                 and language != short_utterance_language
+                and (language is not None or bool(self.config.language))
             )
             prompt = prompt_messages(self.messages)
             if is_short_switch:
