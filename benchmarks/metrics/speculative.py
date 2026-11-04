@@ -225,9 +225,10 @@ def percent(fraction: float | None) -> str:
 
 def gap_percent(values: list[float]) -> float | None:
     """The spread between one side's legs, relative to their mean."""
+    mean_value = mean_or_none(values)
     return (
-        (max(values) - min(values)) / statistics.mean(values) * 100
-        if len(values) > 1
+        (max(values) - min(values)) / mean_value * 100
+        if len(values) > 1 and mean_value
         else None
     )
 

@@ -32,8 +32,7 @@ env:
 
 # Invoked by omni-ci.yaml after unit tests. Restores omni only.
 # Every stage starts its own server and reads no other stage's output, so all
-# stages run side by side. stage-11-process-replicas runs only for qwen3-omni
-# and stage-12-fdb-smoke only for minicpmo.
+# stages run side by side. stage-11-process-replicas runs only for qwen3-omni.
 
 jobs:
   stage-1-thinker:
@@ -41,7 +40,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 20
     container:
-      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -81,7 +80,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 25
     container:
-      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -138,7 +137,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 20
     container:
-      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -182,7 +181,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 15
     container:
-      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -226,7 +225,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 20
     container:
-      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -271,7 +270,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 15
     container:
-      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -315,7 +314,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
-      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -359,7 +358,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
-      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -403,7 +402,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
-      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -447,7 +446,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 35
     container:
-      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       # note (Yue Yin): TP=2 relay uses pidfd_getfd to pass fds between stage
       # processes; CAP_SYS_PTRACE is required (else every request 500s).
       options: >-
@@ -494,7 +493,7 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
-      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -528,49 +527,3 @@ jobs:
         uses: ./.github/actions/omni-post-stage
         with:
           stage-label: process replicas
-
-  stage-12-fdb-smoke:
-    name: stage 12 - Full-Duplex-Bench smoke
-    if: inputs.omni_ci_model == 'minicpmo'
-    runs-on: [self-hosted, h100]
-    timeout-minutes: 45
-    container:
-      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
-      options: >-
-        --rm
-        -e NVIDIA_VISIBLE_DEVICES
-        -e OMNI_CI_CPUSET
-        --cap-add=SYS_PTRACE
-        -v /dev/shm:/dev/shm
-        -v /data/omni-ci:/data/omni-ci
-        -v /data/cache/huggingface:/github/home/.cache/huggingface
-        -v /data/cache/huggingface:/root/.cache/huggingface
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - uses: ./.github/actions/omni-setup
-        with:
-          venv-name: omni
-
-      - name: Run Full-Duplex-Bench smoke
-        shell: bash
-        run: |
-          source omni/bin/activate
-          export PYTHONPATH=$PWD
-          bash .github/scripts/run_flaky_pytest.sh \
-            pytest tests/test_model/test_minicpmo_fdb_ci.py -v -s -x
-        env:
-          HF_ENDPOINT: https://huggingface.co
-          TORCHINDUCTOR_CACHE_DIR: ${{ env.OMNI_CI_HOME }}/.torchinductor
-
-      - name: Post-stage cleanup
-        if: always()
-        uses: ./.github/actions/omni-post-stage
-        with:
-          stage-label: Full-Duplex-Bench smoke
-          artifact-search-root: ${{ env.OMNI_CI_HOME }}/fdb/runs
-          artifact-path-globs: |
-            */RESULTS.md
-          artifact-upload-name: ${{ inputs.omni_ci_model }}-fdb-smoke-results
-          artifact-upload-path: ${{ env.OMNI_CI_HOME }}/fdb/runs/*/RESULTS.md

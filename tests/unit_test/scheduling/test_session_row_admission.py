@@ -101,7 +101,12 @@ class AdmissionScheduler:
         admitted_requests: list[Req] = []
         for request in self.waiting_queue:
             if len(admitted_requests) >= self.get_num_allocatable_reqs(
-                0, None, running_batch=self.running_batch
+                0,
+                None,
+                running_batch=self.running_batch,
+                num_held_rows=sum(
+                    admitted.kv.holds_kv for admitted in admitted_requests
+                ),
             ):
                 break
             else:
@@ -127,9 +132,15 @@ def per_batch_limit(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     return parallel
 
 
-def test_every_open_session_unit_is_admitted_in_one_batch_with_one_free_row() -> None:
+@pytest.mark.parametrize("continuation_aware_admission", [True, False])
+def test_every_open_session_unit_is_admitted_in_one_batch_with_one_free_row(
+    continuation_aware_admission: bool,
+) -> None:
     session_count = 6
-    scheduler = AdmissionScheduler(request_rows=session_count + 1)
+    scheduler = AdmissionScheduler(
+        request_rows=session_count + 1,
+        continuation_aware_admission=continuation_aware_admission,
+    )
     held_rows: dict[str, int] = {}
     for index in range(session_count):
         scheduler.open_session(f"session-{index}", holds_row=True)
@@ -147,11 +158,9 @@ def test_every_open_session_unit_is_admitted_in_one_batch_with_one_free_row() ->
     assert scheduler.free_rows() == 1
 
 
-def test_without_continuation_aware_admission_units_wait_for_free_rows() -> None:
+def test_continuation_aware_admission_admits_every_unit_with_no_free_row() -> None:
     session_count = 6
-    scheduler = AdmissionScheduler(
-        request_rows=session_count + 1, continuation_aware_admission=False
-    )
+    scheduler = AdmissionScheduler(request_rows=session_count)
     held_rows: dict[str, int] = {}
     for index in range(session_count):
         scheduler.open_session(f"session-{index}", holds_row=True)
@@ -162,15 +171,29 @@ def test_without_continuation_aware_admission_units_wait_for_free_rows() -> None
         scheduler.queue_request(f"unit-{index}", f"session-{index}")
         for index in range(session_count)
     ]
+    assert scheduler.free_rows() == 0
 
-    batches = []
-    while scheduler.waiting_queue:
-        batches.append(scheduler.admit_prefill_batch())
-        scheduler.waiting_queue = scheduler.waiting_queue[len(batches[-1]) :]
-        assert scheduler.free_rows() == 1
-
-    assert batches == [[unit.rid] for unit in units]
+    assert scheduler.admit_prefill_batch() == [unit.rid for unit in units]
     assert {unit.rid: unit.kv.req_pool_idx for unit in units} == held_rows
+    assert scheduler.free_rows() == 0
+
+
+def test_without_continuation_aware_admission_no_free_row_admits_nothing() -> None:
+    session_count = 6
+    scheduler = AdmissionScheduler(
+        request_rows=session_count, continuation_aware_admission=False
+    )
+    for index in range(session_count):
+        scheduler.open_session(f"session-{index}", holds_row=True)
+    units = [
+        scheduler.queue_request(f"unit-{index}", f"session-{index}")
+        for index in range(session_count)
+    ]
+    assert scheduler.free_rows() == 0
+
+    assert scheduler.admit_prefill_batch() == []
+    assert scheduler.waiting_queue == units
+    assert scheduler.free_rows() == 0
 
 
 def test_first_units_and_plain_requests_are_limited_by_free_rows() -> None:
