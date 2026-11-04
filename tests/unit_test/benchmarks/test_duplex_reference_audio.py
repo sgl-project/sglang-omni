@@ -174,31 +174,66 @@ class WindowEligibility(AudioFixture):
             self.assertIn(expect, " ".join(record["window"]["reasons"]))
             self.assertIsNone(out)
 
-    def test_only_a_nonfatal_admission_rejection_before_admission_keeps_the_window(
-        self,
-    ) -> None:
-        """A session the recorder admitted on a re-sent session.update used to lose its window to the earlier admission_rejected."""
-        rejection = {
-            "direction": "receive",
-            "time_s": TRACE_ORIGIN_S - 0.02,
-            "event": {
-                "type": "error",
-                "sglang": {"fatal": False},
-                "error": {"code": "admission_rejected", "message": "queue full"},
-            },
-        }
-        trace = "".join(
-            sorted(
-                make_session_trace(self.pcm).splitlines(keepends=True)
-                + [json.dumps(rejection) + "\n"],
-                key=lambda line: json.loads(line)["time_s"],
-            )
-        )
-        record, _, _ = self.analyze(self.pcm, trace)
-        self.assertTrue(record["window"]["valid"], record["window"]["reasons"])
-        self.assertIn(
-            "admission_rejected", json.dumps(record["lifecycle"]["protocol_anomalies"])
-        )
+    def test_rejection_recovery_requires_correlated_retry_before_audio(self) -> None:
+        """An uncorrelated rejection or late retry ack used to retain the export window."""
+        for scenario in ("recovered", "missing_error_id", "wrong_ack", "late_ack"):
+            with self.subTest(scenario=scenario):
+                records = list(
+                    map(json.loads, make_session_trace(self.pcm).splitlines())
+                )
+                acknowledgment = records[0]
+                acknowledgment["event"]["client_event_id"] = (
+                    "unknown" if scenario == "wrong_ack" else "retry"
+                )
+                if scenario == "late_ack":
+                    acknowledgment["time_s"] = TRACE_ORIGIN_S + 0.001
+                else:
+                    pass
+                error = {"code": "admission_rejected", "event_id": "initial"}
+                if scenario == "missing_error_id":
+                    error.pop("event_id")
+                else:
+                    pass
+                records.extend(
+                    [
+                        {
+                            "direction": "send",
+                            "time_s": TRACE_ORIGIN_S - 0.04,
+                            "event": {"type": "session.update", "event_id": "initial"},
+                        },
+                        {
+                            "direction": "receive",
+                            "time_s": TRACE_ORIGIN_S - 0.03,
+                            "event": {
+                                "type": "error",
+                                "sglang": {"fatal": False},
+                                "error": error,
+                            },
+                        },
+                        {
+                            "direction": "send",
+                            "time_s": TRACE_ORIGIN_S - 0.02,
+                            "event": {"type": "session.update", "event_id": "retry"},
+                        },
+                    ]
+                )
+                trace = "".join(
+                    json.dumps(record) + "\n"
+                    for record in sorted(records, key=lambda record: record["time_s"])
+                )
+                record, _, audio = self.analyze(self.pcm, trace)
+                if scenario == "recovered":
+                    self.assertTrue(
+                        record["window"]["valid"], record["window"]["reasons"]
+                    )
+                    self.assertIsNotNone(audio)
+                    self.assertIn(
+                        "admission_rejected",
+                        json.dumps(record["lifecycle"]["protocol_anomalies"]),
+                    )
+                else:
+                    self.assertFalse(record["window"]["valid"])
+                    self.assertIsNone(audio)
 
     def test_liveness_after_window_must_be_proven(self) -> None:
         record, _, _ = self.analyze(

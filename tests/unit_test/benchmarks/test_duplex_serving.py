@@ -407,6 +407,42 @@ def test_level_counts_rejected_sessions_apart_from_failures(tmp_path: Path) -> N
     assert verdict["metrics"]["admission_rejections"] == ADMISSION_RETRIES + 1
 
 
+@pytest.mark.parametrize(
+    ("saved_counts", "valid_rows"), [(False, True), (True, True), (True, False)]
+)
+def test_failed_trace_with_bad_rows_preserves_report(
+    tmp_path: Path, saved_counts: bool, valid_rows: bool
+) -> None:
+    """A malformed trace row used to abort reporting an already failed session."""
+    run_dir = record_run(tmp_path / "run", 1, [("error", [])], rejected_updates=1)
+    run_path = run_dir / "run.json"
+    run = json.loads(run_path.read_text())
+    variant = run["samples"][0]["variants"]["input"]
+    variant["failure_kind"] = "runtime"
+    if saved_counts:
+        variant["admission"] = {"admission_denials": 2, "admission_rejections": 3}
+    else:
+        pass
+    run_path.write_text(json.dumps(run))
+    trace_path = run_dir / variant["directory"] / "continuous.jsonl"
+    with trace_path.open("a" if valid_rows else "w") as trace_file:
+        trace_file.write('{"direction":\n')
+    report = serving_report([run_dir], PLAYBACK_RESERVE_S)
+    level = report["levels"][0]
+    assert level["sessions"] == 1
+    assert level["sessions_failed"] == 1
+    assert level["sessions_with_admission_events"] == 1
+    assert level["http_admission_denial_events"] == (2 if saved_counts else 0)
+    assert level["session_admission_rejection_events"] == (3 if saved_counts else 1)
+    assert level["units_expected"] == level["units_missed"] == 3
+    table = benchmark_duplex_serving.format_table(report)
+    if valid_rows:
+        assert level["mean_open_sessions"] == 1
+    else:
+        assert level["mean_open_sessions"] is None
+        assert "| 1 | - | 1/1 |" in table
+
+
 def test_capacity_is_the_level_below_the_first_unmet_target(tmp_path: Path) -> None:
     passing = [("pass", ON_TIME)]
     report = serving_report(

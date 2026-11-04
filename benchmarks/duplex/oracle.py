@@ -188,6 +188,7 @@ def evaluate_trace(
     counts: Counter[tuple[str, str]] = Counter()
     event_ids: dict[str, set[str]] = {"send": set(), "receive": set()}
     sent_commands: dict[str, SentCommand] = {}
+    pending_update_id: str | None = None
     acknowledged: set[tuple[str, str | None]] = set()
     response_states: dict[str, ResponseState] = {}
     input_times: list[float] = []
@@ -252,6 +253,11 @@ def evaluate_trace(
             check(not closed, f"{event_type} after session.closed")
             if direction == "send":
                 if event_type == "session.update":
+                    check(
+                        pending_update_id is None,
+                        "session.update while another update is pending",
+                    )
+                    pending_update_id = event.event_id
                     check(
                         max_admission_attempts is None
                         or admissions + admission_rejections <= max_admission_attempts,
@@ -333,6 +339,12 @@ def evaluate_trace(
                     "missing session ID",
                 )
             elif event_type == "session.updated":
+                check(
+                    pending_update_id is not None
+                    and event.client_event_id == pending_update_id,
+                    "session.updated: missing matching pending update",
+                )
+                pending_update_id = None
                 session_fields = event.session or {}
                 check(
                     session_id is not None and session_fields.get("id") == session_id,
@@ -621,7 +633,9 @@ def evaluate_trace(
                     and not updated
                     and rejected_command is not None
                     and rejected_command.event.type == "session.update"
+                    and error.get("event_id") == pending_update_id
                 ):
+                    pending_update_id = None
                     admission_rejections += 1
                     # note (Yucheng Hu): The client re-sends a rejected update, so only the admitted one counts as the session's update and may be acknowledged.
                     counts["send", "session.update"] -= 1

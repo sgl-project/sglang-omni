@@ -566,6 +566,21 @@ def test_oracle_checks_the_combined_admission_budget(retry_limit: int) -> None:
         assert any("limit" in violation for violation in result["violations"])
 
 
+def test_overlapping_updates_cannot_bypass_the_shared_budget() -> None:
+    """Two pending updates let a fifth admission attempt pass a three-retry limit."""
+    records = trace_fixture()
+    records.insert(1, rejected_update())
+    denied = rejection()
+    denied["time_s"] = 100.015
+    records.insert(3, denied)
+    result = evaluate_trace(
+        [admission(1), admission(2), admission(3), *records],
+        max_admission_attempts=3,
+    )
+    assert result["status"] == "fail", result
+    assert any("pending" in violation for violation in result["violations"])
+
+
 @pytest.mark.parametrize(
     "profile", ["nemotron-voicechat-pr2188", "qwen3-omni-half-duplex"]
 )

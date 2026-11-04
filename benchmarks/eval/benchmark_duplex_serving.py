@@ -50,7 +50,7 @@ def format_table(report: dict[str, JsonValue]) -> str:
         first_audio = level["first_audio_latency_s"]
         buffer_needed = level["startup_buffer_needed_s"]
         rows.append(
-            f"| {level['concurrency']} | {level['mean_open_sessions']:.1f} "
+            f"| {level['concurrency']} | {ratio(level['mean_open_sessions'], '.1f')} "
             f"| {level['sessions_failed']}/{level['sessions']} "
             f"| {level['admission_denials']} / {level['sessions_with_admission_rejections']} "
             f"| {level['sessions_rejected']} | {level['sessions_with_admission_events']} "

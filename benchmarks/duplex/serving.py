@@ -20,6 +20,7 @@ from benchmarks.duplex.oracle_models import (
     is_admission_rejection,
 )
 from benchmarks.duplex.profiles import PROFILES, ProfileName
+from benchmarks.duplex.reference_capture import read_trace
 from benchmarks.duplex.run_artifacts import load_run
 from benchmarks.duplex.v15_audio import AUDIO_DELTA, LEGACY_AUDIO_DELTA
 
@@ -241,17 +242,29 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
         trace_end_s: float | None = None
         http_denials = session_rejections = 0
         with (variant_dir / "continuous.jsonl").open(encoding="utf-8") as trace_file:
-            for line in trace_file:
-                record = json.loads(line)
+            for capture in read_trace(trace_file):
+                if capture.row is None:
+                    continue
+                else:
+                    record = capture.row
                 if trace_start_s is None:
-                    trace_start_s = record["time_s"]
+                    trace_start_s = record.time_s
                 else:
                     pass
-                trace_end_s = record["time_s"]
-                http_denials += record["direction"] == "admission"
-                session_rejections += record[
-                    "direction"
-                ] == "receive" and is_admission_rejection(record["event"])
+                trace_end_s = record.time_s
+                if "admission" not in variant_state:
+                    http_denials += record.direction == "admission"
+                    session_rejections += (
+                        record.direction == "receive"
+                        and is_admission_rejection(record.event)
+                    )
+                else:
+                    pass
+        if "admission" in variant_state:
+            http_denials = variant_state["admission"]["admission_denials"]
+            session_rejections = variant_state["admission"]["admission_rejections"]
+        else:
+            pass
         if trace_start_s is not None:
             assert trace_end_s is not None
             trace_spans_s.append((trace_start_s, trace_end_s))
@@ -305,16 +318,19 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
             real_time_factor["p90"] is None
             or real_time_factor["p90"] >= MAX_REPLY_REAL_TIME_FACTOR,
         )
+    elapsed_s = max((end_s for _, end_s in trace_spans_s), default=0.0) - min(
+        (start_s for start_s, _ in trace_spans_s), default=0.0
+    )
     return {
         "run": str(run_dir),
         "profile": profile,
         "concurrency": load["concurrency"],
         # note (jeffro): sessions start as slots free up, so the first and last ones
         # of a recording run with fewer neighbours than the concurrency.
-        "mean_open_sessions": sum(end_s - start_s for start_s, end_s in trace_spans_s)
-        / (
-            max(end_s for _, end_s in trace_spans_s)
-            - min(start_s for start_s, _ in trace_spans_s)
+        "mean_open_sessions": (
+            sum(end_s - start_s for start_s, end_s in trace_spans_s) / elapsed_s
+            if elapsed_s > 0
+            else None
         ),
         "sessions": len(attempted),
         "sessions_failed": sessions_failed,
