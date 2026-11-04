@@ -142,6 +142,23 @@ def test_request_longer_than_the_context_is_rejected_with_the_limit():
     assert is_bad_request_error(error.value)
 
 
+def test_reference_extra_frame_counts_toward_the_context_limit() -> None:
+    payload = make_payload(4)
+    default = build_lm_request(payload, vocab_size=32000)
+    prompt_positions = default.talker_model_inputs["timeline"].num_prompt_positions
+    context_length = prompt_positions + 4 + 1
+    build_lm_request(payload, vocab_size=32000, context_length=context_length)
+    state = PersonaPlexState.from_dict(payload.data)
+    state.session_reference = True
+    payload.data = state.to_dict()
+    with pytest.raises(ValueError, match="5 generated frames"):
+        build_lm_request(payload, vocab_size=32000, context_length=context_length)
+    reference = build_lm_request(
+        payload, vocab_size=32000, context_length=context_length + 1
+    )
+    assert reference.max_new_tokens == 5
+
+
 @pytest.mark.parametrize("stage_seed,expected", [(None, 9), (0, 0)])
 def test_stage_seed_precedence(stage_seed: int | None, expected: int) -> None:
     sampling = resolve_sampling(

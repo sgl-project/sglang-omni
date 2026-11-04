@@ -260,11 +260,12 @@ def build_lm_request(
         raise ValueError("PersonaPlex needs at least one 80 ms frame of caller audio")
     else:
         pass
-    positions = timeline.num_prompt_positions + timeline.num_frames
+    generation_frames = timeline.num_frames + int(state.session_reference)
+    positions = timeline.num_prompt_positions + generation_frames
     if context_length is not None and positions > context_length - 1:
         raise ValueError(
             f"PersonaPlex request needs {positions} positions "
-            f"({timeline.num_prompt_positions} prompt + {timeline.num_frames} caller "
+            f"({timeline.num_prompt_positions} prompt + {generation_frames} generated "
             f"frames, {timeline.num_frames * SAMPLES_PER_FRAME / SAMPLE_RATE:.1f} s) "
             f"but the LM context holds {context_length - 1}; shorten the recording "
             "or raise the lm stage's context_length"
@@ -278,7 +279,7 @@ def build_lm_request(
         origin_input_text="",
         origin_input_ids=input_ids,
         sampling_params=lm_sampling_params(
-            sampling, max_new_tokens=timeline.num_frames, vocab_size=vocab_size
+            sampling, max_new_tokens=generation_frames, vocab_size=vocab_size
         ),
         vocab_size=vocab_size,
     )
@@ -286,7 +287,7 @@ def build_lm_request(
         req=req,
         input_ids=torch.tensor(input_ids, dtype=torch.long),
         stage_payload=payload,
-        max_new_tokens=timeline.num_frames,
+        max_new_tokens=generation_frames,
         temperature=sampling.text_temperature,
     )
     data.talker_model_inputs = new_model_inputs(timeline, sampling)

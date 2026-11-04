@@ -2,12 +2,14 @@
 """The stages around the LM keep per-call codec state and hand the prompt on once."""
 
 import threading
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
 import torch
 
 from sglang_omni.client.audio import encode_pcm
+from sglang_omni.models.personaplex import stages
 from sglang_omni.models.personaplex.architecture import SAMPLES_PER_FRAME
 from sglang_omni.models.personaplex.mimi_decode_graph import MimiDecodeSlots
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
@@ -85,7 +87,7 @@ def test_units_must_be_whole_frames_of_pcm16():
     assert pcm16_to_waveform(end).numel() == 0
 
 
-def test_streaming_encode_matches_the_whole_recording(random_codec):
+def test_streaming_encode_matches_the_whole_recording(random_codec, monkeypatch):
     frames = 3
     waveform = pcm16_to_waveform(
         unit(0, waveform_to_pcm16(torch.randn(frames * SAMPLES_PER_FRAME) * 0.3))
@@ -111,6 +113,25 @@ def test_streaming_encode_matches_the_whole_recording(random_codec):
     hooks.close(CALL)
 
     assert torch.equal(torch.cat(streamed), whole)
+    monkeypatch.setattr(
+        stages, "load_codec", lambda *a, **k: (random_codec, torch.device("cpu"))
+    )
+    encode_step = Mock(wraps=random_codec.encode_step)
+    monkeypatch.setattr(random_codec, "encode_step", encode_step)
+    reference = stages.create_mimi_encode_executor("dummy")
+    for _ in range(2):
+        result = reference.fn(
+            payload(PersonaPlexState(waveform=waveform, session_reference=True))
+        )
+        encoded = PersonaPlexState.from_dict(result.data)
+        assert torch.equal(encoded.user_codes, torch.cat(streamed))
+        assert encoded.waveform is None
+        assert encoded.session_reference
+    assert encode_step.call_count == 2 * frames
+    assert all(
+        call.args[0].shape == (1, 1, SAMPLES_PER_FRAME)
+        for call in encode_step.call_args_list
+    )
 
 
 def decode_slots(codec, num_slots: int) -> MimiDecodeSlots:

@@ -15,6 +15,7 @@ from sglang_omni.config.sources import patches_from_stages_mapping
 from sglang_omni.models.personaplex.config import (
     DEFAULT_LM_MAX_RUNNING_REQUESTS,
     PersonaPlexPipelineConfig,
+    PersonaPlexSessionPipelineConfig,
 )
 
 
@@ -82,6 +83,19 @@ def test_async_decode_is_opt_in_from_cli() -> None:
         manager.parse_extra_args(["--lm.factory.enable_async_decode", "true"])
     )
     assert updated.stage_named("lm").factory.enable_async_decode
+
+
+def test_session_reference_cli_reaches_both_codec_stages() -> None:
+    config = rebuild(
+        PersonaPlexPipelineConfig(model_path="dummy"), "--session_reference", "true"
+    )
+    preprocessing = resolve_stage_factory_args(
+        config.stage_named("preprocessing"), config
+    )
+    assert preprocessing["session_reference"]
+    assert code2wav_arguments(config)["session_reference"]
+    with pytest.raises(ValueError, match="offline reference pipeline"):
+        PersonaPlexSessionPipelineConfig(model_path="dummy", session_reference=True)
 
 
 def rebuild(

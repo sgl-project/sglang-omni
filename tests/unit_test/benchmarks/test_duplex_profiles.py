@@ -671,6 +671,8 @@ def test_parity_cli_records_offline_identity(
             str(run),
             "--offline-url",
             "http://offline.test",
+            "--offline-mode",
+            "session-reference",
             "--voice",
             "NATF2",
             "--instructions",
@@ -692,4 +694,5 @@ def test_parity_cli_records_offline_identity(
     assert report["offline_server"]["revision"] == "a" * 40
     assert report["offline_server"]["model_revision"] == "b" * 40
     assert report["offline_server"]["runtime"] == "pinned-image"
+    assert report["offline_mode"] == "session-reference"
     assert report["full_reply"]["byte_identical"] is True

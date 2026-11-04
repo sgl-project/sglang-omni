@@ -65,6 +65,12 @@ def main() -> None:
     parser.add_argument("--session-run", type=Path, required=True)
     parser.add_argument("--offline-url", required=True, help="Offline server base URL")
     parser.add_argument(
+        "--offline-mode",
+        choices=("default", "session-reference"),
+        default="default",
+        help="Record whether the offline server was launched with session_reference",
+    )
+    parser.add_argument(
         "--voice", required=True, help="Voice used by the recorded session"
     )
     parser.add_argument(
@@ -149,6 +155,7 @@ def main() -> None:
     (arguments.output / "request.json").write_text(json.dumps(request, indent=2) + "\n")
     (arguments.output / "response.json").write_bytes(response.content)
     report = {
+        "offline_mode": arguments.offline_mode,
         "session_manifest": manifest,
         "offline_server": offline_identity,
         "session_replay": replay,
