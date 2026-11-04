@@ -35,20 +35,6 @@ TORCH_DTYPES = {
 }
 
 
-def pin_attention_backend(device: torch.device) -> None:
-    """Use one SDPA kernel for resident and offloaded AuK.
-
-    Restoring paused weight memory can make the dispatcher select another kernel for the same shape. Flash attention also rejects the additive key bias.
-    """
-    if device.type == "cuda":
-        torch.backends.cuda.enable_flash_sdp(False)
-        torch.backends.cuda.enable_cudnn_sdp(False)
-        torch.backends.cuda.enable_math_sdp(False)
-        torch.backends.cuda.enable_mem_efficient_sdp(True)
-    else:
-        pass
-
-
 def resolve_dtype(*, field: str, name: str) -> torch.dtype:
     if name not in TORCH_DTYPES:
         raise ValueError(

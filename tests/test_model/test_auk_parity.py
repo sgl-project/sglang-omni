@@ -9,6 +9,8 @@ from unittest.mock import patch
 import pytest
 import torch
 
+from sglang_omni.models.auk import batch_compute
+
 pytestmark = pytest.mark.accelerator
 
 
@@ -76,7 +78,6 @@ def models():
 @pytest.mark.parametrize("reference", [False, True])
 def test_speech_matches_upstream(models, monkeypatch, reference):
     from sglang_omni.client.client import Client
-    from sglang_omni.models.auk import stages
     from sglang_omni.models.auk.hf_config import make_runtime_config
     from sglang_omni.models.auk.request_builders import build_auk_state
     from sglang_omni.models.auk.vae import BigVGANFlowVAE
@@ -151,7 +152,7 @@ def test_speech_matches_upstream(models, monkeypatch, reference):
 
     monkeypatch.setattr(BigVGANFlowVAE, "encoding_and_normalization", encode)
     monkeypatch.setattr(BigVGANFlowVAE, "denormalize", denormalize)
-    capture(monkeypatch, stages, "fuse_hidden_states", actual, "conditioning")
+    capture(monkeypatch, batch_compute, "fuse_hidden_states", actual, "conditioning")
     torch.manual_seed(request.seed)
     expected["waveform"], sample_rate = upstream.generate(
         messages,

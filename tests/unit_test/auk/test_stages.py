@@ -1,11 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """Batched stage hand-offs and checkpoint sampling recipes."""
 
+from types import ModuleType
+from typing import Literal
 from unittest.mock import Mock
 
 import numpy as np
 import pytest
 import torch
+import torch.nn.functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from sglang_omni.models.auk import constants as C
 from sglang_omni.models.auk.batch_compute import (
@@ -15,7 +19,6 @@ from sglang_omni.models.auk.batch_compute import (
 )
 from sglang_omni.models.auk.hf_config import AuKRuntimeConfig
 from sglang_omni.models.auk.payload_types import AuKState
-from sglang_omni.models.auk.runtime import warmup_flow
 from sglang_omni.models.auk.stages import create_auk_engine_executor
 from sglang_omni.models.auk.vae import BigVGANFlowVAE
 from sglang_omni.pipeline.control_plane import deserialize_message, serialize_message
@@ -141,6 +144,47 @@ def stages(monkeypatch):
     return stages
 
 
+@pytest.mark.parametrize("stage_name", ["conditioning", "auk_engine"])
+def test_resident_initialization_preserves_attention_backends(
+    stages: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    stage_name: Literal["conditioning", "auk_engine"],
+) -> None:
+    """Initializing a CUDA stage must not disable colocated CPU attention."""
+    monkeypatch.setattr(
+        stages, "resolve_concrete_device", lambda *args: torch.device("cuda:0")
+    )
+    monkeypatch.setattr(stages, "scheduler", Mock())
+    monkeypatch.setattr(stages, "AuKConditionEncoder", Mock())
+    monkeypatch.setattr(stages, "load_fusion", Mock())
+    monkeypatch.setattr(stages, "load_vae", Mock())
+    monkeypatch.setattr(stages, "load_flow", Mock())
+
+    query = torch.arange(16, dtype=torch.float32).reshape(1, 1, 4, 4)
+    with sdpa_kernel(
+        [
+            SDPBackend.FLASH_ATTENTION,
+            SDPBackend.MATH,
+            SDPBackend.EFFICIENT_ATTENTION,
+            SDPBackend.CUDNN_ATTENTION,
+        ]
+    ):
+        expected = F.scaled_dot_product_attention(query, query, query)
+        if stage_name == "conditioning":
+            stages.create_conditioning_executor("stub", device="cuda")
+        else:
+            stages.create_auk_engine_executor(
+                "stub", device="cuda", enable_dit_fused_qk_norm_rope=False
+            )
+
+        actual = F.scaled_dot_product_attention(query, query, query)
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        assert torch.backends.cuda.flash_sdp_enabled()
+        assert torch.backends.cuda.math_sdp_enabled()
+        assert torch.backends.cuda.mem_efficient_sdp_enabled()
+        assert torch.backends.cuda.cudnn_sdp_enabled()
+
+
 @pytest.mark.parametrize("field", ["dtype", "weight_dtype"])
 def test_unknown_dtype_names_are_rejected_before_the_checkpoint_is_resolved(field):
     with pytest.raises(
@@ -246,13 +290,22 @@ def test_the_step_graph_is_refused_without_the_attention_bias(stages, monkeypatc
         create_auk_engine_executor("stub", device="cpu", enable_dit_cuda_graph=True)
 
 
-def test_the_warmup_covers_a_request_that_carries_no_reference():
-    """An instruction-only request guards on no bias, and would recompile both blocks."""
+@pytest.mark.parametrize("max_batch_size", [1, 8])
+def test_the_warmup_covers_a_request_that_carries_no_reference(
+    stages: ModuleType, monkeypatch: pytest.MonkeyPatch, max_batch_size: int
+) -> None:
+    """Resident warmup must retain every compile guard even with batch size one."""
     flow = stub_flow()
     flow.transformer.txt_proj.in_features = 16
     flow.transformer.latent_dim = 64
 
-    warmup_flow(flow, torch.device("cpu"), torch.float32, dict(steps=8))
+    monkeypatch.setattr(stages, "load_flow", lambda *args: flow)
+    create_auk_engine_executor(
+        "stub",
+        device="cpu",
+        max_batch_size=max_batch_size,
+        enable_dit_torch_compile=True,
+    )
 
     batches = [items for (items,), _ in flow.sample_batch.call_args_list]
     lone = [

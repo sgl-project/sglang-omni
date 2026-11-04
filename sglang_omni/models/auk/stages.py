@@ -32,7 +32,6 @@ from sglang_omni.models.auk.runtime import (
     load_flow,
     load_fusion,
     load_vae,
-    pin_attention_backend,
     resolve_dtype,
     warmup_flow,
 )
@@ -105,7 +104,6 @@ def create_conditioning_executor(
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     compute_dtype = resolve_dtype(field="dtype", name=dtype)
     device = resolve_concrete_device(device, gpu_id)
-    pin_attention_backend(device)
     checkpoint = resolve_checkpoint(model_path)
     fusion = load_fusion(checkpoint, str(device))
     offload = None
@@ -193,7 +191,6 @@ def create_auk_engine_executor(
     compute_dtype = resolve_dtype(field="dtype", name=dtype)
     backbone_dtype = resolve_dtype(field="weight_dtype", name=weight_dtype)
     device = resolve_concrete_device(device, gpu_id)
-    pin_attention_backend(device)
     checkpoint = resolve_checkpoint(model_path)
     config = make_runtime_config(checkpoint)
     # note(Dayuxiaoshui): autocast reads fp32 as off, and on a non-fp32
@@ -255,7 +252,7 @@ def create_auk_engine_executor(
     else:
         pass
     if enable_dit_torch_compile or step_graph is not None:
-        if enable_serial_offload or max_batch_size == 1:
+        if enable_serial_offload:
             warmup_flow(flow, device, autocast_dtype, sampling, step_graph, serial=True)
         else:
             warmup_flow(flow, device, autocast_dtype, sampling, step_graph)
