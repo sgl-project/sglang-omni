@@ -115,4 +115,4 @@ cmp docs/developer_reference/personaplex_expanded_baseline.json \
   /tmp/personaplex-expanded-report/regenerated.json
 ```
 
-The report-input bundle was rebuilt in an empty directory and matched the checked-in JSON byte for byte. The benchmark changes pass 67 related tests, including exact text comparison across transcript chunks, and repository pre-commit checks. The H100 was deleted after the archive was downloaded and verified; the subsequent RunPod API query returned no instance. Results and review notes remain local.
+The report-input bundle was rebuilt in an empty directory and matched the checked-in JSON byte for byte. The benchmark changes pass 67 related tests, including exact text comparison across transcript chunks, and repository pre-commit checks. The H100 was deleted after the archive was downloaded and verified; the subsequent RunPod API query returned no instance. Raw recording archives and report-input bundles are retained locally.
