@@ -566,7 +566,10 @@
             <nav aria-label="Page">
                 <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#running-the-offline-example">Running the offline example</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#running-the-offline-example">Running the offline example</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming-codec-chunk-sizes">Streaming codec chunk sizes</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#realtime-conversation">Realtime conversation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#offline-request-parameters">Offline request parameters</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#tool-calling">Tool calling</a></li>
@@ -618,6 +621,35 @@
 </ul>
 <p>The reply text is the thinker’s spoken tokens only; frames where the model is listening carry a marker token and are dropped from the text.</p>
 <p>For Intel GPUs, follow the <a class="reference internal" href="../get_started/installation_xpu.html#nemotron-voicechat-speech-to-speech-two-xpus"><span class="std std-ref">Nemotron VoiceChat XPU recipe</span></a>.</p>
+<section id="streaming-codec-chunk-sizes">
+<h3>Streaming codec chunk sizes<a class="headerlink" href="#streaming-codec-chunk-sizes" title="Link to this heading">#</a></h3>
+<p>The offline pipeline enables the <code class="docutils literal notranslate"><span class="pre">(1,</span> <span class="pre">1,</span> <span class="pre">1,</span> <span class="pre">1,</span> <span class="pre">2,</span> <span class="pre">2,</span> <span class="pre">4)</span></code> chunk ramp by default to reduce decoder calls and audio transfers. To disable the ramp and decode one codec frame at a time, set the code2wav factory’s <code class="docutils literal notranslate"><span class="pre">chunk_frames</span></code>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>examples/run_nemotron_voicechat.py<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>/path/to/NVIDIA-NemotronLabs-VoiceChat-11B<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--audio<span class="w"> </span>/path/to/NVIDIA-NemotronLabs-VoiceChat-11B/turn_taking.wav<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--out<span class="w"> </span>reply.wav<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--code2wav.factory.chunk_frames<span class="w"> </span><span class="s1">'[1]'</span>
+</pre></div>
+</div>
+<p>The equivalent YAML setting, for commands that take <code class="docutils literal notranslate"><span class="pre">--config</span></code>, is:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">config_cls</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">NemotronVoiceChatPipelineConfig</span>
+<span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/path/to/NVIDIA-NemotronLabs-VoiceChat-11B</span>
+<span class="nt">stages</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">code2wav</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">factory</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">chunk_frames</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">1</span><span class="p p-Indicator">]</span>
+</pre></div>
+</div>
+<p>CLI settings override YAML settings. Preview the resolved schedule and its source:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>config<span class="w"> </span>resolve<span class="w"> </span>--config<span class="w"> </span>voicechat.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--code2wav.factory.chunk_frames<span class="w"> </span><span class="s1">'[1, 2, 4]'</span>
+sgl-omni<span class="w"> </span>config<span class="w"> </span>explain<span class="w"> </span>stages.code2wav.factory.chunk_frames<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--config<span class="w"> </span>voicechat.yaml<span class="w"> </span>--code2wav.factory.chunk_frames<span class="w"> </span><span class="s1">'[1, 2, 4]'</span>
+</pre></div>
+</div>
+<p>Each entry is the number of <strong>new</strong> codec frames to collect for a decode; the last entry repeats for the rest of the request. The default ramp emits four small chunks before growing to two frames and then four (320 ms of audio per steady chunk). <code class="docutils literal notranslate"><span class="pre">(1,)</span></code> restores the previous single-frame cadence. The schedule restarts for each request, and end-of-stream flushes a partially filled chunk.</p>
+<p>Larger chunks trade playback arrival frequency for fewer decoder calls. Measure both first-chunk latency and playback underruns with the intended client buffer when choosing a schedule. This setting does not control the native realtime duplex pipeline. Chunk sizes must be positive integers and leave enough history in the 16-frame decode window for the checkpoint’s causal decoder and held-back tail; empty or null schedules and non-positive or non-integer entries fail during configuration resolution. The decoder-dependent window limit is checked when the code2wav scheduler is created.</p>
+</section>
 </section>
 <section id="realtime-conversation">
 <h2>Realtime conversation<a class="headerlink" href="#realtime-conversation" title="Link to this heading">#</a></h2>
@@ -725,7 +757,10 @@
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#running-the-offline-example">Running the offline example</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#running-the-offline-example">Running the offline example</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming-codec-chunk-sizes">Streaming codec chunk sizes</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#realtime-conversation">Realtime conversation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#offline-request-parameters">Offline request parameters</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#tool-calling">Tool calling</a></li>
