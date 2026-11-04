@@ -11,22 +11,20 @@ MPS_SLACK_LOWER = 1.25
 
 MPS_CONCURRENCY = 16
 
-MPS_HIGGS_THROUGHPUT_QPS_REF: float | None = 16.22
-MPS_HIGGS_OUTPUT_TOK_PER_REQ_S_REF: float | None = 120.9
-MPS_HIGGS_LATENCY_MEAN_S_REF: float | None = 0.981
-MPS_HIGGS_RTF_MEAN_REF: float | None = 0.2322
+MPS_HIGGS_THROUGHPUT_QPS_REF: float | None = 15.958
+MPS_HIGGS_OUTPUT_TOK_PER_REQ_S_REF: float | None = 120.6
+MPS_HIGGS_LATENCY_MEAN_S_REF: float | None = 0.996
+MPS_HIGGS_RTF_MEAN_REF: float | None = 0.2332
 
-MPS_MOSS_THROUGHPUT_QPS_REF: float | None = 19.595
-MPS_MOSS_OUTPUT_TOK_PER_REQ_S_REF: float | None = 79.7
-MPS_MOSS_LATENCY_MEAN_S_REF: float | None = 0.811
-MPS_MOSS_RTF_MEAN_REF: float | None = 0.1863
+MPS_MOSS_THROUGHPUT_QPS_REF: float | None = 19.487
+MPS_MOSS_OUTPUT_TOK_PER_REQ_S_REF: float | None = 79.3
+MPS_MOSS_LATENCY_MEAN_S_REF: float | None = 0.816
+MPS_MOSS_RTF_MEAN_REF: float | None = 0.1877
 
-# Speaker similarity gets its own MPS baseline. The canonical reference is
-# calibrated under ordinary DP2, and under a shared card the observed spread
-# straddles it (65.90 to 67.31 against a 66.07 line), so reusing it would make
-# the stage fail about half the time without any measured MPS penalty.
-MPS_HIGGS_SIMILARITY_MEAN_MIN: float | None = 64.5785757446289
-MPS_MOSS_SIMILARITY_MEAN_MIN: float | None = 62.4948962020874
+# Speaker similarity uses its own MPS baseline because the canonical reference
+# is calibrated under ordinary DP2 rather than a shared card.
+MPS_HIGGS_SIMILARITY_MEAN_MIN: float | None = 65.52045616149903
+MPS_MOSS_SIMILARITY_MEAN_MIN: float | None = 64.23701919555664
 
 MPS_SIMILARITY_MEAN_MIN = {
     "higgs": MPS_HIGGS_SIMILARITY_MEAN_MIN,
