@@ -1402,21 +1402,23 @@ The reported results came from one C1 and C2 screen, five C4 runs, two C8 runs, 
 
 One H200 141 GB ran the same 128-session v1.5 cohort as the MiniCPM-o campaign above (16 pairs per subset, 1,676.565 seconds of input, the longest 15.763 seconds) against the Qwen3-Omni session graph, with the `turn-based` profile, `server_vad` at `silence_duration_ms` 800 (the VAD node default) and no system prompt. The server used `examples/qwen3_omni/session_h200.yaml` with only `max_sessions` changed. The image and audio encoders each ran one request at a time (`max_concurrency` 1 since #3111), so no session received another session's encoder output. Client and server shared one host with about 27 CPUs by cgroup quota. Each level is one recording, and no warm-up was excluded.
 
-| N | `max_sessions` | Mean open | Failed | First audio p50 / p90 (ms) | Underrun replies | RTF p90 | Meets targets |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| 1 | 16 | 1.0 | 0/128 | 131 / 152 | 0/179 | 0.80 | yes |
-| 2 | 16 | 2.0 | 0/128 | 141 / 184 | 0/178 | 0.79 | yes |
-| 4 | 16 | 3.9 | 0/128 | 130 / 154 | 0/179 | 0.80 | yes |
-| 8 | 16 | 7.8 | 0/128 | 144 / 182 | 0/179 | 0.80 | yes |
-| 16 | 16 | 15.2 | 0/128 | 176 / 246 | 0/179 | 0.80 | yes |
-| 16 | 64 | 15.4 | 0/128 | 183 / 345 | 0/171 | 0.80 | yes |
-| 24 | 64 | 22.4 | 0/128 | 213 / 348 | 0/179 | 0.79 | yes |
-| 32 | 64 | 29.0 | 0/128 | 248 / 408 | 0/179 | 0.79 | yes |
-| 48 | 64 | 38.6 | 0/128 | 317 / 853 | 2/179 | 0.78 | yes |
+The table adds one column to the serving metrics above. The generation rate is measured on replies still being delivered when the client sends `sglang.input_audio.end`, after which the delivery pacer no longer holds audio back: for each reply with at least 10 seconds of audio arriving after that moment, it is that audio's duration divided by the time from the input end to the reply's last audio, in multiples of real time. The column reports the 10th percentile, because audio already generated and held at the input end arrives at once and makes most replies' rate a measure of the flush rather than of generation. A rate above 1x means generation outpaces playback; 1x means it just keeps up.
+
+| N | `max_sessions` | Mean open | Failed | First audio p50 / p90 (ms) | Underrun replies | RTF p90 | Generation rate p10 | Meets targets |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 1 | 16 | 1.0 | 0/128 | 131 / 152 | 0/179 | 0.80 | 20.4x | yes |
+| 2 | 16 | 2.0 | 0/128 | 141 / 184 | 0/178 | 0.79 | 14.8x | yes |
+| 4 | 16 | 3.9 | 0/128 | 130 / 154 | 0/179 | 0.80 | 10.0x | yes |
+| 8 | 16 | 7.8 | 0/128 | 144 / 182 | 0/179 | 0.80 | 7.9x | yes |
+| 16 | 16 | 15.2 | 0/128 | 176 / 246 | 0/179 | 0.80 | 5.3x | yes |
+| 16 | 64 | 15.4 | 0/128 | 183 / 345 | 0/171 | 0.80 | 4.6x | yes |
+| 24 | 64 | 22.4 | 0/128 | 213 / 348 | 0/179 | 0.79 | 4.2x | yes |
+| 32 | 64 | 29.0 | 0/128 | 248 / 408 | 0/179 | 0.79 | 4.1x | yes |
+| 48 | 64 | 38.6 | 0/128 | 317 / 853 | 2/179 | 0.78 | 3.5x | yes |
 
 No level had an admission denial, an `admission_rejected` session or an input pacing violation. Every level met the serving targets, so the capacity at `max_sessions` 64 is at least 48 and the knee was not reached. At N=48 the level averaged 38.6 open sessions, because 128 sessions with a 14-second median do not fill three waves; first audio p90 doubled from N=32 and the first two underruns appeared, both on the same long reply. The decode `#running-req` of the server log peaked at N at every level, with `#queue-req` 0 throughout.
 
-The RTF column does not measure headroom here. While a session's input is still streaming, the delivery pacer releases reply audio at most `max_output_lead_ms` (1,000 ms) ahead of real time from the reply's first audio, so a reply of about 5 seconds arrives over about 4 seconds at any load; after `sglang.input_audio.end` the pacer releases everything it holds. The delivery rate after the input end, taken as the 10th percentile over replies with at least 10 seconds of audio after it, follows generation speed instead: 20.4x real time at N=1, 14.8x at 2, 10.0x at 4, 7.9x at 8, 5.3x and 4.6x at 16 (`max_sessions` 16 and 64), 4.2x at 24, 4.1x at 32 and 3.5x at 48.
+The RTF column does not measure headroom here. While a session's input is still streaming, the delivery pacer releases reply audio at most `max_output_lead_ms` (1,000 ms) ahead of real time from the reply's first audio, so a reply of about 5 seconds arrives over about 4 seconds at any load; after `sglang.input_audio.end` the pacer releases everything it holds. The generation rate column shows the headroom RTF hides: it falls from 20.4x real time at N=1 to 3.5x at N=48.
 
 Without a system prompt, Qwen3-Omni answers some prompts at length. The median reply carries 6.9 seconds of audio, but at N=16 32 replies exceed 60 seconds, and 3 to 7 replies per level stop at the talker's 4,096-token limit (327.7 seconds) as `incomplete` with `max_output_tokens`. These replies account for most of the generation work.
 
