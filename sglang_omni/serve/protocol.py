@@ -34,12 +34,24 @@ class UsageResponse(BaseModel):
 class SpecTokensDetails(BaseModel):
     """Per-request speculative decoding statistics."""
 
-    spec_accept_rate: float
+    spec_accept_rate: float | None = None
     spec_accept_length: float
     spec_num_correct_drafts: int
-    spec_num_proposed_drafts: int
+    spec_num_proposed_drafts: int | None = None
     spec_verify_ct: int
     spec_correct_drafts_histogram: list[int]
+
+    @model_serializer(mode="wrap")
+    def drop_unknown_rate(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, object]:
+        data = handler(self)
+        if self.spec_accept_rate is None:
+            data.pop("spec_accept_rate", None)
+            data.pop("spec_num_proposed_drafts", None)
+        else:
+            pass
+        return data
 
 
 class SglExt(BaseModel):

@@ -2017,16 +2017,21 @@ def register_speech(app: FastAPI) -> None:
                     "X-SGLang-Omni-Spec-Accept-Length": str(
                         details["spec_accept_length"]
                     ),
-                    "X-SGLang-Omni-Spec-Accept-Rate": str(details["spec_accept_rate"]),
                     "X-SGLang-Omni-Spec-Num-Correct-Drafts": str(
                         details["spec_num_correct_drafts"]
-                    ),
-                    "X-SGLang-Omni-Spec-Num-Proposed-Drafts": str(
-                        details["spec_num_proposed_drafts"]
                     ),
                     "X-SGLang-Omni-Spec-Verify-Ct": str(details["spec_verify_ct"]),
                 }
             )
+            if "spec_accept_rate" in details:
+                headers["X-SGLang-Omni-Spec-Accept-Rate"] = str(
+                    details["spec_accept_rate"]
+                )
+                headers["X-SGLang-Omni-Spec-Num-Proposed-Drafts"] = str(
+                    details["spec_num_proposed_drafts"]
+                )
+            else:
+                pass
         else:
             pass
 

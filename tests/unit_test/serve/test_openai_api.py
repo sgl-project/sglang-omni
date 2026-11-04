@@ -1385,6 +1385,40 @@ def test_speech_returns_spec_tokens_details_only_when_requested(
         assert "sglext" not in outcome.json()
 
 
+def test_spec_tokens_details_without_a_rate_omit_the_rate_fields() -> None:
+    details: SpecTokensDetailsDict = {
+        "spec_accept_length": 2.5,
+        "spec_num_correct_drafts": 3,
+        "spec_verify_ct": 2,
+        "spec_correct_drafts_histogram": [0, 1, 1],
+    }
+    chat = TestClient(
+        create_app(
+            Client(TextDeltaCoordinator(["1, 2", ", 3"], details)),
+            model_name="qwen3-omni",
+        )
+    ).post(
+        "/v1/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "count"}],
+            "return_spec_tokens_details": True,
+        },
+    )
+    speech = TestClient(
+        create_app(
+            SuccessfulSpeechClient(spec_tokens_details=details), model_name="tts"
+        )
+    ).post(
+        "/v1/audio/speech",
+        json={"input": "hello", "return_spec_tokens_details": True},
+    )
+
+    assert chat.json()["sglext"] == {"spec_tokens_details": details}
+    assert speech.headers["x-sglang-omni-spec-accept-length"] == "2.5"
+    assert "x-sglang-omni-spec-accept-rate" not in speech.headers
+    assert "x-sglang-omni-spec-num-proposed-drafts" not in speech.headers
+
+
 def test_chat_answer_excludes_the_matched_stop_string() -> None:
     coordinator = TextDeltaCoordinator(["1, 2", ", 3"])
     app = create_app(Client(coordinator), model_name="qwen3-omni")

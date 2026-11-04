@@ -9,6 +9,7 @@ from enum import Enum, auto
 from typing import (
     TYPE_CHECKING,
     Generic,
+    NotRequired,
     Protocol,
     SupportsIndex,
     SupportsInt,
@@ -94,10 +95,10 @@ class ModelRunnerOutput:
 class SpecTokensDetailsDict(TypedDict):
     """Per-request speculative decoding statistics a finished request reports."""
 
-    spec_accept_rate: float
+    spec_accept_rate: NotRequired[float]
     spec_accept_length: float
     spec_num_correct_drafts: int
-    spec_num_proposed_drafts: int
+    spec_num_proposed_drafts: NotRequired[int]
     spec_verify_ct: int
     spec_correct_drafts_histogram: list[int]
 
