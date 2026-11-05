@@ -13,9 +13,11 @@ import torch
 from safetensors.torch import save_file
 
 from sglang_omni.config.runtime import resolve_factory_signature_args
-from sglang_omni.models.yue2.acoustic import synthesize_latents
+from sglang_omni.models.yue2.acoustic import AcousticChunk, synthesize_latents
 from sglang_omni.models.yue2.config import Yue2PipelineConfig
+from sglang_omni.models.yue2.cuda_graph import DecodeGraph
 from sglang_omni.models.yue2.generation import (
+    SamplingGraph,
     TokenResult,
     generate_tokens,
     sampling_scores,
@@ -177,7 +179,7 @@ def test_cached_decode_matches_full_prefix(model: Yue2Model) -> None:
 def test_sampling_masks_and_minimum_length(phase: str, end_token: int) -> None:
     sampling = SamplingConfig(temperature=0.0, min_tokens=1, max_tokens=2)
     logits = torch.zeros(1, 184704)
-    logits[:, end_token] = 10
+    logits[:, end_token] = torch.inf
     blocked = sampling_scores(logits, sampling, [], phase, False)
     allowed = sampling_scores(logits, sampling, [1], phase, False)
     assert torch.isneginf(blocked[:, end_token]).all()
@@ -401,3 +403,112 @@ def test_scheduler_queues_distinct_requests_and_handles_abort() -> None:
         scheduler.stop()
         worker.join(5)
     assert not worker.is_alive()
+
+
+@torch.inference_mode()
+def test_projection_fusion_preserves_logits_and_checkpoint(model: Yue2Model) -> None:
+    tokens = torch.tensor([[1, 2, 3, 4]])
+    expected = model(tokens, TokenCache(capacity=4))
+    names = set(model.state_dict())
+    for layer in model.model.layers:
+        layer.self_attn.fuse_projections()
+        layer.mlp.fuse_projections()
+    actual = model(tokens, TokenCache(capacity=4))
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+    assert set(model.state_dict()) == names
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("device_index", [0, 1])
+@torch.inference_mode()
+def test_decode_graph_replay_and_request_reset(device_index: int) -> None:
+    if torch.cuda.device_count() <= device_index:
+        pytest.skip("Second GPU required")
+    else:
+        pass
+    device = torch.device("cuda", device_index)
+    torch.manual_seed(17)
+    model = (
+        Yue2Model(
+            Yue2ModelConfig(
+                hidden_size=64,
+                num_hidden_layers=2,
+                num_attention_heads=2,
+                num_key_value_heads=1,
+                head_dim=32,
+                intermediate_size=128,
+                max_position_embeddings=128,
+                max_latent_frames=128,
+            )
+        )
+        .to(device)
+        .bfloat16()
+        .eval()
+    )
+    runner = DecodeGraph(model)
+    for prefix in [[1, 2, 3, 4, 5], [9, 8]]:
+        runner.prefill(prefix)
+        token = torch.tensor([[7]], device=device)
+        runner.tokens.copy_(token)
+        expected = runner.forward().clone()
+        runner.position.fill_(len(prefix))
+        actual = runner.step(token)
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        fresh = DecodeGraph(model)
+        fresh.prefill(prefix)
+        torch.testing.assert_close(actual, fresh.step(token), rtol=0, atol=0)
+        sampling = SamplingConfig(min_tokens=1, max_tokens=2)
+        sampler = SamplingGraph(actual, sampling, "semantic", False)
+        torch.testing.assert_close(
+            sampler.step(actual, 0, None),
+            sampling_scores(actual, sampling, [], "semantic", False),
+            rtol=0,
+            atol=0,
+        )
+        chunk = AcousticChunk(model, prefix, torch.randn(8, 64))
+        expected_latents = chunk.solve(2, lambda: False)
+        torch.testing.assert_close(
+            chunk.solve(2, lambda: False, cuda_graph=True),
+            expected_latents,
+            rtol=0,
+            atol=0,
+        )
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize(
+    "phase,legacy_off,temperature",
+    [
+        ("abc", False, 0.7),
+        ("semantic", False, 1.0),
+        ("semantic", True, 1.0),
+        ("semantic", False, 0.0),
+    ],
+)
+@torch.inference_mode()
+def test_sampling_graph_preserves_masks_ties_and_history(
+    phase: str,
+    legacy_off: bool,
+    temperature: float,
+) -> None:
+    generator = torch.Generator(device="cuda").manual_seed(17)
+    logits = torch.randn(
+        1, 184704, device="cuda", dtype=torch.bfloat16, generator=generator
+    )
+    sampling = SamplingConfig(
+        temperature=temperature, min_tokens=2, max_tokens=8, penalty_window=3, top_k=4
+    )
+    runner = SamplingGraph(logits, sampling, phase, legacy_off)
+    history: list[int] = []
+    previous = None
+    for step in range(8):
+        # note (ruiling): BF16 ties at the top-k boundary must retain the eager distribution.
+        logits[:, CODEC_OFFSET : CODEC_OFFSET + 6] = 10
+        expected = sampling_scores(logits, sampling, history, phase, legacy_off)
+        actual = runner.step(logits, step, previous)
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        token = CODEC_OFFSET + step % 2
+        history.append(token)
+        previous = torch.tensor([[token]], device="cuda")

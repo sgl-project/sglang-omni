@@ -10,6 +10,7 @@ from safetensors import safe_open
 from torch import nn
 
 from sglang_omni.models.yue2.acoustic import synthesize_latents
+from sglang_omni.models.yue2.cuda_graph import DecodeGraph
 from sglang_omni.models.yue2.generation import generate_tokens
 from sglang_omni.models.yue2.layers import Yue2ModelConfig
 from sglang_omni.models.yue2.model import Yue2Model
@@ -68,8 +69,23 @@ class Yue2Runtime:
         *,
         vae_core_frames: int,
         vae_halo_frames: int,
+        ar_cuda_graph: bool = False,
+        nar_cuda_graph: bool = False,
+        sampling_cuda_graph: bool = False,
+        fuse_projections: bool = False,
     ) -> None:
         self.model = model
+        self.decode_graphs: list[DecodeGraph] | None = [] if ar_cuda_graph else None
+        self.nar_cuda_graph = nar_cuda_graph
+        self.sampling_cuda_graph = sampling_cuda_graph
+        if fuse_projections:
+            for layer in model.model.layers:
+                layer.self_attn.fuse_projections()
+                layer.nar_self_attn.fuse_projections()
+                layer.mlp.fuse_projections()
+                layer.nar_mlp.fuse_projections()
+        else:
+            pass
         self.vae = vae
         self.tokenizer = tokenizer
         self.vae_core_frames = vae_core_frames
@@ -90,6 +106,10 @@ class Yue2Runtime:
         *,
         vae_core_frames: int,
         vae_halo_frames: int,
+        ar_cuda_graph: bool = False,
+        nar_cuda_graph: bool = False,
+        sampling_cuda_graph: bool = False,
+        fuse_projections: bool = False,
     ) -> "Yue2Runtime":
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
@@ -119,6 +139,10 @@ class Yue2Runtime:
             tokenizer,
             vae_core_frames=vae_core_frames,
             vae_halo_frames=vae_halo_frames,
+            ar_cuda_graph=ar_cuda_graph,
+            nar_cuda_graph=nar_cuda_graph,
+            sampling_cuda_graph=sampling_cuda_graph,
+            fuse_projections=fuse_projections,
         )
 
     @torch.inference_mode()
@@ -149,6 +173,8 @@ class Yue2Runtime:
                 request.seed,
                 "abc",
                 cancelled,
+                decode_graphs=self.decode_graphs,
+                sampling_cuda_graph=self.sampling_cuda_graph,
             )
             abc_tokens, abc_truncated = plan.tokens, plan.truncated
         prefix = self.tokenizer.prefix(request, abc_tokens)
@@ -167,10 +193,18 @@ class Yue2Runtime:
             negative=negative,
             cfg_scale=request.guidance,
             legacy_off=options.cot == "off",
+            decode_graphs=self.decode_graphs,
+            sampling_cuda_graph=self.sampling_cuda_graph,
         )
         codec_tokens = [token - CODEC_OFFSET for token in semantic.tokens]
         latents = synthesize_latents(
-            self.model, prefix, codec_tokens, request.seed, options.ode_steps, cancelled
+            self.model,
+            prefix,
+            codec_tokens,
+            request.seed,
+            options.ode_steps,
+            cancelled,
+            cuda_graph=self.nar_cuda_graph,
         )
         audio = self.vae.decode_tiled(
             latents.T[None],

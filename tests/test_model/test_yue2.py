@@ -6,6 +6,7 @@ import os
 import pytest
 import torch
 
+from sglang_omni.models.yue2.acoustic import synthesize_latents
 from sglang_omni.models.yue2.request import build_request
 from sglang_omni.models.yue2.runtime import Yue2Runtime
 from sglang_omni.proto.request import OmniRequest, StagePayload
@@ -16,14 +17,18 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def runtime() -> Yue2Runtime:
+@pytest.fixture(scope="module", params=[False, True])
+def runtime(request: pytest.FixtureRequest) -> Yue2Runtime:
     return Yue2Runtime.from_pretrained(
         os.environ.get("YUE2_MODEL_PATH", "m-a-p/YuE2-3B"),
         os.environ.get("YUE2_VAE_PATH", "m-a-p/YuE2-Vae"),
         torch.device("cuda:0"),
         vae_core_frames=1024,
         vae_halo_frames=16,
+        ar_cuda_graph=request.param,
+        nar_cuda_graph=request.param,
+        sampling_cuda_graph=request.param,
+        fuse_projections=request.param,
     )
 
 
@@ -86,3 +91,25 @@ def test_real_checkpoint_generation(
     assert recovered.abc_tokens == song.abc_tokens
     assert recovered.codec_tokens == song.codec_tokens
     torch.testing.assert_close(recovered.audio, song.audio, rtol=0, atol=0)
+
+
+def test_acoustic_graph_preserves_solver_and_abort_recovery(
+    runtime: Yue2Runtime,
+) -> None:
+    prefix, codecs = [1, 2, 3], list(range(64))
+    expected = synthesize_latents(runtime.model, prefix, codecs, 42, 7, lambda: False)
+    polls = 0
+
+    def cancelled() -> bool:
+        nonlocal polls
+        polls += 1
+        return polls >= 5
+
+    with pytest.raises(InterruptedError):
+        synthesize_latents(
+            runtime.model, prefix, codecs, 42, 7, cancelled, cuda_graph=True
+        )
+    actual = synthesize_latents(
+        runtime.model, prefix, codecs, 42, 7, lambda: False, cuda_graph=True
+    )
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)

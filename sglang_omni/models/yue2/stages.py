@@ -43,6 +43,10 @@ def create_synthesis_executor(
     vae_path: str,
     vae_core_frames: int,
     vae_halo_frames: int,
+    ar_cuda_graph: bool,
+    nar_cuda_graph: bool,
+    sampling_cuda_graph: bool,
+    fuse_projections: bool,
     gpu_id: int | None = None,
     device: str | None = None,
 ) -> Yue2Scheduler:
@@ -57,5 +61,9 @@ def create_synthesis_executor(
         resolved_device,
         vae_core_frames=vae_core_frames,
         vae_halo_frames=vae_halo_frames,
+        ar_cuda_graph=ar_cuda_graph,
+        nar_cuda_graph=nar_cuda_graph,
+        sampling_cuda_graph=sampling_cuda_graph,
+        fuse_projections=fuse_projections,
     )
     return Yue2Scheduler(runtime)

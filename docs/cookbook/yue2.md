@@ -12,7 +12,7 @@ CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
   --port 8000
 ```
 
-The worker loads the BF16 transformer and FP32 decoder once and processes queued requests sequentially. Each request owns its sampling generators and KV caches. This implementation does not yet batch token generation across requests or capture CUDA graphs.
+The worker loads the BF16 transformer and FP32 decoder once and processes queued requests sequentially. Each request owns its sampling generators. CUDA graph buffers, when enabled, are reused sequentially with request-local lengths and sampling history. Cross-request token batching is not supported.
 
 Both the transformer and decoder accept local checkpoint directories or Hugging Face model identifiers. The default decoder is `m-a-p/YuE2-Vae`. Select the benchmark decoder with `--synthesis.factory.vae_path m-a-p/YuE2-Vae-legacy`. Checkpoint identifiers can pin a revision with `repository@revision`.
 
@@ -64,6 +64,22 @@ Model-specific settings use the existing `stage_params` field:
 | `ode_steps` | Midpoint flow-matching steps. Default: 32. |
 
 Voice selection, reference-audio conditioning, speed changes and streaming output are unsupported. Cancellation is checked between AR tokens, acoustic solver evaluations and VAE tiles; an already submitted GPU operation finishes before cancellation takes effect.
+
+## Optional acceleration
+
+The default path uses eager execution. On NVIDIA CUDA devices, enable the separately selectable optimizations with:
+
+```bash
+sgl-omni serve --model-path m-a-p/YuE2-3B \
+  --synthesis.factory.ar_cuda_graph true \
+  --synthesis.factory.nar_cuda_graph true \
+  --synthesis.factory.sampling_cuda_graph true \
+  --synthesis.factory.fuse_projections true
+```
+
+AR decode graphs reserve one full-context KV buffer per guidance branch and reuse it across requests. NAR graphs capture the velocity evaluation for each acoustic chunk. Sampling graphs preserve the vocabulary mask, top-k ties, repetition window and request-local random generator. Projection fusion combines QKV and gate/up projections without changing checkpoint names.
+
+AR graph attention uses the packed FlashAttention path, matching the model's reference graph implementation. AR graph attention and projection fusion can change BF16 rounding, so a fixed seed can produce different songs. NAR graph replay and projection fusion are checked against their eager counterparts; full song-quality evaluation is still required before changing the defaults.
 
 ## Validation
 

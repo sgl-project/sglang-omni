@@ -4,6 +4,7 @@
 import torch
 from torch.nn import functional as F
 
+from sglang_omni.models.yue2.layers import TokenCache
 from sglang_omni.models.yue2.model import Yue2Model
 from sglang_omni.models.yue2.request import (
     CODEC_OFFSET,
@@ -15,7 +16,10 @@ from sglang_omni.models.yue2.request import (
 
 class AcousticChunk:
     def __init__(
-        self, model: Yue2Model, prefix: list[int], noise: torch.Tensor
+        self,
+        model: Yue2Model,
+        prefix: list[int],
+        noise: torch.Tensor,
     ) -> None:
         self.model = model
         self.noise = noise
@@ -24,22 +28,20 @@ class AcousticChunk:
         self.frame_count = noise.shape[0]
         self.prefix_length = len(prefix)
         self.cache: list[tuple[torch.Tensor, torch.Tensor]] = []
-        positions = torch.arange(self.prefix_length, device=self.device)[None]
-        cosine, sine = model.model.rotary_emb(positions)
-        hidden_states = model.model.embed_tokens(
-            torch.tensor([prefix], device=self.device)
-        )
-        for layer in model.model.layers:
-            query, key, value = layer.self_attn.project_qkv(
-                layer.input_layernorm(hidden_states), cosine, sine
+        cache = TokenCache(capacity=len(prefix))
+        model(torch.tensor([prefix], device=self.device), cache)
+        for key, value in zip(cache.keys, cache.values):
+            shape = (
+                *key.shape[:2],
+                self.prefix_length + self.frame_count + 2,
+                key.shape[-1],
             )
-            self.cache.append((key, value))
-            hidden_states = hidden_states + layer.self_attn.attend(
-                query, key, value, causal=True
+            combined_key, combined_value = key.new_empty(shape), value.new_empty(shape)
+            combined_key[:, :, : self.prefix_length].copy_(key[:, :, : cache.length])
+            combined_value[:, :, : self.prefix_length].copy_(
+                value[:, :, : cache.length]
             )
-            hidden_states = hidden_states + layer.mlp(
-                layer.post_attention_layernorm(hidden_states)
-            )
+            self.cache.append((combined_key, combined_value))
         positions = torch.arange(
             self.prefix_length,
             self.prefix_length + self.frame_count + 2,
@@ -52,13 +54,18 @@ class AcousticChunk:
         self.position_embedding = model.latent_pos_embed(local_positions)[None]
 
     def velocity(self, latent: torch.Tensor, time: float) -> torch.Tensor:
-        model = self.model
         raw_time = (
             torch.logit(torch.tensor(time, dtype=torch.float64)).clamp(-20, 20).item()
         )
-        timestep = torch.sigmoid(
-            torch.tensor(raw_time, dtype=self.dtype, device=self.device)
+        return self.predict_velocity(
+            latent, torch.tensor(raw_time, dtype=self.dtype, device=self.device)
         )
+
+    def predict_velocity(
+        self, latent: torch.Tensor, raw_time: torch.Tensor
+    ) -> torch.Tensor:
+        model = self.model
+        timestep = torch.sigmoid(raw_time)
         shift = model.config.timestep_shift
         timestep = shift * timestep / (1 + (shift - 1) * timestep)
         hidden_states = model.vae2llm(F.pad(latent, (0, 0, 1, 1))[None])
@@ -67,29 +74,79 @@ class AcousticChunk:
             + model.time_embedder(timestep.expand(self.frame_count + 2))[None]
         )
         hidden_states = hidden_states + self.position_embedding
-        for layer, (prefix_key, prefix_value) in zip(model.model.layers, self.cache):
+        for layer, (combined_key, combined_value) in zip(
+            model.model.layers, self.cache
+        ):
             query, key, value = layer.nar_self_attn.project_qkv(
                 layer.nar_input_layernorm(hidden_states), self.cosine, self.sine
             )
-            key = torch.cat((prefix_key, key), dim=2)
-            value = torch.cat((prefix_value, value), dim=2)
+            combined_key[:, :, self.prefix_length :].copy_(key)
+            combined_value[:, :, self.prefix_length :].copy_(value)
             hidden_states = hidden_states + layer.nar_self_attn.attend(
-                query, key, value, causal=False
+                query, combined_key, combined_value, causal=False
             )
             hidden_states = hidden_states + layer.nar_mlp(
                 layer.nar_pre_mlp_layernorm(hidden_states)
             )
         return model.llm2vae(model.model.norm(hidden_states))[0, 1:-1]
 
-    def solve(self, steps: int, cancelled: CancellationCheck) -> torch.Tensor:
+    def solve(
+        self, steps: int, cancelled: CancellationCheck, *, cuda_graph: bool = False
+    ) -> torch.Tensor:
         latent = self.noise.to(device=self.device, dtype=self.dtype)
+        graph = None
+        if cuda_graph:
+            graph_latent = latent.clone()
+            graph_time = torch.zeros((), device=self.device, dtype=self.dtype)
+            stream = torch.cuda.Stream(device=self.device)
+            stream.wait_stream(torch.cuda.current_stream(self.device))
+            with torch.cuda.stream(stream):
+                for _ in range(3):
+                    self.predict_velocity(graph_latent, graph_time)
+            torch.cuda.current_stream(self.device).wait_stream(stream)
+            check_cancelled(cancelled)
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph, stream=stream):
+                graph_velocity = self.predict_velocity(graph_latent, graph_time)
+        else:
+            pass
         step_size = 1.0 / steps
+        raw_times = (
+            torch.tensor(
+                [
+                    time
+                    for step in range(steps)
+                    for time in (
+                        1.0 - step * step_size,
+                        1.0 - step * step_size - step_size / 2,
+                    )
+                ],
+                dtype=torch.float64,
+            )
+            .logit()
+            .clamp(-20, 20)
+            .to(device=self.device, dtype=self.dtype)
+        )
         for step in range(steps):
             check_cancelled(cancelled)
             time = 1.0 - step * step_size
-            midpoint = latent - self.velocity(latent, time) * (step_size / 2)
+            if graph is None:
+                velocity = self.velocity(latent, time)
+            else:
+                graph_latent.copy_(latent)
+                graph_time.copy_(raw_times[2 * step])
+                graph.replay()
+                velocity = graph_velocity
+            midpoint = latent - velocity * (step_size / 2)
             check_cancelled(cancelled)
-            latent = latent - self.velocity(midpoint, time - step_size / 2) * step_size
+            if graph is None:
+                velocity = self.velocity(midpoint, time - step_size / 2)
+            else:
+                graph_latent.copy_(midpoint)
+                graph_time.copy_(raw_times[2 * step + 1])
+                graph.replay()
+                velocity = graph_velocity
+            latent = latent - velocity * step_size
         return latent.float().cpu()
 
 
@@ -101,6 +158,8 @@ def synthesize_latents(
     seed: int,
     steps: int,
     cancelled: CancellationCheck,
+    *,
+    cuda_graph: bool = False,
 ) -> torch.Tensor:
     chunk_frames = (model.config.max_position_embeddings - len(prefix) - 3) // 2
     if not codec_tokens:
@@ -126,7 +185,7 @@ def synthesize_latents(
         ]
         chunk = AcousticChunk(model, conditioning, noise[start:end])
         try:
-            chunks.append(chunk.solve(steps, cancelled))
+            chunks.append(chunk.solve(steps, cancelled, cuda_graph=cuda_graph))
         finally:
             chunk.cache.clear()
     latents = torch.cat(chunks)

@@ -112,20 +112,44 @@ class Attention(nn.Module):
         )
         self.q_norm = RMSNorm(self.head_dim, config.rms_norm_eps)
         self.k_norm = RMSNorm(self.head_dim, config.rms_norm_eps)
+        self.register_buffer("fused_qkv", None, persistent=False)
+
+    def fuse_projections(self) -> None:
+        self.fused_qkv = torch.cat(
+            (self.q_proj.weight, self.k_proj.weight, self.v_proj.weight)
+        )
+        sizes = [
+            self.num_heads * self.head_dim,
+            self.num_kv_heads * self.head_dim,
+            self.num_kv_heads * self.head_dim,
+        ]
+        for projection, weight in zip(
+            (self.q_proj, self.k_proj, self.v_proj), self.fused_qkv.split(sizes)
+        ):
+            projection.weight = nn.Parameter(weight, requires_grad=False)
 
     def project_qkv(
         self, hidden_states: torch.Tensor, cosine: torch.Tensor, sine: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         batch_size, token_count = hidden_states.shape[:2]
-        query = self.q_proj(hidden_states).view(
-            batch_size, token_count, self.num_heads, self.head_dim
-        )
-        key = self.k_proj(hidden_states).view(
-            batch_size, token_count, self.num_kv_heads, self.head_dim
-        )
-        value = self.v_proj(hidden_states).view(
-            batch_size, token_count, self.num_kv_heads, self.head_dim
-        )
+        if self.fused_qkv is None:
+            query, key, value = (
+                self.q_proj(hidden_states),
+                self.k_proj(hidden_states),
+                self.v_proj(hidden_states),
+            )
+        else:
+            query, key, value = F.linear(hidden_states, self.fused_qkv).split(
+                [
+                    self.num_heads * self.head_dim,
+                    self.num_kv_heads * self.head_dim,
+                    self.num_kv_heads * self.head_dim,
+                ],
+                dim=-1,
+            )
+        query = query.view(batch_size, token_count, self.num_heads, self.head_dim)
+        key = key.view(batch_size, token_count, self.num_kv_heads, self.head_dim)
+        value = value.view(batch_size, token_count, self.num_kv_heads, self.head_dim)
         return (
             apply_rotary(self.q_norm(query), cosine, sine).transpose(1, 2),
             apply_rotary(self.k_norm(key), cosine, sine).transpose(1, 2),
@@ -162,11 +186,20 @@ class MLP(nn.Module):
         self.down_proj = nn.Linear(
             config.intermediate_size, config.hidden_size, bias=False
         )
+        self.register_buffer("fused_gate_up", None, persistent=False)
+
+    def fuse_projections(self) -> None:
+        self.fused_gate_up = torch.cat((self.gate_proj.weight, self.up_proj.weight))
+        gate, up = self.fused_gate_up.chunk(2)
+        self.gate_proj.weight = nn.Parameter(gate, requires_grad=False)
+        self.up_proj.weight = nn.Parameter(up, requires_grad=False)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        return self.down_proj(
-            F.silu(self.gate_proj(hidden_states)) * self.up_proj(hidden_states)
-        )
+        if self.fused_gate_up is None:
+            gate, up = self.gate_proj(hidden_states), self.up_proj(hidden_states)
+        else:
+            gate, up = F.linear(hidden_states, self.fused_gate_up).chunk(2, dim=-1)
+        return self.down_proj(F.silu(gate) * up)
 
 
 class DecoderLayer(nn.Module):

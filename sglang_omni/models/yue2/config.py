@@ -9,6 +9,10 @@ from sglang_omni.config import FactoryArgs, PipelineConfig, StageConfig
 
 
 class Yue2FactoryArgs(FactoryArgs):
+    ar_cuda_graph: bool = False
+    nar_cuda_graph: bool = False
+    sampling_cuda_graph: bool = False
+    fuse_projections: bool = False
     vae_path: str = "m-a-p/YuE2-Vae"
     vae_core_frames: int = Field(default=1024, gt=0)
     vae_halo_frames: int = Field(default=16, ge=0)
