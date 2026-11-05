@@ -6,7 +6,7 @@ from typing import ClassVar
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.mem_cache.allocator.base import BaseTokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
-from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
+from sglang.srt.mem_cache.memory_pool import KVCache, MHATokenToKVPool, ReqToTokenPool
 from sglang.srt.models.registry import ModelRegistry
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils.hf_transformers_utils import get_tokenizer
@@ -17,7 +17,11 @@ from sglang_omni.models.minicpm_o.components.sglang_thinker import (
     MiniCPMOThinkerForCausalLM,
 )
 from sglang_omni.models.minicpm_o.hf_config import register_minicpm_o_hf_config
-from sglang_omni.models.minicpm_o.native_config import THINKER_CONTEXT_LENGTH
+from sglang_omni.models.minicpm_o.native_config import (
+    DEFAULT_WINDOW_SETTINGS,
+    THINKER_CONTEXT_LENGTH,
+    MiniCPMODuplexWindow,
+)
 from sglang_omni.models.minicpm_o.native_thinker_model_runner import (
     MiniCPMOThinkerModelRunner,
 )
@@ -27,6 +31,23 @@ from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 
 
+def check_window_kv_cache(window: MiniCPMODuplexWindow, kv_cache: KVCache) -> None:
+    """Refuse a thinker window over a KV cache whose token rows a cut cannot move in place."""
+    # note (0xtoward): A quantized KV recipe reads back a dequantized copy, and other layouts or pools hold no token rows to move.
+    if window.sliding_window_mode != "off" and (
+        type(kv_cache) is not MHATokenToKVPool
+        or kv_cache.is_quantized_kv_cache
+        or kv_cache.kv_cache_layout != "nhd"
+    ):
+        raise ValueError(
+            f"window.sliding_window_mode {window.sliding_window_mode} moves retained thinker KV "
+            "in place, which needs a bf16 or fp8 KV cache in the NHD layout; got "
+            f"{type(kv_cache).__name__}. Serve this cache with --window.sliding_window_mode off."
+        )
+    else:
+        pass
+
+
 class MiniCPMOThinkerEngineBuilder(SGLangGenerationEngineBuilder):
     model_name: str = "MiniCPM-o thinker"
     model_arch_override: str = "MiniCPMO"
@@ -34,6 +55,12 @@ class MiniCPMOThinkerEngineBuilder(SGLangGenerationEngineBuilder):
     supports_context_length_override: ClassVar[bool] = True
     tokenizer: PreTrainedTokenizerBase
     adapter: ThinkerAdapter
+    window: MiniCPMODuplexWindow
+
+    def __init__(
+        self, *, window: MiniCPMODuplexWindow = DEFAULT_WINDOW_SETTINGS
+    ) -> None:
+        self.window = window
 
     def generation_defaults(self, *, dtype: str) -> dict[str, str | int | float | bool]:
         return dict(
@@ -60,7 +87,12 @@ class MiniCPMOThinkerEngineBuilder(SGLangGenerationEngineBuilder):
         return MiniCPMOThinkerModelRunner(model_worker, output_proc)
 
     def make_adapters(self, model: MiniCPMOThinkerForCausalLM) -> tuple[None, None]:
-        self.adapter = ThinkerAdapter(self.tokenizer, model.config.vocab_size)
+        self.adapter = ThinkerAdapter(
+            self.tokenizer,
+            model.config.vocab_size,
+            window=self.window,
+            rotary_embedding=model.model.layers[0].self_attn.rotary_emb,
+        )
         return None, None
 
     def extra_scheduler_kwargs(self) -> dict[str, ThinkerAdapter | int]:
@@ -78,6 +110,7 @@ class MiniCPMOThinkerEngineBuilder(SGLangGenerationEngineBuilder):
         server_args: ServerArgs,
         model_config: ModelConfig,
     ) -> tuple[OmniScheduler, MiniCPMOThinkerModelRunner]:
+        check_window_kv_cache(self.window, token_to_kv_pool_allocator.get_kvcache())
         output_proc = SGLangOutputProcessor(capture_hidden=True)
         return super().build_runtime(
             model_worker=model_worker,

@@ -228,7 +228,8 @@ class AsrService : public omni_server::Service {
 public:
   AsrService(const std::filesystem::path &directory, const ModelLoader &load) {
     worker_ = std::make_unique<TranscriptionWorker>(
-        [&]() { model_ = load(directory); });
+        [&]() { model_ = load(directory); },
+        [this]() { model_->ReleaseIdleMemory(); });
   }
 
   void SetModelName(const std::string &model_name,
@@ -259,6 +260,15 @@ private:
 };
 
 } // namespace
+
+void ServedModel::ReleaseIdleMemory() {
+  // Note (khazic): a decode keeps MLX's buffer cache, since freeing every
+  // step's buffers slows each token; an idle server returns it, so it
+  // holds only the model. The synchronize lets the step a decode queued
+  // before it stopped return its buffers first.
+  mx::synchronize();
+  mx::clear_cache();
+}
 
 std::optional<std::string> TextField(const FormFields &form,
                                      const std::string &name) {

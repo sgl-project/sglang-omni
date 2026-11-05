@@ -22,7 +22,7 @@ Run the host block on the host before Step 1, and again in every new host shell.
 ```bash
 export GPU=0
 export HF_TOKEN=hf_your_token_here
-export IMAGE=hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
+export IMAGE=hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
 export CPUSET=$(cat /sys/bus/pci/devices/$(nvidia-smi -i $GPU --query-gpu=pci.bus_id --format=csv,noheader | tail -c 13 | tr A-F a-f)/local_cpulist)
 echo $CPUSET
 ```

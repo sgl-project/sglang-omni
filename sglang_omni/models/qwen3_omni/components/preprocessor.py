@@ -331,8 +331,10 @@ class Qwen3OmniPreprocessor:
         video_min_pixels: int | None = None,
         video_max_pixels: int | None = None,
         video_total_pixels: int | None = None,
+        video_decode_threads: int,
     ) -> None:
         self.model_path = model_path
+        self.video_decode_threads = video_decode_threads
         self.default_video_fps = float(video_fps) if video_fps is not None else None
         self.default_video_max_frames = (
             int(video_max_frames) if video_max_frames is not None else None
@@ -833,6 +835,7 @@ class Qwen3OmniPreprocessor:
                     extract_audio=extract_audio_from_video_flag,
                     audio_target_sr=audio_target_sr,
                     resource_connector=connector,
+                    video_decode_threads=self.video_decode_threads,
                 ),
                 ensure_audio_list_async(
                     request_audios,
