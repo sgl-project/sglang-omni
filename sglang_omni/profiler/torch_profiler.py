@@ -109,7 +109,7 @@ class TorchProfiler(ProfilerBase):
             profile_memory = (
                 os.environ.get("SGLANG_TORCH_PROFILER_PROFILE_MEMORY") == "1"
             )
-            # note (DerekSun02): torch 2.13 drops every memory event under all-thread capture.
+            # note (DerekSun02): torch 2.14 drops every memory event under all-thread capture.
             if profile_memory:
                 logger.warning(
                     f"[Rank {rank}] Memory profiling records only the thread "
