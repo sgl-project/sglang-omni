@@ -297,6 +297,16 @@ def test_edit_parameters_reach_each_sequential_output(
     model.t2i_generate.assert_not_called()
 
 
+def test_pipeline_overrides_preserve_edit_task_routing() -> None:
+    config = SenseNovaU1PipelineConfig()
+    config.update_pipeline_config(
+        {"supported_task_types": ["T2I"], "model_precision": "fp32"}
+    )
+    assert config.model_precision == "fp32"
+    assert config.resolve_task_type(has_image=True).name == "TI2I"
+    assert config.resolve_task_type(has_image=False).name == "T2I"
+
+
 def test_edit_requests_are_not_dynamically_batched() -> None:
     config = SenseNovaU1PipelineConfig()
     sampling = SenseNovaU1SamplingParams(prompt="edit", image_path="reference.png")

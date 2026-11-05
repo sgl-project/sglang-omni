@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Validate deployment options for native SenseNova generation."""
 from dataclasses import dataclass
+from typing import ClassVar
 
 from sglang.multimodal_gen.configs.pipeline_configs.base import (
     ModelTaskType,
@@ -98,7 +99,7 @@ def set_compatible_runtime_defaults(server_args: ServerArgs) -> None:
 @dataclass
 class SenseNovaU1PipelineConfig(PipelineConfig):
     task_type: ModelTaskType = ModelTaskType.T2I
-    supported_task_types: tuple[ModelTaskType, ...] = (
+    supported_task_types: ClassVar[tuple[ModelTaskType, ...]] = (
         ModelTaskType.T2I,
         ModelTaskType.TI2I,
     )
