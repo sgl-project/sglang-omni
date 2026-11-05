@@ -14,7 +14,12 @@ import msgpack
 import pytest
 import torch
 from sglang.srt.managers.io_struct import SessionParams, TokenizedGenerateReqInput
-from sglang.srt.managers.schedule_batch import Req, ReqKvInfo
+from sglang.srt.managers.schedule_batch import (
+    FINISH_ABORT,
+    FINISH_LENGTH,
+    Req,
+    ReqKvInfo,
+)
 from sglang.srt.mem_cache.base_prefix_cache import MatchPrefixParams, MatchResult
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.session.session_controller import Session
@@ -668,6 +673,7 @@ def test_context_exhaustion_releases_append_unit() -> None:
     bridge.sessions[identity.id] = BridgeSession(session_identity=identity, unit=unit)
     bridge.units_by_request_id[request_id] = unit
     bridge.create_session_request = Mock()
+    bridge.check_session_capacity = Mock(return_value=None)
     scheduler.session_bridge = bridge
 
     OmniScheduler.enqueue_built_request(
@@ -807,6 +813,84 @@ def test_ar_bridge_binds_the_native_request_and_hands_an_aborted_unit_to_the_ada
     assert bridge.sessions[identity.id].unit is None
 
 
+def test_drafts_run_only_while_no_unit_runs_and_any_input_stops_them() -> None:
+    """A unit's result lets its session open one draft unit once no unit runs; a draft streams nothing and its output goes to the adapter, and any session's input cancels every running draft."""
+    first, second = SessionIdentity("first"), SessionIdentity("second")
+    adapter = ARSessionAdapter()
+    adapter.result = Mock(return_value=StagePayload("sent", OmniRequest(None), {}))
+    adapter.build_draft = Mock(
+        side_effect=lambda identity, payload, chunk: SGLangARRequestData(
+            req=Req(
+                payload.request_id,
+                "",
+                array("q", [1]),
+                SamplingParams(max_new_tokens=16),
+                vocab_size=NATIVE_VOCAB_SIZE,
+            )
+        )
+    )
+    adapter.keep_draft = Mock()
+    native_sessions = {
+        identity.id: Session(0, identity.id, streaming=True)
+        for identity in (first, second)
+    }
+    scheduler = Mock()
+    scheduler.max_req_len = 1024
+    scheduler.session_controller.get.side_effect = native_sessions.__getitem__
+    bridge = ARSessionBridge(scheduler, adapter)
+    for identity in (first, second):
+        bridge.sessions[identity.id] = BridgeSession(session_identity=identity)
+
+    def append(identity: SessionIdentity, input_seq: int) -> SessionUnit:
+        return bridge.accept(
+            StagePayload(f"{identity.id}-{input_seq}", OmniRequest(None), {}),
+            SessionOperation(
+                "append",
+                identity,
+                ("thinker",),
+                TimedChunk("audio", input_seq * 1000, 1000, input_seq, b""),
+            ),
+        )
+
+    def finish(
+        unit: SessionUnit, request_data: SGLangARRequestData
+    ) -> StagePayload | None:
+        result = bridge.result(unit, request_data)
+        bridge.complete(unit.request_id)
+        return result
+
+    first_unit = append(first, 0)
+    second_unit = append(second, 0)
+    assert (
+        finish(first_unit, SGLangARRequestData(req=Mock()))
+        is adapter.result.return_value
+    )
+    assert bridge.start_drafts() == []
+
+    finish(second_unit, SGLangARRequestData(req=Mock()))
+    [(_, first_draft_data), (_, second_draft_data)] = bridge.start_drafts()
+    first_draft = bridge.sessions[first.id].unit
+    second_draft = bridge.sessions[second.id].unit
+    assert first_draft.is_draft and second_draft.is_draft
+    adapter.stream = Mock(return_value=(TimedChunk("audio", 0, 1000, 0, b"draft"),))
+    assert (
+        list(
+            bridge.stream_messages(
+                first_draft.request_id, first_draft_data, output=Mock()
+            )
+        )
+        == []
+    )
+    adapter.stream.assert_not_called()
+    first_draft_data.output_ids = [7, 8]
+    assert finish(first_draft, first_draft_data) is None
+
+    append(first, 1)
+
+    adapter.keep_draft.assert_called_once_with(first, [7, 8])
+    assert bridge.sessions[second.id].unit is None
+
+
 NATIVE_SESSION_ID = "native"
 NATIVE_VOCAB_SIZE = 1000
 FIRST_UNIT_IDS = [1, 2, 3]
@@ -931,6 +1015,261 @@ def rewound_third_unit(
         MatchPrefixParams(key=third.full_untruncated_fill_ids[:-1], req=third)
     )
     return third, match, freed
+
+
+def running_draft_bridge(
+    kept_token_count: int | None,
+) -> tuple[ARSessionBridge, SessionUnit, StreamingSession, list[tuple[int, int]]]:
+    """Run a draft on a real native session and its borrowed KV record, with allocation represented by a free-range recorder."""
+    session, prompt_length = spoken_native_session()
+    history_token_count = prompt_length + len(SECOND_UNIT_OUTPUT_IDS)
+    record = ReqKvInfo(
+        req_pool_idx=0,
+        kv_committed_len=history_token_count - 1,
+        kv_allocated_len=history_token_count - 1,
+    )
+    freed: list[tuple[int, int]] = []
+    cache = SimpleNamespace(
+        page_size=1,
+        free_kv_row=lambda kv, ranges: freed.extend(ranges),
+        unlock=Mock(),
+        req_to_token_pool=SimpleNamespace(free=Mock(), mamba_allocator=None),
+    )
+    streaming = StreamingSession(cache)
+    streaming.slots[NATIVE_SESSION_ID] = SessionSlot(kv=record)
+    cache.release_session = streaming.release_session
+
+    def release_request_kv_cache(request: Req) -> None:
+        """Stand in for the scheduler's release: an aborted turn hands its record back and the row goes free."""
+        if not streaming.try_cache_finished_req(request):
+            cache.free_kv_row(
+                request.kv,
+                [(request.kv.cache_protected_len, request.kv.kv_allocated_len)],
+            )
+            request.kv.mark_kv_released()
+        else:
+            pass
+
+    cache.session_records = lambda: {
+        session_id: slot.kv for session_id, slot in streaming.slots.items()
+    }
+    draft = session.create_req(
+        tokenized_unit("unit-1-draft", [40, 41]), None, NATIVE_VOCAB_SIZE
+    )
+    draft.refresh_fill_ids()
+    streaming.try_match_prefix(
+        MatchPrefixParams(key=draft.full_untruncated_fill_ids[:-1], req=draft)
+    )
+    draft.output_ids.extend(range(50, 57))
+    draft.refresh_fill_ids()
+    draft.output_ids.append(57)
+    draft.skip_radix_cache_insert = True
+    draft.omni_data = None
+    record.kv_committed_len = len(draft.origin_input_ids) + len(draft.output_ids) - 1
+    record.kv_allocated_len = record.kv_committed_len
+    adapter = ARSessionAdapter()
+    adapter.prepare_unit = Mock(
+        return_value=ARSessionPreparation(kept_token_count=kept_token_count)
+    )
+    scheduler = Mock()
+    scheduler.waiting_queue = []
+    scheduler.chunked_req = None
+    scheduler.session_controller.get.return_value = session
+    scheduler.tree_cache = cache
+    scheduler.release_request_kv_cache.side_effect = release_request_kv_cache
+    bridge = ARSessionBridge(scheduler, adapter)
+    identity = SessionIdentity(NATIVE_SESSION_ID)
+    unit = SessionUnit(
+        request_id=draft.rid,
+        session_identity=identity,
+        stages=("thinker",),
+        chunk=TimedChunk("audio", 2000, 1000, 2, b""),
+        session_request=draft,
+        is_prepared=True,
+        is_enqueued=True,
+        is_draft=True,
+        native_offset=history_token_count,
+        prompt_length=2,
+        embedding_spans=[audio_span(history_token_count, history_token_count + 1)],
+    )
+    bridge.sessions[identity.id] = BridgeSession(
+        session_identity=identity,
+        unit=unit,
+        embedding_spans=[FIRST_UNIT_AUDIO_SPAN, SECOND_UNIT_AUDIO_SPAN],
+    )
+    bridge.units_by_request_id[unit.request_id] = unit
+    return bridge, unit, streaming, freed
+
+
+def next_real_unit_after_draft(
+    bridge: ARSessionBridge, draft_unit: SessionUnit, streaming: StreamingSession
+) -> tuple[Req, MatchResult | None]:
+    """Append the real input and match the history left by draft cleanup."""
+    payload = StagePayload("unit-2", OmniRequest(None), {})
+    next_unit = bridge.accept(
+        payload,
+        SessionOperation(
+            "append",
+            draft_unit.session_identity,
+            ("thinker",),
+            TimedChunk("audio", 2000, 1000, 2, b""),
+        ),
+    )
+    assert bridge.prepare_unit(next_unit, payload) is False
+    session = bridge.bridge_scheduler.session_controller.get(NATIVE_SESSION_ID)
+    third = session.create_req(
+        tokenized_unit("unit-2", THIRD_UNIT_IDS), None, NATIVE_VOCAB_SIZE
+    )
+    third.refresh_fill_ids()
+    match = streaming.try_match_prefix(
+        MatchPrefixParams(key=third.full_untruncated_fill_ids[:-1], req=third)
+    )
+    return third, match
+
+
+DRAFT_OUTCOMES = (
+    "preempted",
+    "completed",
+    "completed-during-drain",
+    "retracted",
+    "failed-forward",
+)
+
+
+@pytest.mark.parametrize(
+    ("outcome", "kept_token_count"),
+    [
+        *(pytest.param(outcome, None, id=outcome) for outcome in DRAFT_OUTCOMES),
+        pytest.param("preempted", len(FIRST_UNIT_IDS), id="earlier-unit-cut"),
+    ],
+)
+def test_draft_cleanup_keeps_the_next_real_unit_runnable_and_reuses_its_history(
+    outcome: str, kept_token_count: int | None
+) -> None:
+    """However a draft ends, the next real unit extends the real history, with a pending user cut applied; a draft that ran to its end, was preempted or was retracted leaves its cached history reusable, a retracted draft hands its output to the adapter and leaves its session closable, and a draft whose forward failed leaves none of its unwritten KV behind."""
+    bridge, draft_unit, streaming, freed = running_draft_bridge(kept_token_count)
+    draft = draft_unit.session_request
+    assert draft is not None
+    drafted_token_ids = list(draft.output_ids)
+    kept_token_ids: list[int] = []
+
+    def save_draft(session_identity: SessionIdentity, output_ids: list[int]) -> None:
+        assert session_identity == draft_unit.session_identity
+        kept_token_ids.extend(output_ids)
+
+    def complete_draft() -> None:
+        draft.finished_len = len(draft.output_ids)
+        draft.finished_reason = FINISH_LENGTH(draft.finished_len)
+        assert streaming.try_cache_finished_req(draft)
+        draft_data = SGLangARRequestData(req=draft)
+        assert bridge.result(draft_unit, draft_data) is None
+        bridge.complete(draft_unit.request_id, draft_data)
+
+    bridge.adapter.keep_draft = save_draft
+    if outcome == "completed":
+        complete_draft()
+    elif outcome == "completed-during-drain":
+        bridge.bridge_scheduler.synchronize_launched_decode.side_effect = complete_draft
+    elif outcome == "retracted":
+        # note (bianyutong): Native retraction commits the running draft before putting it back in the queue.
+        assert streaming.try_cache_finished_req(draft)
+        draft.reset_for_retract()
+        bridge.bridge_scheduler.waiting_queue = [draft]
+    elif outcome == "failed-forward":
+        # note (bianyutong): Prefill allocation advances the KV lengths before the forward writes; handle_batch_failure marks the request to finish, then aborts it.
+        del draft.output_ids[:]
+        draft.refresh_fill_ids()
+        draft.kv.kv_allocated_len = len(draft.full_untruncated_fill_ids)
+        draft.kv.kv_committed_len = draft.kv.kv_allocated_len
+        draft.to_finish = FINISH_ABORT()
+        bridge.cancel(draft.rid)
+    else:
+        pass
+
+    third, match = next_real_unit_after_draft(bridge, draft_unit, streaming)
+
+    retained_ids = [
+        *FIRST_UNIT_IDS,
+        *FIRST_UNIT_OUTPUT_IDS,
+        *SECOND_UNIT_IDS,
+        *SECOND_UNIT_OUTPUT_IDS,
+    ][:kept_token_count]
+    assert third.to_finish is None
+    assert list(third.origin_input_ids) == [*retained_ids, *THIRD_UNIT_IDS]
+    assert list(third.full_untruncated_fill_ids) == list(third.origin_input_ids)
+    if outcome == "failed-forward":
+        assert match is None
+        assert freed
+    else:
+        assert match is not None
+        assert match.device_prefix_len == len(retained_ids)
+        assert all(start >= len(retained_ids) for start, end in freed)
+    assert bridge.sessions[NATIVE_SESSION_ID].embedding_spans == [
+        span
+        for span in (FIRST_UNIT_AUDIO_SPAN, SECOND_UNIT_AUDIO_SPAN)
+        if span.end <= len(retained_ids)
+    ]
+    if outcome == "retracted":
+        assert draft.finished()
+        assert kept_token_ids == drafted_token_ids
+    else:
+        pass
+
+
+@pytest.mark.parametrize(
+    ("available_tokens", "kept_draft_tokens", "has_capacity"),
+    [(9, 3, True), (8, 0, True), (5, 0, False)],
+    ids=["fits-with-the-draft", "fits-without-the-draft", "rejected"],
+)
+def test_session_capacity_spends_remaining_kv_on_optional_draft_tokens(
+    available_tokens: int, kept_draft_tokens: int, has_capacity: bool
+) -> None:
+    """A draft takes the KV left after the real input and its full output budget; when that is short, the draft goes and the input is judged on its own."""
+    identity = SessionIdentity("capacity")
+    prompt_token_ids = list(range(8))
+    request = Req(
+        "real",
+        "",
+        array("q", [*prompt_token_ids, 20, 21, 22]),
+        SamplingParams(max_new_tokens=4),
+        vocab_size=NATIVE_VOCAB_SIZE,
+    )
+    request.refresh_fill_ids()
+    request_data = SGLangARRequestData(req=request)
+    retained = ReqKvInfo(req_pool_idx=0, kv_committed_len=6, kv_allocated_len=6)
+    scheduler = Mock()
+    scheduler.max_req_len = 64
+    scheduler.req_to_token_pool.free_slots = [1, 2]
+    scheduler.token_to_kv_pool_allocator.available_size.return_value = available_tokens
+    scheduler.tree_cache.session_records.return_value = {identity.id: retained}
+    scheduler.tree_cache.evictable_size.return_value = 0
+    scheduler.tree_cache.page_size = 1
+    adapter = ARSessionAdapter()
+
+    def drop_draft(candidate: SGLangARRequestData) -> int:
+        assert candidate is request_data
+        del candidate.req.origin_input_ids[len(prompt_token_ids) :]
+        candidate.req.refresh_fill_ids()
+        return 3
+
+    adapter.drop_draft = drop_draft
+    bridge = ARSessionBridge(scheduler, adapter)
+    unit = SessionUnit(
+        request_id=request.rid,
+        session_identity=identity,
+        stages=("thinker",),
+        chunk=TimedChunk("audio", 0, 1000, 0, b""),
+        session_request=request,
+        prompt_length=len(request.origin_input_ids),
+    )
+    bridge.units_by_request_id = {request.rid: unit}
+
+    error = bridge.check_session_capacity(request.rid, request_data)
+
+    assert (error is None) is has_capacity
+    assert list(request.origin_input_ids[:8]) == prompt_token_ids
+    assert len(request.origin_input_ids) == 8 + kept_draft_tokens
+    assert unit.prompt_length == len(request.origin_input_ids)
 
 
 def test_ar_bridge_rewind_hands_the_next_unit_the_kept_prompt_and_frees_the_rest() -> (

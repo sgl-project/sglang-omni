@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import torch
-from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+from sglang.srt.layers.logits_processor import LogitsMetadata, LogitsProcessorOutput
 from sglang.srt.managers.schedule_batch import ScheduleBatch
 from sglang.srt.managers.utils import GenerationBatchResult
 from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode, ForwardBatch
@@ -26,6 +26,7 @@ from sglang_omni.models.minicpm_o.thinker_model_runner import (
     MiniCPMOThinkerModelRunner as OfflineThinkerModelRunner,
 )
 from sglang_omni.models.minicpm_o.thinker_state import DuplexUnitRequestData
+from sglang_omni.scheduling.sglang_backend.history_cut import keep_extended_prefix
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.scheduling.sglang_backend.request_data import session_prefill_rows
 from sglang_omni.scheduling.types import (
@@ -122,21 +123,80 @@ class MiniCPMOThinkerModelRunner(OfflineThinkerModelRunner):
             )
         else:
             pass
-        token_ids = duplex_sample_batch(
-            logits,
-            [request.data.thinker_state for request in requests],
-            special_tokens=special_tokens,
-            forbidden_token_index=self.forbidden_token_index,
-            generation_steps=[request.data.generation_steps for request in requests],
-            listen_forced_flags=[request.data.is_listen_forced for request in requests],
+        sampled_rows = [
+            row
+            for row, request in enumerate(requests)
+            if not request.data.draft_token_ids
+        ]
+        token_ids = dict(
+            zip(
+                sampled_rows,
+                duplex_sample_batch(
+                    logits[sampled_rows],
+                    [requests[row].data.thinker_state for row in sampled_rows],
+                    special_tokens=special_tokens,
+                    forbidden_token_index=self.forbidden_token_index,
+                    generation_steps=[
+                        requests[row].data.generation_steps for row in sampled_rows
+                    ],
+                    listen_forced_flags=[
+                        requests[row].data.is_listen_forced for row in sampled_rows
+                    ],
+                    unit_indices=[
+                        requests[row].data.unit_index for row in sampled_rows
+                    ],
+                ),
+                strict=True,
+            )
         )
+        drafted_rows = [row for row in range(len(requests)) if row not in sampled_rows]
+        if drafted_rows:
+            logits_metadata = LogitsMetadata.from_forward_batch(forward_batch)
+        else:
+            logits_metadata = None
+        for row in drafted_rows:
+            data = requests[row].data
+            draft_token_ids = data.draft_token_ids
+            segment_end = sum(forward_batch.extend_seq_lens_cpu[: row + 1])
+            # note (bianyutong): next_token_logits holds only the last drafted position, so the unit's first position and each drafted one take their logits from the FULL hidden capture.
+            position_logits = self.outer_model.language_model.logits_processor._get_logits(  # noqa: leading-underscore  # upstream has no public call for the logits of chosen rows
+                logits_output.hidden_states[
+                    segment_end - len(draft_token_ids) - 1 : segment_end
+                ],
+                self.outer_model.lm_head,
+                logits_metadata,
+                use_logits_buffer=False,
+            )
+            for position in range(len(draft_token_ids) + 1):
+                [token_id] = duplex_sample_batch(
+                    position_logits[position : position + 1],
+                    [data.thinker_state],
+                    special_tokens=special_tokens,
+                    forbidden_token_index=self.forbidden_token_index,
+                    generation_steps=[data.generation_steps + position],
+                    listen_forced_flags=[data.is_listen_forced],
+                    unit_indices=[data.unit_index],
+                )
+                if (
+                    position == len(draft_token_ids)
+                    or token_id != draft_token_ids[position]
+                ):
+                    break
+                else:
+                    pass
+            data.accepted_draft_count = position
+            token_ids[row] = token_id
         for request in requests:
             data = request.data
             if data.is_listen_forced and data.generation_steps == 0:
                 data.thinker_state.force_listen_counter += 1
             else:
                 pass
-        return torch.tensor(token_ids, dtype=torch.long, device=logits.device)
+        return torch.tensor(
+            [token_ids[row] for row in range(len(requests))],
+            dtype=torch.long,
+            device=logits.device,
+        )
 
     # note (Junnan Li): FULL capture must match decode graphs and retain talker conditioning.
     def requested_capture_hidden_mode_prefill(
@@ -156,36 +216,65 @@ class MiniCPMOThinkerModelRunner(OfflineThinkerModelRunner):
         outputs: dict[str, RequestOutput],
     ) -> None:
         """Pair generated tokens with their next-step hidden states for the talker."""
-        for scheduler_request in scheduler_output.requests:
+        for row, scheduler_request in enumerate(scheduler_output.requests):
             request_output = outputs[scheduler_request.request_id]
             data = scheduler_request.data
-            sampled_token_id = int(request_output.data)
-            special_tokens = self.resolve_special_tokens(data)
-            pending_token_id = data.pending_unit_token
-            if pending_token_id is not None and data.generation_steps >= 2:
-                hidden_state = request_output.extra["hidden_states"]
-                hidden_state = (
-                    hidden_state.reshape(-1, hidden_state.shape[-1])[-1]
-                    .detach()
-                    .clone()
-                )
-                data.talker_conditions.append(
-                    (
-                        pending_token_id,
-                        hidden_state.to("cpu"),
-                        pending_token_id == special_tokens.turn_eos,
-                    )
-                )
+            if data.is_draft:
+                continue
             else:
                 pass
-            if sampled_token_id in special_tokens.chunk_terminators:
-                data.pending_unit_token = None
-            else:
-                if data.generation_steps > 0:
-                    data.generated_unit_ids.append(sampled_token_id)
+            special_tokens = self.resolve_special_tokens(data)
+            draft_count = len(data.draft_token_ids)
+            step_token_ids = [
+                *data.draft_token_ids[: data.accepted_draft_count],
+                int(request_output.data),
+            ]
+            hidden_states = request_output.extra["hidden_states"]
+            hidden_state_rows = hidden_states.reshape(-1, hidden_states.shape[-1])
+            # note (bianyutong): A drafted prefill ran one step per decided token, and each step read the prompt row of the token before it, among the last draft_count + 1 rows.
+            for position, sampled_token_id in enumerate(step_token_ids):
+                pending_token_id = data.pending_unit_token
+                if (
+                    pending_token_id is not None
+                    and data.generation_steps + position >= 2
+                ):
+                    hidden_state = (
+                        hidden_state_rows[
+                            hidden_state_rows.shape[0] - draft_count - 1 + position
+                        ]
+                        .detach()
+                        .clone()
+                    )
+                    data.talker_conditions.append(
+                        (
+                            pending_token_id,
+                            hidden_state.to("cpu"),
+                            pending_token_id == special_tokens.turn_eos,
+                        )
+                    )
                 else:
                     pass
-                data.pending_unit_token = sampled_token_id
+                if sampled_token_id in special_tokens.chunk_terminators:
+                    data.pending_unit_token = None
+                else:
+                    if data.generation_steps + position > 0:
+                        data.generated_unit_ids.append(sampled_token_id)
+                    else:
+                        pass
+                    data.pending_unit_token = sampled_token_id
+            if draft_count:
+                prompt_token_count = len(data.req.origin_input_ids) - draft_count
+                keep_extended_prefix(
+                    scheduler_output.batch_data,
+                    row,
+                    prompt_token_count=prompt_token_count,
+                    kept_token_count=prompt_token_count + data.accepted_draft_count,
+                )
+                # note (bianyutong): finalize advances the step once for the whole forward.
+                data.generation_steps += data.accepted_draft_count
+                data.draft_token_ids = []
+            else:
+                pass
 
 
 __all__ = [
