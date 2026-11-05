@@ -179,6 +179,7 @@ Supported Models
    developer_reference/personaplex_quality_baseline.md
    developer_reference/personaplex_expanded_baseline.md
    developer_reference/personaplex_latency_attribution.md
+   developer_reference/personaplex_interleaved_analysis.md
    developer_reference/tts_bench.md
    developer_reference/tts_model_integration.md
    developer_reference/asr_bench.md

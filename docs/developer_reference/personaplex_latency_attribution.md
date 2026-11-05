@@ -63,6 +63,8 @@ Scoring uses the pinned FDB evaluator `3e799c45a045256f47d5f1c9cda90157e2d2ec9e`
 
 ## Next experiment
 
+The [completed interleaved experiment](personaplex_interleaved_analysis.md) repeats both configurations across five fresh launches per sampling mode and adds CPU/GPU telemetry and CUDA kernel attribution.
+
 Keep the current deterministic implementation while profiling Mimi encoding and LM execution with GPU kernel timing and CPU scheduling/throttling measurements. Alternate configurations across fresh launches, retain seed 42 and identical inputs, and compare repeated runs with and without event profiling. This will distinguish stage execution costs from the phase-to-phase variation observed here. Any candidate change should then repeat complete-output parity on the 39-call cohort before expanding quality coverage.
 
 ## Evidence
