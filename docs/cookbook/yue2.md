@@ -73,4 +73,12 @@ Run the CPU regression suite with:
 pytest tests/unit_test/yue2 -q
 ```
 
+Run the real-checkpoint smoke tests on one CUDA GPU with:
+
+```bash
+pytest tests/test_model/test_yue2.py -q
+```
+
+These short tests cover the score modes, external ABC, CFG, cancellation and seeded recovery. They do not measure song quality. Set `YUE2_MODEL_PATH` and `YUE2_VAE_PATH` to use local or revision-pinned checkpoints.
+
 Quality comparisons must use the same transformer revision, VAE revision, prompts, seeds and generation settings. The official [WildSongBench protocol](https://huggingface.co/datasets/m-a-p/WildSongBench) uses `YuE2-Vae-legacy`; scores from the standard decoder are not directly comparable to that baseline. Keep truncated outputs in evaluation and report them separately.

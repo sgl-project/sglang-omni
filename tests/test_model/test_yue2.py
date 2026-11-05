@@ -2,7 +2,6 @@
 """Real-checkpoint generation and cancellation checks for one CUDA device."""
 
 import os
-import threading
 
 import pytest
 import torch
@@ -74,12 +73,16 @@ def test_real_checkpoint_generation(
     assert song.audio.dtype == torch.float32 and torch.isfinite(song.audio).all()
     assert song.sample_rate == 48000
     assert len(song.codec_tokens) == 16 and song.finish_reason == "length"
-    aborted = threading.Event()
-    aborted.set()
+    cancellation_checks = 0
+
+    def cancelled_after_prefill() -> bool:
+        nonlocal cancellation_checks
+        cancellation_checks += 1
+        return cancellation_checks >= 3
+
     with pytest.raises(InterruptedError):
-        runtime.generate(request, aborted.is_set)
-    aborted.clear()
-    recovered = runtime.generate(request, aborted.is_set)
+        runtime.generate(request, cancelled_after_prefill)
+    recovered = runtime.generate(request, lambda: False)
     assert recovered.abc_tokens == song.abc_tokens
     assert recovered.codec_tokens == song.codec_tokens
     torch.testing.assert_close(recovered.audio, song.audio, rtol=0, atol=0)
