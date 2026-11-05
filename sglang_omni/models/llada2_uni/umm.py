@@ -173,7 +173,7 @@ class LLaDA2UniUMMAdapter:
             request = OmniRequest(
                 state, context.request.params, context.request.metadata
             )
-            return [UMMDispatch(THINK, request)]
+            return [UMMDispatch(THINK, request, context=context.produced)]
 
     @staticmethod
     def add_text(run: InterleavedRun, text: str) -> None:

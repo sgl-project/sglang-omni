@@ -45,6 +45,7 @@ from sglang_omni.models.llada2_uni.request_builders import (
     LLaDA2UniRequest,
     make_dllm_thinker_scheduler_adapters,
 )
+from sglang_omni.pipeline.umm import CONTEXT_KEY, ContextRef
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling import dllm_scheduler as dllm_scheduler_module
 from sglang_omni.scheduling.dllm_scheduler import DllmForwardBatch, DllmScheduler
@@ -426,6 +427,36 @@ def test_interleaved_frame_after_an_image_emits_only_image_tokens(
     assert message.type == "result", message.data
     state = LLaDA2UniPipelineState.from_dict(message.data.data)
     assert state.thinker_out["output_ids"] == [IMAGE_TOKEN_OFFSET + 7] * 6
+
+
+@pytest.mark.parametrize(
+    ("output_ids", "expected_context"),
+    [
+        ([71, 10, 22, 23, 12], ContextRef("thinker", "story")),
+        ([71, 2], None),
+    ],
+    ids=["next-phase-follows", "request-done"],
+)
+def test_thinker_result_reports_context_only_while_a_phase_follows(
+    output_ids: list[int], expected_context: ContextRef | None
+) -> None:
+    request = OmniRequest(
+        inputs=[{"role": "user", "content": "Illustrate a two-frame story"}],
+        params={},
+        metadata={"image_generation": {"mode": "interleaved"}},
+    )
+    payload = preprocess(request)
+    _, result_adapter = make_dllm_thinker_scheduler_adapters(
+        tokenizer=Tokenizer(),
+        vocab_size=IMAGE_TOKEN_OFFSET + 16,
+        dllm_config=make_config(),
+    )
+
+    result = result_adapter(
+        NS(stage_payload=payload, output_ids=output_ids, finish_reason="stop")
+    )
+
+    assert result.data.get(CONTEXT_KEY) == expected_context
 
 
 def test_attention_masks_local_and_cached_padding() -> None:

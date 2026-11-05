@@ -22,7 +22,7 @@ from sglang.srt.dllm.config import DllmConfig
 from sglang.srt.managers.schedule_batch import FINISH_LENGTH, Req, ScheduleBatch
 from sglang.srt.managers.schedule_policy import AddReqResult, PrefillAdder
 from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
-from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
+from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache, TreeLock
 from sglang.srt.mem_cache.common import checkpoint_kv_cache, release_kv_cache
 from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
@@ -34,6 +34,7 @@ from sglang.srt.utils import broadcast_pyobj
 
 from sglang_omni.model_runner.base import resolve_deferred_prefill_inputs
 from sglang_omni.model_runner.model_worker import ModelWorker
+from sglang_omni.pipeline.umm import CONTEXT_KEY
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.sglang_backend.request_data import (
@@ -120,6 +121,9 @@ class DllmScheduler:
         self.uncond_to_cond: dict[str, str] = {}
         self.uncond_rids: set[str] = set()
         self.orphaned_uncond_rids: set[str] = set()
+        # Prefixes pinned for the request's next phase, oldest first.
+        self.retained_contexts: dict[str, TreeLock] = {}
+        self.contexts_to_retain: set[str] = set()
 
     def warm_up_serving_thread(self) -> None:
         pass
@@ -286,6 +290,8 @@ class DllmScheduler:
         self.staging_queue = new_staging
 
         for rid in aborted:
+            self.release_context(rid)
+            self.contexts_to_retain.discard(rid)
             self.rid_to_req_data.pop(rid, None)
             for uncond_rid in self.cond_to_unconds.pop(rid, []):
                 self.uncond_to_cond.pop(uncond_rid, None)
@@ -345,6 +351,8 @@ class DllmScheduler:
         )
         uncond_req.tokenizer = cond_req.tokenizer
         uncond_req._is_uncond = True  # noqa: leading-underscore  # DLLM protocol
+        # A companion reads shared prefixes, but its padded rows key nothing reusable.
+        uncond_req.skip_radix_cache_insert = True
         uncond_req._dllm_left_pad_len = int(
             left_pad_len
         )  # noqa: leading-underscore  # DLLM protocol
@@ -430,6 +438,9 @@ class DllmScheduler:
             )
         else:
             pass
+
+    def release_context(self, request_id: str) -> None:
+        self.tree_cache.unlock(self.retained_contexts.pop(request_id, None))
 
     def select_runnable_rows(self, reqs: list[DllmRequest]) -> list[DllmRequest]:
         """Rows with a whole committed block encode first, then the group decodes."""
@@ -622,6 +633,11 @@ class DllmScheduler:
                 from_staging=from_staging,
                 request_snapshots=request_snapshots,
             )
+            # note (qiujiawei): reuse only saves work, an admission that lacks memory must not wait on it.
+            if self.retained_contexts:
+                self.release_context(next(iter(self.retained_contexts)))
+            else:
+                pass
             return None
         else:
             pass
@@ -810,6 +826,10 @@ class DllmScheduler:
                 try:
                     result = self.result_adapter(req_data)
                     message_type = "result"
+                    if CONTEXT_KEY in result.data:
+                        self.contexts_to_retain.add(req.rid)
+                    else:
+                        pass
                 except Exception as exc:
                     logger.exception(f"DLLM result adapter failed for {req.rid}")
                     self.emit_request_error(req.rid, str(exc))
@@ -830,6 +850,14 @@ class DllmScheduler:
         for req in batch.reqs:
             if req.finished() or req.rid in orphaned:
                 release_kv_once(req, self.tree_cache)
+                self.release_context(req.rid)
+                if req.rid in self.contexts_to_retain:
+                    self.contexts_to_retain.remove(req.rid)
+                    self.retained_contexts[req.rid] = self.tree_cache.lock(
+                        req.last_node
+                    )
+                else:
+                    pass
                 exclude.add(req)
             else:
                 pass

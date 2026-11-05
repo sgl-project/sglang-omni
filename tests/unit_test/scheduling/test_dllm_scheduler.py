@@ -14,7 +14,9 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from sglang.srt.dllm.config import DllmConfig
 from sglang.srt.managers.schedule_batch import ReqKvInfo
+from sglang.srt.mem_cache.allocator import PagedTokenToKVPoolAllocator
 from sglang.srt.mem_cache.allocator.token import TokenToKVPoolAllocator
+from sglang.srt.mem_cache.base_prefix_cache import EvictParams
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
 from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
 from sglang.srt.mem_cache.unified_cache.components import ComponentType
@@ -23,10 +25,15 @@ from sglang.srt.runtime_context import get_context
 from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.model_runner.model_worker import ModelWorker
+from sglang_omni.pipeline.umm import CONTEXT_KEY, ContextRef
+from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling import dllm_scheduler as dllm_scheduler_module
 from sglang_omni.scheduling.dllm_scheduler import DllmScheduler
 from sglang_omni.scheduling.message import IncomingMessage
-from sglang_omni.scheduling.sglang_backend.request_data import DllmRequest
+from sglang_omni.scheduling.sglang_backend.request_data import (
+    DllmRequest,
+    SGLangDLLMRequestData,
+)
 
 
 class ReqDouble:
@@ -389,6 +396,8 @@ def chunked_scheduler() -> DllmScheduler:
     scheduler.chunked_prefill_size = 32
     scheduler.model_config = None
     scheduler.staging_queue = []
+    scheduler.retained_contexts = {}
+    scheduler.contexts_to_retain = set()
     for rid in ("cond", "uncond"):
         params = SamplingParams(max_new_tokens=32, temperature=0.0)
         params.normalize(None)
@@ -695,3 +704,177 @@ def test_tp_abort_at_forward_boundary(
         nprocs=2,
         join=True,
     )
+
+
+PHASE_POOL_TOKENS = 64
+GENERATED_TOKEN_ID = 50
+
+
+def build_phase_request(payload: StagePayload) -> SGLangDLLMRequestData:
+    params = SamplingParams(max_new_tokens=payload.data["max_new_tokens"], temperature=0)
+    params.normalize(None)
+    request = DllmRequest(
+        payload.request_id,
+        "",
+        array("q", payload.data["input_ids"]),
+        params,
+        dllm_config=payload.data["dllm_config"],
+    )
+    data = SGLangDLLMRequestData(output_ids=request.output_ids, req=request)
+    data.stage_payload = payload
+    return data
+
+
+def finish_phase(data: SGLangDLLMRequestData) -> StagePayload:
+    payload = data.stage_payload
+    context = (
+        {CONTEXT_KEY: ContextRef("thinker", payload.request_id)}
+        if payload.data["continues"]
+        else {}
+    )
+    return StagePayload(payload.request_id, None, context)
+
+
+@pytest.fixture
+def radix_scheduler() -> DllmScheduler:
+    with get_context().override_server_args(page_size=4, max_prefill_tokens=64):
+        pool = ReqToTokenPool(3, PHASE_POOL_TOKENS, "cpu", False)
+        allocator = PagedTokenToKVPoolAllocator(
+            PHASE_POOL_TOKENS, 4, torch.float32, "cpu", None, False
+        )
+        tree_cache = UnifiedRadixCache(
+            CacheInitParams(
+                disable=False,
+                req_to_token_pool=pool,
+                token_to_kv_pool_allocator=allocator,
+                page_size=4,
+                tree_components=(ComponentType.FULL,),
+            )
+        )
+        yield DllmScheduler(
+            SimpleNamespace(),
+            tree_cache,
+            pool,
+            allocator,
+            None,
+            SimpleNamespace(
+                context_len=PHASE_POOL_TOKENS, vocab_size=300, is_encoder_decoder=False
+            ),
+            DllmConfig(
+                algorithm="LowConfidence",
+                algorithm_config={},
+                block_size=4,
+                mask_id=99,
+                max_running_requests=3,
+            ),
+            request_builder=build_phase_request,
+            result_adapter=finish_phase,
+        )
+
+
+def run_phase(
+    scheduler: DllmScheduler,
+    input_ids: list[int],
+    max_new_tokens: int,
+    *,
+    continues: bool = True,
+    request_id: str = "story",
+) -> list[tuple[int, int]]:
+    """Run one thinker phase through the real cache and return its block spans."""
+    scheduler.inbox.put(
+        IncomingMessage(
+            request_id=request_id,
+            type="new_request",
+            data=StagePayload(
+                request_id,
+                None,
+                {
+                    "input_ids": input_ids,
+                    "max_new_tokens": max_new_tokens,
+                    "continues": continues,
+                    "dllm_config": scheduler.dllm_config,
+                },
+            ),
+        )
+    )
+    spans = []
+    for _ in range(32):
+        scheduler.drain_and_purge()
+        batch = scheduler.schedule_next_batch()
+        if batch is None:
+            continue
+        else:
+            pass
+        spans.extend((req.prefix_len, req.extend_end) for req in batch.reqs)
+        generated = [
+            [GENERATED_TOKEN_ID]
+            * max(req.extend_end - len(req.origin_input_ids) - len(req.output_ids), 0)
+            for req in batch.reqs
+        ]
+        scheduler.apply_results(
+            batch,
+            SimpleNamespace(
+                next_token_ids=generated,
+                accept_length_per_req_cpu=None,
+                dllm_algo_state=None,
+            ),
+        )
+        scheduler.post_step(batch)
+        if not scheduler.staging_queue:
+            return spans
+        else:
+            pass
+    raise AssertionError(f"phase of {request_id} never finished")
+
+
+PROMPT_IDS = list(range(1, 11))
+# The phase below generates six tokens, so the sequence fills four whole blocks.
+CONTINUED_IDS = [*PROMPT_IDS, *[GENERATED_TOKEN_ID] * 6, 60, 61]
+
+
+def evict_everything(scheduler: DllmScheduler) -> None:
+    scheduler.tree_cache.evict(EvictParams(num_tokens=PHASE_POOL_TOKENS))
+
+
+def test_next_phase_resumes_from_the_prefix_the_last_phase_pinned(
+    radix_scheduler: DllmScheduler,
+) -> None:
+    scheduler = radix_scheduler
+
+    first_spans = run_phase(scheduler, PROMPT_IDS, 6)
+    evict_everything(scheduler)
+    second_spans = run_phase(scheduler, CONTINUED_IDS, 2, continues=False)
+
+    assert first_spans == [(0, 4), (4, 8), (8, 12), (12, 16)]
+    assert second_spans == [(16, 20)]
+    # The last phase leaves nothing pinned, so its whole sequence can be reclaimed.
+    assert scheduler.retained_contexts == {}
+    evict_everything(scheduler)
+    assert scheduler.token_to_kv_pool_allocator.available_size() == PHASE_POOL_TOKENS
+
+
+def test_abort_between_phases_releases_the_pinned_prefix(
+    radix_scheduler: DllmScheduler,
+) -> None:
+    scheduler = radix_scheduler
+    run_phase(scheduler, PROMPT_IDS, 6)
+
+    scheduler.abort("story")
+    scheduler.drain_and_purge()
+    evict_everything(scheduler)
+
+    assert scheduler.retained_contexts == {}
+    assert scheduler.token_to_kv_pool_allocator.available_size() == PHASE_POOL_TOKENS
+
+
+def test_admission_short_of_memory_gives_up_a_pinned_prefix(
+    radix_scheduler: DllmScheduler,
+) -> None:
+    scheduler = radix_scheduler
+    run_phase(scheduler, PROMPT_IDS, 6)
+    other_ids = list(range(100, 140))
+
+    first_spans = run_phase(scheduler, other_ids, 12, request_id="other")
+
+    assert first_spans[0] == (0, 4)
+    assert "story" not in scheduler.retained_contexts

@@ -36,6 +36,7 @@ from sglang_omni.models.llada2_uni.payload_types import (
     LLaDA2UniPipelineState,
     ThinkerOutput,
 )
+from sglang_omni.pipeline.umm import CONTEXT_KEY, ContextRef
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend.request_data import (
     DllmRequest,
@@ -463,10 +464,18 @@ def make_dllm_thinker_scheduler_adapters(
                 )
             else:
                 pass
-        return StagePayload(
+        result = StagePayload(
             request_id=payload.request_id,
             request=payload.request,
             data=state.to_dict(),
         )
+        # The next thinker phase continues this sequence, so its prefix stays cached.
+        if state.task_kind == "interleaved" and not state.stream_state[
+            "interleaved"
+        ].get("done"):
+            result.data[CONTEXT_KEY] = ContextRef(stage_name, payload.request_id)
+        else:
+            pass
+        return result
 
     return request_builder, result_adapter

@@ -10,7 +10,12 @@ from sglang_omni.models.llada2_uni.config import LLaDA2UniInterleavedPipelineCon
 from sglang_omni.models.llada2_uni.merge import extract_image_vq_tokens
 from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
 from sglang_omni.models.llada2_uni.umm import LLaDA2UniUMMAdapter
-from sglang_omni.pipeline.umm import UMMContext, UMMOutput, UMMRequestError
+from sglang_omni.pipeline.umm import (
+    ContextRef,
+    UMMContext,
+    UMMOutput,
+    UMMRequestError,
+)
 from sglang_omni.proto import OmniRequest
 from tests.unit_test.fixtures.llada2_fakes import Tokenizer, advance, preprocess
 
@@ -182,6 +187,21 @@ def test_frames_decode_while_the_thinker_writes_and_segments_keep_model_order():
     assert step.dispatches == () and adapter.usage(context) == 0
     adapter.close(context, "completed")
     assert not adapter.runs
+
+
+def test_thinker_phase_hands_its_context_to_the_next_thinker_phase():
+    adapter = LLaDA2UniUMMAdapter("m")
+    context = umm_context()
+    start = adapter.start(context)
+    (text_phase,) = adapter.advance(
+        context, "prepare", preprocess(start.request).data
+    ).dispatches
+
+    context.produced = ContextRef("thinker", "story")
+    step = adapter.advance(context, "think", think(text_phase, [71, 10, 22, 23, 12]))
+
+    (image_phase,) = step.dispatches
+    assert image_phase.context == context.produced
 
 
 def test_interleaved_variant_runs_the_adapter_and_refuses_what_it_cannot_serve(
