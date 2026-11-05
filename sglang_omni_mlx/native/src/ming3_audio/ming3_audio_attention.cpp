@@ -95,13 +95,8 @@ mx::array Model::LatentAttention(const mx::array &hidden,
       {0, 2, 1, 3});
   const auto key_value_parts = mx::split(key_value, mx::Shape{plain_width}, -1);
   const auto rotary = [&](const mx::array &input) {
-    const auto reordered =
-        mx::reshape(mx::transpose(mx::reshape(input, {1, input.shape(1), length,
-                                                      rotary_width / 2, 2}),
-                                  {0, 1, 2, 4, 3}),
-                    input.shape());
-    return mx::fast::rope(reordered, rotary_width, false, text_.rope_theta,
-                          1.0f, cached_tokens);
+    return mx::fast::rope(input, rotary_width, true, text_.rope_theta, 1.0f,
+                          cached_tokens);
   };
   const auto queries =
       mx::concatenate({query_parts[0], rotary(query_parts[1])}, -1);
