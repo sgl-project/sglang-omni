@@ -91,11 +91,12 @@ func TestStreamOpenFailsWhileRecording(t *testing.T) {
 	gate := make(chan struct{})
 	prov := &fakeStreamer{openGate: gate, openErr: &asr.Error{Kind: asr.KindServer, Detail: "the local speech model stopped answering"}}
 	h := newHarness(t, prov, nil, nil)
+	h.audio.notifyAt, h.audio.notified = 5, make(chan struct{})
 	id := h.start()
-	for deadline := time.Now().Add(5 * time.Second); h.audio.recorded() < 5; time.Sleep(time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("only %d frames recorded", h.audio.recorded())
-		}
+	select {
+	case <-h.audio.notified: // five frames recorded
+	case <-time.After(5 * time.Second):
+		t.Fatalf("only %d frames recorded", h.audio.recorded())
 	}
 	close(gate) // the stream's open fails now, mid-recording
 	end := h.rec.wait(t)

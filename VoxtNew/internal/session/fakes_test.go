@@ -60,6 +60,9 @@ type fakeAudio struct {
 	// Stop, as the helper's file input does.
 	file    []byte
 	drained chan struct{}
+	// notified closes once notifyAt frames were sent (0: never).
+	notifyAt int
+	notified chan struct{}
 
 	mu      sync.Mutex
 	stops   map[string]chan struct{}
@@ -137,6 +140,9 @@ func (f *fakeAudio) Record(ctx context.Context, id string, p proto.CaptureParams
 			f.mu.Lock()
 			f.frames++
 			f.mu.Unlock()
+			if f.notifyAt > 0 && n == f.notifyAt {
+				close(f.notified)
+			}
 			if f.failAt > 0 && n == f.failAt {
 				return proto.CaptureResult{}, f.failErr
 			}
