@@ -33,8 +33,8 @@ SPEAKER_EMBEDDING_DIM = 2048
 class Qwen3SpeakerEmbedding(nn.Module):
     """Qwen3 voice embedding extractor for 2048-d speaker-conditioned checkpoints.
 
-    Model id, mel parameters and preprocessing match the reference exactly so the
-    raw embedding is bit-for-bit identical.
+    The default model id, mel parameters and preprocessing match the reference
+    exactly so the raw embedding is bit-for-bit identical.
     """
 
     MODEL_NAME = "marksverdhei/Qwen3-Voice-Embedding-12Hz-1.7B"
@@ -50,15 +50,15 @@ class Qwen3SpeakerEmbedding(nn.Module):
         self,
         device: str,
         compile_forward: bool = False,
-        speaker_embedding_model: str | None = None,
+        *,
+        speaker_embedding_model_name_or_path: str,
     ) -> None:
         super().__init__()
         self.device = device
         self.compile_forward = compile_forward
         self.compiled = None
-        self.speaker_embedding_model = speaker_embedding_model or self.MODEL_NAME
         self.model = AutoModel.from_pretrained(
-            self.speaker_embedding_model,
+            speaker_embedding_model_name_or_path,
             trust_remote_code=True,
         )
         self.model.to(device)
@@ -273,8 +273,14 @@ class SpeakerEncoder(TensorReferenceEncodeHook[Zonos2RefInput]):
         device: str,
         cache_max_items: int = 256,
         compile_forward: bool = False,
-        speaker_embedding_model: str | None = None,
+        speaker_embedding_model_name_or_path: str | None = None,
     ):
+        if speaker_embedding_model_name_or_path is None:
+            speaker_embedding_model_name_or_path = Qwen3SpeakerEmbedding.MODEL_NAME
+        elif not speaker_embedding_model_name_or_path.strip():
+            raise ValueError("speaker_embedding_model_name_or_path must not be empty")
+        else:
+            pass
         if int(cache_max_items) < 1:
             raise ValueError(f"cache_max_items must be >= 1, got {cache_max_items}")
         else:
@@ -282,7 +288,8 @@ class SpeakerEncoder(TensorReferenceEncodeHook[Zonos2RefInput]):
         self.device = device
         self.embedder: Qwen3SpeakerEmbedding | None = None
         self.embedder_lock = threading.Lock()
-        self.speaker_embedding_model = speaker_embedding_model
+        self.encoder_id = speaker_embedding_model_name_or_path
+        self.speaker_embedding_model_name_or_path = speaker_embedding_model_name_or_path
         # note (Yue Yin): opt-in compile kill-switch (default OFF for bit-for-bit
         # parity); driven by the speaker_encode stage's spk_compile factory arg.
         self.compile = compile_forward
@@ -304,7 +311,9 @@ class SpeakerEncoder(TensorReferenceEncodeHook[Zonos2RefInput]):
                     self.embedder = Qwen3SpeakerEmbedding(
                         device=self.device,
                         compile_forward=self.compile,
-                        speaker_embedding_model=self.speaker_embedding_model,
+                        speaker_embedding_model_name_or_path=(
+                            self.speaker_embedding_model_name_or_path
+                        ),
                     )
                 else:
                     pass
