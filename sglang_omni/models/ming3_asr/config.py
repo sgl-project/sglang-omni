@@ -22,6 +22,8 @@ PACKAGE = "sglang_omni.models.ming3_asr"
 class Ming3ASRFactoryArgs(FactoryArgs):
     """Thinker knobs checked when the pipeline configuration loads."""
 
+    enable_async_decode: bool = True
+    async_decode_min_batch_size: int = Field(default=1, ge=1)
     pre_lm_max_batch_size: int | None = Field(default=None, ge=1)
     pre_lm_max_batch_wait_ms: int | None = Field(default=None, ge=0)
     stream_emit_interval_seconds: float = Field(default=0.05, ge=0, allow_inf_nan=False)
