@@ -31,6 +31,7 @@ All notable changes to VoxtNew. The format follows [Keep a Changelog](https://ke
 - The speech model uses much less memory on long recordings: under 4 GB for a 5-minute dictation (Accurate model) instead of up to 10 GB, which pushed your other apps into swap and slowed the Mac. Recognising a recording again is faster, too.
 - When recognition fails or finds no text, the entry keeps the recording for 7 days even when Keep the recordings is off, so that you can retry it; a successful retry deletes it.
 - Dictionary terms no longer appear at the end of a dictation where you did not say them ("… 嗯。Voxt, Omni, SGLang."). The speech model wrote out the dictionary it was given when part of a recording had no speech, such as the pause before Stop at the end of a long dictation. Such an ending is now checked against the same audio recognised without the dictionary, and terms you did not say are removed; terms you did say stay, also at the end of a sentence.
+- VoxtNew no longer crashes now and then while it checks its Microphone and Accessibility permissions (when the helper starts or restarts). The check could finish on a different system thread from the one it started on.
 
 ### 中文
 
@@ -61,6 +62,7 @@ All notable changes to VoxtNew. The format follows [Keep a Changelog](https://ke
 - 长录音时语音识别模型占用的内存大大减少：5 分钟的口述（精准模型）不到 4 GB，以前最多 10 GB，会把其他应用挤进 swap、拖慢 Mac。重新识别一段录音也更快了。
 - 识别失败或没有识别出文字时，即使“保存录音”关着，这条记录也保留录音 7 天，方便重试；重试成功后删除。
 - 词典里的词不会再出现在你没说过它们的口述末尾（“……嗯。Voxt，Omni，SGLang。”）。录音中没有说话的部分（比如长口述结束前、按停止之前的停顿）会让语音模型把给它的词典原样写出来。现在这样的结尾会和不带词典识别的同一段音频核对，删掉你没说过的词条；说过的词条照常保留，在句末也一样。
+- VoxtNew 检查麦克风和辅助功能权限时（辅助进程启动或重启时）不会再偶尔崩溃。原因是这次检查可能在另一个系统线程上结束，而不是开始时的那个线程。
 
 ## [0.1.0-beta.1] - 2026-10-17
 
