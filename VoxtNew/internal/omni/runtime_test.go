@@ -31,6 +31,9 @@ type fake struct {
 	dir string // a model folder per id: dir/<id>
 	mu  sync.Mutex
 	out []string // the runtime's log lines
+	// lines gets a token once a line was added (cap 1): waitLogged
+	// looks again.
+	lines chan struct{}
 }
 
 func newFake(t *testing.T, o omnitest.Opts, tune func(*Config)) *fake {
@@ -39,15 +42,14 @@ func newFake(t *testing.T, o omnitest.Opts, tune func(*Config)) *fake {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &fake{dir: t.TempDir(), log: filepath.Join(t.TempDir(), "fake.jsonl")}
+	f := &fake{dir: t.TempDir(), log: filepath.Join(t.TempDir(), "fake.jsonl"), lines: make(chan struct{}, 1)}
 	o.Log = f.log
 	for _, s := range Models() {
 		if err := os.MkdirAll(filepath.Join(f.dir, s.ID), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	cfg := Config{Binary: exe, Env: omnitest.Env(o), StartTimeout: 10 * time.Second,
-		Log: func(level, msg string) { f.mu.Lock(); f.out = append(f.out, level+" "+msg); f.mu.Unlock() }}
+	cfg := Config{Binary: exe, Env: omnitest.Env(o), StartTimeout: 10 * time.Second, Log: f.add}
 	if tune != nil {
 		tune(&cfg)
 	}
@@ -71,10 +73,34 @@ func (f *fake) asr(t *testing.T, id string) *ASR {
 	return a
 }
 
+// add is the runtime's Config.Log.
+func (f *fake) add(level, msg string) {
+	f.mu.Lock()
+	f.out = append(f.out, level+" "+msg)
+	f.mu.Unlock()
+	select {
+	case f.lines <- struct{}{}:
+	default:
+	}
+}
+
 func (f *fake) logged(sub string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return slices.ContainsFunc(f.out, func(l string) bool { return strings.Contains(l, sub) })
+}
+
+// waitLogged waits until the runtime logged a line with sub.
+func (f *fake) waitLogged(t *testing.T, sub string) {
+	t.Helper()
+	timeout := time.After(10 * time.Second)
+	for !f.logged(sub) {
+		select {
+		case <-f.lines:
+		case <-timeout:
+			t.Fatalf("no log line with %q", sub)
+		}
+	}
 }
 
 // eventually waits for cond.
