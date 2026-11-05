@@ -62,6 +62,20 @@ def non_streaming_decode_groups(
         return groups
 
 
+class SilentWindowDecoder:
+    """Silence of the window's own length, for runs that time the engine without the codec."""
+
+    def __init__(self, *, frame_length: int) -> None:
+        self.frame_length = frame_length
+
+    def __call__(self, indices: torch.Tensor) -> torch.Tensor:
+        return torch.zeros(
+            (indices.shape[0], 1, indices.shape[-1] * self.frame_length),
+            dtype=torch.float32,
+            device=indices.device,
+        )
+
+
 class WindowGraphDecoder:
     def __init__(
         self,

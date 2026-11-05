@@ -25,18 +25,26 @@ from sglang_omni.model_runner.sglang_model_runner import SGLModelRunner
 from sglang_omni.models.fishaudio_drama3 import CAPABILITIES
 from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
+    DEFAULT_CONTINUITY_MARGIN_MS,
     DEFAULT_ENABLE_ASYNC_DECODE,
+    DEFAULT_FIRST_AUDIO_SLO_MS,
     DEFAULT_FIRST_FRAME_CUDA_GRAPH_MAX_REQUESTS,
     DEFAULT_FIRST_FRAME_CUDA_GRAPHS,
     DEFAULT_MAX_NEW_TOKENS_CAP,
     DEFAULT_MAX_PROMPT_ROWS,
+    DEFAULT_MAX_STALL_MS,
+    DEFAULT_PREFILL_INTERVAL_POLICY,
+    DEFAULT_PREFILL_LONGEST_INTERVAL,
     DEFAULT_REFERENCE_SAMPLING,
     DEFAULT_REFERENCE_SAMPLING_FALLBACK,
+    DEFAULT_RELEASE_MIN_ADMIT,
     DEFAULT_STREAM_FOLLOWUP_STRIDE,
     DEFAULT_STREAM_FOLLOWUP_STRIDE_RAMP,
     DEFAULT_STREAM_STRIDE,
     DEFAULT_TOWER_FUSED_LAYERS,
     DEFAULT_TRITON_SAMPLING,
+    DEFAULT_VOCODER_MARGIN_MS,
+    PrefillIntervalPolicy,
     ReferenceSamplingFallback,
 )
 from sglang_omni.models.fishaudio_drama3.first_frame_graphs import (
@@ -45,6 +53,10 @@ from sglang_omni.models.fishaudio_drama3.first_frame_graphs import (
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
 from sglang_omni.models.fishaudio_drama3.model_inputs import Drama3DecodeBuffers
 from sglang_omni.models.fishaudio_drama3.model_runner import Drama3ModelRunner
+from sglang_omni.models.fishaudio_drama3.prefill_cadence import (
+    PrefillCadence,
+    PrefillCadenceConfig,
+)
 from sglang_omni.models.fishaudio_drama3.quantization import (
     INT4_QUANTIZATION_METHOD,
     QUANTIZATION_METHOD,
@@ -62,6 +74,7 @@ from sglang_omni.models.fishaudio_drama3.sampling_kernels import (
     CodebookSampler,
     triton_sampling_unsupported_reason,
 )
+from sglang_omni.models.fishaudio_drama3.scheduler import Drama3Scheduler
 from sglang_omni.models.fishaudio_drama3.sglang_model import Drama3ForCausalLM
 from sglang_omni.models.fishaudio_drama3.tower_kernels import (
     FUSED_KERNELS,
@@ -73,6 +86,7 @@ from sglang_omni.scheduling.engine_factory import (
     SchedulerExtras,
     SGLangGenerationEngineBuilder,
 )
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 
@@ -118,6 +132,15 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS,
         enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE,
         async_decode_min_batch_size: int = DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
+        prefill_interval_policy: PrefillIntervalPolicy = (
+            DEFAULT_PREFILL_INTERVAL_POLICY
+        ),
+        prefill_longest_interval: int = DEFAULT_PREFILL_LONGEST_INTERVAL,
+        prefill_first_audio_slo_ms: int = DEFAULT_FIRST_AUDIO_SLO_MS,
+        prefill_max_stall_ms: int = DEFAULT_MAX_STALL_MS,
+        prefill_continuity_margin_ms: int = DEFAULT_CONTINUITY_MARGIN_MS,
+        prefill_vocoder_margin_ms: int = DEFAULT_VOCODER_MARGIN_MS,
+        prefill_release_min_admit: int = DEFAULT_RELEASE_MIN_ADMIT,
     ) -> None:
         self.context_length = context_length
         self.max_running_requests = max_running_requests
@@ -134,6 +157,18 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         self.tower_fused_layers = tower_fused_layers
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
+        self.prefill_interval_policy = prefill_interval_policy
+        self.prefill_cadence_config = PrefillCadenceConfig(
+            longest_interval=prefill_longest_interval,
+            first_audio_slo_s=prefill_first_audio_slo_ms / 1000,
+            max_stall_s=prefill_max_stall_ms / 1000,
+            continuity_margin_s=prefill_continuity_margin_ms / 1000,
+            vocoder_margin_s=prefill_vocoder_margin_ms / 1000,
+            first_window=stream_stride,
+            window_ramp=stream_followup_stride_ramp,
+            followup_window=stream_followup_stride,
+            release_min_admit=prefill_release_min_admit,
+        )
         self.frame_streamer: Drama3FrameStreamer | None = None
         self.sglang_runner: SGLModelRunner | None = None
 
@@ -394,6 +429,34 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
             ),
             Drama3ResultAdapter(eos_token_id=model.config.eos_token_id),
         )
+
+    def scheduler_type(self) -> type[OmniScheduler[Drama3RequestData]]:
+        if self.prefill_interval_policy == "slo":
+            return Drama3Scheduler
+        else:
+            return super().scheduler_type()
+
+    def post_scheduler_setup(
+        self,
+        scheduler: OmniScheduler[Drama3RequestData],
+        model_runner: SGLModelRunner,
+    ) -> None:
+        if isinstance(scheduler, Drama3Scheduler):
+            cadence = PrefillCadence(config=self.prefill_cadence_config)
+            scheduler.install_cadence(cadence)
+            logger.info(
+                f"Drama 3 prefill interval: slo policy, first audio "
+                f"{1000 * cadence.config.first_audio_slo_s:.0f} ms, stall "
+                f"{1000 * cadence.config.max_stall_s:.0f} ms, critical frame interval "
+                f"{1000 * cadence.critical_interval_s:.1f} ms, longest interval "
+                f"{cadence.config.longest_interval}"
+            )
+        else:
+            logger.info(
+                f"Drama 3 prefill interval: fixed, "
+                f"{DECODE_STEPS_BETWEEN_PREFILLS} decode steps between prefills "
+                f"unless the engine's prefill_decode_interval overrides it"
+            )
 
     def extra_scheduler_kwargs(self) -> SchedulerExtras[Drama3RequestData]:
         """The frame streamer make_adapters created, which build calls first."""

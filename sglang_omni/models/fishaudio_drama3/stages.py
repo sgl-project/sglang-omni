@@ -25,14 +25,23 @@ from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_FIRST_FRAME_CUDA_GRAPHS,
     DEFAULT_MAX_NEW_TOKENS_CAP,
     DEFAULT_MAX_PROMPT_ROWS,
+    DEFAULT_CONTINUITY_MARGIN_MS,
+    DEFAULT_FIRST_AUDIO_SLO_MS,
     DEFAULT_MAX_RUNNING_REQUESTS,
+    DEFAULT_MAX_STALL_MS,
+    DEFAULT_PREFILL_INTERVAL_POLICY,
+    DEFAULT_PREFILL_LONGEST_INTERVAL,
     DEFAULT_REFERENCE_SAMPLING,
     DEFAULT_REFERENCE_SAMPLING_FALLBACK,
+    DEFAULT_RELEASE_MIN_ADMIT,
+    DEFAULT_SILENT_DECODE,
     DEFAULT_STREAM_FOLLOWUP_STRIDE,
     DEFAULT_STREAM_FOLLOWUP_STRIDE_RAMP,
     DEFAULT_STREAM_STRIDE,
     DEFAULT_TOWER_FUSED_LAYERS,
     DEFAULT_TRITON_SAMPLING,
+    DEFAULT_VOCODER_MARGIN_MS,
+    PrefillIntervalPolicy,
     ReferenceSamplingFallback,
 )
 from sglang_omni.models.fishaudio_drama3.engine_builder import Drama3EngineBuilder
@@ -42,6 +51,7 @@ from sglang_omni.models.fishaudio_drama3.speech_request import Drama3SpeechPrepr
 from sglang_omni.models.fishaudio_drama3.stream_windows import stream_window_lengths
 from sglang_omni.models.fishaudio_drama3.vocoder import (
     Drama3VocoderScheduler,
+    SilentWindowDecoder,
     WindowGraphDecoder,
 )
 from sglang_omni.models.fishaudio_s2_pro.stages import (
@@ -169,6 +179,13 @@ def create_tts_engine_executor(
     tower_fused_layers: bool = DEFAULT_TOWER_FUSED_LAYERS,
     enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE,
     async_decode_min_batch_size: int = DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
+    prefill_interval_policy: PrefillIntervalPolicy = DEFAULT_PREFILL_INTERVAL_POLICY,
+    prefill_longest_interval: int = DEFAULT_PREFILL_LONGEST_INTERVAL,
+    prefill_first_audio_slo_ms: int = DEFAULT_FIRST_AUDIO_SLO_MS,
+    prefill_max_stall_ms: int = DEFAULT_MAX_STALL_MS,
+    prefill_continuity_margin_ms: int = DEFAULT_CONTINUITY_MARGIN_MS,
+    prefill_vocoder_margin_ms: int = DEFAULT_VOCODER_MARGIN_MS,
+    prefill_release_min_admit: int = DEFAULT_RELEASE_MIN_ADMIT,
 ) -> OmniScheduler[Drama3RequestData]:
     overrides = dict(server_args_overrides or {})
     mem_fraction_static = overrides.get("mem_fraction_static")
@@ -201,6 +218,13 @@ def create_tts_engine_executor(
         tower_fused_layers=tower_fused_layers,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
+        prefill_interval_policy=prefill_interval_policy,
+        prefill_longest_interval=prefill_longest_interval,
+        prefill_first_audio_slo_ms=prefill_first_audio_slo_ms,
+        prefill_max_stall_ms=prefill_max_stall_ms,
+        prefill_continuity_margin_ms=prefill_continuity_margin_ms,
+        prefill_vocoder_margin_ms=prefill_vocoder_margin_ms,
+        prefill_release_min_admit=prefill_release_min_admit,
     ).build(
         model_path,
         device=device,
@@ -280,6 +304,7 @@ def create_vocoder_executor(
     window_cuda_graphs: bool,
     decode_dtype: Literal["float32", "float16"],
     max_new_tokens: int,
+    silent_decode: bool = DEFAULT_SILENT_DECODE,
     total_gpu_memory_fraction: float | None = None,
 ) -> Drama3VocoderScheduler:
     resolved_device = str(resolve_concrete_device(device, gpu_id))
@@ -294,8 +319,14 @@ def create_vocoder_executor(
         decode: WindowDecoder = ChannelsLastDecoder(codec, dtype=torch.float16)
     else:
         decode = codec.from_indices
-    if window_cuda_graphs:
-        decode_window: WindowDecoder = WindowGraphDecoder(
+    if silent_decode:
+        # note (0xtoward): a run that times the engine alone. The stage keeps every window, its
+        # order and its length, and drops only the codec's own GPU work.
+        decode_window: WindowDecoder = SilentWindowDecoder(
+            frame_length=int(codec.frame_length)
+        )
+    elif window_cuda_graphs:
+        decode_window = WindowGraphDecoder(
             decode,
             num_codebooks=num_codebooks,
             frame_length=int(codec.frame_length),
