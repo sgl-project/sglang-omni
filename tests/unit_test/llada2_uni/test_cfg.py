@@ -21,21 +21,36 @@ from sglang.srt.layers.attention.flashinfer_backend import (
 )
 from sglang.srt.layers.radix_attention import AttentionType, RadixAttention
 from sglang.srt.mem_cache.allocator import TokenToKVPoolAllocator
+from sglang.srt.mem_cache.cache_init_params import CacheInitParams
 from sglang.srt.mem_cache.kv_index_translator import KVIndexTranslator
 from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool, ReqToTokenPool
+from sglang.srt.mem_cache.unified_cache.components import ComponentType
+from sglang.srt.mem_cache.unified_radix_cache import UnifiedRadixCache
 from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBackend
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
 from sglang.srt.model_executor.runner.decode_cuda_graph_runner import (
     DecodeCudaGraphRunner,
 )
+from sglang.srt.runtime_context import get_context
 from sglang.srt.sampling.sampling_params import SamplingParams
 
 import sglang_omni.models.llada2_uni.cfg_attention_backend as cfg_attention_backend
+from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.sglang_model_runner import CFGCudaGraphRunner
 from sglang_omni.models.llada2_uni.bootstrap import validate_cfg
+from sglang_omni.models.llada2_uni.components.preprocessor import IMAGE_TOKEN_OFFSET
 from sglang_omni.models.llada2_uni.low_confidence_cfg import LowConfidenceCFG
-from sglang_omni.models.llada2_uni.request_builders import LLaDA2UniRequest
+from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
+from sglang_omni.models.llada2_uni.request_builders import (
+    LLaDA2UniRequest,
+    make_dllm_thinker_scheduler_adapters,
+)
+from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling import dllm_scheduler as dllm_scheduler_module
 from sglang_omni.scheduling.dllm_scheduler import DllmForwardBatch, DllmScheduler
+from sglang_omni.scheduling.message import IncomingMessage
+from sglang_omni.scheduling.sglang_backend.request_data import SGLangDLLMRequestData
+from tests.unit_test.fixtures.llada2_fakes import Tokenizer, advance, preprocess
 
 
 class RaggedWrapperStub:
@@ -282,6 +297,134 @@ def test_scheduler_applies_left_padding_metadata() -> None:
 
     assert forward_batch.dllm_left_pad_lens_cpu == [0, 6]
     assert forward_batch.positions[4:].tolist() == [0, 0, 0, 1]
+
+
+@pytest.mark.parametrize("text_ids", [[], [73]], ids=["back-to-back", "captioned"])
+def test_interleaved_frame_after_an_image_emits_only_image_tokens(
+    monkeypatch: pytest.MonkeyPatch, text_ids: list[int]
+) -> None:
+    """A frame drawn right after the previous image, with no text between them, failed the request with a non-image token."""
+    request = OmniRequest(
+        inputs=[{"role": "user", "content": "Illustrate a two-frame story"}],
+        params={},
+        metadata={"image_generation": {"mode": "interleaved"}},
+    )
+    state = LLaDA2UniPipelineState.from_dict(preprocess(request).data)
+    advance(state, [71, 10, 22, 23, 12])
+    advance(state, [IMAGE_TOKEN_OFFSET + i for i in range(6)])
+    advance(state, [*text_ids, 10, 22, 23, 12])
+
+    dllm_config = DllmConfig(
+        algorithm="LowConfidenceCFG",
+        algorithm_config={"image_token_offset": IMAGE_TOKEN_OFFSET},
+        block_size=4,
+        mask_id=Tokenizer.mask_token_id,
+        max_running_requests=3,
+    )
+    vocab_size = IMAGE_TOKEN_OFFSET + 16
+    request_builder, result_adapter = make_dllm_thinker_scheduler_adapters(
+        tokenizer=Tokenizer(), vocab_size=vocab_size, dllm_config=dllm_config
+    )
+    forward_count = 0
+
+    def forward(forward_batch: NS, pp_proxy_tensors: None = None) -> NS:
+        nonlocal forward_count
+        forward_count += 1
+        assert forward_count < 100, "the image phase never finished"
+        logits = torch.zeros(forward_batch.input_ids.numel(), vocab_size)
+        logits[:, IMAGE_TOKEN_OFFSET + 7] = 20.0
+        return NS(logits_output=NS(full_logits=logits), can_run_graph=False)
+
+    def init_forward_batch(
+        batch: NS, model_runner: NS, *, return_hidden_states_before_norm: bool
+    ) -> NS:
+        rows = [request.get_fill_ids()[request.prefix_len :] for request in batch.reqs]
+        positions = torch.cat(
+            [
+                torch.arange(request.prefix_len, request.extend_end)
+                for request in batch.reqs
+            ]
+        )
+        committed_lengths = torch.tensor(
+            [
+                len(request.origin_input_ids) + len(request.output_ids)
+                for request in batch.reqs
+            ]
+        )
+        return NS(
+            input_ids=torch.tensor([token for row in rows for token in row]),
+            batch_size=len(rows),
+            positions=positions,
+            dllm_prompt_mask=(
+                positions.view(-1, dllm_config.block_size) < committed_lengths[:, None]
+                if any(request.dllm_has_literal_mask for request in batch.reqs)
+                else None
+            ),
+            extend_seq_lens_cpu=[len(row) for row in rows],
+            forward_mode=ForwardMode.DLLM_EXTEND,
+        )
+
+    def finish(request_data: SGLangDLLMRequestData) -> StagePayload:
+        scheduler.stop()
+        return result_adapter(request_data)
+
+    monkeypatch.setattr(
+        dllm_scheduler_module,
+        "ScheduleBatch",
+        NS(
+            init_new=lambda **kwargs: NS(
+                reqs=kwargs["reqs"],
+                prepare_for_extend=lambda: None,
+                prefill_input_ids_cpu=None,
+                filter_batch=lambda **kwargs: None,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        dllm_scheduler_module, "DllmForwardBatch", NS(init_new=init_forward_batch)
+    )
+    worker = object.__new__(ModelWorker)
+    worker.dllm_algorithm = LowConfidenceCFG(dllm_config)
+    worker.model_runner = NS(device="cpu", forward=forward)
+    req_to_token_pool = ReqToTokenPool(3, 64, "cpu", False)
+    allocator = TokenToKVPoolAllocator(256, torch.float32, "cpu", None, False)
+    tree_cache = UnifiedRadixCache(
+        CacheInitParams(
+            disable=True,
+            req_to_token_pool=req_to_token_pool,
+            token_to_kv_pool_allocator=allocator,
+            page_size=1,
+            tree_components=(ComponentType.FULL,),
+        )
+    )
+    scheduler = DllmScheduler(
+        worker,
+        tree_cache,
+        req_to_token_pool,
+        allocator,
+        None,
+        NS(context_len=8192),
+        dllm_config,
+        request_builder=request_builder,
+        result_adapter=finish,
+    )
+    scheduler.inbox.put(
+        IncomingMessage(
+            request_id="story",
+            type="new_request",
+            data=StagePayload(
+                request_id="story", request=request, data=state.to_dict()
+            ),
+        )
+    )
+
+    with get_context().override_server_args(page_size=1, max_prefill_tokens=64):
+        scheduler.start()
+
+    message = scheduler.outbox.get_nowait()
+    assert message.type == "result", message.data
+    state = LLaDA2UniPipelineState.from_dict(message.data.data)
+    assert state.thinker_out["output_ids"] == [IMAGE_TOKEN_OFFSET + 7] * 6
 
 
 def test_attention_masks_local_and_cached_padding() -> None:

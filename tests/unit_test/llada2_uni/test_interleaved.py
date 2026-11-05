@@ -1,41 +1,18 @@
 # SPDX-License-Identifier: Apache-2.0
 """Interleaved transitions, frame CFG, EOI stopping, and the UMM adapter."""
 
-import asyncio
 from types import SimpleNamespace
 
 import pytest
 
-from sglang_omni.models.llada2_uni.components.preprocessor import (
-    IMAGE_TOKEN_OFFSET,
-    LLaDA2Preprocessor,
-)
+from sglang_omni.models.llada2_uni.components.preprocessor import IMAGE_TOKEN_OFFSET
 from sglang_omni.models.llada2_uni.config import LLaDA2UniInterleavedPipelineConfig
-from sglang_omni.models.llada2_uni.interleaved import advance_interleaved_state
 from sglang_omni.models.llada2_uni.merge import extract_image_vq_tokens
 from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
 from sglang_omni.models.llada2_uni.umm import LLaDA2UniUMMAdapter
 from sglang_omni.pipeline.umm import UMMContext, UMMOutput, UMMRequestError
-from sglang_omni.proto import OmniRequest, StagePayload
-
-
-class Tokenizer:
-    mask_token_id = 99
-    eos_token_id = 2
-    additional_stop_token_ids = [666]
-
-    def convert_tokens_to_ids(self, token):
-        return {"<|image|>": 10, "<|/image|>": 11, "<boi>": 12}[token]
-
-    def convert_ids_to_tokens(self, token):
-        return f"<|reserved_token_{token - 20}|>"
-
-    def encode(self, text, add_special_tokens=False):
-        return [100 + i for i, _ in enumerate(text.split())]
-
-    def decode(self, ids, skip_special_tokens=True):
-        return " ".join(str(token) for token in ids if token != self.eos_token_id)
-
+from sglang_omni.proto import OmniRequest
+from tests.unit_test.fixtures.llada2_fakes import Tokenizer, advance, preprocess
 
 CONFIG = {
     "mode": "interleaved",
@@ -51,26 +28,9 @@ CONFIG = {
 STORY = [{"role": "user", "content": "Illustrate a three-frame story"}]
 
 
-def preprocess(request, interleaved=True):
-    preprocessor = object.__new__(LLaDA2Preprocessor)
-    preprocessor.tokenizer = Tokenizer()
-    preprocessor.max_seq_len = 8192
-    preprocessor.interleaved = interleaved
-    return asyncio.run(
-        preprocessor(StagePayload(request_id="story", request=request, data={}))
-    )
-
-
 def initial_payload():
     return preprocess(
         OmniRequest(inputs=STORY, params={}, metadata={"image_generation": CONFIG})
-    )
-
-
-def advance(state, ids):
-    state.thinker_out = {"output_ids": ids, "is_final": True}
-    advance_interleaved_state(
-        state, Tokenizer(), completed_phase=state.stream_state["interleaved"]["phase"]
     )
 
 
