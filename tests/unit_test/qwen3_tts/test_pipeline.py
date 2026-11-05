@@ -4162,6 +4162,28 @@ def test_qwen3_tts_whole_request_reference_under_the_tail_uses_the_windows(
     )
 
 
+def test_qwen3_tts_whole_request_planned_on_lost_tail_graphs_fails_only_itself(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler, incremental, _ = whole_request_scheduler(monkeypatch)
+    scheduler.initial_tail_decode_graphs = FakeTailRunner(
+        scheduler, incremental, widths=(4, 6), bucket=2, miss=True
+    )
+    incremental.first_chunk_reach = 2
+    messages = [
+        whole_request_message("tail", 5, ref_code_len=5),
+        whole_request_message("windows", 4),
+    ]
+
+    scheduler.run_non_streaming_batch(messages, asyncio.new_event_loop())
+    results = run_whole_requests(scheduler)
+
+    assert results["tail"].type == "error"
+    assert chunk_samples(results["windows"].data) == expected_whole_samples(
+        scheduler, 4
+    )
+
+
 def test_qwen3_tts_whole_request_failed_replay_fails_only_its_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -3070,9 +3070,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         self, row: Qwen3TTSWholeRequest, error: BaseException
     ) -> None:
         logger.warning(
-            "Qwen3-TTS whole request %r failed: %s",
-            row.request_id,
-            error,
+            f"Qwen3-TTS whole request {row.request_id!r} failed: {error}",
             exc_info=error,
         )
         self.free_whole_request_slot(row)
