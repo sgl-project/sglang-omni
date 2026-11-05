@@ -820,7 +820,7 @@ def test_qwen3_tts_breakable_prefill_enabled_by_default() -> None:
     assert overrides["cuda_graph_backend_prefill"] is CudaGraphBackend.BREAKABLE
     assert "cuda_graph_bs_prefill" not in overrides
     assert "cuda_graph_max_bs_prefill" not in overrides
-    assert defaults["disable_cuda_graph"] is current_platform.is_cpu()
+    assert defaults["disable_cuda_graph"] is False
     assert overrides["disable_cuda_graph"] is defaults["disable_cuda_graph"]
 
 
@@ -9766,8 +9766,7 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
         while published:
             published.pop().restore()
 
-    is_cpu = current_platform.is_cpu()
-    assert build_kwargs["disable_cuda_graph"] is is_cpu
+    assert build_kwargs["disable_cuda_graph"] is False
     assert build_kwargs["cuda_graph_bs"] == expected_cuda_graph_bs
     assert build_kwargs["cuda_graph_max_bs"] == 64
     assert build_kwargs["enable_torch_compile"] is False
@@ -9807,17 +9806,13 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
         torch.tensor([1.0, 0.01], dtype=torch.float32),
     )
 
-    assert infrastructure_saw_deferred_capture == [not is_cpu]
-    assert init_graph_calls == ([] if is_cpu else [True])
-    assert predictor_captures == ([] if is_cpu else [(True, 50, 1.0)])
-    assert events == (
-        ["memory_pool"]
-        if is_cpu
-        else ["predictor_capture", "memory_pool", "init_graphs"]
-    )
+    assert infrastructure_saw_deferred_capture == [True]
+    assert init_graph_calls == [True]
+    assert predictor_captures == [(True, 50, 1.0)]
+    assert events == ["predictor_capture", "memory_pool", "init_graphs"]
     assert scheduler.server_args.cuda_graph_bs == expected_cuda_graph_bs
     assert scheduler.server_args.cuda_graph_max_bs == 64
-    assert scheduler.server_args.disable_cuda_graph is is_cpu
+    assert scheduler.server_args.disable_cuda_graph is False
     assert scheduler.server_args.enable_torch_compile is False
     assert scheduler.server_args.torch_compile_max_bs == 64
     clear_qwen3_tts_preprocessing_context()
