@@ -36,7 +36,11 @@ from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.sglang_backend import SGLangOutputProcessor
 from sglang_omni.scheduling.sglang_backend.prompt_hidden import PromptHiddenRequest
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
-from sglang_omni.scheduling.types import SchedulerOutput, SchedulerRequest
+from sglang_omni.scheduling.types import (
+    SchedulerOutput,
+    SchedulerRequest,
+    SpecTokensDetailsDict,
+)
 from tests.unit_test.fixtures.prompt_hidden import cuda_prompt_hidden_store
 from tests.unit_test.fixtures.qwen_fakes import deliver_code2wav_chunk
 
@@ -460,6 +464,16 @@ def test_non_streaming_finalizes_on_new_request():
     assert len(result_msgs) == 1
 
 
+SPEC_TOKENS_DETAILS: SpecTokensDetailsDict = {
+    "spec_accept_rate": 0.5,
+    "spec_accept_length": 2.0,
+    "spec_num_correct_drafts": 1,
+    "spec_num_proposed_drafts": 2,
+    "spec_verify_ct": 1,
+    "spec_correct_drafts_histogram": [0, 1],
+}
+
+
 def payload_with_output_ids(stream: bool, output_ids: list[int]) -> StagePayload:
     """Variant of make_payload that injects a non-empty output_ids list so
     decode_events produces a text_final event with the full reconstructed
@@ -476,6 +490,7 @@ def payload_with_output_ids(stream: bool, output_ids: list[int]) -> StagePayload
                     "is_final": True,
                     "extra_model_outputs": {},
                     "finish_reason": "stop",
+                    "spec_tokens_details": SPEC_TOKENS_DETAILS,
                 }
             },
             "thinker_out": None,
@@ -514,6 +529,7 @@ def test_streaming_final_result_drops_full_text_to_avoid_duplication():
     assert "events" in final_data
     assert "usage" in final_data
     assert final_data.get("finish_reason") == "stop"
+    assert final_data["spec_tokens_details"] == SPEC_TOKENS_DETAILS
 
 
 def test_non_streaming_final_result_keeps_full_text():
@@ -532,6 +548,7 @@ def test_non_streaming_final_result_keeps_full_text():
     final_data = result_msgs[0].data.data
     assert final_data.get("text") == "hi there"
     assert final_data.get("finish_reason") == "stop"
+    assert final_data["spec_tokens_details"] == SPEC_TOKENS_DETAILS
 
 
 def test_abort_clears_state():

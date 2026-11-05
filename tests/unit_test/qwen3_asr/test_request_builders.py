@@ -884,12 +884,21 @@ def test_qwen3_asr_result_adapter_decodes_without_text_round_trip() -> None:
         audio_duration_s=1.25,
         finish_reason="length",
     )
+    data.spec_tokens_details = {
+        "spec_accept_rate": 0.5,
+        "spec_accept_length": 2.0,
+        "spec_num_correct_drafts": 1,
+        "spec_num_proposed_drafts": 2,
+        "spec_verify_ct": 1,
+        "spec_correct_drafts_histogram": [0, 1],
+    }
 
     result = result_adapter(data)
 
     assert result.data["text"] == " leading\u00a0middle  "
     assert result.data["language"] == "English"
     assert result.data["finish_reason"] == "length"
+    assert result.data["spec_tokens_details"] == data.spec_tokens_details
     assert tokenizer.encode_calls == ["<asr_text>"]
     assert len(tokenizer.decode_calls) == 2
     assert tokenizer.decode_calls[-1] == {
