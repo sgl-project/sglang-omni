@@ -88,6 +88,23 @@ request values. Stage sampling also takes precedence for `seed`.
 The fixed caller-frame budget still determines the number of generated frames.
 
 
+## Opt-in FP8 inference
+
+BF16 is the default. Two LM engine flags switch the backbone to FP8, separately or together; the text head, embeddings, Depformer and Mimi keep their precision.
+
+| Flags | Backbone weights | KV positions in 8 GiB | Audio s/s, C1 / C8 | First audio, C1 / C8 |
+|---|---:|---:|---:|---:|
+| None (BF16) | 13.15 GB | 16,384 | 6.95 / 44.40 | 58.2 / 172.7 ms |
+| `--lm.engine.quantization fp8` | 6.58 GB | 16,384 | 8.23 / 50.66 | 66.5 / 179.1 ms |
+| `--lm.engine.kv_cache_dtype fp8_e4m3` | 13.15 GB | 32,768 | 6.82 / 44.68 | 59.8 / 171.8 ms |
+| Both | 6.58 GB | 32,768 | 7.89 / 50.14 | 69.3 / 176.6 ms |
+
+*Offline requests on one H100 with FA3, SGLang 0.5.22, `--lm.engine.max_running_requests 8`.*
+
+FP8 weights are the speed option: they halve the weight memory and raise throughput by 14–18%, at 6–10 ms more first-audio latency. On A100 they run as weight-only Marlin and raise C1 throughput by 27%. FP8 KV is the capacity option: a KV budget holds twice the positions, with no speed gain. On 416 English prompts at C8, every FP8 option stayed within 0.10 UTMOS and 1 WER point of BF16.
+
+These results cover offline requests, not full-duplex sessions. FP8 KV was tested only on H100 with FA3, and its scales are fixed at 1.0.
+
 ## Known limitations
 
 ### All platforms

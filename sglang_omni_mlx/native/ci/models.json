@@ -41,6 +41,20 @@
       "vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
     }
   },
+  "wilsonzheng0327/Qwen3-ASR-0.6B-dflash": {
+    "revision": "75da55f3170c28ce70379b96921c1cf9a331d008",
+    "files": {
+      "config.json": "de349d2f8494363a3a3641ca6554a3841e001f769de089974a5349c9580931da",
+      "model.safetensors": "bbfc427b9e57cb3663d23ab796d05ca82070bbdfe4c42dc9a5813430a0ace219"
+    }
+  },
+  "wilsonzheng0327/Qwen3-ASR-1.7B-dflash": {
+    "revision": "23a0db8ae3f0724ccb7227c969a57651ddade2e0",
+    "files": {
+      "config.json": "890b34fd509f74fa8aeceaaea921d5d9a7110f177b75185aa54d4edb9f6af4e1",
+      "model.safetensors": "00c32b078e3613073c0437e69519eb7811cbf97fcbd0066d05d62be7273670b8"
+    }
+  },
   "mlx-community/silero-vad-v6": {
     "revision": "2ebf4a5e10726a2e78ddd4d70eedfb6f1c33eb06",
     "files": {

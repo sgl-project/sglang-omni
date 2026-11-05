@@ -27,11 +27,15 @@ actor OmniASRRuntime {
 
     nonisolated let kind: OmniASRModelKind
     nonisolated let modelDirectory: URL
+    /// A speculative draft the server verifies against the model; nil decodes
+    /// one token per step.
+    nonisolated let draftDirectory: URL?
     nonisolated let configuration: OmniBackendConfiguration
 
     private(set) var state: State = .idle
     private var serverProcess: Process?
     private var modelDirectoryLease: OmniModelDirectoryLease?
+    private var draftDirectoryLease: OmniModelDirectoryLease?
     private var controlPipe: Pipe?
     private var servingEndpoint: OmniServerEndpoint?
     private var preparation: Task<OmniServerEndpoint, Error>?
@@ -40,9 +44,15 @@ actor OmniASRRuntime {
     private var activeUses = 0
     private var drainWaiters: [CheckedContinuation<Void, Never>] = []
 
-    init(kind: OmniASRModelKind, modelDirectory: URL, configuration: OmniBackendConfiguration) {
+    init(
+        kind: OmniASRModelKind,
+        modelDirectory: URL,
+        draftDirectory: URL? = nil,
+        configuration: OmniBackendConfiguration
+    ) {
         self.kind = kind
         self.modelDirectory = modelDirectory
+        self.draftDirectory = draftDirectory
         self.configuration = configuration
         let sessionConfiguration = URLSessionConfiguration.ephemeral
         // Loopback requests must never be routed through a system proxy.
@@ -192,6 +202,7 @@ actor OmniASRRuntime {
               !process.isRunning else { return }
         process.terminationHandler = nil
         modelDirectoryLease = nil
+        draftDirectoryLease = nil
         if case .ready = state {
             state = .failed("The local Omni server stopped unexpectedly.")
             servingEndpoint = nil
@@ -204,14 +215,23 @@ actor OmniASRRuntime {
         }
         guard case .starting = state else { throw OmniASRRuntimeError.retired }
         modelDirectoryLease = directoryLease
-        let process = Process()
-        process.executableURL = configuration.runtimeExecutable
-        process.arguments = [
+        var arguments = [
             "--supervised",
             "--model-kind", kind.rawValue,
             "--model-directory", directoryLease.directory.path,
             "--startup-timeout-s", String(configuration.startupTimeoutSeconds),
         ]
+        if let draftDirectory {
+            let draftLease = try await ModelDiskOperations.perform {
+                try OmniModelDirectoryLease.acquire(for: draftDirectory, mode: .sharedRead)
+            }
+            guard case .starting = state else { throw OmniASRRuntimeError.retired }
+            draftDirectoryLease = draftLease
+            arguments += ["--draft-model-path", draftLease.directory.path]
+        }
+        let process = Process()
+        process.executableURL = configuration.runtimeExecutable
+        process.arguments = arguments
         process.environment = Self.runtimeEnvironment(inheriting: ProcessInfo.processInfo.environment)
         let control = Pipe()
         let events = Pipe()
@@ -290,6 +310,7 @@ actor OmniASRRuntime {
     private func stopServerProcess() async {
         guard let process = serverProcess else {
             modelDirectoryLease = nil
+            draftDirectoryLease = nil
             return
         }
         if let controlPipe {
@@ -311,6 +332,7 @@ actor OmniASRRuntime {
         process.terminationHandler = nil
         serverProcess = nil
         modelDirectoryLease = nil
+        draftDirectoryLease = nil
     }
 
     /// Voxt's environment without the dynamic loader settings a debugger or XCTest
