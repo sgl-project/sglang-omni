@@ -2413,6 +2413,7 @@ def test_speculative_admission_refuses_sampling_the_draft_cannot_reproduce(
     ],
 )
 def test_plain_fallback_admission_preserves_sampling_contract(
+    monkeypatch: pytest.MonkeyPatch,
     temperature: float,
     repetition_penalty: float,
     expected_path: str,
@@ -2421,6 +2422,10 @@ def test_plain_fallback_admission_preserves_sampling_contract(
     """Unsupported sampling must select plain before any draft prefill runs."""
     scheduler = object.__new__(OmniScheduler)
     scheduler.enable_plain_fallback = True
+    scheduler.max_req_len = 100
+    monkeypatch.setattr(
+        omni_scheduler_module, "get_alloc_reserve_per_decode", lambda: 16
+    )
     scheduler.draft_worker = SimpleNamespace()
     scheduler.draft_algorithm = SpeculativeAlgorithm.DFLASH
     scheduler.model_runner = SimpleNamespace(
@@ -2448,6 +2453,55 @@ def test_plain_fallback_admission_preserves_sampling_contract(
         assert reason in request_data.fallback_reason
     assert request.sampling_params.repetition_penalty == repetition_penalty
     assert request.sampling_params.temperature == normalized_temperature
+
+
+@pytest.mark.parametrize(
+    ("max_new_tokens", "expected_path"),
+    [(34, "spec"), (35, "plain"), (50, "plain"), (51, "spec")],
+)
+def test_plain_fallback_accepts_requests_without_room_for_draft_reserve(
+    monkeypatch: pytest.MonkeyPatch, max_new_tokens: int, expected_path: str
+) -> None:
+    """A request that fits plain must not be refused for draft-only KV reserves."""
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.enable_plain_fallback = True
+    scheduler.draft_worker = SimpleNamespace()
+    scheduler.max_req_len = 100
+    scheduler.model_config = SimpleNamespace(context_len=200)
+    scheduler.token_to_kv_pool_allocator = Mock()
+    scheduler.model_runner = SimpleNamespace(speculative_requires_greedy=False)
+    monkeypatch.setattr(
+        scheduler, "speculative_request_error", lambda request, request_data: None
+    )
+    monkeypatch.setattr(
+        omni_scheduler_module, "get_alloc_reserve_per_decode", lambda: 16
+    )
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_schedule",
+        lambda: SimpleNamespace(mem_fraction_static=0.76),
+    )
+    request = Req(
+        rid="capacity-boundary",
+        origin_input_text="",
+        origin_input_ids=[0] * 50,
+        sampling_params=SamplingParams(max_new_tokens=max_new_tokens),
+    )
+    request_data = SGLangARRequestData(req=request)
+
+    assert scheduler.select_decode_path(request, request_data) is None
+    assert request_data.decode_path == expected_path
+    capacity_error = scheduler.request_kv_capacity_error(
+        request, decode_path=request_data.decode_path
+    )
+    if max_new_tokens <= 50:
+        assert capacity_error is None
+    else:
+        assert "KV cache" in capacity_error
+    if expected_path == "plain":
+        assert request_data.fallback_reason == "speculative_kv_reserve"
+        assert request.cache_salt.startswith("omni:plain:")
+    else:
+        assert request_data.fallback_reason is None
 
 
 def test_plain_fallback_rotates_paths_and_cancels_parked_requests() -> None:

@@ -2115,6 +2115,24 @@ class OmniScheduler(Generic[RequestDataT]):
     ) -> str | None:
         """Fix the request's execution path before its first prefill."""
         fallback_reason = self.speculative_request_error(request, request_data)
+        if (
+            self.enable_plain_fallback
+            and self.draft_worker is not None
+            and fallback_reason is None
+        ):
+            required_tokens = len(request.origin_input_ids) + int(
+                request.sampling_params.max_new_tokens or 0
+            )
+            if (
+                required_tokens
+                <= self.max_req_len
+                < required_tokens + get_alloc_reserve_per_decode()
+            ):
+                fallback_reason = "speculative_kv_reserve"
+            else:
+                pass
+        else:
+            pass
         if self.draft_worker is None:
             request_data.decode_path = "plain"
         elif fallback_reason is None:

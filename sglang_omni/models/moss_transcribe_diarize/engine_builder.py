@@ -13,6 +13,8 @@ from sglang.srt.speculative.base_spec_worker import BaseSpecWorker
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from transformers import PreTrainedTokenizerBase, ProcessorMixin
 
+from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.moss_transcribe_diarize import CAPABILITIES, request_builders
 from sglang_omni.models.moss_transcribe_diarize.encoder_service import (
     BatchedAudioEncoderService,
@@ -34,6 +36,7 @@ from sglang_omni.scheduling.generation_batch_policy import (
     build_default_prefill_cuda_graph_bs,
     get_prefill_cuda_graph_backend,
 )
+from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 
 if TYPE_CHECKING:
 
@@ -253,6 +256,15 @@ class MossTranscribeDiarizeEngineBuilder(
                 "speculative_worker_class": self.speculative_worker_class,
             }
 
+    def make_model_runner(
+        self,
+        model_worker: ModelWorker,
+        output_proc: SGLangOutputProcessor,
+    ) -> ModelRunner[MossTranscribeDiarizeRequestData]:
+        model_runner = super().make_model_runner(model_worker, output_proc)
+        model_runner.speculative_ignores_request_seed = True
+        return model_runner
+
     def setup_model_resources(
         self,
         model: MossTranscribeDiarizeForConditionalGeneration,
@@ -301,7 +313,7 @@ class MossTranscribeDiarizeEngineBuilder(
             enable_trimmed_fbank=self.enable_trimmed_fbank,
             speculative_reserve_tokens=(
                 0
-                if self.speculative_worker_class is None
+                if self.speculative_worker_class is None or self.enable_plain_fallback
                 else get_alloc_reserve_per_decode()
             ),
         )

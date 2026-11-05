@@ -242,7 +242,19 @@ sgl-omni serve \
   --port 8000
 ```
 
-This profile reuses the same admission, batch scheduling, token relay, and cleanup code as Qwen3-ASR. It requires one CUDA GPU and synchronous execution. The profile starts with graphs and radix disabled; ordinary-decode/verify graph separation and path-isolated radix reuse can be enabled with the same engine overrides as Qwen3-ASR. The H200 GPU probe verifies that repetition-penalty batches call the ordinary sampler with zero draft forwards, target verifies, or draft KV writes, then cancel, retract, resume, and recover every request/KV slot. See [per-request plain fallback](qwen3_asr.md#per-request-plain-fallback) for the probe, execution restrictions, graph/cache switches, and remaining validation scope. The corpus measurements below describe the existing DFlash path.
+This profile reuses the same admission, batch scheduling, token relay, and cleanup code as Qwen3-ASR. Internal requests with a sampling seed also select plain because DFlash verification does not consume that seed. The transcription HTTP form does not expose a seed field. With fallback enabled, the builder keeps the same duration-based output budget as standalone plain; shared admission chooses plain when the remaining context cannot also hold draft reserves. It requires one CUDA GPU and synchronous execution. The profile starts with graphs and radix disabled; ordinary-decode/verify graph separation and path-isolated radix reuse can be enabled with the same engine overrides as Qwen3-ASR. The H200 GPU probe verifies that repetition-penalty batches call the ordinary sampler with zero draft forwards, target verifies, or draft KV writes, then cancel, retract, resume, and recover every request/KV slot. See [per-request plain fallback](qwen3_asr.md#per-request-plain-fallback) for the probe, execution restrictions, graph/cache switches, and remaining validation scope. The earlier corpus measurements below describe the existing DFlash path.
+
+A subsequent H200 fallback qualification compared standalone plain with the prototype across all 800 Movies800 clips and all 20 AISHELL4 long recordings, both with default greedy sampling and with repetition_penalty=1.2. All 3,280 requests completed without errors or reported length truncation. Both servers enabled ordinary decode graphs and radix caching, with target prefill graphs disabled. Each cell lists standalone plain / prototype; these single-pass accuracy observations are not performance measurements.
+
+| Dataset | Request mode | Samples per server | CER without speaker labels | cpCER | Timestamp DER, collar 0 |
+| --- | --- | --- | --- | --- | --- |
+| Movies800 | greedy/spec | 800 | 5.8838% / 5.8949% | 13.0100% / 13.2055% | 21.0692% / 21.1436% |
+| Movies800 | repetition_penalty=1.2 | 800 | 6.4129% / 6.4192% | 13.6631% / 13.6694% | 21.7322% / 21.7436% |
+| AISHELL4 long | greedy/spec | 20 | 13.8312% / 13.8678% | 15.0148% / 14.4100% | 10.2419% / 9.8733% |
+| AISHELL4 long | repetition_penalty=1.2 | 20 | 15.2587% / 15.2715% | 15.3169% / 15.3463% | 9.7742% / 9.7899% |
+
+Movies800 metrics use 784 clips with reference segments; the benchmark reports the other 16 as skipped rather than request failures. AISHELL4 metrics cover all 20 recordings. Internal seeded fallback requests reproduced standalone plain tokens and selected-token logprobs, including a repeated seed; unseeded sampling does not promise identical transcripts. For valid inputs, transcription HTTP boundary checks retained the plain control's acceptance/rejection behavior for the tested temperature, repetition_penalty, and max_new_tokens cases. The shared HTTP form now rejects negative temperature with 422 before generation; zero remains valid.
+
 
 Paired runs on one H200 140GB with FA3 and SGLang 0.5.22, `max_running_requests=16`, `cuda_graph_max_bs=16` and `mem_fraction_static=0.80`, each on a fresh server, in audio seconds per second. Concurrency 1 rows are the mean of both orders; the other rows are one pair.
 
