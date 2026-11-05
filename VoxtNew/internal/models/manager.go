@@ -90,7 +90,7 @@ type Manager struct {
 	client    *hfhub.Client
 	status    map[string]Status // by id; downloads' bytes live in jobs
 	jobs      map[string]*job
-	busy      map[string]bool // ids a job is installing (a speech model's VAD: one job)
+	busy      map[string]*job // ids a job is installing, and that job (a speech model's VAD: one job)
 	lastNote  time.Time
 	closed    bool
 }
@@ -112,7 +112,7 @@ func Open(opt Options) *Manager {
 		panic("models: Open without a Store")
 	}
 	m := &Manager{store: opt.Store, opt: opt, catalog: opt.Catalog,
-		status: map[string]Status{}, jobs: map[string]*job{}, busy: map[string]bool{}}
+		status: map[string]Status{}, jobs: map[string]*job{}, busy: map[string]*job{}}
 	if m.catalog == nil {
 		m.catalog = catalog
 	}
@@ -268,7 +268,7 @@ func (m *Manager) Download(id string) error {
 	}
 	var list []Model
 	for _, need := range mod.Needs {
-		if n, ok := m.Lookup(need); ok && !m.status[need].OnDisk && !m.busy[need] {
+		if n, ok := m.Lookup(need); ok && !m.status[need].OnDisk && m.busy[need] == nil {
 			list = append(list, n)
 		}
 	}
@@ -277,7 +277,7 @@ func (m *Manager) Download(id string) error {
 	j := &job{cancel: cancel, done: make(chan struct{})}
 	for _, l := range list {
 		j.total += l.Size()
-		m.busy[l.ID] = true
+		m.busy[l.ID] = j
 	}
 	m.jobs[id] = j
 	s := m.status[id]
@@ -317,25 +317,60 @@ func (m *Manager) Close() {
 }
 
 func (m *Manager) run(ctx context.Context, client *hfhub.Client, id string, j *job, list []Model) {
-	var err error
-	for _, mod := range list {
-		err = client.Download(ctx, mod.Entry(""), func(p hfhub.Progress) {
+	fetch := func(mod Model) error {
+		err := client.Download(ctx, mod.Entry(""), func(p hfhub.Progress) {
 			m.mu.Lock()
 			j.current, j.waiting = min(p.Bytes, mod.Size()), p.WaitingFor
 			m.mu.Unlock()
 			m.note(false)
 		})
-		if err != nil {
+		if err == nil {
+			m.mu.Lock()
+			j.base, j.current, j.waiting = j.base+mod.Size(), 0, ""
+			m.mu.Unlock()
+		}
+		return err
+	}
+	var err error
+	for _, mod := range list {
+		if err = fetch(mod); err != nil {
 			break
 		}
+	}
+	// A model it needs that another job was installing: that job may end
+	// without it (cancelled, failed). Wait for it, then fetch what is
+	// still missing, so that a speech model never installs without it.
+	for _, need := range list[len(list)-1].Needs {
+		n, ok := m.Lookup(need)
 		m.mu.Lock()
-		j.base, j.current, j.waiting = j.base+mod.Size(), 0, ""
+		other := m.busy[need]
 		m.mu.Unlock()
+		if err != nil || !ok || other == j {
+			continue
+		}
+		if other != nil {
+			select {
+			case <-other.done:
+			case <-ctx.Done():
+				err = ctx.Err()
+				continue
+			}
+		}
+		if rev, _ := find(m.store.Hub, n); rev != "" {
+			continue
+		}
+		m.mu.Lock()
+		m.busy[need], j.total = j, j.total+n.Size()
+		m.mu.Unlock()
+		list = append(list, n)
+		err = fetch(n)
 	}
 	m.refresh() // before the job ends: never "not downloading" and "not installed" in between
 	m.mu.Lock()
 	for _, mod := range list {
-		delete(m.busy, mod.ID)
+		if m.busy[mod.ID] == j {
+			delete(m.busy, mod.ID)
+		}
 	}
 	delete(m.jobs, id)
 	if err != nil && !errors.Is(err, context.Canceled) {
