@@ -6,7 +6,7 @@ from typing import Literal
 
 import torch
 
-from sglang_omni.models.yue2.cuda_graph import DecodeGraph
+from sglang_omni.models.yue2.cuda_graph import CapturedGraph, DecodeGraph
 from sglang_omni.models.yue2.layers import TokenCache
 from sglang_omni.models.yue2.model import Yue2Model
 from sglang_omni.models.yue2.request import (
@@ -117,15 +117,15 @@ class SamplingGraph:
             (1, sampling.penalty_window), dtype=torch.long, device=logits.device
         )
         self.active = torch.zeros_like(self.recent, dtype=self.frequencies.dtype)
-        self.graph = torch.cuda.CUDAGraph()
+        self.graph = CapturedGraph(logits.device)
         self.logits.copy_(logits)
-        stream = torch.cuda.Stream(device=logits.device)
+        stream = self.graph.stream
         stream.wait_stream(torch.cuda.current_stream(logits.device))
         with torch.cuda.stream(stream):
             for _ in range(3):
                 self.forward()
         torch.cuda.current_stream(logits.device).wait_stream(stream)
-        with torch.cuda.graph(self.graph, stream=stream):
+        with torch.cuda.graph(self.graph.graph, stream=stream):
             self.scores = self.forward()
 
     def forward(self) -> torch.Tensor:

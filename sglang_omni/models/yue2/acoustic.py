@@ -4,6 +4,7 @@
 import torch
 from torch.nn import functional as F
 
+from sglang_omni.models.yue2.cuda_graph import CapturedGraph
 from sglang_omni.models.yue2.layers import TokenCache
 from sglang_omni.models.yue2.model import Yue2Model
 from sglang_omni.models.yue2.request import (
@@ -96,17 +97,17 @@ class AcousticChunk:
         latent = self.noise.to(device=self.device, dtype=self.dtype)
         graph = None
         if cuda_graph:
+            graph = CapturedGraph(self.device)
             graph_latent = latent.clone()
             graph_time = torch.zeros((), device=self.device, dtype=self.dtype)
-            stream = torch.cuda.Stream(device=self.device)
+            stream = graph.stream
             stream.wait_stream(torch.cuda.current_stream(self.device))
             with torch.cuda.stream(stream):
                 for _ in range(3):
                     self.predict_velocity(graph_latent, graph_time)
             torch.cuda.current_stream(self.device).wait_stream(stream)
             check_cancelled(cancelled)
-            graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(graph, stream=stream):
+            with torch.cuda.graph(graph.graph, stream=stream):
                 graph_velocity = self.predict_velocity(graph_latent, graph_time)
         else:
             pass

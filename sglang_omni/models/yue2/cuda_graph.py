@@ -1,10 +1,46 @@
 # SPDX-License-Identifier: Apache-2.0
 """Reusable single-branch AR decode graph with device-resident cache length."""
 
+import ctypes
+import weakref
+
 import torch
 
 from sglang_omni.models.yue2.layers import TokenCache
 from sglang_omni.models.yue2.model import Yue2Model
+
+
+def release_capture(
+    graph: torch.cuda.CUDAGraph, stream: torch.cuda.ExternalStream
+) -> None:
+    with torch.cuda.device(stream.device):
+        graph.reset()
+        torch.cuda.check_error(
+            torch.cuda.cudart().cudaStreamDestroy(stream.cuda_stream)
+        )
+
+
+class CapturedGraph:
+    def __init__(self, device: torch.device) -> None:
+        # note (ruiling): PyTorch #193402 lets pooled-stream reuse invalidate another live graph's cuBLAS workspace.
+        with torch.cuda.device(device):
+            handle = ctypes.c_void_p()
+            torch.cuda.check_error(
+                torch.cuda.cudart().cudaStreamCreate(ctypes.addressof(handle))
+            )
+            assert handle.value is not None
+            try:
+                self.stream = torch.cuda.ExternalStream(handle.value, device=device)
+                self.graph = torch.cuda.CUDAGraph()
+            except Exception:
+                torch.cuda.check_error(
+                    torch.cuda.cudart().cudaStreamDestroy(handle.value)
+                )
+                raise
+        weakref.finalize(self, release_capture, self.graph, self.stream)
+
+    def replay(self) -> None:
+        self.graph.replay()
 
 
 class DecodeGraph:
@@ -28,7 +64,7 @@ class DecodeGraph:
             [0, 1], dtype=torch.int32, device=weight.device
         )
         self.key_offsets = self.query_offsets * self.capacity
-        self.graph: torch.cuda.CUDAGraph | None = None
+        self.graph: CapturedGraph | None = None
         self.output: torch.Tensor | None = None
 
     def forward(self) -> torch.Tensor:
@@ -77,7 +113,8 @@ class DecodeGraph:
         )
         self.position.fill_(len(prefix))
         if self.graph is None:
-            stream = torch.cuda.Stream(device=self.tokens.device)
+            graph = CapturedGraph(self.tokens.device)
+            stream = graph.stream
             stream.wait_stream(torch.cuda.current_stream(self.tokens.device))
             with torch.cuda.stream(stream):
                 for _ in range(3):
@@ -85,8 +122,7 @@ class DecodeGraph:
                     self.forward()
                 self.position.fill_(len(prefix))
             torch.cuda.current_stream(self.tokens.device).wait_stream(stream)
-            graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(graph, stream=stream):
+            with torch.cuda.graph(graph.graph, stream=stream):
                 output = self.forward()
             self.graph, self.output = graph, output
             self.position.fill_(len(prefix))

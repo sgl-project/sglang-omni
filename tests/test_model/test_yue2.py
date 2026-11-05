@@ -7,7 +7,9 @@ import pytest
 import torch
 
 from sglang_omni.models.yue2.acoustic import synthesize_latents
-from sglang_omni.models.yue2.request import build_request
+from sglang_omni.models.yue2.cuda_graph import DecodeGraph
+from sglang_omni.models.yue2.generation import SamplingGraph
+from sglang_omni.models.yue2.request import SamplingConfig, build_request
 from sglang_omni.models.yue2.runtime import Yue2Runtime
 from sglang_omni.proto.request import OmniRequest, StagePayload
 
@@ -113,3 +115,22 @@ def test_acoustic_graph_preserves_solver_and_abort_recovery(
         runtime.model, prefix, codecs, 42, 7, lambda: False, cuda_graph=True
     )
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@torch.inference_mode()
+def test_decode_graph_survives_temporary_graphs(runtime: Yue2Runtime) -> None:
+    """Destroying sampling graphs must not invalidate a persistent decode graph."""
+    runner = DecodeGraph(runtime.model)
+    prefix = [1, 2, 3]
+    logits = runner.prefill(prefix)
+    token = torch.tensor([[7]], device=logits.device)
+    expected = runner.step(token).clone()
+    sampling = SamplingConfig(min_tokens=1, max_tokens=2)
+    # note (ruiling): Forty captures wrap PyTorch's 32-stream pool and reproduce workspace invalidation.
+    for _ in range(40):
+        sampler = SamplingGraph(logits, sampling, "semantic", False)
+        sampler.step(logits, 0, None)
+        del sampler
+    torch.cuda.empty_cache()
+    runner.prefill(prefix)
+    torch.testing.assert_close(runner.step(token), expected, rtol=0, atol=0)
