@@ -122,6 +122,41 @@ func TestMove(t *testing.T) {
 	}
 }
 
+// TestMoveBackKeepsFallbackRecordings: a recording kept in the default
+// folder while the chosen one was on a disconnected drive survives
+// "Use the default" after the drive is back. Moving back used to take
+// that file, already in its destination, for an original and delete
+// its only copy, and still report success.
+func TestMoveBackKeepsFallbackRecordings(t *testing.T) {
+	h := openHistory(t, 3)
+	external := filepath.Join(t.TempDir(), "External")
+	if _, err := Move(ctx, h, external, func() error { h.SetAudioDir(external); return nil }, nil); err != nil {
+		t.Fatal(err)
+	}
+	// The drive goes away; a new recording goes to the default folder.
+	if err := os.Rename(external, external+".unplugged"); err != nil {
+		t.Fatal(err)
+	}
+	put(t, h, h.DefaultAudioDir(), "fallback.wav", "RIFF fallback")
+	if err := h.Put(ctx, store.Entry{ID: "fallback", Kind: store.KindTranscribe, CreatedAt: time.Now(), Audio: "fallback.wav"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(external+".unplugged", external); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Move(ctx, h, h.DefaultAudioDir(), func() error { h.SetAudioDir(""); return nil }, nil); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{"e0.wav": "RIFF e0", "e1.wav": "RIFF e1", "fallback.wav": "RIFF fallback"} {
+		if data, err := os.ReadFile(h.AudioPath(name)); err != nil || string(data) != want {
+			t.Errorf("%s after moving back: %q, %v", name, data, err)
+		}
+	}
+	if got := files(t, external); len(got) != 0 {
+		t.Errorf("left on the drive %v", got)
+	}
+}
+
 // TestMoveFails: a failed copy partway, a cancel, a failed commit and a
 // file in the way each leave the recordings where they were, in use, and
 // no copy behind.

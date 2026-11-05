@@ -96,6 +96,12 @@ func Move(ctx context.Context, hs store.History, to string, commit func() error,
 	place := func(name, src string) error {
 		dst := filepath.Join(to, name)
 		if fi, err := os.Stat(dst); err == nil {
+			if si, err := os.Stat(src); err == nil && os.SameFile(si, fi) {
+				// Kept in to already (the default folder, while the other
+				// was missing): its only copy, not an original to delete.
+				done[name] = true
+				return nil
+			}
 			if !fi.Mode().IsRegular() || !sameFile(src, dst) {
 				return fmt.Errorf("%s holds another %s already", to, name)
 			}
