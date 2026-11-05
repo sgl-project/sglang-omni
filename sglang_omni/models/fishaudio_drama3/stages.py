@@ -28,6 +28,7 @@ from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_MAX_RUNNING_REQUESTS,
     DEFAULT_REFERENCE_SAMPLING,
     DEFAULT_REFERENCE_SAMPLING_FALLBACK,
+    DEFAULT_ROUTED_EXPERT_CACHE_SLOTS,
     DEFAULT_STREAM_FOLLOWUP_STRIDE,
     DEFAULT_STREAM_FOLLOWUP_STRIDE_RAMP,
     DEFAULT_STREAM_STRIDE,
@@ -171,6 +172,7 @@ def create_tts_engine_executor(
     enable_async_decode: bool = DEFAULT_ENABLE_ASYNC_DECODE,
     async_decode_min_batch_size: int = DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE,
     engine_builder_path: str | None = None,
+    routed_expert_cache_slots: int | None = DEFAULT_ROUTED_EXPERT_CACHE_SLOTS,
 ) -> OmniScheduler[Drama3RequestData]:
     """Build the AR engine; engine_builder_path names a Drama3EngineBuilder subclass, such as an offline diagnostic, to build it instead."""
     overrides = dict(server_args_overrides or {})
@@ -218,6 +220,7 @@ def create_tts_engine_executor(
         tower_fused_layers=tower_fused_layers,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
+        routed_expert_cache_slots=routed_expert_cache_slots,
     ).build(
         model_path,
         device=device,

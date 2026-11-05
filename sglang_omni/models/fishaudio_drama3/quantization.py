@@ -13,6 +13,8 @@ from collections.abc import Mapping
 import torch
 from sglang.srt.layers.linear import LinearBase
 from sglang.srt.layers.moe.fused_moe_triton import FusedMoE
+from sglang.srt.layers.moe.token_dispatcher.base import CombineInput
+from sglang.srt.layers.moe.token_dispatcher.standard import StandardDispatchOutput
 from sglang.srt.layers.quantization.base_config import (
     QuantizationConfig,
     QuantizeMethodBase,
@@ -25,6 +27,8 @@ from sglang.srt.layers.quantization.gptq.gptq import (
 )
 from sglang.srt.layers.quantization.unquant import UnquantizedLinearMethod
 from sglang.srt.layers.quantization.utils import replace_parameter
+
+from sglang_omni.models.fishaudio_drama3.expert_cache import LayerExpertCache
 
 QUANTIZATION_METHOD = "bsgemm-moe"
 EXPERT_WEIGHT_BLOCK_SIZE = [128, 128]
@@ -108,7 +112,12 @@ class ExpertFp8Config(QuantizationConfig):
 
 
 class ExpertMarlinMoEMethod(GPTQMarlinMoEMethod):
-    """GPTQ-Marlin routed experts with their scales in the activation dtype."""
+    """GPTQ-Marlin routed experts with their scales in the activation dtype; once the
+    engine attaches a routed expert cache, Marlin runs over the cached experts."""
+
+    def __init__(self, quant_config: GPTQMarlinConfig) -> None:
+        super().__init__(quant_config)
+        self.routed_expert_cache: LayerExpertCache | None = None
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
         super().process_weights_after_loading(layer)
@@ -117,6 +126,23 @@ class ExpertMarlinMoEMethod(GPTQMarlinMoEMethod):
         # activation dtype.
         replace_parameter(layer, "w13_scales", layer.w13_scales.to(layer.params_dtype))
         replace_parameter(layer, "w2_scales", layer.w2_scales.to(layer.params_dtype))
+
+    def apply(
+        self, layer: torch.nn.Module, dispatch_output: StandardDispatchOutput
+    ) -> CombineInput:
+        routed_expert_cache = self.routed_expert_cache
+        if routed_expert_cache is None:
+            return super().apply(layer, dispatch_output)
+        else:
+            marlin_kernel = layer.scheme.kernel
+            marlin_inputs = routed_expert_cache.marlin_inputs(
+                dispatch_output,
+                weight_bits=self.quant_config.weight_bits,
+                is_k_full=marlin_kernel.is_k_full,
+            )
+            return marlin_kernel.runner.run(
+                marlin_inputs.dispatch_output, marlin_inputs.quant_info
+            )
 
 
 class ExpertDenseInt4Config(QuantizationConfig):

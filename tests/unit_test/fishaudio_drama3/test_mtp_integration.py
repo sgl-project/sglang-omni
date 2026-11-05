@@ -1354,6 +1354,7 @@ def decode_runner(row_count: int) -> DecodeRunner:
     model.config = config
     model.step_exchange = StepExchange()
     model.decode_buffers = buffers
+    model.routed_expert_cache = None
     attention_backend = Mock(spec=HybridLinearAttnBackend)
     attention_backend.full_attn_backend = Mock(spec=TritonAttnBackend)
     kv_pool = Mock(spec=HybridLinearKVPool)
