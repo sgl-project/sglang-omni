@@ -39,14 +39,17 @@ env:
 # Invoked by omni-ci.yaml. Each job runs a fixed Full-Duplex-Bench v1.0 and v1.5
 # selection on one interaction strategy, judges it with Qwen3.8-27B and gates the
 # result on that strategy's own calibrated baseline. The jobs share the PR home's
-# FDB assets, so they run one after another; a failed or skipped job does not
-# skip the next.
-# DAG: full-duplex -> turn-based -> cascaded
+# FDB assets, so one per-run concurrency group serializes them. Strategy results
+# are independent, and queued execution order is unspecified.
 
 jobs:
   full-duplex:
     name: Full-Duplex-Bench - full duplex (MiniCPM-o)
     if: inputs.run_full_duplex
+    concurrency: &fdb_serial
+      group: omni-fdb-${{ github.run_id }}
+      cancel-in-progress: false
+      queue: max
     runs-on: [self-hosted, h100]
     timeout-minutes: 45
     container:
@@ -94,8 +97,8 @@ jobs:
 
   turn-based:
     name: Full-Duplex-Bench - turn based (Qwen3-Omni)
-    needs: full-duplex
-    if: always() && !cancelled() && inputs.run_turn_based
+    if: inputs.run_turn_based
+    concurrency: *fdb_serial
     runs-on: [self-hosted, h100]
     timeout-minutes: 45
     # The engine runs one server on two GPUs and reads them from
@@ -147,8 +150,8 @@ jobs:
 
   cascaded:
     name: Full-Duplex-Bench - cascaded (Qwen3.8-27B)
-    needs: [full-duplex, turn-based]
-    if: always() && !cancelled() && inputs.run_cascaded
+    if: inputs.run_cascaded
+    concurrency: *fdb_serial
     runs-on: [self-hosted, h100]
     timeout-minutes: 45
     # The engine runs one server on two GPUs and reads them from

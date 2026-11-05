@@ -29,10 +29,16 @@ env:
 # Invoked by omni-ci.yaml after every other selected suite, because this job
 # checks out the PR head and may rebuild the shared PR home (see the DAG note in
 # omni-ci.yaml). Restores omni only.
+# These tests do not consume one another's results. A shared per-run concurrency
+# group serializes MPS use; the queued execution order is unspecified.
 
 jobs:
   stage-1-mps-nonstream:
     name: stage 1 - MPS non-streaming
+    concurrency: &mps_serial
+      group: omni-mps-${{ github.run_id }}
+      cancel-in-progress: false
+      queue: max
     runs-on: [self-hosted, h100]
     timeout-minutes: 25
     container:
@@ -156,8 +162,7 @@ jobs:
 
   stage-2-native-mps:
     name: stage 2 - native MPS lifecycle
-    needs: stage-1-mps-nonstream
-    if: always() && !cancelled()
+    concurrency: *mps_serial
     runs-on: [self-hosted, h100]
     timeout-minutes: 120
     container:
@@ -227,8 +232,7 @@ jobs:
 
   stage-3-native-weight-share:
     name: stage 3 - native weight-sharing lifecycle
-    needs: stage-2-native-mps
-    if: always() && !cancelled()
+    concurrency: *mps_serial
     runs-on: [self-hosted, h100]
     timeout-minutes: 120
     container:
