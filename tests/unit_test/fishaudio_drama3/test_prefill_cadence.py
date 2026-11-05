@@ -181,9 +181,32 @@ def test_the_modelled_frame_interval_stops_improving_below_the_arrival_crossover
     assert heavy[0] > heavy[1] > heavy[2]
 
 
-def test_the_continuity_floor_is_a_share_of_the_critical_interval_not_a_fixed_margin() -> None:
-    # A step most of the way to the critical interval still leaves a reachable floor.
-    policy = cadence(longest_interval=64, is_latency_driven=True, continuity_margin=0.05)
+def test_a_burst_stalls_far_less_than_a_constant_interval_of_the_same_mean() -> None:
+    """Why a mean frame interval cannot decide this: the same mean, delivered in runs, stalls less."""
+    policy = cadence(longest_interval=64, is_latency_driven=True)
+    policy.observe_prefill(0.022, 1)
+    policy.observe_prefill(0.087, 24)
+    policy.frames_decoded, policy.requests_admitted = 8400, 100
+    mean_s = policy.modelled_frame_interval_s(32, 0.0214, 39.7)
+    constant_s = worst_stall_s(mean_s, DEFAULT_WINDOWS, FOLLOWUP_WINDOW, 0.0, 84)
+    assert policy.worst_burst_stall_s(32, 0.0214, 39.7) < constant_s / 2
+
+
+def test_a_longer_run_of_frames_hides_more_of_the_prefill() -> None:
+    policy = cadence(longest_interval=64, is_latency_driven=True)
     policy.observe_prefill(0.025, 2)
     policy.observe_prefill(0.060, 16)
-    assert policy.smooth_enough_interval(0.0164, 25.0) < 64
+    policy.frames_decoded, policy.requests_admitted = 8400, 100
+    stalls = [policy.worst_burst_stall_s(level, 0.0214, 39.7) for level in (2, 4, 8, 16, 32)]
+    assert stalls == sorted(stalls, reverse=True)
+    assert stalls[0] > 0.4 > stalls[-1]
+
+
+def test_a_light_load_never_stalls_however_short_the_interval() -> None:
+    """Below the crossover the run between prefills is set by the gap between arrivals."""
+    policy = cadence(longest_interval=64, is_latency_driven=True)
+    policy.observe_prefill(0.022, 1)
+    policy.observe_prefill(0.030, 4)
+    policy.frames_decoded, policy.requests_admitted = 8400, 100
+    assert policy.worst_burst_stall_s(1, 0.0085, 9.2) == pytest.approx(0.0, abs=1e-9)
+    assert policy.smooth_enough_interval(0.0085, 9.2) == 1

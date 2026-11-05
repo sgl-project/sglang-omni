@@ -54,9 +54,9 @@ class PrefillCadenceConfig:
     # latency: between the two bounds, take the interval with the shortest modelled wall time per
     # request instead of either bound. How far back arrivals and admissions are counted:
     rate_window_s: float = 4.0
-    # Held back from the critical interval as a share of it, since what a step leaves of a 24.8 ms
-    # budget differs by machine: 8 ms is a third of it on one card and nearly all of it on another.
-    continuity_margin: float = 0.05
+    # Held back from the stall budget as a share of it. A margin in ms cannot transfer: 8 ms off a
+    # 24.8 ms critical interval is a third of it where a step is 10 ms and all of it where it is 20.
+    continuity_margin: float = 0.2
     is_latency_driven: bool = False
 
 
@@ -225,21 +225,69 @@ class PrefillCadence:
         else:
             return min(config.longest_interval, int(budget_s / step_s))
 
+    def settle(
+        self, interval: int, step_s: float, arrival_rate: float
+    ) -> tuple[float, float, float]:
+        """What this interval settles on: the prefill, the prefills per second, and the burst.
+
+        A prefill happens only when a request is waiting, so prefills per second are the smaller of
+        the arrival rate and one per cycle. Below that crossover a longer interval batches nothing,
+        and the run of frames a stream gets between two prefills is set by the gap between arrivals
+        rather than by the interval, which is why a light load never stalls whatever the interval.
+        """
+        cohort, prefills = 1.0, max(arrival_rate, 1e-6)
+        for _ in range(3):
+            cycle_s = interval * step_s + self.prefill_estimate_s(cohort)
+            prefills = min(max(arrival_rate, 1e-6), 1 / cycle_s)
+            cohort = max(1.0, arrival_rate / prefills)
+        prefill_s = self.prefill_estimate_s(cohort)
+        burst_frames = max(1.0, (1 / prefills - prefill_s) / step_s)
+        return prefill_s, prefills, burst_frames
+
     def modelled_frame_interval_s(
         self, interval: int, step_s: float, arrival_rate: float
     ) -> float:
-        """The step stretched by the share of the time prefills take at this interval.
+        """The step stretched by the share of the time prefills take at this interval."""
+        prefill_s, prefills, _ = self.settle(interval, step_s, arrival_rate)
+        return step_s / (1 - min(0.9, prefills * prefill_s))
 
-        A prefill happens only when a request is waiting, so prefills per second are the smaller of
-        the arrival rate and one per cycle; below that crossover a longer interval batches nothing.
+    def window_ends(self) -> list[int]:
+        config = self.config
+        frames = max(config.followup_window, int(self.frames_per_request()) or 120)
+        ends: list[int] = []
+        for window in (
+            config.first_window,
+            *config.window_ramp,
+            *[config.followup_window] * frames,
+        ):
+            if ends and ends[-1] >= frames:
+                break
+            else:
+                ends.append((ends[-1] if ends else 0) + window)
+        return ends
+
+    def worst_burst_stall_s(
+        self, interval: int, step_s: float, arrival_rate: float
+    ) -> float:
+        """Worst stall of a stream whose frames come in runs, against the window schedule.
+
+        Frame k is ready at k * step + the prefills that fell before it. A window is decoded once
+        its last frame is in, and the stream plays what it already has meanwhile, so the stalls that
+        matter are in the opening ramp: window 2 needs ten more frames where window 1 bought four
+        frames of audio. A run longer than that ramp hides the prefill entirely.
         """
-        cohort, prefills = 1.0, arrival_rate
-        for _ in range(3):
-            cycle_s = interval * step_s + self.prefill_estimate_s(cohort)
-            prefills = min(arrival_rate, 1 / cycle_s)
-            cohort = max(1.0, arrival_rate / prefills) if prefills > 0 else 1.0
-        share = min(0.9, prefills * self.prefill_estimate_s(cohort))
-        return step_s / (1 - share)
+        prefill_s, _, burst_frames = self.settle(interval, step_s, arrival_rate)
+        ready = lambda frame: frame * step_s + int((frame - 1) / burst_frames) * prefill_s  # noqa: E731
+        ends = self.window_ends()
+        playback_end_s = ready(ends[0]) + ends[0] * AUDIO_FRAME_SECONDS
+        worst_s = 0.0
+        for previous, end in zip(ends, ends[1:]):
+            ready_s = ready(end)
+            worst_s = max(worst_s, ready_s - playback_end_s)
+            playback_end_s = (
+                max(playback_end_s, ready_s) + (end - previous) * AUDIO_FRAME_SECONDS
+            )
+        return worst_s
 
     def wall_time_s(
         self, interval: int, step_s: float, arrival_rate: float, frames: float
@@ -250,13 +298,13 @@ class PrefillCadence:
         )
 
     def smooth_enough_interval(self, step_s: float, arrival_rate: float) -> int:
-        """Shortest interval whose modelled frame interval stays inside the schedule's tolerance."""
-        limit_s = self.critical_interval_s * (1 - self.config.continuity_margin)
+        """Shortest interval whose burst keeps the worst stall inside the budget."""
+        limit_s = self.config.max_stall_s * (1 - self.config.continuity_margin)
         return next(
             (
                 level
                 for level in range(1, self.config.longest_interval + 1)
-                if self.modelled_frame_interval_s(level, step_s, arrival_rate) <= limit_s
+                if self.worst_burst_stall_s(level, step_s, arrival_rate) <= limit_s
             ),
             self.config.longest_interval,
         )
