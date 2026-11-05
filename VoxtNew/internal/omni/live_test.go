@@ -3,6 +3,7 @@ package omni
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,6 +26,26 @@ func drain(t *testing.T, st asr.Stream) []asr.Event {
 			evs = append(evs, ev)
 		case <-timeout:
 			t.Fatal("the stream did not end")
+		}
+	}
+}
+
+// watchLog makes c's Log look for a line with sub; the func it returns
+// waits for the first one.
+func watchLog(c *Config, sub string) func(*testing.T) {
+	seen, once, log := make(chan struct{}), new(sync.Once), c.Log
+	c.Log = func(level, msg string) {
+		log(level, msg)
+		if strings.Contains(msg, sub) {
+			once.Do(func() { close(seen) })
+		}
+	}
+	return func(t *testing.T) {
+		t.Helper()
+		select {
+		case <-seen:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("no log line with %q", sub)
 		}
 	}
 }
@@ -80,6 +101,7 @@ func TestLive(t *testing.T) {
 func TestLiveClose(t *testing.T) {
 	f := newFake(t, omnitest.Opts{}, func(c *Config) { c.IdleTimeout = 200 * time.Millisecond })
 	a := f.asr(t, ASRFast)
+	clock := new(fakeClock).install(f.rt)
 	st, err := a.Open(context.Background(), asr.StreamRequest{})
 	if err != nil {
 		t.Fatal(err)
@@ -91,15 +113,20 @@ func TestLiveClose(t *testing.T) {
 			t.Errorf("after Close: %+v", ev)
 		}
 	}
-	// The lease is back: the idle unload happens.
-	eventually(t, "the unload", func() bool { return len(f.records("shutdown")) == 1 })
+	// The lease is back: the idle unload happens (the idle stop returns
+	// once the process exited).
+	clock.advance(200 * time.Millisecond)
+	if n := len(f.records("shutdown")); n != 1 {
+		t.Errorf("%d shutdowns after the idle time", n)
+	}
 	if len(f.records("final")) != 0 {
 		t.Error("Close ran a Final")
 	}
 }
 
 func TestLiveCancelled(t *testing.T) {
-	f := newFake(t, omnitest.Opts{Delay: 5 * time.Second}, nil)
+	var finalSent func(*testing.T)
+	f := newFake(t, omnitest.Opts{Delay: 5 * time.Second}, func(c *Config) { finalSent = watchLog(c, "Final request") })
 	a := f.asr(t, ASRFast)
 	ctx, cancel := context.WithCancel(context.Background())
 	st, err := a.Open(ctx, asr.StreamRequest{})
@@ -108,7 +135,7 @@ func TestLiveCancelled(t *testing.T) {
 	}
 	_ = st.Send(tone(time.Second, 0.3))
 	_ = st.Finish()
-	time.Sleep(100 * time.Millisecond)
+	finalSent(t) // the cancel comes during the Final
 	cancel()
 	evs := drain(t, st)
 	if last := evs[len(evs)-1]; last.Kind != asr.EventError || asr.KindOf(last.Err) != asr.KindCancelled {
