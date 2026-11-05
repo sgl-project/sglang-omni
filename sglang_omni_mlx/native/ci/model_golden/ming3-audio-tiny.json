@@ -10,7 +10,10 @@
   "max_completion_tokens": 1024
  },
  "baseline": {
-  "source": "pending"
+  "source": "Official Transformers reference: inclusionAI/Ming-3.0-audio-flash 4af0410 examples/transformers_audio.py path with the golden request (BF16, no offload, NVIDIA A40, torch 2.8.0+cu128, transformers 5.14.1, fla-core 0.5.2); 317/392 clips identical to native, the rest diverge at near-tie tokens",
+  "wer_en": 0.01606,
+  "cer_zh": 0.0538,
+  "mer_mixed": 0.09512
  },
  "tolerance": {
   "metric_pp": 1.5,
