@@ -1069,6 +1069,7 @@ flow_merge_pad_budget_percent = 25
 <p>SpeechSpec’s DSpark draft <a class="reference external" href="https://huggingface.co/yuekai/cosyvoice3_llm_dspark"><code class="docutils literal notranslate"><span class="pre">yuekai/cosyvoice3_llm_dspark</span></code></a> proposes 7 speech tokens per step from three of the LLM’s hidden layers, and the LLM verifies them in one forward pass.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>FunAudioLLM/Fun-CosyVoice3-0.5B-2512<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--tts_engine.engine.speculative_algorithm<span class="w"> </span>DSPARK<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--tts_engine.engine.speculative_draft_model_path<span class="w"> </span>yuekai/cosyvoice3_llm_dspark<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
