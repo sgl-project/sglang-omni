@@ -4203,7 +4203,7 @@ def test_qwen3_tts_whole_request_device_fault_on_its_slot_fails_only_itself(
 
     assert results["faulted"].type == "error"
     assert chunk_samples(results["next"].data) == expected_whole_samples(scheduler, 4)
-    assert [call[1] for call in runner.calls] != []
+    assert len(runner.calls) == 1
 
 
 def test_qwen3_tts_whole_requests_finish_on_the_stateful_decoder_without_window_graphs(
