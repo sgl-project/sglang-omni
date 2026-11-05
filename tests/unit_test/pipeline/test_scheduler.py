@@ -35,6 +35,7 @@ from sglang.srt.managers.scheduler_components.batch_result_processor import (
     SchedulerBatchResultProcessor,
 )
 from sglang.srt.mem_cache.allocator.paged import PagedTokenToKVPoolAllocator
+from sglang.srt.mem_cache.allocator.swa import PureSWATokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import (
     CacheRequestHandle,
     CacheRequestOutcome,
@@ -44,7 +45,7 @@ from sglang.srt.runtime_context import get_context
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
-from sglang_omni.admission import QueueFullError
+from sglang_omni.admission import ContextExhaustedError, QueueFullError
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
@@ -248,6 +249,7 @@ def test_start_runs_the_loop_on_the_top_priority_stream_only_when_asked(
     scheduler.pending_request_admissions = {}
     scheduler.shutdown_lock = threading.Lock()
     scheduler.shutdown_callback = None
+    scheduler.async_d2h_worker = None
     outer_stream = torch.cuda.current_stream()
     loop_streams: list[torch.cuda.Stream] = []
 
@@ -265,6 +267,35 @@ def test_start_runs_the_loop_on_the_top_priority_stream_only_when_asked(
     else:
         assert loop_streams == [outer_stream]
     assert torch.cuda.current_stream() == outer_stream
+
+
+def test_shutdown_resources_stops_the_borrowed_d2h_copy_worker_once() -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.shutdown_lock = threading.Lock()
+    calls: list[str] = []
+    scheduler.shutdown_callback = lambda: calls.append("callback")
+    scheduler.async_d2h_worker = SimpleNamespace(
+        shutdown=lambda: calls.append("worker")
+    )
+
+    scheduler.shutdown_resources()
+    scheduler.shutdown_resources()
+
+    assert calls == ["worker", "callback"]
+    assert scheduler.async_d2h_worker is None
+    assert scheduler.shutdown_callback is None
+
+
+def test_shutdown_resources_without_a_d2h_copy_worker_runs_only_the_callback() -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.shutdown_lock = threading.Lock()
+    calls: list[str] = []
+    scheduler.shutdown_callback = lambda: calls.append("callback")
+    scheduler.async_d2h_worker = None
+
+    scheduler.shutdown_resources()
+
+    assert calls == ["callback"]
 
 
 def make_abortable_req(request_id: str, **attributes):
@@ -646,6 +677,7 @@ def test_upstream_queue_limit_abort_is_translated_to_omni_output() -> None:
     scheduler.disaggregation_mode = DisaggregationMode.NULL
     scheduler.enable_priority_scheduling = False
     scheduler.abort_on_priority_when_disabled = False
+    scheduler.rust_server = None
     scheduler.max_queued_requests = 0
     scheduler.waiting_queue = []
     scheduler.enable_hicache_storage = False
@@ -698,6 +730,7 @@ def requeue_scheduler() -> OmniScheduler:
     scheduler.disaggregation_mode = DisaggregationMode.NULL
     scheduler.enable_priority_scheduling = False
     scheduler.abort_on_priority_when_disabled = False
+    scheduler.rust_server = None
     scheduler.max_queued_requests = None
     scheduler.waiting_queue = []
     scheduler.enable_hicache_storage = False
@@ -963,6 +996,7 @@ def enqueue_limit_scheduler(monkeypatch):
     scheduler.enable_priority_scheduling = True
     scheduler.schedule_low_priority_values_first = False
     scheduler.abort_on_priority_when_disabled = False
+    scheduler.rust_server = None
     scheduler.max_queued_requests = 1
     scheduler.waiting_queue = []
     scheduler.enable_hicache_storage = False
@@ -978,7 +1012,7 @@ def enqueue_limit_scheduler(monkeypatch):
     scheduler.abort = lambda rid, *, defer_running_cleanup=True: aborts.append(rid)
     scheduler.send_to_detokenizer = omni_scheduler_module.NoOpSender()
     scheduler.ipc_channels = omni_scheduler_module.OmniIpcChannels(scheduler)
-    scheduler.request_kv_capacity_error = lambda req: None
+    scheduler.request_kv_capacity_error = lambda req, **_kwargs: None
     scheduler.initialize_request_stream_state = lambda req_data, payload: None
     scheduler.append_stream_chunk = lambda *args, **kwargs: None
     scheduler.mark_stream_done = lambda *args, **kwargs: None
@@ -1047,6 +1081,10 @@ def test_enqueue_built_request_admits_an_empty_session_append_with_history(
     monkeypatch,
 ) -> None:
     scheduler, _, aborts = enqueue_limit_scheduler(monkeypatch)
+    capacity_checks = []
+    scheduler.request_kv_capacity_error = lambda req, **kwargs: (
+        capacity_checks.append((req, kwargs)) or None
+    )
     unit = SimpleNamespace(is_enqueued=False)
     session_request = admission_req("req-append", [1, 2, 3])
 
@@ -1072,6 +1110,7 @@ def test_enqueue_built_request_admits_an_empty_session_append_with_history(
     assert unit.is_enqueued
     assert scheduler.outbox.empty()
     assert aborts == []
+    assert capacity_checks == [(session_request, {"session_capacity_checked": True})]
 
 
 def test_process_input_requests_rejects_before_build_when_waiting_queue_is_full() -> (
@@ -1207,6 +1246,7 @@ def test_upstream_kv_exhaustion_abort_is_translated_to_omni_output() -> None:
     scheduler.enable_hierarchical_cache = False
     scheduler.forward_ct = 1
     scheduler.enable_skip_finishing_decode = False
+    scheduler.rust_server = None
     scheduler.server_args = SimpleNamespace()
     scheduler.decode_offload_manager = None
     scheduler.token_to_kv_pool_allocator = SimpleNamespace(available_size=lambda: 0)
@@ -1953,8 +1993,18 @@ def test_omni_scheduler_flushes_stream_before_terminal_result(monkeypatch) -> No
     assert model_path_ends == [("req-finished", "success")]
 
 
+@pytest.mark.parametrize(
+    ("num_draft_tokens", "adaptive", "expected_rate"),
+    [
+        (4, False, {"spec_accept_rate": 2 / 6, "spec_num_proposed_drafts": 6}),
+        # A width-1 verify proposes no drafts, so the rate has no denominator.
+        (1, False, {}),
+        # Adaptive widths change between verifies, so the final width cannot count them.
+        (4, True, {}),
+    ],
+)
 def test_speculative_stream_output_emits_each_committed_token_before_the_result(
-    monkeypatch,
+    monkeypatch, num_draft_tokens: int, adaptive: bool, expected_rate: dict
 ) -> None:
     scheduler = object.__new__(OmniScheduler)
     init_terminal_output_state(scheduler)
@@ -1963,9 +2013,16 @@ def test_speculative_stream_output_emits_each_committed_token_before_the_result(
     scheduler.first_emit_done = set()
     scheduler.prefill_start_done = {"req-spec"}
     scheduler.prefill_end_done = set()
-    scheduler.draft_worker = SimpleNamespace()
+    scheduler.draft_worker = SimpleNamespace(
+        speculative_num_draft_tokens=num_draft_tokens
+    )
     monkeypatch.setattr(
         omni_scheduler_module, "_emit_model_path_end", lambda rid, *, status: None
+    )
+    monkeypatch.setattr(
+        omni_scheduler_module,
+        "get_spec",
+        lambda: SimpleNamespace(speculative_adaptive=adaptive),
     )
     calls: list[tuple[str, object]] = []
 
@@ -1992,6 +2049,9 @@ def test_speculative_stream_output_emits_each_committed_token_before_the_result(
         finished=lambda: finished,
         finished_reason=None,
         _omni_terminal_claimed=False,
+        spec_verify_ct=0,
+        spec_num_correct_drafts=0,
+        spec_correct_drafts_histogram=[],
     )
     request_data.req = req
 
@@ -2009,6 +2069,9 @@ def test_speculative_stream_output_emits_each_committed_token_before_the_result(
     finished = True
     req.output_ids = [5, 6, 7, 9, 8, 8]
     req.output_ids_through_stop = [5, 6, 7, 9]
+    req.spec_verify_ct = 2
+    req.spec_num_correct_drafts = 2
+    req.spec_correct_drafts_histogram = [1, 0, 1]
     scheduler.stream_output([req])
 
     assert calls == [
@@ -2028,6 +2091,14 @@ def test_speculative_stream_output_emits_each_committed_token_before_the_result(
         "stream",
         "result",
     ]
+    # Drafts accepted past the stop token are trimmed, so they do not count.
+    assert request_data.spec_tokens_details == {
+        "spec_accept_length": 4 / 2,
+        "spec_num_correct_drafts": 2,
+        "spec_verify_ct": 2,
+        "spec_correct_drafts_histogram": [1, 0, 1],
+        **expected_rate,
+    }
 
 
 def test_speculative_emission_failure_fails_only_its_request() -> None:
@@ -2184,6 +2255,8 @@ def test_speculative_reserve_rejection_names_the_reserve(monkeypatch) -> None:
     scheduler = object.__new__(OmniScheduler)
     scheduler.draft_worker = SimpleNamespace()
     scheduler.max_req_len = 100
+    scheduler.model_config = SimpleNamespace(context_len=200)
+    scheduler.token_to_kv_pool_allocator = Mock()
     monkeypatch.setattr(
         omni_scheduler_module, "get_alloc_reserve_per_decode", lambda: 16
     )
@@ -2192,6 +2265,7 @@ def test_speculative_reserve_rejection_names_the_reserve(monkeypatch) -> None:
         return SimpleNamespace(
             origin_input_ids=[0] * 50,
             sampling_params=SimpleNamespace(max_new_tokens=max_new_tokens),
+            session=None,
         )
 
     assert scheduler.request_kv_capacity_error(request(34)) is None
@@ -2199,6 +2273,59 @@ def test_speculative_reserve_rejection_names_the_reserve(monkeypatch) -> None:
     assert "16-token speculative decoding reserve" in message
     assert "Lower max_tokens" in message
     assert_refusal_is_a_caller_error(message)
+
+
+def test_streaming_pure_swa_uses_context_instead_of_physical_kv_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.draft_worker = None
+    scheduler.max_req_len = 3404
+    scheduler.model_config = SimpleNamespace(context_len=8192)
+    scheduler.tp_worker = SimpleNamespace(kv_cache_bytes=1)
+    scheduler.token_to_kv_pool_allocator = object.__new__(PureSWATokenToKVPoolAllocator)
+    monkeypatch.setattr(
+        "sglang.srt.runtime_context.get_schedule",
+        lambda: SimpleNamespace(mem_fraction_static=0.76),
+    )
+
+    def request(input_tokens: int, *, streaming: bool) -> SimpleNamespace:
+        return SimpleNamespace(
+            origin_input_ids=[0] * input_tokens,
+            sampling_params=SimpleNamespace(max_new_tokens=1),
+            session=SimpleNamespace(streaming=streaming),
+        )
+
+    assert (
+        scheduler.request_kv_capacity_error(
+            request(3404, streaming=True), session_capacity_checked=True
+        )
+        is None
+    )
+    context_error = scheduler.request_kv_capacity_error(
+        request(8191, streaming=True), session_capacity_checked=True
+    )
+    assert context_error.startswith("context_exhausted:")
+    assert ContextExhaustedError.matches(ValueError(context_error))
+    assert "thinker context" in context_error
+    assert "context_capacity=8191" in context_error
+
+    for kv_error in (
+        scheduler.request_kv_capacity_error(request(3404, streaming=False)),
+        scheduler.request_kv_capacity_error(request(3404, streaming=True)),
+    ):
+        assert "thinker KV cache" in kv_error
+        assert "kv_capacity=3404" in kv_error
+
+    scheduler.draft_worker = SimpleNamespace()
+    monkeypatch.setattr(
+        omni_scheduler_module, "get_alloc_reserve_per_decode", lambda: 16
+    )
+    speculative_error = scheduler.request_kv_capacity_error(
+        request(3404, streaming=True), session_capacity_checked=True
+    )
+    assert "thinker KV cache" in speculative_error
+    assert "kv_capacity=3404" in speculative_error
 
 
 @pytest.mark.parametrize(
@@ -3383,6 +3510,7 @@ def construct_omni_scheduler(
         enable_metrics=False,
         enable_metrics_for_all_schedulers=False,
         prefill_decode_interval=prefill_decode_interval,
+        prefill_decode_interval_min_bs=0,
     )
 
     class StrictParallelContext:
@@ -3525,7 +3653,7 @@ def test_unset_prefill_decode_interval_never_defers_prefill(monkeypatch) -> None
     )  # noqa: leading-underscore  # upstream name
 
     assert (
-        scheduler._should_defer_prefill() is False
+        scheduler._should_defer_prefill(scheduler.running_batch) is False
     )  # noqa: leading-underscore  # upstream name
 
 
@@ -3705,6 +3833,7 @@ def test_omni_scheduler_binds_one_execution_bridge_to_any_runner(
         enable_metrics=False,
         enable_metrics_for_all_schedulers=False,
         prefill_decode_interval=0,
+        prefill_decode_interval_min_bs=0,
     )
     monkeypatch.setattr(
         "sglang.srt.managers.scheduler_components.new_token_ratio_tracker.get_schedule",
@@ -3791,6 +3920,7 @@ def test_omni_scheduler_refuses_spec_overlap_without_a_draft(monkeypatch) -> Non
         enable_metrics=False,
         enable_metrics_for_all_schedulers=False,
         prefill_decode_interval=0,
+        prefill_decode_interval_min_bs=0,
     )
     monkeypatch.setattr(
         "sglang.srt.runtime_context.get_parallel",
@@ -3931,7 +4061,9 @@ def spec_prefill_scheduler(
         disaggregation_mode=DisaggregationMode.NULL,
         enable_overlap=True,
         enable_overlap_mlx=False,
-        model_config=None,
+        model_config=SimpleNamespace(
+            think_end_ids=None, self_opened_think_start_ids=None
+        ),
         token_to_kv_pool_allocator=scheduler.token_to_kv_pool_allocator,
         tree_cache=scheduler.tree_cache,
         hisparse_coordinator=None,
@@ -4224,6 +4356,7 @@ def test_omni_scheduler_stop_runs_shutdown_callback_once() -> None:
     scheduler.pending_request_admissions = {}
     scheduler.shutdown_lock = threading.Lock()
     scheduler.shutdown_callback = lambda: shutdowns.append(None)
+    scheduler.async_d2h_worker = None
 
     scheduler.stop()
     scheduler.stop()
@@ -4261,6 +4394,7 @@ def test_omni_scheduler_start_closes_active_model_paths(
     scheduler.pending_request_admissions = {}
     scheduler.shutdown_lock = threading.Lock()
     scheduler.shutdown_callback = None
+    scheduler.async_d2h_worker = None
 
     def run_loop() -> None:
         if loop_error is not None:
