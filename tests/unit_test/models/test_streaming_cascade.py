@@ -105,6 +105,7 @@ PROFILE_NAMES = (
     "qwen3-asr-qwen3-tts-vivian-dflash",
     "qwen3-asr-qwen3.8-27b-vivian",
     "qwen3-asr-qwen3.8-27b-vivian-styles",
+    "qwen3-asr-qwen3.8-27b-vivian-tts-tool",
     "qwen3-asr-streaming-qwen3-tts-vivian",
 )
 HTTP_PROFILE = PROFILES / "nemotron-qwen3-tts" / "launch.yaml"
@@ -2654,7 +2655,7 @@ def test_a_short_switch_after_a_cut_reply_adds_both_notes():
 async def test_chat_deltas_carry_the_language_of_their_messages():
     generator = build({"kind": "openai_chat", **HTTP_SERVICE})
 
-    async def complete(messages):
+    async def complete(messages, tool_choice):
         for content in ("1, ", "2."):
             yield ChatDelta(content=content)
 

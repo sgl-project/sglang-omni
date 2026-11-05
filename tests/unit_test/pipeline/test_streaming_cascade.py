@@ -180,6 +180,72 @@ async def test_eos_flushes_uncommitted_audio_and_history(backends):
         assert session.outputs[-1].eos and session.outputs[-1].kind == "input_done"
 
 
+async def prompts_reach(messages: list[list[dict]], count: int) -> None:
+    while len(messages) < count:
+        await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backends", ["speech_tool"], indirect=True)
+async def test_a_model_speaking_through_a_tool_reaches_the_client_as_one_reply_per_speech(
+    backends, backend_requests
+):
+    config, _, words, messages = backends
+    async with conversation(config) as session:
+        await session.audio()
+        await session.command(COMMIT)
+        await session.until(
+            lambda: any(
+                control_type(o) == TURN_DONE and o.turn == 1 for o in session.outputs
+            )
+        )
+        # The prompt after a speech comes only once its paced turn.done reached the client, and no output follows it.
+        assert len(messages) == 1
+        await asyncio.wait_for(prompts_reach(messages, 2), 15)
+        assert messages[1][-1]["content"] == '{"status": "completed"}'
+        await session.audio()
+        await session.command(COMMIT)
+        await asyncio.wait_for(prompts_reach(messages, 4), 15)
+        assert words == ["Hello", "world."] * 2
+        assert [message["role"] for message in messages[2]] == [
+            "system",
+            "user",
+            "assistant",
+            "tool",
+            "user",
+        ]
+        arguments = messages[2][2]["tool_calls"][0]["function"]["arguments"]
+        assert yaml.safe_load(arguments) == {"text": "Hello world."}
+        await session.until(
+            lambda: any(
+                control_type(o) == TURN_DONE and o.turn == 3 for o in session.outputs
+            )
+        )
+        replies = [
+            (control_type(o), o.turn)
+            for o in session.outputs
+            if control_type(o) in (TURN_STARTED, TURN_DONE, TURN_EMPTY)
+        ]
+        # The prompts of turns 2 and 4 said nothing, so the client never heard of them.
+        assert replies == [
+            (TURN_STARTED, 1),
+            (TURN_DONE, 1),
+            (TURN_STARTED, 3),
+            (TURN_DONE, 3),
+        ]
+        captions = [
+            (o.payload["text"], o.turn)
+            for o in session.outputs
+            if o.format == TEXT_DELTA
+        ]
+        assert captions == [("Hello world.", 1), ("Hello world.", 3)]
+        assert [
+            request.get("tool_choice")
+            for request in backend_requests
+            if request.get("max_tokens") != 1
+        ] == ["required", None, "required", None]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backends", ["slow_first"], indirect=True)
 async def test_interrupt_cancels_old_reply_and_next_turn_completes(backends):

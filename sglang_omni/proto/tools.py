@@ -19,13 +19,20 @@ class ToolResponse(BaseModel):
     response: object
 
 
-def tool_call_chunk(calls: list[ToolCall], turn: int) -> TimedChunk:
+def tool_call_chunk(
+    calls: list[ToolCall], turn: int, language: str | None = None
+) -> TimedChunk:
+    payload: dict[str, object] = {"calls": [call.model_dump() for call in calls]}
+    if language is not None:
+        payload["language"] = language
+    else:
+        pass
     return TimedChunk(
         TOOL,
         0,
         0,
         0,
-        {"calls": [call.model_dump() for call in calls]},
+        payload,
         format=TOOL_CALL,
         turn=turn,
     )

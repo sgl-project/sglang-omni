@@ -2,6 +2,7 @@
 """Synthesizer kinds: reply audio from the reply text."""
 
 import asyncio
+import logging
 import re
 from collections.abc import AsyncIterator
 from typing import Literal
@@ -22,6 +23,7 @@ from sglang_omni.models.streaming_cascade.base import (
     iterate,
     replying,
     sentences,
+    text_chunk,
     with_language,
 )
 from sglang_omni.models.streaming_cascade.numerals import spoken_text
@@ -29,13 +31,18 @@ from sglang_omni.proto.session import TimedChunk
 from sglang_omni.proto.streams import (
     REPLY_PROGRESS,
     REPLY_SENTENCE,
+    SPEECH_ERROR,
     TEXT_DELTA,
+    TOOL_CALL,
     TURN_DONE,
     chunk_language,
     chunk_style,
     control_type,
 )
+from sglang_omni.proto.tools import tool_calls_of
 from sglang_omni.scheduling.session import ChunkEmitter
+
+logger = logging.getLogger(__name__)
 
 # Note (ruoyu): Qwen3-TTS reads an emoji as stray syllables or runs on for minutes and spells out a link target.
 MARKDOWN_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
@@ -108,6 +115,10 @@ class TurnSpeaker(Replier):
 
     `speak_reply` turns one reply's deltas into emitted audio; an `interrupt`
     control of that turn cancels it and the rest of the reply's text is dropped.
+    A tool_call chunk holds one speech of its own turn as a whole: its text is
+    emitted as a text delta for the nodes that follow the spoken words, and a
+    service failure ends the speech with the error on its turn.done, so the
+    model is told instead of the Session failing.
     """
 
     async def speak_reply(
@@ -134,9 +145,29 @@ class TurnSpeaker(Replier):
             await self.speak_reply(iterate(deltas), turn, emit)
             emit(control_chunk(TURN_DONE, turn=turn))
 
+        async def speak_call_then_end(turn: int, text: TimedChunk) -> None:
+            speech: asyncio.Queue[TimedChunk | None] = asyncio.Queue()
+            speech.put_nowait(text)
+            speech.put_nowait(None)
+            emit(text)
+            try:
+                await self.speak_reply(iterate(speech), turn, emit)
+            except httpx.HTTPError as error:
+                logger.error(f"speech of turn {turn} failed: {error!r}")
+                emit(control_chunk(TURN_DONE, turn=turn, **{SPEECH_ERROR: repr(error)}))
+            else:
+                emit(control_chunk(TURN_DONE, turn=turn))
+
         async def handle(chunk: TimedChunk, replies: Replies) -> None:
             nonlocal deltas
-            if chunk.format == TEXT_DELTA and chunk.turn in replies.interrupted:
+            if chunk.format == TOOL_CALL:
+                await replies.finish()
+                [call] = tool_calls_of(chunk)
+                text = text_chunk(
+                    call.arguments["text"], chunk.turn, chunk_language(chunk)
+                )
+                replies.start(chunk.turn, speak_call_then_end(chunk.turn, text))
+            elif chunk.format == TEXT_DELTA and chunk.turn in replies.interrupted:
                 # Note (Junnan Li): The generator may emit a few deltas after the interrupt before it stops.
                 pass
             elif chunk.format == TEXT_DELTA:
