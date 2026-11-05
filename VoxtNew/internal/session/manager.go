@@ -117,7 +117,7 @@ func (m *Manager) Start(req StartRequest) (string, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &run{
 		m: m, id: m.cfg.NewID(), req: req, settings: m.cfg.Settings(), ctx: ctx, cancel: cancel,
-		stop: make(chan struct{}), pcm: newPCMBuffer(),
+		stop: make(chan struct{}), recorded: make(chan struct{}), pcm: newPCMBuffer(),
 	}
 	m.cur = r
 	m.rev++
