@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import functools
+import importlib.util
 import logging
 import os
+import re
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
@@ -12,6 +15,31 @@ from sglang.srt.platforms.xpu import XpuDeviceMixin
 from sglang_omni.platforms.interface import JointRopeInplaceKernel, OmniPlatform
 
 logger = logging.getLogger(__name__)
+
+VIDEO_DECODE_ENV = "SGLANG_OMNI_XPU_VIDEO_DECODE"
+
+
+@functools.cache
+def video_decode_setting() -> str | None:
+    """The XPU device SGLANG_OMNI_XPU_VIDEO_DECODE names, or None when it is off."""
+    # note (Rahul): off by default, since full-size frames on a card the thinker has filled slow the thinker.
+    setting = os.environ.get(VIDEO_DECODE_ENV, "0").strip().lower()
+    if setting in ("0", "false", "no", "off"):
+        return None
+    elif setting in ("1", "true", "yes", "on"):
+        return "xpu"
+    elif re.fullmatch(r"xpu:\d+", setting):
+        return setting
+    else:
+        raise ValueError(
+            f'"{setting}" is not a valid {VIDEO_DECODE_ENV} value: use a boolean or xpu:N'
+        )
+
+
+@functools.cache
+def torchcodec_xpu_installed() -> bool:
+    return importlib.util.find_spec("torchcodec_xpu") is not None
+
 
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
@@ -36,6 +64,14 @@ class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
         # note (jianan): intel_xpu requires graphs disabled for encoder-decoder
         # models; torch_native makes SGLang disable both graph phases.
         return "torch_native"
+
+    def get_video_decode_device(self) -> str | None:
+        """The card whose media engine torchcodec decodes on, through the torchcodec-xpu plugin; opt-in."""
+        device = video_decode_setting()
+        if device is not None and torchcodec_xpu_installed():
+            return device
+        else:
+            return None
 
     def get_fused_qk_norm_rope_with_cos_sin_cache(self):
         try:
