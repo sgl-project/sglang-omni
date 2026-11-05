@@ -117,6 +117,21 @@ source .venv/bin/activate
 uv pip install --prerelease=allow -v -e .   # drop -e for a non-editable install
 ```
 
+## Prepare the bundled SGLang runtime
+
+Omni pins SGLang to the upstream commit that merged [#45474](https://github.com/sgl-project/sglang/pull/45474), which includes the GDN prefill graph, and bundles the FP32 snapshot fix from [#48682](https://github.com/sgl-project/sglang/pull/48682) followed by the prompt-only prefix-cache policy from [#46683](https://github.com/sgl-project/sglang/pull/46683). The CUDA source build requires Rust 1.92 or newer and the build dependencies declared by SGLang. After installing Omni, prepare the runtime before starting Python workers:
+
+```bash
+sgl-omni-prepare-runtime
+sgl-omni-prepare-runtime --check
+```
+
+FP32 snapshots default to off in SGLang. Drama3 enables SGLANG_ENABLE_GDN_FP32_PREFIX_SNAPSHOTS in its tts_engine process; an explicit value of 0 preserves the original snapshot path.
+
+The command verifies the pinned source files, creates an environment-local copy, applies both patches and verifies the result. The original installation remains unchanged. Restart running Python processes after preparation. For an editable SGLang install, pass its unmodified package directory with --source /path/to/sglang/python/sglang.
+
+Docker startup and CI preparation run this command automatically. Patch resources are part of the CI environment fingerprint. The source build retains its native extensions; earlier source-overlay benchmarks do not qualify the complete dependency upgrade or this installation path. CUDA serving requires fresh GPU validation, and other platform packages require their own source and runtime validation.
+
 ## Next steps
 
 [Start the Qwen3-ASR server, send a request, and check the transcript](apiserver_quickstart.md#install-and-start).

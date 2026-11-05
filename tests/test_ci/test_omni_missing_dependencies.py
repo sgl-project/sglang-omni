@@ -1,5 +1,8 @@
 import importlib.util
+import json
 from pathlib import Path
+
+import pytest
 
 SCRIPT = Path(__file__).parents[2] / ".github/scripts/omni_missing_dependencies.py"
 SPEC = importlib.util.spec_from_file_location("omni_missing_dependencies", SCRIPT)
@@ -30,3 +33,34 @@ override-dependencies = ["protobuf>=6,<7"]
     ]
 
     assert MODULE.override_requirements(pyproject) == ["protobuf>=6,<7"]
+
+
+def test_git_pin_rejects_a_release_or_different_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A same-version release must not satisfy the pinned Git dependency."""
+    metadata = tmp_path / "packaging.dist-info"
+    metadata.mkdir()
+    installed_version = MODULE.importlib.metadata.version("packaging")
+    (metadata / "METADATA").write_text(
+        f"Name: packaging\nVersion: {installed_version}\n"
+    )
+    installed = MODULE.importlib.metadata.Distribution.at(metadata)
+    monkeypatch.setattr(
+        MODULE.importlib.metadata, "distribution", lambda name: installed
+    )
+    requirement = (
+        "packaging @ git+https://example.com/packaging.git@abc123#subdirectory=python"
+    )
+
+    assert MODULE.unsatisfied_requirements([requirement]) == [requirement]
+    direct_url = {
+        "url": "https://example.com/packaging.git",
+        "vcs_info": {"vcs": "git", "commit_id": "old"},
+        "subdirectory": "python",
+    }
+    (metadata / "direct_url.json").write_text(json.dumps(direct_url))
+    assert MODULE.unsatisfied_requirements([requirement]) == [requirement]
+    direct_url["vcs_info"]["commit_id"] = "abc123"
+    (metadata / "direct_url.json").write_text(json.dumps(direct_url))
+    assert MODULE.unsatisfied_requirements([requirement]) == []

@@ -44,7 +44,7 @@ RUN git clone --filter=blob:none https://github.com/openucx/ucx.git /tmp/ucx \
 # behind as a package without a version and breaks the flashinfer import.
 COPY pyproject.toml /tmp/pyproject.toml
 RUN python3 -c 'import tomllib; print("\n".join(tomllib.load(open("/tmp/pyproject.toml", "rb"))["tool"]["uv"]["override-dependencies"]))' > /tmp/omni-overrides.txt \
-    && uv pip install --python /opt/sglang/bin/python3 --no-build-isolation \
+    && uv pip install --python /opt/sglang/bin/python3 \
         --overrides /tmp/omni-overrides.txt -r /tmp/pyproject.toml \
         descript-audiotools==0.7.2 descript-audio-codec==1.0.0 \
     && CMAKE_ARGS='-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=89;90;100;120' \
@@ -79,6 +79,7 @@ if [ "${SGLANG_OMNI_AUTO_CLONE:-1}" = "1" ]; then
             https://github.com/sgl-project/sglang-omni.git "${repo_dir}"
     fi
     python3 -m pip install --no-deps --no-build-isolation -e "${repo_dir}"
+    sgl-omni-prepare-runtime
     cd "${repo_dir}"
 fi
 

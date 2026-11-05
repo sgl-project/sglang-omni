@@ -1,0 +1,77 @@
+{
+  "base_commit": "b74fd392e18bb9745e6a47698ea3998bc22614f8",
+  "patches": [
+    "gdn-fp32-prefix-snapshots.patch",
+    "prompt-only-prefix-cache.patch"
+  ],
+  "files": {
+    "kernels/ops/attention/fla/chunk.py": {
+      "source_sha256": "e8ed1e6b45467fb71eedee5dd3e8a4d4865c62056764a7540a2bfb4e71d47633",
+      "patched_sha256": "da217de1a4962bf97464b29c3ee25a98feb2ca3401134e4ca284bc90b6763d29"
+    },
+    "kernels/ops/attention/fla/chunk_o.py": {
+      "source_sha256": "a31ab505787cd715da98fc8206d9f6933c1454cc81e4177e0b3c4dbfc12a61a2",
+      "patched_sha256": "a31ab505787cd715da98fc8206d9f6933c1454cc81e4177e0b3c4dbfc12a61a2"
+    },
+    "kernels/ops/mamba/gdn_prefill_track.py": {
+      "source_sha256": "8cbd9f7e3f3c753dac1cbf68f542472bb587e16405990b97c6b10daee2946554",
+      "patched_sha256": "c1e9a4a093d9fb7cd7276e99e99c6c26cd05b76abd6f71f631d53bcd7a608245"
+    },
+    "srt/environ.py": {
+      "source_sha256": "6a16637c3beaf674df1112808c6245ef8cdd55392daf6d1c059a7d613313cc66",
+      "patched_sha256": "053a4ae09e2325fc7c31e3fb3f20e8cd82a10ddb9b3bd95b0d7d5289de04e426"
+    },
+    "srt/layers/attention/hybrid_linear_attn_backend.py": {
+      "source_sha256": "e6f797a346bf7534026c963188e7383ec5eded10b94a75811ddb7867cc9980ef",
+      "patched_sha256": "d96c1f78fece566eb90c23b7f631f52cb48bae8b7c2befcb71a793228824037f"
+    },
+    "srt/layers/attention/linear/gdn_backend.py": {
+      "source_sha256": "48c847a352a95412712dfc51d9e90291ba16bba4b3ebe61fec5885d746d055a7",
+      "patched_sha256": "b5a0121870b4dc3cbf6527f00cbc8f25fabee84caed4f32b27cab5eb21114c82"
+    },
+    "srt/layers/attention/linear/gdn_prefill_graph.py": {
+      "source_sha256": "190544217d546b96cf7525f8a09c20e921d337d5f2d0512f0c24a5ad2dca238b",
+      "patched_sha256": "7cf054eaf78f6a04e313e0f29bf9e1e84940a5322b4fcbb58b1a3d637935fb83"
+    },
+    "srt/layers/attention/linear/kernels/gdn_triton.py": {
+      "source_sha256": "6e4658d40532c4112839302cb7c351125b38bffb27d11d7b9558540c9f32343e",
+      "patched_sha256": "876c29fa518a278bfc527408f7d38545c022fcae7a69b4e785e4626f2ccd00da"
+    },
+    "srt/layers/attention/triton_backend.py": {
+      "source_sha256": "2e095cfafcd30ad0e720fd1ecd70c92f1a83f47a86a28da0ab739ab5717100aa",
+      "patched_sha256": "f36bf0346e7ed1f05129de9fb9db4fe2fcec6de9790b23bc412834af2fa42e60"
+    },
+    "srt/layers/radix_attention.py": {
+      "source_sha256": "7d04b60884d94c03cd43aeb04af3e9a57b6a068faf7378311d4ecc960260ac69",
+      "patched_sha256": "7d04b60884d94c03cd43aeb04af3e9a57b6a068faf7378311d4ecc960260ac69"
+    },
+    "srt/managers/schedule_batch.py": {
+      "source_sha256": "d639643de8d0c44c7fc7fd5e552cb2575ec6dd1bc33b66f33ec94c0ff48341e3",
+      "patched_sha256": "685a6c46b3765602e26931f78d1bac2d8a819f9ed7dc30b99ce80f9821dbb019"
+    },
+    "srt/managers/scheduler.py": {
+      "source_sha256": "6bc26a2cfb5caf18ab457891c681d1d5134d1b55a69fce42d244f2726c0b98eb",
+      "patched_sha256": "6bc26a2cfb5caf18ab457891c681d1d5134d1b55a69fce42d244f2726c0b98eb"
+    },
+    "srt/managers/scheduler_components/batch_result_processor.py": {
+      "source_sha256": "c446e77cbd2ba7af1c5d6d2b6a0dfd9dc94f2724d862112ff6b2945058c64ad2",
+      "patched_sha256": "7f09d723f8ea42c5ef9eaae670ec20b23f2e43f07d5f6ea19f6dc9d4f2788b83"
+    },
+    "srt/mem_cache/memory_pool.py": {
+      "source_sha256": "5c0e678ce049a60dc2d2bcd05baf9d2457e42f2d6eb33890e21a8c41ce70ad12",
+      "patched_sha256": "6ed180f91cefdb5a5ef2b410c8fe0cefe8ee1d13cbaa1efaf33316af020ef84b"
+    },
+    "srt/model_executor/model_runner.py": {
+      "source_sha256": "98885a96edf915a5007dcf8a48d1fce481ed718ffb80c998959c0ae64dfff9f5",
+      "patched_sha256": "98885a96edf915a5007dcf8a48d1fce481ed718ffb80c998959c0ae64dfff9f5"
+    },
+    "srt/model_executor/runner/decode_cuda_graph_runner.py": {
+      "source_sha256": "394c2502ce214cc5087f7acafb36c865ba39b28b9192d5f5332c185223da2068",
+      "patched_sha256": "ca2ada98082fd55ee64563ebe1f0178fcd66b6eb226ee0fd944150cb843a3f83"
+    },
+    "srt/model_executor/runner/prefill_cuda_graph_runner.py": {
+      "source_sha256": "532f87c4d096e4f41c98bc4ce67011fdba53d661f5142fad12dfb0f9f8e4f8f4",
+      "patched_sha256": "532f87c4d096e4f41c98bc4ce67011fdba53d661f5142fad12dfb0f9f8e4f8f4"
+    }
+  }
+}

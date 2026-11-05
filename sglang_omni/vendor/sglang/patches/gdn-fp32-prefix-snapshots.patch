@@ -1,0 +1,243 @@
+diff --git a/kernels/ops/attention/fla/chunk.py b/kernels/ops/attention/fla/chunk.py
+index 918d3bcd8d..b0fbb6e4a6 100644
+--- a/kernels/ops/attention/fla/chunk.py
++++ b/kernels/ops/attention/fla/chunk.py
+@@ -48,4 +48,6 @@ def chunk_gated_delta_rule_fwd(
+     chunk_offsets: torch.LongTensor | None = None,
+     o_chunk_indices: torch.LongTensor | None = None,
++    track_state: torch.Tensor | None = None,
++    track_chunk_idx: torch.Tensor | None = None,
+ ):
+     g = chunk_local_cumsum(
+@@ -74,4 +76,6 @@ def chunk_gated_delta_rule_fwd(
+         inplace_update=inplace_update,
+         chunk_offsets=chunk_offsets,
++        track_state=track_state,
++        track_chunk_idx=track_chunk_idx,
+     )
+     o = chunk_fwd_o(
+@@ -110,4 +114,6 @@ class ChunkGatedDeltaRuleFunction(torch.autograd.Function):
+         chunk_indices: Optional[torch.LongTensor] = None,
+         chunk_offsets: Optional[torch.LongTensor] = None,
++        track_state: torch.Tensor | None = None,
++        track_chunk_idx: torch.Tensor | None = None,
+     ):
+         q_orig = q
+@@ -137,4 +143,6 @@ class ChunkGatedDeltaRuleFunction(torch.autograd.Function):
+             chunk_offsets=chunk_offsets,
+             o_chunk_indices=o_chunk_indices,
++            track_state=track_state,
++            track_chunk_idx=track_chunk_idx,
+         )
+         return o.to(q.dtype), h
+@@ -157,4 +165,6 @@ def chunk_gated_delta_rule(
+     chunk_indices: Optional[torch.LongTensor] = None,
+     chunk_offsets: Optional[torch.LongTensor] = None,
++    track_state: torch.Tensor | None = None,
++    track_chunk_idx: torch.Tensor | None = None,
+ ):
+     r"""
+@@ -276,4 +286,6 @@ def chunk_gated_delta_rule(
+         chunk_indices,
+         chunk_offsets,
++        track_state,
++        track_chunk_idx,
+     )
+     if head_first:
+diff --git a/kernels/ops/mamba/gdn_prefill_track.py b/kernels/ops/mamba/gdn_prefill_track.py
+index b1db469d75..59ae178597 100644
+--- a/kernels/ops/mamba/gdn_prefill_track.py
++++ b/kernels/ops/mamba/gdn_prefill_track.py
+@@ -8,6 +8,6 @@ the bucket's fixed row bound and read a per-row mode instead:
+ * ``track_mode[r] == 1``: the tracked length is chunk aligned; the snapshot is
+   the post-extend state of the row's own cache slot.
+-* ``track_mode[r] == 2``: the snapshot is the chunk-boundary state stored in
+-  ``h[track_h_row[r]]`` (activation dtype), as the eager Triton path reads it.
++* ``track_mode[r] == 2``: read the selected FP32 snapshot, or the activation-dtype
++  chunk state when FP32 snapshots are disabled.
+ 
+ Every tracked row also snapshots its conv window: the ``STATE_LEN`` raw
+@@ -66,7 +66,7 @@ def _gdn_track_conv_window_kernel(
+ def _gdn_track_ssm_kernel(
+     ssm_pool,  # [slots, ...] per-slot contiguous
+-    h,  # [chunks, ...] per-chunk states
++    h,  # Selected FP32 snapshots or activation-dtype chunk states
+     track_mode,  # [rows] int32
+-    track_h_row,  # [rows] int32 row of h holding the chunk-boundary state
++    track_h_row,  # None for selected snapshots
+     track_dst,  # [rows] int64 physical track slot
+     cache_indices,  # [rows] physical cache slot of the row
+@@ -87,6 +87,6 @@ def _gdn_track_ssm_kernel(
+         val = tl.load(ssm_pool + src * stride_ssm_slot + offs, mask=mask)
+     else:
+-        row = tl.load(track_h_row + r).to(tl.int64)
+-        val = tl.load(h + row * stride_h_row + offs, mask=mask)
++        row = r if track_h_row is None else tl.load(track_h_row + r)
++        val = tl.load(h + row.to(tl.int64) * stride_h_row + offs, mask=mask)
+         val = val.to(ssm_pool.dtype.element_ty)
+     tl.store(ssm_pool + dst * stride_ssm_slot + offs, val, mask=mask)
+@@ -128,14 +128,14 @@ def gdn_track_ssm_state(
+     h: torch.Tensor,
+     track_mode: torch.Tensor,
+-    track_h_row: torch.Tensor,
++    track_h_row: torch.Tensor | None,
+     track_dst: torch.Tensor,
+     cache_indices: torch.Tensor,
+ ) -> None:
+-    """Snapshot the tracked rows' SSM state into their track slots (mode 1:
+-    the row's final state, mode 2: its chunk-boundary state in ``h``)."""
++    """Copy final states or selected boundary snapshots to track slots."""
+     rows = track_mode.shape[0]
+     numel = ssm_pool[0].numel()
+     assert ssm_pool[0].is_contiguous(), "per-slot SSM state must be contiguous"
+-    h = h.flatten(0, 1)
++    if track_h_row is not None:
++        h = h.flatten(0, 1)
+     assert h[0].is_contiguous() and h[0].numel() == numel
+     block = 1024
+diff --git a/srt/environ.py b/srt/environ.py
+index 0a4a98eb66..7c9600194e 100644
+--- a/srt/environ.py
++++ b/srt/environ.py
+@@ -1856,4 +1856,5 @@ class Envs:
+     # larger prefill batch runs the step eagerly. Bounds the padded grids and scratch.
+     SGLANG_GDN_PREFILL_GRAPH_MAX_SEQS = EnvInt(128)
++    SGLANG_ENABLE_GDN_FP32_PREFIX_SNAPSHOTS = EnvBool(False)
+ 
+     # ===================================================================
+diff --git a/srt/layers/attention/linear/gdn_backend.py b/srt/layers/attention/linear/gdn_backend.py
+index 6ec8858dde..fae80fd232 100644
+--- a/srt/layers/attention/linear/gdn_backend.py
++++ b/srt/layers/attention/linear/gdn_backend.py
+@@ -561,4 +561,7 @@ class GDNAttnBackend(MambaAttnBackendBase):
+         _validate_gdn_linear_attn_backends(model_runner.linear_attn_backends)
+         super().__init__(model_runner)
++        self.enable_fp32_prefix_snapshots = (
++            envs.SGLANG_ENABLE_GDN_FP32_PREFIX_SNAPSHOTS.get()
++        )
+         self.enable_mis = get_exec().features.enable_mis
+         self.mis_metadata: Optional[GDNMISMetadata] = None
+@@ -633,4 +636,5 @@ class GDNAttnBackend(MambaAttnBackendBase):
+             # extra buffer is only on with the radix cache).
+             track=get_exec().mamba.enable_mamba_extra_buffer,
++            fp32_snapshots=self.enable_fp32_prefix_snapshots,
+             cache_index_dtype=cache_indices.dtype,
+             device=self.device,
+@@ -1187,4 +1191,14 @@ class GDNAttnBackend(MambaAttnBackendBase):
+         query, key, value = self._split_prefill_qkv(layer, mixed_qkv)
+         g, beta = self._prefill_gates(layer, a, b)
++        # note (wirybeaver): snapshots must bypass activation-dtype chunk states.
++        snapshot = (
++            torch.empty(
++                (meta.max_seqs, *ssm_states.shape[1:]),
++                dtype=torch.float32,
++                device=ssm_states.device,
++            )
++            if meta.track and self.enable_fp32_prefix_snapshots
++            else None
++        )
+         core_attn_out, _, h = self.kernel_dispatcher.extend(
+             q=query,
+@@ -1198,11 +1212,13 @@ class GDNAttnBackend(MambaAttnBackendBase):
+             chunk_indices=meta.chunk_indices,
+             chunk_offsets=meta.chunk_offsets,
++            track_state=snapshot,
++            track_chunk_idx=meta.track_chunk_idx if snapshot is not None else None,
+         )
+         if meta.track:
+             gdn_track_ssm_state(
+                 ssm_pool=ssm_states,
+-                h=h,
++                h=snapshot if snapshot is not None else h,
++                track_h_row=meta.track_h_row if snapshot is None else None,
+                 track_mode=meta.track_mode,
+-                track_h_row=meta.track_h_row,
+                 track_dst=meta.track_dst,
+                 cache_indices=meta.cache_indices,
+@@ -1436,4 +1452,5 @@ class GDNAttnBackend(MambaAttnBackendBase):
+                 forward_metadata.has_mamba_track_mask
+                 and forward_metadata.track_ssm_h_src.numel() > 0
++                and self.enable_fp32_prefix_snapshots
+                 and self.kernel_dispatcher.extend_kernel.supports_track_state_snapshot
+             ):
+diff --git a/srt/layers/attention/linear/gdn_prefill_graph.py b/srt/layers/attention/linear/gdn_prefill_graph.py
+index 17bd633bd7..49c04bd302 100644
+--- a/srt/layers/attention/linear/gdn_prefill_graph.py
++++ b/srt/layers/attention/linear/gdn_prefill_graph.py
+@@ -79,4 +79,5 @@ class GDNPrefillGraphMetadata(msgspec.Struct, frozen=True):
+     track_mode: torch.Tensor  # [max_seqs]
+     track_h_row: torch.Tensor  # [max_seqs] row of the per-chunk states h
++    track_chunk_idx: torch.Tensor | None  # [max_seqs], selected FP32 snapshots
+     track_conv_start: torch.Tensor  # [max_seqs]
+     num_logical_tokens: torch.Tensor  # [1]
+@@ -97,4 +98,5 @@ class GDNPrefillGraphMetadata(msgspec.Struct, frozen=True):
+         cache_index_dtype: torch.dtype,
+         device: torch.device,
++        fp32_snapshots: bool = False,
+     ) -> GDNPrefillGraphMetadata:
+         max_seqs = max(1, min(num_tokens, max_seqs_cap))
+@@ -110,4 +112,5 @@ class GDNPrefillGraphMetadata(msgspec.Struct, frozen=True):
+             max_seqs,  # track_conv_start
+             1,  # num_logical_tokens
++            max_seqs if fp32_snapshots else 0,  # track_chunk_idx
+         ]
+         packed = torch.zeros(sum(sizes), dtype=torch.int32, device=device)
+@@ -126,4 +129,5 @@ class GDNPrefillGraphMetadata(msgspec.Struct, frozen=True):
+             track_mode=views[4],
+             track_h_row=views[5],
++            track_chunk_idx=views[8] if fp32_snapshots else None,
+             track_conv_start=views[6],
+             num_logical_tokens=views[7],
+@@ -205,4 +209,9 @@ class GDNPrefillGraphMetadata(msgspec.Struct, frozen=True):
+         track_mode = np.zeros(self.max_seqs, dtype=np.int64)
+         track_h_row = np.zeros(self.max_seqs, dtype=np.int64)
++        track_chunk_idx = (
++            np.full(self.max_seqs, -1, dtype=np.int64)
++            if self.track_chunk_idx is not None
++            else None
++        )
+         track_conv_start = np.zeros(self.max_seqs, dtype=np.int64)
+         if track_rows is not None:
+@@ -210,4 +219,6 @@ class GDNPrefillGraphMetadata(msgspec.Struct, frozen=True):
+             for row, chunk in track_rows.chunk_rows:
+                 track_h_row[row] = offsets[row] + chunk
++                if track_chunk_idx is not None:
++                    track_chunk_idx[row] = chunk
+                 track_mode[row] = TRACK_CHUNK_STATE
+             for row in track_rows.final_rows:
+@@ -219,4 +230,6 @@ class GDNPrefillGraphMetadata(msgspec.Struct, frozen=True):
+         o = self._write(o=o, values=track_conv_start)
+         o = self._write(o=o, values=np.array([total]))
++        if track_chunk_idx is not None:
++            o = self._write(o=o, values=track_chunk_idx)
+         assert o == self.host.shape[0]
+ 
+diff --git a/srt/layers/attention/linear/kernels/gdn_triton.py b/srt/layers/attention/linear/kernels/gdn_triton.py
+index 433e2704b4..c015844951 100644
+--- a/srt/layers/attention/linear/kernels/gdn_triton.py
++++ b/srt/layers/attention/linear/kernels/gdn_triton.py
+@@ -43,4 +43,5 @@ class TritonGDNKernel(LinearAttnKernelBase):
+     supports_packed_decode: bool = not is_cpu() and not is_npu()
+     supports_strided_target_verify_qkv: bool = True
++    supports_track_state_snapshot: bool = not (is_cpu() or is_npu() or is_xpu())
+ 
+     def packed_decode(
+@@ -191,4 +192,12 @@ class TritonGDNKernel(LinearAttnKernelBase):
+                 "chunk_offsets": kwargs["chunk_offsets"],
+             }
++        snapshot_arguments = (
++            {
++                "track_state": kwargs.get("track_state"),
++                "track_chunk_idx": kwargs.get("track_chunk_idx"),
++            }
++            if self.supports_track_state_snapshot
++            else {}
++        )
+         if is_cpu():
+             if not inplace_update:
+@@ -221,4 +230,5 @@ class TritonGDNKernel(LinearAttnKernelBase):
+             **inplace_update_args,
+             **graph_table_args,
++            **snapshot_arguments,
+         )
+ 

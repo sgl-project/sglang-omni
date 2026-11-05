@@ -34,6 +34,7 @@ _link_workspace_venv() {
 _refresh_editable_install() {
   _link_workspace_venv
   uv pip install --upgrade --no-deps -e .
+  sgl-omni-prepare-runtime
 }
 
 _record_deps_hash_if_missing() {
