@@ -50,8 +50,6 @@ using speech_service::Json;
 using speech_service::PresentFieldOr;
 
 constexpr size_t kMaxInputCharacters = 4096;
-// With kMaxInputCharacters, the references' limits keep a prompt inside the
-// model's 32768 positions at up to four tokens a character.
 constexpr size_t kMaxReferences = 4;
 constexpr double kMaxReferenceSeconds = 60.0;
 constexpr size_t kMaxReferenceCharacters = 2048;
@@ -134,11 +132,15 @@ bool IsAboveInt64(const Json &value) {
 }
 
 // An optional number field: fallback when missing or null, else a finite
-// number.
+// number that stays finite as float32.
 double NumberOr(const Json &body, const char *name, double fallback) {
   const Json value = FieldOr(body, name, Json(fallback));
   if (!value.is_number() || !std::isfinite(value.get<double>())) {
     throw std::invalid_argument(std::string(name) + " must be a number");
+  } else if (std::abs(value.get<double>()) >
+             std::numeric_limits<float>::max()) {
+    throw std::invalid_argument(std::string(name) +
+                                " must fit in a finite float32 number");
   } else {
   }
   return value.get<double>();
@@ -395,7 +397,7 @@ private:
     }
     sampling.temperature = static_cast<float>(temperature);
     const double top_p = NumberOr(body, "top_p", sampling.top_p);
-    if (!(top_p > 0.0 && top_p <= 1.0)) {
+    if (!(static_cast<float>(top_p) > 0.0f && top_p <= 1.0)) {
       throw std::invalid_argument("top_p must be in (0, 1]");
     } else {
     }
@@ -413,7 +415,7 @@ private:
     // fixed 1.0; this range is this server's.
     const double repetition_penalty =
         NumberOr(body, "repetition_penalty", sampling.repetition_penalty);
-    if (!(repetition_penalty > 0.0 &&
+    if (!(static_cast<float>(repetition_penalty) > 0.0f &&
           repetition_penalty <= kMaxRepetitionPenalty)) {
       throw std::invalid_argument("repetition_penalty must be in (0, 2]");
     } else {

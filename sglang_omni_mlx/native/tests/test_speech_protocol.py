@@ -161,10 +161,63 @@ def test_a_response_format_is_trimmed_and_lowercased(
     assert (response.status, response.headers["Content-Type"]) == (200, "audio/pcm")
 
 
-def test_a_failed_generation_gets_500(speech_server: SupervisedServer) -> None:
-    response = speech_server.post_speech({"input": "hello", "outcome": "fail"})
+@pytest.mark.parametrize("stream", [False, True])
+def test_a_failed_generation_gets_500(
+    speech_server: SupervisedServer, stream: bool
+) -> None:
+    """A failure before the first audio chunk returned an empty successful stream."""
+    response = speech_server.post_speech(
+        {
+            "input": "hello",
+            "outcome": "fail",
+            "response_format": "pcm",
+            "stream": stream,
+        }
+    )
     assert response.status == 500
     assert response.json() == {"detail": "Speech generation failed."}
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_a_request_error_during_generation_gets_400(
+    speech_server: SupervisedServer, stream: bool
+) -> None:
+    """Input errors discovered during generation returned 500 or an empty successful stream."""
+    response = speech_server.post_speech(
+        {
+            "input": "hello",
+            "outcome": "invalid",
+            "response_format": "pcm",
+            "stream": stream,
+        }
+    )
+    assert response.status == 400
+    assert response.json() == {"detail": "stub invalid speech request"}
+
+
+def test_a_stream_without_audio_gets_500(speech_server: SupervisedServer) -> None:
+    """An empty generation returned a successful stream without any audio."""
+    response = speech_server.post_speech(
+        {"input": "hello", "chunks": 0, "response_format": "pcm", "stream": True}
+    )
+    assert response.status == 500
+    assert response.json() == {"detail": "Speech generation failed."}
+
+
+def test_a_failure_after_streamed_audio_does_not_append_json(
+    speech_server: SupervisedServer,
+) -> None:
+    """An error after committed PCM must end the stream without a JSON suffix."""
+    response = speech_server.post_speech(
+        {
+            **SPEECH_REQUEST,
+            "outcome": "fail_after_audio",
+            "response_format": "pcm",
+            "stream": True,
+        }
+    )
+    assert response.status == 200
+    assert response.body == b"\0\0" * CHUNK_COUNT * CHUNK_SAMPLE_COUNT
 
 
 def test_a_server_without_a_chosen_name_takes_any_model(
@@ -205,16 +258,20 @@ def test_a_full_queue_gets_503_until_a_client_leaves(
     server.stop()
 
 
+@pytest.mark.parametrize("stream", [False, True])
 def test_a_request_past_its_deadline_gets_504(
-    stub_server_binary: Path, model_directory: Path
+    stub_server_binary: Path, model_directory: Path, stream: bool
 ) -> None:
+    """A stream that timed out before its first audio chunk returned an empty 200."""
     server = SupervisedServer(
         stub_server_binary,
         "stub_speech",
         model_directory,
         ("--request-timeout-s", "0.5"),
     )
-    response = server.post_speech(BLOCKING_REQUEST)
+    response = server.post_speech(
+        {**BLOCKING_REQUEST, "response_format": "pcm", "stream": stream}
+    )
     assert response.status == 504
     assert response.json() == {"detail": "Speech generation timed out."}
     server.wait_for_request_states({})

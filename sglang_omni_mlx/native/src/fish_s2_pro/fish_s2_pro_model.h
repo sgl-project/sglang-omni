@@ -79,7 +79,7 @@ public:
   // Generates up to max_frames frames, or as many as fit in max_positions()
   // after the prompt, passing each frame's evaluated int32 codes [codebooks] to
   // on_frame. Stops at <|im_end|>; throws TranscriptionCancelled once cancel is
-  // set, and std::runtime_error for a prompt that leaves no position.
+  // set, and std::invalid_argument for a prompt that leaves no position.
   qwen3_asr::FinishReason
   Generate(const SpeechPrompt &prompt, int max_frames,
            const SamplingOptions &sampling, const std::atomic<bool> &cancel,
