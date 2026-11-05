@@ -161,6 +161,9 @@ func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer c.CloseNow()
+	// As the real server: an append of the audio recorded while the model
+	// loaded can be far over the library's 32 KB default.
+	c.SetReadLimit(-1)
 	ctx := r.Context()
 	idx := 0
 	send := func(v map[string]any) {
