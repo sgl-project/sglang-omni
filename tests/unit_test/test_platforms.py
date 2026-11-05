@@ -285,7 +285,13 @@ def test_launch_first_prefill_is_enabled_only_where_it_was_measured() -> None:
     synchronous prefill."""
     for platform_type in (CUDAOmniPlatform, XPUOmniPlatform):
         assert platform_type().enable_async_prefill() is True, platform_type
-    for platform_type in (CPUOmniPlatform, ROCMOmniPlatform, NPUOmniPlatform):
+    for platform_type in (
+        CPUOmniPlatform,
+        ROCMOmniPlatform,
+        NPUOmniPlatform,
+        platforms.AppleOmniPlatform,
+        platforms.MUSAOmniPlatform,
+    ):
         assert platform_type().enable_async_prefill() is False, platform_type
 
 
