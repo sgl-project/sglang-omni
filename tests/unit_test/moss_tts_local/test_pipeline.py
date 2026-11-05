@@ -873,10 +873,14 @@ def test_moss_tts_local_generation_defaults(disable_prefill: bool) -> None:
         assert overrides["cuda_graph_backend_prefill"] == "disabled"
     else:
         assert overrides["cuda_graph_backend_prefill"] == "full"
-        buckets = overrides["cuda_graph_bs_prefill"]
-        assert next(bucket for bucket in buckets if bucket >= 157) == 160
-        assert next(bucket for bucket in buckets if bucket >= 17 * 157) == 3072
-        assert overrides["cuda_graph_config"]["prefill"]["full_prefill_max_req"] == 32
+        assert overrides["cuda_graph_bs_prefill"] == [64, 128, 256, 512]
+        assert overrides["cuda_graph_max_bs_prefill"] == 512
+        assert (
+            overrides.get("cuda_graph_config", {})
+            .get("prefill", {})
+            .get("full_prefill_max_req")
+            is None
+        )
 
 
 def test_moss_local_context_probe_uses_runtime_model_config_inputs(

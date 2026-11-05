@@ -96,24 +96,8 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
             "dtype": dtype,
             "disable_cuda_graph": False,
             "cuda_graph_backend_prefill": CudaGraphBackend.FULL,
-            # note (Zhang Yiyang): Cover short and coalesced prefills without excess padding.
-            "cuda_graph_bs_prefill": [
-                64,
-                128,
-                160,
-                192,
-                256,
-                320,
-                512,
-                768,
-                1024,
-                1536,
-                2048,
-                3072,
-                4096,
-            ],
-            # note (Dino1844): Coalesced prefills can exceed the default request-slot count.
-            "cuda_graph_config": {"prefill": {"full_prefill_max_req": 32}},
+            # note (Zhang Yiyang): Keep the measured buckets to bound prefill capture time and memory.
+            "cuda_graph_bs_prefill": [64, 128, 256, 512],
             "disable_overlap_schedule": True,
             # note (Dino1844): Prefix KV reuse does not restore Local slot state.
             "disable_radix_cache": True,
