@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/sgl-project/sglang-omni/VoxtNew/internal/asr"
@@ -147,11 +146,12 @@ func filePCM(req asr.FileRequest) ([]byte, error) {
 // final is Voxt's Qwen3-ASR Final (transcribeQwenFinal) with language,
 // the model's ("" detects), and the context bias: the chunks share one
 // token budget, and the first chunk's detected language is forced on the
-// rest. It returns the text and the language.
+// rest. The chunks' texts are joined as the live pieces are (joinParts).
+// It returns the text and the language.
 func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, b bias) (string, string, error) {
 	t := a.spec.ASR
 	budget := t.tokenBudget(asr.Duration(pcm, sampleRate))
-	var text strings.Builder
+	var parts []string
 	for _, c := range t.splitChunks(pcm) {
 		if budget <= 0 {
 			break
@@ -166,9 +166,9 @@ func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, 
 		if language == "" {
 			language = r.language
 		}
-		text.WriteString(r.text)
+		parts = append(parts, r.text)
 	}
-	return strings.TrimSpace(text.String()), language, nil
+	return joinParts(parts), language, nil
 }
 
 // Open starts a live session: partial text while audio comes in, then

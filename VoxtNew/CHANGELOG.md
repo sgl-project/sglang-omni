@@ -35,6 +35,7 @@ All notable changes to VoxtNew. The format follows [Keep a Changelog](https://ke
 - VoxtNew no longer crashes now and then while it checks its Microphone and Accessibility permissions (when the helper starts or restarts). The check could finish on a different system thread from the one it started on.
 - The global shortcut tap is no longer reported ready when macOS created it but stripped its keyboard events (Accessibility granted without Input Monitoring): the granted events are read back and verified, a partial tap is refused and retried every 2 s, plain shortcuts keep working through the fallback, and the Shortcuts settings show the permission notice.
 - Chinese dictation is no longer turned into English on a Mac whose first language is English. Without a main language set in Settings → General, the speech model was told to expect the interface's language (English there) and the Fast model translated most Chinese recordings; now it detects the language itself unless you set a main language or use VoxtNew in Chinese.
+- A long recording recognised in parts (Transcribe again and Retry in History) no longer loses the space where two parts meet ("the Republic.Socrates begins"); Chinese still gets none.
 
 ### 中文
 
@@ -69,6 +70,7 @@ All notable changes to VoxtNew. The format follows [Keep a Changelog](https://ke
 - VoxtNew 检查麦克风和辅助功能权限时（辅助进程启动或重启时）不会再偶尔崩溃。原因是这次检查可能在另一个系统线程上结束，而不是开始时的那个线程。
 - 全局快捷键的 event tap 不再在 macOS 创建了它却剥掉键盘事件时误报就绪（只给了辅助功能、没给输入监控）：现在会回读并校验实际授予的事件，不完整的 tap 会被拒绝并每 2 秒重试；普通快捷键继续走备用通道，快捷键设置页会显示权限提示。
 - 系统首选语言是英文的 Mac 上，中文口述不会再被转成英文。以前没在 设置 → 通用 里设主语言时，语音模型会被告知按界面语言（那里是英文）识别，快速模型把大部分中文录音翻成了英文；现在除非你设了主语言或者用中文界面，否则由模型自己判断语言。
+- 分段识别的长录音（历史里的“重新识别”和“重试”）在两段相接的地方不会再丢掉空格（“the Republic.Socrates begins”）；中文照旧不加空格。
 
 ## [0.1.0-beta.1] - 2026-10-17
 
