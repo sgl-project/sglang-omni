@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/VoxtNew/internal/i18n"
 	"github.com/sgl-project/sglang-omni/VoxtNew/internal/settings"
 	"github.com/sgl-project/sglang-omni/VoxtNew/internal/vad"
 )
@@ -194,26 +195,48 @@ func TestModelGatesStream(t *testing.T) {
 	}
 }
 
-// TestSpeechLang: the speech model gets the main language as its hint
-// (the settings', else the UI's), also when the user speaks other
-// languages: without a hint Qwen3-ASR may take a mixed dictation that
-// starts in English for English and translate the rest (docs/eval.md).
+// TestSpeechLang: the hint the speech model gets for a system language
+// × app language × main language. Forcing the English UI as the hint
+// turned Chinese dictation into English on an English-first Mac (#3398:
+// the app is English for every system language but Simplified Chinese):
+// a main language the user set is the hint, else a Chinese UI's "zh",
+// else none and the model detects.
 func TestSpeechLang(t *testing.T) {
 	for _, c := range []struct {
-		main, locale string
-		others       []string
-		want         string
-	}{{"ja", "en", nil, "ja"}, {"", "zh-Hans", nil, "zh"}, {"zh", "en", []string{"en"}, "zh"}} {
-		file := &fakeFile{text: "hi"}
-		h := newHarness(t, file, nil, func(cfg *Config, s *settings.Settings) {
-			s.General.MainLanguage, s.General.OtherLanguages = c.main, c.others
-			cfg.Locale = func() string { return c.locale }
+		name   string
+		system []string // the system's preferred languages, most preferred first
+		app    string   // the app language, "" follows the system
+		main   string   // the main language, "" left to follow
+		others []string
+		want   string
+	}{
+		{"en first, zh second (#3398)", []string{"en-US", "zh-Hans-US"}, "", "", nil, ""},
+		{"zh system", []string{"zh-Hans-CN"}, "", "", nil, "zh"},
+		{"zh-Hant system", []string{"zh-Hant-TW"}, "", "", nil, ""},
+		{"ja system", []string{"ja-JP"}, "", "", nil, ""},
+		{"fr system", []string{"fr-FR"}, "", "", nil, ""},
+		{"en system, Chinese app", []string{"en-US"}, "zh-Hans", "", nil, "zh"},
+		{"main set", []string{"en-US"}, "", "zh", nil, "zh"},
+		{"main set, en", []string{"en-US"}, "", "en", nil, "en"},
+		{"main set, ja", []string{"en-US"}, "", "ja", nil, "ja"},
+		{"main set, other languages", []string{"en-US"}, "", "zh", []string{"en"}, "zh"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			locale := c.app
+			if locale == "" {
+				locale = i18n.Match(c.system[0]) // applyLocale
+			}
+			file := &fakeFile{text: "hi"}
+			h := newHarness(t, file, nil, func(cfg *Config, s *settings.Settings) {
+				s.General.MainLanguage, s.General.OtherLanguages = c.main, c.others
+				cfg.Locale = func() string { return locale }
+			})
+			id := h.start()
+			h.speak(id, 10)
+			h.rec.wait(t)
+			if file.lang != c.want {
+				t.Errorf("system %v, app %q, main %q: hint %q, want %q", c.system, c.app, c.main, file.lang, c.want)
+			}
 		})
-		id := h.start()
-		h.speak(id, 10)
-		h.rec.wait(t)
-		if file.lang != c.want {
-			t.Errorf("main %q, locale %q, others %q: hint %q, want %q", c.main, c.locale, c.others, file.lang, c.want)
-		}
 	}
 }

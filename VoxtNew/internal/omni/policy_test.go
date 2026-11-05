@@ -58,7 +58,7 @@ func TestTokenBudget(t *testing.T) {
 
 func TestLanguageHint(t *testing.T) {
 	s := again(ASRFast)
-	for in, want := range map[string]string{"zh": "zh", "zh-Hans": "zh", "en-US": "en", "yue": "yue", "": "", "  ": "", "sw": "", "xx": ""} {
+	for in, want := range map[string]string{"zh": "zh", "zh-Hans": "zh", "en-US": "en", "ja-JP": "ja", "fr-FR": "fr", "yue": "yue", "": "", "  ": "", "sw": "", "xx": ""} {
 		if got := s.languageHint(in); got != want {
 			t.Errorf("hint(%q) = %q, want %q", in, got, want)
 		}

@@ -94,6 +94,8 @@ The user's main language is Chinese in all of these. "main zh" is Voxt's policy 
 
 **Decision: keep (a), Voxt's policy.** The main language is the hint even when the user lists other languages (`session.speechLang`, `TestSpeechLang`). Option (b), no hint when other languages are set, would gain nothing on these clips and loses whole sentences on mixed speech. The open risk is the mirror case: a user whose main language is English and who dictates Chinese on `asr.fast` (Decisions needed in the handoff).
 
+**Since #3519, an English UI is no hint.** With no main language set, the hint falls back to the UI's language only when that is Simplified Chinese (`zh`, which keeps the long mixed clip above Chinese); an English UI sends none and the model detects. English is the UI of every system language but Simplified Chinese, so it says nothing about the speaker, and as a hint it turned most Chinese dictation into English on an English-first Mac (#3398). A main language the user set is still always the hint.
+
 ### The dictionary as context bias
 
 Terms written exactly, of the 10 in the `dict` clips:

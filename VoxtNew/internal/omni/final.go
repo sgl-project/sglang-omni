@@ -78,6 +78,9 @@ func (r finalRequest) body(model string) (*bytes.Buffer, string) {
 // hung the server: it is killed.
 func transcribe(ctx context.Context, l *lease, r finalRequest, stall time.Duration) (finalResult, error) {
 	body, ctype := r.body(l.endpoint().model)
+	// The hint goes to the log, never the recognised text: a wrong hint
+	// translated Chinese dictation (#3398) and nothing showed it.
+	l.s.rt.logf("info", "%s: Final request with language hint %q", l.s.spec.ID, r.language)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, l.endpoint().base()+"/v1/audio/transcriptions", body)

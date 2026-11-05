@@ -210,6 +210,52 @@ func TestFinal(t *testing.T) {
 	}
 }
 
+// TestLanguageHintLogged: the log says which language hint each request
+// carries, and never the recognised text. A forced English hint
+// translated Chinese dictation (#3398), and nothing in the log showed
+// what hint was sent.
+func TestLanguageHintLogged(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		lang string
+		want string
+	}{
+		{"hint", "zh-Hans", `language hint "zh"`},
+		{"detect", "", `language hint ""`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFake(t, omnitest.Opts{Text: "识别出的文字"}, nil)
+			a := f.asr(t, ASRFast)
+			pcm := tone(time.Second, 0.3)
+			if _, err := a.Transcribe(context.Background(), asr.FileRequest{Audio: pcm, Format: "pcm", Lang: c.lang}); err != nil {
+				t.Fatal(err)
+			}
+			st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: 16000, Lang: c.lang})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := st.Send(pcm); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.Finish(); err != nil {
+				t.Fatal(err)
+			}
+			drain(t, st)
+			f.mu.Lock()
+			logs := slices.Clone(f.out)
+			f.mu.Unlock()
+			for _, want := range []string{"Final request with " + c.want, "live session with " + c.want} {
+				if !slices.ContainsFunc(logs, func(l string) bool { return strings.Contains(l, want) }) {
+					t.Errorf("no log of %q; logs %q", want, logs)
+				}
+			}
+			if slices.ContainsFunc(logs, func(l string) bool { return strings.Contains(l, "识别出的文字") }) {
+				t.Errorf("the log holds the recognised text: %q", logs)
+			}
+		})
+	}
+}
+
 // TestOlderServer: a runtime from before --cache-limit-mb (the user's
 // installed bundle, an older release) still starts, without the flag,
 // and the log says so; Silero's server never gets the flag.
