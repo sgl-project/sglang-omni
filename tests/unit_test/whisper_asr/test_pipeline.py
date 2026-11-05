@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 import json
-import sys
+import shutil
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from huggingface_hub import HfApi, constants, hf_hub_download
+from huggingface_hub.errors import EntryNotFoundError
 from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool
+from transformers import (
+    AutoConfig,
+    GenerationConfig,
+    WhisperConfig,
+    WhisperFeatureExtractor,
+    WhisperProcessor,
+    WhisperTokenizer,
+)
 
 import sglang_omni.model_runner.base as model_runner_base
 import sglang_omni.models.whisper_asr.stages as whisper_asr_stages
@@ -340,7 +351,9 @@ def test_whisper_asr_config_uses_single_batched_stage() -> None:
 
 @pytest.mark.parametrize("encoder_attention_backend", [None, "auto", "sdpa", "fa4"])
 def test_whisper_asr_threads_explicit_cuda_graph_bs(
-    monkeypatch: pytest.MonkeyPatch, encoder_attention_backend: str | None
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    encoder_attention_backend: str | None,
 ) -> None:
     cuda_platform = CUDAOmniPlatform()
     monkeypatch.setattr(platforms, "current_platform", cuda_platform)
@@ -353,23 +366,35 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(
         tokenizer=object(),
         feature_extractor=SimpleNamespace(nb_max_frames=3000),
     )
-    monkeypatch.setitem(
-        sys.modules,
-        "transformers",
-        SimpleNamespace(
-            AutoConfig=SimpleNamespace(
-                from_pretrained=lambda *args, **kwargs: SimpleNamespace(
-                    max_target_positions=448
-                )
-            ),
-            AutoProcessor=SimpleNamespace(
-                from_pretrained=lambda *args, **kwargs: fake_processor
-            ),
-            GenerationConfig=SimpleNamespace(
-                from_pretrained=lambda *args, **kwargs: object()
-            ),
-        ),
-    )
+    revision = "a" * 40
+    metadata_revisions: list[str] = []
+
+    def config_file(
+        model_path: str,
+        filename: str,
+        *,
+        revision: str | None,
+        local_files_only: bool = False,
+    ) -> str:
+        assert revision == "release"
+        return str(tmp_path / "snapshots" / ("a" * 40) / filename)
+
+    monkeypatch.setattr(whisper_asr_builder, "cached_file", config_file)
+    for name, result in (
+        ("AutoConfig", SimpleNamespace(max_target_positions=448)),
+        ("AutoProcessor", fake_processor),
+        ("GenerationConfig", SimpleNamespace()),
+    ):
+
+        def from_pretrained(
+            model_path: str, *, revision: str, result: SimpleNamespace = result
+        ) -> SimpleNamespace:
+            metadata_revisions.append(revision)
+            return result
+
+        monkeypatch.setattr(
+            whisper_asr_builder, name, SimpleNamespace(from_pretrained=from_pretrained)
+        )
     monkeypatch.setattr(
         whisper_request_builders,
         "make_whisper_scheduler_adapters",
@@ -393,6 +418,7 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(
     monkeypatch.setattr(omni_scheduler, "OmniScheduler", fake_scheduler)
 
     def fake_server_args_builder(model_path, context_length, **overrides):
+        assert model_path == "dummy"
         build_kwargs["context_length"] = context_length
         build_kwargs.update(overrides)
         server_args = SimpleNamespace(**overrides)
@@ -475,9 +501,14 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(
         device="cuda",
         gpu_id=0,
         **factory_kwargs,
-        server_args_overrides={"json_model_override_args": '{"test_setting": 7}'},
+        server_args_overrides={
+            "json_model_override_args": '{"test_setting": 7}',
+            "revision": "release",
+        },
     )
 
+    assert metadata_revisions == [revision] * 3
+    assert build_kwargs["revision"] == revision
     assert json.loads(build_kwargs["json_model_override_args"]) == {
         "encoder_attention_backend": encoder_attention_backend or "auto",
         "test_setting": 7,
@@ -502,6 +533,232 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(
     )
     assert len(graph_init_calls) == 1
     assert len(attest_calls) == 1
+
+
+def record_pre_infra_setup_targets(
+    monkeypatch: pytest.MonkeyPatch, cached_dir: Path | None
+) -> list[str]:
+    """Record the model path used by each loader."""
+    targets: list[str] = []
+
+    def loader(result: SimpleNamespace) -> SimpleNamespace:
+        def from_pretrained(target: str, *, revision: str | None) -> SimpleNamespace:
+            targets.append(str(target))
+            return result
+
+        return SimpleNamespace(from_pretrained=from_pretrained)
+
+    fake_processor = SimpleNamespace(
+        tokenizer=object(),
+        feature_extractor=SimpleNamespace(nb_max_frames=3000),
+    )
+    monkeypatch.setattr(
+        whisper_asr_builder,
+        "AutoConfig",
+        loader(SimpleNamespace(max_target_positions=448)),
+    )
+    monkeypatch.setattr(whisper_asr_builder, "AutoProcessor", loader(fake_processor))
+    monkeypatch.setattr(
+        whisper_asr_builder, "GenerationConfig", loader(SimpleNamespace())
+    )
+
+    def config_file(
+        model_path: str,
+        filename: str,
+        *,
+        revision: str | None,
+        local_files_only: bool = False,
+    ) -> str:
+        assert model_path == "openai/whisper-large-v3"
+        if cached_dir is None and local_files_only:
+            raise OSError("not cached")
+        else:
+            return str((cached_dir or Path("cache")) / filename)
+
+    monkeypatch.setattr(whisper_asr_builder, "cached_file", config_file)
+    builder = whisper_asr_builder.WhisperASREngineBuilder(
+        encoder_attention_backend="auto",
+        max_running_requests=16,
+        max_new_tokens=32,
+        mem_fraction_static=0.2,
+    )
+    builder.server_args_overrides = {}
+    builder.pre_infra_setup("openai/whisper-large-v3")
+    return targets
+
+
+def test_whisper_asr_pre_infra_setup_loads_from_cached_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    for name in (
+        "config.json",
+        "preprocessor_config.json",
+        "tokenizer_config.json",
+        "generation_config.json",
+        "tokenizer.json",
+        "normalizer.json",
+    ):
+        (tmp_path / name).touch()
+
+    targets = record_pre_infra_setup_targets(monkeypatch, tmp_path)
+    assert targets == [str(tmp_path)] * 3
+
+
+@pytest.mark.parametrize(
+    "missing_file",
+    [
+        "preprocessor_config.json",
+        "tokenizer_config.json",
+        "generation_config.json",
+        "tokenizer.json",
+        "normalizer.json",
+    ],
+)
+def test_whisper_asr_pre_infra_setup_keeps_repo_id_for_partial_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, missing_file: str
+) -> None:
+    for name in (
+        "config.json",
+        "preprocessor_config.json",
+        "tokenizer_config.json",
+        "generation_config.json",
+        "tokenizer.json",
+        "normalizer.json",
+        "vocab.json",
+        "merges.txt",
+    ):
+        if name != missing_file:
+            (tmp_path / name).touch()
+        else:
+            pass
+
+    targets = record_pre_infra_setup_targets(monkeypatch, tmp_path)
+    assert targets == ["openai/whisper-large-v3"] * 3
+
+
+def test_whisper_asr_pre_infra_setup_keeps_repo_id_on_cache_miss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    targets = record_pre_infra_setup_targets(monkeypatch, None)
+    assert targets == ["openai/whisper-large-v3"] * 3
+
+
+def write_whisper_metadata(directory: Path, decoder_length: int) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    tokenizer = WhisperTokenizer(
+        vocab={"<|endoftext|>": 0, "<|startoftranscript|>": 1}, merges=[]
+    )
+    WhisperProcessor(WhisperFeatureExtractor(), tokenizer).save_pretrained(directory)
+    WhisperFeatureExtractor().save_pretrained(directory)
+    WhisperConfig(max_target_positions=decoder_length).save_pretrained(directory)
+    GenerationConfig(max_length=decoder_length).save_pretrained(directory)
+    (directory / "normalizer.json").write_text("{}")
+
+
+@pytest.mark.parametrize(
+    ("cache_state", "expected_length"),
+    [
+        ("metadata", 448),
+        ("offline", 448),
+        ("missing", 256),
+        ("partial", 256),
+        ("tag", 256),
+        ("local", 448),
+    ],
+)
+def test_whisper_cached_metadata_matches_the_worker_revision(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    cache_state: str,
+    expected_length: int,
+) -> None:
+    """A new Hub revision must not replace the model behind cached metadata."""
+    repo_id = "test/whisper-revision"
+    old_revision, new_revision = "a" * 40, "b" * 40
+    cache_repo = tmp_path / "models--test--whisper-revision"
+    old_snapshot = cache_repo / "snapshots" / old_revision
+    new_snapshot = cache_repo / "snapshots" / new_revision
+    write_whisper_metadata(old_snapshot, 448)
+    write_whisper_metadata(new_snapshot, 256)
+    refs = cache_repo / "refs"
+    refs.mkdir()
+    (refs / "main").write_text(old_revision)
+    (refs / "release").write_text(new_revision)
+    if cache_state == "offline":
+        (old_snapshot / "model.safetensors").touch()
+        monkeypatch.setattr(constants, "HF_HUB_OFFLINE", True)
+    elif cache_state == "missing":
+        shutil.rmtree(old_snapshot)
+    elif cache_state == "partial":
+        (old_snapshot / "normalizer.json").unlink()
+    else:
+        pass
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path))
+    downloaded_files: list[str] = []
+
+    def hub_file(model_path: str, filename: str, **kwargs: object) -> str:
+        if kwargs.get("local_files_only"):
+            return hf_hub_download(model_path, filename, **kwargs)
+        else:
+            downloaded_files.append(filename)
+            revision = kwargs.get("revision") or "main"
+            selected_revision = new_revision if revision == "main" else revision
+            selected_file = cache_repo / "snapshots" / selected_revision / filename
+            if selected_file.is_file():
+                if revision == "main":
+                    (refs / "main").write_text(new_revision)
+                else:
+                    pass
+                return str(selected_file)
+            else:
+                raise EntryNotFoundError(str(selected_file))
+
+    monkeypatch.setattr("transformers.utils.hub.hf_hub_download", hub_file)
+    monkeypatch.setattr(HfApi, "list_repo_tree", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        HfApi,
+        "repo_info",
+        lambda *args, revision=None, **kwargs: SimpleNamespace(
+            sha=new_revision if revision in (None, "main") else revision
+        ),
+    )
+    builder = whisper_asr_builder.WhisperASREngineBuilder(
+        encoder_attention_backend="auto",
+        max_running_requests=16,
+        max_new_tokens=32,
+        mem_fraction_static=0.2,
+    )
+    builder.server_args_overrides = (
+        {"revision": "release"} if cache_state == "tag" else {}
+    )
+    model_path = str(old_snapshot) if cache_state == "local" else repo_id
+    builder.pre_infra_setup(model_path)
+    overrides = {
+        **builder.server_args_overrides,
+        "cuda_graph_backend_prefill": CudaGraphBackend.DISABLED,
+    }
+    builder.adjust_overrides(overrides)
+    worker_config = AutoConfig.from_pretrained(
+        model_path, revision=overrides.get("revision")
+    )
+    assert (
+        builder.decoder_context_len
+        == worker_config.max_target_positions
+        == expected_length
+    )
+    assert builder.generation_config.max_length == expected_length
+    assert not any(name.endswith((".safetensors", ".bin")) for name in downloaded_files)
+    if cache_state in ("metadata", "offline", "local", "tag"):
+        assert downloaded_files == []
+    else:
+        assert "config.json" in downloaded_files
+    if cache_state == "local":
+        assert overrides.get("revision") is None
+    else:
+        assert overrides["revision"] == (
+            old_revision if expected_length == 448 else new_revision
+        )
 
 
 @pytest.mark.parametrize("enabled", [False, True])

@@ -143,6 +143,7 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
         from sglang_omni.scheduling import sglang_backend
         from sglang_omni.utils.device import resolve_concrete_device
 
+        self.server_args_overrides = server_args_overrides or {}
         checkpoint_dir = self.resolve_checkpoint(model_path)
         concrete_device = resolve_concrete_device(device, gpu_id)
         device = str(concrete_device)
