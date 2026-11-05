@@ -245,15 +245,20 @@ public struct HotkeyConfigureParams: Codable, Sendable {
     public var tapMaxMs: Double?
     public var swallowFn: Bool?
     public var active: Bool?
+    /// The shortcut that cancels while active (its id is "cancel", its
+    /// behavior a tap). Absent: nothing cancels. Never judged while
+    /// inactive, so its keys reach the app in front.
+    public var cancel: HotkeyBinding?
 
     public init(bindings: [HotkeyBinding], doubleTapMs: Double? = nil, longPressMs: Double? = nil, tapMaxMs: Double? = nil,
-                swallowFn: Bool? = nil, active: Bool? = nil) {
+                swallowFn: Bool? = nil, active: Bool? = nil, cancel: HotkeyBinding? = nil) {
         self.bindings = bindings
         self.doubleTapMs = doubleTapMs
         self.longPressMs = longPressMs
         self.tapMaxMs = tapMaxMs
         self.swallowFn = swallowFn
         self.active = active
+        self.cancel = cancel
     }
 }
 

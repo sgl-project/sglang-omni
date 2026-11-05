@@ -12,7 +12,7 @@ package main
 // sits at the bottom of the screen (there is no room under it), under the
 // capsule, over the card, when it sits at the top; its right edge under
 // the capsule's. A language closes it and translates the card's text
-// again; so do the capsule again, Escape (before the card), any of the
+// again; so do the capsule again, the cancel shortcut (before the card), any of the
 // card's other actions, the card going, and another app coming to the
 // front.
 

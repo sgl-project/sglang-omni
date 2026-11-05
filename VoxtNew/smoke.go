@@ -40,7 +40,7 @@ func runSmoke(dir string) int {
 	// No shortcuts: the helper installs no event tap (the Mac may be in use).
 	err = lib.settings.Update(context.Background(), func(s *settings.Settings) {
 		s.Features.Transcribe.Hotkeys, s.Features.Translate.Hotkeys, s.Features.Rewrite.Hotkeys = nil, nil, nil
-		s.Features.PasteLast = settings.Hotkey{}
+		s.Features.PasteLast, s.Features.Cancel = settings.Hotkey{}, settings.Hotkey{}
 	})
 	if err != nil {
 		say("FAIL the settings: %v", err)

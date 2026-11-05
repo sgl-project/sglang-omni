@@ -25,8 +25,18 @@ func TestMigrate(t *testing.T) {
 	// A partial document keeps what it has and gains the defaults.
 	s, err = Migrate([]byte(`{"version":1,"general":{"language":"zh-Hans","menuBar":false},"privacy":{"keepHistory":false},"unknown":1}`))
 	if err != nil || s.General.Language != "zh-Hans" || s.General.MenuBar || s.Privacy.KeepHistory || s.Appearance.Scale != 1 ||
-		s.Appearance.Theme != "system" || len(s.Features.Transcribe.Hotkeys) != 1 {
+		s.Appearance.Theme != "system" || len(s.Features.Transcribe.Hotkeys) != 1 || s.Features.Cancel.Keys != DefaultCancel {
 		t.Fatalf("partial: %+v %v", s, err)
+	}
+	// A cancel the user turned off stays off; a chosen key stays.
+	for _, tc := range []struct{ doc, keys string }{
+		{`{"version":4,"features":{"cancel":{"keys":""}}}`, ""},
+		{`{"version":4,"features":{"cancel":{"keys":"Control+."}}}`, "Control+."},
+	} {
+		s, err := Migrate([]byte(tc.doc))
+		if err != nil || s.Features.Cancel.Keys != tc.keys {
+			t.Errorf("%s: cancel %+v %v", tc.doc, s.Features.Cancel, err)
+		}
 	}
 	data, _ := json.Marshal(s)
 	again, err := Migrate(data)

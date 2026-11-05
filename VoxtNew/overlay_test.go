@@ -86,7 +86,7 @@ func TestOverlayModes(t *testing.T) {
 	if a.ov.mode != ovAnswer || !a.answer.open || a.answer.text != "Card text" || a.ov.w != layout.AnswerW {
 		t.Fatalf("card %s %+v", a.ov.mode, a.answer)
 	}
-	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyEscape, Phase: proto.PhaseTrigger})
+	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
 	if a.answer.open || a.ov.mode != ovHidden {
 		t.Errorf("escape: %s %+v", a.ov.mode, a.answer)
 	}

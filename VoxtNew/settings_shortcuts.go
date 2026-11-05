@@ -1,8 +1,9 @@
 package main
 
 // Settings → Shortcuts (/settings/shortcuts): every global shortcut
-// in one table (Transcribe's, Translate's and Rewrite's, and Paste the
-// last result), with their trigger and what hotkey.Check finds wrong:
+// in one table (Transcribe's, Translate's and Rewrite's, Paste the
+// last result, and Cancel transcription), with their trigger and what
+// hotkey.Check finds wrong:
 // clashes, keys macOS uses, keys that need Accessibility while the event
 // tap is missing, keys another ActNow app uses too. A row opens its
 // feature's page, where it changes.
@@ -27,14 +28,14 @@ func featurePath(feature string) string {
 	case hotkey.Rewrite:
 		return "/rewrite"
 	}
-	return "/transcribe" // Transcribe, and Paste the last result
+	return "/transcribe" // Transcribe, Paste the last result, Cancel transcription
 }
 
 // shortcutsSettings is the Shortcuts section of the settings dialog.
 func (a *app) shortcutsSettings(c *ui.Context) {
 	t := c.Theme()
 	k := tok(t)
-	caption(c, i18n.T("The shortcuts work in every app. Click one to change it on its feature's page. Escape cancels a recording."))
+	caption(c, i18n.T("The shortcuts work in every app. Click one to change it on its feature's page."))
 	if !a.hotkeys.Installed {
 		notice(c, "sc-no-tap", noticeWarn,
 			i18n.T("Without Accessibility only plain shortcuts work (⌃⌥⇧⌘ with a key); fn, a single modifier, double taps and long presses need it."),
@@ -56,7 +57,7 @@ func (a *app) shortcutsSettings(c *ui.Context) {
 			head(i18n.T("Shortcut")).Width(keysW).Shrink(0)
 			ui.Box(c).Width(px(t, shortcutMarksW+14+sp2)).Shrink(0) // the marks and the chevron
 		})
-		for _, feat := range append(append([]string{}, hotkey.Features...), hotkey.PasteLast) {
+		for _, feat := range append(append([]string{}, hotkey.Features...), hotkey.PasteLast, hotkey.CancelID) {
 			hs := hotkey.HotkeysOf(f, feat)
 			problems := uitext.HotkeyProblems(f, feat) // feature_keys_text.go
 			if len(hs) == 0 {
@@ -98,6 +99,9 @@ func (a *app) shortcutRow(c *ui.Context, feature string, i int, h *settings.Hotk
 				if feature == hotkey.PasteLast {
 					ic = icons.Copy
 				}
+				if feature == hotkey.CancelID {
+					ic = icons.CloseCircle
+				}
 				ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Grow(1).Basis(0).MinWidth(0).Children(func() {
 					if i == 0 {
 						ui.Icon(c, ic.Linear).Size(px(t, 16), px(t, 16)).TextColor(k.Text2).Shrink(0)
@@ -111,13 +115,13 @@ func (a *app) shortcutRow(c *ui.Context, feature string, i int, h *settings.Hotk
 					}
 					kbd(c, keys).MinWidth(0).Ellipsis("…") // shell_commands.go
 					trig := uitext.TriggerText(h.Trigger)
-					if feature == hotkey.PasteLast {
+					if feature == hotkey.PasteLast || feature == hotkey.CancelID {
 						trig = uitext.TriggerText(settings.TriggerTap) // always a tap
 					}
 					ui.Text(c, trig).FontSize(px(t, fsMicro)).TextColor(k.Text2).SingleLine().Ellipsis("…").MinWidth(0)
 				})
 				ui.Row(c).Width(px(t, shortcutMarksW)).Shrink(0).Gap(px(t, sp2)).Justify(ui.End).Children(func() {
-					if h != nil && hotkey.NeedsTap(*h) {
+					if h != nil && (feature == hotkey.CancelID || hotkey.NeedsTap(*h)) { // cancel works only through the tap, while active
 						col := k.Text3
 						if !a.hotkeys.Installed {
 							col = k.Warning

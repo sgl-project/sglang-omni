@@ -295,7 +295,17 @@ func (r *run) endCancelled(stream asr.Stream) {
 	}
 	r.cancel()
 	r.logf("info", "cancelled")
-	r.m.end(r, Cancelled, nil, nil)
+	total := r.now().Sub(r.m.Current().StartedAt)
+	audio := asr.Duration(r.pcm.bytes(), asr.SampleRate)
+	r.m.end(r, Cancelled, func(s *Snapshot) {
+		s.Timings.Total = total
+		s.Timings.Audio = audio
+		s.Recording = audio >= r.m.cfg.MinRecording && r.keepsRecording()
+	}, func(s Snapshot) {
+		if audio >= r.m.cfg.MinRecording {
+			r.keep(s, store.StatusCancelled)
+		}
+	})
 }
 
 // asrProblem classifies a speech model's error.
@@ -367,7 +377,7 @@ func (r *run) keep(s Snapshot, status store.Status) {
 				e.Audio = name
 				if !r.settings.Privacy.KeepAudio {
 					e.AudioUntil = r.now().Add(cfg.AudioRetention)
-					r.logf("info", "recognition failed: the recording is kept until %s, for Retry", e.AudioUntil.Format(time.DateTime))
+					r.logf("info", "the recording is kept until %s, for Retry", e.AudioUntil.Format(time.DateTime))
 				}
 			} else {
 				r.logf("warning", "keeping the recording: %v", err)
@@ -382,14 +392,15 @@ func (r *run) keep(s Snapshot, status store.Status) {
 }
 
 // keepsRecording reports whether the session's history entry keeps the
-// recording: the settings keep recordings, or recognition failed (for
-// a while: Config.AudioRetention). Not for tries.
+// recording: the settings keep recordings, recognition failed, or the
+// user cancelled (for a while: Config.AudioRetention), so Retry can
+// recover it. Not for tries.
 func (r *run) keepsRecording() bool {
 	cfg := r.m.cfg
 	if r.req.Try || r.req.Text != nil || cfg.History == nil || !r.settings.Privacy.KeepHistory || len(r.pcm.bytes()) == 0 {
 		return false
 	}
-	return r.settings.Privacy.KeepAudio || r.recognitionFailed
+	return r.settings.Privacy.KeepAudio || r.recognitionFailed || r.cancelled.Load()
 }
 
 func isHelperErr(err error) bool { return errors.Is(err, core.ErrHelper) }

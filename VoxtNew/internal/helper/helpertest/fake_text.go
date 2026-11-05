@@ -17,7 +17,7 @@ func (f *fake) hotkeyStatus() proto.HotkeyStatus {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	st := proto.HotkeyStatus{Installed: f.installed, Accessibility: f.trusted, Bindings: f.bindings}
-	if f.bindings > 0 && !f.trusted {
+	if (f.bindings > 0 || f.hkCancel) && !f.trusted {
 		st.Error = "CGEvent.tapCreate failed: VoxtNew may not use Accessibility; retrying every 2 s"
 	}
 	return st
@@ -31,7 +31,8 @@ func (f *fake) hotkeys(m proto.Message) {
 	}
 	f.mu.Lock()
 	f.bindings = len(p.Bindings)
-	f.installed = f.bindings > 0 && f.trusted
+	f.hkCancel = p.Cancel != nil
+	f.installed = (f.bindings > 0 || f.hkCancel) && f.trusted
 	f.hkActive = p.Active
 	install := f.installed && !f.scripted
 	if install {
@@ -49,8 +50,8 @@ func (f *fake) hotkeys(m proto.Message) {
 func (f *fake) trust() {
 	f.mu.Lock()
 	f.trusted = true
-	install := f.bindings > 0 && !f.installed
-	f.installed = f.bindings > 0
+	install := (f.bindings > 0 || f.hkCancel) && !f.installed
+	f.installed = f.bindings > 0 || f.hkCancel
 	play := install && !f.scripted
 	if play {
 		f.scripted = true

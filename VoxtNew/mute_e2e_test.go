@@ -46,7 +46,7 @@ func TestSessionMutesOutput(t *testing.T) {
 		}, events: []string{hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(600, "transcribe/0", proto.PhaseTrigger)}, end: session.Done},
 		{name: "translate by voice", events: []string{hotkeyLine(0, "translate/0", proto.PhaseTrigger), hotkeyLine(500, "translate/0", proto.PhaseTrigger)}, end: session.Done},
 		{name: "rewrite", opts: "readonly", events: []string{hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(500, "rewrite/0", proto.PhaseTrigger)}, end: session.Done},
-		{name: "cancelled", events: []string{hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(400, proto.HotkeyEscape, proto.PhaseTrigger)}, end: session.Cancelled},
+		{name: "cancelled", events: []string{hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(400, proto.HotkeyCancel, proto.PhaseTrigger)}, end: session.Cancelled},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			state := filepath.Join(t.TempDir(), "output.json")

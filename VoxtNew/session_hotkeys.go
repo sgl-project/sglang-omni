@@ -38,19 +38,19 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 	if e.Front != nil {
 		target = *e.Front
 	}
-	if e.Binding == proto.HotkeyEscape && a.answer.langOpen {
-		a.closeLangMenu() // Escape closes the menu first, then the card
+	if e.Binding == proto.HotkeyCancel && a.answer.langOpen {
+		a.closeLangMenu() // the cancel shortcut closes the menu first, then the card
 		return
 	}
-	if e.Binding == proto.HotkeyEscape && a.answer.open {
+	if e.Binding == proto.HotkeyCancel && a.answer.open {
 		switch {
 		case !a.sess.State.Live() || a.sess.ID == a.answer.redo:
-			// Voxt's: Escape closes the card, and stops another language
+			// Voxt's: the cancel shortcut closes the card, and stops another language
 			// on its way.
 			a.closeAnswer()
 			return
 		case a.followUp != "" && a.followUp == a.answer.id:
-			// A follow-up: Escape cancels it, the card stays (Voxt's).
+			// A follow-up: the cancel shortcut cancels it, the card stays (Voxt's).
 			a.cancelSession()
 			return
 		}

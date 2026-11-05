@@ -251,7 +251,9 @@ func TestPipeline(t *testing.T) {
 	}
 }
 
-// TestCancel cancels at each stage: nothing is pasted or kept.
+// TestCancel cancels at each stage: nothing is pasted, and a recording
+// long enough to keep stays in History (cancelled, with its audio) so
+// Retry can recover it; a shorter one keeps nothing.
 func TestCancel(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -281,8 +283,13 @@ func TestCancel(t *testing.T) {
 			if p := h.text.pastes(); len(p) != 0 {
 				t.Errorf("pasted %q", p)
 			}
-			if e := h.hist.all(); len(e) != 0 {
-				t.Errorf("kept %+v", e)
+			entries := h.hist.all()
+			if end.Timings.Audio >= DefaultMinRecording {
+				if len(entries) != 1 || entries[0].Status != store.StatusCancelled || entries[0].Audio == "" {
+					t.Errorf("a cancel keeps its recording for Retry: %+v", entries)
+				}
+			} else if len(entries) != 0 {
+				t.Errorf("a cancel too short to keep kept %+v", entries)
 			}
 			if h.m.Last() != "" {
 				t.Errorf("last %q", h.m.Last())
