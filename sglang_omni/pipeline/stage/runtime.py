@@ -453,6 +453,8 @@ class Stage:
             await self.comm.close()
         except Exception as exc:
             _record_cleanup_error("comm", exc)
+        recorder = _get_recorder()
+        recorder.release_stage(self.name)
         logger.info("Stage %s stopped", self.name)
         if cleanup_error is not None:
             raise RuntimeError(f"Stage {self.name} cleanup failed") from cleanup_error
@@ -2700,7 +2702,10 @@ class Stage:
         if msg.event_dir is not None:
             try:
                 _get_recorder().start(
-                    run_id=run_id, event_dir=msg.event_dir, stage=self.name
+                    run_id=run_id,
+                    event_dir=msg.event_dir,
+                    stage=self.name,
+                    event_buffer_capacity=msg.event_buffer_capacity,
                 )
             except Exception:
                 logger.warning(
@@ -2723,7 +2728,7 @@ class Stage:
         if recorder.is_active() and (
             msg.run_id is None or recorder.active_run_id() == msg.run_id
         ):
-            recorder.stop(run_id=msg.run_id)
+            recorder.release_stage(self.name)
         else:
             pass
 
