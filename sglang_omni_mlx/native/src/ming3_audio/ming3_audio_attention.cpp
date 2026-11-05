@@ -141,7 +141,6 @@ mx::array Model::DeltaAttention(const mx::array &hidden,
                       mx::expand_dims(correction, -2));
     outputs.push_back(
         mx::squeeze(mx::matmul(mx::expand_dims(query, -2), state), -2));
-    mx::async_eval({state, outputs.back()});
   }
   cache.recurrent = state;
   const auto output = mx::astype(mx::stack(outputs), hidden.dtype());
