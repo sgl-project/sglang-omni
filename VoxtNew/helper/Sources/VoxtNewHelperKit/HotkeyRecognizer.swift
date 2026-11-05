@@ -93,16 +93,6 @@ public enum RawFlags {
         side(command, deviceLeftCommand, deviceRightCommand, .leftCommand, .rightCommand)
         return s
     }
-
-    /// The CGEventFlags of a set of families (for comparing key combos).
-    public static func families(_ flags: UInt64) -> Set<ModFamily> {
-        var s = Set<ModFamily>()
-        if flags & shift != 0 { s.insert(.shift) }
-        if flags & control != 0 { s.insert(.control) }
-        if flags & option != 0 { s.insert(.option) }
-        if flags & command != 0 { s.insert(.command) }
-        return s
-    }
 }
 
 /// Virtual key codes the recognizer knows (Carbon kVK_*).
@@ -113,6 +103,13 @@ public enum KeyCode {
     /// The 🌐 key's key down/up after fn (seen on macOS 26 with an Apple keyboard).
     public static let globe: UInt16 = 179
     public static let modifiers: Set<UInt16> = [54, 55, 56, 57, 58, 59, 60, 61, 62, 63]
+    /// Keys whose events macOS marks with fn's flag whether fn is held or
+    /// not (a laptop reaches them through fn): F1–F20, Help, Home, Page Up,
+    /// Forward Delete, End, Page Down and the arrows.
+    public static let fnFlagged: Set<UInt16> = [
+        122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111, 105, 107, 113, 106, 64, 79, 80, 90,
+        114, 115, 116, 117, 119, 121, 123, 124, 125, 126,
+    ]
 }
 
 public enum Behavior: String, Codable, Sendable {
@@ -163,9 +160,16 @@ public struct Binding: Codable, Equatable, Sendable {
         return true
     }
 
-    /// Whether the modifier families of a key event are exactly this binding's.
-    public func matches(families: Set<ModFamily>) -> Bool {
-        Set(modifiers.keys.filter { $0 != .fn }) == families
+    /// Whether a key event is this binding's: its key, with exactly its
+    /// modifier keys (RawFlags.pressed), sides and fn included. For the
+    /// keys in KeyCode.fnFlagged fn's flag says nothing, so fn is not
+    /// judged there: F5 and Fn+F5 are one shortcut.
+    public func matches(keyCode: UInt16, pressed: Set<ModKey>) -> Bool {
+        guard key == keyCode else { return false }
+        guard KeyCode.fnFlagged.contains(keyCode) else { return matches(chord: pressed) }
+        var withoutFn = self
+        withoutFn.modifiers[.fn] = nil
+        return withoutFn.matches(chord: pressed.subtracting([.fn]))
     }
 
     /// More modifiers is more specific (fn+⇧ before fn).
@@ -446,15 +450,15 @@ public struct HotkeyRecognizer: Sendable {
     private var keyBindings: [Binding] { config.bindings.filter { $0.key != nil }.sorted { $0.specificity > $1.specificity } }
 
     private mutating func handleKeyDown(keyCode: UInt16, flags: UInt64, isRepeat: Bool, t: Double, _ out: inout [HotkeyEvent]) -> Bool {
-        let families = RawFlags.families(flags)
+        let pressed = RawFlags.pressed(flags)
         // The cancel shortcut, only while active: its keys are swallowed
         // then, and reach the app in front at any other time.
-        if config.active, let c = config.cancel, c.key == keyCode, c.matches(families: families) {
+        if config.active, let c = config.cancel, c.matches(keyCode: keyCode, pressed: pressed) {
             if !isRepeat { out.append(HotkeyEvent(binding: c.id, phase: .trigger, behavior: .tap, heldMs: nil, t: t)) }
             swallowedKeys.insert(keyCode)
             return true
         }
-        guard let b = keyBindings.first(where: { $0.key == keyCode && $0.matches(families: families) }) else {
+        guard let b = keyBindings.first(where: { $0.matches(keyCode: keyCode, pressed: pressed) }) else {
             if swallowedKeys.contains(keyCode) { return true } // repeats of a swallowed key
             return false
         }
