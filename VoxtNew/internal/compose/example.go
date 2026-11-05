@@ -57,6 +57,8 @@ var (
 // text as it is (Hy-MT2 takes no clean-up rules). Nothing else changes:
 // self-corrections stay.
 func StripFillers(text string) string {
+	text = fillerBeforeStop.ReplaceAllString(text, "$1$2")
+	text = fillerInWords.ReplaceAllString(text, "$1 $2")
 	s := cjkFiller.ReplaceAllString(text, "")
 	for prev := ""; prev != s; {
 		prev, s = s, cjkOpener.ReplaceAllString(s, "$1$2")
@@ -71,3 +73,11 @@ func StripFillers(text string) string {
 	}
 	return s
 }
+
+// What removing a filler must keep: the full stop of the clause it ends
+// ("好的，嗯。" is "好的。", not "好的，"), and the space between the
+// Latin words it sat between ("and嗯and").
+var (
+	fillerBeforeStop = regexp.MustCompile(`(\S)[，,、]\s*[嗯呃]+[…\s]*([。.！!？?])`)
+	fillerInWords    = regexp.MustCompile(`([A-Za-z0-9])[嗯呃]+([A-Za-z0-9])`)
+)

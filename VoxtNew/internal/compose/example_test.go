@@ -54,6 +54,12 @@ func TestExample(t *testing.T) {
 func TestStripFillers(t *testing.T) {
 	for _, c := range []struct{ in, want string }{
 		{"呃，今天天气真好，嗯，我们下午见。", "今天天气真好，我们下午见。"},
+		// A filler before the full stop leaves the stop, and one between
+		// two Latin words leaves a space: removing it changed the sentence.
+		{"好的，嗯。", "好的。"},
+		{"这个文本处理还是很拉的，嗯。", "这个文本处理还是很拉的。"},
+		{"and嗯and I eat", "and and I eat"},
+		{"嗯。今天开会", "今天开会"},
 		{"嗯那个报告呃周四之前", "那个报告周四之前"},
 		{"Um, so we need to, uh, fix the bug.", "So we need to, fix the bug."},
 		{"umbrella and hummus, um", "umbrella and hummus,"},
