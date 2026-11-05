@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -372,6 +373,32 @@ func TestCancelResume(t *testing.T) {
 	}
 	if served := e.hub.Served(); served > repoLLM.Size()+(64<<10) {
 		t.Errorf("served %d bytes for %d", served, repoLLM.Size())
+	}
+}
+
+// TestTruncatedFileIsNotInstalled: a catalogue file cut short on disk (a
+// copy that stopped) makes the model not installed, also a file that is
+// not LFS when .actnow/blobs.json is missing. The claim gave Check no
+// sizes, so only blobs.json could catch it.
+func TestTruncatedFileIsNotInstalled(t *testing.T) {
+	e := newEnv(t, testCatalog(), Options{})
+	if err := e.m.Download("llm"); err != nil {
+		t.Fatal(err)
+	}
+	if s := wait(t, e.m, "llm"); !s.Installed {
+		t.Fatalf("downloaded: %+v", s)
+	}
+	llm, _ := e.m.Lookup("llm")
+	if err := os.Remove(fammodels.SizesFile(e.m.Hub(), llm.Repo)); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(SnapshotDir(e.m.Hub(), llm, ""), "config.json")
+	if err := os.Truncate(config, 3); err != nil { // follows the link to the blob
+		t.Fatal(err)
+	}
+	e.m.Refresh()
+	if s := e.m.Status("llm"); s.Installed || s.OnDisk {
+		t.Errorf("config.json cut short, still installed: %+v", s)
 	}
 }
 
