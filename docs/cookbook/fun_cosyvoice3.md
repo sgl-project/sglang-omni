@@ -360,6 +360,8 @@ sgl-omni serve \
   --port 8000
 ```
 
+Send `return_spec_tokens_details: true` with a speech request to get its acceptance statistics. Buffered audio adds `X-SGLang-Omni-Spec-Accept-Length`, `X-SGLang-Omni-Spec-Accept-Rate`, `X-SGLang-Omni-Spec-Num-Correct-Drafts`, `X-SGLang-Omni-Spec-Num-Proposed-Drafts` and `X-SGLang-Omni-Spec-Verify-Ct` headers; the SSE `speech.audio.done` event and the raw PCM outcome from `GET /v1/audio/speech/{request_id}` carry `sglext.spec_tokens_details`, which also holds the per-verify histogram. `spec_accept_length` is speech tokens per verify, including the token sampled at prefill, so it can read higher than the scheduler log's `accept len`, which counts only verified tokens. `spec_accept_rate` and `spec_num_proposed_drafts`, and their headers, are left out when no drafts were proposed or the draft width is adaptive.
+
 Verification reproduces CosyVoice3's sampler exactly: temperature, top-k/top-p, the repetition penalty, the minimum-length stop mask and the repetition-aware redraw. The speech tokens therefore follow the same distribution as without the draft. A request's `seed` fixes every draft and verify draw, so a seeded request reproduces its speech tokens while the draft is on; they differ from the tokens the same seed gives without the draft, which samples differently.
 
 LLM speech-token throughput without the vocoder (Seed-TTS zh, 2,020 utterances, one H200 141GB with SGLang 0.5.22, target and draft on FA3, each batch run to completion), with the default sampling and about 3.0 tokens accepted per verify:

@@ -1115,6 +1115,11 @@ def apply_thinker_result(
     else:
         pass
 
+    if result.spec_tokens_details is not None:
+        thinker_out["spec_tokens_details"] = result.spec_tokens_details
+    else:
+        pass
+
     output_token_logprobs = getattr(result, "output_token_logprobs", None)
     if output_token_logprobs is not None:
         thinker_out["output_token_logprobs"] = output_token_logprobs
