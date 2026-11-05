@@ -13,9 +13,10 @@
 #
 # It reads the persistent models and runtimes, never downloads or builds
 # them (their READMEs say how to refresh them):
-#   $HUB (~/.cache/huggingface/hub, or $HF_HUB_CACHE): the six catalogue
-#     models' snapshots at their pinned commits (the ActNow family's model
-#     library; internal/models' TestRealSnapshots lists them)
+#   the ActNow family's model library ($ACTNOW_FAMILY_DIR/models/hub, by
+#     default ~/Library/Application Support/ActNow/models/hub): the six
+#     catalogue models' snapshots at their pinned commits (internal/models'
+#     TestRealSnapshots lists them)
 #   ~/voxtnew-runtime/omni/     VOXTNEW_RUNTIME_DIR: scripts/build-omni.sh --out
 #   ~/voxtnew-runtime/llm/      scripts/build-llm.sh --out
 # --full runs the whole eval (about 20 minutes more) and writes its tables
@@ -136,9 +137,13 @@ app_build() {
 smoke() {
   local dir="$OUT/smoke"
   mkdir -p "$dir/data"
-  # The app's own processes, not the environment's; the models from $HUB
-  # (the fast ones), a family directory of its own (the real one is not
-  # written).
+  # The app's own processes, not the environment's; a family directory of
+  # its own (the real one is not written), with an APFS clone of the model
+  # library: --smoke does not bring the models over from the Hugging Face
+  # cache as a first start does, so a new family would have none.
+  local hub
+  hub="$(dirname "$(dirname "$(dirname "$(snap asr.fast)")")")"
+  mkdir -p "$dir/ActNow/models" && cp -Rc "$hub" "$dir/ActNow/models/hub" || { echo "smoke: FAIL cloning the model library $hub"; return 1; }
   env -u VOXTNEW_HELPER -u VOXTNEW_OMNI_RUNTIME -u VOXTNEW_LLM \
     ACTNOW_FAMILY_DIR="$dir/ActNow" VOXTNEW_SMOKE_MODELS=asr.fast,llm.fast \
     "$ROOT/build/darwin-arm64/VoxtNew.app/Contents/MacOS/VoxtNew" --smoke "$dir" &
