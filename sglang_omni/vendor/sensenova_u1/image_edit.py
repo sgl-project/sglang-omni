@@ -132,16 +132,20 @@ def build_it2i_inputs(
     attention_mask = {"full_attention": create_block_causal_mask(indexes[0])}
 
     input_embeds = model.language_model.get_input_embeddings()(input_ids)
-    B, N, C = input_embeds.shape
+    batch_size, token_count, embedding_dimension = input_embeds.shape
     if reference_embeddings is not None:
-        input_embeds = input_embeds.reshape(B * N, C)
-        input_ids = input_ids.reshape(B * N)
+        input_embeds = input_embeds.reshape(
+            batch_size * token_count, embedding_dimension
+        )
+        input_ids = input_ids.reshape(batch_size * token_count)
         selected = input_ids == model.img_context_token_id
         assert selected.sum() != 0
-        input_embeds[selected] = reference_embeddings.reshape(-1, C).to(
-            input_embeds.device
+        input_embeds[selected] = reference_embeddings.reshape(
+            -1, embedding_dimension
+        ).to(input_embeds.device)
+        input_embeds = input_embeds.reshape(
+            batch_size, token_count, embedding_dimension
         )
-        input_embeds = input_embeds.reshape(B, N, C)
     else:
         pass
 

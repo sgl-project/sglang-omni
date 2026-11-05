@@ -85,7 +85,6 @@ def test_edit_denoising_uses_references_and_is_repeatable(
     img_cfg_scale: float,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Exercise actual reference encoding, prefix attention and CFG on a small CPU model."""
     model, tokenizer = edit_model_and_tokenizer
     extract_feature = Mock(wraps=model.extract_feature)
     monkeypatch.setattr(model, "extract_feature", extract_feature)

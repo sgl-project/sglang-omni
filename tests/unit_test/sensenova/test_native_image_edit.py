@@ -205,7 +205,6 @@ def test_edit_api_rejects_invalid_image_tokens_before_dispatch(
     prompt: str,
     error_message: str,
 ) -> None:
-    """Invalid image tokens must be rejected before reaching the worker."""
     server_args = SimpleNamespace(
         model_path=str(tmp_path),
         pipeline_class_name="SenseNovaU1Pipeline",
