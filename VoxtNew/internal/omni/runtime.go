@@ -104,6 +104,9 @@ type Runtime struct {
 	cfg    Config
 	events *resident.Queue // Config.OnModel's
 	idle   atomic.Int64    // the idle timeout (Config.IdleTimeout, SetIdleTimeout)
+	// afterFunc runs the idle timers (time.AfterFunc; tests move a
+	// clock of their own) and returns their Stop.
+	afterFunc func(time.Duration, func()) func()
 
 	mu      sync.Mutex
 	servers map[string]*server // by model id and directory
@@ -132,6 +135,10 @@ func NewRuntime(cfg Config) *Runtime {
 	}
 	rt := &Runtime{cfg: cfg, events: resident.NewQueue(cfg.OnModel), servers: map[string]*server{}}
 	rt.idle.Store(int64(cfg.IdleTimeout))
+	rt.afterFunc = func(d time.Duration, f func()) func() {
+		t := time.AfterFunc(d, f)
+		return func() { t.Stop() }
+	}
 	return rt
 }
 

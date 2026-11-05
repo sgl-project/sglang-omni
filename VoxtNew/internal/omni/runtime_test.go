@@ -1,6 +1,7 @@
 package omni
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"os"
@@ -88,6 +89,54 @@ func eventually(t *testing.T, what string, cond func() bool) {
 }
 
 func gone(pid int) bool { return syscall.Kill(pid, 0) != nil }
+
+// fakeClock stands for the idle timers' clock: tests move it on by hand,
+// and the timers due run in the caller, in order.
+type fakeClock struct {
+	mu     sync.Mutex
+	now    time.Duration
+	timers []*fakeTimer
+}
+
+type fakeTimer struct {
+	at   time.Duration
+	fn   func()
+	done bool // stopped or run
+}
+
+// install makes rt's idle timers run on c.
+func (c *fakeClock) install(rt *Runtime) *fakeClock {
+	rt.afterFunc = func(d time.Duration, fn func()) func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		t := &fakeTimer{at: c.now + d, fn: fn}
+		c.timers = append(c.timers, t)
+		return func() {
+			c.mu.Lock()
+			t.done = true
+			c.mu.Unlock()
+		}
+	}
+	return c
+}
+
+// advance moves the clock on by d and runs the timers then due.
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	c.now += d
+	var due []*fakeTimer
+	for _, t := range c.timers {
+		if !t.done && t.at <= c.now {
+			t.done = true
+			due = append(due, t)
+		}
+	}
+	c.mu.Unlock()
+	slices.SortStableFunc(due, func(a, b *fakeTimer) int { return cmp.Compare(a.at, b.at) })
+	for _, t := range due {
+		t.fn()
+	}
+}
 
 func TestNewASR(t *testing.T) {
 	f := newFake(t, omnitest.Opts{}, nil)
@@ -300,9 +349,10 @@ func TestIdleUnload(t *testing.T) {
 
 // TestSetIdleTimeout: a change applies to the running servers at once:
 // kept (never) → stopped after the new time, counted from the change;
-// back to never, they stay; one in use counts from the end of its use.
+// back to never, they stay.
 func TestSetIdleTimeout(t *testing.T) {
 	f := newFake(t, omnitest.Opts{}, func(c *Config) { c.IdleTimeout = -1 })
+	clock := new(fakeClock).install(f.rt)
 	ctx := context.Background()
 	pcm := tone(time.Second, 0.3)
 	fast := f.asr(t, ASRFast)
@@ -320,18 +370,21 @@ func TestSetIdleTimeout(t *testing.T) {
 		}
 	}
 	use()
-	time.Sleep(150 * time.Millisecond)
+	clock.advance(time.Hour)
 	if r := f.rt.Running(); len(r) != 2 {
 		t.Fatalf("kept: running %v", r)
 	}
-	changed := time.Now()
 	f.rt.SetIdleTimeout(250 * time.Millisecond)
 	if d := f.rt.IdleTimeout(); d != 250*time.Millisecond {
 		t.Errorf("IdleTimeout %v", d)
 	}
-	eventually(t, "the idle unload", func() bool { return len(f.rt.Running()) == 0 })
-	if took := time.Since(changed); took < 250*time.Millisecond {
-		t.Errorf("unloaded %v after the change", took)
+	clock.advance(249 * time.Millisecond)
+	if r := f.rt.Running(); len(r) != 2 {
+		t.Fatalf("stopped before the new time: running %v", r)
+	}
+	clock.advance(time.Millisecond) // the idle stop waits for the process to exit
+	if r := f.rt.Running(); len(r) != 0 {
+		t.Fatalf("not stopped at the new time: running %v", r)
 	}
 	if n := len(f.records("shutdown")); n != 2 {
 		t.Errorf("%d shutdowns", n)
@@ -339,7 +392,7 @@ func TestSetIdleTimeout(t *testing.T) {
 
 	use()
 	f.rt.SetIdleTimeout(-1)
-	time.Sleep(500 * time.Millisecond)
+	clock.advance(time.Hour)
 	if r := f.rt.Running(); len(r) != 2 {
 		t.Errorf("never: running %v", r)
 	}
