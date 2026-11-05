@@ -87,6 +87,15 @@ func cardSteps() []cardStep {
 			snap(a, session.Snapshot{ID: "r2", Kind: store.KindRewrite, State: session.Done, Card: true, Delivery: deliver.ReasonCard, Raw: "shorter",
 				Title: "Late", Result: "Ten minutes late: start without me."})
 		}, body: -1, insert: true, copy: true, followUp: true, convo: true},
+		// Cut off at the model's length limit: in the card, which says so.
+		{name: "cut-off", apply: func(a *app) {
+			a.closeAnswer()
+			cut := tr(session.Done, "goroutine 是由 Go 运行时管理的", "")
+			cut.ID, cut.Delivery = "t4", deliver.ReasonCard
+			cut.Problem = &session.Problem{Code: session.ProblemTruncated, Degraded: true}
+			snap(a, session.Snapshot{ID: "t4", Kind: store.KindTranslate, State: session.Composing})
+			snap(a, cut)
+		}, msg: true, insert: true, copy: true, lang: true},
 	}
 }
 

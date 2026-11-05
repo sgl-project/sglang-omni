@@ -101,13 +101,13 @@ func (r *run) write(raw, selection string) {
 		source = selection
 	}
 	llmStart := r.now()
-	res, profile, err := r.ask(in)
+	res, profile, truncated, err := r.ask(in)
 	if err == nil && kind == store.KindTranslate && compose.Untranslated(source, res.Content, in.TargetLanguage) && r.ctx.Err() == nil {
 		r.logf("warning", "the translation looks untranslated: asking again, strictly")
 		r.m.update(r, func(s *Snapshot) { s.Retried, s.Draft = true, "" })
 		in.Strict = true
-		if again, p, err2 := r.ask(in); err2 == nil {
-			res, profile = again, p
+		if again, p, cut, err2 := r.ask(in); err2 == nil {
+			res, profile, truncated = again, p, cut
 		} else if r.ctx.Err() == nil {
 			r.logf("warning", "the strict retry failed, keeping the first answer: %v", err2)
 		}
@@ -133,17 +133,27 @@ func (r *run) write(raw, selection string) {
 		return
 	}
 	r.m.update(r, func(s *Snapshot) { s.Title, s.Draft = res.Title, res.Content })
-	r.finish(Done, nil, res.Content, o)
+	var problem *Problem
+	if truncated {
+		// Part of an answer must not go over the selection, nor in
+		// unseen: the card shows it, and says so.
+		r.logf("warning", "the answer stopped at the language model's length limit: it goes to the card")
+		problem = &Problem{Code: ProblemTruncated, Err: errors.New("the answer stopped at the language model's length limit"), Degraded: true}
+		o.card = deliver.ReasonCard
+		r.m.update(r, func(s *Snapshot) { s.Card = !r.req.Try })
+	}
+	r.finish(Done, problem, res.Content, o)
 }
 
 // ask sends one request and streams its answer into the snapshot. It
-// returns the answer (Content only, but for a JSON answer) and the
-// composition's profile.
-func (r *run) ask(in compose.Input) (compose.Answer, string, error) {
+// returns the answer (Content only, but for a JSON answer), the
+// composition's profile, and whether the model stopped at its length
+// limit (llm.FinishLength).
+func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 	cfg := r.m.cfg
 	out, err := compose.Build(in)
 	if err != nil {
-		return compose.Answer{}, "", err
+		return compose.Answer{}, "", false, err
 	}
 	msgs := make([]llm.Message, 0, len(out.History)+2)
 	for _, m := range out.Messages() {
@@ -190,20 +200,21 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, error) {
 	}
 	resp, err := r.llmChat(cfg.llmDeadlines(req, utf8.RuneCountInString(in.Text+in.Instruction), cfg.WriteTimeout))
 	if err != nil {
-		return compose.Answer{}, out.Profile(), err
+		return compose.Answer{}, out.Profile(), false, err
 	}
 	if buf.Len() > 0 {
 		publish(true)
 	}
+	truncated := resp.FinishReason == llm.FinishLength
 	if in.Answer {
 		if a, ok := compose.ParseAnswer(resp.Text); ok {
-			return a, out.Profile(), nil
+			return a, out.Profile(), truncated, nil
 		}
 		r.logf("warning", "the answer is not the JSON asked for: taking it as text")
-		return compose.Answer{Content: compose.Clean(strings.TrimSpace(strings.Trim(strings.TrimSpace(resp.Text), "`")), in.Instruction)}, out.Profile(), nil
+		return compose.Answer{Content: compose.Clean(strings.TrimSpace(strings.Trim(strings.TrimSpace(resp.Text), "`")), in.Instruction)}, out.Profile(), truncated, nil
 	}
 	input := in.Text
-	return compose.Answer{Content: compose.Clean(resp.Text, input)}, out.Profile(), nil
+	return compose.Answer{Content: compose.Clean(resp.Text, input)}, out.Profile(), truncated, nil
 }
 
 // endWriteFailed ends a Translate or Rewrite session failed. With card,

@@ -110,6 +110,18 @@ func TestWrite(t *testing.T) {
 				}
 			},
 		},
+		// An answer cut off at the model's length limit is neither
+		// inserted nor put over the selection: the card shows it, and
+		// says it may be incomplete. It used to be pasted like any other.
+		{
+			name: "a translation cut off goes to the card", kind: store.KindTranslate, sel: &fakeSelector{text: "Good morning, everyone."}, llm: &fakeLLM{text: "大家早上", finish: llm.FinishLength},
+			focus:  &proto.FocusResult{PID: 812, Role: "AXTextArea", Editable: true},
+			states: "reading composing done", state: Done, result: "大家早上", card: deliver.ReasonCard, problem: ProblemTruncated,
+		},
+		{
+			name: "translated speech cut off goes to the card", kind: store.KindTranslate, sel: &fakeSelector{}, llm: &fakeLLM{text: "你好", finish: llm.FinishLength},
+			speak: true, states: "reading recording recognizing composing done", state: Done, result: "你好", card: deliver.ReasonCard, problem: ProblemTruncated,
+		},
 		{
 			name: "untranslated: asked again strictly", kind: store.KindTranslate, sel: &fakeSelector{text: "Good morning"}, llm: &fakeLLM{texts: []string{"Good morning.", "早上好"}},
 			states: "reading composing delivering done", state: Done, result: "早上好", pasted: true,

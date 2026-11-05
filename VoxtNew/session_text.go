@@ -41,6 +41,8 @@ func sessionProblemText(p *session.Problem) (text, more, action string) {
 		return i18n.T("No language model is installed."), "", actionModels
 	case session.ProblemEmpty:
 		return i18n.T("The language model answered nothing."), "", actionNone
+	case session.ProblemTruncated:
+		return i18n.T("The model hit its length limit: the answer may be incomplete."), "", actionNone
 	case session.ProblemLLM:
 		if !p.Degraded {
 			msg, more := uitext.ModelErrorText(p.Err)

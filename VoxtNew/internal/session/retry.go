@@ -189,7 +189,7 @@ func (r *run) retry(e store.Entry, pcm []byte, stage func(State)) (store.Entry, 
 		}
 	} else {
 		var ans compose.Answer
-		ans, _, llmErr = r.ask(r.writeInput(text, e.SourceText))
+		ans, _, _, llmErr = r.ask(r.writeInput(text, e.SourceText)) // nothing is pasted: a cut-off answer only updates the entry
 		e.Result = strings.TrimSpace(ans.Content)
 		if llmErr == nil && e.Result == "" {
 			llmErr = errors.New("the language model answered nothing")
