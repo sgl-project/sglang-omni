@@ -1,0 +1,361 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Native weight-loading, numerical, and dual-tail attention contracts."""
+
+import os
+from pathlib import Path
+
+import pytest
+import torch
+from sglang.srt.configs.model_config import ModelConfig
+from transformers import Qwen3Config
+from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+from transformers.models.qwen3.modeling_qwen3 import Qwen3RMSNorm, Qwen3RotaryEmbedding
+
+from sglang_omni.model_runner.model_worker import ModelWorker
+from sglang_omni.models.moss_speech.fsm import (
+    AUDIO_PAD,
+    MODALITY_PAD,
+    MODE_AUDIO,
+    MODE_TEXT,
+)
+from sglang_omni.models.moss_speech.hf_config import (
+    MossSpeechConfig,
+    ensure_moss_speech_config_registered,
+)
+from sglang_omni.models.moss_speech.model_layers import (
+    MossSpeechRMSNorm,
+    reference_rope_frequencies,
+    request_linear,
+)
+from sglang_omni.models.moss_speech.model_runner import MossSpeechModelRunner
+from sglang_omni.models.moss_speech.request_builders import MossSpeechSGLangRequestData
+from sglang_omni.models.moss_speech.sglang_model import (
+    MossSpeechModelOutput,
+    MossSpeechSGLangModel,
+)
+from sglang_omni.scheduling.types import SchedulerRequest
+from tests.unit_test.fixtures.accelerator import require_cuda
+from tests.unit_test.fixtures.moss_speech_model import (
+    checkpoint_weights,
+    decode,
+    native_runtime,
+    prefill,
+    tiny_model,
+)
+
+NATIVE_CPU = pytest.mark.skipif(
+    os.environ.get("SGLANG_USE_CPU_ENGINE") != "1",
+    reason="Native CPU construction requires SGLANG_USE_CPU_ENGINE=1 before imports",
+)
+
+
+@NATIVE_CPU
+def test_actual_worker_allocates_both_modality_tails_without_rewriting_hf_layers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configuration = MossSpeechConfig(
+        hidden_size=128,
+        intermediate_size=256,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        head_dim=64,
+        vocab_size=256,
+        audio_vocab_size=64,
+        max_position_embeddings=16,
+        architectures=["MossSpeechForCausalLM"],
+    )
+    configuration.save_pretrained(tmp_path)
+    monkeypatch.setitem(
+        CONFIG_MAPPING._extra_content, "moss_speech", MossSpeechConfig
+    )  # noqa: leading-underscore  # Transformers registry spelling.
+    ensure_moss_speech_config_registered()
+    worker_configuration = ModelConfig(
+        str(tmp_path), trust_remote_code=False, dtype="bfloat16"
+    )
+    ModelWorker.apply_arch_override(worker_configuration, "MossSpeechForCausalLM")
+    assert worker_configuration.num_attention_layers == 40
+    assert worker_configuration.num_hidden_layers == 36
+    assert worker_configuration.hf_config.num_hidden_layers == 36
+    with native_runtime(torch.device("cpu")):
+        model = MossSpeechSGLangModel(configuration)
+        weights = checkpoint_weights(configuration)
+        assert len(weights) == 446
+        model.load_weights(weights)
+        assert model.attention_layer_ids() == list(range(40))
+
+
+@NATIVE_CPU
+def test_checkpoint_sentinels_reach_every_independent_parameter() -> None:
+    with native_runtime(torch.device("cpu")), torch.no_grad():
+        model = tiny_model(torch.device("cpu"))
+        weights = dict(checkpoint_weights(model.config))
+        model.load_weights(weights.items())
+        for parameter, source in (
+            (model.embed_tokens.weight, "model.embed_tokens.weight"),
+            (model.audio_embed.weight, "model.audio_embed.weight"),
+            (model.text_norm.weight, "model.text_norm.weight"),
+            (model.audio_norm.weight, "model.audio_norm.weight"),
+            (model.text_lm_head.weight, "text_lm_head.weight"),
+            (model.audio_lm_head.weight, "audio_lm_head.weight"),
+        ):
+            torch.testing.assert_close(parameter, weights[source], rtol=0, atol=0)
+        for layers, source_block in (
+            (model.layers, "shared_block"),
+            (model.text_block, "text_block"),
+            (model.audio_block, "audio_block"),
+        ):
+            for layer_index, layer in enumerate(layers):
+                prefix = f"model.{source_block}.layers.{layer_index}."
+                expected_qkv = torch.cat(
+                    [
+                        weights[prefix + f"self_attn.{projection}_proj.weight"]
+                        for projection in ("q", "k", "v")
+                    ]
+                )
+                expected_gate_up = torch.cat(
+                    [
+                        weights[prefix + f"mlp.{projection}_proj.weight"]
+                        for projection in ("gate", "up")
+                    ]
+                )
+                torch.testing.assert_close(
+                    layer.self_attn.qkv_proj.weight, expected_qkv, rtol=0, atol=0
+                )
+                torch.testing.assert_close(
+                    layer.mlp.gate_up_proj.weight, expected_gate_up, rtol=0, atol=0
+                )
+                for parameter, leaf in (
+                    (layer.self_attn.o_proj.weight, "self_attn.o_proj.weight"),
+                    (layer.self_attn.q_norm.weight, "self_attn.q_norm.weight"),
+                    (layer.self_attn.k_norm.weight, "self_attn.k_norm.weight"),
+                    (layer.mlp.down_proj.weight, "mlp.down_proj.weight"),
+                    (layer.input_layernorm.weight, "input_layernorm.weight"),
+                    (
+                        layer.post_attention_layernorm.weight,
+                        "post_attention_layernorm.weight",
+                    ),
+                ):
+                    torch.testing.assert_close(
+                        parameter, weights[prefix + leaf], rtol=0, atol=0
+                    )
+
+
+@NATIVE_CPU
+@pytest.mark.parametrize(
+    "defect,message",
+    [
+        ("missing", "cover"),
+        ("unexpected", "Unexpected"),
+        ("duplicate", "Duplicate"),
+        ("broadcast", "shape"),
+        ("shape", "shape"),
+    ],
+)
+def test_incomplete_duplicate_and_malformed_checkpoints_fail(
+    defect: str, message: str
+) -> None:
+    with native_runtime(torch.device("cpu")):
+        model = tiny_model(torch.device("cpu"))
+        weights = checkpoint_weights(model.config)
+        if defect == "missing":
+            weights.pop()
+        elif defect == "unexpected":
+            weights.append(("model.lm_head.weight", torch.zeros(1)))
+        elif defect == "duplicate":
+            weights.append(weights[0])
+        elif defect == "broadcast":
+            source_name, tensor = weights[6]
+            weights[6] = (source_name, tensor[:1])
+        else:
+            source_name, tensor = weights[0]
+            weights[0] = (
+                source_name,
+                torch.zeros(tuple(length + 3 for length in tensor.shape)),
+            )
+        with pytest.raises(RuntimeError, match=message):
+            model.load_weights(weights)
+
+
+def test_bf16_normalization_rounds_residual_and_normalized_value() -> None:
+    """Combining FP32 residual addition or weight multiplication changes checkpoint rounding."""
+    generator = torch.Generator().manual_seed(921)
+    hidden_states = torch.randn(3, 128, generator=generator).bfloat16()
+    residual = torch.randn(3, 128, generator=generator).bfloat16()
+    original_hidden = hidden_states.clone()
+    with torch.random.fork_rng(devices=[]):
+        normalization = MossSpeechRMSNorm(128, eps=1e-6).bfloat16()
+    with torch.no_grad():
+        normalization.weight.copy_(torch.randn(128, generator=generator).bfloat16())
+    rounded_residual = hidden_states + residual
+    reference = Qwen3RMSNorm(128, eps=1e-6).bfloat16()
+    with torch.no_grad():
+        reference.weight.copy_(normalization.weight)
+    expected = reference(rounded_residual)
+    actual, actual_residual = normalization(hidden_states, residual)
+    assert torch.equal(actual, expected)
+    assert torch.equal(actual_residual, rounded_residual)
+    assert torch.equal(hidden_states, original_hidden)
+
+
+def test_projection_matches_each_request_in_isolation() -> None:
+    generator = torch.Generator().manual_seed(78)
+    hidden_states = torch.randn(7, 128, generator=generator).bfloat16()
+    weight = torch.randn(32, 128, generator=generator).bfloat16()
+    linear = torch.nn.functional.linear
+    expected = torch.cat(
+        [linear(hidden_states[:2], weight), linear(hidden_states[2:], weight)]
+    )
+    actual = request_linear(hidden_states, weight, [2, 5])
+    assert torch.equal(actual, expected)
+
+
+@pytest.mark.parametrize("head_dim,theta", [(8, 10000.0), (128, 1_000_000.0)])
+def test_rope_frequencies_keep_cpu_float32_reference_values(
+    head_dim: int, theta: float
+) -> None:
+    frequencies = reference_rope_frequencies(head_dim, theta)
+    assert frequencies.device.type == "cpu"
+    assert frequencies.dtype == torch.float32
+    with torch.device("cpu"):
+        reference = Qwen3RotaryEmbedding(
+            Qwen3Config(head_dim=head_dim, rope_theta=theta)
+        )
+    torch.testing.assert_close(frequencies, reference.inv_freq, rtol=0, atol=0)
+
+
+def assert_native_request_isolation(device: torch.device) -> None:
+    with native_runtime(device), torch.no_grad():
+        generator = torch.Generator(device=device).manual_seed(183)
+        model = tiny_model(device)
+        prompt_embeddings = [
+            torch.randn((length, 128), generator=generator, device=device)
+            for length in (2, 3)
+        ]
+        feedback_embeddings = torch.randn((2, 128), generator=generator, device=device)
+        packed_prefill, packed_backend = prefill(
+            model, prompt_embeddings, ["first", "second"]
+        )
+        packed_decode = decode(
+            model, packed_backend, [2, 3], feedback_embeddings, ["first", "second"]
+        )
+        for request_index, prompt in enumerate(prompt_embeddings):
+            isolated_prefill, isolated_backend = prefill(model, [prompt], ["isolated"])
+            isolated_decode = decode(
+                model,
+                isolated_backend,
+                [len(prompt)],
+                feedback_embeddings[request_index : request_index + 1],
+                ["isolated"],
+            )
+            for packed, isolated in (
+                (packed_prefill.text_logits, isolated_prefill.text_logits),
+                (packed_prefill.audio_logits, isolated_prefill.audio_logits),
+                (packed_decode.text_logits, isolated_decode.text_logits),
+                (packed_decode.audio_logits, isolated_decode.audio_logits),
+            ):
+                assert packed is not None and isolated is not None
+                torch.testing.assert_close(
+                    packed[request_index], isolated[0], rtol=0, atol=0
+                )
+        first_tail = model.config.num_shared_layers
+        second_tail = first_tail + model.config.num_modality_layers
+        text_keys = packed_backend.token_to_kv_pool.get_key_buffer(first_tail)
+        audio_keys = packed_backend.token_to_kv_pool.get_key_buffer(second_tail)
+        assert text_keys.data_ptr() != audio_keys.data_ptr()
+        assert torch.count_nonzero(text_keys[1:8]) > 0
+        assert torch.count_nonzero(audio_keys[1:8]) > 0
+        assert not torch.equal(text_keys[1:8], audio_keys[1:8])
+
+
+@NATIVE_CPU
+def test_native_cpu_prefill_decode_keep_requests_and_tail_kv_independent() -> None:
+    assert_native_request_isolation(torch.device("cpu"))
+
+
+@pytest.mark.accelerator
+def test_native_cuda_prefill_decode_keep_requests_and_tail_kv_independent() -> None:
+    require_cuda()
+    if os.environ.get("SGLANG_USE_CPU_ENGINE") == "1":
+        pytest.skip("Run the accelerator lane without the CPU engine override")
+    else:
+        assert_native_request_isolation(torch.device("cuda", 0))
+
+
+@pytest.mark.accelerator
+def test_replayed_dual_logits_follow_current_request_order_and_active_rows() -> None:
+    """Captured logits must reach new requests instead of capture-time request IDs."""
+    require_cuda()
+    device = torch.device("cuda", 0)
+    with native_runtime(device), torch.no_grad():
+        model = tiny_model(device)
+        runner = object.__new__(MossSpeechModelRunner)
+        runner.model = model
+        hidden_states = torch.zeros(4, 128, dtype=torch.bfloat16, device=device)
+
+        def project_channels() -> MossSpeechModelOutput:
+            text_logits = request_linear(
+                hidden_states, model.text_lm_head.weight, [1] * 4
+            )
+            audio_logits = request_linear(
+                hidden_states, model.audio_lm_head.weight, [1] * 4
+            )
+            return MossSpeechModelOutput(
+                next_token_logits=text_logits,
+                text_logits=text_logits,
+                audio_logits=audio_logits,
+            )
+
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            for _ in range(2):
+                project_channels()
+        torch.cuda.current_stream().wait_stream(stream)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            output = project_channels()
+        generator = torch.Generator(device=device).manual_seed(184)
+        for step, active_rows in enumerate((3, 1, 4, 2)):
+            hidden_states.copy_(
+                torch.randn(hidden_states.shape, generator=generator, device=device)
+            )
+            graph.replay()
+            expected_text = torch.nn.functional.linear(
+                hidden_states, model.text_lm_head.weight
+            ).argmax(-1)
+            expected_audio = torch.nn.functional.linear(
+                hidden_states, model.audio_lm_head.weight
+            ).argmax(-1)
+            requests = [
+                SchedulerRequest(
+                    request_id=f"step-{step}-request-{active_rows-index}",
+                    data=MossSpeechSGLangRequestData(
+                        prompt_rows=torch.tensor(
+                            [[MODALITY_PAD, 3]] if index % 2 else [[3, AUDIO_PAD]]
+                        ),
+                        mode=MODE_AUDIO if index % 2 else MODE_TEXT,
+                    ),
+                )
+                for index in range(active_rows)
+            ]
+            selected = runner.sample_next_token_ids(output, None, None, requests)
+            assert selected.shape == (active_rows,)
+            for index, request in enumerate(requests):
+                text_token = int(expected_text[index])
+                audio_token = int(expected_audio[index])
+                expected_row = (MODALITY_PAD if index % 2 else text_token, audio_token)
+                assert request.data.output_rows == [expected_row]
+                assert int(selected[index]) == (
+                    audio_token if index % 2 else text_token
+                )
+                expected_embedding = model.audio_embed.weight[audio_token]
+                if index % 2 == 0:
+                    expected_embedding = model.embed_tokens.weight[text_token]
+                else:
+                    pass
+                torch.testing.assert_close(
+                    request.data.pending_feedback_queue.popleft(),
+                    expected_embedding,
+                    rtol=0,
+                    atol=0,
+                )
