@@ -314,9 +314,11 @@ class DllmScheduler:
         """Create a companion uncond Req for CFG and add to waiting queue."""
         uncond_rid = f"{cond_req.rid}{rid_suffix}"
         uncond_input_ids = list(uncond_input_ids)
-        if len(uncond_input_ids) != len(cond_req.origin_input_ids):
+        if (len(uncond_input_ids) - len(cond_req.origin_input_ids)) % (
+            cond_req.dllm_config.block_size
+        ):
             raise ValueError(
-                "CFG companion input must be physically aligned with the "
+                "CFG companion input must share a block column with the "
                 f"conditional input: cond={len(cond_req.origin_input_ids)}, "
                 f"companion={len(uncond_input_ids)}"
             )

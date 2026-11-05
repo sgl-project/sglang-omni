@@ -34,24 +34,25 @@ def initial_payload():
     )
 
 
-def test_image_phase_generates_the_frame_grid_and_closes_it_with_eoi():
+def image_request(state):
     pytest.importorskip("sglang")
     from sglang_omni.models.llada2_uni.request_builders import (
         build_dllm_thinker_request,
     )
 
-    def image_request(state):
-        return build_dllm_thinker_request(
-            state,
-            params={"stop": ["stop"], "stop_token_ids": [666]},
-            tokenizer=Tokenizer(),
-            vocab_size=IMAGE_TOKEN_OFFSET + 16,
-            dllm_config=SimpleNamespace(
-                block_size=4, mask_id=99, requires_separate_context_encoding=False
-            ),
-            request_id="story",
-        ).req
+    return build_dllm_thinker_request(
+        state,
+        params={"stop": ["stop"], "stop_token_ids": [666]},
+        tokenizer=Tokenizer(),
+        vocab_size=IMAGE_TOKEN_OFFSET + 16,
+        dllm_config=SimpleNamespace(
+            block_size=4, mask_id=99, requires_separate_context_encoding=False
+        ),
+        request_id="story",
+    ).req
 
+
+def test_image_phase_generates_the_frame_grid_and_closes_it_with_eoi():
     state = LLaDA2UniPipelineState.from_dict(initial_payload().data)
     advance(state, [71, 10, 22, 23, 12])
     req = image_request(state)
@@ -60,9 +61,10 @@ def test_image_phase_generates_the_frame_grid_and_closes_it_with_eoi():
     assert req.sampling_params.max_new_tokens == 6
     assert req.sampling_params.stop_strs == []
     assert not req.sampling_params.stop_token_ids
-    assert len(req.origin_input_ids) == len(
-        req._uncond_input_ids
-    )  # noqa: leading-underscore  # DLLM protocol
+    # The rows share a block column, and no block of padding is left to encode.
+    pad_length = req._uncond_left_pad_len  # noqa: leading-underscore  # DLLM protocol
+    assert 0 <= pad_length < 4
+    assert (len(req.origin_input_ids) - len(req._uncond_input_ids)) % 4 == 0
     assert req._cfg_scale == 4.0  # noqa: leading-underscore  # DLLM protocol
     assert req._dllm_steps == 32  # noqa: leading-underscore  # DLLM protocol
 
@@ -72,6 +74,25 @@ def test_image_phase_generates_the_frame_grid_and_closes_it_with_eoi():
     interleaved = state.stream_state["interleaved"]
     assert interleaved["phase"] == "text" and interleaved["emit_frame"]
     assert state.prompt["input_ids"][0, -1].item() == 11
+
+
+def test_image_phase_budget_counts_the_padding_of_the_longest_row():
+    state = LLaDA2UniPipelineState.from_dict(initial_payload().data)
+    advance(state, [71, 10, 22, 23, 12])
+    advance(state, [IMAGE_TOKEN_OFFSET + i for i in range(6)])
+    advance(state, [10, 22, 23, 12])
+    req = image_request(state)
+    longest_row = max(
+        len(req._uncond_input_ids),  # noqa: leading-underscore  # DLLM protocol
+        len(req._uncond_img_input_ids),  # noqa: leading-underscore  # DLLM protocol
+    )
+    assert longest_row > len(req.origin_input_ids)
+
+    state.stream_state["interleaved"]["max_seq_len"] = longest_row + 6
+    assert image_request(state).sampling_params.max_new_tokens == 6
+    state.stream_state["interleaved"]["max_seq_len"] = longest_row + 5
+    with pytest.raises(ValueError, match="exhausted its token budget"):
+        image_request(state)
 
 
 @pytest.mark.parametrize(

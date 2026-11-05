@@ -169,7 +169,6 @@ def build_dllm_thinker_request(
     phase = interleaved["phase"] if state.task_kind == "interleaved" else None
     image_phase = phase == "image"
     cfg_settings = stream_state
-    conditional_pad = 0
     max_new_tokens = params.get("max_new_tokens", DEFAULT_THINKER_MAX_NEW_TOKENS)
     if phase == "text":
         remaining = interleaved["max_seq_len"] - len(input_ids_array)
@@ -180,40 +179,27 @@ def build_dllm_thinker_request(
         max_new_tokens = min(interleaved["text_max_new_tokens"], remaining)
     elif image_phase:
         plan = interleaved["cfg_plan"]
-        branches = {"conditional": list(input_ids_array)}
-        branches.update(
-            {
-                "uncond" if name == "unconditional" else "uncond_img": ids
-                for name, ids in plan["branches"].items()
-            }
-        )
-        length = max(map(len, branches.values()))
-        # The frame's grid, image tokens only, as a text-to-image pass.
-        max_new_tokens = min(
-            interleaved["current_frame"]["remaining_image_tokens"],
-            interleaved["max_seq_len"] - length,
-        )
-        if max_new_tokens <= 0:
-            raise ValueError("interleaved image phase exhausted its token budget")
-        else:
-            pass
-        conditional_pad = length - len(input_ids_array)
-        input_ids_array = array(
-            "q", [tokenizer.mask_token_id] * conditional_pad + list(input_ids_array)
-        )
         cfg_settings = {
             "cfg_scale": plan["cfg_scale"],
             "cfg_image_scale": plan["cfg_image_scale"],
             "cfg_rescale": plan["cfg_rescale"],
         }
-        for name, ids in branches.items():
-            if name != "conditional":
-                (
-                    cfg_settings[f"{name}_input_ids"],
-                    cfg_settings[f"{name}_left_pad_len"],
-                ) = align_cfg_unconditional_input_ids(tokenizer, input_ids_array, ids)
-            else:
-                pass
+        length = len(input_ids_array)
+        for name, ids in plan["branches"].items():
+            branch = "uncond" if name == "unconditional" else "uncond_img"
+            # note (qiujiawei): rows only share a block column, whole pad blocks change nothing.
+            pad_length = (len(input_ids_array) - len(ids)) % dllm_config.block_size
+            cfg_settings[f"{branch}_input_ids"] = [
+                tokenizer.mask_token_id
+            ] * pad_length + ids
+            cfg_settings[f"{branch}_left_pad_len"] = pad_length
+            length = max(length, pad_length + len(ids))
+        # The frame's grid, image tokens only, as a text-to-image pass.
+        max_new_tokens = interleaved["current_frame"]["remaining_image_tokens"]
+        if length + max_new_tokens > interleaved["max_seq_len"]:
+            raise ValueError("interleaved image phase exhausted its token budget")
+        else:
+            pass
     elif state.thinking_phase == "text":
         max_new_tokens = DEFAULT_THINKER_MAX_NEW_TOKENS
     elif state.task_kind in ("t2i", "edit"):
@@ -273,9 +259,6 @@ def build_dllm_thinker_request(
     )
     if image_phase:
         req._task_kind = "t2i"  # noqa: leading-underscore  # DLLM protocol
-        req._dllm_left_pad_len = (
-            conditional_pad  # noqa: leading-underscore  # DLLM protocol
-        )
     else:
         pass
     # dllm_steps sets the image pass, the thinking text keeps the block schedule.
@@ -310,8 +293,8 @@ def build_dllm_thinker_request(
                     continue
                 else:
                     pad_len = cfg_settings["uncond_img_left_pad_len"]
-            if len(branch_ids) != len(input_ids_array):
-                raise ValueError("CFG branches must have equal physical lengths")
+            if (len(branch_ids) - len(input_ids_array)) % dllm_config.block_size:
+                raise ValueError("CFG branches must share a block column")
             else:
                 pass
             if not 0 <= pad_len <= len(branch_ids):

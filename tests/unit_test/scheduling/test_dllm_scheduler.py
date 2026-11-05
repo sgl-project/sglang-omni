@@ -505,6 +505,18 @@ def test_cfg_rows_encode_at_their_own_length_then_decode_together(
     assert not any(req.is_dllm_prefill() for req in batch.reqs)
 
 
+def test_companion_in_another_block_column_is_rejected(
+    chunked_scheduler: DllmScheduler,
+) -> None:
+    scheduler = chunked_scheduler
+    conditional = scheduler.waiting_queue[0]
+
+    with pytest.raises(ValueError, match="share a block column"):
+        scheduler.create_uncond_companion(
+            conditional, [1] * 129, 0, "-uncond", mark_img=False
+        )
+
+
 def test_abort_releases_a_cfg_row_that_never_ran(
     chunked_scheduler: DllmScheduler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
