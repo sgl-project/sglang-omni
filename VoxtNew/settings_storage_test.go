@@ -1,12 +1,17 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/sgl-project/sglang-omni/VoxtNew/internal/datadir"
 	"github.com/sgl-project/sglang-omni/VoxtNew/internal/models"
+	"github.com/sgl-project/sglang-omni/VoxtNew/internal/store"
 )
 
 // TestStorageModels: Settings → Storage shows the shared model folder and
@@ -67,5 +72,53 @@ func TestStorageModels(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(a.home(), datadir.ResetFile)); err != nil {
 		t.Errorf("no reset: %v", err)
+	}
+}
+
+// TestEraseStopsWhenRecordingsStay: Erase with the recordings in a folder
+// outside the data folder, where one cannot be deleted. Nothing is
+// erased and VoxtNew does not restart; a toast says why. It used to
+// restart and erase the rest, leaving that file with no entry naming it.
+func TestEraseStopsWhenRecordingsStay(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root deletes a read-only folder's files")
+	}
+	a, _, tt := newTestApp(t)
+	seedModels(t, a, models.ASRFast)
+	useModels(t, a, models.ASRFast)
+	h := a.lib.store.History()
+	locked := filepath.Join(t.TempDir(), "Recordings")
+	if err := os.Mkdir(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h.SetAudioDir(locked)
+	os.WriteFile(filepath.Join(locked, "e1.wav"), []byte("RIFF"), 0o644)
+	if err := h.Put(context.Background(), store.Entry{ID: "e1", Kind: store.KindTranscribe, CreatedAt: time.Now(), Result: "x", Audio: "e1.wav"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0o755) })
+	relaunched := false
+	old := appRelaunch
+	appRelaunch = func() { relaunched = true }
+	defer func() { appRelaunch = old }()
+	a.navigate("/settings/storage")
+	a.askErase()
+	frames(tt)
+	a.resetText = "DELETE"
+	click(t, tt, "Erase and restart")
+	if relaunched {
+		t.Error("restarted to erase, with a recording left behind")
+	}
+	if !hasPrefix(tt, "Could not erase:") && !slices.ContainsFunc(a.toasts, func(s string) bool { return strings.HasPrefix(s, "Could not erase:") }) {
+		t.Errorf("no toast: %q %q", a.toasts, firstTexts(tt))
+	}
+	if !onDisk(a, models.ASRFast) {
+		t.Error("the models went before the recordings")
+	}
+	if _, err := os.Stat(filepath.Join(a.home(), datadir.ResetFile)); !os.IsNotExist(err) {
+		t.Errorf("reset asked: %v", err)
 	}
 }

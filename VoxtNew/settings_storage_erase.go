@@ -125,14 +125,20 @@ func (a *app) eraseAll() {
 	a.resetAsk, a.erasing = "", true
 	h := a.lib.store.History()
 	a.async(func() {
-		eraseFamily(fam, del, ids)
 		if h.AudioDir() != h.DefaultAudioDir() {
 			// Recordings outside the data folder (history_settings.go):
-			// the start's erase does not reach them.
+			// the start's erase does not reach them. One that stays
+			// stops the erase, before anything else is gone.
 			if _, err := h.DeleteAudio(context.Background()); err != nil {
 				log.Printf("erase: recordings: %v", err)
+				a.post(func() {
+					a.erasing = false
+					a.toast(i18n.T("Could not erase: %v", err))
+				})
+				return
 			}
 		}
+		eraseFamily(fam, del, ids)
 		err := datadir.WriteJSON(filepath.Join(home, datadir.ResetFile), datadir.PendingReset{Everything: true, Also: []string{logs}})
 		a.post(func() {
 			a.erasing = false
