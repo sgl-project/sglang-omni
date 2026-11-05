@@ -149,8 +149,8 @@ class QwenTalkerModelRunner(ModelRunner["SGLangARRequestData"]):
             talker_hidden = talker_hidden.unsqueeze(1)
         else:
             pass
-        self.model.code_predictor_forward(layer0_codes, talker_hidden)
         self.stage_token_ids(result, result.next_token_ids)
+        self.model.code_predictor_forward(layer0_codes, talker_hidden)
         self.emit_code_chunks_and_feedback(
             schedule_batch=schedule_batch,
             requests=requests,
