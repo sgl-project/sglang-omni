@@ -10,12 +10,12 @@ Architecturally, MOSS-TTS-v1.5 is the `delay-pattern` counterpart to [MOSS-TTS-L
 
 This table summarizes the model's main user-facing capabilities.
 
-| Capability               | How to use it                                                                  |
-| ------------------------ | ------------------------------------------------------------------------------ |
+| Capability               | How to use it                                                                    |
+| ------------------------ | -------------------------------------------------------------------------------- |
 | Text-to-speech           | Send text in `input`; generated speech is 24 kHz.                              |
-| Voice cloning            | Provide a reference clip and its transcript.                                   |
-| Languages                | Supports 31 languages; use `language` to provide a hint.                      |
-| Pronunciation and pauses | Include Pinyin/IPA or a marker such as `[pause 0.5s]` in `input`.               |
+| Voice cloning            | Provide a reference clip and its transcript.                                     |
+| Languages                | Supports 31 languages; use `language` to provide a hint.                       |
+| Pronunciation and pauses | Include Pinyin/IPA or a marker such as `[pause 0.5s]` in `input`.            |
 | Length and style         | Use duration tokens to guide length or `instructions` to guide speaking style. |
 
 ## Prerequisites
@@ -275,11 +275,15 @@ is 0.00%.
 
 ## Known Limitations
 
-- **Voice cloning depends on the reference.** Omit the reference for non-cloned speech; provide
-  the transcript (`text` / `ref_text`) for the best speaker similarity when cloning.
-- **Concurrency vs. WER.** Quality is best around `--max-concurrency 8`; higher concurrency
-  regresses WER.
-- **Rare runaway generation.** A small fraction of utterances can loop and generate up to
-  `max_new_tokens`; setting a `token_count` (or lowering `max_new_tokens`) bounds the output.
-- **Duration is a hint.** `${token:N}` / `token_count` steers length but is not an exact clip
-  duration.
+- **High concurrency degrades WER.**
+
+  - **Impact:** Setting `--max-concurrency` too high may increase throughput, but it will regress the Word Error Rate (WER), leading to lower transcription quality.
+  - **Mitigation:** Keep `--max-concurrency` around `8` to maintain the best quality.
+- **Rare runaway generation (looping).**
+
+  - **Impact:** A small fraction of utterances may get stuck in a generation loop and keep producing tokens until the hard limit, resulting in abnormally long and unusable audio.
+  - **Mitigation:** Set a `token_count` to bound the output, or lower the `max_new_tokens` limit.
+- **Duration control is approximate (a hint, not exact).**
+
+  - **Impact:** Using `${token:N}` or `token_count` steers the output length, but the actual generated audio duration may not precisely match the requested time.
+  - **Mitigation:** Treat these parameters as a length hint. If exact clip duration is required, consider post-processing (e.g., trimming) the generated audio.
