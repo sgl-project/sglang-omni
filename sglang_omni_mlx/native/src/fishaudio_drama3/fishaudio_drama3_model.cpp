@@ -93,7 +93,9 @@ Drama3Model::Drama3Model(const std::filesystem::path &model_directory,
       expert_cache_(offload_experts
                         ? std::make_unique<ExpertCache>(model_directory)
                         : nullptr),
-      checkpoint_(LoadDrama3Weights(model_directory, offload_experts), config_),
+      checkpoint_(expert_cache_ ? expert_cache_->TakeResidentWeights()
+                                : LoadDrama3Weights(model_directory, false),
+                  config_),
       tokenizer_(model_directory), codec_(model_directory),
       candidate_ids_(mx::array(0)) {
   const nlohmann::json &text = config_.at("text_config");

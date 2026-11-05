@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "fishaudio_drama3/fishaudio_drama3_experts.h"
 
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -291,42 +292,70 @@ void Verify(const std::filesystem::path &directory, int bits, mx::Dtype dtype) {
   // values.
   drama::ExpertCache replaced(directory, 2 * expert_bytes);
   const auto cached_expert = replaced.Acquire(kPrefix, 0);
-  auto replacement_weights = weights;
-  for (auto &[name, weight] : replacement_weights) {
+  const auto replacement_path = directory / "replacement.tmp.safetensors";
+  std::filesystem::copy_file(path, replacement_path,
+                             std::filesystem::copy_options::overwrite_existing);
+  std::ifstream original(path, std::ios::binary);
+  uint64_t header_bytes = 0;
+  original.read(reinterpret_cast<char *>(&header_bytes), 8);
+  std::string header(header_bytes, '\0');
+  original.read(header.data(), header.size());
+  const auto tensors = nlohmann::json::parse(header);
+  std::fstream replacement(replacement_path,
+                           std::ios::binary | std::ios::in | std::ios::out);
+  for (const auto &[name, tensor] : tensors.items()) {
     if (drama::IsRoutedExpertWeight(name) && name.ends_with(".biases")) {
-      weight = mx::add(weight, mx::array(1.0f, weight.dtype()));
+      const auto offsets = tensor.at("data_offsets").get<std::vector<size_t>>();
+      const std::string payload(offsets[1] - offsets[0], '\0');
+      replacement.seekp(8 + header_bytes + offsets[0]);
+      replacement.write(payload.data(), payload.size());
+    } else if (name == "tower.test") {
+      const float value = 2.0f;
+      replacement.seekp(8 + header_bytes +
+                        tensor.at("data_offsets").at(0).get<size_t>());
+      replacement.write(reinterpret_cast<const char *>(&value), sizeof(value));
     } else {
     }
   }
-  const auto replacement_path = directory / "replacement.tmp.safetensors";
-  mx::save_safetensors(replacement_path.string(), replacement_weights);
+  replacement.close();
   Require(std::filesystem::file_size(path) ==
               std::filesystem::file_size(replacement_path),
           "replacement fixture changed shard size");
-  auto original_reader = std::make_shared<CountingReader>(path.string());
-  auto replacement_reader =
-      std::make_shared<CountingReader>(replacement_path.string());
-  uint64_t original_header_bytes = 0;
-  uint64_t replacement_header_bytes = 0;
-  original_reader->read(reinterpret_cast<char *>(&original_header_bytes), 8);
-  replacement_reader->read(reinterpret_cast<char *>(&replacement_header_bytes),
-                           8);
-  std::string original_header(original_header_bytes, '\0');
-  std::string replacement_header(replacement_header_bytes, '\0');
-  original_reader->read(original_header.data(), original_header.size());
-  replacement_reader->read(replacement_header.data(),
-                           replacement_header.size());
-  Require(original_header == replacement_header,
+  std::ifstream patched(replacement_path, std::ios::binary);
+  std::string patched_header(8 + header_bytes, '\0');
+  patched.read(patched_header.data(), patched_header.size());
+  Require(patched_header.substr(8) == header &&
+              std::memcmp(patched_header.data(), &header_bytes, 8) == 0,
           "replacement fixture changed tensor layout");
-  Require(
-      mx::max(
-          mx::abs(mx::subtract(
-              mx::astype(weights.at(kPrefix + ".up_proj.biases"), mx::float32),
-              mx::astype(replacement_weights.at(kPrefix + ".up_proj.biases"),
-                         mx::float32))))
-              .item<float>() > 0.5f,
-      "replacement fixture did not change expert values");
   std::filesystem::rename(replacement_path, path);
+  const omni_common::Checkpoint startup(replaced.TakeResidentWeights(), config);
+  Require(startup.Weight("tower.test").item<float>() == 1.0f,
+          "startup mixed resident and expert shard generations");
+  Require(!startup.Has(kPrefix + ".up_proj.weight") &&
+              !startup.Has("codec.test") && startup.Has("tower.test") &&
+              startup.Has("backbone.model.layers.0.mlp.gate.weight") &&
+              startup.Has("backbone.model.layers.0.mlp.shared_expert.weight"),
+          "one-shot resident extraction changed weight selection");
+  bool repeated_take_rejected = false;
+  try {
+    replaced.TakeResidentWeights();
+  } catch (const std::runtime_error &error) {
+    repeated_take_rejected = std::string(error.what()) ==
+                             "resident weights already taken from expert cache";
+  }
+  Require(repeated_take_rejected,
+          "repeated resident extraction did not report consumption");
+  std::cout << "one-shot resident extraction rejected repeat bits=" << bits
+            << " dtype=" << dtype << '\n';
+  const omni_common::Checkpoint replacement_checkpoint(
+      drama::LoadDrama3Weights(directory, false), config);
+  Require(replacement_checkpoint.Weight("tower.test").item<float>() == 2.0f &&
+              mx::max(mx::abs(mx::subtract(
+                          replacement_checkpoint.Weight(kPrefix +
+                                                        ".up_proj.biases"),
+                          weights.at(kPrefix + ".up_proj.biases"))))
+                      .item<float>() > 0.0f,
+          "replacement did not change resident and expert payloads");
   Require(replaced.Acquire(kPrefix, 0) == cached_expert,
           "replacement invalidated cached expert");
   const auto uncached_expert = replaced.Acquire(kPrefix, 1);

@@ -19,6 +19,11 @@ namespace mx = mlx::core;
 
 namespace {
 
+bool IsDrama3Weight(const std::string &name) {
+  return name.starts_with("backbone.") || name.starts_with("semantic_head.") ||
+         name.starts_with("tower.");
+}
+
 std::vector<std::filesystem::path>
 DramaWeightFiles(const std::filesystem::path &model_directory) {
   std::vector<std::filesystem::path> paths;
@@ -204,13 +209,7 @@ LoadDrama3Weights(const std::filesystem::path &model_directory,
       return true;
     } else {
     }
-    for (const char *prefix : {"backbone.", "semantic_head.", "tower."}) {
-      if (named.first.starts_with(prefix)) {
-        return false;
-      } else {
-      }
-    }
-    return true;
+    return !IsDrama3Weight(named.first);
   });
   return weights;
 }
@@ -245,6 +244,10 @@ ExpertCache::ExpertCache(const std::filesystem::path &model_directory,
     const auto tensors = nlohmann::json::parse(header);
     for (const auto &[name, weight] : weights) {
       if (!IsRoutedExpertWeight(name)) {
+        if (IsDrama3Weight(name)) {
+          resident_weights_.insert_or_assign(name, weight);
+        } else {
+        }
         continue;
       } else if (weight.ndim() != 3 || weight.shape(0) <= 0 ||
                  weight.nbytes() == 0) {
@@ -307,6 +310,16 @@ ExpertCache::ExpertCache(const std::filesystem::path &model_directory,
       } else {
       }
     }
+  }
+}
+
+omni_common::WeightMap ExpertCache::TakeResidentWeights() {
+  if (resident_weights_taken_) {
+    throw std::runtime_error(
+        "resident weights already taken from expert cache");
+  } else {
+    resident_weights_taken_ = true;
+    return std::move(resident_weights_);
   }
 }
 

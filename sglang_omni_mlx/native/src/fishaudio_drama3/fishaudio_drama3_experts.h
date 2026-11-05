@@ -31,6 +31,7 @@ public:
                        size_t capacity_bytes = kExpertCacheBytes);
   ExpertCache(const ExpertCache &) = delete;
   ExpertCache &operator=(const ExpertCache &) = delete;
+  omni_common::WeightMap TakeResidentWeights();
   std::shared_ptr<const ExpertWeights> Acquire(const std::string &prefix,
                                                int expert_id);
   mlx::core::array Routed(const mlx::core::array &input,
@@ -56,6 +57,8 @@ public:
   size_t payload_read_bytes() const { return payload_read_bytes_->load(); }
 
 private:
+  omni_common::WeightMap resident_weights_;
+  bool resident_weights_taken_ = false;
   struct TensorSlice {
     std::shared_ptr<mlx::core::io::Reader> shard;
     mlx::core::Shape shape;
