@@ -3,9 +3,16 @@
 cmake_minimum_required(VERSION 3.24)
 project(sglang_omni_mlx_native LANGUAGES C CXX)
 
+option(SGLANG_BUILD_QWEN3_OMNI "Build full Qwen3-Omni (requires external FFmpeg 7)" OFF)
+if(SGLANG_BUILD_QWEN3_OMNI)
+  enable_language(OBJCXX)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_OBJCXX_STANDARD 20)
+set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
 
 # Note (Jiaxin Deng): exactly the MLX build the Python reference server runs
 # on, so both produce bit-identical outputs.
@@ -38,6 +45,9 @@ set(CIVETWEB_BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(CIVETWEB_ENABLE_SERVER_EXECUTABLE OFF CACHE BOOL "" FORCE)
 set(CIVETWEB_ENABLE_CXX OFF CACHE BOOL "" FORCE)
 set(CIVETWEB_ENABLE_ASAN OFF CACHE BOOL "" FORCE)
+if(SGLANG_BUILD_QWEN3_OMNI)
+  set(CIVETWEB_THREAD_STACK_SIZE 8388608 CACHE STRING "Native media decoding worker stack" FORCE)
+endif()
 set(CIVETWEB_INSTALL_EXECUTABLE OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
   civetweb
@@ -58,6 +68,55 @@ target_include_directories(common PUBLIC src)
 target_link_libraries(common PUBLIC mlx nlohmann_json::nlohmann_json pcre2-8-static
   "-framework CoreFoundation")
 target_compile_options(common PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
+
+if(SGLANG_BUILD_QWEN3_OMNI)
+find_package(CURL REQUIRED)
+find_path(OMNI_FFMPEG_INCLUDE_DIR libavcodec/avcodec.h
+  HINTS /opt/homebrew/opt/ffmpeg@7/include)
+find_library(OMNI_AVCODEC avcodec HINTS /opt/homebrew/opt/ffmpeg@7/lib)
+find_library(OMNI_AVFORMAT avformat HINTS /opt/homebrew/opt/ffmpeg@7/lib)
+find_library(OMNI_AVUTIL avutil HINTS /opt/homebrew/opt/ffmpeg@7/lib)
+if(NOT OMNI_FFMPEG_INCLUDE_DIR OR NOT OMNI_AVCODEC OR NOT OMNI_AVFORMAT OR NOT OMNI_AVUTIL)
+  message(FATAL_ERROR "SGLANG_BUILD_QWEN3_OMNI=ON requires FFmpeg 7 development headers and avcodec/avformat/avutil libraries. Provide a reviewed FFmpeg 7 installation via CMAKE_PREFIX_PATH (for Homebrew: brew --prefix ffmpeg@7), or disable the option for ASR-only builds.")
+endif()
+add_library(qwen3_omni STATIC
+  src/qwen3_omni/configuration.cpp
+  src/qwen3_omni/model.cpp
+  src/qwen3_omni/text_model.cpp
+  src/qwen3_omni/encoders.cpp
+  src/qwen3_omni/request.cpp
+  src/qwen3_omni/media.cpp
+  src/qwen3_omni/audio_decoder.cpp
+  src/qwen3_omni/audio_apple.mm
+  src/qwen3_omni/vocoder.cpp
+  src/qwen3_omni/preprocessing.cpp
+  src/qwen3_omni/generation.cpp
+  src/qwen3_omni/decode.cpp
+  src/qwen3_omni/serving.cpp
+  src/qwen3_omni/media_apple.mm)
+target_include_directories(qwen3_omni PRIVATE "${OMNI_FFMPEG_INCLUDE_DIR}")
+target_link_libraries(qwen3_omni PUBLIC "${OMNI_AVCODEC}" "${OMNI_AVFORMAT}" "${OMNI_AVUTIL}")
+target_link_libraries(qwen3_omni PUBLIC common CURL::libcurl
+  "-framework AVFoundation" "-framework CoreGraphics" "-framework ImageIO"
+  "-framework CoreMedia" "-framework CoreVideo" "-framework Foundation")
+set_source_files_properties(src/qwen3_omni/media_apple.mm src/qwen3_omni/audio_apple.mm
+  PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+target_compile_options(qwen3_omni PRIVATE -Wall -Wextra)
+include(CTest)
+add_executable(qwen3_omni_components tests/qwen3_omni_components.cpp)
+target_link_libraries(qwen3_omni_components PRIVATE qwen3_omni)
+target_compile_definitions(qwen3_omni_components PRIVATE
+  OMNI_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../tests/data")
+add_test(NAME qwen3_omni_components COMMAND qwen3_omni_components)
+add_executable(qwen3_omni_generate tools/qwen3_omni_generate.cpp)
+target_link_libraries(qwen3_omni_generate PRIVATE qwen3_omni)
+add_executable(qwen3_omni_server src/qwen3_omni/server.cpp src/common/http.cpp)
+target_link_libraries(qwen3_omni_server PRIVATE qwen3_omni civetweb-c-library)
+set_target_properties(qwen3_omni_generate qwen3_omni_server PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS qwen3_omni_generate qwen3_omni_server RUNTIME DESTINATION bin)
+endif()
 # Note (Jiaxin Deng): npz keeps the no-fused-multiply-add rounding it was built
 # with as part of whisper_asr.
 set_source_files_properties(src/common/npz.cpp PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
