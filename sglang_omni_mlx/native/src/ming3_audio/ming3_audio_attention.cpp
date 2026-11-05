@@ -9,7 +9,64 @@ namespace mx = mlx::core;
 
 namespace {
 constexpr int kRecurrentTokenLimit = 64;
+
+// Note (XXXXRT666): KDA decays each key channel, but MLX 0.32.4's
+// mx::fast::gated_delta_update reads one gate per head whenever both widths
+// are 128, and a loop of MLX ops costs several dispatches per token. Switch
+// to gated_delta_update once the runtime's MLX includes ml-explore/mlx#4791.
+// One simdgroup runs one head's value column through every token in float32,
+// each lane holding a 32nd of that column's state in registers.
+const mx::fast::CustomKernelFunction &DeltaRule() {
+  static const auto kernel = mx::fast::metal_kernel(
+      "ming3_audio_delta_rule",
+      {"queries", "keys", "values", "decay", "beta", "state_in"},
+      {"outputs", "state_out"}, R"(
+  constexpr int lane_width = key_width / 32;
+  const uint head = thread_position_in_grid.z;
+  const uint column = thread_position_in_grid.y;
+  const uint lane_offset = thread_index_in_simdgroup * lane_width;
+  const int length = queries_shape[0];
+  const device float *query = queries + head * key_width + lane_offset;
+  const device float *key = keys + head * key_width + lane_offset;
+  const device float *gate = decay + head * key_width + lane_offset;
+  const device float *value = values + head * value_width + column;
+  const device float *strength = beta + head;
+  device float *output = outputs + head * value_width + column;
+  const uint state_offset = (head * value_width + column) * key_width + lane_offset;
+  float memory[lane_width];
+  for (int i = 0; i < lane_width; ++i) {
+    memory[i] = state_in[state_offset + i];
+  }
+  for (int t = 0; t < length; ++t) {
+    float recalled = 0.0f;
+    for (int i = 0; i < lane_width; ++i) {
+      memory[i] *= gate[i];
+      recalled += memory[i] * key[i];
+    }
+    const float correction = strength[0] * (value[0] - simd_sum(recalled));
+    float answer = 0.0f;
+    for (int i = 0; i < lane_width; ++i) {
+      memory[i] += key[i] * correction;
+      answer += memory[i] * query[i];
+    }
+    answer = simd_sum(answer);
+    if (thread_index_in_simdgroup == 0) {
+      output[0] = answer;
+    }
+    query += heads * key_width;
+    key += heads * key_width;
+    gate += heads * key_width;
+    value += heads * value_width;
+    strength += heads;
+    output += heads * value_width;
+  }
+  for (int i = 0; i < lane_width; ++i) {
+    state_out[state_offset + i] = memory[i];
+  }
+)");
+  return kernel;
 }
+} // namespace
 
 mx::array Model::LatentAttention(const mx::array &hidden,
                                  const std::string &prefix,
@@ -123,29 +180,18 @@ mx::array Model::DeltaAttention(const mx::array &hidden,
   const auto beta = mx::reshape(
       mx::sigmoid(mx::astype(checkpoint_.Linear(hidden, prefix + ".b_proj"),
                              mx::float32)),
-      {length, heads, 1});
-  auto state =
+      {length, heads});
+  const auto state =
       cache.recurrent.value_or(mx::zeros({heads, width, width}, mx::float32));
-  std::vector<mx::array> outputs;
-  for (int token = 0; token < length; ++token) {
-    const auto key = mx::take(keys, mx::array(token), 0);
-    const auto query = mx::take(queries, mx::array(token), 0);
-    state = mx::multiply(
-        state, mx::expand_dims(mx::take(decay, mx::array(token), 0), -1));
-    const auto correction = mx::multiply(
-        mx::take(beta, mx::array(token), 0),
-        mx::subtract(
-            mx::take(values, mx::array(token), 0),
-            mx::squeeze(mx::matmul(mx::expand_dims(key, -2), state), -2)));
-    state = mx::addmm(state, mx::expand_dims(key, -1),
-                      mx::expand_dims(correction, -2));
-    outputs.push_back(
-        mx::squeeze(mx::matmul(mx::expand_dims(query, -2), state), -2));
-  }
-  cache.recurrent = state;
-  const auto output = mx::astype(mx::stack(outputs), hidden.dtype());
+  const auto recurrence = DeltaRule()(
+      {queries, keys, values, decay, beta, state},
+      {{length, heads, width}, state.shape()}, {mx::float32, mx::float32},
+      {32, width, heads}, {32, 4, 1},
+      {{"key_width", width}, {"value_width", width}, {"heads", heads}},
+      std::nullopt, false, {});
+  cache.recurrent = recurrence[1];
   auto normalized = mx::fast::rms_norm(
-      mx::astype(output, mx::float32),
+      mx::astype(mx::astype(recurrence[0], hidden.dtype()), mx::float32),
       checkpoint_.Weight(prefix + ".o_norm.weight"), text_.rms_norm_eps);
   const auto output_gate = mx::reshape(
       mx::astype(checkpoint_.Linear(hidden, prefix + ".g_proj"), mx::float32),
