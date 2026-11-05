@@ -36,6 +36,9 @@ public final class MuteClaims: @unchecked Sendable {
     private let lock = NSLock()
     private var claims: [OutputDevice] = []
     private var journal: String?
+    /// This helper wrote its journal file: a file with its pid that it did
+    /// not write is a dead helper's that had the same pid.
+    private var wrote = false
 
     /// pid names this helper's journal file; alive tells whether another
     /// helper's process runs (its journal is its own).
@@ -138,7 +141,7 @@ public final class MuteClaims: @unchecked Sendable {
                     try? FileManager.default.removeItem(at: f) // unreadable: nothing to undo
                     continue
                 }
-                if j.pid == pid || alive(j.pid) { continue } // a running helper's claims are its own
+                if j.pid == pid ? wrote : alive(j.pid) { continue } // a running helper's claims are its own
                 var left: [OutputDevice] = []
                 for d in j.devices {
                     switch undo(uid: d.uid) {
@@ -179,6 +182,7 @@ public final class MuteClaims: @unchecked Sendable {
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let data = try makeEncoder().encode(JournalFile(pid: pid, devices: list))
         try data.write(to: url, options: .atomic)
+        wrote = true
     }
 
     struct JournalFile: Codable {

@@ -237,6 +237,7 @@ type OutputHelper struct {
 	mu       sync.Mutex
 	claims   []proto.OutputDevice
 	journal  string
+	wrote    bool // wrote its journal: a file with its PID it did not write is a dead helper's
 	watching bool
 	last     proto.OutputState
 	once     sync.Once
@@ -395,7 +396,10 @@ func (h *OutputHelper) Recover(_ context.Context, p proto.OutputRecoverParams) (
 			os.Remove(f) // unreadable: nothing to undo
 			continue
 		}
-		if h.alive(j.PID) {
+		h.mu.Lock()
+		own := j.PID == h.PID && h.wrote
+		h.mu.Unlock()
+		if own || j.PID != h.PID && h.alive(j.PID) {
 			continue // a helper that runs: its claims are its own
 		}
 		var left []proto.OutputDevice
@@ -440,6 +444,7 @@ func (h *OutputHelper) writeJournal(claims []proto.OutputDevice) error {
 	}
 	data, _ := json.Marshal(journalFile{PID: h.PID, Devices: claims})
 	tmp := path + ".tmp"
+	h.wrote = true
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return err
 	}

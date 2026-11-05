@@ -179,6 +179,21 @@ final class OutputMuteTests: XCTestCase {
         XCTAssertEqual(files(dir), [])
     }
 
+    /// A helper that got the pid of a dead one recovers that helper's
+    /// journal instead of taking it for its own (journals of unplugged
+    /// devices now stay until the device is back).
+    func testReusedPidRecoversTheDeadHelpersJournal() throws {
+        let hw = devices(), dir = journalDir()
+        let first = MuteClaims(hardware: hw, pid: 100, alive: { _ in false })
+        hw.current = airpods.uid
+        XCTAssertTrue(try first.mute(OutputMuteParams(device: airpods, journal: dir)).took)
+        // The helper dies; a new one gets the same pid.
+        let again = MuteClaims(hardware: hw, pid: 100, alive: { _ in false })
+        XCTAssertEqual(again.recover(OutputRecoverParams(journal: dir)).restored, [airpods])
+        XCTAssertEqual(hw.isMuted(airpods.uid), false)
+        XCTAssertEqual(files(dir), [])
+    }
+
     func testJournalFormatIsGos() throws {
         // internal/helper/helpertest/output.go reads and writes the same file.
         let hw = devices(), dir = journalDir()
