@@ -1085,7 +1085,7 @@ def test_enqueue_built_request_admits_an_empty_session_append_with_history(
     scheduler.request_kv_capacity_error = lambda req, **kwargs: (
         capacity_checks.append((req, kwargs)) or None
     )
-    unit = SimpleNamespace(is_enqueued=False)
+    unit = SimpleNamespace(is_enqueued=False, is_draft=False)
     session_request = admission_req("req-append", [1, 2, 3])
 
     def create_session_request(payload, request_data) -> None:
@@ -1094,7 +1094,7 @@ def test_enqueue_built_request_admits_an_empty_session_append_with_history(
     scheduler.session_bridge = SimpleNamespace(
         units_by_request_id={"req-append": unit},
         create_session_request=create_session_request,
-        check_session_capacity=lambda request_id: None,
+        check_session_capacity=lambda request_id, request_data: None,
     )
 
     OmniScheduler.enqueue_built_request(
@@ -4798,6 +4798,24 @@ def test_omni_scheduler_result_adapter_failure_emits_error_without_raise(
     assert request_data.decode_input_embeds is None
     assert req.omni_data is None
     assert request_data.req is req
+
+
+def test_a_draft_unit_reports_no_error_to_the_client() -> None:
+    """An error on a draft unit stays inside; the same error on a real unit goes out."""
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.is_entry_rank = True
+    scheduler.outbox = Queue()
+    scheduler.session_bridge = SimpleNamespace(
+        units_by_request_id={"draft": SimpleNamespace(is_draft=True)}
+    )
+    error = RuntimeError("forward failed")
+
+    OmniScheduler.emit_request_error(scheduler, "draft", error)
+    OmniScheduler.emit_request_error(scheduler, "real", error)
+
+    message = scheduler.outbox.get_nowait()
+    assert (message.request_id, message.type, message.data) == ("real", "error", error)
+    assert scheduler.outbox.empty()
 
 
 def test_omni_scheduler_running_abort_does_not_leak_prefill_dedup_state(
