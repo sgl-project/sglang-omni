@@ -62,7 +62,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.2.0" />
-    <meta name="docbuild:last-update" content="Nov 04, 2026"/>
+    <meta name="docbuild:last-update" content="Nov 05, 2026"/>
   
     
     <script src="../_static/searchtools.js"></script>
@@ -935,6 +935,7 @@ ready without it.</p>
 </pre></div>
 </div>
 <ul class="simple">
+<li><p><strong>Acceptance length.</strong> Send the form field <code class="docutils literal notranslate"><span class="pre">return_spec_tokens_details=true</span></code> to get <code class="docutils literal notranslate"><span class="pre">sglext.spec_tokens_details</span></code> (<code class="docutils literal notranslate"><span class="pre">spec_accept_length</span></code>, <code class="docutils literal notranslate"><span class="pre">spec_accept_rate</span></code>, the draft counts and the per-verify histogram) on <code class="docutils literal notranslate"><span class="pre">json</span></code> and <code class="docutils literal notranslate"><span class="pre">verbose_json</span></code> responses and on the streamed <code class="docutils literal notranslate"><span class="pre">transcript.text.done</span></code> event. Audio long enough to be transcribed in chunks returns none. <code class="docutils literal notranslate"><span class="pre">spec_accept_rate</span></code> and <code class="docutils literal notranslate"><span class="pre">spec_num_proposed_drafts</span></code> are left out when no drafts were proposed or the draft width is adaptive.</p></li>
 <li><p><strong>Transcripts.</strong> The target verifies every proposed token, so accuracy stays at the target’s level, but the text is not byte-identical to a run without the draft. MOSS-TD has many near-tied decisions, mostly the hundredths digits of timestamps and the odd filler word or comma, which any numeric change can flip. Without a draft, 229 of 800 <code class="docutils literal notranslate"><span class="pre">movies800times</span></code> clips differ between concurrency 1 and 16, and on an H200 all 20 <code class="docutils literal notranslate"><span class="pre">aishell4_long</span></code> transcripts differ between two identical runs, though they match on an H100.</p></li>
 <li><p><strong>Context.</strong> The duration-scaled budget leaves room for the few tokens each step reserves. An explicit <code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code> that leaves no such room is rejected instead of clamped.</p></li>
 <li><p><strong>Capacity.</strong> The draft’s KV shares the pool, so one H100 80GB at <code class="docutils literal notranslate"><span class="pre">mem_fraction_static=0.80</span></code> holds about 480k tokens instead of 570k. Long audio at high concurrency fills it, and the scheduler then retracts requests and finishes them later: every <code class="docutils literal notranslate"><span class="pre">aishell4_long</span></code> file still completed at concurrency 16 and 32.</p></li>
@@ -1258,7 +1259,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Nov 04, 2026.
+  Last updated on Nov 05, 2026.
   <br/>
 </p>
   </div>

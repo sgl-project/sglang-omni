@@ -62,7 +62,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.2.0" />
-    <meta name="docbuild:last-update" content="Nov 04, 2026"/>
+    <meta name="docbuild:last-update" content="Nov 05, 2026"/>
   
     
     <script src="../_static/searchtools.js"></script>
@@ -1073,6 +1073,7 @@ flow_merge_pad_budget_percent = 25
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
+<p>Send <code class="docutils literal notranslate"><span class="pre">return_spec_tokens_details:</span> <span class="pre">true</span></code> with a speech request to get its acceptance statistics. Buffered audio adds <code class="docutils literal notranslate"><span class="pre">X-SGLang-Omni-Spec-Accept-Length</span></code>, <code class="docutils literal notranslate"><span class="pre">X-SGLang-Omni-Spec-Accept-Rate</span></code>, <code class="docutils literal notranslate"><span class="pre">X-SGLang-Omni-Spec-Num-Correct-Drafts</span></code>, <code class="docutils literal notranslate"><span class="pre">X-SGLang-Omni-Spec-Num-Proposed-Drafts</span></code> and <code class="docutils literal notranslate"><span class="pre">X-SGLang-Omni-Spec-Verify-Ct</span></code> headers; the SSE <code class="docutils literal notranslate"><span class="pre">speech.audio.done</span></code> event and the raw PCM outcome from <code class="docutils literal notranslate"><span class="pre">GET</span> <span class="pre">/v1/audio/speech/{request_id}</span></code> carry <code class="docutils literal notranslate"><span class="pre">sglext.spec_tokens_details</span></code>, which also holds the per-verify histogram. <code class="docutils literal notranslate"><span class="pre">spec_accept_length</span></code> is speech tokens per verify, including the token sampled at prefill, so it can read higher than the scheduler log’s <code class="docutils literal notranslate"><span class="pre">accept</span> <span class="pre">len</span></code>, which counts only verified tokens. <code class="docutils literal notranslate"><span class="pre">spec_accept_rate</span></code> and <code class="docutils literal notranslate"><span class="pre">spec_num_proposed_drafts</span></code>, and their headers, are left out when no drafts were proposed or the draft width is adaptive.</p>
 <p>Verification reproduces CosyVoice3’s sampler exactly: temperature, top-k/top-p, the repetition penalty, the minimum-length stop mask and the repetition-aware redraw. The speech tokens therefore follow the same distribution as without the draft. A request’s <code class="docutils literal notranslate"><span class="pre">seed</span></code> fixes every draft and verify draw, so a seeded request reproduces its speech tokens while the draft is on; they differ from the tokens the same seed gives without the draft, which samples differently.</p>
 <p>LLM speech-token throughput without the vocoder (Seed-TTS zh, 2,020 utterances, one H200 141GB with SGLang 0.5.22, target and draft on FA3, each batch run to completion), with the default sampling and about 3.0 tokens accepted per verify:</p>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -1515,7 +1516,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Nov 04, 2026.
+  Last updated on Nov 05, 2026.
   <br/>
 </p>
   </div>

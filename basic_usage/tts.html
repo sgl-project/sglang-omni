@@ -62,7 +62,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.2.0" />
-    <meta name="docbuild:last-update" content="Nov 04, 2026"/>
+    <meta name="docbuild:last-update" content="Nov 05, 2026"/>
   
     
     <script src="../_static/searchtools.js"></script>
@@ -1373,6 +1373,11 @@ the SGLang-Omni server:</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
 <td><p>Model-specific. Qwen3-TTS Base accepts request-scoped seed, Voxtral TTS currently rejects seed</p></td>
 </tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">return_spec_tokens_details</span></code></p></td>
+<td><p>bool</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
+<td><p>With a speculative draft, return this request’s acceptance statistics: <code class="docutils literal notranslate"><span class="pre">X-SGLang-Omni-Spec-*</span></code> headers on buffered audio, <code class="docutils literal notranslate"><span class="pre">sglext.spec_tokens_details</span></code> on <code class="docutils literal notranslate"><span class="pre">speech.audio.done</span></code> and on the raw PCM outcome</p></td>
+</tr>
 </tbody>
 </table>
 </div>
@@ -1569,7 +1574,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Nov 04, 2026.
+  Last updated on Nov 05, 2026.
   <br/>
 </p>
   </div>

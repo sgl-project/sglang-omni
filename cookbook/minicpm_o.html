@@ -62,7 +62,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.2.0" />
-    <meta name="docbuild:last-update" content="Nov 04, 2026"/>
+    <meta name="docbuild:last-update" content="Nov 05, 2026"/>
   
     
     <script src="../_static/searchtools.js"></script>
@@ -697,6 +697,7 @@ Those pixel options do not bound the initial native-resolution allocation.</p>
 </div>
 <p>An EAGLE3 draft for Qwen3-8B, such as <a class="reference external" href="https://huggingface.co/Tengyunw/qwen3_8b_eagle3"><code class="docutils literal notranslate"><span class="pre">Tengyunw/qwen3_8b_eagle3</span></code></a>, runs with <code class="docutils literal notranslate"><span class="pre">--thinker.engine.speculative_algorithm</span> <span class="pre">EAGLE3</span></code>, <code class="docutils literal notranslate"><span class="pre">speculative_num_steps</span> <span class="pre">3</span></code>, <code class="docutils literal notranslate"><span class="pre">speculative_eagle_topk</span> <span class="pre">1</span></code> and <code class="docutils literal notranslate"><span class="pre">speculative_num_draft_tokens</span> <span class="pre">4</span></code>.</p>
 <ul class="simple">
+<li><p><strong>Acceptance length.</strong> Send <code class="docutils literal notranslate"><span class="pre">return_spec_tokens_details:</span> <span class="pre">true</span></code> with a chat request to get its <code class="docutils literal notranslate"><span class="pre">sglext.spec_tokens_details</span></code>: <code class="docutils literal notranslate"><span class="pre">spec_accept_length</span></code> (output tokens per verify, including the token sampled at prefill, so it can read higher than the scheduler log’s <code class="docutils literal notranslate"><span class="pre">accept</span> <span class="pre">len</span></code>, which counts only verified tokens), <code class="docutils literal notranslate"><span class="pre">spec_accept_rate</span></code>, the draft counts and the per-verify histogram. A streamed response sends it in a chunk with empty <code class="docutils literal notranslate"><span class="pre">choices</span></code> before <code class="docutils literal notranslate"><span class="pre">[DONE]</span></code>. <code class="docutils literal notranslate"><span class="pre">spec_accept_rate</span></code> and <code class="docutils literal notranslate"><span class="pre">spec_num_proposed_drafts</span></code> are left out when no drafts were proposed or the draft width is adaptive. Only the Thinker draft is reported for now, including on speech responses; a per-stage field can follow once the Talker has a draft too.</p></li>
 <li><p><strong>Speech output.</strong> The Talker reads one Thinker hidden row per text token, and the draft’s layer capture keeps the row of every verified token, so a speech server accepts drafts that verify one linear block per request: a chain EAGLE3 draft (<code class="docutils literal notranslate"><span class="pre">speculative_eagle_topk</span> <span class="pre">1</span></code>), DFlash or DSpark. Qwen3-8B DFlash drafts mask with token 151669, which is <code class="docutils literal notranslate"><span class="pre">&lt;image&gt;</span></code> in MiniCPM-o, so they accept almost no tokens here.</p></li>
 <li><p><strong>Supported settings.</strong> DSpark uses static verification. DFlash and DSpark reject a request seed for sampled verification; greedy and prefill-only requests still accept a seed. Speech verification supports at most 8,192 hidden rows per batch, including graph padding. Prefill storage follows the configured token ceiling; text-only serving does not allocate speech hidden buffers.</p></li>
 <li><p><strong>Sampling.</strong> <code class="docutils literal notranslate"><span class="pre">length_penalty</span></code> applies to every verified token. Requests with <code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code>, <code class="docutils literal notranslate"><span class="pre">frequency_penalty</span></code>, <code class="docutils literal notranslate"><span class="pre">presence_penalty</span></code>, <code class="docutils literal notranslate"><span class="pre">min_p</span></code> or logprobs are rejected, because the draft workers cannot reproduce them. A prefill-only request keeps them, since the runner’s own sampler draws its single token on the target prefill and never reaches a verify.</p></li>
@@ -793,7 +794,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Nov 04, 2026.
+  Last updated on Nov 05, 2026.
   <br/>
 </p>
   </div>

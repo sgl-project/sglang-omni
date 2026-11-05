@@ -62,7 +62,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.2.0" />
-    <meta name="docbuild:last-update" content="Nov 04, 2026"/>
+    <meta name="docbuild:last-update" content="Nov 05, 2026"/>
   
     
     <script src="../_static/searchtools.js"></script>
@@ -1007,6 +1007,7 @@ sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\<
 </pre></div>
 </div>
 <ul class="simple">
+<li><p><strong>Acceptance length.</strong> Send <code class="docutils literal notranslate"><span class="pre">return_spec_tokens_details:</span> <span class="pre">true</span></code> with a chat request to get its <code class="docutils literal notranslate"><span class="pre">sglext.spec_tokens_details</span></code>: <code class="docutils literal notranslate"><span class="pre">spec_accept_length</span></code> (output tokens per verify, including the token sampled at prefill, so it can read higher than the scheduler log’s <code class="docutils literal notranslate"><span class="pre">accept</span> <span class="pre">len</span></code>, which counts only verified tokens), <code class="docutils literal notranslate"><span class="pre">spec_accept_rate</span></code>, the draft counts and the per-verify histogram. A streamed response sends it in a chunk with empty <code class="docutils literal notranslate"><span class="pre">choices</span></code> before <code class="docutils literal notranslate"><span class="pre">[DONE]</span></code>. <code class="docutils literal notranslate"><span class="pre">spec_accept_rate</span></code> and <code class="docutils literal notranslate"><span class="pre">spec_num_proposed_drafts</span></code> are left out when no drafts were proposed or the draft width is adaptive. Only the Thinker draft is reported for now; a per-stage field can follow once the Talker has a draft too.</p></li>
 <li><p><strong>Context.</strong> The drafts shown above have an 8,192-token context. The prompt, output budget and speculative reservations must fit within it. Use <code class="docutils literal notranslate"><span class="pre">--preprocessing.factory.max_seq_len</span> <span class="pre">8192</span></code> to reject oversized prompts early.</p></li>
 <li><p><strong>Sampling.</strong> Keep <code class="docutils literal notranslate"><span class="pre">repetition_penalty=1</span></code>, <code class="docutils literal notranslate"><span class="pre">frequency_penalty=0</span></code>, <code class="docutils literal notranslate"><span class="pre">presence_penalty=0</span></code>, and <code class="docutils literal notranslate"><span class="pre">min_p=0</span></code>. Disable logprobs and <code class="docutils literal notranslate"><span class="pre">return_hidden_states</span></code>. For <code class="docutils literal notranslate"><span class="pre">/generate</span></code>, send <code class="docutils literal notranslate"><span class="pre">return_logprob:</span> <span class="pre">false</span></code>.</p></li>
 <li><p><strong>Scheduling.</strong> Speculative decoding is synchronous by default. Add <code class="docutils literal notranslate"><span class="pre">--thinker.factory.enable_async_decode</span> <span class="pre">true</span></code> to either command to enable overlap, keeping <code class="docutils literal notranslate"><span class="pre">async_decode_min_batch_size=1</span></code>. Mixed prefill/decode batches (<code class="docutils literal notranslate"><span class="pre">enable_mixed_chunk=true</span></code>), sessions and weight updates are unsupported with a draft.</p></li>
@@ -1109,7 +1110,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Nov 04, 2026.
+  Last updated on Nov 05, 2026.
   <br/>
 </p>
   </div>
