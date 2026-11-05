@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
 
 
 def make_suppress_requests(suppress_per_row):
@@ -102,3 +103,24 @@ def test_suppress_cache_holds_one_entry_across_requests():
         ), step
 
     assert len(runner.suppress_tensor_cache) == 1
+
+
+def test_talker_prefill_stages_its_tokens_before_the_predictor():
+    """The talker's prefill pass held its host until the code predictor finished, not only the sample."""
+    calls = []
+    runner = types.SimpleNamespace(
+        feedback_enabled=True,
+        model=types.SimpleNamespace(
+            code_predictor_forward=lambda codes, hidden: calls.append("predictor")
+        ),
+        stage_token_ids=lambda result, ids: calls.append("stage tokens"),
+        emit_code_chunks_and_feedback=lambda **arguments: calls.append("emit"),
+    )
+    result = types.SimpleNamespace(
+        next_token_ids=torch.zeros(2, dtype=torch.long),
+        logits_output=types.SimpleNamespace(hidden_states=torch.zeros(2, 4)),
+    )
+
+    QwenTalkerModelRunner.post_prefill(runner, result, None, None, [])
+
+    assert calls == ["stage tokens", "predictor", "emit"]
