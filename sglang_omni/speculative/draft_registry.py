@@ -98,7 +98,6 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         algorithm="DSPARK",
         draft_model_path="Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm",
         draft_model_revision="c4c310aca2c768343165261cb22c21b90c1f79e0",
-        engine_settings={"speculative_dspark_block_size": 7},
         license=None,
     ),
 )
