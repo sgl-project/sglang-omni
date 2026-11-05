@@ -9,7 +9,9 @@ from argparse import Namespace
 from pathlib import Path
 
 import pytest
+import yaml
 from aiohttp import web
+from pydantic import JsonValue
 
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.dataset.seedtts import SampleInput
@@ -18,11 +20,7 @@ from benchmarks.eval.benchmark_asr_transcribe_diarize import (
     RESULTS_FILE,
     SPEED_RESULTS_FILE,
 )
-from benchmarks.eval.speculative_sweep import (
-    ServerConfigFile,
-    parse_args,
-    split_draft_config,
-)
+from benchmarks.eval.speculative_sweep import parse_args, write_side_configs
 from benchmarks.eval.speculative_workloads import (
     WORKLOADS,
     LoadSettings,
@@ -40,6 +38,7 @@ from benchmarks.metrics.speculative import (
     render,
 )
 from benchmarks.tasks.asr import build_asr_eval_results
+from sglang_omni.config.manager import ConfigManager
 
 # Lines from SGLang 0.5.22 servers on H100: MOSS-TD with a DFlash draft, and a Qwen3-ASR server without one that meets the same prompt twice.
 DRAFT_SERVER_LOG = """\
@@ -200,59 +199,120 @@ def test_the_report_names_each_accuracy_metric_the_workload_measures() -> None:
     )
 
 
+QWEN3_ASR_DFLASH_SETTINGS: dict[str, str | int] = {
+    "speculative_algorithm": "DFLASH",
+    "speculative_draft_model_path": "wilsonzheng0327/Qwen3-ASR-1.7B-dflash",
+    "speculative_draft_model_revision": "d62bd4051e68282e02f93de774036a35f22f1373",
+    "speculative_num_draft_tokens": 8,
+}
+
+
 @pytest.mark.parametrize("keep_prefix_cache", [False, True])
-def test_the_no_draft_config_is_the_draft_config_without_its_speculative_settings(
+@pytest.mark.parametrize(
+    "draft_settings",
+    [
+        pytest.param(
+            {
+                "stages": {
+                    "asr": {
+                        "engine": {
+                            **QWEN3_ASR_DFLASH_SETTINGS,
+                            "mem_fraction_static": 0.7,
+                        }
+                    }
+                }
+            },
+            id="stage-engine",
+        ),
+        pytest.param(
+            {
+                "shared": [
+                    {
+                        "select": {"stages": ["asr"]},
+                        "engine": QWEN3_ASR_DFLASH_SETTINGS,
+                    }
+                ],
+                "stages": {
+                    "asr": {
+                        "engine": {
+                            "speculative_algorithm": "DFLASH",
+                            "mem_fraction_static": 0.7,
+                        }
+                    }
+                },
+            },
+            id="shared-selector",
+        ),
+        pytest.param(
+            {
+                "shared": [
+                    {
+                        "select": {"stages": ["asr"]},
+                        "engine": {
+                            **QWEN3_ASR_DFLASH_SETTINGS,
+                            "mem_fraction_static": 0.7,
+                        },
+                    }
+                ]
+            },
+            id="shared-selector-without-stages",
+        ),
+    ],
+)
+def test_only_the_draft_side_serves_the_draft(
+    tmp_path: Path,
+    draft_settings: dict[str, JsonValue],
     keep_prefix_cache: bool,
 ) -> None:
-    """Every other engine setting reaches both sides; only the drafted stage loses its prefix cache."""
-    draft_config = ServerConfigFile.model_validate(
-        {
-            "config_cls": "MossTranscribeDiarizePipelineConfig",
-            "model_path": "OpenMOSS-Team/MOSS-Transcribe-Diarize",
-            "stages": {
-                "asr": {
-                    "engine": {
-                        "speculative_algorithm": "DFLASH",
-                        "speculative_draft_model_path": "draft",
-                        "mem_fraction_static": 0.8,
-                    },
-                    "factory": {"enable_async_decode": False},
-                },
-                "preprocessing": {"factory": {"max_seq_len": 8192}},
-            },
-        }
+    """A draft set through a shared selector stayed on in the no-draft config, so the sweep compared the draft against itself."""
+    draft_config_path = tmp_path / "qwen3_asr_dflash.yaml"
+    draft_config_path.write_text(
+        yaml.safe_dump(
+            {
+                "config_cls": "Qwen3ASRPipelineConfig",
+                "model_path": "Qwen/Qwen3-ASR-1.7B",
+                **draft_settings,
+            }
+        )
+    )
+    output_dir = tmp_path / "sweep"
+    output_dir.mkdir()
+
+    config_paths = write_side_configs(
+        draft_config_path, output_dir, keep_prefix_cache=keep_prefix_cache
     )
 
-    configs = split_draft_config(draft_config, keep_prefix_cache=keep_prefix_cache)
-
-    prefix_cache = {} if keep_prefix_cache else {"disable_radix_cache": True}
-    expected_stages = {
-        "baseline": {"mem_fraction_static": 0.8, **prefix_cache},
-        "draft": {
-            "speculative_algorithm": "DFLASH",
-            "speculative_draft_model_path": "draft",
-            "mem_fraction_static": 0.8,
-            **prefix_cache,
-        },
+    served = {
+        side: ConfigManager.from_file(str(path))
+        .config.stage_named("asr")
+        .engine.overrides()
+        for side, path in config_paths.items()
     }
-    for side, engine in expected_stages.items():
-        assert configs[side].model_dump(exclude_unset=True) == {
-            "config_cls": "MossTranscribeDiarizePipelineConfig",
-            "model_path": "OpenMOSS-Team/MOSS-Transcribe-Diarize",
-            "stages": {
-                "asr": {"engine": engine, "factory": {"enable_async_decode": False}},
-                "preprocessing": {"factory": {"max_seq_len": 8192}},
-            },
-        }
+    assert served["draft"]["speculative_algorithm"] == "DFLASH"
+    assert served["draft"]["speculative_num_draft_tokens"] == 8
+    assert served["baseline"] == {
+        setting: value
+        for setting, value in served["draft"].items()
+        if not setting.startswith("speculative_")
+    }
+    assert served["baseline"]["mem_fraction_static"] == 0.7
+    assert ("disable_radix_cache" in served["draft"]) is not keep_prefix_cache
 
 
-def test_a_config_without_a_draft_is_refused() -> None:
-    config = ServerConfigFile.model_validate(
-        {"stages": {"asr": {"engine": {"mem_fraction_static": 0.8}}}}
+def test_a_config_without_a_draft_is_refused(tmp_path: Path) -> None:
+    draft_config_path = tmp_path / "qwen3_asr.yaml"
+    draft_config_path.write_text(
+        yaml.safe_dump(
+            {
+                "config_cls": "Qwen3ASRPipelineConfig",
+                "model_path": "Qwen/Qwen3-ASR-1.7B",
+                "stages": {"asr": {"engine": {"mem_fraction_static": 0.7}}},
+            }
+        )
     )
 
-    with pytest.raises(ValueError, match="no speculative_"):
-        split_draft_config(config, keep_prefix_cache=False)
+    with pytest.raises(ValueError, match="runs no stage with a draft"):
+        write_side_configs(draft_config_path, tmp_path, keep_prefix_cache=False)
 
 
 @pytest.mark.asyncio
@@ -485,6 +545,19 @@ def test_arguments_after_the_separator_go_to_the_client(monkeypatch) -> None:
         pytest.param("0", [*REQUIRED, "--order", "ABC"], id="unknown-leg"),
         pytest.param("0", [*REQUIRED, "--", "--port=9000"], id="client-port"),
         pytest.param("0", [*REQUIRED, "--", "--repeats", "1"], id="client-repeats"),
+        pytest.param(
+            "0",
+            [*REQUIRED, "--", "--max-concurrency", "16"],
+            id="client-concurrency-alias",
+        ),
+        pytest.param(
+            "0",
+            [*REQUIRED, "--", "--max-concurrency=16"],
+            id="client-concurrency-alias-equals",
+        ),
+        pytest.param(
+            "0", [*REQUIRED, "--", "--max-conc", "16"], id="client-flag-abbreviation"
+        ),
     ],
 )
 def test_the_sweep_refuses_to_start_on_a_bad_setup(

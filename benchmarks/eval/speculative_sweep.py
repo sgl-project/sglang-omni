@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Sweep a speculative draft against no draft across concurrency.
 
-One command for every draft: name its server config and a workload. The no-draft config is the same config without the speculative_* engine settings, so every other engine setting reaches both sides. Both turn off the prefix cache on the drafted stages unless --prefix-cache is set, because the clients send the same prompts in every pass and cache hits would stand in for prefill. Each leg starts a fresh server, runs the workload's client over every concurrency, and stops the server. Legs run one after another in the order given, ABBA by default, so drift between runs shows as a gap between the two legs of one side.
+One command for every draft: name its server config and a workload. The no-draft config is the same config with disable_speculative_decoding on every stage that runs a draft, so every other engine setting reaches both sides. The serving loader decides which stages run one, so a draft set through a shared selector or a model default is turned off too. Both turn off the prefix cache on the drafted stages unless --prefix-cache is set, because the clients send the same prompts in every pass and cache hits would stand in for prefill. Each leg starts a fresh server, runs the workload's client over every concurrency, and stops the server. Legs run one after another in the order given, ABBA by default, so drift between runs shows as a gap between the two legs of one side.
 
 The summary gives, per concurrency, both sides' throughput, the gain, p95 latency and its change, first-output p95 when the client streams, the workload's accuracy metrics and failed requests; then k, the loads where the draft is worse than no draft, and per leg the startup time, KV pool, peak token usage, retractions, acceptance length and peak GPU memory. sweep.json holds the same comparison, and baseline.yaml and draft.yaml the configs each side served.
 
@@ -46,6 +46,7 @@ from benchmarks.metrics.speculative import (
     read_server_log,
     render,
 )
+from sglang_omni.config.manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,8 @@ DRIVER_CLIENT_FLAGS = (
     "--output-dir",
     "--concurrencies",
     "--concurrency",
+    # note (wilsonzheng0327): the transcribe-diarize client's alias of --concurrency.
+    "--max-concurrency",
     "--repeats",
     "--warmup",
     "--max-samples",
@@ -81,42 +84,53 @@ class ServerConfigFile(BaseModel):
     model_config = ConfigDict(extra="allow", protected_namespaces=())
 
     model_path: str | None = None
-    stages: dict[str, StageConfigFile]
+    stages: dict[str, StageConfigFile] = Field(default_factory=dict)
 
 
-def split_draft_config(
-    draft_config: ServerConfigFile, *, keep_prefix_cache: bool
-) -> dict[Side, ServerConfigFile]:
-    """The draft config and the same config without its speculative_* engine settings."""
+def write_side_configs(
+    draft_config_path: Path, output_dir: Path, *, keep_prefix_cache: bool
+) -> dict[Side, Path]:
+    """Write the draft config, and the same config with the draft switched off on every stage that runs one."""
+    resolved_config = ConfigManager.from_file(str(draft_config_path)).config
     drafted_stages = [
-        name
-        for name, stage in draft_config.stages.items()
-        if any(
-            setting.startswith(SPECULATIVE_SETTING_PREFIX) for setting in stage.engine
+        stage.name
+        for stage in resolved_config.stages
+        if stage.engine is not None
+        and any(
+            setting.startswith(SPECULATIVE_SETTING_PREFIX)
+            for setting in stage.engine.overrides()
         )
     ]
     if not drafted_stages:
-        raise ValueError("the draft config sets no speculative_* engine setting")
+        raise ValueError(f"{draft_config_path} runs no stage with a draft")
     else:
         pass
-    configs: dict[Side, ServerConfigFile] = {
-        "baseline": draft_config.model_copy(deep=True),
-        "draft": draft_config.model_copy(deep=True),
+    draft_config = ServerConfigFile.model_validate(
+        yaml.safe_load(draft_config_path.read_text())
+    )
+    prefix_cache_settings: dict[str, JsonValue] = (
+        {} if keep_prefix_cache else {"disable_radix_cache": True}
+    )
+    engine_settings: dict[Side, dict[str, JsonValue]] = {
+        "baseline": {"disable_speculative_decoding": True, **prefix_cache_settings},
+        "draft": prefix_cache_settings,
     }
-    for name in drafted_stages:
-        baseline_engine = configs["baseline"].stages[name].engine
-        for setting in [
-            setting
-            for setting in baseline_engine
-            if setting.startswith(SPECULATIVE_SETTING_PREFIX)
-        ]:
-            baseline_engine.pop(setting)
-        for config in configs.values():
-            if keep_prefix_cache:
-                pass
-            else:
-                config.stages[name].engine["disable_radix_cache"] = True
-    return configs
+    config_paths: dict[Side, Path] = {}
+    for side, settings in engine_settings.items():
+        side_config = draft_config.model_copy(deep=True)
+        if settings:
+            stages = dict(side_config.stages)
+            for name in drafted_stages:
+                stage = stages.setdefault(name, StageConfigFile())
+                stage.engine = {**stage.engine, **settings}
+            side_config.stages = stages
+        else:
+            pass
+        config_paths[side] = output_dir / f"{side}.yaml"
+        config_paths[side].write_text(
+            yaml.safe_dump(side_config.model_dump(exclude_unset=True), sort_keys=False)
+        )
+    return config_paths
 
 
 def run_leg(
@@ -227,10 +241,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     elif set(args.order) != set(SIDE_BY_LETTER):
         parser.error("--order needs at least one A and one B, and no other letters")
     elif any(
-        argument.split("=")[0] in DRIVER_CLIENT_FLAGS for argument in args.client_args
+        # note (wilsonzheng0327): argparse expands an unambiguous prefix, so --max-conc would reach the client as --max-concurrency.
+        flag.startswith(argument.split("=")[0])
+        for argument in args.client_args
+        if argument.startswith("--")
+        for flag in DRIVER_CLIENT_FLAGS
     ):
         parser.error(
-            f"the sweep sets {', '.join(DRIVER_CLIENT_FLAGS)} for the client itself"
+            f"the sweep sets {', '.join(DRIVER_CLIENT_FLAGS)} for the client itself, and refuses abbreviations of them"
         )
     else:
         pass
@@ -253,14 +271,9 @@ def main() -> None:
     else:
         pass
     args.output_dir.mkdir(parents=True)
-    config_paths: dict[Side, Path] = {}
-    for side, config in split_draft_config(
-        draft_config, keep_prefix_cache=args.prefix_cache
-    ).items():
-        config_paths[side] = args.output_dir / f"{side}.yaml"
-        config_paths[side].write_text(
-            yaml.safe_dump(config.model_dump(exclude_unset=True), sort_keys=False)
-        )
+    config_paths = write_side_configs(
+        args.draft_config, args.output_dir, keep_prefix_cache=args.prefix_cache
+    )
     legs = []
     for index, letter in enumerate(args.order):
         side = SIDE_BY_LETTER[letter]

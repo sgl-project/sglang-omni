@@ -12,7 +12,7 @@ Side = Literal["baseline", "draft"]
 AccuracyMetric = Literal["WER", "CER", "DER"]
 # The roadmap's k: the highest concurrency where the draft gains at least this much.
 K_GAIN = 1.2
-# The roadmap's never-worse gate: at every load the draft keeps at least this share of the throughput, and at most this multiple of the p95 latency and of the p95 first-output latency.
+# note (wilsonzheng0327): the roadmap's never-worse gate; at every load the draft keeps at least this share of the throughput, and at most this multiple of the p95 latency and of the p95 first-output latency.
 NEVER_WORSE_THROUGHPUT_RATIO = 0.97
 NEVER_WORSE_LATENCY_RATIO = 1.05
 # note (wilsonzheng0327): the first allocation is the target's pool; a draft then allocates its own with the same token count.
