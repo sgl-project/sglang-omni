@@ -92,7 +92,7 @@ jobs:
           artifact-search-root: ${{ env.OMNI_CI_HOME }}/fdb/runs
           artifact-path-globs: |
             */RESULTS.md
-          artifact-upload-name: fdb-full-duplex-results
+          artifact-upload-name: fdb-full-duplex-results-attempt-${{ github.run_attempt }}
           artifact-upload-path: ${{ env.OMNI_CI_HOME }}/fdb/runs/ci-minicpmo/RESULTS.md
 
   turn-based:
@@ -145,7 +145,7 @@ jobs:
           artifact-search-root: ${{ env.OMNI_CI_HOME }}/fdb/runs
           artifact-path-globs: |
             */RESULTS.md
-          artifact-upload-name: fdb-turn-based-results
+          artifact-upload-name: fdb-turn-based-results-attempt-${{ github.run_attempt }}
           artifact-upload-path: ${{ env.OMNI_CI_HOME }}/fdb/runs/ci-qwen3-omni/RESULTS.md
 
   cascaded:
@@ -198,5 +198,5 @@ jobs:
           artifact-search-root: ${{ env.OMNI_CI_HOME }}/fdb/runs
           artifact-path-globs: |
             */RESULTS.md
-          artifact-upload-name: fdb-cascaded-results
+          artifact-upload-name: fdb-cascaded-results-attempt-${{ github.run_attempt }}
           artifact-upload-path: ${{ env.OMNI_CI_HOME }}/fdb/runs/ci-cascade/RESULTS.md

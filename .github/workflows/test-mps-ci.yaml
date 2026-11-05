@@ -219,7 +219,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: native-mps-lifecycle-evidence
+          name: native-mps-lifecycle-evidence-attempt-${{ github.run_attempt }}
           path: test-results/native-mps/**
           if-no-files-found: warn
           retention-days: 7
@@ -291,7 +291,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: native-weight-share-lifecycle-evidence
+          name: native-weight-share-lifecycle-evidence-attempt-${{ github.run_attempt }}
           path: test-results/native-weight-share/**
           if-no-files-found: warn
           retention-days: 7
