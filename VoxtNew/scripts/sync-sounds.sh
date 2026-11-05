@@ -20,6 +20,11 @@ optional=0
 [ "${1:-}" = --optional ] && optional=1
 top=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 src=${ACTNOW_SOUNDS:-}
+# A folder the user names is never replaced: only the cache below is.
+if [ -n "$src" ] && [ ! -f "$src/catalog.json" ]; then
+	echo "sync-sounds: ACTNOW_SOUNDS=$src has no catalog.json (set it to a copy of hehehai/actnow-sounds)" >&2
+	exit 1
+fi
 if [ -z "$src" ]; then
 	if [ -f "$top/../actnow-sounds/catalog.json" ]; then
 		src="$top/../actnow-sounds"
