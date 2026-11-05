@@ -114,14 +114,17 @@ func (t *ASRTuning) splitChunks(pcm []byte) []chunk {
 	var out []chunk
 	for start := 0; start < total; {
 		end := min(start+maxSamples, total)
-		if end >= total {
+		// The rest fits in one chunk and its search: no cut, which could
+		// only fall in the closing pause and leave a sliver of silence that
+		// the model fills with words ("Okay.").
+		if end >= total || pastEnd && total-start <= maxSamples+search {
 			out = append(out, chunk{pcm: padded(start, total), offset: at(start)})
 			break
 		}
 		from := max(start, end-search)
 		to := end
 		if pastEnd {
-			to = min(total, end+search)
+			to = min(total-search, end+search) // the last chunk keeps at least the search
 		}
 		cut := end
 		if to-from > window {

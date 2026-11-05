@@ -155,6 +155,20 @@ func TestSplitChunks(t *testing.T) {
 	if cs[1].offset < 1700*time.Millisecond || cs[1].offset > 1900*time.Millisecond {
 		t.Errorf("past the end: cut at %v", cs[1].offset)
 	}
+	// The last chunk is never a sliver of the closing pause, which the
+	// model answered with words nobody said ("… a moment. Okay."): a rest
+	// that fits in one chunk and its search stays whole, and a cut leaves
+	// at least the search behind it.
+	q.ChunkSeconds = 2
+	cs = q.splitChunks(append(tone(2100*time.Millisecond, 0.5), silence(200*time.Millisecond)...))
+	if len(cs) != 1 {
+		t.Errorf("2.3 s ending in a pause: %d chunks, the last %v", len(cs), cs[len(cs)-1].offset)
+	}
+	pcm = append(tone(2400*time.Millisecond, 0.5), silence(200*time.Millisecond)...)
+	cs = q.splitChunks(pcm)
+	if rest := time.Duration(len(pcm)/2)*time.Second/sampleRate - cs[len(cs)-1].offset; len(cs) != 2 || rest < q.CutSearch {
+		t.Errorf("2.6 s ending in a pause: %d chunks, the last %v long", len(cs), rest)
+	}
 }
 
 func TestJoinParts(t *testing.T) {
