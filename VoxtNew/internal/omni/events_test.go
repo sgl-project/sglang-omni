@@ -19,10 +19,22 @@ type heard struct {
 	mu     sync.Mutex
 	events []resident.Event
 	before []string
+	// got gets a token once an event was added (cap 1): until looks
+	// again.
+	got chan struct{}
 }
 
 func (h *heard) tune(c *Config) {
-	c.OnModel = func(ev resident.Event) { h.mu.Lock(); h.events = append(h.events, ev); h.mu.Unlock() }
+	h.got = make(chan struct{}, 1)
+	c.OnModel = func(ev resident.Event) {
+		h.mu.Lock()
+		h.events = append(h.events, ev)
+		h.mu.Unlock()
+		select {
+		case h.got <- struct{}{}:
+		default:
+		}
+	}
 	c.BeforeLoad = func(_ context.Context, id string) { h.mu.Lock(); h.before = append(h.before, id); h.mu.Unlock() }
 }
 
@@ -39,14 +51,25 @@ func (h *heard) of(id string) []string {
 	return out
 }
 
-func (h *heard) wait(t *testing.T, id string, want ...string) {
-	t.Helper()
-	for end := time.Now().Add(10 * time.Second); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
-		if slices.Equal(h.of(id), want) {
-			return
+// until waits for cond, looking again at each event; false when it does
+// not hold within 10 s.
+func (h *heard) until(cond func() bool) bool {
+	timeout := time.After(10 * time.Second)
+	for !cond() {
+		select {
+		case <-h.got:
+		case <-timeout:
+			return false
 		}
 	}
-	t.Fatalf("%s's events %q, want %q", id, h.of(id), want)
+	return true
+}
+
+func (h *heard) wait(t *testing.T, id string, want ...string) {
+	t.Helper()
+	if !h.until(func() bool { return slices.Equal(h.of(id), want) }) {
+		t.Fatalf("%s's events %q, want %q", id, h.of(id), want)
+	}
 }
 
 func (h *heard) beforeLoads() []string {
@@ -140,13 +163,15 @@ func TestModelEventsEnds(t *testing.T) {
 			s := h.of(id)
 			return len(s) > 0 && strings.HasPrefix(s[len(s)-1], "unloaded ")
 		}
-		eventually(t, "the switch's unload", func() bool { return unloaded(ASRFast) })
+		if !h.until(func() bool { return unloaded(ASRFast) }) {
+			t.Fatalf("no unload at the switch: %q", h.of(ASRFast))
+		}
 		if unloaded(VADSilero) || unloaded(ASRAccurate) {
 			t.Errorf("unloaded at the switch: %q %q", h.of(VADSilero), h.of(ASRAccurate))
 		}
 		f.rt.Close()
-		for _, id := range []string{VADSilero, ASRAccurate} {
-			eventually(t, id+" unloaded", func() bool { return unloaded(id) })
+		if !h.until(func() bool { return unloaded(VADSilero) && unloaded(ASRAccurate) }) {
+			t.Fatalf("not unloaded at Close: %q %q", h.of(VADSilero), h.of(ASRAccurate))
 		}
 		if got := h.beforeLoads(); !slices.Equal(got, []string{VADSilero, ASRFast, ASRAccurate}) {
 			t.Errorf("BeforeLoad %v", got)
