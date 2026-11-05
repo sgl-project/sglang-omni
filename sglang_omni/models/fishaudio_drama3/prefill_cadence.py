@@ -55,8 +55,11 @@ class PrefillCadenceConfig:
     # request instead of either bound. How far back arrivals and admissions are counted:
     rate_window_s: float = 4.0
     # Held back from the stall budget as a share of it. A margin in ms cannot transfer: 8 ms off a
-    # 24.8 ms critical interval is a third of it where a step is 10 ms and all of it where it is 20.
-    continuity_margin: float = 0.2
+    # 25.5 ms critical interval is a third of it where a step is 10 ms and all of it where it is 20.
+    # The size is calibrated: the modelled worst stall is deterministic at the mean costs while the
+    # SLO is a percentile over requests, and on one H100 the model came in 1.25-1.5x under the
+    # measured p95 across the grid, so a third of the budget is held back for that dispersion.
+    continuity_margin: float = 0.35
     is_latency_driven: bool = False
 
 
@@ -325,38 +328,54 @@ class PrefillCadence:
             interval, step_s, arrival_rate
         )
 
-    def smooth_enough_interval(self, step_s: float, arrival_rate: float) -> int:
-        """Shortest interval whose burst keeps the worst stall inside the budget."""
+    def smooth_intervals(self, step_s: float, arrival_rate: float) -> list[int]:
+        """Every interval whose burst keeps the worst stall inside the budget.
+
+        A list, not a floor: the stall is **not** monotone in the interval. Whether a prefill lands
+        inside a window or between two of them depends on how the run of frames lines up with the
+        window boundaries, so the passing intervals come in bands. On this machine at C96 with a
+        100 ms budget they are {12}, [20, 24] and [29, ...], because floor(57 / run) prefills fall
+        before the window ending at frame 58 and that count steps down: 4 for a run of 14, 2 for a
+        run of 20, 1 for a run of 29. A rule that only bounds the search from below can therefore
+        pick an interval that does not pass its own test, and a run of 14 is a local worst case.
+        """
         limit_s = self.config.max_stall_s * (1 - self.config.continuity_margin)
-        return next(
-            (
-                level
-                for level in range(1, self.config.longest_interval + 1)
-                if self.worst_burst_stall_s(level, step_s, arrival_rate) <= limit_s
-            ),
-            self.config.longest_interval,
-        )
+        return [
+            level
+            for level in range(1, self.config.longest_interval + 1)
+            if self.worst_burst_stall_s(level, step_s, arrival_rate) <= limit_s
+        ]
 
     def latency_interval(self, now_s: float, step_s: float, prefill_s: float) -> int:
         """The interval with the shortest modelled wall time, inside what the two SLOs allow."""
         arrival_rate = self.request_rate(now_s)
         frames = self.frames_per_request()
-        shortest = self.smooth_enough_interval(step_s, arrival_rate)
         longest = self.first_audio_interval(step_s, prefill_s)
         if arrival_rate <= 0 or frames <= 0:
             self.chosen_targets["unmeasured"] += 1
             return longest
-        elif shortest > longest:
+        else:
+            pass
+        smooth = self.smooth_intervals(step_s, arrival_rate)
+        allowed = [level for level in smooth if level <= longest]
+        if allowed:
+            self.chosen_targets["latency"] += 1
+            candidates = allowed
+        elif smooth:
+            # note (0xtoward): no interval meets both SLOs. Keep continuity: a stall breaks every
+            # window of a stream where late first audio is one event, and the longer interval also
+            # shrinks the running batch, which brings the step back.
             self.conflicts += 1
             self.chosen_targets["conflict"] += 1
-            return shortest
+            candidates = [min(smooth)]
         else:
-            self.chosen_targets["latency"] += 1
-            return min(
-                range(max(1, shortest), longest + 1),
-                key=lambda level: self.wall_time_s(level, step_s, arrival_rate, frames),
-                default=longest,
-            )
+            self.conflicts += 1
+            self.chosen_targets["neither"] += 1
+            candidates = [max(1, longest)]
+        return min(
+            candidates,
+            key=lambda level: self.wall_time_s(level, step_s, arrival_rate, frames),
+        )
 
     def choose_interval(self, now_s: float = 0.0) -> int:
         step_s, prefill_s = self.step_s, self.prefill_s

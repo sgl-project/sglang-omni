@@ -216,7 +216,7 @@ def test_a_light_load_never_stalls_however_short_the_interval() -> None:
     policy.observe_prefill(0.030, 4)
     policy.frames_decoded, policy.requests_admitted = 8400, 100
     assert policy.worst_burst_stall_s(1, 0.0085, 9.2) == pytest.approx(0.0, abs=1e-9)
-    assert policy.smooth_enough_interval(0.0085, 9.2) == 1
+    assert 1 in policy.smooth_intervals(0.0085, 9.2)
 
 
 def test_the_rate_comes_from_frames_decoded_not_from_counting_arrivals() -> None:
@@ -229,3 +229,22 @@ def test_the_rate_comes_from_frames_decoded_not_from_counting_arrivals() -> None
     assert policy.request_rate(99 * 0.0206) == pytest.approx(96 / 0.0206 / 84, rel=0.05)
     policy.observe_arrival(99 * 0.0206, 3)
     assert policy.arrival_rate(99 * 0.0206) < policy.request_rate(99 * 0.0206) / 10
+
+
+def test_the_interval_chosen_passes_its_own_stall_test() -> None:
+    """The stall saw-tooths with the interval, so the search filters rather than bounding."""
+    policy = cadence(longest_interval=64, is_latency_driven=True)
+    policy.observe_prefill(0.0215, 1)
+    policy.observe_prefill(0.0787, 20)
+    for _ in range(40):
+        policy.observe_decode_step(0.0208, 96, 0.0)
+    policy.requests_admitted = policy.frames_decoded / 83
+    smooth = policy.smooth_intervals(0.0208, 40.7)
+    # The bands: a run of 20 puts two prefills before the window ending at frame 58, a run of 19
+    # puts three, so they are 2.4x apart in stall and only one of them passes.
+    assert 20 in smooth and 19 not in smooth
+    assert policy.worst_burst_stall_s(19, 0.0208, 40.7) > 2 * policy.worst_burst_stall_s(
+        20, 0.0208, 40.7
+    )
+    chosen = policy.latency_interval(1.0, 0.0208, 0.0658)
+    assert chosen in smooth or chosen == policy.first_audio_interval(0.0208, 0.0658)
