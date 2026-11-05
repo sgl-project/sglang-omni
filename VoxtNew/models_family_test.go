@@ -264,14 +264,16 @@ func TestModelFamilyText(t *testing.T) {
 // on disk, so it never became VoxtNew's.
 func TestBorrowedModel(t *testing.T) {
 	for _, tc := range []struct {
-		id       string
-		borrowed bool
-		remove   string // the card's button once used
+		id         string
+		borrowed   bool
+		remove     string // the card's button once used
+		needsThere bool   // Dicta installed what it needs too
 	}{
-		{models.LLMQwen3, true, "Remove"},
-		{models.ASRFast, false, "Delete"},
+		{models.LLMQwen3, true, "Remove", false},
+		{models.ASRFast, false, "Delete", false},
+		{models.ASRFast, false, "Delete", true},
 	} {
-		t.Run(tc.id, func(t *testing.T) {
+		t.Run(fmt.Sprintf("%s/needs-installed=%v", tc.id, tc.needsThere), func(t *testing.T) {
 			a, _, tt := newTestApp(t)
 			tt.SetSize(windowWidth, 1600)
 			name := uitext.ModelName(tc.id)
@@ -284,6 +286,15 @@ func TestBorrowedModel(t *testing.T) {
 				t.Fatal(err)
 			}
 			claimFor(t, a, dictaID, tc.id)
+			if tc.needsThere {
+				for _, need := range m.Needs {
+					n, _ := models.Lookup(need)
+					if err := modelstest.SeedModel(a.models.Hub(), n); err != nil {
+						t.Fatal(err)
+					}
+					claimFor(t, a, dictaID, need)
+				}
+			}
 			if has(tt, "Download "+name) {
 				t.Fatalf("the card offers Download, which does nothing for a model on disk")
 			}
@@ -293,6 +304,14 @@ func TestBorrowedModel(t *testing.T) {
 			click(t, tt, "Use "+name)
 			if st := a.models.Status(tc.id); !st.Installed || !st.Mine || !has(tt, "Shared with Dicta") {
 				t.Fatalf("used: %+v %q", st, tt.Texts())
+			}
+			// What it needs comes with it: Dicta's voice detection is used,
+			// a missing one is downloaded.
+			for _, need := range m.Needs {
+				st := a.models.Status(need)
+				if tc.needsThere && (!st.Installed || !st.Mine) || !st.Downloading && !st.Installed && st.Err == nil {
+					t.Errorf("%s needs %s: neither used nor downloading (%+v)", tc.id, need, st)
+				}
 			}
 			click(t, tt, tc.remove+" "+name+"…")
 			if !has(tt, fmt.Sprintf("Remove %q from VoxtNew?", name)) {

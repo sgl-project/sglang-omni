@@ -104,16 +104,32 @@ func deleteOutcome(id string, res []fammodels.Result, err error) string {
 	return ""
 }
 
-// useModel claims a model another app installed for VoxtNew ("Use it").
+// useModel claims a model another app installed for VoxtNew ("Use it"),
+// with what it needs that is on disk, then downloads what it needs that
+// is not (a speech model's voice detection), as the setup guide's obUse.
 func (a *app) useModel(id string) {
 	m := a.models
+	ids, fetch := []string{id}, []string(nil)
+	mod, _ := models.Lookup(id)
+	for _, need := range mod.Needs {
+		switch st := a.modelStatus[need]; {
+		case st.Installed, st.Downloading:
+		case st.OnDisk:
+			ids = append(ids, need)
+		default:
+			fetch = append(fetch, need)
+		}
+	}
 	a.async(func() {
-		err := m.Use(context.Background(), id)
+		err := m.Use(context.Background(), ids...)
 		a.post(func() {
 			if err != nil {
 				a.toast(i18n.T("Could not use the model: %v", err))
 			}
 			a.modelsChanged()
+			for _, need := range fetch {
+				a.downloadModel(need)
+			}
 		})
 	})
 }
