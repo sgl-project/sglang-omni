@@ -2,6 +2,7 @@ package datadir
 
 import (
 	"context"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -142,6 +143,40 @@ func TestEraseEverything(t *testing.T) {
 		if _, err := os.Stat(d); !os.IsNotExist(err) {
 			t.Errorf("%s is still there", d)
 		}
+	}
+}
+
+// TestEraseEverythingSaysWhatStays: a file that cannot be deleted stays,
+// and the log names it instead of saying everything was erased (it said
+// so whatever RemoveAll answered).
+func TestEraseEverythingSaysWhatStays(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root deletes a read-only folder's files")
+	}
+	def, moved := t.TempDir(), t.TempDir()
+	write(t, moved, map[string]string{"audio/locked/a.wav": "a", "b.txt": "b"})
+	locked := filepath.Join(moved, "audio", "locked")
+	if err := os.Chmod(locked, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0o755) })
+	if err := WriteJSON(filepath.Join(def, LocationFile), Location{Dir: moved}); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteJSON(filepath.Join(def, ResetFile), PendingReset{Everything: true}); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	log.SetOutput(&out)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	if _, err := Resolve(def); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "erased everything") || !strings.Contains(out.String(), filepath.Join(locked, "a.wav")) {
+		t.Errorf("the log says %q; want the file that stays named", out.String())
+	}
+	if _, err := os.Stat(filepath.Join(moved, "b.txt")); !os.IsNotExist(err) {
+		t.Error("the rest was not erased")
 	}
 }
 
