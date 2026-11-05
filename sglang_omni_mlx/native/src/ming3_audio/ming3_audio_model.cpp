@@ -345,30 +345,44 @@ mx::array Model::Moe(const mx::array &hidden, const std::string &prefix) const {
                                                      mx::array(1e-20f))),
                          mx::array(text_.routed_scaling_factor));
 
-  const auto flat_indices = mx::reshape(indices, {-1});
-  const auto order = mx::argsort(flat_indices);
-  const auto expert_indices = mx::take(flat_indices, order, 0);
-  const auto token_indices =
-      mx::floor_divide(order, mx::array(selected_experts, mx::uint32));
-  const auto expanded = mx::expand_dims(
-      mx::take(mx::reshape(hidden, {tokens, width}), token_indices, 0), 1);
-  const auto project = [&](const mx::array &input,
-                           const std::string &projection) {
-    return mx::gather_mm(
-        input,
-        checkpoint_.Weight(prefix + ".experts." + projection + ".weight"),
-        std::nullopt, expert_indices, true);
+  const auto run_experts = [&](const mx::array &rows,
+                               const mx::array &row_experts, bool sorted) {
+    const auto project = [&](const mx::array &input,
+                             const std::string &projection) {
+      return mx::gather_mm(
+          input,
+          checkpoint_.Weight(prefix + ".experts." + projection + ".weight"),
+          std::nullopt, row_experts, sorted);
+    };
+    const auto gate = mx::astype(project(rows, "gate_proj"), mx::float32);
+    const auto up = project(rows, "up_proj");
+    return project(
+        mx::multiply(mx::astype(omni_common::Silu(gate), hidden.dtype()), up),
+        "down_proj");
   };
-  const auto gate = mx::astype(project(expanded, "gate_proj"), mx::float32);
-  const auto up = project(expanded, "up_proj");
-  const auto routed = project(
-      mx::multiply(mx::astype(omni_common::Silu(gate), hidden.dtype()), up),
-      "down_proj");
-  const auto inverse_order =
-      mx::put_along_axis(mx::zeros(order.shape(), mx::uint32), order,
-                         mx::arange(tokens * selected_experts, mx::uint32), 0);
-  const auto restored = mx::reshape(mx::take(routed, inverse_order, 0),
-                                    {tokens, selected_experts, width});
+  const auto restored = [&] {
+    // Note (XXXXRT666): A decode token's experts are all distinct, so sorting
+    // leaves gather_mm nothing to group.
+    if (tokens > 1) {
+      const auto flat_indices = mx::reshape(indices, {-1});
+      const auto order = mx::argsort(flat_indices);
+      const auto token_indices =
+          mx::floor_divide(order, mx::array(selected_experts, mx::uint32));
+      const auto expanded = mx::expand_dims(
+          mx::take(mx::reshape(hidden, {tokens, width}), token_indices, 0), 1);
+      const auto routed =
+          run_experts(expanded, mx::take(flat_indices, order, 0), true);
+      const auto inverse_order = mx::put_along_axis(
+          mx::zeros(order.shape(), mx::uint32), order,
+          mx::arange(tokens * selected_experts, mx::uint32), 0);
+      return mx::reshape(mx::take(routed, inverse_order, 0),
+                         {tokens, selected_experts, width});
+    } else {
+      return mx::squeeze(run_experts(mx::reshape(hidden, {tokens, 1, 1, width}),
+                                     indices, false),
+                         -2);
+    }
+  }();
   const auto output =
       mx::astype(mx::sum(mx::multiply(mx::astype(restored, mx::float32),
                                       mx::expand_dims(routing, -1)),
