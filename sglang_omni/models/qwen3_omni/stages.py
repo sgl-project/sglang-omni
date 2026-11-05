@@ -11,14 +11,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import queue
-import threading
-from collections.abc import Callable, Coroutine, Mapping
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from dataclasses import dataclass
 from functools import partial
-from typing import TYPE_CHECKING, Literal, Protocol, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 import torch
 import torch.nn.functional as F
@@ -1009,28 +1007,20 @@ def batch_audio_encoder_payloads(
 # ---------------------------------------------------------------------------
 
 
-class PreprocessRequest(Protocol):
-    def __call__(
-        self, payload: StagePayload
-    ) -> Coroutine[None, None, StagePayload]: ...
-
-
 class PreprocessingScheduler(SimpleScheduler[StagePayload, StagePayload]):
     """Run requests in arrival order on the scheduler thread, except that a request with video gets a thread of its own, so its long decode holds up no request behind it."""
 
     def __init__(
         self,
-        preprocess_request: PreprocessRequest,
-        preprocess_video_request: PreprocessRequest,
+        preprocessor: Qwen3OmniPreprocessor,
         video_executor: ThreadPoolExecutor,
     ) -> None:
         super().__init__(
-            preprocess_request,
+            preprocessor,
             shutdown_callback=partial(
                 video_executor.shutdown, wait=False, cancel_futures=True
             ),
         )
-        self.preprocess_video_request = preprocess_video_request
         self.video_executor = video_executor
 
     def run_single(self, msg: IncomingMessage, loop: asyncio.AbstractEventLoop) -> None:
@@ -1045,7 +1035,7 @@ class PreprocessingScheduler(SimpleScheduler[StagePayload, StagePayload]):
         else:
             pass
         try:
-            result = asyncio.run(self.preprocess_video_request(msg.data))
+            result = self.run_compute_in_thread(msg.data)
         except BaseException as exc:
             if self.consume_if_aborted(msg.request_id):
                 return
@@ -1077,48 +1067,26 @@ def create_preprocessing_executor(
         video_decode_threads = automatic_video_decode_threads(max(max_concurrency, 1))
     else:
         pass
-
-    def build_preprocessor() -> Qwen3OmniPreprocessor:
-        return Qwen3OmniPreprocessor(
-            model_path=model_path,
-            max_seq_len=max_seq_len,
-            video_fps=video_fps,
-            video_max_frames=video_max_frames,
-            video_min_pixels=video_min_pixels,
-            video_max_pixels=video_max_pixels,
-            video_total_pixels=video_total_pixels,
-            video_decode_threads=video_decode_threads,
-        )
-
-    preprocessor = build_preprocessor()
-
-    async def preprocess_request(payload: StagePayload) -> StagePayload:
-        return await preprocessor(payload)
+    preprocessor = Qwen3OmniPreprocessor(
+        model_path=model_path,
+        max_seq_len=max_seq_len,
+        video_fps=video_fps,
+        video_max_frames=video_max_frames,
+        video_min_pixels=video_min_pixels,
+        video_max_pixels=video_max_pixels,
+        video_total_pixels=video_total_pixels,
+        video_decode_threads=video_decode_threads,
+    )
 
     if max_concurrency <= 1:
-        return SimpleScheduler[StagePayload, StagePayload](preprocess_request)
+        return SimpleScheduler[StagePayload, StagePayload](preprocessor)
     else:
         pass
 
-    # note (ratish): the HF processor is not promised to be thread safe, so each video thread calls its own.
-    idle_preprocessors: queue.SimpleQueue[Qwen3OmniPreprocessor] = queue.SimpleQueue()
-    for _ in range(max_concurrency):
-        idle_preprocessors.put(build_preprocessor())
-    video_thread = threading.local()
-
-    def bind_video_thread() -> None:
-        video_thread.preprocessor = idle_preprocessors.get_nowait()
-
-    async def preprocess_video_request(payload: StagePayload) -> StagePayload:
-        return await video_thread.preprocessor(payload)
-
     return PreprocessingScheduler(
-        preprocess_request,
-        preprocess_video_request,
+        preprocessor,
         ThreadPoolExecutor(
-            max_workers=max_concurrency,
-            initializer=bind_video_thread,
-            thread_name_prefix="preprocessing-video",
+            max_workers=max_concurrency, thread_name_prefix="preprocessing-video"
         ),
     )
 

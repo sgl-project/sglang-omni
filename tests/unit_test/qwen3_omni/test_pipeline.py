@@ -2740,11 +2740,11 @@ def test_preprocessing_serial_requests_keep_arrival_order_on_the_scheduler_threa
     max_concurrency: int,
     build_request: RequestBuilder,
 ) -> None:
-    calls: list[tuple[str, int, int]] = []
+    calls: list[tuple[str, int]] = []
 
     class Preprocessor:
         async def __call__(self, payload: StagePayload) -> str:
-            calls.append((payload.request_id, threading.get_ident(), id(self)))
+            calls.append((payload.request_id, threading.get_ident()))
             return payload.request_id
 
     monkeypatch.setattr(
@@ -2766,17 +2766,15 @@ def test_preprocessing_serial_requests_keep_arrival_order_on_the_scheduler_threa
     assert results == ["first", "second", "third"]
     assert [call[0] for call in calls] == results
     assert {call[1] for call in calls} == {worker.ident}
-    assert len({call[2] for call in calls}) == 1
 
 
-def test_preprocessing_video_threads_each_run_their_own_preprocessor(
+def test_preprocessing_runs_no_more_videos_than_its_threads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     both_running = threading.Barrier(2, timeout=5)
     running_lock = threading.Lock()
     running = 0
     most_running = 0
-    calls: list[tuple[int, int]] = []
 
     class Preprocessor:
         async def __call__(self, payload: StagePayload) -> str:
@@ -2784,7 +2782,6 @@ def test_preprocessing_video_threads_each_run_their_own_preprocessor(
             with running_lock:
                 running += 1
                 most_running = max(most_running, running)
-                calls.append((threading.get_ident(), id(self)))
             both_running.wait()
             with running_lock:
                 running -= 1
@@ -2806,8 +2803,6 @@ def test_preprocessing_video_threads_each_run_their_own_preprocessor(
 
     assert results == {f"video-{index}" for index in range(4)}
     assert most_running == 2
-    assert len({thread for thread, _ in calls}) == 2
-    assert len(set(calls)) == 2
 
 
 def test_preprocessing_video_threads_see_the_stage_bound_to_the_scheduler_thread(

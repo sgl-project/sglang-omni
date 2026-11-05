@@ -73,6 +73,7 @@ def preprocessing_stage(*, process: str, speech_enabled: bool = False) -> StageC
         name="preprocessing",
         process=process,
         factory_path=f"{_PKG}.stages.create_preprocessing_executor",
+        # note (ratish): one video thread per media worker, since a further video would only wait for a worker to decode it.
         factory=FactoryArgs(max_concurrency=MEDIA_WORKERS),
         next=next_stages,
         route_fn=route_fn,
