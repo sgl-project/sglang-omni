@@ -1,7 +1,9 @@
 package session
 
 import (
+	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -88,6 +90,55 @@ func TestDeliverWhereTyping(t *testing.T) {
 			}
 			if tc.kind == store.KindTranscribe && e.RuleID != "g-chat" {
 				t.Errorf("rule %q: the start app's group composed it", e.RuleID)
+			}
+		})
+	}
+}
+
+// TestCancelBeforePaste: the cancel shortcut, pressed while the result
+// waits for the focused element to be read, ends the session cancelled:
+// nothing is pasted and the history keeps the entry as cancelled. The
+// delivery used to ignore the cancel, paste, and end done and inserted.
+// The read either ends only at the cancel (as the helper's does) or
+// answers after it; either way nothing is pasted.
+func TestCancelBeforePaste(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		endsAtStop bool
+	}{
+		{"the read ends at the cancel", true},
+		{"the read answers after the cancel", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, &fakeFile{text: "hello"}, &fakeLLM{text: "Hello."}, nil)
+			reading, release := make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			h.text.onFocus = func(ctx context.Context) error {
+				if h.m.Current().State != Delivering {
+					return nil
+				}
+				once.Do(func() { close(reading) })
+				if tc.endsAtStop {
+					<-ctx.Done()
+					return ctx.Err()
+				}
+				<-release
+				return nil
+			}
+			id, err := h.m.Start(StartRequest{Kind: store.KindTranscribe, Target: slack})
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.speak(id, 3)
+			<-reading
+			h.m.Cancel(id)
+			close(release)
+			end := h.rec.wait(t) // a read that never ends: "the session did not end"
+			if pasted := h.text.pastes(); len(pasted) != 0 || end.State != Cancelled || end.Inserted {
+				t.Fatalf("pasted %q, end %s inserted=%v", pasted, end.State, end.Inserted)
+			}
+			if es := h.hist.all(); len(es) != 1 || es[0].Status != store.StatusCancelled {
+				t.Errorf("history %+v", es)
 			}
 		})
 	}

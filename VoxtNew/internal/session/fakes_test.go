@@ -404,6 +404,9 @@ type fakeText struct {
 	// secure the app with secure input on.
 	check  string
 	secure *proto.App
+	// onFocus, when set, runs in each focus read before it answers; an
+	// error ends that read.
+	onFocus func(ctx context.Context) error
 
 	mu      sync.Mutex
 	pasted  []string
@@ -411,7 +414,14 @@ type fakeText struct {
 	verify  []int
 }
 
-func (f *fakeText) Focus(context.Context) (proto.FocusResult, error) { return f.focus, f.err }
+func (f *fakeText) Focus(ctx context.Context) (proto.FocusResult, error) {
+	if f.onFocus != nil {
+		if err := f.onFocus(ctx); err != nil {
+			return proto.FocusResult{}, err
+		}
+	}
+	return f.focus, f.err
+}
 
 func (f *fakeText) Paste(_ context.Context, p proto.PasteParams) (proto.PasteResult, error) {
 	f.mu.Lock()
