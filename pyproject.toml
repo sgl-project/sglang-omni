@@ -133,6 +133,20 @@ minicpm-o = [
     "onnx>=1.18.0",
 ]
 
+# Codec source prerequisites are in docs/get_started/installation.md.
+moss-speech = [
+    "conformer==0.3.2",
+    "einops>=0.8.1",
+    "gdown==5.1.0",
+    "hyperpyyaml==1.2.3",
+    "lightning==2.6.5",
+    "matplotlib",
+    "pyworld==0.3.4",
+    "setuptools<80",  # pyworld imports pkg_resources.
+    "ruamel.yaml>=0.17.28,<0.19",  # HyperPyYAML's loader is incompatible with 0.19.
+    "wget==3.2",
+]
+
 # Drama 3 vocoder imports dac and audiotools. These stay out of the base
 # dependencies, so `uv pip install -e .` for other models is unchanged.
 # descript-audiotools pins protobuf<3.20; tool.uv.override-dependencies keeps
