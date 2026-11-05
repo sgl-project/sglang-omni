@@ -153,7 +153,9 @@ func (r *run) listen() (string, bool) {
 		case o := <-openDone:
 			openDone = nil
 			if o.err != nil {
-				r.fail(r.asrProblem(o.err))
+				// As after Stop: what was recorded is kept, to Retry.
+				r.recognitionFailed = true
+				r.endFailed(r.asrProblem(o.err), nil)
 				return "", false
 			}
 			r.setOpening(false)

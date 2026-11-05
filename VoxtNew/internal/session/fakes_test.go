@@ -60,6 +60,9 @@ type fakeAudio struct {
 	// Stop, as the helper's file input does.
 	file    []byte
 	drained chan struct{}
+	// notified closes once notifyAt frames were sent (0: never).
+	notifyAt int
+	notified chan struct{}
 
 	mu      sync.Mutex
 	stops   map[string]chan struct{}
@@ -137,6 +140,9 @@ func (f *fakeAudio) Record(ctx context.Context, id string, p proto.CaptureParams
 			f.mu.Lock()
 			f.frames++
 			f.mu.Unlock()
+			if f.notifyAt > 0 && n == f.notifyAt {
+				close(f.notified)
+			}
 			if f.failAt > 0 && n == f.failAt {
 				return proto.CaptureResult{}, f.failErr
 			}
@@ -207,6 +213,7 @@ type fakeStreamer struct {
 	errAfter int           // the stream fails after this many sends
 	hang     bool          // no final after Finish
 	openWait time.Duration // Open takes this long
+	openGate chan struct{} // Open waits for it to close (nil: no wait)
 	silent   bool          // no partials
 	salvage  string        // the text its streams salvage (asr.Salvager), "" for none
 
@@ -221,6 +228,13 @@ func (f *fakeStreamer) Open(ctx context.Context, req asr.StreamRequest) (asr.Str
 	if f.openWait > 0 {
 		select {
 		case <-time.After(f.openWait):
+		case <-ctx.Done():
+			return nil, &asr.Error{Kind: asr.KindCancelled}
+		}
+	}
+	if f.openGate != nil {
+		select {
+		case <-f.openGate:
 		case <-ctx.Done():
 			return nil, &asr.Error{Kind: asr.KindCancelled}
 		}
