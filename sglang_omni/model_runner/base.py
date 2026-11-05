@@ -1162,9 +1162,17 @@ class ModelRunner(Generic[RequestDataInput]):
         else:
             pass
         self.validate_seeded_sampling_supported(sampling_info)
+        for sp in sampling_params:
+            if sp.sampling_seed is not None and not (
+                0 <= sp.sampling_seed <= SAMPLING_SEED_MASK
+            ):
+                sp.sampling_seed = resolve_row_seed(sp.sampling_seed)
+            else:
+                pass
         # note (YifanLi3): the per-step sampling_info is a copy, so reuse the
         # device tensor while the batch composition is unchanged instead of
-        # paying a host-to-device copy every decode step.
+        # paying a host-to-device copy every decode step. The key holds the
+        # normalized seeds so an out-of-range user seed does not miss once.
         batch_key = tuple(
             (request.request_id, sp.sampling_seed)
             for sp, request in zip(sampling_params, requests)
@@ -1179,9 +1187,6 @@ class ModelRunner(Generic[RequestDataInput]):
             seed = sp.sampling_seed
             if seed is None:
                 seed = rank_shared_unseeded_sampling_seed(request, row_idx)
-            elif not (0 <= seed <= SAMPLING_SEED_MASK):
-                seed = resolve_row_seed(seed)  # mask and cache user seed
-                sp.sampling_seed = seed
             else:
                 pass
             row_seeds.append(seed)

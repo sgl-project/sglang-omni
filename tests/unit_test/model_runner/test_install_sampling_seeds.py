@@ -16,7 +16,7 @@ from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.sglang_model_runner import (
     register_flashinfer_seeded_sampler,
 )
-from sglang_omni.sampling.seed import derive_sampling_seed
+from sglang_omni.sampling.seed import derive_sampling_seed, resolve_row_seed
 
 VOCAB_SIZE = 3072
 TOP_K = 50
@@ -102,6 +102,20 @@ def test_reuses_seed_tensor_while_batch_is_unchanged():
     requests = [req(42, "first"), req(7, "second")]
     fb = make_fb()
     runner.install_sampling_seeds(fb, requests)
+    fb_next = make_fb()
+    runner.install_sampling_seeds(fb_next, requests)
+    assert fb_next.sampling_info.sampling_seed is fb.sampling_info.sampling_seed
+
+
+def test_reuses_seed_tensor_after_normalizing_an_out_of_range_seed():
+    runner = seed_runner()
+    requests = [req(-1, "negative"), req(1 << 40, "wide")]
+    fb = make_fb()
+    runner.install_sampling_seeds(fb, requests)
+    assert fb.sampling_info.sampling_seed.tolist() == [
+        resolve_row_seed(-1),
+        resolve_row_seed(1 << 40),
+    ]
     fb_next = make_fb()
     runner.install_sampling_seeds(fb_next, requests)
     assert fb_next.sampling_info.sampling_seed is fb.sampling_info.sampling_seed
