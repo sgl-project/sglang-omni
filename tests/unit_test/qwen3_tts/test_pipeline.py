@@ -95,6 +95,7 @@ from sglang_omni.models.qwen3_tts.streaming_vocoder import (
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.platforms import current_platform
 from sglang_omni.preprocessing.cache_key import PromptRowCacheKeys
 from sglang_omni.profiler.event_recorder import (
     RequestEventBuffer,
@@ -103,7 +104,6 @@ from sglang_omni.profiler.event_recorder import (
     reset_active_stage,
     set_active_stage,
 )
-from sglang_omni.platforms import current_platform
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.sampling import seed as sampling_seed
 from sglang_omni.scheduling.engine_factory import GenerationDefaults
