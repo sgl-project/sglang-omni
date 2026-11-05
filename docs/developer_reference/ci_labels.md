@@ -173,7 +173,7 @@ The stage label is `run-mac-ci`.
 
 ## Label rules
 
-1. A stage runs only when its stage label is on the pull request. There is no label that selects every stage; add the stage labels the change needs.
+1. A stage runs only when its stage label is on the pull request. There is no label that selects every stage; add the stage labels the change needs. If a fundamental change really needs all of CI, add `run-asr-ci`, `run-tts-ci`, `run-mps-ci`, `run-omni-ci`, `run-native-duplex`, `run-cascaded-duplex`, `run-intel-cpu-ci`, `run-intel-xpu-ci` and `run-mac-ci`, or comment `/tag-and-rerun-ci asr tts mps omni full-duplex cascaded intel-cpu intel-xpu mac`. Leave out `run-turn-based-duplex`, which fails by design until it is calibrated.
 2. Self-hosted CI needs a stage label or `run-lint-only`. Without one, the Omni CI gate fails with `No CI label found`; unselected hardware workflows skip their tests without failing. The checks on GitHub-hosted runners do not depend on labels. `run-lint-only` runs no self-hosted job, so a green lint check leaves no self-hosted failure. It does not turn off a stage label that is also present.
 3. Any stage label also runs PR Test. A pull request labeled only `run-mac-ci` still runs PR Test on H100.
 4. A model label names a model, not a stage. It picks that model for every selected stage that accepts it, and never selects a stage by itself. Higgs and MOSS labels are accepted by TTS and MPS. If no selected stage accepts the label, the gate prints a warning.
