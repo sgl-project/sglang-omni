@@ -253,6 +253,7 @@ class TtsSeedttsBenchmarkConfig:
     similarity_checkpoint: str | None = None
     asr_model_path: str = QWEN3_ASR_MODEL_PATH
     asr_concurrency: int = DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
+    asr_resample_to_16_khz: bool = False
     environment_fingerprint: BenchmarkFingerprint | None = None
     measure_gpu_memory: bool = False
 
@@ -516,6 +517,7 @@ def run_tts_seedtts_transcribe(
         "initial_codec_chunk_frames": config.initial_codec_chunk_frames,
         "concurrency": config.concurrency,
         "asr_concurrency": config.asr_concurrency,
+        "asr_resample_to_16_khz": config.asr_resample_to_16_khz,
         "quantization": config.quantization,
     }
     return run_seedtts_transcribe(
@@ -523,6 +525,7 @@ def run_tts_seedtts_transcribe(
         wer_config=wer_config,
         generation_mode=generation_mode,
         asr_router_port=asr_router_port,
+        resample_to_16_khz=config.asr_resample_to_16_khz,
     )
 
 
@@ -573,6 +576,7 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         similarity_checkpoint=args.similarity_checkpoint,
         asr_model_path=args.asr_model_path,
         asr_concurrency=args.asr_concurrency,
+        asr_resample_to_16_khz=args.asr_resample_to_16_khz,
     )
 
 
@@ -1059,6 +1063,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
         help="Concurrent transcription requests during WER evaluation.",
+    )
+    parser.add_argument(
+        "--asr-resample-to-16-khz",
+        action="store_true",
+        help="Resample each generated WAV to 16 kHz mono before transcription, "
+        "for ASR servers that accept only that, such as the native MLX "
+        "qwen3_asr_server.",
     )
     parser.add_argument(
         "--similarity-checkpoint",

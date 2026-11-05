@@ -522,6 +522,7 @@ def _transcribe_generated_via_runner(
     concurrency: int,
     *,
     log_per_sample: bool = False,
+    resample_to_16_khz: bool = False,
 ) -> tuple[list[SampleOutput], float]:
     done = [e for e in generated if e.get("is_success", False)]
     samples = [
@@ -541,6 +542,7 @@ def _transcribe_generated_via_runner(
             lang=lang,
             concurrency=concurrency,
             warmup=concurrency * ASR_WARMUP_MULTIPLIER,
+            resample_to_16_khz=resample_to_16_khz,
         )
     )
     result_by_id = {r.request_id: r for r in results}
@@ -580,6 +582,7 @@ def run_seedtts_transcribe(
     generation_mode: str | None = None,
     log_per_sample: bool = False,
     asr_router_port: int | None = None,
+    resample_to_16_khz: bool = False,
 ) -> dict:
     """Transcribe saved audio, compute WER + ASR-speed metrics, and persist them.
 
@@ -606,6 +609,7 @@ def run_seedtts_transcribe(
         config.lang,
         asr_concurrency,
         log_per_sample=log_per_sample,
+        resample_to_16_khz=resample_to_16_khz,
     )
 
     wer_metrics = calculate_wer_metrics(outputs, config.lang)
