@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+import sglang_omni.models.ming_tts.engine_builder as engine_builder_module
 from sglang_omni.models.ming_tts.engine_builder import MingTtsEngineBuilder
 from sglang_omni.models.ming_tts.model_runner import MingTTSModelRunner
 
@@ -20,15 +22,26 @@ def adjust_overrides(key: str, value: Any) -> dict[str, Any]:
     return overrides
 
 
-def test_ming_tts_default_prefill_backend_is_declared_supported() -> None:
+@pytest.mark.parametrize(
+    ("is_cuda", "expected_backend"), [(True, "breakable"), (False, "disabled")]
+)
+def test_ming_tts_default_prefill_backend_is_declared_supported(
+    monkeypatch: pytest.MonkeyPatch, is_cuda: bool, expected_backend: str
+) -> None:
+    """Non-CUDA platforms bypass the graphed prefill forward, so they must not request one."""
     from sglang_omni.models.ming_tts import CAPABILITIES
     from sglang_omni.scheduling.generation_batch_policy import (
         build_default_prefill_cuda_graph_bs,
     )
 
+    monkeypatch.setattr(
+        engine_builder_module,
+        "current_platform",
+        SimpleNamespace(is_cuda=lambda: is_cuda),
+    )
     defaults = MingTtsEngineBuilder().generation_defaults(dtype="bfloat16")
 
-    assert defaults["cuda_graph_backend_prefill"] == "breakable"
+    assert defaults["cuda_graph_backend_prefill"] == expected_backend
     assert CAPABILITIES.supports_breakable_prefill_cuda_graph is True
     assert MingTtsEngineBuilder.supports_breakable_prefill_cuda_graph is True
     assert defaults["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(512)

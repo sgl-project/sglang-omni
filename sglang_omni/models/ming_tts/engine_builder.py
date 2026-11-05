@@ -13,6 +13,7 @@ from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.ming_omni.tp_utils import validate_attention_tp_config
 from sglang_omni.models.ming_tts import CAPABILITIES
 from sglang_omni.models.ming_tts.tokenizer import MingTTSTokenizerBundle
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 from sglang_omni.scheduling.engine_factory import (
@@ -159,8 +160,13 @@ class MingTtsEngineBuilder(TtsEngineBuilder["MingTTSSGLangRequestData"]):
             "max_running_requests": 8,
             "dtype": dtype,
             "disable_cuda_graph": True,
+            # The model only replays the prefill graph on CUDA; see custom_prefill_forward.
+            "cuda_graph_backend_prefill": (
+                CudaGraphBackend.BREAKABLE
+                if current_platform.is_cuda()
+                else CudaGraphBackend.DISABLED
+            ),
             # note (Dayuxiaoshui): Measured on Seed-TTS; longer prefills run eager.
-            "cuda_graph_backend_prefill": CudaGraphBackend.BREAKABLE,
             "cuda_graph_bs_prefill": build_default_prefill_cuda_graph_bs(512),
             "disable_overlap_schedule": True,
             "disable_radix_cache": True,

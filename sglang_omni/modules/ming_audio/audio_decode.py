@@ -379,6 +379,12 @@ class AudioVAEFixedStreamingTransition:
             for index in range(layer_count)
         ]
         self.cache = Cache(layers=self.cache_layers)
+        # The state bank and envelope tail were written on the caller's stream;
+        # the eager path can reach decode without the device sync graph prep does.
+        if self.stream is not None:
+            self.stream.wait_stream(self.device_module.current_stream(device))
+        else:
+            pass
 
     @property
     def capacity(self) -> int:
