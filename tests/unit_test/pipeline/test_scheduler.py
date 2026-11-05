@@ -2407,7 +2407,7 @@ def test_speculative_admission_refuses_sampling_the_draft_cannot_reproduce(
 
 
 @pytest.mark.parametrize(
-    ("temperature", "repetition_penalty", "expected_path", "reason"),
+    ("temperature", "repetition_penalty", "expected_path", "expected_fallback_reason"),
     [
         (0.0, 1.0, "spec", None),
         (0.7, 1.0, "plain", "temperature"),
@@ -2418,8 +2418,8 @@ def test_plain_fallback_admission_preserves_sampling_contract(
     monkeypatch: pytest.MonkeyPatch,
     temperature: float,
     repetition_penalty: float,
-    expected_path: str,
-    reason: str | None,
+    expected_path: Literal["plain", "spec"],
+    expected_fallback_reason: str | None,
 ) -> None:
     """Unsupported sampling must select plain before any draft prefill runs."""
     scheduler = object.__new__(OmniScheduler)
@@ -2449,10 +2449,10 @@ def test_plain_fallback_admission_preserves_sampling_contract(
     normalized_temperature = request.sampling_params.temperature
     assert scheduler.select_decode_path(request, request_data) is None
     assert request_data.decode_path == expected_path
-    if reason is None:
+    if expected_fallback_reason is None:
         assert request_data.fallback_reason is None
     else:
-        assert reason in request_data.fallback_reason
+        assert expected_fallback_reason in request_data.fallback_reason
     assert request.sampling_params.repetition_penalty == repetition_penalty
     assert request.sampling_params.temperature == normalized_temperature
 
@@ -2462,7 +2462,9 @@ def test_plain_fallback_admission_preserves_sampling_contract(
     [(34, "spec"), (35, "plain"), (50, "plain"), (51, "spec")],
 )
 def test_plain_fallback_accepts_requests_without_room_for_draft_reserve(
-    monkeypatch: pytest.MonkeyPatch, max_new_tokens: int, expected_path: str
+    monkeypatch: pytest.MonkeyPatch,
+    max_new_tokens: int,
+    expected_path: Literal["plain", "spec"],
 ) -> None:
     """A request that fits plain must not be refused for draft-only KV reserves."""
     scheduler = object.__new__(OmniScheduler)
@@ -2595,14 +2597,16 @@ def test_plain_fallback_does_not_idle_on_a_blocked_path(
     attempted_paths: list[str] = []
 
     def prepare_batch(
-        current: OmniScheduler[SGLangARRequestData],
+        current_scheduler: OmniScheduler[SGLangARRequestData],
         running_batch: ScheduleBatch,
         last_batch: ScheduleBatch | None,
     ) -> NextBatchPlan:
-        attempted_paths.append(current.decode_path)
+        attempted_paths.append(current_scheduler.decode_path)
         assert len(attempted_paths) <= 2
         return NextBatchPlan(
-            batch_to_run=(running_batch if current.decode_path == ready_path else None),
+            batch_to_run=(
+                running_batch if current_scheduler.decode_path == ready_path else None
+            ),
             running_batch=running_batch,
         )
 
@@ -2650,12 +2654,12 @@ def test_plain_fallback_requeues_all_kv_owners_before_native_oom_abort(
     monkeypatch.setattr(omni_scheduler_module, "retract_all", release_requests)
 
     def enqueue_retracted_request(
-        current: OmniScheduler[SGLangARRequestData],
+        current_scheduler: OmniScheduler[SGLangARRequestData],
         request: Req,
         is_retracted: bool = False,
     ) -> None:
         """Observe the native queue interface without requiring initialized pools."""
-        current.waiting_queue.append(request)
+        current_scheduler.waiting_queue.append(request)
 
     monkeypatch.setattr(
         sglang_scheduler_module.Scheduler,

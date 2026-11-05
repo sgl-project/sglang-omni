@@ -29,6 +29,7 @@ from functools import partial
 from itertools import islice
 from typing import Callable, Generic, Literal
 
+import sglang.srt.runtime_context as runtime_context
 import torch
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.disaggregation.utils import DisaggregationMode
@@ -345,7 +346,7 @@ class OmniScheduler(Generic[RequestDataT]):
     async_prefill: bool = False
     request_build_admission_wait_s: float = _REQUEST_BUILD_ADMISSION_WAIT_S
     enable_plain_fallback: bool = False
-    decode_batch_states: dict[str, DecodeBatchState] | None = None
+    decode_batch_states: dict[Literal["plain", "spec"], DecodeBatchState] | None = None
     kv_recovery_request: Req | None = None
 
     def __init__(
@@ -2088,12 +2089,10 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
 
-        from sglang.srt.runtime_context import get_schedule
-
         kv_cache_bytes = getattr(
             getattr(self, "tp_worker", None), "kv_cache_bytes", None
         )
-        mem_fraction = get_schedule().mem_fraction_static
+        mem_fraction = runtime_context.get_schedule().mem_fraction_static
         if kv_cache_bytes is not None:
             mem_hint = " Try raising engine.kv_cache_bytes."
         elif mem_fraction is not None:
@@ -2227,14 +2226,8 @@ class OmniScheduler(Generic[RequestDataT]):
             )
         )
 
-    def get_next_batch_to_run(self):
-        """Bridge Omni's batch-owning loops to the upstream scheduler contract.
-
-        Upstream takes running_batch and last_batch as arguments instead of
-        reading them off self and returns a NextBatchPlan instead of the batch. Omni's event loops
-        own that state, so feed it in and write the (possibly rebuilt) running
-        batch back before handing the runnable batch to the caller.
-        """
+    def get_next_batch_to_run(self) -> ScheduleBatch | None:
+        """Keep batch ownership in Omni while borrowing native batch selection."""
         for _ in range(2 if self.enable_plain_fallback else 1):
             if self.enable_plain_fallback:
                 with self.request_admission_lock:
@@ -2253,10 +2246,12 @@ class OmniScheduler(Generic[RequestDataT]):
                 running_batch.batch_is_full = False
             else:
                 pass
-            plan = _Upstream.get_next_batch_to_run(self, running_batch, self.last_batch)
-            self.running_batch = plan.running_batch
-            if plan.batch_to_run is not None or not self.enable_plain_fallback:
-                return plan.batch_to_run
+            batch_plan = _Upstream.get_next_batch_to_run(
+                self, running_batch, self.last_batch
+            )
+            self.running_batch = batch_plan.running_batch
+            if batch_plan.batch_to_run is not None or not self.enable_plain_fallback:
+                return batch_plan.batch_to_run
             else:
                 self.last_batch = None
         return None
@@ -2274,31 +2269,32 @@ class OmniScheduler(Generic[RequestDataT]):
         ):
             with self.request_admission_lock:
                 self.kv_recovery_request = batch.reqs[0]
-                requests = {
+                requests_by_identity = {
                     id(request): request
                     for held_batch in (batch, *self.pending_batches())
                     for request in held_batch.reqs
                     if not request.finished()
                 }
-                retracted_count = self.retract_running_requests()
+                retracted_request_count = self.retract_running_requests()
                 self.new_token_ratio_tracker.reset()
-                self.metrics_reporter.num_retracted_reqs = retracted_count
+                self.metrics_reporter.num_retracted_reqs = retracted_request_count
                 if self.metrics_reporter.enable_metrics:
                     self.metrics_reporter.metrics_collector.increment_retracted_reqs(
-                        num_retracted_reqs=retracted_count,
+                        num_retracted_reqs=retracted_request_count,
                         num_retracted_input_tokens=sum(
                             len(request.origin_input_ids)
-                            for request in requests.values()
+                            for request in requests_by_identity.values()
                         ),
                         num_retracted_output_tokens=sum(
-                            len(request.output_ids) for request in requests.values()
+                            len(request.output_ids)
+                            for request in requests_by_identity.values()
                         ),
                     )
                 else:
                     pass
                 logger.warning(
                     f"KV cache pool is full across decode paths; "
-                    f"requeued {retracted_count} requests"
+                    f"requeued {retracted_request_count} requests"
                 )
             return None
         else:
@@ -2306,16 +2302,18 @@ class OmniScheduler(Generic[RequestDataT]):
 
     def select_next_decode_path(self) -> None:
         """Prioritize a retracted request, otherwise alternate ready paths."""
-        states = self.decode_batch_states
-        assert states is not None
-        states[self.decode_path] = DecodeBatchState(
+        decode_batch_states = self.decode_batch_states
+        assert decode_batch_states is not None
+        decode_batch_states[self.decode_path] = DecodeBatchState(
             running_batch=self.running_batch,
             last_batch=self.last_batch,
             chunked_request=self.chunked_req,
             pending_chunked_abort_request=self._pending_chunked_abort_req,  # noqa: leading-underscore  # upstream scheduler contract
         )
-        next_path = "plain" if self.decode_path == "spec" else "spec"
-        next_state = states[next_path]
+        next_decode_path: Literal["plain", "spec"] = (
+            "plain" if self.decode_path == "spec" else "spec"
+        )
+        next_batch_state = decode_batch_states[next_decode_path]
         recovery_request = self.kv_recovery_request
         if recovery_request is not None and (
             recovery_request.finished() or recovery_request.omni_data is None
@@ -2327,23 +2325,26 @@ class OmniScheduler(Generic[RequestDataT]):
         if recovery_request is not None:
             self.decode_path = recovery_request.omni_data.decode_path
         elif (
-            next_state.running_batch.reqs
-            or (next_state.last_batch is not None and next_state.last_batch.reqs)
-            or next_state.chunked_request is not None
+            next_batch_state.running_batch.reqs
+            or (
+                next_batch_state.last_batch is not None
+                and next_batch_state.last_batch.reqs
+            )
+            or next_batch_state.chunked_request is not None
             or any(
-                request.omni_data.decode_path == next_path
+                request.omni_data.decode_path == next_decode_path
                 for request in self.waiting_queue
             )
         ):
-            self.decode_path = next_path
+            self.decode_path = next_decode_path
         else:
             pass
-        selected_state = states[self.decode_path]
-        self.running_batch = selected_state.running_batch
-        self.last_batch = selected_state.last_batch
-        self.chunked_req = selected_state.chunked_request
+        selected_batch_state = decode_batch_states[self.decode_path]
+        self.running_batch = selected_batch_state.running_batch
+        self.last_batch = selected_batch_state.last_batch
+        self.chunked_req = selected_batch_state.chunked_request
         self._pending_chunked_abort_req = (
-            selected_state.pending_chunked_abort_request
+            selected_batch_state.pending_chunked_abort_request
         )  # noqa: leading-underscore  # upstream scheduler contract
         self.spec_algorithm = (
             SpeculativeAlgorithm.NONE
@@ -2364,13 +2365,13 @@ class OmniScheduler(Generic[RequestDataT]):
         num_held_rows: int = 0,
     ) -> int:
         if self.enable_plain_fallback:
-            other_requests = {
+            other_request_identities = {
                 id(request)
                 for batch in self.pending_batches()
                 for request in batch.reqs
                 if not request.finished()
             }
-            running_bs += len(other_requests)
+            running_bs += len(other_request_identities)
         else:
             pass
         bridge = self.session_bridge
@@ -2510,7 +2511,7 @@ class OmniScheduler(Generic[RequestDataT]):
         )
         return now_s - oldest_enqueue_s < self.prefill_coalesce_wait_s
 
-    def get_new_batch_prefill(self, running_batch):
+    def get_new_batch_prefill(self, running_batch: ScheduleBatch) -> NextBatchPlan:
         if not self.enable_plain_fallback:
             return self.get_coalesced_batch_prefill(running_batch)
         else:

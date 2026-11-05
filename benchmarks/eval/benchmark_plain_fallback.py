@@ -16,6 +16,8 @@ from jiwer import wer
 
 REQUEST_MIX_PERIOD = 100
 REQUEST_MIX_STRIDE = 37
+REQUEST_TIMEOUT_SECONDS = 180
+FALLBACK_TEMPERATURE = 0.7
 
 
 @dataclass(kw_only=True)
@@ -36,99 +38,122 @@ class SweepMeasurement:
     requests: list[RequestMeasurement]
 
 
-async def run_sweep(arguments: argparse.Namespace) -> None:
-    audio_bytes = arguments.audio.read_bytes()
-    reference = re.sub(r"[^\w\s]", "", arguments.reference_text.casefold())
+async def run_sweep(
+    *,
+    audio_path: Path,
+    reference_text: str,
+    base_url: str,
+    model_identifier: str,
+    concurrency_counts: list[int],
+    fallback_percentages: list[int],
+    request_count: int,
+    output_path: Path,
+) -> None:
+    audio_bytes = audio_path.read_bytes()
+    normalized_reference_text = re.sub(r"[^\w\s]", "", reference_text.casefold())
     measurements: list[SweepMeasurement] = []
     async with httpx.AsyncClient(
-        timeout=180, limits=httpx.Limits(max_connections=max(arguments.concurrencies))
-    ) as client:
+        timeout=REQUEST_TIMEOUT_SECONDS,
+        limits=httpx.Limits(max_connections=max(concurrency_counts)),
+    ) as transcription_client:
 
         async def transcribe(
             sampled: bool, semaphore: asyncio.Semaphore
         ) -> RequestMeasurement:
             async with semaphore:
-                started = time.perf_counter()
+                started_at_seconds = time.perf_counter()
                 first_token_seconds = None
                 transcript = ""
-                completed = False
-                async with client.stream(
+                has_completed_transcript = False
+                async with transcription_client.stream(
                     "POST",
-                    f"{arguments.base_url.rstrip('/')}/v1/audio/transcriptions",
+                    f"{base_url.rstrip('/')}/v1/audio/transcriptions",
                     data={
-                        "model": arguments.model,
-                        "temperature": str(0.7 if sampled else 0.0),
+                        "model": model_identifier,
+                        "temperature": str(FALLBACK_TEMPERATURE if sampled else 0.0),
                         "stream": "true",
                     },
-                    files={"file": (arguments.audio.name, audio_bytes, "audio/wav")},
+                    files={"file": (audio_path.name, audio_bytes, "audio/wav")},
                 ) as response:
                     response.raise_for_status()
-                    async for line in response.aiter_lines():
-                        if line.startswith("data: ") and line != "data: [DONE]":
-                            event = json.loads(line[6:])
+                    async for stream_line in response.aiter_lines():
+                        if (
+                            stream_line.startswith("data: ")
+                            and stream_line != "data: [DONE]"
+                        ):
+                            transcript_event = json.loads(stream_line[6:])
                             if (
-                                event.get("type") == "error"
-                                or event.get("error") is not None
+                                transcript_event.get("type") == "error"
+                                or transcript_event.get("error") is not None
                             ):
                                 raise RuntimeError(
-                                    f"Transcription stream failed: {event}"
+                                    f"Transcription stream failed: {transcript_event}"
                                 )
-                            elif event.get("type") == "transcript.text.delta":
+                            elif (
+                                transcript_event.get("type") == "transcript.text.delta"
+                            ):
                                 if first_token_seconds is None:
-                                    first_token_seconds = time.perf_counter() - started
+                                    first_token_seconds = (
+                                        time.perf_counter() - started_at_seconds
+                                    )
                                 else:
                                     pass
-                                transcript += event["delta"]
-                            elif event.get("type") == "transcript.text.done":
-                                transcript = event["text"]
-                                completed = True
+                                transcript += transcript_event["delta"]
+                            elif transcript_event.get("type") == "transcript.text.done":
+                                transcript = transcript_event["text"]
+                                has_completed_transcript = True
                             else:
                                 pass
                         else:
                             pass
-                if first_token_seconds is None or not completed:
+                if first_token_seconds is None or not has_completed_transcript:
                     raise RuntimeError(f"Incomplete transcription stream: {transcript}")
                 else:
                     return RequestMeasurement(
                         sampled=sampled,
                         first_token_seconds=first_token_seconds,
-                        latency_seconds=time.perf_counter() - started,
+                        latency_seconds=time.perf_counter() - started_at_seconds,
                         word_error_rate=wer(
-                            reference, re.sub(r"[^\w\s]", "", transcript.casefold())
+                            normalized_reference_text,
+                            re.sub(r"[^\w\s]", "", transcript.casefold()),
                         ),
                     )
 
         await transcribe(False, asyncio.Semaphore(1))
-        if any(arguments.fallback_percentages):
+        if any(fallback_percentages):
             await transcribe(True, asyncio.Semaphore(1))
         else:
             pass
-        for concurrency in arguments.concurrencies:
-            for fallback_percentage in arguments.fallback_percentages:
-                semaphore = asyncio.Semaphore(concurrency)
-                started = time.perf_counter()
-                requests = await asyncio.gather(
+        for concurrent_request_count in concurrency_counts:
+            for fallback_percentage in fallback_percentages:
+                semaphore = asyncio.Semaphore(concurrent_request_count)
+                started_at_seconds = time.perf_counter()
+                request_measurements = await asyncio.gather(
                     *(
                         transcribe(
-                            index * REQUEST_MIX_STRIDE % REQUEST_MIX_PERIOD
+                            request_index * REQUEST_MIX_STRIDE % REQUEST_MIX_PERIOD
                             < fallback_percentage,
                             semaphore,
                         )
-                        for index in range(arguments.requests)
+                        for request_index in range(request_count)
                     )
                 )
-                elapsed_seconds = time.perf_counter() - started
-                row = SweepMeasurement(
-                    concurrency=concurrency,
+                elapsed_seconds = time.perf_counter() - started_at_seconds
+                sweep_measurement = SweepMeasurement(
+                    concurrency=concurrent_request_count,
                     fallback_percentage=fallback_percentage,
-                    requests_per_second=len(requests) / elapsed_seconds,
-                    sampled_requests=sum(request.sampled for request in requests),
-                    word_error_rate=sum(request.word_error_rate for request in requests)
-                    / len(requests),
-                    requests=requests,
+                    requests_per_second=len(request_measurements) / elapsed_seconds,
+                    sampled_requests=sum(
+                        request.sampled for request in request_measurements
+                    ),
+                    word_error_rate=sum(
+                        request.word_error_rate for request in request_measurements
+                    )
+                    / len(request_measurements),
+                    requests=request_measurements,
                 )
-                measurements.append(row)
-                arguments.output.write_text(
+                measurements.append(sweep_measurement)
+                output_path.write_text(
                     json.dumps(
                         [asdict(measurement) for measurement in measurements], indent=2
                     )
@@ -137,9 +162,11 @@ async def run_sweep(arguments: argparse.Namespace) -> None:
                 print(
                     json.dumps(
                         {
-                            name: value
-                            for name, value in asdict(row).items()
-                            if name != "requests"
+                            measurement_field: measurement_value
+                            for measurement_field, measurement_value in asdict(
+                                sweep_measurement
+                            ).items()
+                            if measurement_field != "requests"
                         }
                     ),
                     flush=True,
@@ -164,7 +191,18 @@ def main() -> None:
     elif any(value < 0 or value > 100 for value in arguments.fallback_percentages):
         parser.error("fallback percentages must be between 0 and 100")
     else:
-        asyncio.run(run_sweep(arguments))
+        asyncio.run(
+            run_sweep(
+                audio_path=arguments.audio,
+                reference_text=arguments.reference_text,
+                base_url=arguments.base_url,
+                model_identifier=arguments.model,
+                concurrency_counts=arguments.concurrencies,
+                fallback_percentages=arguments.fallback_percentages,
+                request_count=arguments.requests,
+                output_path=arguments.output,
+            )
+        )
 
 
 if __name__ == "__main__":

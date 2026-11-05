@@ -73,6 +73,7 @@ class MossTranscribeDiarizeEngineBuilder(
         enable_torch_compile: bool | None,
         torch_compile_max_bs: int,
         enable_async_decode: bool,
+        enable_plain_fallback: bool,
         async_decode_min_batch_size: int,
         prefill_coalesce_requests: int,
         prefill_coalesce_wait_ms: float,
@@ -86,7 +87,6 @@ class MossTranscribeDiarizeEngineBuilder(
         request_build_max_pending: int | None,
         stream_emit_interval_s: float,
         enable_trimmed_fbank: bool = True,
-        enable_plain_fallback: bool = False,
     ) -> None:
         self.max_running_requests = max_running_requests
         self.requested_max_new_tokens = max_new_tokens

@@ -399,27 +399,38 @@ class SGLModelRunner(ModelRunner):
         if self.plain_decode_runner is not None:
             return
         else:
-            plain_runner = copy.copy(self)
-            plain_runner.spec_algorithm = SpeculativeAlgorithm.NONE
-            plain_runner.plain_decode_runner = None
-            backends = build_attention_backends(model_runner=plain_runner)
-            plain_runner.attn_backend = backends.attn_backend
-            plain_runner.decode_attn_backend = backends.decode_attn_backend
-            plain_runner.decode_attn_backend_group = backends.decode_attn_backend_group
-            plain_runner.kv_index_translator.bind_and_verify_backends(
-                [plain_runner.attn_backend, plain_runner.decode_attn_backend]
+            plain_decode_runner = copy.copy(self)
+            plain_decode_runner.spec_algorithm = SpeculativeAlgorithm.NONE
+            plain_decode_runner.plain_decode_runner = None
+            attention_backends = build_attention_backends(
+                model_runner=plain_decode_runner
             )
-            plain_runner.eager_runner = EagerRunner(plain_runner, run_warmup=False)
-            plain_runner.init_decode_cuda_graph()
-            self.plain_decode_runner = plain_runner
+            plain_decode_runner.attn_backend = attention_backends.attn_backend
+            plain_decode_runner.decode_attn_backend = (
+                attention_backends.decode_attn_backend
+            )
+            plain_decode_runner.decode_attn_backend_group = (
+                attention_backends.decode_attn_backend_group
+            )
+            plain_decode_runner.kv_index_translator.bind_and_verify_backends(
+                [
+                    plain_decode_runner.attn_backend,
+                    plain_decode_runner.decode_attn_backend,
+                ]
+            )
+            plain_decode_runner.eager_runner = EagerRunner(
+                plain_decode_runner, run_warmup=False
+            )
+            plain_decode_runner.init_decode_cuda_graph()
+            self.plain_decode_runner = plain_decode_runner
             self.graph_memory_usage = replace_graph_memory_usage(
                 self.graph_memory_usage,
-                {"decode": plain_runner.graph_memory_usage["decode"]},
+                {"decode": plain_decode_runner.graph_memory_usage["decode"]},
                 phases=("decode",),
             )
             self.graph_time_usage = replace_graph_time_usage(
                 self.graph_time_usage,
-                {"decode": plain_runner.graph_time_usage["decode"]},
+                {"decode": plain_decode_runner.graph_time_usage["decode"]},
                 phases=("decode",),
             )
 

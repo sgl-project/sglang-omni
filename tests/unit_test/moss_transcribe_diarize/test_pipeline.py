@@ -52,6 +52,7 @@ def make_moss_engine_builder() -> MossTranscribeDiarizeEngineBuilder:
         enable_torch_compile=False,
         torch_compile_max_bs=4,
         enable_async_decode=True,
+        enable_plain_fallback=False,
         async_decode_min_batch_size=2,
         prefill_coalesce_requests=0,
         prefill_coalesce_wait_ms=0.0,

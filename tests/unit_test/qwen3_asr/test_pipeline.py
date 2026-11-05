@@ -117,6 +117,7 @@ def make_engine_builder(
         max_running_requests=64,
         max_new_tokens=128,
         enable_async_decode=True,
+        enable_plain_fallback=False,
         async_decode_min_batch_size=2,
         mem_fraction_static=None,
         mm_embedding_cache_size_bytes=0,
