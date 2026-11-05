@@ -12,7 +12,8 @@ class PinnedDraft:
     """One draft for one model stage, and the engine keys that serve it.
 
     A cookbook command, an example config or a model's defaults that serve this
-    draft give exactly the keys from engine_overrides.
+    draft give the keys from engine_overrides. They can leave out the revision,
+    which EngineArgs.overrides fills from this entry.
     """
 
     model_path: str

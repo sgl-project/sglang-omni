@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from sglang_omni.config.manager import ConfigManager, normalize_flag_key
-from sglang_omni.config.schema import StageConfig
+from sglang_omni.config.schema import EngineArgs
 from sglang_omni.models.registry import resolve_variant
 from sglang_omni.speculative.draft_registry import DRAFT_REGISTRY, PinnedDraft
 
@@ -34,13 +34,13 @@ def registered_keys(draft: PinnedDraft) -> dict[str, str]:
     return {key: str(value) for key, value in draft.engine_overrides().items()}
 
 
-def stage_draft_keys(stage: StageConfig) -> dict[str, str]:
-    if stage.engine is None:
+def engine_draft_keys(engine: EngineArgs | None) -> dict[str, str]:
+    if engine is None:
         return {}
     else:
         return {
             key: str(value)
-            for key, value in stage.engine.overrides().items()
+            for key, value in engine.overrides().items()
             if key.startswith("speculative_")
         }
 
@@ -75,9 +75,9 @@ def drafts_in_docs() -> tuple[list[ServedDraft], list[str]]:
                             source=str(doc_path.relative_to(REPO_ROOT)),
                             model_path=model_path,
                             stage=stage,
-                            engine_keys=engine_keys,
+                            engine_keys=engine_draft_keys(EngineArgs(**flag_keys)),
                         )
-                        for stage, engine_keys in keys_by_stage.items()
+                        for stage, flag_keys in keys_by_stage.items()
                     )
                 else:
                     pass
@@ -90,7 +90,7 @@ def drafts_in_example_configs() -> list[ServedDraft]:
         if "speculative_" in config_path.read_text(encoding="utf-8"):
             config = ConfigManager.from_file(str(config_path)).config
             for stage in config.stages:
-                engine_keys = stage_draft_keys(stage)
+                engine_keys = engine_draft_keys(stage.engine)
                 if engine_keys:
                     served.append(
                         ServedDraft(
@@ -118,6 +118,8 @@ def test_registry_pins_each_draft_and_turns_on_at_most_one_per_stage() -> None:
     assert len(
         {(draft.model_path, draft.stage, draft.algorithm) for draft in DRAFT_REGISTRY}
     ) == len(DRAFT_REGISTRY)
+    draft_repos = Counter(draft.draft_model_path for draft in DRAFT_REGISTRY)
+    assert all(count == 1 for count in draft_repos.values()), draft_repos
     default_on = Counter(
         (draft.model_path, draft.stage)
         for draft in DRAFT_REGISTRY
@@ -133,6 +135,27 @@ def test_only_a_licensed_draft_is_on_by_default() -> None:
 
 def test_every_draft_flag_in_the_docs_names_one_stage_engine_key() -> None:
     assert UNREADABLE_DOC_DRAFT_FLAGS == []
+
+
+def test_engine_fills_a_pinned_draft_revision_only_when_the_key_is_absent() -> None:
+    draft = DRAFT_REGISTRY[0]
+    pinned = EngineArgs(speculative_draft_model_path=draft.draft_model_path)
+    explicit = EngineArgs(
+        speculative_draft_model_path=draft.draft_model_path,
+        speculative_draft_model_revision="main",
+    )
+    default_branch = EngineArgs(
+        speculative_draft_model_path=draft.draft_model_path,
+        speculative_draft_model_revision=None,
+    )
+    unpinned = EngineArgs(speculative_draft_model_path="example/unpinned-draft")
+    assert (
+        pinned.overrides()["speculative_draft_model_revision"]
+        == draft.draft_model_revision
+    )
+    assert explicit.overrides()["speculative_draft_model_revision"] == "main"
+    assert default_branch.overrides()["speculative_draft_model_revision"] is None
+    assert "speculative_draft_model_revision" not in unpinned.overrides()
 
 
 @pytest.mark.parametrize(
@@ -196,7 +219,7 @@ def test_model_defaults_serve_exactly_the_default_on_drafts() -> None:
             else:
                 for model_path in model_paths:
                     for stage in config_cls(model_path=model_path).stages:
-                        engine_keys = stage_draft_keys(stage)
+                        engine_keys = engine_draft_keys(stage.engine)
                         if engine_keys:
                             default_drafts.add(
                                 (model_path, stage.name, frozenset(engine_keys.items()))

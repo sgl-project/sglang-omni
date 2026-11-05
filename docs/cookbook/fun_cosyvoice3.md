@@ -358,7 +358,6 @@ sgl-omni serve \
   --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
   --tts_engine.engine.speculative_algorithm DSPARK \
   --tts_engine.engine.speculative_draft_model_path yuekai/cosyvoice3_llm_dspark \
-  --tts_engine.engine.speculative_draft_model_revision 0b1b28dbb751bac3b74eea5dcc11e0570c91563b \
   --tts_engine.engine.speculative_dspark_block_size 7 \
   --port 8000
 ```
