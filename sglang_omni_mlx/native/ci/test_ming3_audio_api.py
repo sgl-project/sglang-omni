@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 from check_golden import QUALITY_GROUPS, chip, quality
+from ming3_audio_golden import request
+from ming3_audio_golden import running_chat as serve_chat
 
 RUNTIME_BIN = os.environ.get("NATIVE_RUNTIME_BIN")
 DATA_ROOT = os.environ.get("CI_DATA_ROOT")
@@ -32,44 +34,11 @@ pytestmark = pytest.mark.skipif(
 def running_chat(
     log_directory: Path, extra_arguments: tuple[str, ...] = ()
 ) -> Iterator[tuple[int, subprocess.Popen[str]]]:
-    log_path = log_directory / "server.log"
     model_directory = Path(DATA_ROOT) / "models" / MODEL_REPO.replace("/", "_")
-    with log_path.open("w+") as log:
-        process = subprocess.Popen(
-            [
-                str(Path(RUNTIME_BIN) / "ming3_audio_server"),
-                "--supervised",
-                "--model-directory",
-                str(model_directory),
-                "--model-name",
-                MODEL_REPO,
-                *extra_arguments,
-            ],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=log,
-            text=True,
-        )
-        try:
-            ready = process.stdout.readline()
-            if not ready:
-                log.seek(0)
-                pytest.fail(log.read())
-            else:
-                yield json.loads(ready)["port"], process
-        finally:
-            if process.poll() is None:
-                process.stdin.write('{"command":"shutdown"}\n')
-                process.stdin.flush()
-                try:
-                    process.wait(timeout=30)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
-                    pytest.fail("server did not shut down")
-            else:
-                pass
-            assert process.returncode == 0
+    with serve_chat(
+        Path(RUNTIME_BIN), model_directory, MODEL_REPO, log_directory, extra_arguments
+    ) as server:
+        yield server
 
 
 @pytest.fixture(scope="module")
@@ -104,23 +73,6 @@ def wait_for_running(port: int, running: bool, timeout_seconds: float = 30) -> N
         else:
             time.sleep(0.01)
     pytest.fail(f"server did not reach request_states={expected}")
-
-
-def request(
-    port: int, body: str = "", method: str = "POST", path: str = "/v1/chat/completions"
-) -> tuple[int, bytes]:
-    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=300)
-    try:
-        connection.request(
-            method,
-            path,
-            body=body.encode(),
-            headers={"Content-Type": "application/json"},
-        )
-        response = connection.getresponse()
-        return response.status, response.read()
-    finally:
-        connection.close()
 
 
 @pytest.fixture(scope="module")
