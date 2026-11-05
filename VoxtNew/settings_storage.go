@@ -5,8 +5,9 @@ package main
 // the reset tiers: the look, all settings, everything
 // (settings_storage_erase.go). The local models are not in the data
 // folder: they are in the ActNow family's library ($HUB, by default
-// ~/.cache/huggingface/hub), which every family app shares; the page
-// shows how much of it is VoxtNew's alone and how much it shares.
+// ~/Library/Application Support/ActNow/models/hub), which every family
+// app shares; the page shows how much of it is VoxtNew's alone and how
+// much it shares.
 
 import (
 	"context"
