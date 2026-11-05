@@ -7,13 +7,16 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sgl-project/sglang-omni/VoxtNew/internal/i18n"
 	"github.com/sgl-project/sglang-omni/VoxtNew/internal/llm"
 	"github.com/sgl-project/sglang-omni/VoxtNew/internal/llmrt"
 	"github.com/sgl-project/sglang-omni/VoxtNew/internal/llmrt/llmrttest"
 	"github.com/sgl-project/sglang-omni/VoxtNew/internal/models"
+	"github.com/sgl-project/sglang-omni/VoxtNew/internal/omni"
 	"github.com/sgl-project/sglang-omni/VoxtNew/internal/omni/omnitest"
+	"github.com/sgl-project/sglang-omni/VoxtNew/internal/resident"
 )
 
 // fakeProcMemory makes procMemory read mem (by pid; a pid not there
@@ -45,6 +48,28 @@ func (f *fakeProcMemory) set(pid int, b int64) {
 	f.mem[pid] = b
 }
 
+// omniLoads reports the omni runtime's models as their servers are
+// loaded (resident.Loaded, with the pid), for the runtimes made from now
+// on.
+func omniLoads(t *testing.T) <-chan resident.Event {
+	ch := make(chan resident.Event, 16)
+	newRT := omniNewRuntime
+	omniNewRuntime = func(c omni.Config) *omni.Runtime {
+		on := c.OnModel
+		c.OnModel = func(ev resident.Event) {
+			if on != nil {
+				on(ev)
+			}
+			if ev.Kind == resident.Loaded {
+				ch <- ev
+			}
+		}
+		return newRT(c)
+	}
+	t.Cleanup(func() { omniNewRuntime = newRT })
+	return ch
+}
+
 // TestModelsMemory: the Local models page says the memory of the models
 // loaded in the fake Omni server and the fake voxtnew-llm, measured by
 // their pids (the language model's own report when its process cannot
@@ -52,6 +77,7 @@ func (f *fakeProcMemory) set(pid int, b int64) {
 // that is not loaded, and nothing after an unload.
 func TestModelsMemory(t *testing.T) {
 	fakeOmni(t, omnitest.Opts{})
+	loads := omniLoads(t)
 	t.Setenv(llmrt.DevEnv, "")
 	t.Setenv("VOXTNEW_LLM", "")
 	a, _, tt := newTestApp(t)
@@ -74,13 +100,15 @@ func TestModelsMemory(t *testing.T) {
 		t.Fatal(err)
 	}
 	var pid int
-	eventually(t, "the speech server", func() bool {
-		ps := a.omniRT.Processes()
-		if len(ps) == 1 {
-			pid = ps[0].PID
-		}
-		return len(ps) == 1
-	})
+	select { // the open's warm
+	case ev := <-loads:
+		pid = ev.PID
+	case <-time.After(10 * time.Second):
+		t.Fatal("the speech server did not load")
+	}
+	if ps := a.omniRT.Processes(); len(ps) != 1 || ps[0].PID != pid {
+		t.Fatalf("processes %+v, loaded pid %d", ps, pid)
+	}
 	pm.set(pid, 1536<<20)
 	chat, _, err := a.local.LLM(context.Background(), models.LLMFast)
 	if err != nil {
@@ -124,7 +152,9 @@ func TestModelsMemory(t *testing.T) {
 	}
 	a.unloadModel(models.ASRFast)
 	rt.Unload()
-	eventually(t, "the unload", func() bool { return len(a.omniRT.Processes()) == 0 })
+	if ps := a.omniRT.Processes(); len(ps) != 0 { // Unload takes its servers off the list at once
+		t.Errorf("processes after the unload %+v", ps)
+	}
 	a.navigate(modelsPath)
 	frames(tt)
 	if has(tt, "Loaded") || len(a.modelMem) != 0 {
