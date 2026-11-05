@@ -127,25 +127,29 @@ class SenseNovaU1GenerationStage(PipelineStage):
             reusable_memory_bytes = torch.cuda.memory_reserved(
                 self.model.device
             ) - torch.cuda.memory_allocated(self.model.device)
-            generation_result = it2i_generate(
-                self.model,
-                self.tokenizer,
-                batch.prompt,
-                batch.condition_image,
-                image_size=(int(batch.width), int(batch.height)),
-                num_steps=int(batch.num_inference_steps),
-                cfg_scale=float(batch.guidance_scale),
-                img_cfg_scale=edit_options["img_cfg_scale"],
-                seed=seeds[0],
-                timestep_shift=generation_options.timestep_shift,
-                t_eps=generation_options.t_eps,
-                memory_budget_bytes=max(
-                    0,
-                    free_memory_bytes
-                    + reusable_memory_bytes
-                    - EDIT_WORKSPACE_RESERVE_BYTES,
-                ),
-            )
+            with self.progress_bar(
+                range(int(batch.num_inference_steps)), batch=batch
+            ) as steps:
+                generation_result = it2i_generate(
+                    self.model,
+                    self.tokenizer,
+                    batch.prompt,
+                    batch.condition_image,
+                    image_size=(int(batch.width), int(batch.height)),
+                    num_steps=int(batch.num_inference_steps),
+                    steps=steps,
+                    cfg_scale=float(batch.guidance_scale),
+                    img_cfg_scale=edit_options["img_cfg_scale"],
+                    seed=seeds[0],
+                    timestep_shift=generation_options.timestep_shift,
+                    t_eps=generation_options.t_eps,
+                    memory_budget_bytes=max(
+                        0,
+                        free_memory_bytes
+                        + reusable_memory_bytes
+                        - EDIT_WORKSPACE_RESERVE_BYTES,
+                    ),
+                )
         else:
             generation_result = self.model.t2i_generate(
                 self.tokenizer,

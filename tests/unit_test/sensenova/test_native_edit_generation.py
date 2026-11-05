@@ -1,5 +1,6 @@
 """Exercise reference conditioning and prefix memory admission on CPU."""
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -14,11 +15,13 @@ from sglang.multimodal_gen.runtime.pipelines_core.stages import base as stage_ba
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from tokenizers.pre_tokenizers import WhitespaceSplit
+from tqdm.auto import tqdm
 from transformers import PreTrainedTokenizerFast
 from transformers.cache_utils import DynamicCache
 
 from sglang_omni.models.sensenova_u1.native.generation import SenseNovaU1GenerationStage
 from sglang_omni.models.sensenova_u1.native.sampling import SenseNovaU1SamplingParams
+from sglang_omni.native_generation import cancellation
 from sglang_omni.vendor.sensenova_u1 import image_edit
 from sglang_omni.vendor.sensenova_u1.configuration_neo_chat import NEOChatConfig
 from sglang_omni.vendor.sensenova_u1.image_edit import build_it2i_queries, it2i_generate
@@ -100,6 +103,7 @@ def test_edit_denoising_uses_references_and_is_repeatable(
     parameters = dict(
         image_size=(64, 64),
         num_steps=2,
+        steps=range(2),
         cfg_scale=cfg_scale,
         img_cfg_scale=img_cfg_scale,
         seed=7,
@@ -167,6 +171,7 @@ def test_edit_prefix_memory_budget_boundary(
     parameters = dict(
         image_size=(64, 64),
         num_steps=2,
+        steps=range(2),
         cfg_scale=4.0,
         img_cfg_scale=1.0,
         seed=7,
@@ -221,6 +226,7 @@ def test_edit_prefix_budget_accounts_for_references_text_and_output(
             references,
             image_size=output_size_pixels,
             num_steps=2,
+            steps=range(2),
             cfg_scale=4.0,
             img_cfg_scale=1.0,
             seed=7,
@@ -281,6 +287,7 @@ def test_prefix_estimate_covers_observed_softmax_buffers(
         [Image.new("RGB", (32, 32))],
         image_size=(64, 64),
         num_steps=2,
+        steps=range(2),
         cfg_scale=4.0,
         img_cfg_scale=1.0,
         seed=7,
@@ -439,6 +446,7 @@ def test_edit_prefix_budget_includes_all_guidance_caches(
             [Image.new("RGB", (32, 32))],
             image_size=(4096, 4096),
             num_steps=2,
+            steps=range(2),
             cfg_scale=4.0,
             img_cfg_scale=1.5,
             seed=7,
@@ -447,3 +455,79 @@ def test_edit_prefix_budget_includes_all_guidance_caches(
             memory_budget_bytes=memory_budget_bytes,
         )
     normalize.assert_not_called()
+
+
+@pytest.mark.parametrize("armed", [False, True])
+def test_edit_loop_checks_cancellation_between_steps(
+    edit_model_and_tokenizer: tuple[NEOChatModel, PreTrainedTokenizerFast],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    armed: bool,
+) -> None:
+    """An edit must stop at the next step after cancellation and release its caches."""
+    model, tokenizer = edit_model_and_tokenizer
+    monkeypatch.setattr(
+        stage_base,
+        "get_global_server_args",
+        lambda: SimpleNamespace(comfyui_mode=False),
+    )
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device: (4 * 1024**3, 0))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device: 0)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device: 0)
+    monkeypatch.setattr(cancellation.CancellationState, "enabled", True)
+    original_progress_bar = stage_base.PipelineStage.progress_bar
+
+    def progress_bar(
+        stage: stage_base.PipelineStage, iterable: range, *, batch: Req
+    ) -> tqdm:
+        return cancellation.around_progress_bar(
+            original_progress_bar, stage, iterable, batch=batch
+        )
+
+    monkeypatch.setattr(stage_base.PipelineStage, "progress_bar", progress_bar)
+    sampling = SenseNovaU1SamplingParams(
+        prompt="edit",
+        image_path="reference.png",
+        width=64,
+        height=64,
+        num_inference_steps=3,
+        guidance_scale=4.0,
+        seed=7,
+        generator_device="cpu",
+        output_path=str(tmp_path),
+    )
+    request = Req(sampling_params=sampling)
+    sampling.apply_request_extra(request)
+    request.condition_image = [Image.new("RGB", (32, 32))]
+    stage = SenseNovaU1GenerationStage(model, tokenizer)
+    baseline = stage.forward(request, None)
+    if armed:
+        (tmp_path / cancellation.ARMED_MARKER).touch()
+    else:
+        pass
+    unpatchify = model.unpatchify
+
+    def cancel_after_step(
+        image_latents: torch.Tensor, patch_size: int, height: int, width: int
+    ) -> torch.Tensor:
+        result = unpatchify(image_latents, patch_size, height, width)
+        (tmp_path / cancellation.CANCELLED_MARKER).touch()
+        return result
+
+    completed_steps = Mock(side_effect=cancel_after_step)
+    clear_cache = Mock(wraps=image_edit.clear_flash_kv_cache)
+    monkeypatch.setattr(model, "unpatchify", completed_steps)
+    monkeypatch.setattr(image_edit, "clear_flash_kv_cache", clear_cache)
+    if armed:
+        with pytest.raises(cancellation.GenerationCancelled):
+            stage.forward(request, None)
+        assert completed_steps.call_count == 1
+    else:
+        output = stage.forward(request, None)
+        assert completed_steps.call_count == 3
+        assert torch.equal(output.output[0], baseline.output[0])
+    assert clear_cache.call_count == 2
+    for call in clear_cache.call_args_list:
+        for layer in call.args[0].layers:
+            assert not hasattr(layer, "flash_k_cache")
+            assert not hasattr(layer, "flash_v_cache")

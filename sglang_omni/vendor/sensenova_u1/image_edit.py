@@ -2,6 +2,7 @@
 """Reference conditioning and Euler denoising for SenseNova image editing."""
 
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 import torch
@@ -191,6 +192,7 @@ def it2i_generate(
     *,
     image_size: tuple[int, int],
     num_steps: int,
+    steps: Iterable[int],
     cfg_scale: float,
     img_cfg_scale: float,
     seed: int,
@@ -317,7 +319,7 @@ def it2i_generate(
         timesteps = torch.linspace(0.0, 1.0, num_steps + 1, device=device)
         timesteps = model._apply_time_schedule(timesteps, timestep_shift)
 
-        for step_index in range(num_steps):
+        for step_index in steps:
             timestep = timesteps[step_index]
             image_latents = model.patchify(image_prediction, image_patch_size)
             image_patches = model.patchify(
