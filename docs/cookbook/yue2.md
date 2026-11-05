@@ -1,0 +1,76 @@
+# YuE2
+
+[YuE2](https://huggingface.co/m-a-p/YuE2-3B) generates 48 kHz stereo music from lyrics and a style description. Its shared transformer predicts an ABC score and semantic tokens autoregressively, then generates acoustic latents with flow matching. A separate FP32 VAE decodes the audio.
+
+## Start the server
+
+Install SGLang-Omni following [Installation](../get_started/installation.md), then start one CUDA worker:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
+  --model-path m-a-p/YuE2-3B \
+  --port 8000
+```
+
+The worker loads the BF16 transformer and FP32 decoder once and processes queued requests sequentially. Each request owns its sampling generators and KV caches. This implementation does not yet batch token generation across requests or capture CUDA graphs.
+
+Both the transformer and decoder accept local checkpoint directories or Hugging Face model identifiers. The default decoder is `m-a-p/YuE2-Vae`. Select the benchmark decoder with `--synthesis.factory.vae_path m-a-p/YuE2-Vae-legacy`. Checkpoint identifiers can pin a revision with `repository@revision`.
+
+## Generate a song
+
+```bash
+curl http://localhost:8000/v1/audio/speech \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "m-a-p/YuE2-3B",
+    "input": "[Verse]\nMorning light is shining through\nEvery road leads back to you",
+    "instructions": "Gentle acoustic pop, warm female vocals, piano and guitar",
+    "seed": 42,
+    "max_new_tokens": 9000,
+    "response_format": "wav"
+  }' \
+  --output song.wav
+```
+
+`input` is plain lyrics and `instructions` is the musical style. `seed` controls each generation phase independently. `max_new_tokens` limits semantic audio tokens, excluding the ABC planning phase; it is a token budget, not a requested audio duration. The semantic sampling fields `temperature`, `top_p`, `top_k` and `repetition_penalty` are supported.
+
+The response's `X-Finish-Reason` is `length` if either planning or semantic generation reaches its token budget; it is `stop` when both phases finish normally. Increasing the semantic budget cannot repair a truncated ABC plan: adjust `abc_max_tokens` for that phase. Requests that exceed the model context fail instead of silently shortening their budgets.
+
+## Control the score and acoustic solver
+
+Model-specific settings use the existing `stage_params` field:
+
+```json
+{
+  "input": "[Verse]\nMorning light is shining through",
+  "instructions": "Acoustic folk, gentle vocals",
+  "seed": 42,
+  "stage_params": {
+    "synthesis": {
+      "cot": "melody",
+      "abc": "X:1\nT:Morning\nM:4/4\nL:1/4\nK:C\nC D E F | G A B c |",
+      "ode_steps": 32
+    }
+  }
+}
+```
+
+| Setting | Meaning |
+| --- | --- |
+| `cot` | `full` plans melody and chords; `melody` plans melody; `off` skips score planning. Default: `full`. |
+| `abc` | An optional supplied score, used without generating a new one. Requires `full` or `melody`. |
+| `abc_max_tokens` | Planning budget. Default: 4096. |
+| `cfg_scale` | Semantic classifier-free guidance. Defaults to 1.0 for score modes and 1.01 for `off`, matching the model's generation protocol. |
+| `ode_steps` | Midpoint flow-matching steps. Default: 32. |
+
+Voice selection, reference-audio conditioning, speed changes and streaming output are unsupported. Cancellation is checked between AR tokens, acoustic solver evaluations and VAE tiles; an already submitted GPU operation finishes before cancellation takes effect.
+
+## Validation
+
+Run the CPU regression suite with:
+
+```bash
+pytest tests/unit_test/yue2 -q
+```
+
+Quality comparisons must use the same transformer revision, VAE revision, prompts, seeds and generation settings. The official [WildSongBench protocol](https://huggingface.co/datasets/m-a-p/WildSongBench) uses `YuE2-Vae-legacy`; scores from the standard decoder are not directly comparable to that baseline. Keep truncated outputs in evaluation and report them separately.
