@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -283,6 +284,24 @@ func TestHistorySearch(t *testing.T) {
 	}
 }
 
+// keptInFallbackFolder puts a recording in the store's own folder while
+// the chosen recordings folder is on a drive that is not connected, as a
+// session does then, and returns its path. Show in Finder must find it
+// there, not in the missing folder.
+func keptInFallbackFolder(t *testing.T, a *app, name string) string {
+	t.Helper()
+	h := a.lib.store.History()
+	path := filepath.Join(h.DefaultAudioDir(), name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("RIFF"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.SetAudioDir(filepath.Join(t.TempDir(), "unplugged"))
+	return path
+}
+
 func TestHistoryDetail(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	seedHistory(t, a)
@@ -312,10 +331,12 @@ func TestHistoryDetail(t *testing.T) {
 	if got := tt.Clipboard(); got != "um so let's move the design review to thursday afternoon and I'll send the new agenda tonight" {
 		t.Errorf("clipboard = %q", got)
 	}
+	fallback := keptInFallbackFolder(t, a, histInserted+".wav")
 	click(t, tt, "Show the recording in Finder")
-	if want := filepath.Join(a.lib.store.History().AudioDir(), histInserted+".wav"); len(revealed) != 1 || revealed[0] != want {
+	if want := fallback; len(revealed) != 1 || revealed[0] != want {
 		t.Errorf("revealed %v, want %s", revealed, want)
 	}
+	a.lib.store.History().SetAudioDir("")
 
 	// A failed entry: why, no language model, no recording.
 	click(t, tt, "asr.accurate: the speech server stopped answering (15s)")

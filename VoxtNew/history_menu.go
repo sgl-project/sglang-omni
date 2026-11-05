@@ -7,7 +7,6 @@ package main
 // menu without the recognised text and the recording.
 
 import (
-	"path/filepath"
 	"strings"
 
 	"github.com/egoist/mygo/ui"
@@ -56,7 +55,7 @@ func (a *app) entryMenu(c *ui.Context, row ui.Element, e store.Entry, keys bool,
 			details()
 		}
 		if e.Audio != "" && m.Item(i18n.T("Show the recording in Finder")).Chosen() {
-			revealInFinder(filepath.Join(a.lib.store.History().AudioDir(), e.Audio))
+			revealInFinder(a.lib.store.History().AudioPath(e.Audio))
 		}
 		if e.Audio != "" && m.Item(retryLabel(e)).Disabled(a.hist.retry.id != "").Chosen() {
 			a.retryEntry(e) // history_retry.go

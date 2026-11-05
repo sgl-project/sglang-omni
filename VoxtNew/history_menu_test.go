@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -125,11 +124,13 @@ func TestEntryMenuActions(t *testing.T) {
 	if a.hist.sel != "" {
 		t.Errorf("Copy selected %q", a.hist.sel)
 	}
+	fallback := keptInFallbackFolder(t, a, histInserted+".wav")
 	openMenu(t, tt, row)
 	choose(t, tt, "Show the recording in Finder")
-	if want := filepath.Join(a.lib.store.History().AudioDir(), histInserted+".wav"); len(revealed) != 1 || revealed[0] != want {
+	if want := fallback; len(revealed) != 1 || revealed[0] != want {
 		t.Errorf("revealed %v, want %s", revealed, want)
 	}
+	a.lib.store.History().SetAudioDir("")
 
 	// Details opens the panel, and keeps it open when chosen again.
 	for range 2 {
