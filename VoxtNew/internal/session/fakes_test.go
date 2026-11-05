@@ -207,6 +207,7 @@ type fakeStreamer struct {
 	errAfter int           // the stream fails after this many sends
 	hang     bool          // no final after Finish
 	openWait time.Duration // Open takes this long
+	openGate chan struct{} // Open waits for it to close (nil: no wait)
 	silent   bool          // no partials
 	salvage  string        // the text its streams salvage (asr.Salvager), "" for none
 
@@ -221,6 +222,13 @@ func (f *fakeStreamer) Open(ctx context.Context, req asr.StreamRequest) (asr.Str
 	if f.openWait > 0 {
 		select {
 		case <-time.After(f.openWait):
+		case <-ctx.Done():
+			return nil, &asr.Error{Kind: asr.KindCancelled}
+		}
+	}
+	if f.openGate != nil {
+		select {
+		case <-f.openGate:
 		case <-ctx.Done():
 			return nil, &asr.Error{Kind: asr.KindCancelled}
 		}

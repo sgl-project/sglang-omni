@@ -83,6 +83,31 @@ func TestASRFallback(t *testing.T) {
 	}
 }
 
+// TestStreamOpenFailsWhileRecording: the speech model's stream fails to
+// open while the user is still speaking. The session fails, and the entry
+// keeps what was recorded, ready to Retry, as when the same error comes
+// after Stop. It used to end with nothing kept: the recording was lost.
+func TestStreamOpenFailsWhileRecording(t *testing.T) {
+	gate := make(chan struct{})
+	prov := &fakeStreamer{openGate: gate, openErr: &asr.Error{Kind: asr.KindServer, Detail: "the local speech model stopped answering"}}
+	h := newHarness(t, prov, nil, nil)
+	id := h.start()
+	for deadline := time.Now().Add(5 * time.Second); h.audio.recorded() < 5; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d frames recorded", h.audio.recorded())
+		}
+	}
+	close(gate) // the stream's open fails now, mid-recording
+	end := h.rec.wait(t)
+	if end.State != Failed || end.Problem == nil || end.Problem.Code != ProblemASR || !end.Recording {
+		t.Fatalf("end %s recording=%v problem %+v", end.State, end.Recording, end.Problem)
+	}
+	es := h.hist.all()
+	if len(es) != 1 || es[0].Status != store.StatusFailed || es[0].Audio != id+".wav" || !writeFileForTest(t, h.hist.dir, id+".wav") {
+		t.Fatalf("entries %+v", es)
+	}
+}
+
 // TestRecordingRetention: with the settings keeping no recordings, an
 // entry keeps its recording for a while only when recognition failed or
 // found nothing; with them keeping recordings, for as long as the entry.
