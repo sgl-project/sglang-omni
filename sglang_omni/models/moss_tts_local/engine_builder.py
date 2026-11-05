@@ -81,12 +81,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
             effective_total_gpu_memory_fraction=None,
             applied_codec_mem_reserve=0.0,
         )
-        # note (ratish): flashinfer's GQA tensor-core decode shares the prefill
-        # kernel plus a ragged-merge pass; at this model's decode shapes
-        # (bs <= 256, kv <= ~800, GQA group 4) the specialized decode kernel
-        # is ~1.3 ms/step cheaper (17.97 vs 19.47 ms per decode main graph on
-        # A100, c=256 soak trace). setdefault keeps an operator's explicit
-        # choice intact.
+        # note (ratish): Specialized decode was faster for the measured A100 shapes.
         os.environ.setdefault("SGLANG_FLASHINFER_USE_TENSOR_CORE", "false")
         self.profile_total_gpu_memory_fraction: float | None = None
         self.model: MossTTSLocalSGLangModel | None = None
@@ -101,14 +96,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
             "dtype": dtype,
             "disable_cuda_graph": False,
             "cuda_graph_backend_prefill": CudaGraphBackend.FULL,
-            # note (Zhang Yiyang): Keep the measured buckets to bound prefill capture time and memory.
-            # 160/192/320 cover the common short/medium prompt lengths (a
-            # 157-token prompt otherwise replays the 256 bucket, wasting ~40%
-            # of the prefill replay on padding). 512..4096 cover the
-            # scheduler's coalesced multi-request prefill batches (~157 tokens
-            # per request, observed bs up to 17): anything above the ladder top
-            # fell back to the whole eager prefill body (~470 kernel launches
-            # per batch) instead of a replay.
+            # note (Zhang Yiyang): Cover short and coalesced prefills without excess padding.
             "cuda_graph_bs_prefill": [
                 64,
                 128,
@@ -124,16 +112,10 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
                 3072,
                 4096,
             ],
-            # Full-backend request slots: the auto-derived default
-            # (chunked_prefill_size // 512 = 16) rejected every coalesced
-            # prefill above 16 requests.
+            # note (Dino1844): Coalesced prefills can exceed the default request-slot count.
             "cuda_graph_config": {"prefill": {"full_prefill_max_req": 32}},
             "disable_overlap_schedule": True,
-            # note: the slot-pool decode state is per (rid -> row) and a radix
-            # prefix hit replays prompt KV without the pool's prepare/reset
-            # bookkeeping, so a repeated prompt deterministically mis-samples
-            # (the second identical request diverges from frame 0). Drama 3
-            # enforces the same constraint for its slot pool.
+            # note (Dino1844): Prefix KV reuse does not restore Local slot state.
             "disable_radix_cache": True,
             # note (Zhang Yiyang): Tests showed costly startup with no consistent throughput gain from compile.
             "enable_torch_compile": False,

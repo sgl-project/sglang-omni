@@ -30,6 +30,7 @@ from sglang.srt.runtime_context import get_parallel, get_schedule
 from sglang.srt.utils import add_prefix
 from transformers import GPT2Config, PretrainedConfig, Qwen3Config
 
+import sglang_omni.models.moss_tts_local.local_transformer as local_transformer
 from sglang_omni.models.moss_tts.sampling_kernels import (
     MAX_FUSED_SAMPLE_VOCAB,
     sample_seeded_branchless,
@@ -41,14 +42,20 @@ from sglang_omni.models.moss_tts_local.payload_types import (
 )
 from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeStatePool
 
+if local_transformer.triton is not None:
+    from sglang_omni.models.moss_tts_local.local_kernels import (
+        frame_lookup_attention,
+        seeded_sample_attend,
+    )
+else:
+    pass
+
 logger = logging.getLogger(__name__)
 
 
 def as_qwen3_config(
     config: PretrainedConfig | dict[str, object] | None,
 ) -> Qwen3Config | None:
-    from transformers import Qwen3Config
-
     if isinstance(config, Qwen3Config):
         return config
     else:
@@ -127,6 +134,17 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         self.large_vocab_frame_sampler: Callable[..., torch.Tensor] | None = None
         self.frame_compile_configured = False
         self.qkv_lookup: torch.Tensor | None = None
+        self._derived_weight_cache_error: str | None = (
+            "Online weight updates are not supported with the MOSS-TTS Local fused "
+            "head configured: captured graphs can retain derived QKV tables. "
+            "Restart with MOSS_LOCAL_FUSED_HEAD=0 before updating weights."
+            if self.fused_head_available()
+            or (
+                self.pp_group.world_size > 1
+                and os.environ.get("MOSS_LOCAL_FUSED_HEAD", "1") != "0"
+            )
+            else None
+        )  # noqa: leading-underscore  # Native SGLang weight-update contract.
 
     def acquire_row(self, rid: str) -> int:
         """Assign (or return the existing) decode-state pool row for ``rid``."""
@@ -404,9 +422,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
             return False
         else:
             pass
-        from sglang_omni.models.moss_tts_local import local_transformer as _lt
-
-        if _lt.triton is None:
+        if local_transformer.triton is None:
             return False
         else:
             pass
@@ -428,13 +444,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
     def apply_rope_rounded(
         x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, dtype: torch.dtype
     ) -> torch.Tensor:
-        """Interleaved RoPE with the rotary_cache_kernel's eager rounding.
-
-        The kernel rounds each product to the cache dtype before the fp32 sum
-        and rounds again on store; replicate that exactly so the precomputed
-        QKV rows match the on-the-fly rope bit-for-bit. ``cos``/``sin`` are
-        per-head ``[head_dim]`` slices tiled across the hidden axis.
-        """
+        """Match rotary_cache_kernel's cache-dtype rounding for interleaved RoPE."""
         cos = cos.to(dtype).float().repeat(x.shape[-1] // cos.shape[-1])
         sin = sin.to(dtype).float().repeat(x.shape[-1] // sin.shape[-1])
         pairs = x.view(*x.shape[:-1], x.shape[-1] // 2, 2)
@@ -446,13 +456,7 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
 
     @torch.no_grad()
     def prepare_qkv_lookup(self) -> None:
-        """Precompute per-codebook QKV rows for depth positions 1..n_vq-1.
-
-        Depth position ``c+1``'s input is codebook ``c``'s embedding, so its
-        ``c_attn(ln_1(.))`` projection (RoPE for that position baked in) can
-        be tabulated once per code over all codes. Must run before CUDA graph
-        capture; never replace the table while captured graphs reference it.
-        """
+        """Build QKV lookup tables before captured graphs retain their addresses."""
         lt = self.local_transformer
         block = lt.h[0]
         vocab = int(self.config.audio_vocab_size)
@@ -535,11 +539,6 @@ class MossTTSLocalSGLangModel(torch.nn.Module):
         else:
             pass
         if fused:
-            from sglang_omni.models.moss_tts_local.local_kernels import (
-                frame_lookup_attention,
-                seeded_sample_attend,
-            )
-
             lt = self.local_transformer
             block = lt.h[0]
             first = hidden_states.to(dtype=self.dtype)

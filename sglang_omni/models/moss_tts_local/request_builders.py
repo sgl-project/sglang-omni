@@ -88,8 +88,7 @@ class MossTTSLocalSGLangRequestData(ARRequestData):
     engine_start_s: float = 0.0
     stream_metadata: dict[str, object] | None = None
     stream_pending_rows: list[torch.Tensor] = field(default_factory=list)
-    # (Per-request host codes staging removed: codes accumulate on device in
-    # the state pool's slot-indexed generated_codes tensor.)
+    stream_first_batch_sent: bool = False
 
 
 @dataclass
@@ -492,9 +491,6 @@ def apply_sglang_moss_tts_local_result(
         else None
     )
     if codes is not None:
-        # Codes accumulated on device per slot (one scatter per emit); the
-        # side-stream pinned D2H lands in ~tens of µs because resolve already
-        # waited on the launch completion event covering the last scatter.
         state.audio_codes = codes
     else:
         generated_rows = torch.stack(data.output_rows, dim=0).to(dtype=torch.long)

@@ -1,27 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Fused Triton kernels for the MOSS-TTS-Local frame-local head.
-
-The frame-local transformer is a single block re-entered at depth positions
-0..n_vq-1: position 0 consumes the backbone hidden state through the full
-``c_attn`` projection, while every later position consumes an audio-code
-embedding whose projected QKV can be precomputed per codebook into a
-``[vocab, 3H]`` table (RoPE for that position baked in). The kernels below
-fuse, per depth position:
-
-* the seeded sampler (one launch covering temperature, stable-sort top-k,
-  nucleus and the murmur3-seeded gumbel draw — the exact body of
-  ``fused_seeded_sample_kernel``),
-* the QKV row gather of the sampled code,
-* the K/V store into the frame-local cache and the prefix attention, and
-* the next input embedding gather (the residual stream input).
-
-The sampling body is copied verbatim from
-``sglang_omni.models.moss_tts.sampling_kernels.fused_seeded_sample_kernel``
-so seeded requests replay bit-identically whether a code goes through the
-standalone sampler or this fused launch; only the attention arithmetic is
-new (fp32 accumulation in this kernel vs SDPA), which perturbs logits by
-bf16 ulps, not the seed schedule.
-"""
+"""Fused seeded sampling, embedding lookup and frame-local attention kernels."""
 from __future__ import annotations
 
 import torch
@@ -58,12 +36,7 @@ def attend_prefix(
     BS: tl.constexpr,
     GROUP: tl.constexpr,
 ):
-    """KV insertion and prefix attention for GROUP heads of one row.
-
-    Mirrors the eager path: fp32 score/softmax accumulation over the valid
-    prefix, output stored back in the cache dtype. ``row`` addresses the QKV
-    table (the sampled code for depth > 0, the batch row at depth 0).
-    """
+    """Insert one row's KV and attend over its valid prefix in fp32."""
     h = group * GROUP + tl.arange(0, GROUP)
     d = tl.arange(0, BD)
     dmask = (h[:, None] < HEADS) & (d[None, :] < D)
@@ -117,7 +90,7 @@ def sample_seeded_row(
     BLOCK: tl.constexpr,
     POSITION_OFFSET: tl.constexpr,
 ):
-    """Verbatim body of ``fused_seeded_sample_kernel`` for one row."""
+    """Preserve the standalone fused_seeded_sample_kernel's seeded arithmetic."""
     idx = tl.arange(0, BLOCK)
     valid = idx < VOCAB
 
@@ -132,11 +105,8 @@ def sample_seeded_row(
     safe_temp = tl.where(do_sample, temp, 1.0)
     scores = logits / safe_temp
 
-    # Note (Jiaxin Deng): key packs orderable score bits above a complemented
-    # index so equal scores keep input order, matching cub's stable radix sort
-    # (torch.sort) bit-for-bit at nucleus tie boundaries. -0.0 canonicalizes to
-    # +0.0 first: the zeros compare equal numerically, so bit-distinct keys
-    # would break that input-order tie rule.
+    # note (Jiaxin Deng): Pack score and inverse index to preserve stable ties.
+    # note (Jiaxin Deng): Canonicalize signed zero before sorting.
     key_scores = tl.where(scores == 0.0, 0.0, scores)
     bits = key_scores.to(tl.int32, bitcast=True)
     orderable = (bits ^ ((bits >> 31) | -2147483648)).to(tl.uint32).to(tl.int64)
@@ -178,8 +148,7 @@ def sample_seeded_row(
     remove = ((inclusive - probs_sorted) > top_p) & p_active
     final_sorted = tl.where(remove, -float("inf"), masked_sorted)
 
-    # Match multinomial_with_seed exactly, including hash_value == UINT32_MAX;
-    # the hash keys on original token ids so lane order is irrelevant.
+    # note (Dino1844): Hash original token ids so sorting preserves seeded draws.
     seed = tl.load(seeds_ptr + row).to(tl.uint64)
     position = (tl.load(positions_ptr + row) + POSITION_OFFSET).to(tl.uint32)
     hash_value: tl.uint32 = 0
@@ -204,8 +173,7 @@ def sample_seeded_row(
     )
     sampled = tl.where(nan_index != 2147483647, nan_index, max_index)
 
-    # Note (Jiaxin Deng): torch.argmax ranks NaN above every number, so a NaN row
-    # must select its first NaN lane; comparing against a NaN max matches none.
+    # note (Jiaxin Deng): Preserve argmax's first-NaN tie rule.
     logit_is_nan = logits != logits
     nan_greedy = tl.min(tl.where(valid & logit_is_nan, idx, 2147483647), axis=0)
     finite = valid & ~logit_is_nan
@@ -286,15 +254,8 @@ def seeded_sample_attend_kernel(
     BS: tl.constexpr,
     GROUP: tl.constexpr,
     ATTEND: tl.constexpr,
-    EMBED: tl.constexpr,
 ):
-    """Sample one codebook row, then attend with the sampled code's QKV row.
-
-    Every head-group program runs the sampler redundantly (deterministic, so
-    all groups agree) and group 0 stores the code into column ``CHANNEL``;
-    the sampling position is the per-row base position plus ``CHANNEL + 1``,
-    matching the standalone sampler's schedule.
-    """
+    """Sample one codebook, gather its embedding and optionally attend to QKV."""
     batch, group = tl.program_id(0), tl.program_id(1)
     sampled = sample_seeded_row(
         logits_ptr,
@@ -329,12 +290,12 @@ def seeded_sample_attend_kernel(
             D,
             CAPACITY,
             POSITION,
-            EMBED,
+            True,
             BD,
             BS,
             GROUP,
         )
-    elif EMBED:
+    else:
         h = group * GROUP + tl.arange(0, GROUP)
         d = tl.arange(0, BD)
         dmask = (h[:, None] < HEADS) & (d[None, :] < D)
@@ -342,8 +303,6 @@ def seeded_sample_attend_kernel(
             Embedding + sampled * H + h[:, None] * D + d[None, :], dmask, 0
         )
         tl.store(Residual + batch * H + h[:, None] * D + d[None, :], residual, dmask)
-    else:
-        pass
 
 
 def frame_lookup_attention(
@@ -388,23 +347,14 @@ def seeded_sample_attend(
     codes: torch.Tensor,
     channel: int,
     qkv: torch.Tensor | None,
-    embedding: torch.Tensor | None,
+    embedding: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
     position: int,
     group: int = 32,
     num_warps: int = 8,
-) -> tuple[torch.Tensor | None, torch.Tensor | None]:
-    """Seeded sample + code store + QKV lookup + KV insert + attention.
-
-    ``codes`` is the full ``[batch, n_vq]`` destination; the kernel writes
-    column ``channel``. ``qkv`` is the channel's ``[vocab, 3H]`` lookup table
-    (``None`` on the last channel skips attention); ``embedding`` is the
-    channel's ``[vocab, H]`` code-embedding table, gathered into the returned
-    residual (the next depth position's residual-stream input). The sampling
-    position is ``base_positions + channel + 1``, matching the standalone
-    sampler's schedule.
-    """
+) -> tuple[torch.Tensor | None, torch.Tensor]:
+    """Sample a codebook and return optional attention plus its embedding."""
     rows, vocab = logits.shape
     if vocab > MAX_FUSED_SAMPLE_VOCAB:
         raise ValueError(
@@ -419,12 +369,7 @@ def seeded_sample_attend(
         out = torch.empty((rows, hidden), dtype=key.dtype, device=key.device)
     else:
         out = key  # unused pointer (ATTEND=False)
-    if embedding is not None:
-        residual = torch.empty(
-            (rows, hidden), dtype=embedding.dtype, device=logits.device
-        )
-    else:
-        residual = out  # unused pointer (EMBED=False)
+    residual = torch.empty((rows, hidden), dtype=embedding.dtype, device=logits.device)
     if codes.stride(1) != 1:
         raise ValueError("codes must have unit column stride")
     else:
@@ -438,11 +383,11 @@ def seeded_sample_attend(
         base_positions,
         codes,
         qkv if attend else key,
-        embedding if embedding is not None else key,
+        embedding,
         key,
         value,
-        out if attend else key,
-        residual if embedding is not None else key,
+        out,
+        residual,
         codes.stride(0),
         channel,
         vocab,
@@ -457,10 +402,9 @@ def seeded_sample_attend(
         triton.next_power_of_2(position + 1),
         group,
         attend,
-        embedding is not None,
         num_warps=num_warps,
     )
-    return (out if attend else None, residual if embedding is not None else None)
+    return (out if attend else None, residual)
 
 
 __all__ = [

@@ -22,9 +22,7 @@ import torch
 
 from sglang_omni.scheduling.types import SchedulerRequest
 
-# Device-side generated-codes pool capacity per slot, in frames. Matches the
-# per-request host staging bound it replaces (max_new_tokens default 4096);
-# requests that generate more frames fall back to the stack+D2H finish path.
+# note (Dino1844): Bound device code storage; longer outputs use the terminal fallback.
 CODES_CAPACITY_FRAMES = 4096
 
 if TYPE_CHECKING:
@@ -119,17 +117,9 @@ class MossTTSLocalDecodeStatePool:
         # Real rows 0..P-2 are assignable; the padding row stays out of the
         # free list so it is never handed to a request.
         self.free_rows: list[int] = list(range(self.padding_row))
-        # Zero-row templates for reset_row: slice-copies from these are
-        # device-to-device kernels, unlike ``t[i] = python_scalar`` whose
-        # pageable H2D blocks the scheduler thread until the in-flight
-        # forward drains.
+        # note (Dino1844): Device zero templates avoid pageable scalar host uploads.
         self.zero_row_float32 = torch.zeros(1, device=self.device, dtype=torch.float32)
         self.zero_row_int64 = torch.zeros(1, device=self.device, dtype=torch.int64)
-        # Device-side accumulation of generated audio codes (the Drama3
-        # slot-pool pattern): each emit scatters its rows into
-        # generated_codes[row, pos] with pos from frame_counts, so the
-        # terminal payload's whole-utterance D2H becomes one side-stream
-        # pinned copy at finish instead of per-step staging + host scatter.
         self.codes_capacity = CODES_CAPACITY_FRAMES
         self.frame_counts = torch.zeros(
             self.num_rows, device=self.device, dtype=torch.int64
@@ -153,22 +143,7 @@ class MossTTSLocalDecodeStatePool:
     def acquire_pinned_row_buffer(
         self, row_count: int
     ) -> tuple[torch.Tensor, torch.cuda.Event | None]:
-        """Pinned staging buffer for the per-step row-index H2D, plus the
-        event guarding its last enqueue.
-
-        ``torch.tensor(list, device="cuda")`` is a pageable H2D copy: it waits
-        for the current stream to drain, so on the async-decode path (where
-        launch N overlaps forward N-1) it serialized the scheduler thread
-        against the in-flight forward. Pinned ``copy_(non_blocking=True)``
-        returns immediately and the copy overlaps the forward.
-
-        A buffer is reused only once its guarding event reports complete, so
-        the host write can never overwrite a copy the GPU has not executed.
-        The classic ping-pong pair is only safe at lookahead depth 1 (the
-        previous same-slot copy is always covered by a waited event); deeper
-        pipelines can hold several un-waited launches, and the pool self-sizes
-        to the realized depth instead of guessing it.
-        """
+        """Reuse pinned row-index buffers only after their upload event completes."""
         for buf, event in self.pinned_row_buffers:
             if buf.numel() >= row_count and (event is None or event.query()):
                 return buf, event
@@ -214,13 +189,7 @@ class MossTTSLocalDecodeStatePool:
         self.free_rows.append(row_idx)
 
     def reset_row(self, row_idx: int) -> None:
-        """Zero every field of ``row_idx`` (clears stranded feedback/params).
-
-        Every write is an async device kernel: scalar assignments like
-        ``self.text_temp[row_idx] = 0.0`` are pageable H2D copies that block
-        the scheduler thread until the in-flight forward drains (~4.6 ms per
-        finished request at c=128 once no earlier sync drains the stream).
-        """
+        """Reset row metadata and counters without scalar host uploads."""
         self.feedback_embeds[row_idx].zero_()
         z32 = self.zero_row_float32
         z64 = self.zero_row_int64
@@ -234,21 +203,13 @@ class MossTTSLocalDecodeStatePool:
         self.seeds[row_idx : row_idx + 1] = z64
         self.generation_steps[row_idx : row_idx + 1] = z64
         self.sampling_steps[row_idx : row_idx + 1] = z64
-        # Codes accumulation restarts at position 0 for the row's next owner;
-        # the codes pool itself is overwritten lazily (reads are [:count]).
+        # note (Dino1844): Only the next owner's written codes prefix is readable.
         self.frame_counts[row_idx : row_idx + 1] = z64
         self.audio_token_presence[row_idx].zero_()
         self.audio_repetition_penalty_rows.discard(int(row_idx))
 
     def write_params(self, row_idx: int, data: "MossTTSLocalSGLangRequestData") -> None:
-        """Write the seven request-static sampling fields into ``row_idx``.
-
-        The values travel as ONE pinned ring upload plus device-side row
-        writes: eight per-row scalar assignments are pageable H2D copies, and
-        each one blocks the scheduler thread until every in-flight forward
-        drains — on the lookahead pipeline that stall scales with the queue
-        depth (measured 15% of the scheduler thread at depth 2).
-        """
+        """Stage request sampling parameters without pageable scalar uploads."""
         try:
             audio_repetition_penalty = float(data.audio_repetition_penalty)
         except AttributeError:
@@ -329,11 +290,7 @@ class MossTTSLocalDecodeStatePool:
         self.params_written_rids.discard(rid)
 
     def accumulate_codes(self, row_t: torch.Tensor, codes: torch.Tensor) -> None:
-        """Scatter one step's emitted code rows into the per-slot pool.
-
-        The extra frame at codes_capacity absorbs EOS and lookahead overruns
-        without overwriting a committed frame or compacting device tensors.
-        """
+        """Append emitted codes, reserving one sink frame for EOS/lookahead overruns."""
         k = int(row_t.numel())
         if k == 0:
             return
@@ -344,15 +301,7 @@ class MossTTSLocalDecodeStatePool:
         self.frame_counts[row_t] += 1
 
     def copy_codes_to_host(self, rid: str, frame_count: int) -> torch.Tensor | None:
-        """One side-stream pinned D2H of ``rid``'s accumulated codes.
-
-        Called from the finish path after resolve waited on the launch
-        completion event, so the last emit's scatter has already completed
-        (host barrier) and the row is still held — a fresh side-stream copy
-        races nothing. Returns ``None`` when the pool cannot serve the
-        request (no row, or more frames than capacity) and the caller falls
-        back to the synchronous stack+D2H.
-        """
+        """Copy resolved codes into owned host storage, or return None for fallback."""
         row_idx = self.row_for(rid)
         if row_idx is None or frame_count <= 0 or frame_count > self.codes_capacity:
             return None

@@ -282,10 +282,7 @@ class MossTTSLocalModelRunner(ModelRunner):
             and cached_active_rows[0] == pool_row_indices
             and cached_active_rows[1].shape[0] >= batch_size
         ):
-            # Same batch membership as the previous step (the steady decode
-            # state): params are already written, the row tensor and the
-            # penalty verdict are unchanged, so skip the per-request
-            # acquire/ensure/penalty loop and the pinned row-index upload.
+            # note (Dino1844): Prefill invalidates cached rows before slot or parameter reuse.
             row_tensor, pool_rows, has_audio_repetition_penalty = (
                 cached_active_rows[1][:batch_size],
                 cached_active_rows[2][:batch_size],
@@ -506,11 +503,7 @@ class MossTTSLocalModelRunner(ModelRunner):
                     emit_next_text = emit_rows[:, 0]
                 else:
                     pass
-            # Both counters advance on device at emit: sampling_steps has
-            # always been launch-side, and generation_steps now joins it —
-            # the async floor is max(sampling, generation) so the value is
-            # unchanged, and sync mode reads the same number it used to
-            # receive from the resolve-side host commit (see state_pool).
+            # note (Dino1844): Device counters lead host reporting during async lookahead.
             pool.sampling_steps[emit_row_t] = (emit_steps + 1).to(
                 device=pool.sampling_steps.device, dtype=torch.int64
             )
@@ -534,8 +527,6 @@ class MossTTSLocalModelRunner(ModelRunner):
             pool.feedback_embeds[emit_row_t] = emit_embeds.detach().to(
                 device=pool.feedback_embeds.device, dtype=pool.feedback_embeds.dtype
             )
-            # Slot-pool codes accumulation: one device scatter per step; the
-            # finish path reads it back with a single side-stream pinned D2H.
             pool.accumulate_codes(
                 emit_row_t,
                 emit_rows[:, 1:].to(dtype=torch.long),
@@ -658,12 +649,7 @@ class MossTTSLocalModelRunner(ModelRunner):
         advanced_steps: list[tuple[SchedulerRequest, int]],
         forward_batch: ForwardBatch | None,
     ) -> None:
-        """No-op: pool generation_steps advance on device at emit time
-        (see run_frame_decode); the host-side commit this hook used to
-        perform — a per-step O(batch) Python list build plus a pinned H2D —
-        is gone. The host ``data.generation_steps`` counter the base class
-        maintains still drives reporting and the retraction re-prefill.
-        """
+        """Keep pool counters on device; native finalize owns host reporting counters."""
         del advanced_steps, forward_batch
 
     def post_process_outputs(

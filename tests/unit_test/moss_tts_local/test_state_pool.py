@@ -7,11 +7,16 @@ The pool derives its sizing/placement from a fake model exposing a
 
 from __future__ import annotations
 
+from array import array
 from contextlib import nullcontext
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch
+from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
+from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
 from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
@@ -25,6 +30,7 @@ from sglang_omni.models.moss_tts_local.state_pool import (
 )
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
+from sglang_omni.scheduling.types import SchedulerOutput, SchedulerRequest
 
 HIDDEN = 8
 
@@ -131,7 +137,9 @@ def test_release_resets_row_fields():
     pool = MossTTSLocalDecodeStatePool(make_model())
     row = pool.acquire_row("a")
     pool.write_params(row, make_params(seed=123))
-    pool.commit_generation_step("a", 3)
+    pool.generation_steps[row] = 3
+    pool.sampling_steps[row] = 3
+    pool.accumulate_codes(torch.tensor([row]), torch.full((1, 12), 7))
     pool.feedback_embeds[row].fill_(1.0)
     pool.release_row("a")
     assert torch.all(pool.feedback_embeds[row] == 0)
@@ -140,6 +148,7 @@ def test_release_resets_row_fields():
     assert pool.seeds[row] == 0
     assert pool.generation_steps[row] == 0
     assert pool.sampling_steps[row] == 0
+    assert pool.frame_counts[row] == 0
     assert pool.audio_repetition_penalty[row] == 0.0
     assert int(torch.count_nonzero(pool.audio_token_presence[row])) == 0
 
@@ -197,22 +206,13 @@ def test_ensure_params_writes_once_until_invalidated():
     assert int(pool.seeds[row]) == 2
 
 
-def test_commit_generation_step_updates_active_row():
-    pool = MossTTSLocalDecodeStatePool(make_model())
-    row = pool.acquire_row("a")
-
-    pool.commit_generation_step("a", 7)
-    pool.commit_generation_step("ghost", 3)
-
-    assert int(pool.generation_steps[row]) == 7
-    assert int(pool.sampling_steps[row]) == 7
-
-
 def test_reset_for_refill_clears_active_row():
     pool = MossTTSLocalDecodeStatePool(make_model())
     row = pool.acquire_row("a")
     pool.ensure_params(row, "a", make_params(seed=1))
-    pool.commit_generation_step("a", 4)
+    pool.generation_steps[row] = 4
+    pool.sampling_steps[row] = 5
+    pool.accumulate_codes(torch.tensor([row]), torch.full((1, 12), 7))
     pool.feedback_embeds[row] = 1.0
     pool.audio_token_presence[row, 0, 7] = True
 
@@ -222,6 +222,7 @@ def test_reset_for_refill_clears_active_row():
     assert int(torch.count_nonzero(pool.audio_token_presence[row])) == 0
     assert int(pool.generation_steps[row]) == 4
     assert int(pool.sampling_steps[row]) == 4
+    assert int(pool.frame_counts[row]) == 0
     # params were invalidated, so the next ensure_params re-writes them.
     pool.ensure_params(row, "a", make_params(seed=2))
     assert int(pool.seeds[row]) == 2
@@ -236,6 +237,85 @@ def test_reset_for_refill_is_noop_for_unheld_rid():
     # the held row and its write-once flag are untouched.
     pool.ensure_params(row, "a", make_params(seed=9))
     assert int(pool.seeds[row]) == 1
+
+
+def test_busy_parameter_upload_buffers_preserve_inflight_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fifth upload must not overwrite any of four unfinished H2D sources."""
+    pool = MossTTSLocalDecodeStatePool(make_model())
+    pool.pinned_parameter_buffers = [
+        (
+            torch.full((1, 5), float(index)),
+            torch.full((1, 3), index, dtype=torch.long),
+        )
+        for index in range(4)
+    ]
+    pool.parameter_buffer_events = [
+        SimpleNamespace(query=lambda: False) for _ in range(4)
+    ]
+    original_values = [
+        (floats.clone(), integers.clone())
+        for floats, integers in pool.pinned_parameter_buffers
+    ]
+    empty_tensor = torch.empty
+
+    def allocate_host_tensor(
+        row_count: int,
+        column_count: int,
+        *,
+        dtype: torch.dtype,
+        pin_memory: bool,
+    ) -> torch.Tensor:
+        assert pin_memory
+        return empty_tensor(row_count, column_count, dtype=dtype)
+
+    monkeypatch.setattr(torch, "empty", allocate_host_tensor)
+    floats, integers, _ = pool.acquire_pinned_parameter_buffers()
+    floats.fill_(100.0)
+    integers.fill_(200)
+
+    for (pending_floats, pending_integers), (expected_floats, expected_integers) in zip(
+        pool.pinned_parameter_buffers[:4], original_values
+    ):
+        assert torch.equal(pending_floats, expected_floats)
+        assert torch.equal(pending_integers, expected_integers)
+
+
+def test_codes_capacity_overrun_preserves_committed_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EOS and speculative emits must not overwrite the final committed frame."""
+    monkeypatch.setattr(
+        "sglang_omni.models.moss_tts_local.state_pool.CODES_CAPACITY_FRAMES", 2
+    )
+    pool = MossTTSLocalDecodeStatePool(make_model(max_running_requests=1))
+    row = pool.acquire_row("a")
+    row_tensor = torch.tensor([row])
+    expected_codes = torch.tensor([[11] * 12, [12] * 12])
+    for codes in expected_codes:
+        pool.accumulate_codes(row_tensor, codes.unsqueeze(0))
+    for token in (21, 22, 23):
+        pool.accumulate_codes(row_tensor, torch.full((1, 12), token))
+
+    assert torch.equal(pool.copy_codes_to_host("a", 2), expected_codes)
+    assert torch.equal(pool.generated_codes[row, 2], torch.full((12,), 23))
+    assert pool.copy_codes_to_host("a", 3) is None
+
+
+def test_host_codes_survive_slot_reuse() -> None:
+    """Returning CPU codes must detach their storage from the reusable slot."""
+    pool = MossTTSLocalDecodeStatePool(make_model(max_running_requests=1))
+    row = pool.acquire_row("a")
+    expected_codes = torch.full((1, 12), 11)
+    pool.accumulate_codes(torch.tensor([row]), expected_codes)
+    previous_codes = pool.copy_codes_to_host("a", 1)
+    pool.release_row("a")
+    next_row = pool.acquire_row("b")
+    pool.accumulate_codes(torch.tensor([next_row]), torch.full((1, 12), 21))
+
+    assert torch.equal(previous_codes, expected_codes)
+    assert torch.equal(pool.copy_codes_to_host("b", 1), torch.full((1, 12), 21))
 
 
 def test_prepare_active_rows_reports_audio_repetition_penalty_from_pool():
@@ -415,7 +495,8 @@ def test_collect_frame_reads_generation_steps_from_pool():
     request = SimpleNamespace(request_id="rid", data=data)
     row = pool.acquire_row("rid")
     pool.ensure_params(row, "rid", data)
-    pool.commit_generation_step("rid", 4)
+    pool.generation_steps[row] = 4
+    pool.sampling_steps[row] = 4
     result = SimpleNamespace(
         logits_output=SimpleNamespace(hidden_states=torch.zeros(1, hidden_size))
     )
@@ -423,7 +504,9 @@ def test_collect_frame_reads_generation_steps_from_pool():
     runner.collect_frame(result, SimpleNamespace(), SimpleNamespace(), [request])
 
     assert torch.equal(captured["base_positions"], torch.tensor([4 * 13]))
+    assert int(pool.generation_steps[row]) == 5
     assert int(pool.sampling_steps[row]) == 5
+    assert data.generation_steps == 99
 
 
 def test_sync_execute_commits_sampling_position_before_next_frame(monkeypatch):
@@ -508,66 +591,133 @@ def test_sync_execute_commits_sampling_position_before_next_frame(monkeypatch):
     assert torch.equal(torch.cat(positions), torch.tensor([0, 13, 26, 39]))
 
 
-def test_pool_sampling_position_leads_unresolved_lookahead_launches():
-    hidden_size = 4
-    weight = torch.zeros(2, hidden_size, dtype=torch.bfloat16)
-    embedding = SimpleNamespace(weight=weight)
-    model = SimpleNamespace(
-        decode_input_embedding=embedding,
-        state_pool=None,
-        config=SimpleNamespace(
-            n_vq=12,
-            audio_assistant_slot_token_id=1000,
-            audio_end_token_id=1001,
-        ),
-        frame_graph_max_bs=1,
-        device=torch.device("cpu"),
-    )
+@pytest.mark.parametrize("initial_mode", [ForwardMode.EXTEND, ForwardMode.DECODE])
+def test_native_async_emit_leads_host_resolve(initial_mode: ForwardMode) -> None:
+    """A second launch must preserve the first frame and its reporting snapshot."""
+    model = make_model(max_running_requests=1)
+    model.config.audio_assistant_slot_token_id = 1000
+    model.config.audio_end_token_id = 1001
+    model.frame_graph_max_bs = 1
+    model.device = torch.device("cpu")
     pool = MossTTSLocalDecodeStatePool(model)
     model.state_pool = pool
-    captured = []
+    positions: list[torch.Tensor] = []
+    shared_codes = torch.zeros((1, 12), dtype=torch.long)
+    shared_feedback = torch.ones((1, HIDDEN), dtype=torch.bfloat16)
 
-    def decode_frame_graphed(hidden_states, **kwargs):
+    def decode_frame_graphed(
+        hidden_states: torch.Tensor, **sampling_parameters: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         del hidden_states
-        captured.append(kwargs["base_positions"].detach().clone())
+        positions.append(sampling_parameters["base_positions"].clone())
+        shared_codes.fill_(len(positions))
         return (
             torch.zeros(1, dtype=torch.long),
-            torch.full((1, 12), 7, dtype=torch.long),
-            torch.ones((1, hidden_size), dtype=torch.bfloat16),
+            shared_codes,
+            shared_feedback,
         )
 
     model.decode_frame_graphed = decode_frame_graphed
+    request = Req(
+        rid="rid",
+        origin_input_text="test",
+        origin_input_ids=array("q", [1]),
+        sampling_params=SamplingParams(max_new_tokens=4),
+    )
+    data = MossTTSLocalSGLangRequestData(req=request, sampling_seed=42)
+    scheduled_request = SchedulerRequest(request_id=request.rid, data=data)
+    schedule_batch = ScheduleBatch(
+        reqs=[request], forward_mode=initial_mode, is_prefill_only=False
+    )
+    output = SchedulerOutput(requests=[scheduled_request], batch_data=schedule_batch)
+    results: list[SimpleNamespace] = []
+    staged_ids: list[torch.Tensor] = []
+
+    def build_forward_batch(
+        scheduler_output: SchedulerOutput,
+    ) -> tuple[ForwardBatch, ScheduleBatch, bool]:
+        forward_batch = ForwardBatch(
+            forward_mode=scheduler_output.batch_data.forward_mode,
+            batch_size=1,
+            input_ids=torch.tensor([1]),
+            req_pool_indices=torch.tensor([0]),
+            seq_lens=torch.tensor([1]),
+            out_cache_loc=torch.tensor([0]),
+            seq_lens_sum=1,
+        )
+        return (
+            forward_batch,
+            scheduler_output.batch_data,
+            forward_batch.forward_mode.is_extend(),
+        )
+
+    def prepare_and_forward(
+        forward_batch: ForwardBatch,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
+        is_prefill: bool,
+        *,
+        is_lookahead: bool,
+    ) -> SimpleNamespace:
+        result = SimpleNamespace(
+            logits_output=SimpleNamespace(hidden_states=torch.zeros(1, HIDDEN)),
+            next_token_ids=None,
+            can_run_cuda_graph=True,
+        )
+        results.append(result)
+        return result
+
+    def record_completion() -> SimpleNamespace:
+        result = results[-1]
+        assert runner.stage_token_ids.call_count == len(results)
+        staged_result, staged_values = runner.stage_token_ids.call_args.args
+        assert staged_result is result
+        assert torch.equal(staged_values, result.next_token_ids)
+        host_token_ids = runner.resolve_host_token_ids(result)
+        assert torch.equal(host_token_ids, result.next_token_ids)
+        staged_ids.append(host_token_ids.clone())
+        return SimpleNamespace(query=lambda: True)
 
     runner = object.__new__(MossTTSLocalModelRunner)
     runner.model = model
     runner.async_enabled = True
-    data = SimpleNamespace(
-        req=SimpleNamespace(inflight_middle_chunks=0),
-        text_temperature=1.0,
-        text_top_p=1.0,
-        text_top_k=50,
-        audio_temperature=1.0,
-        audio_top_p=1.0,
-        audio_top_k=50,
-        sampling_seed=0,
-        generation_steps=0,
-        audio_repetition_penalty=1.0,
-        output_rows=[],
+    runner.async_query_hit = 0
+    runner.async_query_miss = 0
+    runner.output_processor = SGLangOutputProcessor()
+    runner.stage_token_ids = Mock(wraps=runner.stage_token_ids)
+    runner.execution_context = lambda *args, **kwargs: nullcontext()
+    runner.build_forward_batch = build_forward_batch
+    runner.prepare_and_forward = prepare_and_forward
+    runner.execution_bridge = SimpleNamespace(
+        publish_next_tokens=lambda batch, token_ids: setattr(
+            batch, "output_ids", token_ids
+        ),
+        record_completion=record_completion,
     )
-    request = SimpleNamespace(request_id="rid", data=data)
-    result = SimpleNamespace(
-        logits_output=SimpleNamespace(hidden_states=torch.zeros(1, hidden_size))
-    )
-
-    runner.post_decode_launch(result, SimpleNamespace(), [request])
-    runner.post_decode_launch(result, SimpleNamespace(), [request])
-
+    first = runner.execute_launch(output)
+    output.batch_data.forward_mode = ForwardMode.DECODE
+    second = runner.execute_launch(output)
     row = pool.row_for("rid")
-    assert row is not None
-    assert torch.equal(captured[0], torch.tensor([0]))
-    assert torch.equal(captured[1], torch.tensor([13]))
-    assert int(pool.generation_steps[row]) == 0
+    assert torch.equal(torch.cat(positions), torch.tensor([0, 13]))
+    assert int(pool.generation_steps[row]) == 2
     assert int(pool.sampling_steps[row]) == 2
+    assert int(pool.frame_counts[row]) == 2
+    assert data.generation_steps == 0
+    assert data.output_rows == []
+    assert first.launch_buf.data_ptr() != first.batch_result.next_token_ids.data_ptr()
+    assert first.batch_result.moss_journal.rows[0, 1:].tolist() == [1] * 12
+    first.batch_result.next_token_ids = torch.tensor([-1])
+
+    for expected_step, pending in enumerate((first, second), start=1):
+        result = runner.execute_resolve(pending)
+        expected_ids = staged_ids[expected_step - 1]
+        assert torch.equal(result.next_token_ids, expected_ids)
+        assert torch.equal(result.host_token_ids, expected_ids)
+        assert result.outputs["rid"].data == int(expected_ids[0])
+        assert data.generation_steps == expected_step
+        assert data.output_rows[-1][1:].tolist() == [expected_step] * 12
+        assert int(pool.generation_steps[row]) == 2
+    assert len(positions) == 2
 
 
 @pytest.mark.accelerator
@@ -627,9 +777,12 @@ def test_collect_frame_stages_host_token_ids():
     assert outputs["1"].data == model.config.audio_end_token_id
 
 
+@pytest.mark.parametrize("previous_request_id", ["previous", "rid"])
 def test_collect_frame_uses_eager_path_when_audio_repetition_penalty_active(
-    monkeypatch,
-):
+    monkeypatch: pytest.MonkeyPatch,
+    previous_request_id: str,
+) -> None:
+    """A reused pool row must not retain its prior request's penalty decision."""
     hidden_size = 4
     weight = torch.zeros(2, hidden_size, dtype=torch.bfloat16)
     embedding = SimpleNamespace(weight=weight)
@@ -644,6 +797,8 @@ def test_collect_frame_uses_eager_path_when_audio_repetition_penalty_active(
         ),
         frame_graph_max_bs=1,
         device=torch.device("cpu"),
+        dtype=torch.bfloat16,
+        hidden_size=hidden_size,
     )
     pool = MossTTSLocalDecodeStatePool(model)
     model.state_pool = pool
@@ -688,28 +843,40 @@ def test_collect_frame_uses_eager_path_when_audio_repetition_penalty_active(
     runner = object.__new__(MossTTSLocalModelRunner)
     runner.async_enabled = False
     runner.model = model
-    data = SimpleNamespace(
-        req=SimpleNamespace(inflight_middle_chunks=0),
-        text_temperature=1.0,
-        text_top_p=1.0,
-        text_top_k=50,
-        audio_temperature=1.0,
-        audio_top_p=1.0,
-        audio_top_k=50,
-        sampling_seed=0,
-        generation_steps=0,
-        audio_repetition_penalty=2.0,
-        output_rows=[],
+    previous_row = pool.acquire_row(previous_request_id)
+    previous_request = SchedulerRequest(
+        request_id=previous_request_id,
+        data=MossTTSLocalSGLangRequestData(audio_repetition_penalty=1.0),
     )
-    request = SimpleNamespace(request_id="rid", data=data)
+    previous_batch = SimpleNamespace(input_ids=torch.zeros(1, dtype=torch.long))
+    runner.before_decode(previous_batch, SimpleNamespace(), [previous_request])
+    pool.release_row(previous_request_id)
+    native_request = Req(
+        rid="rid",
+        origin_input_text="test",
+        origin_input_ids=array("q", [1]),
+        sampling_params=SamplingParams(max_new_tokens=4),
+    )
+    native_request.prefix_len = 0
+    native_request.extend_end = 1
+    data = MossTTSLocalSGLangRequestData(
+        req=native_request,
+        audio_repetition_penalty=2.0,
+        prompt_rows=torch.zeros((1, 13), dtype=torch.long),
+    )
+    request = SchedulerRequest(request_id="rid", data=data)
     row = pool.acquire_row("rid")
-    pool.ensure_params(row, "rid", data)
+    assert row == previous_row
+    prefill_batch = SimpleNamespace(input_ids=torch.zeros(1, dtype=torch.long))
+    runner.build_prefill_input_embeds(prefill_batch, [request])
+    forward_batch = SimpleNamespace(input_ids=torch.zeros(1, dtype=torch.long))
+    runner.before_decode(forward_batch, SimpleNamespace(), [request])
     pool.audio_token_presence[row, 0, 7] = True
     result = SimpleNamespace(
         logits_output=SimpleNamespace(hidden_states=torch.zeros(1, hidden_size))
     )
 
-    runner.collect_frame(result, SimpleNamespace(), SimpleNamespace(), [request])
+    runner.collect_frame(result, forward_batch, SimpleNamespace(), [request])
 
     assert called["eager"] is True
     assert len(sampled_audio_logits) == 1
@@ -721,7 +888,7 @@ def test_collect_frame_uses_eager_path_when_audio_repetition_penalty_active(
     assert not bool(pool.audio_token_presence[row, 1, 8])
 
 
-def test_cached_pool_rows_drive_collect_and_batched_step_commit():
+def test_cached_pool_rows_drive_emit_before_host_finalize():
     hidden_size = 4
     weight = torch.zeros(4, hidden_size, dtype=torch.bfloat16)
     embedding = SimpleNamespace(weight=weight)
@@ -779,7 +946,8 @@ def test_cached_pool_rows_drive_collect_and_batched_step_commit():
         raise AssertionError("collect path must reuse cached moss_pool_row_t")
 
     pool.prepare_active_rows = fail_prepare_active_rows
-    pool.commit_generation_steps(row_t, torch.tensor([4, 8], dtype=torch.long))
+    pool.generation_steps[row_t] = torch.tensor([4, 8], dtype=torch.long)
+    pool.sampling_steps[row_t] = torch.tensor([4, 8], dtype=torch.long)
     captured = {}
 
     def decode_frame_graphed(hidden_states, **kwargs):
@@ -816,6 +984,10 @@ def test_cached_pool_rows_drive_collect_and_batched_step_commit():
     assert torch.equal(pool.feedback_embeds[row_b], torch.full((4,), 5).bfloat16())
     assert int(pool.sampling_steps[row_a]) == 5
     assert int(pool.sampling_steps[row_b]) == 9
+    assert int(pool.generation_steps[row_a]) == 5
+    assert int(pool.generation_steps[row_b]) == 9
+    assert requests[0].data.generation_steps == 4
+    assert requests[1].data.generation_steps == 8
 
     runner.finalize(
         result,
@@ -830,7 +1002,7 @@ def test_cached_pool_rows_drive_collect_and_batched_step_commit():
     assert int(pool.generation_steps[row_b]) == 9
 
 
-def test_finalize_commits_generation_steps_to_pool():
+def test_finalize_advances_host_steps_without_rewinding_device_pool():
     model = make_model(max_running_requests=2)
     pool = MossTTSLocalDecodeStatePool(model)
     model.state_pool = pool
@@ -851,6 +1023,8 @@ def test_finalize_commits_generation_steps_to_pool():
     )
     sched_req = SimpleNamespace(request_id="rid", data=data)
     row = pool.acquire_row("rid")
+    pool.generation_steps[row] = 2
+    pool.sampling_steps[row] = 2
 
     runner.finalize(
         SimpleNamespace(
@@ -865,7 +1039,8 @@ def test_finalize_commits_generation_steps_to_pool():
     )
 
     assert data.generation_steps == 1
-    assert int(pool.generation_steps[row]) == 1
+    assert int(pool.generation_steps[row]) == 2
+    assert int(pool.sampling_steps[row]) == 2
 
 
 def test_resume_reprefill_overwrites_stranded_feedback():
@@ -885,7 +1060,8 @@ def test_resume_reprefill_overwrites_stranded_feedback():
 
     row = pool.acquire_row("a")
     pool.ensure_params(row, "a", make_params(seed=1))
-    pool.commit_generation_step("a", 3)
+    pool.generation_steps[row] = 3
+    pool.sampling_steps[row] = 4
     # Feedback stranded by the retraction (must be wiped by the resume).
     pool.feedback_embeds[row].fill_(5.0)
     pool.audio_token_presence[row, 0, 99] = True
@@ -899,6 +1075,8 @@ def test_resume_reprefill_overwrites_stranded_feedback():
         row_t = torch.zeros(width, dtype=torch.long)
         row_t[1:] = token
         generated.append(row_t)
+        pool.accumulate_codes(torch.tensor([row]), row_t[1:].unsqueeze(0))
+    pool.accumulate_codes(torch.tensor([row]), torch.full((1, 12), 99))
     data = SimpleNamespace(
         req=SimpleNamespace(extend_len=5, prefix_len=0, rid="a"),
         prompt_rows=prompt_rows,
@@ -912,9 +1090,15 @@ def test_resume_reprefill_overwrites_stranded_feedback():
     forward_batch = SimpleNamespace(input_ids=torch.zeros(5, dtype=torch.long))
 
     runner.build_prefill_input_embeds(forward_batch, [sched_req])
+    pool.accumulate_codes(torch.tensor([row]), torch.full((1, 12), 7))
 
+    assert torch.equal(
+        pool.copy_codes_to_host("a", 4),
+        torch.tensor([[token] * 12 for token in (4, 5, 6, 7)]),
+    )
     assert torch.all(pool.feedback_embeds[row] == 0), "stranded feedback must be wiped"
     assert int(pool.generation_steps[row]) == 3, "resume must preserve sample position"
+    assert int(pool.sampling_steps[row]) == 3
     assert not bool(pool.audio_token_presence[row, 0, 99])
     assert bool(pool.audio_token_presence[row, 0, 4])
     assert bool(pool.audio_token_presence[row, 0, 5])

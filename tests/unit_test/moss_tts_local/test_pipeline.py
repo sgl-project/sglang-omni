@@ -7,9 +7,11 @@ import dataclasses
 import multiprocessing
 import os
 import pickle
+import queue
 import struct
 import sys
 import types
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -17,7 +19,13 @@ import torch
 from huggingface_hub import snapshot_download
 from huggingface_hub.errors import LocalEntryNotFoundError
 from sglang.srt.model_executor.cuda_graph_config import CudaGraphConfig, PhaseConfig
+from sglang.srt.model_executor.model_runner_components import (
+    weight_updater as native_weight_updater,
+)
+from sglang.srt.runtime_context import get_context
+from transformers import GPT2Config, PretrainedConfig, Qwen3Config
 
+import sglang_omni.models.moss_tts_local.sglang_model as moss_local_model
 from sglang_omni.client.audio import encode_audio, encode_wav
 from sglang_omni.comm.stage_io import extract_tensors, restore_tensors
 from sglang_omni.config import StageConfig
@@ -34,12 +42,16 @@ from sglang_omni.models.moss_tts_local.config import (
     MossTTSLocalSplitPipelineConfig,
 )
 from sglang_omni.models.moss_tts_local.engine_builder import MossTtsLocalEngineBuilder
-from sglang_omni.models.moss_tts_local.local_transformer import MossTTSLocalTransformer
+from sglang_omni.models.moss_tts_local.local_transformer import (
+    MossTTSLocalTransformer,
+    triton,
+)
 from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
 from sglang_omni.models.moss_tts_local.payload_types import (
     moss_tts_local_special_token_defaults,
 )
 from sglang_omni.models.moss_tts_local.request_builders import (
+    MossTTSLocalSGLangRequestData,
     apply_sglang_moss_tts_local_result,
     build_generation_kwargs,
     build_moss_tts_local_state,
@@ -49,6 +61,7 @@ from sglang_omni.models.moss_tts_local.request_builders import (
     preprocess_moss_tts_local_payload,
     set_moss_tts_local_preprocessing_context,
 )
+from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeJournal
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
@@ -62,6 +75,15 @@ from sglang_omni.scheduling.stage_kv_budget import stage_kv_cache_budget
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.port_claim import claim_tcp_port
 from tests.unit_test.pipeline.helpers import build_compiled_process_topology
+
+if triton is not None:
+    from sglang_omni.models.moss_tts.sampling_kernels import sample_seeded_fused
+    from sglang_omni.models.moss_tts_local.local_kernels import (
+        frame_lookup_attention,
+        seeded_sample_attend,
+    )
+else:
+    pass
 
 N_VQ = 12
 PREFILL_GRAPH_TEST_TOKENS = 64
@@ -851,7 +873,10 @@ def test_moss_tts_local_generation_defaults(disable_prefill: bool) -> None:
         assert overrides["cuda_graph_backend_prefill"] == "disabled"
     else:
         assert overrides["cuda_graph_backend_prefill"] == "full"
-        assert overrides["cuda_graph_bs_prefill"] == [64, 128, 256, 512]
+        buckets = overrides["cuda_graph_bs_prefill"]
+        assert next(bucket for bucket in buckets if bucket >= 157) == 160
+        assert next(bucket for bucket in buckets if bucket >= 17 * 157) == 3072
+        assert overrides["cuda_graph_config"]["prefill"]["full_prefill_max_req"] == 32
 
 
 def test_moss_local_context_probe_uses_runtime_model_config_inputs(
@@ -1788,52 +1813,75 @@ def test_post_process_outputs_does_not_buffer_without_stream_outbox():
     assert data.stream_pending_rows == []
 
 
-def test_post_process_outputs_batches_stream_transport_rows():
-    from sglang_omni.models.moss_tts_local.model_runner import MossTTSLocalModelRunner
-    from sglang_omni.models.moss_tts_local.state_pool import MossTTSLocalDecodeJournal
-
+@pytest.mark.parametrize("emit_end_token", [False, True])
+def test_real_request_stream_transport_preserves_first_batch_and_tail(
+    emit_end_token: bool,
+) -> None:
+    """A fresh request must stream its first frame and flush its unfinished tail."""
     runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
     runner.model = types.SimpleNamespace(
         config=types.SimpleNamespace(audio_end_token_id=151670)
     )
-    messages = []
-    runner.outbox = types.SimpleNamespace(put=messages.append)
-    data = types.SimpleNamespace(
-        req=None,
-        output_rows=[],
+    outbox = queue.Queue()
+    runner.set_stream_outbox(outbox)
+    data = MossTTSLocalSGLangRequestData(
         stream_metadata={"stream": True, "modality": "audio_codes", "n_vq": N_VQ},
-        stream_first_batch_sent=False,
     )
     sched_output = types.SimpleNamespace(
         requests=[types.SimpleNamespace(request_id="r0", data=data)]
     )
     rows = torch.arange(7 * (N_VQ + 1), dtype=torch.long).reshape(7, N_VQ + 1)
 
-    for row in rows:
-        result = types.SimpleNamespace(
-            moss_journal=MossTTSLocalDecodeJournal(
-                rids=["r0"],
-                pool_rows=[0],
-                rows=row.unsqueeze(0),
+    def emit_rows(frame_rows: torch.Tensor) -> None:
+        for row in frame_rows:
+            runner.post_process_outputs(
+                types.SimpleNamespace(
+                    moss_journal=MossTTSLocalDecodeJournal(
+                        rids=["r0"], pool_rows=[0], rows=row.unsqueeze(0)
+                    )
+                ),
+                sched_output,
+                {"r0": types.SimpleNamespace(data=1000)},
             )
-        )
-        runner.post_process_outputs(
-            result,
-            sched_output,
-            {"r0": types.SimpleNamespace(data=1000)},
-        )
-    runner.post_process_outputs(
-        types.SimpleNamespace(
-            moss_journal=MossTTSLocalDecodeJournal(
-                rids=["r0"],
-                pool_rows=[0],
-                rows=torch.zeros(1, N_VQ + 1, dtype=torch.long),
-            )
-        ),
-        sched_output,
-        {"r0": types.SimpleNamespace(data=151670)},
-    )
 
+    emit_rows(rows[:1])
+    first = outbox.get_nowait()
+    assert torch.equal(first.data, rows[0])
+    assert outbox.empty()
+    emit_rows(rows[1:5])
+    assert outbox.empty()
+    assert len(data.stream_pending_rows) == 4
+    emit_rows(rows[5:6])
+    second = outbox.get_nowait()
+    assert torch.equal(second.data, rows[1:6])
+    assert outbox.empty()
+    emit_rows(rows[6:])
+    assert outbox.empty()
+    if emit_end_token:
+        runner.post_process_outputs(
+            types.SimpleNamespace(
+                moss_journal=MossTTSLocalDecodeJournal(
+                    rids=["r0"],
+                    pool_rows=[0],
+                    rows=torch.zeros(1, N_VQ + 1, dtype=torch.long),
+                )
+            ),
+            sched_output,
+            {"r0": types.SimpleNamespace(data=151670)},
+        )
+    else:
+        runner.on_request_finished("r0", data)
+    tail = outbox.get_nowait()
+    assert torch.equal(tail.data, rows[6])
+    assert data.stream_pending_rows == []
+    assert outbox.empty()
+
+    messages = [first, second, tail]
+    for message in messages:
+        assert message.request_id == "r0"
+        assert message.type == "stream"
+        assert message.target == "vocoder"
+        assert message.metadata == data.stream_metadata
     assert [tuple(message.data.shape) for message in messages] == [
         (N_VQ + 1,),
         (5, N_VQ + 1),
@@ -2282,3 +2330,312 @@ def test_async_decode_dotted_flags_accept_moss_local():
     assert args["async_decode_min_batch_size"] == 4
     assert args["total_gpu_memory_fraction"] == pytest.approx(0.67)
     assert args["codec_mem_reserve"] == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize(
+    "mode,operation",
+    [
+        ("fused", "disk"),
+        ("fused", "distributed"),
+        ("fused", "tensor"),
+        ("fused", "ipc"),
+        ("off", "distributed"),
+        ("cpu", "distributed"),
+        ("pp", "distributed"),
+        ("pp_off", "distributed"),
+    ],
+)
+def test_native_weight_updates_respect_local_derived_cache(
+    monkeypatch: pytest.MonkeyPatch, mode: str, operation: str
+) -> None:
+    """Native updates must reject derived caches before writes on every PP rank."""
+    monkeypatch.setenv(
+        "MOSS_LOCAL_FUSED_HEAD", "0" if mode in ("off", "pp_off") else "1"
+    )
+    monkeypatch.setattr(moss_local_model.local_transformer, "triton", object())
+    disk_loader = Mock(side_effect=AssertionError("disk I/O preceded cache rejection"))
+    tensor_transport = Mock(
+        side_effect=AssertionError("tensor transport preceded cache rejection")
+    )
+    monkeypatch.setattr(native_weight_updater, "get_model_loader", disk_loader)
+    monkeypatch.setattr(
+        native_weight_updater, "monkey_patch_torch_reductions", tensor_transport
+    )
+    world_size = 2 if mode in ("pp", "pp_off") else 1
+    first_ranks = (True, False) if world_size == 2 else (True,)
+    messages: list[str] = []
+    with get_context().override_server_args(
+        max_running_requests=2, weight_cache_mode="off", sampling_backend="pytorch"
+    ):
+        for first_rank in first_ranks:
+            embedding_weights: list[torch.Tensor] = []
+
+            def make_embedding(
+                vocabulary_size: int,
+                hidden_size: int,
+                *,
+                quant_config: None,
+                prefix: str,
+            ) -> torch.nn.Embedding:
+                embedding = torch.nn.Embedding(
+                    vocabulary_size, hidden_size, dtype=torch.bfloat16
+                )
+                embedding_weights.append(embedding.weight)
+                return embedding
+
+            def embedding_appears_cuda(weight: torch.Tensor) -> bool:
+                return (
+                    mode != "cpu"
+                    and bool(embedding_weights)
+                    and weight is embedding_weights[0]
+                )
+
+            monkeypatch.setattr(
+                torch.Tensor, "is_cuda", property(embedding_appears_cuda)
+            )
+            monkeypatch.setattr(
+                moss_local_model, "VocabParallelEmbedding", make_embedding
+            )
+            monkeypatch.setattr(
+                moss_local_model, "Qwen3Model", lambda **kwargs: torch.nn.Identity()
+            )
+            monkeypatch.setattr(
+                moss_local_model,
+                "get_parallel",
+                lambda: types.SimpleNamespace(
+                    pp_group=types.SimpleNamespace(
+                        is_first_rank=first_rank, world_size=world_size
+                    )
+                ),
+            )
+            config = PretrainedConfig(
+                language_config=Qwen3Config(
+                    hidden_size=8,
+                    intermediate_size=16,
+                    num_hidden_layers=1,
+                    num_attention_heads=2,
+                    num_key_value_heads=2,
+                    vocab_size=32,
+                ),
+                gpt2_config=GPT2Config(n_head=2, n_inner=16),
+                n_vq=2,
+                audio_vocab_size=8,
+            )
+            model = moss_local_model.MossTTSLocalSGLangModel(config)
+            assert model.qkv_lookup is None
+            projection = model.local_transformer.h[0].attn.c_attn.weight
+            original = projection.detach().clone()
+            replacement = torch.full_like(projection, 0.5)
+            weights = [("local_transformer.h.0.attn.c_attn.weight", replacement)]
+            load_weights = Mock(wraps=model.load_weights)
+            monkeypatch.setattr(model, "load_weights", load_weights)
+            updater = native_weight_updater.WeightUpdater(
+                tp_rank=0,
+                device="cpu",
+                gpu_id=0,
+                model_config=types.SimpleNamespace(
+                    model_path="original", dtype=torch.float32
+                ),
+                custom_weight_loaders={},
+                get_model=lambda: model,
+                update_model_fields=Mock(),
+                recapture_cuda_graph=Mock(),
+                get_model_runner=lambda: types.SimpleNamespace(model=model),
+            )
+            if operation == "disk":
+                success, message = updater.update_weights_from_disk("updated", "pt")
+            elif operation == "tensor":
+                success, message = updater.update_weights_from_tensor(weights)
+            elif operation == "ipc":
+                success, message = updater.update_weights_from_ipc(
+                    types.SimpleNamespace(zmq_handles=[])
+                )
+            else:
+                success, message = updater.load_weights_from_distributed(weights)
+            messages.append(message)
+            if mode in ("fused", "pp"):
+                assert success is False
+                assert "MOSS_LOCAL_FUSED_HEAD=0" in message
+                assert torch.equal(projection, original)
+                load_weights.assert_not_called()
+                disk_loader.assert_not_called()
+                tensor_transport.assert_not_called()
+            else:
+                assert success is True, message
+                assert torch.equal(projection, replacement)
+                load_weights.assert_called_once()
+        if world_size == 2:
+            assert messages[0] == messages[1]
+        else:
+            pass
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+@pytest.mark.parametrize("channel", [2, 4], ids=["attending", "terminal"])
+def test_seeded_sample_attend_preserves_sample_and_embedding(channel: int) -> None:
+    """The fused head must preserve seeded codes and residuals on its final channel."""
+    torch.manual_seed(3)
+    device = torch.device("cuda")
+    batch_size, vocabulary_size, heads, head_dimension, codebooks = 8, 256, 4, 16, 5
+    hidden_size = heads * head_dimension
+    logits = torch.randn(batch_size, vocabulary_size, device=device)
+    temperature = torch.full((batch_size,), 1.3, device=device)
+    top_p = torch.full((batch_size,), 0.9, device=device)
+    top_k = torch.full((batch_size,), 25, device=device, dtype=torch.long)
+    seeds = torch.arange(batch_size, device=device, dtype=torch.long) * 101
+    base_positions = torch.full((batch_size,), 41, device=device, dtype=torch.long)
+    codes = torch.zeros(batch_size, codebooks, device=device, dtype=torch.long)
+    embedding = torch.randn(
+        vocabulary_size, hidden_size, device=device, dtype=torch.bfloat16
+    )
+    key = torch.zeros(
+        batch_size,
+        heads,
+        codebooks,
+        head_dimension,
+        device=device,
+        dtype=torch.bfloat16,
+    )
+    value = torch.zeros_like(key)
+    if channel == codebooks - 1:
+        qkv = None
+    else:
+        qkv = torch.randn(
+            vocabulary_size, 3 * hidden_size, device=device, dtype=torch.bfloat16
+        )
+    output, residual = seeded_sample_attend(
+        logits,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        seeds=seeds,
+        base_positions=base_positions,
+        codes=codes,
+        channel=channel,
+        qkv=qkv,
+        embedding=embedding,
+        key=key,
+        value=value,
+        position=channel + 1,
+    )
+    reference = sample_seeded_fused(
+        logits,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        seeds=seeds,
+        positions=base_positions + channel + 1,
+    )
+    assert torch.equal(codes[:, channel], reference)
+    assert torch.equal(residual, torch.nn.functional.embedding(reference, embedding))
+    if qkv is None:
+        assert output is None
+        assert torch.count_nonzero(key) == torch.count_nonzero(value) == 0
+    else:
+        assert output is not None
+        assert torch.isfinite(output).all()
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_seeded_sample_attend_attention_matches_reference() -> None:
+    """A greedy draw must insert its KV and attend to the existing prefix."""
+    torch.manual_seed(5)
+    device = torch.device("cuda")
+    batch_size, vocabulary_size, heads, head_dimension, codebooks = 6, 128, 4, 16, 5
+    channel = 3
+    position = channel + 1
+    hidden_size = heads * head_dimension
+    logits = torch.randn(batch_size, vocabulary_size, device=device)
+    temperature = torch.zeros(batch_size, device=device)
+    top_p = torch.ones(batch_size, device=device)
+    top_k = torch.full((batch_size,), 25, device=device, dtype=torch.long)
+    seeds = torch.arange(batch_size, device=device, dtype=torch.long) * 7
+    base_positions = torch.zeros(batch_size, device=device, dtype=torch.long)
+    codes = torch.zeros(batch_size, codebooks, device=device, dtype=torch.long)
+    qkv = torch.randn(
+        vocabulary_size, 3 * hidden_size, device=device, dtype=torch.bfloat16
+    )
+    embedding = torch.randn(
+        vocabulary_size, hidden_size, device=device, dtype=torch.bfloat16
+    )
+    key = torch.zeros(
+        batch_size,
+        heads,
+        codebooks,
+        head_dimension,
+        device=device,
+        dtype=torch.bfloat16,
+    )
+    value = torch.zeros_like(key)
+    key[:, :, :position].normal_()
+    value[:, :, :position].normal_()
+    reference_key, reference_value = key.clone(), value.clone()
+    output, _ = seeded_sample_attend(
+        logits,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        seeds=seeds,
+        base_positions=base_positions,
+        codes=codes,
+        channel=channel,
+        qkv=qkv,
+        embedding=embedding,
+        key=key,
+        value=value,
+        position=position,
+    )
+    tokens = codes[:, channel]
+    assert torch.equal(tokens, logits.argmax(dim=-1))
+    query = qkv[tokens, :hidden_size].view(batch_size, heads, head_dimension).float()
+    reference_key[:, :, position] = qkv[tokens, hidden_size : 2 * hidden_size].view(
+        batch_size, heads, head_dimension
+    )
+    reference_value[:, :, position] = qkv[tokens, 2 * hidden_size :].view(
+        batch_size, heads, head_dimension
+    )
+    reference = (
+        torch.nn.functional.scaled_dot_product_attention(
+            query.unsqueeze(2),
+            reference_key[:, :, : position + 1].float(),
+            reference_value[:, :, : position + 1].float(),
+        )
+        .squeeze(2)
+        .reshape(batch_size, hidden_size)
+        .to(torch.bfloat16)
+    )
+    torch.testing.assert_close(output, reference, rtol=5e-2, atol=5e-2)
+    torch.testing.assert_close(key, reference_key)
+    torch.testing.assert_close(value, reference_value)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_frame_lookup_attention_position_zero() -> None:
+    """Depth-zero attention must preserve the projected V and store its KV."""
+    torch.manual_seed(9)
+    device = torch.device("cuda")
+    batch_size, heads, head_dimension, codebooks = 5, 8, 32, 12
+    hidden_size = heads * head_dimension
+    qkv = torch.randn(batch_size, 3 * hidden_size, device=device, dtype=torch.bfloat16)
+    key = torch.zeros(
+        batch_size,
+        heads,
+        codebooks,
+        head_dimension,
+        device=device,
+        dtype=torch.bfloat16,
+    )
+    value = torch.zeros_like(key)
+    output = frame_lookup_attention(qkv, key, value, 0)
+    assert torch.equal(output, qkv[:, 2 * hidden_size :])
+    assert torch.equal(
+        key[:, :, 0],
+        qkv[:, hidden_size : 2 * hidden_size].view(batch_size, heads, head_dimension),
+    )
+    assert torch.equal(
+        value[:, :, 0],
+        qkv[:, 2 * hidden_size :].view(batch_size, heads, head_dimension),
+    )
