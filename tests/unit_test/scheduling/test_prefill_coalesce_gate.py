@@ -579,16 +579,21 @@ class DecodingStubScheduler(StubScheduler):
         (True, True),
     ],
 )
+@pytest.mark.parametrize("full_batch_with_finished_request", [False, True])
 def test_prefill_prediction_and_execution_share_hint_policy(
     upstream: mock.MagicMock,
     clock: mock.MagicMock,
     after_build_drain_hint: bool | None | HintUnset,
     expected_hold: bool,
+    full_batch_with_finished_request: bool,
 ) -> None:
+    """Finishing a full decode batch must not bypass cache-hit pacing."""
     sched = DecodingStubScheduler(request_admission_lock=CountingLock())
     sched.prefill_coalesce_after_builds_during_decode = True
     sched.pending_request_builds.clear()
     sched.waiting_queue = [make_req(100.0, after_build_drain_hint)]
+    sched.running_batch.batch_is_full = full_batch_with_finished_request
+    sched.running_batch.reqs[0].finished = lambda: full_batch_with_finished_request
     clock.return_value = 100.001
 
     is_prefill_expected = OmniScheduler.is_prefill_expected(sched)
@@ -596,6 +601,11 @@ def test_prefill_prediction_and_execution_share_hint_policy(
 
     assert is_prefill_expected is not expected_hold
     assert (plan.batch_to_run is None) is expected_hold
+
+    clock.return_value = 100.061
+    assert OmniScheduler.is_prefill_expected(sched)
+    plan = OmniScheduler.get_new_batch_prefill(sched, sched.running_batch)
+    assert plan.batch_to_run is UPSTREAM_BATCH
 
 
 def test_the_prefill_expectation_reads_the_clock_before_the_pending_builds(
