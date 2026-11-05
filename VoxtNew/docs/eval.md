@@ -327,7 +327,7 @@ Hy-MT2 takes its own prompt and no clean-up rules (behavior.md 3.13). Raw speech
 | `llm.balanced`'s clean-up first | 5 | 0 | 1 | 0.44 s, plus the clean-up's 2.7 s and loading two models |
 
 **Decision: Hy-MT2 gets the speech without its fillers.**
-- `compose.StripFillers` is deterministic and needs no model. It drops 嗯 呃 额 唔 and um uh er hmm anywhere. It drops 啊, 哦, 那个 and 就是说 only at the start of a clause, before a pause or a correction.
+- `compose.StripFillers` is deterministic and needs no model. It drops 嗯 呃 and um uh er hmm anywhere. It drops 啊, 哦, 额, 唔, 那个 and 就是说 only at the start of a clause, before a pause or a correction.
 - The session puts that text in `llm.Request.Translate` for speech; a selection is sent as it is.
 - **Clean-up first was rejected.** It wins on self-corrections, but `voxtnew-llm` holds one model at a time, so every spoken translation would load the 4B model and Hy-MT2 in turn: about 1.5 s of loading and 2.7 s of clean-up for a 0.5 s translation.
 - **The trade-off for the user.** Self-corrections reach Hy-MT2 as spoken ("next Tuesday, no, next Wednesday"). A user who wants them resolved picks a general model for Translate: `llm.balanced` with the example got 6 of 6 in 3.6 s, `llm.fast` 6 of 6 in 1.4 s.
