@@ -691,6 +691,7 @@ def make_moss_transcribe_diarize_scheduler_adapters(
                 "usage": {"engine_time_s": engine_time_s},
                 "finish_reason": data.finish_reason,
                 "weight_version": getattr(data, "weight_version", None),
+                "spec_tokens_details": data.spec_tokens_details,
                 "modality": "text",
             },
         )
