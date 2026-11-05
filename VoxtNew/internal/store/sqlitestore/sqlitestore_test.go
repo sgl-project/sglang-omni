@@ -261,15 +261,16 @@ func TestHistory(t *testing.T) {
 }
 
 // TestClearHistoryLeavesNoText: after Clear history, the texts are gone
-// from the database's files too, not only from its tables. A plain DELETE
-// left them in freed pages (and in the write-ahead log), readable by
-// anyone who opens the file.
+// from the database's files too, not only from its tables: neither the
+// text itself nor the search index's trigrams of it. A plain DELETE left
+// them in freed pages (and in the write-ahead log), and the index kept
+// its trigrams, readable by anyone who opens the file.
 func TestClearHistoryLeavesNoText(t *testing.T) {
 	dir := t.TempDir()
 	s := openTest(t, dir)
 	h := s.History()
-	const secret = "zebra-quartz-7731 my bank PIN"
-	for i := range 50 { // enough rows to fill pages of their own
+	const secret = "zebra-qzxjv-7731 my bank PIN" // qzx, zxj, xjv: trigrams found nowhere else
+	for i := range 50 {                           // enough rows to fill pages of their own
 		e := store.Entry{ID: fmt.Sprintf("e%d", i), Kind: store.KindTranscribe, CreatedAt: time.Now(), Result: secret + strings.Repeat(" padding", 40), RawText: secret}
 		if err := h.Put(ctx, e); err != nil {
 			t.Fatal(err)
@@ -283,8 +284,10 @@ func TestClearHistoryLeavesNoText(t *testing.T) {
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			t.Fatal(err)
 		}
-		if bytes.Contains(data, []byte("zebra-quartz-7731")) {
-			t.Errorf("%s still holds the cleared text", name)
+		for _, s := range []string{"zebra-qzxjv-7731", "qzx", "zxj", "xjv"} {
+			if bytes.Contains(data, []byte(s)) {
+				t.Errorf("%s still holds %q of the cleared text", name, s)
+			}
 		}
 	}
 }

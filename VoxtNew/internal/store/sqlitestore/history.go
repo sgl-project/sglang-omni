@@ -185,11 +185,12 @@ func (r *historyRepo) DeleteAll(ctx context.Context, kind store.Kind) (int, erro
 		return 0, wrap("history", err)
 	}
 	// A DELETE only frees the pages: the texts stay in the file (and the
-	// write-ahead log) until they are rewritten. Clearing the history
+	// write-ahead log) until they are rewritten, and the search index
+	// keeps its trigrams of them until it is merged. Clearing the history
 	// should leave nothing to read there.
 	var compact error
 	if len(rows.Values) > 0 {
-		for _, q := range []string{"VACUUM", "PRAGMA wal_checkpoint(TRUNCATE)"} {
+		for _, q := range []string{"INSERT INTO history_fts(history_fts) VALUES('optimize')", "VACUUM", "PRAGMA wal_checkpoint(TRUNCATE)"} {
 			if _, err := r.db.Query(ctx, q); err != nil {
 				compact = wrap("history: "+q, err)
 				break
