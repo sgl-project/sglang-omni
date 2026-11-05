@@ -34,8 +34,10 @@ else:
 _M = TypeVar("_M")
 _MAX_HTTP_REDIRECTS = 5
 
+MEDIA_WORKERS = 8
+
 # Global thread pool for CPU-bound tasks (decoding/resampling)
-global_thread_pool = ThreadPoolExecutor(max_workers=8)
+global_thread_pool = ThreadPoolExecutor(max_workers=MEDIA_WORKERS)
 atexit.register(global_thread_pool.shutdown)
 
 

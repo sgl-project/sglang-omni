@@ -31,15 +31,13 @@ def test_preprocessing_cpu_policy_is_resolved_at_launch(
     monkeypatch: pytest.MonkeyPatch,
     config_cls: type[Qwen3OmniPipelineConfig | Qwen3OmniSpeechPipelineConfig],
 ) -> None:
-    capacity = Mock(return_value=32)
+    capacity = Mock(return_value=64)
     monkeypatch.setattr(qwen3_omni_config, "effective_cpu_count", capacity)
     config = config_cls(model_path="dummy")
     document = config.model_dump()
     capacity.assert_not_called()
 
-    assert (
-        config.resolved_stage_env_defaults("preprocessing")["OMP_NUM_THREADS"] == "32"
-    )
+    assert config.resolved_stage_env_defaults("preprocessing")["OMP_NUM_THREADS"] == "8"
     for stage in config.stages:
         if stage.name != "preprocessing":
             assert "OMP_NUM_THREADS" not in config.resolved_stage_env_defaults(
@@ -48,13 +46,18 @@ def test_preprocessing_cpu_policy_is_resolved_at_launch(
     capacity.assert_called_once_with()
     assert config.model_dump() == document
 
-    capacity.return_value = 2
+    capacity.return_value = 4
     rebuilt = config_cls.model_validate(document)
-    assert config.resolved_stage_env_defaults("preprocessing")["OMP_NUM_THREADS"] == "2"
+    assert config.resolved_stage_env_defaults("preprocessing")["OMP_NUM_THREADS"] == "1"
     assert (
-        rebuilt.resolved_stage_env_defaults("preprocessing")["OMP_NUM_THREADS"] == "2"
+        rebuilt.resolved_stage_env_defaults("preprocessing")["OMP_NUM_THREADS"] == "1"
     )
     assert rebuilt.model_dump() == document
+
+    rebuilt.stage_named("preprocessing").factory.max_concurrency = 1
+    assert (
+        rebuilt.resolved_stage_env_defaults("preprocessing")["OMP_NUM_THREADS"] == "4"
+    )
 
 
 @pytest.mark.parametrize(
@@ -84,6 +87,42 @@ def test_preprocessing_cpu_policy_preserves_explicit_settings(
     )
     assert config.model_dump() == document
     capacity.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "config_cls",
+    [
+        Qwen3OmniPipelineConfig,
+        Qwen3OmniSpeechPipelineConfig,
+        Qwen3OmniSpeechColocatedPipelineConfig,
+    ],
+)
+def test_preprocessing_openmp_threads_sleep_between_regions(
+    config_cls: type[Qwen3OmniPipelineConfig],
+) -> None:
+    config = config_cls(model_path="dummy")
+
+    assert (
+        config.resolved_stage_env_defaults("preprocessing")["OMP_WAIT_POLICY"]
+        == "PASSIVE"
+    )
+    for stage in config.stages:
+        if stage.name != "preprocessing":
+            assert "OMP_WAIT_POLICY" not in config.resolved_stage_env_defaults(
+                stage.name
+            )
+        else:
+            pass
+
+
+def test_preprocessing_openmp_wait_policy_preserves_an_explicit_setting() -> None:
+    config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
+    config.stage_named("preprocessing").env["OMP_WAIT_POLICY"] = "ACTIVE"
+
+    assert (
+        config.resolved_stage_env_defaults("preprocessing")["OMP_WAIT_POLICY"]
+        == "ACTIVE"
+    )
 
 
 def test_config_manager_parses_dotted_fraction_overrides_as_numbers() -> None:
