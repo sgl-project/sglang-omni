@@ -327,6 +327,30 @@ def test_fish_reads_reference_wavs_cuda_reads(fish_server: Server, wav: bytes) -
     assert status == 200
 
 
+@pytest.mark.parametrize("stream", [False, True])
+def test_fish_rejects_a_prompt_past_its_token_budget(
+    fish_server: Server, stream: bool
+) -> None:
+    """Unicode normalization expanded a character-bounded prompt into a 500 or an empty 200."""
+    status, response = fish_server.request(
+        "POST",
+        "/v1/audio/speech",
+        json.dumps(
+            {
+                "input": "\U0001d160" * 4096,
+                "references": [{"text": "\U0001d160" * 2048, "vq_codes": [[0]] * 10}],
+                "response_format": "pcm",
+                "stream": stream,
+                "max_new_tokens": 1,
+            }
+        ).encode(),
+    )
+    assert status == 400
+    assert json.loads(response)["detail"] == (
+        "the prompt and its audio exceed the model's 32768 positions"
+    )
+
+
 def test_fish_answers_a_stream_with_unusable_audio_with_400(
     fish_server: Server,
 ) -> None:
@@ -402,8 +426,13 @@ def test_fish_takes_max_new_tokens_past_its_cap(
         ({"input": "hi", "voice": "nobody"}, "Unknown voice 'nobody'. "),
         ({"input": "hi", "temperature": -1}, "temperature must be a non-negative"),
         ({"input": "hi", "temperature": "hot"}, "temperature must be a number"),
+        (
+            {"input": "hi", "temperature": 1e300},
+            "temperature must fit in a finite float32 number",
+        ),
         ({"input": "hi", "top_p": 0}, "top_p must be in (0, 1]"),
         ({"input": "hi", "top_p": 1.5}, "top_p must be in (0, 1]"),
+        ({"input": "hi", "top_p": 1e-300}, "top_p must be in (0, 1]"),
         ({"input": "hi", "top_k": 0}, "top_k must be -1 or between 1 and 30"),
         ({"input": "hi", "top_k": 31}, "top_k must be -1 or between 1 and 30"),
         ({"input": "hi", "top_k": 1.5}, "top_k must be -1 or between 1 and 30"),
@@ -424,6 +453,10 @@ def test_fish_takes_max_new_tokens_past_its_cap(
         ),
         (
             {"input": "hi", "repetition_penalty": 0},
+            "repetition_penalty must be in (0, 2]",
+        ),
+        (
+            {"input": "hi", "repetition_penalty": 1e-300},
             "repetition_penalty must be in (0, 2]",
         ),
         ({"input": "hi", "seed": "1"}, "seed must be an integer"),

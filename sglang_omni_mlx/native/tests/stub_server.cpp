@@ -145,12 +145,16 @@ protected:
                          const speech_service::SpeechContext &context) {
       if (outcome == "fail") {
         throw std::runtime_error("stub speech failed");
+      } else if (outcome == "invalid") {
+        throw std::invalid_argument("stub invalid speech request");
       } else {
       }
       for (int chunk = 0; chunk < chunk_count; ++chunk) {
         context.send(std::vector<float>(chunk_sample_count, 0.0f));
       }
-      if (outcome == "block") {
+      if (outcome == "fail_after_audio") {
+        throw std::runtime_error("stub speech failed after audio");
+      } else if (outcome == "block") {
         while (!context.cancel.load()) {
           context.check_deadline();
           std::this_thread::sleep_for(kBlockPollInterval);
