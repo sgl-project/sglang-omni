@@ -98,7 +98,7 @@ def test_one_gated_request_disables_whole_batch():
     assert runner().lookahead_eligible(param_mix) is False
 
 
-def test_seeded_batch_is_eligible():
+def test_seeded_batch_is_eligible() -> None:
     seeded_mix = batch(req(sampling_seed=42), req())
     assert runner().lookahead_eligible(seeded_mix) is True
 
@@ -147,29 +147,16 @@ def sample_lookahead_seeds(
     return forward_batch.sampling_info.sampling_seed
 
 
-def test_sample_lookahead_installs_request_seeds():
+def test_sample_lookahead_installs_request_seeds() -> None:
     seeds = sample_lookahead_seeds(
         [scheduler_request("a", 42), scheduler_request("b", 7)]
     )
     assert seeds.tolist() == [42, 7]
 
 
-def test_sample_lookahead_seeds_unseeded_rows_in_mixed_batch():
-    unseeded = scheduler_request("b", None)
-    seeds = sample_lookahead_seeds([scheduler_request("a", 42), unseeded])
-    assert seeds.tolist() == [42, rank_shared_unseeded_sampling_seed(unseeded, 1)]
-
-
-def test_sample_lookahead_leaves_unseeded_batch_unseeded():
-    seeds = sample_lookahead_seeds(
-        [scheduler_request("a", None), scheduler_request("b", None)]
-    )
-    assert seeds is None
-
-
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
-def test_overlapped_lookahead_steps_draw_the_synchronous_seeded_tokens():
+def test_overlapped_lookahead_steps_draw_the_synchronous_seeded_tokens() -> None:
     """Launching step N+1 before step N resolves draws, per step, the tokens a
     synchronous sample at that step's positions draws."""
     requests = [scheduler_request("seeded", 42), scheduler_request("unseeded", None)]

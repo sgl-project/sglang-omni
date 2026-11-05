@@ -97,7 +97,7 @@ def test_installs_seeded_top_k_and_top_p_on_flashinfer() -> None:
     assert int(fb.sampling_info.sampling_seed[0]) == 42
 
 
-def test_reuses_seed_tensor_while_batch_is_unchanged():
+def test_reuses_seed_tensor_while_batch_is_unchanged() -> None:
     runner = seed_runner()
     requests = [req(42, "first"), req(7, "second")]
     fb = make_fb()
@@ -107,7 +107,7 @@ def test_reuses_seed_tensor_while_batch_is_unchanged():
     assert fb_next.sampling_info.sampling_seed is fb.sampling_info.sampling_seed
 
 
-def test_reuses_seed_tensor_after_normalizing_an_out_of_range_seed():
+def test_reuses_seed_tensor_after_normalizing_an_out_of_range_seed() -> None:
     runner = seed_runner()
     requests = [req(-1, "negative"), req(1 << 40, "wide")]
     fb = make_fb()
@@ -121,7 +121,7 @@ def test_reuses_seed_tensor_after_normalizing_an_out_of_range_seed():
     assert fb_next.sampling_info.sampling_seed is fb.sampling_info.sampling_seed
 
 
-def test_rebuilds_seed_tensor_when_batch_changes():
+def test_rebuilds_seed_tensor_when_batch_changes() -> None:
     runner = seed_runner()
     first, second = req(42, "first"), req(7, "second")
     runner.install_sampling_seeds(make_fb(), [first, second])
