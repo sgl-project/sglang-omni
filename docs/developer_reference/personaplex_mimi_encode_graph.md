@@ -2,6 +2,8 @@
 
 This change adds CUDA graph replay for each 80 ms Mimi input frame. Each session owns its convolution history, transformer cache and frame offset; reset clears them in place for reuse.
 
+This per-session batch-1 implementation overlaps with P2-1 in [#3174](https://github.com/sgl-project/sglang-omni/pull/3174), which covers batched streaming encoding and CUDA graph replay. Our experiments with this separate implementation may serve as a performance reference for that work.
+
 The subsequent [full FDB experiment](personaplex_full_fdb_baseline.md) covers all 1,723 released calls with default LM inference and checks eager/graph equality on the existing 39-call cohort.
 
 ## Configuration
@@ -64,6 +66,11 @@ Each cell pools the reference intervals and shows mean seconds and count. The re
 | Clean | Stop | 0.871 s (3) | 0.668 s (3) |
 
 FDB scoring audio uses FIFO receipt-time playout within the input window. Faster delivery changes this waveform's timing and the intervals visible before the window ends, while the complete generated PCM stays identical. The overlap response interval count therefore changes from 21 to 22. Both modes have model speech at the window end in 10 overlap and six clean samples. The user-ending-without-a-later-model-start label occurs in three eager overlap samples and two graph samples. Both modes have one overlap and nine clean samples with no stop interval. These labels remain in the summaries alongside the interval statistics.
+
+## Further work
+
+- [ ] Coordinate implementation and evaluation scope with the author of [#3174](https://github.com/sgl-project/sglang-omni/pull/3174).
+- [ ] Evaluate #3174 with the existing 39-call consistency comparison and FDB tooling under matched inputs, sampling settings and runtime conditions.
 
 ## Evidence
 

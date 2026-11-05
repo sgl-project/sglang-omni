@@ -2,6 +2,8 @@
 
 The 2026-11-05 experiment completes all 1,723 released FDB calls, covering 7.316 hours of audio at concurrency 1 and seed 42. The [Mimi encoder CUDA graph added in this work](personaplex_mimi_encode_graph.md) reduces median post-input drain from 2.46 seconds to 72 ms in the same-host 39-call comparison, with identical PCM and text. The full run measures its latency, stability and model behavior with default LM inference.
 
+These results use this PR's separate batch-1 encoder graph implementation. The batch-1 performance measurements may serve as a reference for the overlapping P2-1 work in [#3174](https://github.com/sgl-project/sglang-omni/pull/3174). Evaluation of #3174 under matched conditions is listed in [further work](personaplex_mimi_encode_graph.md#further-work).
+
 ## Configuration and coverage
 
 Serving source is `5a37be84d797719a43daeb97b9c002db7d223eca`. The H100 PCIe 80GB host uses a 16-thread CPU budget, SGLang 0.5.22, PyTorch 2.14.1+cu130 and driver 595.91.07. The image is `hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985`.
