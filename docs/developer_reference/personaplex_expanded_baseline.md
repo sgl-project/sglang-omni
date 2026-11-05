@@ -2,7 +2,7 @@
 
 The expanded 2026-11-04 experiment verifies complete PCM byte equality and exact text equality on all 39 selected FDB calls across nine subsets. It also measures the performance cost of deterministic inference on the same H100 and repeats the 39-call quality baseline. The machine-readable report (`personaplex_expanded_baseline.json`) contains individual comparisons, paired timings, scoring results, runtime conditions and source hashes.
 
-The measured configuration increases total offline request time by 21.2%. The quality run also shows higher response and stop latencies, together with accumulated output delay during realtime delivery.
+This configuration increases total offline request time by 21.2% and accumulates realtime output delay. Subsequent work adds [Mimi encoder CUDA graphs](personaplex_mimi_encode_graph.md) and evaluates all 1,723 calls in the [full FDB baseline](personaplex_full_fdb_baseline.md).
 
 ## Configuration and coverage
 
@@ -102,7 +102,7 @@ The expanded cohort establishes exact complete-output consistency. The [latency 
 
 Extract the saved JSON using the [attachment and checksum instructions](personaplex_quality_baseline.md#saved-report-files). The attachment includes the expanded input bundle and generator; the commands below use the original local bundle path.
 
-The complete local archive is `results/p0-4-expanded/expanded-evidence.tar.gz`, SHA-256 `f51d6b09ee52e4a694975f47aa5e2c1280fa1d48690f7c2be4e43acbb97ff84d`. Its 3,100 entries contain the recorded calls, offline requests and replies, selected original dataset files, evaluator receipts, source snapshots, launch commands and logs. It contains no symlinks. Archive integrity, all report input hashes and all serving source hashes were verified locally. All 39 successful comparisons were independently checked again from raw protocol traces, caller PCM and offline WAV files.
+The raw archive is `results/p0-4-expanded/expanded-evidence.tar.gz`, SHA-256 `f51d6b09ee52e4a694975f47aa5e2c1280fa1d48690f7c2be4e43acbb97ff84d`. It contains recordings, offline replies, selected inputs, scoring receipts, source snapshots, commands and logs. All 39 comparisons are verified from traces and WAV files.
 
 The smaller `results/p0-4-expanded/expanded-report-inputs.tar.gz` contains the JSON inputs and the report generator, including the quality delivery-time analysis. Rebuild the saved report without a GPU or network access:
 
@@ -117,4 +117,4 @@ cmp results/p0-4-reports/personaplex_expanded_baseline.json \
   /tmp/personaplex-expanded-report/regenerated.json
 ```
 
-The report-input bundle was rebuilt in an empty directory and matched the saved JSON byte for byte. The benchmark changes pass 67 related tests, including exact text comparison across transcript chunks, and repository pre-commit checks. The H100 was deleted after the archive was downloaded and verified; the subsequent RunPod API query returned no instance. Raw recording archives and report-input bundles are retained locally.
+The input bundle reproduces the JSON byte for byte. All 67 related benchmark tests and pre-commit checks pass. The GPU was released after archive verification.

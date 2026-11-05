@@ -1,6 +1,6 @@
 # PersonaPlex latency attribution experiment
 
-The 2026-11-04 follow-up separates attention splitting, batch-invariant operations and CPU thread settings on one H100. Greedy profiling reproduces output backlog when processing an 80 ms input unit takes about 94 ms. Seeded quality sampling also produces runs below 80 ms per unit. The observed performance ordering changes between recording phases, so the experiment retains the current deterministic configuration and identifies the measurements needed for the next optimization.
+The 2026-11-04 experiment varies attention splitting, batch-invariant operations and CPU threads on one H100. Greedy processing takes about 94 ms per 80 ms input unit, creating backlog. Quality-sampling profiles run below 80 ms, with performance ordering varying across phases. The [interleaved follow-up](personaplex_interleaved_analysis.md) controls launch order and adds kernel timing.
 
 ## Configuration
 
@@ -39,15 +39,15 @@ Each profile covers the same two overlap inputs. Greedy batch-invariant-off has 
 | Deterministic quality sampling | 74.84 | 20.53 | 40.18 | 3.78 |
 | Quality sampling, batch-invariant off | 65.98 | 21.09 | 31.97 | 3.43 |
 
-These are wall-clock stage service times, including execution and scheduling effects. They are not isolated GPU kernel measurements. Stage medians do not sum to the median of the complete unit lifetime.
+Stage service is wall-clock time, including execution and scheduling. Stage and total-lifetime medians are computed separately.
 
-The greedy deterministic capture has a ready-to-admitted P50 of 1.267 s: pending input accumulates before admission because processing exceeds the 80 ms input cadence. The sampled captures operate below that cadence at the median. Mimi encoding also changes substantially between phases, although its input and configuration are the same; sampling mode and host/runtime variation need separate measurement before assigning a fixed cost to the deterministic operation switch.
+Greedy deterministic processing exceeds the 80 ms cadence and accumulates 1.267 seconds of median admission wait. Quality-sampling profiles stay below that cadence. Mimi timing also varies across phases with identical input and configuration, motivating interleaved measurements.
 
 ## Seeded quality timing
 
 All 32 recordings pass protocol validation, and all 32 FDB timing evaluations succeed. Within each arm, all eight inputs reproduce identical complete PCM and text across the two recordings. Across arms, all eight transmitted input hashes match, while none of the eight output PCM or text comparisons match. Identical seeds therefore control sampling randomness without holding generated content constant when numerical operations change.
 
-The deterministic arm's post-input drain P50 is 0.083 s; the batch-invariant-off arm's is 1.587 s. The later sampled profiler shows the opposite processing-speed ordering. This variation prevents selecting the faster production configuration from this campaign alone.
+Median drain is 0.083 seconds with deterministic operations and 1.587 seconds with batch-invariant operations off. The later profiler reverses this speed ordering, motivating repeated fresh-launch controls.
 
 Timing below is the pooled mean over the reference evaluator's overlap intervals, with interval counts in parentheses. Each subset contains one distinct pair recorded twice; repeats do not increase the number of distinct dataset samples.
 
@@ -59,17 +59,15 @@ Timing below is the pooled mean over the reference evaluator's overlap intervals
 | Background speech | No interval (0) | No interval (0) | 0.276 (4) | 0.852 (4) |
 | All | 0.460 (8) | 0.860 (8) | 0.720 (16) | 0.944 (16) |
 
-Scoring uses the pinned FDB evaluator `3e799c45a045256f47d5f1c9cda90157e2d2ec9e`, receipt-time playout, SoundFile loading and Silero VAD 6.2.1 on CPU. ASR and behavior judging are outside this timing experiment. Timing includes both generated behavior and delivery effects.
+Scoring uses evaluator `3e799c45a045256f47d5f1c9cda90157e2d2ec9e`, receipt-time playout, SoundFile and Silero VAD 6.2.1 on CPU. These intervals reflect generated speech and delivery timing.
 
-## Next experiment
+## Follow-up
 
-The [completed interleaved experiment](personaplex_interleaved_analysis.md) repeats both configurations across five fresh launches per sampling mode and adds CPU/GPU telemetry and CUDA kernel attribution.
-
-Keep the current deterministic implementation while profiling Mimi encoding and LM execution with GPU kernel timing and CPU scheduling/throttling measurements. Alternate configurations across fresh launches, retain seed 42 and identical inputs, and compare repeated runs with and without event profiling. This will distinguish stage execution costs from the phase-to-phase variation observed here. Any candidate change should then repeat complete-output parity on the 39-call cohort before expanding quality coverage.
+The [interleaved experiment](personaplex_interleaved_analysis.md) repeats five fresh launches per configuration and sampling mode with CPU/GPU telemetry and kernel attribution. It leads to [Mimi encoder CUDA graphs](personaplex_mimi_encode_graph.md) and the [full FDB baseline](personaplex_full_fdb_baseline.md).
 
 ## Evidence
 
-The local raw archive is `results/p0-4-latency/latency-evidence.tar.gz`, SHA-256 `aa0209036fa2bafbe612571578afc27a50a553886bd22095f1fd318ba51864c0`. It includes original recordings, offline requests/replies, timing receipts, complete and incomplete profiler captures, backend snapshots, serving source, launch commands, GPU telemetry and setup failure logs. The offline launch was retried after removing a realtime-only seed flag; CPU scoring was rerun with the source directory on its import path.
+The raw archive is `results/p0-4-latency/latency-evidence.tar.gz`, SHA-256 `aa0209036fa2bafbe612571578afc27a50a553886bd22095f1fd318ba51864c0`. It contains recordings, offline replies, scoring receipts, profiler captures, source, commands, telemetry and setup logs.
 
 The machine-readable report and portable report inputs are retained under `results/p0-4-latency/`. Generated JSON and raw audio remain local artifacts for attachment.
 
@@ -86,4 +84,4 @@ cmp results/p0-4-latency/personaplex_latency_attribution.json \
   /tmp/personaplex-latency-report/regenerated.json
 ```
 
-The portable bundle reproduces the report byte for byte. Local verification independently checks all 68 measured recordings, both complete PCM/text comparisons, 32 scoring receipts, 12 complete profiler receipts and 1,953 source hashes. The archive contains no symbolic links; its hard links resolve to files included in the archive. The H100 was deleted after download and archive verification, and the subsequent RunPod query returned no instance.
+The portable bundle reproduces the report byte for byte. Verification covers 68 recordings, two PCM/text comparisons, 32 scoring receipts, 12 profiler receipts and 1,953 source hashes. The GPU was released after archive verification.

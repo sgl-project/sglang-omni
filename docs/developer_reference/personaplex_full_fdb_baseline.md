@@ -1,10 +1,10 @@
 # PersonaPlex full FDB baseline
 
-The 2026-11-05 experiment records every released FDB v1.5 overlap/clean input and every v1.0 input: 1,723 calls and 7.316 hours of input audio. All calls pass protocol validation, exercise simultaneous input/output and meet the recorder's 80 ms input-pacing tolerance. The experiment uses concurrency 1, seed 42, default LM inference and the opt-in [Mimi encoder CUDA graph](personaplex_mimi_encode_graph.md).
+The 2026-11-05 experiment completes all 1,723 released FDB calls, covering 7.316 hours of audio at concurrency 1 and seed 42. The [Mimi encoder CUDA graph added in this work](personaplex_mimi_encode_graph.md) reduces median post-input drain from 2.46 seconds to 72 ms in the same-host 39-call comparison, with identical PCM and text. The full run measures its latency, stability and model behavior with default LM inference.
 
 ## Configuration and coverage
 
-Serving source is `5a37be84d797719a43daeb97b9c002db7d223eca`. The RunPod H100 PCIe 80GB costs $2.89/hour. Serving uses a CPU thread budget of 16. Serving uses SGLang 0.5.22, PyTorch 2.14.1+cu130 and NVIDIA driver 595.91.07 from image `hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985`.
+Serving source is `5a37be84d797719a43daeb97b9c002db7d223eca`. The H100 PCIe 80GB host uses a 16-thread CPU budget, SGLang 0.5.22, PyTorch 2.14.1+cu130 and driver 595.91.07. The image is `hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985`.
 
 The PersonaPlex checkpoint is `nvidia/personaplex-7b-v1` at `fdaf4090a61cb315c138a1faee287ffd6c716309`, with voice `NATF2` and prompt “You are a wise and friendly teacher. Answer questions or provide advice in a clear and engaging way.” Sampling uses text temperature 0.7/top-k 25 and audio temperature 0.8/top-k 250. The server sets `--lm.engine.enable_deterministic_inference false` and `--mimi_encode.factory.enable_cuda_graph true`. Input uses mono 24 kHz PCM16 and 80 ms units.
 
@@ -21,18 +21,18 @@ The PersonaPlex checkpoint is `nvidia/personaplex-7b-v1` at `fdaf4090a61cb315c13
 | v1.0 | ICC backchannel | 55 | 55 |
 | All | | 1,225 | 1,723 |
 
-The v1.5 release contains 98 backchannel samples; its upstream declaration lists 99. The inventory records the released files and archive hashes. The longest individual input is 94 seconds. A 44.672-second ICC warmup precedes each release's recording batch.
+The v1.5 backchannel archive contains 98 samples; the upstream declaration lists 99. The longest input is 94 seconds. Each release's batch starts with a 44.672-second ICC warmup.
 
 ## Default inference and repeatability
 
-The same-host preflight runs the existing 39 selected calls with eager and graph encoders, using default LM inference and the quality sampling settings above. All 78 recordings pass protocol validation. Every eager/graph pair has byte-identical complete PCM and identical text. The full run reproduces the same complete PCM and text for all 39 shared inputs.
+The preflight changes only the encoder mode on the same host. All 78 calls pass protocol validation, and all 39 pairs have identical complete PCM and text. The full run reproduces those outputs for all 39 shared inputs.
 
 | Preflight encoder | Median first audio | Median post-input drain | Maximum drain |
 |---|---:|---:|---:|
 | Eager | 122.9 ms | 2,459.1 ms | 8,693.1 ms |
 | CUDA graph | 93.6 ms | 72.1 ms | 76.6 ms |
 
-The first eager preflight attempt completed its warmup, then stopped before measured calls because the selected-input directory lacked release revision files. Copying those files from the validated full dataset enabled both complete preflight runs. The retained first warmup emitted audio after 12.69 seconds. The full run's two warmups emitted audio after 848 and 94 ms and passed protocol validation. The initial cold-start delay remains under investigation.
+An initial setup attempt stopped before measured calls because release revision files were missing; copying them fixed setup. Its warmup first packet took 12.69 seconds. The full-run warmups took 848 and 94 ms. Cold-start latency remains under investigation.
 
 ## Full-run latency and stability
 
@@ -43,19 +43,19 @@ The first eager preflight attempt completed its warmup, then stopped before meas
 | Per-call maximum audio packet gap | 123.3 ms | 163.3 ms | 200.5 ms |
 | Close acknowledgement | 16.9 ms | 20.0 ms | 23.0 ms |
 
-The server remains live across both releases. Five-second monitoring covers 7.55 hours and 5,438 GPU samples. Median GPU memory use is 26,081 MiB, with a 26,543 MiB maximum. From ten minutes after each process starts to its final sample, the server's RSS increases by 2.03 MiB and its two main workers increase by 1.38 and 2.48 MiB. The remaining large worker stays at 688.64 MiB. One main worker reaches 11,303.69 MiB during startup and ends at 3,126.39 MiB.
+All 1,723 calls pass protocol validation, exercise simultaneous input/output and meet the 80 ms input-pacing tolerance. The server stays live across both releases. Monitoring covers 7.55 hours at five-second intervals: GPU memory has a median of 26,081 MiB and maximum of 26,543 MiB. After the first ten minutes, RSS grows by 2.03 MiB in the server and 1.38/2.48 MiB in its main workers. The report includes startup peaks and per-process samples.
 
 ## Evaluation
 
-Reference export qualifies all 498 v1.5 pairs and all 727 v1.0 calls. Scoring audio uses FIFO receipt-time playout within `[0, T_input]`, resampled to mono 16 kHz PCM16. Complete generated PCM is retained separately for equality checks.
+All 498 v1.5 pairs and 727 v1.0 calls qualify for scoring. Scoring uses FIFO receipt-time playout within `[0, T_input]`, resampled to mono 16 kHz PCM16; equality checks use complete generated PCM.
 
 The evaluator is pinned at `3e799c45a045256f47d5f1c9cda90157e2d2ec9e`. ASR uses Parakeet TDT 0.6B v2 at `ae9ad07059c7c739ffaf932226a8fe64ae2620b0`; timing uses Silero VAD 6.2.1. The custom behavior judge is Qwen3.8-27B at `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0`, BF16, thinking disabled, temperature zero and a 512-token output limit. Scoring uses PyTorch/torchaudio 2.11.0+cu130 and NeMo 3.0.0.
 
-All 1,992 v1.5 audio files and 727 v1.0 outputs complete ASR. One clean output has an empty transcript, retained in the ASR ledger. All 996 v1.5 windows produce timing results. All 498 pairs receive a valid custom Qwen label on their first attempt.
+ASR completes all 2,719 files, including one empty clean-output transcript. All 996 v1.5 windows produce timing results, and all 498 pairs receive a valid Qwen label on the first attempt.
 
 ### v1.5 timing
 
-The table pools the pinned evaluator's intervals for the overlap variants. Counts in parentheses are intervals; a recording can contribute several. These are campaign reductions of the per-sample intervals. The report retains medians and 2,000 sample-bootstrap replicates with seed 20260925.
+The table pools overlap intervals from the reference evaluator; parentheses show interval counts. The report includes medians and 2,000 sample-bootstrap replicates with seed 20260925.
 
 | Subset | Mean stop latency, seconds (intervals) | Mean response latency, seconds (intervals) |
 |---|---:|---:|
@@ -65,11 +65,18 @@ The table pools the pinned evaluator's intervals for the overlap variants. Count
 | Background speech | 0.623 (77) | 0.368 (191) |
 | All | 0.611 (657) | 0.425 (882) |
 
-The pooled mean 95% intervals are 0.595–0.628 seconds for stop and 0.399–0.455 seconds for response. Clean variants have mean stop latency 0.621 seconds across 183 intervals and mean response latency 0.407 seconds across 482 intervals. Model speech reaches the scoring-window end in 350 overlap and 222 clean recordings. The user-ending-without-a-later-model-start label occurs in 99 overlap and 17 clean recordings. Zero stop intervals occur in 48 overlap and 331 clean recordings; zero response intervals occur in two overlap and 17 clean recordings. These labels remain alongside the latency statistics.
+The pooled mean 95% intervals are 0.595–0.628 seconds for stop and 0.399–0.455 seconds for response. Clean means are 0.621 seconds for stop (183 intervals) and 0.407 seconds for response (482 intervals).
+
+| Window label | Overlap | Clean |
+|---|---:|---:|
+| Model speech at window end | 350 | 222 |
+| User ends without a later model start | 99 | 17 |
+| No stop interval | 48 | 331 |
+| No response interval | 2 | 17 |
 
 ### v1.5 behavior
 
-The custom judge classifies paired clean/overlap transcripts with the reference behavior prompt. Counts below use all released pairs; the report includes per-label Wilson 95% intervals.
+Qwen classifies paired transcripts with the reference behavior prompt. The report includes Wilson 95% intervals for each label.
 
 | Subset | Pairs | Respond | Resume | Uncertain handling | Unknown |
 |---|---:|---:|---:|---:|---:|
@@ -81,7 +88,7 @@ The custom judge classifies paired clean/overlap transcripts with the reference 
 
 ### v1.0 reference metrics
 
-All five released subsets complete the pinned reference evaluator. The interruption relevance rating uses the 187 model responses among 200 evaluated inputs; Qwen handles all 187 requests without retries. ICC values are the reference evaluator's mean ± standard deviation.
+The interruption rating averages 187 model responses among 200 evaluated inputs. ICC values are mean ± standard deviation.
 
 | Subset | Evaluated | Reference results |
 |---|---:|---|
@@ -93,10 +100,10 @@ All five released subsets complete the pinned reference evaluator. The interrupt
 
 ### v1.0 unified metrics
 
-The unified scorer measures pause intrusion in 69/137 synthetic pause calls and 141/216 CANDOR pause calls. CANDOR turn-taking has 70/119 early starts and 42/119 responses within one second of the reference endpoint. Of 200 interruption calls, 179 exercise interruption while the model is speaking; all 179 stop, with median stop latency 0.808 seconds and P90 1.320 seconds. Response within one second occurs in 129/179 exercised calls. The machine-readable results retain the distinct event definitions, denominators, censoring and confidence intervals.
+Pause intrusion occurs in 69/137 synthetic calls and 141/216 CANDOR calls. CANDOR turn-taking has 70/119 early starts and 42/119 responses within one second. Interruption is exercised in 179/200 calls; all 179 stop, with median latency 0.808 seconds and P90 1.320 seconds. Of those calls, 129/179 respond within one second. These measurements establish the model's behavior baseline for future turn-taking work.
 
-## Evidence and scope
+## Evidence
 
-The local experiment directory is `results/p0-4-full/`. It retains the dataset inventory, source and model revisions, launch commands, complete recordings, scoring receipts, judge exchanges, resource samples and both 39-call comparisons. Generated JSON and audio are experiment artifacts. The measured configuration covers one fixed seed and concurrency 1 on this H100 host.
+`results/p0-4-full/` contains the inputs, revisions, commands, recordings, scoring receipts, judge exchanges and telemetry. JSON results include denominators, censoring and confidence intervals.
 
-The complete evidence archive is `full-fdb-evidence.tar.gz`, SHA-256 `d84f6e774dd63c6fd38e3c5e191b0d48a7754668bee7d56d7c49bd303c7d756d`. The compact `full-fdb-report.zip` contains `full-fdb-report.json`, its source JSON bundle, a standard-library rebuild script and checksums. Its README documents offline reconstruction and byte comparison of the report.
+The raw archive is `full-fdb-evidence.tar.gz`, SHA-256 `d84f6e774dd63c6fd38e3c5e191b0d48a7754668bee7d56d7c49bd303c7d756d`. `full-fdb-report.zip` packages the report JSON, reconstruction inputs, script and checksums; its README gives rebuild commands.

@@ -1,18 +1,18 @@
 # PersonaPlex interleaved latency analysis
 
-The 2026-11-04 interleaved experiment finds a repeatable cost for batch-invariant operations while all 80 primary recordings keep up with 80 ms input pacing. Disabling those operations reduces the per-launch median unit lifetime in every paired block: the median paired reduction is 5.50 ms for greedy sampling and 7.12 ms for quality sampling. It also changes the complete PCM and text outputs. The current deterministic implementation remains the reference configuration.
+The 2026-11-04 interleaved experiment measures the cost of batch-invariant operations across fresh launches. Disabling them reduces median unit lifetime by 5.50 ms for greedy sampling and 7.12 ms for quality sampling, and changes PCM and text. All 80 primary calls keep up with 80 ms input pacing.
 
-The seconds-long backlog from the [earlier attribution experiment](personaplex_latency_attribution.md) does not recur on this host. This run uses an H100 NVL and AMD CPU, so the earlier host's slowdown remains unresolved. The new measurements identify substantial time outside GPU kernel execution, particularly in Mimi encoding, as the next optimization target.
+On this H100 NVL/AMD host, the [earlier experiment's](personaplex_latency_attribution.md) seconds-long backlog does not recur. Mimi spends about 2 ms executing kernels within 16.5–17.4 ms of stage service time. This finding led to the [encoder CUDA graph implementation](personaplex_mimi_encode_graph.md), later evaluated on [full FDB](personaplex_full_fdb_baseline.md).
 
 ## Design and validation
 
 Serving revision is `f1cb3b19d578d8b38ef6e4da2301c45807cfbc53`; model revision is `fdaf4090a61cb315c138a1faee287ffd6c716309`. The pinned container, voice `NATF2`, teacher prompt, concurrency 1 and seed 42 match the preceding experiment. Quality sampling uses text temperature 0.7/top-k 25 and audio temperature 0.8/top-k 250. Greedy sampling sets both temperatures to zero.
 
-The machine has an H100 NVL, an AMD EPYC 9654 CPU, PyTorch 2.14.1+cu130 and SGLang 0.5.22. The process CPU budget resolves to 27; the cgroup quota is 2,615,625 microseconds per 100,000-microsecond period, or approximately 26.16 CPUs. The preceding machine used H100 SXM and Xeon Platinum 8470 with a 23-thread budget. These changes prevent attributing the cross-host improvement to one component.
+The host uses H100 NVL, AMD EPYC 9654, PyTorch 2.14.1+cu130 and SGLang 0.5.22. Its CPU budget is 27 threads, with a cgroup quota of 26.16 CPUs. The preceding H100 SXM/Xeon Platinum 8470 host used 23 threads. Performance comparisons below pair configurations on this host.
 
 Five blocks alternate sampling-mode order and configuration order. Each of the four configurations gets five fresh launches. Every launch warms both complete inputs, then records them once with request-event profiling and once without it; profiler order alternates across blocks. The inputs are sample 1 from v1.5 user interruption and background speech. This produces 80 measured recordings over two distinct inputs, plus 40 warmups. Separate kernel profiles use four-second prefixes, with one capture per configuration and one additional preflight capture.
 
-All 80 primary recordings pass protocol validation. Each input/configuration combination yields identical full PCM and text across its ten recordings, including both profiler settings and all five launches. The eight input/configuration combinations also match the corresponding prior-host PCM outputs. Changing the batch-invariant setting changes both PCM and text for both inputs in both sampling modes. This campaign measures repeatability within the session route; it adds no new offline comparisons or FDB behavior scores.
+All 80 primary calls pass protocol validation. Each input/configuration reproduces its full PCM and text across ten recordings and matches the prior host's PCM. Changing batch-invariant operations changes PCM and text in both sampling modes.
 
 All 24 campaign phases and the preflight finish successfully. The 75 process receipts report complete event storage and zero dropped events. Ten CUDA traces contain 1,589,840 kernel events.
 
@@ -51,23 +51,21 @@ Kernel timestamps are aligned with request-event stage windows using the trace's
 | Quality | On | 2.014 | 8.808 | 2.407 | 1,775 |
 | Quality | Off | 2.015 | 7.590 | 2.023 | 1,247 |
 
-Mimi executes 841 kernels per steady unit in every configuration. Its kernel busy time stays near 2 ms, while its primary-stage service medians are approximately 16.5–17.4 ms. In the kernel captures themselves, Mimi service medians range from 14.7 to 26.4 ms. That difference includes host execution, launch gaps, synchronization, transfers and scheduling; it is not a direct measurement of CPU compute alone.
+Mimi executes 841 kernels per unit, taking about 2 ms of GPU time. Stage service takes 16.5–17.4 ms in primary runs and 14.7–26.4 ms in kernel captures. The gap includes host execution, launches, synchronization, transfers and scheduling.
 
-Disabling batch-invariant operations removes 528 LM kernels per steady unit and about 1.21–1.22 ms of LM kernel busy time. Decoder kernel busy time falls by about 0.38 ms. The larger wall-clock improvement supports investigating dispatch and synchronization costs alongside arithmetic. Kernel captures are instrumented runs over short prefixes; their service times are reported separately from primary timing measurements.
+Disabling batch-invariant operations removes 528 LM kernels per unit and 1.21–1.22 ms of LM GPU time; decoder GPU time falls by 0.38 ms. Dispatch and synchronization are further candidates for the larger wall-clock difference.
 
 ## CPU and GPU telemetry
 
-Within the primary recording windows, cgroup snapshots cover 10,887 scheduling periods, with 83 throttled periods (0.76%). The cumulative `throttled_time` counter increases by 215.93 seconds; this value is retained as a cgroup counter and is not converted into an elapsed-time percentage. There are at most four throttled periods in any sampled recording window. Measurements use one-second snapshots inside each recording window, excluding boundary fragments.
+One-second cgroup snapshots inside recording windows cover 10,887 periods, including 83 throttled periods (0.76%). Cumulative `throttled_time` increases by 215.93 seconds. Each sampled window contains at most four throttled periods.
 
-The scheduler monitor sums counters across currently existing threads. Ten process/recording comparisons have decreasing totals when threads exit, so those aggregates cannot provide a complete CPU-wait decomposition. The raw counters are retained; a follow-up scheduling trace should preserve thread identities and lifetimes. No claim about the earlier host's CPU throttling follows from these new-host measurements.
+Ten scheduler-counter totals decrease as threads exit. A follow-up CPU-wait analysis needs thread identities and lifetimes; the raw counters are retained.
 
-The 1,168 GPU samples inside primary recording windows show constant SM and memory clocks of 1,785 and 2,619 MHz. GPU utilization has a median of 18% and maximum of 30%; temperature ranges from 44 to 48°C. These paced, single-session measurements include time between input units. They do not indicate GPU saturation or clock variation as the source of this campaign's timing differences.
+The 1,168 GPU samples show constant SM/memory clocks of 1,785/2,619 MHz, utilization of 18% median and 30% maximum, and temperatures of 44–48°C. Sampling includes idle time between paced input units.
 
-## Next implementation experiment
+## Follow-up
 
-Prototype CUDA graph replay for the fixed-size, stateful Mimi encoding step while preserving its arithmetic and codec-state transitions. The 841 small kernels and roughly 2 ms of GPU execution per input unit make launch and synchronization overhead a concrete target. Measure the prototype with the same interleaved controls, then repeat complete PCM/text parity on the 39-call cohort before expanding quality coverage.
-
-Keep batch-invariant operations enabled during that prototype. Their cost is measurable, and disabling them changes generated outputs. Resolve remaining host-side delays with thread-lifetime-aware scheduling traces and CUDA API correlation rather than treating the wall-clock/kernel-time difference as one cause.
+The [Mimi encoder graph experiment](personaplex_mimi_encode_graph.md) implements replay, verifies complete-output equality on 39 calls and measures reduced backlog. The [full FDB experiment](personaplex_full_fdb_baseline.md) extends coverage to 1,723 calls with default LM inference.
 
 ## Evidence and reproduction
 
@@ -86,4 +84,4 @@ cmp results/p0-4-interleaved/personaplex_interleaved_analysis.json \
   /tmp/personaplex-interleaved-report/regenerated.json
 ```
 
-The H100 NVL was allocated at $3.19/hour and deleted after approximately one hour, after the archive downloaded and passed checksum verification. The background retry task has been unloaded. Analysis uses the saved evidence and starts no new GPU instance.
+The H100 NVL cost $3.19/hour and was released after approximately one hour, following archive download and verification.
