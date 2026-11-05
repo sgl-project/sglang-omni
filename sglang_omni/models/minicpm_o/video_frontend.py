@@ -18,6 +18,7 @@ import numpy.typing as npt
 from PIL import Image
 from pydantic import BaseModel
 from qwen_vl_utils.vision_process import smart_resize
+from sglang.utils import LazyImport
 
 from sglang_omni.preprocessing.base import MediaIO, is_url
 from sglang_omni.preprocessing.resource_connector import (
@@ -25,13 +26,21 @@ from sglang_omni.preprocessing.resource_connector import (
     get_global_resource_connector,
     global_thread_pool,
 )
-from sglang_omni.preprocessing.video import extract_audio_from_path
+from sglang_omni.preprocessing.video import (
+    DEVICE_DECODE_FRAMES_PER_BATCH,
+    DEVICE_DECODE_LOCK,
+    VideoDecoder,
+    extract_audio_from_path,
+    warn_device_decode_fallback,
+)
 
 try:
     from decord import VideoReader, cpu
 except ImportError:
     VideoReader = None
     cpu = None
+
+current_platform: LazyImport = LazyImport("sglang_omni.platforms", "current_platform")
 
 MAX_VIDEO_FRAMES = 64
 AUDIO_SAMPLE_RATE = 16000
@@ -91,7 +100,63 @@ class MiniCPMVideoIO(MediaIO[TimedVideo]):
     def load_base64(self, media_type: str, encoded_video: str) -> TimedVideo:
         return self.load_bytes(base64.b64decode(encoded_video, validate=True))
 
-    def load_file(self, video_path: Path) -> TimedVideo:
+    def sample_timeline(
+        self, source_frame_count: int, source_frames_per_second: float
+    ) -> tuple[list[float], list[int], float]:
+        """Sampled timestamps, the source frame index of each, and the clip duration in seconds."""
+        duration_seconds = (
+            source_frame_count / source_frames_per_second
+            if source_frames_per_second > 0
+            else 0.0
+        )
+        if duration_seconds <= 0 or source_frames_per_second <= 0:
+            raise ValueError("Video input has invalid duration or frame rate")
+        else:
+            pass
+        if self.frames_per_second is not None:
+            sample_interval_seconds = 1.0 / self.frames_per_second
+            candidate_frame_count = math.ceil(
+                duration_seconds / sample_interval_seconds
+            )
+        elif duration_seconds > MAX_VIDEO_FRAMES:
+            sample_interval_seconds = LONG_VIDEO_SAMPLE_INTERVAL_SECONDS
+            candidate_frame_count = int(duration_seconds / sample_interval_seconds)
+        else:
+            sample_interval_seconds = 1.0
+            candidate_frame_count = math.ceil(duration_seconds)
+        maximum_frame_count = (
+            self.maximum_frame_count
+            if self.maximum_frame_count is not None
+            else MAX_VIDEO_FRAMES
+        )
+        if maximum_frame_count < 1:
+            raise ValueError("video_max_frames must be positive")
+        elif candidate_frame_count > maximum_frame_count:
+            sample_indices = [
+                index * (candidate_frame_count - 1) // max(maximum_frame_count - 1, 1)
+                for index in range(maximum_frame_count)
+            ]
+        else:
+            sample_indices = range(candidate_frame_count)
+        timestamps_seconds = [
+            index * sample_interval_seconds for index in sample_indices
+        ]
+        if self.frames_per_second is None and duration_seconds > MAX_VIDEO_FRAMES:
+            timestamps_seconds = [round(seconds, 1) for seconds in timestamps_seconds]
+        else:
+            pass
+        frame_indices = [
+            min(
+                int(timestamp_seconds * source_frames_per_second),
+                source_frame_count - 1,
+            )
+            for timestamp_seconds in timestamps_seconds
+        ]
+        return timestamps_seconds, frame_indices, duration_seconds
+
+    def read_frames_with_decord(
+        self, video_path: Path
+    ) -> tuple[list[Image.Image], list[float], float]:
         if VideoReader is None or cpu is None:
             raise RuntimeError(
                 "MiniCPM-o timed video input requires decord==0.6.0; "
@@ -100,63 +165,61 @@ class MiniCPMVideoIO(MediaIO[TimedVideo]):
         else:
             video_reader = VideoReader(str(video_path), ctx=cpu(0))
         try:
-            source_frames_per_second = video_reader.get_avg_fps()
-            duration_seconds = (
-                len(video_reader) / source_frames_per_second
-                if source_frames_per_second > 0
-                else 0.0
+            timestamps_seconds, frame_indices, duration_seconds = self.sample_timeline(
+                len(video_reader), video_reader.get_avg_fps()
             )
-            if duration_seconds <= 0 or source_frames_per_second <= 0:
-                raise ValueError("Video input has invalid duration or frame rate")
-            else:
-                pass
-            if self.frames_per_second is not None:
-                sample_interval_seconds = 1.0 / self.frames_per_second
-                candidate_frame_count = math.ceil(
-                    duration_seconds / sample_interval_seconds
-                )
-            elif duration_seconds > MAX_VIDEO_FRAMES:
-                sample_interval_seconds = LONG_VIDEO_SAMPLE_INTERVAL_SECONDS
-                candidate_frame_count = int(duration_seconds / sample_interval_seconds)
-            else:
-                sample_interval_seconds = 1.0
-                candidate_frame_count = math.ceil(duration_seconds)
-            maximum_frame_count = (
-                self.maximum_frame_count
-                if self.maximum_frame_count is not None
-                else MAX_VIDEO_FRAMES
-            )
-            if maximum_frame_count < 1:
-                raise ValueError("video_max_frames must be positive")
-            elif candidate_frame_count > maximum_frame_count:
-                sample_indices = [
-                    index
-                    * (candidate_frame_count - 1)
-                    // max(maximum_frame_count - 1, 1)
-                    for index in range(maximum_frame_count)
-                ]
-            else:
-                sample_indices = range(candidate_frame_count)
-            timestamps_seconds = [
-                index * sample_interval_seconds for index in sample_indices
-            ]
-            if self.frames_per_second is None and duration_seconds > MAX_VIDEO_FRAMES:
-                timestamps_seconds = [
-                    round(seconds, 1) for seconds in timestamps_seconds
-                ]
-            else:
-                pass
-            frame_indices = [
-                min(
-                    int(timestamp_seconds * source_frames_per_second),
-                    len(video_reader) - 1,
-                )
-                for timestamp_seconds in timestamps_seconds
-            ]
             frame_pixels = video_reader.get_batch(frame_indices).asnumpy()
-            frames = [Image.fromarray(frame).convert("RGB") for frame in frame_pixels]
         finally:
             del video_reader
+        frames = [Image.fromarray(frame).convert("RGB") for frame in frame_pixels]
+        return frames, timestamps_seconds, duration_seconds
+
+    def read_frames_on_device(
+        self, video_path: Path, decode_device: str
+    ) -> tuple[list[Image.Image], list[float], float]:
+        with DEVICE_DECODE_LOCK:
+            decoder = VideoDecoder(
+                str(video_path), device=decode_device, dimension_order="NHWC"
+            )
+            timestamps_seconds, frame_indices, duration_seconds = self.sample_timeline(
+                decoder.metadata.num_frames, decoder.metadata.average_fps
+            )
+            frame_pixels = [
+                decoder.get_frames_at(
+                    indices=frame_indices[
+                        batch_start : batch_start + DEVICE_DECODE_FRAMES_PER_BATCH
+                    ]
+                )
+                .data.cpu()
+                .numpy()
+                for batch_start in range(
+                    0, len(frame_indices), DEVICE_DECODE_FRAMES_PER_BATCH
+                )
+            ]
+        frames = [
+            Image.fromarray(frame).convert("RGB")
+            for batch in frame_pixels
+            for frame in batch
+        ]
+        return frames, timestamps_seconds, duration_seconds
+
+    def load_file(self, video_path: Path) -> TimedVideo:
+        decode_device = current_platform.get_video_decode_device()
+        if decode_device is None or VideoDecoder is None:
+            frames, timestamps_seconds, duration_seconds = self.read_frames_with_decord(
+                video_path
+            )
+        else:
+            try:
+                frames, timestamps_seconds, duration_seconds = (
+                    self.read_frames_on_device(video_path, decode_device)
+                )
+            except (RuntimeError, ValueError) as device_exc:
+                # note (Rahul): decord samples the same timeline and reports invalid media itself.
+                warn_device_decode_fallback(decode_device, device_exc)
+                frames, timestamps_seconds, duration_seconds = (
+                    self.read_frames_with_decord(video_path)
+                )
         if self.use_audio:
             try:
                 with warnings.catch_warnings():

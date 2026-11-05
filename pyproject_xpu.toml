@@ -39,6 +39,8 @@ dependencies = [
     "torchvision==0.29.0+xpu",
     "torchaudio==2.11.0+xpu",
     "torchcodec==0.17.0",
+    # Decodes request videos on the GPU media engine; its version tracks torchcodec.
+    "torchcodec-xpu==0.17.0 ; sys_platform == 'linux' and platform_machine == 'x86_64'",
 
     # --- Model loading / HF -------------------------------------------------
     "accelerate>=0.27.0",
