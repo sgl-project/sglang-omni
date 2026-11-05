@@ -79,9 +79,10 @@ type ASRTuning struct {
 	PieceMax     time.Duration
 	PauseMin     time.Duration
 	// CacheMB bounds MLX's cache of freed buffers in the server
-	// (--cache-limit-mb): without it one long Final kept up to 6 GB beside
-	// the weights (eval.md "Speech server memory"). 0: MLX's own limit,
-	// as with an older server that lacks the flag.
+	// (--cache-limit-mb): with no cap one long Final kept up to 6 GB beside
+	// the weights (eval.md "Speech server memory"). 0: the flag is not
+	// passed, so the server's default applies (2 GiB; no cap on an older
+	// server, which also lacks the flag).
 	CacheMB int
 }
 
