@@ -10,13 +10,13 @@
 //     <a class="reference internal" href="...">Qwen</a>   page's own group
 //     <details open="open"><summary>...</summary><ul> ...models... </ul></details>
 //   </li>
-// Company groups are the only nested toctree items in the sidebar, so
-// `li.toctree-l1.has-children` identifies them reliably (verified: every
-// page in the build has exactly 15 such items, all company groups).
+// Note (Akazaakane): Platform parents also have children. Limit the custom
+// toggle to Cookbook company pages so platform links can open their guides.
 (function () {
   "use strict";
 
   var COMPANY_GROUP_SELECTOR = "nav.bd-links li.toctree-l1.has-children > a";
+  var COMPANY_PAGE = /\/cookbook\/companies\/[^/]+\.html$/;
   var EXPAND_MS = 250;
   var COLLAPSE_MS = 200;
   // Fallback: if a transitionend/transitioncancel is never delivered (e.g.
@@ -249,6 +249,7 @@
       // getting their click behavior, so each group is handled on its own.
       try {
         var link = links[i];
+        if (!COMPANY_PAGE.test(link.pathname)) continue;
         var li = link.parentElement;
         if (!li || !li.classList.contains("has-children")) continue;
         var details = li.querySelector(":scope > details");

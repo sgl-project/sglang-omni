@@ -172,9 +172,18 @@ sgl-omni serve \
 
 DFlash requires greedy decoding (`temperature=0`), uses synchronous scheduling, and retains CUDA graphs. Realtime sessions are not validated.
 
+The command above caps the server at 8 running requests. A load sweep at the default cap with the prefix cache off ([#3454](https://github.com/sgl-project/sglang-omni/pull/3454)), on one H200 over SeedTTS English clips, found that the draft gives no speedup at 32 concurrent requests and is about 10% slower at 64. To serve such a load, turn the draft off; `disable_speculative_decoding` drops every `speculative_*` key from the stage:
+
+```bash
+sgl-omni serve \
+  --config examples/configs/qwen3_asr_1_7b_dflash.yaml \
+  --asr.engine.disable_speculative_decoding true \
+  --port 8000
+```
+
 ### Experimental Ascend NPU validation
 
-The shared DFlash worker has an Ascend path, but the checkpoint pinned in this example has not yet been qualified on NPU. Start with the single-device eager configuration below to check the draft's hidden states, checkpoint attention semantics and accepted-token/KV handoff before testing graphs or concurrency. Follow the [NPU installation guide](../get_started/installation_npu.md) for the supported stack; this example does not enable DFlash by default.
+The shared DFlash worker has an Ascend path. Single-device eager and decode-graph runs with the pinned 48k draft have been reported on A3; full qualification remains pending as described below. Start with the single-device eager configuration below to check the draft's hidden states, checkpoint attention semantics and accepted-token/KV handoff before testing graphs or concurrency. Follow the [NPU installation guide](../get_started/installation_npu.md) for the supported stack; this example does not enable DFlash by default.
 
 ```bash
 sgl-omni serve \
@@ -204,7 +213,7 @@ sgl-omni serve \
 
 This configuration captures decode request buckets 1 and 2, with eight tokens per DFlash block. It keeps prefill and encoder execution eager, Torch Compile disabled and scheduling synchronous. It uses the same pinned 48k draft and the context/window restrictions above. The existing SGLang NPU runner executes the shared worker's capture-tail hook, which writes mapped proposal IDs to fixed storage; no separate ASR graph worker is required. Do not set `SGLANG_DFLASH_EAGER_DRAFT_SAMPLER=1` when validating the captured head.
 
-Graph capture and replay remain unqualified on native Ascend for this candidate. Follow the [DFlash graph validation packet](../../scripts/npu/DFLASH_GRAPH_VALIDATION.md): first replay the sampler component with changed inputs, then verify actual draft and target replay on real audio, including transitions between request buckets. The component test alone does not qualify ASR attention or KV/auxiliary hidden-state reuse. Keep the eager example as the paired reference; enabling decode graphs does not establish encoder graphs, overlap, realtime support or a speedup.
+A [bounded A3 server report](https://github.com/sgl-project/sglang-omni/pull/3473#issuecomment-6646114210) on candidate `9fa8fe74` records target/draft graph capture, positive decode graph serving, matching transcripts across four 1064-request eager/graph legs, serial stability and a separate c2 run. It used SGLang 0.5.23 installed over an older CANN image, rather than the pinned image digest; transcript equality does not prove token-ID/finish-reason or KV handoff equivalence. Full native qualification remains pending. Follow the [DFlash graph validation packet](../../scripts/npu/DFLASH_GRAPH_VALIDATION.md): first replay the sampler component with changed inputs, then verify actual draft and target replay on real audio, including transitions between request buckets. The component test alone does not qualify ASR attention or KV/auxiliary hidden-state reuse. Keep the eager example as the paired reference; enabling decode graphs does not establish encoder graphs, overlap, realtime support or a speedup.
 
 ## Transcribe Audio
 

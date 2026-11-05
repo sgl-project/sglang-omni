@@ -20,6 +20,7 @@ from benchmarks.eval import (
     benchmark_asr_seedtts,
     benchmark_asr_stt_benchmark,
 )
+from benchmarks.tasks import asr
 
 
 class FakeDataset:
@@ -39,6 +40,21 @@ class FakeDataset:
         return FakeDataset(
             [
                 {aliases.get(key, key): value for key, value in row.items()}
+                for row in self.rows
+            ]
+        )
+
+    def map(self, function, remove_columns: list[str]) -> "FakeDataset":
+        return FakeDataset(
+            [
+                {
+                    **{
+                        key: value
+                        for key, value in row.items()
+                        if key not in remove_columns
+                    },
+                    **function(row),
+                }
                 for row in self.rows
             ]
         )
@@ -633,6 +649,55 @@ def test_librispeech_stages_flac_with_column_aliases(
     decoded, _ = sf.read(samples[0].ref_audio)
     np.testing.assert_array_equal(decoded, waveform)
     stt_benchmark._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
+
+
+def test_fleurs_loads_a_language_folder_with_one_id_per_recording(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """FLEURS repeats a sentence id for each speaker, which the loader rejected as a duplicate."""
+    stt_benchmark._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
+
+    def load_dataset(repo_id: str, **kwargs):
+        assert repo_id == "google/fleurs"
+        assert kwargs == {
+            "split": "test",
+            "data_files": {"test": "ja_jp/test/*.parquet"},
+            "verification_mode": "no_checks",
+            "revision": stt_benchmark.FLEURS_PARQUET_REVISION,
+        }
+        return FakeDataset(
+            [
+                {
+                    "id": 1767,
+                    "path": f"/conversion/cache/test/{recording}.wav",
+                    "audio": {"bytes": stt_wav_bytes(index)},
+                    "transcription": "インターネットで検索する",
+                }
+                for index, recording in enumerate(("1001", "1002"))
+            ]
+        )
+
+    install_fake_datasets(monkeypatch, load_dataset)
+    stage_stt_into(monkeypatch, tmp_path)
+    samples = stt_benchmark.load_stt_benchmark_samples(
+        "google/fleurs", config_name="ja_jp", split="test"
+    )
+
+    assert [sample.sample_id for sample in samples] == ["1001", "1002"]
+    stt_benchmark._STAGED_CACHE.clear()  # noqa: leading-underscore  # production name
+
+
+@pytest.mark.parametrize(
+    ("text", "lang", "expected"),
+    [
+        ("インターネット、で。", "ja", "イ ン タ ー ネ ッ ト で"),
+        ("在 短 短 兩 週", "yue", "在 短 短 兩 週"),
+    ],
+)
+def test_japanese_and_cantonese_score_per_character(
+    text: str, lang: str, expected: str
+) -> None:
+    assert asr.normalize_text(text, lang) == expected
 
 
 def test_stt_column_aliases_preserve_canonical_columns(

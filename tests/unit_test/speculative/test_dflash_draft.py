@@ -18,7 +18,6 @@ from sglang_omni.speculative.dflash_draft import (
     ReducedVocabularyDFlashWorker,
     materialize_draft_checkpoint,
 )
-from tests.unit_test.fixtures.accelerator import require_device_streams
 
 SINGLE_FILE_WEIGHTS = ("model.safetensors",)
 SHARDED_WEIGHTS = (
@@ -194,13 +193,16 @@ def test_draft_sampler_reuses_storage_across_changed_inputs_and_batch_sizes() ->
 @pytest.mark.accelerator
 def test_draft_sampler_graph_replay_updates_mapped_tokens_in_shared_storage() -> None:
     """Replayed proposals must use new hidden states and retain the target-id mapping."""
-    device = require_device_streams()
+    # The shared stream fixture follows audio staging policy, which excludes NPU.
+    # This test needs the platform's graph capability instead.
+    device = torch.device(current_platform.device_type)
     backend = current_platform.get_device_graph_backend(device)
     if backend is None:
         pytest.skip("The selected accelerator has no graph backend")
     else:
         pass
     device_module = torch.get_device_module(device)
+    device = torch.device(device.type, device_module.current_device())
     draft_model = make_draft_model().to(device=device, dtype=torch.bfloat16)
     sampler = DraftBlockSampler(draft_model, block_size=3, max_batch_size=2)
     output_address = sampler.out.data_ptr()
