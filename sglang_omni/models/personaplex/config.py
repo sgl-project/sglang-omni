@@ -54,6 +54,16 @@ class PersonaPlexSessionLMStageConfig(EngineStageConfig):
     )
 
 
+class PersonaPlexSessionEncodeFactoryArgs(FactoryArgs):
+    enable_cuda_graph: bool = False
+
+
+class PersonaPlexSessionEncodeStageConfig(StageConfig):
+    factory: PersonaPlexSessionEncodeFactoryArgs = Field(
+        default_factory=PersonaPlexSessionEncodeFactoryArgs
+    )
+
+
 class PersonaPlexCode2WavFactoryArgs(FactoryArgs):
     """Streaming decode: num_decode_slots streams resident at once, up to
     max_batch_size of them per step, device graphs for chunks of up to
@@ -128,7 +138,7 @@ def personaplex_session_stages_factory() -> list[StageConfig]:
             factory_path=f"{MODEL_STAGES_PREFIX}.create_session_preprocessing_executor",
             next=MIMI_ENCODE_STAGE,
         ),
-        StageConfig(
+        PersonaPlexSessionEncodeStageConfig(
             name=MIMI_ENCODE_STAGE,
             process="pipeline",
             factory_path=f"{MODEL_STAGES_PREFIX}.create_session_mimi_encode_executor",
@@ -257,7 +267,8 @@ class PersonaPlexSessionPipelineConfig(PersonaPlexPipelineConfig):
     # Note (wilsonzheng0327): Async LM decode and offline code2wav factory fields
     # have no session counterpart.
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
-        LM_STAGE: PersonaPlexSessionLMStageConfig
+        LM_STAGE: PersonaPlexSessionLMStageConfig,
+        MIMI_ENCODE_STAGE: PersonaPlexSessionEncodeStageConfig,
     }
 
     max_sessions: int = Field(default=1, ge=1)

@@ -261,7 +261,9 @@ def test_realtime_session_stages_hold_max_sessions_calls_and_run_codecs_serially
         str(tmp_path), max_open_sessions=3
     )
     codecs = [
-        stages.create_session_mimi_encode_executor(str(tmp_path), max_open_sessions=3),
+        stages.create_session_mimi_encode_executor(
+            str(tmp_path), max_open_sessions=3, enable_cuda_graph=False
+        ),
         stages.create_session_code2wav_executor(str(tmp_path), max_open_sessions=3),
     ]
     for scheduler in [prompt, *codecs]:

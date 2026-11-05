@@ -249,6 +249,7 @@ def create_session_mimi_encode_executor(
     model_path: str,
     *,
     max_open_sessions: int,
+    enable_cuda_graph: bool,
     max_concurrency: int = 1,
     device: str | None = None,
     gpu_id: int | None = None,
@@ -257,7 +258,13 @@ def create_session_mimi_encode_executor(
     units encode at once."""
     codec, device = load_codec(model_path, device=device, gpu_id=gpu_id, mode="encode")
     return SessionScheduler(
-        MimiEncodeHooks(codec, device),
+        MimiEncodeHooks(
+            codec,
+            device,
+            graph_slot_count=(
+                max_open_sessions if enable_cuda_graph and device.type == "cuda" else 0
+            ),
+        ),
         max_open_sessions=max_open_sessions,
         max_concurrency=max_concurrency,
     )
