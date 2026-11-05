@@ -175,32 +175,15 @@ class Yue2Tokenizer:
             raise ValueError("YuE2 requires the checkpoint's qwen.tiktoken vocabulary")
         else:
             pass
-        special_tokens = [
-            "<|endoftext|>",
-            "<|im_start|>",
-            "<|im_end|>",
-            "<R>",
-            "<S>",
-            "<X>",
-            "<mask>",
-            "<sep>",
-        ]
-        special_tokens.extend(f"<extra_{index}>" for index in range(200))
-        special_tokens[204:206] = ["<abc>", "</abc>"]
         self.encoding = tiktoken.Encoding(
             "YuE2",
             mergeable_ranks=ranks,
-            special_tokens={
-                token: index + TEXT_END for index, token in enumerate(special_tokens)
-            },
+            special_tokens={},
             pat_str=r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+",
         )
 
     def encode(self, text: str) -> list[int]:
         return self.encoding.encode_ordinary(unicodedata.normalize("NFC", text))
-
-    def decode(self, tokens: list[int]) -> str:
-        return self.encoding.decode(tokens)
 
     def prefix(self, request: Yue2Request, abc_tokens: list[int] | None) -> list[int]:
         prompt = f"{INSTRUCTIONS[request.options.cot]}\n[Tags]\n{request.style}\n[Lyrics]\n{request.lyrics}\n"

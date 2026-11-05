@@ -69,9 +69,8 @@ def sampling_scores(
         probabilities = values.softmax(-1)
         removed = probabilities.cumsum(-1) - probabilities > sampling.top_p
         removed[..., : 3 if legacy_off else 1] = False
-        scores = values.masked_fill(removed, -torch.inf).scatter(
-            -1, indices, values.masked_fill(removed, -torch.inf)
-        )
+        values = values.masked_fill(removed, -torch.inf)
+        scores = scores.scatter(-1, indices, values)
     else:
         pass
     return scores
@@ -90,14 +89,17 @@ def generate_tokens(
     cfg_scale: float = 1.0,
     legacy_off: bool = False,
 ) -> TokenResult:
-    prefixes = [prefix] if cfg_scale == 1 else [prefix, negative]
+    if cfg_scale == 1:
+        prefixes = [prefix]
+    else:
+        assert negative is not None
+        prefixes = [prefix, negative]
     if any(
-        tokens is None
-        or len(tokens) + sampling.max_tokens > model.config.max_position_embeddings
+        len(tokens) + sampling.max_tokens > model.config.max_position_embeddings
         for tokens in prefixes
     ):
         raise ValueError(
-            "YuE2 prefix and token budget exceed the model context, or CFG has no negative prefix"
+            "YuE2 request: prefix and token budget exceed the model context"
         )
     else:
         pass

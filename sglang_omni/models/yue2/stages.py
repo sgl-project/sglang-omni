@@ -17,7 +17,10 @@ class Yue2Scheduler(SimpleScheduler[StagePayload, StagePayload]):
         super().__init__(self.generate)
 
     def generate(self, payload: StagePayload) -> StagePayload:
-        request = build_request(payload)
+        try:
+            request = build_request(payload)
+        except ValueError as error:
+            raise ValueError(f"YuE2 request: {error}") from error
         song = self.runtime.generate(
             request, lambda: self.is_aborted(payload.request_id)
         )

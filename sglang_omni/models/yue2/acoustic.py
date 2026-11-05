@@ -103,8 +103,10 @@ def synthesize_latents(
     cancelled: CancellationCheck,
 ) -> torch.Tensor:
     chunk_frames = (model.config.max_position_embeddings - len(prefix) - 3) // 2
-    if not codec_tokens or chunk_frames < 1:
-        raise ValueError("YuE2 has no semantic tokens or no remaining acoustic context")
+    if not codec_tokens:
+        raise ValueError("YuE2 has no semantic tokens")
+    elif chunk_frames < 1:
+        raise ValueError("YuE2 request: prefix leaves no remaining acoustic context")
     else:
         pass
     generator = torch.Generator(device="cpu").manual_seed(seed)

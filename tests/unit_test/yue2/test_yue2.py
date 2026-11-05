@@ -36,6 +36,7 @@ from sglang_omni.models.yue2.stages import Yue2Scheduler, create_synthesis_execu
 from sglang_omni.models.yue2.vae import DecoderConfig, VaeConfig, Yue2Vae
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
+from sglang_omni.serve.openai_errors import generation_error_status_code
 
 
 @pytest.fixture
@@ -131,6 +132,20 @@ def test_invalid_token_budget_rejected(token_budget: object) -> None:
         build_request(message)
 
 
+def test_scheduler_classifies_request_and_compute_failures() -> None:
+    """Invalid stage options must not become HTTP 500 responses."""
+    runtime = Mock(spec=Yue2Runtime)
+    runtime.generate.side_effect = ValueError("Invalid tensor shape")
+    scheduler = Yue2Scheduler(runtime)
+    with pytest.raises(ValueError) as invalid_request:
+        scheduler.generate(payload(cot="unknown"))
+    assert generation_error_status_code(RuntimeError(str(invalid_request.value))) == 400
+    runtime.generate.assert_not_called()
+    with pytest.raises(ValueError) as compute_failure:
+        scheduler.generate(payload())
+    assert generation_error_status_code(RuntimeError(str(compute_failure.value))) == 500
+
+
 @pytest.mark.parametrize("cot", ["full", "melody"])
 def test_cfg_keeps_exact_score_tokens(cot: str, tokenizer: Yue2Tokenizer) -> None:
     request = build_request(payload(cot=cot, cfg_scale=0.0))
@@ -195,21 +210,27 @@ def test_seed_and_budget_remain_request_local(model: Yue2Model) -> None:
     assert len(short.tokens) == 2 and short.truncated
 
 
+@pytest.mark.parametrize("phase", ["abc", "acoustic"])
 def test_context_overflow_fails_before_prefill(
-    model: Yue2Model, monkeypatch: pytest.MonkeyPatch
+    phase: str, model: Yue2Model, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """AR-fit prompts can still leave no room for an acoustic frame."""
     forward = Mock(side_effect=AssertionError("must not execute"))
-    monkeypatch.setattr(model, "forward", forward)
-    with pytest.raises(ValueError, match="context"):
-        generate_tokens(
-            model,
-            [1, 2],
-            SamplingConfig(min_tokens=0, max_tokens=128),
-            7,
-            "abc",
-            lambda: False,
-        )
+    monkeypatch.setattr(model.model.embed_tokens, "forward", forward)
+    with pytest.raises(ValueError, match="context") as invalid_request:
+        if phase == "abc":
+            generate_tokens(
+                model,
+                [1, 2],
+                SamplingConfig(min_tokens=0, max_tokens=128),
+                7,
+                "abc",
+                lambda: False,
+            )
+        else:
+            synthesize_latents(model, list(range(124)), [0], 7, 2, lambda: False)
     forward.assert_not_called()
+    assert generation_error_status_code(RuntimeError(str(invalid_request.value))) == 400
 
 
 def test_abort_then_recovery_releases_request_cache(model: Yue2Model) -> None:
@@ -229,11 +250,21 @@ def test_abort_then_recovery_releases_request_cache(model: Yue2Model) -> None:
 
 @torch.inference_mode()
 def test_acoustic_seed_and_cancellation(model: Yue2Model) -> None:
-    first = synthesize_latents(model, [1, 2], [0, 1, 2], 7, 2, lambda: False)
-    repeated = synthesize_latents(model, [1, 2], [0, 1, 2], 7, 2, lambda: False)
-    torch.testing.assert_close(first, repeated, rtol=0, atol=0)
+    codec_tokens = list(range(65))
+    first = synthesize_latents(model, [1, 2], codec_tokens, 7, 2, lambda: False)
+    assert first.shape == (65, 64)
+    assert torch.isfinite(first).all()
+    polls = 0
+
+    def cancelled() -> bool:
+        nonlocal polls
+        polls += 1
+        return polls >= 3
+
     with pytest.raises(InterruptedError):
-        synthesize_latents(model, [1, 2], [0, 1, 2], 7, 2, lambda: True)
+        synthesize_latents(model, [1, 2], codec_tokens, 7, 2, cancelled)
+    recovered = synthesize_latents(model, [1, 2], codec_tokens, 7, 2, lambda: False)
+    torch.testing.assert_close(first, recovered, rtol=0, atol=0)
 
 
 @torch.inference_mode()
