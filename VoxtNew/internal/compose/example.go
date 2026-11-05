@@ -44,11 +44,12 @@ func Example(in Input) (input, answer string, ok bool) {
 }
 
 var (
-	// Hesitations anywhere; "啊", "哦" (also sentence particles) and
-	// "那个", "就是说" (also words) only at the start of a clause and
-	// followed by a pause or a correction.
-	cjkFiller   = regexp.MustCompile(`[嗯呃额唔][，,、。.…\s]*`)
-	cjkOpener   = regexp.MustCompile(`(^|[，,。.！!？?；;、\s])(?:啊|哦|那个|就是说)(?:[，,、…\s]+|(不对|不是))`)
+	// Hesitations anywhere; "啊", "哦" (also sentence particles), "额",
+	// "唔" (in 金额, 额外; Cantonese "not") and "那个", "就是说" (also
+	// words) only at the start of a clause and followed by a pause or a
+	// correction.
+	cjkFiller   = regexp.MustCompile(`[嗯呃][，,、。.…\s]*`)
+	cjkOpener   = regexp.MustCompile(`(^|[，,。.！!？?；;、\s])(?:啊|哦|额|唔|那个|就是说)(?:[，,、…\s]+|(不对|不是))`)
 	latinFiller = regexp.MustCompile(`(?i)(^|[\s,.;!?，。])(?:um+|uh+|erm|er|hmm+)\b[,.…]*\s*`)
 )
 

@@ -62,6 +62,16 @@ func TestStripFillers(t *testing.T) {
 		{"那个报告的话，嗯，周五之前发给我就行，啊不对，周四之前。", "那个报告的话，周五之前发给我就行，不对，周四之前。"},
 		{"就是说，这个方案呢，好啊。", "这个方案呢，好啊。"},
 		{"那个人说的", "那个人说的"},
+		// "额" and "唔" are also parts of words, and "唔" is Cantonese "not":
+		// only a clause-opening one followed by a pause is a hesitation.
+		{"金额为一百元", "金额为一百元"},
+		{"额外费用", "额外费用"},
+		{"我唔係學生", "我唔係學生"},
+		{"额，我想一下", "我想一下"},
+		{"唔，我谂下先", "我谂下先"},
+		{"周四，额，周五吧", "周四，周五吧"},
+		{"嗯，我想", "我想"},
+		{"呃……好吧", "好吧"},
 	} {
 		if got := StripFillers(c.in); got != c.want {
 			t.Errorf("StripFillers(%q) = %q, want %q", c.in, got, c.want)
