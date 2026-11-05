@@ -2,6 +2,8 @@
 
 The session Mimi encoder can replay a CUDA graph for each 80 ms input frame. The graph runs the existing encoder operations and owns one session's convolution history, transformer cache and frame offset. A session reset clears those tensors in place before the graph is reused.
 
+The subsequent [full FDB experiment](personaplex_full_fdb_baseline.md) covers all 1,723 released calls with default LM inference and checks eager/graph equality on the existing 39-call cohort.
+
 ## Configuration
 
 Enable the prototype on a CUDA session server with `--mimi_encode.factory.enable_cuda_graph true`. The default is `false`. The encoder captures one graph per admitted session slot during serving-thread warmup. Whole-frame input uses graph replay; other supported chunk sizes use the existing eager encoder with the same session state. Empty end-of-input units retain their existing behavior.

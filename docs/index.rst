@@ -181,6 +181,7 @@ Supported Models
    developer_reference/personaplex_latency_attribution.md
    developer_reference/personaplex_interleaved_analysis.md
    developer_reference/personaplex_mimi_encode_graph.md
+   developer_reference/personaplex_full_fdb_baseline.md
    developer_reference/tts_bench.md
    developer_reference/tts_model_integration.md
    developer_reference/asr_bench.md
