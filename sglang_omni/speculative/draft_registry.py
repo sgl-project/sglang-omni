@@ -17,7 +17,7 @@ class PinnedDraft:
 
     model_path: str
     stage: str
-    algorithm: Literal["DFLASH", "DSPARK", "EAGLE3"]
+    algorithm: Literal["DFLASH", "DSPARK", "EAGLE3", "STANDALONE"]
     draft_model_path: str
     draft_model_revision: str
     engine_settings: dict[str, int] = field(default_factory=dict)
@@ -50,6 +50,15 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         algorithm="DFLASH",
         draft_model_path="wilsonzheng0327/MOSS-Transcribe-Diarize-dflash",
         draft_model_revision="2e3f00b0932112e4f92a4ef67a4cd60ee855056c",
+        license="apache-2.0",
+    ),
+    PinnedDraft(
+        model_path="openai/whisper-large-v3",
+        stage="asr",
+        algorithm="STANDALONE",
+        draft_model_path="wilsonzheng0327/Whisper-large-v3-distil-draft",
+        draft_model_revision="257104348ea24677cf6338967592a9d6078b383b",
+        engine_settings={"speculative_num_steps": 7},
         license="apache-2.0",
     ),
     PinnedDraft(
