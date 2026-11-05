@@ -2,6 +2,7 @@ package sqlitestore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -183,7 +184,19 @@ func (r *historyRepo) DeleteAll(ctx context.Context, kind store.Kind) (int, erro
 	if err != nil {
 		return 0, wrap("history", err)
 	}
-	return len(rows.Values), r.removeAudios(rows.Values)
+	// A DELETE only frees the pages: the texts stay in the file (and the
+	// write-ahead log) until they are rewritten. Clearing the history
+	// should leave nothing to read there.
+	var compact error
+	if len(rows.Values) > 0 {
+		for _, q := range []string{"VACUUM", "PRAGMA wal_checkpoint(TRUNCATE)"} {
+			if _, err := r.db.Query(ctx, q); err != nil {
+				compact = wrap("history: "+q, err)
+				break
+			}
+		}
+	}
+	return len(rows.Values), errors.Join(r.removeAudios(rows.Values), compact)
 }
 
 func (r *historyRepo) ExpireAudio(ctx context.Context, now time.Time) (int, error) {

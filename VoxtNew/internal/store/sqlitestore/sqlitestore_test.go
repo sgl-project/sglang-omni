@@ -5,8 +5,10 @@ package sqlitestore
 // checked) into os.UserCacheDir()/mygo/natives; see the README's Tests.
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -255,6 +257,35 @@ func TestHistory(t *testing.T) {
 	}
 	if n, err := h.DeleteAll(ctx, ""); n != 1 || err != nil {
 		t.Errorf("delete all: %d %v", n, err)
+	}
+}
+
+// TestClearHistoryLeavesNoText: after Clear history, the texts are gone
+// from the database's files too, not only from its tables. A plain DELETE
+// left them in freed pages (and in the write-ahead log), readable by
+// anyone who opens the file.
+func TestClearHistoryLeavesNoText(t *testing.T) {
+	dir := t.TempDir()
+	s := openTest(t, dir)
+	h := s.History()
+	const secret = "zebra-quartz-7731 my bank PIN"
+	for i := range 50 { // enough rows to fill pages of their own
+		e := store.Entry{ID: fmt.Sprintf("e%d", i), Kind: store.KindTranscribe, CreatedAt: time.Now(), Result: secret + strings.Repeat(" padding", 40), RawText: secret}
+		if err := h.Put(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, err := h.DeleteAll(ctx, ""); n != 50 || err != nil {
+		t.Fatalf("clear: %d %v", n, err)
+	}
+	for _, name := range []string{FileName, FileName + "-wal"} {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		if bytes.Contains(data, []byte("zebra-quartz-7731")) {
+			t.Errorf("%s still holds the cleared text", name)
+		}
 	}
 }
 
