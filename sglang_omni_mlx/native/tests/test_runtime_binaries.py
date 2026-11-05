@@ -18,6 +18,7 @@ SERVED_KINDS = {
     "nemotron_asr_server": ("nemotron_asr",),
     "parakeet_server": ("parakeet",),
     "sensevoice_server": ("sensevoice",),
+    "arkasr_server": ("arkasr",),
     "voxtral_tts_server": ("voxtral_tts",),
     "qwen3_tts_server": ("qwen3_tts",),
     "cosyvoice3_server": ("cosyvoice3",),
