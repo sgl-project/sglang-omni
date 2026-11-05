@@ -220,7 +220,7 @@ func TestAnswerCardInteraction(t *testing.T) {
 	a.answer.msg = ""
 	a.overlaySync()
 	click(t, tt, "Translate into")
-	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyEscape, Phase: proto.PhaseTrigger})
+	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
 	if a.answer.langOpen || a.ov.lang.shown || !a.answer.open {
 		t.Errorf("Escape on the menu: open %v, card %v", a.answer.langOpen, a.answer.open)
 	}
@@ -234,7 +234,7 @@ func TestAnswerCardInteraction(t *testing.T) {
 		t.Error("the mark stays")
 	}
 	// Escape closes it.
-	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyEscape, Phase: proto.PhaseTrigger})
+	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
 	if a.answer.open || a.ov.shown {
 		t.Fatalf("escape: %+v", a.answer)
 	}
@@ -254,7 +254,7 @@ func TestAnswerCardInteraction(t *testing.T) {
 	if !has(tt, "Done") || !has(tt, "shorter") || !has(tt, "You") || has(tt, "Continue") {
 		t.Errorf("recording: %q", firstTexts(tt))
 	}
-	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyEscape, Phase: proto.PhaseTrigger})
+	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
 	snap(a, session.Snapshot{ID: "r2", Kind: store.KindRewrite, State: session.Cancelled}) // as the manager would
 	if !a.answer.open || a.ov.mode != ovAnswer || a.followUp != "" || a.answer.text == "" {
 		t.Errorf("escape on a follow-up: %s %+v", a.ov.mode, a.answer)
@@ -284,7 +284,7 @@ func TestAnswerCardInteraction(t *testing.T) {
 	if a.ov.bubbleCopied != "" {
 		t.Error("the bubble's mark stays")
 	}
-	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyEscape, Phase: proto.PhaseTrigger})
+	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
 	if a.answer.open {
 		t.Error("the second Escape left the card")
 	}

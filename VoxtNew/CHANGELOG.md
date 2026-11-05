@@ -15,6 +15,7 @@ All notable changes to VoxtNew. The format follows [Keep a Changelog](https://ke
 - **Retry** a history entry from its recording: a failed entry (or one with no text) shows Retry on its row instead of Failed, in its details and in its context menu; other entries with a recording have Transcribe again. The entry is updated in place (text, status, time); nothing is pasted. The overlay's notice of a failed recognition opens the entry and retries it.
 - **Long dictations are recognised while you speak**: after a minute, finished stretches are recognised in the background, cut at pauses, so Stop leaves only the last half-minute or so (on a busy Mac, 104 s of speech: 26 s → 2.4 s after Stop).
 - **The overlay says what a recording is waiting for.** When the microphone is slow to start (the first dictation after VoxtNew starts on a Mac short of memory), the microphone icon pulses inside a ring and the overlay says "Starting the microphone…": what you say before the bars light up is not recorded. While the speech model is still loading (the first dictation, or after it was unloaded), only the icon pulses and the bars keep showing your voice: the recording works, and the live text comes once the model is ready.
+- **A customizable cancel shortcut**: Settings → Shortcuts lists Cancel transcription; change its key or turn it off on the Transcribe page (Escape by default). The key is taken only while a recording runs or the answer card shows, and a cancelled recording now stays in History, ready to Retry.
 
 ### Changed
 
@@ -46,6 +47,7 @@ All notable changes to VoxtNew. The format follows [Keep a Changelog](https://ke
 - **重试**：用历史记录保存的录音再识别一次。失败或没有文字的记录，行上的“失败”换成“重试”，详情和右键菜单里也有；其他有录音的记录是“重新识别”。结果原地更新这条记录（文字、状态、用时），不会粘贴。浮窗里识别失败的提示，点一下打开这条记录并重试。
 - **长口述边说边识别**：说到 1 分钟以后，已经说完的部分在停顿处切开、在后台识别，停止后只剩最后半分钟左右（Mac 内存紧张时，104 秒口述停止后的等待 26 秒 → 2.4 秒）。
 - **浮窗说明录音在等什么。** 麦克风启动慢时（Mac 内存紧张时 VoxtNew 启动后的第一次口述），麦克风图标在一个圆环里闪动，浮窗显示“正在启动麦克风…”：波形亮起之前说的话不会被录下。语音识别模型还在加载时（第一次口述，或者模型被卸载之后），只有图标在动，波形照常跟着你的声音：录音不受影响，模型就绪后实时文字随即出现。
+- **取消转录的按键可自定义**：设置→快捷键里新增“取消转录”一行，在转录页可以换成别的键或关掉（默认 Esc）。只在录音或答案卡片显示时拦截这个键；取消的录音现在会留在历史里，可以用“重试”找回。
 
 #### 变更
 

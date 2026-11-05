@@ -2,8 +2,9 @@ package main
 
 // A feature page's Shortcuts section (feature_page.go): its rows of
 // shortcuts with their triggers, choosing or typing a chord, and Transcribe's
-// paste-the-last-result row. Keys another ActNow app uses too say so
-// under the row, as they are chosen or typed; saving stays allowed.
+// paste-the-last-result and cancel-transcription rows. Keys another ActNow
+// app uses too say so under the row, as they are chosen or typed; saving
+// stays allowed.
 
 import (
 	"fmt"
@@ -70,11 +71,16 @@ func (a *app) featureSync(feature string) {
 	if pl == "" {
 		u.paste.sel = i18n.T("Off")
 	}
+	ck := a.prefs.Features.Cancel.Keys
+	u.cancel = keyRow{sel: chordLabel(ck), text: ck}
+	if ck == "" {
+		u.cancel.sel = i18n.T("Off")
+	}
 }
 
 func (a *app) featureKeysKey(feature string) string {
 	f := a.prefs.Features
-	return fmt.Sprint(hotkey.HotkeysOf(f, feature), f.PasteLast, i18n.Locale())
+	return fmt.Sprint(hotkey.HotkeysOf(f, feature), f.PasteLast, f.Cancel, i18n.Locale())
 }
 
 // chordLabel is the select's label of keys: the preset they are, or their
@@ -171,7 +177,7 @@ func (a *app) featureShortcuts(c *ui.Context, feature string) {
 	p := uitext.FeaturePrefix(feature)
 	u := a.fui(feature)
 	a.featureSync(feature)
-	if sectionTitleAdd(c, p+"-key-add", i18n.T("Shortcuts"), i18n.T("Tap: press to start, press again to stop. Double tap: press twice quickly. Long press: record while you hold the keys. Escape cancels."), i18n.T("Add a shortcut")) {
+	if sectionTitleAdd(c, p+"-key-add", i18n.T("Shortcuts"), i18n.T("Tap: press to start, press again to stop. Double tap: press twice quickly. Long press: record while you hold the keys."), i18n.T("Add a shortcut")) {
 		h := newHotkey(a.prefs.Features)
 		a.setHotkeys(feature, true, func(hs []settings.Hotkey) []settings.Hotkey { return append(hs, h) })
 	}
@@ -207,6 +213,7 @@ func (a *app) featureShortcuts(c *ui.Context, feature string) {
 	switch feature {
 	case hotkey.Transcribe:
 		a.trPasteRow(c)
+		a.trCancelRow(c)
 	case hotkey.Rewrite:
 		caption(c, i18n.T("While the answer card shows an answer, the shortcut records a follow-up that changes it (\"shorter\", \"in English\")."))
 	}
@@ -396,6 +403,52 @@ func (a *app) trPasteRow(c *ui.Context) {
 func (a *app) setPasteLast(keys string) {
 	a.updateSettings(func(s *settings.Settings) {
 		s.Features.PasteLast = settings.Hotkey{Keys: keys, Trigger: settings.TriggerTap}
+	})
+	u := a.fui(hotkey.Transcribe)
+	u.seen = a.featureKeysKey(hotkey.Transcribe)
+}
+
+// trCancelRow is "Cancel transcription": its keys only (always a tap).
+// The helper judges them only while a session records or the answer
+// card shows; the rest of the time they reach the app in front.
+func (a *app) trCancelRow(c *ui.Context) {
+	t := c.Theme()
+	r := &a.fui(hotkey.Transcribe).cancel
+	cur := a.prefs.Features.Cancel.Keys
+	problems := uitext.HotkeyProblems(a.prefs.Features, hotkey.CancelID)[0]
+	ui.Column(c.Key("tr-cancel")).Gap(px(t, 6)).Children(func() {
+		settingRow(c, "tr-cancel-row", i18n.T("Cancel transcription"), i18n.T("Cancels the recording or the answer card, and only while they show. The recording stays in History, ready to retry."), func() {
+			opts, byLabel := keyOptions(cur, true)
+			if !slices.Contains(opts, r.sel) {
+				r.sel = chordLabel(cur)
+			}
+			if r.custom {
+				r.sel = i18n.T("Custom…")
+			}
+			if ui.Select(c.Key("tr-cancel-sel"), &r.sel, opts).Label(i18n.T("Keys to cancel transcription")).Width(px(t, 180)).Changed() {
+				if r.sel == i18n.T("Custom…") {
+					r.custom, r.text = true, cur
+					return
+				}
+				keys, ok := byLabel[r.sel]
+				if !ok {
+					return
+				}
+				r.custom, r.text = false, keys
+				a.setCancelKeys(keys)
+			}
+		})
+		if r.custom {
+			a.customKeys(c, r, i18n.T("Custom keys to cancel transcription"), a.setCancelKeys)
+		}
+		problemLines(c, problems)
+		a.usedByView(c, recordedKeys(*r, cur))
+	})
+}
+
+func (a *app) setCancelKeys(keys string) {
+	a.updateSettings(func(s *settings.Settings) {
+		s.Features.Cancel = settings.Hotkey{Keys: keys, Trigger: settings.TriggerTap}
 	})
 	u := a.fui(hotkey.Transcribe)
 	u.seen = a.featureKeysKey(hotkey.Transcribe)

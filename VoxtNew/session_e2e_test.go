@@ -269,17 +269,39 @@ func TestSessionStreamingCard(t *testing.T) {
 	}
 }
 
-// TestSessionEscapeAndFailures: Escape cancels (nothing pasted or kept);
-// a failing language model inserts the text as recognised with a warning.
+// TestSessionEscapeAndFailures: the cancel key ends the session without
+// pasting, but the recording stays in History for Retry (one accidental
+// press must not lose what was said); while nothing records, the cancel
+// key does nothing. A failing language model inserts the text as
+// recognised with a warning.
 func TestSessionEscapeAndFailures(t *testing.T) {
-	t.Run("escape", func(t *testing.T) {
-		chat := &fakeChat{text: "x"}
-		set, keys, tr := fileSetup(t, "never", chat)
-		ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(300, proto.HotkeyEscape, proto.PhaseTrigger))
+	t.Run("cancel keeps the recording", func(t *testing.T) {
+		chat := &fakeChat{text: "Hello there."}
+		set, keys, tr := fileSetup(t, "hello there", chat)
+		ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(500, proto.HotkeyCancel, proto.PhaseTrigger))
 		a := newSessionApp(t, ev, set, keys)
 		a.pump("the end", func() bool { return a.sess.State.Ended() })
-		if calls, _ := tr.uploads(); a.sess.State != session.Cancelled || a.ov.mode != ovHidden || len(a.pasted()) != 0 || len(a.history()) != 0 || calls != 0 {
-			t.Errorf("end %+v", a.sess)
+		if a.sess.State != session.Cancelled || a.ov.mode != ovHidden || len(a.pasted()) != 0 {
+			t.Fatalf("end %+v, overlay %s, pasted %+v", a.sess, a.ov.mode, a.pasted())
+		}
+		if calls, _ := tr.uploads(); calls != 0 {
+			t.Errorf("a cancel sends nothing to the speech model: %d uploads", calls)
+		}
+		es := a.history()
+		if len(es) != 1 || es[0].Status != store.StatusCancelled || es[0].Audio == "" || es[0].AudioMS < 300 {
+			t.Fatalf("the cancelled recording must stay in History for Retry: %+v", es)
+		}
+		a.retryEntry(es[0])
+		a.pump("the retry", func() bool { return a.hist.retry.id == "" })
+		es = a.history()
+		if len(es) != 1 || es[0].Status != store.StatusDone || es[0].Result != "Hello there." || len(a.pasted()) != 0 {
+			t.Fatalf("Retry must recover the cancelled recording without inserting: %+v, pasted %+v", es, a.pasted())
+		}
+		// While nothing records, the cancel key does nothing.
+		front := helpertest.Apps["com.tinyspeck.slackmacgap"]
+		a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: &front})
+		if a.sess.State != session.Cancelled || len(a.history()) != 1 {
+			t.Errorf("the cancel key acted while idle: %+v, history %+v", a.sess, a.history())
 		}
 	})
 	t.Run("llm fails", func(t *testing.T) {

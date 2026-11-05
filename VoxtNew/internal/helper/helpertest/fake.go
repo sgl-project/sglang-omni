@@ -178,6 +178,7 @@ type fake struct {
 	installed bool
 	scripted  bool // the events= script and press= ran
 	hkActive  bool
+	hkCancel  bool                     // hotkey.configure's cancel is set (the tap installs for it alone too)
 	manual    []string                 // app.configure's manualAccessibility
 	running   map[string]bool          // capture jobs
 	cancel    map[string]bool          // asked to stop by job.cancel

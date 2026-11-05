@@ -44,9 +44,10 @@ const (
 	PhaseUp      = "up"      // longPress: released after down
 )
 
-// HotkeyEscape is the binding of the hotkey.event sent for Escape while
-// Active (a recording runs); Escape is then swallowed.
-const HotkeyEscape = "escape"
+// HotkeyCancel is the binding of the hotkey.event sent for the cancel
+// shortcut (HotkeyConfigureParams.Cancel) while Active (a session
+// records or the answer card shows); its keys are then swallowed.
+const HotkeyCancel = "cancel"
 
 // HotkeyConfigureParams replaces the bindings; an empty list removes the
 // event tap. Changing only the timings or Active keeps a chord in progress:
@@ -64,9 +65,14 @@ type HotkeyConfigureParams struct {
 	// SwallowFn swallows fn's own events (and the 🌐 key's that follow)
 	// while an fn chord is bound, so the 🌐 action does not run.
 	SwallowFn bool `json:"swallowFn,omitempty"`
-	// Active: a session records. A tap fires at once (no wait for a
-	// double tap), and Escape is reported and swallowed.
+	// Active: a session records or the answer card shows. A tap fires at
+	// once (no wait for a double tap), and Cancel is reported and
+	// swallowed.
 	Active bool `json:"active,omitempty"`
+	// Cancel is the shortcut that cancels while Active (its ID is
+	// HotkeyCancel, its behavior a tap). Absent: nothing cancels. It is
+	// never judged while inactive, so its keys reach the app in front.
+	Cancel *HotkeyBinding `json:"cancel,omitempty"`
 }
 
 // HotkeyStatus answers hotkey.configure and hotkey.status, and is
@@ -91,7 +97,7 @@ type HotkeyStatus struct {
 
 // HotkeyEventParams reports a binding that fired.
 type HotkeyEventParams struct {
-	Binding  string  `json:"binding"` // HotkeyBinding.ID, or HotkeyEscape
+	Binding  string  `json:"binding"` // HotkeyBinding.ID, or HotkeyCancel
 	Phase    string  `json:"phase"`
 	Behavior string  `json:"behavior"`
 	HeldMS   float64 `json:"heldMs,omitempty"` // how long the chord was held, when known

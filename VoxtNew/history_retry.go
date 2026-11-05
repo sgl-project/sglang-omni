@@ -204,5 +204,8 @@ func recordingKeptText(e store.Entry) string {
 	if e.Audio == "" || e.AudioUntil.IsZero() {
 		return ""
 	}
+	if e.Status == store.StatusCancelled {
+		return i18n.T("Recording kept for Retry; deleted after %s.", i18n.DateTime(e.AudioUntil))
+	}
 	return i18n.T("Recording kept because recognition failed; deleted after %s.", i18n.DateTime(e.AudioUntil))
 }

@@ -262,6 +262,9 @@ const (
 	Rewrite    = "rewrite"
 	// PasteLast is the binding id of Features.PasteLast.
 	PasteLast = "paste-last"
+	// CancelID is the binding id of Features.Cancel: the helper reports
+	// it only while active (proto.HotkeyCancel).
+	CancelID = proto.HotkeyCancel
 )
 
 // Features lists the three features in the settings' order.
@@ -271,7 +274,7 @@ var Features = []string{Transcribe, Translate, Rewrite}
 func ID(feature string, i int) string { return feature + "/" + strconv.Itoa(i) }
 
 // ParseID splits a binding id: ("transcribe", 0, true); PasteLast is
-// (PasteLast, 0, true); "escape" and others are false.
+// (PasteLast, 0, true); "cancel" and others are false.
 func ParseID(id string) (feature string, index int, ok bool) {
 	if id == PasteLast {
 		return PasteLast, 0, true
@@ -299,6 +302,11 @@ func HotkeysOf(f settings.Features, feature string) []settings.Hotkey {
 			return nil
 		}
 		return []settings.Hotkey{f.PasteLast}
+	case CancelID:
+		if f.Cancel.Keys == "" {
+			return nil
+		}
+		return []settings.Hotkey{f.Cancel}
 	}
 	return f.Transcribe.Hotkeys
 }
@@ -313,6 +321,11 @@ type Carbon struct {
 type Plan struct {
 	// Bindings go to the helper's event tap (hotkey.configure).
 	Bindings []proto.HotkeyBinding
+	// Cancel is the cancel shortcut (hotkey.configure's cancel): the
+	// helper judges it only while active, so its keys are never taken
+	// while nothing records. Nil when it is off or clashes with an
+	// earlier binding.
+	Cancel *proto.HotkeyBinding
 	// Carbon are the bindings that work without Accessibility, through
 	// MyGo's Carbon shortcuts: keys with ⌃⌥⇧⌘ (no fn, no sides). They
 	// fire on key down only, so a long press there acts as a tap.
@@ -321,8 +334,10 @@ type Plan struct {
 
 // Build turns the shortcuts of the features in enabled (and PasteLast)
 // into bindings, in the settings' order (Transcribe, Translate, Rewrite,
-// PasteLast). Hotkeys that do not parse are left out (Check reports
-// them); so is a later duplicate of the same keys and behaviour.
+// PasteLast), and Features.Cancel into the plan's cancel shortcut (a
+// tap, judged only while active). Hotkeys that do not parse are left out
+// (Check reports them); so is a later duplicate of the same keys and
+// behaviour.
 func Build(f settings.Features, enabled []string) Plan {
 	var p Plan
 	type seen struct {
@@ -364,6 +379,24 @@ func Build(f settings.Features, enabled []string) Plan {
 	if f.PasteLast.Keys != "" {
 		add(PasteLast, f.PasteLast, proto.BehaviorTap)
 	}
+	if f.Cancel.Keys != "" {
+		if c, err := Parse(f.Cancel.Keys); err == nil {
+			dup := false
+			for _, s := range taken {
+				if s.c.Equal(c) && s.b == proto.BehaviorTap {
+					dup = true // an earlier binding wins, as Check reports
+				}
+			}
+			if !dup {
+				b := proto.HotkeyBinding{ID: CancelID, Modifiers: c.Mods, Behavior: proto.BehaviorTap}
+				if !c.ModifierOnly() {
+					code := c.Code
+					b.Key = &code
+				}
+				p.Cancel = &b
+			}
+		}
+	}
 	return p
 }
 
@@ -379,7 +412,8 @@ func (p Plan) UsesFn() bool {
 }
 
 // Configure is the hotkey.configure of the plan; active while a session
-// runs (taps fire at once, Escape is reported).
+// runs or the answer card shows (taps fire at once, the cancel shortcut
+// is reported).
 func (p Plan) Configure(active bool) proto.HotkeyConfigureParams {
 	bs := p.Bindings
 	if bs == nil {
@@ -387,5 +421,5 @@ func (p Plan) Configure(active bool) proto.HotkeyConfigureParams {
 	}
 	// The double-tap window is left to the helper: the system's double-click
 	// interval (at most 800 ms, else 500).
-	return proto.HotkeyConfigureParams{Bindings: bs, SwallowFn: p.UsesFn(), Active: active}
+	return proto.HotkeyConfigureParams{Bindings: bs, SwallowFn: p.UsesFn(), Active: active, Cancel: p.Cancel}
 }

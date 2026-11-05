@@ -52,7 +52,7 @@ func TestRewriteAnswerFollowUp(t *testing.T) {
 	if len(msgs) != 4 || msgs[2][0] != "assistant" || !strings.Contains(msgs[2][1], "Sorry, I am running late.") || msgs[3][1] != "<instruction>\nshorter\n</instruction>" {
 		t.Errorf("follow-up messages %q", msgs)
 	}
-	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyEscape, Phase: proto.PhaseTrigger})
+	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
 	if a.answer.open {
 		t.Error("Escape did not close the card")
 	}

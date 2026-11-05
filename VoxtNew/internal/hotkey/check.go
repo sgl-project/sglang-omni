@@ -89,8 +89,8 @@ func NeedsTap(h settings.Hotkey) bool {
 }
 
 // Check lists the problems of the shortcuts in f, in the settings' order
-// (Transcribe, Translate, Rewrite, PasteLast). A clash is reported on the
-// later binding.
+// (Transcribe, Translate, Rewrite, PasteLast, Cancel). A clash is
+// reported on the later binding.
 func Check(f settings.Features) []Problem {
 	type entry struct {
 		feature string
@@ -100,7 +100,7 @@ func Check(f settings.Features) []Problem {
 	}
 	var out []Problem
 	var seen []entry
-	all := append(append([]string{}, Features...), PasteLast)
+	all := append(append([]string{}, Features...), PasteLast, CancelID)
 	for _, feat := range all {
 		for i, h := range HotkeysOf(f, feat) {
 			c, err := Parse(h.Keys)
@@ -109,7 +109,7 @@ func Check(f settings.Features) []Problem {
 				continue
 			}
 			trigger := h.Trigger
-			if trigger == "" || feat == PasteLast {
+			if trigger == "" || feat == PasteLast || feat == CancelID {
 				trigger = settings.TriggerTap
 			}
 			clash := false
@@ -132,8 +132,10 @@ func Check(f settings.Features) []Problem {
 			if !clash {
 				if sys := SystemShortcut(c); sys != "" {
 					out = append(out, Problem{Feature: feat, Index: i, Code: ProblemSystem, System: sys})
-				} else if !c.ModifierOnly() && len(c.Mods) == 0 && !isFKey(c.Key) {
+				} else if !c.ModifierOnly() && len(c.Mods) == 0 && !isFKey(c.Key) && feat != CancelID {
 					// F-keys alone are fine; any other key alone is not.
+					// Cancel may be a bare key: it is only taken while a
+					// session records or the answer card shows.
 					out = append(out, Problem{Feature: feat, Index: i, Code: ProblemBareKey})
 				}
 			}

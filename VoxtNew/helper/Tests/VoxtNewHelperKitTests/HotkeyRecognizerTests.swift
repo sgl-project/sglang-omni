@@ -132,17 +132,75 @@ final class HotkeyRecognizerTests: XCTestCase {
         XCTAssertFalse(r.handle(.keyUp(keyCode: 9, flags: RawFlags.command, t: 120)).swallow)
     }
 
-    func testEscapeOnlyWhenActive() {
+    /// The cancel shortcut is taken only while active: its key down and up
+    /// are swallowed then and reported as "cancel"; while inactive the same
+    /// keys pass through untouched. Escape is no longer special: with no
+    /// cancel configured nothing is taken even while active, and with
+    /// another key configured Escape passes.
+    func testCancelShortcutOnlyWhenActive() {
         var c = defaults()
+        c.cancel = Binding(id: "cancel", modifiers: [:], key: 53, behavior: .tap)
         var r = HotkeyRecognizer(config: c)
-        XCTAssertFalse(r.handle(.keyDown(keyCode: 53, flags: 0, isRepeat: false, t: 0)).swallow)
-        _ = r.handle(.keyUp(keyCode: 53, flags: 0, t: 10))
+        let idle = r.handle(.keyDown(keyCode: 53, flags: 0, isRepeat: false, t: 0))
+        XCTAssertFalse(idle.swallow)
+        XCTAssertTrue(idle.events.isEmpty)
+        XCTAssertFalse(r.handle(.keyUp(keyCode: 53, flags: 0, t: 10)).swallow)
         c.active = true
         r.configure(c)
-        let e = r.handle(.keyDown(keyCode: 53, flags: 0, isRepeat: false, t: 20))
-        XCTAssertTrue(e.swallow)
-        XCTAssertEqual(e.events.map(\.binding), ["escape"])
+        let down = r.handle(.keyDown(keyCode: 53, flags: 0, isRepeat: false, t: 20))
+        XCTAssertTrue(down.swallow)
+        XCTAssertEqual(down.events.map(\.binding), ["cancel"])
+        let held = r.handle(.keyDown(keyCode: 53, flags: 0, isRepeat: true, t: 25))
+        XCTAssertTrue(held.swallow)
+        XCTAssertTrue(held.events.isEmpty)
         XCTAssertTrue(r.handle(.keyUp(keyCode: 53, flags: 0, t: 30)).swallow)
+        c.active = false
+        r.configure(c)
+        XCTAssertFalse(r.handle(.keyDown(keyCode: 53, flags: 0, isRepeat: false, t: 40)).swallow)
+    }
+
+    func testCancelKeyIsConfigurable() {
+        var c = defaults()
+        c.active = true
+        c.cancel = Binding(id: "cancel", modifiers: [.control: .any], key: 47, behavior: .tap) // ⌃.
+        var r = HotkeyRecognizer(config: c)
+        let down = r.handle(.keyDown(keyCode: 47, flags: RawFlags.control, isRepeat: false, t: 0))
+        XCTAssertTrue(down.swallow)
+        XCTAssertEqual(down.events.map(\.binding), ["cancel"])
+        XCTAssertTrue(r.handle(.keyUp(keyCode: 47, flags: RawFlags.control, t: 10)).swallow)
+        // Escape and the bare key are not the cancel shortcut: they pass.
+        let esc = r.handle(.keyDown(keyCode: 53, flags: 0, isRepeat: false, t: 20))
+        XCTAssertFalse(esc.swallow)
+        XCTAssertTrue(esc.events.isEmpty)
+        let bare = r.handle(.keyDown(keyCode: 47, flags: 0, isRepeat: false, t: 30))
+        XCTAssertFalse(bare.swallow)
+        XCTAssertTrue(bare.events.isEmpty)
+    }
+
+    func testNoCancelConfiguredTakesNothing() {
+        var c = defaults()
+        c.active = true
+        var r = HotkeyRecognizer(config: c)
+        let esc = r.handle(.keyDown(keyCode: 53, flags: 0, isRepeat: false, t: 0))
+        XCTAssertFalse(esc.swallow)
+        XCTAssertTrue(esc.events.isEmpty)
+    }
+
+    func testModifierOnlyCancel() {
+        var c = defaults()
+        c.active = true
+        c.cancel = Binding(id: "cancel", modifiers: [.command: .right], behavior: .tap)
+        var r = HotkeyRecognizer(config: c)
+        // A modifier-only chord is never swallowed, and fires on release.
+        XCTAssertFalse(r.handle(.flagsChanged(keyCode: 54, flags: rcmd, t: 0)).swallow)
+        let up = r.handle(.flagsChanged(keyCode: 54, flags: 0, t: 60))
+        XCTAssertFalse(up.swallow)
+        XCTAssertEqual(up.events.map(\.binding), ["cancel"])
+        // The left command is not the right one.
+        XCTAssertTrue(run(c, [(0, 55, lcmd), (60, 55, 0)]).isEmpty)
+        // Inactive: nothing fires.
+        c.active = false
+        XCTAssertTrue(run(c, [(0, 54, rcmd), (60, 54, 0)]).isEmpty)
     }
 
     /// Seen on macOS 26 (synthetic events): fn's release after fn+⌃ never

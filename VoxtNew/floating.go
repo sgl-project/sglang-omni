@@ -5,7 +5,7 @@ package main
 // the user dictates into loses its focus and caret and ⌘V pastes
 // elsewhere. MyGo patch 0003 (third_party/mygo-patches) makes such a
 // window a non-activating panel at creation; it never takes the keyboard,
-// so it holds no text input (Escape comes from the helper's event tap
+// so it holds no text input (the cancel shortcut comes from the helper's event tap
 // while a session is active). A window that needs typing is an ordinary
 // one, and before inserting, VoxtNew gives the front back to the target
 // with activateTarget (plan B of the M0 spike S3).
