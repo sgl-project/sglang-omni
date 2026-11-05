@@ -289,7 +289,6 @@ class SpeakerEncoder(TensorReferenceEncodeHook[Zonos2RefInput]):
         self.embedder: Qwen3SpeakerEmbedding | None = None
         self.embedder_lock = threading.Lock()
         self.encoder_id = speaker_embedding_model_name_or_path
-        self.speaker_embedding_model_name_or_path = speaker_embedding_model_name_or_path
         # note (Yue Yin): opt-in compile kill-switch (default OFF for bit-for-bit
         # parity); driven by the speaker_encode stage's spk_compile factory arg.
         self.compile = compile_forward
@@ -311,9 +310,7 @@ class SpeakerEncoder(TensorReferenceEncodeHook[Zonos2RefInput]):
                     self.embedder = Qwen3SpeakerEmbedding(
                         device=self.device,
                         compile_forward=self.compile,
-                        speaker_embedding_model_name_or_path=(
-                            self.speaker_embedding_model_name_or_path
-                        ),
+                        speaker_embedding_model_name_or_path=self.encoder_id,
                     )
                 else:
                     pass
