@@ -10,7 +10,7 @@ It is a subset of AudioSmith's engine protocol 2 (`docs/protocol-v2.md` there): 
 
 - The app starts the helper with no arguments; its working directory is the executable's. It is `VoxtNew.app/Contents/Resources/helper/voxtnew-helper`, or `$VOXTNEW_HELPER` (development: README, "Signing during development").
 - One JSON message per line (UTF-8, `\n`), at most 4 MiB (`proto.MaxLine`); app → helper on stdin, helper → app on stdout. stderr is free-form text: the supervisor writes it to `~/Library/Logs/VoxtNew/helper.log` and to the logs panel (source `helper`).
-- The helper exits when stdin closes, on `helper.shutdown` or on SIGTERM, SIGINT or SIGHUP. Each exit first lets a paste put the old clipboard back (at most 500 ms, then at once), then cancels the recordings and undoes its output mutes.
+- The helper exits when stdin closes, on `helper.shutdown` or on SIGTERM, SIGINT or SIGHUP. Each exit first lets a paste put the old clipboard back (at most 500 ms, then at once), then undoes its output mutes, then cancels the recordings.
 - macOS checks the helper's permissions (Microphone, Accessibility) against VoxtNew.app, its responsible process: the prompts and System Settings name VoxtNew, and a grant reaches the running helper (the event tap installs within 2 s, no restart).
 
 ## 2. Messages

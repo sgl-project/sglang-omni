@@ -14,7 +14,7 @@ final class ExitTests: XCTestCase {
     }
 
     /// A paste whose restore is due soon: the exit waits for it, then
-    /// cancels the recordings and undoes the mutes.
+    /// undoes the mutes and cancels the recordings.
     func testExitWaitsForTheClipboard() {
         let r = PendingRestores(), log = Log()
         let id = r.add { log.add("restored by the exit") }
@@ -26,7 +26,7 @@ final class ExitTests: XCTestCase {
         }
         r.willWait = { due.signal() } // only once the exit waits
         beforeExit(r, within: 30, cancelCaptures: { log.add("captures") }, undoOutput: { log.add("output") })
-        XCTAssertEqual(log.all, ["restored by the paste", "captures", "output"])
+        XCTAssertEqual(log.all, ["restored by the paste", "output", "captures"])
     }
 
     /// A restore that does not come in time is done by the exit.
@@ -36,6 +36,6 @@ final class ExitTests: XCTestCase {
         let done = r.add { log.add("never") }
         r.done(done)
         beforeExit(r, within: 0, cancelCaptures: { log.add("captures") }, undoOutput: { log.add("output") })
-        XCTAssertEqual(log.all, ["restored by the exit", "captures", "output"])
+        XCTAssertEqual(log.all, ["restored by the exit", "output", "captures"])
     }
 }

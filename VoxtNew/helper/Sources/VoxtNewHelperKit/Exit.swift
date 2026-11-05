@@ -47,9 +47,11 @@ public final class PendingRestores: @unchecked Sendable {
 }
 
 /// Before an exit: the clipboard first (at most 500 ms), then the
-/// recordings, then the output's mutes.
+/// output's mutes, then the recordings. Cancelling a recording writes to
+/// the app, which may be gone (a signal): a broken pipe must not end the
+/// helper with the output still muted.
 public func beforeExit(_ restores: PendingRestores, within limit: TimeInterval = 0.5, cancelCaptures: () -> Void, undoOutput: () -> Void) {
     restores.finish(within: limit)
-    cancelCaptures()
     undoOutput()
+    cancelCaptures()
 }

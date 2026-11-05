@@ -151,7 +151,7 @@ final class Server: @unchecked Sendable {
     }
 
     /// Before any exit: a paste's clipboard restore still to come (at most
-    /// 500 ms), the recordings, the output's mutes.
+    /// 500 ms), the output's mutes, the recordings.
     func exiting(_ why: String) {
         beforeExit(textio.restores, cancelCaptures: capture.cancelAll, undoOutput: { output.undo(why) })
     }
