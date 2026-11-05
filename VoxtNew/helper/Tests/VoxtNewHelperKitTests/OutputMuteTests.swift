@@ -142,6 +142,43 @@ final class OutputMuteTests: XCTestCase {
         XCTAssertEqual(files(dir), [])
     }
 
+    /// A device that is not there when its claim is given back keeps the
+    /// claim, so it is unmuted once it is back. recover deleted a dead
+    /// helper's journal even when its device was unplugged, and release
+    /// and releaseAll dropped the claim first: the device came back muted
+    /// with nothing left to unmute it.
+    func testUnpluggedDeviceKeepsItsClaim() throws {
+        let hw = devices(), dir = journalDir()
+        final class Dead: @unchecked Sendable { var pids = Set<Int32>() }
+        let dead = Dead()
+        let first = MuteClaims(hardware: hw, pid: 100, alive: { !dead.pids.contains($0) })
+        hw.current = airpods.uid
+        XCTAssertTrue(try first.mute(OutputMuteParams(device: airpods, journal: dir)).took)
+        // Unplugged, then the helper is killed; the next one recovers.
+        let unplugged = hw.list.remove(at: 1)
+        dead.pids.insert(100)
+        let second = MuteClaims(hardware: hw, pid: 200, alive: { !dead.pids.contains($0) })
+        XCTAssertNil(second.recover(OutputRecoverParams(journal: dir)).restored)
+        XCTAssertEqual(files(dir), ["100.json"], "the journal of a device that is not there was dropped")
+        // Plugged back: the next recovery unmutes it.
+        hw.list.append(unplugged)
+        XCTAssertEqual(second.recover(OutputRecoverParams(journal: dir)).restored, [airpods])
+        XCTAssertEqual(hw.isMuted(airpods.uid), false)
+        XCTAssertEqual(files(dir), [])
+
+        // release and releaseAll keep the claim of a device that is not there.
+        XCTAssertTrue(try second.mute(OutputMuteParams(device: airpods, journal: dir)).took)
+        hw.list.removeLast()
+        XCTAssertEqual(second.release(OutputReleaseParams(device: airpods, unmute: true)), OutputReleaseResult(unmuted: false))
+        XCTAssertEqual(second.releaseAll(), [])
+        XCTAssertEqual(second.claimed, [airpods])
+        XCTAssertEqual(files(dir), ["200.json"])
+        hw.list.append(unplugged)
+        XCTAssertEqual(second.releaseAll(), [airpods])
+        XCTAssertEqual(hw.isMuted(airpods.uid), false)
+        XCTAssertEqual(files(dir), [])
+    }
+
     func testJournalFormatIsGos() throws {
         // internal/helper/helpertest/output.go reads and writes the same file.
         let hw = devices(), dir = journalDir()

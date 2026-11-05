@@ -92,14 +92,21 @@ public final class MuteClaims: @unchecked Sendable {
     }
 
     /// output.release: gives the claim back, unmuting the device if asked
-    /// and it is still muted. Without a claim on it, nothing.
+    /// and it is still muted. Without a claim on it, nothing. A device that
+    /// is not there or would not unmute keeps its claim (and journal), for
+    /// releaseAll or the next helper.
     public func release(_ p: OutputReleaseParams) -> OutputReleaseResult {
         lock.withLock {
             guard let i = claims.firstIndex(where: { $0.uid == p.device.uid }) else { return OutputReleaseResult(unmuted: false) }
+            var unmuted = false
+            if p.unmute == true {
+                let u = undo(uid: p.device.uid)
+                if u == .failed { return OutputReleaseResult(unmuted: false) }
+                unmuted = u == .unmuted
+            }
             claims.remove(at: i)
             try? writeJournal(claims)
-            guard p.unmute == true else { return OutputReleaseResult(unmuted: false) }
-            return OutputReleaseResult(unmuted: unmuteIfMuted(uid: p.device.uid))
+            return OutputReleaseResult(unmuted: unmuted)
         }
     }
 
@@ -108,10 +115,12 @@ public final class MuteClaims: @unchecked Sendable {
     @discardableResult
     public func releaseAll() -> [OutputDevice] {
         lock.withLock {
-            let gone = claims
-            claims = []
-            try? writeJournal([])
-            for d in gone { _ = unmuteIfMuted(uid: d.uid) }
+            var gone: [OutputDevice] = [], kept: [OutputDevice] = []
+            for d in claims {
+                if undo(uid: d.uid) == .failed { kept.append(d) } else { gone.append(d) }
+            }
+            claims = kept
+            try? writeJournal(kept)
             return gone
         }
     }
@@ -130,19 +139,33 @@ public final class MuteClaims: @unchecked Sendable {
                     continue
                 }
                 if j.pid == pid || alive(j.pid) { continue } // a running helper's claims are its own
-                for d in j.devices where unmuteIfMuted(uid: d.uid) {
-                    restored.append(d)
+                var left: [OutputDevice] = []
+                for d in j.devices {
+                    switch undo(uid: d.uid) {
+                    case .unmuted: restored.append(d)
+                    case .notMuted: break
+                    case .failed: left.append(d) // not there, or refused: for the next recovery
+                    }
                 }
-                try? FileManager.default.removeItem(at: f)
+                if left.isEmpty {
+                    try? FileManager.default.removeItem(at: f)
+                } else if let data = try? makeEncoder().encode(JournalFile(pid: j.pid, devices: left)) {
+                    try? data.write(to: f, options: .atomic)
+                }
             }
             return OutputRecoverResult(restored: restored.isEmpty ? nil : restored)
         }
     }
 
-    /// Unmutes the device with uid when it is there and muted. Lock held.
-    private func unmuteIfMuted(uid: String) -> Bool {
-        guard let d = hardware.device(uid: uid), hardware.muted(d) == true else { return false }
-        return hardware.setMuted(false, d)
+    /// What giving back a claim did; failed: the device is not there or
+    /// would not unmute, so the claim must stay.
+    private enum Undo { case unmuted, notMuted, failed }
+
+    /// Unmutes the device with uid when it is muted. Lock held.
+    private func undo(uid: String) -> Undo {
+        guard let d = hardware.device(uid: uid) else { return .failed }
+        guard hardware.muted(d) == true else { return .notMuted }
+        return hardware.setMuted(false, d) ? .unmuted : .failed
     }
 
     /// Keeps claims in the journal; none removes the file. Lock held.
