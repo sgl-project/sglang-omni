@@ -32,6 +32,10 @@ from sglang.srt.utils import add_prefix
 from torch import nn
 
 from sglang_omni.models.fishaudio_drama3.audio_decoder import AudioDecoder
+from sglang_omni.models.fishaudio_drama3.expert_cache import (
+    CacheMode,
+    RoutedExpertCache,
+)
 from sglang_omni.models.fishaudio_drama3.first_frame_graphs import (
     Drama3FirstFrameGraphs,
     FirstFrameInputs,
@@ -169,6 +173,8 @@ class Drama3ForCausalLM(nn.Module):
         # The engine builder allocates these once the request pool is sized.
         self.decode_buffers: Drama3DecodeBuffers | None = None
         self.first_frame_graphs: Drama3FirstFrameGraphs | None = None
+        # The engine builder offloads the routed experts when the stage asks.
+        self.routed_expert_cache: RoutedExpertCache | None = None
 
     @property
     def start_layer(self) -> int:
@@ -188,6 +194,14 @@ class Drama3ForCausalLM(nn.Module):
     ) -> LogitsProcessorOutput:
         forward_mode = forward_batch.forward_mode
         decode_buffers = self.decode_buffers
+        if self.routed_expert_cache is not None:
+            self.routed_expert_cache.mode = (
+                CacheMode.DECODE
+                if forward_mode == ForwardMode.DECODE
+                else CacheMode.PREFILL
+            )
+        else:
+            pass
         if forward_mode == ForwardMode.EXTEND:
             return self.forward_extend(input_ids, positions, forward_batch)
         elif forward_mode != ForwardMode.DECODE:
