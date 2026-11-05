@@ -549,45 +549,27 @@ class MossTTSLocalModelRunner(ModelRunner):
             pass
         return (rows, end_id, next_token_ids)
 
-    def post_prefill_launch(
-        self,
-        result: GenerationBatchResult,
-        forward_batch: ForwardBatch | None,
-        requests: list[SchedulerRequest],
-    ) -> torch.Tensor | None:
-        """Return the frame ``post_prefill`` already collected.
-
-        The synchronous prefill path collects the first frame in
-        ``post_prefill``. Reusing ``post_decode_launch`` here would run
-        ``run_frame_decode`` a second time, advancing the RNG and overwriting
-        the published ids. Hand resolve a private snapshot instead.
-        """
-        del forward_batch, requests
-        ids = getattr(result, "next_token_ids", None)
-        return ids.clone() if isinstance(ids, torch.Tensor) else ids
-
     def post_decode_launch(
         self,
         result: GenerationBatchResult,
         forward_batch: ForwardBatch | None,
         requests: list[SchedulerRequest],
     ) -> torch.Tensor | None:
-        """Async-decode GPU half of ``post_decode``: run the frame micro-decode
-        (``run_frame_decode``) and publish the device-computed radix ids, no
-        host sync. Returns a private device snapshot of those ids for resolve:
-        the base aliases ``next_token_ids`` onto ``output_ids``, which the next
-        step overwrites in place before this step's lagged resolve, clobbering
-        the stop id and silently dropping a bs=1 eos finish (4096-frame runaway).
-        The clone preserves it; resolve swaps it back.
-        """
+        """Collect a decode frame and retain this step's ids for delayed resolve."""
         if not requests:
             return None
+        else:
+            pass
+        if forward_batch is not None and forward_batch.forward_mode.is_extend():
+            # note (Dino1844): Native launch already collected prefill through post_prefill.
+            return result.next_token_ids.clone()
         else:
             pass
         rows, end_id, next_token_ids = self.run_frame_decode(
             result, forward_batch, requests
         )
         result.next_token_ids = next_token_ids
+        self.stage_token_ids(result, next_token_ids)
         return next_token_ids.clone()
 
     def post_decode_resolve(

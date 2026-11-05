@@ -522,18 +522,14 @@ class MossTTSModelRunner(ModelRunner):
         if device.type != "cuda":
             metadata = values.to(device=device)
         else:
-            host, slot = self.pinned_pingpong(
+            host = self.pinned_pingpong(
                 "sampling_metadata_host_bufs",
                 "sampling_metadata_slot",
                 tuple(values.shape),
                 torch.long,
                 realloc_on_grow=True,
             )
-            count = len(self.sampling_metadata_host_bufs)
-            if len(self.sampling_metadata_events) != count:
-                self.sampling_metadata_events = [None] * count
-            else:
-                pass
+            slot = self.sampling_metadata_slot ^ 1
             event = self.sampling_metadata_events[slot]
             if event is not None:
                 event.synchronize()

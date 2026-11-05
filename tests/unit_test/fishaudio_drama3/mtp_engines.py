@@ -648,7 +648,7 @@ class SchedulerDriver:
 
     def is_pipeline_drained(self) -> bool:
         return (
-            not self.scheduler.async_pending
+            self.scheduler.async_pending is None
             and self.scheduler.previous_pending_decode is None
             and not self.runner.unresolved_forward_indices
         )

@@ -94,7 +94,7 @@ def init_sync_request_build_state(scheduler: OmniScheduler) -> None:
     scheduler.pending_request_admissions = {}
     scheduler.backlogged_request_build_payloads = deque()
     scheduler.request_build_max_pending_observed = 0
-    scheduler.async_pending = []
+    scheduler.async_pending = None
     scheduler.enable_priority_scheduling = False
     scheduler.abort_on_priority_when_disabled = False
     scheduler.processed_tokens_counter = 0
@@ -476,7 +476,7 @@ def test_take_deferred_request_payloads_is_event_driven() -> None:
     scheduler.running_batch = None
     scheduler.cur_batch = None
     scheduler.last_batch = None
-    scheduler.async_pending = []
+    scheduler.async_pending = None
     scheduler.waiting_queue = []
     scheduler.completed_request_ids = {}
     scheduler.pending_stream_ingress = {}
@@ -1419,9 +1419,9 @@ def test_immediate_finish_keeps_async_snapshot_aligned_until_resolve() -> None:
     scheduler.running_batch = live_batch
     scheduler.cur_batch = live_batch
     scheduler.last_batch = None
-    scheduler.async_pending = [
-        PendingDecode(batch=snapshot, scheduler_output=object(), device_step=object())
-    ]
+    scheduler.async_pending = PendingDecode(
+        batch=snapshot, scheduler_output=object(), device_step=object()
+    )
     captured = {}
 
     def resolve(batch, sched_output, _pending_step, *, skip_rids):
@@ -3033,7 +3033,7 @@ def test_pending_stream_requests_are_bounded(monkeypatch, caplog) -> None:
     scheduler.running_batch = None
     scheduler.cur_batch = None
     scheduler.last_batch = None
-    scheduler.async_pending = []
+    scheduler.async_pending = None
     scheduler.waiting_queue = []
     scheduler.completed_request_ids = {}
     scheduler.pending_stream_ingress = {}

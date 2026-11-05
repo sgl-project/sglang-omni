@@ -8349,7 +8349,7 @@ def test_qwen3_tts_ar_scheduler_abort_cleans_prepared_state() -> None:
         scheduler.running_batch = SimpleNamespace(reqs=[], batch_is_full=False)
         scheduler.cur_batch = None
         scheduler.last_batch = None
-        scheduler.async_pending = []
+        scheduler.async_pending = None
         scheduler.inbox = Queue()
 
         scheduler.abort(request_id)

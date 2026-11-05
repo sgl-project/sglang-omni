@@ -100,45 +100,6 @@ class StubRunner(ModelRunner):
         return ModelRunnerOutput(outputs={}, req_ids=[], req_id_to_index={})
 
 
-class PrefillStubRunner(StubRunner):
-    """StubRunner that launches a prefill and only implements prefill hooks."""
-
-    def __init__(self):
-        super().__init__()
-        self.prefill_launch_calls = 0
-        self.prefill_resolve_calls = 0
-
-    def build_forward_batch(self, scheduler_output):
-        forward_batch, schedule_batch, _ = super().build_forward_batch(scheduler_output)
-        return forward_batch, schedule_batch, True
-
-    def post_prefill_launch(self, result, forward_batch, requests):
-        self.prefill_launch_calls += 1
-        return f"prefillbuf-{self.prefill_launch_calls}"
-
-    def post_prefill_resolve(
-        self, launch_buf, result, forward_batch, schedule_batch, requests
-    ):
-        self.prefill_resolve_calls += 1
-        self.last_resolved_buf = launch_buf
-
-    def post_decode_launch(self, result, forward_batch, requests):
-        raise AssertionError("prefill launch must not use the decode hook")
-
-    def post_decode_resolve(
-        self, launch_buf, result, forward_batch, schedule_batch, requests
-    ):
-        raise AssertionError("prefill resolve must not use the decode hook")
-
-
-class DefaultPrefillStubRunner(StubRunner):
-    """Prefill runner with no prefill hooks; must keep the decode fallback."""
-
-    def build_forward_batch(self, scheduler_output):
-        forward_batch, schedule_batch, _ = super().build_forward_batch(scheduler_output)
-        return forward_batch, schedule_batch, True
-
-
 def patch_event(ready: bool):
     class FakeEvent:
         def __init__(self):
@@ -232,29 +193,6 @@ def test_launch_returns_handle_resolve_consumes_it():
     # already published at the right length. Re-stamping the lagged step's
     # tokens leaves a stale-length rail -> input_ids/seq_lens mismatch once a
     # req finishes mid-batch (the bs>1 replay crash). The launch publishes it.
-
-
-def test_prefill_launch_and_resolve_use_prefill_hooks():
-    r = PrefillStubRunner()
-    with patch_event(ready=True):
-        step = r.execute_launch(make_sched_output(1))
-        assert step is not None
-        assert step.is_prefill is True
-        out = r.execute_resolve(step)
-    assert out is not None
-    assert (r.prefill_launch_calls, r.prefill_resolve_calls) == (1, 1)
-    assert r.last_resolved_buf == "prefillbuf-1"
-
-
-def test_prefill_falls_back_to_decode_hooks_by_default():
-    r = DefaultPrefillStubRunner()
-    with patch_event(ready=True):
-        step = r.execute_launch(make_sched_output(1))
-        assert step is not None
-        assert step.is_prefill is True
-        r.execute_resolve(step)
-    assert (r.launch_calls, r.resolve_calls) == (1, 1)
-    assert r.last_resolved_buf == "hostbuf-1"
 
 
 def test_two_launches_return_distinct_handles():
@@ -800,20 +738,18 @@ def new_scheduler_for_async_loop():
     s.server_args = types.SimpleNamespace(disable_radix_cache=False)
     s.token_to_kv_pool_allocator = types.SimpleNamespace(free=lambda _: None)
     s.waiting_queue = []
-    s.async_decode_lookahead_depth = 1
     return s
 
 
-def drive_loop(seq, min_bs=2, depth=1):
+def drive_loop(seq, min_bs=2):
     """Run the real event loop over `seq` (each item = bs int, or None for idle)
     and return the ordered list of path events taken."""
     events = []
     s = new_scheduler_for_async_loop()
     s.running = True
     s._engine_paused = False  # noqa: leading-underscore  # production name
-    s.async_pending = []
+    s.async_pending = None
     s.async_decode_min_batch_size = min_bs
-    s.async_decode_lookahead_depth = depth
     s.cur_batch = None
     s.last_batch = None
     s.recv_requests = lambda: []
@@ -868,7 +804,7 @@ def test_fast_path_bs1_bypasses_lookahead_and_drains_on_transition():
         "idle",  # empty
     ]
     # the in-flight step was drained -> no pending left stranded
-    assert s.async_pending == []
+    assert s.async_pending is None
 
 
 def test_fast_path_threshold_one_keeps_all_decode_on_lookahead():
@@ -902,7 +838,6 @@ def test_custom_logit_processor_transitions_async_sync_async():
 
     timestamp_batch = FakeBatch(2)
     timestamp_batch.reqs[1].custom_logit_processor = "processor"
-
     batches = [FakeBatch(2), timestamp_batch, FakeBatch(2)]
     state = {"i": 0}
 
@@ -922,79 +857,6 @@ def test_custom_logit_processor_transitions_async_sync_async():
         "run sync N+1",
         "launch async N+2",
     ]
-
-
-def test_depth_two_keeps_two_steps_in_flight():
-    # Warmup holds TWO launches before the first resolve, then one resolve per
-    # launch; the trailing idle drains the two steps still in flight.
-    events, s = drive_loop([2, 2, 2, 2, None], min_bs=2, depth=2)
-    assert events == [
-        "launch",
-        "launch",
-        "launch",
-        "resolve",
-        "launch",
-        "resolve",
-        "resolve",
-        "resolve",
-        "idle",
-    ]
-    assert s.async_pending == []
-
-
-def test_depth_two_drains_fifo_on_sync_path():
-    # A batch leaving the lookahead drains BOTH in-flight steps, oldest first.
-    events = []
-    older = PendingDecode(batch=FakeBatch(2), scheduler_output="s0", device_step="p0")
-    newer = PendingDecode(batch=FakeBatch(2), scheduler_output="s1", device_step="p1")
-    s = scaffold_async_loop(async_pending=[older, newer])
-    s.async_decode_lookahead_depth = 2
-    s.batch_is_decode = lambda b: False
-    s.resolve_and_process = lambda pb, ps, pstep: events.append(ps)
-    s.run_batch = lambda b: (events.append("sync"), object())[1]
-    s.process_batch_result = lambda b, r: None
-
-    def gnb():
-        s.running = False
-        return FakeBatch(2)
-
-    s.get_next_batch_to_run = gnb
-    s.event_loop_async_decode()
-
-    assert events == ["s0", "s1", "sync"]
-    assert s.async_pending == []
-
-
-def test_depth_two_overrun_drops_stale_rows_after_full_drain():
-    # The fast-path batch is built BEFORE the drain; with depth 2 the drain
-    # resolves TWO steps, either of which can finish a req still present in
-    # that batch. drop_stale_overrun must run after the FULL drain.
-    events = []
-    older = PendingDecode(batch=FakeBatch(2), scheduler_output="s0", device_step="p0")
-    newer = PendingDecode(batch=FakeBatch(2), scheduler_output="s1", device_step="p1")
-    s = scaffold_async_loop(async_pending=[older, newer])
-    s.async_decode_lookahead_depth = 2
-    s.batch_is_decode = lambda b: False
-    s.resolve_and_process = lambda pb, ps, pstep: events.append("resolve")
-    s.run_batch = lambda b: (events.append("sync"), object())[1]
-    s.process_batch_result = lambda b, r: None
-
-    stale_batch = FakeBatch(2)
-
-    def drop_stale_overrun(batch):
-        events.append("drop stale")
-        return batch
-
-    s.drop_stale_overrun = drop_stale_overrun
-
-    def gnb():
-        s.running = False
-        return stale_batch
-
-    s.get_next_batch_to_run = gnb
-    s.event_loop_async_decode()
-
-    assert events == ["resolve", "resolve", "drop stale", "sync"]
 
 
 @pytest.mark.parametrize(
@@ -1039,7 +901,7 @@ def test_pending_decode_drain_order_for_prefill(
 
     def get_next_batch_to_run():
         events.append("schedule")
-        pending_during_schedule.append(s.async_pending[-1] if s.async_pending else None)
+        pending_during_schedule.append(s.async_pending)
         s.running = False
         return FakeBatch(1)
 
@@ -1075,7 +937,7 @@ def test_full_running_batch_keeps_lookahead_with_waiting_requests():
     s.run_batch_launch = launch
 
     def get_next_batch_to_run():
-        events.append(("schedule", pending in s.async_pending))
+        events.append(("schedule", s.async_pending is pending))
         s.running = False
         return FakeBatch(2)
 
@@ -1147,7 +1009,7 @@ def test_fast_path_does_not_double_free_req_finished_by_drain():
     s = new_scheduler_for_async_loop()
     s.running = True
     s._engine_paused = False  # noqa: leading-underscore  # production name
-    s.async_pending = []
+    s.async_pending = None
     s.async_decode_min_batch_size = 2
     s.cur_batch = None
     s.last_batch = None
@@ -1207,11 +1069,7 @@ def scaffold_async_loop(*, async_pending=None):
     s = new_scheduler_for_async_loop()
     s.running = True
     s._engine_paused = False  # noqa: leading-underscore  # production name
-    s.async_pending = (
-        list(async_pending)
-        if isinstance(async_pending, list)
-        else ([] if async_pending is None else [async_pending])
-    )
+    s.async_pending = async_pending
     s.async_decode_min_batch_size = 2
     s.cur_batch = None
     s.last_batch = None
@@ -1252,7 +1110,7 @@ def test_async_path_launch_failure_calls_handle_batch_failure():
 
     assert failures == [(batch, RuntimeError, "launch boom")]
     # launch failed before async_pending was set; prev state preserved.
-    assert s.async_pending == []
+    assert s.async_pending is None
 
 
 def test_async_path_resolve_failure_calls_handle_batch_failure():
@@ -1288,19 +1146,17 @@ def test_async_path_resolve_failure_calls_handle_batch_failure():
 
     assert failures == [(prev_batch, RuntimeError, "resolve boom")]
     # launch succeeded; async_pending was rotated to the new batch.
-    assert len(s.async_pending) == 1
-    assert s.async_pending[0].batch is new_batch
+    assert s.async_pending is not None
+    assert s.async_pending.batch is new_batch
 
 
 def test_drain_resolve_failure_calls_handle_batch_failure():
     failures = []
     stranded_batch = FakeBatch(2)
     s = OmniScheduler.__new__(OmniScheduler)
-    s.async_pending = [
-        PendingDecode(
-            batch=stranded_batch, scheduler_output="sched", device_step="step"
-        )
-    ]
+    s.async_pending = PendingDecode(
+        batch=stranded_batch, scheduler_output="sched", device_step="step"
+    )
 
     def resolve(pb, ps, pstep):
         raise RuntimeError("drain boom")
@@ -1311,7 +1167,7 @@ def test_drain_resolve_failure_calls_handle_batch_failure():
     OmniScheduler.resolve_pending_async(s)
 
     assert failures == [(stranded_batch, RuntimeError, "drain boom")]
-    assert s.async_pending == []
+    assert s.async_pending is None
 
 
 class MixedBatch:
@@ -1453,7 +1309,7 @@ class RunningBatch:
 
 
 def scaffold_resolve_before_prefill(
-    events: list[str], *, async_pending: PendingDecode | list[PendingDecode] | None
+    events: list[str], *, async_pending: PendingDecode | None
 ) -> OmniScheduler:
     s = scaffold_async_loop(async_pending=async_pending)
     s.async_decode_resolve_before_prefill = True
@@ -1536,7 +1392,7 @@ def test_a_predicted_prefill_resolves_first_then_receives_again_before_selecting
         "prefill",
     ]
     assert late_request in selected_waiting[0]
-    assert s.async_pending == []
+    assert s.async_pending is None
 
 
 @pytest.mark.parametrize(
@@ -1603,7 +1459,7 @@ def test_a_wrong_prefill_guess_launches_the_decode_without_a_step_in_flight() ->
     s.event_loop_async_decode()
 
     assert events == ["admin", "resolve", "admin", "schedule", "launch"]
-    assert s.async_pending
+    assert s.async_pending is not None
 
 
 def test_a_missed_prefill_falls_back_to_resolving_after_selection() -> None:
@@ -1649,99 +1505,7 @@ def test_both_session_steps_in_flight_resolve_in_launch_order() -> None:
         "prefill",
     ]
     assert s.previous_pending_decode is None
-    assert s.async_pending == []
-
-
-@pytest.mark.parametrize("previously_owned", [False, True])
-def test_session_drain_retries_a_failed_wait_in_launch_order(
-    previously_owned: bool,
-) -> None:
-    """A failed device wait used to discard a queued session completion."""
-    scheduler = new_scheduler_for_async_loop()
-    scheduler.session_bridge = object()
-    older = PendingDecode(
-        batch=FakeBatch(1), scheduler_output="older", device_step="older-device"
-    )
-    newer = PendingDecode(
-        batch=FakeBatch(1), scheduler_output="newer", device_step="newer-device"
-    )
-    scheduler.previous_pending_decode = older if previously_owned else None
-    scheduler.async_pending = [newer] if previously_owned else [older, newer]
-    resolved_steps: list[str] = []
-    should_fail_wait = True
-
-    def wait_async_device(batch: FakeBatch, device_step: str) -> None:
-        nonlocal should_fail_wait
-        if should_fail_wait:
-            should_fail_wait = False
-            raise RuntimeError("completion wait failed")
-        else:
-            pass
-
-    def resolve_and_process(
-        batch: FakeBatch,
-        scheduler_output: str,
-        device_step: str,
-        *,
-        is_device_ready: bool,
-    ) -> None:
-        resolved_steps.append(scheduler_output)
-
-    scheduler.wait_async_device = wait_async_device
-    scheduler.resolve_and_process = resolve_and_process
-
-    with pytest.raises(RuntimeError, match="completion wait failed"):
-        scheduler.resolve_pending_async()
-
-    assert resolved_steps == []
-    assert scheduler.previous_pending_decode is older
-    assert scheduler.async_pending == [newer]
-
-    scheduler.resolve_pending_async()
-
-    assert resolved_steps == ["older", "newer"]
-    assert scheduler.previous_pending_decode is None
-    assert scheduler.async_pending == []
-
-
-@pytest.mark.parametrize("previously_owned", [False, True])
-def test_session_drain_collects_each_step_once_when_collection_reenters(
-    previously_owned: bool,
-) -> None:
-    """A collection callback reentering drain used to collect its step twice."""
-    scheduler = new_scheduler_for_async_loop()
-    scheduler.session_bridge = object()
-    older = PendingDecode(
-        batch=FakeBatch(1), scheduler_output="older", device_step="older-device"
-    )
-    newer = PendingDecode(
-        batch=FakeBatch(1), scheduler_output="newer", device_step="newer-device"
-    )
-    scheduler.previous_pending_decode = older if previously_owned else None
-    scheduler.async_pending = [newer] if previously_owned else [older, newer]
-    resolved_steps: list[str] = []
-    scheduler.wait_async_device = lambda batch, device_step: None
-
-    def resolve_and_process(
-        batch: FakeBatch,
-        scheduler_output: str,
-        device_step: str,
-        *,
-        is_device_ready: bool,
-    ) -> None:
-        resolved_steps.append(scheduler_output)
-        if len(resolved_steps) == 1:
-            scheduler.resolve_pending_async()
-        else:
-            pass
-
-    scheduler.resolve_and_process = resolve_and_process
-
-    scheduler.resolve_pending_async()
-
-    assert resolved_steps == ["older", "newer"]
-    assert scheduler.previous_pending_decode is None
-    assert scheduler.async_pending == []
+    assert s.async_pending is None
 
 
 def test_a_failing_early_resolve_is_handled_and_the_loop_goes_on() -> None:

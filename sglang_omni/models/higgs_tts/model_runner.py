@@ -95,7 +95,7 @@ class HiggsTTSModelRunner(ModelRunner):
             device_buf.shape,
             device_buf.dtype,
             realloc_on_grow=True,
-        )[0]
+        )
 
     def set_stream_outbox(self, outbox: Queue[OutgoingMessage]) -> None:
         self.outbox = outbox

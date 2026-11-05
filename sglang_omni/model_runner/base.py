@@ -119,17 +119,16 @@ def resolve_deferred_prefill_inputs(
 
 @dataclass
 class PendingStep:
-    """One step launched on the GPU but not yet consumed on the host.
+    """One decode step launched on the GPU but not yet consumed on the host.
 
-    Async lookahead bookkeeping: a launched step has its forward + on-GPU
-    sample/collect enqueued and ``event`` recorded right after, so
-    ``event.query()`` true means the launched step's GPU work is published.
-    ``launch_buf`` is whatever ``post_prefill_launch`` / ``post_decode_launch``
-    returns for resolve to consume: a device-side correctness snapshot of the
-    published ids (MOSS-TTS-Local, no host copy), or a pinned host staging
-    buffer an async host copy filled (Higgs); only the latter provides host-D2H
-    overlap. ``execute_resolve`` later waits on ``event`` and reads
-    ``launch_buf`` through the matching prefill/decode resolve hook.
+    Async-decode (one-step lookahead) bookkeeping: a launched step has its
+    forward + on-GPU sample + collect enqueued and ``event`` recorded right
+    after, so ``event.query()`` true means the launched step's GPU work is
+    published. ``launch_buf`` is whatever ``post_decode_launch`` returns for
+    resolve to consume: a device-side correctness snapshot of the published ids
+    (MOSS-TTS-Local, no host copy), or a pinned host staging buffer an async host
+    copy filled (Higgs); only the latter provides host-D2H overlap.
+    ``execute_resolve`` later waits on ``event`` and reads ``launch_buf``.
 
     Invariant: at most one ``_PendingStep`` is live at a time (see
     ``ModelRunner._pending``). When the launch uses host staging it is pinned
@@ -137,9 +136,9 @@ class PendingStep:
     launch(N+1) writes the other (design.md section 1.4).
     """
 
-    event: CompletionEvent  # device Event, recorded after the launch hook publishes
+    event: CompletionEvent  # device Event, recorded after post_decode_launch publishes
     launch_buf: (
-        DecodeLaunchBuffer  # launch-hook return: device snapshot or host staging
+        DecodeLaunchBuffer  # post_decode_launch return: device snapshot or host staging
     )
     scheduler_output: (
         SchedulerOutput  # this step's SchedulerOutput (routing + output proc)
@@ -149,9 +148,6 @@ class PendingStep:
     batch_result: (
         GenerationBatchResult  # carries logits_output (device of next_token_ids)
     )
-    # Required by execute_resolve to pick post_prefill_resolve vs
-    # post_decode_resolve. Defaults to False for test-built handles.
-    is_prefill: bool = False
 
 
 class ModelRunner(Generic[RequestDataInput]):
@@ -180,12 +176,8 @@ class ModelRunner(Generic[RequestDataInput]):
         self.model = tp_worker.model_runner.model
         self.execution_bridge: SGLangExecutionBridge | None = None
 
-        # Async decode (lookahead pipeline). Inert unless ``_async_enabled``
-        # is set. The scheduler sets the depth alongside async_enabled; the
-        # pinned host-staging rings size themselves to depth + 1 so a launch
-        # can never overwrite a buffer a resolve still has to read.
+        # Async decode (one-step lookahead). Inert unless ``_async_enabled`` is set.
         self.async_enabled: bool = False
-        self.async_lookahead_depth: int = 1
         self.staging_slot: int = 0
         self.host_staging_buffers: list[torch.Tensor] = []
         # Observability: how often resolve found the launched step's event
@@ -213,22 +205,18 @@ class ModelRunner(Generic[RequestDataInput]):
         else:
             pass
         n = ids.shape[0]
-        buf, slot = self.next_token_id_host_buf(ids, n)
+        buf = self.next_token_id_host_buf(ids, n)
         buf[:n].copy_(ids[:n], non_blocking=True)
-        event = self.next_token_id_event(slot)
+        event = self.next_token_id_event()
         event.record()
         result._host_token_ids = buf[
             :n
         ]  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         result._host_token_ids_event = event  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
-    def next_token_id_host_buf(
-        self, like: torch.Tensor, n: int
-    ) -> tuple[torch.Tensor, int]:
-        # Note (wenyao): a ring of pinned buffers so a step's host read never
-        # races a later step's async copy into the same slot; the ring is
-        # lookahead_depth + 1 large, and the returned slot keys the guarding
-        # event (buffer i is guarded by event i).
+    def next_token_id_host_buf(self, like: torch.Tensor, n: int) -> torch.Tensor:
+        # Note (wenyao): two buffers ping-ponged so a step's host read never races
+        # the next step's async copy
         return self.pinned_pingpong(
             "token_id_host_bufs",
             "token_id_host_slot",
@@ -237,24 +225,16 @@ class ModelRunner(Generic[RequestDataInput]):
             realloc_on_grow=True,
         )
 
-    def next_token_id_event(self, slot: int) -> torch.cuda.Event:
+    def next_token_id_event(self) -> torch.cuda.Event:
         # note (ratish): a new event is created at its first record, which waits while
-        # another thread of the process is inside the CUDA runtime; one per ring slot.
-        count = self.pinned_ring_size()
-        if len(self.token_id_events) != count:
-            self.token_id_events = [torch.cuda.Event() for _ in range(count)]
+        # another thread of the process is inside the CUDA runtime; two, as the buffers.
+        if not self.token_id_events:
+            self.token_id_events = [torch.cuda.Event() for _ in range(2)]
         else:
             pass
-        return self.token_id_events[slot % count]
-
-    def pinned_ring_size(self) -> int:
-        """Pinned host-staging ring size: one buffer per launch that may be
-        in flight while a resolve still owes a host read, plus the one being
-        staged. Two buffers (the historic ping-pong pair) are only safe at
-        lookahead depth 1: resolve(N) reads its buffer after at most one more
-        launch stages. At depth D, launch N+D can stage into that same buffer
-        before resolve(N) reads it, so the ring needs D + 1 slots."""
-        return max(2, int(getattr(self, "async_lookahead_depth", 1)) + 1)
+        event = self.token_id_events[self.token_id_event_slot]
+        self.token_id_event_slot ^= 1
+        return event
 
     def pinned_pingpong(
         self,
@@ -264,21 +244,16 @@ class ModelRunner(Generic[RequestDataInput]):
         dtype: torch.dtype,
         *,
         realloc_on_grow: bool,
-    ) -> tuple[torch.Tensor, int]:
-        """Return ``(buffer, slot)`` from a pinned host ring, cycling slots.
-
-        The ring holds ``pinned_ring_size()`` buffers; the returned slot also
-        keys the guarding event where the caller uses one (the token-id
-        staging pairs buffer ``i`` with event ``i``).
+    ) -> torch.Tensor:
+        """Return one of two pinned host buffers, alternating slot each call.
 
         ``realloc_on_grow`` reallocates (and resets the slot) when the request
-        outgrows the buffer or changes dtype; otherwise the ring is allocated
+        outgrows the buffer or changes dtype; otherwise the pair is allocated
         once on first use with the given fixed shape.
         """
-        count = self.pinned_ring_size()
         bufs = getattr(self, bufs_attr)
-        need_alloc = not bufs or len(bufs) != count
-        if realloc_on_grow and bufs and len(bufs) == count:
+        need_alloc = not bufs
+        if realloc_on_grow and bufs:
             need_alloc = (
                 bufs[0].shape[0] < shape[0]
                 or bufs[0].shape[1:] != tuple(shape[1:])
@@ -289,16 +264,16 @@ class ModelRunner(Generic[RequestDataInput]):
         if need_alloc:
             bufs = [
                 torch.empty(shape, dtype=dtype, device="cpu", pin_memory=True)
-                for _ in range(count)
+                for _ in range(2)
             ]
             setattr(self, bufs_attr, bufs)
             setattr(self, slot_attr, 0)
         else:
             pass
-        slot = getattr(self, slot_attr) % count
+        slot = getattr(self, slot_attr)
         buf = bufs[slot]
-        setattr(self, slot_attr, (slot + 1) % count)
-        return buf, slot
+        setattr(self, slot_attr, slot ^ 1)
+        return buf
 
     def resolve_host_token_ids(
         self, result: GenerationBatchResult
@@ -411,16 +386,14 @@ class ModelRunner(Generic[RequestDataInput]):
         self, shape: tuple[int, ...] | torch.Size, dtype: torch.dtype
     ) -> torch.Tensor:
         """Return a pinned host staging buffer covering ``shape``/``dtype``,
-        cycling a ring of pinned buffers on each call. Runners that stage the
+        ping-ponging between two buffers on each call. Runners that stage the
         collect to host use this: Higgs passes its fixed CG staging shape, the
         base plain-LM launch passes the step's ``(batch_size,)`` ids shape.
         Device-snapshot runners (MOSS-TTS-Local) never do.
 
-        The ring is ``pinned_ring_size()`` (lookahead_depth + 1) large:
-        resolve(N) reads one on the host while up to ``depth`` later launches
-        stage into the others. That CPU-read vs GPU-write overlap is not
-        protected by single-stream ordering; the historic two-buffer
-        ping-pong was only safe at depth 1.
+        Two buffers are required: resolve(N) reads one on the host while
+        launch(N+1)'s async host copy writes the other. That CPU-read vs
+        GPU-write overlap is not protected by single-stream ordering.
         Buffers are allocated lazily on first use and replaced when the
         requested dim 0 outgrows them (or trailing dims / dtype change); a
         resolve still holding the previous buffer keeps it alive, so
@@ -432,7 +405,7 @@ class ModelRunner(Generic[RequestDataInput]):
             tuple(shape),
             dtype,
             realloc_on_grow=True,
-        )[0]
+        )
 
     def execute(self, scheduler_output: SchedulerOutput) -> ModelRunnerOutput:
         """Full synchronous pipeline: build → prepare → forward → post →
@@ -493,19 +466,14 @@ class ModelRunner(Generic[RequestDataInput]):
         )
 
     def execute_launch(self, scheduler_output: SchedulerOutput) -> "PendingStep | None":
-        """Enqueue a decode or supported whole-prompt prefill step, call the
-        matching launch hook to publish a model-specific resolve payload
+        """Enqueue a decode or supported whole-prompt prefill step, call
+        ``post_decode_launch`` to publish a model-specific resolve payload
         (returned as launch_buf), and record a device event right after
         publication. Does NOT wait on the GPU. ``launch_buf``
         is a device-side correctness snapshot (MOSS-TTS-Local) or pinned host
         staging (Higgs); only the latter overlaps a host copy with the next
         forward, and ``event.query()`` proves the launched step's GPU work is
         done, not that any host overlap happened.
-
-        Prefill and decode have separate launch hooks so a model whose prefill
-        already collected its first frame (MOSS-TTS-Local) does not collect it a
-        second time here. The default prefill hooks delegate to the decode
-        hooks, preserving the behavior of models that only implement decode.
 
         Returns the ``_PendingStep`` handle (or None if there was no batch).
         The CALLER owns the handle and passes it to ``execute_resolve`` later.
@@ -539,25 +507,11 @@ class ModelRunner(Generic[RequestDataInput]):
                     schedule_batch,
                     scheduler_output.requests,
                 )
-                launch_buf = self.post_prefill_launch(
-                    batch_result, forward_batch, scheduler_output.requests
-                )
-            else:
-                launch_buf = self.post_decode_launch(
-                    batch_result, forward_batch, scheduler_output.requests
-                )
-            if (
-                not is_prefill
-                and isinstance(batch_result.next_token_ids, torch.Tensor)
-                and batch_result.next_token_ids.is_cuda
-            ):
-                # Async decode launches never run the sync collect hook, so
-                # stage the pinned host copy here; otherwise finalize's
-                # resolve falls back to a blocking .tolist() D2H on the
-                # scheduler thread (30% of step time in py-spy).
-                self.stage_token_ids(batch_result, batch_result.next_token_ids)
             else:
                 pass
+            launch_buf = self.post_decode_launch(
+                batch_result, forward_batch, scheduler_output.requests
+            )
             self.ensure_next_token_ids(
                 batch_result,
                 forward_batch,
@@ -584,18 +538,17 @@ class ModelRunner(Generic[RequestDataInput]):
             forward_batch=forward_batch,
             schedule_batch=resolve_batch,
             batch_result=batch_result,
-            is_prefill=is_prefill,
         )
 
     def execute_resolve(
         self, pending: "PendingStep | None"
     ) -> ModelRunnerOutput | None:
-        """Consume a launched step: wait on its event (non-blocking
+        """Consume a launched decode step: wait on its event (non-blocking
         ``query()``, else ``synchronize()``), read its ``launch_buf`` (a device
-        snapshot or pinned host staging) through the matching prefill/decode
-        resolve hook, then finalize sampling/output. Returns that step's
-        ``ModelRunnerOutput``, or None if ``pending`` is None (first iteration /
-        after a drain).
+        snapshot or pinned host staging) and run the per-request collect loop
+        (``post_decode_resolve``), then
+        finalize sampling/output. Returns that step's ``ModelRunnerOutput``,
+        or None if ``pending`` is None (first iteration / after a drain).
         """
         if pending is None:
             return None
@@ -613,22 +566,13 @@ class ModelRunner(Generic[RequestDataInput]):
             for req in pending.scheduler_output.requests
             if req.data.req.finished() or self.req_is_retracted(req.data.req)
         }
-        if pending.is_prefill:
-            self.post_prefill_resolve(
-                pending.launch_buf,
-                pending.batch_result,
-                pending.forward_batch,
-                pending.schedule_batch,
-                pending.scheduler_output.requests,
-            )
-        else:
-            self.post_decode_resolve(
-                pending.launch_buf,
-                pending.batch_result,
-                pending.forward_batch,
-                pending.schedule_batch,
-                pending.scheduler_output.requests,
-            )
+        self.post_decode_resolve(
+            pending.launch_buf,
+            pending.batch_result,
+            pending.forward_batch,
+            pending.schedule_batch,
+            pending.scheduler_output.requests,
+        )
         return self.finalize(
             pending.batch_result,
             pending.forward_batch,
@@ -1033,44 +977,6 @@ class ModelRunner(Generic[RequestDataInput]):
         is enqueued on the same outbox, so runners that buffer stream chunks
         across decode steps can flush them ahead of stream completion.
         """
-
-    def post_prefill_launch(
-        self,
-        result: GenerationBatchResult,
-        forward_batch: ForwardBatch | None,
-        requests: list[SchedulerRequest],
-    ) -> DecodeLaunchBuffer:
-        """Async-prefill GPU half of ``post_prefill``.
-
-        Called instead of ``post_decode_launch`` for an extend batch when the
-        scheduler admits whole-prompt prefill to lookahead. Return the payload
-        ``post_prefill_resolve`` consumes; the caller records the completion
-        event right after this call.
-
-        Default: delegate to ``post_decode_launch`` so a model that only
-        implements the decode half keeps its existing prefill behavior. A model
-        whose ``post_prefill`` already sampled/collected (MOSS-TTS-Local) must
-        override this to return that snapshot instead of sampling again.
-        """
-        return self.post_decode_launch(result, forward_batch, requests)
-
-    def post_prefill_resolve(
-        self,
-        launch_buf: DecodeLaunchBuffer,
-        result: GenerationBatchResult,
-        forward_batch: ForwardBatch | None,
-        schedule_batch: ScheduleBatch,
-        requests: list[SchedulerRequest],
-    ) -> None:
-        """Async-prefill host half of ``post_prefill``.
-
-        Called instead of ``post_decode_resolve`` when resolving an extend batch
-        launched by ``post_prefill_launch``. Default: delegate to the decode
-        resolve hook; prefill-specific state is restored by overriding this.
-        """
-        self.post_decode_resolve(
-            launch_buf, result, forward_batch, schedule_batch, requests
-        )
 
     def post_decode_launch(
         self,

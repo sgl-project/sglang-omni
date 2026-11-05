@@ -129,7 +129,7 @@ def test_omni_scheduler_update_weights_rejects_active_requests_by_default() -> N
     scheduler.admin_lock = threading.Lock()
     scheduler._engine_paused = False  # noqa: leading-underscore  # production name
     scheduler.last_pause_mode = None
-    scheduler.async_pending = []
+    scheduler.async_pending = None
     scheduler.resolve_pending_async = lambda: None
     scheduler.active_request_ids = lambda: ["req-1"]
 
@@ -208,7 +208,7 @@ def test_omni_scheduler_weight_updates_flush_and_advance_epoch(
     scheduler.admin_lock = threading.Lock()
     scheduler._engine_paused = False  # noqa: leading-underscore  # production name
     scheduler.last_pause_mode = None
-    scheduler.async_pending = []
+    scheduler.async_pending = None
     scheduler.request_admission_lock = threading.RLock()
     scheduler.prompt_cache_epoch = 0
     scheduler.waiting_queue = []
@@ -425,7 +425,7 @@ def test_omni_scheduler_distributed_update_aborts_and_flushes_cache() -> None:
     scheduler.admin_lock = threading.Lock()
     scheduler._engine_paused = False  # noqa: leading-underscore  # production name
     scheduler.last_pause_mode = None
-    scheduler.async_pending = []
+    scheduler.async_pending = None
     scheduler.request_admission_lock = threading.RLock()
     scheduler.prompt_cache_epoch = 0
     scheduler.waiting_queue = []
@@ -474,7 +474,7 @@ def test_omni_scheduler_distributed_update_failure_keeps_engine_paused() -> None
     scheduler.admin_lock = threading.Lock()
     scheduler._engine_paused = False  # noqa: leading-underscore  # production name
     scheduler.last_pause_mode = None
-    scheduler.async_pending = []
+    scheduler.async_pending = None
     scheduler.resolve_pending_async = lambda: None
     scheduler.active_request_ids = lambda: []
 

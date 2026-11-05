@@ -64,7 +64,6 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
         *,
         enable_async_decode: bool,
         async_decode_min_batch_size: int,
-        async_decode_lookahead_depth: int = 1,
         prefill_coalesce_requests: int = 0,
         prefill_coalesce_wait_ms: float = 60.0,
         total_gpu_memory_fraction: float | None,
@@ -73,7 +72,6 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
     ) -> None:
         self.enable_async_decode = enable_async_decode
         self.async_decode_min_batch_size = async_decode_min_batch_size
-        self.async_decode_lookahead_depth = max(1, int(async_decode_lookahead_depth))
         self.prefill_coalesce_requests = prefill_coalesce_requests
         self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
         self.total_gpu_memory_fraction = total_gpu_memory_fraction
@@ -266,15 +264,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder[MossTTSLocalSGLangRequestData])
         return {
             "enable_async_decode": self.enable_async_decode,
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
-            # Launched-but-unresolved decode steps kept in flight. Depth 1 is
-            # the classic one-step lookahead; 2+ hides longer resolves behind
-            # GPU forwards (finishing requests overrun by up to `depth` frames,
-            # dropped by the resolve's prior-step-finish skip).
-            "async_decode_lookahead_depth": self.async_decode_lookahead_depth,
-            # Whole-prompt prefill lookahead. The MOSS runner's post_prefill
-            # collects the first frame, and post_prefill_launch hands that
-            # snapshot to resolve instead of sampling a second time. Chunked or
-            # mixed prefills stay synchronous in the scheduler.
+            # note (Dino1844): Local launch reuses the first frame already collected by prefill.
             "async_prefill": self.enable_async_decode,
             "prefill_coalesce_requests": self.prefill_coalesce_requests,
             "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,

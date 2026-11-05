@@ -160,7 +160,7 @@ class Drama3ModelRunner(ModelRunner[Drama3RequestData]):
         row_count = len(rows)
         row_launch_key = tuple(rows)
         if row_launch_key != self.row_launch_key:
-            host_rows, _ = self.pinned_pingpong(
+            host_rows = self.pinned_pingpong(
                 "row_upload_buffers",
                 "row_upload_slot",
                 (row_count,),
