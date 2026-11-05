@@ -171,6 +171,15 @@ class Drama3PipelineConfig(PipelineConfig):
         ),
     ]
 
+    def resolved_stage_env_defaults(self, stage_name: str) -> dict[str, str]:
+        env_defaults = super().resolved_stage_env_defaults(stage_name)
+        if stage_name == "tts_engine":
+            env_defaults.setdefault("SGLANG_ENABLE_GDN_PREFILL_GRAPH_EXTEND", "1")
+            env_defaults.setdefault("SGLANG_ENABLE_GDN_FP32_PREFIX_SNAPSHOTS", "1")
+        else:
+            pass
+        return env_defaults
+
     def model_post_init(self, __context: object = None) -> None:
         super().model_post_init(__context)
         preprocessing_extra = (
