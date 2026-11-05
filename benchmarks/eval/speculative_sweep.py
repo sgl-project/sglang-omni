@@ -7,6 +7,8 @@ The summary gives, per concurrency, both sides' throughput, the gain, p95 latenc
 
 Set CUDA_VISIBLE_DEVICES to one GPU that nothing else uses: after each leg the managed server ends every process still using it. Arguments after -- go to the client, such as --stream to measure first output.
 
+TTS workloads save generated audio at every load, stop the TTS server, then start one ASR server per leg to score that audio. Transcription is outside the TTS performance measurement and uses --asr-model-path and --asr-concurrency.
+
 Usage:
 
     CUDA_VISIBLE_DEVICES=0 python -m benchmarks.eval.speculative_sweep \\
@@ -30,11 +32,13 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from benchmarks.benchmarker.utils import managed_omni_server
+from benchmarks.eval.speculative_tts import generate_tts, measure_tts
 from benchmarks.eval.speculative_workloads import (
     HOST,
     WORKLOADS,
     AsrWorkload,
     LoadSettings,
+    TtsWorkload,
     measure_asr,
     measure_transcribe_diarize,
 )
@@ -45,6 +49,10 @@ from benchmarks.metrics.speculative import (
     compare,
     read_server_log,
     render,
+)
+from benchmarks.tasks.asr import (
+    DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
+    QWEN3_ASR_MODEL_PATH,
 )
 from sglang_omni.config.manager import ConfigManager
 
@@ -74,6 +82,28 @@ DRIVER_CLIENT_FLAGS = (
     "--reuse-asr-results",
     "--asr-results-file",
     "--speed-results-file",
+)
+TTS_DRIVER_CLIENT_FLAGS = (
+    "--model",
+    "--meta",
+    "--testset",
+    "--generate-only",
+    "--transcribe-only",
+    "--similarity-only",
+    "--utmos-only",
+    "--sustained-overshoot",
+    "--request-rate",
+    "--asr-model-path",
+    "--asr-concurrency",
+)
+TTS_SERVER_CLIENT_FLAGS = (
+    "--quantization",
+    "--max-running-requests",
+    "--max-queued-requests",
+    "--cuda-graph-max-bs",
+    "--server-config",
+    "--server-timeout",
+    "--skip-gpu-cleanup",
 )
 
 
@@ -172,10 +202,32 @@ def run_leg(
             loads = measure_asr(
                 workload, settings, port=port, model_path=model_path, leg_dir=leg_dir
             )
+        elif isinstance(workload, TtsWorkload):
+            generate_tts(
+                workload, settings, port=port, model_path=model_path, leg_dir=leg_dir
+            )
         else:
             loads = measure_transcribe_diarize(
                 workload, settings, port=port, model_path=model_path, leg_dir=leg_dir
             )
+    if isinstance(workload, TtsWorkload):
+        with managed_omni_server(
+            model_path=args.asr_model_path,
+            port=port,
+            host=HOST,
+            log_file=leg_dir / "asr_server.log",
+        ):
+            loads = measure_tts(
+                workload,
+                settings,
+                port=port,
+                model_path=model_path,
+                asr_model_path=args.asr_model_path,
+                asr_concurrency=args.asr_concurrency,
+                leg_dir=leg_dir,
+            )
+    else:
+        pass
     return Leg(
         name=name,
         side=side,
@@ -197,6 +249,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--workload", choices=list(WORKLOADS), required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--asr-model-path",
+        default=QWEN3_ASR_MODEL_PATH,
+        help="ASR model used to score saved TTS audio after each TTS server stops.",
+    )
+    parser.add_argument(
+        "--asr-concurrency",
+        type=int,
+        default=DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
+        help="Transcription concurrency for TTS quality evaluation.",
+    )
     parser.add_argument(
         "--model-path", default=None, help="The config's model_path when omitted."
     )
@@ -245,6 +308,34 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         parser.error("set CUDA_VISIBLE_DEVICES to the one GPU the sweep owns")
     elif set(args.order) != set(SIDE_BY_LETTER):
         parser.error("--order needs at least one A and one B, and no other letters")
+    elif not args.concurrencies or any(value <= 0 for value in args.concurrencies):
+        parser.error("--concurrencies must contain positive integers")
+    elif len(set(args.concurrencies)) != len(args.concurrencies):
+        parser.error("--concurrencies must not contain duplicates")
+    elif args.repeats < 1 or args.asr_concurrency < 1:
+        parser.error("--repeats and --asr-concurrency must be positive")
+    elif args.max_samples is not None and args.max_samples < 1:
+        parser.error("--max-samples must be positive")
+    elif isinstance(WORKLOADS[args.workload], TtsWorkload) and any(
+        flag.startswith(argument.split("=")[0])
+        for argument in args.client_args
+        if argument.startswith("--")
+        for flag in TTS_SERVER_CLIENT_FLAGS
+    ):
+        parser.error(
+            "TTS server options cannot be passed after --. Set engine options in the "
+            "--draft-config YAML under stages.<stage>.engine; select the YAML with "
+            "--draft-config. Server timeout and GPU cleanup are controlled by the sweep."
+        )
+    elif isinstance(WORKLOADS[args.workload], TtsWorkload) and any(
+        flag.startswith(argument.split("=")[0])
+        for argument in args.client_args
+        if argument.startswith("--")
+        for flag in TTS_DRIVER_CLIENT_FLAGS
+    ):
+        parser.error(
+            "TTS client arguments must not override sweep routing, workload, load or phase settings"
+        )
     elif any(
         # note (wilsonzheng0327): argparse expands an unambiguous prefix, so --max-conc would reach the client as --max-concurrency.
         flag.startswith(argument.split("=")[0])

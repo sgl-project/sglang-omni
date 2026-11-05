@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 Side = Literal["baseline", "draft"]
@@ -36,6 +36,7 @@ class LoadMeasurement:
     first_output_latency_p95_s: float | None
     accuracy: dict[AccuracyMetric, float]
     gpu_memory_peak_mib: float | None
+    incomplete_reasons: list[str] = field(default_factory=list)
 
 
 @dataclass(kw_only=True)
@@ -65,6 +66,7 @@ class SideAtConcurrency:
     first_output_latencies_p95_s: list[float]
     accuracy: dict[AccuracyMetric, list[float]]
     failed_requests: int
+    incomplete_reasons: list[str] = field(default_factory=list)
 
 
 @dataclass(kw_only=True)
@@ -154,6 +156,9 @@ def compare(legs: list[Leg], *, k_gain: float) -> Comparison:
     for leg in legs:
         for load in leg.loads:
             measured = sides[(leg.side, load.concurrency)]
+            measured.incomplete_reasons.extend(
+                f"{leg.name}: {reason}" for reason in load.incomplete_reasons
+            )
             for values, value in (
                 (measured.throughputs, load.throughput_requests_per_s),
                 (measured.latencies_p95_s, load.latency_p95_s),
@@ -189,6 +194,8 @@ def compare(legs: list[Leg], *, k_gain: float) -> Comparison:
                 # note (wilsonzheng0327): throughput and p95 count only the requests that finished, so a load where any failed cannot qualify.
                 is_complete=baseline.failed_requests == 0
                 and draft.failed_requests == 0
+                and not baseline.incomplete_reasons
+                and not draft.incomplete_reasons
                 and gain is not None
                 and latency_ratio is not None,
             )
@@ -319,7 +326,7 @@ def render(comparison: Comparison, legs: list[Leg], *, title: str) -> str:
         f"- k, the highest complete concurrency with at least {K_GAIN}x: {comparison.k if comparison.k is not None else 'none'}",
         f"- Worse than no draft (throughput under {NEVER_WORSE_THROUGHPUT_RATIO}x, or p95 or first-output p95 over {NEVER_WORSE_LATENCY_RATIO}x): "
         f"{', '.join(f'c{concurrency}' for concurrency in comparison.worse_concurrencies) or 'none'}",
-        "- Incomplete, so left out of k and the never-worse check (failed requests or missing numbers): "
+        "- Incomplete, so left out of k and the never-worse check (failed requests, missing numbers or incomplete evaluation): "
         f"{', '.join(f'c{concurrency}' for concurrency in comparison.incomplete_concurrencies) or 'none'}",
         "- Prompt tokens served from the prefix cache, which repeated prompts inflate: "
         + ", ".join(
@@ -327,6 +334,11 @@ def render(comparison: Comparison, legs: list[Leg], *, title: str) -> str:
             for leg in legs
         ),
     ]
+    for row in comparison.rows:
+        for side in (row.baseline, row.draft):
+            lines.extend(
+                f"- c{row.concurrency}: {reason}" for reason in side.incomplete_reasons
+            )
     accuracy_by_side = {
         metric: {
             "baseline": [

@@ -37,7 +37,17 @@ class TranscribeDiarizeWorkload:
     dataset: str
 
 
-WORKLOADS: dict[str, AsrWorkload | TranscribeDiarizeWorkload] = {
+@dataclass(frozen=True, kw_only=True)
+class TtsWorkload:
+    """SeedTTS synthesis followed by transcription after the TTS server stops."""
+
+    language: Literal["en", "zh"]
+    error_rate: Literal["WER", "CER"]
+
+
+WORKLOADS: dict[str, AsrWorkload | TranscribeDiarizeWorkload | TtsWorkload] = {
+    "tts-seedtts-en": TtsWorkload(language="en", error_rate="WER"),
+    "tts-seedtts-zh": TtsWorkload(language="zh", error_rate="CER"),
     "seedtts-en": AsrWorkload(
         client="benchmarks.eval.benchmark_asr_seedtts",
         client_arguments=("--lang", "en"),
