@@ -181,15 +181,22 @@ def test_the_modelled_frame_interval_stops_improving_below_the_arrival_crossover
     assert heavy[0] > heavy[1] > heavy[2]
 
 
-def test_a_burst_stalls_far_less_than_a_constant_interval_of_the_same_mean() -> None:
-    """Why a mean frame interval cannot decide this: the same mean, delivered in runs, stalls less."""
+def test_the_stall_follows_the_prefills_before_the_window_that_binds() -> None:
+    """Not the mean frame interval: the mean barely moves while the stall falls by a factor of four."""
     policy = cadence(longest_interval=64, is_latency_driven=True)
     policy.observe_prefill(0.022, 1)
     policy.observe_prefill(0.087, 24)
     policy.frames_decoded, policy.requests_admitted = 8400, 100
-    mean_s = policy.modelled_frame_interval_s(32, 0.0214, 39.7)
-    constant_s = worst_stall_s(mean_s, DEFAULT_WINDOWS, FOLLOWUP_WINDOW, 0.0, 84)
-    assert policy.worst_burst_stall_s(32, 0.0214, 39.7) < constant_s / 2
+    means = [policy.modelled_frame_interval_s(level, 0.0214, 39.7) for level in (16, 32)]
+    stalls = [policy.worst_burst_stall_s(level, 0.0214, 39.7) for level in (16, 32)]
+    assert means[0] / means[1] < 1.05
+    assert stalls[0] / stalls[1] > 3
+
+
+def test_the_last_window_is_cut_to_the_frames_a_request_produces() -> None:
+    policy = cadence(longest_interval=64, is_latency_driven=True)
+    policy.frames_decoded, policy.requests_admitted = 8400, 100
+    assert policy.window_ends()[-1] == 84
 
 
 def test_a_longer_run_of_frames_hides_more_of_the_prefill() -> None:

@@ -73,7 +73,9 @@ def worst_stall_s(
         if window_ends and window_ends[-1] >= frame_count:
             break
         else:
-            window_ends.append((window_ends[-1] if window_ends else 0) + window)
+            window_ends.append(
+                min(frame_count, (window_ends[-1] if window_ends else 0) + window)
+            )
     playback_end_s = (
         window_ends[0] * frame_interval_s
         + vocoder_s
@@ -252,6 +254,7 @@ class PrefillCadence:
         return step_s / (1 - min(0.9, prefills * prefill_s))
 
     def window_ends(self) -> list[int]:
+        """Frame each window ends on, the last one cut to the frames a request actually produces."""
         config = self.config
         frames = max(config.followup_window, int(self.frames_per_request()) or 120)
         ends: list[int] = []
@@ -263,7 +266,7 @@ class PrefillCadence:
             if ends and ends[-1] >= frames:
                 break
             else:
-                ends.append((ends[-1] if ends else 0) + window)
+                ends.append(min(frames, (ends[-1] if ends else 0) + window))
         return ends
 
     def worst_burst_stall_s(
@@ -274,7 +277,10 @@ class PrefillCadence:
         Frame k is ready at k * step + the prefills that fell before it. A window is decoded once
         its last frame is in, and the stream plays what it already has meanwhile, so the stalls that
         matter are in the opening ramp: window 2 needs ten more frames where window 1 bought four
-        frames of audio. A run longer than that ramp hides the prefill entirely.
+        frames of audio, and on the default schedule the window ending at frame 58 binds hardest.
+        What decides that stall is the prefill time accumulated before that frame, floor(57 / run)
+        prefills, not the mean frame interval over the whole request: a longer run puts fewer
+        prefills before it even though each one is longer.
         """
         prefill_s, _, burst_frames = self.settle(interval, step_s, arrival_rate)
         ready = lambda frame: frame * step_s + int((frame - 1) / burst_frames) * prefill_s  # noqa: E731
