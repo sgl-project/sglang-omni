@@ -37,18 +37,18 @@ func TestLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	pcm := tone(2500*time.Millisecond, 0.3)
-	for _, fr := range asr.Frames(pcm, 100*time.Millisecond, 16000) {
-		if err := st.Send(fr); err != nil {
-			t.Fatal(err)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	sendAll(t, st, pcm)
 	// Partials come while the audio does.
-	eventually(t, "a partial", func() bool { return len(st.Events()) > 0 })
+	var first asr.Event
+	select {
+	case first = <-st.Events():
+	case <-time.After(10 * time.Second):
+		t.Fatal("no partial before Finish")
+	}
 	if err := st.Finish(); err != nil {
 		t.Fatal(err)
 	}
-	evs := drain(t, st)
+	evs := append([]asr.Event{first}, drain(t, st)...)
 	if len(evs) < 2 {
 		t.Fatalf("events %+v", evs)
 	}
@@ -66,8 +66,8 @@ func TestLive(t *testing.T) {
 	if len(finals) != 1 || finals[0].Samples != 40000 || finals[0].Fields["prompt"] != "VoxtNew" || finals[0].Fields["language"] != "zh" {
 		t.Errorf("finals %+v", finals)
 	}
-	eventually(t, "the live record", func() bool { return len(f.records("live")) == 1 })
-	if l := f.records("live")[0]; l.Fields["language"] != "zh" || l.Samples == 0 {
+	f.rt.Close() // the server records its live sessions before it exits
+	if l := f.records("live"); len(l) != 1 || l[0].Fields["language"] != "zh" || l[0].Samples == 0 {
 		t.Errorf("live %+v", l)
 	}
 	if err := st.Send(pcm[:3200]); err == nil {
