@@ -117,6 +117,13 @@ class SenseNovaU1SamplingParams(SamplingParams):
                 )
             else:
                 pass
+            if "<IMG_CONTEXT>" in self.prompt:
+                raise ValueError(
+                    "SenseNova editing prompts must not contain <IMG_CONTEXT>; "
+                    "use <image> to reference an input image"
+                )
+            else:
+                pass
             reference_count = (
                 len(self.image_path) if isinstance(self.image_path, list) else 1
             )

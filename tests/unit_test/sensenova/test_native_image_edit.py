@@ -157,22 +157,55 @@ def test_invalid_edit_parameters_are_rejected(
 
 
 @pytest.mark.parametrize("image_path", ["reference.png", ["first.png", "second.png"]])
-def test_edit_rejects_excess_image_placeholders(image_path: str | list[str]) -> None:
-    with pytest.raises(
-        ValueError, match="more image placeholders than reference images"
-    ):
-        SenseNovaU1SamplingParams(prompt="<image><image><image>", image_path=image_path)
+@pytest.mark.parametrize(
+    "prompt,error_message",
+    [
+        ("<image><image><image>", "more image placeholders than reference images"),
+        ("Write <IMG_CONTEXT> on the sign", "must not contain <IMG_CONTEXT>"),
+    ],
+)
+def test_edit_rejects_invalid_image_tokens(
+    image_path: str | list[str], prompt: str, error_message: str
+) -> None:
+    with pytest.raises(ValueError, match=error_message):
+        SenseNovaU1SamplingParams(prompt=prompt, image_path=image_path)
 
 
-@pytest.mark.parametrize("prompt", ["edit", "<image> edit", "<image><image> edit"])
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "edit",
+        "<image> edit",
+        "<image><image> edit",
+        "Write <img> on the sign",
+        "Write </img> on the sign",
+    ],
+)
 def test_edit_accepts_implicit_and_explicit_references(prompt: str) -> None:
     SenseNovaU1SamplingParams(prompt=prompt, image_path=["first.png", "second.png"])
 
 
-def test_edit_api_rejects_excess_placeholders_before_dispatch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "prompt,error_message",
+    [
+        (
+            "<image><image> edit",
+            "Prompt has more image placeholders than reference images",
+        ),
+        (
+            "Write <IMG_CONTEXT> on the sign",
+            "SenseNova editing prompts must not contain <IMG_CONTEXT>; "
+            "use <image> to reference an input image",
+        ),
+    ],
+)
+def test_edit_api_rejects_invalid_image_tokens_before_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    prompt: str,
+    error_message: str,
 ) -> None:
-    """Excess placeholders used to fail in the worker and surface as HTTP 500."""
+    """Invalid image tokens must be rejected before reaching the worker."""
     server_args = SimpleNamespace(
         model_path=str(tmp_path),
         pipeline_class_name="SenseNovaU1Pipeline",
@@ -191,13 +224,11 @@ def test_edit_api_rejects_excess_placeholders_before_dispatch(
     with TestClient(app, raise_server_exceptions=False) as client:
         response = client.post(
             "/v1/images/edits",
-            data={"prompt": "<image><image> edit", "generator_device": "cpu"},
+            data={"prompt": prompt, "generator_device": "cpu"},
             files={"image": ("reference.png", image_bytes.getvalue(), "image/png")},
         )
     assert response.status_code == 400, response.text
-    assert response.json()["detail"] == (
-        "Prompt has more image placeholders than reference images"
-    )
+    assert response.json()["detail"] == error_message
     dispatch.assert_not_called()
 
 
