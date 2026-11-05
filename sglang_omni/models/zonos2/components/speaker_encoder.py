@@ -118,7 +118,7 @@ class Qwen3SpeakerEmbedding(nn.Module):
             # one graph across variable audio lengths instead of per-length recompiles.
             torch._dynamo.mark_dynamic(
                 mel, 1
-            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            )  # noqa: SLF001  # leading-underscore: upstream private spelling
         else:
             pass
         return self.model(input_values=mel).last_hidden_state.to(torch.float32)
