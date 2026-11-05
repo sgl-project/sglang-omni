@@ -11,7 +11,7 @@ first.
 
 | Checkpoint | Runtime | Voxt behavior kept |
 | --- | --- | --- |
-| `mlx-community/Qwen3-ASR-0.6B-4bit`, `mlx-community/Qwen3-ASR-1.7B-6bit`, `mlx-community/Qwen3-ASR-1.7B-8bit` | `qwen3_asr_server` | Final with context bias and language hint, Swift's audio layout and stop rules, 1200 s energy-cut chunks sharing one token budget, first detected language carried forward; live preview over the realtime socket, first decode after 100 ms of audio, then once a second |
+| `mlx-community/Qwen3-ASR-0.6B-4bit`, `mlx-community/Qwen3-ASR-1.7B-6bit`, `mlx-community/Qwen3-ASR-1.7B-8bit` | `qwen3_asr_server` | Final with context bias and language hint, Swift's audio layout and stop rules, 1200 s energy-cut chunks sharing one token budget, first detected language carried forward; live preview over the realtime socket, first decode after 100 ms of audio, then once a second; each checkpoint can verify its DFlash draft (`--draft-model-path`; `wilsonzheng0327/Qwen3-ASR-0.6B-dflash` for the 0.6B, `wilsonzheng0327/Qwen3-ASR-1.7B-dflash` for the 1.7B), decoding several tokens per step with the same greedy transcript |
 | `mlx-community/whisper-large-v3-turbo` | `whisper_server` | Final and batch preview with Voxt's language, token budget, temperature, and 30 s audio windows |
 | `mlx-community/whisper-large-v3-mlx` | `whisper_server` | Final and batch preview with Voxt's language, token budget, temperature, and 30 s audio windows; weights load from `weights.npz` |
 | `mlx-community/whisper-small-mlx` | `whisper_server` | Final and batch preview with Voxt's language, token budget, temperature, and 30 s audio windows |
@@ -30,6 +30,12 @@ see the [Music3 cookbook](../../docs/cookbook/minimax_music3.md#apple-silicon-na
 for checkpoint provisioning, request fields, reference parity and waveform
 goldens. Voxt's ASR model selection is unchanged.
 
+It also builds `fishaudio_drama3_server` and `fishaudio_drama3_synthesize` for Fish
+Audio Drama 3 text-to-speech, served through `/v1/audio/speech` with the speech
+API `voxtral_tts_server` uses (`qwen3_asr/speech_service`); see the
+[Drama 3 cookbook](../../docs/cookbook/fishaudio_drama3.md#apple-silicon-native-mlx).
+Voxt does not start it.
+
 ## Build and run
 
 Requirements: an Apple Silicon Mac, Xcode and [uv](https://docs.astral.sh/uv/).
@@ -46,9 +52,8 @@ Voxt/backend/run_omni_dev.sh run
 `moss_transcribe_diarize_server`, `moss_transcribe`, `nemotron_asr_server`,
 `nemotron_transcribe`, `parakeet_server`, `parakeet_transcribe`,
 `sensevoice_server`, `sensevoice_transcribe`, `voxtral_tts_server`,
-`voxtral_tts_synthesize`, `qwen3_tts_server`, `qwen3_tts_synthesize`, and the
-pinned MLX library
-and Metal kernels next to them.
+`voxtral_tts_synthesize`, `qwen3_tts_server`, `qwen3_tts_synthesize`,
+`cosyvoice3_server`, `cosyvoice3_synthesize`, `music3_server`, `music3_synthesize`, `fishaudio_drama3_server`, `fishaudio_drama3_synthesize`, and the pinned MLX library and Metal kernels next to them.
 
 "Voxt Omni Dev" has its own bundle identifier. It runs without the sandbox so it
 can start the runtime, and it sees `~/.voxt-omni-dev` as its home, so its
@@ -76,8 +81,9 @@ and quitting stops it.
 - The Qwen3-ASR server API:
   - `/health` with `request_states`;
   - `/v1/models`;
-  - `/v1/audio/transcriptions` (JSON or SSE);
+  - `/v1/audio/transcriptions` (JSON or SSE), whose optional `repetition_penalty` (positive, default 1 = off; Voxt does not send it) scales down the logits of tokens already generated, as SGLang's sampler does on CUDA, to break runaway token loops;
   - the `/v1/realtime` manual-turn socket.
+- Qwen3-ASR's `/v1/audio/transcriptions` stops greedy decoding at a token loop (the last 24 tokens use at most 3 distinct ids) unless the request sends `stop_on_token_loop=false`, and the text keeps one copy of the repeated unit. `qwen3_asr_transcribe` does so only with `--stop-on-token-loop`. Realtime refreshes run without the guard.
 - `Voxt/Transcription/Omni*.swift` is the client:
   - `OmniASRRuntime` handles launch, requests, and an awaitable retire that drains in-flight work.
   - It also contains the request planning, the live session and its adapter to Voxt's streaming session interface.
@@ -85,11 +91,11 @@ and quitting stops it.
 
 ## Tests and CI
 
-- Runtime correctness is checked by `sglang_omni_mlx/native/ci`:
+- Runtime correctness is checked by hand with `sglang_omni_mlx/native/ci`:
   - `provision.py` fetches the pinned checkpoint and rebuilds the frozen corpus from its public sources, checking every file's SHA-256.
   - `check_golden.py` runs the runtime over the 392-clip corpus with Voxt's Final request and requires every clip to match the golden output. It reports error rates next to the original Swift backend's.
   - Silero VAD and Sortformer golden files hold the original Swift outputs; `vad_golden.py` and `sortformer_golden.py` check them with tolerances for MLX kernel differences.
-- The `Voxt Mac CI` workflow runs these on the repository's Apple Silicon runner, together with the server API tests and Voxt's Omni unit tests.
+- The `Voxt Mac CI` workflow runs none of these and no model. On GitHub's macOS runners it builds the runtime and runs `sglang_omni_mlx/native/tests`: the protocol every server shares, on `stub_server` with stand-in models; each server's model kinds and startup checks; and that the installed runtime links only the system and itself. It also runs Voxt's Omni unit tests.
 - The Whisper check pins its checkpoint and tokenizer, runs all 392 frozen clips through `check_model_golden.py`, and tests the transcription server. Its golden keeps per-chip outputs with `check_golden.py`'s tolerance, and records the original Swift backend's error rates as its baseline.
 - The Cohere check pins its checkpoint and Silero VAD v6, runs the same frozen corpus through `check_model_golden.py`, and tests the server. Its golden keeps per-chip outputs with the same tolerance, and records the original Swift backend's error rates as its baseline; a second golden freezes the energy cut's multi-chunk path on the long clips.
 - Voxt's opt-in suites need the installed model and `VOXT_RUN_MODEL_TESTS=1`:
@@ -110,6 +116,7 @@ the `.xctestrun` file.
 ## Known limitations
 
 - Greedy decoding only.
+- Qwen3-ASR's token-loop guard misses a loop whose repeated unit has more than 3 distinct tokens.
 - Whisper uses batch preview; its server has no realtime socket.
 - Cohere uses batch preview until a native streaming session is implemented.
 - The dev build is ad hoc signed without keychain access groups, so remote
