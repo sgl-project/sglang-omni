@@ -68,7 +68,6 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         algorithm="DSPARK",
         draft_model_path="yuekai/cosyvoice3_llm_dspark",
         draft_model_revision="0b1b28dbb751bac3b74eea5dcc11e0570c91563b",
-        engine_settings={"speculative_dspark_block_size": 7},
         license=None,
     ),
     PinnedDraft(
