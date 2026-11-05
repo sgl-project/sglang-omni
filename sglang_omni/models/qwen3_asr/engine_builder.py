@@ -549,7 +549,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             context_length=self.context_length,
             audio_encoder_service=self.audio_encoder_service,
             should_wait_for_encode=self.should_wait_for_encode,
-            greedy_only=self.uses_torch_mps() or self.draft_checkpoint is not None,
+            greedy_only=self.uses_torch_mps(),
         )
 
     def make_abort_callback(self) -> Callable[[str], None] | None:
