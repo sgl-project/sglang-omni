@@ -2050,7 +2050,6 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             capacity_hint = " Try raising engine.mem_fraction_static."
 
-
         return (
             "Request requires more tokens than the thinker KV cache can hold "
             f"(input_tokens={input_len}, max_new_tokens={max_new_tokens}, "
