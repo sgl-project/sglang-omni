@@ -240,9 +240,10 @@ def test_acoustic_seed_and_cancellation(model: Yue2Model) -> None:
 def test_tiled_vae_preserves_full_waveform_and_tail() -> None:
     decoder = DecoderConfig(channels=2, c_mults=[1, 2], strides=[2, 2])
     vae = Yue2Vae(VaeConfig(decoder_config=decoder, downsampling_ratio=4)).eval()
-    latents = torch.randn(1, 64, 140)
+    torch.manual_seed(42)
+    latents = torch.randn(1, 64, 400)
     expected = vae.decoder(latents).clamp(-1, 1)
-    actual = vae.decode_tiled(latents, 31, 128, lambda: False)
+    actual = vae.decode_tiled(latents, 31, vae.required_halo(31), lambda: False)
     assert actual.shape == expected.shape
     torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
     with pytest.raises(ValueError, match="halo"):
