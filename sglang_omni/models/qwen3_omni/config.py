@@ -398,7 +398,7 @@ class Qwen3OmniBasePipelineConfig(PipelineConfig):
         # note (ratish): OpenMP threads spin after each region, and a request's regions are short and far apart, so that spin is most of this stage's CPU and does no work.
         env_defaults.setdefault("OMP_WAIT_POLICY", "PASSIVE")
         if "OMP_NUM_THREADS" not in env_defaults:
-            video_threads = max(self.stage_named(stage_name).factory.max_concurrency, 1)
+            video_threads = self.stage_named(stage_name).factory.max_concurrency
             env_defaults["OMP_NUM_THREADS"] = str(
                 max(effective_cpu_count() // video_threads, 1)
             )
