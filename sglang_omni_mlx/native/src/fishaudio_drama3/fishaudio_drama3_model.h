@@ -16,7 +16,7 @@
 
 #include "common/layers.h"
 #include "common/tokenizer.h"
-#include "fishaudio_drama3/fishaudio_drama3_codec.h"
+#include "fish_dac/fish_dac.h"
 #include "fishaudio_drama3/fishaudio_drama3_prompt.h"
 #include "mlx/mlx.h"
 #include "qwen3_asr/qwen3_asr_transcriber.h"
@@ -44,7 +44,7 @@ struct SynthesisResult {
   int frame_count = 0;
 };
 
-// A reference: mono samples at kCodecSampleRate or codes [codebooks][frames],
+// A reference: mono samples at the codec's rate or codes [codebooks][frames],
 // and its transcript.
 struct ReferenceInput {
   std::string text;
@@ -76,7 +76,7 @@ public:
   explicit Drama3Model(const std::filesystem::path &model_directory);
 
   const omni_common::Tokenizer &tokenizer() const { return tokenizer_; }
-  const AudioCodec &codec() const { return codec_; }
+  const fish_dac::AudioCodec &codec() const { return codec_; }
   int codebook_count() const { return codebook_count_; }
   int codebook_size() const { return codebook_size_; }
   int semantic_begin() const { return semantic_begin_; }
@@ -162,7 +162,7 @@ private:
   nlohmann::json config_;
   omni_common::Checkpoint checkpoint_;
   omni_common::Tokenizer tokenizer_;
-  AudioCodec codec_;
+  fish_dac::AudioCodec codec_;
   int layer_count_;
   float rms_norm_eps_;
   int attention_head_count_;

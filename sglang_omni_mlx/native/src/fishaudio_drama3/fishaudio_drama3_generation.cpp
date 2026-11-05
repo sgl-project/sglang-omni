@@ -335,7 +335,7 @@ SynthesisResult Drama3Model::Synthesize(
     const std::function<void(const mx::array &)> &on_frame,
     const std::function<void(std::vector<float>)> &on_audio) {
   const std::vector<std::string> chunks = SplitText(text);
-  CodecStream codec_stream(codec_);
+  fish_dac::CodecStream codec_stream(codec_);
   const auto decode = [&](const std::vector<mx::array> &codes, size_t begin,
                           size_t end) {
     std::vector<float> audio;

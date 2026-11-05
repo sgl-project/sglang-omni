@@ -7,7 +7,7 @@ Rules for Apple Silicon work. They write down what the native runtime PRs under
 
 | Path | Contents |
 | --- | --- |
-| `sglang_omni_mlx/native/` | C++ runtime on MLX: one server binary per model, a parity CLI per model in `tools/`. Each model's code is in `src/<model>/`; code shared across models (`audio`, `form`, `layers`, `npz`, `tokenizer`, built as the `common` library, plus `swift_port` and `http`) is in `src/common/`. The shared ASR server code (`asr_service`, `worker`, `realtime`) is still in `src/qwen3_asr/`, and so is the `/v1/audio/speech` API that `voxtral_tts_server` and `fishaudio_drama3_server` share (`speech_service`), built on `asr_service`. |
+| `sglang_omni_mlx/native/` | C++ runtime on MLX: one server binary per model, a parity CLI per model in `tools/`. Each model's code is in `src/<model>/`; code shared across models (`audio`, `form`, `layers`, `npz`, `reference_audio`, `tokenizer`, built as the `common` library, plus `swift_port` and `http`) is in `src/common/`. The shared ASR server code (`asr_service`, `worker`, `realtime`) is still in `src/qwen3_asr/`, and so is the `/v1/audio/speech` API that `voxtral_tts_server`, `fishaudio_drama3_server` and `fish_s2_pro_server` share (`speech_service`), built on `asr_service`. |
 | `sglang_omni_mlx/native/ci/` | Model pins, the 392-clip corpus, golden outputs, server API tests. |
 | `sglang_omni_mlx/<model>/` | Python MLX servers, e.g. the Qwen3-ASR reference server. |
 | `Voxt/` | The macOS app that runs the native servers. See [`Voxt/backend/README.md`](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/backend/README.md). |
@@ -59,12 +59,12 @@ Both drafts are pinned in `ci/models.json`. A draft for another target is one pi
   and a server on the shared `asr_service` (a speech model's on
   `speech_service`), a CLI in `tools/`, and CMake
   targets: a library for the model's own sources that links what it reuses
-  (`common`, `swift_port`, `silero_vad`, `sortformer`). Shared code goes in
+  (`common`, `swift_port`, `silero_vad`, `sortformer`, `fish_dac`). Shared code goes in
   `src/common/`, not in another model's directory or library. Include project
   headers by their path under `src/`, e.g. `#include "common/layers.h"`.
 - Shared audio, checkpoint/layer, tokenizer and multipart APIs use the `omni_common` namespace and the `common` library. HTTP helpers use `omni_server` and the `common_http` library; neither library depends on a model. Qwen3-ASR audio layouts, log-mel extraction and encoder token counts belong to `qwen3_asr/qwen3_audio.h`. Shared decoder and ASR serving types still live under `qwen3_asr/`; their extraction is separate from the common primitive APIs.
-- Reuse `layers`, `swift_port`, the Sortformer front end and the Silero VAD
-  port. If your code duplicates something on `main`, move it into the shared
+- Reuse `layers`, `swift_port`, the Sortformer front end, the Silero VAD
+  port and the Fish DAC. If your code duplicates something on `main`, move it into the shared
   file in the same PR.
 - Voxt changes stay in `Omni*.swift`, `VoxtTests/Omni*` and `Voxt/backend/`,
   plus minimal routing edits.
