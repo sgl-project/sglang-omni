@@ -102,8 +102,6 @@ extension OnboardingGuideView {
         case .localLLM(let repo): return customLLMManager.isModelDownloaded(repo: repo)
         case .remoteLLM(let provider):
             return RemoteModelConfigurationStore.isStoredLLMConfigurationConfigured(provider: provider, stored: remoteLLMConfigurations)
-        case .localGGUF(let id):
-            return AppDelegate.shared?.ggufTranslationModelManager.isModelDownloaded(id: id) == true
         case .none: return false
         }
     }
@@ -237,8 +235,6 @@ extension OnboardingGuideView {
 
     func translationSelectionSummary(_ selectionID: FeatureModelSelectionID) -> String {
         switch selectionID.translationSelection {
-        case .localGGUF(let modelID):
-            return GGUFTranslationModelCatalog.option(for: modelID).title
         case .localLLM, .remoteLLM:
             return llmSelectionSummary(selectionID)
         case .none:

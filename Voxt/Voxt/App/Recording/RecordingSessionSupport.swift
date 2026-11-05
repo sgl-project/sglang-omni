@@ -40,8 +40,6 @@ enum RecordingSessionSupport {
             switch translationSettings.modelSelectionID.translationSelection {
             case .localLLM(let repo):
                 return "translation: local-llm(\(repo))"
-            case .localGGUF(let modelID):
-                return "translation: local-gguf(\(modelID.rawValue))"
             case .remoteLLM(let provider):
                 return "translation: remote-llm(\(provider.rawValue))"
             case .none:

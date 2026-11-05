@@ -6,7 +6,7 @@ Voxt no longer imports, loads or links MLXAudioSTT, MLXAudioVAD or MLXAudioCore.
 
 The shared `sglang_omni_mlx/native` package must remain the officially merged implementation. XPC and the task-added C ABI/engine/lifetime changes are withdrawn, not future production gates. App-side protocol conversion, process ownership and cooperating model-directory readers remain. Preserve the original family options/longform behavior, model catalog, saved choices, installations and `model-storage/mlx-audio/...` paths. That storage name is not a package dependency.
 
-Removing Audio does not mean removing MLX. Keep MLX Swift LLM/VLM/MLX, llama.swift, Tokenizers/HuggingFace and Remote ASR/LLM. Identity-only model fixtures in lifecycle tests cannot perform inference and are not numerical fallbacks.
+Removing Audio does not mean removing MLX. Keep MLX Swift LLM/VLM/MLX, Tokenizers/HuggingFace and Remote ASR/LLM. Identity-only model fixtures in lifecycle tests cannot perform inference and are not numerical fallbacks.
 
 ## Retained compatibility set
 

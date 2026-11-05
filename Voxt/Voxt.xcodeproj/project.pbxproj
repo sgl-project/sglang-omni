@@ -14,7 +14,6 @@
 		A0BC00000000000000000121 /* HuggingFace in Frameworks */ = {isa = PBXBuildFile; productRef = A0BC00000000000000000122 /* HuggingFace */; };
 		AABBCCDDEEFF001122334457 /* Logging in Frameworks */ = {isa = PBXBuildFile; productRef = AABBCCDDEEFF001122334456 /* Logging */; };
 		B1C2D3E4F5060708090A0B0C /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = B1C2D3E4F5060708090A0B0D /* Sparkle */; };
-		BB11CC22DD33EE44FF556671 /* LlamaSwift in Frameworks */ = {isa = PBXBuildFile; productRef = BB11CC22DD33EE44FF556672 /* LlamaSwift */; };
 		C1D2E3F4A5060708090A0B01 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = C1D2E3F4A5060708090A0B02 /* MLXLMCommon */; };
 		C1D2E3F4A5060708090A0B04 /* MLXVLM in Frameworks */ = {isa = PBXBuildFile; productRef = C1D2E3F4A5060708090A0B05 /* MLXVLM */; };
 		C1D2E3F4A5060708090A0B06 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = C1D2E3F4A5060708090A0B07 /* MLXLLM */; };
@@ -148,7 +147,6 @@
 				A0BC00000000000000000111 /* MLX in Frameworks */,
 				A0BC00000000000000000121 /* HuggingFace in Frameworks */,
 				B1C2D3E4F5060708090A0B0C /* Sparkle in Frameworks */,
-				BB11CC22DD33EE44FF556671 /* LlamaSwift in Frameworks */,
 				C1D2E3F4A5060708090A0B01 /* MLXLMCommon in Frameworks */,
 				C1D2E3F4A5060708090A0B04 /* MLXVLM in Frameworks */,
 				C1D2E3F4A5060708090A0B06 /* MLXLLM in Frameworks */,
@@ -262,7 +260,6 @@
 				A0BC00000000000000000102 /* Tokenizers */,
 				A0BC00000000000000000112 /* MLX */,
 				A0BC00000000000000000122 /* HuggingFace */,
-				BB11CC22DD33EE44FF556672 /* LlamaSwift */,
 				B1C2D3E4F5060708090A0B0D /* Sparkle */,
 				C1D2E3F4A5060708090A0B02 /* MLXLMCommon */,
 				C1D2E3F4A5060708090A0B05 /* MLXVLM */,
@@ -339,7 +336,6 @@
 				F1A2B3C4D5E6F708090A0B0E /* XCRemoteSwiftPackageReference "FaviconFinder" */,
 				FA11DBA2FA11DBA2FA11DBA2 /* XCRemoteSwiftPackageReference "GRDB.swift" */,
 				AABBCCDDEEFF001122334455 /* XCRemoteSwiftPackageReference "swift-log" */,
-				BB11CC22DD33EE44FF556670 /* XCRemoteSwiftPackageReference "llama.swift" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 31F19CCE2F4D76D200E96913 /* Products */;
@@ -1034,14 +1030,6 @@
 				version = 2.10.0;
 			};
 		};
-		BB11CC22DD33EE44FF556670 /* XCRemoteSwiftPackageReference "llama.swift" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/mattt/llama.swift.git";
-			requirement = {
-				kind = exactVersion;
-				version = 2.10549.0;
-			};
-		};
 		C1D2E3F4A5060708090A0B03 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/ml-explore/mlx-swift-lm.git";
@@ -1101,11 +1089,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = B1C2D3E4F5060708090A0B0E /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
-		};
-		BB11CC22DD33EE44FF556672 /* LlamaSwift */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = BB11CC22DD33EE44FF556670 /* XCRemoteSwiftPackageReference "llama.swift" */;
-			productName = LlamaSwift;
 		};
 		C1D2E3F4A5060708090A0B02 /* MLXLMCommon */ = {
 			isa = XCSwiftPackageProductDependency;

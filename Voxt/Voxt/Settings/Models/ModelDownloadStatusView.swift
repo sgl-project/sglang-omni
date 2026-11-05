@@ -134,41 +134,6 @@ struct ModelDownloadStatusSnapshot: Equatable {
             return nil
         }
     }
-
-    static func fromGGUFState(_ state: GGUFTranslationModelManager.ModelState, pauseMessage: String? = nil) -> Self? {
-        switch state {
-        case .downloading(let progress, let completed, let total, let currentFile, let completedFiles, let totalFiles):
-            return .init(
-                progress: progress,
-                isPaused: false,
-                kind: .standard,
-                completed: completed,
-                total: total,
-                currentFile: currentFile,
-                currentFileCompleted: 0,
-                currentFileTotal: 0,
-                completedFiles: completedFiles,
-                totalFiles: totalFiles,
-                pauseMessage: nil
-            )
-        case .paused(let progress, let completed, let total, let currentFile, let completedFiles, let totalFiles):
-            return .init(
-                progress: progress,
-                isPaused: true,
-                kind: .standard,
-                completed: completed,
-                total: total,
-                currentFile: currentFile,
-                currentFileCompleted: 0,
-                currentFileTotal: 0,
-                completedFiles: completedFiles,
-                totalFiles: totalFiles,
-                pauseMessage: pauseMessage
-            )
-        default:
-            return nil
-        }
-    }
 }
 
 struct ModelDownloadStatusView: View {

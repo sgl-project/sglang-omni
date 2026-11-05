@@ -29,15 +29,6 @@
       }
     },
     {
-      "identity" : "llama.swift",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/mattt/llama.swift.git",
-      "state" : {
-        "revision" : "716419d4d7aa542fce301e809cde7234c68ddbc6",
-        "version" : "2.10549.0"
-      }
-    },
-    {
       "identity" : "mlx-swift",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/ml-explore/mlx-swift",

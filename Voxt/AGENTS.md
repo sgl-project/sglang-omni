@@ -41,7 +41,7 @@ For local signing, copy `Config/Signing.local.xcconfig.example` to `Config/Signi
 
 ## Dependencies
 
-Swift package dependencies are resolved through the Xcode project. Direct package references include mlx-swift-lm, mlx-swift, Tokenizers, HuggingFace, OmniModelArtifacts, llama.swift, GRDB, swift-log, Sparkle, PermissionFlow, and FaviconFinder. MLX Audio is retired; do not restore its products or package pin. The MLX Audio dependency policy is documented in `docs/MLXAudioDependency.md`.
+Swift package dependencies are resolved through the Xcode project. Direct package references include mlx-swift-lm, mlx-swift, Tokenizers, HuggingFace, OmniModelArtifacts, GRDB, swift-log, Sparkle, PermissionFlow, and FaviconFinder. MLX Audio is retired; do not restore its products or package pin. The MLX Audio dependency policy is documented in `docs/MLXAudioDependency.md`. What each package is used for, and what would allow removing it, is in the Swift package dependencies section of `docs/Architecture.md`; update that table when adding or removing a package.
 
 ## Architecture And Documentation
 

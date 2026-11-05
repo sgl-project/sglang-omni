@@ -151,6 +151,24 @@ final class FeatureModelCatalogBuilderTests: MLXModelManagerTestCase {
         )
     }
 
+    func testHyMT2TranslationModelsAppearOnlyInTranslationSelector() {
+        let builder = makeBuilder(featureSettings: makeFeatureSettings())
+        let hyMT2Repos: Set<String> = ["mlx-community/Hy-MT2-1.8B-4bit", "mlx-community/Hy-MT2-1.8B-8bit"]
+
+        let translationRepos = Set(builder.entries(for: .translationModel).compactMap { entry -> String? in
+            guard case let .localLLM(repo) = entry.selectionID.translationSelection else { return nil }
+            return repo
+        })
+        XCTAssertTrue(hyMT2Repos.isSubset(of: translationRepos))
+
+        for sheet in [FeatureModelSelectorSheet.transcriptionLLM, .transcriptionNoteTitle, .rewriteLLM, .meetingSummary] {
+            let selectionIDs = Set(builder.entries(for: sheet).map(\.selectionID))
+            for repo in hyMT2Repos {
+                XCTAssertFalse(selectionIDs.contains(.localLLM(repo)), "\(sheet) exposes \(repo)")
+            }
+        }
+    }
+
     func testMeetingASREntriesDoNotExposeLegacyWhisperModels() throws {
         let builder = makeBuilder(featureSettings: makeFeatureSettings())
 
@@ -547,7 +565,6 @@ final class FeatureModelCatalogBuilderTests: MLXModelManagerTestCase {
         FeatureModelCatalogBuilder(
             mlxModelManager: mlxModelManager ?? TestModelManagers.mlx,
             customLLMManager: TestModelManagers.customLLM,
-            ggufTranslationModelManager: TestModelManagers.gguf,
             featureSettings: featureSettings,
             remoteASRProviderConfigurationsRaw: remoteASRConfigurationsRaw,
             remoteLLMProviderConfigurationsRaw: remoteLLMConfigurationsRaw,
@@ -595,5 +612,4 @@ final class FeatureModelCatalogBuilderTests: MLXModelManagerTestCase {
 private enum TestModelManagers {
     static let mlx = MLXModelManager(modelRepo: MLXModelManager.defaultModelRepo)
     static let customLLM = CustomLLMModelManager(modelRepo: CustomLLMModelManager.defaultModelRepo)
-    static let gguf = GGUFTranslationModelManager(modelID: .hyMT2Q4KM)
 }

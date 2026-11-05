@@ -17,12 +17,14 @@
 | 新增保留 | LFM2 8B A1B 3bit | `mlx-community/LFM2-8B-A1B-3bit-MLX` | MoE LFM2 入口，约 4.18 GB |
 | 新增保留 | Qwen3.6 27B 4bit | `mlx-community/Qwen3.6-27B-4bit` | 高端大内存 Qwen 入口，约 16.08 GB |
 
-## 翻译 GGUF
+## 翻译
 
-| 状态 | 模型 | repo / 文件 | 备注 |
+| 状态 | 模型 | repo | 备注 |
 |---|---|---|---|
-| 保留 | Hy-MT2 1.8B Q4_K_M | `tencent/Hy-MT2-1.8B-GGUF#Hy-MT2-1.8B-Q4_K_M.gguf` | 默认可见，低延迟翻译入口 |
-| 保留 | Hy-MT2 1.8B Q8_0 | `tencent/Hy-MT2-1.8B-GGUF#Hy-MT2-1.8B-Q8_0.gguf` | 默认可见，高质量翻译入口 |
+| 保留，替代 Q4_K_M | Hy-MT2 1.8B 4bit | `mlx-community/Hy-MT2-1.8B-4bit` | 默认翻译入口，仅在翻译模型中可见 |
+| 保留，替代 Q8_0 | Hy-MT2 1.8B 8bit | `mlx-community/Hy-MT2-1.8B-8bit` | 高质量翻译入口，仅在翻译模型中可见 |
+
+Hy-MT2 已从 llama.swift（GGUF）迁到 MLXLLM，原 GGUF 条目随 llama.swift 一起移除。已保存的 Q8_0 选择迁移到 8bit，其他 GGUF 选择迁移到 4bit。
 
 ## 视觉 / 实验入口
 

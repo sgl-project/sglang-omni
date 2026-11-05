@@ -9,11 +9,10 @@ Use this document to choose focused local checks before a full release gate. CI 
 | core | Capture pipeline, session flow, prompt building, VAD planning, Feature Settings, MLX planning, model debug | `tools/run_local_regression_matrix.sh core` |
 | refactor | core + split LLM/configuration/hotkey/model/meeting-detail suites, onboarding and storage contracts | `tools/run_local_regression_matrix.sh refactor` |
 | mlx | MLX public fixture and replay tests | `VOXT_RUN_MODEL_TESTS=1 tools/run_local_regression_matrix.sh mlx` |
-| gguf | Installed GGUF inference and native termination cleanup | `tools/run_local_regression_matrix.sh gguf` |
 | vad | Local VAD mode, runtime policy, storage, debug snapshot | `tools/run_local_regression_matrix.sh vad` |
 | installed | Installed-model long-form matrix | `VOXT_RUN_MODEL_TESTS=1 tools/run_local_regression_matrix.sh installed` |
 | all | refactor + mlx (core already includes vad) | `VOXT_RUN_MODEL_TESTS=1 tools/run_local_regression_matrix.sh all` |
-| full | all + gguf + installed | `VOXT_RUN_MODEL_TESTS=1 tools/run_local_regression_matrix.sh full` |
+| full | all + installed | `VOXT_RUN_MODEL_TESTS=1 tools/run_local_regression_matrix.sh full` |
 
 The script resolves the repository from its own location, disables signing, and uses the committed lockfile strictly. `VOXT_SPM_CACHE_PATH` and `VOXT_SPM_CLONE_PATH` override the local cache paths. Model groups need installed checkpoints; review skips separately from passes.
 
@@ -21,7 +20,7 @@ The `refactor` group also includes the stage-4 ASR framing/response/completion a
 
 Stage 6A adds existing dictionary learning/matcher/store, history serialization/store/correction, and meeting-detail formatting/virtual-list/cache coverage to `refactor`. Playback controls, scrolling and accessibility still need UI acceptance on macOS.
 
-Stage 6B includes current local-LLM request policy, source selection, resumable URLProtocol, installation/cache and catalog contracts. The three non-model GGUF tests are selected by method; installed GGUF inference is still isolated in `gguf`. Tooling validates both suite and method names to detect stale selectors.
+Stage 6B includes current local-LLM request policy, source selection, resumable URLProtocol, installation/cache and catalog contracts. Hy-MT2 translation now runs on the MLX local-LLM path, so the retired GGUF group and its suite are gone; `HyMT2MigrationTests` covers the GGUF selection migration, the deferred weight cleanup and the translation-only exclusions. Tooling validates both suite and method names to detect stale selectors.
 
 Stage 6C adds queued-injection and pasteboard-ownership tests, lifecycle output-generation cases, and the existing connectivity tester suite. Pasteboard tests use unique named boards, never the general clipboard. They do not post real keys or validate editor/focus behavior; manual acceptance must cover cancel/restart during paste, overlay dismissal, follow-up keys, window switching and concurrent user copies.
 

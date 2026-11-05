@@ -354,10 +354,6 @@ enum FeatureSettingsStore {
             didChange = setIfChanged(TranslationModelProvider.customLLM.rawValue, forKey: AppPreferenceKey.translationModelProvider, defaults: defaults) || didChange
             didChange = setIfChanged(TranslationModelProvider.customLLM.rawValue, forKey: AppPreferenceKey.translationFallbackModelProvider, defaults: defaults) || didChange
             didChange = setIfChanged(repo, forKey: AppPreferenceKey.translationCustomLLMModelRepo, defaults: defaults) || didChange
-        case .localGGUF(let modelID):
-            didChange = setIfChanged(TranslationModelProvider.localGGUF.rawValue, forKey: AppPreferenceKey.translationModelProvider, defaults: defaults) || didChange
-            didChange = setIfChanged(TranslationModelProvider.localGGUF.rawValue, forKey: AppPreferenceKey.translationFallbackModelProvider, defaults: defaults) || didChange
-            didChange = setIfChanged(modelID.rawValue, forKey: AppPreferenceKey.translationGGUFModelID, defaults: defaults) || didChange
         case .remoteLLM(let provider):
             didChange = setIfChanged(TranslationModelProvider.remoteLLM.rawValue, forKey: AppPreferenceKey.translationModelProvider, defaults: defaults) || didChange
             didChange = setIfChanged(TranslationModelProvider.remoteLLM.rawValue, forKey: AppPreferenceKey.translationFallbackModelProvider, defaults: defaults) || didChange
@@ -471,18 +467,17 @@ enum FeatureSettingsStore {
     }
 
     private static func legacyTranslationSelection(defaults: UserDefaults) -> FeatureModelSelectionID {
-        let provider = TranslationModelProvider.resolved(
-            rawValue: defaults.string(forKey: AppPreferenceKey.translationModelProvider)
-        )
-        switch provider {
-        case .customLLM:
-            return .localLLM(defaults.string(forKey: AppPreferenceKey.translationCustomLLMModelRepo) ?? CustomLLMModelManager.defaultModelRepo)
-        case .localGGUF:
-            return .localGGUFTranslation(
-                GGUFTranslationModelCatalog.resolvedModelID(
-                    defaults.string(forKey: AppPreferenceKey.translationGGUFModelID)
+        let providerRawValue = defaults.string(forKey: AppPreferenceKey.translationModelProvider)
+        if providerRawValue == LegacyGGUFTranslationMigration.providerRawValue {
+            return .localLLM(
+                LegacyGGUFTranslationMigration.repo(
+                    forLegacyModelID: defaults.string(forKey: AppPreferenceKey.legacyTranslationGGUFModelID)
                 )
             )
+        }
+        switch TranslationModelProvider.resolved(rawValue: providerRawValue) {
+        case .customLLM:
+            return .localLLM(defaults.string(forKey: AppPreferenceKey.translationCustomLLMModelRepo) ?? CustomLLMModelManager.defaultModelRepo)
         case .remoteLLM:
             let fallback = RemoteLLMProvider(rawValue: defaults.string(forKey: AppPreferenceKey.remoteLLMSelectedProvider) ?? "") ?? .openAI
             let selected = RemoteLLMProvider(rawValue: defaults.string(forKey: AppPreferenceKey.translationRemoteLLMProvider) ?? "") ?? fallback

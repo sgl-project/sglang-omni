@@ -30,7 +30,7 @@ Directory leases protect cooperating operations, not external blob writes, uncoo
 
 Audio STT/VAD/Core loaders, numerical compatibility adapters, products and package pin are retired. XPC helper/client/contracts, validation configurations and the C ABI route are removed. Default production remains the unmodified Native HTTP implementation, not a new 30-second or bounded XPC route.
 
-Keep model catalogs, saved choices and installed directories, MLX Swift LLM/VLM/MLX, Tokenizers/HuggingFace, llama.swift and Remote. Captured AudioCore DSP and independent model/sample-bound numerical references replace linked-library oracles; missing references skip parity explicitly.
+Keep model catalogs, saved choices and installed directories, MLX Swift LLM/VLM/MLX, Tokenizers/HuggingFace and Remote. Captured AudioCore DSP and independent model/sample-bound numerical references replace linked-library oracles; missing references skip parity explicitly.
 
 Preserve actor isolation, nonisolated inference, cancellation propagation and existing buffer locks. See the [Native HTTP plan](../../plan/NativeHTTPMigrationPlan.zh-CN.md) and [earlier phase record](../../docs/RefactoringProgress.zh-CN.md) before changing ownership.
 

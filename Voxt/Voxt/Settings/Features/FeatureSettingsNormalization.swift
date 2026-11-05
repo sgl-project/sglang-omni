@@ -167,8 +167,6 @@ enum FeatureSettingsNormalization {
         switch selectionID.translationSelection {
         case let .localLLM(repo):
             return .localLLM(CustomLLMModelCatalog.isSupportedModelRepo(repo) ? repo : CustomLLMModelCatalog.defaultModelRepo)
-        case let .localGGUF(modelID):
-            return .localGGUFTranslation(modelID)
         case let .remoteLLM(provider):
             return .remoteLLM(provider)
         case .none:

@@ -122,18 +122,14 @@ final class ModelSettingsProgressRefreshSupportTests: XCTestCase {
         mlxHasActiveDownloadingRepos: Bool,
         customLLMState: CustomLLMModelManager.ModelState,
         customLLMStateByRepo: [String: CustomLLMModelManager.ModelState] = [:],
-        customLLMHasActiveDownloadingRepos: Bool = false,
-        ggufStateByID: [GGUFTranslationModelID: GGUFTranslationModelManager.ModelState] = [:],
-        ggufActiveDownloadModelID: GGUFTranslationModelID? = nil
+        customLLMHasActiveDownloadingRepos: Bool = false
     ) -> Bool {
         ModelSettingsProgressRefreshSupport.shouldPollModelState(
             mlxState: mlxState,
             mlxHasActiveDownloadingRepos: mlxHasActiveDownloadingRepos,
             customLLMState: customLLMState,
             customLLMStateByRepo: customLLMStateByRepo,
-            customLLMHasActiveDownloadingRepos: customLLMHasActiveDownloadingRepos,
-            ggufStateByID: ggufStateByID,
-            ggufActiveDownloadModelID: ggufActiveDownloadModelID
+            customLLMHasActiveDownloadingRepos: customLLMHasActiveDownloadingRepos
         )
     }
 }

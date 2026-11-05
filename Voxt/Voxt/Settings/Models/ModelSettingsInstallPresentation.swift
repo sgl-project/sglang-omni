@@ -6,7 +6,6 @@ import SwiftUI
 enum LocalModelInstallTarget: Hashable {
     case mlx(String)
     case customLLM(String)
-    case ggufTranslation(GGUFTranslationModelID)
 }
 
 enum LocalModelInstallState: Equatable {

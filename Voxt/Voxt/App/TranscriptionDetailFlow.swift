@@ -164,17 +164,17 @@ extension AppDelegate {
         switch kind {
         case .translation:
             return unavailableTextSelectionMessage(
-                resolvedTranscriptionFollowUpTextSelection(for: kind)
+                Self.resolvedTranscriptionFollowUpTextSelection(for: kind, featureSettings: featureSettings)
             )
         default:
             return unavailableTextSelectionMessage(
-                resolvedTranscriptionFollowUpTextSelection(for: kind)
+                Self.resolvedTranscriptionFollowUpTextSelection(for: kind, featureSettings: featureSettings)
             )
         }
     }
 
     private func resolvedTranscriptionFollowUpModel(for kind: TranscriptionHistoryKind) -> TranscriptionFollowUpModel? {
-        switch resolvedTranscriptionFollowUpTextSelection(for: kind) {
+        switch Self.resolvedTranscriptionFollowUpTextSelection(for: kind, featureSettings: featureSettings) {
         case .appleIntelligence:
             guard let enhancer else { return nil }
             if #available(macOS 26.0, *) {
@@ -203,26 +203,27 @@ extension AppDelegate {
         }
     }
 
-    private func resolvedTranscriptionFollowUpTextSelection(
-        for kind: TranscriptionHistoryKind
+    static func resolvedTranscriptionFollowUpTextSelection(
+        for kind: TranscriptionHistoryKind,
+        featureSettings: FeatureSettings
     ) -> FeatureModelSelectionID.TextSelection? {
         switch kind {
         case .normal:
-            guard transcriptionFeatureSettings.llmEnabled else { return nil }
-            return transcriptionFeatureSettings.llmSelectionID.textSelection
+            guard featureSettings.transcription.llmEnabled else { return nil }
+            return featureSettings.transcription.llmSelectionID.textSelection
         case .translation:
-            switch translationFeatureSettings.modelSelectionID.translationSelection {
+            switch featureSettings.translation.modelSelectionID.translationSelection {
             case .localLLM(let repo):
+                // Translation-only checkpoints such as Hy-MT2 cannot answer follow-up questions.
+                guard !CustomLLMModelCatalog.isTranslationOnlyModel(repo) else { return nil }
                 return .localLLM(repo: repo)
-            case .localGGUF:
-                return nil
             case .remoteLLM(let provider):
                 return .remoteLLM(provider: provider)
             case .none:
                 return nil
             }
         case .rewrite:
-            return rewriteFeatureSettings.llmSelectionID.textSelection
+            return featureSettings.rewrite.llmSelectionID.textSelection
         case .transcript:
             return nil
         }

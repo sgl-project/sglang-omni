@@ -46,7 +46,7 @@ final class ModelStackRetirementTests: XCTestCase {
             "mlx-community/gemma-3n-E4B-it-lm-4bit", "mlx-community/Qwen3-30B-A3B-4bit"
         ]
         let active = Set(CustomLLMModelCatalog.availableModels.map(\.id))
-        XCTAssertEqual(active.count, 12)
+        XCTAssertEqual(active.count, 14)
         XCTAssertEqual(CustomLLMModelCatalog.supportedModels, CustomLLMModelCatalog.availableModels)
         XCTAssertEqual(Set(CustomLLMModelCatalog.displayModels(includingInstalled: retired).map(\.id)), active)
         XCTAssertTrue(active.isDisjoint(with: retired))

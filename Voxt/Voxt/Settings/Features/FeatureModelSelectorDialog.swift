@@ -417,9 +417,6 @@ enum FeatureModelConfigurationRouting {
             }
         }
 
-        if case .localGGUF? = selectionID.translationSelection {
-            return false
-        }
         return false
     }
 }

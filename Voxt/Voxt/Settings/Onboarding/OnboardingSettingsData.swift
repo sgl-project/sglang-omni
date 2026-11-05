@@ -320,8 +320,6 @@ extension OnboardingSettingsView {
 
     func translationSelectionSummary(_ selectionID: FeatureModelSelectionID) -> String {
         switch selectionID.translationSelection {
-        case .localGGUF(let modelID):
-            return GGUFTranslationModelCatalog.option(for: modelID).title
         case .localLLM, .remoteLLM:
             return llmSelectionSummary(selectionID)
         case .none:

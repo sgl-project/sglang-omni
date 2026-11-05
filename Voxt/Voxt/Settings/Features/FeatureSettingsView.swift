@@ -10,7 +10,6 @@ struct FeatureSettingsView: View {
     var onSelectFeatureTab: ((FeatureSettingsTab) -> Void)? = nil
     @ObservedObject var mlxModelManager: MLXModelManager
     @ObservedObject var customLLMManager: CustomLLMModelManager
-    @ObservedObject var ggufTranslationModelManager: GGUFTranslationModelManager
     @ObservedObject var noteStore: VoxtNoteStore
     @ObservedObject var meetingFileTaskQueue: MeetingFileTaskQueue
     @StateObject var meetingDiarizationModelManager = MeetingDiarizationModelManager()
@@ -223,7 +222,6 @@ struct FeatureSettingsView: View {
         FeatureModelCatalogBuilder(
             mlxModelManager: mlxModelManager,
             customLLMManager: customLLMManager,
-            ggufTranslationModelManager: ggufTranslationModelManager,
             featureSettings: featureSettings,
             remoteASRProviderConfigurationsRaw: remoteASRProviderConfigurationsRaw,
             remoteLLMProviderConfigurationsRaw: remoteLLMProviderConfigurationsRaw,

@@ -96,8 +96,9 @@ extension AppDelegate {
         let downloadedCustomOptions: [MeetingSummaryModelOption] = CustomLLMModelManager.displayModels(including: customLLMManager.currentModelRepo).compactMap { model -> MeetingSummaryModelOption? in
             // Keep the user's configured local model during its initial scan;
             // do not silently switch to another provider while status is unknown.
-            guard customLLMManager.isModelDownloaded(repo: model.id)
-                || (model.id == selectedLocalRepo && customLLMManager.isCheckingInstallation(repo: model.id)) else {
+            guard !CustomLLMModelCatalog.isTranslationOnlyModel(model.id),
+                  customLLMManager.isModelDownloaded(repo: model.id)
+                    || (model.id == selectedLocalRepo && customLLMManager.isCheckingInstallation(repo: model.id)) else {
                 return nil
             }
             return MeetingSummaryModelOption(

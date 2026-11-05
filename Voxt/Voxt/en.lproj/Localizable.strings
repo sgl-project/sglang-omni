@@ -2123,7 +2123,6 @@
 "Higher values allow more variation. Keep this near 0 for deterministic dictation." = "Higher values allow more variation. Keep this near 0 for deterministic dictation.";
 "Language detection" = "Language detection";
 "Let speaker analysis estimate the speaker count automatically." = "Let speaker analysis estimate the speaker count automatically.";
-"Local GGUF" = "Local GGUF";
 "MLX uses language hints by default. Some model families also expose model-specific local tuning in the Configure dialog." = "MLX uses language hints by default. Some model families also expose model-specific local tuning in the Configure dialog.";
 "MOSS" = "MOSS";
 "Max 2" = "Max 2";

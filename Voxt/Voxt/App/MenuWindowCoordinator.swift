@@ -561,7 +561,6 @@ extension AppDelegate {
             },
             mlxModelManager: mlxModelManager,
             customLLMManager: customLLMManager,
-            ggufTranslationModelManager: ggufTranslationModelManager,
             historyStore: historyStore,
             meetingFileTaskQueue: meetingFileTaskQueue,
             noteStore: noteStore,
