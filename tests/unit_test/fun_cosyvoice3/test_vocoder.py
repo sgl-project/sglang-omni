@@ -446,6 +446,14 @@ def test_cosyvoice3_vocoder_prepare_and_store_audio_payload() -> None:
         flow_prompt_speech_token=torch.tensor([[5]], dtype=torch.int32),
         flow_embedding=torch.ones(1, 192),
         flow_prompt_speech_feat=reference_features,
+        spec_tokens_details={
+            "spec_accept_rate": 0.5,
+            "spec_accept_length": 2.0,
+            "spec_num_correct_drafts": 1,
+            "spec_num_proposed_drafts": 2,
+            "spec_verify_ct": 1,
+            "spec_correct_drafts_histogram": [0, 1],
+        },
     )
     payload = make_payload(state)
 
@@ -474,6 +482,7 @@ def test_cosyvoice3_vocoder_prepare_and_store_audio_payload() -> None:
     )
     assert result.sample_rate == 24000
     assert result.modality == "audio"
+    assert result.spec_tokens_details == state.spec_tokens_details
 
 
 def test_cosyvoice3_vocoder_rejects_payload_without_audio_codes() -> None:

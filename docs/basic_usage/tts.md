@@ -680,6 +680,7 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `top_k` | int | `null` | Top-k sampling |
 | `repetition_penalty` | float | `null` | Repetition penalty |
 | `seed` | int | `null` | Model-specific. Qwen3-TTS Base accepts request-scoped seed, Voxtral TTS currently rejects seed |
+| `return_spec_tokens_details` | bool | `false` | With a speculative draft, return this request's acceptance statistics: `X-SGLang-Omni-Spec-*` headers on buffered audio, `sglext.spec_tokens_details` on `speech.audio.done` and on the raw PCM outcome |
 
 Invalid speech requests return an OpenAI-style error envelope:
 
