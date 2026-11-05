@@ -183,23 +183,7 @@ sgl-omni serve \
 
 Send the form field `return_spec_tokens_details=true` to get `sglext.spec_tokens_details` (`spec_accept_length`, `spec_accept_rate`, the draft counts and the per-verify histogram) on `json` and `verbose_json` responses and on the streamed `transcript.text.done` event. Audio long enough to be transcribed in chunks returns none. `spec_accept_rate` and `spec_num_proposed_drafts` are left out when no drafts were proposed or the draft width is adaptive.
 
-### Ascend NPU
-
-Use the [NPU installation guide](../get_started/installation_npu.md) for the supported runtime. DFlash supports one Ascend device with BF16, greedy decoding and synchronous scheduling. Start with the eager example, or select the decode-graph example for request buckets one and two:
-
-```bash
-# Eager decoding
-sgl-omni serve --config examples/configs/qwen3_asr_1_7b_dflash_npu.yaml --port 8000
-
-# Draft and target verification decode graphs
-sgl-omni serve --config examples/configs/qwen3_asr_1_7b_dflash_npu_graph.yaml --port 8000
-```
-
-Both examples explicitly select `ascend` for target and draft attention, disable encoder graphs and Torch Compile, and pin the causal 48k draft. The graph example also keeps prefill eager. Keep `SGLANG_DFLASH_EAGER_DRAFT_SAMPLER` unset or `0` to capture the reduced-vocabulary draft head. Direct factory callers must supply the same engine overrides and `enable_encoder_cuda_graph=False`.
-
-Reuse the ordinary `Qwen/Qwen3-ASR-1.7B` target weights and download the additional pinned draft (about 726 MB). No retraining or NPU-specific weight conversion is needed. For offline serving, pass local snapshots with `--model-path` and `--asr.engine.speculative_draft_model_path`; the shared loader creates and cleans up a temporary flat draft configuration while retaining the original weights.
-
-Set `speculative_draft_attention_backend: ascend` explicitly and keep effective `context_length`, including the audio/text prefix and verification reserve, at or below the draft's 32768-token attention window. A larger output budget or context override can exceed that bound. The pinned checkpoint is causal; a 32k-vocabulary variant is a separate weight identity, not a different attention-window limit. Overlap, realtime, TP>1, quantized targets and contexts or concurrency beyond these examples remain outside the validated scope.
+For Ascend NPU eager and decode-graph configurations, see [Qwen3-ASR DFlash on NPU](../get_started/installation_npu.md#qwen3-asr-dflash).
 
 ## Transcribe Audio
 
