@@ -217,3 +217,15 @@ def test_a_light_load_never_stalls_however_short_the_interval() -> None:
     policy.frames_decoded, policy.requests_admitted = 8400, 100
     assert policy.worst_burst_stall_s(1, 0.0085, 9.2) == pytest.approx(0.0, abs=1e-9)
     assert policy.smooth_enough_interval(0.0085, 9.2) == 1
+
+
+def test_the_rate_comes_from_frames_decoded_not_from_counting_arrivals() -> None:
+    """A closed loop finishes requests in clumps, so the arrival count swings and this does not."""
+    policy = cadence(longest_interval=64, is_latency_driven=True)
+    for index in range(100):
+        policy.observe_decode_step(0.0206, 96, index * 0.0206)
+    policy.requests_admitted = policy.frames_decoded / 84
+    # 96 frames every 20.6 ms over 84 frames a request is about 55 requests a second.
+    assert policy.request_rate(99 * 0.0206) == pytest.approx(96 / 0.0206 / 84, rel=0.05)
+    policy.observe_arrival(99 * 0.0206, 3)
+    assert policy.arrival_rate(99 * 0.0206) < policy.request_rate(99 * 0.0206) / 10

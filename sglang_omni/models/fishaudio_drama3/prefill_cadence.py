@@ -130,6 +130,9 @@ class PrefillCadence:
     arrivals: collections.deque[tuple[float, int]] = field(
         default_factory=collections.deque
     )
+    decoded: collections.deque[tuple[float, int]] = field(
+        default_factory=collections.deque
+    )
     prefill_line: list[float] = field(default_factory=lambda: [0.0] * 5)
     frames_decoded: float = 0.0
     requests_admitted: float = 0.0
@@ -143,10 +146,15 @@ class PrefillCadence:
             config.followup_window,
         )
 
-    def observe_decode_step(self, step_s: float, batch_size: int) -> None:
+    def observe_decode_step(
+        self, step_s: float, batch_size: int, now_s: float = 0.0
+    ) -> None:
         self.tally(self.step_by_batch, batch_size // BATCH_BUCKET * BATCH_BUCKET, step_s)
         self.step_s = self.smoothed(self.step_s, step_s)
         self.frames_decoded += batch_size
+        self.decoded.append((now_s, batch_size))
+        while self.decoded and self.decoded[0][0] < now_s - self.config.rate_window_s:
+            self.decoded.popleft()
 
     def observe_prefill(self, prefill_s: float, request_count: int) -> None:
         self.tally(self.prefill_by_count, request_count, prefill_s)
@@ -173,6 +181,20 @@ class PrefillCadence:
             if time_s >= now_s - self.config.rate_window_s
         )
         return recent / self.config.rate_window_s
+
+    def request_rate(self, now_s: float) -> float:
+        """Requests per second, from the frames decoded and the frames a request takes.
+
+        Smoother than counting arrivals. In steady state the two agree, but a fixed number of
+        concurrent streams admits and finishes requests in clumps, so an arrival count over a few
+        seconds swings by a factor of two, and the continuity floor swings with it.
+        """
+        frames = self.frames_per_request()
+        if len(self.decoded) < 2 or frames <= 0:
+            return self.arrival_rate(now_s)
+        else:
+            span_s = max(self.config.rate_window_s / 4, now_s - self.decoded[0][0])
+            return sum(count for _, count in self.decoded) / span_s / frames
 
     def frames_per_request(self) -> float:
         if self.requests_admitted < 1:
@@ -317,7 +339,7 @@ class PrefillCadence:
 
     def latency_interval(self, now_s: float, step_s: float, prefill_s: float) -> int:
         """The interval with the shortest modelled wall time, inside what the two SLOs allow."""
-        arrival_rate = self.arrival_rate(now_s)
+        arrival_rate = self.request_rate(now_s)
         frames = self.frames_per_request()
         shortest = self.smooth_enough_interval(step_s, arrival_rate)
         longest = self.first_audio_interval(step_s, prefill_s)
@@ -392,13 +414,14 @@ class PrefillCadence:
         else:
             return False
 
-    def report(self) -> str:
+    def report(self, now_s: float = 0.0) -> str:
         step_ms = 1000 * self.step_s if self.step_s is not None else 0.0
         prefill_ms = 1000 * self.prefill_s if self.prefill_s is not None else 0.0
         text = (
             f"Drama cadence: step {step_ms:.1f} ms, prefill {prefill_ms:.1f} ms, critical interval "
             f"{1000 * self.critical_interval_s:.1f} ms, wait cap {1000 * self.wait_cap_s():.0f} ms, "
-            f"frames/request {self.frames_per_request():.0f}, prefill fit "
+            f"frames/request {self.frames_per_request():.0f}, rate {self.request_rate(now_s):.1f}/s "
+            f"(arrivals {self.arrival_rate(now_s):.1f}/s), prefill fit "
             f"{1000 * self.prefill_estimate_s(0):.1f}+{1000 * (self.prefill_estimate_s(1) - self.prefill_estimate_s(0)):.2f}n ms, "
             f"targets {dict(self.chosen_targets)}, "
             f"intervals {dict(sorted(self.chosen_intervals.items()))}, slo conflicts "

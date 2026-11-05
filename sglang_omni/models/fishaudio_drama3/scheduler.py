@@ -34,7 +34,9 @@ class Drama3Scheduler(OmniScheduler[Drama3RequestData]):
         if self.round_started_s is None:
             pass
         elif self.last_batch_was_decode:
-            cadence.observe_decode_step(now_s - self.round_started_s, self.last_batch_size)
+            cadence.observe_decode_step(
+                now_s - self.round_started_s, self.last_batch_size, now_s
+            )
         elif self.last_batch_was_extend:
             cadence.observe_prefill(now_s - self.round_started_s, self.last_batch_size)
         else:
@@ -42,7 +44,7 @@ class Drama3Scheduler(OmniScheduler[Drama3RequestData]):
         self.observe_arrivals(now_s)
         self.release_if_due(now_s)
         if now_s - self.reported_s >= REPORT_INTERVAL_S:
-            logger.info(cadence.report())
+            logger.info(cadence.report(now_s))
             self.reported_s = now_s
         else:
             pass
