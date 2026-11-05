@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
-from scripts.docs_review.models import ModelSettings
+from scripts.docs_review.models import ModelSettings, ReasoningEffort
 
 MODEL_TIMEOUT_SECONDS = 60
 
@@ -29,11 +29,13 @@ class ChatRequest(BaseModel):
 
     model_name: str = Field(serialization_alias="model")
     messages: list[ChatMessage]
-    max_output_tokens: int = Field(gt=0, serialization_alias="max_tokens")
-    temperature: Literal[0] = 0
+    max_tokens: int | None = Field(default=None, gt=0)
+    max_completion_tokens: int | None = Field(default=None, gt=0)
+    temperature: Literal[0] | None = None
+    reasoning_effort: ReasoningEffort | None = None
 
     def to_json(self) -> str:
-        return self.model_dump_json(by_alias=True)
+        return self.model_dump_json(by_alias=True, exclude_none=True)
 
 
 class OpenAICompatibleReviewer:
@@ -68,14 +70,24 @@ class OpenAICompatibleReviewer:
 def build_chat_request(
     bundle_text: str, settings: ModelSettings, prompt_text: str
 ) -> ChatRequest:
-    return ChatRequest(
-        model_name=settings.model_name,
-        messages=[
-            ChatMessage(role="system", content=prompt_text),
-            ChatMessage(role="user", content=bundle_text),
-        ],
-        max_output_tokens=settings.max_output_tokens,
-    )
+    messages = [
+        ChatMessage(role="system", content=prompt_text),
+        ChatMessage(role="user", content=bundle_text),
+    ]
+    if settings.reasoning_effort is None:
+        return ChatRequest(
+            model_name=settings.model_name,
+            messages=messages,
+            max_tokens=settings.max_output_tokens,
+            temperature=0,
+        )
+    else:
+        return ChatRequest(
+            model_name=settings.model_name,
+            messages=messages,
+            max_completion_tokens=settings.max_output_tokens,
+            reasoning_effort=settings.reasoning_effort,
+        )
 
 
 def authorization_header(settings: ModelSettings) -> str:

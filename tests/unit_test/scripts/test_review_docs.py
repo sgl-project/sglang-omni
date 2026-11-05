@@ -29,6 +29,7 @@ from scripts.docs_review.models import (
     DocumentType,
     Finding,
     ModelSettings,
+    ReasoningEffort,
     ReviewRequest,
     RuleKind,
 )
@@ -762,10 +763,39 @@ def test_model_request_treats_the_bundle_as_data() -> None:
     assert request.messages[0].content == read_prompt()
     assert request.messages[1].content == bundle_text
     assert "DOCS_REVIEW_TEST_KEY" not in request.to_json()
+    payload = json.loads(request.to_json())
+    assert payload["max_tokens"] == 200
+    assert payload["temperature"] == 0
+    assert "max_completion_tokens" not in payload
+    assert "reasoning_effort" not in payload
     content = parse_chat_content(
         json.dumps({"choices": [{"message": {"content": "[]"}}]}).encode()
     )
     assert content == "[]"
+
+
+@pytest.mark.parametrize(
+    ("configured_effort", "expected_effort"),
+    [(None, "medium"), ("medium", "medium"), ("high", "high")],
+)
+def test_terra_request_uses_reasoning_parameters(
+    configured_effort: ReasoningEffort | None, expected_effort: ReasoningEffort
+) -> None:
+    settings = ModelSettings(
+        model_name="gpt-6.1-terra",
+        endpoint_url="https://example.invalid/v1/chat/completions",
+        max_output_tokens=8192,
+        api_key_environment_variable="DOCS_REVIEW_TEST_KEY",
+        reasoning_effort=configured_effort,
+    )
+    payload = json.loads(build_chat_request("bundle", settings, "prompt").to_json())
+    assert settings.model_dump()["reasoning_effort"] == expected_effort
+    assert payload["model"] == "gpt-6.1-terra"
+    assert payload["max_completion_tokens"] == 8192
+    assert payload["reasoning_effort"] == expected_effort
+    assert "max_tokens" not in payload
+    assert "temperature" not in payload
+    assert "DOCS_REVIEW_TEST_KEY" not in json.dumps(payload)
 
 
 def test_evaluation_hides_material_after_the_cutoff() -> None:
@@ -874,10 +904,11 @@ def test_real_reviewer_request_includes_rules_schema_and_produces_a_finding(
         pull_request_text=checklist("Document audio."),
         budget=sample_budget(),
         model_settings=ModelSettings(
-            model_name="reviewer",
+            model_name="gpt-6.1-terra",
             endpoint_url="https://example.invalid/chat",
             max_output_tokens=512,
             api_key_environment_variable="DOCS_REVIEW_TEST_KEY",
+            reasoning_effort="medium",
         ),
         ledger_path=tmp_path / "ledger.sqlite",
     )
@@ -886,7 +917,13 @@ def test_real_reviewer_request_includes_rules_schema_and_produces_a_finding(
     assert result.report.findings == [finding]
     sent_body = captured_requests[0].data
     assert isinstance(sent_body, bytes)
-    messages = json.loads(sent_body)["messages"]
+    payload = json.loads(sent_body)
+    assert payload["model"] == "gpt-6.1-terra"
+    assert payload["reasoning_effort"] == "medium"
+    assert payload["max_completion_tokens"] == 512
+    assert "max_tokens" not in payload
+    assert "temperature" not in payload
+    messages = payload["messages"]
     contract = json.loads(messages[0]["content"].split("Trusted review contract:\n")[1])
     assert {rule["rule_id"] for rule in contract["rules"]} == KNOWN_RULE_IDS
     properties = contract["output_schema"]["$defs"]["Finding"]
@@ -1085,7 +1122,9 @@ def test_report_contains_mixed_and_unknown_document_scopes(tmp_path: Path) -> No
     assert "PERFORMANCE_EVIDENCE" in render_bundle(result.bundle)
 
 
-@pytest.mark.parametrize("changed_field", ["endpoint_url", "max_output_tokens"])
+@pytest.mark.parametrize(
+    "changed_field", ["endpoint_url", "max_output_tokens", "reasoning_effort"]
+)
 def test_model_configuration_change_invalidates_cached_report(
     tmp_path: Path, changed_field: str
 ) -> None:
@@ -1116,8 +1155,10 @@ def test_model_configuration_change_invalidates_cached_report(
     assert reviewer.call_count == 1
     if changed_field == "endpoint_url":
         settings.endpoint_url = "https://example.invalid/two"
-    else:
+    elif changed_field == "max_output_tokens":
         settings.max_output_tokens = 1024
+    else:
+        settings.reasoning_effort = "high"
     request.follow_up_authorized = True
     second = run_review(request, reviewer, FixedClock())
     assert second.report.review_input_sha256 != first.report.review_input_sha256

@@ -9,7 +9,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class CheckStatus(Enum):
@@ -76,11 +76,23 @@ class BudgetConfig(BaseModel):
     call_cost_cents: int = Field(ge=0)
 
 
+ReasoningEffort = Literal["none", "low", "medium", "high", "xhigh", "max"]
+
+
 class ModelSettings(BaseModel):
     model_name: str
     endpoint_url: str
     max_output_tokens: int = Field(gt=0)
     api_key_environment_variable: str
+    reasoning_effort: ReasoningEffort | None = None
+
+    @model_validator(mode="after")
+    def set_default_reasoning_effort(self) -> ModelSettings:
+        if self.model_name == "gpt-6.1-terra" and self.reasoning_effort is None:
+            self.reasoning_effort = "medium"
+        else:
+            pass
+        return self
 
 
 class Finding(BaseModel):
