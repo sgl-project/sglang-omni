@@ -44,6 +44,34 @@ final class CaptureFileTests: XCTestCase {
         XCTAssertEqual(p.fileFrames, 8820)
     }
 
+    /// The player reads the file from its first sample to its last: the
+    /// chunks it gives, joined, are the file's frames exactly — a
+    /// recording must not lose the start or the end of what was said.
+    func testPlayerReadsTheFirstAndLastSamples() throws {
+        let p = try CaptureFilePlayer(path: Self.tone, speed: 1, chunkMs: 20)
+        let file = try AVAudioFile(forReading: URL(fileURLWithPath: Self.tone))
+        let whole = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)))
+        try file.read(into: whole)
+        var played: [AVAudioPCMBuffer] = []
+        var now: Double = 0
+        while !p.atEnd {
+            now += 20
+            played += p.due(now: now)
+        }
+        XCTAssertEqual(played.count, 20)
+        var at = 0
+        for b in played {
+            XCTAssertEqual(b.frameLength, p.chunk)
+            for c in 0 ..< Int(b.format.channelCount) {
+                let got = Array(UnsafeBufferPointer(start: b.floatChannelData![c], count: Int(b.frameLength)))
+                let want = Array(UnsafeBufferPointer(start: whole.floatChannelData![c] + at, count: Int(b.frameLength)))
+                XCTAssertEqual(got, want, "the chunk at frame \(at) differs from the file")
+            }
+            at += Int(b.frameLength)
+        }
+        XCTAssertEqual(at, Int(file.length))
+    }
+
     func testPlayerSpeed() throws {
         let p = try CaptureFilePlayer(path: Self.tone, speed: 4, chunkMs: 20)
         XCTAssertTrue(p.due(now: 0).isEmpty)

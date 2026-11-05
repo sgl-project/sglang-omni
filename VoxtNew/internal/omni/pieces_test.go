@@ -1,7 +1,9 @@
 package omni
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
@@ -91,6 +93,40 @@ func TestLivePieces(t *testing.T) {
 	}
 	if !f.logged("4 pieces while it recorded") {
 		t.Error("the Final's line does not say what the pieces did")
+	}
+}
+
+// TestLivePiecesCoverEverySample: the pieces recognised while recording
+// and the Final at Finish together carry every sample that was sent, in
+// order, from the first to the last: the tail left when the user stops
+// (speech that lasts to the last sample) is recognised too.
+func TestLivePiecesCoverEverySample(t *testing.T) {
+	f := newFake(t, omnitest.Opts{Text: "p{n}", RecordAudio: true}, nil)
+	a := piecesASR(t, f)
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pcm := append(speechAndPauses(3), tone(1200*time.Millisecond, 0.3)...) // 6.3 s, ends in speech
+	sendAll(t, st, pcm)
+	eventually(t, "a piece", func() bool { return piecesDone(st) >= 1 })
+	if err := st.Finish(); err != nil { // the user stops the moment the audio ends
+		t.Fatal(err)
+	}
+	evs := drain(t, st)
+	if last := evs[len(evs)-1]; last.Kind != asr.EventFinal {
+		t.Fatalf("last %+v", last)
+	}
+	var got []byte
+	for _, r := range f.records("final") {
+		b, err := base64.StdEncoding.DecodeString(r.Audio)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, b...)
+	}
+	if !bytes.Equal(got, pcm) {
+		t.Errorf("the Final requests carried %d samples; want every one of the recording's %d, from its first sample to its last", len(got)/2, len(pcm)/2)
 	}
 }
 
