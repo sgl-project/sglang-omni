@@ -42,6 +42,9 @@ var omniLocate = func() (string, error) {
 	return omni.Locate(exe)
 }
 
+// omniNewRuntime makes the runtime (a test seam).
+var omniNewRuntime = omni.NewRuntime
+
 // omniRuntime is the runtime, made on first use (a.omniMu held).
 func (a *app) omniRuntime() (*omni.Runtime, error) {
 	if a.omniRT != nil || a.omniErr != nil {
@@ -54,7 +57,7 @@ func (a *app) omniRuntime() (*omni.Runtime, error) {
 		return nil, a.omniErr
 	}
 	speech, _ := keepIdle(a.keepSetting()) // models_keep.go
-	a.omniRT = omni.NewRuntime(omni.Config{Binary: bin, Log: a.omniLog, IdleTimeout: speech,
+	a.omniRT = omniNewRuntime(omni.Config{Binary: bin, Log: a.omniLog, IdleTimeout: speech,
 		OnModel: a.modelEvents(workerOmni), BeforeLoad: a.beforeLoad()}) // family_runtime.go
 	return a.omniRT, nil
 }
