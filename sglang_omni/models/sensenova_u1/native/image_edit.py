@@ -93,7 +93,8 @@ class SenseNovaU1InputStage(InputValidationStage):
         input_max_pixels = min(
             DEFAULT_INPUT_MAX_PIXELS, TOTAL_REFERENCE_MAX_PIXELS // len(images)
         )
-        references = []
+        reference_sizes_pixels: list[tuple[int, int]] = []
+        total_reference_pixels = 0
         for image in images:
             height_pixels, width_pixels = smart_resize(
                 image.height,
@@ -102,5 +103,16 @@ class SenseNovaU1InputStage(InputValidationStage):
                 min_pixels=MIN_REFERENCE_PIXELS,
                 max_pixels=input_max_pixels,
             )
-            references.append(image.resize((width_pixels, height_pixels)))
-        batch.condition_image = references
+            reference_sizes_pixels.append((width_pixels, height_pixels))
+            total_reference_pixels += width_pixels * height_pixels
+        if total_reference_pixels > TOTAL_REFERENCE_MAX_PIXELS:
+            raise ValueError(
+                f"Prepared reference images contain {total_reference_pixels} pixels, "
+                f"exceeding the total limit of {TOTAL_REFERENCE_MAX_PIXELS} pixels"
+            )
+        else:
+            pass
+        batch.condition_image = [
+            image.resize(reference_size_pixels)
+            for image, reference_size_pixels in zip(images, reference_sizes_pixels)
+        ]

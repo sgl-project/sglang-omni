@@ -3,7 +3,7 @@
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -93,6 +93,58 @@ def test_reference_order_is_preserved(monkeypatch: pytest.MonkeyPatch) -> None:
         (0, 0, 255),
     ]
     assert (request.width, request.height) == (64, 64)
+
+
+@pytest.mark.parametrize(
+    "reference_count,reference_size_pixels", [(60, (32, 64)), (65, (64, 64))]
+)
+def test_reference_pixel_overflow_is_rejected_before_resize(
+    monkeypatch: pytest.MonkeyPatch,
+    reference_count: int,
+    reference_size_pixels: tuple[int, int],
+) -> None:
+    """Aligned reference sizes could exceed the total budget before generation."""
+    monkeypatch.setattr(
+        stage_base,
+        "get_global_server_args",
+        lambda: SimpleNamespace(comfyui_mode=False),
+    )
+    sampling = SenseNovaU1SamplingParams(
+        prompt="combine the images", image_path=["reference.png"] * reference_count
+    )
+    request = Req(sampling_params=sampling)
+    references = [
+        Image.new("RGB", reference_size_pixels) for _ in range(reference_count)
+    ]
+    request.condition_image = references
+    with patch.object(
+        Image.Image, "resize", autospec=True, side_effect=Image.Image.resize
+    ) as resize:
+        with pytest.raises(ValueError, match="exceeding the total limit"):
+            SenseNovaU1InputStage().preprocess_condition_image(request, None, 64, 64)
+        resize.assert_not_called()
+    assert request.condition_image is references
+
+
+def test_reference_pixel_budget_allows_exact_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        stage_base,
+        "get_global_server_args",
+        lambda: SimpleNamespace(comfyui_mode=False),
+    )
+    sampling = SenseNovaU1SamplingParams(
+        prompt="combine the images", image_path=["reference.png"] * 64
+    )
+    request = Req(sampling_params=sampling)
+    request.condition_image = [Image.new("RGB", (64, 64)) for _ in range(64)]
+    SenseNovaU1InputStage().preprocess_condition_image(request, None, 64, 64)
+    assert len(request.condition_image) == 64
+    assert all(image.size == (512, 512) for image in request.condition_image)
+    assert (
+        sum(image.width * image.height for image in request.condition_image) == 4096**2
+    )
 
 
 @pytest.mark.parametrize(
