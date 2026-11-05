@@ -117,10 +117,8 @@ Both drafts are pinned in `ci/models.json`. A draft for another target is one pi
 
 **CI and style**
 
-- Target `main` (stacked PRs get no Mac CI), non-draft, with the `run-mac-ci`
-  or `run-all-ci` label. Both Mac CI jobs must pass on a real run.
+- Target `main` (stacked PRs get no Mac CI), non-draft, with the `run-mac-ci` label. Both Mac CI jobs must pass on a real run.
 - Run pre-commit and follow
   [coding-style.md](https://github.com/sgl-project/sglang-omni/blob/main/.claude/skills/code-review/coding-style.md).
 - Update `Voxt/backend/README.md`. Follow the PR format of
   [#2676](https://github.com/sgl-project/sglang-omni/pull/2676) or
-  [#2689](https://github.com/sgl-project/sglang-omni/pull/2689).
