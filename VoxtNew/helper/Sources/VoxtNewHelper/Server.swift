@@ -85,6 +85,16 @@ func onMain<T: Sendable>(_ body: @MainActor @Sendable () throws -> T) async reth
     }
 }
 
+/// Runs body on the main thread now, from any thread: an exit's last
+/// clipboard restore, which cannot wait for a task.
+func onMainSync(_ body: @MainActor @Sendable () -> Void) {
+    if Thread.isMainThread {
+        MainActor.assumeIsolated(body)
+    } else {
+        DispatchQueue.main.sync { MainActor.assumeIsolated(body) }
+    }
+}
+
 /// The session: answers requests from stdin. Control requests each run in
 /// a task of their own, so an app slow to answer Accessibility does not
 /// hold up capture.stop; capture.start is a job that answers when it ends.
@@ -133,12 +143,17 @@ final class Server: @unchecked Sendable {
                 handle(id: id, method: method, msg, clock: clock)
             }
             log("stdin closed, exiting")
-            capture.cancelAll()
-            output.undo("the app went away")
+            exiting("the app went away")
             exit(0)
         }
         thread.name = "voxtnew.stdin"
         thread.start()
+    }
+
+    /// Before any exit: a paste's clipboard restore still to come (at most
+    /// 500 ms), the recordings, the output's mutes.
+    func exiting(_ why: String) {
+        beforeExit(textio.restores, cancelCaptures: capture.cancelAll, undoOutput: { output.undo(why) })
     }
 
     func handle(id: String, method: String, _ msg: Incoming, clock: RequestClock) {
@@ -153,8 +168,7 @@ final class Server: @unchecked Sendable {
         }
         switch method {
         case Method.shutdown:
-            capture.cancelAll()
-            output.undo("helper.shutdown")
+            exiting("helper.shutdown")
             out.result(id, Empty())
             exit(0)
         case Method.captureStart:
@@ -253,7 +267,7 @@ final class Server: @unchecked Sendable {
             debug = p.logLevel == "debug"
         }
         front.start()
-        output.start()
+        output.start(exiting: { [self] why in exiting(why) })
         let version = helperVersion()
         out.logLine("info", "voxtnew-helper \(version) ready (app \(p.app))")
         out.result(id, HelloResult(protocol: protocolVersion, version: version, pid: Int(getpid()), methods: Method.requests,
