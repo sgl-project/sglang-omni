@@ -364,3 +364,41 @@ def test_ming_tts_tail_graph_rejects_a_device_without_a_graph_backend() -> None:
 
     with pytest.raises(RuntimeError, match="no device graph backend for cpu"):
         graph.capture()
+
+
+def test_ming_tts_moe_block_binds_its_topk_to_the_experts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The MoE block built a TopK and never bound it to its experts, which the routing forward refuses."""
+    from torch import nn
+
+    from sglang_omni.models.ming_tts import sglang_model
+    from tests.unit_test.fixtures.moe_fakes import FakeExperts, RecordingTopK
+
+    monkeypatch.setattr(sglang_model, "TopK", RecordingTopK)
+    monkeypatch.setattr(
+        sglang_model, "get_moe_impl_class", lambda quant_config: FakeExperts
+    )
+    monkeypatch.setattr(
+        sglang_model, "MingBailingMoeGate", lambda config: nn.Identity()
+    )
+    monkeypatch.setattr(
+        sglang_model, "get_parallel", lambda: SimpleNamespace(tp_size=1)
+    )
+    config = SimpleNamespace(
+        num_experts=8,
+        num_experts_per_tok=2,
+        norm_topk_prob=True,
+        routed_scaling_factor=1.0,
+        multi_gate=False,
+        hidden_size=16,
+        moe_intermediate_size=32,
+        num_shared_experts=0,
+    )
+
+    block = sglang_model.MingBailingMoeSparseMoeBlock(config, layer_id=0)
+
+    assert block.topk.bound == (
+        FakeExperts.runner_backend,
+        FakeExperts.routing_method_type,
+    )

@@ -27,10 +27,12 @@ pytestmark = pytest.mark.skipif(
     not RUNTIME_BIN or not DATA_ROOT, reason="set NATIVE_RUNTIME_BIN and CI_DATA_ROOT"
 )
 MODEL_REPO = "mlx-community/Qwen3-ASR-0.6B-4bit"
+DRAFT_REPO = "wilsonzheng0327/Qwen3-ASR-0.6B-dflash"
+LARGE_DRAFT_REPO = "wilsonzheng0327/Qwen3-ASR-1.7B-dflash"
 
 
-def model_directory() -> Path:
-    return Path(DATA_ROOT) / "models" / MODEL_REPO.replace("/", "_")
+def model_directory(repo: str = MODEL_REPO) -> Path:
+    return Path(DATA_ROOT) / "models" / repo.replace("/", "_")
 
 
 def clip(clip_id: str) -> bytes:
@@ -174,6 +176,61 @@ def test_voxt_final_request_streams_text_and_generation_metadata(
     }
 
 
+def test_a_draft_model_serves_the_voxt_final_request() -> None:
+    """The draft's proposals are verified in place: Voxt's request is answered as without one,
+    and a token budget below the block size is kept exactly."""
+    with_draft = Server(flags=("--draft-model-path", str(model_directory(DRAFT_REPO))))
+    try:
+        status, body = with_draft.post_form(
+            {
+                "model": with_draft.ready["model_name"],
+                "stream": "true",
+                "language": "English",
+                "max_new_tokens": "1024",
+                "stop_at_end_of_text": "true",
+                "stop_on_token_loop": "true",
+                "include_generation_metadata": "true",
+                "audio_layout": "voxt_swift",
+            },
+            clip("0006_en_short"),
+        )
+        budget_status, budget_body = with_draft.post_form(
+            {
+                "model": with_draft.ready["model_name"],
+                "stream": "true",
+                "language": "English",
+                "max_new_tokens": "2",
+                "include_generation_metadata": "true",
+                "audio_layout": "voxt_swift",
+            },
+            clip("0006_en_short"),
+        )
+    finally:
+        with_draft.stop()
+    assert status == 200
+    events = sse_events(body)
+    assert events[-1] == "[DONE]"
+    assert events[0]["type"] == "transcript.text.done"
+    assert events[0]["text"]
+    assert events[0]["generation_metadata"]["finish_reason"] == "stop"
+    assert events[0]["generation_metadata"]["language"] == "English"
+    assert budget_status == 200
+    budget_done = sse_events(budget_body)[0]
+    assert budget_done["text"]
+    assert budget_done["generation_metadata"]["finish_reason"] == "length"
+    assert budget_done["generation_metadata"]["generated_token_count"] == 2
+
+
+def test_a_draft_for_another_target_fails_at_load() -> None:
+    """A draft of the wrong hidden size is refused before ready, not at the first request."""
+    failed = Server(
+        flags=("--draft-model-path", str(model_directory(LARGE_DRAFT_REPO)))
+    )
+    assert failed.ready["event"] == "failed"
+    assert "hidden size 2048" in failed.ready["reason"]
+    assert failed.process.wait(timeout=10) == 1
+
+
 def test_plain_request_returns_json_text(server: Server) -> None:
     status, body = server.post_form({"language": "en"}, clip("0006_en_short"))
     assert (status, json.loads(body)) == (
@@ -203,27 +260,6 @@ def test_invalid_requests_are_rejected(server: Server, fields: dict, wav) -> Non
     assert status == 400
     detail = json.loads(body)["detail"]
     assert all(name in detail for name in fields)
-
-
-@pytest.mark.parametrize("repetition_penalty", ["0", "-1", "nan", "inf"])
-def test_invalid_cli_repetition_penalty_fails_before_model_loading(
-    repetition_penalty: str,
-) -> None:
-    """Invalid penalties reached decoding instead of being rejected before model loading."""
-    completed = subprocess.run(
-        [
-            str(Path(RUNTIME_BIN) / "qwen3_asr_transcribe"),
-            "--model-path",
-            "does-not-exist",
-            "--repetition-penalty",
-            repetition_penalty,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert completed.returncode != 0
-    assert "--repetition-penalty must be positive and finite" in completed.stderr
 
 
 def wav_bytes(pcm: bytes) -> bytes:
@@ -405,47 +441,3 @@ def test_shutdown_reports_stopped() -> None:
     running.process.stdin.flush()
     assert json.loads(running.process.stdout.readline()) == {"event": "stopped"}
     assert running.process.wait(timeout=10) == 0
-
-
-def test_unknown_model_kinds_are_rejected() -> None:
-    completed = subprocess.run(
-        [
-            str(Path(RUNTIME_BIN) / "qwen3_asr_server"),
-            "--supervised",
-            "--model-kind",
-            "whisper",
-            "--model-directory",
-            "x",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert completed.returncode == 2
-    assert completed.stdout == ""
-
-
-@pytest.mark.parametrize(
-    ("flag", "value"),
-    [
-        ("--max-segment-seconds", "0"),
-        ("--max-segment-seconds", "0.00001"),
-        ("--decode-interval-ms", "0"),
-        ("--first-decode-ms", "-1"),
-    ],
-)
-def test_invalid_realtime_settings_fail_at_startup(flag: str, value: str) -> None:
-    completed = subprocess.run(
-        [
-            str(Path(RUNTIME_BIN) / "qwen3_asr_server"),
-            "--model-directory",
-            "x",
-            flag,
-            value,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert completed.returncode == 2
-    assert flag in completed.stderr

@@ -22,14 +22,29 @@ from sglang_omni.models.nemotron_voicechat.duplex_stages import (
     ThinkerBuilder,
 )
 from sglang_omni.models.nemotron_voicechat.fusion import AddFusion
-from sglang_omni.models.nemotron_voicechat.talker import LevelScheduleEntry
+from sglang_omni.models.nemotron_voicechat.mog_head import MoGHead
+from sglang_omni.models.nemotron_voicechat.request_builders import (
+    NemotronVoiceChatRequestData,
+)
+from sglang_omni.models.nemotron_voicechat.talker import (
+    EarTtsTalker,
+    LevelScheduleEntry,
+)
 from sglang_omni.models.nemotron_voicechat.talker_model_runner import (
+    NemotronVoiceChatTalkerModelRunner,
     VoiceChatTalkerModelRunner,
 )
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.scheduling.types import SchedulerRequest
+
+TALKER_HIDDEN_SIZE = 32
+TALKER_NUM_QUANTIZERS = 4
+TALKER_CODEBOOK_SIZE = 16
+TALKER_LATENT_SIZE = 8
+SAMPLING_ITERATIONS = 4
+SAMPLE_COUNT = 2000
 
 
 @pytest.fixture
@@ -53,8 +68,10 @@ def thinker_adapter() -> ThinkerAdapter:
     tokenizer = Mock(spec=PreTrainedTokenizerBase, all_special_ids=[0])
     tokenizer.convert_tokens_to_ids.return_value = 0
     tokenizer.decode.side_effect = lambda token_ids: "x" * len(token_ids)
+    runner = object.__new__(DuplexThinkerRunner)
+    runner.model = model
     return ThinkerAdapter(
-        Mock(spec=DuplexThinkerRunner, model=model),
+        runner,
         prompt_token_ids=[1, 2],
         pad_token_id=0,
         tokenizer=tokenizer,
@@ -76,7 +93,7 @@ def test_runner_forwards_only_uncached_fusion_inputs(
         StagePayload("first", OmniRequest(None), {"acoustic": torch.ones(1, 4)}),
     )
     first_request.output_ids = [3]
-    first_request.extra_model_outputs = {"function_ids": [4]}
+    first_request.function_ids = [4]
     thinker_adapter.result(session_identity, first_request)
     next_request = thinker_adapter.build(
         session_identity,
@@ -124,7 +141,7 @@ def test_thinker_continuation_reuses_pending_token_position(
     )
     assert first_request.input_ids.tolist() == [1, 2, 0]
     first_request.output_ids = [3]
-    first_request.extra_model_outputs = {"function_ids": [4]}
+    first_request.function_ids = [4]
     first_output = thinker_adapter.result(session_identity, first_request)
     assert first_output.data["text"] == "x"
     assert first_output.data["text_token"] == 3
@@ -153,6 +170,37 @@ def test_duplex_ar_stages_disable_radix_cache_for_fusion_rows() -> None:
     assert talker.generation_defaults(dtype="bfloat16")["disable_radix_cache"]
 
 
+def test_thinker_unit_runs_through_runner_output_hook(
+    thinker_adapter: ThinkerAdapter,
+) -> None:
+    session_identity = SessionIdentity("runner-output")
+    thinker_adapter.open(session_identity, OmniRequest(None))
+    request_data = thinker_adapter.build(
+        session_identity,
+        TimedChunk("audio", 0, 80, 0, bytes(2560), "pcm16"),
+        StagePayload("unit", OmniRequest(None), {"acoustic": torch.ones(1, 4)}),
+    )
+    assert isinstance(request_data, NemotronVoiceChatRequestData)
+
+    thinker_adapter.runner.model.function_ids = torch.tensor([4])
+    generation_result = Mock(
+        logits_output=Mock(next_token_logits=torch.tensor([[0.0, 0.0, 0.0, 1.0]]))
+    )
+    thinker_adapter.runner.post_prefill(
+        generation_result,
+        None,
+        Mock(),
+        [SchedulerRequest("unit", data=request_data)],
+    )
+    assert request_data.function_ids == [4]
+    assert request_data.pending_stream_tokens == [3]
+
+    request_data.output_ids = [3]
+    output = thinker_adapter.result(session_identity, request_data)
+    assert output.data["text_token"] == 3
+    assert output.data["function_token"] == 4
+
+
 def test_context_limit_rejects_unit_without_corrupting_reopened_session(
     thinker_adapter: ThinkerAdapter,
 ) -> None:
@@ -168,7 +216,7 @@ def test_context_limit_rejects_unit_without_corrupting_reopened_session(
             ),
         )
         request.output_ids = [3]
-        request.extra_model_outputs = {"function_ids": [4]}
+        request.function_ids = [4]
         thinker_adapter.result(session_identity, request)
     for attempt in range(2):
         with pytest.raises(ContextExhaustedError, match="^context_exhausted:"):
@@ -211,7 +259,7 @@ def test_thinker_sessions_keep_text_history_independent(
             StagePayload("unit", OmniRequest(None), {"acoustic": torch.ones(1, 4)}),
         )
         request.output_ids = token_ids[-1:]
-        request.extra_model_outputs = {"function_ids": [4]}
+        request.function_ids = [4]
         texts.append(thinker_adapter.result(session_identity, request).data["text"])
         thinker_adapter.tokenizer.decode.assert_called_with(token_ids)
     assert texts == ["x", "x", "x"]
@@ -223,7 +271,7 @@ def test_thinker_sessions_keep_text_history_independent(
     )
     assert request.input_ids.numel() == 0
     request.output_ids = [6]
-    request.extra_model_outputs = {"function_ids": [4]}
+    request.function_ids = [4]
     assert thinker_adapter.result(second_session, request).data["text"] == "x"
     thinker_adapter.tokenizer.decode.assert_called_with([5, 6])
 
@@ -243,7 +291,7 @@ def test_thinker_withholds_incomplete_unicode_and_special_tokens(
             StagePayload("unit", OmniRequest(None), {"acoustic": torch.ones(1, 4)}),
         )
         request.output_ids = [token_id]
-        request.extra_model_outputs = {"function_ids": [4]}
+        request.function_ids = [4]
         deltas.append(thinker_adapter.result(session_identity, request).data["text"])
     assert deltas == ["", "", "你", "好"]
 
@@ -286,9 +334,9 @@ def test_runner_rejects_misaligned_fusion_history(
 
 def test_talker_continuation_fuses_previous_codes_with_current_text() -> None:
     def fuse_codes_and_text(
-        previous_codes: torch.Tensor, text_token_id: int
+        previous_codes: torch.Tensor, text_token_ids: list[int]
     ) -> torch.Tensor:
-        return previous_codes.float() + text_token_id
+        return previous_codes.float() + text_token_ids[0]
 
     runner = Mock(
         spec=DuplexTalkerRunner,
@@ -296,7 +344,7 @@ def test_talker_continuation_fuses_previous_codes_with_current_text() -> None:
     )
     runner.pad_codes.return_value = torch.zeros(1, 4, dtype=torch.long)
     runner.warmup.return_value = torch.ones(2, 4)
-    runner.step_row.side_effect = fuse_codes_and_text
+    runner.step_rows.side_effect = fuse_codes_and_text
     runner.generate_codes.return_value = torch.tensor([[5, 6, 7, 8]])
     adapter = TalkerAdapter(runner, context_length=8)
     session_identity = SessionIdentity("talker")
@@ -412,7 +460,7 @@ def test_thinker_routes_tool_call_out_and_forces_response_in(
             StagePayload("frame", OmniRequest(None), {"acoustic": torch.ones(1, 4)}),
         )
         request.output_ids = [0]
-        request.extra_model_outputs = {"function_ids": [function_token_id]}
+        request.function_ids = [function_token_id]
         return thinker_adapter.result(session_identity, request)
 
     # note (Junnan Li): The pad id inside a call span is not part of the call text.
@@ -449,3 +497,160 @@ def test_thinker_routes_tool_call_out_and_forces_response_in(
             2 * torch.ones(4) + 3 * embeddings[0] + 5 * embeddings[function_input],
         )
     assert state.tool_call_token_ids is None
+
+
+def test_talker_samples_the_batch_once_and_gives_each_request_its_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sampled_row_counts: list[int] = []
+
+    def sample_codes(
+        hidden: torch.Tensor,
+        head: torch.nn.Module,
+        *,
+        level_schedule: list[LevelScheduleEntry],
+        top_p: float,
+        noise_scale: float,
+    ) -> torch.Tensor:
+        sampled_row_counts.append(hidden.shape[0])
+        return hidden.long()
+
+    def initialize_runner(
+        runner: NemotronVoiceChatTalkerModelRunner,
+        tp_worker: ModelWorker,
+        output_processor: SGLangOutputProcessor,
+    ) -> None:
+        runner.model = Mock(
+            hidden_out=torch.arange(24.0).reshape(6, 4),
+            talker=Mock(generate_codes=sample_codes),
+            mog_head=Mock(),
+        )
+        runner.level_schedule = []
+        runner.top_p = 0.9
+        runner.noise_scale = 1.0
+
+    monkeypatch.setattr(
+        NemotronVoiceChatTalkerModelRunner, "__init__", initialize_runner
+    )
+    runner = NemotronVoiceChatTalkerModelRunner(
+        Mock(spec=ModelWorker), Mock(spec=SGLangOutputProcessor)
+    )
+    requests = [
+        SchedulerRequest(
+            f"talker-{index}", data=Mock(talker_model_inputs={"codes_rows": []})
+        )
+        for index in range(3)
+    ]
+    runner.post_decode(Mock(), Mock(), Mock(), requests)
+
+    assert sampled_row_counts == [3]
+    for index, request in enumerate(requests):
+        inputs = request.data.talker_model_inputs
+        row_codes = torch.arange(4 * index, 4 * index + 4)[None]
+        torch.testing.assert_close(inputs["prev_codes"], row_codes)
+        torch.testing.assert_close(inputs["codes_rows"], [row_codes[0]])
+        torch.testing.assert_close(inputs["stream_chunk"], row_codes)
+        assert inputs["stream_chunk"].device.type == "cpu"
+
+
+def make_code_sampler() -> tuple[EarTtsTalker, MoGHead]:
+    torch.manual_seed(0)
+    talker = EarTtsTalker(
+        dict(
+            hidden_size=TALKER_HIDDEN_SIZE,
+            vocab_size=10,
+            char_vocab_size=8,
+            num_quantizers=TALKER_NUM_QUANTIZERS,
+            codebook_size=TALKER_CODEBOOK_SIZE,
+            latent_size=TALKER_LATENT_SIZE,
+            char_encoder_config={
+                "encoder": dict(
+                    hidden_size=16,
+                    intermediate_size=32,
+                    num_hidden_layers=1,
+                    num_attention_heads=2,
+                    num_key_value_heads=1,
+                    head_dim=8,
+                )
+            },
+        )
+    )
+    talker.rvq_embs.normal_()
+    mog_head = MoGHead(
+        dict(
+            hidden_size=TALKER_HIDDEN_SIZE,
+            intermediate_size=64,
+            num_layers=3,
+            num_predictions=TALKER_CODEBOOK_SIZE,
+            out_size=TALKER_LATENT_SIZE,
+            low_rank=4,
+        )
+    )
+    mog_head.low_mat.data.normal_()
+    return talker.eval(), mog_head.eval()
+
+
+def sample_rows(
+    talker: EarTtsTalker,
+    mog_head: MoGHead,
+    hidden_TD: torch.Tensor,
+    *,
+    top_p: float,
+    noise_scale: float,
+) -> torch.Tensor:
+    return talker.generate_codes(
+        hidden_TD,
+        mog_head,
+        level_schedule=talker.build_level_schedule(
+            SAMPLING_ITERATIONS, 1.0, hidden_TD.device
+        ),
+        top_p=top_p,
+        noise_scale=noise_scale,
+    )
+
+
+@torch.inference_mode()
+def test_batched_code_sampling_matches_each_row_sampled_alone_without_noise() -> None:
+    talker, mog_head = make_code_sampler()
+    hidden_TD = torch.randn(5, TALKER_HIDDEN_SIZE)
+    # note (Xinhao Tan): this nucleus keeps only the top component and zero noise
+    # samples its mean, so the codes are a pure function of the row.
+    batched = sample_rows(talker, mog_head, hidden_TD, top_p=1e-6, noise_scale=0.0)
+    alone = torch.cat(
+        [
+            sample_rows(talker, mog_head, row_D[None], top_p=1e-6, noise_scale=0.0)
+            for row_D in hidden_TD
+        ]
+    )
+    torch.testing.assert_close(batched, alone, rtol=0, atol=0)
+
+
+@torch.inference_mode()
+def test_a_rows_code_distribution_does_not_depend_on_its_batch() -> None:
+    talker, mog_head = make_code_sampler()
+    row_D = torch.randn(TALKER_HIDDEN_SIZE)
+    others_TD = torch.randn(SAMPLE_COUNT, TALKER_HIDDEN_SIZE)
+
+    def first_level_distribution(codes_TQ: torch.Tensor) -> torch.Tensor:
+        counts = torch.bincount(codes_TQ[:, 0], minlength=TALKER_CODEBOOK_SIZE)
+        return counts / codes_TQ.shape[0]
+
+    alone = torch.cat(
+        [
+            sample_rows(talker, mog_head, row_D[None], top_p=0.9, noise_scale=1.0)
+            for _ in range(SAMPLE_COUNT)
+        ]
+    )
+    interleaved_TD = torch.stack(
+        [row_D.repeat(SAMPLE_COUNT, 1), others_TD], dim=1
+    ).reshape(-1, TALKER_HIDDEN_SIZE)
+    mixed = sample_rows(talker, mog_head, interleaved_TD, top_p=0.9, noise_scale=1.0)
+    copies = sample_rows(
+        talker, mog_head, row_D.repeat(SAMPLE_COUNT, 1), top_p=0.9, noise_scale=1.0
+    )
+
+    alone_distribution = first_level_distribution(alone)
+    assert (alone_distribution > 0).sum() > 1
+    for batched in (mixed[::2], copies):
+        distance = (first_level_distribution(batched) - alone_distribution).abs()
+        assert 0.5 * distance.sum() < 0.1

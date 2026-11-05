@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-ARG SGLANG_IMAGE=lmsysorg/sglang@sha256:5fc09edb6a0bb1d5b6992b543723c66d08f86d7a507e951e87e0d05db4ac766e
+ARG SGLANG_IMAGE=lmsysorg/sglang@sha256:f7876bef696ccf9cf75a2bf7ccb82970f5fac577f082fb8ca95c9a59d2160eb5
 
 FROM ${SGLANG_IMAGE} AS runtime
 
@@ -52,7 +52,7 @@ RUN python3 -c 'import tomllib; print("\n".join(tomllib.load(open("/tmp/pyprojec
         --overrides /tmp/omni-overrides.txt -r /tmp/pyproject.toml \
         --extra audar-tts --extra fun-cosyvoice3 --extra minicpm-o \
     && uv pip install --python /opt/sglang/bin/python3 --no-deps qwen-tts==0.1.1 \
-    && uv pip install --python /opt/sglang/bin/python3 --no-deps --reinstall flashinfer-python==0.7.1 \
+    && uv pip install --python /opt/sglang/bin/python3 --no-deps --reinstall flashinfer-python==0.7.2 \
     && rm /tmp/pyproject.toml /tmp/omni-overrides.txt
 
 ENV FLASHINFER_WORKSPACE_BASE=/root \

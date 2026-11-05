@@ -93,19 +93,22 @@ logger = logging.getLogger(__name__)
 
 
 class EosControlledLogits(nn.Module):
-    """Wraps the logits processor: eos only at each request's chosen frame."""
+    """Wraps the logits processor: eos only at each request's chosen frame.
+
+    The lm_head scores the main-token candidates only, so eos is a candidate column, not its token id.
+    """
 
     def __init__(
         self,
         logits_processor: LogitsProcessor,
         *,
-        eos_token_id: int,
+        eos_column: int,
         request_specs: dict[str, RequestSpec],
         prompt_row_counts: dict[str, int],
     ) -> None:
         super().__init__()
         self.logits_processor = logits_processor
-        self.eos_token_id = eos_token_id
+        self.eos_column = eos_column
         self.request_specs = request_specs
         self.prompt_row_counts = prompt_row_counts
         self.last_logits: torch.Tensor | None = None
@@ -125,9 +128,9 @@ class EosControlledLogits(nn.Module):
         ):
             frame_index = sequence_length - self.prompt_row_counts[request_id]
             if frame_index == self.request_specs[request_id].end_at_frame:
-                logits[row, self.eos_token_id] = FORCED_EOS_LOGIT
+                logits[row, self.eos_column] = FORCED_EOS_LOGIT
             else:
-                logits[row, self.eos_token_id] = float("-inf")
+                logits[row, self.eos_column] = float("-inf")
         self.last_logits = logits.float().cpu()
         return output
 
@@ -146,9 +149,10 @@ class RecordingDrama3Model(Drama3ForCausalLM):
         self.prompt_row_counts: dict[str, int] = {}
         self.sampled_frame_counts: dict[str, int] = {}
         self.forwards: list[ForwardRecord] = []
+        candidate_token_ids = self.audio_decoder.main_token_candidate_ids.tolist()
         self.eos_controlled_logits = EosControlledLogits(
             self.logits_processor,
-            eos_token_id=config.eos_token_id,
+            eos_column=candidate_token_ids.index(config.eos_token_id),
             request_specs=self.request_specs,
             prompt_row_counts=self.prompt_row_counts,
         )
