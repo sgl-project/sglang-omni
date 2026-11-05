@@ -107,9 +107,11 @@ an SGLang draft worker.
 Every published draft a stage serves has one entry in
 `sglang_omni/speculative/draft_registry.py`: the draft repo, its full
 revision, the algorithm and its other `speculative_*` settings, the license
-and whether the model turns it on by default. A cookbook command, an example
-config or a model's defaults that serve the draft give exactly that entry's
-keys, which `tests/unit_test/speculative/test_draft_registry.py` checks, so a
+and whether the model turns it on by default. A draft whose model card states
+no license stays off by default. A cookbook command, an example config or a
+model's defaults that serve the draft give exactly that entry's keys, and a
+model's defaults turn it on only for that entry's model path.
+`tests/unit_test/speculative/test_draft_registry.py` checks these rules, so a
 new draft adds its entry in the same change.
 
 ## Setting Values: YAML and CLI

@@ -12,14 +12,14 @@ from pathlib import Path
 
 import pytest
 
-from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.manager import ConfigManager, normalize_flag_key
 from sglang_omni.config.schema import StageConfig
 from sglang_omni.models.registry import resolve_variant
 from sglang_omni.speculative.draft_registry import DRAFT_REGISTRY, PinnedDraft
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 BASH_BLOCK = re.compile(r"```(?:bash|sh|shell)\n(.*?)```", re.DOTALL)
-ENGINE_DRAFT_FLAG = re.compile(r"--(\w+)\.engine\.(speculative_\w+)")
+ENGINE_DRAFT_FLAG = re.compile(r"--([\w-]+)\.engine\.(speculative_\w+)")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -45,8 +45,9 @@ def stage_draft_keys(stage: StageConfig) -> dict[str, str]:
         }
 
 
-def drafts_in_docs() -> list[ServedDraft]:
+def drafts_in_docs() -> tuple[list[ServedDraft], list[str]]:
     served = []
+    unreadable_flags = []
     for doc_path in sorted((REPO_ROOT / "docs").rglob("*.md")):
         for block in BASH_BLOCK.findall(doc_path.read_text(encoding="utf-8")):
             for command in block.replace("\\\n", " ").splitlines():
@@ -60,7 +61,12 @@ def drafts_in_docs() -> list[ServedDraft]:
                     for flag, value in zip(tokens, tokens[1:]):
                         match = ENGINE_DRAFT_FLAG.fullmatch(flag)
                         if match is not None:
-                            keys_by_stage.setdefault(match[1], {})[match[2]] = value
+                            stage = normalize_flag_key(match[1])
+                            keys_by_stage.setdefault(stage, {})[match[2]] = value
+                        elif flag.startswith("--") and ".engine.speculative_" in flag:
+                            unreadable_flags.append(
+                                f"{doc_path.relative_to(REPO_ROOT)}: {flag}"
+                            )
                         else:
                             pass
                     model_path = dict(zip(tokens, tokens[1:])).get("--model-path")
@@ -75,7 +81,7 @@ def drafts_in_docs() -> list[ServedDraft]:
                     )
                 else:
                     pass
-    return served
+    return served, unreadable_flags
 
 
 def drafts_in_example_configs() -> list[ServedDraft]:
@@ -101,7 +107,8 @@ def drafts_in_example_configs() -> list[ServedDraft]:
     return served
 
 
-SERVED_DRAFTS = drafts_in_docs() + drafts_in_example_configs()
+DOC_DRAFTS, UNREADABLE_DOC_DRAFT_FLAGS = drafts_in_docs()
+SERVED_DRAFTS = DOC_DRAFTS + drafts_in_example_configs()
 
 
 def test_registry_pins_each_draft_and_turns_on_at_most_one_per_stage() -> None:
@@ -117,6 +124,15 @@ def test_registry_pins_each_draft_and_turns_on_at_most_one_per_stage() -> None:
         if draft.is_default_on
     )
     assert all(count == 1 for count in default_on.values()), default_on
+
+
+def test_only_a_licensed_draft_is_on_by_default() -> None:
+    for draft in DRAFT_REGISTRY:
+        assert draft.license is not None or not draft.is_default_on, draft
+
+
+def test_every_draft_flag_in_the_docs_names_one_stage_engine_key() -> None:
+    assert UNREADABLE_DOC_DRAFT_FLAGS == []
 
 
 @pytest.mark.parametrize(
@@ -160,6 +176,11 @@ def test_every_draft_off_by_default_is_served_in_a_doc_or_example_config() -> No
 
 
 def test_model_defaults_serve_exactly_the_default_on_drafts() -> None:
+    registry_paths = sorted({draft.model_path for draft in DRAFT_REGISTRY})
+    # note (Haoling Pu): a near-miss path stands for a sibling checkpoint without an entry, such as Qwen3-ASR 0.6B next to 1.7B.
+    model_paths = registry_paths + [
+        f"{path}-without-a-draft" for path in registry_paths
+    ]
     default_drafts = set()
     for config_module_path in sorted(
         (REPO_ROOT / "sglang_omni" / "models").glob("*/config.py")
@@ -173,14 +194,17 @@ def test_model_defaults_serve_exactly_the_default_on_drafts() -> None:
             if config_cls.model_fields["stages"].is_required():
                 pass
             else:
-                for stage in config_cls(model_path="unused").stages:
-                    engine_keys = stage_draft_keys(stage)
-                    if engine_keys:
-                        default_drafts.add((stage.name, frozenset(engine_keys.items())))
-                    else:
-                        pass
+                for model_path in model_paths:
+                    for stage in config_cls(model_path=model_path).stages:
+                        engine_keys = stage_draft_keys(stage)
+                        if engine_keys:
+                            default_drafts.add(
+                                (model_path, stage.name, frozenset(engine_keys.items()))
+                            )
+                        else:
+                            pass
     assert default_drafts == {
-        (draft.stage, frozenset(registered_keys(draft).items()))
+        (draft.model_path, draft.stage, frozenset(registered_keys(draft).items()))
         for draft in DRAFT_REGISTRY
         if draft.is_default_on
     }

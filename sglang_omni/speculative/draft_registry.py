@@ -21,7 +21,7 @@ class PinnedDraft:
     draft_model_path: str
     draft_model_revision: str
     engine_settings: dict[str, int] = field(default_factory=dict)
-    # note (Haoling Pu): None means the model card states no license.
+    # note (Haoling Pu): None means the model card states no license, so the draft stays off by default.
     license: str | None
     is_default_on: bool = False
 
