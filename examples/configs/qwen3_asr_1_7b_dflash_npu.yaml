@@ -1,4 +1,4 @@
-# Experimental single-device eager validation; native Ascend qualification is pending.
+# Single-device BF16 DFlash with eager execution.
 config_cls: Qwen3ASRPipelineConfig
 name: qwen3-asr-1.7b-dflash-npu
 model_path: Qwen/Qwen3-ASR-1.7B

@@ -181,39 +181,25 @@ sgl-omni serve \
   --port 8000
 ```
 
-### Experimental Ascend NPU validation
+Send the form field `return_spec_tokens_details=true` to get `sglext.spec_tokens_details` (`spec_accept_length`, `spec_accept_rate`, the draft counts and the per-verify histogram) on `json` and `verbose_json` responses and on the streamed `transcript.text.done` event. Audio long enough to be transcribed in chunks returns none. `spec_accept_rate` and `spec_num_proposed_drafts` are left out when no drafts were proposed or the draft width is adaptive.
 
-The shared DFlash worker has an Ascend path. Single-device eager and decode-graph runs with the pinned 48k draft have been reported on A3; full qualification remains pending as described below. Start with the single-device eager configuration below to check the draft's hidden states, checkpoint attention semantics and accepted-token/KV handoff before testing graphs or concurrency. Follow the [NPU installation guide](../get_started/installation_npu.md) for the supported stack; this example does not enable DFlash by default.
+### Ascend NPU
 
-```bash
-sgl-omni serve \
-  --config examples/configs/qwen3_asr_1_7b_dflash_npu.yaml \
-  --port 8000
-```
-
-The NPU example disables encoder and generation graphs and Torch Compile, sets both target and draft attention to `ascend`, and limits running requests to one. The builder keeps the existing greedy-only, synchronous DFlash scheduling policy. These settings define the initial validation scope; graph, overlap, realtime and higher-concurrency support remain unqualified. Direct factory callers must pass the same engine overrides and `enable_encoder_cuda_graph=False`; the launcher loads them from the example.
-
-Set `speculative_draft_attention_backend: ascend` explicitly on NPU, including for direct factory calls. For this initial validation, keep the effective engine `context_length` at or below the pinned draft's 32,768-token sliding window, including the audio/text prefix and verification reserve; do not increase it to the draft's larger `max_position_embeddings`. The current builder's default context fits within this bound with its default output budget, but an explicit context override or a larger `max_new_tokens` floor can exceed it. Full-context causal attention and sliding-window attention agree only while all visible keys fit in the window, so this bounded run cannot qualify window eviction or longer contexts.
-
-The pinned draft is causal (`sliding_window_non_causal=false`). Check that the converted configuration retains causal attention; only a checkpoint declaring `sliding_window_non_causal=true` should produce `is_causal=false`. A 32k-vocabulary draft is a separate weight identity from the pinned 48k-vocabulary draft, and vocabulary size does not determine the attention window. Record its own revision, config and weight hashes before using its results to qualify a configuration.
-
-The target is the ordinary `Qwen/Qwen3-ASR-1.7B` checkpoint, which can be reused if already present. DFlash additionally loads `wilsonzheng0327/Qwen3-ASR-1.7B-dflash` at the revision pinned in the example (about 726 MB of weights). The 0.6B draft is not interchangeable with the 1.7B target. No retraining or NPU-specific weight conversion is required by this integration: the shared loader writes a temporary flat configuration and links the original safetensors, including the draft's trained output head and token mapping. Supply local target/draft snapshot paths for an offline server; use `--asr.engine.speculative_draft_model_path` for the draft path. The temporary configuration is released after engine construction, including build failures; the original weight cache is retained.
-
-The [NPU DFlash validation packet](../../scripts/npu/DFLASH_VALIDATION.md) defines the initial server checks and required evidence. An eager pass does not qualify NPU graphs or demonstrate a speedup.
-
-### Experimental Ascend DFlash decode graphs
-
-To validate graph capture of the draft block, its reduced-vocabulary head and the target verification forward, use the separate graph example on the SGLang version required by `pyproject_npu.toml`:
+Use the [NPU installation guide](../get_started/installation_npu.md) for the supported runtime. DFlash supports one Ascend device with BF16, greedy decoding and synchronous scheduling. Start with the eager example, or select the decode-graph example for request buckets one and two:
 
 ```bash
-sgl-omni serve \
-  --config examples/configs/qwen3_asr_1_7b_dflash_npu_graph.yaml \
-  --port 8000
+# Eager decoding
+sgl-omni serve --config examples/configs/qwen3_asr_1_7b_dflash_npu.yaml --port 8000
+
+# Draft and target verification decode graphs
+sgl-omni serve --config examples/configs/qwen3_asr_1_7b_dflash_npu_graph.yaml --port 8000
 ```
 
-This configuration captures decode request buckets 1 and 2, with eight tokens per DFlash block. It keeps prefill and encoder execution eager, Torch Compile disabled and scheduling synchronous. It uses the same pinned 48k draft and the context/window restrictions above. The existing SGLang NPU runner executes the shared worker's capture-tail hook, which writes mapped proposal IDs to fixed storage; no separate ASR graph worker is required. Do not set `SGLANG_DFLASH_EAGER_DRAFT_SAMPLER=1` when validating the captured head.
+Both examples explicitly select `ascend` for target and draft attention, disable encoder graphs and Torch Compile, and pin the causal 48k draft. The graph example also keeps prefill eager. Keep `SGLANG_DFLASH_EAGER_DRAFT_SAMPLER` unset or `0` to capture the reduced-vocabulary draft head. Direct factory callers must supply the same engine overrides and `enable_encoder_cuda_graph=False`.
 
-A [bounded A3 server report](https://github.com/sgl-project/sglang-omni/pull/3473#issuecomment-6646114210) on candidate `9fa8fe74` records target/draft graph capture, positive decode graph serving, matching transcripts across four 1064-request eager/graph legs, serial stability and a separate c2 run. It used SGLang 0.5.23 installed over an older CANN image, rather than the pinned image digest; transcript equality does not prove token-ID/finish-reason or KV handoff equivalence. Full native qualification remains pending. Follow the [DFlash graph validation packet](../../scripts/npu/DFLASH_GRAPH_VALIDATION.md): first replay the sampler component with changed inputs, then verify actual draft and target replay on real audio, including transitions between request buckets. The component test alone does not qualify ASR attention or KV/auxiliary hidden-state reuse. Keep the eager example as the paired reference; enabling decode graphs does not establish encoder graphs, overlap, realtime support or a speedup.
+Reuse the ordinary `Qwen/Qwen3-ASR-1.7B` target weights and download the additional pinned draft (about 726 MB). No retraining or NPU-specific weight conversion is needed. For offline serving, pass local snapshots with `--model-path` and `--asr.engine.speculative_draft_model_path`; the shared loader creates and cleans up a temporary flat draft configuration while retaining the original weights.
+
+Set `speculative_draft_attention_backend: ascend` explicitly and keep effective `context_length`, including the audio/text prefix and verification reserve, at or below the draft's 32768-token attention window. A larger output budget or context override can exceed that bound. The pinned checkpoint is causal; a 32k-vocabulary variant is a separate weight identity, not a different attention-window limit. Overlap, realtime, TP>1, quantized targets and contexts or concurrency beyond these examples remain outside the validated scope.
 
 ## Transcribe Audio
 

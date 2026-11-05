@@ -1,4 +1,4 @@
-# Experimental draft/target decode graphs; native Ascend qualification is pending.
+# Single-device DFlash decode graphs; encoder and prefill remain eager.
 config_cls: Qwen3ASRPipelineConfig
 name: qwen3-asr-1.7b-dflash-npu-graph
 model_path: Qwen/Qwen3-ASR-1.7B
