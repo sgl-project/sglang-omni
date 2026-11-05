@@ -736,7 +736,7 @@
   "Save each result": "保存每次结果",
   "Saved %s": "已保存 %s",
   "Saved recordings": "已保存的录音",
-  "Saves the audio with each history entry, to listen again or recognise it once more. When this is off, a recording whose recognition failed is still kept for 7 days, so that you can retry it.": "在每条历史中保存音频，方便重听或重新识别。关闭时，识别失败的录音仍会保留 7 天，方便重试。",
+  "Saves the audio with each history entry, to listen again or recognise it once more. When this is off, a recording whose recognition failed, or that you cancelled, is still kept for 7 days, so that you can retry it.": "在每条历史中保存音频，方便重听或重新识别。关闭时，识别失败或被你取消的录音仍会保留 7 天，方便重试。",
   "Save…": "保存…",
   "Say a sentence or two: the result shows here and is not typed anywhere.": "说一两句话：结果只显示在这里，不会输入到任何地方。",
   "Say a sentence or two: the translation shows here and is not typed anywhere.": "说一两句话：译文显示在这里，不会输入到任何地方。",
