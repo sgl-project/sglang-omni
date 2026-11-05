@@ -17,11 +17,8 @@ import pytest
 import torch
 from sglang.srt.runtime_context import get_spec
 
-from sglang_omni.models.moss_transcribe_diarize.stages import (
-    create_sglang_moss_transcribe_diarize_executor,
-)
-from sglang_omni.models.qwen3_asr.stages import create_sglang_qwen3_asr_executor
 from sglang_omni.proto import OmniRequest, StagePayload
+from tests.unit_test.fixtures.plain_fallback import create_plain_fallback_scheduler
 
 
 @pytest.mark.accelerator
@@ -45,6 +42,27 @@ def test_plain_fallback_uses_one_target_worker(
     )
 
 
+@pytest.mark.accelerator
+@pytest.mark.parametrize("model_family", ["qwen3_asr", "moss_td"])
+@pytest.mark.parametrize("scenario", ["kv_pressure", "blocked_path"])
+@pytest.mark.parametrize("enable_cuda_graph", [False, True])
+def test_plain_fallback_progress_with_shared_resource_limits(
+    model_family: Literal["qwen3_asr", "moss_td"],
+    scenario: Literal["kv_pressure", "blocked_path"],
+    enable_cuda_graph: bool,
+) -> None:
+    """Mixed paths must requeue under pressure and avoid idling runnable work."""
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            f"from tests.unit_test.fixtures.plain_fallback import probe_plain_fallback_progress; probe_plain_fallback_progress({model_family!r}, {scenario!r}, enable_cuda_graph={enable_cuda_graph!r})",
+        ],
+        check=True,
+        timeout=300,
+    )
+
+
 def probe_plain_fallback(
     model_family: Literal["qwen3_asr", "moss_td"],
     *,
@@ -52,57 +70,13 @@ def probe_plain_fallback(
     enable_radix_cache: bool = False,
 ) -> None:
     """Fallback requests must never forward the draft or write its KV pool."""
-    server_overrides = {
-        "speculative_algorithm": "DFLASH",
-        "speculative_num_draft_tokens": 8,
-        "disable_cuda_graph": not enable_cuda_graph,
-        "cuda_graph_backend_prefill": "disabled",
-        "max_running_requests": 4,
-        "cuda_graph_bs": [1, 2, 4],
-        "cuda_graph_max_bs": 4,
-        "disable_radix_cache": not enable_radix_cache,
-        "enable_torch_compile": False,
-        "max_total_tokens": 32768,
-    }
-    if model_family == "qwen3_asr":
-        server_overrides.update(
-            {
-                "speculative_draft_model_path": "wilsonzheng0327/Qwen3-ASR-1.7B-dflash",
-                "speculative_draft_model_revision": "d62bd4051e68282e02f93de774036a35f22f1373",
-            }
-        )
-        scheduler = create_sglang_qwen3_asr_executor(
-            "Qwen/Qwen3-ASR-1.7B",
-            device="cuda",
-            gpu_id=0,
-            max_running_requests=4,
-            enable_plain_fallback=True,
-            enable_async_decode=False,
-            enable_encoder_cuda_graph=False,
-            enable_pre_lm_encoder=False,
-            request_build_max_workers=1,
-            prefill_coalesce_requests=0,
-            server_args_overrides=server_overrides,
-        )
-    else:
-        server_overrides.update(
-            {
-                "speculative_draft_model_path": "wilsonzheng0327/MOSS-Transcribe-Diarize-dflash",
-                "speculative_draft_model_revision": "2e3f00b0932112e4f92a4ef67a4cd60ee855056c",
-            }
-        )
-        scheduler = create_sglang_moss_transcribe_diarize_executor(
-            "OpenMOSS-Team/MOSS-Transcribe-Diarize",
-            device="cuda",
-            gpu_id=0,
-            max_running_requests=4,
-            enable_plain_fallback=True,
-            enable_async_decode=False,
-            max_new_tokens=128,
-            request_build_max_workers=1,
-            prefill_coalesce_requests=0,
-            server_args_overrides=server_overrides,
-        )
+    scheduler = create_plain_fallback_scheduler(
+        model_family,
+        enable_cuda_graph=enable_cuda_graph,
+        enable_radix_cache=enable_radix_cache,
+        max_running_requests=4,
+        max_total_tokens=32768,
+    )
     target_runner = scheduler.tp_worker.model_runner
     draft_runner = scheduler.draft_worker.draft_model_runner
     target_worker = scheduler.tp_worker.speculative_target_worker

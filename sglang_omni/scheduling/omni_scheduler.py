@@ -346,6 +346,7 @@ class OmniScheduler(Generic[RequestDataT]):
     request_build_admission_wait_s: float = _REQUEST_BUILD_ADMISSION_WAIT_S
     enable_plain_fallback: bool = False
     decode_batch_states: dict[str, DecodeBatchState] | None = None
+    kv_recovery_request: Req | None = None
 
     def __init__(
         self,
@@ -2234,29 +2235,77 @@ class OmniScheduler(Generic[RequestDataT]):
         own that state, so feed it in and write the (possibly rebuilt) running
         batch back before handing the runnable batch to the caller.
         """
-        if self.enable_plain_fallback:
-            with self.request_admission_lock:
-                self.select_next_decode_path()
-        else:
-            pass
-        running_batch = self.running_batch
-        # note (Junnan Li): An empty mixed-chunk batch can retain a stale full flag.
+        for _ in range(2 if self.enable_plain_fallback else 1):
+            if self.enable_plain_fallback:
+                with self.request_admission_lock:
+                    self.select_next_decode_path()
+            else:
+                pass
+            running_batch = self.running_batch
+            # note (Junnan Li): An empty mixed-chunk batch can retain a stale full flag.
+            if (
+                running_batch.is_empty()
+                and running_batch.batch_is_full
+                and self.waiting_queue
+                and self.chunked_req is None
+                and self.get_num_allocatable_reqs(0, running_batch=running_batch) > 0
+            ):
+                running_batch.batch_is_full = False
+            else:
+                pass
+            plan = _Upstream.get_next_batch_to_run(self, running_batch, self.last_batch)
+            self.running_batch = plan.running_batch
+            if plan.batch_to_run is not None or not self.enable_plain_fallback:
+                return plan.batch_to_run
+            else:
+                self.last_batch = None
+        return None
+
+    def update_running_batch(self, batch: ScheduleBatch) -> ScheduleBatch | None:
+        """Requeue both KV owners before a per-path OOM can abort its last row."""
         if (
-            running_batch.is_empty()
-            and running_batch.batch_is_full
-            and self.waiting_queue
-            and self.chunked_req is None
-            and self.get_num_allocatable_reqs(0, running_batch=running_batch) > 0
+            self.enable_plain_fallback
+            and any(
+                request.kv.holds_kv and not request.finished()
+                for pending_batch in self.pending_batches()
+                for request in pending_batch.reqs
+            )
+            and not batch.check_decode_mem()
         ):
-            running_batch.batch_is_full = False
+            with self.request_admission_lock:
+                self.kv_recovery_request = batch.reqs[0]
+                requests = {
+                    id(request): request
+                    for held_batch in (batch, *self.pending_batches())
+                    for request in held_batch.reqs
+                    if not request.finished()
+                }
+                retracted_count = self.retract_running_requests()
+                self.new_token_ratio_tracker.reset()
+                self.metrics_reporter.num_retracted_reqs = retracted_count
+                if self.metrics_reporter.enable_metrics:
+                    self.metrics_reporter.metrics_collector.increment_retracted_reqs(
+                        num_retracted_reqs=retracted_count,
+                        num_retracted_input_tokens=sum(
+                            len(request.origin_input_ids)
+                            for request in requests.values()
+                        ),
+                        num_retracted_output_tokens=sum(
+                            len(request.output_ids) for request in requests.values()
+                        ),
+                    )
+                else:
+                    pass
+                logger.warning(
+                    f"KV cache pool is full across decode paths; "
+                    f"requeued {retracted_count} requests"
+                )
+            return None
         else:
-            pass
-        plan = _Upstream.get_next_batch_to_run(self, running_batch, self.last_batch)
-        self.running_batch = plan.running_batch
-        return plan.batch_to_run
+            return _Upstream.update_running_batch(self, batch)
 
     def select_next_decode_path(self) -> None:
-        """Alternate ready paths while preserving each prefill/decode handoff."""
+        """Prioritize a retracted request, otherwise alternate ready paths."""
         states = self.decode_batch_states
         assert states is not None
         states[self.decode_path] = DecodeBatchState(
@@ -2267,7 +2316,17 @@ class OmniScheduler(Generic[RequestDataT]):
         )
         next_path = "plain" if self.decode_path == "spec" else "spec"
         next_state = states[next_path]
-        if (
+        recovery_request = self.kv_recovery_request
+        if recovery_request is not None and (
+            recovery_request.finished() or recovery_request.omni_data is None
+        ):
+            self.kv_recovery_request = None
+            recovery_request = None
+        else:
+            pass
+        if recovery_request is not None:
+            self.decode_path = recovery_request.omni_data.decode_path
+        elif (
             next_state.running_batch.reqs
             or (next_state.last_batch is not None and next_state.last_batch.reqs)
             or next_state.chunked_request is not None

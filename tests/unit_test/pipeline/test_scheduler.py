@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from queue import Empty, Queue
 from types import SimpleNamespace
+from typing import Literal
 from unittest.mock import Mock
 
 import pytest
@@ -26,6 +27,7 @@ from sglang.srt.disaggregation.utils import DisaggregationMode
 from sglang.srt.environ import envs
 from sglang.srt.managers.schedule_batch import (
     FINISH_LENGTH,
+    NextBatchPlan,
     Req,
     ReqKvInfo,
     ScheduleBatch,
@@ -2504,8 +2506,8 @@ def test_plain_fallback_accepts_requests_without_room_for_draft_reserve(
         assert request_data.fallback_reason is None
 
 
-def test_plain_fallback_rotates_paths_and_cancels_parked_requests() -> None:
-    """A sparse plain request must run while a speculative request stays live."""
+def plain_fallback_scheduler() -> tuple[OmniScheduler[SGLangARRequestData], Req, Req]:
+    """Create one active spec request and one queued plain request."""
     scheduler = object.__new__(OmniScheduler)
     scheduler.enable_plain_fallback = True
     scheduler.decode_path = "spec"
@@ -2550,6 +2552,12 @@ def test_plain_fallback_rotates_paths_and_cancels_parked_requests() -> None:
     )
     scheduler.waiting_queue = [plain_request]
     init_sync_request_build_state(scheduler)
+    return scheduler, request, plain_request
+
+
+def test_plain_fallback_rotates_paths_and_cancels_parked_requests() -> None:
+    """A sparse plain request must run while a speculative request stays live."""
+    scheduler, request, _ = plain_fallback_scheduler()
     scheduler.select_next_decode_path()
     assert scheduler.spec_algorithm.is_none()
     assert scheduler.future_map is scheduler.plain_future_map
@@ -2561,6 +2569,131 @@ def test_plain_fallback_rotates_paths_and_cancels_parked_requests() -> None:
     assert scheduler.running_batch.reqs == [request]
     assert scheduler.spec_algorithm == SpeculativeAlgorithm.DFLASH
     assert scheduler.future_map is scheduler.speculative_future_map
+
+
+@pytest.mark.parametrize("ready_path", ["plain", "spec", None])
+def test_plain_fallback_does_not_idle_on_a_blocked_path(
+    monkeypatch: pytest.MonkeyPatch, ready_path: Literal["plain", "spec"] | None
+) -> None:
+    """An inadmissible queued path must not idle a different running path."""
+    scheduler, request, waiting_request = plain_fallback_scheduler()
+    if ready_path == "plain":
+        scheduler.decode_path = "plain"
+        request.omni_data.decode_path = "plain"
+        waiting_request.omni_data.decode_path = "spec"
+        scheduler.decode_batch_states = {
+            "plain": omni_scheduler_module.DecodeBatchState(
+                running_batch=scheduler.running_batch,
+                last_batch=scheduler.last_batch,
+            ),
+            "spec": omni_scheduler_module.DecodeBatchState(
+                running_batch=ScheduleBatch(reqs=[], batch_is_full=False)
+            ),
+        }
+    else:
+        pass
+    attempted_paths: list[str] = []
+
+    def prepare_batch(
+        current: OmniScheduler[SGLangARRequestData],
+        running_batch: ScheduleBatch,
+        last_batch: ScheduleBatch | None,
+    ) -> NextBatchPlan:
+        attempted_paths.append(current.decode_path)
+        assert len(attempted_paths) <= 2
+        return NextBatchPlan(
+            batch_to_run=(running_batch if current.decode_path == ready_path else None),
+            running_batch=running_batch,
+        )
+
+    monkeypatch.setattr(
+        sglang_scheduler_module.Scheduler, "get_next_batch_to_run", prepare_batch
+    )
+
+    batch = scheduler.get_next_batch_to_run()
+
+    if ready_path is None:
+        assert batch is None
+        assert scheduler.last_batch is None
+    else:
+        assert len(attempted_paths) == 2
+        assert attempted_paths[0] != attempted_paths[1]
+        assert batch.reqs == [request]
+        assert scheduler.decode_path == ready_path
+        assert batch is scheduler.running_batch
+
+
+@pytest.mark.parametrize("terminal_state", ["finished", "cancelled"])
+def test_plain_fallback_requeues_all_kv_owners_before_native_oom_abort(
+    monkeypatch: pytest.MonkeyPatch, terminal_state: Literal["finished", "cancelled"]
+) -> None:
+    """A sole active row was aborted while the other path held recoverable KV."""
+    scheduler, request, parked_request = plain_fallback_scheduler()
+    request.kv.req_pool_idx = 0
+    parked_request.kv.req_pool_idx = 1
+    parked_batch = ScheduleBatch(reqs=[parked_request], batch_is_full=False)
+    scheduler.decode_batch_states["plain"] = omni_scheduler_module.DecodeBatchState(
+        running_batch=parked_batch, last_batch=parked_batch
+    )
+    scheduler.waiting_queue = []
+    scheduler.running_batch.forward_mode = ForwardMode.DECODE
+    scheduler.running_batch.check_decode_mem = Mock(return_value=False)
+    scheduler.new_token_ratio_tracker = Mock()
+    scheduler.metrics_reporter = SimpleNamespace(
+        num_retracted_reqs=0, enable_metrics=True, metrics_collector=Mock()
+    )
+    scheduler.req_to_token_pool = Mock()
+    scheduler.token_to_kv_pool_allocator = Mock()
+    scheduler.tree_cache = Mock()
+    scheduler.hisparse_coordinator = None
+    release_requests = Mock()
+    monkeypatch.setattr(omni_scheduler_module, "retract_all", release_requests)
+
+    def enqueue_retracted_request(
+        current: OmniScheduler[SGLangARRequestData],
+        request: Req,
+        is_retracted: bool = False,
+    ) -> None:
+        """Observe the native queue interface without requiring initialized pools."""
+        current.waiting_queue.append(request)
+
+    monkeypatch.setattr(
+        sglang_scheduler_module.Scheduler,
+        "_add_request_to_queue",  # noqa: leading-underscore  # native queue interface
+        enqueue_retracted_request,
+    )
+    native_update = Mock(side_effect=AssertionError("native last-row abort reached"))
+    monkeypatch.setattr(
+        sglang_scheduler_module.Scheduler, "update_running_batch", native_update
+    )
+
+    assert scheduler.update_running_batch(scheduler.running_batch) is None
+
+    assert release_requests.call_args.kwargs["reqs"] == [request, parked_request]
+    assert scheduler.waiting_queue == [request, parked_request]
+    assert scheduler.kv_recovery_request is request
+    assert scheduler.metrics_reporter.num_retracted_reqs == 2
+    scheduler.metrics_reporter.metrics_collector.increment_retracted_reqs.assert_called_once_with(
+        num_retracted_reqs=2,
+        num_retracted_input_tokens=2,
+        num_retracted_output_tokens=0,
+    )
+    native_update.assert_not_called()
+    assert all(
+        not state.running_batch.reqs for state in scheduler.decode_batch_states.values()
+    )
+    assert request.omni_data.decode_path == "spec"
+    assert parked_request.omni_data.decode_path == "plain"
+    scheduler.select_next_decode_path()
+    assert scheduler.decode_path == "spec"
+    if terminal_state == "finished":
+        request.finished_reason = FINISH_LENGTH(length=8)
+    else:
+        request.omni_data = None
+    scheduler.waiting_queue = [parked_request]
+    scheduler.select_next_decode_path()
+    assert scheduler.kv_recovery_request is None
+    assert scheduler.decode_path == "plain"
 
 
 def test_omni_scheduler_fish_abort_during_step_suppresses_chunk_and_result() -> None:
