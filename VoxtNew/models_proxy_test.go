@@ -50,17 +50,28 @@ func TestRealSystemProxy(t *testing.T) {
 		return proxyURL, err
 	}
 	fx := conformance.New(t)
+	changed := make(chan struct{}, 1) // a token once a status changed: look again
 	opt := models.Options{Store: fx.Peer("dev.hehehai.voxtnew.test"),
-		Network: models.Network{Endpoints: []string{"https://huggingface.co"}, Client: models.NewHTTPClient(proxy)}}
+		Network: models.Network{Endpoints: []string{"https://huggingface.co"}, Client: models.NewHTTPClient(proxy)},
+		OnChange: func() {
+			select {
+			case changed <- struct{}{}:
+			default:
+			}
+		}}
 	m := models.Open(opt)
 	defer m.Close()
 	start := time.Now()
 	if err := m.Download(models.VADSilero); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Minute)
-	for m.Status(models.VADSilero).Downloading && time.Now().Before(deadline) {
-		time.Sleep(100 * time.Millisecond)
+	timeout := time.After(2 * time.Minute)
+	for m.Status(models.VADSilero).Downloading {
+		select {
+		case <-changed:
+		case <-timeout:
+			t.Fatalf("still downloading after 2 minutes: %+v", m.Status(models.VADSilero))
+		}
 	}
 	s := m.Status(models.VADSilero)
 	t.Logf("silero-vad: %+v in %v, requests by proxy: %v", s, time.Since(start).Round(time.Millisecond), used)
