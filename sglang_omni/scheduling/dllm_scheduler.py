@@ -62,7 +62,9 @@ def release_kv_once(req: Req, tree_cache: BasePrefixCache) -> None:
     if req.kv.holds_kv:
         release_kv_cache(req, tree_cache, checkpoint=True)
     else:
-        pass
+        # A CFG row that never ran still pins the prefix it matched at admission.
+        tree_cache.unlock(req.lock)
+        req.lock = None
 
 
 class DllmScheduler:
@@ -427,24 +429,16 @@ class DllmScheduler:
         else:
             pass
 
-    def synchronize_cfg_phases(self, reqs: list[DllmRequest]) -> None:
-        """Keep CFG companions in the conditional request's DLLM phase."""
-        if len(reqs) < 2:
-            return
-        else:
-            pass
-        cond_req = next(  # noqa: leading-underscore  # DLLM protocol
-            (req for req in reqs if not req._is_uncond), None
-        )
-        if cond_req is None:
-            return
-        else:
-            pass
-        for req in reqs:
-            if req._is_uncond:  # noqa: leading-underscore  # DLLM protocol
-                req.dllm_phase = cond_req.dllm_phase
-            else:
-                pass
+    def select_runnable_rows(self, reqs: list[DllmRequest]) -> list[DllmRequest]:
+        """Rows with a whole committed block encode first, then the group decodes."""
+        block_size = self.dllm_config.block_size
+        encoding_rows = [
+            req
+            for req in reqs
+            if req.prefix_len + block_size
+            <= len(req.origin_input_ids) + len(req.output_ids)
+        ]
+        return encoding_rows or reqs
 
     def get_request_group(self, queue: list[DllmRequest]) -> list[DllmRequest]:
         """Return the complete logical request group at the head of a queue."""
@@ -575,8 +569,16 @@ class DllmScheduler:
 
         from_staging = source_queue is self.staging_queue
         if from_staging:
-            for req in request_group:
+            runnable_rows = self.select_runnable_rows(request_group)
+            for req in runnable_rows:
+                has_run = req.kv.holds_kv
+                block_offset = req.dllm_block_offset
                 req.init_next_round_input()
+                # A new round advances the offset, but this row's first block is the one its admission matched.
+                if not has_run:
+                    req.dllm_block_offset = block_offset
+                else:
+                    pass
                 result = adder.add_dllm_staging_req(req)
                 if result == AddReqResult.NO_TOKEN:
                     break
@@ -594,14 +596,15 @@ class DllmScheduler:
                     break
                 else:
                     pass
+            runnable_rows = self.select_runnable_rows(request_group)
 
-        expected_rids = [req.rid for req in request_group]
+        expected_rids = [
+            req.rid for req in (runnable_rows if from_staging else request_group)
+        ]
         scheduled_rids = [req.rid for req in adder.can_run_list]
         ready = scheduled_rids == expected_rids
         if ready and len(request_group) > 1:
-            self.synchronize_cfg_phases(adder.can_run_list)
-            spans = {(req.prefix_len, req.extend_end) for req in adder.can_run_list}
-            if len(spans) != 1 or any(
+            if any(
                 req.extend_len != self.dllm_config.block_size
                 for req in adder.can_run_list
             ):
@@ -633,7 +636,7 @@ class DllmScheduler:
         ]
 
         new_batch = ScheduleBatch.init_new(
-            reqs=adder.can_run_list,
+            reqs=runnable_rows,
             req_to_token_pool=self.req_to_token_pool,
             token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
             tree_cache=self.tree_cache,
@@ -849,7 +852,11 @@ class DllmScheduler:
                 continue
             else:
                 pass
-            checkpoint_kv_cache(req, self.tree_cache)
+            # A row waiting for its group has not advanced this round.
+            if req in batch.reqs:
+                checkpoint_kv_cache(req, self.tree_cache)
+            else:
+                pass
             # Keep the row until finish/abort so release_kv_cache owns both
             # cached tokens and the request slot throughout staging.
             new_staging.append(req)

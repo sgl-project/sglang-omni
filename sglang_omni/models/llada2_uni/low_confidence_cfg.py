@@ -42,12 +42,6 @@ class LowConfidenceCFG(DllmAlgorithm):
     ) -> tuple[LogitsProcessorOutput | torch.Tensor, list[torch.Tensor], bool]:
         reqs = forward_batch.reqs
         is_cfg = no_text_idx is not None
-        if reqs and all(req.is_dllm_prefill() for req in reqs):
-            out = model_runner.forward(forward_batch, pp_proxy_tensors=None)
-            return out.logits_output, [], out.can_run_graph
-        else:
-            pass
-
         ids = forward_batch.input_ids.view(forward_batch.batch_size, self.block_size)
         starts = self._block_start_list(
             forward_batch
@@ -158,6 +152,12 @@ class LowConfidenceCFG(DllmAlgorithm):
             pass
         reqs = forward_batch.reqs
         batch_size = forward_batch.batch_size
+        # note (qiujiawei): encoding rows of a CFG group advance on their own lengths.
+        if reqs and all(req.is_dllm_prefill() for req in reqs):
+            out = model_runner.forward(forward_batch, pp_proxy_tensors=None)
+            return out.logits_output, [], None, None, out.can_run_graph
+        else:
+            pass
 
         cfg_marked = bool(reqs) and any(  # noqa: leading-underscore  # DLLM protocol
             req._is_uncond or req._cfg_group_rid is not None for req in reqs

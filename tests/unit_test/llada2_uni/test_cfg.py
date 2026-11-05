@@ -239,12 +239,13 @@ def test_guidance_updates_all_cfg_branches(size: int, rescale: float) -> None:
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
-def test_cfg_prefill_only_builds_kv_state() -> None:
+@pytest.mark.parametrize("rows", [slice(None), slice(1, 2)], ids=["group", "companion"])
+def test_cfg_prefill_only_builds_kv_state(rows: slice) -> None:
     algorithm = LowConfidenceCFG(make_config())
-    requests = make_cfg_group(2)
+    requests = make_cfg_group(2)[rows]
     for request in requests:
         request.dllm_phase = DllmReqPhase.INCOMING_PREFILL
-    input_ids = torch.tensor([1, 2, 3, 4, 9, 9, 3, 4])
+    input_ids = torch.tensor([1, 2, 3, 4, 9, 9, 3, 4])[-4 * len(requests) :]
     original = input_ids.clone()
     calls = 0
 
@@ -255,7 +256,7 @@ def test_cfg_prefill_only_builds_kv_state() -> None:
 
     result = algorithm.run(
         NS(forward=forward),
-        NS(reqs=requests, batch_size=2, input_ids=input_ids),
+        NS(reqs=requests, batch_size=len(requests), input_ids=input_ids),
     )
 
     assert result == (None, [], None, None, False)

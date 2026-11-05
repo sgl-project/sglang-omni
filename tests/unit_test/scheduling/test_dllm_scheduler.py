@@ -435,6 +435,92 @@ def test_cfg_chunked_admission_rolls_back_and_retries(
     assert all(req.extend_len == 32 for req in batch.reqs)
 
 
+def use_unequal_cfg_rows(
+    scheduler: DllmScheduler, monkeypatch: pytest.MonkeyPatch, lengths: list[int]
+) -> list[DllmRequest]:
+    requests = scheduler.waiting_queue.copy()
+    for request, length in zip(requests, lengths, strict=True):
+        request.origin_input_ids = array("q", [1] * length)
+    scheduler.cond_to_unconds = {"cond": ["uncond"]}
+    scheduler.uncond_to_cond = {"uncond": "cond"}
+    scheduler.uncond_rids = {"uncond"}
+    scheduler.orphaned_uncond_rids = set()
+    requests[1]._is_uncond = True  # noqa: leading-underscore  # DLLM protocol
+    monkeypatch.setattr(
+        dllm_scheduler_module,
+        "ScheduleBatch",
+        SimpleNamespace(
+            init_new=lambda **kwargs: SimpleNamespace(
+                reqs=kwargs["reqs"],
+                prepare_for_extend=lambda: None,
+                filter_batch=lambda **kwargs: None,
+            )
+        ),
+    )
+    return requests
+
+
+@pytest.mark.parametrize(
+    ("lengths", "expected_rounds"),
+    [
+        (
+            [40, 104],
+            [
+                {"cond": (0, 32), "uncond": (0, 32)},
+                {"uncond": (32, 64)},
+                {"uncond": (64, 96)},
+                {"cond": (32, 64), "uncond": (96, 128)},
+            ],
+        ),
+        (
+            [8, 72],
+            [
+                {"uncond": (0, 32)},
+                {"uncond": (32, 64)},
+                {"cond": (0, 32), "uncond": (64, 96)},
+            ],
+        ),
+    ],
+    ids=["both-rows-encode-first", "conditional-decodes-at-admission"],
+)
+def test_cfg_rows_encode_at_their_own_length_then_decode_together(
+    chunked_scheduler: DllmScheduler,
+    monkeypatch: pytest.MonkeyPatch,
+    lengths: list[int],
+    expected_rounds: list[dict[str, tuple[int, int]]],
+) -> None:
+    scheduler = chunked_scheduler
+    use_unequal_cfg_rows(scheduler, monkeypatch, lengths)
+
+    rounds = []
+    with get_context().override_server_args(page_size=1, max_prefill_tokens=64):
+        for _ in expected_rounds:
+            batch = scheduler.schedule_next_batch()
+            rounds.append(
+                {req.rid: (req.prefix_len, req.extend_end) for req in batch.reqs}
+            )
+            scheduler.post_step(batch)
+
+    assert rounds == expected_rounds
+    assert not any(req.is_dllm_prefill() for req in batch.reqs)
+
+
+def test_abort_releases_a_cfg_row_that_never_ran(
+    chunked_scheduler: DllmScheduler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scheduler = chunked_scheduler
+    conditional, _ = use_unequal_cfg_rows(scheduler, monkeypatch, [8, 72])
+
+    with get_context().override_server_args(page_size=1, max_prefill_tokens=64):
+        batch = scheduler.schedule_next_batch()
+        assert conditional not in batch.reqs and conditional.lock is not None
+        scheduler.aborted_request_ids = {"cond"}
+        scheduler.drain_and_purge()
+
+    assert scheduler.staging_queue == []
+    assert conditional.lock is None
+
+
 def test_dllm_staging_admission_uses_dllm_config(
     chunked_scheduler: DllmScheduler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
