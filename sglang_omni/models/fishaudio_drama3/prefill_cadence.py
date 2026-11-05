@@ -51,6 +51,13 @@ class PrefillCadenceConfig:
     step_smoothing: float = 0.1
     # The ablation: take longest_interval every time and leave first audio to the wait cap alone.
     is_longest_only: bool = False
+    # latency: between the two bounds, take the interval with the shortest modelled wall time per
+    # request instead of either bound. How far back arrivals and admissions are counted:
+    rate_window_s: float = 4.0
+    # Held back from the critical interval as a share of it, since what a step leaves of a 24.8 ms
+    # budget differs by machine: 8 ms is a third of it on one card and nearly all of it on another.
+    continuity_margin: float = 0.05
+    is_latency_driven: bool = False
 
 
 def worst_stall_s(
@@ -118,6 +125,13 @@ class PrefillCadence:
     releases: collections.Counter[str] = field(default_factory=collections.Counter)
     step_by_batch: dict[int, list[float]] = field(default_factory=dict)
     prefill_by_count: dict[int, list[float]] = field(default_factory=dict)
+    arrivals: collections.deque[tuple[float, int]] = field(
+        default_factory=collections.deque
+    )
+    prefill_line: list[float] = field(default_factory=lambda: [0.0] * 5)
+    frames_decoded: float = 0.0
+    requests_admitted: float = 0.0
+    chosen_targets: collections.Counter[str] = field(default_factory=collections.Counter)
 
     def __post_init__(self) -> None:
         config = self.config
@@ -130,10 +144,50 @@ class PrefillCadence:
     def observe_decode_step(self, step_s: float, batch_size: int) -> None:
         self.tally(self.step_by_batch, batch_size // BATCH_BUCKET * BATCH_BUCKET, step_s)
         self.step_s = self.smoothed(self.step_s, step_s)
+        self.frames_decoded += batch_size
 
     def observe_prefill(self, prefill_s: float, request_count: int) -> None:
         self.tally(self.prefill_by_count, request_count, prefill_s)
         self.prefill_s = self.smoothed(self.prefill_s, prefill_s)
+        self.requests_admitted += request_count
+        weight, count, total, squares, products = self.prefill_line
+        self.prefill_line = [
+            weight + 1,
+            count + request_count,
+            total + prefill_s,
+            squares + request_count**2,
+            products + request_count * prefill_s,
+        ]
+
+    def observe_arrival(self, now_s: float, request_count: int) -> None:
+        self.arrivals.append((now_s, request_count))
+        while self.arrivals and self.arrivals[0][0] < now_s - self.config.rate_window_s:
+            self.arrivals.popleft()
+
+    def arrival_rate(self, now_s: float) -> float:
+        recent = sum(
+            count
+            for time_s, count in self.arrivals
+            if time_s >= now_s - self.config.rate_window_s
+        )
+        return recent / self.config.rate_window_s
+
+    def frames_per_request(self) -> float:
+        if self.requests_admitted < 1:
+            return 0.0
+        else:
+            return self.frames_decoded / self.requests_admitted
+
+    def prefill_estimate_s(self, cohort: float) -> float:
+        """T_P(n) = fixed + per request * n, fitted on every prefill seen, not smoothed over time."""
+        weight, count, total, squares, products = self.prefill_line
+        spread = weight * squares - count**2
+        if weight < 2 or spread <= 0:
+            return self.prefill_s if self.prefill_s is not None else 0.0
+        else:
+            per_request = (weight * products - count * total) / spread
+            fixed = (total - per_request * count) / weight
+            return max(0.0, fixed + max(0.0, per_request) * cohort)
 
     def smoothed(self, mean_s: float | None, sample_s: float) -> float:
         if mean_s is None:
@@ -171,12 +225,71 @@ class PrefillCadence:
         else:
             return min(config.longest_interval, int(budget_s / step_s))
 
-    def choose_interval(self) -> int:
+    def modelled_frame_interval_s(
+        self, interval: int, step_s: float, arrival_rate: float
+    ) -> float:
+        """The step stretched by the share of the time prefills take at this interval.
+
+        A prefill happens only when a request is waiting, so prefills per second are the smaller of
+        the arrival rate and one per cycle; below that crossover a longer interval batches nothing.
+        """
+        cohort, prefills = 1.0, arrival_rate
+        for _ in range(3):
+            cycle_s = interval * step_s + self.prefill_estimate_s(cohort)
+            prefills = min(arrival_rate, 1 / cycle_s)
+            cohort = max(1.0, arrival_rate / prefills) if prefills > 0 else 1.0
+        share = min(0.9, prefills * self.prefill_estimate_s(cohort))
+        return step_s / (1 - share)
+
+    def wall_time_s(
+        self, interval: int, step_s: float, arrival_rate: float, frames: float
+    ) -> float:
+        """Modelled wall time of one request: the admission wait it pays plus its own frames."""
+        return interval * step_s / 2 + frames * self.modelled_frame_interval_s(
+            interval, step_s, arrival_rate
+        )
+
+    def smooth_enough_interval(self, step_s: float, arrival_rate: float) -> int:
+        """Shortest interval whose modelled frame interval stays inside the schedule's tolerance."""
+        limit_s = self.critical_interval_s * (1 - self.config.continuity_margin)
+        return next(
+            (
+                level
+                for level in range(1, self.config.longest_interval + 1)
+                if self.modelled_frame_interval_s(level, step_s, arrival_rate) <= limit_s
+            ),
+            self.config.longest_interval,
+        )
+
+    def latency_interval(self, now_s: float, step_s: float, prefill_s: float) -> int:
+        """The interval with the shortest modelled wall time, inside what the two SLOs allow."""
+        arrival_rate = self.arrival_rate(now_s)
+        frames = self.frames_per_request()
+        shortest = self.smooth_enough_interval(step_s, arrival_rate)
+        longest = self.first_audio_interval(step_s, prefill_s)
+        if arrival_rate <= 0 or frames <= 0:
+            self.chosen_targets["unmeasured"] += 1
+            return longest
+        elif shortest > longest:
+            self.conflicts += 1
+            self.chosen_targets["conflict"] += 1
+            return shortest
+        else:
+            self.chosen_targets["latency"] += 1
+            return min(
+                range(max(1, shortest), longest + 1),
+                key=lambda level: self.wall_time_s(level, step_s, arrival_rate, frames),
+                default=longest,
+            )
+
+    def choose_interval(self, now_s: float = 0.0) -> int:
         step_s, prefill_s = self.step_s, self.prefill_s
         if self.config.is_longest_only:
             interval = self.config.longest_interval
         elif step_s is None or prefill_s is None:
             interval = 0
+        elif self.config.is_latency_driven:
+            interval = self.latency_interval(now_s, step_s, prefill_s)
         else:
             shortest = self.continuity_interval(step_s, prefill_s)
             longest = self.first_audio_interval(step_s, prefill_s)
@@ -195,17 +308,21 @@ class PrefillCadence:
         config = self.config
         return prefill_s + config.first_window * step_s + config.vocoder_margin_s
 
-    def wait_cap_s(self) -> float:
-        """How long a waiting request may wait before the interval is cut short for it."""
-        step_s, prefill_s = self.step_s, self.prefill_s
-        if step_s is None or prefill_s is None:
+    def wait_cap_s(self, waiting_count: int = 1) -> float:
+        """How long a waiting request may wait before the interval is cut short for it.
+
+        The prefill it will pay for is the one admitting everything now waiting, which is known
+        here, so the cap uses T_P(waiting_count) and not a mean of prefills already gone by.
+        """
+        step_s = self.step_s
+        if step_s is None or self.prefill_s is None:
             return self.config.first_audio_slo_s
         else:
             # note (0xtoward): release one step early, the step already running delays the prefill.
             return max(
                 0.0,
                 self.config.first_audio_slo_s
-                - self.first_audio_s(step_s, prefill_s)
+                - self.first_audio_s(step_s, self.prefill_estimate_s(waiting_count))
                 - step_s,
             )
 
@@ -215,7 +332,7 @@ class PrefillCadence:
         if free_slots < min(waiting_count, self.config.release_min_admit):
             self.releases["held_full"] += 1
             return False
-        elif oldest_wait_s >= self.wait_cap_s():
+        elif oldest_wait_s >= self.wait_cap_s(waiting_count):
             self.releases["wait_cap"] += 1
             return True
         else:
@@ -227,6 +344,9 @@ class PrefillCadence:
         text = (
             f"Drama cadence: step {step_ms:.1f} ms, prefill {prefill_ms:.1f} ms, critical interval "
             f"{1000 * self.critical_interval_s:.1f} ms, wait cap {1000 * self.wait_cap_s():.0f} ms, "
+            f"frames/request {self.frames_per_request():.0f}, prefill fit "
+            f"{1000 * self.prefill_estimate_s(0):.1f}+{1000 * (self.prefill_estimate_s(1) - self.prefill_estimate_s(0)):.2f}n ms, "
+            f"targets {dict(self.chosen_targets)}, "
             f"intervals {dict(sorted(self.chosen_intervals.items()))}, slo conflicts "
             f"{self.conflicts}, releases {dict(sorted(self.releases.items()))}, decode ms by batch "
             f"{self.means(self.step_by_batch)}, prefill ms by cohort {self.means(self.prefill_by_count)}"
@@ -235,6 +355,7 @@ class PrefillCadence:
         self.prefill_by_count.clear()
         self.chosen_intervals.clear()
         self.releases.clear()
+        self.chosen_targets.clear()
         self.conflicts = 0
         return text
 

@@ -25,6 +25,7 @@ class Drama3Scheduler(OmniScheduler[Drama3RequestData]):
         self.last_batch_was_decode = False
         self.last_batch_was_extend = False
         self.last_batch_size = 0
+        self.newest_enqueue_s = 0.0
         self.reported_s = time.perf_counter()
 
     def get_next_batch_to_run(self) -> ScheduleBatch | None:
@@ -38,6 +39,7 @@ class Drama3Scheduler(OmniScheduler[Drama3RequestData]):
             cadence.observe_prefill(now_s - self.round_started_s, self.last_batch_size)
         else:
             pass
+        self.observe_arrivals(now_s)
         self.release_if_due(now_s)
         if now_s - self.reported_s >= REPORT_INTERVAL_S:
             logger.info(cadence.report())
@@ -50,6 +52,22 @@ class Drama3Scheduler(OmniScheduler[Drama3RequestData]):
         self.last_batch_was_extend = batch is not None and batch.forward_mode.is_extend()
         self.last_batch_size = len(batch.reqs) if batch is not None else 0
         return batch
+
+    def observe_arrivals(self, now_s: float) -> None:
+        """Count the requests that joined the waiting queue since the last round."""
+        arrived = [
+            enqueue_s
+            for request in self.waiting_queue
+            for enqueue_s in (
+                getattr(request, "_coalesce_enqueue_t", 0.0) or 0.0,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            )
+            if enqueue_s > self.newest_enqueue_s
+        ]
+        if arrived:
+            self.newest_enqueue_s = max(arrived)
+            self.cadence.observe_arrival(now_s, len(arrived))
+        else:
+            pass
 
     def is_prefill_expected(self) -> bool:
         # note (0xtoward): async decode predicts this round's prefill, so the wait cap applies first.
@@ -81,7 +99,7 @@ class Drama3Scheduler(OmniScheduler[Drama3RequestData]):
     ) -> None:
         if batch is not None and batch.forward_mode.is_extend():
             self._prefill_decode_interval_remaining = (  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-                self.cadence.choose_interval()
+                self.cadence.choose_interval(time.perf_counter())
             )
         else:
             pass

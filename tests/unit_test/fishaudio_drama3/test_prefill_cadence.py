@@ -137,3 +137,53 @@ def test_the_longest_only_ablation_ignores_both_bounds_but_keeps_the_wait_cap() 
     policy.observe_prefill(0.060, 8)
     assert policy.choose_interval() == 32
     assert policy.wait_cap_s() == pytest.approx(0.5 - 0.060 - 0.048 - 0.03 - 0.012)
+
+
+def test_the_prefill_fit_reads_the_cohort_a_prefill_will_admit() -> None:
+    policy = cadence()
+    policy.observe_prefill(0.030, 4)
+    policy.observe_prefill(0.058, 14)
+    assert policy.prefill_estimate_s(4) == pytest.approx(0.030)
+    assert policy.prefill_estimate_s(14) == pytest.approx(0.058)
+    assert policy.prefill_estimate_s(24) == pytest.approx(0.086, abs=1e-6)
+
+
+def test_the_wait_cap_shrinks_when_more_requests_are_waiting() -> None:
+    policy = cadence()
+    policy.observe_decode_step(0.012, 48)
+    policy.observe_prefill(0.030, 4)
+    policy.observe_prefill(0.058, 14)
+    assert policy.wait_cap_s(4) > policy.wait_cap_s(24)
+
+
+def test_a_light_load_takes_a_short_interval_and_a_heavy_one_a_long_one() -> None:
+    light = cadence(longest_interval=64, is_latency_driven=True)
+    heavy = cadence(longest_interval=64, is_latency_driven=True)
+    for policy, batch, arrivals in ((light, 8, 8.0), (heavy, 96, 40.0)):
+        policy.observe_prefill(0.025, 2)
+        policy.observe_prefill(0.060, 16)
+        for _ in range(30):
+            policy.observe_decode_step(0.0085 if batch == 8 else 0.021, batch)
+        policy.observe_arrival(1.0, int(arrivals * policy.config.rate_window_s))
+        policy.requests_admitted = 10
+        policy.frames_decoded = 840
+    assert light.latency_interval(1.0, 0.0085, 0.030) < heavy.latency_interval(1.0, 0.021, 0.060)
+    assert light.latency_interval(1.0, 0.0085, 0.030) <= 8
+
+
+def test_the_modelled_frame_interval_stops_improving_below_the_arrival_crossover() -> None:
+    policy = cadence(longest_interval=64, is_latency_driven=True)
+    policy.observe_prefill(0.025, 2)
+    policy.observe_prefill(0.060, 16)
+    light = [policy.modelled_frame_interval_s(level, 0.0085, 9.0) for level in (1, 2, 4)]
+    assert light[0] == pytest.approx(light[2], rel=1e-9)
+    heavy = [policy.modelled_frame_interval_s(level, 0.021, 40.0) for level in (1, 8, 32)]
+    assert heavy[0] > heavy[1] > heavy[2]
+
+
+def test_the_continuity_floor_is_a_share_of_the_critical_interval_not_a_fixed_margin() -> None:
+    # A step most of the way to the critical interval still leaves a reachable floor.
+    policy = cadence(longest_interval=64, is_latency_driven=True, continuity_margin=0.05)
+    policy.observe_prefill(0.025, 2)
+    policy.observe_prefill(0.060, 16)
+    assert policy.smooth_enough_interval(0.0164, 25.0) < 64

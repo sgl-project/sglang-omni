@@ -39,7 +39,9 @@ DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE = 1
 # interval the first-audio SLO leaves, but never shorter than max_stall needs (prefill_cadence).
 # longest: always longest_interval, so only the wait cap bounds first audio; the ablation that
 # shows whether the interval the SLOs compute does anything the cap does not already do.
-PrefillIntervalPolicy = Literal["fixed", "slo", "longest"]
+# latency: between the same two bounds, the interval with the shortest modelled wall time per
+# request, which is what a fixed concurrency rewards and what either bound alone misses.
+PrefillIntervalPolicy = Literal["fixed", "slo", "longest", "latency"]
 DEFAULT_PREFILL_INTERVAL_POLICY: PrefillIntervalPolicy = "fixed"
 DEFAULT_PREFILL_LONGEST_INTERVAL = 32
 DEFAULT_FIRST_AUDIO_SLO_MS = 500

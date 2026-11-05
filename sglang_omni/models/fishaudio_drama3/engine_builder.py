@@ -169,6 +169,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
             followup_window=stream_followup_stride,
             release_min_admit=prefill_release_min_admit,
             is_longest_only=prefill_interval_policy == "longest",
+            is_latency_driven=prefill_interval_policy == "latency",
         )
         self.frame_streamer: Drama3FrameStreamer | None = None
         self.sglang_runner: SGLModelRunner | None = None
@@ -432,7 +433,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         )
 
     def scheduler_type(self) -> type[OmniScheduler[Drama3RequestData]]:
-        if self.prefill_interval_policy in ("slo", "longest"):
+        if self.prefill_interval_policy in ("slo", "longest", "latency"):
             return Drama3Scheduler
         else:
             return super().scheduler_type()
