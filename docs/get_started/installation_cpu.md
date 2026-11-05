@@ -5,7 +5,7 @@ use the [CUDA installation](./installation.md).
 
 ## Prerequisites
 
-- Python >= 3.10,<3.13
+- Python >= 3.11,<3.13
 - `uv`
 - A CPU build of SGLang from the matching upstream release.
 - Standard audio runtime libraries such as `ffmpeg` and `libsndfile`.
@@ -87,9 +87,7 @@ python -c "import sglang_omni, torch; print(sglang_omni.__file__, torch.__versio
 which sgl-omni
 ```
 
-The torch version should resolve to a CPU build. CPU-specific unit tests live in
-one directory, so CI (and you) can select them without touching the accelerator
-suites:
+The torch version should resolve to a CPU build. To run the CPU unit tests:
 
 ```bash
 SGLANG_USE_CPU_ENGINE=1 pytest tests/unit_test/cpu -v
