@@ -276,11 +276,14 @@ TranscriptionOptions RealtimeSession::DecodeOptions(Segment &segment) {
   return options;
 }
 
-Transcription RealtimeSession::Decode(std::vector<float> samples,
-                                      TranscriptionOptions options) const {
+Transcription
+RealtimeSession::Decode(std::vector<float> samples,
+                        TranscriptionOptions options,
+                        std::shared_ptr<StreamingEncoder> encoder) const {
   return [&transcriber = transcriber_, samples = std::move(samples),
-          options = std::move(options)](const std::atomic<bool> &cancel) {
-    return transcriber.Transcribe(samples, options, cancel);
+          options = std::move(options),
+          encoder = std::move(encoder)](const std::atomic<bool> &cancel) {
+    return transcriber.Transcribe(samples, options, cancel, encoder.get());
   };
 }
 
@@ -296,6 +299,7 @@ void RealtimeSession::ApplyResult(Segment &segment,
 void RealtimeSession::MaybeStartRefresh() {
   std::vector<float> samples;
   TranscriptionOptions options;
+  std::shared_ptr<StreamingEncoder> encoder;
   int segment_id = 0;
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -321,13 +325,20 @@ void RealtimeSession::MaybeStartRefresh() {
     } else {
     }
     options = DecodeOptions(segment);
+    if (segment.encoder == nullptr) {
+      segment.encoder =
+          std::make_shared<StreamingEncoder>(transcriber_, options.layout);
+    } else {
+    }
+    encoder = segment.encoder;
     segment_id = segment.segment_id;
     refreshing_ = true;
   }
   std::weak_ptr<RealtimeSession> weak_self =
       std::static_pointer_cast<RealtimeSession>(shared_from_this());
   worker_.Submit(
-      Decode(std::move(samples), std::move(options)), cancel_,
+      Decode(std::move(samples), std::move(options), std::move(encoder)),
+      cancel_,
       [weak_self, segment_id](std::optional<TranscriptionResult> result,
                               std::exception_ptr error) {
         const std::shared_ptr<RealtimeSession> self = weak_self.lock();
@@ -403,7 +414,7 @@ void RealtimeSession::FinalizeThrough(long end_sample) {
       }
       try {
         const TranscriptionResult result = worker_.Transcribe(
-            Decode(std::move(samples), std::move(options)), cancel_);
+            Decode(std::move(samples), std::move(options), nullptr), cancel_);
         ApplyResult(segment, result);
         text = result.text;
       } catch (...) {
