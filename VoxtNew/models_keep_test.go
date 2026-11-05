@@ -79,6 +79,7 @@ func TestKeepLoadedRow(t *testing.T) {
 // entries said idle since when.
 func TestKeepLoadedLive(t *testing.T) {
 	fakeOmni(t, omnitest.Opts{})
+	events := omniEvents(t)
 	a, _, _ := newTestApp(t)
 	t.Setenv(llmrt.DevEnv, "")
 	a.updateSettings(func(s *settings.Settings) { s.Models.KeepLoaded = settings.KeepUntilQuit })
@@ -86,7 +87,7 @@ func TestKeepLoadedLive(t *testing.T) {
 	self, _ := os.Executable()
 	_, idle := keepIdle(a.keepSetting())
 	a.llmrt = llmrt.New(llmrt.Config{Bin: self, Env: append(llmrttest.Env(""), omnitest.EnvFake+"="), IdleTimeout: idle,
-		OnModel: a.modelEvents(workerLLM), BeforeLoad: a.beforeLoad()})
+		OnModel: reportTo(events, a.modelEvents(workerLLM)), BeforeLoad: a.beforeLoad()})
 
 	if _, _, err := a.local.ASR(context.Background(), models.ASRFast); err != nil { // warms the servers
 		t.Fatal(err)
@@ -101,36 +102,37 @@ func TestKeepLoadedLive(t *testing.T) {
 	if d := a.omniRT.IdleTimeout(); d != -1 {
 		t.Errorf("the speech runtime started with %v", d)
 	}
-	for _, id := range []string{models.ASRFast, models.VADSilero, models.LLMFast} {
-		eventually(t, id+" idle", func() bool { l, ok := a.loadedModel(t, id); return ok && l.IdleSince != nil })
-	}
+	a.waitIdle(t, events, models.ASRFast, models.VADSilero, models.LLMFast)
 
-	// A change reaches both runtimes, and back.
-	a.updateSettings(func(s *settings.Settings) { s.Models.KeepLoaded = settings.Keep30Min })
-	eventually(t, "30 minutes", func() bool {
-		return a.omniRT.IdleTimeout() == 30*time.Minute && a.llmrt.IdleTimeout() == 30*time.Minute
-	})
-	a.updateSettings(func(s *settings.Settings) { s.Models.KeepLoaded = settings.KeepAuto })
-	eventually(t, "automatic", func() bool {
-		return a.omniRT.IdleTimeout() == omni.DefaultIdleTimeout && a.llmrt.IdleTimeout() == llmrt.DefaultIdleTimeout
-	})
-	a.updateSettings(func(s *settings.Settings) { s.Models.KeepLoaded = settings.KeepUntilQuit })
-	eventually(t, "until VoxtNew quits", func() bool { return a.omniRT.IdleTimeout() == -1 && a.llmrt.IdleTimeout() == -1 })
-	// Still loaded, and idle: eventually, as a warm's lease may come
-	// after its server's launch said it idle (omni's Warm: the launch
-	// reports before the warm leases and lets go).
-	for _, id := range []string{models.ASRFast, models.VADSilero, models.LLMFast} {
-		eventually(t, id+" idle after the changes", func() bool { l, ok := a.loadedModel(t, id); return ok && l.IdleSince != nil })
+	// A change reaches both runtimes (at once: the test app applies
+	// settings in the caller), and back.
+	for _, c := range []struct {
+		keep             string
+		speech, language time.Duration
+	}{
+		{settings.Keep30Min, 30 * time.Minute, 30 * time.Minute},
+		{settings.KeepAuto, omni.DefaultIdleTimeout, llmrt.DefaultIdleTimeout},
+		{settings.KeepUntilQuit, -1, -1},
+	} {
+		a.updateSettings(func(s *settings.Settings) { s.Models.KeepLoaded = c.keep })
+		if s, l := a.omniRT.IdleTimeout(), a.llmrt.IdleTimeout(); s != c.speech || l != c.language {
+			t.Errorf("%s: speech %v, language %v; want %v, %v", keepLabel(c.keep), s, l, c.speech, c.language)
+		}
 	}
+	// Still loaded, and idle: at once, or at the end of a warm's lease
+	// that came after its server's launch said it idle (omni's Warm: the
+	// launch reports before the warm leases and lets go).
+	a.waitIdle(t, events, models.ASRFast, models.VADSilero, models.LLMFast)
 
 	// The family's memory request wins over the setting.
 	a.unloadIdleModel(models.ASRFast)
 	a.unloadIdleModel(models.LLMFast)
-	eventually(t, "the unloads", func() bool {
-		_, asr := a.loadedModel(t, models.ASRFast)
-		_, lm := a.loadedModel(t, models.LLMFast)
-		return !asr && !lm
-	})
+	waitUnloaded(t, events, models.ASRFast, models.LLMFast)
+	for _, id := range []string{models.ASRFast, models.LLMFast} {
+		if _, ok := a.loadedModel(t, id); ok {
+			t.Errorf("%s is still in the file after its unload", id)
+		}
+	}
 	if _, ok := a.loadedModel(t, models.VADSilero); !ok {
 		t.Error("Silero went too")
 	}
