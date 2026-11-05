@@ -10,6 +10,9 @@ from PIL import Image
 from transformers import PreTrainedTokenizerBase
 from transformers.cache_utils import DynamicCache
 
+from sglang_omni.vendor.sensenova_u1.image_edit_memory import (
+    estimate_it2i_prefix_memory_bytes,
+)
 from sglang_omni.vendor.sensenova_u1.modeling_neo_chat import (
     NEOChatModel,
     _randn_with_seed,
@@ -118,12 +121,11 @@ def build_it2i_queries(
 
 def build_it2i_inputs(
     model: NEOChatModel,
-    tokenizer: PreTrainedTokenizerBase,
-    query: str,
+    input_ids: torch.Tensor,
     reference_embeddings: torch.Tensor | None = None,
     grid_hw: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
-    input_ids = tokenizer(query, return_tensors="pt")["input_ids"].to(model.device)
+    input_ids = input_ids.to(model.device)
 
     indexes = get_thw_indexes(model, input_ids[0], grid_hw)
 
@@ -190,10 +192,32 @@ def it2i_generate(
     seed: int,
     timestep_shift: float,
     t_eps: float,
+    memory_budget_bytes: int,
 ) -> torch.Tensor:
     model.config.t_eps = t_eps
     model.img_context_token_id = tokenizer.convert_tokens_to_ids("<IMG_CONTEXT>")
     model.img_start_token_id = tokenizer.convert_tokens_to_ids("<img>")
+    reference_sizes_pixels = [image.size for image in images]
+    queries = build_it2i_queries(
+        model, prompt, reference_sizes_pixels, cfg_scale, img_cfg_scale
+    )
+    query_input_ids = [
+        tokenizer(query, return_tensors="pt")["input_ids"] for query in queries
+    ]
+    required_memory_bytes = estimate_it2i_prefix_memory_bytes(
+        model,
+        [input_ids.shape[1] for input_ids in query_input_ids],
+        image_size,
+        reference_sizes_pixels,
+    )
+    if required_memory_bytes > memory_budget_bytes:
+        raise ValueError(
+            f"SenseNova editing prefix requires an estimated {required_memory_bytes} bytes, "
+            f"exceeding the available budget of {memory_budget_bytes} bytes; "
+            "reduce reference image area, prompt length or output size"
+        )
+    else:
+        pass
     reference_patches: list[torch.Tensor] = []
     reference_grids: list[torch.Tensor] = []
     for image in images:
@@ -208,20 +232,16 @@ def it2i_generate(
         reference_grids.append(image_grid.to(model.device))
     pixel_values = torch.cat(reference_patches)
     grid_shape = torch.cat(reference_grids)
-    queries = build_it2i_queries(
-        model, prompt, [image.size for image in images], cfg_scale, img_cfg_scale
-    )
     image_patch_size = model.patch_size * int(1 / model.downsample_ratio)
     reference_embeddings = model.extract_feature(
         pixel_values, grid_hw=grid_shape, gen_model=False
     )
     prefixes: list[ImagePrefix] = []
-    for query in queries:
+    for query, input_ids in zip(queries, query_input_ids):
         has_references = "<IMG_CONTEXT>" in query
         input_embeddings, indexes, attention_mask = build_it2i_inputs(
             model,
-            tokenizer,
-            query,
+            input_ids,
             reference_embeddings if has_references else None,
             grid_shape if has_references else None,
         )

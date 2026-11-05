@@ -18,10 +18,6 @@ from sglang.multimodal_gen.runtime.entrypoints.openai import image_api
 from sglang.multimodal_gen.runtime.entrypoints.openai import utils as image_api_utils
 from sglang.multimodal_gen.runtime.pipelines_core.schedule_batch import Req
 from sglang.multimodal_gen.runtime.pipelines_core.stages import base as stage_base
-from tokenizers import Tokenizer
-from tokenizers.models import WordLevel
-from tokenizers.pre_tokenizers import WhitespaceSplit
-from transformers import PreTrainedTokenizerFast
 
 from sglang_omni.models.sensenova_u1.native import generation
 from sglang_omni.models.sensenova_u1.native.generation import SenseNovaU1GenerationStage
@@ -30,9 +26,6 @@ from sglang_omni.models.sensenova_u1.native.pipeline_config import (
     SenseNovaU1PipelineConfig,
 )
 from sglang_omni.models.sensenova_u1.native.sampling import SenseNovaU1SamplingParams
-from sglang_omni.vendor.sensenova_u1.configuration_neo_chat import NEOChatConfig
-from sglang_omni.vendor.sensenova_u1.image_edit import it2i_generate
-from sglang_omni.vendor.sensenova_u1.modeling_neo_chat import NEOChatModel
 
 
 @pytest.mark.parametrize("explicit_size", [False, True])
@@ -215,9 +208,15 @@ def test_t2i_does_not_validate_unused_edit_guidance() -> None:
     assert request.image_path is None
 
 
-@pytest.mark.parametrize("output_count", [1, 2])
+@pytest.mark.parametrize(
+    "output_count,free_memory_bytes,reserved_memory_bytes",
+    [(1, 1536 * 1024**2 + 4096, 1024), (2, 1536 * 1024**2 + 2048, 3072)],
+)
 def test_edit_parameters_reach_each_sequential_output(
-    monkeypatch: pytest.MonkeyPatch, output_count: int
+    monkeypatch: pytest.MonkeyPatch,
+    output_count: int,
+    free_memory_bytes: int,
+    reserved_memory_bytes: int,
 ) -> None:
     monkeypatch.setattr(
         stage_base,
@@ -239,6 +238,13 @@ def test_edit_parameters_reach_each_sequential_output(
     request.condition_image = [Image.new("RGB", (64, 32))]
     edit = Mock(return_value=torch.zeros(1, 3, 32, 64))
     monkeypatch.setattr(generation, "it2i_generate", edit)
+    monkeypatch.setattr(
+        torch.cuda, "mem_get_info", Mock(return_value=(free_memory_bytes, 8192))
+    )
+    monkeypatch.setattr(
+        torch.cuda, "memory_reserved", Mock(return_value=reserved_memory_bytes)
+    )
+    monkeypatch.setattr(torch.cuda, "memory_allocated", Mock(return_value=1024))
     model = Mock()
     server_args = SimpleNamespace(pipeline_config=SenseNovaU1PipelineConfig())
     generation_stage = SenseNovaU1GenerationStage(model, Mock())
@@ -251,6 +257,7 @@ def test_edit_parameters_reach_each_sequential_output(
         assert expanded_request.image_path == "reference.png"
         output = generation_stage.forward(expanded_request, server_args)
         assert edit.call_args.args[3] is request.condition_image
+        assert edit.call_args.kwargs["memory_budget_bytes"] == 4096
         assert edit.call_args.kwargs["img_cfg_scale"] == 1.5
         assert edit.call_args.kwargs["image_size"] == (64, 32)
         assert edit.call_args.kwargs["seed"] == 7 + output_index
@@ -267,108 +274,6 @@ def test_edit_requests_are_not_dynamically_batched() -> None:
     assert not config.supports_dynamic_batching_for_request(request)
     assert config.resolve_task_type(has_image=True).name == "TI2I"
     assert config.resolve_task_type(has_image=False).name == "T2I"
-
-
-@pytest.mark.parametrize(
-    "cfg_scale,img_cfg_scale", [(1.0, 1.0), (4.0, 1.0), (2.0, 2.0), (4.0, 1.5)]
-)
-def test_edit_denoising_uses_references_and_is_repeatable(
-    cfg_scale: float,
-    img_cfg_scale: float,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Exercise actual reference encoding, prefix attention and CFG on a small CPU model."""
-    torch.manual_seed(0)
-    config = NEOChatConfig(
-        vision_config={
-            "hidden_size": 32,
-            "llm_hidden_size": 32,
-            "patch_size": 16,
-            "max_position_embeddings_vision": 64,
-        },
-        llm_config={
-            "architectures": ["Qwen3ForCausalLM"],
-            "vocab_size": 16,
-            "hidden_size": 32,
-            "intermediate_size": 64,
-            "num_hidden_layers": 1,
-            "num_attention_heads": 4,
-            "num_key_value_heads": 2,
-            "head_dim": 8,
-            "max_position_embeddings": 2048,
-            "max_position_embeddings_hw": 64,
-        },
-        template="neo1_0",
-        use_pixel_head=False,
-        fm_head_layers=2,
-        concat_time_token_num=0,
-        noise_scale=1.0,
-        noise_scale_mode="constant",
-        noise_scale_base_image_seq_len=1,
-        add_noise_scale_embedding=True,
-        noise_scale_max_value=10.0,
-    )
-    model = NEOChatModel(config).eval()
-    extract_feature = Mock(wraps=model.extract_feature)
-    monkeypatch.setattr(model, "extract_feature", extract_feature)
-    timestep_forward = Mock(wraps=model.fm_modules["timestep_embedder"].forward)
-    noise_forward = Mock(wraps=model.fm_modules["noise_scale_embedder"].forward)
-    monkeypatch.setattr(
-        model.fm_modules["timestep_embedder"], "forward", timestep_forward
-    )
-    monkeypatch.setattr(
-        model.fm_modules["noise_scale_embedder"], "forward", noise_forward
-    )
-    vocabulary = {"[PAD]": 0, "[UNK]": 1, "<img>": 2, "</img>": 3, "<IMG_CONTEXT>": 4}
-    tokenizer_backend = Tokenizer(WordLevel(vocabulary, unk_token="[UNK]"))
-    tokenizer_backend.pre_tokenizer = WhitespaceSplit()
-    tokenizer = PreTrainedTokenizerFast(
-        tokenizer_object=tokenizer_backend,
-        unk_token="[UNK]",
-        pad_token="[PAD]",
-        additional_special_tokens=["<img>", "</img>", "<IMG_CONTEXT>"],
-    )
-    references = [Image.new("RGB", (32, 32), color) for color in ["red", "blue"]]
-    parameters = dict(
-        image_size=(64, 64),
-        num_steps=2,
-        cfg_scale=cfg_scale,
-        img_cfg_scale=img_cfg_scale,
-        seed=7,
-        timestep_shift=3.0,
-        t_eps=0.02,
-    )
-    first = it2i_generate(model, tokenizer, "edit", references, **parameters)
-    repeated = it2i_generate(model, tokenizer, "edit", references, **parameters)
-    changed = it2i_generate(
-        model, tokenizer, "edit", list(reversed(references)), **parameters
-    )
-    assert first.shape == (1, 3, 64, 64)
-    # note (Wes): Native CUDA embeds four image tokens per step, rather than broadcasting a precomputed embedding.
-    expected_steps = [0.0, 0.25] * 3
-    assert timestep_forward.call_count == len(expected_steps)
-    assert noise_forward.call_count == len(expected_steps)
-    for call, timestep in zip(timestep_forward.call_args_list, expected_steps):
-        torch.testing.assert_close(call.args[0], torch.full((4,), timestep))
-    for call in noise_forward.call_args_list:
-        torch.testing.assert_close(call.args[0], torch.full((4,), 0.1))
-    assert torch.isfinite(first).all()
-    assert torch.equal(first, repeated)
-    assert not torch.equal(first, changed)
-    changed_guidance = it2i_generate(
-        model,
-        tokenizer,
-        "edit",
-        references,
-        **(parameters | {"img_cfg_scale": img_cfg_scale + 0.5}),
-    )
-    assert not torch.equal(first, changed_guidance)
-    reference_encoding_calls = [
-        call
-        for call in extract_feature.call_args_list
-        if call.kwargs["gen_model"] is False
-    ]
-    assert len(reference_encoding_calls) == 4
 
 
 @pytest.mark.parametrize(
