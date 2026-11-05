@@ -6,6 +6,7 @@ import (
 	fammodels "github.com/hehehai/actnowkit/models"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -44,7 +45,7 @@ func fakeOmni(t *testing.T, o omnitest.Opts) string {
 // quitting stops the servers.
 func TestSessionOmni(t *testing.T) {
 	log := fakeOmni(t, omnitest.Opts{Text: "来自 Omni 的文本"})
-	unloaded := unloadedModels(t)
+	events := omniEvents(t)
 	ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger))
 	a := newSessionApp(t, ev, func(s *settings.Settings) {
 		s.Features.Transcribe.Enhance = false
@@ -77,7 +78,7 @@ func TestSessionOmni(t *testing.T) {
 	if _, err := a.local.(*local.Library).Delete(context.Background(), models.ASRFast, fammodels.ThisApp); err != nil {
 		t.Fatal(err)
 	}
-	waitUnloaded(t, unloaded, models.ASRFast)
+	waitUnloaded(t, events, models.ASRFast)
 	if n := len(omnitest.Of(omnitest.Records(log), "shutdown")); n != 1 {
 		t.Errorf("%d servers shut down after the delete", n)
 	}
@@ -90,35 +91,42 @@ func TestSessionOmni(t *testing.T) {
 	}
 }
 
-// unloadedModels reports the ids of the omni runtime's models as their
-// processes exit (resident.Unloaded), for the runtimes made from now on.
-func unloadedModels(t *testing.T) <-chan string {
-	ch := make(chan string, 16)
+// omniEvents reports the model events (Config.OnModel) of the omni
+// runtimes made from now on.
+func omniEvents(t *testing.T) chan resident.Event {
+	ch := make(chan resident.Event, 256)
 	newRT := omniNewRuntime
 	omniNewRuntime = func(c omni.Config) *omni.Runtime {
-		on := c.OnModel
-		c.OnModel = func(ev resident.Event) {
-			if on != nil {
-				on(ev)
-			}
-			if ev.Kind == resident.Unloaded {
-				ch <- ev.ID
-			}
-		}
+		c.OnModel = reportTo(ch, c.OnModel)
 		return newRT(c)
 	}
 	t.Cleanup(func() { omniNewRuntime = newRT })
 	return ch
 }
 
-// waitUnloaded waits until id's process exited.
-func waitUnloaded(t *testing.T, unloaded <-chan string, id string) {
+// reportTo is a runtime's Config.OnModel that hands each event to on
+// (the app's: the runtime file), then sends it on ch.
+func reportTo(ch chan<- resident.Event, on func(resident.Event)) func(resident.Event) {
+	return func(ev resident.Event) {
+		if on != nil {
+			on(ev)
+		}
+		ch <- ev
+	}
+}
+
+// waitUnloaded waits until the processes of ids exited.
+func waitUnloaded(t *testing.T, events <-chan resident.Event, ids ...string) {
 	t.Helper()
-	for got := ""; got != id; {
+	timeout := time.After(10 * time.Second)
+	for len(ids) > 0 {
 		select {
-		case got = <-unloaded:
-		case <-time.After(10 * time.Second):
-			t.Fatalf("%s did not stop", id)
+		case ev := <-events:
+			if ev.Kind == resident.Unloaded {
+				ids = slices.DeleteFunc(ids, func(id string) bool { return id == ev.ID })
+			}
+		case <-timeout:
+			t.Fatalf("%v did not stop", ids)
 		}
 	}
 }
