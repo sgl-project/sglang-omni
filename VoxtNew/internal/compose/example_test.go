@@ -57,6 +57,8 @@ func TestStripFillers(t *testing.T) {
 		// A filler before the full stop leaves the stop, and one between
 		// two Latin words leaves a space: removing it changed the sentence.
 		{"好的，嗯。", "好的。"},
+		{"好的，嗯，嗯。", "好的。"},
+		{"好的，呃…嗯。", "好的。"},
 		{"这个文本处理还是很拉的，嗯。", "这个文本处理还是很拉的。"},
 		{"and嗯and I eat", "and and I eat"},
 		{"嗯。今天开会", "今天开会"},

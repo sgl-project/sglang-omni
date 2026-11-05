@@ -74,10 +74,10 @@ func StripFillers(text string) string {
 	return s
 }
 
-// What removing a filler must keep: the full stop of the clause it ends
-// ("好的，嗯。" is "好的。", not "好的，"), and the space between the
+// What removing a filler must keep: the full stop of the clause it ends,
+// also after several ("好的，嗯，嗯。" is "好的。", not "好的，"), and the space between the
 // Latin words it sat between ("and嗯and").
 var (
-	fillerBeforeStop = regexp.MustCompile(`(\S)[，,、]\s*[嗯呃]+[…\s]*([。.！!？?])`)
+	fillerBeforeStop = regexp.MustCompile(`(\S)[，,、]\s*(?:[嗯呃]+[，,、…\s]*)+([。.！!？?])`)
 	fillerInWords    = regexp.MustCompile(`([A-Za-z0-9])[嗯呃]+([A-Za-z0-9])`)
 )
