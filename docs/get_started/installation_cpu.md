@@ -131,7 +131,7 @@ See the [Whisper cookbook](../cookbook/whisper_asr.md) for request parameters, s
 
 ### Qwen3-TTS (text-to-speech, Intel Xeon CPU)
 
-Qwen3-TTS Base have been validated on an AMX-capable Intel Xeon CPU. Qwen3-TTS does not support `torch.compile`, and it is disabled by default. Install the `qwen-tts` runtime dependency as described in the [Qwen3-TTS cookbook](../cookbook/qwen3_tts.md#prerequisites).
+Qwen3-TTS Base has been validated on an AMX-capable Intel Xeon CPU. Install the `qwen-tts` runtime dependency as described in the [Qwen3-TTS cookbook](../cookbook/qwen3_tts.md#prerequisites).
 
 Run inside the CPU environment installed above:
 
@@ -141,4 +141,4 @@ SGLANG_USE_CPU_ENGINE=1 sgl-omni serve \
   --port 8000
 ```
 
-The Base checkpoint requires reference audio and its transcript in synthesis requests. See the [Qwen3-TTS cookbook](../cookbook/qwen3_tts.md) for request examples and other checkpoints.
+The Base checkpoint requires reference audio for synthesis. The reference transcript is optional. See the [Qwen3-TTS cookbook](../cookbook/qwen3_tts.md) for request examples and other checkpoints.
