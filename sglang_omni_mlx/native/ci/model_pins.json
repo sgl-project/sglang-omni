@@ -92,6 +92,17 @@
       "model.safetensors": "05e01c7f396c298cf7d23f61da7b504adeab698f0aaeafd9c82d198625464592"
     }
   },
+  "mlx-community/Ming-omni-tts-16.8B-A3B-4bit": {
+    "revision": "97752f43c4d7a6b3f045f484c798bf6bb1f950df",
+    "files": {
+      "campplus.safetensors": "a479586bd8f8f96cdb414eaa2fa07c6cd54d6d1636562e2d75a0211cb3b0a6fd",
+      "config.json": "7fce1d887f078ec72b0c3896a03acf33f64f1d415f4bf60cfb38592fa667d70d",
+      "model-00001-of-00002.safetensors": "b80143410fd71d43061df9a309d83c525344454c2b4e92b5675233d0706794ca",
+      "model-00002-of-00002.safetensors": "cc52a6f76b29e3b5ecb766ba60d00f57524e9709c7418b109b9ede6b57e2ae2f",
+      "model.safetensors.index.json": "c65c85c5f395ca5cbb0e5d8c1eb47db6325a385ca871781806f9f9a4cd39c100",
+      "tokenizer.json": "4d10b6320b9a64d04482a468cbe02f227f0c411b9daa09f6ec40f851b308f34f"
+    }
+  },
   "mlx-community/SenseVoiceSmall": {
     "revision": "8ddd966bd96243cff196422f81f0c5d955814792",
     "files": {
