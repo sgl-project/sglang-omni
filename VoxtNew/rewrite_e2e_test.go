@@ -3,7 +3,6 @@ package main
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sgl-project/sglang-omni/VoxtNew/internal/helper/helpertest"
 	"github.com/sgl-project/sglang-omni/VoxtNew/internal/helper/proto"
@@ -45,7 +44,9 @@ func (a *sessionApp) recordFollowUp(t *testing.T, tr *fakeTranscriptions, said s
 	if v := a.cardNow(); a.ov.mode != ovAnswer || !v.conversation || !v.recording || !v.canStop || v.canFollowUp {
 		t.Errorf("recording the follow-up: %s %+v", a.ov.mode, v)
 	}
-	time.Sleep(400 * time.Millisecond)
+	// At least 400 ms recorded, over the shortest recording kept: the
+	// fake helper sends a level before each 100 ms frame.
+	a.pump("the follow-up's audio", func() bool { return len(a.sess.Levels) >= 5 })
 	a.stopSession() // Done
 	a.pump("the follow-up's end", func() bool { return a.sess.ID != first && a.sess.State.Ended() })
 }
