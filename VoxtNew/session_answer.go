@@ -37,6 +37,9 @@ func (a *app) openAnswer(s session.Snapshot) {
 		// Pasted, but it did not show: say so where the user looks.
 		card.msg = uitext.DeliveryText(deliver.Result{Reason: s.Delivery}, s.Target)
 	}
+	if p := s.Problem; p != nil && p.Code == session.ProblemTruncated {
+		card.msg, _, _ = sessionProblemText(p) // read it before inserting it
+	}
 	if s.Kind == store.KindRewrite {
 		// A follow-up continues the card's conversation.
 		if a.answer.kind == store.KindRewrite && a.answer.id == a.followUp {

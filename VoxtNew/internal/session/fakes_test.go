@@ -350,6 +350,7 @@ type fakeLLM struct {
 	hang   bool
 	chunk  int
 	pause  time.Duration
+	finish string // the response's FinishReason
 
 	mu   sync.Mutex
 	reqs []llm.Request
@@ -387,7 +388,7 @@ func (f *fakeLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, erro
 			req.OnDelta(string(rs[i:min(i+n, len(rs))]))
 		}
 	}
-	return llm.Response{Text: text}, nil
+	return llm.Response{Text: text, FinishReason: f.finish}, nil
 }
 
 func (f *fakeLLM) requests() []llm.Request {
