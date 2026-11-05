@@ -18,7 +18,9 @@ import (
 // Mac's memory, and the process answers the next chat (it cancelled the
 // stopped one, it was not killed).
 func TestLLMDeadlines(t *testing.T) {
-	svc, l := llmServices(t, &fakeTranscriptions{text: "unused"}, "Let's meet on Wednesday at three.", llmrt.Balanced)
+	// The fake holds the second chat's first piece until it is cancelled:
+	// only the deadline can end it, however fast or busy the Mac.
+	svc, l := llmServicesWith(t, &fakeTranscriptions{text: "unused"}, "Let's meet on Wednesday at three.", ",hold-chat=2", llmrt.Balanced)
 	chat, _, err := svc.LLM(context.Background(), llmrt.Balanced)
 	if err != nil {
 		t.Fatal(err)

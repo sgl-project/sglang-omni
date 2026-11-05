@@ -21,6 +21,7 @@
 //	first-ms=N       wait N ms before the first piece of the process's first chat (a slow prefill)
 //	stall-at=K       wait stall-ms before piece K+1 (a model that stalls after K pieces)
 //	stall-ms=N       that wait, in ms (default 10000)
+//	hold-chat=N      the process's N-th chat sends no piece until it is cancelled
 //	load-ms=N        a load takes N ms (default 5)
 //	mismatch         answer llm.hello with protocol 9
 //	silent           never answer llm.hello
@@ -74,6 +75,7 @@ type options struct {
 	mismatch, silent      bool
 	crashChat, hangCancel bool
 	loadFail              bool
+	holdChat              int
 	chatLog               string
 }
 
@@ -113,6 +115,8 @@ func parse(s string) options {
 			o.hangCancel = true
 		case "load-fail":
 			o.loadFail = true
+		case "hold-chat":
+			o.holdChat = n
 		case "chat-log":
 			o.chatLog = v
 		}
@@ -312,11 +316,15 @@ func (f *fake) chat(id string, p wire.ChatParams, cancel chan struct{}) {
 		case f.o.stallAt > 0 && tokens == f.o.stallAt:
 			wait = f.o.stallMs
 		}
+		var after <-chan time.Time // nil: held until cancelled
+		if tokens > 0 || f.chats != f.o.holdChat {
+			after = time.After(time.Duration(wait) * time.Millisecond)
+		}
 		select {
 		case <-cancel:
 			f.fail(id, wire.CodeCancelled, "The chat was cancelled")
 			return
-		case <-time.After(time.Duration(wait) * time.Millisecond):
+		case <-after:
 		}
 		if f.o.crashChat {
 			os.Exit(3)

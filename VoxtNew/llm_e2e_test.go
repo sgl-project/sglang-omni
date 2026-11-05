@@ -60,6 +60,13 @@ func (l *llmSetup) lines(sub string) []string {
 // process and $VOXTNEW_DEV_LLM's models.
 func llmServices(t *testing.T, tr *fakeTranscriptions, reply string, fake ...string) (local.Services, *llmSetup) {
 	t.Helper()
+	return llmServicesWith(t, tr, reply, "", fake...)
+}
+
+// llmServicesWith is llmServices with more of the fake's options
+// (llmrttest's list, comma-separated, after a comma).
+func llmServicesWith(t *testing.T, tr *fakeTranscriptions, reply, opts string, fake ...string) (local.Services, *llmSetup) {
+	t.Helper()
 	l := &llmSetup{real: os.Getenv("VOXTNEW_LLM_REAL") == "1"}
 	cfg := llmrt.Config{AppVersion: "test", LogDir: t.TempDir(), IdleTimeout: -1, Log: func(e core.LogEntry) {
 		l.mu.Lock()
@@ -91,7 +98,7 @@ func llmServices(t *testing.T, tr *fakeTranscriptions, reply string, fake ...str
 		t.Setenv(llmrt.DevEnv, "") // the app's own hook (withDevLLM) stays out
 	} else {
 		cfg.Bin, _ = os.Executable()
-		cfg.Env = llmrttest.Env(llmrttest.Opt("reply", reply))
+		cfg.Env = llmrttest.Env(llmrttest.Opt("reply", reply) + opts)
 		for _, id := range fake {
 			dir := t.TempDir()
 			os.WriteFile(filepath.Join(dir, "config.json"), []byte("{}"), 0o644)
