@@ -128,3 +128,12 @@ def test_the_report_carries_the_step_and_prefill_tables_and_clears_them() -> Non
     assert "decode ms by batch {40: (2, 12.0)}" in report
     assert "prefill ms by cohort {8: (1, 60.0)}" in report
     assert "decode ms by batch {}" in policy.report()
+
+
+def test_the_longest_only_ablation_ignores_both_bounds_but_keeps_the_wait_cap() -> None:
+    policy = cadence(longest_interval=32, is_longest_only=True)
+    assert policy.choose_interval() == 32
+    policy.observe_decode_step(0.012, 48)
+    policy.observe_prefill(0.060, 8)
+    assert policy.choose_interval() == 32
+    assert policy.wait_cap_s() == pytest.approx(0.5 - 0.060 - 0.048 - 0.03 - 0.012)

@@ -168,6 +168,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
             window_ramp=stream_followup_stride_ramp,
             followup_window=stream_followup_stride,
             release_min_admit=prefill_release_min_admit,
+            is_longest_only=prefill_interval_policy == "longest",
         )
         self.frame_streamer: Drama3FrameStreamer | None = None
         self.sglang_runner: SGLModelRunner | None = None
@@ -431,7 +432,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         )
 
     def scheduler_type(self) -> type[OmniScheduler[Drama3RequestData]]:
-        if self.prefill_interval_policy == "slo":
+        if self.prefill_interval_policy in ("slo", "longest"):
             return Drama3Scheduler
         else:
             return super().scheduler_type()
@@ -445,7 +446,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
             cadence = PrefillCadence(config=self.prefill_cadence_config)
             scheduler.install_cadence(cadence)
             logger.info(
-                f"Drama 3 prefill interval: slo policy, first audio "
+                f"Drama 3 prefill interval: {self.prefill_interval_policy} policy, first audio "
                 f"{1000 * cadence.config.first_audio_slo_s:.0f} ms, stall "
                 f"{1000 * cadence.config.max_stall_s:.0f} ms, critical frame interval "
                 f"{1000 * cadence.critical_interval_s:.1f} ms, longest interval "

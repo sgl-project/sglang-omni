@@ -49,6 +49,8 @@ class PrefillCadenceConfig:
     # full batch, releasing for one freed slot at a time turns every decode step into a prefill.
     release_min_admit: int = 1
     step_smoothing: float = 0.1
+    # The ablation: take longest_interval every time and leave first audio to the wait cap alone.
+    is_longest_only: bool = False
 
 
 def worst_stall_s(
@@ -171,7 +173,9 @@ class PrefillCadence:
 
     def choose_interval(self) -> int:
         step_s, prefill_s = self.step_s, self.prefill_s
-        if step_s is None or prefill_s is None:
+        if self.config.is_longest_only:
+            interval = self.config.longest_interval
+        elif step_s is None or prefill_s is None:
             interval = 0
         else:
             shortest = self.continuity_interval(step_s, prefill_s)

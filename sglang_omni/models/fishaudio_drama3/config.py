@@ -37,7 +37,9 @@ DEFAULT_ENABLE_ASYNC_DECODE = False
 DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE = 1
 # fixed: the engine's prefill_decode_interval decode steps between prefills. slo: the longest
 # interval the first-audio SLO leaves, but never shorter than max_stall needs (prefill_cadence).
-PrefillIntervalPolicy = Literal["fixed", "slo"]
+# longest: always longest_interval, so only the wait cap bounds first audio; the ablation that
+# shows whether the interval the SLOs compute does anything the cap does not already do.
+PrefillIntervalPolicy = Literal["fixed", "slo", "longest"]
 DEFAULT_PREFILL_INTERVAL_POLICY: PrefillIntervalPolicy = "fixed"
 DEFAULT_PREFILL_LONGEST_INTERVAL = 32
 DEFAULT_FIRST_AUDIO_SLO_MS = 500
