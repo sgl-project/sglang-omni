@@ -10,12 +10,7 @@ from sglang_omni.models.llada2_uni.config import LLaDA2UniInterleavedPipelineCon
 from sglang_omni.models.llada2_uni.merge import extract_image_vq_tokens
 from sglang_omni.models.llada2_uni.payload_types import LLaDA2UniPipelineState
 from sglang_omni.models.llada2_uni.umm import LLaDA2UniUMMAdapter
-from sglang_omni.pipeline.umm import (
-    ContextRef,
-    UMMContext,
-    UMMOutput,
-    UMMRequestError,
-)
+from sglang_omni.pipeline.umm import ContextRef, UMMContext, UMMOutput, UMMRequestError
 from sglang_omni.proto import OmniRequest
 from tests.unit_test.fixtures.llada2_fakes import Tokenizer, advance, preprocess
 
@@ -67,9 +62,12 @@ def test_image_phase_generates_the_frame_grid_and_closes_it_with_eoi():
     assert req.sampling_params.stop_strs == []
     assert not req.sampling_params.stop_token_ids
     # The rows share a block column, and no block of padding is left to encode.
-    pad_length = req._uncond_left_pad_len  # noqa: leading-underscore  # DLLM protocol
+    pad_length = req._uncond_pad_len  # noqa: leading-underscore  # DLLM protocol
     assert 0 <= pad_length < 4
-    assert (len(req.origin_input_ids) - len(req._uncond_input_ids)) % 4 == 0
+    uncond_input_ids = (
+        req._uncond_input_ids
+    )  # noqa: leading-underscore  # DLLM protocol
+    assert (len(req.origin_input_ids) - len(uncond_input_ids)) % 4 == 0
     assert req._cfg_scale == 4.0  # noqa: leading-underscore  # DLLM protocol
     assert req._dllm_steps == 32  # noqa: leading-underscore  # DLLM protocol
 

@@ -56,7 +56,8 @@ class DllmForwardBatch(ForwardBatch):
     """Keep DLLM metadata through the eager runner's dataclass batch rebuilds."""
 
     reqs: list[DllmRequest] = field(default_factory=list)
-    dllm_left_pad_lens_cpu: list[int] = field(default_factory=list)
+    dllm_pad_lens_cpu: list[int] = field(default_factory=list)
+    dllm_pad_starts_cpu: list[int] = field(default_factory=list)
 
 
 def release_kv_once(req: Req, tree_cache: BasePrefixCache) -> None:
@@ -241,7 +242,8 @@ class DllmScheduler:
                     self.create_uncond_companion(  # noqa: leading-underscore  # DLLM protocol
                         req,
                         uncond_ids,
-                        req._uncond_left_pad_len,
+                        req._uncond_pad_len,
+                        req._uncond_pad_start,
                         "-uncond",
                         mark_img=False,
                     )
@@ -252,7 +254,8 @@ class DllmScheduler:
                         self.create_uncond_companion(  # noqa: leading-underscore  # DLLM protocol
                             req,
                             uncond_img_ids,
-                            req._uncond_img_left_pad_len,
+                            req._uncond_img_pad_len,
+                            req._uncond_img_pad_start,
                             "-uncond-img",
                             mark_img=True,
                         )
@@ -313,7 +316,8 @@ class DllmScheduler:
         self,
         cond_req: DllmRequest,
         uncond_input_ids: list[int],
-        left_pad_len: int,
+        pad_length: int,
+        pad_start: int,
         rid_suffix: str,
         mark_img: bool,
     ) -> None:
@@ -330,8 +334,8 @@ class DllmScheduler:
             )
         else:
             pass
-        if not 0 <= int(left_pad_len) <= len(uncond_input_ids):
-            raise ValueError("CFG left-pad length is outside the companion prompt")
+        if not 0 <= pad_start <= pad_start + pad_length <= len(uncond_input_ids):
+            raise ValueError("CFG padding is outside the companion prompt")
         else:
             pass
         uncond_sampling_params = SamplingParams(
@@ -353,9 +357,12 @@ class DllmScheduler:
         uncond_req._is_uncond = True  # noqa: leading-underscore  # DLLM protocol
         # A companion reads shared prefixes, but its padded rows key nothing reusable.
         uncond_req.skip_radix_cache_insert = True
-        uncond_req._dllm_left_pad_len = int(
-            left_pad_len
-        )  # noqa: leading-underscore  # DLLM protocol
+        uncond_req._dllm_pad_len = (
+            pad_length  # noqa: leading-underscore  # DLLM protocol
+        )
+        uncond_req._dllm_pad_start = (
+            pad_start  # noqa: leading-underscore  # DLLM protocol
+        )
         cond_req._cfg_group_rid = (
             cond_req.rid
         )  # noqa: leading-underscore  # DLLM protocol
@@ -393,41 +400,47 @@ class DllmScheduler:
         forward_batch: DllmForwardBatch,
         batch: ScheduleBatch,
     ) -> None:
-        """Apply mask and position metadata for mask-padded CFG branches."""
-        left_pad_lengths = [  # noqa: leading-underscore  # DLLM protocol
-            req._dllm_left_pad_len for req in batch.reqs
+        """Apply mask and position metadata for padded CFG branches."""
+        pad_lengths = [  # noqa: leading-underscore  # DLLM protocol
+            req._dllm_pad_len for req in batch.reqs
         ]
-        forward_batch.dllm_left_pad_lens_cpu = left_pad_lengths
-        if not any(left_pad_lengths):
+        pad_starts = [  # noqa: leading-underscore  # DLLM protocol
+            req._dllm_pad_start for req in batch.reqs
+        ]
+        forward_batch.dllm_pad_lens_cpu = pad_lengths
+        forward_batch.dllm_pad_starts_cpu = pad_starts
+        if not any(pad_lengths):
             return
         else:
             pass
-        if any(left_pad_length < 0 for left_pad_length in left_pad_lengths):
-            raise RuntimeError("CFG left-pad lengths must be non-negative")
+        if any(pad_length < 0 for pad_length in pad_lengths):
+            raise RuntimeError("CFG pad lengths must be non-negative")
         else:
             pass
         if not forward_batch.forward_mode.is_extend():
-            raise RuntimeError("CFG left-pad metadata requires an extend batch")
+            raise RuntimeError("CFG pad metadata requires an extend batch")
         else:
             pass
 
         extend_sequence_lengths = list(forward_batch.extend_seq_lens_cpu)
-        if len(extend_sequence_lengths) != len(left_pad_lengths):
+        if len(extend_sequence_lengths) != len(pad_lengths):
             raise RuntimeError(
-                f"CFG pad metadata batch mismatch: {len(left_pad_lengths)} vs "
+                f"CFG pad metadata batch mismatch: {len(pad_lengths)} vs "
                 f"{len(extend_sequence_lengths)}"
             )
         else:
             pass
 
         position_start = 0
-        for left_pad_length, extend_sequence_length in zip(
-            left_pad_lengths, extend_sequence_lengths
+        for pad_length, pad_start, extend_sequence_length in zip(
+            pad_lengths, pad_starts, extend_sequence_lengths
         ):
             position_end = position_start + int(extend_sequence_length)
-            if left_pad_length:
+            if pad_length:
                 request_positions = forward_batch.positions[position_start:position_end]
-                request_positions.sub_(left_pad_length).clamp_min_(0)
+                request_positions.sub_(
+                    (request_positions - pad_start).clamp(0, pad_length)
+                )
             else:
                 pass
             position_start = position_end

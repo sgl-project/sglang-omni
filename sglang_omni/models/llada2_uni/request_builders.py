@@ -190,10 +190,14 @@ def build_dllm_thinker_request(
             branch = "uncond" if name == "unconditional" else "uncond_img"
             # note (qiujiawei): rows only share a block column, whole pad blocks change nothing.
             pad_length = (len(input_ids_array) - len(ids)) % dllm_config.block_size
+            pad_start = plan["pad_starts"].get(name, 0)
             cfg_settings[f"{branch}_input_ids"] = [
-                tokenizer.mask_token_id
-            ] * pad_length + ids
-            cfg_settings[f"{branch}_left_pad_len"] = pad_length
+                *ids[:pad_start],
+                *[tokenizer.mask_token_id] * pad_length,
+                *ids[pad_start:],
+            ]
+            cfg_settings[f"{branch}_pad_len"] = pad_length
+            cfg_settings[f"{branch}_pad_start"] = pad_start
             length = max(length, pad_length + len(ids))
         # The frame's grid, image tokens only, as a text-to-image pass.
         max_new_tokens = interleaved["current_frame"]["remaining_image_tokens"]
@@ -287,13 +291,13 @@ def build_dllm_thinker_request(
         for branch in ("uncond", "uncond_img"):
             if branch == "uncond":
                 branch_ids = uncond_ids
-                pad_len = cfg_settings["uncond_left_pad_len"]
+                pad_len = cfg_settings["uncond_pad_len"]
             else:
                 branch_ids = cfg_settings.get("uncond_img_input_ids")
                 if branch_ids is None:
                     continue
                 else:
-                    pad_len = cfg_settings["uncond_img_left_pad_len"]
+                    pad_len = cfg_settings["uncond_img_pad_len"]
             if (len(branch_ids) - len(input_ids_array)) % dllm_config.block_size:
                 raise ValueError("CFG branches must share a block column")
             else:
@@ -306,16 +310,22 @@ def build_dllm_thinker_request(
                 req._uncond_input_ids = list(
                     branch_ids
                 )  # noqa: leading-underscore  # DLLM protocol
-                req._uncond_left_pad_len = (
+                req._uncond_pad_len = (
                     pad_len  # noqa: leading-underscore  # DLLM protocol
                 )
+                req._uncond_pad_start = cfg_settings.get(
+                    "uncond_pad_start", 0
+                )  # noqa: leading-underscore  # DLLM protocol
             else:
                 req._uncond_img_input_ids = list(
                     branch_ids
                 )  # noqa: leading-underscore  # DLLM protocol
-                req._uncond_img_left_pad_len = (
+                req._uncond_img_pad_len = (
                     pad_len  # noqa: leading-underscore  # DLLM protocol
                 )
+                req._uncond_img_pad_start = cfg_settings.get(
+                    "uncond_img_pad_start", 0
+                )  # noqa: leading-underscore  # DLLM protocol
         if cfg_settings.get("uncond_img_input_ids") is not None:
             req._cfg_image_scale = cfg_settings[
                 "cfg_image_scale"
@@ -386,7 +396,7 @@ def thinking_phase1_to_phase2(
         )
         cfg_inputs = {
             "uncond_input_ids": uncond_ids,
-            "uncond_left_pad_len": pad_len,
+            "uncond_pad_len": pad_len,
         }
     else:
         pass

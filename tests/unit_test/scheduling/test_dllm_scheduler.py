@@ -522,7 +522,7 @@ def test_companion_in_another_block_column_is_rejected(
 
     with pytest.raises(ValueError, match="share a block column"):
         scheduler.create_uncond_companion(
-            conditional, [1] * 129, 0, "-uncond", mark_img=False
+            conditional, [1] * 129, 0, 0, "-uncond", mark_img=False
         )
 
 
@@ -711,7 +711,9 @@ GENERATED_TOKEN_ID = 50
 
 
 def build_phase_request(payload: StagePayload) -> SGLangDLLMRequestData:
-    params = SamplingParams(max_new_tokens=payload.data["max_new_tokens"], temperature=0)
+    params = SamplingParams(
+        max_new_tokens=payload.data["max_new_tokens"], temperature=0
+    )
     params.normalize(None)
     request = DllmRequest(
         payload.request_id,

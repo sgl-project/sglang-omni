@@ -38,7 +38,7 @@ class LLaDA2CFGFlashInferAttnBackend(FlashInferAttnBackend):
         self.cfg_prefill_wrapper_ragged = BatchPrefillWithRaggedKVCacheWrapper(
             self.workspace_buffer, "NHD", backend="fa2"
         )
-        self.cfg_local_left_pad_active = False
+        self.cfg_local_pad_active = False
         self.cfg_has_cached_prefix = False
         self.cfg_replay_batch: ForwardBatch | None = None
 
@@ -86,7 +86,7 @@ class LLaDA2CFGFlashInferAttnBackend(FlashInferAttnBackend):
         )
 
     def init_forward_metadata(self, forward_batch: ForwardBatch) -> None:
-        self.cfg_local_left_pad_active = False
+        self.cfg_local_pad_active = False
         # note (Anmuliar): FlashInfer retains custom masks between wrapper plans.
         self.cfg_prefill_wrapper_ragged._custom_mask_buf = (
             None  # noqa: leading-underscore  # FlashInfer API
@@ -98,71 +98,79 @@ class LLaDA2CFGFlashInferAttnBackend(FlashInferAttnBackend):
             return super().init_forward_metadata(forward_batch)
         else:
             pass
-        left_pad_lens = tuple(forward_batch.dllm_left_pad_lens_cpu)
-        if not any(left_pad_lens):
+        pad_lens = tuple(forward_batch.dllm_pad_lens_cpu)
+        if not any(pad_lens):
             return super().init_forward_metadata(forward_batch)
         else:
             pass
+        pad_starts = tuple(forward_batch.dllm_pad_starts_cpu)
         prefix_lens = tuple(forward_batch.extend_prefix_lens_cpu)
         query_lens = tuple(forward_batch.extend_seq_lens_cpu)
-        assert len(left_pad_lens) == len(prefix_lens) == len(query_lens)
-        cached_left_pad_lens = tuple(
-            min(pad, prefix)
-            for pad, prefix in zip(left_pad_lens, prefix_lens, strict=True)
-        )
-        local_left_pad_lens = tuple(
-            min(max(pad - prefix, 0), query)
-            for pad, prefix, query in zip(
-                left_pad_lens, prefix_lens, query_lens, strict=True
+        assert len(pad_lens) == len(pad_starts) == len(prefix_lens) == len(query_lens)
+        # Each span is the row's padding in cached positions and in this block's columns.
+        cached_pad_spans = tuple(
+            (min(start, prefix), min(start + pad, prefix))
+            for start, pad, prefix in zip(
+                pad_starts, pad_lens, prefix_lens, strict=True
             )
         )
-        paged_lens = tuple(
-            max(prefix - pad, 0)
-            for prefix, pad in zip(prefix_lens, left_pad_lens, strict=True)
+        local_pad_spans = tuple(
+            (
+                min(max(start - prefix, 0), query),
+                min(max(start + pad - prefix, 0), query),
+            )
+            for start, pad, prefix, query in zip(
+                pad_starts, pad_lens, prefix_lens, query_lens, strict=True
+            )
         )
         self.plan_cfg_attention(
             forward_batch,
             query_lens,
-            cached_left_pad_lens,
-            local_left_pad_lens,
-            paged_lens,
+            cached_pad_spans,
+            local_pad_spans,
         )
 
     def plan_cfg_attention(
         self,
         forward_batch: ForwardBatch,
         query_lens: tuple[int, ...],
-        cached_pad_lens: tuple[int, ...],
-        local_pad_lens: tuple[int, ...],
-        paged_lens: tuple[int, ...],
+        cached_pad_spans: tuple[tuple[int, int], ...],
+        local_pad_spans: tuple[tuple[int, int], ...],
     ) -> None:
         seq_lens = forward_batch.seq_lens
         prefix_lens = forward_batch.extend_prefix_lens
         wrappers = self.prefill_wrappers_paged
-        cached_left_pad_lens = torch.tensor(
-            cached_pad_lens, dtype=seq_lens.dtype, device=seq_lens.device
+        cached_pad_lens = torch.tensor(
+            [end - start for start, end in cached_pad_spans],
+            dtype=seq_lens.dtype,
+            device=seq_lens.device,
         )
-        paged_kernel_lens = torch.tensor(
-            paged_lens, dtype=seq_lens.dtype, device=seq_lens.device
+        paged_kernel_lens = prefix_lens - cached_pad_lens
+        paged_lens = paged_kernel_lens.tolist()
+        # A left pad is skipped by start offset, any other needs explicit KV indices.
+        custom_kv_indices = (
+            self.pack_kv_indices_around_padding(forward_batch, cached_pad_spans)
+            if any(start > 0 and end > start for start, end in cached_pad_spans)
+            else None
         )
-        local_pad_active = any(local_pad_lens)
+        local_pad_active = any(end > start for start, end in local_pad_spans)
         cfg_prefill_wrapper = self.cfg_prefill_wrapper_ragged
         prefill_indices_updater = self.indices_updater_prefill
         if local_pad_active:
             flattened_request_masks = []
-            for query_length, local_left_pad_length in zip(
-                query_lens, local_pad_lens, strict=True
+            for query_length, (local_pad_start, local_pad_end) in zip(
+                query_lens, local_pad_spans, strict=True
             ):
                 request_attention_mask = torch.ones(
                     (query_length, query_length),
                     dtype=torch.bool,
                     device=seq_lens.device,
                 )
-                if local_left_pad_length:
-                    request_attention_mask[:, :local_left_pad_length] = False
+                if local_pad_end > local_pad_start:
+                    request_attention_mask[:, local_pad_start:local_pad_end] = False
                     # note (Anmuliar): discarded pad queries still need a valid softmax.
                     pad_indices = torch.arange(
-                        local_left_pad_length, device=seq_lens.device
+                        local_pad_start, local_pad_end, device=seq_lens.device
                     )
                     request_attention_mask[pad_indices, pad_indices] = True
                 else:
@@ -184,12 +192,13 @@ class LLaDA2CFGFlashInferAttnBackend(FlashInferAttnBackend):
                 sum(paged_lens),
                 seq_lens,
                 prefix_lens,
-                cached_left_pad_lens,
+                cached_pad_lens,
                 prefill_indices_updater.kv_indptr[0],
                 prefill_indices_updater.qo_indptr[0],
                 False,
                 None,
                 fixed_split_size=self.prefill_split_tile_size,
+                custom_kv_indices=custom_kv_indices,
                 plan=forward_batch.kv_loc_plan,
             )
             cfg_prefill_wrapper.begin_forward(
@@ -205,10 +214,10 @@ class LLaDA2CFGFlashInferAttnBackend(FlashInferAttnBackend):
                 non_blocking=True,
                 fixed_split_size=self.prefill_split_tile_size,
             )
-            self.cfg_local_left_pad_active = True
+            self.cfg_local_pad_active = True
             self.cfg_has_cached_prefix = any(paged_lens)
         else:
-            self.cfg_local_left_pad_active = False
+            self.cfg_local_pad_active = False
             prefill_indices_updater.call_begin_forward(
                 prefill_indices_updater.prefill_wrapper_ragged,
                 wrappers[0],
@@ -217,12 +226,13 @@ class LLaDA2CFGFlashInferAttnBackend(FlashInferAttnBackend):
                 sum(paged_lens),
                 seq_lens,
                 prefix_lens,
-                cached_left_pad_lens,
+                cached_pad_lens,
                 prefill_indices_updater.kv_indptr[0],
                 prefill_indices_updater.qo_indptr[0],
                 True,
                 None,
                 fixed_split_size=self.prefill_split_tile_size,
+                custom_kv_indices=custom_kv_indices,
                 plan=forward_batch.kv_loc_plan,
             )
 
@@ -231,6 +241,33 @@ class LLaDA2CFGFlashInferAttnBackend(FlashInferAttnBackend):
             use_ragged=True,
             extend_no_prefix=False,
         )
+
+    def pack_kv_indices_around_padding(
+        self,
+        forward_batch: ForwardBatch,
+        cached_pad_spans: tuple[tuple[int, int], ...],
+    ) -> torch.Tensor:
+        prefix_lens = forward_batch.extend_prefix_lens
+        kv_indptr = torch.zeros(
+            prefix_lens.numel() + 1, dtype=torch.int32, device=prefix_lens.device
+        )
+        kv_indptr[1:] = torch.cumsum(prefix_lens, dim=0)
+        kv_indices = torch.empty(
+            int(kv_indptr[-1]), dtype=torch.int32, device=prefix_lens.device
+        )
+        self.kv_index_translator.pack_read_stream(
+            forward_batch.kv_loc_plan,
+            req_pool_indices=forward_batch.req_pool_indices,
+            seq_lens=prefix_lens,
+            indptr=kv_indptr,
+            out=kv_indices,
+        )
+        keep = torch.ones_like(kv_indices, dtype=torch.bool)
+        for row_start, (pad_start, pad_end) in zip(
+            kv_indptr[:-1].tolist(), cached_pad_spans, strict=True
+        ):
+            keep[row_start + pad_start : row_start + pad_end] = False
+        return kv_indices[keep]
 
     def forward_extend(
         self,
@@ -241,7 +278,7 @@ class LLaDA2CFGFlashInferAttnBackend(FlashInferAttnBackend):
         forward_batch: ForwardBatch,
         save_kv_cache: bool = True,
     ) -> torch.Tensor:
-        if not self.cfg_local_left_pad_active:
+        if not self.cfg_local_pad_active:
             return super().forward_extend(
                 q, k, v, layer, forward_batch, save_kv_cache=save_kv_cache
             )

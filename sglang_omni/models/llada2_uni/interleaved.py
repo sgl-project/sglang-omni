@@ -91,6 +91,8 @@ class ImageHeader:
 class CFGBranchPlan:
     mode: Literal["none", "simple", "editing"]
     branches: dict[str, list[int]]
+    # Where each branch takes its padding, at the left unless named here.
+    pad_starts: dict[str, int]
     cfg_scale: float
     cfg_text_scale: float
     cfg_image_scale: float
@@ -187,6 +189,8 @@ def build_cfg_plan(
                 "unconditional": no_text,
                 "no_image": unconditional + current_text + header_ids,
             },
+            # note (qiujiawei): padding after the history keeps its blocks equal to the conditional row's, so their KV is shared.
+            {"unconditional": len(history)},
             config.cfg_text_scale,
             config.cfg_text_scale,
             config.cfg_image_scale,
@@ -197,12 +201,13 @@ def build_cfg_plan(
 
     scale = config.cfg_scale if config.cfg_scale > 0.0 else config.cfg_text_scale
     if scale == 1.0:
-        return CFGBranchPlan("none", {}, 1.0, 0.0, 0.0, config.cfg_rescale)
+        return CFGBranchPlan("none", {}, {}, 1.0, 0.0, 0.0, config.cfg_rescale)
     else:
         pass
     return CFGBranchPlan(
         "simple",
         {"unconditional": unconditional + header_ids},
+        {},
         scale,
         0.0,
         0.0,
@@ -325,6 +330,7 @@ def advance_text(
     interleaved["cfg_plan"] = {
         "mode": plan.mode,
         "branches": copy.deepcopy(plan.branches),
+        "pad_starts": dict(plan.pad_starts),
         "cfg_scale": plan.cfg_scale,
         "cfg_text_scale": plan.cfg_text_scale,
         "cfg_image_scale": plan.cfg_image_scale,

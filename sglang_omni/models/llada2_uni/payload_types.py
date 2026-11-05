@@ -92,9 +92,11 @@ class LLaDA2UniStreamState(TypedDict, total=False):
     cfg_rescale: float
     cfg_image_scale: float
     uncond_input_ids: list[int]
-    uncond_left_pad_len: int
+    uncond_pad_len: int
     uncond_img_input_ids: list[int]
-    uncond_img_left_pad_len: int
+    uncond_img_pad_len: int
+    uncond_pad_start: int
+    uncond_img_pad_start: int
 
 
 @dataclass
