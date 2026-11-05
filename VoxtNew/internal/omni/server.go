@@ -23,7 +23,7 @@ type server struct {
 	spawned *process // the process starting, until it is ready or failed
 	start   *startOp // the start in progress, shared by its waiters
 	leases  int      // uses holding proc
-	idle    *time.Timer
+	idle    func()   // stops the idle timer
 	retired bool
 	stopped chan struct{} // closed once retired and no process is left
 	// loaded is the process that said it is ready, until it exited
@@ -77,7 +77,7 @@ func (s *server) acquire(ctx context.Context) (*lease, error) {
 		if p := s.proc; p != nil && p.alive() {
 			s.leases++
 			if s.idle != nil {
-				s.idle.Stop()
+				s.idle()
 				s.idle = nil
 			}
 			s.report()
@@ -196,14 +196,14 @@ func (s *server) unlease(p *process) {
 // armIdle stops p after the idle timeout, from now (s.mu held).
 func (s *server) armIdle(p *process) {
 	if s.idle != nil {
-		s.idle.Stop()
+		s.idle()
 		s.idle = nil
 	}
 	d := s.rt.IdleTimeout()
 	if d < 0 {
 		return
 	}
-	s.idle = time.AfterFunc(d, func() {
+	s.idle = s.rt.afterFunc(d, func() {
 		s.mu.Lock()
 		if s.proc != p || s.leases > 0 {
 			s.mu.Unlock()
@@ -233,7 +233,7 @@ func (s *server) retire(why string) {
 	s.mu.Lock()
 	s.retired = true
 	if s.idle != nil {
-		s.idle.Stop()
+		s.idle()
 		s.idle = nil
 	}
 	p := s.proc
@@ -257,7 +257,7 @@ func (s *server) shutdown() {
 	s.mu.Lock()
 	s.retired = true
 	if s.idle != nil {
-		s.idle.Stop()
+		s.idle()
 		s.idle = nil
 	}
 	p, sp := s.proc, s.spawned
