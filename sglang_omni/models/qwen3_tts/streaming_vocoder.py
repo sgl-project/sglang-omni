@@ -2858,7 +2858,7 @@ class Qwen3TTSStreamingVocoderScheduler(
     def run_non_streaming_batch(
         self, batch: list[IncomingMessage], loop: asyncio.AbstractEventLoop
     ) -> None:
-        # note (ratish): a failed capture leaves no window to step a whole request through.
+        # note (ratish): with the window graphs gone there is no window to step a whole request through.
         if not (
             self.decodes_whole_requests and self.initial_window_decode_graphs.enabled
         ):
