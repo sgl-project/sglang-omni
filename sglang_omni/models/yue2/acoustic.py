@@ -95,6 +95,7 @@ class AcousticChunk:
         self, steps: int, cancelled: CancellationCheck, *, cuda_graph: bool = False
     ) -> torch.Tensor:
         latent = self.noise.to(device=self.device, dtype=self.dtype)
+        step_size = 1.0 / steps
         graph = None
         if cuda_graph:
             graph = CapturedGraph(self.device)
@@ -109,25 +110,24 @@ class AcousticChunk:
             check_cancelled(cancelled)
             with torch.cuda.graph(graph.graph, stream=stream):
                 graph_velocity = self.predict_velocity(graph_latent, graph_time)
+            raw_times = (
+                torch.tensor(
+                    [
+                        time
+                        for step in range(steps)
+                        for time in (
+                            1.0 - step * step_size,
+                            1.0 - step * step_size - step_size / 2,
+                        )
+                    ],
+                    dtype=torch.float64,
+                )
+                .logit()
+                .clamp(-20, 20)
+                .to(device=self.device, dtype=self.dtype)
+            )
         else:
             pass
-        step_size = 1.0 / steps
-        raw_times = (
-            torch.tensor(
-                [
-                    time
-                    for step in range(steps)
-                    for time in (
-                        1.0 - step * step_size,
-                        1.0 - step * step_size - step_size / 2,
-                    )
-                ],
-                dtype=torch.float64,
-            )
-            .logit()
-            .clamp(-20, 20)
-            .to(device=self.device, dtype=self.dtype)
-        )
         for step in range(steps):
             check_cancelled(cancelled)
             time = 1.0 - step * step_size
