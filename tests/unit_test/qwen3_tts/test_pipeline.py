@@ -4162,81 +4162,64 @@ def test_qwen3_tts_whole_request_reference_under_the_tail_uses_the_windows(
     )
 
 
-@pytest.mark.parametrize(
-    "generated_frames,ref_code_len,failed_replay",
-    [(5, 0, 1), (13, 0, 3), (13, 6, 5), (13, 6, 2)],
-)
-def test_qwen3_tts_whole_request_failed_replay_decodes_the_request_whole(
+def test_qwen3_tts_whole_request_failed_replay_fails_only_its_rows(
     monkeypatch: pytest.MonkeyPatch,
-    generated_frames: int,
-    ref_code_len: int,
-    failed_replay: int,
 ) -> None:
-    scheduler, _, runner = whole_request_scheduler(
-        monkeypatch, miss_on_call=failed_replay
-    )
-    message = whole_request_message(
-        "whole", generated_frames, ref_code_len=ref_code_len
-    )
+    scheduler, _, runner = whole_request_scheduler(monkeypatch, miss_on_call=2)
+    messages = [
+        whole_request_message("first", 8),
+        whole_request_message("second", 8),
+        whole_request_message("short", 2),
+    ]
 
-    scheduler.run_non_streaming_batch([message], asyncio.new_event_loop())
+    scheduler.run_non_streaming_batch(messages, asyncio.new_event_loop())
     results = run_whole_requests(scheduler)
 
-    assert len(runner.calls) == failed_replay
-    assert chunk_samples(results["whole"].data) == expected_whole_samples(
-        scheduler, generated_frames, ref_code_len
-    )
-    assert results["whole"].data.data["usage"]["completion_tokens"] == generated_frames
+    assert results["first"].type == "error"
+    assert results["second"].type == "error"
+    assert chunk_samples(results["short"].data) == expected_whole_samples(scheduler, 2)
+    assert [call[0][2] for call in runner.calls] == [4, 4, 2]
 
 
-def test_qwen3_tts_whole_requests_finish_whole_once_the_window_graphs_are_gone(
+def test_qwen3_tts_whole_request_device_fault_on_its_slot_fails_only_itself(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scheduler, _, runner = whole_request_scheduler(monkeypatch)
-    messages = [whole_request_message("started", 8), whole_request_message("next", 8)]
+    zero_slot = scheduler.codec_arena.zero_slot
+    faulted = []
+
+    def fail_first_zero_slot(slot: int) -> None:
+        if faulted:
+            zero_slot(slot)
+        else:
+            faulted.append(slot)
+            raise RuntimeError("device fault")
+
+    monkeypatch.setattr(scheduler.codec_arena, "zero_slot", fail_first_zero_slot)
+    messages = [whole_request_message("faulted", 4), whole_request_message("next", 4)]
 
     scheduler.run_non_streaming_batch(messages, asyncio.new_event_loop())
+    results = run_whole_requests(scheduler)
+
+    assert results["faulted"].type == "error"
+    assert chunk_samples(results["next"].data) == expected_whole_samples(scheduler, 4)
+    assert [call[1] for call in runner.calls] != []
+
+
+def test_qwen3_tts_whole_requests_finish_on_the_stateful_decoder_without_window_graphs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler, _, runner = whole_request_scheduler(monkeypatch)
+    message = whole_request_message("whole", 8)
+
+    scheduler.run_non_streaming_batch([message], asyncio.new_event_loop())
     run_initial_worker_pass(scheduler)
     runner.enabled = False
+    monkeypatch.setattr(runner, "split_frames", lambda frames: None)
     results = run_whole_requests(scheduler)
 
     assert len(runner.calls) == 1
-    for name in ("started", "next"):
-        assert chunk_samples(results[name].data) == expected_whole_samples(scheduler, 8)
-
-
-def test_qwen3_tts_whole_request_device_fault_on_its_slot_keeps_the_worker(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    scheduler, _, runner = whole_request_scheduler(monkeypatch)
-
-    def fail_zero_slot(slot: int) -> None:
-        raise RuntimeError("device fault")
-
-    monkeypatch.setattr(scheduler.codec_arena, "zero_slot", fail_zero_slot)
-    message = whole_request_message("whole", 5)
-
-    scheduler.run_non_streaming_batch([message], asyncio.new_event_loop())
-    results = run_whole_requests(scheduler)
-
-    assert runner.calls == []
-    assert chunk_samples(results["whole"].data) == expected_whole_samples(scheduler, 5)
-
-
-def test_qwen3_tts_whole_request_that_cannot_decode_at_all_fails_only_itself(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    scheduler, _, _ = whole_request_scheduler(monkeypatch, miss_on_call=1)
-
-    def fail_decode(state: Qwen3TTSState) -> torch.Tensor:
-        raise RuntimeError("device fault")
-
-    monkeypatch.setattr(scheduler, "decode_state_audio", fail_decode)
-    message = whole_request_message("whole", 4)
-
-    scheduler.run_non_streaming_batch([message], asyncio.new_event_loop())
-
-    assert run_whole_requests(scheduler)["whole"].type == "error"
+    assert chunk_samples(results["whole"].data) == expected_whole_samples(scheduler, 8)
 
 
 def test_qwen3_tts_whole_request_that_cannot_start_fails_only_itself(

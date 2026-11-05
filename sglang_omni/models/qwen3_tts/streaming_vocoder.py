@@ -3045,7 +3045,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                         pass
                     self.wait_codes_ready(row)
                 except Exception as exc:
-                    self.finish_whole_request_eagerly(row, exc)
+                    self.fail_whole_request(row, exc)
                     continue
             else:
                 pass
@@ -3066,17 +3066,22 @@ class Qwen3TTSStreamingVocoderScheduler(
         else:
             pass
 
-    def run_whole_request_replay(self) -> None:
-        # note (ratish): a replay failure tears the window graphs down, and a stateful decode of a row's width without them faults on the device, so rows finish as new requests do.
-        if not self.initial_window_decode_graphs.enabled:
-            rows, self.whole_request_rows = self.whole_request_rows, deque()
-            for row in rows:
-                self.finish_whole_request_eagerly(
-                    row, RuntimeError("the window graphs are disabled")
-                )
-            return
+    def fail_whole_request(
+        self, row: Qwen3TTSWholeRequest, error: BaseException
+    ) -> None:
+        logger.warning(
+            "Qwen3-TTS whole request %r failed: %s",
+            row.request_id,
+            error,
+            exc_info=error,
+        )
+        self.free_whole_request_slot(row)
+        if not self.is_aborted(row.request_id):
+            self.emit_error(row.request_id, error)
         else:
             pass
+
+    def run_whole_request_replay(self) -> None:
         group, tail_runner = self.plan_whole_request_replay()
         if not group:
             return
@@ -3108,17 +3113,15 @@ class Qwen3TTSStreamingVocoderScheduler(
             ).resolve_partial()
         except Exception as exc:
             for row, _ in group:
-                self.finish_whole_request_eagerly(row, exc)
+                self.fail_whole_request(row, exc)
             return
         for index, ((row, frames), delta) in enumerate(zip(group, deltas)):
             if self.is_aborted(row.request_id):
                 self.free_whole_request_slot(row)
                 continue
             elif index in bad_rows:
-                self.free_whole_request_slot(row)
-                self.emit_error(
-                    row.request_id,
-                    Qwen3TTSInvalidCodeRows([index], bad_row_message([index])),
+                self.fail_whole_request(
+                    row, Qwen3TTSInvalidCodeRows([index], bad_row_message([index]))
                 )
                 continue
             else:
@@ -3146,43 +3149,6 @@ class Qwen3TTSStreamingVocoderScheduler(
                 },
             )
             self.emit_result(row.request_id, row.payload)
-
-    def finish_whole_request_eagerly(
-        self, row: Qwen3TTSWholeRequest, cause: BaseException
-    ) -> None:
-        """A row that cannot finish on the graphs decodes whole, as the batch path does; it has every code."""
-        self.free_whole_request_slot(row)
-        if self.is_aborted(row.request_id):
-            return
-        else:
-            pass
-        logger.warning(
-            "Qwen3-TTS window graph decode failed for %r (%s); decoding the whole request eagerly",
-            row.request_id,
-            cause,
-            exc_info=cause,
-        )
-        try:
-            self.wait_codes_ready(row)
-            row.payload.data = self.audio_result_data(
-                row.final_state,
-                audio_waveform_payload(
-                    self.decode_state_audio(row.final_state),
-                    sample_rate=self.sample_rate,
-                    modality="audio",
-                    source_hint="Qwen3-TTS",
-                ),
-            )
-        except Exception as exc:
-            if not self.is_aborted(row.request_id):
-                self.emit_error(row.request_id, exc)
-            else:
-                pass
-        else:
-            if not self.is_aborted(row.request_id):
-                self.emit_result(row.request_id, row.payload)
-            else:
-                pass
 
     def run_initial_batch(self, batch: list[tuple[str, Qwen3TTSStreamState]]) -> None:
         if get_recorder().is_active():
