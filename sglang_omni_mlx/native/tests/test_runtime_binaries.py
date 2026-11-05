@@ -11,6 +11,7 @@ from native_server import EVENT_TIMEOUT_SECONDS, EXIT_TIMEOUT_SECONDS, Supervise
 
 # The model kinds Voxt starts each server with.
 SERVED_KINDS = {
+    "auk_server": ("auk",),
     "qwen3_asr_server": ("qwen3_asr", "silero_vad", "sortformer"),
     "whisper_server": ("whisper",),
     "cohere_transcribe_server": ("cohere_transcribe",),

@@ -23,6 +23,9 @@ struct QuantizationConfig {
 using WeightMap = std::unordered_map<std::string, mlx::core::array>;
 
 nlohmann::json ReadJson(const std::filesystem::path &path);
+// A YAML file as JSON, its plain scalars typed as PyYAML's safe loader types
+// them and its quoted scalars kept as strings.
+nlohmann::json ReadYaml(const std::filesystem::path &path);
 // Every .safetensors file in the directory, names as stored.
 WeightMap LoadSafetensors(const std::filesystem::path &model_directory);
 
@@ -35,6 +38,9 @@ public:
 
   const mlx::core::array &Weight(const std::string &name) const;
   bool Has(const std::string &name) const;
+  // Throws std::invalid_argument unless name's tensor has shape.
+  void RequireShape(const std::string &name,
+                    const mlx::core::Shape &shape) const;
   const QuantizationConfig &Quantization(const std::string &prefix) const;
   mlx::core::array Linear(const mlx::core::array &x,
                           const std::string &prefix) const;

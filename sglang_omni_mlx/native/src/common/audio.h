@@ -22,6 +22,12 @@ inline constexpr float kLogMelDynamicRange = 8.0f;
 // std::invalid_argument for anything else.
 std::vector<float> DecodeWav(std::string_view wav_bytes,
                              int sample_rate = kSampleRate);
+struct DecodedAudio {
+  std::vector<float> samples;
+  int sample_rate;
+};
+// The same at whatever positive sample rate the file declares.
+DecodedAudio DecodeAudioWav(std::string_view wav_bytes);
 // Samples as 16-bit little-endian PCM, clipped to [-1, 1] and scaled by
 // 32767 as the CUDA server's encode_pcm does.
 std::string Pcm16Bytes(const std::vector<float> &samples);
@@ -32,6 +38,13 @@ std::string WavBytes(const std::string &pcm, int sample_rate);
 // float32 in the same order as Voxt's Swift front end.
 const std::vector<float> &MelFilterBank(int mel_bin_count = kMelBinCount);
 const std::vector<float> &PeriodicHannWindow();
+
+// A centered STFT's final frame: Whisper's processor drops it, Voxt's Swift
+// front end keeps it.
+enum class FinalStftFrame { kDropped, kKept };
+// Whisper-style log-mel in float32 on MLX, [mel_bins, frames].
+mlx::core::array LogMel(const std::vector<float> &samples,
+                        FinalStftFrame final_frame);
 
 // Whisper's fixed 30 s encoder window.
 inline constexpr int kWhisperWindowSampleCount = 30 * kSampleRate;

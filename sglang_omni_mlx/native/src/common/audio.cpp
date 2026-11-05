@@ -4,8 +4,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 
 namespace omni_common {
@@ -110,9 +112,9 @@ std::vector<float> BuildPeriodicHannWindow() {
   return window;
 }
 
-} // namespace
-
-std::vector<float> DecodeWav(std::string_view wav_bytes, int sample_rate) {
+// expected_sample_rate, when given, is the only rate accepted.
+DecodedAudio DecodeWavSamples(std::string_view wav_bytes,
+                              std::optional<int> expected_sample_rate) {
   if (wav_bytes.size() < 12 || wav_bytes.substr(0, 4) != "RIFF" ||
       wav_bytes.substr(8, 4) != "WAVE") {
     throw std::invalid_argument("audio must be a RIFF/WAVE file");
@@ -141,14 +143,23 @@ std::vector<float> DecodeWav(std::string_view wav_bytes, int sample_rate) {
       bits_per_sample = ReadU16(wav_bytes, body_offset + 14);
       have_format = true;
     } else if (chunk_id == "data") {
-      if (!have_format || channel_count != 1 ||
-          file_sample_rate != static_cast<uint32_t>(sample_rate)) {
+      const bool is_mono = have_format && channel_count == 1;
+      if (expected_sample_rate.has_value() &&
+          (!is_mono ||
+           file_sample_rate != static_cast<uint32_t>(*expected_sample_rate))) {
+        const int sample_rate = *expected_sample_rate;
         const std::string kilohertz =
             sample_rate % 1000 == 0
                 ? std::to_string(sample_rate / 1000)
                 : std::to_string(sample_rate / 1000) + "." +
                       std::to_string(sample_rate % 1000 / 100);
         throw std::invalid_argument("audio must be " + kilohertz + " kHz mono");
+      } else if (!is_mono) {
+        throw std::invalid_argument("audio must be mono");
+      } else if (file_sample_rate == 0 ||
+                 file_sample_rate >
+                     static_cast<uint32_t>(std::numeric_limits<int>::max())) {
+        throw std::invalid_argument("WAV sample rate is invalid");
       } else if (audio_format == kWavFormatPcm && bits_per_sample == 16) {
         std::vector<float> samples(body_size / 2);
         for (size_t i = 0; i < samples.size(); ++i) {
@@ -157,12 +168,12 @@ std::vector<float> DecodeWav(std::string_view wav_bytes, int sample_rate) {
                       sizeof(value));
           samples[i] = static_cast<float>(value) / kPcm16FullScale;
         }
-        return samples;
+        return {std::move(samples), static_cast<int>(file_sample_rate)};
       } else if (audio_format == kWavFormatFloat && bits_per_sample == 32) {
         std::vector<float> samples(body_size / 4);
         std::memcpy(samples.data(), wav_bytes.data() + body_offset,
                     samples.size() * 4);
-        return samples;
+        return {std::move(samples), static_cast<int>(file_sample_rate)};
       } else {
         throw std::invalid_argument("audio must be PCM16 or float32 WAV");
       }
@@ -171,6 +182,16 @@ std::vector<float> DecodeWav(std::string_view wav_bytes, int sample_rate) {
     offset = body_offset + chunk_size + (chunk_size & 1u);
   }
   throw std::invalid_argument("WAV file has no data chunk");
+}
+
+} // namespace
+
+std::vector<float> DecodeWav(std::string_view wav_bytes, int sample_rate) {
+  return DecodeWavSamples(wav_bytes, sample_rate).samples;
+}
+
+DecodedAudio DecodeAudioWav(std::string_view wav_bytes) {
+  return DecodeWavSamples(wav_bytes, std::nullopt);
 }
 
 std::string Pcm16Bytes(const std::vector<float> &samples) {
@@ -228,6 +249,43 @@ const std::vector<float> &MelFilterBank(int mel_bin_count) {
 const std::vector<float> &PeriodicHannWindow() {
   static const std::vector<float> window = BuildPeriodicHannWindow();
   return window;
+}
+
+mx::array LogMel(const std::vector<float> &samples,
+                 FinalStftFrame final_frame) {
+  std::vector<float> padded_samples = samples;
+  if (padded_samples.size() < static_cast<size_t>(kFftSize)) {
+    // Note (Jiaxin Deng): reflect padding needs more than half a window, so a
+    // tail this short (a realtime cut) is zero-filled to one window.
+    padded_samples.resize(kFftSize, 0.0f);
+  } else {
+  }
+  const int sample_count = static_cast<int>(padded_samples.size());
+  const mx::array audio(padded_samples.data(), {sample_count}, mx::float32);
+  constexpr int padding = kFftSize / 2;
+  const mx::array head = mx::slice(audio, {padding}, {0}, {-1});
+  const mx::array tail =
+      mx::slice(audio, {sample_count - 2}, {sample_count - padding - 2}, {-1});
+  const mx::array padded = mx::concatenate({head, audio, tail});
+  const int frame_count = 1 + (padded.shape(0) - kFftSize) / kHopLength;
+  const mx::array frames =
+      mx::as_strided(padded, {frame_count, kFftSize}, {kHopLength, 1}, 0);
+  const mx::array window(PeriodicHannWindow().data(), {kFftSize}, mx::float32);
+  mx::array power =
+      mx::square(mx::abs(mx::fft::rfft(mx::multiply(frames, window), 1)));
+  if (final_frame == FinalStftFrame::kDropped) {
+    power = mx::slice(power, {0, 0}, {power.shape(0) - 1, power.shape(1)});
+  } else {
+  }
+  const mx::array filters(MelFilterBank().data(),
+                          {kFftSize / 2 + 1, kMelBinCount}, mx::float32);
+  mx::array log_spectrum = mx::log10(
+      mx::maximum(mx::matmul(power, filters), mx::array(kLogMelFloor)));
+  log_spectrum =
+      mx::maximum(log_spectrum, mx::subtract(mx::max(log_spectrum),
+                                             mx::array(kLogMelDynamicRange)));
+  return mx::transpose(
+      mx::divide(mx::add(log_spectrum, mx::array(4.0f)), mx::array(4.0f)));
 }
 
 mx::array WhisperWindowFeatures(const float *samples, int sample_count,
