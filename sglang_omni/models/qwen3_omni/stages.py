@@ -1324,7 +1324,7 @@ def create_sglang_thinker_executor_from_config(
             # hidden states. The speculative prefill also skips post_prefill, which
             # stores the talker's multimodal prompt rows. Lifting this needs both
             # captures side by side and the rows stored on the speculative prefill.
-            # note (evanderfan): a session thinker captures neither and streams only token ids to the talker.
+            # note (evanderfan): a session thinker neither captures the talker's layer nor stores prompt rows; it streams only token ids to the talker.
             raise ValueError(
                 "speculative thinker decoding does not support speech output yet; "
                 "serve the thinker with --text-only"
