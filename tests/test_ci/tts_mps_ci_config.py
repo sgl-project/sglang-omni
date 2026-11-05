@@ -21,8 +21,6 @@ MPS_MOSS_OUTPUT_TOK_PER_REQ_S_REF: float | None = 79.3
 MPS_MOSS_LATENCY_MEAN_S_REF: float | None = 0.816
 MPS_MOSS_RTF_MEAN_REF: float | None = 0.1877
 
-# Speaker similarity uses its own MPS baseline because the canonical reference
-# is calibrated under ordinary DP2 rather than a shared card.
 MPS_HIGGS_SIMILARITY_MEAN_MIN: float | None = 65.52045616149903
 MPS_MOSS_SIMILARITY_MEAN_MIN: float | None = 64.23701919555664
 
