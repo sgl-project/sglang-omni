@@ -6,7 +6,6 @@ package main
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sgl-project/sglang-omni/VoxtNew/internal/helper/helpertest"
 	"github.com/sgl-project/sglang-omni/VoxtNew/internal/helper/proto"
@@ -38,7 +37,9 @@ func TestRewriteAnswerFollowUp(t *testing.T) {
 	if v := a.cardNow(); !a.answer.open || a.ov.mode != ovAnswer || !v.conversation || !v.recording {
 		t.Errorf("card %v overlay %s while recording: %+v", a.answer.open, a.ov.mode, v)
 	}
-	time.Sleep(400 * time.Millisecond)
+	// At least 400 ms recorded, over the shortest recording kept: the
+	// fake helper sends a level before each 100 ms frame.
+	a.pump("the follow-up's audio", func() bool { return len(a.sess.Levels) >= 5 })
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: "rewrite/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: &front})
 	a.pump("the follow-up's end", func() bool { return a.sess.State.Ended() && a.answer.text == "Running late." })
 	if a.answer.text != "Running late." || len(a.answer.turns) != 2 || !a.answer.open || !a.answer.conversation || len(a.pasted()) != 0 {
