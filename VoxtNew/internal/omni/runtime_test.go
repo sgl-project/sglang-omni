@@ -365,19 +365,24 @@ func TestFinalErrors(t *testing.T) {
 // again at the next use.
 func TestIdleUnload(t *testing.T) {
 	f := newFake(t, omnitest.Opts{}, func(c *Config) { c.IdleTimeout = 300 * time.Millisecond })
+	clock := new(fakeClock).install(f.rt)
 	ctx := context.Background()
 	pcm := tone(time.Second, 0.3)
 	fast := f.asr(t, ASRFast)
 	if _, err := fast.Transcribe(ctx, asr.FileRequest{Audio: pcm}); err != nil {
 		t.Fatal(err)
 	}
+	clock.advance(299 * time.Millisecond)
 	if r := f.rt.Running(); len(r) != 1 || r[0] != ASRFast {
 		t.Errorf("running %v", r)
 	}
 	if ps := f.rt.Processes(); len(ps) != 1 || ps[0].ID != ASRFast || ps[0].PID != f.records("launch")[0].PID {
 		t.Errorf("processes %+v, launched %+v", ps, f.records("launch"))
 	}
-	eventually(t, "the idle unload", func() bool { return len(f.records("shutdown")) == 1 && len(f.rt.Running()) == 0 })
+	clock.advance(time.Millisecond) // the idle stop returns once the process exited
+	if n, r := len(f.records("shutdown")), f.rt.Running(); n != 1 || len(r) != 0 {
+		t.Fatalf("after the idle time: %d shutdowns, running %v", n, r)
+	}
 	if ps := f.rt.Processes(); len(ps) != 0 {
 		t.Errorf("processes after the unload %+v", ps)
 	}
@@ -449,24 +454,29 @@ func TestSetIdleTimeout(t *testing.T) {
 }
 
 // TestSetIdleTimeoutInUse: a server in use when the time changes is
-// stopped once unused for the new time after its use ends.
+// stopped once unused for the new time after its use ends, not counted
+// from the change.
 func TestSetIdleTimeoutInUse(t *testing.T) {
-	f := newFake(t, omnitest.Opts{Delay: 400 * time.Millisecond}, func(c *Config) { c.IdleTimeout = -1 })
+	f := newFake(t, omnitest.Opts{}, func(c *Config) { c.IdleTimeout = -1 })
+	clock := new(fakeClock).install(f.rt)
 	a := f.asr(t, ASRFast)
-	done := make(chan error, 1)
-	go func() {
-		_, err := a.Transcribe(context.Background(), asr.FileRequest{Audio: tone(time.Second, 0.3)})
-		done <- err
-	}()
-	eventually(t, "the Final", func() bool { return len(f.records("final")) == 1 })
-	f.rt.SetIdleTimeout(100 * time.Millisecond)
-	if err := <-done; err != nil {
-		t.Fatalf("the use in progress failed: %v", err)
+	l, err := f.rt.acquire(context.Background(), a.spec, a.dir) // a use in progress, as a Final holds it
+	if err != nil {
+		t.Fatal(err)
 	}
-	ended := time.Now()
-	eventually(t, "the idle unload", func() bool { return len(f.rt.Running()) == 0 })
-	if took := time.Since(ended); took < 100*time.Millisecond {
-		t.Errorf("unloaded %v after the use", took)
+	f.rt.SetIdleTimeout(100 * time.Millisecond)
+	clock.advance(time.Hour)
+	if r := f.rt.Running(); len(r) != 1 {
+		t.Fatalf("stopped while in use: running %v", r)
+	}
+	l.release()
+	clock.advance(99 * time.Millisecond)
+	if r := f.rt.Running(); len(r) != 1 {
+		t.Fatalf("stopped before the new time after the use: running %v", r)
+	}
+	clock.advance(time.Millisecond)
+	if r := f.rt.Running(); len(r) != 0 {
+		t.Fatalf("not stopped at the new time after the use: running %v", r)
 	}
 }
 
