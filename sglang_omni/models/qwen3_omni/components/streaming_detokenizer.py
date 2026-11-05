@@ -104,7 +104,12 @@ def build_decode_result(
             pass
     else:
         pass
-    for key in ("finish_reason", "output_token_logprobs", "weight_version"):
+    for key in (
+        "finish_reason",
+        "output_token_logprobs",
+        "weight_version",
+        "spec_tokens_details",
+    ):
         value = thinker_out.get(key)
         if value is not None:
             result.setdefault(key, value)
