@@ -4165,7 +4165,7 @@ def test_qwen3_tts_whole_request_reference_under_the_tail_uses_the_windows(
 def test_qwen3_tts_whole_request_failed_replay_fails_only_its_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    scheduler, _, runner = whole_request_scheduler(monkeypatch, miss_on_call=2)
+    scheduler, _, runner = whole_request_scheduler(monkeypatch, miss_on_call=3)
     messages = [
         whole_request_message("first", 8),
         whole_request_message("second", 8),
@@ -4178,7 +4178,7 @@ def test_qwen3_tts_whole_request_failed_replay_fails_only_its_rows(
     assert results["first"].type == "error"
     assert results["second"].type == "error"
     assert chunk_samples(results["short"].data) == expected_whole_samples(scheduler, 2)
-    assert [call[0][2] for call in runner.calls] == [4, 4, 2]
+    assert [call[0][2] for call in runner.calls] == [4, 2, 4]
 
 
 def test_qwen3_tts_whole_request_device_fault_on_its_slot_fails_only_itself(
