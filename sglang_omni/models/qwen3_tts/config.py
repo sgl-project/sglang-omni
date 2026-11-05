@@ -28,6 +28,8 @@ from sglang_omni.serve.server_warmup import warmup_tone_wav_bytes
 from sglang_omni.utils.json import JsonValue
 
 _PKG = "sglang_omni.models.qwen3_tts"
+# CPU has no accelerator placement id.
+_DEFAULT_STAGE_GPU: int | None = None if current_platform.is_cpu() else 0
 _QWEN3_TTS_CUSTOM_VARIANT_MARKERS = (
     "custom_voice",
     "customvoice",
@@ -76,8 +78,6 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
     # preprocessing and vocoder decoding and disables the vocoder CUDA graphs,
     # reducing throughput.
 
-    # CPU has no accelerator placement id.
-    _DEFAULT_DEVICE_ID: int | None = None if current_platform.is_cpu() else 0
     enable_deterministic_inference: bool = False
     stages: list[StageConfig] = [
         StageConfig(
@@ -97,7 +97,7 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_vocoder_executor",
             factory=FactoryArgs(dtype="bfloat16"),
-            gpu=_DEFAULT_DEVICE_ID,
+            gpu=_DEFAULT_STAGE_GPU,
             terminal=True,
             can_accept_stream_before_payload=True,
         ),
@@ -106,7 +106,7 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
             factory=FactoryArgs(dtype="bfloat16"),
-            gpu=_DEFAULT_DEVICE_ID,
+            gpu=_DEFAULT_STAGE_GPU,
             next="vocoder",
             stream_to=["vocoder"],
         ),
