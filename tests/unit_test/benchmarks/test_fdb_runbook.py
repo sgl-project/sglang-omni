@@ -25,7 +25,6 @@ from benchmarks.duplex.fdb.__main__ import build_parser, sample_selection
 from benchmarks.duplex.fdb.aggregate import render
 from benchmarks.duplex.fdb.common import (
     PARAKEET_SHA256,
-    RECORD_PROFILE,
     Settings,
     load_settings,
     require_v10_export,
@@ -38,7 +37,7 @@ from benchmarks.duplex.fdb.selection import (
     leave_out_hint,
     select_v10_samples,
 )
-from benchmarks.duplex.fdb.servers import RunningServer
+from benchmarks.duplex.fdb.servers import RunningServer, judge_server_command
 from benchmarks.duplex.reference_v10 import MANIFEST_KIND
 from benchmarks.duplex.run_artifacts import file_sha256
 from benchmarks.duplex.v10_dataset import SUBSETS as V10_SUBSETS
@@ -204,6 +203,8 @@ def test_generate_all_stages_chains_the_steps_and_stops_at_a_failure(
 ) -> None:
     parser = build_parser()
     assert not parser.parse_args(["generate"]).all_stages
+    assert not parser.parse_args(["generate"]).skip_warmup
+    assert parser.parse_args(["generate", "--skip-warmup"]).skip_warmup
     args = parser.parse_args(
         ["generate", "--repeat", "2", "--num-shards", "3", "--all-stages"]
     )
@@ -220,10 +221,17 @@ def test_generate_all_stages_chains_the_steps_and_stops_at_a_failure(
 
         return record
 
-    def chain(all_stages: bool) -> list[str]:
+    def chain(all_stages: bool, should_run_semantic_judge: bool = True) -> list[str]:
         calls.clear()
         runbook_cli.generate_stages(
-            settings, args.repeat, *selections, args.num_shards, ("0",), all_stages
+            settings,
+            args.repeat,
+            *selections,
+            args.num_shards,
+            ("0",),
+            all_stages,
+            should_run_semantic_judge,
+            not args.skip_warmup,
         )
         return [name for name, _, _ in calls]
 
@@ -232,11 +240,21 @@ def test_generate_all_stages_chains_the_steps_and_stops_at_a_failure(
     assert chain(False) == ["generate"]
     assert chain(args.all_stages) == ["generate", "asr", "judge", "aggregate"]
     assert calls == [
-        ("generate", (settings, 2, *selections, 3, ("0",)), {}),
+        ("generate", (settings, 2, *selections, 3, ("0",)), {"should_warm_up": True}),
         ("asr", (settings, 2), {"retry_failed": False}),
-        ("judge", (settings, 2), {"retry_failed": False}),
+        (
+            "judge",
+            (settings, 2),
+            {"retry_failed": False, "should_run_semantic_judge": True},
+        ),
         ("aggregate", (settings,), {}),
     ]
+    chain(True, should_run_semantic_judge=False)
+    assert calls[2] == (
+        "judge",
+        (settings, 2),
+        {"retry_failed": False, "should_run_semantic_judge": False},
+    )
     monkeypatch.setattr(runbook_cli, "asr", step("asr", "WARNING: rerun asr"))
     with pytest.raises(SystemExit, match="rerun asr"):
         chain(True)
@@ -264,6 +282,12 @@ def test_leave_out_hint_names_an_option_change_the_parser_accepts() -> None:
 def test_env_exports_the_scoring_interpreter(settings: Settings) -> None:
     # note (luojiaxuan): the manual scoring commands run with this interpreter.
     assert settings.shell_exports()["SCORING_PYTHON"] == str(settings.scoring_python)
+
+
+def test_judge_server_runs_from_the_current_interpreter(settings: Settings) -> None:
+    command = judge_server_command(settings)
+    assert command[:3] == [sys.executable, "-m", "sglang.launch_server"]
+    assert "serve" not in command
 
 
 def test_session_timeouts_stay_within_the_recorder_ceiling(
@@ -348,6 +372,7 @@ def stub_generate_phases(
         return [arguments[1] / "recording" / "shard-0"]
 
     monkeypatch.setattr(generate_module, "record_shards", record_shards)
+    monkeypatch.setattr(generate_module, "warm_up", lambda *_: None)
     monkeypatch.setattr(generate_module, "print_variant_status", lambda *_: None)
     monkeypatch.setattr(generate_module, "export_reference_audio", lambda *_: None)
     monkeypatch.setattr(
@@ -434,6 +459,127 @@ def test_record_shards_sends_shard_i_to_server_i_mod_their_count(
         3,
     )
     assert [(shard / "server").read_text() for shard in shard_dirs] == ["a", "b", "a"]
+
+
+def test_generate_warms_the_server_up_before_the_scored_recording(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The warmup repeats the first selected v1.5 pair, or the first v1.0 sample
+    when v1.5 is left out, once per shard; --skip-warmup leaves it out."""
+    stage_datasets(settings)
+    _, recordings, _ = stub_generate_phases(monkeypatch)
+    events: list[tuple] = []
+    monkeypatch.setattr(
+        generate_module,
+        "warm_up",
+        lambda *arguments: events.append(("warm_up", arguments)),
+    )
+    monkeypatch.setattr(
+        generate_module,
+        "record_shards",
+        lambda *arguments: events.append(("record", arguments[2]))
+        or [arguments[1] / "recording" / "shard-0"],
+    )
+    repeat_dir = settings.repeat_dir(1)
+    v15_ids = [f"{subset}/1" for subset in V15_SUBSETS]
+    v10_ids = [f"{subset}/1" for subset in V10_SUBSETS]
+    generate_module.generate(
+        settings,
+        1,
+        SampleSelection(per_subset=1),
+        SampleSelection(per_subset=1),
+        3,
+        (settings.gpu,),
+    )
+    assert events == [
+        (
+            "warm_up",
+            (
+                [generate_module.v15_record_command(settings)],
+                repeat_dir,
+                v15_ids[0],
+                2,
+                3,
+            ),
+        ),
+        ("record", v15_ids),
+        ("record", v10_ids),
+    ]
+    events.clear()
+    v10_only = load_settings("warmup-v10-only")
+    generate_module.generate(
+        v10_only,
+        1,
+        SampleSelection(per_subset=0),
+        SampleSelection(per_subset=1),
+        1,
+        (settings.gpu,),
+    )
+    assert events == [
+        (
+            "warm_up",
+            (
+                [generate_module.v10_record_command(v10_only)],
+                v10_only.repeat_dir(1),
+                v10_ids[0],
+                1,
+                1,
+            ),
+        ),
+        ("record", v10_ids),
+    ]
+    events.clear()
+    generate_module.generate(
+        settings,
+        2,
+        SampleSelection(per_subset=1),
+        SampleSelection(per_subset=1),
+        1,
+        (settings.gpu,),
+        should_warm_up=False,
+    )
+    assert [name for name, _ in events] == ["record", "record"]
+
+
+def test_warm_up_records_the_sample_once_per_shard_outside_the_recording(
+    tmp_path: Path,
+) -> None:
+    """Each shard records the warmup sample on its own server under warmup/, and
+    a failed warmup session leaves the scored recording to go on."""
+    repeat_dir = tmp_path / "repeat-1"
+    script = (
+        "import pathlib, sys; "
+        "out = pathlib.Path(sys.argv[sys.argv.index('--output') + 1]); "
+        "out.mkdir(parents=True); (out / 'server').write_text(sys.argv[1]); "
+        "(out / 'samples').write_text(' '.join(sys.argv[sys.argv.index('--sample-id'):])); "
+        "sys.exit(sys.argv[1] == 'b')"
+    )
+    commands = [[sys.executable, "-c", script, name] for name in ("a", "b")]
+    generate_module.warm_up(commands, repeat_dir, "user_interruption/1", 2, 3)
+    shards = sorted((repeat_dir / "warmup" / "recording").iterdir())
+    assert [(shard / "server").read_text() for shard in shards] == ["a", "b", "a"]
+    assert {(shard / "samples").read_text() for shard in shards} == {
+        "--sample-id user_interruption/1"
+    }
+    assert not (repeat_dir / "recording").exists()
+
+
+def test_generate_discards_the_warmup_of_an_attempt_that_never_recorded(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stage_datasets(settings)
+    stub_generate_phases(monkeypatch)
+    stale = settings.repeat_dir(1) / "warmup" / "recording" / "shard-0"
+    stale.mkdir(parents=True)
+    generate_module.generate(
+        settings,
+        1,
+        SampleSelection(per_subset=1),
+        SampleSelection(per_subset=0),
+        1,
+        (settings.gpu,),
+    )
+    assert not stale.exists()
 
 
 def test_generate_without_v10_writes_no_v10_directory_and_fails_before_the_server(
@@ -617,7 +763,7 @@ def test_v10_record_and_export_commands_parse_with_the_v10_cli(
     ]
     args = run_v10_cli(shard, "record", monkeypatch)
     assert args.sample_id == [V10_IDS[0]]
-    assert args.profile == RECORD_PROFILE
+    assert args.profile == settings.engine.record_profile
     assert args.dataset_root == settings.dataset_v10
     assert args.dataset_revision == V10_REVISION
     assert args.url == settings.realtime_url
@@ -855,7 +1001,7 @@ def test_judge_evaluates_every_pending_subset_and_names_the_failed_ones(
     with pytest.raises(
         SystemExit, match="v1.0 evaluation failed for candor_turn_taking"
     ):
-        judge_module.judge(settings, 1, False)
+        judge_module.judge(settings, 1, False, True)
     assert evaluated_subsets(calls) == ["candor_turn_taking", "icc_backchannel"]
     assert (repeat_dir / "report.txt").is_file()
 
@@ -876,10 +1022,10 @@ def test_judge_hands_the_pending_subsets_to_the_judge_phase(
     monkeypatch.setattr(
         judge_module,
         "judge_with_qwen",
-        lambda *arguments: handed.append(arguments[-2:]) or (True, []),
+        lambda *arguments: handed.append(arguments[-3:-1]) or (True, []),
     )
     monkeypatch.setattr(judge_module, "write_report", lambda *_: True)
-    judge_module.judge(settings, 1, False)
+    judge_module.judge(settings, 1, False, True)
     # note (luojiaxuan): the judge-free subset is scored before the judge phase,
     # which gets only the interruption subset.
     assert evaluated_subsets(calls) == ["icc_backchannel"]
@@ -891,9 +1037,19 @@ def test_judge_runs_no_v10_phase_for_a_v15_only_repeat(
 ) -> None:
     stage_scored_repeat(settings, None)
     calls = stub_judge_phases(monkeypatch, failing_subset=None)
-    judge_module.judge(settings, 1, False)
+    judge_module.judge(settings, 1, False, True)
     assert calls
     assert not any(V10_CLI in command for command in calls)
+
+
+def test_judge_leaves_out_only_the_semantic_judge_when_asked(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stage_scored_repeat(settings, None)
+    calls = stub_judge_phases(monkeypatch, failing_subset=None)
+    judge_module.judge(settings, 1, False, should_run_semantic_judge=False)
+    assert any("custom-judge" in command for command in calls)
+    assert not any("benchmarks.duplex.semantic_judge" in command for command in calls)
 
 
 @pytest.mark.parametrize(
@@ -971,7 +1127,7 @@ def test_judge_stops_with_the_server_log_once_the_judge_server_exits(
     monkeypatch.setattr(judge_module, "judge_server", judge_server)
     monkeypatch.setattr(judge_module, "run_command", run)
     with pytest.raises(SystemExit) as stopped:
-        judge_module.judge(settings, 1, False)
+        judge_module.judge(settings, 1, False, True)
     log_file = repeat_dir / "logs" / "judge-server.log"
     assert str(stopped.value) == (
         f"ERROR: the judge server exited with code 1 {stopped_at}; "
@@ -1055,7 +1211,7 @@ def test_asr_and_judge_run_only_the_v10_phases_for_a_v10_only_repeat(
     ]
     (repeat_dir / "v10" / "reference" / "asr.json").write_text("{}")
     judge_calls = stub_judge_phases(monkeypatch, failing_subset=None)
-    judge_module.judge(settings, 1, False)
+    judge_module.judge(settings, 1, False, True)
     assert [command[3] for command in judge_calls] == ["reference-evaluate"] * 2
     assert not (repeat_dir / "report.txt").exists()
     # note (luojiaxuan): a repeat that was never generated has no sample-ids.txt.
@@ -1087,7 +1243,7 @@ def test_judge_starts_no_judge_when_no_llm_request_is_pending(
         "judge_server",
         lambda *_: pytest.fail("the judge server started with no LLM request"),
     )
-    judge_module.judge(settings, 1, False)
+    judge_module.judge(settings, 1, False, True)
     assert evaluated_subsets(calls) == [
         "synthetic_pause_handling",
         "candor_turn_taking",
@@ -1105,10 +1261,10 @@ def test_judge_starts_no_judge_when_no_llm_request_is_pending(
     (interruption / "v10" / "reference" / "asr.json").write_text("{}")
     if judge_name == "gpt":
         with pytest.raises(SystemExit, match="OPENAI_API_KEY"):
-            judge_module.judge(load_settings("v10-interruption"), 1, False)
+            judge_module.judge(load_settings("v10-interruption"), 1, False, True)
     else:
         with pytest.raises(pytest.fail.Exception, match="judge server started"):
-            judge_module.judge(load_settings("v10-interruption"), 1, False)
+            judge_module.judge(load_settings("v10-interruption"), 1, False, True)
 
 
 def test_asr_and_judge_refuse_a_selected_v10_without_its_artifacts(
@@ -1119,12 +1275,12 @@ def test_asr_and_judge_refuse_a_selected_v10_without_its_artifacts(
     with pytest.raises(SystemExit, match="did not finish the v1.0 export"):
         asr_module.asr(settings, 1, False)
     with pytest.raises(SystemExit, match="did not finish the v1.0 export"):
-        judge_module.judge(settings, 1, False)
+        judge_module.judge(settings, 1, False, True)
     tree = repeat_dir / "v10" / "reference"
     tree.mkdir()
     (tree / "manifest.json").write_text("{}")
     with pytest.raises(SystemExit, match="asr.*asr.json is missing"):
-        judge_module.judge(settings, 1, False)
+        judge_module.judge(settings, 1, False, True)
 
 
 def test_evaluate_v10_runs_each_subset_on_its_own_and_reports_failures(

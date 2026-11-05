@@ -174,7 +174,13 @@ class EngineArgs(BaseModel):
         default=None,
         description="Authoritative KV pool size in bytes, per rank; accepts an int or an exact binary-size string such as 2GiB. Consumed by the omni KV configurator, never forwarded to SGLang ServerArgs.",
     )
-    NON_SERVER_KEYS: ClassVar[frozenset[str]] = frozenset({"kv_cache_bytes"})
+    disable_speculative_decoding: bool | None = Field(
+        default=None,
+        description="When true, every speculative_* key in this block is left out of server_args_overrides, so the stage runs without the draft set by the model defaults or a config file. Never forwarded to SGLang ServerArgs.",
+    )
+    NON_SERVER_KEYS: ClassVar[frozenset[str]] = frozenset(
+        {"kv_cache_bytes", "disable_speculative_decoding"}
+    )
 
     @field_validator("kv_cache_bytes", mode="before")
     @classmethod
@@ -204,13 +210,19 @@ class EngineArgs(BaseModel):
 
         A declared key left at ``None`` means "not set" and is omitted, so
         SGLang's own defaults stay in charge; free-form keys are always
-        included because writing one is itself the intent.
+        included because writing one is itself the intent. With
+        disable_speculative_decoding set, the speculative_* keys are left out
+        whichever source wrote them.
         """
         extra = self.model_extra or {}
         return {
             key: value
             for key, value in self.model_dump().items()
-            if (value is not None or key in extra) and key not in self.NON_SERVER_KEYS
+            if (value is not None or key in extra)
+            and key not in self.NON_SERVER_KEYS
+            and not (
+                self.disable_speculative_decoding and key.startswith("speculative_")
+            )
         }
 
 

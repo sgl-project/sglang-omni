@@ -17,7 +17,7 @@ from sglang_omni.serve.speech_service import SpeechRequestValidator
 from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
 VOCODER_WINDOWS = {
-    "stream_stride": 10,
+    "stream_stride": 4,
     "stream_followup_stride_ramp": (10, 12, 32),
     "stream_followup_stride": 64,
     "stream_overlap_tokens": 32,
@@ -76,7 +76,7 @@ def test_each_factory_gets_the_defaults_written_once() -> None:
         "tower_fused_layers": True,
         "enable_async_decode": False,
         "async_decode_min_batch_size": 1,
-        "stream_stride": 10,
+        "stream_stride": 4,
         "stream_followup_stride_ramp": (10, 12, 32),
         "stream_followup_stride": 64,
     }
@@ -245,3 +245,28 @@ def test_speech_fields_the_model_cannot_honor_are_refused(
         speech_validator().parse_raw_request({"input": "hello", field_name: value})
 
     assert rejection.value.param == field_name
+
+
+def test_reference_sampling_reaches_the_engine_only_when_set() -> None:
+    config = ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
+        [
+            ("tts_engine.factory.reference_sampling", "true"),
+            ("tts_engine.factory.reference_sampling_fallback", "ras"),
+        ]
+    )
+    assert isinstance(config, Drama3PipelineConfig)
+
+    engine_kwargs = launch_kwargs(config, "tts_engine")
+
+    assert (
+        engine_kwargs["reference_sampling"],
+        engine_kwargs["reference_sampling_fallback"],
+    ) == (True, "ras")
+    with pytest.raises(ValidationError, match="reference_sampling_fallback"):
+        ConfigManager(Drama3PipelineConfig(model_path="checkpoint")).merge_config(
+            [("tts_engine.factory.reference_sampling_fallback", "greedy")]
+        )
+
+
+def test_epsilon_cutoff_is_a_supported_speech_field() -> None:
+    speech_validator().parse_raw_request({"input": "hello", "epsilon_cutoff": 1e-3})

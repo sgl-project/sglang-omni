@@ -27,6 +27,7 @@ from tests.unit_test.fishaudio_drama3.graph_fixtures import (
     bits,
 )
 from tests.unit_test.fishaudio_drama3.mtp_fixtures import (
+    EOS_CANDIDATE_COLUMN,
     EOS_TOKEN_ID,
     PROMPTS,
     SEMANTIC_END_TOKEN_ID,
@@ -47,6 +48,39 @@ def same_bits(left: torch.Tensor, right: torch.Tensor) -> bool:
         and left.shape == right.shape
         and torch.equal(bits(left), bits(right))
     )
+
+
+def bfloat16_steps(tensor: torch.Tensor) -> torch.Tensor:
+    """Bfloat16 bit patterns as integers ordered like the values they encode."""
+    signed_bits = bits(tensor.to(torch.bfloat16)).to(torch.int32)
+    magnitude = signed_bits & 0x7FFF
+    return torch.where(signed_bits < 0, -magnitude, magnitude)
+
+
+def is_bfloat16_exact(tensor: torch.Tensor) -> bool:
+    return torch.equal(tensor.to(torch.bfloat16).to(tensor.dtype), tensor)
+
+
+def within_one_bfloat16_step(left: torch.Tensor, right: torch.Tensor) -> bool:
+    """Equal non-finite entries; finite ones bfloat16 values at most one step apart."""
+    if left.dtype != right.dtype or left.shape != right.shape:
+        return False
+    else:
+        is_finite = left.isfinite()
+        finite_left = left[is_finite]
+        finite_right = right[is_finite]
+        return (
+            torch.equal(is_finite, right.isfinite())
+            and same_bits(left[~is_finite], right[~is_finite])
+            and is_bfloat16_exact(finite_left)
+            and is_bfloat16_exact(finite_right)
+            and bool(
+                (
+                    (bfloat16_steps(finite_left) - bfloat16_steps(finite_right)).abs()
+                    <= 1
+                ).all()
+            )
+        )
 
 
 def forward_name(record: GraphForwardRecord) -> str:
@@ -161,6 +195,10 @@ def bit_problems(pair: EnginePair) -> list[str]:
     for eager_record, graph_record in zip(
         pair.eager.forwards, pair.graph.forwards, strict=True
     ):
+        # note (zengjiahua): cuBLAS picks the bfloat16 lm_head GEMM by row count, so a decode padded to a larger graph batch can round a semantic logit one step apart.
+        is_lm_head_row_count_different = (
+            eager_record.graph_batch_size or len(eager_record.steps)
+        ) != (graph_record.graph_batch_size or len(graph_record.steps))
         for eager_step, graph_step in zip(
             eager_record.steps, graph_record.steps, strict=True
         ):
@@ -179,7 +217,11 @@ def bit_problems(pair: EnginePair) -> list[str]:
                 for name in eager_tensors.keys() | graph_tensors.keys()
                 if name not in eager_tensors
                 or name not in graph_tensors
-                or not same_bits(eager_tensors[name], graph_tensors[name])
+                or not (
+                    within_one_bfloat16_step(eager_tensors[name], graph_tensors[name])
+                    if name == "semantic logits" and is_lm_head_row_count_different
+                    else same_bits(eager_tensors[name], graph_tensors[name])
+                )
             )
     return problems
 
@@ -191,9 +233,9 @@ def finite_problems(run: GraphEngineRun) -> list[str]:
     for record in run.forwards:
         for step in record.steps:
             semantic_logits = step.semantic_logits
-            is_masked_eos = (torch.arange(semantic_logits.numel()) == EOS_TOKEN_ID) & (
-                semantic_logits == float("-inf")
-            )
+            is_masked_eos = (
+                torch.arange(semantic_logits.numel()) == EOS_CANDIDATE_COLUMN
+            ) & (semantic_logits == float("-inf"))
             is_finite = {
                 "written key/value cache": bool(step.written_cache.isfinite().all()),
                 "head logits": bool(step.head_logits.isfinite().all()),
