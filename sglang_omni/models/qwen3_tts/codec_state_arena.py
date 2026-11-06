@@ -71,9 +71,12 @@ class Qwen3TTSCodecStateArena:
         device: torch.device,
         dtype: torch.dtype,
         in_place_frames: int = 0,
+        reserved_slots: int = 0,
     ) -> None:
         """in_place_frames: the widest decode a fused decoder attends in place, which sizes
-        its K/V rings; 0 keeps the K/V in gathered buffers."""
+        its K/V rings; 0 keeps the K/V in gathered buffers. reserved_slots: rows past
+        num_slots that acquire never hands out, for an owner that manages them itself.
+        """
         if num_slots <= 0:
             raise ValueError("Qwen3-TTS codec state arena needs at least one slot")
         else:
@@ -83,7 +86,8 @@ class Qwen3TTSCodecStateArena:
         self.device_module = torch.get_device_module(self.device)
         self.dtype = dtype
         self._num_slots = int(num_slots)  # noqa: leading-underscore
-        self.scratch_slot = self._num_slots  # noqa: leading-underscore
+        self.scratch_slot = int(num_slots) + int(reserved_slots)
+        self.reserved_slots = range(int(num_slots), self.scratch_slot)
         spec = decoder.state_spec()
         if decoder.fused_transformer is not None and in_place_frames > 0:
             self.ring_frames = spec.retained_context + int(in_place_frames)
@@ -101,7 +105,7 @@ class Qwen3TTSCodecStateArena:
             self.key_rings = []
             self.value_rings = []
         self.storage = decoder.init_state(
-            self._num_slots + 1,  # noqa: leading-underscore
+            self.scratch_slot + 1,
             device=self.device,
             dtype=dtype,
             has_key_value_buffers=not self.key_rings,
@@ -133,7 +137,7 @@ class Qwen3TTSCodecStateArena:
 
     @property
     def total_bytes(self) -> int:
-        return self._bytes_per_slot * self._num_slots  # noqa: leading-underscore
+        return self._bytes_per_slot * self.scratch_slot  # noqa: leading-underscore
 
     @property
     def exhausted_count(self) -> int:
@@ -142,7 +146,9 @@ class Qwen3TTSCodecStateArena:
     def active_slots(self) -> int:
         with self.lock:
             return (
-                self._num_slots - len(self.free) - len(self.retired)
+                self._num_slots
+                - len(self.free)
+                - sum(slot < self._num_slots for slot in self.retired)
             )  # noqa: leading-underscore
 
     def acquire(self) -> int | None:
@@ -243,13 +249,12 @@ class Qwen3TTSCodecStateArena:
                     PinnedTransferSlot(
                         self.device,
                         torch.long,
-                        initial_capacity=self._num_slots
-                        + 1,  # noqa: leading-underscore
+                        initial_capacity=self.scratch_slot + 1,
                     ),
                     torch.empty(
-                        self._num_slots + 1,
+                        self.scratch_slot + 1,
                         dtype=torch.long,
-                        device=self.device,  # noqa: leading-underscore
+                        device=self.device,
                     ),
                 )
                 for _ in range(self.STAGING_RING)

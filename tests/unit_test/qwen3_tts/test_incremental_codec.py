@@ -1117,6 +1117,24 @@ def make_arena(
     return incremental, arena
 
 
+def test_codec_state_arena_never_hands_out_reserved_slots() -> None:
+    arena = Qwen3TTSCodecStateArena(
+        Qwen3TTSIncrementalDecoder(Decoder()),
+        num_slots=2,
+        reserved_slots=3,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+
+    assert [arena.acquire(), arena.acquire(), arena.acquire()] == [0, 1, None]
+    assert list(arena.reserved_slots) == [2, 3, 4]
+    assert arena.scratch_slot == 5
+    assert int(arena.storage.frame_positions.shape[0]) == 6
+    assert arena.describe()["slots"] == 2
+    assert arena.active_slots() == 2
+    assert arena.total_bytes == 5 * arena.bytes_per_slot
+
+
 @pytest.mark.accelerator
 @pytest.mark.skipif(not current_platform.is_npu(), reason="Ascend NPU is required")
 def test_codec_state_arena_stages_indices_on_npu() -> None:
