@@ -47,6 +47,71 @@ def test_ming_tts_default_prefill_backend_is_declared_supported(
     assert defaults["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(512)
 
 
+def resolved_server_args(overrides: dict[str, Any]) -> SimpleNamespace:
+    return SimpleNamespace(
+        max_running_requests=overrides["max_running_requests"],
+        attention_backend="fa3",
+        prefill_attention_backend=None,
+        decode_attention_backend=None,
+        disable_cuda_graph=overrides["disable_cuda_graph"],
+        enable_torch_compile=overrides["enable_torch_compile"],
+        torch_compile_max_bs=overrides["torch_compile_max_bs"],
+        chunked_prefill_size=overrides["chunked_prefill_size"],
+        max_prefill_tokens=overrides["max_prefill_tokens"],
+        tp_size=1,
+        attn_cp_size=1,
+        dcp_size=1,
+        lora_paths=None,
+        enable_lora=None,
+        moe_a2a_backend="none",
+        cuda_graph_config=SimpleNamespace(
+            decode=SimpleNamespace(
+                max_bs=overrides["cuda_graph_max_bs"], bs=overrides["cuda_graph_bs"]
+            ),
+            prefill=SimpleNamespace(
+                backend=overrides["cuda_graph_backend_prefill"],
+                bs=overrides.get("cuda_graph_bs_prefill"),
+                max_bs=overrides.get("cuda_graph_max_bs_prefill"),
+            ),
+        ),
+        _cuda_graph_config_locked=frozenset(),
+    )
+
+
+@pytest.mark.parametrize(
+    ("server_args_overrides", "expected_backend"),
+    [({}, "disabled"), ({"disable_cuda_graph": False}, "breakable")],
+)
+def test_ming_tts_default_policy_passes_validation_on_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+    server_args_overrides: dict[str, Any],
+    expected_backend: str,
+) -> None:
+    """The eager default must not request a prefill graph, and enabling graphs restores it."""
+    from sglang_omni.scheduling.generation_batch_policy import (
+        build_generation_batch_overrides,
+        validate_generation_batch_policy,
+    )
+
+    monkeypatch.setattr(
+        engine_builder_module, "current_platform", SimpleNamespace(is_cuda=lambda: True)
+    )
+    builder = MingTtsEngineBuilder()
+    builder.context_length = 8192
+    overrides = build_generation_batch_overrides(
+        server_args_overrides=server_args_overrides,
+        **builder.generation_defaults(dtype="bfloat16"),
+    )
+    builder.adjust_overrides(overrides)
+
+    assert overrides["cuda_graph_backend_prefill"] == expected_backend
+    validate_generation_batch_policy(
+        model_name=builder.model_name,
+        server_args=resolved_server_args(overrides),
+        allowed_prefill_backends=builder.allowed_prefill_cuda_graph_backends(),
+    )
+
+
 def test_ming_tts_abort_callback_resets_runner_state() -> None:
     runner = object.__new__(MingTTSModelRunner)
     runner.request_states = {"req-ming-tts": object()}
