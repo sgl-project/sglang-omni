@@ -70,7 +70,7 @@ func toasted(a *app, tt *ui.Tester, msg string) bool {
 
 func TestModelDeleteShared(t *testing.T) {
 	a, _, tt := newTestApp(t)
-	tt.SetSize(windowWidth, 1600)
+	tt.SetSize(windowWidth, modelsPageHeight)
 	seedModels(t, a, models.ASRFast, models.VADSilero)
 	useModels(t, a, models.ASRFast)
 	claimFor(t, a, audioSmithID, models.ASRFast)
@@ -112,7 +112,7 @@ func TestModelDeleteShared(t *testing.T) {
 
 func TestModelDeleteCancelShared(t *testing.T) {
 	a, _, tt := newTestApp(t)
-	tt.SetSize(windowWidth, 1600)
+	tt.SetSize(windowWidth, modelsPageHeight)
 	seedModels(t, a, models.LLMTranslate)
 	useModels(t, a, models.LLMTranslate)
 	claimFor(t, a, dictaID, models.LLMTranslate)
@@ -135,7 +135,7 @@ func TestModelDeleteCancelShared(t *testing.T) {
 // it): deleting says so and keeps everything.
 func TestModelDeleteBusy(t *testing.T) {
 	a, _, tt := newTestApp(t)
-	tt.SetSize(windowWidth, 1600)
+	tt.SetSize(windowWidth, modelsPageHeight)
 	seedModels(t, a, models.ASRFast, models.VADSilero)
 	fast, _ := models.Lookup(models.ASRFast)
 	lock, err := fammodels.TryLockRepo(a.models.Hub(), fast.Repo, family.Shared, fammodels.Owner{BundleID: audioSmithID, Op: fammodels.OpDownload})
@@ -161,7 +161,7 @@ func TestModelElsewhere(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("HF_ENDPOINT", srv.URL)
 	a, _, tt := newTestApp(t)
-	tt.SetSize(windowWidth, 1600)
+	tt.SetSize(windowWidth, modelsPageHeight)
 	reopenModels(a)
 	accurate, _ := models.Lookup(models.ASRAccurate)
 	lock, err := fammodels.TryLockRepo(a.models.Hub(), accurate.Repo, family.Shared, fammodels.Owner{BundleID: audioSmithID, Op: fammodels.OpDownload})
@@ -213,7 +213,7 @@ func TestModelWaitingFor(t *testing.T) {
 	modelsReserve = -1
 	defer func() { modelsReserve = reserve }()
 	a, _, tt := newTestApp(t)
-	tt.SetSize(windowWidth, 1600)
+	tt.SetSize(windowWidth, modelsPageHeight)
 	drain := queuePosts(a)
 	reopenModels(a)
 	// A model of one file, the one locked: Hy-MT2 (retired: the page
@@ -290,7 +290,7 @@ func TestBorrowedModel(t *testing.T) {
 	} {
 		t.Run(fmt.Sprintf("%s/needs-installed=%v", tc.id, tc.needsThere), func(t *testing.T) {
 			a, _, tt := newTestApp(t)
-			tt.SetSize(windowWidth, 1600)
+			tt.SetSize(windowWidth, modelsPageHeight)
 			name := uitext.ModelName(tc.id)
 			a.navigate(modelsPath)
 			if tc.borrowed && has(tt, name) {

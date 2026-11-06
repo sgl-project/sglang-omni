@@ -74,6 +74,10 @@ func openLive(ctx context.Context, a *ASR, l *lease, req asr.StreamRequest) (*li
 	if hint != "" {
 		session["language"] = hint
 	}
+	b := a.spec.ASR.contextBias(req.Hints, req.Prompt)
+	if a.spec.Kind == kindMoss {
+		session["prompt"] = mossPrompt(b.terms)
+	}
 	if err := writeJSON(dctx, conn, map[string]any{"type": "session.update", "session": session}); err != nil {
 		conn.CloseNow()
 		return nil, asr.NetError(dctx, Provider, err)
@@ -94,7 +98,7 @@ func openLive(ctx context.Context, a *ASR, l *lease, req asr.StreamRequest) (*li
 	}
 	sctx, cancel := context.WithCancel(ctx)
 	s := &live{a: a, l: l, req: req, ctx: sctx, cancel: cancel, conn: conn,
-		language: hint, bias: a.spec.ASR.contextBias(req.Hints, req.Prompt),
+		language: hint, bias: b,
 		out: make(chan []byte, 1024), preview: true, events: make(chan asr.Event, eventBuffer)}
 	go s.write()
 	go s.read()
@@ -246,6 +250,9 @@ func (s *live) read() {
 		}
 		switch ev.Type {
 		case "transcription.segment":
+			if s.a.spec.Kind == kindMoss {
+				ev.Text = mossText(ev.Text)
+			}
 			s.mu.Lock()
 			text, ok := s.asm.apply(ev.Index, ev.Segment, ev.Text, ev.Final)
 			if ok && !s.finished {

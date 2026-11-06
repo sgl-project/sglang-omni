@@ -24,15 +24,40 @@ func ModelName(id string) string {
 	return id
 }
 
+// FamilyName is what the UI calls a model family (models.Model.Family):
+// "Qwen3-ASR", "Whisper"… (the family itself when it has no name here).
+// Not translated.
+func FamilyName(family string) string {
+	switch family {
+	case "qwen3-asr":
+		return "Qwen3-ASR"
+	case "whisper":
+		return "Whisper"
+	case "moss-transcribe-diarize":
+		return "MOSS"
+	case "parakeet":
+		return "Parakeet"
+	case "sensevoice":
+		return "SenseVoice"
+	}
+	return family
+}
+
 // ModelTags are model id's short labels on its card, as Voxt 1.x showed
 // them: where it runs, what it is best at, whether it shows the text
 // while you speak. No ratings: they had no basis.
 func ModelTags(id string) []string {
 	switch id {
-	case models.ASRAccurate:
+	case models.ASRAccurate, models.ASRAccurate6bit:
 		return []string{i18n.T("Local"), i18n.T("Accurate"), i18n.T("Realtime")}
 	case models.ASRFast:
 		return []string{i18n.T("Local"), i18n.T("Fast"), i18n.T("Realtime")}
+	case models.ASRWhisperTurbo, models.ASRWhisperSmall, models.ASRParakeet, models.ASRSenseVoice:
+		return []string{i18n.T("Local"), i18n.T("Fast")}
+	case models.ASRWhisperLarge:
+		return []string{i18n.T("Local"), i18n.T("Accurate")}
+	case models.ASRMoss:
+		return []string{i18n.T("Local"), i18n.T("Realtime")}
 	}
 	return []string{i18n.T("Local")}
 }
@@ -42,8 +67,22 @@ func ModelAbout(id string) string {
 	switch id {
 	case models.ASRAccurate:
 		return i18n.T("The most accurate. Good with accents, dialects, names and several languages in one sentence, and shows the text as you speak.")
+	case models.ASRAccurate6bit:
+		return i18n.T("The accurate model in 6 bits: a smaller download and less memory, and shows the text as you speak.")
 	case models.ASRFast:
 		return i18n.T("Quicker and lighter on memory, for clear speech in a quiet place. A good choice for a Mac with 8 GB of memory.")
+	case models.ASRWhisperTurbo:
+		return i18n.T("Whisper's best balance of speed and accuracy, in many languages. The text comes once you stop speaking.")
+	case models.ASRWhisperLarge:
+		return i18n.T("The most accurate Whisper, larger and slower than turbo. The text comes once you stop speaking.")
+	case models.ASRWhisperSmall:
+		return i18n.T("A small Whisper for a Mac with little memory, less accurate. The text comes once you stop speaking.")
+	case models.ASRMoss:
+		return i18n.T("Made for conversations with several speakers, and shows the text as you speak.")
+	case models.ASRParakeet:
+		return i18n.T("Fast, for European languages; it finds the language itself. The text comes once you stop speaking.")
+	case models.ASRSenseVoice:
+		return i18n.T("Fast and light, for Chinese, Cantonese, English, Japanese and Korean. The text comes once you stop speaking.")
 	case models.VADSilero:
 		return i18n.T("Tells speech from silence, so that only speech is recognised.")
 	case models.LLMBalanced:
@@ -63,8 +102,16 @@ func ModelAbout(id string) string {
 // ModelLanguages says which languages model id knows ("" for none).
 func ModelLanguages(id string) string {
 	switch id {
-	case models.ASRAccurate, models.ASRFast:
+	case models.ASRAccurate, models.ASRAccurate6bit, models.ASRFast:
 		return i18n.T("30 languages and 22 Chinese dialects, including Chinese, English, Cantonese, Japanese and Korean")
+	case models.ASRWhisperTurbo, models.ASRWhisperLarge, models.ASRWhisperSmall:
+		return i18n.T("Over 90 languages, including Chinese, English, Japanese and Korean")
+	case models.ASRMoss:
+		return i18n.T("Chinese and English")
+	case models.ASRParakeet:
+		return i18n.T("25 European languages, including English, German, French, Spanish and Russian")
+	case models.ASRSenseVoice:
+		return i18n.T("Chinese, Cantonese, English, Japanese and Korean")
 	case models.LLMBalanced, models.LLMFast:
 		return i18n.T("Over 200 languages, best in Chinese and English")
 	case models.LLMQwen3:

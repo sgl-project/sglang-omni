@@ -2,25 +2,32 @@
 // MLX runtime (sglang_omni_mlx/native): C++ servers, one process per
 // model, spoken to over loopback HTTP and WebSockets. It supervises them
 // and implements internal/asr's FileTranscriber and Streamer for the
-// curated Qwen3-ASR models, and internal/vad's Model for Silero VAD.
+// curated speech models, and internal/vad's Model for Silero VAD.
 //
 // # Models
 //
 // Only a few models, each with parameters tuned for it (models.go): the
-// speech models Qwen3-ASR 1.7B 8-bit (the default, accurate) and 0.6B
-// 4-bit (fast), and Silero VAD v6. They are keyed by the catalogue's
-// stable ids (ASRAccurate "asr.accurate", ASRFast "asr.fast", VADSilero
+// speech models Qwen3-ASR 1.7B 8-bit (the default, accurate), 1.7B
+// 6-bit and 0.6B 4-bit (fast), Whisper large-v3 turbo, large-v3 and small,
+// MOSS-Transcribe-Diarize, Parakeet TDT 0.6B v3 and SenseVoice Small, and
+// Silero VAD v6. They are keyed by the catalogue's stable ids
+// (ASRAccurate "asr.accurate", ASRFast "asr.fast", …, VADSilero
 // "vad.silero"); the Hugging Face repository and its pinned revision are
 // recorded beside them. Downloads, checksums and install state are
-// internal/models'; this package gets a model's folder. An ASR may carry
-// the VAD (WithVAD): its VAD method is local.VoiceActivity, how a session
-// finds the Silero model beside the speech model.
+// internal/models'; this package gets a model's folder, and Whisper's
+// tokenizer folder too, which its server finds linked beside the weights
+// (joinDirs). An ASR may carry the VAD (WithVAD): its VAD method is
+// local.VoiceActivity, how a session finds the Silero model beside the
+// speech model.
 //
 // # Processes (Runtime)
 //
 // A Runtime knows where the binaries are (Locate: $VOXTNEW_OMNI_RUNTIME,
 // else Voxt.app/Contents/Resources/omni) and owns the servers. A
-// server starts on first use: qwen3_asr_server --supervised on 127.0.0.1
+// server starts on first use: the model's binary (qwen3_asr_server;
+// silero_vad_server, its copy, for Silero, so that Activity Monitor tells
+// the two apart; whisper_server, moss_transcribe_diarize_server,
+// parakeet_server, sensevoice_server beside it) --supervised on 127.0.0.1
 // port 0, which prints {"event":"ready","port":…} on stdout once its model
 // is loaded; a server that says nothing within StartTimeout is killed.
 // Uses hold a lease; a server with no lease for IdleTimeout stops (idle
@@ -52,7 +59,18 @@
 // terms is checked against the same audio recognised without it, and
 // the terms it did not hear go (echo.go).
 //
-// Live (WS /v1/realtime): a manual-turn session with the language hint;
+// The other speech models (kinds.go, Voxt 1.x's requests): one Final
+// request per recording, which their server cuts itself; Whisper with the
+// language hint and the token budget, MOSS with its plain-text
+// instruction and the dictionary's terms as hot words (its timestamps,
+// speaker labels and events removed from the text), Parakeet with
+// Voxt's chunk length, SenseVoice with the hint, without inverse text
+// normalization, and past 30 s cut at speech by the server's Silero VAD.
+// Only Qwen3-ASR and MOSS have the live preview below (Spec.Live): the
+// others' sessions send the whole recording after it stops.
+//
+// Live (WS /v1/realtime): a manual-turn session with the language hint
+// (MOSS: its instruction);
 // the server decodes 100 ms after the first audible audio, then once a
 // second (launch flags). Its segments make the partial text. At Finish
 // the socket is dropped and the Final above runs on everything sent, as

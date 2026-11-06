@@ -64,7 +64,7 @@ done
 mkdir -p "$OUT/runtime"
 cp -Rc "$R/omni" "$OUT/runtime/omni" && cp -Rc "$R/llm" "$OUT/runtime/llm" || exit 2
 ours="$OUT|$ROOT/build/darwin-arm64"
-others="$(pgrep -fl 'voxtnew-llm|qwen3_asr_server' | grep -vE "$ours" || true)"
+others="$(pgrep -fl 'voxtnew-llm|qwen3_asr_server|silero_vad_server' | grep -vE "$ours" || true)"
 if [[ -n "$others" ]]; then
   echo "note: other model processes are running; the times are skewed:"
   echo "$others" | cut -c1-160
@@ -92,7 +92,7 @@ step() {
   local note
   note="$(grep -E "$grep" "$OUT/$name.log" | tail -1 | sed 's/^[[:space:]]*//' | cut -c1-90)"
   local left
-  left="$(pgrep -fl 'qwen3_asr_server|voxtnew-llm|voxtnew-helper' | grep -E "$ours" || true)"
+  left="$(pgrep -fl 'qwen3_asr_server|silero_vad_server|voxtnew-llm|voxtnew-helper' | grep -E "$ours" || true)"
   if [[ -n "$left" ]]; then
     status=1
     note="left running: $(echo "$left" | awk '{print $1}' | tr '\n' ' ')"
@@ -168,7 +168,7 @@ smoke() {
   wait $pid || return 1
   sleep 1
   local left
-  left="$(pgrep -fl 'qwen3_asr_server|voxtnew-llm|voxtnew-helper' | grep -F "$ROOT/build/darwin-arm64/Voxt.app" || true)"
+  left="$(pgrep -fl 'qwen3_asr_server|silero_vad_server|voxtnew-llm|voxtnew-helper' | grep -F "$ROOT/build/darwin-arm64/Voxt.app" || true)"
   if [[ -n "$left" ]]; then
     echo "smoke: FAIL left running after quit: $left"
     return 1

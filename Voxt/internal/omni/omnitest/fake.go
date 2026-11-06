@@ -1,7 +1,12 @@
 // Package omnitest is a fake qwen3_asr_server for tests: a test binary
 // runs it instead of its tests when OMNI_FAKE is set, so internal/omni's
 // Runtime spawns a real process and talks to it over real pipes, HTTP and
-// WebSockets, without a Mac or a model. In the test package:
+// WebSockets, without a Mac or a model. Run as another server's name (a
+// link to the test binary: whisper_server, moss_transcribe_diarize_server,
+// parakeet_server, sensevoice_server), it is that server: only its kind,
+// none of qwen3_asr_server's own flags, and the realtime API only for
+// MOSS. As silero_vad_server (a copy of qwen3_asr_server) it is
+// qwen3_asr_server. In the test package:
 //
 //	func TestMain(m *testing.M) {
 //		if omnitest.Enabled() {
@@ -66,6 +71,9 @@ type Opts struct {
 	Delay time.Duration
 	// Load is how long the model "loads" before ready.
 	Load time.Duration
+	// Partial is put before each partial text of a live session (MOSS's
+	// tags).
+	Partial string
 	// Echo: a Final with a prompt ends with the prompt's lines, as
 	// Qwen3-ASR echoes its context on silence ("text。A，B。").
 	Echo bool
@@ -83,6 +91,7 @@ func Env(o Opts) []string {
 	v.Set("mode", o.Mode)
 	v.Set("log", o.Log)
 	v.Set("text", o.Text)
+	v.Set("partial", o.Partial)
 	v.Set("delay", o.Delay.String())
 	v.Set("load", o.Load.String())
 	v.Set("failfrom", strconv.Itoa(o.FailFrom))
@@ -97,7 +106,7 @@ func Enabled() bool { return os.Getenv(EnvFake) != "" }
 
 func opts() Opts {
 	v, _ := url.ParseQuery(os.Getenv(EnvFake))
-	o := Opts{Mode: v.Get("mode"), Log: v.Get("log"), Text: v.Get("text")}
+	o := Opts{Mode: v.Get("mode"), Log: v.Get("log"), Text: v.Get("text"), Partial: v.Get("partial")}
 	o.Delay, _ = time.ParseDuration(v.Get("delay"))
 	o.Load, _ = time.ParseDuration(v.Get("load"))
 	o.FailFrom, _ = strconv.Atoi(v.Get("failfrom"))
@@ -115,8 +124,12 @@ func opts() Opts {
 
 // Record is one line of the log.
 type Record struct {
-	Event  string            `json:"event"` // launch, final, live, vad-timestamps, vad-stream, shutdown
-	Args   []string          `json:"args,omitempty"`
+	Event string   `json:"event"` // launch, final, live, vad-timestamps, vad-stream, shutdown
+	Args  []string `json:"args,omitempty"`
+	// Binary is the launch's server (its file name), Files the names in
+	// its --model-directory.
+	Binary string            `json:"binary,omitempty"`
+	Files  []string          `json:"files,omitempty"`
 	Fields map[string]string `json:"fields,omitempty"`
 	// Samples is the audio a request carried (a live session: all it got).
 	Samples int `json:"samples,omitempty"`

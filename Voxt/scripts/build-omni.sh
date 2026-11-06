@@ -3,9 +3,10 @@
 # Mac and stages what VoxtNew runs of it where mygo ships it:
 # resources/darwin-arm64/omni/bin/ becomes
 # Voxt.app/Contents/Resources/omni/bin/ (go tool mygo build, mygo dev):
-# qwen3_asr_server (Qwen3-ASR and, with --model-kind silero_vad, Silero
-# VAD), MLX's libraries and mlx.metallib, which MLX loads from beside its
-# library. mygo build signs the binaries and libraries with the app (they
+# the speech servers (qwen3_asr_server: Qwen3-ASR; its copy
+# silero_vad_server: Silero VAD; whisper_server, moss_transcribe_diarize_server,
+# parakeet_server, sensevoice_server), MLX's libraries and mlx.metallib,
+# which MLX loads from beside its library. mygo build signs the binaries and libraries with the app (they
 # keep the hardened runtime of a real identity); the metallib is a
 # resource the app's signature seals.
 #
@@ -66,23 +67,34 @@ if ! bash "$NATIVE/scripts/build_runtime.sh" "$WORK/runtime" "$WORK/work" >"$log
   exit 1
 fi
 
-# Only what VoxtNew runs: the one server, and MLX beside it.
+# Only what VoxtNew runs: the servers of its speech models (internal/omni
+# models.go), and MLX beside them. silero_vad_server is a copy of
+# qwen3_asr_server for Silero VAD, so that Activity Monitor tells the voice
+# detector from the speech model.
+SERVERS=(qwen3_asr_server silero_vad_server whisper_server moss_transcribe_diarize_server parakeet_server sensevoice_server)
 rm -rf "$OUT/bin"
 mkdir -p "$OUT/bin"
-cp -f "$WORK/runtime/bin/qwen3_asr_server" "$OUT/bin/"
+for s in "${SERVERS[@]}"; do
+  src="$s"
+  [[ $s == silero_vad_server ]] && src=qwen3_asr_server
+  cp -f "$WORK/runtime/bin/$src" "$OUT/bin/$s"
+  chmod 0755 "$OUT/bin/$s"
+done
 cp -f "$WORK/runtime/bin/"*.dylib "$WORK/runtime/bin/mlx.metallib" "$OUT/bin/"
-chmod 0755 "$OUT/bin/qwen3_asr_server"
 # Unsigned code does not run on Apple silicon: sign it ad hoc for a runtime
 # used outside the app (mygo build signs the app's copy again).
-for f in "$OUT/bin/qwen3_asr_server" "$OUT/bin/"*.dylib; do
+for f in "${SERVERS[@]/#/$OUT/bin/}" "$OUT/bin/"*.dylib; do
   codesign --force --sign - "$f" >/dev/null 2>&1
 done
-# It loads (its libraries resolve) when it gets as far as refusing a kind.
-probe="$("$OUT/bin/qwen3_asr_server" --model-kind none 2>&1 || true)"
-if [[ "$probe" != *"--model-kind must be"* ]]; then
-  echo "the staged qwen3_asr_server does not start: $probe" >&2
-  exit 1
-fi
+# A server loads (its libraries resolve) when it gets as far as refusing a
+# kind.
+for s in "${SERVERS[@]}"; do
+  probe="$("$OUT/bin/$s" --model-kind none 2>&1 || true)"
+  if [[ "$probe" != *"--model-kind must be"* && "$probe" != *"only --model-kind"* ]]; then
+    echo "the staged $s does not start: $probe" >&2
+    exit 1
+  fi
+done
 du -sh "$OUT/bin" | sed "s|^|staged |"
 echo "VOXTNEW_OMNI_RUNTIME=$OUT"
 
