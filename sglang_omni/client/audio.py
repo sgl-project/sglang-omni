@@ -271,52 +271,48 @@ def encode_with_pyav(
         pass
 
     buf = io.BytesIO()
-    container = av.open(buf, mode="w", format=container_format)
+    with av.open(buf, mode="w", format=container_format) as container:
+        stream = None
+        for codec in codecs:
+            try:
+                stream = container.add_stream(codec, rate=sample_rate)
+                break
+            except av.CodecError:
+                continue
 
-    stream = None
-    for codec in codecs:
-        try:
-            stream = container.add_stream(codec, rate=sample_rate)
-            break
-        except av.CodecError:
-            continue
+        if stream is None:
+            codecs_str = "', '".join(codecs)
+            raise RuntimeError(
+                f"None of the codecs ('{codecs_str}') are supported by PyAV."
+            )
+        else:
+            pass
 
-    if stream is None:
-        container.close()
-        codecs_str = "', '".join(codecs)
-        raise RuntimeError(
-            f"None of the codecs ('{codecs_str}') are supported by PyAV."
-        )
-    else:
-        pass
+        if audio.ndim == 1:
+            layout = "mono"
+            planar_audio = audio.reshape(1, -1)
+        elif audio.ndim == 2 and audio.shape[0] in (1, 2):
+            channels = int(audio.shape[0])
+            layout = "mono" if channels == 1 else "stereo"
+            planar_audio = audio
+        else:
+            raise ValueError(
+                "PyAV encoding supports mono or stereo channel-first audio, "
+                f"got shape {audio.shape}"
+            )
 
-    if audio.ndim == 1:
-        layout = "mono"
-        planar_audio = audio.reshape(1, -1)
-    elif audio.ndim == 2 and audio.shape[0] in (1, 2):
-        channels = int(audio.shape[0])
-        layout = "mono" if channels == 1 else "stereo"
-        planar_audio = audio
-    else:
-        raise ValueError(
-            "PyAV encoding supports mono or stereo channel-first audio, "
-            f"got shape {audio.shape}"
-        )
+        planar_audio = np.ascontiguousarray(planar_audio, dtype=np.float32)
+        stream.layout = layout
 
-    planar_audio = np.ascontiguousarray(planar_audio, dtype=np.float32)
-    stream.layout = layout
+        # FFmpeg expects float-planar (fltp) format for these codecs
+        frame = av.AudioFrame.from_ndarray(planar_audio, format="fltp", layout=layout)
+        frame.sample_rate = sample_rate
 
-    # FFmpeg expects float-planar (fltp) format for these codecs
-    frame = av.AudioFrame.from_ndarray(planar_audio, format="fltp", layout=layout)
-    frame.sample_rate = sample_rate
+        for packet in stream.encode(frame):
+            container.mux(packet)
 
-    for packet in stream.encode(frame):
-        container.mux(packet)
-
-    for packet in stream.encode(None):
-        container.mux(packet)
-
-    container.close()
+        for packet in stream.encode(None):
+            container.mux(packet)
     return buf.getvalue()
 
 
