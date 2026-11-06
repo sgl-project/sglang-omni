@@ -96,8 +96,8 @@ public final class MuteClaims: @unchecked Sendable {
 
     /// output.release: gives the claim back, unmuting the device if asked
     /// and it is still muted. Without a claim on it, nothing. A device that
-    /// is not there or would not unmute keeps its claim (and journal), for
-    /// releaseAll or the next helper.
+    /// is not there, whose mute could not be read, or that would not unmute
+    /// keeps its claim (and journal), for releaseAll or the next helper.
     public func release(_ p: OutputReleaseParams) -> OutputReleaseResult {
         lock.withLock {
             guard let i = claims.firstIndex(where: { $0.uid == p.device.uid }) else { return OutputReleaseResult(unmuted: false) }
@@ -147,7 +147,7 @@ public final class MuteClaims: @unchecked Sendable {
                     switch undo(uid: d.uid) {
                     case .unmuted: restored.append(d)
                     case .notMuted: break
-                    case .failed: left.append(d) // not there, or refused: for the next recovery
+                    case .failed: left.append(d) // not there, unread or refused: for the next recovery
                     }
                 }
                 if left.isEmpty {
@@ -160,14 +160,16 @@ public final class MuteClaims: @unchecked Sendable {
         }
     }
 
-    /// What giving back a claim did; failed: the device is not there or
-    /// would not unmute, so the claim must stay.
+    /// What giving back a claim did; failed: the device is not there, its
+    /// mute could not be read, or it would not unmute, so the claim must
+    /// stay.
     private enum Undo { case unmuted, notMuted, failed }
 
     /// Unmutes the device with uid when it is muted. Lock held.
     private func undo(uid: String) -> Undo {
         guard let d = hardware.device(uid: uid) else { return .failed }
-        guard hardware.muted(d) == true else { return .notMuted }
+        guard let m = hardware.muted(d) else { return .failed } // unread: keep the claim
+        guard m else { return .notMuted }
         return hardware.setMuted(false, d) ? .unmuted : .failed
     }
 

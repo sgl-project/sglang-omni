@@ -179,6 +179,22 @@ final class OutputMuteTests: XCTestCase {
         XCTAssertEqual(files(dir), [])
     }
 
+    /// A mute Core Audio could not read is not taken for unmuted: the claim
+    /// and its journal stay until it reads muted again.
+    func testUnreadMuteKeepsItsClaim() throws {
+        let hw = devices(), dir = journalDir()
+        let c = MuteClaims(hardware: hw, pid: 100, alive: { _ in true })
+        XCTAssertTrue(try c.mute(OutputMuteParams(device: speakers, journal: dir)).took)
+        hw.list[0].muted = nil
+        XCTAssertEqual(c.release(OutputReleaseParams(device: speakers, unmute: true)), OutputReleaseResult(unmuted: false))
+        XCTAssertEqual(c.claimed, [speakers])
+        XCTAssertEqual(files(dir), ["100.json"])
+        hw.list[0].muted = true
+        XCTAssertEqual(c.releaseAll(), [speakers])
+        XCTAssertEqual(hw.isMuted(speakers.uid), false)
+        XCTAssertEqual(files(dir), [])
+    }
+
     /// A helper that got the pid of a dead one recovers that helper's
     /// journal instead of taking it for its own (journals of unplugged
     /// devices now stay until the device is back).
