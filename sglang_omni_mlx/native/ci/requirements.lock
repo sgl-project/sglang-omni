@@ -1,7 +1,6 @@
 numpy==2.3.5
 pyarrow==25.0.1
 pytest==9.1.1
-requests==2.34.2
 scipy==1.17.1
 soundfile==0.13.1
 websockets==17.2
