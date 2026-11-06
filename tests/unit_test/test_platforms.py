@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import subprocess
+import sys
 from contextlib import nullcontext
 from types import SimpleNamespace
 
@@ -292,3 +294,33 @@ def test_cpu_cuda_rocm_xpu_and_musa_implement_the_shared_device_operations() -> 
         assert (
             type(platform).get_available_memory is not DeviceMixin.get_available_memory
         ), platform_type
+
+
+def test_importing_the_platforms_does_not_import_torchada() -> None:
+    """Only a MUSA platform needs torchada; non-MUSA hosts must not warn."""
+    code = (
+        "import sys\n"
+        "import sglang_omni.platforms\n"
+        "print('torchada' in sys.modules)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+    )
+    if getattr(torch.version, "musa", None) is None:
+        assert result.stdout.strip() == "False"
+    else:
+        pass
+    assert "Failed to import torchada" not in result.stderr
+
+
+def test_musa_platform_warns_when_torchada_is_missing(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from sglang_omni.platforms.musa import MUSAOmniPlatform
+
+    # A None entry in sys.modules makes `import torchada` raise ImportError.
+    monkeypatch.setitem(sys.modules, "torchada", None)
+    with caplog.at_level("WARNING", logger="sglang_omni.platforms.musa"):
+        MUSAOmniPlatform()
+
+    assert "Failed to import torchada" in caplog.text
