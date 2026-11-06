@@ -8,6 +8,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/hehehai/actnowkit/hfhub"
@@ -15,7 +16,10 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/actnow"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/lang"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/omni"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
@@ -65,6 +69,20 @@ func (a *app) modelShown(m models.Model) bool {
 	return true
 }
 
+// modelTags are m's labels: uitext.ModelTags, then whether a speech
+// model knows the user's main language.
+func (a *app) modelTags(m models.Model) []string {
+	tags := uitext.ModelTags(m.ID)
+	if spec, ok := omni.Lookup(m.ID); ok && len(spec.Languages) > 0 {
+		if slices.Contains(spec.Languages, lang.Canonical(session.MainLanguage(a.prefs, i18n.Locale()))) {
+			tags = append(tags, i18n.T("Supports your main language"))
+		} else {
+			tags = append(tags, i18n.T("Does not support your main language"))
+		}
+	}
+	return tags
+}
+
 // anyModelShown says whether the page shows a model of kind.
 func (a *app) anyModelShown(kind models.Kind) bool {
 	for _, m := range models.Catalog() {
@@ -91,8 +109,11 @@ func (a *app) modelCard(c *ui.Context, m models.Model) {
 			ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp1)).Children(func() {
 				ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
 					ui.Text(c, uitext.ModelName(m.ID)).FontWeight(600)
-					if m.Default {
+					if m.Default && !m.Retired {
 						tagChip(c, i18n.T("Default"))
+					}
+					for _, tag := range a.modelTags(m) {
+						tagChip(c, tag)
 					}
 					if st.Installed {
 						statusMark(c, icons.CheckCircle, k.Success, i18n.T("Installed"))

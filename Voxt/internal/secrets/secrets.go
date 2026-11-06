@@ -1,6 +1,7 @@
 // Package secrets keeps Voxt's secrets (the API keys of the remote
 // language models) in the macOS login Keychain, as generic password items
-// of the service "Voxt", one account per secret: "llm.<provider>"
+// of the service "VoxtNew" (an inside name, as the data folders), one
+// account per secret: "llm.<provider>"
 // (settings.Provider.ID). Secrets never go into the settings, the
 // database or the logs.
 //
@@ -22,7 +23,7 @@ import (
 )
 
 // Service is the Keychain service of Voxt's secrets.
-const Service = "Voxt"
+const Service = "VoxtNew"
 
 // ErrNoKeychain is returned off macOS, where there is no Keychain to use.
 var ErrNoKeychain = errors.New("no keychain on this system")

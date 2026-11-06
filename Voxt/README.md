@@ -2,7 +2,7 @@
 
 **English** · [简体中文](README.zh-CN.md)
 
-Voice input for macOS on **local models only**: press a shortcut in any app, speak, and the text appears where your cursor is.
+Voice input for macOS: press a shortcut in any app, speak, and the text appears where your cursor is. Speech is recognised **on your Mac**; the language model that cleans up, translates and rewrites is one you choose: a service's API, or one you run on this Mac with Ollama.
 
 - **转录 Transcribe**: what you say, typed where your cursor is, with live text while you speak and an optional clean-up by a language model (fillers and false starts out, punctuation in).
 - **翻译 Translate**: the selected text, or what you say, into another language.
@@ -20,29 +20,27 @@ With a history, the overlay, shortcuts, the menu bar, a setup guide, settings an
 
 ## What runs on your Mac
 
-Everything that hears or reads your words:
+Everything that hears your words:
 
 - **Speech recognition** and **voice detection** run on sglang-omni's native MLX servers ([`sglang_omni_mlx/native`](../sglang_omni_mlx/native), C++, no Python), one process per model, started when needed, stopped after 10 minutes unused (Local models → Advanced changes it).
-- **Language models** run in `voxtnew-llm`, a Swift process of Voxt's own (MLX, and llama.cpp for one model), stopped after 5 minutes unused (or as Local models → Advanced says).
 - A small Swift helper does what needs Apple's frameworks: the microphone, global shortcuts, Accessibility, pasting.
 
 Voxt offers a few models, tuned for it, and downloads them from Hugging Face (or a mirror) when you ask, each file checked against a pinned SHA-256:
 
 | Model | What it is good at | Download |
 |---|---|---|
-| Accurate speech recognition (recommended) | the most accurate; accents, dialects, names, several languages in one sentence; live text | 2.5 GB |
-| Fast speech recognition | quicker and lighter, for clear speech in a quiet place | 713 MB |
-| Balanced language model (recommended) | clean-up, translation and rewriting: the best balance of quality and speed | 3.3 GB |
-| Fast language model | answers sooner, uses less memory; short clean-ups and simple rewrites | 1.7 GB |
-| Translation model | made for translation, quick and natural; only Translate uses it | 1.1 GB |
+| Qwen3-ASR 1.7B (8bit) (recommended) | the most accurate; accents, dialects, names, several languages in one sentence; live text | 2.5 GB |
+| Qwen3-ASR 0.6B (4bit) | quicker and lighter, for clear speech in a quiet place | 713 MB |
 
-Voice detection (1.2 MB) comes with the first speech model. The speech models know 30 languages and 22 Chinese dialects; the general language models are best in Chinese and English.
+Voice detection (Silero VAD v6, 1.2 MB) comes with the first speech model. The speech models know 30 languages and 22 Chinese dialects.
 
-**Needs** a Mac with Apple silicon and macOS 15 or later. The app is about 280 MB; the recommended pair is a 5.8 GB download (all five models: 9.4 GB). While both recommended models are loaded they take about 7 GB of memory, so 16 GB of memory is comfortable; on an 8 GB Mac choose the fast models.
+**Language models** are the services you set up on the Language models page, over their OpenAI-compatible API: OpenAI, Anthropic, Google Gemini, DeepSeek, Qwen (Alibaba Cloud), Kimi, GLM, Doubao (Volcengine), MiniMax, StepFun, Xiaomi MiMo, xAI, OpenRouter, any other compatible server, or one on this Mac (Ollama, LM Studio, oMLX: free, and the text stays here). Without one, Transcribe types the text as recognised; Translate and Rewrite need one.
+
+**Needs** a Mac with Apple silicon and macOS 15 or later. The app is about 280 MB; the recommended speech model is a 2.5 GB download. On an 8 GB Mac choose Qwen3-ASR 0.6B (4bit).
 
 ## Privacy
 
-Audio and text never leave the Mac: recognition, clean-up, translation and rewriting all run on it. Voxt has no server of its own, no account and no analytics. It goes online for one thing only: downloading the models you choose (from Hugging Face, through the system's proxy, or hf-mirror.com when Hugging Face cannot be reached). The history, its optional recordings, the dictionary and the settings stay in `~/Library/Application Support/VoxtNew/`.
+Audio never leaves the Mac: speech is recognised on it. The text to clean up, translate or rewrite goes to the language model you set up, and only there: with Ollama, LM Studio or oMLX it stays on this Mac. API keys stay in the macOS Keychain. Voxt has no server of its own, no account and no analytics. Otherwise it goes online only to download the models you choose (from Hugging Face, through the system's proxy, or hf-mirror.com when Hugging Face cannot be reached). The history, its optional recordings, the dictionary and the settings stay in `~/Library/Application Support/VoxtNew/`.
 
 ## Build from source
 

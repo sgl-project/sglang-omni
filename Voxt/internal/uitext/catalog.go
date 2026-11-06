@@ -24,6 +24,19 @@ func ModelName(id string) string {
 	return id
 }
 
+// ModelTags are model id's short labels on its card, as Voxt 1.x showed
+// them: where it runs, what it is best at, whether it shows the text
+// while you speak. No ratings: they had no basis.
+func ModelTags(id string) []string {
+	switch id {
+	case models.ASRAccurate:
+		return []string{i18n.T("Local"), i18n.T("Accurate"), i18n.T("Realtime")}
+	case models.ASRFast:
+		return []string{i18n.T("Local"), i18n.T("Fast"), i18n.T("Realtime")}
+	}
+	return []string{i18n.T("Local")}
+}
+
 // ModelAbout says what model id is good at.
 func ModelAbout(id string) string {
 	switch id {

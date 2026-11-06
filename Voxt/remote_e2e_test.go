@@ -118,6 +118,9 @@ func TestRemotePage(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate(remotePath)
 	frames(tt)
+	if !has(tt, "On this Mac") || !has(tt, "Remote") { // Ollama's card, DeepSeek's
+		t.Errorf("no where labels: %q", tt.Texts())
+	}
 	click(t, tt, "DeepSeek")
 	frames(tt)
 	a.provDlg.key = "sk-deep-0123456789"

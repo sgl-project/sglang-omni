@@ -48,6 +48,7 @@ func TestModelsPage(t *testing.T) {
 	tt.SetSize(windowWidth, 1600) // every card on screen
 	a.navigate(modelsPath)
 	for _, s := range []string{"Qwen3-ASR 1.7B (8bit)", "Qwen3-ASR 0.6B (4bit)", "Default", "2.5 GB download",
+		"Local", "Accurate", "Fast", "Realtime", "Supports your main language",
 		"30 languages and 22 Chinese dialects, including Chinese, English, Cantonese, Japanese and Korean"} {
 		if !has(tt, s) {
 			t.Errorf("no %q in %q", s, tt.Texts())

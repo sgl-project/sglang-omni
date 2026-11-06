@@ -23,13 +23,13 @@ func TestItems(t *testing.T) {
 		return nil, nil
 	}
 	k := LLM("deepseek", "Voxt DeepSeek API key")
-	if k.Service != "Voxt" || k.Account != "llm.deepseek" {
+	if k.Service != "VoxtNew" || k.Account != "llm.deepseek" {
 		t.Fatalf("items: %+v", k)
 	}
 	if err := k.Set(" sk-abc "); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(args, []string{"-i"}) || !strings.Contains(stdin, `-s "Voxt" -a "llm.deepseek" -l "Voxt DeepSeek API key" -w "sk-abc"`) ||
+	if !slices.Equal(args, []string{"-i"}) || !strings.Contains(stdin, `-s "VoxtNew" -a "llm.deepseek" -l "Voxt DeepSeek API key" -w "sk-abc"`) ||
 		strings.Contains(strings.Join(args, " "), "sk-abc") {
 		t.Errorf("set: args %q stdin %q", args, stdin)
 	}

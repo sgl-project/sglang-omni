@@ -9,6 +9,8 @@ package main
 // installed. What to build and test is internal/providers'.
 
 import (
+	"net/url"
+
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
@@ -105,6 +107,7 @@ func (a *app) providerCard(c *ui.Context, pr llm.Preset, w float32) {
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Start).MinHeight(px(t, 22)).Children(func() {
 				ui.Row(c).Height(px(t, 22)).AlignItems(ui.Center).Shrink(0).Children(func() { statusDot(c, dot) })
 				ui.Text(c, name).FontWeight(600).Grow(1).MinWidth(0).MaxLines(2).Ellipsis("…").Margin(px(t, 2), 0, 0, 0)
+				ui.Row(c).Height(px(t, 22)).AlignItems(ui.Center).Shrink(0).Children(func() { tagChip(c, whereText(pr, p)) })
 			})
 			model := providers.Model(p)
 			if model == "" {
@@ -146,6 +149,18 @@ func (a *app) providerCard(c *ui.Context, pr llm.Preset, w float32) {
 	if b.Clicked() {
 		a.openProviderDialog(pr.ID)
 	}
+}
+
+// whereText is a service's label: on this Mac (a server on the loopback:
+// Ollama, LM Studio, oMLX, a custom one) or remote.
+func whereText(pr llm.Preset, p settings.Provider) string {
+	if resolved, err := providers.Config(p).Resolve(); err == nil {
+		pr = resolved
+	}
+	if u, err := url.Parse(pr.BaseURL); err == nil && u.Host != "" && llm.IsLoopback(u.Hostname()) {
+		return i18n.T("On this Mac")
+	}
+	return i18n.T("Remote")
 }
 
 // testStatus is a connection test's state: a spinner while it runs, a
