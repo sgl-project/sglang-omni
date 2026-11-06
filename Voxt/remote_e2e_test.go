@@ -109,6 +109,33 @@ func TestRemoteModelEndToEnd(t *testing.T) {
 	}
 }
 
+// TestRemoteErrorKeepsNoKey: a remote model that quotes the key in its
+// error fails the session, and the error kept in the history has the key
+// blanked out.
+func TestRemoteErrorKeepsNoKey(t *testing.T) {
+	const key = "sk-mock-secret-77"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintf(w, `{"error":{"message":"invalid header %s"}}`, r.Header.Get("Authorization"))
+	}))
+	t.Cleanup(srv.Close)
+	useKeys(t, &memKeys{m: map[string]string{llm.Custom: key}})
+	ev := script(t, hotkeyLine(0, "translate/0", proto.PhaseTrigger))
+	a := newSessionApp(t, helpertest.Opt("selection", "Good morning, team.")+","+ev, func(s *settings.Settings) {
+		s.Features.Translate.Target = "zh-Hans"
+		s.Features.Translate.LLM = llm.Custom
+		s.Providers.LLM = []settings.Provider{{ID: llm.Custom, Endpoint: srv.URL + "/v1", Model: "mock-model"}}
+	}, local.NotInstalled{})
+	a.pump("the end", func() bool { return a.sess.State.Ended() })
+	if a.sess.State != session.Failed {
+		t.Fatalf("end %+v", a.sess)
+	}
+	es := a.history()
+	if len(es) != 1 || !strings.Contains(es[0].Error, "invalid header Bearer [key]") || strings.Contains(es[0].Error, key) {
+		t.Fatalf("history %+v", es)
+	}
+}
+
 // TestRemotePage: setting a service up on the Language models page saves
 // its key in the keyring (never the settings) and offers its model to the
 // features; Remove takes both away again.
