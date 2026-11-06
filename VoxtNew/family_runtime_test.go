@@ -49,6 +49,26 @@ func (a *app) loadedModel(t *testing.T, id string) (famruntime.Loaded, bool) {
 	return famruntime.Loaded{}, false
 }
 
+// waitIdle waits until the runtime file says each of ids idle: at once,
+// or at one of its Idle events (the file is written before the event
+// comes on events).
+func (a *app) waitIdle(t *testing.T, events <-chan resident.Event, ids ...string) {
+	t.Helper()
+	idle := func(id string) bool { l, ok := a.loadedModel(t, id); return ok && l.IdleSince != nil }
+	ids = slices.DeleteFunc(slices.Clone(ids), idle)
+	timeout := time.After(10 * time.Second)
+	for len(ids) > 0 {
+		select {
+		case ev := <-events:
+			if ev.Kind == resident.Idle && slices.Contains(ids, ev.ID) && idle(ev.ID) {
+				ids = slices.DeleteFunc(ids, func(id string) bool { return id == ev.ID })
+			}
+		case <-timeout:
+			t.Fatalf("%v not idle", ids)
+		}
+	}
+}
+
 // TestFamilyRuntimeOmni: across a Transcribe session on the fake Omni
 // server the runtime file says the speech model and Silero loaded (their
 // repos, commits, sizes, worker "omni"), the speech model busy while it
@@ -58,6 +78,7 @@ func (a *app) loadedModel(t *testing.T, id string) (famruntime.Loaded, bool) {
 // own process would be, a few MB), so their sizes are written.
 func TestFamilyRuntimeOmni(t *testing.T) {
 	fakeOmni(t, omnitest.Opts{Text: "hello from omni"})
+	events := omniEvents(t)
 	(&fakeProcMemory{mem: map[int]int64{}}).install(t)
 	ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(2500, "transcribe/0", proto.PhaseTrigger))
 	a := newSessionApp(t, ev, func(s *settings.Settings) {
@@ -89,9 +110,9 @@ func TestFamilyRuntimeOmni(t *testing.T) {
 	if pasted, _ := os.ReadFile(a.pasteLog); bytes.Count(pasted, []byte("\n")) != 1 || end.Timings.Deliver < famruntime.PasteWait-50*time.Millisecond {
 		t.Errorf("the paste took %v (%q)", end.Timings.Deliver, pasted)
 	}
+	a.waitIdle(t, events, models.ASRFast, models.VADSilero)
 	for _, id := range []string{models.ASRFast, models.VADSilero} {
 		m, _ := models.Lookup(id)
-		eventually(t, id+" idle", func() bool { l, ok := a.loadedModel(t, id); return ok && l.IdleSince != nil })
 		l, _ := a.loadedModel(t, id)
 		if rev := a.models.Status(id).Revision; l.Revision != rev || rev == "" || l.Worker != workerOmni || l.Bytes != m.Size() {
 			t.Errorf("%s: %+v (revision %q, size %d)", id, l, rev, m.Size())
@@ -102,7 +123,10 @@ func TestFamilyRuntimeOmni(t *testing.T) {
 	}
 
 	a.unloadIdleModel(models.ASRFast)
-	eventually(t, "the unload", func() bool { _, ok := a.loadedModel(t, models.ASRFast); return !ok })
+	waitUnloaded(t, events, models.ASRFast)
+	if _, ok := a.loadedModel(t, models.ASRFast); ok {
+		t.Error("the unloaded model is still in the file")
+	}
 	if _, ok := a.loadedModel(t, models.VADSilero); !ok {
 		t.Error("Silero went too")
 	}
@@ -123,8 +147,9 @@ func TestFamilyRuntimeLLM(t *testing.T) {
 	seedModels(t, a, models.LLMFast)
 	self, _ := os.Executable()
 	env := append(llmrttest.Env(""), omnitest.EnvFake+"=") // this one is no Omni server
+	events := make(chan resident.Event, 256)
 	a.llmrt = llmrt.New(llmrt.Config{Bin: self, Env: env, IdleTimeout: -1,
-		OnModel: a.modelEvents(workerLLM), BeforeLoad: a.beforeLoad()})
+		OnModel: reportTo(events, a.modelEvents(workerLLM)), BeforeLoad: a.beforeLoad()})
 	chat, _, err := a.local.LLM(context.Background(), models.LLMFast)
 	if err != nil {
 		t.Fatal(err)
@@ -132,13 +157,16 @@ func TestFamilyRuntimeLLM(t *testing.T) {
 	if _, err := chat.Chat(context.Background(), llm.Request{Messages: []llm.Message{{Role: llm.User, Content: "hi"}}, Skill: llm.SkillRewrite}); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, "the model idle", func() bool { l, ok := a.loadedModel(t, models.LLMFast); return ok && l.IdleSince != nil })
+	a.waitIdle(t, events, models.LLMFast)
 	l, _ := a.loadedModel(t, models.LLMFast)
 	if rev := a.models.Status(models.LLMFast).Revision; l.Revision != rev || rev == "" || l.Worker != workerLLM || l.Bytes != 2<<30 {
 		t.Errorf("loaded %+v (revision %q)", l, rev)
 	}
 	a.unloadIdleModel(models.LLMFast)
-	eventually(t, "the unload", func() bool { f, _ := a.runtimeFile(t); return len(f.Loaded) == 0 })
+	waitUnloaded(t, events, models.LLMFast)
+	if f, _ := a.runtimeFile(t); len(f.Loaded) != 0 {
+		t.Errorf("loaded after the unload: %+v", f.Loaded)
+	}
 	if st := a.llmrt.Status(); st.State != llmrt.Stopped {
 		t.Errorf("the process %+v", st)
 	}

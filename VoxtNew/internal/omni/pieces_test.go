@@ -55,6 +55,22 @@ func piecesDone(st asr.Stream) int {
 	return len(s.pc.texts)
 }
 
+// lookedAtAll returns once a live stream's pieces loop has looked at all
+// the audio sent. The loop takes one wake at a time, at the start of a
+// round: the second wake goes in once it took the first (a round that
+// begins with all the audio), the third once that round ended.
+func lookedAtAll(t *testing.T, st asr.Stream) {
+	t.Helper()
+	pc := st.(*live).pc
+	for range 3 {
+		select {
+		case pc.wake <- struct{}{}:
+		case <-time.After(10 * time.Second):
+			t.Fatal("the pieces loop stopped")
+		}
+	}
+}
+
 // TestLivePieces: a long live session is recognised in pieces cut in its
 // pauses while it records; Finish recognises the rest only, and the text
 // joins them in order.
@@ -67,7 +83,7 @@ func TestLivePieces(t *testing.T) {
 	}
 	pcm := speechAndPauses(4) // 6.8 s
 	sendAll(t, st, pcm)
-	eventually(t, "four pieces", func() bool { return piecesDone(st) == 4 })
+	f.waitLogged(t, "piece 4 of the recording")
 	if err := st.Finish(); err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +125,7 @@ func TestLivePiecesCoverEverySample(t *testing.T) {
 	}
 	pcm := append(speechAndPauses(3), tone(1200*time.Millisecond, 0.3)...) // 6.3 s, ends in speech
 	sendAll(t, st, pcm)
-	eventually(t, "a piece", func() bool { return piecesDone(st) >= 1 })
+	f.waitLogged(t, "piece 1 of the recording")
 	if err := st.Finish(); err != nil { // the user stops the moment the audio ends
 		t.Fatal(err)
 	}
@@ -141,7 +157,7 @@ func TestLiveNoPiecesWhenShort(t *testing.T) {
 	}
 	pcm := speechAndPauses(1)
 	sendAll(t, st, pcm)
-	time.Sleep(200 * time.Millisecond)
+	lookedAtAll(t, st)
 	_ = st.Finish()
 	evs := drain(t, st)
 	if last := evs[len(evs)-1]; last.Kind != asr.EventFinal || last.Text != "p1" {
@@ -174,8 +190,15 @@ func TestLiveFinalFailsWithText(t *testing.T) {
 				t.Fatal(err)
 			}
 			sendAll(t, st, speechAndPauses(4))
-			eventually(t, "the preview's text", func() bool { return st.(asr.Salvager).Salvage() != "" })
-			time.Sleep(300 * time.Millisecond)
+			select { // the preview's text
+			case ev := <-st.Events():
+				if ev.Kind != asr.EventPartial {
+					t.Fatalf("before Finish: %+v", ev)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("no live partial")
+			}
+			f.waitLogged(t, "a piece of the recording failed")
 			_ = st.Finish()
 			evs := drain(t, st)
 			last := evs[len(evs)-1]

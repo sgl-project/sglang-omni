@@ -15,6 +15,7 @@ import (
 
 	"github.com/sgl-project/sglang-omni/VoxtNew/internal/asr"
 	"github.com/sgl-project/sglang-omni/VoxtNew/internal/omni/omnitest"
+	"github.com/sgl-project/sglang-omni/VoxtNew/internal/resident"
 )
 
 func TestMain(m *testing.M) {
@@ -31,6 +32,9 @@ type fake struct {
 	dir string // a model folder per id: dir/<id>
 	mu  sync.Mutex
 	out []string // the runtime's log lines
+	// lines gets a token once a line was added (cap 1): waitLogged
+	// looks again.
+	lines chan struct{}
 }
 
 func newFake(t *testing.T, o omnitest.Opts, tune func(*Config)) *fake {
@@ -39,15 +43,14 @@ func newFake(t *testing.T, o omnitest.Opts, tune func(*Config)) *fake {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &fake{dir: t.TempDir(), log: filepath.Join(t.TempDir(), "fake.jsonl")}
+	f := &fake{dir: t.TempDir(), log: filepath.Join(t.TempDir(), "fake.jsonl"), lines: make(chan struct{}, 1)}
 	o.Log = f.log
 	for _, s := range Models() {
 		if err := os.MkdirAll(filepath.Join(f.dir, s.ID), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	cfg := Config{Binary: exe, Env: omnitest.Env(o), StartTimeout: 10 * time.Second,
-		Log: func(level, msg string) { f.mu.Lock(); f.out = append(f.out, level+" "+msg); f.mu.Unlock() }}
+	cfg := Config{Binary: exe, Env: omnitest.Env(o), StartTimeout: 10 * time.Second, Log: f.add}
 	if tune != nil {
 		tune(&cfg)
 	}
@@ -71,10 +74,34 @@ func (f *fake) asr(t *testing.T, id string) *ASR {
 	return a
 }
 
+// add is the runtime's Config.Log.
+func (f *fake) add(level, msg string) {
+	f.mu.Lock()
+	f.out = append(f.out, level+" "+msg)
+	f.mu.Unlock()
+	select {
+	case f.lines <- struct{}{}:
+	default:
+	}
+}
+
 func (f *fake) logged(sub string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return slices.ContainsFunc(f.out, func(l string) bool { return strings.Contains(l, sub) })
+}
+
+// waitLogged waits until the runtime logged a line with sub.
+func (f *fake) waitLogged(t *testing.T, sub string) {
+	t.Helper()
+	timeout := time.After(10 * time.Second)
+	for !f.logged(sub) {
+		select {
+		case <-f.lines:
+		case <-timeout:
+			t.Fatalf("no log line with %q", sub)
+		}
+	}
 }
 
 // eventually waits for cond.
@@ -89,6 +116,31 @@ func eventually(t *testing.T, what string, cond func() bool) {
 }
 
 func gone(pid int) bool { return syscall.Kill(pid, 0) != nil }
+
+// unloads makes c send the id of each model whose process exited
+// (resident.Unloaded) on the channel it returns.
+func unloads(c *Config) <-chan string {
+	ch := make(chan string, 16)
+	c.OnModel = func(ev resident.Event) {
+		if ev.Kind == resident.Unloaded {
+			ch <- ev.ID
+		}
+	}
+	return ch
+}
+
+// waitUnloaded waits until model id's process exited.
+func waitUnloaded(t *testing.T, unloaded <-chan string, id string) {
+	t.Helper()
+	timeout := time.After(10 * time.Second)
+	for got := ""; got != id; {
+		select {
+		case got = <-unloaded:
+		case <-timeout:
+			t.Fatalf("%s's process did not exit", id)
+		}
+	}
+}
 
 // fakeClock stands for the idle timers' clock: tests move it on by hand,
 // and the timers due run in the caller, in order.
@@ -342,13 +394,20 @@ func TestFinalErrors(t *testing.T) {
 		}
 	})
 	t.Run("stall", func(t *testing.T) {
-		f := newFake(t, omnitest.Opts{Mode: omnitest.ModeStall}, func(c *Config) { c.StallTimeout = 300 * time.Millisecond })
+		var unloaded <-chan string
+		f := newFake(t, omnitest.Opts{Mode: omnitest.ModeStall}, func(c *Config) {
+			c.StallTimeout = 300 * time.Millisecond
+			unloaded = unloads(c)
+		})
 		_, err := f.asr(t, ASRFast).Transcribe(ctx, asr.FileRequest{Audio: pcm})
 		if asr.KindOf(err) != asr.KindServer || !strings.Contains(err.Error(), "stopped answering") {
 			t.Errorf("%v", err)
 		}
 		pid := f.records("launch")[0].PID
-		eventually(t, "the stalled server killed", func() bool { return gone(pid) })
+		waitUnloaded(t, unloaded, ASRFast)
+		if !gone(pid) {
+			t.Error("the stalled server still runs")
+		}
 	})
 	t.Run("cancelled", func(t *testing.T) {
 		f := newFake(t, omnitest.Opts{Delay: 5 * time.Second}, nil)
@@ -548,21 +607,25 @@ func TestConcurrentStart(t *testing.T) {
 // TestUnload: Unload stops a model's server, after the use in progress;
 // the next use starts it again.
 func TestUnload(t *testing.T) {
-	f := newFake(t, omnitest.Opts{Delay: 400 * time.Millisecond}, nil)
+	var unloaded <-chan string
+	f := newFake(t, omnitest.Opts{}, func(c *Config) { unloaded = unloads(c) })
+	ctx := context.Background()
 	a := f.asr(t, ASRFast)
-	done := make(chan error, 1)
-	go func() {
-		_, err := a.Transcribe(context.Background(), asr.FileRequest{Audio: tone(time.Second, 0.3)})
-		done <- err
-	}()
-	eventually(t, "the Final", func() bool { return len(f.records("final")) == 1 })
+	l, err := f.rt.acquire(ctx, a.spec, a.dir) // the use in progress, as Transcribe holds it
+	if err != nil {
+		t.Fatal(err)
+	}
 	f.rt.Unload(ASRFast)
 	f.rt.Unload("nothing")
-	if err := <-done; err != nil {
+	if _, _, err := a.final(ctx, l, tone(time.Second, 0.3), "", bias{}); err != nil {
 		t.Fatalf("the use in progress failed: %v", err)
 	}
-	eventually(t, "the shutdown", func() bool { return len(f.records("shutdown")) == 1 })
-	if _, err := a.Transcribe(context.Background(), asr.FileRequest{Audio: tone(time.Second, 0.3)}); err != nil {
+	l.release()
+	waitUnloaded(t, unloaded, ASRFast)
+	if n := len(f.records("shutdown")); n != 1 {
+		t.Errorf("%d shutdowns after the use", n)
+	}
+	if _, err := a.Transcribe(ctx, asr.FileRequest{Audio: tone(time.Second, 0.3)}); err != nil {
 		t.Fatal(err)
 	}
 	if n := len(f.records("launch")); n != 2 {
