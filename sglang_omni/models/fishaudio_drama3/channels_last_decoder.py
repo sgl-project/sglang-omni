@@ -37,6 +37,7 @@ if triton is not None:
         x_ptr: torch.Tensor,
         alpha_ptr: torch.Tensor,
         inverse_alpha_ptr: torch.Tensor,
+        bias_ptr: torch.Tensor,
         y_ptr: torch.Tensor,
         rows: int,
         frames: int,
@@ -46,6 +47,7 @@ if triton is not None:
         BLOCK_CHANNELS: tl.constexpr,
         PAD_LEFT: tl.constexpr = 0,
         pad_right: int = 0,
+        HAS_BIAS: tl.constexpr = False,
     ) -> None:
         row = tl.program_id(0).to(tl.int64) * BLOCK_ROWS + tl.arange(0, BLOCK_ROWS)
         channel = tl.program_id(1) * BLOCK_CHANNELS + tl.arange(0, BLOCK_CHANNELS)
@@ -61,6 +63,15 @@ if triton is not None:
             mask=mask & source_mask[:, None],
             other=0.0,
         ).to(tl.float32)
+        if HAS_BIAS:
+            # The conv's bias, added with the rounding of the activation dtype so the
+            # sum equals a separate add of the bias.
+            bias = tl.load(bias_ptr + channel, mask=channel_mask, other=0.0).to(
+                tl.float32
+            )
+            x = (x + bias[None, :]).to(x_ptr.dtype.element_ty).to(tl.float32)
+        else:
+            pass
         alpha = tl.load(alpha_ptr + channel, mask=channel_mask, other=1.0)
         inverse_alpha = tl.load(
             inverse_alpha_ptr + channel, mask=channel_mask, other=1.0
@@ -70,6 +81,67 @@ if triton is not None:
         tl.store(
             y_ptr + row[:, None] * channels + channel[None, :],
             tl.where(source_mask[:, None], y, 0.0).to(y_ptr.dtype.element_ty),
+            mask=mask,
+        )
+
+    @triton.jit(do_not_specialize=["rows", "rows_per_batch"])
+    def residual_bias_add_kernel(
+        x_ptr: torch.Tensor,
+        x_bias_ptr: torch.Tensor,
+        residual_ptr: torch.Tensor,
+        residual_bias_ptr: torch.Tensor,
+        y_ptr: torch.Tensor,
+        rows: int,
+        channels: int,
+        rows_per_batch: int,
+        x_batch_stride: int,
+        residual_batch_stride: int,
+        BLOCK_ROWS: tl.constexpr,
+        BLOCK_CHANNELS: tl.constexpr,
+        HAS_X_BIAS: tl.constexpr,
+        HAS_RESIDUAL_BIAS: tl.constexpr,
+    ) -> None:
+        """y = (x + x_bias) + (residual + residual_bias), each sum rounded to the
+        activation dtype as the separate adds round it."""
+        row = tl.program_id(0).to(tl.int64) * BLOCK_ROWS + tl.arange(0, BLOCK_ROWS)
+        channel = tl.program_id(1) * BLOCK_CHANNELS + tl.arange(0, BLOCK_CHANNELS)
+        row_mask = row < rows
+        channel_mask = channel < channels
+        mask = row_mask[:, None] & channel_mask[None, :]
+        batch = row // rows_per_batch
+        within = row % rows_per_batch
+        dtype = y_ptr.dtype.element_ty
+        x = tl.load(
+            x_ptr
+            + (batch * x_batch_stride + within * channels)[:, None]
+            + channel[None, :],
+            mask=mask,
+            other=0.0,
+        ).to(tl.float32)
+        if HAS_X_BIAS:
+            x_bias = tl.load(x_bias_ptr + channel, mask=channel_mask, other=0.0).to(
+                tl.float32
+            )
+            x = (x + x_bias[None, :]).to(dtype).to(tl.float32)
+        else:
+            pass
+        residual = tl.load(
+            residual_ptr
+            + (batch * residual_batch_stride + within * channels)[:, None]
+            + channel[None, :],
+            mask=mask,
+            other=0.0,
+        ).to(tl.float32)
+        if HAS_RESIDUAL_BIAS:
+            residual_bias = tl.load(
+                residual_bias_ptr + channel, mask=channel_mask, other=0.0
+            ).to(tl.float32)
+            residual = (residual + residual_bias[None, :]).to(dtype).to(tl.float32)
+        else:
+            pass
+        tl.store(
+            y_ptr + row[:, None] * channels + channel[None, :],
+            (x + residual).to(dtype),
             mask=mask,
         )
 
@@ -97,6 +169,11 @@ def tail_weight(conv: torch.nn.Conv1d) -> torch.Tensor:
 
 
 class ChannelsLastDecoder:
+    """The codec decoder over (B, L, C) half activations. Each conv runs without its
+    bias; the bias rides along as the pending bias of the activation and is added by
+    the next snake or residual kernel, which saves one pass over the activation per
+    conv."""
+
     def __init__(self, codec: DAC, *, dtype: torch.dtype) -> None:
         if triton is None:
             raise RuntimeError(
@@ -120,6 +197,15 @@ class ChannelsLastDecoder:
             for module in codec.decoder.modules()
             if isinstance(module, (torch.nn.Conv1d, torch.nn.ConvTranspose1d))
         }
+        self.conv_biases: dict[int, torch.Tensor | None] = {
+            id(module): (
+                None
+                if module.bias is None
+                else module.bias.data.reshape(-1).contiguous()
+            )
+            for module in codec.decoder.modules()
+            if isinstance(module, (torch.nn.Conv1d, torch.nn.ConvTranspose1d))
+        }
         self.tail_weights: dict[int, torch.Tensor] = {
             id(module.conv): tail_weight(module.conv)
             for module in codec.decoder.modules()
@@ -129,12 +215,19 @@ class ChannelsLastDecoder:
     def __call__(self, indices: torch.Tensor) -> torch.Tensor:
         latent = self.codec.quantizer.decode(indices)
         hidden_states = latent.transpose(1, 2).contiguous()
-        hidden_states = self.apply_sequence(self.codec.decoder.model, hidden_states)
-        return hidden_states.transpose(1, 2)
+        hidden_states, pending_bias = self.apply_sequence(
+            self.codec.decoder.model, hidden_states
+        )
+        return add_bias(hidden_states, pending_bias).transpose(1, 2)
 
     def apply_sequence(
-        self, sequence: torch.nn.Sequential, hidden_states: torch.Tensor
-    ) -> torch.Tensor:
+        self,
+        sequence: torch.nn.Sequential,
+        hidden_states: torch.Tensor,
+        pending_bias: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """The sequence applied to hidden_states plus pending_bias; returns the
+        activation and the bias still to add to it."""
         modules = list(sequence)
         index = 0
         while index < len(modules):
@@ -150,8 +243,9 @@ class ChannelsLastDecoder:
                     and hidden_states.is_cuda
                 ):
                     hidden_states = self.snake_conv_tanh(
-                        module, following, hidden_states
+                        module, following, hidden_states, pending_bias
                     )
+                    pending_bias = None
                     index += 3
                 else:
                     frame_count = hidden_states.shape[1]
@@ -159,31 +253,41 @@ class ChannelsLastDecoder:
                         -(following.padding + frame_count)
                     ) % following.conv.dilation[0]
                     padded = self.snake(
-                        module, hidden_states, following.padding, alignment
+                        module,
+                        hidden_states,
+                        following.padding,
+                        alignment,
+                        bias=pending_bias,
                     )
                     hidden_states = self.causal_conv(
                         following, padded, original_frame_count=frame_count
                     )
+                    pending_bias = self.conv_biases[id(following.conv)]
                     index += 2
             else:
-                hidden_states = self.apply(module, hidden_states)
+                hidden_states, pending_bias = self.apply(
+                    module, hidden_states, pending_bias
+                )
                 index += 1
-        return hidden_states
+        return hidden_states, pending_bias
 
     def snake_conv_tanh(
         self,
         snake_module: Snake1d,
         conv_module: CausalConvNet,
         hidden_states: torch.Tensor,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """tanh(conv_module(snake_module(x))) of a (B, L, C) half activation, for the
-        decoder's final conv onto one channel. cuDNN has only a slow engine for a
-        channels-last conv onto one channel, so the taps run as one GEMM over the
-        padded snake output and each frame sums its taps along a diagonal view."""
+        """tanh(conv_module(snake_module(x + bias))) of a (B, L, C) half activation,
+        for the decoder's final conv onto one channel. cuDNN has only a slow engine
+        for a channels-last conv onto one channel, so the taps run as one GEMM over
+        the padded snake output and each frame sums its taps along a diagonal view."""
         conv = conv_module.conv
         taps = conv.kernel_size[0]
         batch_size, frame_count, channel_count = hidden_states.shape
-        padded = self.snake(snake_module, hidden_states, conv_module.padding, 0)
+        padded = self.snake(
+            snake_module, hidden_states, conv_module.padding, 0, bias=bias
+        )
         tap_products = torch.mm(
             padded.view(-1, channel_count),
             self.tail_weights[id(conv)],
@@ -198,21 +302,42 @@ class ChannelsLastDecoder:
         return torch.tanh(conv_output + conv.bias)
 
     def apply(
-        self, module: torch.nn.Module, hidden_states: torch.Tensor
-    ) -> torch.Tensor:
+        self,
+        module: torch.nn.Module,
+        hidden_states: torch.Tensor,
+        pending_bias: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         if isinstance(module, CausalConvNet):
-            return self.causal_conv(module, hidden_states)
+            return (
+                self.causal_conv(module, add_bias(hidden_states, pending_bias)),
+                self.conv_biases[id(module.conv)],
+            )
         elif isinstance(module, CausalTransConvNet):
-            return self.causal_transposed_conv(module, hidden_states)
+            return (
+                self.causal_transposed_conv(
+                    module, add_bias(hidden_states, pending_bias)
+                ),
+                self.conv_biases[id(module.conv)],
+            )
         elif isinstance(module, Snake1d):
-            return self.snake(module, hidden_states)
+            return self.snake(module, hidden_states, bias=pending_bias), None
         elif isinstance(module, ResidualUnit):
-            residual = self.apply_sequence(module.block, hidden_states)
-            return hidden_states[:, : residual.shape[1]] + residual
+            residual, residual_bias = self.apply_sequence(
+                module.block, hidden_states, pending_bias
+            )
+            return (
+                self.residual_add(
+                    hidden_states[:, : residual.shape[1]],
+                    pending_bias,
+                    residual,
+                    residual_bias,
+                ),
+                None,
+            )
         elif isinstance(module, DecoderBlock):
-            return self.apply_sequence(module.block, hidden_states)
+            return self.apply_sequence(module.block, hidden_states, pending_bias)
         elif isinstance(module, torch.nn.Tanh):
-            return torch.tanh(hidden_states)
+            return torch.tanh(add_bias(hidden_states, pending_bias)), None
         else:
             raise TypeError(
                 f"no channels-last decoding for {type(module).__name__} in the codec"
@@ -225,6 +350,7 @@ class ChannelsLastDecoder:
         *,
         original_frame_count: int | None = None,
     ) -> torch.Tensor:
+        """The conv without its bias, which the caller adds later."""
         assert module.stride == 1
         if original_frame_count is None:
             frame_count = hidden_states.shape[1]
@@ -238,18 +364,19 @@ class ChannelsLastDecoder:
             padded,
             module.conv,
             self.conv_weights[id(module.conv)],
-            module.conv.bias,
+            None,
             frame_count,
         )
 
     def causal_transposed_conv(
         self, module: CausalTransConvNet, hidden_states: torch.Tensor
     ) -> torch.Tensor:
+        """The transposed conv without its bias, which the caller adds later."""
         output = channels_last_conv_transpose1d(
             hidden_states,
             module.conv,
             self.conv_weights[id(module.conv)],
-            module.conv.bias,
+            None,
         )
         return output[:, : output.shape[1] - (module.kernel_size - module.stride)]
 
@@ -259,7 +386,10 @@ class ChannelsLastDecoder:
         hidden_states: torch.Tensor,
         pad_left: int = 0,
         pad_right: int = 0,
+        *,
+        bias: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        """snake(hidden_states + bias), padded by zeros on either side."""
         alpha, inverse_alpha = self.snake_alphas[id(module)]
         batch_size, frame_count, channel_count = hidden_states.shape
         assert hidden_states.stride(2) == 1
@@ -281,6 +411,7 @@ class ChannelsLastDecoder:
             hidden_states,
             alpha,
             inverse_alpha,
+            alpha if bias is None else bias,
             output,
             rows,
             frame_count,
@@ -290,5 +421,58 @@ class ChannelsLastDecoder:
             BLOCK_CHANNELS=SNAKE_BLOCK_CHANNELS,
             PAD_LEFT=pad_left,
             pad_right=pad_right,
+            HAS_BIAS=bias is not None,
         )
         return output
+
+    def residual_add(
+        self,
+        hidden_states: torch.Tensor,
+        hidden_bias: torch.Tensor | None,
+        residual: torch.Tensor,
+        residual_bias: torch.Tensor | None,
+    ) -> torch.Tensor:
+        """(hidden_states + hidden_bias) + (residual + residual_bias) in one pass."""
+        batch_size, frame_count, channel_count = residual.shape
+        assert hidden_states.shape == residual.shape
+        if not residual.is_cuda:
+            return add_bias(hidden_states, hidden_bias) + add_bias(
+                residual, residual_bias
+            )
+        else:
+            pass
+        for activation in (hidden_states, residual):
+            assert activation.stride(2) == 1
+            assert activation.stride(1) == channel_count
+        output = torch.empty_like(residual)
+        rows = batch_size * frame_count
+        residual_bias_add_kernel[
+            (
+                triton.cdiv(rows, SNAKE_BLOCK_ROWS),
+                triton.cdiv(channel_count, SNAKE_BLOCK_CHANNELS),
+            )
+        ](
+            hidden_states,
+            residual if hidden_bias is None else hidden_bias,
+            residual,
+            residual if residual_bias is None else residual_bias,
+            output,
+            rows,
+            channel_count,
+            frame_count,
+            hidden_states.stride(0),
+            residual.stride(0),
+            BLOCK_ROWS=SNAKE_BLOCK_ROWS,
+            BLOCK_CHANNELS=SNAKE_BLOCK_CHANNELS,
+            HAS_X_BIAS=hidden_bias is not None,
+            HAS_RESIDUAL_BIAS=residual_bias is not None,
+        )
+        return output
+
+
+def add_bias(hidden_states: torch.Tensor, bias: torch.Tensor | None) -> torch.Tensor:
+    """hidden_states plus a per-channel bias, as the conv would have added it."""
+    if bias is None:
+        return hidden_states
+    else:
+        return hidden_states + bias
