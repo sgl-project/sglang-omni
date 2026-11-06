@@ -128,6 +128,7 @@ class Capabilities:
     # note (Junnan Li): Frame cap per unit, indexed by the session's max_slice_nums minus one.
     image_frames_per_unit: tuple[int, ...] = (1,)
     default_max_slice_nums: int = 1
+    max_coalesced_units: int = 1
 
     def __post_init__(self) -> None:
         if self.interaction not in get_args(Interaction):
@@ -144,6 +145,12 @@ class Capabilities:
             raise ValueError("positive image byte and frame limits required")
         elif not 1 <= self.default_max_slice_nums <= len(self.image_frames_per_unit):
             raise ValueError("default slice count exceeds the slice limit")
+        elif self.max_coalesced_units < 1:
+            raise ValueError("max_coalesced_units must be positive")
+        elif self.max_coalesced_units > 1 and (
+            self.interaction != "native" or self.input_modalities != ("audio",)
+        ):
+            raise ValueError("coalescing requires native audio-only units")
         elif self.tail_policy not in get_args(TailPolicy):
             raise ValueError("unsupported tail policy")
         elif (

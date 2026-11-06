@@ -78,7 +78,8 @@ def test_units_must_be_whole_frames_of_pcm16():
     assert pcm16_to_waveform(end).numel() == 0
 
 
-def test_streaming_encode_matches_the_whole_recording(random_codec):
+@pytest.mark.parametrize("chunk_frames", [1, 3])
+def test_streaming_encode_matches_the_whole_recording(random_codec, chunk_frames: int):
     frames = 3
     waveform = pcm16_to_waveform(
         unit(0, waveform_to_pcm16(torch.randn(frames * SAMPLES_PER_FRAME) * 0.3))
@@ -88,10 +89,10 @@ def test_streaming_encode_matches_the_whole_recording(random_codec):
 
     hooks = open_hooks(MimiEncodeHooks(random_codec, torch.device("cpu")))
     streamed = []
-    for index in range(frames):
+    for index in range(0, frames, chunk_frames):
         state = PersonaPlexState(
             waveform=waveform[
-                index * SAMPLES_PER_FRAME : (index + 1) * SAMPLES_PER_FRAME
+                index * SAMPLES_PER_FRAME : (index + chunk_frames) * SAMPLES_PER_FRAME
             ],
             voice_waveform=voice if index == 0 else None,
         )
@@ -184,6 +185,51 @@ def test_an_empty_end_of_input_emits_only_the_end(random_codec):
     assert [(chunk.eos, chunk.payload) for chunk in emitted] == [
         (True, {"text": "", "pcm": b""})
     ]
+
+
+@pytest.mark.parametrize(
+    "device_type", ["cpu", pytest.param("cuda", marks=pytest.mark.accelerator)]
+)
+def test_coalesced_decode_preserves_pcm_and_copies_replayed_frames(
+    random_codec, device_type: str
+) -> None:
+    """Changing decoder chunk width or retaining a replay buffer changed coalesced audio."""
+    if device_type == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA required")
+    else:
+        pass
+    random_codec.to(device_type)
+    codes = torch.randint(0, 2048, (7, 8))
+    recordings = []
+    for frame_counts in ([2, 1, 1, 1, 1, 1], [2, 5]):
+        slots = MimiDecodeSlots(
+            random_codec,
+            num_slots=1,
+            max_batch_size=1,
+            max_graph_frames=2 if device_type == "cuda" else 0,
+            max_chunk_frames=2,
+        )
+        hooks = open_hooks(Code2WavHooks(slots))
+        emitted = []
+        start = 0
+        for index, frame_count in enumerate(frame_counts):
+            hooks.append_batch(
+                [
+                    SessionAppend(
+                        chunk=unit(index, eos=index == len(frame_counts) - 1),
+                        payload=payload(
+                            PersonaPlexState(codes=codes[start : start + frame_count])
+                        ),
+                        context=context(emitted),
+                    )
+                ]
+            )
+            start += frame_count
+        hooks.close(CALL)
+        recordings.append(b"".join(chunk.payload["pcm"] for chunk in emitted))
+        assert slots.active_slot_count == 0
+    assert recordings[0] == recordings[1]
+    assert len(recordings[0]) == 7 * SAMPLES_PER_FRAME * 2
 
 
 def test_warm_up_runs_both_codecs_and_opens_no_call(random_codec):

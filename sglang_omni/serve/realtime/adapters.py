@@ -84,6 +84,7 @@ class CoordinatorAdapter(InteractionAdapter):
         self.session_identity: SessionIdentity | None = None
         self.output_reader_task: asyncio.Task[None] | None = None
         self.active_unit: Unit | None = None
+        self.input_sequence = 0
         self.unit_completion: asyncio.Future[int] | None = None
         self.unit_output_events: list[OutputEvent] = []
         self.unit_output_bytes = 0
@@ -125,10 +126,7 @@ class CoordinatorAdapter(InteractionAdapter):
         assert self.session_identity is not None and self.output_sink is not None
         try:
             async for output in self.client.session_outputs(self.session_identity):
-                if (
-                    self.active_unit is None
-                    or output.input_seq != self.active_unit.index
-                ):
+                if self.active_unit is None or output.input_seq != self.input_sequence:
                     continue
                 elif output.kind == "input_done":
                     for event in self.unit_output_events:
@@ -190,7 +188,7 @@ class CoordinatorAdapter(InteractionAdapter):
             "audio",
             samples_to_ms(unit.start_sample, self.input_sample_rate_hz),
             samples_to_ms(unit.real_samples, self.input_sample_rate_hz),
-            unit.index,
+            self.input_sequence,
             (
                 unit.pcm
                 if not unit.images
@@ -213,7 +211,9 @@ class CoordinatorAdapter(InteractionAdapter):
                     ready_observation.run_id if ready_observation is not None else None
                 ),
             )
-            return await self.unit_completion
+            consumed_samples = await self.unit_completion
+            self.input_sequence += 1
+            return consumed_samples
         finally:
             self.active_unit = None
             self.unit_completion = None

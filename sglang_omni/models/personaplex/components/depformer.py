@@ -9,10 +9,14 @@ steps, written in place and re-made every frame.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 import torch
 from einops import rearrange
+from sglang.srt.batch_invariant_ops import is_batch_invariant_mode_enabled
 from torch import nn
 from torch.nn import functional
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from sglang_omni.models.personaplex.architecture import (
     AUDIO_CARD,
@@ -77,11 +81,17 @@ class DepformerLayer(nn.Module):
         q, k, v = rearrange(qkv, "b (p h d) -> p b h d", p=3, h=spec.num_heads)
         cache_2BHSD[0, :, :, step] = k
         cache_2BHSD[1, :, :, step] = v
-        attn = functional.scaled_dot_product_attention(
-            q[:, :, None],
-            cache_2BHSD[0, :, :, : step + 1],
-            cache_2BHSD[1, :, :, : step + 1],
-        )
+        # note (WEIXILIN0307): Flash SDPA can round differently across batch sizes even with invariant matrix products.
+        with (
+            sdpa_kernel(SDPBackend.MATH)
+            if is_batch_invariant_mode_enabled()
+            else nullcontext()
+        ):
+            attn = functional.scaled_dot_product_attention(
+                q[:, :, None],
+                cache_2BHSD[0, :, :, : step + 1],
+                cache_2BHSD[1, :, :, : step + 1],
+            )
         x_BD = x_BD + functional.linear(
             rearrange(attn, "b h 1 d -> b (h d)"), self.out_proj_weight[step]
         )

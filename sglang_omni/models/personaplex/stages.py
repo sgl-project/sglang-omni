@@ -379,23 +379,24 @@ def create_session_code2wav_executor(
     model_path: str,
     *,
     max_open_sessions: int,
+    batch_sessions: bool,
     max_graph_frames: int = max(FRAMES_PER_UNIT),
     device: str | None = None,
     gpu_id: int | None = None,
 ) -> SessionScheduler:
-    """Every open session holds a decode slot, and one step decodes every ready
-    session whose unit has as many frames, with device graphs for units of up to
-    max_graph_frames frames (0 turns the graphs off)."""
+    """Keep a decode slot per session; deterministic inference decodes one at a time."""
     codec, _ = load_codec(model_path, device=device, gpu_id=gpu_id, mode="decode")
     decode_slots = MimiDecodeSlots(
         codec,
         num_slots=max_open_sessions,
-        max_batch_size=max_open_sessions,
+        max_batch_size=max_open_sessions if batch_sessions else 1,
         max_graph_frames=max_graph_frames,
         max_chunk_frames=max(FRAMES_PER_UNIT),
     )
     return SessionScheduler(
-        Code2WavHooks(decode_slots), max_open_sessions=max_open_sessions
+        Code2WavHooks(decode_slots),
+        max_open_sessions=max_open_sessions,
+        batch_sessions=batch_sessions,
     )
 
 
