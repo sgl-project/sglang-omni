@@ -8,15 +8,15 @@ Build the native runtime with sglang_omni_mlx/native/scripts/build_runtime.sh, i
 
 ```bash
 python -m sglang_omni_mlx.native.ci.benchmark_long_audio \
-  --server "$NATIVE_RUNTIME_BIN/qwen3_asr_server" \
-  --model-directory "$CI_DATA_ROOT/models/mlx-community_Qwen3-ASR-0.6B-4bit" \
-  --corpus-directory "$CI_DATA_ROOT/corpus/v1" \
+  --runtime-bin "$NATIVE_RUNTIME_BIN" \
+  --data-root "$CI_DATA_ROOT" \
+  --model mlx-community/Qwen3-ASR-0.6B-4bit \
   --output "$ASR_RESULTS_DIRECTORY" \
   --mode realtime --minutes 5 10 30 60 --languages en zh --speed 1 \
   -- --cache-limit-mb 512
 ```
 
-Supply --server, --model-directory, --corpus-directory and a new --output directory. Flags after -- go to the server and are recorded in metadata.json. Voxt starts the server with --cache-limit-mb 512, so pass that flag to measure what the app runs; without it the server's default 2 GiB limit applies. Use --mode realtime --minutes 5 10 30 60 --languages en zh --speed 1 for live pacing. This matrix contains 210 minutes of audio. A speed greater than one is an accelerated input stress measurement: refresh decodes may be coalesced, and its accuracy and finalization latency are not equivalent to live dictation.
+Supply --runtime-bin, --data-root, --model and a new --output directory. Flags after -- go to the server and are recorded in metadata.json. Voxt starts the server with --cache-limit-mb 512, so pass that flag to measure what the app runs; without it the server's default 2 GiB limit applies. Use --mode realtime --minutes 5 10 30 60 --languages en zh --speed 1 for live pacing. This matrix contains 210 minutes of audio. A speed greater than one is an accelerated input stress measurement: refresh decodes may be coalesced, and its accuracy and finalization latency are not equivalent to live dictation.
 
 Use --mode http separately for HTTP requests. Alone it sends one whole-file request with the server's default budget of 10 tokens per audio second. This is a maximum-length stress measurement, not what Voxt sends: a repetition loop runs until that budget, so the time, memory and error rate of such a run depend on the budget. Start with five minutes before testing longer whole-file requests. Add --chunk-seconds 30 to send whole clips in requests of at most 30 seconds, each with the budget of a Voxt Final (28 tokens per audio second plus 64, within 256 to 8192). This is close to the 20 to 45 second pieces Voxt sends during a long recording, except that the cuts fall on clip boundaries instead of detected pauses.
 

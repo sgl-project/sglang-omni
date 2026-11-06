@@ -373,11 +373,11 @@ def test_invalid_duration_is_rejected_before_any_recording(
         "argv",
         [
             "benchmark_long_audio",
-            "--server",
+            "--runtime-bin",
             "unused",
-            "--model-directory",
+            "--data-root",
             "unused",
-            "--corpus-directory",
+            "--model",
             "unused",
             "--output",
             str(output),
@@ -436,7 +436,7 @@ def test_unexpected_server_exit_fails_the_benchmark(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exit_policy: str
 ) -> None:
     """An exit after recovery must not be reported as a successful measurement."""
-    corpus = tmp_path / "corpus"
+    corpus = tmp_path / "corpus" / "v1"
     (corpus / "clips").mkdir(parents=True)
     records = []
     for index in range(2):
@@ -452,9 +452,9 @@ def test_unexpected_server_exit_fails_the_benchmark(
     (corpus / "manifest.jsonl").write_text(
         "\n".join(json.dumps(record) for record in records)
     )
-    model = tmp_path / "model"
-    model.mkdir()
-    server = tmp_path / "fake_server.py"
+    (tmp_path / "models" / "owner_model").mkdir(parents=True)
+    (tmp_path / "bin").mkdir()
+    server = tmp_path / "bin" / "qwen3_asr_server"
     server.write_text(
         f"#!{sys.executable}\n"
         + r"""import json, os, sys, threading
@@ -503,12 +503,12 @@ for line in sys.stdin:
         "argv",
         [
             "benchmark_long_audio",
-            "--server",
-            str(server),
-            "--model-directory",
-            str(model),
-            "--corpus-directory",
-            str(corpus),
+            "--runtime-bin",
+            str(tmp_path / "bin"),
+            "--data-root",
+            str(tmp_path),
+            "--model",
+            "owner/model",
             "--output",
             str(output),
             "--mode",

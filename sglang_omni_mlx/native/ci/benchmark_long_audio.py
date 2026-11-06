@@ -39,6 +39,14 @@ SAMPLER_JOIN_TIMEOUT_SECONDS = 5
 SHUTDOWN_TIMEOUT_SECONDS = 10
 
 
+def server_binary(arguments: argparse.Namespace) -> Path:
+    return arguments.runtime_bin.resolve() / "qwen3_asr_server"
+
+
+def model_directory(arguments: argparse.Namespace) -> Path:
+    return arguments.data_root.resolve() / "models" / arguments.model.replace("/", "_")
+
+
 def write_metadata(arguments: argparse.Namespace) -> None:
     metadata = {
         "arguments": {
@@ -68,10 +76,10 @@ def write_metadata(arguments: argparse.Namespace) -> None:
         "git_status": subprocess.check_output(
             ["git", "status", "--porcelain"], text=True
         ),
-        "binary_sha256": sha256(arguments.server),
+        "binary_sha256": sha256(server_binary(arguments)),
         "model_files_sha256": {
             path.name: sha256(path)
-            for path in sorted(arguments.model_directory.iterdir())
+            for path in sorted(model_directory(arguments).iterdir())
             if path.is_file()
         },
     }
@@ -121,10 +129,10 @@ def run_case(
     with (arguments.output / f"{name}.server.log").open("w") as log:
         process = subprocess.Popen(
             [
-                str(arguments.server.resolve()),
+                str(server_binary(arguments)),
                 "--supervised",
                 "--model-directory",
-                str(arguments.model_directory.resolve()),
+                str(model_directory(arguments)),
                 *arguments.server_arguments,
             ],
             stdin=subprocess.PIPE,
@@ -242,9 +250,13 @@ def run_case(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--server", type=Path, required=True)
-    parser.add_argument("--model-directory", type=Path, required=True)
-    parser.add_argument("--corpus-directory", type=Path, required=True)
+    parser.add_argument("--runtime-bin", type=Path, required=True)
+    parser.add_argument("--data-root", type=Path, required=True)
+    parser.add_argument(
+        "--model",
+        required=True,
+        help="Repository of a provisioned checkpoint, such as mlx-community/Qwen3-ASR-0.6B-4bit",
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
         "--languages", nargs="+", choices=("en", "zh"), default=["en", "zh"]
@@ -297,13 +309,15 @@ def main() -> None:
         arguments.mode != "http" or not 0 < arguments.chunk_seconds < math.inf
     ):
         parser.error("--chunk-seconds needs --mode http and a positive duration")
+    elif arguments.mode == "http" and arguments.speed != 1:
+        parser.error("--speed needs --mode realtime")
     else:
         pass
     arguments.output.mkdir(parents=True, exist_ok=False)
     write_metadata(arguments)
     all_measured = True
     for language in arguments.languages:
-        clips = load_clips(arguments.corpus_directory, language)
+        clips = load_clips(arguments.data_root / "corpus" / "v1", language)
         for minutes in arguments.minutes:
             is_measured = run_case(arguments, clips, language, minutes)
             all_measured = all_measured and is_measured
