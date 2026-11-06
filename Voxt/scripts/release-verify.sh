@@ -89,7 +89,10 @@ echo "code inside: ${#code[@]} (app, executables, libraries, frameworks)"
 if ((want_runtimes)); then
   server="$res/omni/bin/qwen3_asr_server"
   check "the Omni runtime is inside" test -x "$server" -a -x "$res/omni/bin/silero_vad_server" -a -f "$res/omni/bin/mlx.metallib"
-  check "the Omni server starts from the app (its libraries load)" bash -c "'$server' --model-kind none 2>&1 | grep -q -- '--model-kind must be'"
+  for name in qwen3_asr_server silero_vad_server whisper_server moss_transcribe_diarize_server parakeet_server sensevoice_server; do
+    s="$res/omni/bin/$name"
+    check "$name starts from the app (its libraries load)" bash -c "'$s' --model-kind none 2>&1 | grep -q -e '--model-kind must be' -e 'only --model-kind'"
+  done
   # Voxt runs no language model of its own any more: a voxtnew-llm left
   # staged by an older checkout (resources/darwin-arm64/llm) must not ship.
   check "no voxtnew-llm inside" test ! -e "$res/llm"

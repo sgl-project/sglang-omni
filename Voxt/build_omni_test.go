@@ -36,6 +36,9 @@ func TestBuildOmniStagesSileroCopy(t *testing.T) {
 mkdir -p "$1/bin"
 printf '#!/bin/sh\necho "--model-kind must be one of qwen3_asr, silero_vad" >&2\nexit 2\n' > "$1/bin/qwen3_asr_server"
 chmod +x "$1/bin/qwen3_asr_server"
+for s in whisper_server moss_transcribe_diarize_server parakeet_server sensevoice_server; do
+  cp "$1/bin/qwen3_asr_server" "$1/bin/$s"
+done
 echo lib > "$1/bin/libmlx.dylib"
 echo metal > "$1/bin/mlx.metallib"
 `)

@@ -45,11 +45,17 @@ func reopenModels(a *app) {
 	a.openModels()
 }
 
+// modelsPageHeight is a window that shows every card of the Local models
+// page.
+const modelsPageHeight = 2600
+
 func TestModelsPage(t *testing.T) {
 	a, _, tt := newTestApp(t)
-	tt.SetSize(windowWidth, 1600) // every card on screen
+	tt.SetSize(windowWidth, modelsPageHeight)
 	a.navigate(modelsPath)
-	for _, s := range []string{"Qwen3-ASR 1.7B (8bit)", "Qwen3-ASR 0.6B (4bit)", "Default", "2.5 GB download",
+	// A family with several models is one card: its name and count, then
+	// its models; a family of one is the model's card.
+	for _, s := range []string{"Qwen3-ASR", "Whisper", "3 models", "Qwen3-ASR 1.7B (8bit)", "Qwen3-ASR 0.6B (4bit)", "Default", "2.5 GB download",
 		"Local", "Accurate", "Fast", "Realtime", "Supports main language",
 		"30 languages and 22 Chinese dialects, including Chinese, English, Cantonese, Japanese and Korean"} {
 		if !has(tt, s) {
@@ -59,12 +65,23 @@ func TestModelsPage(t *testing.T) {
 	if has(tt, "Silero VAD v6") || has(tt, "Installed") || has(tt, "Qwen3.5 4B OptiQ (4bit)") || has(tt, "Language models no longer used") {
 		t.Error("the VAD or a language model is listed, or a model is installed")
 	}
+	if hasExact(tt, "1 model") || hasExact(tt, "MOSS") || hasExact(tt, "SenseVoice") {
+		t.Errorf("a family of one model has a header: %q", tt.Texts())
+	}
+	// Every model the user can choose has a card that says what it is good at
+	// and which languages it knows.
+	for _, m := range models.Catalog() {
+		about, langs := uitext.ModelAbout(m.ID), uitext.ModelLanguages(m.ID)
+		if m.Kind != models.VAD && !m.Borrowed && !m.Retired && (!has(tt, m.Name) || about == "" || !has(tt, about) || langs == "" || !has(tt, langs)) {
+			t.Errorf("%s: no card with %q, %q and %q", m.ID, m.Name, about, langs)
+		}
+	}
 
 	// Installed models: the page, the features' choices. A language model
 	// Voxt 2.0 downloaded is retired: listed, to be deleted, and offered
 	// to no feature.
 	seedModels(t, a, models.ASRFast, models.VADSilero, models.LLMTranslate)
-	if !has(tt, "Installed") || !has(tt, "712.8 MB on disk") || !has(tt, "· Used by Transcribe · Translate · Rewrite") ||
+	if !has(tt, "Installed") || !has(tt, "3 models · 1 installed") || !has(tt, "712.8 MB on disk") || !has(tt, "· Used by Transcribe · Translate · Rewrite") ||
 		!has(tt, "Language models no longer used") || !has(tt, "Hy-MT2 1.8B (Q4_K_M)") {
 		t.Errorf("installed: %q", tt.Texts())
 	}
@@ -230,7 +247,7 @@ func TestModelDownloadStates(t *testing.T) {
 	modelsReserve = -1 // no free-space check
 	defer func() { modelsReserve = reserve }()
 	a, _, tt := newTestApp(t)
-	tt.SetSize(windowWidth, 1600)
+	tt.SetSize(windowWidth, modelsPageHeight)
 	drain := queuePosts(a)
 	reopenModels(a)
 	seedModels(t, a, models.VADSilero) // the speech models' voice detection: only the model downloads

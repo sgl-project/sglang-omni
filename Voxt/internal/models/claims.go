@@ -115,6 +115,7 @@ func (m *Manager) wanted() []fammodels.Claim {
 				want = append(want, mod.Claim(rev, fammodels.OriginImported))
 			}
 		}
+		want = append(want, mod.AuxClaims(fammodels.OriginImported)...)
 	}
 	return want
 }
@@ -267,7 +268,7 @@ func (m *Manager) claim(ctx context.Context, origin string, ids []string) error 
 			continue
 		}
 		if rev, _ := find(m.store.Hub, mod); rev != "" {
-			claims = append(claims, mod.Claim(rev, origin))
+			claims = append(append(claims, mod.Claim(rev, origin)), mod.AuxClaims(origin)...)
 		}
 	}
 	var err error

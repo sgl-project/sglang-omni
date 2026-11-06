@@ -25,22 +25,31 @@ func (k Kind) Role() string {
 	return fammodels.RoleOther
 }
 
-// Entry is m as hfhub downloads it, at revision rev ("": the pinned one):
-// only the files the catalogue lists, the LFS ones with their SHA-256 (the
-// Hub names the others' blobs by their git ids, which hfhub checks).
+// Entry is m as hfhub downloads it, at revision rev ("": the pinned one),
+// with its auxiliary repos: only the files the catalogue lists, the LFS
+// ones with their SHA-256 (the Hub names the others' blobs by their git
+// ids, which hfhub checks).
 func (m Model) Entry(rev string) hfhub.Entry {
 	if rev == "" {
 		rev = m.Revision
 	}
-	e := hfhub.Entry{ID: m.ID, Repo: m.Repo, Revision: rev, Family: m.Family, Role: m.Kind.Role()}
-	for _, f := range m.Files {
+	e := hfhub.Entry{ID: m.ID, Repo: m.Repo, Revision: rev, Family: m.Family, Role: m.Kind.Role(), Files: hubFiles(m.Files)}
+	for _, a := range m.Aux {
+		e.Aux = append(e.Aux, hfhub.Aux{Repo: a.Repo, Revision: a.Revision, Files: hubFiles(a.Files)})
+	}
+	return e
+}
+
+func hubFiles(files []File) []hfhub.File {
+	var out []hfhub.File
+	for _, f := range files {
 		hf := hfhub.File{Path: f.Path, Size: f.Size}
 		if f.LFS {
 			hf.SHA256 = f.SHA256
 		}
-		e.Files = append(e.Files, hf)
+		out = append(out, hf)
 	}
-	return e
+	return out
 }
 
 // Claim is VoxtNew's claim on m at rev ("": the pinned one), made with
@@ -65,6 +74,22 @@ func (m Model) Claim(rev, origin string) fammodels.Claim {
 	return c
 }
 
+// AuxClaims are VoxtNew's claims on m's auxiliary repos, as hfhub makes
+// them when it downloads m (origin as Claim's).
+func (m Model) AuxClaims(origin string) []fammodels.Claim {
+	var out []fammodels.Claim
+	for _, a := range m.Aux {
+		c := fammodels.Claim{Repo: a.Repo, Revision: a.Revision, Model: m.ID, Family: m.Family, Role: m.Kind.Role(), Aux: true, Origin: origin,
+			Sizes: map[string]int64{}}
+		for _, f := range a.Files {
+			c.Files = append(c.Files, f.Path)
+			c.Sizes[f.Path] = f.Size
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
 // Ref is m's identity at rev ("": the pinned one).
 func (m Model) Ref(rev string) fammodels.Ref {
 	if rev == "" {
@@ -76,8 +101,13 @@ func (m Model) Ref(rev string) fammodels.Ref {
 // find is the commit of m on disk under hub: the pinned one, else the
 // first of Accept that is installed (as fammodels.FindInstalled, but each
 // commit with its own claim: the pinned one's has the catalogue's sizes);
-// "" when none is.
+// "" when none is, or an auxiliary repo is not.
 func find(hub string, m Model) (rev string, st fammodels.Status) {
+	for _, c := range m.AuxClaims("") {
+		if fammodels.Check(hub, c).State != fammodels.Installed {
+			return "", fammodels.Status{}
+		}
+	}
 	for _, r := range append([]string{m.Revision}, m.Accept...) {
 		if st := fammodels.Check(hub, m.Claim(r, "")); st.State == fammodels.Installed {
 			return r, st

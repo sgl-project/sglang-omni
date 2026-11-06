@@ -65,12 +65,13 @@ github.com/sgl-project/sglang-omni/Voxt
 │   ├── resident/         a model runtime's events (loaded, busy, idle, unloaded) in order on a
 │   │                     goroutine of their own (Queue), from each process slot's Tracker:
 │   │                     omni reports them, the app writes the family's runtime file
-│   ├── omni/             the Omni native MLX servers (M1): Runtime (one qwen3_asr_server per model,
+│   ├── omni/             the Omni native MLX servers (M1): Runtime (one server per model,
 │   │                     ready line, start timeout, idle unload (SetIdleTimeout), Unload, restart after death,
 │   │                     stall kill, Close; OnModel, BeforeLoad), ASR (asr.FileTranscriber + asr.Streamer: Voxt's
-│   │                     Qwen3-ASR Final policy, the /v1/realtime preview; WithVAD), VAD
+│   │                     Qwen3-ASR Final policy, the /v1/realtime preview; WithVAD; the other models' requests,
+│   │                     kinds.go), VAD
 │   │                     (vad.Model: Silero), the curated models and their tuning (models.go)
-│   │   └── omnitest/     a fake qwen3_asr_server for tests (the test binary re-runs itself)
+│   │   └── omnitest/     a fake server for tests (the test binary re-runs itself, under each server's name)
 │   ├── session/          the one owner of a voice session: the state machine (reading →
 │   │                     recording → recognizing → composing → delivering → done/cancelled/
 │   │                     failed), the selection, Translate's and Rewrite's streaming answer, its
@@ -290,7 +291,7 @@ While a session is live (or the answer card shows) the bindings go to the helper
 | Apps' icons (App enhancement's lists) | `~/Library/Caches/VoxtNew/icons/<bundle id>-64.png`, drawn by the helper (`app.icons`), redrawn after a week (`internal/appicons`) |
 | Logs | `~/Library/Logs/VoxtNew/voxtnew.log` (app, rotated at 5 MB) and `helper.log` (the helper's stderr) |
 | Helper | `VoxtNew.app/Contents/Resources/helper/voxtnew-helper` (or `$VOXTNEW_HELPER`) |
-| Omni runtime | `VoxtNew.app/Contents/Resources/omni/bin/`: `qwen3_asr_server`, `silero_vad_server` (its copy, for Silero VAD, so that Activity Monitor tells the two apart), `libmlx.dylib`, `libjaccl.dylib`, `mlx.metallib` (`scripts/build-omni.sh`; or `$VOXTNEW_OMNI_RUNTIME`) |
+| Omni runtime | `VoxtNew.app/Contents/Resources/omni/bin/`: `qwen3_asr_server`, `silero_vad_server` (its copy, for Silero VAD, so that Activity Monitor tells the two apart), `whisper_server`, `moss_transcribe_diarize_server`, `parakeet_server`, `sensevoice_server`, `libmlx.dylib`, `libjaccl.dylib`, `mlx.metallib` (`scripts/build-omni.sh`; or `$VOXTNEW_OMNI_RUNTIME`) |
 
 ## 5. What came from Auralink, and from AudioSmith before it
 

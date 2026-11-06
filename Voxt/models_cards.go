@@ -62,13 +62,72 @@ func (a *app) modelsPage(c *ui.Context) {
 	a.providerDialogView(c) // remote_dialog.go
 }
 
-// modelCards are kind's models of the catalogue that the page shows,
-// but the hidden ones.
+// modelCards groups visible speech models by family and shows the other
+// visible models in individual cards.
 func (a *app) modelCards(c *ui.Context, kind models.Kind) {
+	var families []string
+	byFamily := map[string][]models.Model{}
 	for _, m := range models.Catalog() {
-		if m.Kind == kind && a.modelShown(m) && !a.modelHidden(m.ID) {
-			a.modelCard(c, m)
+		if m.Kind != kind || !a.modelShown(m) || a.modelHidden(m.ID) {
+			continue
 		}
+		if kind != models.ASR {
+			a.modelCard(c, m)
+			continue
+		}
+		if byFamily[m.Family] == nil {
+			families = append(families, m.Family)
+		}
+		byFamily[m.Family] = append(byFamily[m.Family], m)
+	}
+	for _, f := range families {
+		if list := byFamily[f]; len(list) > 1 {
+			a.familyCard(c, list)
+		} else {
+			a.modelCard(c, list[0])
+		}
+	}
+}
+
+// familyCard is one family's speech models, as Voxt 1.x grouped its list:
+// the family's name, how many of its models there are and are installed,
+// the languages they know, then a row per model.
+func (a *app) familyCard(c *ui.Context, list []models.Model) {
+	t := c.Theme()
+	k := tok(t)
+	installed := 0
+	for _, m := range list {
+		if a.modelStatus[m.ID].Installed {
+			installed++
+		}
+	}
+	count := i18n.N(len(list), "%d model", "%d models", len(list))
+	if installed > 0 {
+		count += " · " + i18n.T("%d installed", installed)
+	}
+	card(c.Key("family-" + list[0].Family)).Children(func() {
+		ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Center).Wrap().Children(func() {
+			ui.Icon(c, icons.Soundwave.Linear).Size(px(t, 20), px(t, 20)).TextColor(k.Text2).Shrink(0)
+			ui.Text(c, uitext.FamilyName(list[0].Family)).FontWeight(600)
+			caption(c, count)
+		})
+		modelLanguages(c, list[0].ID)
+		for _, m := range list {
+			ui.Box(c.Key("line-" + m.ID)).Height(1).Background(k.Line).Shrink(0)
+			ui.Column(c.Key("model-" + m.ID)).Gap(px(t, sp3)).Children(func() { a.modelRow(c, m, false) })
+		}
+	})
+}
+
+// modelLanguages is the line saying which languages model id knows
+// (nothing when it says none).
+func modelLanguages(c *ui.Context, id string) {
+	t := c.Theme()
+	if l := uitext.ModelLanguages(id); l != "" {
+		ui.Row(c).Gap(px(t, 4)).AlignItems(ui.Center).Children(func() {
+			ui.Icon(c, icons.Global.Linear).Size(px(t, 14), px(t, 14)).TextColor(tok(t).Text2).Shrink(0)
+			caption(c, l).MinWidth(0)
+		})
 	}
 }
 
@@ -212,9 +271,15 @@ func (a *app) dictationCard(c *ui.Context) {
 	})
 }
 
-// modelCard is one model: what it is good at, its languages, its size
-// and state, and what can be done with it.
+// modelCard is one model in a card of its own.
 func (a *app) modelCard(c *ui.Context, m models.Model) {
+	card(c.Key("model-" + m.ID)).Children(func() { a.modelRow(c, m, true) })
+}
+
+// modelRow is one model: its name, size and uses, what it is good at, its
+// languages (alone: in a card of its own, else its family's card says
+// them), its labels, and what can be done with it.
+func (a *app) modelRow(c *ui.Context, m models.Model, alone bool) {
 	t := c.Theme()
 	k := tok(t)
 	st := a.modelStatus[m.ID]
@@ -222,81 +287,78 @@ func (a *app) modelCard(c *ui.Context, m models.Model) {
 	if m.Kind == models.LLM {
 		ic = icons.ChatRoundLine
 	}
-	card(c.Key("model-" + m.ID)).Children(func() {
-		ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Start).Children(func() {
+	ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Start).Children(func() {
+		if alone {
 			ui.Icon(c, ic.Linear).Size(px(t, 20), px(t, 20)).TextColor(k.Text2).Shrink(0).Margin(px(t, 1), 0, 0, 0)
-			// Voxt 1.x's order: the name, then its size and where it is used,
-			// then what it is good at, then the small labels at the foot.
-			ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp2)).Children(func() {
-				size, family := modelSizeText(m, st), modelFamilyText(m, st)
-				if st.Downloading && st.WaitingFor != "" { // "Downloading in AudioSmith… 43%" says it all
-					size, family = family, ""
-				}
-				ui.Column(c).Gap(px(t, 2)).Children(func() {
-					ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
-						ui.Text(c, uitext.ModelName(m.ID)).FontWeight(600)
-						if m.Default && !m.Retired {
-							tagChip(c, i18n.T("Default"))
-						}
-						if st.Installed {
-							statusMark(c, icons.CheckCircle, k.Success, i18n.T("Installed"))
-						}
-					})
-					ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
-						meta := size
-						if used := a.usedBy(local.Kind(m.Kind), m.ID); used != "" {
-							meta += " · " + used
-						}
-						caption(c, meta)
-						if mem, ok := a.modelMem[m.ID]; ok && st.Installed { // models_memory.go
-							ui.Row(c.Key("loaded")).Gap(px(t, 6)).AlignItems(ui.Center).Children(func() {
-								statusDot(c, k.Accent)
-								caption(c, modelMemText(mem))
-							})
-						}
-					})
-					if family != "" {
-						caption(c.Key("family"), family)
+		}
+		// Voxt 1.x's order: the name, then its size and where it is used,
+		// then what it is good at, then the small labels at the foot.
+		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp2)).Children(func() {
+			size, family := modelSizeText(m, st), modelFamilyText(m, st)
+			if st.Downloading && st.WaitingFor != "" { // "Downloading in AudioSmith… 43%" says it all
+				size, family = family, ""
+			}
+			ui.Column(c).Gap(px(t, 2)).Children(func() {
+				ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
+					ui.Text(c, uitext.ModelName(m.ID)).FontWeight(600)
+					if m.Default && !m.Retired {
+						tagChip(c, i18n.T("Default"))
+					}
+					if st.Installed {
+						statusMark(c, icons.CheckCircle, k.Success, i18n.T("Installed"))
 					}
 				})
-				ui.Text(c, uitext.ModelAbout(m.ID))
-				if l := uitext.ModelLanguages(m.ID); l != "" {
-					ui.Row(c).Gap(px(t, 4)).AlignItems(ui.Center).Children(func() {
-						ui.Icon(c, icons.Global.Linear).Size(px(t, 14), px(t, 14)).TextColor(k.Text2).Shrink(0)
-						caption(c, l).MinWidth(0)
-					})
-				}
-				if tags := a.modelTags(m); len(tags) > 0 && !m.Retired {
-					ui.Row(c.Key("tags")).Gap(px(t, 6)).AlignItems(ui.Center).Wrap().Children(func() {
-						for _, tag := range tags {
-							tagChip(c, tag)
-						}
-					})
+				ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
+					meta := size
+					if used := a.usedBy(local.Kind(m.Kind), m.ID); used != "" {
+						meta += " · " + used
+					}
+					caption(c, meta)
+					if mem, ok := a.modelMem[m.ID]; ok && st.Installed { // models_memory.go
+						ui.Row(c.Key("loaded")).Gap(px(t, 6)).AlignItems(ui.Center).Children(func() {
+							statusDot(c, k.Accent)
+							caption(c, modelMemText(mem))
+						})
+					}
+				})
+				if family != "" {
+					caption(c.Key("family"), family)
 				}
 			})
-			ui.Row(c.Key("actions")).Gap(px(t, sp2)).Shrink(0).Children(func() {
-				if m.Kind == models.ASR {
-					a.hideButton(c, m.ID)
-				}
-				a.modelActions(c, m, st)
-			})
-		})
-		if st.Downloading {
-			frac := 0.0
-			if st.Total > 0 {
-				frac = float64(st.Done) / float64(st.Total)
+			ui.Text(c, uitext.ModelAbout(m.ID))
+			if alone {
+				modelLanguages(c, m.ID)
 			}
-			ui.Progress(c, frac).Label(i18n.T("Downloading %s", uitext.ModelName(m.ID)))
-		}
-		if st.Err != nil && !st.Downloading {
-			msg, more := uitext.DownloadErrorText(st.Err)
-			notice(c, "model-err", noticeError, msg, more, func() {
-				if ui.Button(c.Key("retry"), i18n.T("Try again")).Clicked() {
-					a.downloadModel(m.ID)
-				}
-			}, nil)
-		}
+			if tags := a.modelTags(m); len(tags) > 0 && !m.Retired {
+				ui.Row(c.Key("tags")).Gap(px(t, 6)).AlignItems(ui.Center).Wrap().Children(func() {
+					for _, tag := range tags {
+						tagChip(c, tag)
+					}
+				})
+			}
+		})
+		ui.Row(c.Key("actions")).Gap(px(t, sp2)).Shrink(0).Children(func() {
+			if m.Kind == models.ASR {
+				a.hideButton(c, m.ID)
+			}
+			a.modelActions(c, m, st)
+		})
 	})
+	if st.Downloading {
+		frac := 0.0
+		if st.Total > 0 {
+			frac = float64(st.Done) / float64(st.Total)
+		}
+		ui.Progress(c, frac).Label(i18n.T("Downloading %s", uitext.ModelName(m.ID)))
+	}
+	if st.Err != nil && !st.Downloading {
+		msg, more := uitext.DownloadErrorText(st.Err)
+		notice(c, "model-err", noticeError, msg, more, func() {
+			if ui.Button(c.Key("retry"), i18n.T("Try again")).Clicked() {
+				a.downloadModel(m.ID)
+			}
+		}, nil)
+	}
 }
 
 // modelSizeText is a model's size, or how much of it came.

@@ -89,7 +89,11 @@ func (a *app) openOmniASR(_ context.Context, id, dir string) (asr.Provider, erro
 	key := id + "\x00" + dir
 	p := a.omniASR[key]
 	if p == nil || (p.VAD() != nil) != (v != nil) {
-		base, err := omni.NewASR(rt, id, dir)
+		var aux []string // Whisper's tokenizer
+		if a.models != nil {
+			aux = a.models.AuxDirs(id)
+		}
+		base, err := omni.NewASR(rt, id, dir, aux...)
 		if err != nil {
 			return nil, err
 		}

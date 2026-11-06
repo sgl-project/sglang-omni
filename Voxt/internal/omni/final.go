@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"mime/multipart"
 	"net/http"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -33,6 +35,7 @@ type finalRequest struct {
 	context   string
 	maxTokens int
 	layout    string
+	fields    map[string]string // the model's own (kinds.go)
 }
 
 // finalResult is a request's answer.
@@ -66,6 +69,9 @@ func (r finalRequest) body(model string) (*bytes.Buffer, string) {
 	field("include_generation_metadata", "true")
 	if r.layout != "" {
 		field("audio_layout", r.layout)
+	}
+	for _, k := range slices.Sorted(maps.Keys(r.fields)) {
+		field(k, r.fields[k])
 	}
 	fw, _ := w.CreateFormFile("file", "audio.wav")
 	_, _ = fw.Write(asr.WAV(r.pcm, sampleRate))

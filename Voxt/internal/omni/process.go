@@ -61,10 +61,10 @@ func spawn(cfg Config, spec Spec, dir string, cacheLimit bool) (*process, <-chan
 		"--model-directory", dir, "--startup-timeout-s", ftoa(cfg.StartTimeout.Seconds())}
 	bin := cfg.Binary
 	if spec.Binary != "" {
-		// A runtime without the copy (built before it, or sglang's own
-		// build) runs the model on qwen3_asr_server.
-		if b := filepath.Join(filepath.Dir(cfg.Binary), spec.Binary); exists(b) {
-			bin = b
+		bin = filepath.Join(filepath.Dir(cfg.Binary), spec.Binary)
+		// Older runtimes ran Silero VAD on qwen3_asr_server.
+		if spec.Kind == kindSileroVAD && !exists(bin) {
+			bin = cfg.Binary
 		}
 	}
 	cmd := exec.Command(bin, append(args, spec.launchArgs(cacheLimit)...)...)

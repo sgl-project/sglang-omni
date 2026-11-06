@@ -26,7 +26,7 @@ func (t *ASRTuning) tokenBudget(d time.Duration) int {
 // else "" (it detects). Voxt's Qwen3-ASR policy: the user's main
 // language is always the hint when the model has it.
 func (s Spec) languageHint(code string) string {
-	if strings.TrimSpace(code) == "" {
+	if s.NoHint || strings.TrimSpace(code) == "" {
 		return ""
 	}
 	c, ok := lang.Match(s.Languages, code)
