@@ -108,6 +108,10 @@ public:
                                    .end_seconds = 1.5,
                                    .speaker = "S01",
                                    .text = result.text});
+      } else if (outcome == "draft") {
+        result.verify_round_count = 2;
+        result.proposed_draft_token_count = 7;
+        result.accepted_draft_token_count = 3;
       } else {
       }
       return result;

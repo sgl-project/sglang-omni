@@ -221,5 +221,13 @@
       "model-00001-of-00002.safetensors": "53b7663c7c52aa36e487977d6e9bb2f5666b7aaa543bd5d5dd4e96ec88cfd957",
       "model-00002-of-00002.safetensors": "08d9e7bd9d885a0d6608953c6bbe40dbfb67f673a0cce9382414b55a9380053a"
     }
+  },
+  "wilsonzheng0327/Whisper-large-v3-distil-draft": {
+    "revision": "257104348ea24677cf6338967592a9d6078b383b",
+    "files": {
+      "config.json": "e771f2e9f9ebb1838830c00d3aa2ce7e240874ef0133fa5fab8cd189ca766cdb",
+      "generation_config.json": "2d07fa6d3ad06295b03b3be822a20b817949c26fdcb45d73c6e73cd4cdbd91b1",
+      "model.safetensors": "de43643bd06cb2139943899fe56ef43a21ed8623f3bf24e57d96592105c30bf3"
+    }
   }
 }

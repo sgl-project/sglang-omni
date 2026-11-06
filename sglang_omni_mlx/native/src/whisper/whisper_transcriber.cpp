@@ -128,8 +128,17 @@ std::optional<mx::array> SuppressionMask(const std::vector<int> &token_ids,
 } // namespace
 
 WhisperTranscriber::WhisperTranscriber(
-    const std::filesystem::path &model_directory)
-    : model_(model_directory), tokenizer_(model_directory) {
+    const std::filesystem::path &model_directory,
+    const std::filesystem::path &draft_directory, int draft_steps)
+    : model_(model_directory), draft_steps_(draft_steps),
+      tokenizer_(model_directory) {
+  if (draft_steps < 1 || draft_steps > 16) {
+    throw std::invalid_argument("draft steps must be between 1 and 16");
+  } else if (!draft_directory.empty()) {
+    draft_.emplace(draft_directory);
+    draft_->PrepareDraft(model_);
+  } else {
+  }
   const nlohmann::json tokenizer_config =
       ReadJson(model_directory / "tokenizer_config.json");
   clean_up_tokenization_spaces_ =
@@ -243,37 +252,16 @@ WhisperTranscriber::TranscribeWindow(const std::vector<float> &window_samples,
                                      int max_new_tokens, float temperature,
                                      const std::atomic<bool> &cancel) const {
   const mx::array encoder_states = model_.Encode(window_samples);
+  if (draft_.has_value() && temperature == 0.0f) {
+    return TranscribeWithDraft(encoder_states, prompt_ids, max_new_tokens,
+                               cancel);
+  } else {
+  }
   std::vector<DecoderLayerCache> caches(model_.config().text_layer_count);
-  const auto next_token = [&](mx::array logits, bool first_step) {
-    // Note (Jiaxin Deng): the float16 decoder's logits are suppressed and
-    // ranked in float32, as the reference Whisper decoder does.
-    logits = mx::astype(logits, mx::float32);
-    if (first_step && begin_suppression_.has_value()) {
-      logits = mx::add(logits, mx::astype(*begin_suppression_, logits.dtype()));
-    } else {
-    }
-    if (step_suppression_.has_value()) {
-      logits = mx::add(logits, mx::astype(*step_suppression_, logits.dtype()));
-    } else {
-    }
-    if (timestamp_suppression_.has_value()) {
-      logits =
-          mx::add(logits, mx::astype(*timestamp_suppression_, logits.dtype()));
-    } else {
-    }
-    if (temperature <= 0.0f) {
-      return mx::argmax(logits, -1);
-    } else {
-      return mx::reshape(
-          mx::random::categorical(mx::expand_dims(
-              mx::divide(logits, mx::array(temperature, logits.dtype())), 0)),
-          {});
-    }
-  };
   const mx::array prompt(prompt_ids.data(),
                          {1, static_cast<int>(prompt_ids.size())}, mx::int32);
-  mx::array token =
-      next_token(model_.Decode(prompt, 0, encoder_states, caches), true);
+  mx::array token = NextToken(model_.Decode(prompt, 0, encoder_states, caches),
+                              true, temperature);
   mx::async_eval({token});
   WindowResult result;
   std::vector<int> generated_ids;
@@ -290,10 +278,10 @@ WhisperTranscriber::TranscribeWindow(const std::vector<float> &window_samples,
     // decodes while the end of text is checked.
     if (step + 1 < max_new_tokens) {
       token =
-          next_token(model_.Decode(mx::reshape(current, {1, 1}),
-                                   static_cast<int>(prompt_ids.size()) + step,
-                                   encoder_states, caches),
-                     false);
+          NextToken(model_.Decode(mx::reshape(current, {1, 1}),
+                                  static_cast<int>(prompt_ids.size()) + step,
+                                  encoder_states, caches),
+                    false, temperature);
       mx::async_eval({token});
     } else {
     }
@@ -367,6 +355,9 @@ WhisperTranscriber::Transcribe(const std::vector<float> &samples,
     } else {
     }
     result.generated_token_count += window.generated_token_count;
+    result.verify_round_count += window.verify_round_count;
+    result.proposed_draft_token_count += window.proposed_draft_token_count;
+    result.accepted_draft_token_count += window.accepted_draft_token_count;
     if (window.reached_token_limit) {
       result.finish_reason = qwen3_asr::FinishReason::kLength;
     } else {
