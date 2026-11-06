@@ -17,9 +17,7 @@ from typing import Literal
 
 from sglang_omni_mlx.native.ci.long_audio_client import (
     HTTP_TRANSCRIPTION_FIELDS,
-    MEMORY_SAMPLE_INTERVAL_SECONDS,
     HttpTranscription,
-    MemorySampler,
     RealtimeTranscription,
     TranscriptScore,
     score,
@@ -32,6 +30,10 @@ from sglang_omni_mlx.native.ci.long_audio_corpus import (
     build_recording,
     chunk_frame_counts,
     load_clips,
+)
+from sglang_omni_mlx.native.ci.long_audio_memory import (
+    MEMORY_SAMPLE_INTERVAL_SECONDS,
+    MemorySampler,
 )
 from sglang_omni_mlx.native.ci.provision import sha256
 from sglang_omni_mlx.native.tests.native_server import (

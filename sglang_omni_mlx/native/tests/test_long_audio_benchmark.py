@@ -22,7 +22,6 @@ from websockets.sync.server import ServerConnection, serve
 from sglang_omni_mlx.native.ci import benchmark_long_audio, long_audio_client
 from sglang_omni_mlx.native.ci.benchmark_long_audio import stop_server
 from sglang_omni_mlx.native.ci.long_audio_client import (
-    MemorySampler,
     score,
     stream_recording,
     transcribe_chunks,
@@ -34,6 +33,7 @@ from sglang_omni_mlx.native.ci.long_audio_corpus import (
     chunk_frame_counts,
     load_clips,
 )
+from sglang_omni_mlx.native.ci.long_audio_memory import MemorySampler
 
 DONE_EVENT = (
     b'data: {"type":"transcript.text.done","text":"actual transcript",'
