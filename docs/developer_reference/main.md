@@ -139,6 +139,8 @@ Only these pages are exempt from navigation inclusion; emoji, fence-label, and f
 - `get_started/apiserver_quickstart.md`: legacy exemption; this page is now listed in the Get Started sidebar.
 - `basic_usage/python_router.md`: retained until the Python router is removed separately.
 
+Identical fenced bodies in multiple files are rejected when they contain at least six lines and 200 characters after stripping trailing whitespace. Every matching location is reported.
+
 ```bash
 python -m pip install -r scripts/requirements-doc-lint.txt
 python scripts/check_doc_style.py
