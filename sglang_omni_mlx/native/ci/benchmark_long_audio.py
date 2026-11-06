@@ -8,7 +8,6 @@ import hashlib
 import json
 import math
 import platform
-import selectors
 import subprocess
 import time
 from importlib.metadata import version
@@ -28,11 +27,12 @@ from sglang_omni_mlx.native.ci.long_audio_corpus import (
     chunk_frame_counts,
     load_clips,
 )
+from sglang_omni_mlx.native.tests.native_server import read_supervised_event
 
 SHUTDOWN_TIMEOUT_SECONDS = 10
 
 
-def stop_server(process: subprocess.Popen[str]) -> str | None:
+def stop_server(process: subprocess.Popen[bytes]) -> str | None:
     """Stop the server and close its pipes; returns what went wrong, if anything."""
     if process.poll() is not None:
         process.communicate()
@@ -41,7 +41,7 @@ def stop_server(process: subprocess.Popen[str]) -> str | None:
         pass
     try:
         process.communicate(
-            '{"command":"shutdown"}\n', timeout=SHUTDOWN_TIMEOUT_SECONDS
+            b'{"command":"shutdown"}\n', timeout=SHUTDOWN_TIMEOUT_SECONDS
         )
     except subprocess.TimeoutExpired:
         process.kill()
@@ -191,7 +191,6 @@ def main() -> None:
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=log,
-                    text=True,
                 )
                 sampler = MemorySampler(
                     process,
@@ -203,12 +202,7 @@ def main() -> None:
                 )
                 sampler.thread.start()
                 try:
-                    with selectors.DefaultSelector() as selector:
-                        selector.register(process.stdout, selectors.EVENT_READ)
-                        if not selector.select(timeout=60):
-                            raise TimeoutError("Server startup deadline exceeded")
-                        else:
-                            ready = json.loads(process.stdout.readline())
+                    ready = read_supervised_event(process)
                     if ready["event"] != "ready":
                         raise RuntimeError(f"Server failed to start: {ready['reason']}")
                     else:

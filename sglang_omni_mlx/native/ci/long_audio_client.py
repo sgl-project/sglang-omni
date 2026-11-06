@@ -9,11 +9,9 @@ import http.client
 import io
 import json
 import math
-import re
 import subprocess
 import threading
 import time
-import unicodedata
 import wave
 from pathlib import Path
 from typing import TypedDict
@@ -22,6 +20,8 @@ from rapidfuzz.distance import Levenshtein
 from websockets.sync.client import connect
 
 from sglang_omni_mlx.native.ci.long_audio_corpus import SAMPLE_BYTES, SAMPLE_RATE
+from sglang_omni_mlx.native.ci.transcript_tokens import tokens
+from sglang_omni_mlx.native.tests.native_server import multipart_form
 
 HTTP_TRANSCRIPTION_FIELDS = {
     "stream": "true",
@@ -105,7 +105,7 @@ class ProcessUsage(ctypes.Structure):
 class MemorySampler:
     def __init__(
         self,
-        process: subprocess.Popen[str],
+        process: subprocess.Popen[bytes],
         destination: Path,
         limit_bytes: int,
         limit_seconds: float,
@@ -175,15 +175,8 @@ class MemorySampler:
 def score(
     reference: str, hypothesis: str, language: str
 ) -> dict[str, float | int | str]:
-    sequences = []
-    for text in (reference, hypothesis):
-        text = unicodedata.normalize("NFKC", text).lower()
-        if language == "en":
-            words = re.sub(r"[^a-z0-9' ]+", " ", text).split()
-            sequences.append([word.strip("'") for word in words if word.strip("'")])
-        else:
-            sequences.append(re.findall(r"[㐀-鿿豈-﫿]|[a-z0-9']+", text))
-    reference_tokens, hypothesis_tokens = sequences
+    reference_tokens = tokens(reference, language)
+    hypothesis_tokens = tokens(hypothesis, language)
     if not reference_tokens:
         raise ValueError("Cannot score an empty reference")
     else:
@@ -209,21 +202,12 @@ def transcribe_http(
     timeout_seconds: float,
     max_new_tokens: int | None = None,
 ) -> Measurement:
-    boundary = "omni-long-audio-benchmark"
     fields = {"language": language, **HTTP_TRANSCRIPTION_FIELDS}
     if max_new_tokens is not None:
         fields["max_new_tokens"] = str(max_new_tokens)
     else:
         pass
-    body = b"".join(
-        f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode()
-        for name, value in fields.items()
-    )
-    body += (
-        f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.wav"\r\nContent-Type: audio/wav\r\n\r\n'.encode()
-        + wav
-        + f"\r\n--{boundary}--\r\n".encode()
-    )
+    boundary, body = multipart_form(fields, wav)
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout_seconds)
     started = time.monotonic()
     try:
