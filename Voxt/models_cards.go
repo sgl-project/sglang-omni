@@ -107,17 +107,38 @@ func (a *app) modelCard(c *ui.Context, m models.Model) {
 	card(c.Key("model-" + m.ID)).Children(func() {
 		ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Start).Children(func() {
 			ui.Icon(c, ic.Linear).Size(px(t, 20), px(t, 20)).TextColor(k.Text2).Shrink(0).Margin(px(t, 1), 0, 0, 0)
-			ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp1)).Children(func() {
-				ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
-					ui.Text(c, uitext.ModelName(m.ID)).FontWeight(600)
-					if m.Default && !m.Retired {
-						tagChip(c, i18n.T("Default"))
-					}
-					for _, tag := range a.modelTags(m) {
-						tagChip(c, tag)
-					}
-					if st.Installed {
-						statusMark(c, icons.CheckCircle, k.Success, i18n.T("Installed"))
+			// Voxt 1.x's order: the name, then its size and where it is used,
+			// then what it is good at, then the small labels at the foot.
+			ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp2)).Children(func() {
+				size, family := modelSizeText(m, st), modelFamilyText(m, st)
+				if st.Downloading && st.WaitingFor != "" { // "Downloading in AudioSmith… 43%" says it all
+					size, family = family, ""
+				}
+				ui.Column(c).Gap(px(t, 2)).Children(func() {
+					ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
+						ui.Text(c, uitext.ModelName(m.ID)).FontWeight(600)
+						if m.Default && !m.Retired {
+							tagChip(c, i18n.T("Default"))
+						}
+						if st.Installed {
+							statusMark(c, icons.CheckCircle, k.Success, i18n.T("Installed"))
+						}
+					})
+					ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
+						meta := size
+						if used := a.usedBy(local.Kind(m.Kind), m.ID); used != "" {
+							meta += " · " + used
+						}
+						caption(c, meta)
+						if mem, ok := a.modelMem[m.ID]; ok && st.Installed { // models_memory.go
+							ui.Row(c.Key("loaded")).Gap(px(t, 6)).AlignItems(ui.Center).Children(func() {
+								statusDot(c, k.Accent)
+								caption(c, modelMemText(mem))
+							})
+						}
+					})
+					if family != "" {
+						caption(c.Key("family"), family)
 					}
 				})
 				ui.Text(c, uitext.ModelAbout(m.ID))
@@ -127,25 +148,13 @@ func (a *app) modelCard(c *ui.Context, m models.Model) {
 						caption(c, l).MinWidth(0)
 					})
 				}
-				size, family := modelSizeText(m, st), modelFamilyText(m, st)
-				if st.Downloading && st.WaitingFor != "" { // "Downloading in AudioSmith… 43%" says it all
-					size, family = family, ""
+				if tags := a.modelTags(m); len(tags) > 0 && !m.Retired {
+					ui.Row(c.Key("tags")).Gap(px(t, 6)).AlignItems(ui.Center).Wrap().Children(func() {
+						for _, tag := range tags {
+							tagChip(c, tag)
+						}
+					})
 				}
-				if family != "" {
-					caption(c.Key("family"), family)
-				}
-				ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
-					caption(c, size)
-					if used := a.usedBy(local.Kind(m.Kind), m.ID); used != "" {
-						caption(c.Key("used"), "· "+used)
-					}
-					if mem, ok := a.modelMem[m.ID]; ok && st.Installed { // models_memory.go
-						ui.Row(c.Key("loaded")).Gap(px(t, 6)).AlignItems(ui.Center).Children(func() {
-							statusDot(c, k.Accent)
-							caption(c, modelMemText(mem))
-						})
-					}
-				})
 			})
 			ui.Row(c.Key("actions")).Gap(px(t, sp2)).Shrink(0).Children(func() { a.modelActions(c, m, st) })
 		})
