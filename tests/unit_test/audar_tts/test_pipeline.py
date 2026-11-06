@@ -669,7 +669,12 @@ def test_load_codec_constructs_a_local_directory_snapshot(
     monkeypatch.setattr(stages.torch, "load", fake_torch_load)
     stages.load_codec.cache_clear()
     try:
-        codec = stages.load_codec(str(codec_dir), "ignored", "cpu")
+        codec = stages.load_codec(
+            str(codec_dir),
+            "ignored",
+            "cpu",
+            codec_w2v_model_path=str(w2v_dir),
+        )
         assert isinstance(codec, RecordingCodec)
         assert constructed == [(24000, 480)]
         assert torch_loads == [
@@ -692,7 +697,12 @@ def test_load_codec_constructs_a_local_directory_snapshot(
         model_module.NeuCodec = FailingCodec
         stages.load_codec.cache_clear()
         with pytest.raises(RuntimeError, match="constructor failed"):
-            stages.load_codec(str(codec_dir), "ignored", "cpu")
+            stages.load_codec(
+                str(codec_dir),
+                "ignored",
+                "cpu",
+                codec_w2v_model_path=str(w2v_dir),
+            )
         assert model_module.AutoFeatureExtractor is feature_extractor
         assert model_module.Wav2Vec2BertModel is w2v_model
     finally:
@@ -701,7 +711,7 @@ def test_load_codec_constructs_a_local_directory_snapshot(
 
 @pytest.mark.parametrize(
     "missing",
-    ["pytorch_model.bin", "facebook_w2v_bert_2_0"],
+    ["pytorch_model.bin", "w2v snapshot"],
 )
 def test_load_codec_rejects_incomplete_local_snapshot(
     tmp_path: Path,
@@ -709,20 +719,26 @@ def test_load_codec_rejects_incomplete_local_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     codec_dir = tmp_path / "neucodec"
+    w2v_dir = tmp_path / "w2v"
     codec_dir.mkdir()
     if missing != "pytorch_model.bin":
         (codec_dir / "pytorch_model.bin").touch()
     else:
         pass
-    if missing != "facebook_w2v_bert_2_0":
-        (tmp_path / "facebook_w2v_bert_2_0").mkdir()
+    if missing != "w2v snapshot":
+        w2v_dir.mkdir()
     else:
         pass
     monkeypatch.setitem(sys.modules, "neucodec", types.SimpleNamespace(NeuCodec=object))
     stages.load_codec.cache_clear()
     try:
-        with pytest.raises(FileNotFoundError, match=missing):
-            stages.load_codec(str(codec_dir), "ignored", "cpu")
+        with pytest.raises(FileNotFoundError, match="local NeuCodec"):
+            stages.load_codec(
+                str(codec_dir),
+                "ignored",
+                "cpu",
+                codec_w2v_model_path=str(w2v_dir),
+            )
     finally:
         stages.load_codec.cache_clear()
 

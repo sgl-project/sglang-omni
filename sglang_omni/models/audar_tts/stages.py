@@ -20,6 +20,7 @@ from sglang_omni.models.audar_tts.protocol import (
     parse_speech_codes,
 )
 from sglang_omni.models.audar_tts.request_builders import build_audar_state
+from sglang_omni.models.weight_loader import resolve_model_path
 from sglang_omni.preprocessing.audio import AudioMediaIO
 from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
 from sglang_omni.proto import StagePayload
@@ -41,6 +42,7 @@ else:
 
 DEFAULT_GGUF_FILENAME = "Audar-TTS-V1-Turbo-Q4_K_M.gguf"
 DEFAULT_CODEC_MODEL = "neuphonic/neucodec"
+DEFAULT_CODEC_W2V_MODEL = "facebook/w2v-bert-2.0"
 REFERENCE_SAMPLE_RATE = 16000
 OUTPUT_SAMPLE_RATE = 24000
 MIN_REFERENCE_SECONDS = 5.0
@@ -61,7 +63,7 @@ class LocalW2VModelLoader:
         *args: object,
         **kwargs: object,
     ) -> object:
-        if model_name_or_path == "facebook/w2v-bert-2.0":
+        if model_name_or_path == DEFAULT_CODEC_W2V_MODEL:
             model_name_or_path = str(self.local_path)
             kwargs["local_files_only"] = True
         else:
@@ -77,7 +79,12 @@ class ReferenceInput:
 
 
 @lru_cache(maxsize=None)
-def load_codec(model: str, revision: str, device: str) -> "NeuCodec":
+def load_codec(
+    model: str,
+    revision: str,
+    device: str,
+    codec_w2v_model_path: str | None = None,
+) -> "NeuCodec":
     try:
         from neucodec import NeuCodec
     except ImportError as exc:
@@ -86,8 +93,19 @@ def load_codec(model: str, revision: str, device: str) -> "NeuCodec":
         ) from exc
     local_codec_dir = Path(model).expanduser()
     if local_codec_dir.is_dir():
+        local_codec_dir = resolve_model_path(model)
         weights_path = local_codec_dir / "pytorch_model.bin"
-        w2v_path = local_codec_dir.parent / "facebook_w2v_bert_2_0"
+        requested_w2v_path = codec_w2v_model_path or DEFAULT_CODEC_W2V_MODEL
+        try:
+            w2v_path = resolve_model_path(
+                requested_w2v_path,
+                local_files_only=True,
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            raise FileNotFoundError(
+                "A local NeuCodec directory requires a resolvable W2V snapshot; "
+                f"set codec_w2v_model_path explicitly: {requested_w2v_path}"
+            ) from exc
         if weights_path.is_file() and w2v_path.is_dir():
             import neucodec.model as neucodec_model
 
@@ -110,8 +128,8 @@ def load_codec(model: str, revision: str, device: str) -> "NeuCodec":
             return codec.eval().to(device)
         else:
             raise FileNotFoundError(
-                "A local NeuCodec directory needs pytorch_model.bin and "
-                f"a sibling facebook_w2v_bert_2_0 directory: {local_codec_dir}"
+                "A local NeuCodec directory needs pytorch_model.bin and a "
+                f"resolvable W2V snapshot: {local_codec_dir}, {w2v_path}"
             )
     else:
         return NeuCodec.from_pretrained(model, revision=revision).eval().to(device)
@@ -212,6 +230,7 @@ class AudarReferenceEncodeHook(TensorReferenceEncodeHook[ReferenceInput]):
         device: str,
         codec_model: str,
         codec_revision: str,
+        codec_w2v_model_path: str | None = None,
         codec_lock: threading.Lock | None = None,
     ) -> None:
         self.codec = codec
@@ -220,7 +239,10 @@ class AudarReferenceEncodeHook(TensorReferenceEncodeHook[ReferenceInput]):
         self.model_revision = codec_revision
         self.codec_lock = codec_lock or threading.Lock()
         self.encoder_config_hash = hash_bytes(
-            f"sample_rate:{REFERENCE_SAMPLE_RATE}".encode("utf-8")
+            (
+                f"sample_rate:{REFERENCE_SAMPLE_RATE};"
+                f"w2v:{codec_w2v_model_path or DEFAULT_CODEC_W2V_MODEL}"
+            ).encode("utf-8")
         )
 
     def normalize_input(self, raw_input: object) -> ReferenceInput:
@@ -249,6 +271,7 @@ def create_reference_encoder_executor(
     gpu_id: int | None = None,
     codec_model: str = DEFAULT_CODEC_MODEL,
     codec_revision: str = "main",
+    codec_w2v_model_path: str | None = None,
     cache_max_items: int = 256,
     cache_max_bytes: int = 64 * 1024 * 1024,
     max_concurrency: int = 8,
@@ -256,13 +279,19 @@ def create_reference_encoder_executor(
     from sglang_omni.utils.device import resolve_concrete_device
 
     device = str(resolve_concrete_device(device, gpu_id))
-    codec = load_codec(codec_model, codec_revision, device)
+    codec = load_codec(
+        codec_model,
+        codec_revision,
+        device,
+        codec_w2v_model_path=codec_w2v_model_path,
+    )
     reference_service = ReferenceEncodeService(
         AudarReferenceEncodeHook(
             codec=codec,
             device=device,
             codec_model=codec_model,
             codec_revision=codec_revision,
+            codec_w2v_model_path=codec_w2v_model_path,
             codec_lock=codec_lock(codec_model, codec_revision, device),
         ),
         max_items=cache_max_items,
@@ -440,11 +469,17 @@ def create_vocoder_executor(
     gpu_id: int | None = None,
     codec_model: str = DEFAULT_CODEC_MODEL,
     codec_revision: str = "main",
+    codec_w2v_model_path: str | None = None,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     from sglang_omni.utils.device import resolve_concrete_device
 
     device = str(resolve_concrete_device(device, gpu_id))
-    codec = load_codec(codec_model, codec_revision, device)
+    codec = load_codec(
+        codec_model,
+        codec_revision,
+        device,
+        codec_w2v_model_path=codec_w2v_model_path,
+    )
     lock = codec_lock(codec_model, codec_revision, device)
 
     async def _decode(payload: StagePayload) -> StagePayload:
