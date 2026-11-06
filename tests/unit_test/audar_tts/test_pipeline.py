@@ -670,51 +670,33 @@ def test_load_codec_constructs_a_local_directory_snapshot(
     stages.load_codec.cache_clear()
     try:
         codec = stages.load_codec(str(codec_dir), "ignored", "cpu")
-    finally:
+        assert isinstance(codec, RecordingCodec)
+        assert constructed == [(24000, 480)]
+        assert torch_loads == [
+            ((weights_path,), {"map_location": "cpu", "weights_only": True})
+        ]
+        assert loaded == [(state_dict, False)]
+        assert devices == ["cpu"]
+        assert pretrained_calls == [
+            ("w2v", str(w2v_dir), True),
+            ("feature_extractor", str(w2v_dir), True),
+        ]
+        assert model_module.AutoFeatureExtractor is feature_extractor
+        assert model_module.Wav2Vec2BertModel is w2v_model
+
+        class FailingCodec:
+            def __init__(self, sample_rate: int, hop_length: int) -> None:
+                raise RuntimeError("constructor failed")
+
+        sys.modules["neucodec"].NeuCodec = FailingCodec
+        model_module.NeuCodec = FailingCodec
         stages.load_codec.cache_clear()
-
-    assert isinstance(codec, RecordingCodec)
-    assert constructed == [(24000, 480)]
-    assert torch_loads == [
-        ((weights_path,), {"map_location": "cpu", "weights_only": True})
-    ]
-    assert loaded == [(state_dict, False)]
-    assert devices == ["cpu"]
-    assert pretrained_calls == [
-        ("w2v", str(w2v_dir), True),
-        ("feature_extractor", str(w2v_dir), True),
-    ]
-    assert model_module.AutoFeatureExtractor is feature_extractor
-    assert model_module.Wav2Vec2BertModel is w2v_model
-
-
-def test_load_codec_restores_pretrained_classes_after_constructor_failure(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    codec_dir = tmp_path / "neucodec"
-    (tmp_path / "facebook_w2v_bert_2_0").mkdir()
-    codec_dir.mkdir()
-    (codec_dir / "pytorch_model.bin").touch()
-    feature_extractor = recording_pretrained("feature_extractor", [])
-    w2v_model = recording_pretrained("w2v", [])
-
-    class FailingCodec:
-        def __init__(self, sample_rate: int, hop_length: int) -> None:
-            raise RuntimeError("constructor failed")
-
-    model_module = install_fake_neucodec(
-        monkeypatch, FailingCodec, feature_extractor, w2v_model
-    )
-    stages.load_codec.cache_clear()
-    try:
         with pytest.raises(RuntimeError, match="constructor failed"):
             stages.load_codec(str(codec_dir), "ignored", "cpu")
+        assert model_module.AutoFeatureExtractor is feature_extractor
+        assert model_module.Wav2Vec2BertModel is w2v_model
     finally:
         stages.load_codec.cache_clear()
-
-    assert model_module.AutoFeatureExtractor is feature_extractor
-    assert model_module.Wav2Vec2BertModel is w2v_model
 
 
 @pytest.mark.parametrize(
