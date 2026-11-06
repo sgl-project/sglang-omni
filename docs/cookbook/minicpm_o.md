@@ -94,6 +94,18 @@ audio = client.audio.speech.create(
 
 The speech output is non-streaming. The sampling fields you set, such as `temperature`, `top_p` and `max_new_tokens`, apply to the Talker, which generates the speech; the rest keep the Talker's defaults.
 
+
+### HiFT CUDA graphs
+
+Set the Code2Wav factory's `hift_cuda_graph_capture_shapes` to `[batch_size, mel_frames]` buckets, for example `[[1, 64], [2, 64], [1, 128]]`, to capture HiFT's decode body at startup on CUDA. The default empty list disables capture. Inputs use the smallest bucket by batch-times-frames that fits both dimensions; inputs outside all buckets use the original decode body. Non-CUDA devices skip capture.
+
+The graph pads inputs and masks intermediate convolutions at the real frame length, preventing the padded tail from feeding back into valid audio. STFT still sees the unpadded excitation, and spectra are cropped before inverse STFT to preserve the original window envelope. Code2Wav still groups rows by their real length; buckets reuse graphs across these groups rather than combining mixed-length rows. Wider buckets save captures but increase padded computation, so choose nearby lengths for frequent inputs.
+
+Padding can select different convolution algorithms, including different TF32 rounding, so bucketed output is not guaranteed to meet the benchmark's strict pointwise tolerance against an unpadded decode. The benchmark accepts `--capture-shapes` independently of input `--shapes`; use `--deterministic --disable-tf32 --emulate-precision-casts` to reduce convolution and compiler rounding differences when investigating boundaries, and evaluate speech quality under the precision settings used for serving. These diagnostic flags do not guarantee a passing comparison for every batch size and do not change the serving precision settings.
+
+This captures the convolution, upsampling and activation body, including its compiled form when `enable_hift_torch_compile` is enabled. F0 prediction, random excitation, STFT and inverse STFT remain outside the graphs. Graph inputs and outputs consume additional device memory, so select shapes from your workload. Invalid shapes or capture failures fail startup. This setting applies to the chat speech Code2Wav stage, not the separate full-duplex vocoder.
+
+
 ## Speculative Decoding
 
 The Thinker can verify tokens proposed by a DSpark draft trained on its own answers to text, audio, image and video prompts, [`Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm`](https://huggingface.co/Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm):
