@@ -183,11 +183,14 @@ def run_case(
         int(arguments.max_footprint_gib * 1024**3),
     ) as sampler:
         try:
-            ready = read_supervised_event(process)
-            if ready["event"] != "ready":
-                raise RuntimeError(f"Server failed to start: {ready['reason']}")
+            first_event = read_supervised_event(process)
+            port = first_event.get("port")
+            if not isinstance(port, int):
+                raise RuntimeError(
+                    f"Server failed to start: {first_event.get('reason')}"
+                )
             else:
-                port = ready["port"]
+                pass
             sampler.phase = "warmup"
             warmup = transcribe_http(
                 port, warmup_wav, language, arguments.timeout_seconds
@@ -195,6 +198,7 @@ def run_case(
             time.sleep(MEMORY_SETTLE_SECONDS)
             baseline = sampler.samples[-1]
             sampler.phase = "long_recording"
+            transcription: HttpTranscription | RealtimeTranscription
             if arguments.chunk_seconds is not None:
                 transcription = transcribe_chunks(
                     port,
