@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -11,8 +11,10 @@ from sglang.srt.platforms.device_mixin import DeviceMixin, PlatformEnum
 from sglang.srt.platforms.interface import SRTPlatform
 from sglang.srt.platforms.rocm import RocmSRTPlatform
 from sglang.srt.platforms.xpu import XpuSRTPlatform
+from torch.nn.attention import SDPBackend
 
 import sglang_omni.platforms as platforms
+import sglang_omni.platforms.interface as platform_interface
 import sglang_omni.platforms.xpu as xpu_platform
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig
 from sglang_omni.platforms.cpu import CPUOmniPlatform
@@ -241,15 +243,13 @@ def test_a_platform_declines_a_device_that_is_not_its_own() -> None:
 def test_a_platform_that_names_no_sdpa_backend_never_pins(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import torch.nn.attention as attention
+    calls: list[list[SDPBackend]] = []
 
-    calls: list[object] = []
-
-    def recording_pin(backends):
+    def recording_pin(backends: list[SDPBackend]) -> AbstractContextManager[None]:
         calls.append(backends)
         return nullcontext()
 
-    monkeypatch.setattr(attention, "sdpa_kernel", recording_pin)
+    monkeypatch.setattr(platform_interface, "sdpa_kernel", recording_pin)
 
     with OmniPlatform().graph_capture_attention():
         pass
@@ -260,16 +260,13 @@ def test_a_platform_that_names_no_sdpa_backend_never_pins(
 def test_the_pin_receives_exactly_the_backends_the_hook_names(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import torch.nn.attention as attention
-    from torch.nn.attention import SDPBackend
-
     calls: list[list[SDPBackend]] = []
 
-    def recording_pin(backends):
+    def recording_pin(backends: list[SDPBackend]) -> AbstractContextManager[None]:
         calls.append(list(backends))
         return nullcontext()
 
-    monkeypatch.setattr(attention, "sdpa_kernel", recording_pin)
+    monkeypatch.setattr(platform_interface, "sdpa_kernel", recording_pin)
     platform = xpu_platform.XPUOmniPlatform()
 
     with platform.graph_capture_attention():

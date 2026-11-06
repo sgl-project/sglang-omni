@@ -3,6 +3,7 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import Enum
 from typing import Literal, TypeAlias, TypedDict
 
 import msgspec
@@ -13,6 +14,13 @@ from sglang_omni.proto.kv_transfer import (
     KVTransferReadyMessage,
 )
 from sglang_omni.proto.request import StagePayload
+
+
+class TransportKind(str, Enum):
+    LOCAL_OBJECT = "local_object"
+    CUDA_IPC = "cuda_ipc"
+    SHM = "shm"
+    MOONCAKE = "mooncake"
 
 
 class DirectCudaIpcTensor(TypedDict):

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-import copy
 import dataclasses
 import functools
 import logging
@@ -10,7 +9,6 @@ from dataclasses import dataclass
 from threading import Lock
 
 import torch
-from sglang.srt.configs.draft_parallel import DraftParallelLayout
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.layers.radix_attention import RadixAttention
 from sglang.srt.layers.sampler import (
@@ -21,36 +19,28 @@ from sglang.srt.layers.sampler import (
     top_k_top_p_min_p_sampling_from_probs_torch,
 )
 from sglang.srt.mem_cache.kv_cache_configurator import KVCacheConfigurator
-from sglang.srt.mem_cache.memory_pool import KVCache, MHATokenToKVPool
 from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBackend
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
-from sglang.srt.model_executor.forward_context import ForwardContext, forward_context
-from sglang.srt.model_executor.graph_memory_usage import (
-    replace_graph_memory_usage,
-    replace_graph_time_usage,
-)
-from sglang.srt.model_executor.model_runner import ModelRunner, ModelRunnerOutput
-from sglang.srt.model_executor.model_runner_components.attention_backend_setup import (
-    build_attention_backends,
-)
+from sglang.srt.model_executor.model_runner import ModelRunner
 from sglang.srt.model_executor.model_runner_components.layer_setup import (
     AttentionAndMoeLayers,
-)
-from sglang.srt.model_executor.runner.eager_runner import EagerRunner
-from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
-    PrefillCudaGraphRunner,
 )
 from sglang.srt.model_executor.runner.decode_cuda_graph_runner import (
     DecodeCudaGraphRunner,
 )
-from sglang.srt.platforms.interface import KVPoolKind
+from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
+    PrefillCudaGraphRunner,
+)
 from sglang.srt.runtime_context import get_exec, get_parallel, get_schedule
 from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 from sglang.srt.server_args import ServerArgs
-from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
+from sglang.srt.utils.common import get_available_gpu_memory
 from torch import nn
 
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
+from sglang_omni.platforms import current_platform
+from sglang_omni.scheduling.sglang_backend.request_data import DllmForwardBatch
+from sglang_omni.utils import ipc_weights
 from sglang_omni.utils.gpu_memory import (
     calculate_stage_budget_available_bytes,
     calculate_stage_load_delta_bytes,
@@ -154,8 +144,6 @@ def filter_weights_by_prefix(
 
 def free_gpu_memory_bytes(device: str, gpu_id: int) -> int:
     """Currently free GPU memory in bytes, min-reduced across the world group."""
-    from sglang.srt.utils.common import get_available_gpu_memory
-
     world_group = get_parallel().world_group
     free_gib = get_available_gpu_memory(
         device,
@@ -164,26 +152,6 @@ def free_gpu_memory_bytes(device: str, gpu_id: int) -> int:
         cpu_group=world_group.cpu_group,
     )
     return int(free_gib * (1 << 30))
-
-
-class SeparateKVAllocationsPool(MHATokenToKVPool):
-    """MHA pool for a compiled engine, with K and V in separate allocations."""
-
-    # note (ratish): the compiled KV store mutates K and V; inductor writes in place to one input per storage, so sharing an allocation clones all of it every decode step.
-    def _create_buffers_normal(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-        self,
-    ) -> None:
-        k_shape, v_shape = (
-            self._kv_buffer_shapes()
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-        self.k_buffer = [
-            torch.zeros(k_shape, dtype=self.store_dtype, device=self.device)
-            for _ in range(self.layer_num)
-        ]
-        self.v_buffer = [
-            torch.zeros(v_shape, dtype=self.store_dtype, device=self.device)
-            for _ in range(self.layer_num)
-        ]
 
 
 @dataclass(slots=True, kw_only=True)
@@ -197,17 +165,6 @@ class OmniKVCacheConfigurator(KVCacheConfigurator):
 
     total_gpu_memory_fraction: float | None = None
     kv_cache_bytes: int | None = None
-
-    def _resolve_kv_pool_class(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-        self, *, kind: KVPoolKind, default: type[KVCache]
-    ) -> type[KVCache]:
-        pool_class = KVCacheConfigurator._resolve_kv_pool_class(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-            self, kind=kind, default=default
-        )
-        if pool_class is MHATokenToKVPool and get_exec().graph.enable_torch_compile:
-            return SeparateKVAllocationsPool
-        else:
-            return pool_class
 
     def _profile_available_bytes(self, pre_model_load_memory: float) -> int:
         """Profile KV-cache headroom for colocated SGLang AR stages.
@@ -339,8 +296,6 @@ class OmniKVCacheConfigurator(KVCacheConfigurator):
         total_memory: int,
     ) -> int:
         """Profile colocated KV headroom from this stage's load-time delta."""
-        from sglang.srt.utils.common import get_available_gpu_memory
-
         world_group = get_parallel().world_group
         post_model_load_memory = get_available_gpu_memory(
             self.device,
@@ -395,8 +350,10 @@ class OmniKVCacheConfigurator(KVCacheConfigurator):
 class CFGCudaGraphRunner(DecodeCudaGraphRunner):
     """Replay DLLM blocks once CFG padding is entirely in the cached prefix."""
 
-    def can_run_graph(self, forward_batch: ForwardBatch) -> bool:
-        if any(
+    def can_run_graph(self, forward_batch: DllmForwardBatch) -> bool:
+        if any(request.is_dllm_prefill() for request in forward_batch.reqs):
+            return False
+        elif any(
             padding_length > prefix_length
             for padding_length, prefix_length in zip(
                 forward_batch.dllm_left_pad_lens_cpu,
@@ -425,79 +382,6 @@ class CFGCudaGraphRunner(DecodeCudaGraphRunner):
 
 class SGLModelRunner(ModelRunner):
     """Thin wrapper to bootstrap SGLang ModelRunner from backend args."""
-
-    plain_decode_runner: SGLModelRunner | None = None
-
-    def init_plain_decode_graphs(self) -> None:
-        """Capture ordinary decode with shared weights and separate attention state."""
-        if self.plain_decode_runner is not None:
-            return
-        else:
-            plain_decode_runner = copy.copy(self)
-            plain_decode_runner.spec_algorithm = SpeculativeAlgorithm.NONE
-            plain_decode_runner.plain_decode_runner = None
-            attention_backends = build_attention_backends(
-                model_runner=plain_decode_runner
-            )
-            plain_decode_runner.attn_backend = attention_backends.attn_backend
-            plain_decode_runner.decode_attn_backend = (
-                attention_backends.decode_attn_backend
-            )
-            plain_decode_runner.decode_attn_backend_group = (
-                attention_backends.decode_attn_backend_group
-            )
-            plain_decode_runner.kv_index_translator.bind_and_verify_backends(
-                [
-                    plain_decode_runner.attn_backend,
-                    plain_decode_runner.decode_attn_backend,
-                ]
-            )
-            plain_decode_runner.eager_runner = EagerRunner(
-                plain_decode_runner, run_warmup=False
-            )
-            plain_decode_runner.init_decode_cuda_graph()
-            self.plain_decode_runner = plain_decode_runner
-            self.graph_memory_usage = replace_graph_memory_usage(
-                self.graph_memory_usage,
-                {"decode": plain_decode_runner.graph_memory_usage["decode"]},
-                phases=("decode",),
-            )
-            self.graph_time_usage = replace_graph_time_usage(
-                self.graph_time_usage,
-                {"decode": plain_decode_runner.graph_time_usage["decode"]},
-                phases=("decode",),
-            )
-
-    def _forward_raw(  # noqa: leading-underscore  # native forward interface
-        self,
-        forward_batch: ForwardBatch,
-        pp_proxy_tensors: PPProxyTensors | None,
-        reinit_attn_backend: bool = False,
-        split_forward_count: int = 1,
-    ) -> ModelRunnerOutput:
-        if (
-            self.plain_decode_runner is not None
-            and forward_batch.forward_mode.is_decode()
-            and forward_batch.spec_algorithm.is_none()
-        ):
-            forward_batch.attn_backend = self.plain_decode_runner.attn_backend
-            with forward_context(
-                ForwardContext(attn_backend=self.plain_decode_runner.attn_backend),
-                forward_batch=forward_batch,
-            ):
-                return self.plain_decode_runner._forward_raw(  # noqa: leading-underscore  # native forward interface
-                    forward_batch,
-                    pp_proxy_tensors,
-                    reinit_attn_backend,
-                    split_forward_count,
-                )
-        else:
-            return super()._forward_raw(  # noqa: leading-underscore  # native forward interface
-                forward_batch,
-                pp_proxy_tensors,
-                reinit_attn_backend,
-                split_forward_count,
-            )
 
     def __init__(
         self,
@@ -578,8 +462,6 @@ class SGLModelRunner(ModelRunner):
         ModelRunner.__init__ and feeds to the loader, so the published
         load_format record is never touched.
         """
-        from sglang_omni.utils import ipc_weights
-
         ws = ipc_weights.get_weight_share_config()
         if ws is not None and ws.role == "follower":
             return "dummy"
@@ -598,8 +480,6 @@ class SGLModelRunner(ModelRunner):
         own storage. Both paths finish inside load_model, strictly before
         KV-pool profiling, warmup forwards, and CUDA graph capture.
         """
-        from sglang_omni.utils import ipc_weights
-
         ws = ipc_weights.get_weight_share_config()
         self.weight_share_config = ws
         self.weight_share_record = None
@@ -657,8 +537,6 @@ class SGLModelRunner(ModelRunner):
         # The exact handle file name needs the constructed model's class, so
         # this pre-wait polls for any export in the directory; follower_attach
         # below still waits on (and validates) the engine's own file.
-        import torch
-
         ipc_weights.wait_for_any_export(ws.dir_path, timeout_s=ws.attach_timeout_s)
         super().load_model()
         self.weight_share_record, self.weight_ipc_leader_monitor = (
@@ -711,8 +589,6 @@ class SGLModelRunner(ModelRunner):
         """
         record = self.weight_share_record
         if record is not None:
-            from sglang_omni.utils import ipc_weights
-
             ipc_weights.verify_attachment(self.model, record)
         else:
             pass
@@ -722,8 +598,6 @@ class SGLModelRunner(ModelRunner):
 
         get_flags().capture.enable_torch_compile = get_exec().graph.enable_torch_compile
         install_prefill_runner_dispatch()
-
-        from sglang_omni.platforms import current_platform
 
         with contextlib.ExitStack() as pins:
             if current_platform.is_xpu():
@@ -886,6 +760,7 @@ class SGLModelRunner(ModelRunner):
         from sglang.srt.models.registry import ModelRegistry
 
         sglang_omni_models = {
+            "Qwen3ASRDFlashDraftModel": "sglang_omni.models.qwen3_asr.dflash:Qwen3ASRDFlashDraftModel",
             "S2ProSGLangTextModel": "sglang_omni.models.fishaudio_s2_pro.sglang_model:S2ProSGLangTextModel",
             "Qwen3OmniTalker": "sglang_omni.models.qwen3_omni.components.talker:Qwen3OmniTalker",
             "Qwen3OmniThinkerForCausalLM": "sglang_omni.models.qwen3_omni.components.sglang_thinker:Qwen3OmniThinkerForCausalLM",
@@ -900,7 +775,6 @@ class SGLModelRunner(ModelRunner):
             "Zonos2SGLangModel": "sglang_omni.models.zonos2.sglang_model:Zonos2SGLangModel",
             "LLaDA2MoeModelLM": "sglang_omni.models.llada2_uni.components.thinker:LLaDA2MoeModelLM",
             "WhisperForConditionalGeneration": "sglang_omni.models.whisper_asr.sglang_model:WhisperForConditionalGeneration",
-            "WhisperDraftForCausalLM": "sglang_omni.models.whisper_asr.speculative:WhisperDraftForCausalLM",
             "Qwen3ASRForConditionalGeneration": "sglang_omni.models.qwen3_asr.sglang_model:Qwen3ASRForConditionalGeneration",
             "FunAsrNanoForConditionalGeneration": "sglang_omni.models.fun_asr.sglang_model:FunAsrNanoForConditionalGeneration",
             "ArkasrForConditionalGeneration": "sglang_omni.models.arkasr.sglang_model:ArkasrForConditionalGeneration",
@@ -936,9 +810,7 @@ class SGLModelRunner(ModelRunner):
         except Exception as exc:
             logger.warning(f"sglang-omni: skipping Ming-Omni registration ({exc})")
 
-    def init_kv_cache_configurator(
-        self, draft_parallel_layout: DraftParallelLayout | None = None
-    ) -> None:
+    def init_kv_cache_configurator(self):
         """Swap in the Omni configurator so the colocated budget stays hooked.
 
         Upstream keeps _profile_available_bytes on the composed
@@ -946,7 +818,7 @@ class SGLModelRunner(ModelRunner):
         the Omni subclass, copying every declared field so upstream can add
         fields without silently dropping them here.
         """
-        super().init_kv_cache_configurator(draft_parallel_layout)
+        super().init_kv_cache_configurator()
         base = self.kv_cache_configurator
         self.kv_cache_configurator = OmniKVCacheConfigurator(
             **{

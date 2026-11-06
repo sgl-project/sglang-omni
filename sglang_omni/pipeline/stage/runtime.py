@@ -72,6 +72,7 @@ from sglang_omni.scheduling.message import (
     ResultOwningScheduler,
     StageScheduler,
 )
+from sglang_omni.scheduling.types import KVRegistrationScheduler, TPWorkFanoutScheduler
 from sglang_omni.serve.stage_routes import StageHttpServer, StageRoutesError
 from sglang_omni.utils.process import name_native_thread
 
@@ -172,6 +173,15 @@ class Stage:
         self.result_owner = (
             scheduler if isinstance(scheduler, ResultOwningScheduler) else None
         )
+        self.tp_rank, self.tp_size = tp_rank, tp_size
+        if isinstance(scheduler, TPWorkFanoutScheduler):
+            self.fanout_work = scheduler.requires_tp_work_fanout
+        elif tp_size == 1:
+            self.fanout_work = False
+        else:
+            raise TypeError(
+                "Parallel stage scheduler must declare TP work-fanout capabilities"
+            )
         self.project_payload = project_payload or {}
         self.stream_targets = stream_targets or []
         self.get_stream_done_targets = get_stream_done_targets
@@ -205,12 +215,15 @@ class Stage:
             rank_endpoints=rank_endpoints,
             task_done_callback=self.on_background_task_done,
         )
-        for pool, receiver in getattr(scheduler, "kv_registrations", ()):
-            self.comm.register_kv_pool(pool)
-            if receiver is not None:
-                self.comm.register_kv_receiver(pool.pool_id, receiver)
-            else:
-                pass
+        if isinstance(scheduler, KVRegistrationScheduler):
+            for pool, receiver in scheduler.kv_registrations:
+                self.comm.register_kv_pool(pool)
+                if receiver is not None:
+                    self.comm.register_kv_receiver(pool.pool_id, receiver)
+                else:
+                    pass
+        else:
+            pass
 
         self.running = False
         self.aborted: set[str] = set()
@@ -1284,11 +1297,7 @@ class Stage:
             stage=self.name,
             event_name="stage_dispatch",
         )
-        if (
-            self.role == "leader"
-            and self.tp_fanout is not None
-            and getattr(self.scheduler, "requires_tp_work_fanout", False)
-        ):
+        if self.role == "leader" and self.tp_fanout is not None and self.fanout_work:
             self.tp_fanout.fanout_work(payload)
         else:
             pass
@@ -1448,7 +1457,7 @@ class Stage:
             message=message,
             data=dict(data or {}),
             error=error,
-            rank=getattr(self.scheduler, "tp_rank", None),
+            rank=self.tp_rank,
             role=self.role,
         )
 
@@ -2681,9 +2690,7 @@ class Stage:
         self.comm.cleanup(request_id)
         self.clear_request_state(request_id)
         # note (Richard Wang): TP ranks run fanned-out work to completion, since a skip on one rank pairs different requests in one collective.
-        if self.role == "single" or not getattr(
-            self.scheduler, "requires_tp_work_fanout", False
-        ):
+        if self.role == "single" or not self.fanout_work:
             self.scheduler.abort(request_id)
         else:
             pass

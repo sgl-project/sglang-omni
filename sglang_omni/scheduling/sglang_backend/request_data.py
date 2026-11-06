@@ -9,6 +9,7 @@ from typing import Protocol
 
 import torch
 from sglang.srt.managers.schedule_batch import Req
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.pending_text_queue import PendingTextTensorQueue
@@ -149,6 +150,14 @@ class DllmRequest(Req):
     _is_uncond: bool = False  # noqa: leading-underscore  # DLLM protocol
     _is_uncond_img: bool = False  # noqa: leading-underscore  # DLLM protocol
     _cfg_group_rid: str | None = None  # noqa: leading-underscore  # DLLM protocol
+
+
+@dataclass
+class DllmForwardBatch(ForwardBatch):
+    """Keep DLLM metadata through the eager runner's dataclass batch rebuilds."""
+
+    reqs: list[DllmRequest] = field(default_factory=list)
+    dllm_left_pad_lens_cpu: list[int] = field(default_factory=list)
 
 
 @dataclass
