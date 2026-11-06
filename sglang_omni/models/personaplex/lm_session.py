@@ -16,6 +16,7 @@ from sglang.srt.managers.schedule_batch import Req
 from sglang_omni.admission import ContextExhaustedError
 from sglang_omni.models.personaplex.architecture import TEXT_MARKER_IDS
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
+from sglang_omni.models.personaplex.prompts import tensors_digest
 from sglang_omni.models.personaplex.request_builders import (
     LMInputs,
     RequestSampling,
@@ -32,6 +33,17 @@ from sglang_omni.scheduling.sglang_backend.ar_session import ARSessionAdapter
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 
 WORD_BOUNDARY = "▁"
+PROMPT_KEY_PREFIX = "personaplex:prompt:"
+SESSION_KEY_PREFIX = "personaplex:session:"
+
+
+def prompt_key(state: PersonaPlexState) -> str:
+    voice = f"{state.voice_key}|{state.voice_frames}".encode()
+    return PROMPT_KEY_PREFIX + tensors_digest(
+        torch.frombuffer(bytearray(voice), dtype=torch.uint8),
+        torch.tensor(state.text_prompt_ids, dtype=torch.long),
+        None if state.voice_codes is None else state.voice_codes.to(torch.long),
+    )
 
 
 @dataclass(kw_only=True)
@@ -59,10 +71,12 @@ class PersonaPlexSessionAdapter(ARSessionAdapter):
         vocab_size: int,
         context_length: int,
         tokenizer: SentencePieceProcessor,
+        share_prompt_kv: bool = False,
     ) -> None:
         self.vocab_size = vocab_size
         self.context_length = context_length
         self.tokenizer = tokenizer
+        self.share_prompt_kv = share_prompt_kv
         self.states: dict[SessionIdentity, LMSessionState] = {}
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
@@ -173,6 +187,10 @@ class PersonaPlexSessionAdapter(ARSessionAdapter):
             ),
             vocab_size=self.vocab_size,
         )
+        if self.share_prompt_kv:
+            self.key_prompt_kv(session_identity, sglang_request, state, input_ids)
+        else:
+            pass
         data = SGLangARRequestData(
             req=sglang_request,
             input_ids=torch.tensor(input_ids, dtype=torch.long),
@@ -182,6 +200,23 @@ class PersonaPlexSessionAdapter(ARSessionAdapter):
         )
         data.talker_model_inputs = history.model_inputs
         return data
+
+    def key_prompt_kv(
+        self,
+        session_identity: SessionIdentity,
+        sglang_request: Req,
+        state: PersonaPlexState,
+        input_ids: list[int],
+    ) -> None:
+        """Only the prompt is published, so no session matches others' rows."""
+        key = prompt_key(state) if input_ids else None
+        if key is None:
+            sglang_request.extra_key = SESSION_KEY_PREFIX + session_identity.id
+            sglang_request.skip_radix_cache_insert = True
+        else:
+            sglang_request.extra_key = key
+            sglang_request._omni_prompt_cache_key = key  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            sglang_request._omni_prompt_only_radix = True  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
     def result(
         self, session_identity: SessionIdentity, request_data: SGLangARRequestData

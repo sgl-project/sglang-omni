@@ -109,3 +109,16 @@ def test_interrupted_unpack_leaves_no_partial_voices(tmp_path, monkeypatch):
     with pytest.raises(tarfile.ReadError):
         prompts.voices_dir(tmp_path)
     assert sorted(p.name for p in tmp_path.iterdir()) == ["tmp", "voices.tgz"]
+
+
+def test_a_voice_prompt_key_is_a_digest_of_its_rows(tmp_path):
+    first = {
+        "embeddings": torch.randn(5, 1, 1, 8, dtype=torch.bfloat16),
+        "cache": torch.full((1, 17, REFERENCE_CACHE_POSITIONS), 4, dtype=torch.long),
+    }
+    second = {**first, "embeddings": first["embeddings"] + 1}
+    torch.save(first, tmp_path / "a.pt")
+    torch.save(first, tmp_path / "b.pt")
+    torch.save(second, tmp_path / "c.pt")
+    keys = [load_voice_prompt(tmp_path / f"{n}.pt", load_audio=None).key for n in "abc"]
+    assert keys[0] and keys[0] == keys[1] != keys[2]

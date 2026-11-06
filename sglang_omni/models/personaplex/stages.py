@@ -143,6 +143,7 @@ def prompt_preparer(
             else:
                 pass
             state.voice_frames = prompt.frames
+            state.voice_key = prompt.key
             state.voice_embeddings = prompt.embeddings
             state.voice_tail_codes = prompt.tail_codes
             state.voice_waveform = prompt.waveform
@@ -310,6 +311,7 @@ def create_session_lm_executor(
     live_rows_as_decode: bool = False,
     steady_units_as_decode: bool = False,
     live_step_graph: bool = False,
+    share_prompt_kv: bool = False,
     dtype: str | None = None,
     device: str | None = None,
     gpu_id: int | None = None,
@@ -322,6 +324,7 @@ def create_session_lm_executor(
         live_rows_as_decode=live_rows_as_decode,
         steady_units_as_decode=steady_units_as_decode,
         live_step_graph=live_step_graph,
+        share_prompt_kv=share_prompt_kv,
         tokenizer=load_text_tokenizer(resolve_model_path(model_path)),
         context_length=server_args_overrides.get("context_length", context_length),
         # Note (Junnan Li): A unit decodes one or two frames, so async

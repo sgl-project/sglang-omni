@@ -9,7 +9,12 @@ import torch
 from sglang_omni.admission import ContextExhaustedError
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.models.personaplex.architecture import TEXT_MARKER_IDS
-from sglang_omni.models.personaplex.lm_session import PersonaPlexSessionAdapter
+from sglang_omni.models.personaplex.lm_session import (
+    PROMPT_KEY_PREFIX,
+    SESSION_KEY_PREFIX,
+    PersonaPlexSessionAdapter,
+    prompt_key,
+)
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.request_builders import (
     apply_lm_result,
@@ -232,3 +237,78 @@ def test_close_after_a_failed_open_is_a_no_op():
     )
     adapter.close(CALL)
     assert adapter.states == {}
+
+
+def open_sharing_adapter() -> PersonaPlexSessionAdapter:
+    adapter = PersonaPlexSessionAdapter(
+        vocab_size=32000,
+        context_length=CONTEXT_LENGTH,
+        tokenizer=PieceTokenizer(),
+        share_prompt_kv=True,
+    )
+    adapter.open(CALL, OmniRequest(inputs=None))
+    return adapter
+
+
+def test_identical_prompts_share_a_key_and_any_difference_splits_it():
+    base = PersonaPlexState(text_prompt_ids=PROMPT_IDS, voice_frames=3, voice_key="v")
+    same = PersonaPlexState(text_prompt_ids=PROMPT_IDS, voice_frames=3, voice_key="v")
+    assert prompt_key(base) == prompt_key(same)
+    assert prompt_key(base).startswith(PROMPT_KEY_PREFIX)
+    others = [
+        PersonaPlexState(text_prompt_ids=[11, 12], voice_frames=3, voice_key="v"),
+        PersonaPlexState(text_prompt_ids=PROMPT_IDS, voice_frames=4, voice_key="v"),
+        PersonaPlexState(text_prompt_ids=PROMPT_IDS, voice_frames=3, voice_key="w"),
+        PersonaPlexState(
+            text_prompt_ids=PROMPT_IDS,
+            voice_frames=3,
+            voice_key="v",
+            voice_codes=torch.zeros(3, 8, dtype=torch.long),
+        ),
+    ]
+    assert len({prompt_key(state) for state in [base, *others]}) == 5
+
+
+def test_a_shared_prompt_keys_only_the_first_unit_by_its_prompt():
+    driver = CallDriver(open_sharing_adapter())
+    first = driver.build(caller_codes(1)).data.req
+    assert first.extra_key == prompt_key(PersonaPlexState(text_prompt_ids=PROMPT_IDS))
+    assert (
+        first._omni_prompt_cache_key == first.extra_key
+    )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    assert (
+        first._omni_prompt_only_radix is True
+    )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+    assert not first.skip_radix_cache_insert
+
+    driver = CallDriver(open_sharing_adapter())
+    driver.unit(caller_codes(1), [77, 78])
+    later = driver.build(caller_codes(1)).data.req
+    assert later.extra_key == SESSION_KEY_PREFIX + CALL.id
+    assert later.skip_radix_cache_insert is True
+
+
+def test_without_sharing_requests_keep_no_key():
+    req = CallDriver(open_adapter()).build(caller_codes(1)).data.req
+    assert req.extra_key is None
+    assert not getattr(
+        req, "_omni_prompt_only_radix", False
+    )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+
+
+def test_a_first_unit_that_hits_the_shared_prompt_embeds_only_its_last_row():
+    tokens = [77, 78, 79]
+    full = CallDriver(open_adapter())
+    full_request = full.build(caller_codes(2))
+    origin = list(full_request.data.req.origin_input_ids)
+    full_inputs = step(full.runner, full.runner.model, full_request, origin, tokens, 0)
+
+    hit = CallDriver(open_sharing_adapter())
+    hit_request = hit.build(caller_codes(2))
+    hit_inputs = step(
+        hit.runner, hit.runner.model, hit_request, origin, tokens, len(origin) - 1
+    )
+    assert hit_inputs[0].shape[0] == 1
+    assert torch.equal(hit_inputs[0], full_inputs[0][-1:])
+    for rows, full_rows in zip(hit_inputs[1:], full_inputs[1:], strict=True):
+        assert torch.equal(rows, full_rows)
