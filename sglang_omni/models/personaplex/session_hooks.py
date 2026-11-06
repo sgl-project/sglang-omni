@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from hashlib import sha256
+from threading import Lock
 from typing import Protocol
 
 import numpy as np
@@ -29,6 +31,7 @@ from sglang_omni.scheduling.session import (
     SessionContext,
     SessionHooks,
 )
+from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.serve.realtime.types import samples_to_ms
 
 PCM16_SCALE = 32768.0
@@ -78,36 +81,42 @@ class PromptPreparer(Protocol):
 
 
 class PreprocessingHooks(SessionHooks):
-    """Prepares the prompt at open; the session's first unit carries it to the LM."""
-
-    def __init__(self, prepare_prompt: PromptPreparer) -> None:
-        self.prepare_prompt = prepare_prompt
-        self.states: dict[SessionIdentity, PersonaPlexState] = {}
+    """Convert the caller's PCM to whole frames for the streaming encoder."""
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
-        self.states[session_identity] = self.prepare_prompt(request)
+        pass
 
     def append(
         self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
     ) -> StagePayload:
-        state = self.states.pop(context.session_identity, None) or PersonaPlexState()
-        state.waveform = pcm16_to_waveform(chunk)
+        state = PersonaPlexState(waveform=pcm16_to_waveform(chunk))
         payload.data = state.to_dict()
         return payload
 
     def close(self, session_identity: SessionIdentity) -> None:
-        # Note (wilsonzheng0327): The first unit takes the prompt, so a session that
-        # carried any audio has nothing left here.
-        self.states.pop(session_identity, None)
+        pass
 
 
 class MimiEncodeHooks(SessionHooks):
     """Encodes each unit with the session's streaming encoder state."""
 
-    def __init__(self, codec: MimiCodec, device: torch.device) -> None:
+    def __init__(
+        self,
+        codec: MimiCodec,
+        device: torch.device,
+        *,
+        prepare_prompt: PromptPreparer,
+        voice_code_cache_bytes: int,
+    ) -> None:
         self.codec = codec
         self.device = device
+        self.prepare_prompt = prepare_prompt
         self.states: dict[SessionIdentity, MimiEncodeState] = {}
+        self.prompts: dict[SessionIdentity, PersonaPlexState] = {}
+        self.voice_code_lock = Lock()
+        self.voice_code_cache = StageOutputCache[torch.Tensor](
+            max_bytes=voice_code_cache_bytes
+        )
 
     @torch.inference_mode()
     def warm_up_serving_thread(self) -> None:
@@ -118,21 +127,32 @@ class MimiEncodeHooks(SessionHooks):
             self.codec.init_encode_state(batch_size=1),
         )
 
+    @torch.inference_mode()
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
+        state = self.prepare_prompt(request)
+        if state.voice_waveform is not None:
+            voice_digest = sha256(state.voice_waveform.numpy().tobytes()).hexdigest()
+            with self.voice_code_lock:
+                state.voice_codes = self.voice_code_cache.get(voice_digest)
+                if state.voice_codes is None:
+                    state.voice_codes = encode_waveform(
+                        self.codec, self.device, state.voice_waveform
+                    )
+                    self.voice_code_cache.put(voice_digest, state.voice_codes)
+                else:
+                    pass
+            state.voice_waveform = None
+        else:
+            pass
         self.states[session_identity] = self.codec.init_encode_state(batch_size=1)
+        self.prompts[session_identity] = state
 
     @torch.inference_mode()
     def append(
         self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
     ) -> StagePayload:
-        state = PersonaPlexState.from_dict(payload.data)
-        if state.voice_waveform is not None:
-            state.voice_codes = encode_waveform(
-                self.codec, self.device, state.voice_waveform
-            )
-            state.voice_waveform = None
-        else:
-            pass
+        state = self.prompts.pop(context.session_identity, None) or PersonaPlexState()
+        state.waveform = PersonaPlexState.from_dict(payload.data).waveform
         if is_empty_end_of_input(chunk):
             state.user_codes = no_codes()
         else:
@@ -149,6 +169,7 @@ class MimiEncodeHooks(SessionHooks):
 
     def close(self, session_identity: SessionIdentity) -> None:
         self.states.pop(session_identity)
+        self.prompts.pop(session_identity, None)
 
 
 @dataclass(kw_only=True)
