@@ -29,6 +29,7 @@ import collections
 import math
 from dataclasses import dataclass, field
 
+# Drama 3's codec frame: the default, kept so a caller that does not say otherwise gets it.
 AUDIO_FRAME_SECONDS = 2048 / 44100
 BATCH_BUCKET = 8
 # How far the cohorts seen must spread before the prefill's fixed and per-request parts are told
@@ -50,6 +51,11 @@ class PrefillCadenceConfig:
     first_window: int = 4
     window_ramp: tuple[int, ...] = (10, 12, 32)
     followup_window: int = 64
+    # How much audio one frame carries. A property of the model's codec, not of this module: Drama 3
+    # is 2048/44100 s, Qwen3-TTS 12 Hz is 1/12 s, MiniCPM-o's code2wav is 40 ms. Every continuity
+    # test below is a comparison between generation time and playback time, so a wrong value here
+    # does not raise, it quietly returns the wrong interval.
+    frame_seconds: float = AUDIO_FRAME_SECONDS
     # A wait is cut short only when the running batch has room for this many waiting requests: at a
     # full batch, releasing for one freed slot at a time turns every decode step into a prefill.
     release_min_admit: int = 1
@@ -74,6 +80,7 @@ def worst_stall_s(
     followup_window: int,
     vocoder_s: float,
     frame_count: int,
+    frame_seconds: float = AUDIO_FRAME_SECONDS,
 ) -> float:
     """Longest playback stall of a stream whose frames arrive every frame_interval_s."""
     window_ends: list[int] = []
@@ -87,7 +94,7 @@ def worst_stall_s(
     playback_end_s = (
         window_ends[0] * frame_interval_s
         + vocoder_s
-        + window_ends[0] * AUDIO_FRAME_SECONDS
+        + window_ends[0] * frame_seconds
     )
     worst_s = 0.0
     for previous_end, window_end in zip(window_ends, window_ends[1:]):
@@ -95,7 +102,7 @@ def worst_stall_s(
         worst_s = max(worst_s, ready_s - playback_end_s)
         playback_end_s = (
             max(playback_end_s, ready_s)
-            + (window_end - previous_end) * AUDIO_FRAME_SECONDS
+            + (window_end - previous_end) * frame_seconds
         )
     return worst_s
 
@@ -106,13 +113,22 @@ def critical_frame_interval_s(
     followup_window: int,
     vocoder_s: float = 0.006,
     frame_count: int = 120,
+    frame_seconds: float = AUDIO_FRAME_SECONDS,
 ) -> float:
-    """Longest constant frame interval whose worst stall stays within max_stall_s."""
-    shortest_s, longest_s = 0.0, AUDIO_FRAME_SECONDS
+    """Longest constant frame interval whose worst stall stays within max_stall_s.
+
+    Bounded above by one frame of audio: a stream generating at real time or faster cannot fall
+    behind, so a schedule whose later chunks are smaller than its first one never stalls and this
+    returns the frame duration itself. Drama 3's ramp grows instead, so it returns 25.5 ms against a
+    46.4 ms frame, meaning that model has to generate at 1.8x real time to stay smooth.
+    """
+    shortest_s, longest_s = 0.0, frame_seconds
     for _ in range(40):
         middle_s = (shortest_s + longest_s) / 2
         if (
-            worst_stall_s(middle_s, windows, followup_window, vocoder_s, frame_count)
+            worst_stall_s(
+                middle_s, windows, followup_window, vocoder_s, frame_count, frame_seconds
+            )
             <= max_stall_s
         ):
             shortest_s = middle_s
@@ -154,6 +170,7 @@ class PrefillCadence:
             config.max_stall_s,
             (config.first_window, *config.window_ramp),
             config.followup_window,
+            frame_seconds=config.frame_seconds,
         )
 
     def observe_decode_step(
@@ -346,13 +363,13 @@ class PrefillCadence:
         prefill_s, _, burst_frames = self.settle(interval, step_s, arrival_rate)
         ready = lambda frame: frame * step_s + int((frame - 1) / burst_frames) * prefill_s  # noqa: E731
         ends = self.window_ends()
-        playback_end_s = ready(ends[0]) + ends[0] * AUDIO_FRAME_SECONDS
+        playback_end_s = ready(ends[0]) + ends[0] * self.config.frame_seconds
         worst_s = 0.0
         for previous, end in zip(ends, ends[1:]):
             ready_s = ready(end)
             worst_s = max(worst_s, ready_s - playback_end_s)
             playback_end_s = (
-                max(playback_end_s, ready_s) + (end - previous) * AUDIO_FRAME_SECONDS
+                max(playback_end_s, ready_s) + (end - previous) * self.config.frame_seconds
             )
         return worst_s
 

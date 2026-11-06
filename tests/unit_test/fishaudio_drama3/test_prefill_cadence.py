@@ -302,3 +302,40 @@ def test_a_negative_fixed_part_is_refused() -> None:
     policy.observe_prefill(0.180, 20)
     assert policy.prefill_estimate_s(0) > 0
     assert policy.prefill_estimate_s(1) == pytest.approx(0.031, abs=2e-3)
+
+
+def test_a_schedule_whose_later_chunks_are_smaller_never_stalls() -> None:
+    """A stream whose first chunk is its largest gains on playback from the first frame.
+
+    The buffer only grows, so the critical interval is the frame duration itself at any stall
+    budget. This is the one shape where continuity cannot bind, and it is the boundary case for
+    the bisection's upper bound.
+    """
+    frame_s = 1 / 12
+    for budget_s in (0.0, 0.1, 0.4):
+        assert critical_frame_interval_s(
+            budget_s, (16,), 8, frame_count=84, frame_seconds=frame_s
+        ) == pytest.approx(frame_s, rel=1e-3)
+
+
+def test_a_growing_schedule_needs_to_generate_faster_than_real_time() -> None:
+    """Both shipped schedules grow, so both demand generation faster than playback.
+
+    Qwen3-TTS 12 Hz streams 1 frame, then 2, then 4, then 8 at a time, with a frame worth 1/12 s;
+    Drama 3 streams 4, then 10, 12, 32, then 64, with a frame worth 2048/44100 s. A growing
+    schedule means each chunk needs more audio than the one before it bought, so the stream has to
+    run ahead to stay smooth: 1.5x real time for Qwen3-TTS against a 100 ms budget, 1.8x for
+    Drama 3. Neither is free, and Drama 3 is the harder of the two because its second chunk is
+    2.5x its first.
+    """
+    qwen_frame_s = 1 / 12
+    qwen_s = critical_frame_interval_s(
+        0.1, (1, 2, 4), 8, frame_count=84, frame_seconds=qwen_frame_s
+    )
+    assert qwen_s == pytest.approx(0.0542, abs=5e-4)
+    assert qwen_frame_s / qwen_s == pytest.approx(1.54, abs=0.02)
+
+    drama_s = critical_frame_interval_s(0.1, DEFAULT_WINDOWS, FOLLOWUP_WINDOW, frame_count=84)
+    assert drama_s == pytest.approx(0.0255, abs=5e-4)
+    assert AUDIO_FRAME_SECONDS / drama_s == pytest.approx(1.82, abs=0.02)
+    assert drama_s < qwen_s
