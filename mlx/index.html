@@ -608,7 +608,7 @@
 <td><p>Python MLX servers, e.g. the Qwen3-ASR reference server.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">Voxt/</span></code></p></td>
-<td><p>The macOS app that runs the native servers. See <a class="reference external" href="https://github.com/sgl-project/sglang-omni/blob/main/Voxt/backend/README.md"><code class="docutils literal notranslate"><span class="pre">Voxt/backend/README.md</span></code></a>.</p></td>
+<td><p>Voxt, the macOS app that runs the native servers. See <a class="reference external" href="https://github.com/sgl-project/sglang-omni/blob/main/Voxt/README.md"><code class="docutils literal notranslate"><span class="pre">Voxt/README.md</span></code></a>.</p></td>
 </tr>
 </tbody>
 </table>
@@ -632,7 +632,7 @@ PyTorch; the MLX path is one process per model on unified memory, shipped as
 C++ binaries. An interface over both hides what makes each fast.</p></li>
 <li><p><strong>Dependencies differ.</strong> SGLang’s wheel pulls CUDA. Keeping MLX out lets Voxt
 run without CUDA, PyTorch or Python.</p></li>
-<li><p><strong>CI differs.</strong> Mac CI only runs on <code class="docutils literal notranslate"><span class="pre">Voxt/**</span></code> and <code class="docutils literal notranslate"><span class="pre">sglang_omni_mlx/**</span></code>, and
+<li><p><strong>CI differs.</strong> Mac CI only runs on <code class="docutils literal notranslate"><span class="pre">sglang_omni_mlx/**</span></code> and the app’s Swift packages, and
 GPU CI never runs on a Mac. A shared layer would break one side without CI
 noticing.</p></li>
 </ul>
@@ -664,7 +664,7 @@ agree on it with a maintainer first.</p>
 </tbody>
 </table>
 </div>
-<p>Both drafts are pinned in <code class="docutils literal notranslate"><span class="pre">ci/models.json</span></code>. A draft for another target is one pin, one golden whose request names it under <code class="docutils literal notranslate"><span class="pre">draft_model_path</span></code>, and a row in Voxt’s <code class="docutils literal notranslate"><span class="pre">OmniASRBackend.draftModelReposByRepo</span></code>. Verifying a block moves the target’s low-precision logits slightly, so a few percent of clips differ from plain decoding in punctuation or a near-tie word; the goldens hold each chip’s draft outputs like any other.</p>
+<p>Both drafts are pinned in <code class="docutils literal notranslate"><span class="pre">ci/models.json</span></code>. A draft for another target is one pin and one golden whose request names it under <code class="docutils literal notranslate"><span class="pre">draft_model_path</span></code>. Verifying a block moves the target’s low-precision logits slightly, so a few percent of clips differ from plain decoding in punctuation or a near-tie word; the goldens hold each chip’s draft outputs like any other.</p>
 </section>
 <section id="rule-2-contribution-requirements">
 <h2>Rule 2: Contribution requirements<a class="headerlink" href="#rule-2-contribution-requirements" title="Link to this heading">#</a></h2>
@@ -681,12 +681,10 @@ headers by their path under <code class="docutils literal notranslate"><span cla
 <li><p>Reuse <code class="docutils literal notranslate"><span class="pre">layers</span></code>, <code class="docutils literal notranslate"><span class="pre">swift_port</span></code>, the Sortformer front end and the Silero VAD
 port. If your code duplicates something on <code class="docutils literal notranslate"><span class="pre">main</span></code>, move it into the shared
 file in the same PR.</p></li>
-<li><p>Voxt changes stay in <code class="docutils literal notranslate"><span class="pre">Omni*.swift</span></code>, <code class="docutils literal notranslate"><span class="pre">VoxtTests/Omni*</span></code> and <code class="docutils literal notranslate"><span class="pre">Voxt/backend/</span></code>,
-plus minimal routing edits.</p></li>
 </ul>
 <p><strong>Parity</strong></p>
 <ul class="simple">
-<li><p>Name the reference (Voxt’s Swift backend at a pinned mlx-audio-swift commit,
+<li><p>Name the reference (mlx-audio-swift at a pinned commit,
 or a Python MLX reference) and use the same weights and MLX version.</p></li>
 <li><p>Keep the reference’s behavior. Behavior changes go in a separate PR.</p></li>
 <li><p>Report English WER, Chinese CER and mixed MER on the 392-clip corpus,
@@ -714,7 +712,6 @@ kinds in <code class="docutils literal notranslate"><span class="pre">tests/test
 startup rejects. A change to the shared protocol (<code class="docutils literal notranslate"><span class="pre">common/service.cpp</span></code>,
 <code class="docutils literal notranslate"><span class="pre">qwen3_asr/asr_service.cpp</span></code>, <code class="docutils literal notranslate"><span class="pre">speech_service.cpp</span></code>, <code class="docutils literal notranslate"><span class="pre">realtime.cpp</span></code>) gets a
 case against <code class="docutils literal notranslate"><span class="pre">tests/stub_server.cpp</span></code>.</p></li>
-<li><p>New Voxt Omni tests go into the <code class="docutils literal notranslate"><span class="pre">voxt-unit</span></code> job in <code class="docutils literal notranslate"><span class="pre">voxt-mac-ci.yaml</span></code>.</p></li>
 </ul>
 <p><strong>Robustness</strong></p>
 <ul class="simple">
@@ -735,7 +732,7 @@ stated.</p></li>
 <li><p>Target <code class="docutils literal notranslate"><span class="pre">main</span></code> (stacked PRs get no Mac CI), non-draft, with the <code class="docutils literal notranslate"><span class="pre">run-mac-ci</span></code> label. Both Mac CI jobs must pass on a real run.</p></li>
 <li><p>Run pre-commit and follow
 <a class="reference external" href="https://github.com/sgl-project/sglang-omni/blob/main/.claude/skills/code-review/coding-style.md">coding-style.md</a>.</p></li>
-<li><p>Update <code class="docutils literal notranslate"><span class="pre">Voxt/backend/README.md</span></code>. Follow the PR format of
+<li><p>Follow the PR format of
 <a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/2676">#2676</a> or</p></li>
 </ul>
 </section>
