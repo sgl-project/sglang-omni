@@ -534,6 +534,86 @@ async def test_the_arguments_of_past_speeches_count_toward_the_history_bound():
 
 
 @pytest.mark.asyncio
+async def test_only_a_cut_speech_adds_a_note_to_the_prompt_the_client_set():
+    dialog = speech_dialog(system_prompt="Be terse.")
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("question", True),
+            speech_call(),
+            control_chunk(TURN_DONE, turn=1),
+            control_chunk(TURN_DONE, turn=2),
+            transcript_chunk("next", True),
+            speech_call(SPEECH + " More.", "call_2", 3),
+            *[
+                lambda text_end=text_end, audio_ms=audio_ms: dialog.control(
+                    control_chunk(
+                        REPLY_PROGRESS, turn=3, text_end=text_end, audio_ms=audio_ms
+                    )
+                )
+                for text_end, audio_ms in SPEECH_PROGRESS_POINTS
+            ],
+            control_chunk(SPEECH_STARTED),
+            control_chunk(REPLY_DELIVERED, turn=3, audio_ms=1100),
+            transcript_chunk("last", True),
+        ],
+    )
+    first, _, _, last = prompts(outputs)
+    assert first[0].content == "Be terse."
+    assert last[0].content.startswith("Be terse. ")
+    assert "heard_prefix" in last[0].content
+    assert answers(last)["call_2"]["heard_prefix"] == "One two."
+
+
+@pytest.mark.asyncio
+async def test_new_instructions_stand_beside_the_next_utterance_in_its_prompt_only():
+    dialog = speech_dialog()
+    await drain(
+        dialog,
+        [
+            transcript_chunk("question", True),
+            speech_call(),
+            control_chunk(TURN_DONE, turn=1),
+            control_chunk(TURN_DONE, turn=2),
+        ],
+    )
+    replacement = speech_dialog(system_prompt="Be terse.")
+    replacement.adopt(dialog)
+    outputs = await drain(
+        replacement,
+        [
+            transcript_chunk("next", True),
+            speech_call("Yes.", "call_2", 3),
+            control_chunk(TURN_DONE, turn=3),
+            control_chunk(TURN_DONE, turn=4),
+            transcript_chunk("last", True),
+        ],
+    )
+    next_prompt, _, last_prompt = prompts(outputs)
+    assert next_prompt[-1].content == "next\n\n[Be terse.]"
+    assert last_prompt[-1].content == "last"
+    assert [message.content for message in replacement.messages].count("next") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_replacement_with_the_same_instructions_adds_nothing():
+    dialog = speech_dialog()
+    await drain(
+        dialog,
+        [
+            transcript_chunk("question", True),
+            speech_call(),
+            control_chunk(TURN_DONE, turn=1),
+            control_chunk(TURN_DONE, turn=2),
+        ],
+    )
+    replacement = speech_dialog()
+    replacement.adopt(dialog)
+    outputs = await drain(replacement, [transcript_chunk("next", True)])
+    assert prompts(outputs)[0][-1].content == "next"
+
+
+@pytest.mark.asyncio
 async def test_a_replacement_dialog_keeps_the_speech_it_is_waiting_for():
     dialog = speech_dialog()
     await drain(dialog, [transcript_chunk("question", True), speech_call()])

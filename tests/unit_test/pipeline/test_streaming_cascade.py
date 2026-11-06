@@ -247,6 +247,34 @@ async def test_a_model_speaking_through_a_tool_reaches_the_client_as_one_reply_p
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("backends", ["speech_tool"], indirect=True)
+async def test_new_instructions_reach_the_prompt_after_a_speech(backends):
+    config, _, _, messages = backends
+    async with conversation(config) as session:
+        await session.audio()
+        await session.command(COMMIT)
+        await session.until(
+            lambda: any(
+                control_type(o) == TURN_DONE and o.turn == 1 for o in session.outputs
+            )
+        )
+        # The client answers the end of a reply at once, while the prompt after the speech runs.
+        await session.command(CONFIGURE, instructions="Say banana.")
+        await session.audio()
+        await session.command(COMMIT)
+        await asyncio.wait_for(prompts_reach(messages, 3), 15)
+        assert messages[-1][0] == {"role": "system", "content": "Say banana."}
+        assert messages[-1][-1]["content"].endswith("[Say banana.]")
+        assert [message["role"] for message in messages[-1]] == [
+            "system",
+            "user",
+            "assistant",
+            "tool",
+            "user",
+        ]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("backends", ["slow_first"], indirect=True)
 async def test_interrupt_cancels_old_reply_and_next_turn_completes(backends):
     config, _, _, messages = backends

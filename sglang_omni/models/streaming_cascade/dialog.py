@@ -80,6 +80,8 @@ SHORT_UTTERANCE_NOTE = "Reply in {language}, the language of this conversation; 
 CUT_REPLY_NOTE = "A reply of yours that ends with … was cut off when the user interrupted it; answer the latest message in full."
 # A second call of the speech tool while one is spoken is refused rather than queued or overlapped.
 SPEECH_BUSY = "BUSY"
+# note (Jingwen): only when a speech was cut, since a longer note of rules on every prompt took Qwen3.8-27B from 7 of 8 to 4 of 8 samples following a client's new instructions.
+CUT_SPEECH_NOTE = 'A tool result of {"status": "interrupted", "heard_prefix": ...} means the user cut you off and heard only heard_prefix.'
 # note (Jingwen): with thinking off Qwen3.8-27B called the speech tool in 12 of 24 first prompts without this and in 36 of 36 with it, and no prompt wording closed the gap. A later prompt cannot use it, or the model could never stop.
 FIRST_PROMPT_TOOL_CHOICE = "required"
 
@@ -95,11 +97,17 @@ def tagged(content: str, style_starts: list[tuple[int, str]]) -> str:
 
 
 def prompt_messages(messages: list[ChatMessage]) -> list[ChatMessage]:
-    """The history as the model reads it: a reply the listener cut ends with … under a system note, only such a reply ends with …, and a reply shows the style tags the model wrote in it."""
+    """The history as the model reads it: a reply the listener cut ends with … under a system note, only such a reply ends with …, and a reply shows the style tags the model wrote in it; a speech the listener cut is explained by a system note too."""
     prompt: list[ChatMessage] = []
-    has_cut = False
+    notes: list[str] = []
     for message in messages:
-        if message.is_cut:
+        if message.role == "tool":
+            prompt.append(message)
+            if message.is_cut and CUT_SPEECH_NOTE not in notes:
+                notes.append(CUT_SPEECH_NOTE)
+            else:
+                pass
+        elif message.is_cut:
             content = message.content.removesuffix("…")
             prompt.append(
                 ChatMessage(
@@ -107,7 +115,10 @@ def prompt_messages(messages: list[ChatMessage]) -> list[ChatMessage]:
                     content=f"{tagged(content, message.style_starts)}…",
                 )
             )
-            has_cut = True
+            if CUT_REPLY_NOTE not in notes:
+                notes.append(CUT_REPLY_NOTE)
+            else:
+                pass
         elif message.role == "assistant":
             # note (Haoling Pu): the model sometimes ends a finished reply with …, which would read as cut and was followed by an empty reply in a live run.
             content = message.content.rstrip().removesuffix("…")
@@ -119,9 +130,9 @@ def prompt_messages(messages: list[ChatMessage]) -> list[ChatMessage]:
             )
         else:
             prompt.append(message)
-    if has_cut:
+    if notes:
         prompt[0] = ChatMessage(
-            role="system", content=f"{prompt[0].content} {CUT_REPLY_NOTE}"
+            role="system", content=" ".join([prompt[0].content, *notes])
         )
     else:
         pass
@@ -146,11 +157,14 @@ def assistant_tool_call(call: ToolCall) -> AssistantToolCall:
     )
 
 
-def tool_message(tool_call_id: str, result: dict[str, str]) -> ChatMessage:
+def tool_message(
+    tool_call_id: str, result: dict[str, str], is_cut: bool = False
+) -> ChatMessage:
     return ChatMessage(
         role="tool",
         content=json.dumps(result, ensure_ascii=False),
         tool_call_id=tool_call_id,
+        is_cut=is_cut,
     )
 
 
@@ -229,7 +243,9 @@ class Dialog(StreamComponent):
     writes without one is spoken as it is when nothing was spoken for the
     utterance yet, so the user does not sit through a silent reply; after a
     speech it is the model describing what it did, and goes nowhere, not even
-    into the history, and a call that repeats the last speech is refused.
+    into the history, and a call that repeats the last speech is refused. New
+    instructions are repeated beside the next utterance in its prompt only,
+    since a long past speech otherwise outweighs them.
     """
 
     def __init__(self, config: DialogConfig) -> None:
@@ -251,6 +267,8 @@ class Dialog(StreamComponent):
         self.inference_count = 0
         # The text last spoken for the current utterance; None while nothing was.
         self.spoken_text: str | None = None
+        # note (Jingwen): with a long past speech in the history and a call required, Qwen3.8-27B followed a client's new instructions in 3 of 12 samples, and in 10 of 12 with them repeated beside the next utterance.
+        self.has_new_instructions = False
         # Reply audio produced so far as (characters of the reply text with audio, audio ms), one entry per spoken sentence, for truncating an interrupted reply to what was heard.
         self.progress: list[tuple[int, float]] = []
         # note (luojiaxuan): The ended reply a truncate, its delivered audio or its progress may still cut, as (turn, history index), until a later reply ends, other than one interrupted before its first text, or its entry leaves the history.
@@ -287,6 +305,10 @@ class Dialog(StreamComponent):
             self.should_follow_up = previous.should_follow_up
             self.inference_count = previous.inference_count
             self.spoken_text = previous.spoken_text
+            self.has_new_instructions = (
+                previous.has_new_instructions
+                or self.config.system_prompt != previous.config.system_prompt
+            )
             self.progress = previous.progress
             self.truncatable = previous.truncatable
             self.truncatable_text = previous.truncatable_text
@@ -668,7 +690,9 @@ class Dialog(StreamComponent):
                 )
             elif is_cut:
                 self.messages[index] = tool_message(
-                    entry.tool_call_id, {"status": "interrupted", "heard_prefix": kept}
+                    entry.tool_call_id,
+                    {"status": "interrupted", "heard_prefix": kept},
+                    is_cut=True,
                 )
             else:
                 pass
@@ -737,6 +761,14 @@ class Dialog(StreamComponent):
                 )
             else:
                 pass
+            if self.has_new_instructions and self.config.speech_tool is not None:
+                prompt[-1] = ChatMessage(
+                    role="user",
+                    content=f"{prompt[-1].content}\n\n[{self.config.system_prompt}]",
+                )
+            else:
+                pass
+            self.has_new_instructions = False
             self.reply = []
             self.reply_style_starts = []
             self.reply_turn = turn
