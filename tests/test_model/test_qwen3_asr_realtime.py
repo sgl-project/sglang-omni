@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""End-to-end coverage for Qwen3-ASR realtime transcription.
+"""End-to-end Qwen3-ASR realtime transcription, without and with the DFlash draft.
 
 Usage:
     CUDA_VISIBLE_DEVICES=0 pytest -s -x \
@@ -14,6 +14,7 @@ import json
 import subprocess
 import sys
 import wave
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -31,23 +32,30 @@ from tests.utils import (
 
 MODEL_PATH = "Qwen/Qwen3-ASR-1.7B"
 MODEL_NAME = MODEL_PATH
+SERVER_MODEL_ARGS = {
+    "no_draft": ["--model-path", MODEL_PATH],
+    "dflash": ["--config", "examples/configs/qwen3_asr_1_7b_dflash.yaml"],
+}
 STARTUP_TIMEOUT = 600
 WS_TIMEOUT = 120
 SAMPLE_RATE = 16000
 AUDIO_FIXTURE = Path(__file__).parent.parent / "data" / "query_to_draw.wav"
 
 
-@pytest.fixture(scope="module")
-def server_process(tmp_path_factory: pytest.TempPathFactory):
+@pytest.fixture(scope="module", params=list(SERVER_MODEL_ARGS))
+def server_process(
+    request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory
+) -> Iterator[subprocess.Popen]:
     port = find_available_port()
-    log_file = server_log_file(tmp_path_factory, "qwen3_asr_realtime_logs")
+    log_file = server_log_file(
+        tmp_path_factory, f"qwen3_asr_realtime_{request.param}_logs"
+    )
     cmd = [
         sys.executable,
         "-m",
         "sglang_omni.cli",
         "serve",
-        "--model-path",
-        MODEL_PATH,
+        *SERVER_MODEL_ARGS[request.param],
         "--model-name",
         MODEL_NAME,
         "--enable-realtime",
