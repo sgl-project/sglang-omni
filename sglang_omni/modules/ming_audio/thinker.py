@@ -9,6 +9,7 @@ import torch
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.managers.schedule_batch import ScheduleBatch
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
+from sglang.srt.models.bailing_moe_nextn import BailingMoeForCausalLMNextN
 from sglang.srt.models.bailing_moe_v3 import BailingMoeV3ForCausalLM
 
 from sglang_omni.model_runner.base import ModelRunner
@@ -44,7 +45,42 @@ class Ming3AudioThinker(BailingMoeV3ForCausalLM):
         )
 
 
+class Ming3AudioMTP(BailingMoeForCausalLMNextN):
+    """Ling V3 MTP with the thinker's audio-conditioned prompt embeddings."""
+
+    @torch.no_grad()
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        forward_batch: ForwardBatch,
+    ) -> LogitsProcessorOutput:
+        input_embeddings = forward_batch.mm_input_embeds
+        if (
+            input_embeddings is not None
+            and forward_batch.forward_mode.is_extend()
+            and not forward_batch.forward_mode.is_draft_extend_v2()
+        ):
+            # note (YzXiao): Draft prefill shifts prompt embeddings left, leaving each request's new tail token unfilled.
+            last_token_indices = (
+                forward_batch.extend_start_loc + forward_batch.extend_seq_lens - 1
+            ).long()
+            input_embeddings[last_token_indices] = self.model.word_embeddings(
+                input_ids[last_token_indices]
+            )
+        else:
+            pass
+        hidden_states = self.model(
+            input_ids, positions, forward_batch, input_embeds=input_embeddings
+        )
+        return self.logits_processor(
+            input_ids, hidden_states, self.lm_head, forward_batch
+        )
+
+
 class Ming3AudioModelRunner(ModelRunner):
+    supports_speculative_async_decode: bool = True
+
     def before_prefill(
         self,
         forward_batch: ForwardBatch,

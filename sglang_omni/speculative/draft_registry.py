@@ -12,13 +12,14 @@ class PinnedDraft:
     """One draft for one model stage, and the engine keys that serve it.
 
     A cookbook command, an example config or a model's defaults that serve this
-    draft give the keys from engine_overrides. They can leave out the revision,
-    which EngineArgs.overrides fills from this entry.
+    draft give the keys from engine_overrides. EngineArgs.overrides fills an
+    omitted revision for a separate draft. A bundled MTP recipe pins the target
+    revision and its model factory loads both from that checkpoint.
     """
 
     model_path: str
     stage: str
-    algorithm: Literal["DFLASH", "DSPARK", "EAGLE3", "STANDALONE"]
+    algorithm: Literal["DFLASH", "DSPARK", "EAGLE3", "STANDALONE", "NEXTN"]
     draft_model_path: str
     draft_model_revision: str
     engine_settings: dict[str, int] = field(default_factory=dict)
@@ -27,12 +28,20 @@ class PinnedDraft:
     is_default_on: bool = False
 
     def engine_overrides(self) -> dict[str, str | int]:
-        return {
-            "speculative_algorithm": self.algorithm,
-            "speculative_draft_model_path": self.draft_model_path,
-            "speculative_draft_model_revision": self.draft_model_revision,
-            **self.engine_settings,
-        }
+        if self.draft_model_path == self.model_path:
+            # note (YzXiao): Bundled MTP follows the target checkpoint, so pin the target revision in the serving recipe.
+            return {
+                "speculative_algorithm": self.algorithm,
+                "revision": self.draft_model_revision,
+                **self.engine_settings,
+            }
+        else:
+            return {
+                "speculative_algorithm": self.algorithm,
+                "speculative_draft_model_path": self.draft_model_path,
+                "speculative_draft_model_revision": self.draft_model_revision,
+                **self.engine_settings,
+            }
 
 
 DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
@@ -99,5 +108,13 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         draft_model_path="Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm",
         draft_model_revision="c4c310aca2c768343165261cb22c21b90c1f79e0",
         license=None,
+    ),
+    PinnedDraft(
+        model_path="inclusionAI/Ming-3.0-audio-flash",
+        stage="thinker",
+        algorithm="NEXTN",
+        draft_model_path="inclusionAI/Ming-3.0-audio-flash",
+        draft_model_revision="db94e0de19f6d05adc0413c255a28eb480cd1fae",
+        license="mit",
     ),
 )
