@@ -91,6 +91,21 @@ def min_mel_frames(pool_step: int) -> int:
     return 2 * pool_step - 1
 
 
+def validate_audio_feature_lengths(
+    audio_feature_lengths: torch.Tensor, pool_step: int
+) -> None:
+    minimum_mel_frames = min_mel_frames(pool_step)
+    if int(audio_feature_lengths.max()) < minimum_mel_frames:
+        shortest_mel_frames = int(audio_feature_lengths.min())
+        raise ValueError(
+            f"MiniCPM-o accepts audio up to {minimum_mel_frames} mel frames "
+            f"minimum, but the shortest segment has only {shortest_mel_frames}; "
+            "send a longer clip"
+        )
+    else:
+        pass
+
+
 class MultiModalProjector(nn.Module):
     def __init__(self, in_dim: int, out_dim: int) -> None:
         super().__init__()
@@ -181,6 +196,7 @@ class MiniCPMOAudioEncoder(nn.Module):
         *,
         audio_features: torch.Tensor | None = None,
         audio_feature_lens: torch.Tensor | None = None,
+        original_mel_frame_counts: torch.Tensor | None = None,
         **_: object,
     ) -> dict[str, torch.Tensor]:
         """Return (sum(pooled_lens), hidden) embeddings in audio-chunk order."""
@@ -197,16 +213,7 @@ class MiniCPMOAudioEncoder(nn.Module):
         lens = audio_feature_lens.to(self.device)
 
         # note (wenyao): a short trailing segment contributes zero pooled tokens.
-        frame_limit = min_mel_frames(self.audio_pool_step)
-        if int(lens_cpu.max()) < frame_limit:
-            shortest = int(lens_cpu.min())
-            raise ValueError(
-                f"MiniCPM-o accepts audio up to {frame_limit} mel frames "
-                f"minimum, but the shortest segment has only {shortest}; "
-                "send a longer clip"
-            )
-        else:
-            pass
+        validate_audio_feature_lengths(lens_cpu, self.audio_pool_step)
 
         _, _, max_mel_seq_len = wavforms.shape
         max_seq_len = (max_mel_seq_len - 1) // 2 + 1
@@ -225,7 +232,11 @@ class MiniCPMOAudioEncoder(nn.Module):
         attn_mask = torch.where(allowed, 0.0, MASK_MIN).to(self.dtype)
         attn_mask = attn_mask.unsqueeze(1)
 
-        audio_states = self.apm(wavforms, attn_mask)
+        audio_states = self.apm(
+            wavforms,
+            attn_mask,
+            original_mel_frame_counts=original_mel_frame_counts,
+        )
         audio_embeds = self.audio_projection_layer(audio_states)
 
         audio_embeds = audio_embeds.transpose(1, 2)
