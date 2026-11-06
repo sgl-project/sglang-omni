@@ -87,6 +87,7 @@ def test_each_factory_gets_the_defaults_written_once() -> None:
         **VOCODER_WINDOWS,
         "window_cuda_graphs": True,
         "non_streaming_cuda_graph_max_frames": 512,
+        "stream_window_batch_size": 4,
         "decode_dtype": "float16",
         "max_new_tokens": 2048,
     }

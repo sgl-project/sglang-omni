@@ -24,6 +24,8 @@ DEFAULT_MAX_PROMPT_ROWS = 8192
 DEFAULT_STREAM_STRIDE = 4
 DEFAULT_STREAM_FOLLOWUP_STRIDE_RAMP = (10, 12, 32)
 DEFAULT_STREAM_FOLLOWUP_STRIDE = 64
+# Same-length stream windows of up to this many requests share one vocoder decode.
+DEFAULT_STREAM_WINDOW_BATCH_SIZE = 4
 DEFAULT_FIRST_FRAME_CUDA_GRAPHS = True
 DEFAULT_FIRST_FRAME_CUDA_GRAPH_MAX_REQUESTS = 16
 DEFAULT_TRITON_SAMPLING = True
@@ -105,6 +107,9 @@ class Drama3VocoderFactoryArgs(FactoryArgs):
     # With window_cuda_graphs, non-streaming requests of up to this many frames also
     # replay a CUDA graph, padded to a multiple of 8 frames; 0 decodes them eagerly.
     non_streaming_cuda_graph_max_frames: int = Field(default=512, ge=0)
+    stream_window_batch_size: int = Field(
+        default=DEFAULT_STREAM_WINDOW_BATCH_SIZE, ge=1
+    )
     decode_dtype: Literal["float32", "float16"] = "float16"
 
 

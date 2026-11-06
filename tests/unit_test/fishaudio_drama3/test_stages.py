@@ -395,6 +395,7 @@ def cpu_vocoder(factory_args: Drama3VocoderFactoryArgs) -> Drama3VocoderSchedule
         non_streaming_cuda_graph_max_frames=(
             factory_args.non_streaming_cuda_graph_max_frames
         ),
+        stream_window_batch_size=factory_args.stream_window_batch_size,
         decode_dtype=factory_args.decode_dtype,
         max_new_tokens=DEFAULT_MAX_NEW_TOKENS_CAP,
     )
