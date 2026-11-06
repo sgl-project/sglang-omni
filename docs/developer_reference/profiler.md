@@ -322,7 +322,7 @@ trace stays small enough to load in `chrome://tracing` or
 | Env var | Effect |
 |---|---|
 | `SGLANG_TORCH_PROFILER_RECORD_SHAPES=1` | Record input tensor shapes per op |
-| `SGLANG_TORCH_PROFILER_PROFILE_MEMORY=1` | Record tensor memory allocation / free events. Only the thread that starts the profiler is recorded, so worker thread CPU ops are excluded |
+| `SGLANG_TORCH_PROFILER_PROFILE_MEMORY=1` | Record tensor memory allocation / free events. Disables all-thread capture: only the thread that starts the profiler is recorded, so worker thread CPU ops and memory events are excluded |
 | `SGLANG_TORCH_PROFILER_WITH_STACK=1` | Record the Python (and C++) call stack per op |
 | `SGLANG_TORCH_PROFILER_WITH_FLOPS=1` | Estimate FLOPs per op |
 

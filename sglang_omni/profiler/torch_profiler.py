@@ -112,8 +112,9 @@ class TorchProfiler(ProfilerBase):
             # note (DerekSun02): torch 2.14 drops every memory event under all-thread capture.
             if profile_memory:
                 logger.warning(
-                    f"[Rank {rank}] Memory profiling records only the thread "
-                    "that starts the profiler; worker thread CPU ops are excluded"
+                    f"[Rank {rank}] Memory profiling disables all-thread capture: only the "
+                    "thread that starts the profiler is recorded, so worker thread CPU ops "
+                    "and memory events are excluded"
                 )
             else:
                 pass
