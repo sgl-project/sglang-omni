@@ -132,6 +132,57 @@ final class HotkeyRecognizerTests: XCTestCase {
         XCTAssertFalse(r.handle(.keyUp(keyCode: 9, flags: RawFlags.command, t: 120)).swallow)
     }
 
+    /// A key shortcut fires only on its own modifier keys, fn and the side
+    /// included. It used to compare families without fn and without sides,
+    /// so an Fn+Space shortcut fired on a bare Space (and swallowed it) and
+    /// a right ⌥+Space one fired on left ⌥+Space. macOS sets fn's flag on
+    /// every F-key, arrow and navigation key event, fn held or not: for
+    /// those keys fn is not judged, so F5 and Fn+F5 both still fire.
+    func testKeyShortcutMatchesFnAndSide() {
+        let space: UInt16 = 49, f5: UInt16 = 96, left: UInt16 = 123
+        let rOpt = RawFlags.option | 0x40, lOpt = RawFlags.option | 0x20
+        let cases: [(name: String, binding: Binding, key: UInt16, flags: UInt64, fires: Bool)] = [
+            ("fn+space on space", Binding(id: "b", modifiers: [.fn: .any], key: space, behavior: .tap), space, 0, false),
+            ("fn+space on fn+space", Binding(id: "b", modifiers: [.fn: .any], key: space, behavior: .tap), space, fn, true),
+            ("space on fn+space", Binding(id: "b", modifiers: [:], key: space, behavior: .tap), space, fn, false),
+            ("right⌥+space on left⌥+space", Binding(id: "b", modifiers: [.option: .right], key: space, behavior: .tap), space, lOpt, false),
+            ("right⌥+space on right⌥+space", Binding(id: "b", modifiers: [.option: .right], key: space, behavior: .tap), space, rOpt, true),
+            ("⌥+space on left⌥+space", Binding(id: "b", modifiers: [.option: .any], key: space, behavior: .tap), space, lOpt, true),
+            ("f5 with fn's flag", Binding(id: "b", modifiers: [:], key: f5, behavior: .tap), f5, fn, true),
+            ("f5 without fn's flag", Binding(id: "b", modifiers: [:], key: f5, behavior: .tap), f5, 0, true),
+            ("fn+f5 with fn's flag", Binding(id: "b", modifiers: [.fn: .any], key: f5, behavior: .tap), f5, fn, true),
+            ("⌃+← with fn's flag", Binding(id: "b", modifiers: [.control: .any], key: left, behavior: .tap), left, fn | ctrl, true),
+            ("⌃+← without ⌃", Binding(id: "b", modifiers: [.control: .any], key: left, behavior: .tap), left, fn, false),
+        ]
+        for c in cases {
+            var r = HotkeyRecognizer(config: HotkeyConfig(bindings: [c.binding]))
+            let down = r.handle(.keyDown(keyCode: c.key, flags: c.flags, isRepeat: false, t: 0))
+            XCTAssertEqual(down.events.map(\.binding), c.fires ? ["b"] : [], c.name)
+            XCTAssertEqual(down.swallow, c.fires, "\(c.name): swallowed")
+            XCTAssertEqual(r.handle(.keyUp(keyCode: c.key, flags: c.flags, t: 10)).swallow, c.fires, "\(c.name): key up swallowed")
+        }
+    }
+
+    /// The cancel shortcut matches the same way: a right ⌥+Space cancel
+    /// does not take left ⌥+Space, and an F5 cancel takes F5 with fn's flag.
+    func testCancelShortcutMatchesFnAndSide() {
+        let space: UInt16 = 49, f5: UInt16 = 96
+        for (name, cancel, key, flags, fires) in [
+            ("right⌥+space on left⌥+space", Binding(id: "cancel", modifiers: [.option: .right], key: space, behavior: .tap), space, RawFlags.option | 0x20, false),
+            ("right⌥+space on right⌥+space", Binding(id: "cancel", modifiers: [.option: .right], key: space, behavior: .tap), space, RawFlags.option | 0x40, true),
+            ("fn+space on space", Binding(id: "cancel", modifiers: [.fn: .any], key: space, behavior: .tap), space, 0, false),
+            ("f5 with fn's flag", Binding(id: "cancel", modifiers: [:], key: f5, behavior: .tap), f5, fn, true),
+        ] as [(String, Binding, UInt16, UInt64, Bool)] {
+            var c = defaults()
+            c.active = true
+            c.cancel = cancel
+            var r = HotkeyRecognizer(config: c)
+            let down = r.handle(.keyDown(keyCode: key, flags: flags, isRepeat: false, t: 0))
+            XCTAssertEqual(down.events.map(\.binding), fires ? ["cancel"] : [], name)
+            XCTAssertEqual(down.swallow, fires, "\(name): swallowed")
+        }
+    }
+
     /// The cancel shortcut is taken only while active: its key down and up
     /// are swallowed then and reported as "cancel"; while inactive the same
     /// keys pass through untouched. Escape is no longer special: with no
