@@ -34,7 +34,7 @@ Voxt 只提供少数几个为它调好的模型，在你需要时从 Hugging Fac
 
 Voxt 1.x 的其他本地模型也都在：Qwen3-ASR 1.7B (6bit)、Whisper Large v3 Turbo、Whisper Large v3 和 Whisper Small（约 100 种语言）、Parakeet TDT 0.6B v3（25 种欧洲语言）、SenseVoice Small（中文、粤语、英语、日语、韩语）、Cohere Transcribe 03-2026（14 种语言）、Nemotron 3.5 ASR 0.6B（28 种语言，实时显示文字）和 MOSS-Transcribe-Diarize（中文和英语，实时显示文字）。只有 Qwen3-ASR 使用你的词典。Voxt 1.x 下载过的模型直接带过来，不用重新下载（docs/voxt-migration.md）。
 
-声音检测（Silero VAD v6，1.2 MB）随第一个语音识别模型一起安装。Qwen3-ASR 模型支持 30 种语言和 22 种中文方言。
+声音检测（Silero VAD v6，1.2 MB）随第一个语音识别模型一起安装。Qwen3-ASR 模型支持 30 种语言和 22 种中文方言。Qwen3-ASR 1.7B (8bit) 和 0.6B (4bit) 的卡片上还有**推测解码**：一个草稿模型（726 MB 和 262 MB），每步先提出几个词，再由语音识别模型校验。
 
 **语言模型**是你在“语言模型”页设置的服务，通过它们的 OpenAI 兼容 API 调用：OpenAI、Anthropic、Google Gemini、DeepSeek、通义千问（阿里云百炼）、Kimi、智谱 GLM、豆包（火山方舟）、MiniMax、阶跃星辰、小米 MiMo、xAI、OpenRouter，其他兼容的服务，或者本机的服务（Ollama、LM Studio、oMLX：免费，文字不离开这台 Mac）。没有语言模型时，转录直接输入识别出的原文；翻译和转写需要它。
 

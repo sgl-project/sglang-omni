@@ -8,6 +8,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Added
 
+- **Speculative decoding** for each speech model, on its card in Local models: a small draft model (726 MB for Qwen3-ASR 1.7B, 262 MB for 0.6B) proposes several words at a time and the speech model checks them, so it decodes faster. Download the draft to turn it on, delete it to turn it off.
 - **The preview pill keeps only live speech recognition text** while you record and while recognition finishes. The offline Final and the language model no longer replay in the pill; results still insert or show in the answer card.
 - **Editable full system prompts** (Transcribe, Translate, Rewrite → Your rules): edit the whole system prompt in one field (default shows the built-in text). What you save is what Voxt sends. Reset restores the built-in prompt. A preview shows the example user message used for cleanup and formatting when you use the built-in layers. **Settings search**: ⌘F in Settings focuses the search box and filters by title, description, and English keywords.
 - **Setup guide: language model on Translate and Rewrite try steps** (FB22): when no language model is set up, the step explains what is missing and offers **Set up a language model** (the guide stays open). Speech model downloads show progress on the models and try steps; you can continue while a model downloads.
@@ -79,6 +80,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 新增
 
+- 每个语音识别模型的**推测解码**，在本地模型页它的卡片上：一个小的草稿模型（1.7B 模型 726 MB，0.6B 模型 262 MB）每步先提出几个词，再由语音识别模型校验，解码更快。下载草稿即开启，删除即关闭。
 - **浮窗预览只显示实时语音识别文字**：录音和识别收尾时保留流式内容；整段 Final 和语言模型整理/翻译不在胶囊里回放，结果照常插入或在答案卡片里出现。
 - **可编辑完整 system prompt**（转录、翻译、转写 → 你的规则）：在一个文本框里编辑整段 system prompt（默认显示内置文字）；保存后按所写原样发送；恢复默认回到内置；内置分层模式下另有示例用户消息预览（清理与格式）。**设置搜索**：在设置里按 ⌘F 聚焦搜索框，按标题、说明和英文关键词过滤。
 - **设置引导：翻译和转写试用步就地配置语言模型**（FB22）：没配语言模型时，这一步会说明缺什么，并提供「设置语言模型」按钮（引导不关闭）。语音模型下载时，模型步和试用步会显示进度；下载中也可以点继续。

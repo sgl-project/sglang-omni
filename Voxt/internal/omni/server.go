@@ -17,6 +17,9 @@ type server struct {
 	rt   *Runtime
 	spec Spec
 	dir  string
+	// draft is the speculative draft's folder the process verifies, ""
+	// none; cleared once the server refused it (startProcess).
+	draft string
 
 	mu      sync.Mutex
 	proc    *process // the ready process, nil when none runs
@@ -37,8 +40,8 @@ type startOp struct {
 	err  error
 }
 
-func newServer(rt *Runtime, spec Spec, dir string) *server {
-	return &server{rt: rt, spec: spec, dir: dir, stopped: make(chan struct{})}
+func newServer(rt *Runtime, spec Spec, dir, draft string) *server {
+	return &server{rt: rt, spec: spec, dir: dir, draft: draft, stopped: make(chan struct{})}
 }
 
 // errRetired: the server was retired while a use waited for it.
@@ -114,17 +117,7 @@ func (s *server) launch(op *startOp) {
 		cancel()
 	}
 	started := time.Now()
-	p, ready, err := spawn(s.rt.cfg, s.spec, s.dir, s.rt.cacheLimit(s.spec))
-	if err == nil {
-		s.mu.Lock()
-		s.spawned = p
-		retired := s.retired
-		s.mu.Unlock()
-		if retired {
-			p.kill()
-		}
-		err = p.waitReady(ready, s.rt.cfg.StartTimeout)
-	}
+	p, err := s.startProcess()
 	s.mu.Lock()
 	s.start, s.spawned = nil, nil
 	switch {
@@ -151,6 +144,41 @@ func (s *server) launch(op *startOp) {
 		go s.watch(p)
 	}
 	close(op.done)
+}
+
+// startProcess spawns a process and waits until it is ready. A server
+// that does not start with its draft (a runtime from before
+// --draft-model-path, a damaged draft) starts again without it, for the
+// rest of its life: the model still serves, one token a step. Only launch
+// calls it, one start at a time, so draft needs no lock.
+func (s *server) startProcess() (*process, error) {
+	p, err := s.spawnReady(s.draft)
+	if err != nil && s.draft != "" {
+		s.rt.logf("warning", "%s did not start with its draft (%v): starting without it", s.spec.ID, err)
+		s.draft = ""
+		p, err = s.spawnReady("")
+	}
+	return p, err
+}
+
+// spawnReady spawns the process verifying draft and waits for its ready
+// line; a server retired meanwhile is killed.
+func (s *server) spawnReady(draft string) (*process, error) {
+	p, ready, err := spawn(s.rt.cfg, s.spec, s.dir, draft, s.rt.cacheLimit(s.spec))
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	s.spawned = p
+	retired := s.retired
+	s.mu.Unlock()
+	if retired {
+		p.kill()
+	}
+	if err := p.waitReady(ready, s.rt.cfg.StartTimeout); err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 // watch notices a process that exits: it is dropped, so the next use
