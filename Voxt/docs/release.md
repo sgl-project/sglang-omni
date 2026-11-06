@@ -1,6 +1,6 @@
 # 发布与更新
 
-VoxtNew 是 sglang-omni 仓库里的开源 app（Apache-2.0），ActNow 家族的一员。产品页、下载、更新和更新日志都在官网 actnow.dev：产品页 <https://actnow.dev/voxtnew>，下载 <https://actnow.dev/download/voxtnew>（要登录），更新源 `https://actnow.dev/updates/voxtnew`（beta 通道是 `…/voxtnew/beta`）。VoxtNew 有**自己的**更新密钥（§1.3），和家族其他 app 一样用 **wei guan（779M533DL5）** 的 Developer ID 签名、用 york@actnow.dev 公证（用户 10-19 决定；之前用 RY2TQTYSKQ，§9）。**不用 GitHub Release**。
+Voxt（内部名 VoxtNew）是 sglang-omni 仓库里的开源 app（Apache-2.0），ActNow 家族的一员。**从 2.0.0 起，正式版在 sglang-omni 的 GitHub Release 发布**：推一个 `voxt-vX.Y.Z` tag，[Voxt Release](../../.github/workflows/voxt-release.yaml) 工作流在 GitHub 的 macos-26 runner 上构建，用 `voxt-release` 环境里的 Developer ID（Xiaofeng Cao，Team **RY2TQTYSKQ**，和 Swift 版 Voxt 1.x 同一个）签名并公证，把 dmg 放进草稿 Release（见下面的“从 tag 发布”，2026-11-06 定）。§0 起写的是之前的方案：在 mac-air 上用 wei guan（779M533DL5）的 Developer ID 签名、用 york@actnow.dev 公证、发到官网 actnow.dev（产品页 <https://actnow.dev/voxtnew>，更新源 `https://actnow.dev/updates/voxtnew`，VoxtNew 自己的更新密钥见 §1.3），留到有了更新通道时参考。
 
 > **还差官网这一边**：VoxtNew 的产品页已经上线，ingest token 已经发（`RELEASE_INGEST_TOKEN_VOXTNEW`）。还要 ActNow 项目在面板 /panel/releases 的 voxtnew 设置里填上公钥 `MbROqANE8pK8IQ8hdtUtR/m5SqUY2nTgzHwrQt04Zps=`（已在 `notices/from-voxtnew.md` 里请他们填）：填了以后后台才校验更新包的签名。
 
@@ -40,13 +40,30 @@ scripts/mac-gui.sh scripts/release.sh（在 Mac 上，ssh 里经 mac-gui.sh 进�
 
 更新用的是 MyGo 官方方案（`mygo.Updater` + updater 插件的 `native.Plugin` 窗口），说明见 MyGo 的 `docs/updates.md`、`docs/plugins/updater.md`；beta 通道是我们的补丁 0006（`third_party/mygo-patches/`，和 Auralink 的同一个）。
 
+## 从 tag 发布（GitHub Actions）
+
+1. 说明写在 [CHANGELOG.md](../CHANGELOG.md) 最上面一节（格式见 §2.1 第 2 步）：发布时用这个版本的一节，没有就用 `## [Unreleased]`。要在 main 上留下版本号，就在发布前的提交里把 `## [Unreleased]` 改成 `## [X.Y.Z] - 日期`，mygo.json 和两个 Info.plist 也改成 X.Y.Z（§2.1 第 1 步）；不改也可以，发布的版本号由 tag 决定。
+2. 在 main 上推 tag：`git tag -a voxt-vX.Y.Z -m "Voxt X.Y.Z" && git push origin voxt-vX.Y.Z`。版本号只能往上走：要比所有 `voxt-v` tag 都新（包括 Swift 版 Voxt 1.x 的 `voxt-v1.16.x`），只能是 `X.Y.Z`，没有 beta。失败了可以删掉 tag，修好再推同一个。
+3. 工作流把 tag 的版本号写进 mygo.json 和两个 Info.plist，导入 `voxt-release` 环境的 Developer ID（[scripts/release-identity.sh](../scripts/release-identity.sh) 检查它是 RY2TQTYSKQ 的），用 App Store Connect API key 建 notarytool 配置，跑 `scripts/release.sh --notarize voxt-notary --keychain …`（`EXPECT_TEAM=RY2TQTYSKQ`，`release-verify.sh developer-id` 全部通过才继续），再把 `Voxt-X.Y.Z-arm64.dmg` 和它的 `.sha256` 传到草稿 Release “Voxt vX.Y.Z”。说明依次是要求、安装、CHANGELOG 里的那一节和构建来源。
+4. 在 Release 页面检查说明后发布（默认标成 Latest）。用户下载 dmg，把 Voxt 拖进“应用程序”，会替换 Swift 版 Voxt 1.x 的 Voxt.app。2.0.0 不会自动更新，新版本也这样装。
+
+`voxt-release` 环境是 Swift 版 Voxt 1.x 发版时建的，部署规则只放行 `main` 和 `voxt-v*` tag。这个工作流用到它的这些 secret：
+
+| Secret | 内容 |
+|---|---|
+| `DEVELOPER_ID_APP_CERT_P12`、`DEVELOPER_ID_APP_CERT_PASSWORD` | RY2TQTYSKQ 的 Developer ID Application 证书（.p12 的 base64）和它的密码 |
+| `APPLE_NOTARIZATION_KEY`、`APPLE_NOTARIZATION_KEY_ID`、`APPLE_NOTARIZATION_ISSUER` | 同一个 Team 的 App Store Connect API key（.p8 的内容）、key id 和 issuer id，用来公证 |
+| `ACTNOW_SOUNDS_TOKEN`（可选） | 能读 hehehai/actnow-sounds 的 token，官方构建的提示音库从那里来（[scripts/sync-sounds.sh](../scripts/sync-sounds.sh)）。没有它构建照常，提示音用 macOS 的系统声音，工作流给出 warning |
+
+不带 tag 的运行（改了这个工作流、`scripts/release*.sh` 或 `scripts/build-*.sh` 的 PR，或者手动运行）做同样的构建和 `release-verify.sh ad-hoc`，不签名、不公证，dmg 作为 artifact 保留 14 天：打开时要在 系统设置 → 隐私与安全性 里点“仍要打开”。
+
 ## 0. 两个通道
 
-**1.0.0 没有更新通道**：`release/mygo.release.json` 是 `{}`，构建里没有更新源，app 不检查更新（菜单里没有“检查更新…”，关于面板写“这个版本不会自动更新”，`main.go` 用补丁 0008 的 `mygo.Updater.HasFeed` 判断），`release.sh --publish` 直接报错，不走 `actnow-publish.sh`。下面是有通道时的做法，代码都留着：以后有了 sgl-project 自己的通道，把 `updates`（公钥、`url`、`prereleases`）加回 `release/mygo.release.json` 就照旧。
+**2.0.0 没有更新通道**：`release/mygo.release.json` 是 `{}`，构建里没有更新源，app 不检查更新（菜单里没有“检查更新…”，关于面板写“这个版本不会自动更新”，`main.go` 用补丁 0008 的 `mygo.Updater.HasFeed` 判断），`release.sh --publish` 直接报错，不走 `actnow-publish.sh`。下面是有通道时的做法，代码都留着：以后有了 sgl-project 自己的通道，把 `updates`（公钥、`url`、`prereleases`）加回 `release/mygo.release.json` 就照旧。
 
 | | 正式版 | beta 版 |
 |---|---|---|
-| 版本号 | `1.1.0` | `1.1.0-beta.1`（版本号里有 `-`） |
+| 版本号 | `2.1.0` | `2.1.0-beta.1`（版本号里有 `-`） |
 | 更新源 | `https://actnow.dev/updates/voxtnew` | `https://actnow.dev/updates/voxtnew/beta` |
 | 清单里文件的地址 | `…/updates/voxtnew/<文件>` | `…/updates/voxtnew/beta/<文件>`（官网后台会检查） |
 | 谁会收到 | 所有人 | 只有打开了 设置 → 诊断与关于 → **Beta 更新** 的人 |
@@ -113,7 +130,7 @@ york@actnow.dev 要开启双重认证（App 专用密码需要）。也可以改
 
 VoxtNew 有**自己的**一对密钥（10-17 在 mac-air 上用 `go tool mygo keygen` 生成，不再和 Auralink 共用）：
 
-- 公钥 `MbROqANE8pK8IQ8hdtUtR/m5SqUY2nTgzHwrQt04Zps=`，写在 [release/mygo.release.json](../release/mygo.release.json) 的 `updates.publicKey`（1.0.0 起去掉了，见 §0），官网面板 /panel/releases 的 voxtnew 设置里也要填同一个（由 ActNow 项目填）。
+- 公钥 `MbROqANE8pK8IQ8hdtUtR/m5SqUY2nTgzHwrQt04Zps=`，写在 [release/mygo.release.json](../release/mygo.release.json) 的 `updates.publicKey`（2.0.0 起去掉了，见 §0），官网面板 /panel/releases 的 voxtnew 设置里也要填同一个（由 ActNow 项目填）。
 - 私钥在 mac-air 的 `~/.config/voxtnew-release/update-keys/mygo-update.key`（600，目录 700；同目录的 `mygo-update.pub` 是公钥），**不进仓库**、不进日志。
 
 `release.sh` 有身份签名时自己找私钥：环境变量 `MYGO_UPDATER_PRIVATE_KEY`（密钥本身），否则 `VOXTNEW_UPDATE_KEY` 指的文件（默认就是上面那个路径），交给 MyGo 的是文件路径（`updates.privateKey`），密钥不进命令行和环境。开始前它核对私钥和 `release/mygo.release.json` 的公钥是一对，不是就停下。
@@ -148,15 +165,15 @@ MAC_DIR=code/VoxtNew-rel scripts/mac.sh 'export VOXTNEW_SIGN_IDENTITY="$(scripts
 
 ### 2.1 步骤（beta 和正式版一样）
 
-1. **改版本号**，三处要一致（`release.sh`、`build-helper.sh`、`build-llm.sh` 都会检查）。beta 用 `1.x.y-beta.n`，正式版用 `1.x.y`（1.0.0 是第一个公开版本；0.1.0-beta.1 只给内部测试的人发过）：
+1. **改版本号**，三处要一致（`release.sh`、`build-helper.sh`、`build-llm.sh` 都会检查）。beta 用 `2.x.y-beta.n`，正式版用 `2.x.y`（2.0.0 是第一个公开版本，接在 Swift 版 Voxt 1.16.3 之后；0.1.0-beta.1 只给内部测试的人发过）：
    ```sh
-   v=1.0.1-beta.1        # 或 1.0.1
+   v=2.0.1-beta.1        # 或 2.0.1
    jq --arg v "$v" '.version = $v' mygo.json > mygo.json.tmp && mv mygo.json.tmp mygo.json
    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $v" helper/Support/Info.plist   # macOS
    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $v" llm/Support/Info.plist
    ```
-   app 的 `CFBundleShortVersionString` 是完整版本号（更新比较用它）；`CFBundleVersion` 由 MyGo 写成数字部分（`1.0.1-beta.1` 写成 `1.0.1`，补丁 0007）。
-2. **写 CHANGELOG.md**：把最上面的 `## [Unreleased]` 改成 `## [1.0.1] - 2026-11-20`（版本号和 mygo.json 完全一样），英文在前（`### Added`、`### Fixed`…），然后是 `### 中文`，下面用 `####` 小标题（`#### 新增`、`#### 修复`…）。更新窗口显示整节；官网用同一节：发布脚本从第一个含汉字的 `###` 标题（`### 中文`，这个标题本身去掉）分成 `notes`（英文）和 `notesZh`，后台还要求清单里的 notes（整节）包含英文部分。`--publish` 时没有这一节就失败。
+   app 的 `CFBundleShortVersionString` 是完整版本号（更新比较用它）；`CFBundleVersion` 由 MyGo 写成数字部分（`2.0.1-beta.1` 写成 `2.0.1`，补丁 0007）。
+2. **写 CHANGELOG.md**：把最上面的 `## [Unreleased]` 改成 `## [2.0.1] - 2026-11-20`（版本号和 mygo.json 完全一样），英文在前（`### Added`、`### Fixed`…），然后是 `### 中文`，下面用 `####` 小标题（`#### 新增`、`#### 修复`…）。更新窗口显示整节；官网用同一节：发布脚本从第一个含汉字的 `###` 标题（`### 中文`，这个标题本身去掉）分成 `notes`（英文）和 `notesZh`，后台还要求清单里的 notes（整节）包含英文部分。`--publish` 时没有这一节就失败。
 3. 提交、推到 main，等 CI（[voxtnew-ci.yaml](../../.github/workflows/voxtnew-ci.yaml)）通过，在 mac-air 上跑一遍回归（`scripts/mac-regress.sh`，[manual-test.md](manual-test.md) §10）。
 4. 从 Linux 同步到发布用的 checkout 并构建（§1.1 的 `mac-gui.sh`；更新私钥 `release.sh` 自己从 `~/.config/voxtnew-release/` 读，§1.3）：
    ```sh
@@ -169,7 +186,7 @@ MAC_DIR=code/VoxtNew-rel scripts/mac.sh 'export VOXTNEW_SIGN_IDENTITY="$(scripts
      scripts/mac-gui.sh scripts/release.sh --notarize voxtnew-notary --publish'
    ```
    在 Mac 的终端里也可以直接跑 `scripts/release.sh …`（`ACTNOW_INGEST_TOKEN` 自己 export）。构建时**不加 `-upload`**：文件都经 `actnow-publish.sh` 交给官网后台，它校验后写进 R2，最后才写公开清单。频道由版本号决定：带 `-` 的是 beta，清单和更新包的地址在 `…/updates/voxtnew/beta/` 下（MyGo 的 `updates.prereleases`：`updates.url` 保持 `…/updates/voxtnew`，beta 版本自动放进它的 `beta/`；后台会检查）。公证通常几分钟。增量来自官网两个通道上已发布的版本（§5.2）；第一个版本没有增量。
-5. 打 tag 记下发布的提交：`git tag -a "voxtnew-v$v" -m "VoxtNew $v" && git push origin "voxtnew-v$v"`（加前缀，不和 sglang-omni 自己的 tag 混在一起）。
+5. 打 tag 记下发布的提交：`git tag -a "voxtnew-v$v" -m "VoxtNew $v" && git push origin "voxtnew-v$v"`（加前缀，不和 sglang-omni 自己的 tag 混在一起；`voxt-v` tag 会触发 GitHub 上的正式版构建，见“从 tag 发布”）。
 6. 检查：
    ```sh
    curl -s https://actnow.dev/updates/voxtnew/beta/update-darwin-arm64.json | jq '{version, deltas: [.deltas[]?.from]}'
@@ -221,6 +238,8 @@ git diff scripts/actnow-publish.sh        # 看改了什么，再提交
 ```
 
 ### 2.4 以后在 GitHub Actions 上发布（自托管的 Mac runner）
+
+（这是之前的草稿。2.0.0 起的正式版已经在 GitHub Actions 上构建，见“从 tag 发布”：GitHub 托管的 macos-26 runner、`voxt-release` 环境、`voxt-v*` tag、Team RY2TQTYSKQ。）
 
 现在不用（§9）。以后在仓库的自托管 Apple 芯片 runner 上发布时，照 `release.sh` 写一个根目录的工作流（例如 `.github/workflows/voxtnew-release.yaml`，tag `voxtnew-v*` 触发）。Secret 只有这几个，**不要**在 sglang-omni 的 fork 上 `gh secret set`，等用户决定用哪个仓库：
 
@@ -328,10 +347,10 @@ MAC_DIR=code/VoxtNew-upd scripts/mac.sh scripts/mac-beta-e2e.sh     # 两个通�
 
 ## 9. 为什么这样做
 
-- **在 Mac 上用脚本发布，不用 GitHub Actions**：发布要编 Omni 运行时（CMake、固定版本的 MLX）和 voxtnew-llm（xcodebuild、Metal 着色器），GitHub 的 macOS runner 上每次要 15 分钟以上，还要把 Developer ID、公证凭据、更新私钥和官网 token 放进 sglang-omni 这个公开仓库的 Secret。发布用的 Mac 上这些都在钥匙串和 `~/.config` 里。CI（`voxtnew-ci.yaml`）只做 Linux 上的测试。以后要在 CI 里发布，见 §2.4。
+- **在 Mac 上用脚本发布，不用 GitHub Actions**：发布要编 Omni 运行时（CMake、固定版本的 MLX）和 voxtnew-llm（xcodebuild、Metal 着色器），GitHub 的 macOS runner 上每次要 15 分钟以上，还要把 Developer ID、公证凭据、更新私钥和官网 token 放进 sglang-omni 这个公开仓库的 Secret。发布用的 Mac 上这些都在钥匙串和 `~/.config` 里。CI（`voxtnew-ci.yaml`）只做 Linux 上的测试。以后要在 CI 里发布，见 §2.4。2.0.0 起改了：正式版由 GitHub Actions 从 `voxt-v` tag 构建（见“从 tag 发布”），Developer ID 和公证 key 用 Swift 版 Voxt 1.x 发版时就放在 `voxt-release` 环境里的那一套，没有更新私钥和官网 token。
 - **`updates` 不写进仓库的 mygo.json**，只在签名的发布构建里由 [scripts/release-config.sh](../scripts/release-config.sh) 合并：任何带 `updates` 的 `go tool mygo build`（包括 mac-air 上各线程的测试构建）都会链接更新源，放在可写目录里就会每天去检查，发布后甚至会用正式版替换掉测试构建。
 - **自己的更新密钥**：家族规范要求每个 app 一对（M4 时曾和 Auralink 共用）；密钥出事只影响 VoxtNew（§7）。
-- **签名 Team 是 779M533DL5，和家族其他 app 一样**：用户 10-19 决定（之前按家族规范 §17 Q1 用 RY2TQTYSKQ / Xiaofeng Cao，不再用）。结果：VoxtNew 可以加入家族第三期的钥匙串访问组、App Group 和共享 engine（家族规范 §8.5、§11.3），这些都要求同一个 Team；第一、二期不受影响。代价只有一次：用户已装的 RY2TQTYSKQ 版本换过来时要重新授权（§4）。公证也简单了：york@actnow.dev 就是这个 Team 的账号，不用再加入别人的团队。
+- **签名 Team 是 779M533DL5，和家族其他 app 一样**：用户 10-19 决定（之前按家族规范 §17 Q1 用 RY2TQTYSKQ / Xiaofeng Cao，不再用）。结果：VoxtNew 可以加入家族第三期的钥匙串访问组、App Group 和共享 engine（家族规范 §8.5、§11.3），这些都要求同一个 Team；第一、二期不受影响。代价只有一次：用户已装的 RY2TQTYSKQ 版本换过来时要重新授权（§4）。公证也简单了：york@actnow.dev 就是这个 Team 的账号，不用再加入别人的团队。2.0.0 起正式版改用 RY2TQTYSKQ（Swift 版 Voxt 1.x 的 Team，证书在 `voxt-release` 环境里），2026-11-06 定；以后再换 Team，用户要重新授权（§4）。
 - **ssh 里经 `mac-gui.sh` 签名**：不需要密码、不改钥匙串的设置（分区列表），只借用已经登录的图形会话。
 - **两个更新源，beta 取较新的**：官网的约定，和 Auralink 一样；打开 Beta 更新时 app 读 beta 清单，失败时退回正式版。beta 的地址不单独配置：`updates.url` 是正式版的，MyGo（补丁 0006 的 `prereleases`）按版本号把 beta 放进它的 `beta/`，所以 `release/mygo.release.json` 只有一个 url。
 - **按 SHA-1 选签名身份**：codesign 遇到两张同名证书会报 “ambiguous”，按哈希签不会。

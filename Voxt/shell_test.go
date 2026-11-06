@@ -312,7 +312,7 @@ func TestPermissionsMoved(t *testing.T) {
 
 // TestPrivacyGoesOnline: Settings → Privacy says what Voxt goes online
 // for: downloading models, and checking for updates only in a build
-// with an update feed (1.0.0 has none).
+// with an update feed (2.0.0 has none).
 func TestPrivacyGoesOnline(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate("/settings/privacy")

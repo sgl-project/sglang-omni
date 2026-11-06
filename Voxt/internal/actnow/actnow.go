@@ -43,7 +43,7 @@ type Config struct {
 	// BundleID is the running bundle's ("": read from the bundle, else
 	// DevBundleID).
 	BundleID string
-	// Version is VoxtNew's ("1.0.0").
+	// Version is VoxtNew's ("2.0.0").
 	Version string
 	// Dir is the family directory (zero: family.Default(), which honours
 	// $ACTNOW_FAMILY_DIR).
