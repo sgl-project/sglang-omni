@@ -10,6 +10,7 @@ import json
 import wave
 from pathlib import Path
 
+import soundfile
 from pydantic import JsonValue
 
 from benchmarks.duplex.artifacts import (
@@ -26,11 +27,13 @@ from benchmarks.duplex.client import (
     run_session,
 )
 from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES
+from benchmarks.duplex.v15_audio import normalize_audio
 
 
 async def run(
     args: argparse.Namespace, pcm: bytes, server: dict[str, JsonValue]
 ) -> dict[str, JsonValue]:
+    input_sample_rate = PROFILES[args.profile].input_sample_rate
     args.output.mkdir(parents=True, exist_ok=False)
     (args.output / "input.pcm").write_bytes(pcm)
     cases = [
@@ -49,7 +52,7 @@ async def run(
             "packet_ms": PACKET_MS,
             "paced": True,
             "timeout_s": args.timeout,
-            "input_duration_s": len(pcm) / (SAMPLE_RATE * 2),
+            "input_duration_s": len(pcm) / (input_sample_rate * 2),
             "transport": TRANSPORT,
             "unsupported": [
                 "response_cancel",
@@ -68,7 +71,7 @@ async def run(
         "input": {
             "file": "input.pcm",
             "sha256": hashlib.sha256(pcm).hexdigest(),
-            "sample_rate": SAMPLE_RATE,
+            "sample_rate": input_sample_rate,
         },
         "cases": cases,
     }
@@ -130,10 +133,12 @@ def main() -> None:
                 parser.error("--audio must be PCM16 mono at 16000 Hz")
             else:
                 pass
-            pcm = audio.readframes(audio.getnframes())
-    except (OSError, wave.Error) as exc:
+        pcm, _ = normalize_audio(
+            args.audio, sample_rate=PROFILES[args.profile].input_sample_rate
+        )
+    except (OSError, wave.Error, soundfile.LibsndfileError) as exc:
         parser.error(f"--audio is unreadable: {exc}")
-    duration_s = len(pcm) / (SAMPLE_RATE * 2)
+    duration_s = len(pcm) / (PROFILES[args.profile].input_sample_rate * 2)
     if not 0 < duration_s < MAX_TIMEOUT_S:
         parser.error(
             f"--audio duration must be positive and below {MAX_TIMEOUT_S} seconds"

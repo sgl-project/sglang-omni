@@ -699,3 +699,50 @@ def test_benchmark_cli_rejects_a_deadline_the_input_cannot_meet(
     assert code == 2, (stdout, stderr)
     assert "--timeout must exceed the 0.64 second paced input duration" in stderr
     assert not run_dir.exists()
+
+
+def test_benchmark_cli_records_personaplex_at_its_input_rate(tmp_path: Path) -> None:
+    wav_path = tmp_path / "input.wav"
+    run_dir = tmp_path / "run"
+    write_fixture_wav(wav_path)
+
+    async def handler(websocket: ServerConnection) -> None:
+        peer = DuplexPeer(
+            input_sample_rate=24000,
+            output_sample_rate=24000,
+            initial_extra_output_frames=1,
+            tail_holdback_samples=0,
+            terminal_reason="input_audio_ended",
+        )
+        await peer.handler(websocket)
+
+    async def record() -> tuple[int, str, str]:
+        async with websockets.serve(handler, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            return await run_cli(
+                "benchmarks.eval.benchmark_duplex",
+                "--url",
+                f"ws://127.0.0.1:{port}/v1/realtime",
+                "--profile",
+                "personaplex",
+                "--audio",
+                str(wav_path),
+                "--output",
+                str(run_dir),
+                "--server-revision",
+                "e1b9c9c674b1187918593257906ee6e8cc6a13da",
+                "--model",
+                "nvidia/personaplex-7b-v1",
+                "--timeout",
+                "5",
+            )
+
+    code, stdout, stderr = asyncio.run(record())
+    assert code == 0, (stdout, stderr)
+    assert json.loads(stdout)["passed"] == 1
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["input"]["sample_rate"] == 24000
+    assert manifest["config"]["input_duration_s"] == pytest.approx(
+        FIXTURE_PACKETS * PACKET_MS / 1000
+    )
+    assert len((run_dir / "input.pcm").read_bytes()) == len(FIXTURE_PCM) * 3 // 2

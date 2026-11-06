@@ -457,10 +457,13 @@ def test_run_samples_contains_a_preparation_failure_to_its_variant(
     real_normalize = v15_runner.normalize_audio
     broken = (dataset / "user_interruption" / "1" / "input.wav").resolve()
 
-    def flaky_normalize(path: Path):
+    def flaky_normalize(
+        path: Path, *, sample_rate: int
+    ) -> tuple[bytes, dict[str, JsonValue]]:
         if path == broken:
             raise soundfile.LibsndfileError(0, "decoder failed: ")
-        return real_normalize(path)
+        else:
+            return real_normalize(path, sample_rate=sample_rate)
 
     async def handler(websocket: ServerConnection) -> None:
         await DuplexPeer().handler(websocket)
@@ -553,6 +556,26 @@ def test_run_samples_rejects_timeouts_past_the_session_deadline(
                 server=SERVER,
                 dataset_revision="fixture",
                 timeout_s=230.5,
+            )
+        )
+    assert not (tmp_path / "never").exists()
+
+
+@pytest.mark.parametrize("timeout_seconds", [0, -1, float("inf"), float("nan")])
+def test_personaplex_rejects_unbounded_or_nonpositive_deadlines(
+    tmp_path: Path, timeout_seconds: float
+) -> None:
+    """Long-call support must keep the recorder's deadline finite and positive."""
+    with pytest.raises(ValueError, match="finite and positive"):
+        asyncio.run(
+            run_samples(
+                tmp_path,
+                url="ws://127.0.0.1:1/v1/realtime",
+                output=tmp_path / "never",
+                server=SERVER,
+                dataset_revision="fixture",
+                timeout_s=timeout_seconds,
+                profile="personaplex",
             )
         )
     assert not (tmp_path / "never").exists()

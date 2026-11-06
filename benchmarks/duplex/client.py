@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, JsonValue
 from benchmarks.duplex.oracle_models import turn_detection_type
 from benchmarks.duplex.profiles import DEFAULT_PROFILE, PROFILES, ProfileName, Protocol
 
+# note (yaourt137): 16 kHz only, used by the pacing probe; run_session sizes packets from the profile input rate.
 SAMPLE_RATE = 16000
 PACKET_MS = 80
 PACKET_BYTES = SAMPLE_RATE * PACKET_MS // 1000 * 2
@@ -278,7 +279,7 @@ async def run_session(
     turn_detection: TurnDetection | None = None,
     tail_s: float = LEGACY_TAIL_S,
 ) -> None:
-    """Save observations and failures; classification belongs to offline replay.
+    """Record mono PCM16 at the profile input rate; classify failures offline.
 
     turn_detection configures a legacy-protocol or turn-based session; tail_s is the
     delay after the input end before a legacy-protocol session's liveness probe.
@@ -305,7 +306,9 @@ async def run_session(
                 "input": {"turn_detection": turn_detection.model_dump(mode="json")}
             },
         }
-    input_s = len(pcm) / (2 * SAMPLE_RATE)
+    input_sample_rate = PROFILES[profile].input_sample_rate
+    packet_bytes = input_sample_rate * PACKET_MS // 1000 * 2
+    input_s = len(pcm) / (2 * input_sample_rate)
 
     receipts: list[SendReceipt] = []
     async with open_trace(trace_path) as trace_file:
@@ -515,7 +518,7 @@ async def run_session(
                             pass
                         streamed = True
                         for sequence, byte_offset in enumerate(
-                            range(0, len(pcm), PACKET_BYTES)
+                            range(0, len(pcm), packet_bytes)
                         ):
                             # note (edwingao28): Replay measures pacing from the
                             # first append's send, so the deadlines start there too.
@@ -538,11 +541,14 @@ async def run_session(
                             await send(
                                 "input_audio_buffer.append",
                                 audio=base64.b64encode(
-                                    pcm[byte_offset : byte_offset + PACKET_BYTES]
+                                    pcm[byte_offset : byte_offset + packet_bytes]
                                 ).decode("ascii"),
                                 sglang={
                                     "seq": sequence,
-                                    "t_start_ms": byte_offset / 2 / SAMPLE_RATE * 1000,
+                                    "t_start_ms": byte_offset
+                                    / 2
+                                    / input_sample_rate
+                                    * 1000,
                                 },
                             )
                     else:
