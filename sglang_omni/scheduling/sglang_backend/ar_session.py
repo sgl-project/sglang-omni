@@ -17,12 +17,14 @@ from sglang.srt.managers.io_struct import (
     TokenizedGenerateReqInput,
 )
 from sglang.srt.managers.schedule_batch import FINISH_ABORT, Req
+from sglang.srt.mem_cache.unified_cache.components import ComponentType
 from sglang.srt.session.session_controller import Session, SessionController
 
 from sglang_omni.admission import (
     REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV,
     QueueFullError,
 )
+from sglang_omni.profiler.event_recorder import get_recorder
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
     SessionIdentity,
@@ -56,6 +58,9 @@ logger = logging.getLogger(__name__)
 class SessionKV(RetainedKV, Protocol):
     holds_kv: bool
 
+    def get_evicted_seqlen(self, component_type: ComponentType) -> int:
+        pass
+
 
 class SessionTreeCache(SessionRows, Protocol):
     def session_records(self) -> Mapping[str, SessionKV]:
@@ -70,6 +75,8 @@ class RequestToTokenPool(Protocol):
 
 
 class TokenToKVPoolAllocator(Protocol):
+    size: int
+
     def available_size(self) -> int:
         pass
 
@@ -779,6 +786,51 @@ class ARSessionBridge:
     ) -> None:
         unit = self.units_by_request_id.pop(request_id, None)
         if unit is not None:
+            recorder = get_recorder()
+            if recorder.is_active():
+                record = self.bridge_scheduler.tree_cache.session_records().get(
+                    unit.session_identity.id
+                )
+                allocator = self.bridge_scheduler.token_to_kv_pool_allocator
+                available_kv_positions = int(allocator.available_size())
+                kv_pool_capacity_positions = int(allocator.size)
+                session_logical_length = (
+                    0 if record is None else int(record.kv_allocated_len)
+                )
+                session_swa_evicted_length = (
+                    0
+                    if record is None
+                    else int(record.get_evicted_seqlen(ComponentType.SWA))
+                )
+                recorder.emit(
+                    request_id=request_id,
+                    stage=None,
+                    event_name="session_kv_snapshot",
+                    metadata={
+                        "session_id": unit.session_identity.id,
+                        "session_open_index": unit.session_identity.open_index,
+                        "input_seq": unit.chunk.seq,
+                        "cache_type": type(self.bridge_scheduler.tree_cache).__name__,
+                        "kv_allocator_type": type(
+                            self.bridge_scheduler.token_to_kv_pool_allocator
+                        ).__name__,
+                        "session_logical_length": session_logical_length,
+                        "session_swa_evicted_length": session_swa_evicted_length,
+                        "session_window_kv_positions": (
+                            session_logical_length - session_swa_evicted_length
+                        ),
+                        "kv_pool_capacity_positions": kv_pool_capacity_positions,
+                        "kv_pool_allocated_positions": (
+                            kv_pool_capacity_positions - available_kv_positions
+                        ),
+                        "available_kv_positions": available_kv_positions,
+                        "evictable_kv_positions": int(
+                            self.bridge_scheduler.tree_cache.evictable_size()
+                        ),
+                    },
+                )
+            else:
+                pass
             session = self.sessions[unit.session_identity.id]
             session.unit = None
             request = unit.session_request

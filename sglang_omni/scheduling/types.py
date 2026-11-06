@@ -6,7 +6,15 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Generic, Protocol, SupportsIndex, SupportsInt
+from typing import (
+    TYPE_CHECKING,
+    Generic,
+    NotRequired,
+    Protocol,
+    SupportsIndex,
+    SupportsInt,
+    TypedDict,
+)
 
 from typing_extensions import TypeVar
 
@@ -84,6 +92,17 @@ class ModelRunnerOutput:
     host_token_ids: "torch.Tensor | None" = None
 
 
+class SpecTokensDetailsDict(TypedDict):
+    """Per-request speculative decoding statistics a finished request reports."""
+
+    spec_accept_rate: NotRequired[float]
+    spec_accept_length: float
+    spec_num_correct_drafts: int
+    spec_num_proposed_drafts: NotRequired[int]
+    spec_verify_ct: int
+    spec_correct_drafts_histogram: list[int]
+
+
 @dataclass
 class ARRequestData:
     """Backend-neutral autoregressive request state."""
@@ -97,6 +116,7 @@ class ARRequestData:
     )
     finish_reason: str | None = None
     weight_version: str | None = None
+    spec_tokens_details: SpecTokensDetailsDict | None = None
     return_logprob: bool = False
     output_token_logprobs: list[list[float | int]] = field(default_factory=list)
     capture_model_output_keys: tuple[str, ...] = ()

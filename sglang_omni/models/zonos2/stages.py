@@ -104,6 +104,7 @@ def create_speaker_encode_executor(
     speaker_cache_max_items: int = 256,
     max_concurrency: int = 4,
     spk_compile: bool = False,
+    speaker_embedding_model_name_or_path: str | None = None,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     from sglang_omni.models.zonos2.components.speaker_encoder import SpeakerEncoder
     from sglang_omni.utils.device import resolve_concrete_device
@@ -112,6 +113,7 @@ def create_speaker_encode_executor(
         device=str(resolve_concrete_device(device, gpu_id)),
         cache_max_items=speaker_cache_max_items,
         compile_forward=spk_compile,
+        speaker_embedding_model_name_or_path=speaker_embedding_model_name_or_path,
     )
 
     def _speaker(payload: StagePayload) -> StagePayload:

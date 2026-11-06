@@ -45,36 +45,40 @@ Qwen3DecoderConfig::FromJson(const nlohmann::json &text_config) {
 std::pair<mx::array, mx::array>
 KVCache::UpdateAndFetch(const mx::array &keys, const mx::array &values) {
   const int new_token_count = keys.shape(2);
+  const auto positions = [](const mx::array &heads, int token_count) {
+    return mx::Shape{heads.shape(0), heads.shape(1), token_count,
+                     heads.shape(3)};
+  };
   if (!keys_.has_value() || offset_ + new_token_count > keys_->shape(2)) {
-    const int step_count =
-        (new_token_count + kKvCacheStepTokens - 1) / kKvCacheStepTokens;
-    const mx::Shape grown = {keys.shape(0), keys.shape(1),
-                             step_count * kKvCacheStepTokens, keys.shape(3)};
-    const mx::array extra_keys = mx::zeros(grown, keys.dtype());
-    const mx::array extra_values = mx::zeros(grown, values.dtype());
+    const int grown_token_count = (new_token_count + kKvCacheStepTokens - 1) /
+                                  kKvCacheStepTokens * kKvCacheStepTokens;
+    const mx::array extra_keys =
+        mx::zeros(positions(keys, grown_token_count), keys.dtype());
+    const mx::array extra_values =
+        mx::zeros(positions(values, grown_token_count), values.dtype());
     if (!keys_.has_value()) {
       keys_ = extra_keys;
       values_ = extra_values;
     } else {
-      const mx::Shape kept = {keys_->shape(0), keys_->shape(1), offset_,
-                              keys_->shape(3)};
       keys_ = mx::concatenate(
-          {mx::slice(*keys_, {0, 0, 0, 0}, kept), extra_keys}, 2);
+          {mx::slice(*keys_, {0, 0, 0, 0}, positions(*keys_, offset_)),
+           extra_keys},
+          2);
       values_ = mx::concatenate(
-          {mx::slice(*values_, {0, 0, 0, 0}, kept), extra_values}, 2);
+          {mx::slice(*values_, {0, 0, 0, 0}, positions(*values_, offset_)),
+           extra_values},
+          2);
     }
   } else {
   }
   const mx::Shape start = {0, 0, offset_, 0};
-  const mx::Shape stop = {keys.shape(0), keys.shape(1),
-                          offset_ + new_token_count, keys.shape(3)};
-  keys_ = mx::slice_update(*keys_, keys, start, stop);
-  values_ = mx::slice_update(*values_, values, start, stop);
+  keys_ = mx::slice_update(*keys_, keys, start,
+                           positions(keys, offset_ + new_token_count));
+  values_ = mx::slice_update(*values_, values, start,
+                             positions(values, offset_ + new_token_count));
   offset_ += new_token_count;
-  const mx::Shape fetched = {keys_->shape(0), keys_->shape(1), offset_,
-                             keys_->shape(3)};
-  return {mx::slice(*keys_, {0, 0, 0, 0}, fetched),
-          mx::slice(*values_, {0, 0, 0, 0}, fetched)};
+  return {mx::slice(*keys_, {0, 0, 0, 0}, positions(*keys_, offset_)),
+          mx::slice(*values_, {0, 0, 0, 0}, positions(*values_, offset_))};
 }
 
 void KVCache::Trim(int token_count) {
@@ -152,12 +156,20 @@ mx::array Qwen3Decoder::Forward(const mx::array &embeddings,
                 embeddings.shape(1), caches[0].offset(), embeddings.dtype()))
           : std::nullopt;
   mx::array hidden = embeddings;
+  // Note (Yucheng Hu): MLX frees temporaries per buffer, so eval per layer.
+  const bool is_prefill = embeddings.shape(1) > 1;
   for (int layer = 0; layer < config_.num_hidden_layers; ++layer) {
     if (std::count(capture_layers.begin(), capture_layers.end(), layer) > 0) {
       captured->push_back(hidden);
     } else {
     }
+    const mx::array layer_input = hidden;
     hidden = Layer(hidden, layer, caches[layer], rotary);
+    if (is_prefill) {
+      mx::async_eval(hidden);
+      mx::eval(layer_input);
+    } else {
+    }
   }
   return hidden;
 }

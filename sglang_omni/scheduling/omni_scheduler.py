@@ -56,6 +56,7 @@ from sglang.srt.managers.scheduler import validate_input_length
 from sglang.srt.managers.utils import allocate_distinct_stream
 from sglang.srt.mem_cache.allocation_sizing import get_alloc_reserve_per_decode
 from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
+from sglang.srt.mem_cache.allocator.swa import PureSWATokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
 from sglang.srt.mem_cache.common import release_kv_cache
 from sglang.srt.mem_cache.memory_pool import (
@@ -124,6 +125,7 @@ from sglang_omni.scheduling.types import (
     RequestOutput,
     SchedulerOutput,
     SchedulerRequest,
+    SpecTokensDetailsDict,
     StreamOutputBuilder,
 )
 from sglang_omni.utils.process import terminate_gpu_worker
@@ -1869,7 +1871,7 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
         admission_error = self.request_kv_capacity_error(
-            req
+            req, session_capacity_checked=session_unit is not None
         ) or self.speculative_request_error(req, req_data)
         if admission_error is not None:
             logger.warning(
@@ -2033,7 +2035,9 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
 
-    def request_kv_capacity_error(self, req: Req) -> str | None:
+    def request_kv_capacity_error(
+        self, req: Req, *, session_capacity_checked: bool = False
+    ) -> str | None:
         input_len = len(req.origin_input_ids)
         max_new_tokens = int(req.sampling_params.max_new_tokens or 0)
         # note (wilsonzheng0327): each speculative step reserves token slots past
@@ -2042,15 +2046,40 @@ class OmniScheduler(Generic[RequestDataT]):
             0 if self.draft_worker is None else get_alloc_reserve_per_decode()
         )
         required_tokens = input_len + max_new_tokens + speculative_reserve_tokens
-        kv_capacity = int(self.max_req_len)
-        if required_tokens <= kv_capacity:
+        # note (ZaneZhang-67): the bridge prices physical PureSWA growth but does not include speculative draft reserves.
+        use_logical_context_limit = (
+            self.draft_worker is None
+            and session_capacity_checked
+            and isinstance(
+                self.token_to_kv_pool_allocator, PureSWATokenToKVPoolAllocator
+            )
+            and req.session is not None
+            and req.session.streaming
+        )
+        request_capacity = (
+            int(self.model_config.context_len) - 1
+            if use_logical_context_limit
+            else int(self.max_req_len)
+        )
+        if required_tokens <= request_capacity:
             return None
-        elif required_tokens - speculative_reserve_tokens <= kv_capacity:
+        elif required_tokens - speculative_reserve_tokens <= request_capacity:
             return (
                 f"Request needs {required_tokens} tokens, including the "
                 f"{speculative_reserve_tokens}-token speculative decoding reserve, above the "
-                f"{kv_capacity}-token limit (input_tokens={input_len}, "
+                f"{request_capacity}-token limit (input_tokens={input_len}, "
                 f"max_new_tokens={max_new_tokens}). Lower max_tokens."
+            )
+        else:
+            pass
+
+        if use_logical_context_limit:
+            return (
+                f"{ContextExhaustedError.CODE}: request requires more tokens "
+                "than the thinker context can hold "
+                f"(input_tokens={input_len}, max_new_tokens={max_new_tokens}, "
+                f"required_tokens={required_tokens}, "
+                f"context_capacity={request_capacity}). Start a new session."
             )
         else:
             pass
@@ -2074,7 +2103,7 @@ class OmniScheduler(Generic[RequestDataT]):
         return (
             "Request requires more tokens than the thinker KV cache can hold "
             f"(input_tokens={input_len}, max_new_tokens={max_new_tokens}, "
-            f"required_tokens={required_tokens}, kv_capacity={kv_capacity})."
+            f"required_tokens={required_tokens}, kv_capacity={request_capacity})."
             f"{mem_hint}"
         )
 
@@ -2892,6 +2921,35 @@ class OmniScheduler(Generic[RequestDataT]):
                     else req.output_ids_through_stop
                 )
                 data.weight_version = get_serving().weight_version
+                if self.draft_worker is not None and req.spec_verify_ct > 0:
+                    # note (detemmienation): every verify commits the bonus token, so the accept length counts it while the accept rate does not.
+                    spec_tokens_details = SpecTokensDetailsDict(
+                        spec_accept_length=len(req.output_ids_through_stop)
+                        / req.spec_verify_ct,
+                        spec_num_correct_drafts=req.spec_num_correct_drafts,
+                        spec_verify_ct=req.spec_verify_ct,
+                        spec_correct_drafts_histogram=list(
+                            req.spec_correct_drafts_histogram
+                        ),
+                    )
+                    num_proposed_drafts = req.spec_verify_ct * (
+                        self.draft_worker.speculative_num_draft_tokens - 1
+                    )
+                    if get_spec().speculative_adaptive:
+                        # note (detemmienation): adaptive widths change between verifies, so the final width cannot count the proposals and the rate is omitted.
+                        pass
+                    elif num_proposed_drafts > 0:
+                        spec_tokens_details["spec_accept_rate"] = (
+                            req.spec_num_correct_drafts / num_proposed_drafts
+                        )
+                        spec_tokens_details["spec_num_proposed_drafts"] = (
+                            num_proposed_drafts
+                        )
+                    else:
+                        pass
+                    data.spec_tokens_details = spec_tokens_details
+                else:
+                    pass
                 self.flush_stream_output(rid, data)
                 session_unit = self.active_session_unit(rid)
                 if session_unit is None:

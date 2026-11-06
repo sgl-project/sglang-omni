@@ -33,6 +33,7 @@ from sglang_omni.models.fun_cosyvoice3.streaming_vocoder import (
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
+from sglang_omni.scheduling.types import SpecTokensDetailsDict
 from tests.unit_test.fun_cosyvoice3.test_flow_batch import FakeFlow as _PackedFlow
 from tests.unit_test.fun_cosyvoice3.test_vocoder import FakeHiFT as _FakeHiFT
 
@@ -181,6 +182,16 @@ def model_runner() -> FunCosyVoice3ModelRunner:
     return runner
 
 
+SPEC_TOKENS_DETAILS: SpecTokensDetailsDict = {
+    "spec_accept_rate": 0.5,
+    "spec_accept_length": 2.0,
+    "spec_num_correct_drafts": 1,
+    "spec_num_proposed_drafts": 2,
+    "spec_verify_ct": 1,
+    "spec_correct_drafts_histogram": [0, 1],
+}
+
+
 def stream_payload(
     request_id: str = "req-stream",
     *,
@@ -199,6 +210,7 @@ def stream_payload(
         ),
         flow_embedding=torch.ones(1, 192),
         finish_reason="length",
+        spec_tokens_details=SPEC_TOKENS_DETAILS,
     )
     return StagePayload(
         request_id=request_id,
@@ -249,6 +261,7 @@ def test_streaming_vocoder_emits_causal_chunk_then_finalizes_remainder(
     assert messages[1].data.data["modality"] == "audio"
     assert messages[1].data.data["sample_rate"] == 24000
     assert messages[1].data.data["finish_reason"] == "length"
+    assert messages[1].data.data["spec_tokens_details"] == SPEC_TOKENS_DETAILS
     assert "req-stream" not in scheduler.stream_states
 
 
