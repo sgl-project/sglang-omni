@@ -16,8 +16,8 @@ import httpx
 import soundfile as sf
 from pydantic import BaseModel, Field, TypeAdapter
 
-from benchmarks.dataset.prepare import SEEDTTS_DATASET_ID
 from benchmarks.dataset.seedtts import load_seedtts_samples
+from benchmarks.defaults import SEEDTTS_DATASET_ID
 from benchmarks.eval.benchmark_tts_seedtts import DEFAULT_MAX_NEW_TOKENS
 from sglang_omni.serve.protocol import (
     CreateSpeechRequest,

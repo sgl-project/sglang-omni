@@ -14,14 +14,22 @@ import pytest
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.eval import speculative_sweep, speculative_tts
 from benchmarks.eval.speculative_sweep import parse_args, run_leg
-from benchmarks.eval.speculative_workloads import LoadSettings, TtsWorkload
+from benchmarks.eval.speculative_workloads import WORKLOADS, LoadSettings, TtsWorkload
 from benchmarks.metrics.performance import compute_speed_metrics
 from benchmarks.metrics.speculative import Leg, compare, read_server_log, render
 from benchmarks.metrics.wer import SampleOutput, calculate_wer_metrics
+from benchmarks.tasks.asr import apply_wer
 from benchmarks.tasks.tts import save_speed_results, save_wer_results
 
 Outcome = Literal[
-    "ok", "generation", "all_failed", "transcription", "unscorable", "unscored", "ttfc"
+    "ok",
+    "generation",
+    "all_failed",
+    "transcription",
+    "unscorable",
+    "unscored",
+    "ttfc",
+    "legacy",
 ]
 
 
@@ -31,6 +39,7 @@ def write_point(
     concurrency: int,
     stream: bool,
     outcome: Outcome = "ok",
+    language: Literal["en", "zh"] = "en",
 ) -> None:
     """Use the real result writers so changes to their schema break the adapter test."""
     directory.mkdir(parents=True, exist_ok=True)
@@ -45,41 +54,59 @@ def write_point(
         )
         for index in range(2)
     ]
-    samples = [
-        SampleOutput(
-            sample_id=request.request_id,
-            is_transcribed=request.is_success
-            and not (outcome == "transcription" and request.request_id == "1"),
-            is_success=request.is_success
-            and outcome != "unscored"
-            and not (
-                outcome in ("transcription", "unscorable") and request.request_id == "1"
-            ),
-            hits=99,
-            substitutions=1,
-            wer=0.01,
+    reference, transcript = (
+        ("red blue", "red") if language == "en" else ("你好世界", "你好世")
+    )
+    samples = []
+    for request in requests:
+        empty_reference = outcome == "unscored" or (
+            outcome == "unscorable" and request.request_id == "1"
         )
-        for request in requests
-    ]
+        sample = SampleOutput(
+            sample_id=request.request_id,
+            target_text="" if empty_reference else reference,
+        )
+        if request.is_success and not (
+            outcome == "transcription" and request.request_id == "1"
+        ):
+            apply_wer(sample, transcript, language)
+        else:
+            pass
+        samples.append(sample)
+    metrics = compute_speed_metrics(requests, wall_clock_s=4.0)
+    if outcome != "legacy":
+        metrics["wall_clock_s"] = 4.0
+    else:
+        pass
     save_speed_results(
         requests,
-        compute_speed_metrics(requests, wall_clock_s=4.0),
+        metrics,
         {"stream": stream, "concurrency": concurrency},
         str(directory),
     )
-    save_wer_results(samples, calculate_wer_metrics(samples, "en"), {}, str(directory))
+    save_wer_results(
+        samples, calculate_wer_metrics(samples, language), {}, str(directory)
+    )
 
 
 @pytest.mark.parametrize("repeats", [1, 3])
 @pytest.mark.parametrize("stream", [False, True])
-@pytest.mark.parametrize(("language", "error_rate"), [("en", "WER"), ("zh", "CER")])
+@pytest.mark.parametrize(
+    ("workload_name", "language", "error_rate", "expected_rate"),
+    [
+        ("tts-seedtts-en", "en", "WER", 0.5),
+        ("tts-seedtts-zh", "zh", "CER", 0.25),
+    ],
+)
 def test_tts_loads_read_every_repeat_and_keep_generation_timings(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     repeats: int,
     stream: bool,
+    workload_name: str,
     language: Literal["en", "zh"],
     error_rate: Literal["WER", "CER"],
+    expected_rate: float,
 ) -> None:
     commands: list[list[str]] = []
 
@@ -101,9 +128,16 @@ def test_tts_loads_read_every_repeat_and_keep_generation_timings(
             point_name = (
                 f"c{concurrency}" if repeats == 1 else f"c{concurrency}_r{repeat}"
             )
-            write_point(tmp_path / point_name, concurrency=concurrency, stream=stream)
+            write_point(
+                tmp_path / point_name,
+                concurrency=concurrency,
+                stream=stream,
+                language=language,
+            )
+    workload = WORKLOADS[workload_name]
+    assert isinstance(workload, TtsWorkload)
     loads = speculative_tts.measure_tts(
-        TtsWorkload(language=language, error_rate=error_rate),
+        workload,
         LoadSettings(
             concurrencies=[1, 4],
             repeats=repeats,
@@ -124,7 +158,7 @@ def test_tts_loads_read_every_repeat_and_keep_generation_timings(
         assert measurement.throughput_requests_per_s == 0.5
         assert measurement.latency_p95_s == 1.95
         assert measurement.first_output_latency_p95_s == (0.1 if stream else None)
-        assert measurement.accuracy == {error_rate: 0.01}
+        assert measurement.accuracy == {error_rate: expected_rate}
         assert measurement.incomplete_reasons == []
 
 
@@ -138,6 +172,7 @@ def test_tts_loads_read_every_repeat_and_keep_generation_timings(
         ("unscorable", True, 0, None),
         ("unscored", False, 0, "no scored samples"),
         ("ttfc", False, 0, "first-output latency"),
+        ("legacy", False, 0, "missing performance measurements"),
     ],
 )
 def test_incomplete_repeat_cannot_hide_behind_valid_repeat(
@@ -249,6 +284,7 @@ def test_leg_stops_tts_before_starting_asr_and_cleans_up_on_failure(
         if "--generate-only" in command:
             assert active_models == ["test-tts"]
             assert "--use-existing-server" in command
+            assert "--measure-gpu-memory" in command
             assert "--max-new-tokens" not in command
             assert command[command.index("--model") + 1] == "test-tts"
             assert ("--warmup" in command) is not warmup
@@ -262,6 +298,7 @@ def test_leg_stops_tts_before_starting_asr_and_cleans_up_on_failure(
             else:
                 write_point(log_path.parent / "c1", concurrency=1, stream=True)
         else:
+            assert "--measure-gpu-memory" not in command
             assert active_models == ["test-asr"]
             events.append("transcribe")
             if failing_phase == "transcription":
@@ -311,7 +348,7 @@ def test_leg_stops_tts_before_starting_asr_and_cleans_up_on_failure(
             args=arguments,
         )
         assert measurement.server.kv_pool_tokens == 100
-        assert measurement.loads[0].accuracy == {"WER": 0.01}
+        assert measurement.loads[0].accuracy == {"WER": 0.5}
     assert events == ["start test-tts", "generate", "stop test-tts"] + (
         []
         if failing_phase == "generation"

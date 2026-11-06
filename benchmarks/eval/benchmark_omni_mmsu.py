@@ -108,13 +108,11 @@ from benchmarks.benchmarker.conditions import (
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
 from benchmarks.benchmarker.utils import wait_for_service
 from benchmarks.dataset.mmsu import MmsuSample, load_mmsu_samples
+from benchmarks.defaults import DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
 from benchmarks.metrics.mmsu import compute_mmsu_metrics, print_mmsu_summary
 from benchmarks.metrics.performance import compute_speed_metrics
 from benchmarks.metrics.wer import print_wer_summary
-from benchmarks.tasks.asr import (
-    DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
-    compute_text_audio_consistency,
-)
+from benchmarks.tasks.asr import compute_text_audio_consistency
 from benchmarks.tasks.audio_understanding import (
     build_mmsu_results,
     make_mmsu_send_fn,

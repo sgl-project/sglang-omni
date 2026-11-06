@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import wave
 from argparse import Namespace
 from pathlib import Path
@@ -164,6 +166,37 @@ def test_a_load_with_failed_requests_keeps_its_numbers_but_qualifies_nothing() -
     assert comparison.worse_concurrencies == []
     roadmap_row = render(comparison, legs, title="draft").splitlines()[-1]
     assert "| 1.50x | – | – | invalid | – | – |" in roadmap_row
+
+
+@pytest.mark.parametrize("has_complete_load", [True, False])
+def test_partial_transcription_is_only_reported_in_the_per_load_detail(
+    has_complete_load: bool,
+) -> None:
+    baseline = [load(4, 10, 1, accuracy={"CER": 0.08})]
+    draft = [load(4, 12, 1, accuracy={"CER": 0.00})]
+    draft[0].incomplete_reasons.append("99 generated samples were not transcribed")
+    if has_complete_load:
+        baseline.insert(0, load(1, 10, 1, accuracy={"CER": 0.20}))
+        draft.insert(0, load(1, 12, 1, accuracy={"CER": 0.18}))
+    else:
+        pass
+    legs = abba(baseline, draft)
+    report = render(compare(legs, k_gain=1.2), legs, title="TTS")
+    detail = next(
+        line for line in report.splitlines() if line.startswith("| 4 (incomplete)")
+    )
+    assert "8.00%, 8.00% | 0.00%, 0.00%" in detail
+    assert "99 generated samples were not transcribed" in report
+    expected_baseline, expected_draft = (
+        ("20.00%", "18.00%") if has_complete_load else ("–", "–")
+    )
+    assert (
+        f"no draft {expected_baseline} to {expected_baseline}, draft {expected_draft} to {expected_draft}"
+        in report
+    )
+    assert report.splitlines()[-1].endswith(
+        f"| CER {expected_baseline} → {expected_draft} | |"
+    )
 
 
 def test_a_slower_first_output_makes_a_load_worse_even_when_throughput_gains() -> None:
@@ -527,6 +560,24 @@ REQUIRED = [
 ]
 
 
+def test_sweep_help_does_not_import_task_or_dataset_executors() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import runpy, sys\n"
+            "sys.modules['benchmarks.tasks.asr'] = None\n"
+            "sys.modules['benchmarks.dataset.prepare'] = None\n"
+            "sys.argv = ['speculative_sweep', '--help']\n"
+            "runpy.run_module('benchmarks.eval.speculative_sweep', run_name='__main__')",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "tts-seedtts-zh" in result.stdout
+
+
 def test_arguments_after_the_separator_go_to_the_client(monkeypatch) -> None:
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
 
@@ -534,6 +585,23 @@ def test_arguments_after_the_separator_go_to_the_client(monkeypatch) -> None:
 
     assert args.concurrencies == [1, 16]
     assert args.client_args == ["--stream"]
+    assert args.asr_model_path is None and args.asr_concurrency is None
+
+
+@pytest.mark.parametrize("workload", ["seedtts-en", "movies800times"])
+@pytest.mark.parametrize(
+    "option", [["--asr-model-path", "Qwen/Qwen3-ASR-1.7B"], ["--asr-concurrency=32"]]
+)
+def test_only_tts_workloads_accept_evaluator_options(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    workload: str,
+    option: list[str],
+) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    with pytest.raises(SystemExit):
+        parse_args([*REQUIRED, "--workload", workload, *option])
+    assert "apply only to TTS workloads" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -582,7 +650,11 @@ def test_arguments_after_the_separator_go_to_the_client(monkeypatch) -> None:
         pytest.param("0", [*REQUIRED, "--concurrencies", "1,1"], id="duplicate-load"),
         pytest.param("0", [*REQUIRED, "--repeats", "0"], id="no-measured-pass"),
         pytest.param("0", [*REQUIRED, "--max-samples", "0"], id="no-samples"),
-        pytest.param("0", [*REQUIRED, "--asr-concurrency", "0"], id="no-asr-slots"),
+        pytest.param(
+            "0",
+            [*REQUIRED, "--workload", "tts-seedtts-en", "--asr-concurrency", "0"],
+            id="no-asr-slots",
+        ),
     ],
 )
 def test_the_sweep_refuses_to_start_on_a_bad_setup(

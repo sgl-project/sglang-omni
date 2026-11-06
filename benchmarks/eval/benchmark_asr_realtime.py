@@ -54,11 +54,8 @@ from typing import Any
 import torch
 
 from benchmarks.dataset.prepare import DATASETS
-from benchmarks.dataset.seedtts import (
-    SEEDTTS_DATASET_REVISION,
-    SampleInput,
-    load_seedtts_samples,
-)
+from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
+from benchmarks.defaults import QWEN3_ASR_MODEL_PATH, SEEDTTS_DATASET_REVISION
 from benchmarks.eval.benchmark_asr_seedtts import _parse_concurrencies, _positive_int
 from benchmarks.metrics.wer import SampleOutput, calculate_wer_metrics
 from benchmarks.realtime_asr.client import (
@@ -76,7 +73,6 @@ from benchmarks.realtime_asr.metrics import (
 )
 from benchmarks.realtime_asr.replay import TraceArtifact, save_trace, source_fingerprint
 from benchmarks.tasks.asr import (
-    QWEN3_ASR_MODEL_PATH,
     _load_wav_mono_16k,
     apply_wer,
     build_asr_eval_results,

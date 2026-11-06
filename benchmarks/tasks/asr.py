@@ -30,6 +30,7 @@ from benchmarks.benchmarker.data import RequestResult
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig, SendFn
 from benchmarks.benchmarker.utils import get_wav_duration
 from benchmarks.dataset.seedtts import SampleInput
+from benchmarks.defaults import DEFAULT_ASR_TRANSCRIBE_CONCURRENCY, QWEN3_ASR_MODEL_PATH
 from benchmarks.metrics.performance import compute_speed_metrics
 from benchmarks.metrics.wer import (
     SampleOutput,
@@ -49,11 +50,8 @@ OMNI_WHISPER_CHUNK_LENGTH_S = 30
 OMNI_WHISPER_CHUNK_STRIDE_S = 25
 OMNI_WHISPER_SAMPLE_RATE = 16000
 
-QWEN3_ASR_MODEL_PATH = "Qwen/Qwen3-ASR-1.7B"
 QWEN3_ASR_REQUEST_TIMEOUT_S = 300
 FUN_ASR_MODEL_PATH = "FunAudioLLM/Fun-ASR-Nano-2512-hf"
-# note (aaron): ASR transcription fan-out for WER, not TTS generation concurrency.
-DEFAULT_ASR_TRANSCRIBE_CONCURRENCY = 32
 # note (aaron): warmup requests sent before the timed window, per unit of concurrency.
 ASR_WARMUP_MULTIPLIER = 2
 # note (wilsonzheng0327): languages written without spaces between words are scored per character.

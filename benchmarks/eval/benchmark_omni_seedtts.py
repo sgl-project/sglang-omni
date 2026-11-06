@@ -164,14 +164,11 @@ from benchmarks.benchmarker.utils import (
     wait_for_service,
 )
 from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
+from benchmarks.defaults import DEFAULT_ASR_TRANSCRIBE_CONCURRENCY, QWEN3_ASR_MODEL_PATH
 from benchmarks.metrics.performance import (
     build_speed_results,
     compute_speed_metrics,
     print_speed_summary,
-)
-from benchmarks.tasks.asr import (
-    DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
-    QWEN3_ASR_MODEL_PATH,
 )
 from benchmarks.tasks.tts import (
     ReferenceAudioField,

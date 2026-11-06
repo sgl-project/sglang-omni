@@ -83,16 +83,14 @@ from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig, resolve_wa
 from benchmarks.benchmarker.utils import save_json_results, wait_for_service
 from benchmarks.dataset.videomme import DEFAULT_REPO_ID as _VIDEOMME_DEFAULT_REPO
 from benchmarks.dataset.videomme import VideoMMESample, load_videomme_samples
+from benchmarks.defaults import DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
 from benchmarks.metrics.performance import compute_speed_metrics, print_speed_summary
 from benchmarks.metrics.video import (
     compute_videomme_metrics,
     print_videomme_accuracy_summary,
 )
 from benchmarks.metrics.wer import print_wer_summary
-from benchmarks.tasks.asr import (
-    DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
-    compute_text_audio_consistency,
-)
+from benchmarks.tasks.asr import compute_text_audio_consistency
 from benchmarks.tasks.video_understanding import (
     build_videomme_result_records,
     make_video_send_fn,

@@ -8,7 +8,7 @@ from statistics import mean
 
 from pydantic import BaseModel, Field
 
-from benchmarks.dataset.prepare import SEEDTTS_DATASET_ID
+from benchmarks.defaults import SEEDTTS_DATASET_ID
 from benchmarks.eval.speculative_workloads import (
     HOST,
     LoadSettings,
@@ -24,7 +24,8 @@ class TtsSpeedSummary(BaseModel):
     total_requests: int = Field(ge=0)
     completed_requests: int = Field(ge=0)
     failed_requests: int = Field(ge=0)
-    throughput_qps: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    wall_clock_s: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    gpu_memory_peak_mib: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     latency_p95_s: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     audio_ttfp_p95_s: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
@@ -77,6 +78,7 @@ def generate_tts(
         [
             TTS_CLIENT,
             "--generate-only",
+            "--measure-gpu-memory",
             "--use-existing-server",
             "--host",
             HOST,
@@ -216,7 +218,7 @@ def measure_tts(
             else:
                 incomplete_reasons.append(f"{point_name}: no scored samples")
             if (
-                speed.summary.throughput_qps is None
+                not speed.summary.wall_clock_s
                 or speed.summary.latency_p95_s is None
                 or speed.summary.total_requests == 0
             ):
@@ -249,9 +251,9 @@ def measure_tts(
                 ),
                 throughput_requests_per_s=mean_or_none(
                     [
-                        summary.throughput_qps
+                        summary.completed_requests / summary.wall_clock_s
                         for summary in speed_summaries
-                        if summary.throughput_qps is not None
+                        if summary.wall_clock_s
                     ]
                 ),
                 latency_p95_s=mean_or_none(
@@ -271,7 +273,14 @@ def measure_tts(
                 accuracy=(
                     {workload.error_rate: mean(error_rates)} if error_rates else {}
                 ),
-                gpu_memory_peak_mib=None,
+                gpu_memory_peak_mib=max(
+                    (
+                        summary.gpu_memory_peak_mib
+                        for summary in speed_summaries
+                        if summary.gpu_memory_peak_mib is not None
+                    ),
+                    default=None,
+                ),
                 incomplete_reasons=incomplete_reasons,
             )
         )

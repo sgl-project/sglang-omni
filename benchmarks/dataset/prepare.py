@@ -30,12 +30,11 @@ from benchmarks.dataset.socialomni import (
     SOCIALOMNI_DATASET_ID,
     SOCIALOMNI_DATASET_REVISION,
 )
+from benchmarks.defaults import SEEDTTS_DATASET_ID, SEEDTTS_DATASET_REVISION
 from sglang_omni.utils.logging import configure_dependency_loggers
 
 logger = logging.getLogger(__name__)
 
-SEEDTTS_DATASET_ID = "zhaochenyang20/seed-tts-eval-arrow"
-SEEDTTS_DATASET_REVISION = "27f4c1adee83b5b29b7c4b375f6b976324bda308"
 STT_BENCHMARK_DATASET_ID = "pipecat-ai/stt-benchmark-data"
 STT_BENCHMARK_DATASET_REVISION = "3fe50170d520c951957b86996ef082a6ab87b394"
 LONGLIBRIHEAVY_DATASET_ID = "inesc-id/longlibriheavy"

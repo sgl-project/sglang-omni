@@ -326,7 +326,7 @@ def render(comparison: Comparison, legs: list[Leg], *, title: str) -> str:
         f"- k, the highest complete concurrency with at least {K_GAIN}x: {comparison.k if comparison.k is not None else 'none'}",
         f"- Worse than no draft (throughput under {NEVER_WORSE_THROUGHPUT_RATIO}x, or p95 or first-output p95 over {NEVER_WORSE_LATENCY_RATIO}x): "
         f"{', '.join(f'c{concurrency}' for concurrency in comparison.worse_concurrencies) or 'none'}",
-        "- Incomplete, so left out of k and the never-worse check (failed requests, missing numbers or incomplete evaluation): "
+        "- Incomplete, so left out of k, the never-worse check and accuracy summaries (failed requests, missing numbers or incomplete evaluation): "
         f"{', '.join(f'c{concurrency}' for concurrency in comparison.incomplete_concurrencies) or 'none'}",
         "- Prompt tokens served from the prefix cache, which repeated prompts inflate: "
         + ", ".join(
@@ -339,15 +339,16 @@ def render(comparison: Comparison, legs: list[Leg], *, title: str) -> str:
             lines.extend(
                 f"- c{row.concurrency}: {reason}" for reason in side.incomplete_reasons
             )
+    complete_rows = [row for row in comparison.rows if row.is_complete]
     accuracy_by_side = {
         metric: {
             "baseline": [
                 value
-                for row in comparison.rows
+                for row in complete_rows
                 for value in row.baseline.accuracy[metric]
             ],
             "draft": [
-                value for row in comparison.rows for value in row.draft.accuracy[metric]
+                value for row in complete_rows for value in row.draft.accuracy[metric]
             ],
         }
         for metric in comparison.accuracy_metrics

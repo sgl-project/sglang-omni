@@ -32,6 +32,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from benchmarks.benchmarker.utils import managed_omni_server
+from benchmarks.defaults import DEFAULT_ASR_TRANSCRIBE_CONCURRENCY, QWEN3_ASR_MODEL_PATH
 from benchmarks.eval.speculative_tts import generate_tts, measure_tts
 from benchmarks.eval.speculative_workloads import (
     HOST,
@@ -49,10 +50,6 @@ from benchmarks.metrics.speculative import (
     compare,
     read_server_log,
     render,
-)
-from benchmarks.tasks.asr import (
-    DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
-    QWEN3_ASR_MODEL_PATH,
 )
 from sglang_omni.config.manager import ConfigManager
 
@@ -251,13 +248,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
         "--asr-model-path",
-        default=QWEN3_ASR_MODEL_PATH,
         help="ASR model used to score saved TTS audio after each TTS server stops.",
     )
     parser.add_argument(
         "--asr-concurrency",
         type=int,
-        default=DEFAULT_ASR_TRANSCRIBE_CONCURRENCY,
         help="Transcription concurrency for TTS quality evaluation.",
     )
     parser.add_argument(
@@ -304,19 +299,28 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         for gpu in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",")
         if gpu.strip()
     ]
+    is_tts = isinstance(WORKLOADS[args.workload], TtsWorkload)
     if len(visible_gpus) != 1:
         parser.error("set CUDA_VISIBLE_DEVICES to the one GPU the sweep owns")
     elif set(args.order) != set(SIDE_BY_LETTER):
         parser.error("--order needs at least one A and one B, and no other letters")
-    elif not args.concurrencies or any(value <= 0 for value in args.concurrencies):
+    elif any(value <= 0 for value in args.concurrencies):
         parser.error("--concurrencies must contain positive integers")
     elif len(set(args.concurrencies)) != len(args.concurrencies):
         parser.error("--concurrencies must not contain duplicates")
-    elif args.repeats < 1 or args.asr_concurrency < 1:
-        parser.error("--repeats and --asr-concurrency must be positive")
+    elif args.repeats < 1:
+        parser.error("--repeats must be positive")
+    elif not is_tts and (
+        args.asr_model_path is not None or args.asr_concurrency is not None
+    ):
+        parser.error(
+            "--asr-model-path and --asr-concurrency apply only to TTS workloads"
+        )
+    elif args.asr_concurrency is not None and args.asr_concurrency < 1:
+        parser.error("--asr-concurrency must be positive")
     elif args.max_samples is not None and args.max_samples < 1:
         parser.error("--max-samples must be positive")
-    elif isinstance(WORKLOADS[args.workload], TtsWorkload) and any(
+    elif is_tts and any(
         flag.startswith(argument.split("=")[0])
         for argument in args.client_args
         if argument.startswith("--")
@@ -327,7 +331,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "--draft-config YAML under stages.<stage>.engine; select the YAML with "
             "--draft-config. Server timeout and GPU cleanup are controlled by the sweep."
         )
-    elif isinstance(WORKLOADS[args.workload], TtsWorkload) and any(
+    elif is_tts and any(
         flag.startswith(argument.split("=")[0])
         for argument in args.client_args
         if argument.startswith("--")
@@ -345,6 +349,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     ):
         parser.error(
             f"the client may not get {', '.join(DRIVER_CLIENT_FLAGS)} or an abbreviation of one: the sweep sets them itself, or they would change what it measures"
+        )
+    else:
+        pass
+    if is_tts:
+        args.asr_model_path = (
+            QWEN3_ASR_MODEL_PATH if args.asr_model_path is None else args.asr_model_path
+        )
+        args.asr_concurrency = (
+            DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
+            if args.asr_concurrency is None
+            else args.asr_concurrency
         )
     else:
         pass

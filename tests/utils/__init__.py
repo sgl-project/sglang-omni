@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from benchmarks.benchmarker import utils as benchmark_utils
-from benchmarks.tasks.asr import QWEN3_ASR_MODEL_PATH
+from benchmarks.defaults import QWEN3_ASR_MODEL_PATH
 
 if TYPE_CHECKING:
     from tests.test_model.omni_router_utils import ManagedRouterHandle
