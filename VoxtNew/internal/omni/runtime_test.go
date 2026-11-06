@@ -327,8 +327,29 @@ func TestOlderServer(t *testing.T) {
 }
 
 // TestFinalChunks: a recording longer than a chunk is several requests
-// sharing one budget, the first's language forced on the rest.
+// sharing one budget, the first's language forced on the rest. Their
+// texts are joined as the live pieces are: a space between two words or
+// sentences of a spaced script, none in Chinese. The Final used to put
+// them end to end ("the Republic.Socrates begins").
 func TestFinalChunks(t *testing.T) {
+	for _, tc := range []struct{ text, want string }{
+		{"片段", "片段片段片段"},
+		{"Part {n}.", "Part 1. Part 2. Part 3."},
+		{"word{n}", "word1 word2 word3"}, // a cut inside a sentence, no punctuation
+	} {
+		t.Run(tc.text, func(t *testing.T) {
+			f := newFake(t, omnitest.Opts{Text: tc.text}, nil)
+			a := f.asr(t, ASRFast)
+			a.spec.ASR.ChunkSeconds, a.spec.ASR.CutSearch = 2, 100*time.Millisecond
+			res, err := a.Transcribe(context.Background(), asr.FileRequest{Audio: tone(5*time.Second, 0.3), Format: "pcm"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if finals := f.records("final"); res.Text != tc.want || len(finals) != 3 {
+				t.Fatalf("%q in %d requests, want %q", res.Text, len(finals), tc.want)
+			}
+		})
+	}
 	f := newFake(t, omnitest.Opts{Text: "片段"}, nil)
 	a := f.asr(t, ASRFast)
 	a.spec.ASR.ChunkSeconds, a.spec.ASR.CutSearch = 2, 100*time.Millisecond
@@ -337,9 +358,6 @@ func TestFinalChunks(t *testing.T) {
 		t.Fatal(err)
 	}
 	finals := f.records("final")
-	if res.Text != "片段片段片段" || len(finals) != 3 {
-		t.Fatalf("%q in %d requests", res.Text, len(finals))
-	}
 	for i, want := range []struct{ lang, tokens string }{{"", "256"}, {"Chinese", "246"}, {"Chinese", "236"}} {
 		if got := finals[i].Fields; got["language"] != want.lang || got["max_new_tokens"] != want.tokens {
 			t.Errorf("request %d: language %q budget %q, want %q %q", i, got["language"], got["max_new_tokens"], want.lang, want.tokens)
