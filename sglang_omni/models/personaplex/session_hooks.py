@@ -36,6 +36,11 @@ PCM16_BYTES_PER_FRAME = SAMPLES_PER_FRAME * PCM16_BYTES_PER_SAMPLE
 # Note (wilsonzheng0327): A session's first unit returns two agent frames, the
 # prompt's last among them, and every later unit one.
 FRAMES_PER_UNIT = (2, 1)
+# {"text": str, "pcm": bytes}, the words and the PCM16 audio of one unit of the agent's reply
+PERSONAPLEX_REPLY = "personaplex_reply"
+SPEECH_TOKENS = "speech_tokens"
+# {"text_ids": [F], "audio_codes": [F][8], "audio_energy": [F]}, per 80 ms agent frame of a unit its text token, its Mimi codes and the sum of squares of its decoded float samples
+AGENT_FRAMES = "personaplex_agent_frames"
 
 
 def is_empty_end_of_input(chunk: TimedChunk) -> bool:
@@ -159,10 +164,14 @@ class Code2WavState:
 
 class Code2WavHooks(BatchedSessionHooks):
     """Decodes the ready sessions' agent frames on their decode slots, one batch per
-    frame count, and emits each unit's audio with the words spoken in it."""
+    frame count, and emits each unit's audio with the words spoken in it; with
+    relays_agent_frames, also each unit's agent frames for a reading node."""
 
-    def __init__(self, decode_slots: MimiDecodeSlots) -> None:
+    def __init__(
+        self, decode_slots: MimiDecodeSlots, *, relays_agent_frames: bool
+    ) -> None:
         self.decode_slots = decode_slots
+        self.relays_agent_frames = relays_agent_frames
         self.states: dict[SessionIdentity, Code2WavState] = {}
 
     @torch.inference_mode()
@@ -188,6 +197,7 @@ class Code2WavHooks(BatchedSessionHooks):
     def append_batch(self, appends: list[SessionAppend]) -> list[StagePayload]:
         units = [PersonaPlexState.from_dict(append.payload.data) for append in appends]
         pcm = [b""] * len(appends)
+        audio_energies: list[list[float]] = [[] for _ in appends]
         rows_by_width: dict[int, list[int]] = defaultdict(list)
         for index, unit in enumerate(units):
             if unit.codes.shape[0]:
@@ -205,19 +215,55 @@ class Code2WavHooks(BatchedSessionHooks):
             )
             for row, index in enumerate(indices):
                 pcm[index] = waveform_to_pcm16(waveform[row, 0])
-        for append, unit, unit_pcm in zip(appends, units, pcm, strict=True):
+            if self.relays_agent_frames:
+                energies = (
+                    (
+                        waveform[:, 0].float().view(len(indices), -1, SAMPLES_PER_FRAME)
+                        ** 2
+                    )
+                    .sum(dim=-1)
+                    .tolist()
+                )
+                for row, index in enumerate(indices):
+                    audio_energies[index] = energies[row]
+            else:
+                pass
+        for append, unit, unit_pcm, energies in zip(
+            appends, units, pcm, audio_energies, strict=True
+        ):
             session = self.states[append.context.session_identity]
             num_samples = len(unit_pcm) // PCM16_BYTES_PER_SAMPLE
+            t_start_ms = samples_to_ms(session.num_samples, SAMPLE_RATE)
+            duration_ms = samples_to_ms(num_samples, SAMPLE_RATE)
             append.context.emit(
                 TimedChunk(
                     AUDIO,
-                    samples_to_ms(session.num_samples, SAMPLE_RATE),
-                    samples_to_ms(num_samples, SAMPLE_RATE),
+                    t_start_ms,
+                    duration_ms,
                     append.chunk.seq,
                     {"text": unit.text, "pcm": unit_pcm},
+                    format=PERSONAPLEX_REPLY,
                     eos=append.chunk.eos,
                 )
             )
+            if self.relays_agent_frames:
+                append.context.emit(
+                    TimedChunk(
+                        SPEECH_TOKENS,
+                        t_start_ms,
+                        duration_ms,
+                        append.chunk.seq,
+                        {
+                            "text_ids": unit.text_ids,
+                            "audio_codes": unit.codes.tolist(),
+                            "audio_energy": energies,
+                        },
+                        format=AGENT_FRAMES,
+                        eos=append.chunk.eos,
+                    )
+                )
+            else:
+                pass
             session.num_samples += num_samples
             append.payload.data = {}
         return [append.payload for append in appends]
@@ -227,6 +273,9 @@ class Code2WavHooks(BatchedSessionHooks):
 
 
 __all__ = [
+    "AGENT_FRAMES",
+    "PERSONAPLEX_REPLY",
+    "SPEECH_TOKENS",
     "Code2WavHooks",
     "MimiEncodeHooks",
     "PromptPreparer",

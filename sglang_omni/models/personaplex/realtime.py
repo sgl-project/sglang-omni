@@ -123,6 +123,7 @@ def create_realtime_deployment(
             output_converter=PersonaPlexOutputConverter(),
             input_sample_rate_hz=SAMPLE_RATE,
             atomic_consumption=True,
+            plugin_output_ports=pipeline_config.plugin_output_ports(),
         )
 
     return RealtimeDeployment(
@@ -134,6 +135,7 @@ def create_realtime_deployment(
             tail_policy="pad",
             sampling_parameters=tuple(PersonaPlexSessionSampling.model_fields),
             voices=packaged_voices(resolve_model_path(pipeline_config.model_path)),
+            plugin_output_ports=pipeline_config.plugin_output_ports(),
         ),
         adapter_factory=create_adapter,
         limits=runtime_limits_for_pipeline(pipeline_config),

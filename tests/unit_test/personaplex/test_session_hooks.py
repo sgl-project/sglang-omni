@@ -11,6 +11,8 @@ from sglang_omni.models.personaplex.architecture import SAMPLES_PER_FRAME
 from sglang_omni.models.personaplex.mimi_decode_graph import MimiDecodeSlots
 from sglang_omni.models.personaplex.payload_types import PersonaPlexState
 from sglang_omni.models.personaplex.session_hooks import (
+    AGENT_FRAMES,
+    PERSONAPLEX_REPLY,
     Code2WavHooks,
     MimiEncodeHooks,
     PreprocessingHooks,
@@ -120,7 +122,7 @@ def test_code2wav_decodes_sessions_together_and_emits_each_unit_once(random_code
     sessions = [SessionIdentity("a"), SessionIdentity("b")]
     frames_per_unit = {sessions[0]: [2, 1, 1], sessions[1]: [1, 1, 2]}
     codes = {session: torch.randint(0, 2048, (4, 8)) for session in sessions}
-    hooks = Code2WavHooks(decode_slots(random_codec, 2))
+    hooks = Code2WavHooks(decode_slots(random_codec, 2), relays_agent_frames=False)
     emitted: dict[SessionIdentity, list[TimedChunk]] = {}
     for session in sessions:
         hooks.open(session, OmniRequest(inputs=None))
@@ -168,8 +170,47 @@ def test_code2wav_decodes_sessions_together_and_emits_each_unit_once(random_code
         ]
 
 
+def test_relayed_agent_frames_carry_each_frames_tokens_and_audio_energy(random_codec):
+    hooks = open_hooks(
+        Code2WavHooks(decode_slots(random_codec, 1), relays_agent_frames=True)
+    )
+    codes = torch.randint(0, 2048, (3, 8))
+    emitted: list[TimedChunk] = []
+    for index, (start, end) in enumerate([(0, 2), (2, 3)]):
+        state = PersonaPlexState(
+            codes=codes[start:end], text_ids=list(range(start, end)), text="w"
+        )
+        hooks.append_batch(
+            [
+                SessionAppend(
+                    chunk=unit(index), payload=payload(state), context=context(emitted)
+                )
+            ]
+        )
+
+    relayed = [chunk for chunk in emitted if chunk.format == AGENT_FRAMES]
+    assert [chunk.format for chunk in emitted] == [
+        PERSONAPLEX_REPLY,
+        AGENT_FRAMES,
+    ] * 2
+    assert [(chunk.t_start_ms, chunk.duration_ms) for chunk in relayed] == [
+        (0.0, 160.0),
+        (160.0, 80.0),
+    ]
+    assert [chunk.payload["text_ids"] for chunk in relayed] == [[0, 1], [2]]
+    assert [chunk.payload["audio_codes"] for chunk in relayed] == [
+        codes[:2].tolist(),
+        codes[2:].tolist(),
+    ]
+    whole = random_codec.decode(codes.T[None])[0, 0].view(3, SAMPLES_PER_FRAME)
+    energies = [energy for chunk in relayed for energy in chunk.payload["audio_energy"]]
+    assert np.allclose(energies, (whole**2).sum(dim=1).tolist(), rtol=1e-3)
+
+
 def test_an_empty_end_of_input_emits_only_the_end(random_codec):
-    hooks = open_hooks(Code2WavHooks(decode_slots(random_codec, 1)))
+    hooks = open_hooks(
+        Code2WavHooks(decode_slots(random_codec, 1), relays_agent_frames=False)
+    )
     emitted: list[TimedChunk] = []
     state = PersonaPlexState(codes=torch.zeros(0, 8, dtype=torch.long))
     hooks.append_batch(
@@ -188,7 +229,7 @@ def test_an_empty_end_of_input_emits_only_the_end(random_codec):
 
 def test_warm_up_runs_both_codecs_and_opens_no_call(random_codec):
     encode = MimiEncodeHooks(random_codec, torch.device("cpu"))
-    decode = Code2WavHooks(decode_slots(random_codec, 1))
+    decode = Code2WavHooks(decode_slots(random_codec, 1), relays_agent_frames=False)
     encode.warm_up_serving_thread()
     decode.warm_up_serving_thread()
     assert encode.states == {} and decode.states == {}
