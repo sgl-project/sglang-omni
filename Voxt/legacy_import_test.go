@@ -255,3 +255,37 @@ func TestLegacyReusableSkipsRetired(t *testing.T) {
 		t.Error("no speech model would come over")
 	}
 }
+
+// An import ends the offer: the sidebar card goes, and does not come back on
+// a later start (a user who imported from the setup guide, then skipped the
+// rest of it, is not offered the import again).
+func TestImportEndsTheOffer(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "Library", "Containers", legacyBundleID), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VOXTNEW_LEGACY_HOME", home)
+	ctx := context.Background()
+	offered := func(a *app) bool {
+		list, _ := a.notes.List(ctx)
+		for _, n := range list {
+			if n.ID == legacyOffered {
+				return true
+			}
+		}
+		return false
+	}
+	dir := testDir(t)
+	a, _, _ := newTestAppIn(t, dir)
+	a.importLegacyFrom(copyFixture(t, "real")) // from the setup guide, before Setup is done
+	if !a.ob.legacyDone {
+		t.Fatalf("the import did not succeed: %q", a.ob.legacyMsg)
+	}
+	a.quit()
+	b, _, _ := newTestAppIn(t, dir)
+	b.prefs.Setup.Done = true
+	b.offerLegacy()
+	if offered(b) {
+		t.Error("offered again after an import")
+	}
+}

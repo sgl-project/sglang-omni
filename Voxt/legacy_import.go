@@ -383,7 +383,7 @@ func (a *app) importLegacy() {
 
 func (a *app) importLegacyFrom(picked string) {
 	a.dv.importing = true
-	repo, hist, mods := a.lib.store.Dictionary(), a.lib.store.History(), a.models
+	repo, hist, mods, docs := a.lib.store.Dictionary(), a.lib.store.History(), a.models, a.lib.store.Documents()
 	a.async(func() {
 		done := false // the dictionary came over: the card offers the import again, quietly
 		msg := func() string {
@@ -406,6 +406,9 @@ func (a *app) importLegacyFrom(picked string) {
 				return i18n.T("Could not import: %v", err)
 			}
 			done = true
+			if err := docs.Put(ctx, legacyOffered, []byte("true")); err != nil { // imported: offerLegacy's card is not wanted any more
+				log.Printf("legacy import: %v", err)
+			}
 			msg := i18n.T("From the previous Voxt: %d new, %d updated.", added, updated)
 			if skipped > 0 {
 				msg = i18n.T("From the previous Voxt: %d new, %d updated; %d left out (too long or empty).", added, updated, skipped)
@@ -436,6 +439,9 @@ func (a *app) importLegacyFrom(picked string) {
 			a.dv.importing = false
 			a.modelsChanged()
 			a.ob.legacyMsg, a.ob.legacyDone = msg, done
+			if done {
+				a.dismissNotice(legacyOffered) // the sidebar card, if it shows
+			}
 			a.toast(msg)
 			a.loadDict()
 		})
