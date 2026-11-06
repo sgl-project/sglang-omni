@@ -292,6 +292,7 @@ Community & Resources
    cookbook/companies/autoark_ai.md
    cookbook/companies/mistral_ai.md
    cookbook/companies/dots_studio.md
+   cookbook/companies/aura.md
 
 .. toctree::
    :maxdepth: 1
