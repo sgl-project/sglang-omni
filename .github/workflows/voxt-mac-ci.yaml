@@ -4,7 +4,8 @@ name: Voxt Mac CI
 # macOS runners, then checks what Voxt relies on without running a model: the
 # supervisor protocol, the transcription, speech and realtime APIs (served by
 # the stub server around stand-in models), each server's startup checks, and
-# Voxt's Omni unit tests. No checkpoint is downloaded. Model outputs are checked
+# Voxt's Omni unit tests, and VoxtNew's Swift packages (the helper and the
+# language-model runtime). No checkpoint is downloaded. Model outputs are checked
 # by hand per model PR with the tools in sglang_omni_mlx/native/ci.
 #
 # The package job runs only when the repository variable
@@ -17,6 +18,8 @@ on:
     paths:
       - "Voxt/**"
       - "sglang_omni_mlx/**"
+      - "VoxtNew/helper/**"
+      - "VoxtNew/llm/**"
       - ".github/workflows/voxt-mac-ci.yaml"
   workflow_dispatch:
 
@@ -189,6 +192,30 @@ jobs:
             -only-testing:VoxtTests/RecordingSessionLifecycleTests \
             -only-testing:VoxtTests/RemoteLLMRuntimeClientGenerationSettingsTests \
             -only-testing:VoxtTests/RemoteLLMRuntimeClientResponsesRequestTests
+
+  voxtnew-swift:
+    name: VoxtNew helper and LLM runtime tests
+    needs: [preflight]
+    if: needs.preflight.outputs.run_mac == 'true'
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # mlx-swift needs it to build its kernels (VoxtNew/llm).
+      - name: Install the Metal toolchain
+        run: |
+          set -euo pipefail
+          if ! xcrun metal --version > /dev/null 2>&1; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+          xcrun metal --version
+
+      - name: Helper tests
+        run: swift test --package-path VoxtNew/helper
+
+      - name: LLM runtime tests
+        run: swift test --package-path VoxtNew/llm
 
   package:
     name: Voxt native runtime package
