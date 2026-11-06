@@ -42,6 +42,8 @@ scripts/mac-gui.sh scripts/release.sh（在 Mac 上，ssh 里经 mac-gui.sh 进�
 
 ## 0. 两个通道
 
+**1.0.0 没有更新通道**：`release/mygo.release.json` 是 `{}`，构建里没有更新源，app 不检查更新（菜单里没有“检查更新…”，关于面板写“这个版本不会自动更新”，`main.go` 用补丁 0008 的 `mygo.Updater.HasFeed` 判断），`release.sh --publish` 直接报错，不走 `actnow-publish.sh`。下面是有通道时的做法，代码都留着：以后有了 sgl-project 自己的通道，把 `updates`（公钥、`url`、`prereleases`）加回 `release/mygo.release.json` 就照旧。
+
 | | 正式版 | beta 版 |
 |---|---|---|
 | 版本号 | `1.1.0` | `1.1.0-beta.1`（版本号里有 `-`） |
@@ -111,7 +113,7 @@ york@actnow.dev 要开启双重认证（App 专用密码需要）。也可以改
 
 VoxtNew 有**自己的**一对密钥（10-17 在 mac-air 上用 `go tool mygo keygen` 生成，不再和 Auralink 共用）：
 
-- 公钥 `MbROqANE8pK8IQ8hdtUtR/m5SqUY2nTgzHwrQt04Zps=`，写在 [release/mygo.release.json](../release/mygo.release.json) 的 `updates.publicKey`，官网面板 /panel/releases 的 voxtnew 设置里也要填同一个（由 ActNow 项目填）。
+- 公钥 `MbROqANE8pK8IQ8hdtUtR/m5SqUY2nTgzHwrQt04Zps=`，写在 [release/mygo.release.json](../release/mygo.release.json) 的 `updates.publicKey`（1.0.0 起去掉了，见 §0），官网面板 /panel/releases 的 voxtnew 设置里也要填同一个（由 ActNow 项目填）。
 - 私钥在 mac-air 的 `~/.config/voxtnew-release/update-keys/mygo-update.key`（600，目录 700；同目录的 `mygo-update.pub` 是公钥），**不进仓库**、不进日志。
 
 `release.sh` 有身份签名时自己找私钥：环境变量 `MYGO_UPDATER_PRIVATE_KEY`（密钥本身），否则 `VOXTNEW_UPDATE_KEY` 指的文件（默认就是上面那个路径），交给 MyGo 的是文件路径（`updates.privateKey`），密钥不进命令行和环境。开始前它核对私钥和 `release/mygo.release.json` 的公钥是一对，不是就停下。

@@ -103,7 +103,7 @@ SITE="$(cat "$WORK/url.txt")"
 URL="$SITE/updates/voxtnew"
 # The release's updates (url, s3, prereleases) with the test key and feed.
 jq --arg id "$ID" --arg key "$(cat "$WORK/keys/mygo-update.pub")" --arg url "$URL" \
-  '.identifier = $id | .updates.publicKey = $key | .updates.url = $url' release/mygo.release.json >"$WORK/overlay.json"
+  '.identifier = $id | .updates.publicKey = $key | .updates.url = $url | .updates.prereleases = true' release/mygo.release.json >"$WORK/overlay.json"
 echo "  feed $URL"
 
 # The release notes of both versions, as docs/release.md has them: English,

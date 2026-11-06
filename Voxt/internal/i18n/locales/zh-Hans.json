@@ -914,6 +914,7 @@
   "These rules are merged with the built-in writing rules; where they disagree, yours win.": "这些规则会和内置的写作规则合并；两者不一致时，以你的规则为准。",
   "Third-party notices": "第三方声明",
   "This copy cannot update itself: it is a development build, or it is in a folder VoxtNew cannot write to. Move VoxtNew to Applications.": "这个副本不能自动更新：它是开发版本，或者所在的文件夹 VoxtNew 没有写入权限。请把 VoxtNew 移到“应用程序”文件夹。",
+  "This version does not update automatically.": "这个版本不会自动更新。",
   "This deletes your history and its recordings, your dictionary, your app enhancement rules, the local models no other ActNow app uses, every setting and the logs. It cannot be undone. VoxtNew restarts as on its first day, and the models download again.": "这会删除历史及其录音、词典、应用增强规则、没有其他 ActNow app 使用的本地模型、所有设置和日志，且无法撤销。VoxtNew 会像第一次打开一样重启，模型需要重新下载。",
   "This feature is not available.": "这个功能不可用。",
   "This frees %s. You can download it again later.": "将释放 %s。之后可以重新下载。",

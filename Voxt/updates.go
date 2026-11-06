@@ -238,9 +238,12 @@ func (a *app) appUpdated() {
 // helper (OnQuit), the new version starts its own.
 func (a *app) relaunch() { appRelaunch() }
 
-// updateSettingsSection is the Updates part of Settings → About.
+// updateSettingsSection is the Updates part of Settings → About; a build
+// without the updater only says that it does not update.
 func (a *app) updateSettingsSection(c *ui.Context) {
 	if a.upd == nil {
+		sectionTitle(c, i18n.T("Updates"))
+		caption(c, i18n.T("This version does not update automatically."))
 		return
 	}
 	a.loadUpdates()

@@ -48,7 +48,9 @@ func (a *app) commands() []command {
 	add("logs-panel", view, i18n.T("Show or hide the logs panel"), "Show or hide the logs panel", "⇧⌘L", true, func() { a.logsPanel = !a.logsPanel })
 	add("shortcuts", view, i18n.T("Keyboard shortcuts"), "Keyboard shortcuts", "?", true, func() { a.sheetOpen = true })
 	add("helper-restart", view, i18n.T("Restart the helper"), "Restart the helper", "", true, a.restartHelper)
-	add("check-updates", view, i18n.T("Check for Updates…"), "Check for Updates", "", a.upd != nil, a.checkForUpdates)
+	if a.upd != nil {
+		add("check-updates", view, i18n.T("Check for Updates…"), "Check for Updates", "", true, a.checkForUpdates)
+	}
 	add("setup-guide", view, i18n.T("Open the setup guide"), "Open the setup guide onboarding", "", true, a.openOnboarding)
 
 	look := i18n.T("Appearance")

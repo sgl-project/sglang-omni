@@ -15,7 +15,7 @@ All notable changes to VoxtNew. The format follows [Keep a Changelog](https://ke
 - The Local models page: download, pause and resume, every file verified, delete; the memory a loaded model uses. Downloads use the system's proxy, or a mirror when Hugging Face cannot be reached.
 - A setup guide that installs the two recommended models and tries each feature; history, the overlay, the menu bar, shortcuts and settings.
 - Shortcuts: tap the right Option key to transcribe, right Option with Shift to translate, Control with right Option to rewrite; Control-Option-V pastes the last result. They leave fn to Auralink, so the two apps run side by side.
-- Updates from actnow.dev, with a Beta channel (Settings → About). The app is signed and notarised.
+- The app is signed and notarised. This version does not update itself: Settings → About says so, and a new version is downloaded by hand.
 - History entries have a context menu: right-click (or Control-click) one to copy its result or its recognised text, show its details, show its recording in Finder, or delete it. Home's recent results have the same menu. In History a selected entry also takes ⌘C (copy) and Delete.
 - **Keep models loaded** (Local models → Advanced): how long a model stays in memory unused. Automatic, the default, is as before (speech 10 minutes, language models 5); you can choose 5, 15 or 30 minutes, 1 hour, or until VoxtNew quits, so that every dictation starts at once. Other ActNow apps can still ask VoxtNew to free the memory of models it is not using. A change applies at once.
 - **Sounds to choose** (Settings → Audio → Play sounds): the start and the stop sound are each chosen from the ActNow family's sound library (from React Bits Sound Lab, in the builds from actnow.dev; Tally and Wrap by default), or macOS's system sounds, or none. A compact picker searches them (names and tags), filters by type, plays each with ▶ (again to stop) and sets their volume in steps; a Try button plays the choice. A Voxt pair chosen in an earlier build is kept as those system sounds. A build from source without the library plays Pop and Tink.
@@ -63,7 +63,7 @@ All notable changes to VoxtNew. The format follows [Keep a Changelog](https://ke
 - 本地模型页：下载、暂停和继续下载，每个文件都经过校验，可删除；显示已加载模型占用的内存。下载走系统代理，连不上 Hugging Face 时改用镜像。
 - 设置引导：安装推荐的两个模型，并把每个功能试一遍；还有历史、浮窗、菜单栏、快捷键和设置。
 - 快捷键：单按右 Option 转录，右 Option 加 Shift 翻译，Control 加右 Option 转写；Control-Option-V 粘贴上一条结果。fn 留给 Auralink，两个 app 可以同时使用。
-- 从 actnow.dev 更新，有 Beta 通道（设置 → 诊断与关于）。app 已签名并经过公证。
+- app 已签名并经过公证。这个版本不会自动更新：设置 → 诊断与关于里有说明，新版本需要自己下载。
 - 历史记录有了右键菜单：右键（或按住 Control 点）一条记录，可以复制结果或识别原文、查看详情、在访达中显示录音，或者删除它。首页的最近结果也有同样的菜单。在历史页选中一条记录后，也可以按 ⌘C 复制、按 Delete 删除。
 - **保持模型载入**（本地模型 → 高级）：模型闲置多久后从内存卸载。默认“自动”与以前相同（语音识别 10 分钟、语言模型 5 分钟）；也可以选 5、15、30 分钟、1 小时或“直到退出 VoxtNew”，让每次口述都立即开始。其他 ActNow app 仍然可以请 VoxtNew 释放闲置模型占用的内存。修改立即生效。
 - **可选的提示音**（设置 → 音频 → 播放提示音）：开始和结束提示音分别从 ActNow 家族提示音库里选（来自 React Bits Sound Lab，只在 actnow.dev 的官方构建里；默认“开录”和“收工”），也可以选 macOS 系统声音或无声。选择器很紧凑：可以搜索（名字和标签）、按类型筛选、用 ▶ 逐个试听（再点一下停止）、按档位调音量；试听按钮播放当前选择。以前版本选的 Voxt 预设保留为对应的系统声音。没有提示音库的源码构建播放 Pop 和 Tink。

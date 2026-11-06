@@ -95,7 +95,12 @@ func main() {
 	a.muteJournal = outputJournal(home, cacheDir) // mute_link.go
 	a.connectShell(logDir)                        // shell.go
 	a.connectHelper()                             // helperlink.go
-	a.upd, a.bundleStale = pluginUpdates{}, h.stale
+	// A build without an update feed (1.0.0, every development build)
+	// has no updater: no Check for Updates…, and About says so.
+	if mygo.Updater.HasFeed() {
+		a.upd = pluginUpdates{}
+	}
+	a.bundleStale = h.stale
 	a.connectUpdates() // updates.go
 	a.startFamily()    // family.go: the manifest, the other ActNow apps, the first start's migration
 

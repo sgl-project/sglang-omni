@@ -239,6 +239,24 @@ func TestUpdateMenus(t *testing.T) {
 	a.checkForUpdates() // nothing to do, no panic
 }
 
+// TestNoUpdateFeed: a build without an update feed (1.0.0) has no
+// updater. About says that it does not update, and there is no Check for
+// Updates… there or in the command palette (the menus: TestUpdateMenus).
+func TestNoUpdateFeed(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.upd = nil
+	a.navigate("/settings/about")
+	see(t, tt, "This version does not update automatically.")
+	for _, s := range []string{"Check for Updates…", "Check for updates", "actnow.dev"} {
+		if has(tt, s) {
+			t.Errorf("About shows %q", s)
+		}
+	}
+	if slices.ContainsFunc(a.commands(), func(c command) bool { return c.id == "check-updates" }) {
+		t.Error("the command palette has Check for Updates…")
+	}
+}
+
 // TestAppUpdated: an update installed while VoxtNew runs (the helper on
 // disk is the new version's) shows one card, not the helper's, that
 // restarts VoxtNew, on Home and in Settings → About too.
