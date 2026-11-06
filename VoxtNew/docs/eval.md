@@ -41,7 +41,7 @@ On mac-air, from the persistent models and runtimes:
 
 | path | what | refresh |
 |---|---|---|
-| `~/.cache/huggingface/hub` (`$HUB`) | the six catalogue models' snapshots at their pinned commits, about 9 GB, in the ActNow family's model library (shared with the user's AudioSmith and Dicta; claimed as `dev.hehehai.voxtnew`); the tests find them through the catalogue (`models.Installed`) | download in VoxtNew, or `internal/models` `TestRealMoveToHub` from per-model folders; never delete them by hand |
+| `~/Library/Application Support/ActNow/models/hub` (`$HUB`) | the six catalogue models' snapshots at their pinned commits, about 9 GB, in the ActNow family's model library (shared with the user's AudioSmith and Dicta; claimed as `dev.hehehai.voxtnew`); the tests find them through the catalogue (`models.Installed`) | download in VoxtNew, or `internal/models` `TestRealMoveToHub` from per-model folders; never delete them by hand |
 | `~/voxtnew-runtime/{omni,llm}/` | `scripts/build-omni.sh --out` and `scripts/build-llm.sh --out` from `voxtnew/dev` | its `README.md` |
 
 ```sh
