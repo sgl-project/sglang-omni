@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -16,6 +17,9 @@ CLAIM_BASE_PORT = 25100
 CLAIM_SPAN = 20
 DEAD_PID_SCAN_START = 1_000_000
 DEAD_PID_SCAN_COUNT = 200
+# note (Lushali): Linux routes all of 127.0.0.0/8 to loopback, so this stands in
+# for a non-loopback interface address that port_claim's own bind must notice.
+OTHER_LOOPBACK_ADDRESS = "127.0.0.2"
 
 
 def dead_pid() -> int:
@@ -86,3 +90,38 @@ def test_live_claim_is_skipped_and_stale_claim_is_reused(
     reclaimed = claim_tcp_port(stale_port, 1)
     assert reclaimed == stale_port
     release_tcp_port(reclaimed)
+
+
+def test_port_held_on_another_local_address_is_skipped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_PORT_CLAIM_DIR", str(tmp_path))
+    held_port = CLAIM_BASE_PORT + 4
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as holder:
+        holder.bind((OTHER_LOOPBACK_ADDRESS, held_port))
+        claimed = claim_tcp_port(held_port, 2)
+        assert claimed == held_port + 1
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as store:
+            store.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            store.bind(("", claimed))
+            store.listen()
+    release_tcp_port(claimed)
+
+
+def test_taken_range_falls_back_to_kernel_port_only_when_allowed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("SGLANG_OMNI_PORT_CLAIM_DIR", str(tmp_path))
+    held_port = CLAIM_BASE_PORT + 6
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as holder:
+        holder.bind((OTHER_LOOPBACK_ADDRESS, held_port))
+        with pytest.raises(RuntimeError):
+            claim_tcp_port(held_port, 1)
+        claimed = claim_tcp_port(held_port, 1, allow_kernel_port=True)
+        assert claimed != held_port
+        assert (tmp_path / str(claimed)).read_text().strip() == str(os.getpid())
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as store:
+            store.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            store.bind(("", claimed))
+            store.listen()
+    release_tcp_port(claimed)
