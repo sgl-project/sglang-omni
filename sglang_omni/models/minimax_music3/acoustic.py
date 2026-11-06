@@ -152,18 +152,19 @@ class MiniMaxMusic3AcousticDecoder:
             current_platform.is_cuda()
             or current_platform.is_musa()
             or current_platform.is_xpu()
+            or current_platform.is_npu()
         ):
             raise RuntimeError(
-                "MiniMax Music 3 acoustic inference requires CUDA/MUSA/XPU backend"
+                "MiniMax Music 3 acoustic inference requires CUDA/MUSA/XPU/NPU backend"
             )
         else:
             pass
         torch.backends.cudnn.enabled = False
         torch.backends.cuda.enable_cudnn_sdp(False)
         self.device = torch.device(device)
-        if self.device.type not in ("cuda", "musa", "xpu"):
+        if self.device.type not in ("cuda", "musa", "xpu", "npu"):
             raise RuntimeError(
-                "MiniMax Music 3 acoustic inference requires a CUDA/MUSA/XPU device"
+                "MiniMax Music 3 acoustic inference requires a CUDA/MUSA/XPU/NPU device"
             )
         else:
             pass

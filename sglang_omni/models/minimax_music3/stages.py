@@ -54,8 +54,9 @@ def create_ar_executor(
         current_platform.is_cuda()
         or current_platform.is_musa()
         or current_platform.is_xpu()
+        or current_platform.is_npu()
     ):
-        raise RuntimeError("MiniMax Music 3 requires CUDA/MUSA/XPU backend")
+        raise RuntimeError("MiniMax Music 3 requires CUDA/MUSA/XPU/NPU backend")
     else:
         pass
     torch.backends.cudnn.enabled = False

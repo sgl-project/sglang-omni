@@ -22,7 +22,7 @@ from sglang_omni.models.minimax_music3.config import (
     MiniMaxMusic3PipelineConfig,
     MiniMaxMusic3SingleGPUPipelineConfig,
 )
-from sglang_omni.models.minimax_music3.dav import remove_weight_norm
+from sglang_omni.models.minimax_music3.dav import MiniMaxMusic3DAV, remove_weight_norm
 from sglang_omni.models.minimax_music3.dit import (
     Attention,
     MiniMaxMusic3DIT,
@@ -42,8 +42,8 @@ from sglang_omni.platforms.device_graph import DeviceGraphBackend
 
 
 def get_test_device_if_eligible() -> torch.device:
-    if current_platform.device_type not in ("cuda", "musa", "xpu"):
-        pytest.skip("Requires CUDA/MUSA/XPU device")
+    if current_platform.device_type not in ("cuda", "musa", "xpu", "npu"):
+        pytest.skip("Requires CUDA/MUSA/XPU/NPU device")
     return current_platform.get_device(0)
 
 
@@ -296,6 +296,35 @@ def test_dav_weight_norm_folding_preserves_output() -> None:
 
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
     assert remove_weight_norm(convolution) == 0
+
+
+@pytest.mark.accelerator
+def test_dav_compiled_decoder_preserves_dynamic_tails_on_npu() -> None:
+    if not current_platform.is_npu():
+        pytest.skip("Requires Ascend NPU compilation")
+    device = current_platform.get_device(0)
+    torch.manual_seed(17)
+    model = MiniMaxMusic3DAV().to(device).eval()
+    remove_weight_norm(model)
+    latent = torch.randn((1, 128, 689)).to(device)
+    lengths = (689, 516, 344)
+    inputs = {length: latent[..., :length].contiguous() for length in lengths}
+    expected = {length: model(value).cpu() for length, value in inputs.items()}
+
+    # Full windows, tails, and shorter requests share one compiled decoder.
+    model.enable_compiled_decoder(warmup_mel_length=689)
+    first_tail = None
+    for length in (689, 516, 344, 516):
+        actual = model(inputs[length]).cpu()
+        assert actual.shape == (1, 2, length * 512)
+        assert actual.dtype == torch.float32
+        assert torch.isfinite(actual).all()
+        torch.testing.assert_close(actual, expected[length])
+        if length == 516:
+            if first_tail is None:
+                first_tail = actual
+            else:
+                assert torch.equal(actual, first_tail)
 
 
 @pytest.mark.accelerator

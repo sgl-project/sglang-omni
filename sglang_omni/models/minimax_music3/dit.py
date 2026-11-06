@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Callable
+from importlib import import_module
 from types import MethodType
 
 import torch
@@ -151,6 +152,19 @@ class Attention(nn.Module):
         k = apply_rope(k, rope_cos, rope_sin)
         if self.fp32_flex_attention:
             out = flex_attention(q, k, v).transpose(1, 2)
+        elif (
+            x.device.type == "npu"
+            and self.backend.backend is AttentionBackendEnum.TORCH_SDPA
+        ):
+            out = torch.ops.npu.npu_fusion_attention(
+                q,
+                k,
+                v,
+                self.num_heads,
+                "BNSD",
+                scale=self.dim_heads**-0.5,
+                keep_prob=1.0,
+            )[0].transpose(1, 2)
         else:
             out = self.backend(
                 q.transpose(1, 2),
@@ -348,7 +362,12 @@ class MiniMaxMusic3DIT(nn.Module):
     def enable_compiled_blocks(self, *, warmup_mel_length: int) -> None:
         """Fold each block's elementwise work into its matmul stream.s"""
         layers = self.diffusion_transformer.transformer.layers
-        compiled = torch.compile(type(layers[0]).forward, dynamic=True)
+        backend = "inductor"
+        if next(self.parameters()).device.type == "npu":
+            backend = import_module("torchair").get_npu_backend()
+        else:
+            pass
+        compiled = torch.compile(type(layers[0]).forward, backend=backend, dynamic=True)
         for layer in layers:
             layer.forward = MethodType(compiled, layer)
         device = next(self.parameters()).device
