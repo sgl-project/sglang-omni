@@ -57,7 +57,7 @@
     <link rel="icon" href="../_static/logo.ico"/>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Installation — NPU" href="../get_started/installation_npu.html" />
+    <link rel="next" title="Qwen3-ASR long-recording measurements" href="long_audio.html" />
     <link rel="prev" title="Installation — Apple Silicon" href="../get_started/installation_apple_silicon.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -216,7 +216,10 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Other Platforms</span></p>
 <ul class="current nav bd-sidenav">
 <li class="toctree-l1 current active has-children"><a class="reference internal" href="../get_started/installation_apple_silicon.html">Apple Silicon</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul class="current">
-<li class="toctree-l2 current active"><a class="current reference internal" href="#">Native MLX / Voxt</a></li>
+<li class="toctree-l2 current active has-children"><a class="current reference internal" href="#">Native MLX / Voxt</a><details open="open"><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="long_audio.html">Qwen3-ASR long-recording measurements</a></li>
+</ul>
+</details></li>
 </ul>
 </details></li>
 <li class="toctree-l1"><a class="reference internal" href="../get_started/installation_npu.html">Ascend NPU</a></li>
@@ -587,6 +590,8 @@
                   
   <section class="tex2jax_ignore mathjax_ignore" id="mlx-path">
 <h1>MLX Path<a class="headerlink" href="#mlx-path" title="Link to this heading">#</a></h1>
+<div class="toctree-wrapper compound">
+</div>
 <p>Rules for Apple Silicon work. They write down what the native runtime PRs under
 <a class="reference external" href="https://github.com/sgl-project/sglang-omni/issues/2537">#2537</a> already do.</p>
 <section id="layout">
@@ -602,7 +607,7 @@
 <td><p>C++ runtime on MLX: one server binary per model, a parity CLI per model in <code class="docutils literal notranslate"><span class="pre">tools/</span></code>. Each model’s code is in <code class="docutils literal notranslate"><span class="pre">src/&lt;model&gt;/</span></code>; code shared across models (<code class="docutils literal notranslate"><span class="pre">audio</span></code>, <code class="docutils literal notranslate"><span class="pre">form</span></code>, <code class="docutils literal notranslate"><span class="pre">layers</span></code>, <code class="docutils literal notranslate"><span class="pre">npz</span></code>, <code class="docutils literal notranslate"><span class="pre">tokenizer</span></code>, built as the <code class="docutils literal notranslate"><span class="pre">common</span></code> library, plus <code class="docutils literal notranslate"><span class="pre">swift_port</span></code> and <code class="docutils literal notranslate"><span class="pre">http</span></code>) is in <code class="docutils literal notranslate"><span class="pre">src/common/</span></code>. The shared ASR server code (<code class="docutils literal notranslate"><span class="pre">asr_service</span></code>, <code class="docutils literal notranslate"><span class="pre">worker</span></code>, <code class="docutils literal notranslate"><span class="pre">realtime</span></code>) is still in <code class="docutils literal notranslate"><span class="pre">src/qwen3_asr/</span></code>, and so is the <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code> API that <code class="docutils literal notranslate"><span class="pre">voxtral_tts_server</span></code> and <code class="docutils literal notranslate"><span class="pre">fishaudio_drama3_server</span></code> share (<code class="docutils literal notranslate"><span class="pre">speech_service</span></code>), built on <code class="docutils literal notranslate"><span class="pre">asr_service</span></code>. <code class="docutils literal notranslate"><span class="pre">ming3_audio_server</span></code> serves <code class="docutils literal notranslate"><span class="pre">/v1/chat/completions</span></code> from its own service in <code class="docutils literal notranslate"><span class="pre">src/ming3_audio/</span></code>.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sglang_omni_mlx/native/ci/</span></code></p></td>
-<td><p>Model pins, the 392-clip corpus, golden outputs, server API tests.</p></td>
+<td><p>Model pins, the 392-clip corpus, golden outputs, server API tests and the <a class="reference internal" href="long_audio.html"><span class="std std-doc">long-recording benchmark</span></a>.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sglang_omni_mlx/&lt;model&gt;/</span></code></p></td>
 <td><p>Python MLX servers, e.g. the Qwen3-ASR reference server.</p></td>
@@ -764,11 +769,11 @@ stated.</p></li>
       </div>
     </a>
     <a class="right-next"
-       href="../get_started/installation_npu.html"
+       href="long_audio.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Installation — NPU</p>
+        <p class="prev-next-title">Qwen3-ASR long-recording measurements</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
