@@ -40,14 +40,14 @@ class MmarSample:
 
 def _match_answer(choices: list[str], answer: str) -> int | None:
     answer = answer.strip()
-    if len(answer) == 1 and answer.upper().isalpha():
-        index = ord(answer.upper()) - ord("A")
-        if 0 <= index < len(choices):
-            return index
     norm = normalize_text(answer)
     for i, choice in enumerate(choices):
         if normalize_text(choice) == norm:
             return i
+    if len(answer) == 1 and answer.upper().isalpha():
+        index = ord(answer.upper()) - ord("A")
+        if 0 <= index < len(choices):
+            return index
     candidates = [
         i
         for i, choice in enumerate(choices)
