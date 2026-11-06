@@ -26,7 +26,9 @@ public:
                    const std::filesystem::path &draft_directory,
                    int draft_quantization_bits)
       : transcriber_(model_directory, draft_directory,
-                     draft_quantization_bits) {}
+                     draft_quantization_bits) {
+    mlx::core::set_cache_limit(asr_service::kDecodeBufferCacheLimitBytes);
+  }
 
   asr_service::Transcription
   Prepare(std::vector<float> samples,

@@ -5,7 +5,6 @@
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
-#include <functional>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -77,15 +76,6 @@ SpeakerSegmentsJson(const std::vector<SpeakerSegment> &segments);
 // The canonical prompt name for a Qwen3-ASR language code or name. Like
 // Voxt's Swift port, a name outside the table is used as given; blank is none.
 std::optional<std::string> NormalizeLanguage(const std::string &language);
-
-// Verifies greedy proposals against the target; callbacks own the stop rules.
-// A positive prefill_step_tokens bounds prompt chunks, leaving the last token
-// for the first logits. Zero prefills the prompt in one pass.
-int DecodeWithDraft(const Qwen3Decoder &decoder, const DFlashDraft &draft,
-                    const mlx::core::array &embeddings,
-                    const std::function<bool(int)> &commit,
-                    const std::function<int()> &remaining,
-                    const std::atomic<bool> &cancel, int prefill_step_tokens);
 
 class Qwen3ASRTranscriber {
 public:

@@ -418,12 +418,9 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
   };
   int verify_round_count = 0;
   if (draft_.has_value()) {
-    const auto remaining = [&]() {
-      return max_new_tokens - static_cast<int>(output_ids.size());
-    };
-    verify_round_count = qwen3_asr::DecodeWithDraft(
-        model_.decoder(), *draft_, embeddings, commit, remaining, cancel,
-        kPrefillStepTokens);
+    verify_round_count =
+        draft_->Decode(model_.decoder(), embeddings, max_new_tokens,
+                       kPrefillStepTokens, commit, cancel);
   } else {
     // Note (Dayuxiaoshui): the last prompt token stays out of the chunked
     // prefill, so its forward pass also gives the first logits.

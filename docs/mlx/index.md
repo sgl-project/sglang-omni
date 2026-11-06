@@ -52,7 +52,7 @@ agree on it with a maintainer first.
 
 The Qwen3-ASR drafts are pinned in `ci/models.json`; the MOSS-TD draft is pinned in `ci/model_pins.json`. A draft for another target is one pin, one golden whose request names it under `draft_model_path`, and a row in Voxt's `OmniASRBackend.draftModelReposByRepo`. Verifying a block moves the target's low-precision logits slightly, so a few percent of clips differ from plain decoding in punctuation or a near-tie word; the goldens hold each chip's draft outputs like any other.
 
-`moss_transcribe_diarize_server` and `moss_transcribe` also accept `--draft-model-path DIR` and `--draft-bits 4|6|8`. Voxt offers `wilsonzheng0327/MOSS-Transcribe-Diarize-dflash` as the target's optional draft. MOSS-TD shares the greedy DFlash verifier with Qwen3-ASR and retains its chunked prefill, timestamp offsets and speaker-segment output. The CLI reports `verify_rounds` summed across audio chunks. Omit the draft path for ordinary decoding.
+`moss_transcribe_diarize_server` and `moss_transcribe` take the same two flags; the CLI's `verify_rounds` sums over audio chunks.
 
 ## Rule 2: Contribution requirements
 

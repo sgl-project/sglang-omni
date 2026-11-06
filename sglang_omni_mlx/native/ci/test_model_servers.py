@@ -367,7 +367,13 @@ def test_cohere_rejects_a_bad_temperature(
     assert "temperature" in json.loads(body)["detail"]
 
 
-@pytest.fixture(scope="module", params=[False, True], ids=["plain", "dflash"])
+MOSS_SERVER_MODES = [
+    pytest.param(False, id="plain"),
+    pytest.param(True, id="dflash"),
+]
+
+
+@pytest.fixture(scope="module", params=[False], ids=["plain"])
 def moss_server(request: pytest.FixtureRequest) -> Iterator[ModelServer]:
     flags = (
         (
@@ -397,6 +403,7 @@ def two_speaker_wav() -> bytes:
     return out.getvalue()
 
 
+@pytest.mark.parametrize("moss_server", MOSS_SERVER_MODES, indirect=True)
 def test_moss_request_returns_speaker_segments(moss_server: ModelServer) -> None:
     assert moss_server.ready["model_name"].startswith("voxt-moss_transcribe_diarize-")
     status, body = moss_server.post_form({}, two_speaker_wav())
@@ -440,6 +447,7 @@ def test_moss_draft_stops_at_the_token_budget(max_new_tokens: int) -> None:
     assert (output["verify_rounds"] > 0) == (max_new_tokens > 1)
 
 
+@pytest.mark.parametrize("moss_server", MOSS_SERVER_MODES, indirect=True)
 def test_moss_streamed_request_ends_with_segments(moss_server: ModelServer) -> None:
     status, body = moss_server.post_form(
         {"stream": "true", "include_generation_metadata": "true"},
@@ -493,6 +501,7 @@ def test_moss_realtime_rejects_a_prompt_it_cannot_render(
         assert json.loads(socket.recv())["type"] == "transcription_session.updated"
 
 
+@pytest.mark.parametrize("moss_server", MOSS_SERVER_MODES, indirect=True)
 def test_moss_realtime_finalizes_windows_with_segments(
     moss_server: ModelServer,
 ) -> None:
