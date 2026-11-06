@@ -190,7 +190,7 @@ def test_whisper_disables_chunked_prefill_for_atomic_encoder_prefix() -> None:
         (CPUOmniPlatform, None, 0.85),
         (XPUOmniPlatform, "torch_native", 0.85),
         (CUDAOmniPlatform, None, 0.85),
-        (NPUOmniPlatform, None, 0.50),
+        (NPUOmniPlatform, None, 0.85),
     ],
 )
 @pytest.mark.parametrize("explicit_memory_fraction", [None, 0.40, 0.50, 0.85])
@@ -202,7 +202,6 @@ def test_whisper_device_defaults_and_explicit_memory_override(
     explicit_memory_fraction: float | None,
 ) -> None:
     platform = platform_type()
-    monkeypatch.setattr(whisper_asr_stages, "current_platform", platform)
     monkeypatch.setattr(whisper_asr_builder, "current_platform", platform)
 
     def build_defaults(builder, checkpoint_dir, *, dtype, **kwargs):
@@ -582,9 +581,7 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(
     assert build_kwargs["chunked_prefill_size"] == 0
     assert build_kwargs["enable_custom_logit_processor"] is True
     assert build_kwargs["max_prefill_tokens"] == 6144
-    assert build_kwargs["mem_fraction_static"] == (
-        0.50 if whisper_asr_builder.current_platform.is_npu() else 0.85
-    )
+    assert build_kwargs["mem_fraction_static"] == 0.85
     assert scheduler_kwargs["enable_async_decode"] is False
     assert scheduler_kwargs["async_decode_min_batch_size"] == 4
     assert build_kwargs["cuda_graph_backend_prefill"] == CudaGraphBackend.BREAKABLE

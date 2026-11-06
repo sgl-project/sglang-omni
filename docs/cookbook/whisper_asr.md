@@ -20,15 +20,27 @@ Use the A3 runtime pinned by `base-image-a3` in `[tool.sglang-omni.npu]` in `pyp
 bash scripts/npu/install_npu.sh --install-system-deps
 ```
 
-The system-dependency option installs FFmpeg, libsndfile and SoX and requires root inside the container. Omit it if those dependencies are already present. Select a device and start the service:
+The system-dependency option installs FFmpeg, libsndfile and SoX and requires root inside the container. Omit it if those dependencies are already present. For the tested deployment, save the following as `whisper-npu.yaml` to explicitly select a memory fraction of `0.50`:
+
+```yaml
+config_cls: WhisperASRPipelineConfig
+name: whisper
+model_path: openai/whisper-large-v3
+stages:
+  asr:
+    engine:
+      mem_fraction_static: 0.50
+```
+
+Select a device and start the service:
 
 ```bash
 export ASCEND_RT_VISIBLE_DEVICES=0
 export SGLANG_OMNI_PLATFORM_SPEC=sglang_omni.platforms.npu.NPUOmniPlatform
-sgl-omni serve --model-path openai/whisper-large-v3 --port 8000
+sgl-omni serve --config whisper-npu.yaml --port 8000
 ```
 
-Whisper defaults to `mem_fraction_static=0.50` on NPU and `0.85` on other platforms. Set `stages.asr.engine.mem_fraction_static` in the pipeline YAML to override the memory budget for your device or workload.
+Whisper retains the default `mem_fraction_static=0.85` on all platforms. The `0.50` setting above is an explicit deployment choice, not an NPU-wide default. Set `stages.asr.engine.mem_fraction_static` in the pipeline YAML to choose the memory budget for your device or workload.
 
 Whisper defaults to `disable_decode_cuda_graph=True` on NPU because the existing encoder-decoder attention path cannot compile its data-dependent cache slicing during decode graph capture. Prefill graph and compilation settings are unchanged. Explicit `server_args_overrides` retain SGLang's configuration precedence, but enabling NPU decode graphs with the unmodified dependency is unsupported and may fail during startup. Decode graph support requires a separate SGLang backend fix; disabling decode graphs can reduce throughput.
 
