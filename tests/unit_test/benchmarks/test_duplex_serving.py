@@ -21,7 +21,7 @@ TURN_BASED_PROFILE = "qwen3-omni-half-duplex"
 PLAYBACK_RESERVE_S = 0.3
 START_S = 100.0
 INPUT_S = 2.5
-OUTPUT_SECOND = base64.b64encode(b"\x00\x00" * 24000).decode()
+OUTPUT_SECOND = base64.b64encode(b"\x01\x00" * 24000).decode()
 
 
 def record_session(
@@ -32,6 +32,7 @@ def record_session(
     reply_unit: int = 1,
     reply_audio_unit: int = 1,
     reply_audio_s: list[float] | None = None,
+    reply_pcm: list[bytes] | None = None,
     reply_created_s: float | None = None,
     is_legacy: bool = False,
 ) -> Path:
@@ -98,13 +99,17 @@ def record_session(
             response={"id": "response0", "status": "in_progress"},
             **({} if is_legacy else {"sglang": media(reply_unit)}),
         )
-        for arrival_s in reply_audio_s:
+        for index, arrival_s in enumerate(reply_audio_s):
             add(
                 arrival_s,
                 "receive",
                 "response.audio.delta" if is_legacy else "response.output_audio.delta",
                 response_id="response0",
-                delta=OUTPUT_SECOND,
+                delta=(
+                    OUTPUT_SECOND
+                    if reply_pcm is None
+                    else base64.b64encode(reply_pcm[index]).decode()
+                ),
                 **({} if is_legacy else {"sglang": media(reply_audio_unit)}),
             )
     else:
@@ -124,6 +129,7 @@ def record_run(
     admission_denials: int = 0,
     profile: str = PROFILE,
     reply_audio_s: list[float] | None = None,
+    reply_pcm: list[bytes] | None = None,
 ) -> Path:
     """Write a complete recording whose sessions are (status, unit_done_s) pairs."""
     samples = []
@@ -133,6 +139,7 @@ def record_run(
             run_dir / directory,
             unit_done_s,
             reply_audio_s=reply_audio_s,
+            reply_pcm=reply_pcm,
             is_legacy=profile == TURN_BASED_PROFILE,
         )
         samples.append(
@@ -238,6 +245,62 @@ def test_reply_latency_underrun_and_real_time_factor(
     assert reply["underrun_s"] == pytest.approx(underrun_s)
     assert reply["startup_buffer_needed_s"] == pytest.approx(0.2)
     assert reply["real_time_factor"] == pytest.approx(1.2)
+
+
+def pcm(silent_s: float, audible_s: float) -> bytes:
+    return b"\x00\x00" * round(silent_s * 24000) + b"\x01\x00" * round(
+        audible_s * 24000
+    )
+
+
+@pytest.mark.parametrize(
+    ("reply_pcm", "first_audio_latency_s"),
+    [
+        pytest.param(
+            [pcm(0.84, 0.16), pcm(0.0, 1.0)], 1.92, id="silent-head-of-first-chunk"
+        ),
+        pytest.param(
+            [pcm(1.0, 0.0), pcm(0.0, 1.0)],
+            2.28,
+            id="silent-first-chunk-then-late-chunk",
+        ),
+        pytest.param([pcm(1.0, 0.0), pcm(1.0, 0.0)], None, id="all-silent-reply"),
+    ],
+)
+def test_first_audio_is_the_first_audible_sample(
+    tmp_path: Path, reply_pcm: list[bytes], first_audio_latency_s: float | None
+) -> None:
+    session = score_session(
+        record_session(
+            tmp_path / "session",
+            [101.16, 103.0, 103.1],
+            reply_audio_s=[103.0, 104.2],
+            reply_pcm=reply_pcm,
+        ),
+        PROFILE,
+        PLAYBACK_RESERVE_S,
+    )
+
+    (reply,) = session["replies"]
+    assert reply["first_audio_latency_s"] == pytest.approx(first_audio_latency_s)
+    assert reply["audio_s"] == pytest.approx(2.0)
+
+
+def test_level_leaves_a_silent_reply_out_of_first_audio(tmp_path: Path) -> None:
+    level = summarize_level(
+        record_run(
+            tmp_path / "run",
+            1,
+            [("pass", [101.16, 103.0, 103.1])],
+            reply_audio_s=[103.0],
+            reply_pcm=[pcm(1.0, 0.0)],
+        ),
+        PLAYBACK_RESERVE_S,
+    )
+
+    assert level["replies"] == 1
+    assert level["first_audio_latency_s"]["count"] == 0
+    assert level["first_audio_latency_s"]["p90"] is None
 
 
 def test_reply_latency_starts_at_the_unit_with_the_first_audio(tmp_path: Path) -> None:
