@@ -2,4 +2,5 @@ mlx==0.32.3
 mlx-metal==0.32.3
 numpy==2.3.5
 pytest==9.1.1
+rapidfuzz==3.14.6
 websockets==17.2

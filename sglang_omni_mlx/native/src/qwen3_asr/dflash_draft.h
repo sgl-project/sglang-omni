@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
-// The DFlash draft for Qwen3-ASR: a short Qwen3 decoder whose context is the
-// target's hidden states, proposing a block of tokens per round.
+// The DFlash draft for a target on the Qwen3 decoder (Qwen3-ASR, MOSS-TD): a
+// short Qwen3 decoder whose context is the target's hidden states, proposing a
+// block of tokens per round.
 #pragma once
 
+#include <atomic>
 #include <filesystem>
+#include <functional>
 #include <vector>
 
 #include "common/layers.h"
@@ -22,12 +25,20 @@ public:
   DFlashDraft(const std::filesystem::path &directory, int quantization_bits,
               const Qwen3DecoderConfig &target);
 
-  // Target layers (0-indexed) whose entering hidden states form the context.
-  const std::vector<int> &aux_layers() const { return aux_layers_; }
-  // Tokens per block: the anchor and block_size - 1 proposals.
-  int block_size() const { return block_size_; }
-  int mask_token_id() const { return mask_token_id_; }
-  std::vector<KVCache> NewCaches() const;
+  // Greedy decoding with the draft: each round the target verifies the block
+  // the draft proposed, cut to the tokens max_new_tokens still allows, and
+  // commits the accepted tokens plus one more. Tokens go to commit until it
+  // reports the output complete; returns the rounds. A positive
+  // prefill_step_tokens bounds prompt chunks, leaving the last token for the
+  // first logits; zero prefills the prompt in one pass.
+  int Decode(const Qwen3Decoder &target, const mlx::core::array &embeddings,
+             int max_new_tokens, int prefill_step_tokens,
+             const std::function<bool(int)> &commit,
+             const std::atomic<bool> &cancel) const;
+
+private:
+  DFlashDraft(LoadedDraft draft, int quantization_bits);
+
   // Appends the first token_count positions of the target hidden states
   // entering each aux layer, each [1, length, hidden], as context.
   void AppendContext(const std::vector<mlx::core::array> &aux_hidden_states,
@@ -38,12 +49,11 @@ public:
   mlx::core::array ProposeBlock(const mlx::core::array &block_embeddings,
                                 std::vector<KVCache> &caches) const;
 
-private:
-  DFlashDraft(LoadedDraft draft, int quantization_bits);
-
   omni_common::Checkpoint checkpoint_;
   Qwen3Decoder decoder_;
+  // Target layers (0-indexed) whose entering hidden states form the context.
   std::vector<int> aux_layers_;
+  // Tokens per block: the anchor and block_size - 1 proposals.
   int block_size_;
   int mask_token_id_;
 };

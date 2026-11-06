@@ -27,7 +27,14 @@ __all__ = [
     "wire",
 ]
 
-_USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "engine_time_s", "finish_reason")
+_USAGE_FIELDS = (
+    "prompt_tokens",
+    "completion_tokens",
+    "engine_time_s",
+    "finish_reason",
+    "speech_input_tokens",
+    "speech_output_tokens",
+)
 _EXPLICIT_EMIT_MODES = frozenset({"always", "not_none", "truthy"})
 _DEFAULT_CONSUMING_CODECS = frozenset({"int_or", "str_or"})
 
@@ -39,6 +46,8 @@ class PipelineStateBase:
     sample_rate: int = 24000
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    speech_input_tokens: int | None = None
+    speech_output_tokens: int | None = None
     engine_time_s: float = 0.0
     # note (Yucheng Hu): engine terminal state (stop, length, abort), empty until
     # the engine reports one. It rides with the usage fields so a client can
@@ -75,6 +84,14 @@ class PipelineStateBase:
         return value
 
     def append_usage_fields(self, data: dict[str, object]) -> None:
+        if self.speech_input_tokens is not None:
+            data["speech_input_tokens"] = self.speech_input_tokens
+        else:
+            pass
+        if self.speech_output_tokens is not None:
+            data["speech_output_tokens"] = self.speech_output_tokens
+        else:
+            pass
         if self.prompt_tokens:
             data["prompt_tokens"] = int(self.prompt_tokens)
         else:
@@ -384,7 +401,13 @@ def store_state(payload: StagePayload, state: PipelineStateBase) -> StagePayload
 
 
 def build_usage(state: PipelineStateBase) -> dict[str, int | float] | None:
-    if not (state.prompt_tokens or state.completion_tokens or state.engine_time_s):
+    if not (
+        state.prompt_tokens
+        or state.completion_tokens
+        or state.engine_time_s
+        or state.speech_input_tokens is not None
+        or state.speech_output_tokens is not None
+    ):
         return None
     else:
         pass
@@ -393,6 +416,14 @@ def build_usage(state: PipelineStateBase) -> dict[str, int | float] | None:
         "completion_tokens": int(state.completion_tokens),
         "total_tokens": int(state.prompt_tokens + state.completion_tokens),
     }
+    if state.speech_input_tokens is not None:
+        usage["speech_input_tokens"] = state.speech_input_tokens
+    else:
+        pass
+    if state.speech_output_tokens is not None:
+        usage["speech_output_tokens"] = state.speech_output_tokens
+    else:
+        pass
     if state.engine_time_s:
         usage["engine_time_s"] = round(float(state.engine_time_s), 6)
     else:
