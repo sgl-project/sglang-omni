@@ -194,7 +194,7 @@ func TestKeyParity(t *testing.T) {
 }
 
 // TestNoOldNames: the app is called Voxt and its text names no other
-// brand: VoxtNew (its name before 1.0.0, still that of its data folders,
+// brand: VoxtNew (its name before 2.0.0, still that of its data folders,
 // processes and Swift packages), ActNow and actnow.dev are in no message (every
 // message is a key of each translation: TestKeyParity) and no
 // translation.
