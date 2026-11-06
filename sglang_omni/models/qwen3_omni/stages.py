@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import logging
 import os
+import queue
+import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, TypedDict
@@ -1003,8 +1005,8 @@ def batch_audio_encoder_payloads(
 def create_preprocessing_executor(
     model_path: str,
     *,
+    max_concurrency: int,
     max_seq_len: int | None = None,
-    max_concurrency: int = 1,
     video_fps: float | None = None,
     video_max_frames: int | None = None,
     video_min_pixels: int | None = None,
@@ -1019,33 +1021,45 @@ def create_preprocessing_executor(
         video_decode_threads = automatic_video_decode_threads(max(max_concurrency, 1))
     else:
         pass
-    preprocessor = Qwen3OmniPreprocessor(
-        model_path=model_path,
-        max_seq_len=max_seq_len,
-        video_fps=video_fps,
-        video_max_frames=video_max_frames,
-        video_min_pixels=video_min_pixels,
-        video_max_pixels=video_max_pixels,
-        video_total_pixels=video_total_pixels,
-        video_decode_threads=video_decode_threads,
-    )
 
-    async def _preprocess(payload: StagePayload) -> StagePayload:
-        return await preprocessor(payload)
+    def build_preprocessor() -> Qwen3OmniPreprocessor:
+        return Qwen3OmniPreprocessor(
+            model_path=model_path,
+            max_seq_len=max_seq_len,
+            video_fps=video_fps,
+            video_max_frames=video_max_frames,
+            video_min_pixels=video_min_pixels,
+            video_max_pixels=video_max_pixels,
+            video_total_pixels=video_total_pixels,
+            video_decode_threads=video_decode_threads,
+        )
 
-    # Note (wenyao): threaded dispatch deepens thinker batches, and greedy bf16 MoE
-    # answers shift with batch composition (Video-MME CI flipped); serial by default.
     if max_concurrency <= 1:
-        from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+        preprocessor = build_preprocessor()
+
+        async def _preprocess(payload: StagePayload) -> StagePayload:
+            return await preprocessor(payload)
 
         return SimpleScheduler[StagePayload, StagePayload](_preprocess)
     else:
         pass
 
-    from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
+    # note (ratish): every pool thread runs its own preprocessor and so its own HF processor, which is not promised to be thread safe.
+    idle_preprocessors: queue.SimpleQueue[Qwen3OmniPreprocessor] = queue.SimpleQueue()
+    for _ in range(max_concurrency):
+        idle_preprocessors.put(build_preprocessor())
+    thread_state = threading.local()
+
+    def bind_thread_preprocessor() -> None:
+        thread_state.preprocessor = idle_preprocessors.get_nowait()
+
+    async def preprocess_on_thread(payload: StagePayload) -> StagePayload:
+        return await thread_state.preprocessor(payload)
 
     return ThreadedSimpleScheduler[StagePayload, StagePayload](
-        _preprocess, max_concurrency=max_concurrency
+        preprocess_on_thread,
+        max_concurrency=max_concurrency,
+        thread_initializer=bind_thread_preprocessor,
     )
 
 

@@ -2623,17 +2623,56 @@ def test_qwen_video_cache_key_hash_ends_with_a_failed_request(
     ]
 
 
-def test_preprocessing_executor_defaults_to_serial_dispatch(monkeypatch):
+def test_preprocessing_executor_dispatch_follows_its_worker_count(monkeypatch):
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
     from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 
     monkeypatch.setattr(qwen_stages, "Qwen3OmniPreprocessor", lambda **_: object())
-    default = qwen_stages.create_preprocessing_executor("model")
-    assert type(default) is SimpleScheduler
     one = qwen_stages.create_preprocessing_executor("model", max_concurrency=1)
     assert type(one) is SimpleScheduler
     threaded = qwen_stages.create_preprocessing_executor("model", max_concurrency=2)
     assert type(threaded) is ThreadedSimpleScheduler
+
+
+def test_preprocessing_pool_threads_each_run_their_own_preprocessor(monkeypatch):
+    both_running = threading.Barrier(2, timeout=3)
+    calls: list[tuple[int, int]] = []
+
+    class Preprocessor:
+        async def __call__(self, payload):
+            calls.append((id(self), threading.get_ident()))
+            both_running.wait()
+            return {"input": payload}
+
+    monkeypatch.setattr(
+        qwen_stages, "Qwen3OmniPreprocessor", lambda **_: Preprocessor()
+    )
+    scheduler = qwen_stages.create_preprocessing_executor("model", max_concurrency=2)
+    worker = threading.Thread(target=scheduler.start, daemon=True)
+    worker.start()
+    try:
+        for request_id in ("first", "second", "third", "fourth"):
+            scheduler.inbox.put(
+                IncomingMessage(
+                    request_id=request_id, type="new_request", data=request_id
+                )
+            )
+        results = [scheduler.outbox.get(timeout=5) for _ in range(4)]
+    finally:
+        scheduler.stop()
+        worker.join(timeout=3)
+
+    assert sorted((result.request_id, result.type) for result in results) == [
+        ("first", "result"),
+        ("fourth", "result"),
+        ("second", "result"),
+        ("third", "result"),
+    ]
+    threads_by_preprocessor: dict[int, set[int]] = {}
+    for preprocessor_id, thread_id in calls:
+        threads_by_preprocessor.setdefault(preprocessor_id, set()).add(thread_id)
+    assert len(threads_by_preprocessor) == 2
+    assert all(len(threads) == 1 for threads in threads_by_preprocessor.values())
 
 
 def test_preprocessing_dispatch_preserves_results_errors_and_running_abort(monkeypatch):

@@ -15,6 +15,7 @@ from sglang_omni.models.qwen3_omni.config import (
     Qwen3OmniSpeechColocatedPipelineConfig,
     Qwen3OmniSpeechPipelineConfig,
 )
+from sglang_omni.utils import cpu
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -31,14 +32,14 @@ def test_preprocessing_cpu_policy_is_resolved_at_launch(
     monkeypatch: pytest.MonkeyPatch,
     config_cls: type[Qwen3OmniPipelineConfig | Qwen3OmniSpeechPipelineConfig],
 ) -> None:
-    capacity = Mock(return_value=32)
-    monkeypatch.setattr(qwen3_omni_config, "effective_cpu_count", capacity)
+    capacity = Mock(return_value=64)
+    monkeypatch.setattr(cpu, "effective_cpu_count", capacity)
     config = config_cls(model_path="dummy")
     document = config.model_dump()
     capacity.assert_not_called()
 
     assert (
-        config.resolved_stage_env_defaults("preprocessing")["OMP_NUM_THREADS"] == "32"
+        config.resolved_stage_env_defaults("preprocessing")["OMP_NUM_THREADS"] == "16"
     )
     for stage in config.stages:
         if stage.name != "preprocessing":
@@ -48,13 +49,18 @@ def test_preprocessing_cpu_policy_is_resolved_at_launch(
     capacity.assert_called_once_with()
     assert config.model_dump() == document
 
-    capacity.return_value = 2
+    capacity.return_value = 6
     rebuilt = config_cls.model_validate(document)
-    assert config.resolved_stage_env_defaults("preprocessing")["OMP_NUM_THREADS"] == "2"
+    assert config.resolved_stage_env_defaults("preprocessing")["OMP_NUM_THREADS"] == "3"
     assert (
-        rebuilt.resolved_stage_env_defaults("preprocessing")["OMP_NUM_THREADS"] == "2"
+        rebuilt.resolved_stage_env_defaults("preprocessing")["OMP_NUM_THREADS"] == "3"
     )
     assert rebuilt.model_dump() == document
+
+    rebuilt.stage_named("preprocessing").factory.max_concurrency = 1
+    assert (
+        rebuilt.resolved_stage_env_defaults("preprocessing")["OMP_NUM_THREADS"] == "6"
+    )
 
 
 @pytest.mark.parametrize(
@@ -72,7 +78,7 @@ def test_preprocessing_cpu_policy_preserves_explicit_settings(
     expected_threads: str,
 ) -> None:
     capacity = Mock(side_effect=AssertionError("explicit OMP must win"))
-    monkeypatch.setattr(qwen3_omni_config, "effective_cpu_count", capacity)
+    monkeypatch.setattr(cpu, "effective_cpu_count", capacity)
     config = Qwen3OmniSpeechPipelineConfig(model_path="dummy")
     config.env_defaults.update(pipeline_env)
     config.stage_named("preprocessing").env.update(stage_env)

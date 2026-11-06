@@ -33,12 +33,7 @@ sgl-omni serve \
   --port 8008
 ```
 
-Multimodal preprocessing (tokenization, image/video/audio feature extraction)
-runs serially by default. Add `--preprocessing.factory.max_concurrency 4` to
-run it on a thread pool when CPU preprocessing is the bottleneck under
-concurrent load. Threaded preprocessing changes how requests arrive at the
-thinker, so greedy outputs of the bf16 MoE can differ from the serial default;
-keep the default when comparing accuracy across runs.
+Multimodal preprocessing (tokenization, image/video/audio feature extraction) runs on two workers by default, each with its own processor. Set `--preprocessing.factory.max_concurrency` to change the count; 1 runs it serially. The worker count changes how requests arrive at the thinker, so greedy outputs of the bf16 MoE can differ between counts; keep one count when comparing accuracy across runs.
 
 Each preprocessing worker decodes a request's videos on parallel decoders that share min(16, the stage's CPUs divided by its workers) FFmpeg threads, split evenly among the request's videos. Set `--preprocessing.factory.video_decode_threads N` to choose that count. A value at or below the video reader's own threads (`TORCHCODEC_NUM_THREADS`, 8 by default) decodes each video on the reader alone.
 

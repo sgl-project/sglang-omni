@@ -24,7 +24,7 @@ from sglang_omni.proto.session import GRAPH_INPUT
 from sglang_omni.proto.streams import IMAGE, SessionPorts
 from sglang_omni.serve.protocol import ChatCompletionRequest, ChatMessage
 from sglang_omni.serve.server_warmup import WARMUP_MAX_TOKENS, warmup_tone_wav_bytes
-from sglang_omni.utils.cpu import effective_cpu_count
+from sglang_omni.utils.cpu import bounded_intraop_threads
 
 _PKG = "sglang_omni.models.qwen3_omni"
 _PLACEMENT_POLICY = f"{_PKG}.placement.Qwen3OmniPlacementPolicy"
@@ -40,6 +40,12 @@ TALKER_START_MIN_CHUNKS = 1
 ENABLE_TALKER_START_TOPOLOGY = False
 
 TALKER_MAX_RUNNING_REQUESTS = 32
+
+# note (ratish): two workers overlap one request's media decode and HF processor call with the next one's.
+PREPROCESSING_WORKERS = 2
+
+# note (ratish): a torch op past the 32k-element grain wakes its thread's whole OpenMP team, so each worker's team stops at 16.
+PREPROCESSING_MAX_INTRAOP_THREADS = 16
 
 # SGLang reads this when DeepGEMM compile utilities are imported. Qwen AR
 # stages can first hit some dense FP8 shapes after readiness; disable all-M
@@ -72,7 +78,7 @@ def preprocessing_stage(*, process: str, speech_enabled: bool = False) -> StageC
         name="preprocessing",
         process=process,
         factory_path=f"{_PKG}.stages.create_preprocessing_executor",
-        factory=FactoryArgs(),
+        factory=FactoryArgs(max_concurrency=PREPROCESSING_WORKERS),
         next=next_stages,
         route_fn=route_fn,
         project_payload={
@@ -387,10 +393,15 @@ class Qwen3OmniBasePipelineConfig(PipelineConfig):
     )
 
     def resolved_stage_env_defaults(self, stage_name: str) -> dict[str, str]:
-        """Keep CPU-sensitive preprocessing parallel unless OMP is configured."""
+        """Split the CPUs over the preprocessing workers unless OMP is configured."""
         env_defaults = super().resolved_stage_env_defaults(stage_name)
         if stage_name == "preprocessing" and "OMP_NUM_THREADS" not in env_defaults:
-            env_defaults["OMP_NUM_THREADS"] = str(effective_cpu_count())
+            env_defaults["OMP_NUM_THREADS"] = str(
+                bounded_intraop_threads(
+                    worker_count=self.stage_named(stage_name).factory.max_concurrency,
+                    max_threads=PREPROCESSING_MAX_INTRAOP_THREADS,
+                )
+            )
         else:
             pass
         return env_defaults

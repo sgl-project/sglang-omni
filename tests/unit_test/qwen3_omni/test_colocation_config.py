@@ -111,7 +111,9 @@ def test_qwen_worker_cpu_policy_and_fallback(
                     == "preprocessing"
                 )
                 model_threads = (
-                    8 if colocated else cpu_quota if is_preprocessing else None
+                    8
+                    if colocated
+                    else max(cpu_quota // 2, 1) if is_preprocessing else None
                 )
                 expected_threads = parent_threads or str(
                     model_threads or fallback_threads
