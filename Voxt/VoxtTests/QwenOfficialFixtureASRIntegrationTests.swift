@@ -68,7 +68,11 @@ final class QwenOfficialFixtureASRIntegrationTests: XCTestCase {
     }
 
     private func normalizedHanText(_ text: String) -> String {
-        text.replacingOccurrences(of: "\\s+", with: "", options: .regularExpression)
+        let simplified = ChineseScriptNormalizer.normalize(
+            text,
+            preferredMainLanguage: UserMainLanguageOption.option(for: "zh-Hans")!
+        )
+        return simplified.replacingOccurrences(of: "\\s+", with: "", options: .regularExpression)
             .replacingOccurrences(of: "[，。！？、；：,.!?;:\"'“”‘’（）()\\-]", with: "", options: .regularExpression)
     }
 
