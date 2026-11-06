@@ -17,9 +17,20 @@ from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.server_args import ServerArgs
 
 from sglang_omni.model_runner.model_worker import ModelWorker
-from sglang_omni.models.personaplex.architecture import MOSHI_WEIGHTS_NAME, TEXT_CARD
+from sglang_omni.models.personaplex.architecture import (
+    DEFAULT_TEXT_TEMPERATURE,
+    DEFAULT_TEXT_TOP_K,
+    MOSHI_WEIGHTS_NAME,
+    TEXT_CARD,
+)
 from sglang_omni.models.personaplex.components.depformer_cuda_graph import (
     DepformerCudaGraphRunner,
+)
+from sglang_omni.models.personaplex.components.live_step_graph import (
+    GREEDY_LIVE_STEP,
+    LiveRowGraphRunner,
+    LiveStepGraphRunner,
+    LiveStepSampling,
 )
 from sglang_omni.models.personaplex.config import DEFAULT_LM_MAX_RUNNING_REQUESTS
 from sglang_omni.models.personaplex.hf_config import (
@@ -231,6 +242,7 @@ class PersonaPlexSessionEngineBuilder(PersonaPlexEngineBuilder):
         context_length: int | None = None,
         live_rows_as_decode: bool = False,
         steady_units_as_decode: bool = False,
+        live_step_graph: bool = False,
     ) -> None:
         super().__init__(
             enable_async_decode=enable_async_decode,
@@ -241,6 +253,7 @@ class PersonaPlexSessionEngineBuilder(PersonaPlexEngineBuilder):
         self.tokenizer = tokenizer
         self.live_rows_as_decode = live_rows_as_decode
         self.steady_units_as_decode = steady_units_as_decode
+        self.live_step_graph = live_step_graph
 
     def make_model_runner(
         self,
@@ -250,6 +263,36 @@ class PersonaPlexSessionEngineBuilder(PersonaPlexEngineBuilder):
         runner = super().make_model_runner(model_worker, output_proc)
         runner.live_rows_as_decode = self.live_rows_as_decode
         runner.steady_units_as_decode = self.steady_units_as_decode
+        server_args = model_worker.server_args
+        if (
+            self.live_step_graph
+            and current_platform.is_cuda()
+            and not server_args.disable_cuda_graph
+        ):
+            graph_runner = LiveStepGraphRunner(
+                runner.model.depformer,
+                runner.model.hidden_out,
+                runner.model.config.vocab_size,
+                self.depformer_cuda_graph_batch_sizes,
+            )
+            graph_runner.capture_graphs(
+                (
+                    LiveStepSampling.of(
+                        AudioSampling(DEFAULT_TEXT_TEMPERATURE, DEFAULT_TEXT_TOP_K),
+                        self.depformer_cuda_graph_sampling,
+                    ),
+                    GREEDY_LIVE_STEP,
+                ),
+                max_batch_size=server_args.max_running_requests,
+            )
+            runner.live_step_graph = graph_runner
+            row_graphs = LiveRowGraphRunner(
+                runner.model, self.depformer_cuda_graph_batch_sizes
+            )
+            row_graphs.capture_graphs(max_batch_size=server_args.max_running_requests)
+            runner.live_row_graph = row_graphs
+        else:
+            pass
         return runner
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
