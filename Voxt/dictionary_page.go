@@ -147,6 +147,9 @@ func (a *app) dictionaryPage(c *ui.Context) {
 			if m.Item(i18n.T("Import…")).Chosen() {
 				a.importTerms()
 			}
+			if legacyLibrary() != "" && m.Item(i18n.T("Import from the previous Voxt…")).Chosen() {
+				a.importLegacy()
+			}
 			if m.Item(i18n.T("Export as CSV…")).Chosen() {
 				a.exportTerms(dict.CSV)
 			}
@@ -414,20 +417,9 @@ func (a *app) importFile(path string) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
-			have, err := repo.List(ctx, "")
+			added, updated, err := mergeImported(ctx, repo, terms)
 			if err != nil {
 				return i18n.T("Could not import: %v", err)
-			}
-			put, added, updated := dict.Merge(have, terms)
-			now := time.Now()
-			for i, tm := range put {
-				if tm.ID == "" {
-					tm.ID, tm.CreatedAt = core.NewID(now), now.Add(time.Duration(i))
-				}
-				tm.UpdatedAt = now
-				if err := repo.Put(ctx, tm); err != nil {
-					return i18n.T("Could not import: %v", err)
-				}
 			}
 			if skipped > 0 {
 				return i18n.T("Imported: %d new, %d updated, %d rows skipped.", added, updated, skipped)
@@ -440,6 +432,27 @@ func (a *app) importFile(path string) {
 			a.loadDict()
 		})
 	})
+}
+
+// mergeImported merges imported terms into the dictionary: a file import
+// and the previous Voxt's import share it.
+func mergeImported(ctx context.Context, repo store.Dictionary, terms []store.Term) (added, updated int, err error) {
+	have, err := repo.List(ctx, "")
+	if err != nil {
+		return 0, 0, err
+	}
+	put, added, updated := dict.Merge(have, terms)
+	now := time.Now()
+	for i, tm := range put {
+		if tm.ID == "" {
+			tm.ID, tm.CreatedAt = core.NewID(now), now.Add(time.Duration(i))
+		}
+		tm.UpdatedAt = now
+		if err := repo.Put(ctx, tm); err != nil {
+			return 0, 0, err
+		}
+	}
+	return added, updated, nil
 }
 
 // exportTerms writes every term to a file the user picks.
