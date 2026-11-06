@@ -3,6 +3,7 @@
 #pragma once
 
 #include <filesystem>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -42,10 +43,11 @@ public:
 private:
   Qwen3ASR(const nlohmann::json &config,
            const std::filesystem::path &model_directory);
-  mlx::core::array Conv2d(const mlx::core::array &x,
-                          const std::string &prefix) const;
-  mlx::core::array AudioEncoderLayer(const mlx::core::array &x,
-                                     int layer) const;
+  // Casts of one encoder layer's linear weights by the layer-relative name of
+  // the linear; a linear without an entry casts its own weight.
+  using CastWeights = std::map<std::string, mlx::core::array>;
+  mlx::core::array AudioEncoderLayer(const mlx::core::array &x, int layer,
+                                     const CastWeights &cast_weights) const;
 
   AudioEncoderConfig audio_;
   omni_common::Checkpoint checkpoint_;
