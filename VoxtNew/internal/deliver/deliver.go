@@ -118,6 +118,11 @@ type Request struct {
 	// VerifyMS checks the paste for up to that long (DefaultVerifyMS;
 	// 0: no check).
 	VerifyMS int
+	// Stop (nil: none) ends the insert before the paste: the focused
+	// element is read under it, and once it is done nothing is pasted
+	// (Result.Err is its error). A paste already sent is finished and
+	// checked under Insert's ctx alone.
+	Stop context.Context
 }
 
 // Result is what happened.
@@ -188,9 +193,19 @@ func Check(ctx context.Context, io TextIO, r Request) Result {
 }
 
 func insert(ctx context.Context, io TextIO, r Request) Result {
-	res := check(ctx, io, r)
+	checkCtx := ctx
+	if r.Stop != nil {
+		var stop context.CancelFunc
+		checkCtx, stop = context.WithCancel(ctx)
+		defer stop()
+		defer context.AfterFunc(r.Stop, stop)()
+	}
+	res := check(checkCtx, io, r)
 	if res.Reason != ReasonNone {
 		return res
+	}
+	if r.Stop != nil && r.Stop.Err() != nil {
+		return failed(res, r.Stop.Err())
 	}
 	press := r.Press
 	if res.Moved(r.Target) {

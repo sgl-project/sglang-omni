@@ -226,8 +226,13 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 		press := r.press(o.replace) // app enhancement's auto key
 		ctx, cancel := context.WithTimeout(context.Background(), cfg.DeliverTime)
 		dres = deliver.Insert(ctx, cfg.Text, deliver.Request{Text: result, Target: r.req.Target, Press: press, Self: cfg.Self, Activate: cfg.Activate,
-			Replace: o.replace, VerifyMS: deliver.DefaultVerifyMS})
+			Replace: o.replace, VerifyMS: deliver.DefaultVerifyMS, Stop: r.ctx})
 		cancel()
+		if r.cancelled.Load() && errors.Is(dres.Err, context.Canceled) {
+			// Cancelled before the paste was sent: nothing went in.
+			r.endCancelled(nil)
+			return
+		}
 		if dres.Err != nil {
 			r.logf("warning", "insert: %v", dres.Err)
 		}
