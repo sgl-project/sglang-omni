@@ -133,7 +133,7 @@ func TestLivePiecesEcho(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sendAll(t, st, speechAndPauses(2))
+	sendAll(t, st, speechAndPauses(3)) // the closing pause is no cut: a third stretch for the second piece
 	twoPieces(t)
 	if err := st.Finish(); err != nil {
 		t.Fatal(err)

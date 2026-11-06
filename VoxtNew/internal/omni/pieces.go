@@ -121,7 +121,7 @@ func (s *live) findCut(pending []byte) (int, bool) {
 		segs, err := s.a.vad.Speech(ctx, pending[from*2:to*2], sampleRate)
 		cancel()
 		if err == nil {
-			if at, ok := longestPause(segs, to-from, samplesOf(t.PauseMin)); ok {
+			if at, ok := longestPause(segs, to-from, samplesOf(t.PauseMin), to == total); ok {
 				return from + at, true
 			}
 		} else if s.ctx.Err() == nil {
@@ -137,8 +137,10 @@ func (s *live) findCut(pending []byte) (int, bool) {
 // longestPause is the middle of the longest pause of at least minPause
 // samples around the speech segs in audio of n samples (before the
 // first, between two, after the last; all of it when there is no
-// speech).
-func longestPause(segs []vad.Segment, n, minPause int) (int, bool) {
+// speech). atEnd: the audio ends at the newest sample, so the pause after
+// the last speech may be the end of the recording, and a cut there would
+// leave a piece of silence that the model fills with words ("Okay.").
+func longestPause(segs []vad.Segment, n, minPause int, atEnd bool) (int, bool) {
 	best, at := 0, 0
 	consider := func(from, to int) {
 		if to-from >= minPause && to-from > best {
@@ -150,6 +152,8 @@ func longestPause(segs []vad.Segment, n, minPause int) (int, bool) {
 		consider(prev, min(sg.Start, n))
 		prev = max(prev, sg.End)
 	}
-	consider(prev, n)
+	if !atEnd {
+		consider(prev, n)
+	}
 	return at, best > 0
 }
