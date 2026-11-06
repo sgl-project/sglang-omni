@@ -419,7 +419,7 @@ def test_benchmark_measures_a_case_on_the_stub_server(
     assert result["score"]["reference_tokens"] == 3
     assert result["recovery_matches_warmup"] is True
     assert result["server_exit_code"] == 0
-    assert result["peak_footprint_bytes"] >= result["post_session_footprint_bytes"]
+    assert result["peak_footprint_bytes"] >= result["warmup_peak_footprint_bytes"] > 0
 
 
 def test_a_failed_shutdown_fails_a_measured_case(
