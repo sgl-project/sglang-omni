@@ -45,6 +45,7 @@ from sglang_omni.models.fishaudio_s2_pro.tokenizer import (
     S2ProTokenizerAdapter,
 )
 from sglang_omni.scheduling.reference_encoder import ReferenceEncodeService
+from sglang_omni.serve.openai_errors import is_bad_request_error
 from tests.unit_test.fixtures.fish_fakes import (
     FakeFishTokenizer,
     make_s2pro_payload,
@@ -649,8 +650,13 @@ def test_fish_tts_rejects_top_k_outside_graph_width(top_k: int) -> None:
     tokenizer = FakeFishTokenizer()
     state = make_s2pro_state(top_k=top_k)
 
-    with pytest.raises(ValueError, match="S2-Pro top_k must be -1 or between 1 and 30"):
+    with pytest.raises(
+        ValueError, match="S2-Pro top_k must be -1 or between 1 and 30"
+    ) as refusal:
         build_sglang_tts_request(state, tokenizer, request_id="bad-top-k")
+
+    # The refusal crosses the stage boundary as text.
+    assert is_bad_request_error(RuntimeError(str(refusal.value)))
 
     with pytest.raises(ValueError, match="S2-Pro top_k must be -1 or between 1 and 30"):
         S2ProSGLangRequestData(
