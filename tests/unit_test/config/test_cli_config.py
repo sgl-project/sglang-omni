@@ -191,6 +191,94 @@ def plain_config_file(tmp_path, base_config):
     return path
 
 
+class TestExport:
+    @pytest.mark.parametrize(
+        "model_path,config_name,filename",
+        [
+            ("org/model", None, "config_model.yaml"),
+            ("/models/local-model", None, "config_local-model.yaml"),
+            ("models/nested-model/", None, "config_nested-model.yaml"),
+            ("org/model", "custom-name", "config_custom-name.yaml"),
+            ("org/model", "team/custom-name", "config_custom-name.yaml"),
+        ],
+    )
+    def test_default_filename_stays_in_current_directory(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        pipeline_config: PipelineConfig,
+        model_path: str,
+        config_name: str | None,
+        filename: str,
+    ) -> None:
+        """Model IDs and local paths must not become output directories."""
+
+        class ExportPipelineConfig(PipelineConfig):
+            stages: list[StageConfig] = pipeline_config.stages
+            name: str | None = config_name
+
+        monkeypatch.chdir(tmp_path)
+        with mock.patch(
+            "sglang_omni.cli.config.resolve_config_cls_for_model_path",
+            return_value=ExportPipelineConfig,
+        ):
+            result = runner.invoke(
+                app, ["config", "export", "--model-path", model_path]
+            )
+
+        assert result.exit_code == 0, output_of(result)
+        assert list(tmp_path.iterdir()) == [tmp_path / filename]
+        exported = yaml.safe_load((tmp_path / filename).read_text())
+        assert exported["model_path"] == model_path
+        assert exported["name"] == (
+            config_name if config_name is not None else model_path
+        )
+        assert exported == dump_user_config(ExportPipelineConfig(model_path=model_path))
+
+    @pytest.mark.parametrize("absolute_output", [False, True])
+    def test_explicit_output_path_is_preserved(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        pipeline_config: PipelineConfig,
+        absolute_output: bool,
+    ) -> None:
+        """Filename derivation must not change a caller's explicit output path."""
+
+        class ExportPipelineConfig(PipelineConfig):
+            stages: list[StageConfig] = pipeline_config.stages
+
+        monkeypatch.chdir(tmp_path)
+        destination = tmp_path / "exports" / "chosen.yaml"
+        destination.parent.mkdir()
+        output_path = str(
+            destination if absolute_output else destination.relative_to(tmp_path)
+        )
+        with mock.patch(
+            "sglang_omni.cli.config.resolve_config_cls_for_model_path",
+            return_value=ExportPipelineConfig,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "config",
+                    "export",
+                    "--model-path",
+                    "org/model",
+                    "--output-path",
+                    output_path,
+                ],
+            )
+
+        assert result.exit_code == 0, output_of(result)
+        assert list(destination.parent.iterdir()) == [destination]
+        assert yaml.safe_load(destination.read_text()) == dump_user_config(
+            ExportPipelineConfig(model_path="org/model")
+        )
+
+
 class TestResolve:
     def test_prints_the_config_a_launch_would_use(self, runner, config_file):
         """The whole point: this is what `serve` with these arguments builds."""
