@@ -661,10 +661,15 @@ agree on it with a maintainer first.</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">wilsonzheng0327/Qwen3-ASR-1.7B-dflash</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">ci/golden/qwen3-asr-1.7b-8bit-dflash.json</span></code></p></td>
 </tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">OpenMOSS-Team/MOSS-Transcribe-Diarize</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">wilsonzheng0327/MOSS-Transcribe-Diarize-dflash</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ci/model_golden/moss-transcribe-diarize-dflash.json</span></code></p></td>
+</tr>
 </tbody>
 </table>
 </div>
-<p>Both drafts are pinned in <code class="docutils literal notranslate"><span class="pre">ci/models.json</span></code>. A draft for another target is one pin and one golden whose request names it under <code class="docutils literal notranslate"><span class="pre">draft_model_path</span></code>. Verifying a block moves the target’s low-precision logits slightly, so a few percent of clips differ from plain decoding in punctuation or a near-tie word; the goldens hold each chip’s draft outputs like any other.</p>
+<p>The Qwen3-ASR drafts are pinned in <code class="docutils literal notranslate"><span class="pre">ci/models.json</span></code>; the MOSS-TD draft is pinned in <code class="docutils literal notranslate"><span class="pre">ci/model_pins.json</span></code>. A draft for another target is one pin and one golden whose request names it under <code class="docutils literal notranslate"><span class="pre">draft_model_path</span></code>. Verifying a block moves the target’s low-precision logits slightly, so a few percent of clips differ from plain decoding in punctuation or a near-tie word; the goldens hold each chip’s draft outputs like any other.</p>
+<p><code class="docutils literal notranslate"><span class="pre">moss_transcribe_diarize_server</span></code> and <code class="docutils literal notranslate"><span class="pre">moss_transcribe</span></code> take the same two flags; the CLI’s <code class="docutils literal notranslate"><span class="pre">verify_rounds</span></code> sums over audio chunks.</p>
 </section>
 <section id="rule-2-contribution-requirements">
 <h2>Rule 2: Contribution requirements<a class="headerlink" href="#rule-2-contribution-requirements" title="Link to this heading">#</a></h2>
