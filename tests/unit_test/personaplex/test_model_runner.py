@@ -2,9 +2,18 @@
 """Prefill and decode hooks feed timeline rows to the model and frames to the codec."""
 
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch
+from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+from sglang.srt.managers.schedule_batch import ScheduleBatch
+from sglang.srt.managers.utils import GenerationBatchResult
+from sglang.srt.model_executor.forward_batch_info import (
+    CaptureHiddenMode,
+    ForwardBatch,
+    ForwardMode,
+)
 
 from sglang_omni.model_runner.base import PendingStep
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
@@ -81,6 +90,169 @@ def make_runner(model: FakeModel) -> PersonaPlexModelRunner:
     runner.output_processor = SGLangOutputProcessor()
     runner.async_query_hit = runner.async_query_miss = 0
     return runner
+
+
+@pytest.mark.parametrize("history_positions", [0, 16])
+def test_coalesced_continuation_forwards_one_row_without_reallocating_kv(
+    history_positions: int,
+) -> None:
+    """Decode attention changed a coalesced continuation's output from one-row appends."""
+    runner = make_runner(FakeModel())
+    request = make_request(4)
+    request.data.session_history_length = history_positions
+    batch = ForwardBatch(
+        forward_mode=ForwardMode.DECODE,
+        batch_size=1,
+        input_ids=torch.tensor([7]),
+        req_pool_indices=torch.tensor([0]),
+        seq_lens=torch.tensor([19]),
+        out_cache_loc=torch.tensor([31]),
+        seq_lens_sum=19,
+        positions=torch.tensor([18]),
+    )
+    runner.tp_worker = Mock()
+    result = runner.custom_decode_forward(
+        batch,
+        SimpleNamespace(
+            reqs=[SimpleNamespace(origin_input_ids=[0] * 16, output_ids=[7] * 3)]
+        ),
+        [request],
+    )
+    if history_positions:
+        forwarded = runner.tp_worker.forward_batch_generation.call_args.args[0]
+        assert result is runner.tp_worker.forward_batch_generation.return_value
+        assert forwarded.forward_mode == ForwardMode.EXTEND
+        assert forwarded.out_cache_loc is batch.out_cache_loc
+        assert forwarded.positions is batch.positions
+        assert forwarded.req_pool_indices is batch.req_pool_indices
+        assert torch.equal(forwarded.extend_seq_lens, torch.tensor([1]))
+        assert forwarded.extend_prefix_lens_cpu == [18]
+        assert torch.equal(forwarded.input_embeds, runner.model.fusion_buffer[:1])
+    else:
+        assert result is None
+        runner.tp_worker.forward_batch_generation.assert_not_called()
+    assert batch.forward_mode == ForwardMode.DECODE
+
+
+@pytest.mark.parametrize("histories", [(0, 16), (16, 0), (16, 0, 32)])
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        pytest.param(
+            "cuda",
+            marks=[
+                pytest.mark.accelerator,
+                pytest.mark.skipif(
+                    not torch.cuda.is_available(), reason="requires CUDA"
+                ),
+            ],
+        ),
+    ],
+)
+def test_joining_call_keeps_continuation_attention_and_result_order(
+    histories: tuple[int, ...], device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A joining call made coalesced peers switch attention and change their output."""
+    runner = make_runner(FakeModel(max_batch=len(histories)))
+    runner.model.fusion_buffer = runner.model.fusion_buffer.to(device)
+    runner.model.hidden_out = runner.model.hidden_out.to(device)
+    requests = [
+        make_request(4, request_id=str(index)) for index in range(len(histories))
+    ]
+    for request, history in zip(requests, histories, strict=True):
+        request.data.session_history_length = history
+    fused_rows = (
+        torch.arange(len(histories) * NUM_STREAMS, device=device)
+        .view(-1, NUM_STREAMS)
+        .float()
+    )
+    runner.model.fusion_buffer.copy_(fused_rows)
+    batch = ScheduleBatch(
+        reqs=[scheduled(request, [7]) for request in requests],
+        forward_mode=ForwardMode.DECODE,
+        input_ids=torch.arange(len(histories), device=device),
+        req_pool_indices=torch.arange(len(histories), device=device),
+        req_pool_indices_cpu=torch.arange(len(histories)),
+        seq_lens=torch.arange(len(histories), device=device) + 19,
+        seq_lens_cpu=torch.arange(len(histories)) + 19,
+        orig_seq_lens=torch.arange(len(histories), device=device) + 18,
+        out_cache_loc=torch.arange(len(histories), device=device) + 31,
+        sampling_info=SimpleNamespace(grammars=None),
+    )
+
+    def build_subset(
+        subset: ScheduleBatch,
+        model_runner: Mock,
+        *,
+        capture_hidden_mode: CaptureHiddenMode | None,
+        return_hidden_states_before_norm: bool,
+    ) -> ForwardBatch:
+        return ForwardBatch(
+            forward_mode=subset.forward_mode,
+            batch_size=len(subset.reqs),
+            input_ids=subset.input_ids,
+            req_pool_indices=subset.req_pool_indices,
+            seq_lens=subset.seq_lens,
+            seq_lens_cpu=subset.seq_lens_cpu,
+            out_cache_loc=subset.out_cache_loc,
+            seq_lens_sum=subset.seq_lens_sum,
+            positions=subset.seq_lens - 1,
+        )
+
+    monkeypatch.setattr(ForwardBatch, "init_new", build_subset)
+    borrowed_logits = torch.empty(len(histories), 2, device=device)
+    modes = []
+
+    def forward(subset: ForwardBatch) -> GenerationBatchResult:
+        modes.append(subset.forward_mode)
+        count = subset.batch_size
+        source_rows = subset.req_pool_indices
+        assert torch.equal(subset.out_cache_loc, batch.out_cache_loc[source_rows])
+        assert torch.equal(runner.model.fusion_buffer[:count], fused_rows[source_rows])
+        scale = 100 if subset.forward_mode == ForwardMode.EXTEND else 10
+        runner.model.hidden_out.zero_()
+        runner.model.hidden_out[:count].copy_(fused_rows[source_rows] * scale)
+        borrowed_logits[:count] = runner.model.hidden_out[:count, :2]
+        runner.model.fusion_buffer.zero_()
+        return GenerationBatchResult(
+            logits_output=LogitsProcessorOutput(
+                next_token_logits=borrowed_logits[:count],
+                hidden_states=runner.model.hidden_out[:count],
+            )
+        )
+
+    runner.tp_worker = Mock()
+    runner.tp_worker.forward_batch_generation.side_effect = forward
+    result = runner.custom_decode_forward(
+        ForwardBatch(
+            forward_mode=ForwardMode.DECODE,
+            batch_size=len(histories),
+            input_ids=batch.input_ids,
+            req_pool_indices=batch.req_pool_indices,
+            seq_lens=batch.seq_lens,
+            out_cache_loc=batch.out_cache_loc,
+            seq_lens_sum=int(batch.seq_lens_cpu.sum()),
+            capture_hidden_mode=CaptureHiddenMode.LAST,
+        ),
+        batch,
+        requests,
+    )
+    expected_hidden = (
+        fused_rows
+        * torch.tensor(
+            [100 if history else 10 for history in histories], device=device
+        )[:, None]
+    )
+    assert modes == [ForwardMode.DECODE, ForwardMode.EXTEND]
+    assert torch.equal(runner.model.hidden_out, expected_hidden)
+    assert torch.equal(result.logits_output.next_token_logits, expected_hidden[:, :2])
+    assert torch.equal(result.logits_output.hidden_states, expected_hidden)
+    assert result.next_token_ids is None
+    assert (
+        tuple(request.data.session_history_length for request in requests) == histories
+    )
+    assert batch.sampling_info.grammars is None
 
 
 def make_request(

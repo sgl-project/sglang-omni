@@ -31,6 +31,7 @@ from sglang_omni.models.personaplex.prompts import (
 from sglang_omni.preprocessing import resource_connector
 from sglang_omni.proto import StagePayload
 from sglang_omni.proto.request import OmniRequest
+from sglang_omni.scheduling.stage_kv_budget import consume_stage_kv_cache_bytes
 from sglang_omni.serve.openai_errors import is_bad_request_error
 
 CALLER_SAMPLES = 2000
@@ -241,12 +242,12 @@ def test_realtime_session_stages_hold_max_sessions_calls_and_run_codecs_serially
     monkeypatch.setattr(stages, "load_codec", load_codec)
     decode_slots = Mock()
     monkeypatch.setattr(stages, "MimiDecodeSlots", decode_slots)
-    prompt = stages.create_session_preprocessing_executor(
-        str(tmp_path), max_open_sessions=3
-    )
+    prompt = stages.create_session_preprocessing_executor(max_open_sessions=3)
     codecs = [
         stages.create_session_mimi_encode_executor(str(tmp_path), max_open_sessions=3),
-        stages.create_session_code2wav_executor(str(tmp_path), max_open_sessions=3),
+        stages.create_session_code2wav_executor(
+            str(tmp_path), max_open_sessions=3, batch_sessions=True
+        ),
     ]
     for scheduler in [prompt, *codecs]:
         assert scheduler.max_open_sessions == 3
@@ -284,11 +285,16 @@ def test_every_realtime_stage_holds_max_sessions_calls():
         max_sessions=3,
         sampling=PersonaPlexSessionSampling(audio_temperature=0.5, audio_top_k=7),
     )
-    for name in ["preprocessing", "mimi_encode", "code2wav"]:
+    for name in ["preprocessing", "mimi_encode"]:
         assert config.stage_factory_kwargs(name) == {"max_open_sessions": 3}
+    assert config.stage_factory_kwargs("code2wav") == {
+        "max_open_sessions": 3,
+        "batch_sessions": True,
+    }
     assert config.stage_factory_kwargs("lm") == {
         "audio_temperature": 0.5,
         "audio_top_k": 7,
+        "kv_cache_tokens": 3 * 8192,
         "server_args_overrides": {
             "max_running_requests": 3 + REQUEST_TO_TOKEN_SLOTS_RESERVED_FOR_RETAINED_KV
         },
@@ -305,7 +311,13 @@ def resolve_session_config(
     return ConfigResolver(config).resolve(patches).config
 
 
-def test_session_stage_settings_reach_their_factories(monkeypatch, tmp_path):
+@pytest.mark.parametrize("enable_deterministic_inference", [False, True])
+def test_session_stage_settings_reach_their_factories(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    enable_deterministic_inference: bool,
+) -> None:
+    """Deterministic sessions must keep all slots while decoding each session alone."""
     monkeypatch.setattr(stages, "load_codec", lambda *a, **k: (Mock(), "cpu"))
     decode_slots = Mock()
     monkeypatch.setattr(stages, "MimiDecodeSlots", decode_slots)
@@ -314,24 +326,38 @@ def test_session_stage_settings_reach_their_factories(monkeypatch, tmp_path):
     monkeypatch.setattr(stages, "load_text_tokenizer", lambda _: FakeTokenizer())
     config = resolve_session_config(
         str(tmp_path),
-        preprocessing={"factory": {"voice_prompt_cache_bytes": 1024}},
-        mimi_encode={"factory": {"max_concurrency": 2}},
+        mimi_encode={
+            "factory": {"max_concurrency": 2, "voice_prompt_cache_bytes": 1024}
+        },
         code2wav={"factory": {"max_graph_frames": 0}},
-        lm={"engine": {"max_running_requests": 8}},
+        lm={
+            "engine": {
+                "max_running_requests": 8,
+                "enable_deterministic_inference": enable_deterministic_inference,
+            }
+        },
     )
     stage = config.stage_named("mimi_encode")
     encode = stages.create_session_mimi_encode_executor(
         **resolve_stage_factory_args(stage, config)
     )
     assert encode.max_concurrency == 2
+    assert cache.call_args.kwargs["max_bytes"] == 1024
     stage = config.stage_named("preprocessing")
     stages.create_session_preprocessing_executor(
         **resolve_stage_factory_args(stage, config)
     )
-    assert cache.call_args.kwargs["max_bytes"] == 1024
     stage = config.stage_named("code2wav")
-    stages.create_session_code2wav_executor(**resolve_stage_factory_args(stage, config))
+    decode = stages.create_session_code2wav_executor(
+        **resolve_stage_factory_args(stage, config)
+    )
     assert decode_slots.call_args.kwargs["max_graph_frames"] == 0
+    assert decode_slots.call_args.kwargs["num_slots"] == 3
+    expected_batch_size = 1 if enable_deterministic_inference else 3
+    assert decode_slots.call_args.kwargs["max_batch_size"] == expected_batch_size
+    assert decode.max_open_sessions == 3
+    assert decode.max_batch_size == expected_batch_size
+    assert decode.max_concurrency == 1
     lm_args = resolve_stage_factory_args(config.stage_named("lm"), config)
     assert lm_args["server_args_overrides"]["max_running_requests"] == 8
     assert lm_args["audio_temperature"] == 0.8
@@ -345,6 +371,67 @@ def test_session_stage_settings_reach_their_factories(monkeypatch, tmp_path):
 def test_session_lm_slots_below_max_sessions_plus_one_are_rejected():
     with pytest.raises(ValueError, match="max_running_requests=3"):
         resolve_session_config(lm={"engine": {"max_running_requests": 3}})
+
+
+@pytest.mark.parametrize(
+    "dtype,cache_format,tensor_parallel_size,expected_bytes_per_token",
+    [
+        ("bfloat16", "auto", 1, 524288),
+        ("auto", "auto", 1, 524288),
+        ("half", "auto", 2, 262144),
+        ("float", "auto", 1, 1048576),
+        ("bfloat16", "fp8_e4m3", 1, 262144),
+    ],
+)
+def test_session_kv_budget_uses_the_engine_dtype_and_rank_head_count(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    dtype: str,
+    cache_format: str,
+    tensor_parallel_size: int,
+    expected_bytes_per_token: int,
+) -> None:
+    """The automatic byte budget must reach the actual engine bootstrap scope."""
+    (tmp_path / "model.safetensors").write_bytes(b"checkpoint")
+    monkeypatch.setattr(stages, "load_text_tokenizer", lambda _: FakeTokenizer())
+    budgets: list[int] = []
+
+    def build(self, model_path, **kwargs):
+        budgets.append(consume_stage_kv_cache_bytes())
+        return Mock()
+
+    monkeypatch.setattr(stages.PersonaPlexSessionEngineBuilder, "build", build)
+    stages.create_session_lm_executor(
+        str(tmp_path),
+        dtype=dtype,
+        depformer_cuda_graph_batch_sizes=[],
+        audio_temperature=0.0,
+        audio_top_k=1,
+        kv_cache_tokens=8192 * 3,
+        server_args_overrides={
+            "kv_cache_dtype": cache_format,
+            "tp_size": tensor_parallel_size,
+        },
+    )
+    assert budgets == [8192 * 3 * expected_bytes_per_token]
+
+
+@pytest.mark.parametrize("cache_format", ["nvfp4", "fp4_mx_block16", "mxfp8"])
+def test_session_automatic_budget_rejects_unpriced_block_scales(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, cache_format: str
+) -> None:
+    """Counting packed elements alone would under-budget block-quantized KV."""
+    (tmp_path / "model.safetensors").write_bytes(b"checkpoint")
+    monkeypatch.setattr(stages, "load_text_tokenizer", lambda _: FakeTokenizer())
+    with pytest.raises(ValueError, match="Set lm.engine.kv_cache_bytes"):
+        stages.create_session_lm_executor(
+            str(tmp_path),
+            depformer_cuda_graph_batch_sizes=[],
+            audio_temperature=0.0,
+            audio_top_k=1,
+            kv_cache_tokens=8192,
+            server_args_overrides={"kv_cache_dtype": cache_format},
+        )
 
 
 def test_whole_reply_decode_is_cut_back_to_the_caller_length(monkeypatch):

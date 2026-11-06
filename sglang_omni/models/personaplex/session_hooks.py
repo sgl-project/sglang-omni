@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from hashlib import sha256
+from threading import Lock
 from typing import Protocol
 
 import numpy as np
@@ -29,6 +31,7 @@ from sglang_omni.scheduling.session import (
     SessionContext,
     SessionHooks,
 )
+from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.serve.realtime.types import samples_to_ms
 
 PCM16_SCALE = 32768.0
@@ -78,36 +81,42 @@ class PromptPreparer(Protocol):
 
 
 class PreprocessingHooks(SessionHooks):
-    """Prepares the prompt at open; the session's first unit carries it to the LM."""
-
-    def __init__(self, prepare_prompt: PromptPreparer) -> None:
-        self.prepare_prompt = prepare_prompt
-        self.states: dict[SessionIdentity, PersonaPlexState] = {}
+    """Convert the caller's PCM to whole frames for the streaming encoder."""
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
-        self.states[session_identity] = self.prepare_prompt(request)
+        pass
 
     def append(
         self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
     ) -> StagePayload:
-        state = self.states.pop(context.session_identity, None) or PersonaPlexState()
-        state.waveform = pcm16_to_waveform(chunk)
+        state = PersonaPlexState(waveform=pcm16_to_waveform(chunk))
         payload.data = state.to_dict()
         return payload
 
     def close(self, session_identity: SessionIdentity) -> None:
-        # Note (wilsonzheng0327): The first unit takes the prompt, so a session that
-        # carried any audio has nothing left here.
-        self.states.pop(session_identity, None)
+        pass
 
 
 class MimiEncodeHooks(SessionHooks):
     """Encodes each unit with the session's streaming encoder state."""
 
-    def __init__(self, codec: MimiCodec, device: torch.device) -> None:
+    def __init__(
+        self,
+        codec: MimiCodec,
+        device: torch.device,
+        *,
+        prepare_prompt: PromptPreparer,
+        voice_code_cache_bytes: int,
+    ) -> None:
         self.codec = codec
         self.device = device
+        self.prepare_prompt = prepare_prompt
         self.states: dict[SessionIdentity, MimiEncodeState] = {}
+        self.prompts: dict[SessionIdentity, PersonaPlexState] = {}
+        self.voice_code_lock = Lock()
+        self.voice_code_cache = StageOutputCache[torch.Tensor](
+            max_bytes=voice_code_cache_bytes
+        )
 
     @torch.inference_mode()
     def warm_up_serving_thread(self) -> None:
@@ -118,29 +127,47 @@ class MimiEncodeHooks(SessionHooks):
             self.codec.init_encode_state(batch_size=1),
         )
 
+    @torch.inference_mode()
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
+        state = self.prepare_prompt(request)
+        if state.voice_waveform is not None:
+            voice_digest = sha256(state.voice_waveform.numpy().tobytes()).hexdigest()
+            with self.voice_code_lock:
+                state.voice_codes = self.voice_code_cache.get(voice_digest)
+                if state.voice_codes is None:
+                    state.voice_codes = encode_waveform(
+                        self.codec, self.device, state.voice_waveform
+                    )
+                    self.voice_code_cache.put(voice_digest, state.voice_codes)
+                else:
+                    pass
+            state.voice_waveform = None
+        else:
+            pass
         self.states[session_identity] = self.codec.init_encode_state(batch_size=1)
+        self.prompts[session_identity] = state
 
     @torch.inference_mode()
     def append(
         self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
     ) -> StagePayload:
-        state = PersonaPlexState.from_dict(payload.data)
-        if state.voice_waveform is not None:
-            state.voice_codes = encode_waveform(
-                self.codec, self.device, state.voice_waveform
-            )
-            state.voice_waveform = None
-        else:
-            pass
+        state = self.prompts.pop(context.session_identity, None) or PersonaPlexState()
+        state.waveform = PersonaPlexState.from_dict(payload.data).waveform
         if is_empty_end_of_input(chunk):
             state.user_codes = no_codes()
         else:
-            codes = self.codec.encode_step(
-                state.waveform.to(device=self.device, dtype=torch.float32).view(
-                    1, 1, -1
-                ),
-                self.states[context.session_identity],
+            waveform = state.waveform.to(device=self.device, dtype=torch.float32).view(
+                1, 1, -1
+            )
+            # note (jli2786): Frame boundaries keep codec rounding identical when queued units are coalesced.
+            code_frames = [
+                self.codec.encode_step(frame, self.states[context.session_identity])
+                for frame in waveform.split(SAMPLES_PER_FRAME, dim=-1)
+            ]
+            codes = (
+                code_frames[0]
+                if len(code_frames) == 1
+                else torch.cat(code_frames, dim=-1)
             )
             state.user_codes = codes[0].T.cpu()
         state.waveform = None
@@ -149,6 +176,7 @@ class MimiEncodeHooks(SessionHooks):
 
     def close(self, session_identity: SessionIdentity) -> None:
         self.states.pop(session_identity)
+        self.prompts.pop(session_identity, None)
 
 
 @dataclass(kw_only=True)
@@ -188,23 +216,27 @@ class Code2WavHooks(BatchedSessionHooks):
     def append_batch(self, appends: list[SessionAppend]) -> list[StagePayload]:
         units = [PersonaPlexState.from_dict(append.payload.data) for append in appends]
         pcm = [b""] * len(appends)
-        rows_by_width: dict[int, list[int]] = defaultdict(list)
+        rows_by_width: dict[tuple[int, int], list[int]] = defaultdict(list)
         for index, unit in enumerate(units):
             if unit.codes.shape[0]:
-                rows_by_width[unit.codes.shape[0]].append(index)
+                frame_count = unit.codes.shape[0]
+                decode_frames = frame_count if appends[index].chunk.seq == 0 else 1
+                rows_by_width[frame_count, decode_frames].append(index)
             else:
                 pass
-        for indices in rows_by_width.values():
+        for (_, decode_frames), indices in rows_by_width.items():
             codes_BKF = torch.stack([units[index].codes.T for index in indices])
-            waveform = self.decode_slots.decode_step(
-                codes_BKF.to(device=self.decode_slots.codec.device),
-                [
-                    self.states[appends[index].context.session_identity].slot_index
-                    for index in indices
-                ],
-            )
-            for row, index in enumerate(indices):
-                pcm[index] = waveform_to_pcm16(waveform[row, 0])
+            slot_indices = [
+                self.states[appends[index].context.session_identity].slot_index
+                for index in indices
+            ]
+            for frame_codes in codes_BKF.to(
+                device=self.decode_slots.codec.device
+            ).split(decode_frames, dim=-1):
+                waveform = self.decode_slots.decode_step(frame_codes, slot_indices)
+                for row, index in enumerate(indices):
+                    # note (jli2786): Graph replay reuses its output buffer; copy each frame before the next replay.
+                    pcm[index] += waveform_to_pcm16(waveform[row, 0])
         for append, unit, unit_pcm in zip(appends, units, pcm, strict=True):
             session = self.states[append.context.session_identity]
             num_samples = len(unit_pcm) // PCM16_BYTES_PER_SAMPLE

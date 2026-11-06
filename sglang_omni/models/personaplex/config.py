@@ -23,7 +23,10 @@ from sglang_omni.models.personaplex.architecture import (
     DEFAULT_AUDIO_TEMPERATURE,
     DEFAULT_AUDIO_TOP_K,
 )
-from sglang_omni.models.personaplex.hf_config import PERSONAPLEX_ARCH
+from sglang_omni.models.personaplex.hf_config import (
+    DEFAULT_CONTEXT_LENGTH,
+    PERSONAPLEX_ARCH,
+)
 
 MODEL_STAGES_PREFIX = "sglang_omni.models.personaplex.stages"
 PREPROCESSING_STAGE = "preprocessing"
@@ -141,7 +144,7 @@ def personaplex_session_stages_factory() -> list[StageConfig]:
             factory_path=f"{MODEL_STAGES_PREFIX}.create_session_lm_executor",
             factory=PersonaPlexDepformerFactoryArgs(dtype="bfloat16"),
             gpu=0,
-            engine=EngineArgs(mem_fraction_static=0.3),
+            engine=EngineArgs(),
             next=CODE2WAV_STAGE,
         ),
         StageConfig(
@@ -248,6 +251,7 @@ class PersonaPlexSessionPipelineConfig(PersonaPlexPipelineConfig):
     }
 
     max_sessions: int = Field(default=1, ge=1)
+    max_coalesced_units: int = Field(default=1, ge=1)
     # Note (Junnan Li): None keeps the offline default voice and role prompt.
     voice: str | None = None
     instructions: str | None = None
@@ -282,7 +286,7 @@ class PersonaPlexSessionPipelineConfig(PersonaPlexPipelineConfig):
 
     def stage_factory_kwargs(self, stage_name: str) -> Mapping[str, object]:
         if stage_name == LM_STAGE:
-            return {
+            arguments = {
                 "audio_temperature": (
                     self.sampling.audio_temperature
                     if self.sampling.audio_temperature is not None
@@ -296,6 +300,30 @@ class PersonaPlexSessionPipelineConfig(PersonaPlexPipelineConfig):
                 "server_args_overrides": {
                     "max_running_requests": self.lm_request_slots()
                 },
+            }
+            stage = self.stage_named(LM_STAGE)
+            engine = stage.engine
+            if (
+                engine.kv_cache_bytes is None
+                and engine.mem_fraction_static is None
+                and engine.max_total_tokens is None
+            ):
+                arguments["kv_cache_tokens"] = self.max_sessions * (
+                    engine.model_extra.get(
+                        "context_length", stage.factory.context_length
+                    )
+                    or DEFAULT_CONTEXT_LENGTH
+                )
+            else:
+                pass
+            return arguments
+        elif stage_name == CODE2WAV_STAGE:
+            engine = self.stage_named(LM_STAGE).engine
+            return {
+                "max_open_sessions": self.max_sessions,
+                "batch_sessions": not engine.model_extra.get(
+                    "enable_deterministic_inference", False
+                ),
             }
         else:
             return {"max_open_sessions": self.max_sessions}

@@ -2,6 +2,8 @@
 """The stages around the LM keep per-call codec state and hand the prompt on once."""
 
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -19,7 +21,11 @@ from sglang_omni.models.personaplex.session_hooks import (
 )
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
-from sglang_omni.scheduling.session import SessionAppend, SessionContext
+from sglang_omni.scheduling.session import (
+    SessionAppend,
+    SessionContext,
+    SessionScheduler,
+)
 
 CALL = SessionIdentity("call")
 PROMPT_IDS = [11, 12, 13]
@@ -48,23 +54,35 @@ def open_hooks(hooks):
     return hooks
 
 
-def test_only_the_first_unit_carries_the_prompt():
+def test_only_the_first_unit_carries_the_prompt(random_codec):
+    preprocessing = open_hooks(PreprocessingHooks())
     hooks = open_hooks(
-        PreprocessingHooks(lambda request: PersonaPlexState(text_prompt_ids=PROMPT_IDS))
+        MimiEncodeHooks(
+            random_codec,
+            torch.device("cpu"),
+            prepare_prompt=lambda request: PersonaPlexState(text_prompt_ids=PROMPT_IDS),
+            voice_code_cache_bytes=0,
+        )
     )
     waveform = torch.linspace(-0.5, 0.5, SAMPLES_PER_FRAME)
     states = []
     for index in range(2):
         unit_payload = payload()
-        hooks.append(
+        preprocessing.append(
             unit(index, waveform_to_pcm16(waveform)), unit_payload, context([])
         )
+        torch.testing.assert_close(
+            PersonaPlexState.from_dict(unit_payload.data).waveform,
+            waveform,
+            atol=1e-4,
+            rtol=0,
+        )
+        hooks.append(unit(index), unit_payload, context([]))
         states.append(PersonaPlexState.from_dict(unit_payload.data))
     hooks.close(CALL)
 
     assert states[0].text_prompt_ids == PROMPT_IDS
     assert states[1].text_prompt_ids == []
-    torch.testing.assert_close(states[1].waveform, waveform, atol=1e-4, rtol=0)
 
 
 def test_units_must_be_whole_frames_of_pcm16():
@@ -78,7 +96,8 @@ def test_units_must_be_whole_frames_of_pcm16():
     assert pcm16_to_waveform(end).numel() == 0
 
 
-def test_streaming_encode_matches_the_whole_recording(random_codec):
+@pytest.mark.parametrize("chunk_frames", [1, 3])
+def test_streaming_encode_matches_the_whole_recording(random_codec, chunk_frames: int):
     frames = 3
     waveform = pcm16_to_waveform(
         unit(0, waveform_to_pcm16(torch.randn(frames * SAMPLES_PER_FRAME) * 0.3))
@@ -86,14 +105,20 @@ def test_streaming_encode_matches_the_whole_recording(random_codec):
     whole = random_codec.encode(waveform.view(1, 1, -1))[0].T
     voice = torch.randn(2 * SAMPLES_PER_FRAME) * 0.3
 
-    hooks = open_hooks(MimiEncodeHooks(random_codec, torch.device("cpu")))
+    hooks = open_hooks(
+        MimiEncodeHooks(
+            random_codec,
+            torch.device("cpu"),
+            prepare_prompt=lambda request: PersonaPlexState(voice_waveform=voice),
+            voice_code_cache_bytes=0,
+        )
+    )
     streamed = []
-    for index in range(frames):
+    for index in range(0, frames, chunk_frames):
         state = PersonaPlexState(
             waveform=waveform[
-                index * SAMPLES_PER_FRAME : (index + 1) * SAMPLES_PER_FRAME
+                index * SAMPLES_PER_FRAME : (index + chunk_frames) * SAMPLES_PER_FRAME
             ],
-            voice_waveform=voice if index == 0 else None,
         )
         unit_payload = payload(state)
         hooks.append(unit(index), unit_payload, context([]))
@@ -106,6 +131,51 @@ def test_streaming_encode_matches_the_whole_recording(random_codec):
     assert torch.equal(torch.cat(streamed), whole)
 
 
+@pytest.mark.parametrize("cached_voices,expected_encodes", [(0, 4), (1, 3), (2, 2)])
+def test_recorded_voice_cache_preserves_codes_and_session_isolation(
+    random_codec, cached_voices: int, expected_encodes: int
+) -> None:
+    """Reopening a recorded voice used to encode it again on the first unit."""
+    voices = [torch.randn(2 * SAMPLES_PER_FRAME) * 0.3 for _ in range(2)]
+    voice_codes = [random_codec.encode(voice[None, None])[0].T for voice in voices]
+    caller = torch.randn(SAMPLES_PER_FRAME) * 0.3
+    caller_codes = random_codec.encode(caller[None, None])[0].T
+    hooks = MimiEncodeHooks(
+        random_codec,
+        torch.device("cpu"),
+        prepare_prompt=lambda request: PersonaPlexState(
+            voice_waveform=voices[request.params["voice_index"]].clone()
+        ),
+        voice_code_cache_bytes=cached_voices * voice_codes[0].numel() * 8,
+    )
+    with patch.object(random_codec, "encode", wraps=random_codec.encode) as encode:
+        for open_index, voice_index in enumerate([0, 0, 1, 0]):
+            session_identity = SessionIdentity("voice-call", open_index)
+            hooks.open(
+                session_identity,
+                OmniRequest(inputs=None, params={"voice_index": voice_index}),
+            )
+            encodes_after_open = encode.call_count
+            unit_payload = payload(PersonaPlexState(waveform=caller.clone()))
+            hooks.append(
+                unit(0),
+                unit_payload,
+                SessionContext(
+                    session_identity=session_identity,
+                    cancelled=threading.Event(),
+                    emit=[].append,
+                ),
+            )
+            encoded = PersonaPlexState.from_dict(unit_payload.data)
+            assert torch.equal(encoded.voice_codes, voice_codes[voice_index])
+            assert torch.equal(encoded.user_codes, caller_codes)
+            assert encoded.voice_waveform is None
+            assert encode.call_count == encodes_after_open
+            hooks.close(session_identity)
+        assert encode.call_count == expected_encodes
+    assert hooks.states == {} and hooks.prompts == {}
+
+
 def decode_slots(codec, num_slots: int) -> MimiDecodeSlots:
     return MimiDecodeSlots(
         codec,
@@ -114,6 +184,88 @@ def decode_slots(codec, num_slots: int) -> MimiDecodeSlots:
         max_graph_frames=0,
         max_chunk_frames=2,
     )
+
+
+def test_concurrent_opens_share_voice_codes_and_keep_caller_state_separate(
+    random_codec,
+) -> None:
+    """Concurrent opens of a cold voice must not encode it twice or share streaming state."""
+    voice = torch.randn(2 * SAMPLES_PER_FRAME) * 0.3
+    callers = [torch.randn(2 * SAMPLES_PER_FRAME) * 0.3 for _ in range(2)]
+    expected = [random_codec.encode(caller[None, None])[0].T for caller in callers]
+    prepared = threading.Barrier(2)
+
+    def prepare_prompt(request: OmniRequest) -> PersonaPlexState:
+        prepared.wait(timeout=10)
+        return PersonaPlexState(voice_waveform=voice.clone())
+
+    hooks = MimiEncodeHooks(
+        random_codec,
+        torch.device("cpu"),
+        prepare_prompt=prepare_prompt,
+        voice_code_cache_bytes=4096,
+    )
+    identities = [SessionIdentity(f"concurrent-{index}") for index in range(2)]
+    with patch.object(random_codec, "encode", wraps=random_codec.encode) as encode:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(hooks.open, identity, OmniRequest(inputs=None))
+                for identity in identities
+            ]
+            for future in futures:
+                future.result(timeout=30)
+        assert encode.call_count == 1
+        for index, identity in enumerate(identities):
+            encoded_frames = []
+            for frame_index in range(2):
+                start = frame_index * SAMPLES_PER_FRAME
+                unit_payload = payload(
+                    PersonaPlexState(
+                        waveform=callers[index][start : start + SAMPLES_PER_FRAME]
+                    )
+                )
+                hooks.append(
+                    unit(frame_index),
+                    unit_payload,
+                    SessionContext(
+                        session_identity=identity,
+                        cancelled=threading.Event(),
+                        emit=[].append,
+                    ),
+                )
+                encoded_frames.append(
+                    PersonaPlexState.from_dict(unit_payload.data).user_codes
+                )
+            assert torch.equal(torch.cat(encoded_frames), expected[index])
+            hooks.close(identity)
+    assert hooks.states == {} and hooks.prompts == {}
+
+
+@pytest.mark.parametrize("failed_open", [False, True])
+def test_open_without_audio_releases_prompt_and_encoder_state(
+    random_codec, failed_open: bool
+) -> None:
+    """A failed voice encode and a call closed without audio must both release open state."""
+    hooks = MimiEncodeHooks(
+        random_codec,
+        torch.device("cpu"),
+        prepare_prompt=lambda request: PersonaPlexState(
+            voice_waveform=torch.zeros(SAMPLES_PER_FRAME)
+        ),
+        voice_code_cache_bytes=0,
+    )
+    scheduler = SessionScheduler(hooks, max_open_sessions=1)
+    if failed_open:
+        with patch.object(
+            random_codec, "encode", side_effect=RuntimeError("encode failed")
+        ):
+            with pytest.raises(RuntimeError, match="encode failed"):
+                scheduler.open_session(CALL, OmniRequest(inputs=None))
+    else:
+        scheduler.open_session(CALL, OmniRequest(inputs=None))
+        scheduler.close_session(CALL, scheduler.open_sessions[CALL])
+    assert scheduler.open_sessions == {}
+    assert hooks.states == {} and hooks.prompts == {}
 
 
 def test_code2wav_decodes_sessions_together_and_emits_each_unit_once(random_codec):
@@ -186,8 +338,58 @@ def test_an_empty_end_of_input_emits_only_the_end(random_codec):
     ]
 
 
+@pytest.mark.parametrize(
+    "device_type", ["cpu", pytest.param("cuda", marks=pytest.mark.accelerator)]
+)
+def test_coalesced_decode_preserves_pcm_and_copies_replayed_frames(
+    random_codec, device_type: str
+) -> None:
+    """Changing decoder chunk width or retaining a replay buffer changed coalesced audio."""
+    if device_type == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA required")
+    else:
+        pass
+    random_codec.to(device_type)
+    codes = torch.randint(0, 2048, (7, 8))
+    recordings = []
+    for frame_counts in ([2, 1, 1, 1, 1, 1], [2, 5]):
+        slots = MimiDecodeSlots(
+            random_codec,
+            num_slots=1,
+            max_batch_size=1,
+            max_graph_frames=2 if device_type == "cuda" else 0,
+            max_chunk_frames=2,
+        )
+        hooks = open_hooks(Code2WavHooks(slots))
+        emitted = []
+        start = 0
+        for index, frame_count in enumerate(frame_counts):
+            hooks.append_batch(
+                [
+                    SessionAppend(
+                        chunk=unit(index, eos=index == len(frame_counts) - 1),
+                        payload=payload(
+                            PersonaPlexState(codes=codes[start : start + frame_count])
+                        ),
+                        context=context(emitted),
+                    )
+                ]
+            )
+            start += frame_count
+        hooks.close(CALL)
+        recordings.append(b"".join(chunk.payload["pcm"] for chunk in emitted))
+        assert slots.active_slot_count == 0
+    assert recordings[0] == recordings[1]
+    assert len(recordings[0]) == 7 * SAMPLES_PER_FRAME * 2
+
+
 def test_warm_up_runs_both_codecs_and_opens_no_call(random_codec):
-    encode = MimiEncodeHooks(random_codec, torch.device("cpu"))
+    encode = MimiEncodeHooks(
+        random_codec,
+        torch.device("cpu"),
+        prepare_prompt=lambda request: PersonaPlexState(),
+        voice_code_cache_bytes=0,
+    )
     decode = Code2WavHooks(decode_slots(random_codec, 1))
     encode.warm_up_serving_thread()
     decode.warm_up_serving_thread()

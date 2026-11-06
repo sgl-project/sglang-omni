@@ -4,12 +4,16 @@ for recordings and for full-duplex sessions."""
 
 from __future__ import annotations
 
+import logging
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Literal
 
 import numpy as np
 import torch
 from sentencepiece import SentencePieceProcessor
+from sglang.srt.configs.model_config import ModelConfig
+from sglang.srt.mem_cache.kv_cache_dtype import configure_kv_cache_dtype
 
 from sglang_omni.models.personaplex.architecture import (
     DEFAULT_AUDIO_TEMPERATURE,
@@ -68,12 +72,15 @@ from sglang_omni.scheduling.session import SessionScheduler
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache, value_size_bytes
+from sglang_omni.scheduling.stage_kv_budget import stage_kv_cache_budget
 from sglang_omni.utils.audio import load_audio
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.device import resolve_concrete_device
 
 # note (jli2786): Client-selected voice paths can otherwise grow the cache without bound.
 VOICE_PROMPT_CACHE_MAX_BYTES = 512 * 1024**2
+BLOCK_QUANTIZED_KV_CACHE_DTYPES = ("nvfp4", "fp4_mx_block16", "mxfp8")
+logger = logging.getLogger(__name__)
 
 
 def load_channels(source: str | bytes, *, source_name: str) -> np.ndarray:
@@ -179,20 +186,10 @@ def create_preprocessing_executor(
 
 
 def create_session_preprocessing_executor(
-    model_path: str,
     *,
     max_open_sessions: int,
-    voice_prompt_cache_bytes: int = VOICE_PROMPT_CACHE_MAX_BYTES,
 ) -> SessionScheduler:
-    model_dir = Path(resolve_model_path(model_path))
-    prepare_prompt = prompt_preparer(
-        model_dir,
-        load_text_tokenizer(model_dir),
-        voice_prompt_cache_bytes=voice_prompt_cache_bytes,
-    )
-    return SessionScheduler(
-        PreprocessingHooks(prepare_prompt), max_open_sessions=max_open_sessions
-    )
+    return SessionScheduler(PreprocessingHooks(), max_open_sessions=max_open_sessions)
 
 
 def load_codec(
@@ -235,14 +232,27 @@ def create_session_mimi_encode_executor(
     *,
     max_open_sessions: int,
     max_concurrency: int = 1,
+    voice_prompt_cache_bytes: int = VOICE_PROMPT_CACHE_MAX_BYTES,
+    voice_code_cache_bytes: int = VOICE_PROMPT_CACHE_MAX_BYTES,
     device: str | None = None,
     gpu_id: int | None = None,
 ) -> SessionScheduler:
     """Each session encodes on its own streaming state; max_concurrency sessions'
     units encode at once."""
     codec, device = load_codec(model_path, device=device, gpu_id=gpu_id, mode="encode")
+    model_dir = Path(resolve_model_path(model_path))
+    prepare_prompt = prompt_preparer(
+        model_dir,
+        load_text_tokenizer(model_dir),
+        voice_prompt_cache_bytes=voice_prompt_cache_bytes,
+    )
     return SessionScheduler(
-        MimiEncodeHooks(codec, device),
+        MimiEncodeHooks(
+            codec,
+            device,
+            prepare_prompt=prepare_prompt,
+            voice_code_cache_bytes=voice_code_cache_bytes,
+        ),
         max_open_sessions=max_open_sessions,
         max_concurrency=max_concurrency,
     )
@@ -292,6 +302,7 @@ def create_session_lm_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     context_length: int | None = None,
+    kv_cache_tokens: int | None = None,
     server_args_overrides: dict[str, object] | None = None,
     **overrides: object,
 ) -> OmniScheduler[SGLangARRequestData]:
@@ -305,13 +316,49 @@ def create_session_lm_executor(
         depformer_cuda_graph_batch_sizes=depformer_cuda_graph_batch_sizes,
         depformer_cuda_graph_sampling=AudioSampling(audio_temperature, audio_top_k),
     )
-    return builder.build(
-        model_path,
-        device=device,
-        gpu_id=gpu_id,
-        dtype=dtype or "bfloat16",
-        server_args_overrides=server_args_overrides or None,
-    )
+    if kv_cache_tokens is None:
+        budget_scope = nullcontext()
+    else:
+        model_config = ModelConfig(
+            builder.resolve_checkpoint(model_path),
+            dtype=server_args_overrides.get("dtype", dtype or "bfloat16"),
+        )
+        cache_format = server_args_overrides.get("kv_cache_dtype", "auto")
+        if cache_format in BLOCK_QUANTIZED_KV_CACHE_DTYPES:
+            raise ValueError(
+                "Set lm.engine.kv_cache_bytes for block-quantized KV caches"
+            )
+        else:
+            pass
+        _, cache_dtype = configure_kv_cache_dtype(
+            server_args_kv_cache_dtype=cache_format,
+            model=None,
+            model_dtype=model_config.dtype,
+            is_draft_worker=False,
+            is_dflash=False,
+            speculative_draft_attention_backend=None,
+        )
+        kv_bytes_per_token = (
+            2
+            * model_config.num_hidden_layers
+            * model_config.get_num_kv_heads(server_args_overrides.get("tp_size", 1))
+            * model_config.head_dim
+            * cache_dtype.itemsize
+        )
+        kv_cache_bytes = kv_cache_tokens * kv_bytes_per_token
+        logger.info(
+            f"PersonaPlex session KV budget: kv_cache_tokens={kv_cache_tokens} "
+            f"kv_bytes_per_token={kv_bytes_per_token} kv_cache_bytes={kv_cache_bytes}"
+        )
+        budget_scope = stage_kv_cache_budget("lm", kv_cache_bytes)
+    with budget_scope:
+        return builder.build(
+            model_path,
+            device=device,
+            gpu_id=gpu_id,
+            dtype=dtype or "bfloat16",
+            server_args_overrides=server_args_overrides or None,
+        )
 
 
 def create_decode_executor(
@@ -379,23 +426,24 @@ def create_session_code2wav_executor(
     model_path: str,
     *,
     max_open_sessions: int,
+    batch_sessions: bool,
     max_graph_frames: int = max(FRAMES_PER_UNIT),
     device: str | None = None,
     gpu_id: int | None = None,
 ) -> SessionScheduler:
-    """Every open session holds a decode slot, and one step decodes every ready
-    session whose unit has as many frames, with device graphs for units of up to
-    max_graph_frames frames (0 turns the graphs off)."""
+    """Keep a decode slot per session; deterministic inference decodes one at a time."""
     codec, _ = load_codec(model_path, device=device, gpu_id=gpu_id, mode="decode")
     decode_slots = MimiDecodeSlots(
         codec,
         num_slots=max_open_sessions,
-        max_batch_size=max_open_sessions,
+        max_batch_size=max_open_sessions if batch_sessions else 1,
         max_graph_frames=max_graph_frames,
         max_chunk_frames=max(FRAMES_PER_UNIT),
     )
     return SessionScheduler(
-        Code2WavHooks(decode_slots), max_open_sessions=max_open_sessions
+        Code2WavHooks(decode_slots),
+        max_open_sessions=max_open_sessions,
+        batch_sessions=batch_sessions,
     )
 
 

@@ -13,13 +13,15 @@ frame streamed to the codec.
 
 from __future__ import annotations
 
+from copy import copy
 from dataclasses import dataclass
 from itertools import groupby
 
 import torch
+from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
 from sglang.srt.managers.utils import GenerationBatchResult
-from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.prefill_inputs import (
@@ -429,6 +431,128 @@ class PersonaPlexModelRunner(ModelRunner):
         batch = len(rows)
         model.fusion_buffer[:batch] = model.embed_rows(torch.stack(rows)).to(
             model.fusion_buffer.dtype
+        )
+
+    def custom_decode_forward(
+        self,
+        forward_batch: ForwardBatch,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
+    ) -> GenerationBatchResult | None:
+        continuations = [
+            request.data.session_history_length > 0 for request in requests
+        ]
+        if any(continuations) and not all(continuations):
+            return self.mixed_session_decode(forward_batch, schedule_batch, requests)
+        elif all(continuations):
+            # note (jli2786): Coalesced continuations must use the same attention path as one-row session appends.
+            extended_batch = copy(forward_batch)
+            extended_batch.forward_mode = ForwardMode.EXTEND
+            extended_batch.is_extend_in_batch = True
+            extended_batch.can_run_decode_cuda_graph = False
+            extended_batch.extend_num_tokens = len(requests)
+            extended_batch.extend_seq_lens = torch.ones_like(
+                forward_batch.seq_lens, dtype=torch.int32
+            )
+            extended_batch.extend_prefix_lens = (forward_batch.seq_lens - 1).to(
+                torch.int32
+            )
+            extended_batch.extend_start_loc = torch.arange(
+                len(requests), dtype=torch.int32, device=self.model_device
+            )
+            extended_batch.extend_seq_lens_cpu = [1] * len(requests)
+            extended_batch.extend_prefix_lens_cpu = [
+                len(request.origin_input_ids) + len(request.output_ids) - 1
+                for request in schedule_batch.reqs
+            ]
+            extended_batch.extend_logprob_start_lens_cpu = [0] * len(requests)
+            extended_batch.input_embeds = self.model.fusion_buffer[: len(requests)]
+            return self.tp_worker.forward_batch_generation(extended_batch)
+        else:
+            return None
+
+    def mixed_session_decode(
+        self,
+        forward_batch: ForwardBatch,
+        schedule_batch: ScheduleBatch,
+        requests: list[SchedulerRequest],
+    ) -> GenerationBatchResult:
+        # note (jli2786): Joining calls keep decode attention while queued continuations keep one-row extend attention.
+        fused_rows = self.model.fusion_buffer[: len(requests)].clone()
+        hidden_rows = torch.empty_like(self.model.hidden_out[: len(requests)])
+        logits_rows: torch.Tensor | None = None
+        captured_hidden_rows: torch.Tensor | None = None
+        for is_continuation in (False, True):
+            row_indices = [
+                index
+                for index, request in enumerate(requests)
+                if (request.data.session_history_length > 0) == is_continuation
+            ]
+            device_rows = torch.tensor(row_indices, device=self.model_device)
+            subset = copy(schedule_batch)
+            subset.reqs = [schedule_batch.reqs[index] for index in row_indices]
+            subset.input_ids = schedule_batch.input_ids[device_rows]
+            subset.req_pool_indices = schedule_batch.req_pool_indices[device_rows]
+            subset.req_pool_indices_cpu = schedule_batch.req_pool_indices_cpu[
+                row_indices
+            ]
+            subset.seq_lens = schedule_batch.seq_lens[device_rows]
+            subset.seq_lens_cpu = schedule_batch.seq_lens_cpu[row_indices]
+            subset.seq_lens_sum = int(subset.seq_lens_cpu.sum())
+            subset.orig_seq_lens = schedule_batch.orig_seq_lens[device_rows]
+            subset.out_cache_loc = schedule_batch.out_cache_loc[device_rows]
+            subset.sampling_info = copy(schedule_batch.sampling_info)
+            if subset.return_logprob:
+                subset.top_logprobs_nums = [
+                    schedule_batch.top_logprobs_nums[index] for index in row_indices
+                ]
+                subset.token_ids_logprobs = [
+                    schedule_batch.token_ids_logprobs[index] for index in row_indices
+                ]
+            else:
+                pass
+            # note (jli2786): Build each group's own KV plan from allocator ids; slicing a translated plan would retain the parent's read rows.
+            subset_forward = ForwardBatch.init_new(
+                subset,
+                self.tp_worker.model_runner,
+                capture_hidden_mode=forward_batch.capture_hidden_mode,
+                return_hidden_states_before_norm=forward_batch.return_hidden_states_before_norm,
+            )
+            self.model.fusion_buffer[: len(row_indices)].copy_(fused_rows[device_rows])
+            result = self.custom_decode_forward(
+                subset_forward,
+                subset,
+                [requests[index] for index in row_indices],
+            )
+            if result is None:
+                result = self.tp_worker.forward_batch_generation(subset_forward)
+            else:
+                pass
+            hidden_rows.index_copy_(
+                0, device_rows, self.model.hidden_out[: len(row_indices)]
+            )
+            logits = result.logits_output.next_token_logits
+            if logits_rows is None:
+                logits_rows = logits.new_empty(len(requests), *logits.shape[1:])
+            else:
+                pass
+            logits_rows.index_copy_(0, device_rows, logits)
+            if result.logits_output.hidden_states is not None:
+                hidden = result.logits_output.hidden_states
+                if captured_hidden_rows is None:
+                    captured_hidden_rows = hidden.new_empty(
+                        len(requests), *hidden.shape[1:]
+                    )
+                else:
+                    pass
+                captured_hidden_rows.index_copy_(0, device_rows, hidden)
+            else:
+                pass
+        self.model.hidden_out[: len(requests)].copy_(hidden_rows)
+        return GenerationBatchResult(
+            logits_output=LogitsProcessorOutput(
+                next_token_logits=logits_rows, hidden_states=captured_hidden_rows
+            )
         )
 
     def post_decode(
