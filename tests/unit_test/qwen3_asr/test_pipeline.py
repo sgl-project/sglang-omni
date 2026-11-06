@@ -16,7 +16,6 @@ from sglang.srt.arg_groups.cuda_graph_hook import (
     generate_prefill_cuda_graph_batch_sizes,
 )
 
-import sglang_omni.model_runner.base as model_runner_base
 import sglang_omni.models.qwen3_asr.engine_builder as qwen3_asr_builder
 import sglang_omni.models.qwen3_asr.stages as qwen3_asr_stages
 import sglang_omni.scheduling.bootstrap as bootstrap
@@ -111,12 +110,15 @@ def fake_server_args_builder(
 
 
 def make_engine_builder(
-    *, mm_attention_backend: str | None = None, context_length: int = 1636
+    *,
+    mm_attention_backend: str | None = None,
+    context_length: int = 1636,
+    enable_async_decode: bool | None = True,
 ) -> qwen3_asr_builder.Qwen3ASREngineBuilder:
     builder = qwen3_asr_builder.Qwen3ASREngineBuilder(
         max_running_requests=64,
         max_new_tokens=128,
-        enable_async_decode=True,
+        enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=2,
         mem_fraction_static=None,
         mm_embedding_cache_size_bytes=0,
@@ -161,6 +163,7 @@ def test_per_stream_queue_env_defaults(
         "PER_STREAM_QUEUE"
     )
     assert stage_env["SGLANG_ENABLE_METADATA_GLUE_GRAPH"] == "1"
+    assert stage_env["SGLANG_TORCH_COMPILE_MODE"] == "default"
     config.stage_named("asr").env["PER_STREAM_QUEUE"] = "0"
     assert config.resolved_stage_env_defaults("asr")["PER_STREAM_QUEUE"] == "0"
 
@@ -412,6 +415,16 @@ def test_qwen3_asr_torch_mps_profile_overrides_typed_torch_compile_default() -> 
     assert overrides["enable_torch_compile"] is False
 
 
+def test_qwen3_asr_torch_mps_keeps_requests_greedy_only(monkeypatch) -> None:
+    builder = make_engine_builder()
+    builder.device = "mps"
+    monkeypatch.setattr(
+        request_builders, "make_qwen3_asr_scheduler_adapters", lambda **kwargs: kwargs
+    )
+
+    assert builder.make_adapters(object())["greedy_only"] is True
+
+
 def test_qwen3_asr_config_uses_batched_stage_with_64_running_requests() -> None:
     config = Qwen3ASRPipelineConfig(model_path="Qwen/Qwen3-ASR-1.7B")
 
@@ -543,8 +556,8 @@ def patch_engine_dependencies(
         lambda **kwargs: object(),
     )
     monkeypatch.setattr(
-        model_runner_base,
-        "ModelRunner",
+        qwen3_asr_builder,
+        "Qwen3ASRModelRunner",
         lambda *args, **kwargs: object(),
     )
     monkeypatch.setattr(
@@ -681,7 +694,7 @@ def test_qwen3_asr_stage_import_without_dflash() -> None:
             sys.executable,
             "-c",
             "import sys; "
-            "sys.modules['sglang_omni.models.qwen3_asr.dflash'] = None; "
+            "sys.modules['sglang_omni.speculative.dflash_draft'] = None; "
             "from sglang_omni.models.qwen3_asr.stages import "
             "create_sglang_qwen3_asr_executor",
         ],
@@ -691,20 +704,11 @@ def test_qwen3_asr_stage_import_without_dflash() -> None:
     )
 
 
-def test_qwen3_asr_dflash_build_uses_sync_runtime_and_cleans_resources(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """DFlash must release its temporary checkpoint after both successful and failed builds."""
-    # note (WilsonZheng0327): Only DFlash tests require the Triton-dependent worker.
-    from sglang_omni.models.qwen3_asr.dflash import Qwen3ASRDFlashWorker
-
-    recorded = patch_engine_dependencies(monkeypatch, want_cuda_graph=True)
-    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: True)
-    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cpu", lambda: False)
+def write_dflash_checkpoint(directory: Path, *, non_causal: bool) -> None:
     source_config = {
         "speculators_model_type": "dflash",
         "sample_from_anchor": False,
-        "sliding_window_non_causal": False,
+        "sliding_window_non_causal": non_causal,
         "dtype": "bfloat16",
         "draft_vocab_size": 32000,
         "aux_hidden_state_layer_ids": [2, 14, 25],
@@ -715,8 +719,22 @@ def test_qwen3_asr_dflash_build_uses_sync_runtime_and_cleans_resources(
             "vocab_size": 151936,
         },
     }
-    (tmp_path / "config.json").write_text(json.dumps(source_config))
-    (tmp_path / "model.safetensors").touch()
+    (directory / "config.json").write_text(json.dumps(source_config))
+    (directory / "model.safetensors").touch()
+
+
+@pytest.mark.parametrize("non_causal", [False, True])
+def test_qwen3_asr_dflash_build_uses_sync_runtime_and_cleans_resources(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, non_causal: bool
+) -> None:
+    """DFlash must release its temporary checkpoint after both successful and failed builds."""
+    # note (WilsonZheng0327): Only DFlash tests require the Triton-dependent worker.
+    from sglang_omni.speculative.dflash_draft import ReducedVocabularyDFlashWorker
+
+    recorded = patch_engine_dependencies(monkeypatch, want_cuda_graph=True)
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: True)
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cpu", lambda: False)
+    write_dflash_checkpoint(tmp_path, non_causal=non_causal)
 
     infra_kwargs = Qwen3ASREngineBuilder.infra_kwargs
 
@@ -731,6 +749,8 @@ def test_qwen3_asr_dflash_build_uses_sync_runtime_and_cleans_resources(
             "block_size": 8,
             "sample_from_anchor": False,
         }
+        assert config["architectures"] == ["ReducedVocabularyDFlashDraftModel"]
+        assert config.get("is_causal", True) is not non_causal
         assert config["draft_vocab_size"] == 32000
         assert (
             draft_path / "model.safetensors"
@@ -744,7 +764,6 @@ def test_qwen3_asr_dflash_build_uses_sync_runtime_and_cleans_resources(
     )
     scheduler = qwen3_asr_stages.create_sglang_qwen3_asr_executor(
         "dummy",
-        enable_async_decode=True,
         server_args_overrides={
             "speculative_algorithm": "DFLASH",
             "speculative_draft_model_path": str(tmp_path),
@@ -753,10 +772,14 @@ def test_qwen3_asr_dflash_build_uses_sync_runtime_and_cleans_resources(
     draft_path = Path(recorded.build_kwargs["speculative_draft_model_path"])
     assert not draft_path.exists()
     assert recorded.infra_kwargs[-1]["supports_speculative_decoding"] is True
-    assert recorded.infra_kwargs[-1]["speculative_worker_class"] is Qwen3ASRDFlashWorker
+    assert (
+        recorded.infra_kwargs[-1]["speculative_worker_class"]
+        is ReducedVocabularyDFlashWorker
+    )
+    assert recorded.infra_kwargs[-1]["enable_async_decode"] is False
     assert scheduler.enable_async_decode is False
     assert scheduler.async_prefill is False
-    assert recorded.adapter_kwargs["greedy_only"] is True
+    assert recorded.adapter_kwargs["greedy_only"] is False
     assert recorded.build_kwargs["enable_mixed_chunk"] is False
     assert recorded.build_kwargs["disable_overlap_schedule"] is True
     assert not recorded.build_kwargs.get("disable_cuda_graph", False)
@@ -782,6 +805,66 @@ def test_qwen3_asr_dflash_build_uses_sync_runtime_and_cleans_resources(
         )
     assert failure.value is startup_error
     assert not Path(recorded.build_kwargs["speculative_draft_model_path"]).exists()
+
+
+@pytest.mark.parametrize(
+    ("requested", "with_draft", "expected"),
+    [
+        (None, False, True),
+        (None, True, False),
+        (True, True, True),
+        (False, False, False),
+    ],
+)
+def test_qwen3_asr_speculative_overlap_is_an_explicit_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    requested: bool | None,
+    with_draft: bool,
+    expected: bool,
+) -> None:
+    """Ordinary decode defaults to async; under a draft async decode means speculative overlap, so it runs only when the operator asks for it."""
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: True)
+    monkeypatch.setattr(
+        request_builders,
+        "make_qwen3_asr_stream_output_builder",
+        lambda **kwargs: object(),
+    )
+    write_dflash_checkpoint(tmp_path, non_causal=False)
+    builder = make_engine_builder(enable_async_decode=requested)
+    overrides: dict[str, object] = (
+        {
+            "speculative_algorithm": "DFLASH",
+            "speculative_draft_model_path": str(tmp_path),
+            "disable_cuda_graph": True,
+        }
+        if with_draft
+        else {"disable_cuda_graph": True}
+    )
+
+    builder.adjust_overrides(overrides)
+
+    assert builder.extra_scheduler_kwargs()["enable_async_decode"] is expected
+    # note (wilsonzheng0327): SGLang builds the draft worker for one loop or the other, so the infrastructure must hear the same choice as the scheduler.
+    if with_draft:
+        assert builder.infra_kwargs()["enable_async_decode"] is expected
+        assert overrides["disable_overlap_schedule"] is not expected
+        builder.draft_checkpoint.cleanup()
+    else:
+        assert builder.infra_kwargs() == {}
+
+
+def test_qwen3_asr_cuda_runner_opts_into_speculative_overlap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        qwen3_asr_builder.Qwen3ASRModelRunner, "__init__", lambda self, *args: None
+    )
+
+    runner = make_engine_builder().make_model_runner(object(), object())
+
+    assert isinstance(runner, qwen3_asr_builder.Qwen3ASRModelRunner)
+    assert runner.supports_speculative_async_decode is True
 
 
 @pytest.mark.parametrize("resolved_chunked_prefill_size", [2048, 8192])
@@ -962,6 +1045,41 @@ def test_qwen3_asr_glue_graph_stage_override_is_preserved() -> None:
     assert (
         config.resolved_stage_env_defaults("asr")["SGLANG_ENABLE_METADATA_GLUE_GRAPH"]
         == "0"
+    )
+
+
+@pytest.mark.parametrize(
+    "is_xpu, device, expected_enabled",
+    [(True, "xpu", False), (False, "cuda", True)],
+    ids=["xpu_turns_it_off", "other_non_cuda_platform_keeps_it"],
+)
+def test_qwen3_asr_metadata_graph_is_off_only_on_xpu(
+    monkeypatch: pytest.MonkeyPatch, is_xpu: bool, device: str, expected_enabled: bool
+) -> None:
+    """The stage default enables the glue graph everywhere and it records through
+    torch.cuda. On XPU that raises at the first replay, so XPU has to end up with it
+    off; ROCm reaches torch.cuda through HIP and keeps the path it already had."""
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_cuda", lambda: False)
+    monkeypatch.setattr(qwen3_asr_builder.current_platform, "is_xpu", lambda: is_xpu)
+    monkeypatch.setenv("SGLANG_ENABLE_METADATA_GLUE_GRAPH", "1")
+    monkeypatch.setattr(
+        qwen3_asr_builder.metadata_glue,
+        "apply_thread_local_glue_capture",
+        lambda: pytest.fail("the CUDA-only glue capture must not be installed"),
+    )
+    builder = make_engine_builder()
+
+    builder.setup_model(
+        model_worker=SimpleNamespace(model_runner=SimpleNamespace()),
+        checkpoint_dir="dummy",
+        device=device,
+        gpu_id=0,
+        server_args=None,
+    )
+
+    assert (
+        qwen3_asr_builder.envs.SGLANG_ENABLE_METADATA_GLUE_GRAPH.get()
+        is expected_enabled
     )
 
 

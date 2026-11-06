@@ -40,6 +40,10 @@ from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.types import RequestOutput
 from tests.unit_test.fishaudio_s2_pro.test_vocoder import tiny_codec
+from tests.unit_test.fixtures.torch_backend_flags import (  # noqa: F401  # fixture
+    CublasFlagSetter,
+    cublas_flags,
+)
 
 SAMPLES_PER_FRAME = 4
 SAMPLE_RATE = 44100
@@ -706,14 +710,17 @@ def test_the_snake_kernel_follows_the_formula_on_a_trimmed_activation(
     ids=["float32", "float16"],
 )
 def test_the_channels_last_decoder_decodes_like_the_codec(
-    monkeypatch: pytest.MonkeyPatch, dtype: torch.dtype, tolerance: float
+    monkeypatch: pytest.MonkeyPatch,
+    cublas_flags: CublasFlagSetter,
+    dtype: torch.dtype,
+    tolerance: float,
 ) -> None:
     if not torch.cuda.is_available():
         pytest.skip("needs a CUDA device")
     else:
         pass
     monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
-    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
+    cublas_flags("allow_tf32", False)
     reference = tiny_codec().cuda()
     reference.fold_weight_norm()
     channels_last = tiny_codec().cuda()

@@ -14,11 +14,14 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
+    SerializerFunctionWrapHandler,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
 from sglang_omni.client.types import UsageInfo
+from sglang_omni.scheduling.types import SpecTokensDetailsDict
 
 
 class UsageResponse(BaseModel):
@@ -27,6 +30,45 @@ class UsageResponse(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+
+
+class SpecTokensDetails(BaseModel):
+    """Per-request speculative decoding statistics."""
+
+    spec_accept_rate: float | None = None
+    spec_accept_length: float
+    spec_num_correct_drafts: int
+    spec_num_proposed_drafts: int | None = None
+    spec_verify_ct: int
+    spec_correct_drafts_histogram: list[int]
+
+    @model_serializer(mode="wrap")
+    def drop_unknown_rate(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, object]:
+        data = handler(self)
+        if self.spec_accept_rate is None:
+            data.pop("spec_accept_rate", None)
+            data.pop("spec_num_proposed_drafts", None)
+        else:
+            pass
+        return data
+
+
+class SglExt(BaseModel):
+    """Response-level extension fields outside the OpenAI schema."""
+
+    spec_tokens_details: SpecTokensDetails
+
+
+def build_sglext(
+    return_spec_tokens_details: bool,
+    spec_tokens_details: SpecTokensDetailsDict | None,
+) -> SglExt | None:
+    if return_spec_tokens_details and spec_tokens_details is not None:
+        return SglExt(spec_tokens_details=SpecTokensDetails(**spec_tokens_details))
+    else:
+        return None
 
 
 class ChatMessage(BaseModel):
@@ -138,6 +180,7 @@ class ChatCompletionRequest(BaseModel):
     talker_max_new_tokens: int | None = None
 
     # Misc
+    return_spec_tokens_details: bool = False
     request_id: str | None = None
     user: str | None = None
 
@@ -173,6 +216,18 @@ class ChatCompletionResponse(BaseModel):
     model: str
     choices: list[ChatCompletionChoice]
     usage: UsageResponse | None = None
+    sglext: SglExt | None = None
+
+    @model_serializer(mode="wrap")
+    def drop_unset_sglext(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, object]:
+        data = handler(self)
+        if self.sglext is None:
+            data.pop("sglext", None)
+        else:
+            pass
+        return data
 
 
 class ChatCompletionStreamDelta(BaseModel):
@@ -200,6 +255,7 @@ class ChatCompletionStreamResponse(BaseModel):
     model: str
     choices: list[ChatCompletionStreamChoice]
     usage: UsageResponse | None = None
+    sglext: SglExt | None = None
 
 
 class RolloutSamplingParams(BaseModel):
@@ -450,6 +506,8 @@ class CreateSpeechRequest(BaseModel):
     stage_params: dict[str, dict[str, object]] | None = None
     extra_params: dict[str, JsonValue] | None = None
 
+    return_spec_tokens_details: bool = False
+
 
 class SpeechBatchItem(BaseModel):
     """One item in a batch text-to-speech request."""
@@ -544,6 +602,18 @@ class SpeechStreamOutcome(BaseModel):
     request_id: str
     finish_reason: str
     usage: UsageInfo | None = None
+    sglext: SglExt | None = None
+
+    @model_serializer(mode="wrap")
+    def drop_unset_sglext(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, object]:
+        data = handler(self)
+        if self.sglext is None:
+            data.pop("sglext", None)
+        else:
+            pass
+        return data
 
 
 class SpeechBatchResponse(BaseModel):
@@ -628,6 +698,7 @@ class TranscriptionResponse(BaseModel):
     text: str
     usage: TranscriptionUsage | None = None
     finish_reason: str | None = None
+    sglext: SglExt | None = None
 
 
 class TranscriptionSegment(BaseModel):
@@ -649,6 +720,7 @@ class TranscriptionVerboseResponse(BaseModel):
     segments: list[TranscriptionSegment] = Field(default_factory=list)
     usage: TranscriptionUsage | None = None
     finish_reason: str | None = None
+    sglext: SglExt | None = None
 
 
 class TranscriptionTextDeltaEvent(BaseModel):
@@ -665,6 +737,7 @@ class TranscriptionTextDoneEvent(BaseModel):
     text: str
     usage: TranscriptionUsage | None = None
     finish_reason: str | None = None
+    sglext: SglExt | None = None
 
 
 class ModelPermission(BaseModel):

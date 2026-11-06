@@ -1,18 +1,67 @@
-# API Server Quickstart
+(api-server-quickstart)=
+# Quickstart
 
-This page is the shortest path from “I have the repo” to “the API server responds to a request”.
+Start Qwen3-ASR-1.7B on one CUDA GPU and transcribe a short audio clip.
 
-`sglang-omni` exposes an OpenAI-compatible API server on top of its multi-stage pipeline runtime. That server is the main HTTP entry point for:
+## Install and start
 
-- chat completions
-- streaming responses
-- model listing
-- health checks
-- text-to-speech
+Use Linux with a compatible NVIDIA GPU and driver. Choose Docker or uv below;
+see [CUDA Installation](installation.md) for the requirements and
+[other platforms](installation.md#other-platforms) for non-CUDA setups.
 
-If you want the internal design rather than the usage flow, see [API Server Design](../developer_reference/apiserver_design.md).
+**Docker (recommended):** Follow [Docker installation](installation.md#docker-recommended)
+to pull the image, start the container, and install SGLang-Omni inside it.
+Run the launch command below in that container.
 
-## What This Server Is
+**uv:** With the {ref}`CUDA prerequisites <option-b-manual-install>` installed,
+create a Python 3.12 environment on the host:
+
+```bash
+uv venv .venv -p 3.12
+source .venv/bin/activate
+uv pip install --prerelease=allow "sglang-omni==0.2.0"
+```
+
+From either environment, start the server:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
+  --model-path Qwen/Qwen3-ASR-1.7B \
+  --model-name Qwen/Qwen3-ASR-1.7B \
+  --host 127.0.0.1 \
+  --port 8000
+```
+
+The first launch downloads the checkpoint. Wait for the server to finish
+starting. If it does not become ready, check the server log and
+{ref}`/health <health-check>`.
+
+## Send a request
+
+In a second terminal on the same host, download the sample WAV used in the
+[Qwen3-ASR Cookbook](../cookbook/qwen3_asr.md#transcribe-audio) and upload it:
+
+```bash
+curl -fL -o query_to_cars.wav \
+  https://raw.githubusercontent.com/sgl-project/sglang-omni/7fc1a31850efbc1138e1895b5a3bcbeecf3a8481/tests/data/query_to_cars.wav
+
+curl -fsS http://localhost:8000/v1/audio/transcriptions \
+  -F model=Qwen/Qwen3-ASR-1.7B \
+  -F file=@query_to_cars.wav \
+  -F response_format=json
+```
+
+Check the JSON response's `text` field for the spoken question, “How many
+cars are there in the picture?”
+
+Keep the server running to try [streaming transcription](examples.md#stream-a-transcript).
+
+## API server reference
+
+The sections below cover the HTTP server, health checks, and additional API
+requests. For internals, see [API Server Design](../developer_reference/apiserver_design.md).
+
+### What This Server Is
 
 The API server is an adapter between HTTP clients and the internal pipeline runtime:
 
@@ -20,7 +69,7 @@ The API server is an adapter between HTTP clients and the internal pipeline runt
 
 In other words, it does not run model logic directly. Its job is to translate OpenAI-style requests into internal requests and format the results back into HTTP responses.
 
-## Start the Server
+### Start the Server
 
 The installed CLI entrypoint is `sgl-omni`.
 
@@ -43,7 +92,8 @@ The most useful flags are:
 
 If you already have a pipeline config file, you can also pass `--config path/to/config.yaml`. When the config file contains `model_path`, `--model-path` is optional and can be used as an override.
 
-### Unified SGLang CLI
+(unified-sglang-cli)=
+**Unified SGLang CLI**
 
 When SGLang-Omni is installed alongside an SGLang release that supports serve
 backend plugins, the same server can be launched through the core executable:
@@ -60,13 +110,22 @@ sglang serve --model-type omni --config path/to/config.yaml
 
 SGLang-Omni intentionally does not install another `sglang` executable. It
 registers an `omni` serve backend with SGLang core, while `sgl-omni serve`
-remains available as a backward-compatible alias. Automatic Omni model
-detection is not enabled yet; select the backend explicitly with
-`--model-type omni`.
+remains available as a backward-compatible alias. Both commands accept the same
+arguments, including the positional model path, so these two launches are
+equivalent:
 
-## Check That It Works
+```bash
+sglang serve <model-name-or-path> --model-type omni --port 8000
+sgl-omni serve <model-name-or-path> --port 8000
+```
 
-### Health check
+Automatic Omni model detection is not enabled yet; select the backend
+explicitly with `--model-type omni`.
+
+### Check That It Works
+
+(health-check)=
+**Health check**
 
 ```bash
 curl -s http://localhost:8000/health
@@ -86,7 +145,8 @@ The server returns:
 - `200` when the runtime is healthy
 - `503` when the HTTP server is up but the underlying runtime reports unhealthy status
 
-### List the served model
+(list-the-served-model)=
+**List the served model**
 
 ```bash
 curl -s http://localhost:8000/v1/models
@@ -94,7 +154,7 @@ curl -s http://localhost:8000/v1/models
 
 This endpoint returns a single-model list. The model ID comes from `--model-name` if you set it, otherwise from the pipeline name.
 
-## Send a Minimal Chat Request
+### Send a Minimal Chat Request
 
 The core endpoint is `POST /v1/chat/completions`.
 
@@ -122,9 +182,10 @@ Besides `model` and `messages`, the most useful request fields are:
 - `seed`
 - `stream`
 
-## Streaming and Multi-modal Requests
+### Streaming and Multi-modal Requests
 
-### Streaming
+(streaming)=
+**Streaming**
 
 Set `stream` to `true` to receive Server-Sent Events (SSE):
 
@@ -147,7 +208,8 @@ A few details matter here:
 - the stream ends with `data: [DONE]`
 - `usage` is attached to the final completion chunk
 
-### Multi-modal input and output
+(multi-modal-input-and-output)=
+**Multi-modal input and output**
 
 `sglang-omni` extends the standard OpenAI chat schema with a few extra fields:
 
@@ -178,7 +240,7 @@ curl -s http://localhost:8000/v1/chat/completions \
 
 The `videos`, `images`, and `audios` fields accept either local file paths or HTTP(S) URLs.
 
-## Text-to-Speech
+### Text-to-Speech
 
 The server also exposes `POST /v1/audio/speech`.
 
@@ -199,7 +261,7 @@ Two things to remember:
 - the response body is audio bytes, not JSON
 - the actual output format may differ from the requested one if the encoder falls back to another supported codec
 
-## Common Errors
+### Common Errors
 
 When requests fail, the server returns standard HTTP error codes:
 
@@ -213,7 +275,7 @@ If you see a 500 error, check the server logs for the full traceback. Common iss
 - out-of-memory errors
 - missing model files
 
-## Next Reading
+### Next Reading
 
 - [API Server Design](../developer_reference/apiserver_design.md)
 - [Developer Reference](../developer_reference/main.md)

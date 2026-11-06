@@ -1,0 +1,68 @@
+MyGo patch 0008 (VoxtNew): Updater.HasFeed tells a build without
+updates from one that cannot write where it runs.
+
+Updater.Enabled is false both for an app built without updates and for
+one built with them that runs from a folder it cannot write to, or as a
+development build. An app that ships without updates says so ("this
+version does not update automatically") and hides Check for Updates;
+one that has them but cannot install them asks to be moved to
+Applications. HasFeed reports whether the build has a feed and its key,
+wherever it runs. TestHasFeed.
+diff --git a/updater.go b/updater.go
+index 8965e5e..48e2d94 100644
+--- a/updater.go
++++ b/updater.go
+@@ -83,6 +83,13 @@ type Update struct {
+ 	current string
+ }
+ 
++// HasFeed reports whether the app was built with updates (a feed and the
++// key updates are signed with), whether or not it can update itself where
++// it runs: an app without them never updates, wherever it is installed.
++func (u *UpdaterModule) HasFeed() bool {
++	return packageUpdateFeed != "" && packageUpdateKey != ""
++}
++
+ // Enabled reports whether the app can update itself: it was built with
+ // updates and can write where it is installed. Apps installed by a package
+ // manager, such as a .deb in /opt, are updated by it instead.
+diff --git a/updater_js.go b/updater_js.go
+index 7c947fd..f4ca5b2 100644
+--- a/updater_js.go
++++ b/updater_js.go
+@@ -36,6 +36,9 @@ type Update struct {
+ 	Date time.Time
+ }
+ 
++// HasFeed reports whether the app was built with updates: not in browsers.
++func (u *UpdaterModule) HasFeed() bool { return false }
++
+ // Enabled reports whether the app can update itself: not in browsers.
+ func (u *UpdaterModule) Enabled() bool { return false }
+ 
+diff --git a/updater_test.go b/updater_test.go
+index c61cae7..92a8f36 100644
+--- a/updater_test.go
++++ b/updater_test.go
+@@ -371,3 +371,21 @@ func TestUpdaterPrereleases(t *testing.T) {
+ 	}
+ 	Updater.SetPrereleases(false)
+ }
++
++func TestHasFeed(t *testing.T) {
++	defer func(feed, key string) { packageUpdateFeed, packageUpdateKey = feed, key }(packageUpdateFeed, packageUpdateKey)
++	for _, c := range []struct {
++		feed, key string
++		want      bool
++	}{
++		{"", "", false},
++		{"https://example.com/update-darwin-arm64.json", "", false},
++		{"", "key", false},
++		{"https://example.com/update-darwin-arm64.json", "key", true},
++	} {
++		packageUpdateFeed, packageUpdateKey = c.feed, c.key
++		if got := Updater.HasFeed(); got != c.want {
++			t.Errorf("feed %q, key %q: HasFeed() = %v", c.feed, c.key, got)
++		}
++	}
++}
