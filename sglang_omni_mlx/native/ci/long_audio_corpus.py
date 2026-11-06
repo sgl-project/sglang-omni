@@ -61,7 +61,7 @@ def load_clips(corpus_directory: Path, language: str) -> list[Clip]:
 
 def build_recording(
     clips: list[Clip], seconds: float, seed: int, destination: Path
-) -> dict[str, str | int | float | list[str]]:
+) -> dict[str, str | int | float | list[str] | list[int]]:
     """End at a complete clip, at or just beyond the requested duration."""
     if (
         not math.isfinite(seconds)
@@ -101,9 +101,21 @@ def build_recording(
         "audio_seconds": frame_count / SAMPLE_RATE,
         "seed": seed,
         "clip_ids": [clip.clip_id for clip in selected],
+        "clip_frames": [clip.frames for clip in selected],
         "clip_sha256": [clip.sha256 for clip in selected],
         "unique_clips": len({clip.clip_id for clip in selected}),
         "reused_clips": len(selected) - len({clip.clip_id for clip in selected}),
         "reference": " ".join(clip.reference for clip in selected),
         "wav_sha256": digest,
     }
+
+
+def chunk_frame_counts(clip_frames: list[int], chunk_seconds: float) -> list[int]:
+    """Whole clips per request, at most chunk_seconds unless one clip alone is longer."""
+    counts = [0]
+    for frames in clip_frames:
+        if counts[-1] > 0 and counts[-1] + frames > chunk_seconds * SAMPLE_RATE:
+            counts.append(frames)
+        else:
+            counts[-1] += frames
+    return counts

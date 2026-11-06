@@ -23,11 +23,14 @@ from sglang_omni_mlx.native.ci.long_audio_client import (
     MemorySampler,
     score,
     stream_recording,
+    transcribe_chunks,
     transcribe_http,
+    voxt_token_budget,
 )
 from sglang_omni_mlx.native.ci.long_audio_corpus import (
     Clip,
     build_recording,
+    chunk_frame_counts,
     load_clips,
 )
 
@@ -77,6 +80,70 @@ def test_recording_keeps_whole_clips_and_matching_references(tmp_path: Path) -> 
         result["wav_sha256"]
         == hashlib.sha256((tmp_path / "long.wav").read_bytes()).hexdigest()
     )
+
+
+@pytest.mark.parametrize(
+    ("clip_frames", "chunk_seconds", "expected"),
+    [
+        ([16000, 16000], 2, [32000]),
+        ([16000, 16000, 16000], 2, [32000, 16000]),
+        ([48000, 16000], 2, [48000, 16000]),
+    ],
+)
+def test_chunks_keep_whole_clips_within_the_limit(
+    clip_frames: list[int], chunk_seconds: float, expected: list[int]
+) -> None:
+    """A clip cut in two would score words on audio split across requests."""
+    assert chunk_frame_counts(clip_frames, chunk_seconds) == expected
+
+
+@pytest.mark.parametrize(
+    ("audio_seconds", "budget"), [(1, 256), (60, 1744), (1800, 8192)]
+)
+def test_token_budget_matches_voxt(audio_seconds: float, budget: int) -> None:
+    """The values come from Voxt's ASRTuning.tokenBudget."""
+    assert voxt_token_budget(audio_seconds) == budget
+
+
+def test_chunked_http_sends_each_chunk_with_its_own_budget(tmp_path: Path) -> None:
+    recording = tmp_path / "long.wav"
+    first_pcm = b"\xaa\xbb" * 16000
+    second_pcm = b"\xcc\xdd" * 1000000
+    with wave.open(str(recording), "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(16000)
+        writer.writeframes(first_pcm + second_pcm)
+    submitted = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            submitted.append(self.rfile.read(int(self.headers["Content-Length"])))
+            event = {
+                "type": "transcript.text.done",
+                "text": f"part{len(submitted)}",
+                "generation_metadata": {"finish_reason": "stop"},
+            }
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(f"data: {json.dumps(event)}\n\n".encode())
+
+    with HTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            result = transcribe_chunks(
+                server.server_port, recording, [16000, 1000000], "en", 5
+            )
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+    assert result["text"] == "part1 part2"
+    assert len(result["chunk_generation_metadata"]) == 2
+    assert first_pcm in submitted[0] and b"\xcc\xdd" not in submitted[0]
+    assert second_pcm in submitted[1] and b"\xaa\xbb" not in submitted[1]
+    assert b'name="max_new_tokens"\r\n\r\n256\r\n' in submitted[0]
+    assert b'name="max_new_tokens"\r\n\r\n1814\r\n' in submitted[1]
 
 
 @pytest.mark.parametrize(

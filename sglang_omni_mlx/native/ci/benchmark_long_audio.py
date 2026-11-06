@@ -21,9 +21,14 @@ from sglang_omni_mlx.native.ci.long_audio_client import (
     MemorySampler,
     score,
     stream_recording,
+    transcribe_chunks,
     transcribe_http,
 )
-from sglang_omni_mlx.native.ci.long_audio_corpus import build_recording, load_clips
+from sglang_omni_mlx.native.ci.long_audio_corpus import (
+    build_recording,
+    chunk_frame_counts,
+    load_clips,
+)
 
 
 def main() -> None:
@@ -44,10 +49,15 @@ def main() -> None:
         help="Realtime audio seconds per wall second; >1 is accelerated, not live pacing",
     )
     parser.add_argument(
+        "--chunk-seconds",
+        type=float,
+        help="HTTP only: send whole clips in requests of at most this many seconds, each with Voxt's token budget",
+    )
+    parser.add_argument(
         "--timeout-seconds",
         type=float,
         default=300,
-        help="HTTP request deadline and realtime wait after audio input ends",
+        help="Deadline of each HTTP request and realtime wait after audio input ends",
     )
     parser.add_argument(
         "--max-footprint-gib",
@@ -81,6 +91,10 @@ def main() -> None:
         parser.error(
             "Requires macOS and positive duration, speed, timeout and memory limit"
         )
+    elif arguments.chunk_seconds is not None and (
+        arguments.mode != "http" or not 0 < arguments.chunk_seconds < math.inf
+    ):
+        parser.error("--chunk-seconds needs --mode http and a positive duration")
     else:
         pass
     arguments.output.mkdir(parents=True, exist_ok=False)
@@ -185,7 +199,17 @@ def main() -> None:
                     baseline_bytes = sampler.samples[-1]["footprint_bytes"]
                     measured_start = len(sampler.samples)
                     sampler.phase = "long_recording"
-                    if arguments.mode == "http":
+                    if arguments.chunk_seconds is not None:
+                        transcription = transcribe_chunks(
+                            port,
+                            wav_path,
+                            chunk_frame_counts(
+                                recording["clip_frames"], arguments.chunk_seconds
+                            ),
+                            language,
+                            arguments.timeout_seconds,
+                        )
+                    elif arguments.mode == "http":
                         transcription = transcribe_http(
                             port,
                             wav_path.read_bytes(),

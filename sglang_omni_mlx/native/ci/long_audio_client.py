@@ -6,7 +6,9 @@ from __future__ import annotations
 import base64
 import ctypes
 import http.client
+import io
 import json
+import math
 import re
 import subprocess
 import threading
@@ -29,6 +31,11 @@ HTTP_TRANSCRIPTION_FIELDS = {
     "audio_layout": "voxt_swift",
 }
 MEMORY_SAMPLE_INTERVAL_SECONDS = 0.25
+# The token budget of a Voxt Final request, from its Qwen3-ASR tuning.
+VOXT_TOKENS_PER_SECOND = 28
+VOXT_EXTRA_TOKENS = 64
+VOXT_MIN_TOKENS = 256
+VOXT_MAX_TOKENS = 8192
 
 
 class GenerationMetadata(TypedDict):
@@ -41,6 +48,7 @@ class Measurement(TypedDict, total=False):
     text: str
     type: str
     generation_metadata: GenerationMetadata
+    chunk_generation_metadata: list[GenerationMetadata]
     wall_seconds: float
     finalization_seconds: float
     final_segments: int
@@ -166,11 +174,24 @@ def score(
         }
 
 
+def voxt_token_budget(audio_seconds: float) -> int:
+    budget = math.ceil(audio_seconds * VOXT_TOKENS_PER_SECOND) + VOXT_EXTRA_TOKENS
+    return min(max(budget, VOXT_MIN_TOKENS), VOXT_MAX_TOKENS)
+
+
 def transcribe_http(
-    port: int, wav: bytes, language: str, timeout_seconds: float
+    port: int,
+    wav: bytes,
+    language: str,
+    timeout_seconds: float,
+    max_new_tokens: int | None = None,
 ) -> Measurement:
     boundary = "omni-long-audio-benchmark"
     fields = {"language": language, **HTTP_TRANSCRIPTION_FIELDS}
+    if max_new_tokens is not None:
+        fields["max_new_tokens"] = str(max_new_tokens)
+    else:
+        pass
     body = b"".join(
         f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode()
         for name, value in fields.items()
@@ -211,6 +232,41 @@ def transcribe_http(
         raise RuntimeError("Stream ended without a final transcript")
     finally:
         connection.close()
+
+
+def transcribe_chunks(
+    port: int,
+    path: Path,
+    frame_counts: list[int],
+    language: str,
+    timeout_seconds: float,
+) -> Measurement:
+    """Send a recording as consecutive requests, each with its own Voxt budget."""
+    started = time.monotonic()
+    texts: list[str] = []
+    generation_metadata: list[GenerationMetadata] = []
+    with wave.open(str(path), "rb") as reader:
+        for frame_count in frame_counts:
+            chunk = io.BytesIO()
+            with wave.open(chunk, "wb") as writer:
+                writer.setnchannels(1)
+                writer.setsampwidth(SAMPLE_BYTES)
+                writer.setframerate(SAMPLE_RATE)
+                writer.writeframes(reader.readframes(frame_count))
+            measurement = transcribe_http(
+                port,
+                chunk.getvalue(),
+                language,
+                timeout_seconds,
+                voxt_token_budget(frame_count / SAMPLE_RATE),
+            )
+            texts.append(measurement["text"])
+            generation_metadata.append(measurement["generation_metadata"])
+    return {
+        "text": " ".join(texts),
+        "chunk_generation_metadata": generation_metadata,
+        "wall_seconds": time.monotonic() - started,
+    }
 
 
 def stream_recording(
