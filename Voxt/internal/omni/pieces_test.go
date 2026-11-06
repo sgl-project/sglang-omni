@@ -81,7 +81,7 @@ func TestLivePieces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pcm := speechAndPauses(4) // 6.8 s
+	pcm := speechAndPauses(5) // 8.5 s: the closing pause is no cut, so a fifth stretch of speech for a fourth piece
 	sendAll(t, st, pcm)
 	f.waitLogged(t, "piece 4 of the recording")
 	if err := st.Finish(); err != nil {
@@ -248,16 +248,20 @@ func TestLongestPause(t *testing.T) {
 	for _, c := range []struct {
 		segs   []vad.Segment
 		n, min int
+		atEnd  bool
 		at     int
 		ok     bool
 	}{
-		{nil, 100, 10, 50, true}, // no speech
-		{[]vad.Segment{{Start: 0, End: 40}, {Start: 60, End: 100}}, 100, 10, 50, true},                                            // between
-		{[]vad.Segment{{Start: 0, End: 40}, {Start: 50, End: 100}}, 100, 20, 0, false},                                            // too short
-		{[]vad.Segment{{Start: 30, End: 40}, {Start: 45, End: 80}}, 100, 10, 15, true},                                            // before the first (30) beats after the last (20)
-		{[]vad.Segment{{Start: 0, End: 10}, {Start: 20, End: 30}, {Start: 35, End: 60}, {Start: 90, End: 100}}, 100, 5, 75, true}, // the longest of three
+		{nil, 100, 10, false, 50, true}, // no speech
+		{[]vad.Segment{{Start: 0, End: 40}, {Start: 60, End: 100}}, 100, 10, false, 50, true},                                            // between
+		{[]vad.Segment{{Start: 0, End: 40}, {Start: 50, End: 100}}, 100, 20, false, 0, false},                                            // too short
+		{[]vad.Segment{{Start: 30, End: 40}, {Start: 45, End: 80}}, 100, 10, false, 15, true},                                            // before the first (30) beats after the last (20)
+		{[]vad.Segment{{Start: 0, End: 10}, {Start: 20, End: 30}, {Start: 35, End: 60}, {Start: 90, End: 100}}, 100, 5, false, 75, true}, // the longest of three
+		{[]vad.Segment{{Start: 0, End: 40}, {Start: 45, End: 60}}, 100, 3, false, 80, true},                                              // after the last, with audio after it
+		{[]vad.Segment{{Start: 0, End: 40}, {Start: 45, End: 60}}, 100, 3, true, 42, true},                                               // at the end: the closing pause is not a cut
+		{nil, 100, 10, true, 0, false}, // no speech yet at the end: wait
 	} {
-		at, ok := longestPause(c.segs, c.n, c.min)
+		at, ok := longestPause(c.segs, c.n, c.min, c.atEnd)
 		if at != c.at || ok != c.ok {
 			t.Errorf("%+v: %d %v", c, at, ok)
 		}
