@@ -239,7 +239,14 @@ class PrefillCadence:
         else:
             per_request = (weight * products - count * total) / spread
             fixed = (total - per_request * count) / weight
-            return max(0.0, fixed + max(0.0, per_request) * cohort)
+            if fixed < 0:
+                # note (0xtoward): a prefill cannot cost less than nothing at an empty cohort. The
+                # few large cohorts a window sees arrive when the engine is busiest, so they lever
+                # the line below zero: one H200 cell at C64 fitted -1.2 + 5.39 n. Read it as all
+                # fixed cost instead, the same reading as no spread at all.
+                return self.prefill_least_s or (self.prefill_s or 0.0)
+            else:
+                return fixed + max(0.0, per_request) * cohort
 
     def smoothed(self, mean_s: float | None, sample_s: float) -> float:
         if mean_s is None:

@@ -284,3 +284,14 @@ def test_spread_in_the_cohorts_restores_the_fit() -> None:
     policy.observe_prefill(0.1015, 14)
     assert policy.prefill_estimate_s(0) == pytest.approx(0.0229, abs=2e-3)
     assert policy.prefill_estimate_s(14) == pytest.approx(0.1015, abs=4e-3)
+
+
+def test_a_negative_fixed_part_is_refused() -> None:
+    """A few large cohorts at a window's tail can lever the line below zero; a prefill cannot."""
+    policy = cadence()
+    for _ in range(30):
+        policy.observe_prefill(0.031, 1)
+    policy.observe_prefill(0.120, 18)
+    policy.observe_prefill(0.180, 20)
+    assert policy.prefill_estimate_s(0) > 0
+    assert policy.prefill_estimate_s(1) == pytest.approx(0.031, abs=2e-3)
