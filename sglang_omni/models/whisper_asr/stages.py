@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from typing import Literal
 
 from sglang_omni.models.whisper_asr.config import WhisperASRFactoryArgs
+from sglang_omni.platforms import current_platform
 
 
 def create_sglang_whisper_asr_executor(
@@ -43,6 +44,11 @@ def create_sglang_whisper_asr_executor(
     server_args_overrides: Mapping[str, object] | None = None,
 ):
     from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
+
+    if mem_fraction_static is None:
+        mem_fraction_static = 0.50 if current_platform.is_npu() else 0.85
+    else:
+        pass
 
     if encoder_attention_backend is None:
         encoder_attention_backend = WhisperASRFactoryArgs().encoder_attention_backend

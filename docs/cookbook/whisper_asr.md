@@ -12,7 +12,7 @@ hf download openai/whisper-large-v3
 
 ## Ascend NPU
 
-The single-card NPU path uses `openai/whisper-large-v3` in FP16 and retains NPU decode graphs. It uses the released SGLang dependency without a SGLang source patch.
+The single-card NPU path uses `openai/whisper-large-v3` in FP16 with ordinary decode execution. Whisper uses the existing attention backend without a model-specific attention implementation or a SGLang source patch.
 
 Use the A3 runtime pinned by `base-image-a3` in `[tool.sglang-omni.npu]` in `pyproject_npu.toml`, rather than a rolling image tag. The current runtime selects SGLang 0.5.22, CANN 9.1.0, Python 3.12, PyTorch 2.10.0 and torch_npu 2.10.0.post6. The host driver and firmware must support this CANN release; see [Ascend prerequisites](../get_started/installation_npu.md#prerequisites). Install this checkout inside that prepared runtime:
 
@@ -30,7 +30,9 @@ sgl-omni serve --model-path openai/whisper-large-v3 --port 8000
 
 Whisper defaults to `mem_fraction_static=0.50` on NPU and `0.85` on other platforms. Set `stages.asr.engine.mem_fraction_static` in the pipeline YAML to override the memory budget for your device or workload.
 
-The encoder CUDA Graph section below describes the CUDA path; the NPU encoder uses device SDPA. The optional dense-prefill CUDA optimization is also CUDA-only. These paths are separate from the retained NPU decode graph.
+Whisper defaults to `disable_decode_cuda_graph=True` on NPU because the existing encoder-decoder attention path cannot compile its data-dependent cache slicing during decode graph capture. Prefill graph and compilation settings are unchanged. Explicit `server_args_overrides` retain SGLang's configuration precedence, but enabling NPU decode graphs with the unmodified dependency is unsupported and may fail during startup. Decode graph support requires a separate SGLang backend fix; disabling decode graphs can reduce throughput.
+
+The encoder CUDA Graph section below describes the CUDA path; the NPU encoder uses device SDPA. The optional dense-prefill CUDA optimization is also CUDA-only. These paths are separate from the decoder prefill graph.
 
 ## Server Configuration
 
