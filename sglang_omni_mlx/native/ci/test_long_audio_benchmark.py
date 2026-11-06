@@ -424,7 +424,7 @@ def test_http_requires_a_successful_final_event(reply: bytes) -> None:
 
 @pytest.mark.skipif(platform.system() != "Darwin", reason="macOS process accounting")
 @pytest.mark.parametrize(
-    "exit_policy", ["normal", "early_zero", "early_23", "shutdown_23"]
+    "exit_policy", ["normal", "early_zero", "early_23", "shutdown_23", "failed_load"]
 )
 def test_unexpected_server_exit_fails_the_benchmark(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exit_policy: str
@@ -456,6 +456,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 policy = EXIT_POLICY
 print(" ".join(sys.argv[1:]), file=sys.stderr, flush=True)
+if policy == "failed_load":
+    print(json.dumps({"event": "failed", "reason": "model load failed: bad weights"}), flush=True)
+    sys.exit(1)
 post_count = 0
 lock = threading.Lock()
 
@@ -516,13 +519,18 @@ for line in sys.stdin:
     with pytest.raises(SystemExit) as stopped:
         benchmark_long_audio.main()
     result = json.loads((output / "en-0.001m.result.json").read_text())
-    assert result["recovery_matches_warmup"] is True
     assert "--cache-limit-mb 512" in (output / "en-0.001m.server.log").read_text()
-    if exit_policy == "normal":
+    if exit_policy == "failed_load":
+        assert stopped.value.code != 0
+        assert result["status"] == "failed"
+        assert "model load failed: bad weights" in result["error"]
+    elif exit_policy == "normal":
+        assert result["recovery_matches_warmup"] is True
         assert stopped.value.code == 0
         assert result["status"] == "measured"
         assert result["server_exit_code"] == 0
     else:
+        assert result["recovery_matches_warmup"] is True
         assert stopped.value.code != 0
         assert result["status"] == "failed"
         assert result["server_exit_code"] == (0 if exit_policy == "early_zero" else 23)

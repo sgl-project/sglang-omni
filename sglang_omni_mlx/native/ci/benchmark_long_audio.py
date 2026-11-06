@@ -209,7 +209,10 @@ def main() -> None:
                             raise TimeoutError("Server startup deadline exceeded")
                         else:
                             ready = json.loads(process.stdout.readline())
-                    port = ready["port"]
+                    if ready["event"] != "ready":
+                        raise RuntimeError(f"Server failed to start: {ready['reason']}")
+                    else:
+                        port = ready["port"]
                     sampler.phase = "warmup"
                     warmup = transcribe_http(
                         port,
