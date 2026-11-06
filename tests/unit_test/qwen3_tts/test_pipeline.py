@@ -8939,6 +8939,7 @@ def test_qwen3_tts_steady_decode_reports_cuda_graph_ready(
         pending_text_queue=[torch.zeros(4)],
         decode_input_embeds=[],
         generation_steps=0,
+        speech_output_tokens=0,
         extra_model_outputs={},
     )
     request = SimpleNamespace(request_id="req", data=data)
@@ -8952,6 +8953,7 @@ def test_qwen3_tts_steady_decode_reports_cuda_graph_ready(
     )
 
     assert output.can_run_cuda_graph is True
+    assert data.speech_output_tokens == 1
     assert runner.model.prepare_calls == 1
     assert fake_forward_batch.input_ids.tolist() == [0]
     assert torch.equal(runner.model.decode_feedback_embedding.weight[0], torch.ones(4))
