@@ -2,7 +2,7 @@ name: Voxt Mac CI
 
 # Builds Voxt's native MLX runtime (sglang_omni_mlx/native) and Voxt on GitHub's
 # macOS runners, then checks what Voxt relies on without running a model: the
-# supervisor protocol, the transcription, speech and realtime APIs (served by
+# supervisor protocol, the transcription, speech, chat and realtime APIs (served by
 # the stub server around stand-in models), each server's startup checks, and
 # Voxt's Omni unit tests, and VoxtNew's Swift packages (the helper and the
 # language-model runtime). No checkpoint is downloaded. Model outputs are checked
@@ -58,7 +58,7 @@ jobs:
             const labels = pr.data.labels.map((label) => label.name);
             core.setOutput("labels", JSON.stringify(labels));
             core.setOutput("draft", pr.data.draft ? "true" : "false");
-            core.setOutput("is_selected", labels.includes("run-all-ci") || labels.includes("run-mac-ci"));
+            core.setOutput("is_selected", labels.includes("run-mac-ci"));
 
       - name: Block draft PR
         if: ${{ steps.pr.outputs.is_selected == 'true' && fromJson(steps.pr.outputs.draft) }}

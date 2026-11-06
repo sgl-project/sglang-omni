@@ -36,9 +36,8 @@ on:
     inputs:
       ci_labels:
         description: "Space-separated CI labels, resolved like PR labels (e.g. 'run-tts-ci run-moss-tts-local-transformer-v1.5')."
-        required: false
+        required: true
         type: string
-        default: run-all-ci
 
 concurrency:
   group: omni-ci-${{ github.event.pull_request.number || github.ref }}
