@@ -35,8 +35,11 @@ type Speech struct {
 	Models   []string // the model menu's (any id may be typed)
 	// AppID: the key may come with an App ID (Doubao's older console;
 	// its newer one gives a single API key).
-	AppID  bool
-	KeyURL string // where to get a key
+	AppID bool
+	// KeyOptional: a server of its API on this Mac (a local Whisper
+	// server) takes no key (SpeechKeyOptional).
+	KeyOptional bool
+	KeyURL      string // where to get a key
 }
 
 // Speech services' ids that have no client package of their own.
@@ -47,17 +50,17 @@ const (
 
 // speechPresets are Voxt 1.x's remote speech services, in its order.
 var speechPresets = []Speech{
-	{ID: openai.ID, Name: "OpenAI Transcribe", Endpoint: openai.DefaultEndpoint, Model: openai.DefaultModel, Models: openai.Models,
+	{ID: openai.ID, Name: "OpenAI Transcribe", Endpoint: openai.DefaultEndpoint, Model: openai.DefaultModel, Models: openai.Models, KeyOptional: true,
 		KeyURL: "https://platform.openai.com/api-keys"},
 	{ID: doubao.ID, Name: "Doubao (Volcengine)", Stream: true, Endpoint: doubao.DefaultEndpoint, Model: doubao.DefaultModel, Models: doubao.Models, AppID: true,
 		KeyURL: "https://console.volcengine.com/speech/app"},
-	{ID: ZhipuASR, Name: "Zhipu GLM-ASR", Endpoint: "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions", Model: "glm-asr-2512", Models: []string{"glm-asr-2512", "glm-asr-1"},
+	{ID: ZhipuASR, Name: "Zhipu GLM-ASR", Endpoint: "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions", Model: "glm-asr-2512", Models: []string{"glm-asr-2512", "glm-asr-1"}, KeyOptional: true,
 		KeyURL: "https://bigmodel.cn/usercenter/proj-mgmt/apikeys"},
 	{ID: aliyun.ID, Name: "Aliyun Bailian ASR", Stream: true, Endpoint: aliyun.InferenceEndpoint, Model: aliyun.DefaultModel, Models: aliyun.Models,
 		KeyURL: "https://bailian.console.aliyun.com/?tab=model#/api-key"},
 	// StepFun's transcriptions are OpenAI-compatible (multipart, Bearer),
 	// checked by hand with step-asr for Auralink on 2026-10-15.
-	{ID: StepFunASR, Name: "StepFun", Endpoint: "https://api.stepfun.com/v1/audio/transcriptions", Model: "step-asr", Models: []string{"step-asr", "step-asr-1.1"},
+	{ID: StepFunASR, Name: "StepFun", Endpoint: "https://api.stepfun.com/v1/audio/transcriptions", Model: "step-asr", Models: []string{"step-asr", "step-asr-1.1"}, KeyOptional: true,
 		KeyURL: "https://platform.stepfun.com/interface-key"},
 	{ID: mimo.ID, Name: "Xiaomi MiMo", Endpoint: mimo.DefaultEndpoint, Model: mimo.DefaultModel, Models: mimo.Models,
 		KeyURL: "https://platform.xiaomimimo.com/"},
@@ -125,12 +128,11 @@ func SpeechReady(s settings.Settings, hasKey func(id string) bool) []settings.Pr
 // OpenAI-compatible transcription server on this Mac (a local Whisper
 // server), as the language models' Ollama.
 func SpeechKeyOptional(p settings.Provider) bool {
-	switch p.ID {
-	case openai.ID, StepFunASR, ZhipuASR:
-		u, err := url.Parse(strings.TrimSpace(p.Endpoint))
-		return err == nil && u.Host != "" && asr.IsLoopback(u.Hostname())
+	if pr, ok := LookupSpeech(p.ID); !ok || !pr.KeyOptional {
+		return false
 	}
-	return false
+	u, err := url.Parse(strings.TrimSpace(p.Endpoint))
+	return err == nil && u.Host != "" && asr.IsLoopback(u.Hostname())
 }
 
 // NewASR is the client of a speech setup with its key, over client (nil:

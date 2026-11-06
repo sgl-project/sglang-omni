@@ -53,7 +53,7 @@ func services(kind local.Kind) []service {
 	if kind == local.ASR {
 		for _, p := range providers.SpeechPresets() {
 			out = append(out, service{kind: kind, id: p.ID, name: uitext.SpeechName(p.ID), endpoint: p.Endpoint, model: p.Model, models: p.Models,
-				appID: p.AppID, stream: p.Stream, keyURL: p.KeyURL})
+				appID: p.AppID, stream: p.Stream, keyOptional: p.KeyOptional, keyURL: p.KeyURL})
 		}
 		return out
 	}

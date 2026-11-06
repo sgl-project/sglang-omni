@@ -102,7 +102,7 @@ func (a *app) providerDialogView(c *ui.Context) {
 		}
 		mask := a.keyMasks[providers.Account(d.kind, d.id)]
 		keyInfo := i18n.T("Saved in this Mac's Keychain, never in Voxt's settings or logs.")
-		if sv.keyOptional || d.kind == local.ASR && providers.SpeechKeyOptional(d.setup()) {
+		if sv.keyOptional {
 			keyInfo = i18n.T("Optional for a server on this Mac. Saved in this Mac's Keychain, never in Voxt's settings or logs.")
 		}
 		fieldInfo(c, i18n.T("API key"), keyInfo, func() {

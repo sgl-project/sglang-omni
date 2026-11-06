@@ -39,7 +39,8 @@ func (a *app) remotePage(c *ui.Context) {
 // providerCards lists kind's services: those set up first, then the
 // servers that run on this Mac (Voxt 1.x's 本地), then the online
 // services (远程), each group with what it takes; the speech services, all
-// online, in one section of the Speech models page.
+// online by default, as Set up and Online services on the Speech models
+// page.
 func (a *app) providerCards(c *ui.Context, kind local.Kind) {
 	t := c.Theme()
 	var mine, here, online []service
@@ -67,9 +68,15 @@ func (a *app) providerCards(c *ui.Context, kind local.Kind) {
 		})
 	}
 	if kind == local.ASR {
-		sectionTitle(c, i18n.T("Remote services"))
-		caption(c, i18n.T("Buy an API key from the service, then set it up here; a Whisper server on this Mac needs no key. Your recording goes to the service only for the features you choose it on."))
-		grid("remote-asr", append(append(mine, here...), online...))
+		if len(mine) > 0 {
+			sectionTitle(c, i18n.T("Set up"))
+			grid("remote-asr-mine", mine)
+		}
+		if rest := append(here, online...); len(rest) > 0 {
+			sectionTitle(c, i18n.T("Online services"))
+			caption(c, i18n.T("Buy an API key from the service, then set it up here; a Whisper server on this Mac needs no key. Your recording goes to the service only for the features you choose it on."))
+			grid("remote-asr-online", rest)
+		}
 		return
 	}
 	if len(mine) > 0 {

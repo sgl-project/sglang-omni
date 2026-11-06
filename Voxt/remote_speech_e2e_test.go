@@ -148,13 +148,26 @@ func TestRemoteSpeechPage(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate(modelsPath)
 	frames(tt)
-	if !has(tt, "Remote services") || !has(tt, "OpenAI Transcribe") {
-		t.Fatal("no speech services on the Speech models page")
+	if !has(tt, "Online services") || hasExact(tt, "Set up") || !has(tt, "OpenAI Transcribe") {
+		t.Fatal("no speech services on the Speech models page, or a Set up group with none set up")
 	}
+	// A service that takes no key from a server on this Mac says so.
+	keyless := "Optional for a server on this Mac. Saved in this Mac's Keychain, never in Voxt's settings or logs."
+	scrollToText(tt, "OpenAI Transcribe")
+	click(t, tt, "OpenAI Transcribe")
+	frames(tt)
+	if !has(tt, keyless) {
+		t.Errorf("OpenAI Transcribe's key hint: %q", tt.Texts())
+	}
+	a.provDlg = providerDialog{}
+	frames(tt)
 	before := a.problemCode[problemModels]
 	scrollToText(tt, "Doubao (Volcengine)")
 	click(t, tt, "Doubao (Volcengine)")
 	frames(tt)
+	if has(tt, keyless) || !has(tt, "Saved in this Mac's Keychain, never in Voxt's settings or logs.") {
+		t.Errorf("Doubao's key hint: %q", tt.Texts())
+	}
 	a.provDlg.key, a.provDlg.appID = "token-0123456789", "app-42"
 	click(t, tt, "Save")
 	frames(tt)
@@ -169,7 +182,7 @@ func TestRemoteSpeechPage(t *testing.T) {
 	if strings.Contains(string(raw), "token-0123") {
 		t.Fatal("the key is in the settings")
 	}
-	if !has(tt, "Used by Transcribe · Translate · Rewrite") {
+	if !hasExact(tt, "Set up") || !has(tt, "Used by Transcribe · Translate · Rewrite") {
 		t.Errorf("the card does not say where Doubao is used: %q", tt.Texts())
 	}
 	if before != "both" || a.problemCode[problemModels] != "llm" {
@@ -206,7 +219,7 @@ func speechShots(a *app, tt *ui.Tester, save func(string)) {
 	a.updateSettings(func(s *settings.Settings) { providers.PutSpeech(s, settings.Provider{ID: "doubao", AppID: "app-42"}) })
 	a.navigate(modelsPath)
 	frames(tt)
-	scrollToText(tt, i18n.T("Remote services"))
+	scrollToText(tt, i18n.T("Set up"))
 	save("page-models-remote-setup")
 	a.openProviderDialog(local.ASR, "doubao")
 	save("remote-speech-dialog")
