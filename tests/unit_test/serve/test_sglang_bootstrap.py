@@ -476,3 +476,181 @@ def test_create_sglang_infrastructure_consumes_scoped_kv_budget(
     captured.clear()
     bootstrap.create_sglang_infrastructure(server_args, 0)
     assert captured["kv_cache_bytes"] is None
+
+
+def test_create_sglang_infrastructure_fails_fast_on_arch_mismatch(
+    monkeypatch, published
+) -> None:
+    monkeypatch.setattr(
+        bootstrap, "get_visible_gpu_sm_version", lambda _gpu_id: 89, raising=False
+    )
+
+    class FakeRunner:
+        model = object()
+        sliding_window_size = 8
+
+        def alloc_memory_pool(self) -> None:
+            pass
+
+        def init_attention_backends(self) -> None:
+            pass
+
+        def init_cuda_graphs(self) -> None:
+            pass
+
+    class FakeWorker:
+        model_config = SimpleNamespace(is_multimodal=False)
+        enable_prefill_input_embeds = False
+
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+            published.append(get_context().override_server_args(page_size=1))
+            published[-1].install()
+            self.model_runner = FakeRunner()
+
+        def get_memory_pool(self):
+            return "req_pool", "kv_pool"
+
+    monkeypatch.setattr(model_worker_module, "ModelWorker", FakeWorker)
+    monkeypatch.setattr(
+        sglang_backend,
+        "create_tree_cache",
+        lambda *args: ("tree_cache", args),
+    )
+    server_args = SimpleNamespace(
+        attention_backend="fa4",
+        decode_attention_backend=None,
+        prefill_attention_backend=None,
+        sampling_backend="pytorch",
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="attention_backend='fa4' does not support the detected SM89",
+    ):
+        bootstrap.create_sglang_infrastructure(server_args, 0)
+
+
+def test_runtime_configuration_rejects_fa4_on_ada(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        bootstrap, "get_visible_gpu_sm_version", lambda _gpu_id: 89, raising=False
+    )
+    server_args = SimpleNamespace(
+        attention_backend="fa4",
+        decode_attention_backend=None,
+        prefill_attention_backend=None,
+        sampling_backend="pytorch",
+    )
+
+    with pytest.raises(
+        RuntimeError, match="attention_backend='fa4' does not support the detected SM89"
+    ):
+        bootstrap.validate_sglang_runtime_configuration(server_args, gpu_id=0)
+
+
+def test_runtime_configuration_rejects_prefill_fa4_on_ada(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        bootstrap, "get_visible_gpu_sm_version", lambda _gpu_id: 89, raising=False
+    )
+    server_args = SimpleNamespace(
+        attention_backend="flashinfer",
+        decode_attention_backend=None,
+        prefill_attention_backend="fa4",
+        sampling_backend="pytorch",
+    )
+
+    with pytest.raises(RuntimeError, match="prefill_attention_backend='fa4'"):
+        bootstrap.validate_sglang_runtime_configuration(server_args, gpu_id=0)
+
+
+def test_runtime_configuration_rejects_decode_fa4_on_ada(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        bootstrap, "get_visible_gpu_sm_version", lambda _gpu_id: 89, raising=False
+    )
+    server_args = SimpleNamespace(
+        attention_backend="flashinfer",
+        decode_attention_backend="fa4",
+        prefill_attention_backend=None,
+        sampling_backend="pytorch",
+    )
+
+    with pytest.raises(RuntimeError, match="decode_attention_backend='fa4'"):
+        bootstrap.validate_sglang_runtime_configuration(server_args, gpu_id=0)
+
+
+def test_runtime_configuration_accepts_portable_backends_on_ada(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        bootstrap, "get_visible_gpu_sm_version", lambda _gpu_id: 89, raising=False
+    )
+    for backend in ("flashinfer", "torch_native", "triton", None):
+        server_args = SimpleNamespace(
+            attention_backend=backend,
+            decode_attention_backend=None,
+            prefill_attention_backend=None,
+            sampling_backend="pytorch",
+        )
+
+        bootstrap.validate_sglang_runtime_configuration(server_args, gpu_id=0)
+
+
+def test_runtime_configuration_accepts_fa3_on_ada(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # fa3 is not gated here on purpose: upstream asserts its own SM range at
+    # backend construction (SM80-90), so an entry would false-positive on the
+    # SM89 GPUs this roadmap targets.
+    monkeypatch.setattr(
+        bootstrap, "get_visible_gpu_sm_version", lambda _gpu_id: 89, raising=False
+    )
+    server_args = SimpleNamespace(
+        attention_backend="fa3",
+        decode_attention_backend=None,
+        prefill_attention_backend=None,
+        sampling_backend="pytorch",
+    )
+
+    bootstrap.validate_sglang_runtime_configuration(server_args, gpu_id=0)
+
+
+def test_runtime_configuration_accepts_fa4_on_hopper_and_blackwell(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for sm_version in (90, 103, 110, 120):
+        monkeypatch.setattr(
+            bootstrap,
+            "get_visible_gpu_sm_version",
+            lambda _gpu_id, sm=sm_version: sm,
+            raising=False,
+        )
+        server_args = SimpleNamespace(
+            attention_backend="fa4",
+            decode_attention_backend=None,
+            prefill_attention_backend=None,
+            sampling_backend="pytorch",
+        )
+
+        bootstrap.validate_sglang_runtime_configuration(server_args, gpu_id=0)
+
+
+def test_runtime_configuration_skips_validation_when_sm_undetectable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        bootstrap, "get_visible_gpu_sm_version", lambda _gpu_id: None, raising=False
+    )
+    server_args = SimpleNamespace(
+        attention_backend="fa4",
+        decode_attention_backend=None,
+        prefill_attention_backend=None,
+        sampling_backend="pytorch",
+    )
+
+    bootstrap.validate_sglang_runtime_configuration(server_args, gpu_id=0)
