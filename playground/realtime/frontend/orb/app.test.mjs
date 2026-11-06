@@ -17,6 +17,9 @@ function createApp({ actualSampleRate, loadModule = async () => {}, sessionOptio
   let microphoneRequests = 0;
   const context = vm.createContext({
     DuplexSession,
+    registerPluginRenderer,
+    SMPLX_MOTION: "smplx_motion",
+    SkeletonView: class { push() {} draw() {} },
     window: { DEMO_WS_URL: "ws://localhost/v1/realtime", addEventListener() {} },
     location: { search: "" },
     URLSearchParams,
