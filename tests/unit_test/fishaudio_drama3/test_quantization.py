@@ -4,16 +4,20 @@
 from __future__ import annotations
 
 import copy
+from types import SimpleNamespace
 
 import pytest
 import torch
 from sglang.srt.layers.linear import LinearBase
 from sglang.srt.layers.moe.fused_moe_triton import FusedMoE
+from sglang.srt.layers.moe.moe_runner.triton_utils import fused_moe_triton_config
 from sglang.srt.layers.quantization.fp8 import Fp8MoEMethod
 from sglang.srt.layers.quantization.gptq.gptq import GPTQMarlinLinearMethod
 from sglang.srt.layers.quantization.unquant import UnquantizedLinearMethod
 
+from sglang_omni.models.fishaudio_drama3 import moe_configs
 from sglang_omni.models.fishaudio_drama3.quantization import (
+    EXPERT_WEIGHT_BLOCK_SIZE,
     ExpertDenseInt4Config,
     ExpertFp8Config,
     ExpertMarlinMoEMethod,
@@ -183,3 +187,39 @@ def test_int4_other_formats_are_rejected(
 
     with pytest.raises(ValueError, match=message):
         ExpertDenseInt4Config.from_config(quantization)
+
+
+def test_sglangs_moe_kernel_lookup_serves_the_tuned_tile_for_the_fp8_experts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """sglang's kernel config lookup for the block-FP8 expert weights returns the tuned
+    tile; a lookup that bypassed the installed one would silently keep the default."""
+    monkeypatch.setattr(
+        fused_moe_triton_config, "get_moe_configs", moe_configs.SGLANG_GET_MOE_CONFIGS
+    )
+    monkeypatch.setattr(
+        fused_moe_triton_config, "get_device_name", lambda: moe_configs.DEVICE_NAME
+    )
+    monkeypatch.setattr(moe_configs.triton, "__version__", moe_configs.TRITON_VERSION)
+    monkeypatch.setattr(
+        fused_moe_triton_config,
+        "get_exec",
+        lambda: SimpleNamespace(
+            deterministic=SimpleNamespace(enable_deterministic_inference=False)
+        ),
+    )
+    moe_configs.install_tuned_moe_configs()
+    expert_count, intermediate_size = moe_configs.EXPERT_SHAPE[:2]
+    hidden_size = 1024
+    token_count = 16
+
+    config = fused_moe_triton_config.try_get_optimal_moe_config(
+        (expert_count, 2 * intermediate_size, hidden_size),
+        (expert_count, hidden_size, intermediate_size),
+        10,
+        fused_moe_triton_config.get_config_dtype_str(torch.bfloat16, use_fp8_w8a8=True),
+        token_count,
+        block_shape=EXPERT_WEIGHT_BLOCK_SIZE,
+    )
+
+    assert config == moe_configs.TUNED_CONFIGS[token_count]
