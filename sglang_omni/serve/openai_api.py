@@ -86,6 +86,7 @@ from sglang_omni.http.admin_auth import (
 from sglang_omni.http.favicon import register_favicon
 from sglang_omni.proto.admin import AdminResponse
 from sglang_omni.proto.session import SessionLimits
+from sglang_omni.scheduling.types import SpecTokensDetailsDict
 from sglang_omni.serve.diarizations import register_diarizations
 from sglang_omni.serve.openai_errors import generation_error_status_code
 from sglang_omni.serve.protocol import (
@@ -112,12 +113,14 @@ from sglang_omni.serve.protocol import (
     PauseGenerationRequest,
     RolloutGenerateRequest,
     RolloutSamplingParams,
+    SglExt,
     SpeechBatchResponse,
     UpdateWeightFromDiskRequest,
     UpdateWeightsFromDistributedRequest,
     UsageResponse,
     VoiceListResponse,
     WeightsCheckerRequest,
+    build_sglext,
 )
 from sglang_omni.serve.realtime.manager import RealtimeDeployment
 from sglang_omni.serve.realtime.schema import CapabilityResponse
@@ -1163,6 +1166,7 @@ async def chat_non_stream(
             )
         ],
         usage=usage,
+        sglext=build_sglext(req.return_spec_tokens_details, result.spec_tokens_details),
     )
 
     return JSONResponse(content=response.model_dump())
@@ -1231,6 +1235,7 @@ async def chat_stream_events(
     requested_modalities = req.modalities or ["text"]
     finish_reason: str | None = None
     final_usage: UsageResponse | None = None
+    spec_tokens_details: SpecTokensDetailsDict | None = None
 
     chunk_stream = client.completion_stream(
         gen_req,
@@ -1242,6 +1247,10 @@ async def chat_stream_events(
             # Capture finish info for the dedicated finish chunk after the loop.
             # Some pipelines only emit a final aggregate chunk; do not drop its
             # text/audio just because it already carries a finish reason.
+            if chunk.spec_tokens_details is not None:
+                spec_tokens_details = chunk.spec_tokens_details
+            else:
+                pass
             if chunk.finish_reason is not None:
                 finish_reason = chunk.finish_reason
                 if chunk.usage is not None:
@@ -1352,6 +1361,19 @@ async def chat_stream_events(
     for choice in data.get("choices", []):
         choice.setdefault("finish_reason", None)
     yield f"data: {json.dumps(data)}\n\n"
+
+    sglext = build_sglext(req.return_spec_tokens_details, spec_tokens_details)
+    if sglext is not None:
+        sglext_resp = ChatCompletionStreamResponse(
+            id=response_id,
+            created=created,
+            model=model,
+            choices=[],
+            sglext=sglext,
+        )
+        yield f"data: {sglext_resp.model_dump_json(exclude_none=True)}\n\n"
+    else:
+        pass
 
     yield f"data: {STREAM_DONE_SENTINEL}\n\n"
 
@@ -1924,6 +1946,7 @@ def register_speech(app: FastAPI) -> None:
                     speed=req.speed,
                     speech_stream_outcomes=app.state.speech_stream_outcomes,
                     stream_format=req.stream_format,
+                    return_spec_tokens_details=req.return_spec_tokens_details,
                 )
             except ClientError as exc:
                 return speech_generation_failure_response(request_id, exc)
@@ -1983,6 +2006,30 @@ def register_speech(app: FastAPI) -> None:
             )
             if result.usage.engine_time_s is not None:
                 headers["X-Engine-Time"] = str(result.usage.engine_time_s)
+            else:
+                pass
+        else:
+            pass
+        if req.return_spec_tokens_details and result.spec_tokens_details is not None:
+            details = result.spec_tokens_details
+            headers.update(
+                {
+                    "X-SGLang-Omni-Spec-Accept-Length": str(
+                        details["spec_accept_length"]
+                    ),
+                    "X-SGLang-Omni-Spec-Num-Correct-Drafts": str(
+                        details["spec_num_correct_drafts"]
+                    ),
+                    "X-SGLang-Omni-Spec-Verify-Ct": str(details["spec_verify_ct"]),
+                }
+            )
+            if "spec_accept_rate" in details:
+                headers["X-SGLang-Omni-Spec-Accept-Rate"] = str(
+                    details["spec_accept_rate"]
+                )
+                headers["X-SGLang-Omni-Spec-Num-Proposed-Drafts"] = str(
+                    details["spec_num_proposed_drafts"]
+                )
             else:
                 pass
         else:
@@ -2133,22 +2180,31 @@ async def speech_audio_response(
     stream_format: Literal["audio", "sse"],
     *,
     speech_stream_outcomes: SpeechStreamOutcomes,
+    return_spec_tokens_details: bool,
 ) -> StreamingResponse:
     """Stream raw PCM or SSE events once the first audio chunk sets the headers."""
     emitted_samples = 0
     finish_reason = UNKNOWN_FINISH_REASON
     final_usage: UsageInfo | None = None
+    sglext: SglExt | None = None
 
     def record_terminal_chunk_state(chunk: GenerateChunk) -> None:
         # note (Yucheng Hu): the terminal chunk carries these; the last reported
         # value wins so the outcome can be served once the stream has ended.
-        nonlocal finish_reason, final_usage
+        nonlocal finish_reason, final_usage, sglext
         if chunk.reported_finish_reason:
             finish_reason = chunk.reported_finish_reason
         else:
             pass
         if chunk.usage is not None:
             final_usage = chunk.usage
+        else:
+            pass
+        chunk_sglext = build_sglext(
+            return_spec_tokens_details, chunk.spec_tokens_details
+        )
+        if chunk_sglext is not None:
+            sglext = chunk_sglext
         else:
             pass
 
@@ -2259,7 +2315,9 @@ async def speech_audio_response(
                 yield audio_bytes
             active_request = False
             if stream_format == "audio":
-                speech_stream_outcomes.record(request_id, finish_reason, final_usage)
+                speech_stream_outcomes.record(
+                    request_id, finish_reason, final_usage, sglext
+                )
             else:
                 pass
         finally:
@@ -2301,6 +2359,10 @@ async def speech_audio_response(
                 "usage": usage,
                 "finish_reason": finish_reason,
             }
+            if sglext is not None:
+                done["sglext"] = sglext.model_dump()
+            else:
+                pass
             yield f"data: {json.dumps(done)}\n\n"
 
     headers = {

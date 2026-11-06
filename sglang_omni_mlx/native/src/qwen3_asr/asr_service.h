@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "common/form.h"
+#include "common/service.h"
 #include "qwen3_asr/realtime.h"
 #include "qwen3_asr/worker.h"
 
@@ -86,6 +87,8 @@ using RealtimeFactory =
 
 // Serves the realtime API on /v1/realtime; factory must outlive the server.
 void AddRealtimeHandler(mg_context *context, const RealtimeFactory &factory);
+
+omni_server::ServedKind CreateServedKind(const ServedKind &kind);
 
 // Runs the server for the kind --model-kind names (the first by default)
 // until it is stopped; returns the exit code.
