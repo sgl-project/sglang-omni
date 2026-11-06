@@ -31,6 +31,7 @@ var (
 	repoSpeech = conformance.TestRepo("mlx-community/test-asr", "1111111111111111111111111111111111111111", 96<<10)
 	repoVAD    = conformance.TestRepo("mlx-community/test-vad", "2222222222222222222222222222222222222222", 8<<10)
 	repoLLM    = conformance.TestRepo("mlx-community/test-llm", "3333333333333333333333333333333333333333", 64<<10)
+	repoTok    = conformance.TestRepo("openai/test-tokenizer", "4444444444444444444444444444444444444444", 4<<10)
 )
 
 // repoModel is a catalogue model of a fixture repo, its files pinned.
@@ -62,7 +63,7 @@ func newEnv(t *testing.T, cat []Model, opt Options) *testEnv {
 	fx := conformance.New(t)
 	fx.Register(audiosmith)
 	fx.Register(dicta)
-	h := conformance.NewFakeHub(repoSpeech, repoVAD, repoLLM)
+	h := conformance.NewFakeHub(repoSpeech, repoVAD, repoLLM, repoTok)
 	t.Cleanup(h.Close)
 	opt.Store, opt.Catalog = fx.Peer(voxtnew), cat
 	opt.Network.Endpoints = []string{h.URL}
@@ -129,6 +130,42 @@ func TestDownloadClaims(t *testing.T) {
 	}
 	if e.m.Download("asr") != nil || e.m.Status("asr").Downloading {
 		t.Error("an installed model downloads again")
+	}
+}
+
+// TestAux: a model's auxiliary repo (Whisper's tokenizer) comes with it:
+// the model is not installed without it, downloads and claims it, and
+// AuxDirs is its snapshot; deleting one of two models that share it keeps
+// it for the other.
+func TestAux(t *testing.T) {
+	tok := Aux{Repo: repoTok.Ref.Repo, Revision: repoTok.Ref.Revision, Files: repoModel("", ASR, repoTok).Files}
+	w1, w2 := repoModel("w1", ASR, repoSpeech), repoModel("w2", ASR, repoLLM)
+	w1.Aux, w2.Aux = []Aux{tok}, []Aux{tok}
+	e := newEnv(t, []Model{w1, w2}, Options{})
+	e.fx.Install(repoSpeech)
+	e.m.Refresh()
+	if s := e.m.Status("w1"); s.OnDisk || s.Installed || e.m.AuxDirs("w1") != nil {
+		t.Fatalf("on disk without its tokenizer: %+v", s)
+	}
+	for _, id := range []string{"w1", "w2"} {
+		if err := e.m.Download(id); err != nil {
+			t.Fatal(err)
+		}
+		if s := wait(t, e.m, id); !s.Installed || s.Err != nil {
+			t.Fatalf("%s: %+v", id, s)
+		}
+	}
+	if got := e.m.AuxDirs("w1"); !slices.Equal(got, []string{fammodels.SnapshotDir(e.fx.Hub, repoTok.Ref)}) {
+		t.Errorf("aux dirs %v", got)
+	}
+	if c, ok := e.fx.Claims(voxtnew).Find(repoTok.Ref); !ok || !c.Aux || !slices.Equal(c.Users(), []string{"w1", "w2"}) {
+		t.Errorf("the tokenizer's claim %+v %v", c, ok)
+	}
+	if _, err := e.m.Delete(ctxT(t), "w1", fammodels.ThisApp); err != nil {
+		t.Fatal(err)
+	}
+	if e.fx.Installed(repoSpeech.Ref) || !e.fx.Installed(repoTok.Ref) || !e.m.Installed("w2") {
+		t.Errorf("after deleting w1: its repo %v, the tokenizer %v, w2 %v", e.fx.Installed(repoSpeech.Ref), e.fx.Installed(repoTok.Ref), e.m.Installed("w2"))
 	}
 }
 

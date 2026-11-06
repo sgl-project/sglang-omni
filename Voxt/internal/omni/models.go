@@ -8,15 +8,26 @@ import (
 // The curated models' stable ids, the catalogue's (internal/models:
 // settings.Feature.ASR keeps them); the UI never shows them.
 const (
-	ASRAccurate = "asr.accurate" // Qwen3-ASR 1.7B 8-bit, the default
-	ASRFast     = "asr.fast"     // Qwen3-ASR 0.6B 4-bit
-	VADSilero   = "vad.silero"   // Silero VAD v6
+	ASRAccurate     = "asr.accurate"      // Qwen3-ASR 1.7B 8-bit, the default
+	ASRAccurate6bit = "asr.accurate-6bit" // Qwen3-ASR 1.7B 6-bit
+	ASRFast         = "asr.fast"          // Qwen3-ASR 0.6B 4-bit
+	ASRWhisperTurbo = "asr.whisper-turbo" // Whisper large-v3 turbo
+	ASRWhisperLarge = "asr.whisper-large" // Whisper large-v3
+	ASRWhisperSmall = "asr.whisper-small" // Whisper small
+	ASRMoss         = "asr.moss"          // MOSS-Transcribe-Diarize
+	ASRParakeet     = "asr.parakeet"      // Parakeet TDT 0.6B v3
+	ASRSenseVoice   = "asr.sensevoice"    // SenseVoice Small
+	VADSilero       = "vad.silero"        // Silero VAD v6
 )
 
-// Server kinds (qwen3_asr_server --model-kind).
+// Server kinds (--model-kind).
 const (
-	kindQwen3ASR  = "qwen3_asr"
-	kindSileroVAD = "silero_vad"
+	kindQwen3ASR   = "qwen3_asr"
+	kindSileroVAD  = "silero_vad"
+	kindWhisper    = "whisper"
+	kindMoss       = "moss_transcribe_diarize"
+	kindParakeet   = "parakeet"
+	kindSenseVoice = "sensevoice"
 )
 
 // Spec is one curated model: what to run, and the parameters tuned for it.
@@ -26,16 +37,24 @@ type Spec struct {
 	// were tuned on (sglang_omni_mlx/native/ci/models.json pins its
 	// files' SHA-256).
 	Repo, Revision string
-	// Kind is the server's --model-kind.
-	Kind string
+	// Kind is the server's --model-kind; Binary its file in the runtime's
+	// bin/ ("": qwen3_asr_server, Config.Binary).
+	Kind, Binary string
+	// Live: the server has the realtime API (/v1/realtime), so the model
+	// shows partial text while the user speaks.
+	Live bool
 	// Languages are the language codes the model knows (lang.Match
-	// spellings); a hint outside them is not sent.
+	// spellings); a hint outside them is not sent. NoHint: it finds the
+	// language itself and gets no hint (Voxt's MOSS and Parakeet).
 	Languages []string
+	NoHint    bool
 	ASR       *ASRTuning // speech models
 	VAD       *VADTuning // Silero
 }
 
 // ASRTuning is a speech model's request policy (Voxt's, for Qwen3-ASR).
+// The other models' servers cut a recording themselves (kinds.go): they
+// use only the token budget.
 type ASRTuning struct {
 	// TokensPerSecond and ExtraTokens make a Final's budget:
 	// ceil(seconds × TokensPerSecond) + ExtraTokens, within
@@ -128,15 +147,63 @@ func fastTuning() *ASRTuning {
 	return t
 }
 
+// wholeTuning is the other models': Voxt's token budget for a Final, and
+// MOSS's hot words bounded as the fast model's terms.
+func wholeTuning() *ASRTuning {
+	return &ASRTuning{TokensPerSecond: 28, ExtraTokens: 64, MinTokens: 256, MaxTokens: 8192, ContextTerms: 30, ContextChars: 8000}
+}
+
+// whisperLanguages are Whisper's languages (Voxt's list).
+var whisperLanguages = []string{
+	"af", "am", "ar", "as", "az", "be", "bg", "bn", "bo", "br", "bs", "ca", "cs", "cy",
+	"da", "de", "el", "en", "es", "et", "eu", "fa", "fi", "fo", "fr", "gl", "gu", "ha",
+	"he", "hi", "hr", "ht", "hu", "hy", "id", "is", "it", "ja", "jv", "ka", "kk", "km",
+	"kn", "ko", "la", "lb", "lo", "lt", "lv", "mg", "mi", "mk", "ml", "mn", "mr", "ms",
+	"mt", "my", "ne", "nl", "nn", "no", "oc", "pa", "pl", "ps", "pt", "ro", "ru", "sa",
+	"sd", "si", "sk", "sl", "sn", "so", "sq", "sr", "su", "sv", "sw", "ta", "te", "tg",
+	"th", "tk", "tl", "tr", "tt", "uk", "ur", "uz", "vi", "yi", "yo", "zh",
+}
+
+// parakeetLanguages are Parakeet TDT v3's 25 European languages (Voxt's
+// list).
+var parakeetLanguages = []string{
+	"bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it", "lv",
+	"lt", "mt", "pl", "pt", "ro", "sk", "sl", "es", "sv", "ru", "uk",
+}
+
+// whisper is a Whisper model of repo at rev.
+func whisper(id, repo, rev string) Spec {
+	return Spec{ID: id, Repo: repo, Revision: rev, Kind: kindWhisper, Binary: "whisper_server", Languages: whisperLanguages, ASR: wholeTuning()}
+}
+
 // specs are the curated models, the recommended speech model first.
 var specs = []Spec{
 	{
 		ID: ASRAccurate, Repo: "mlx-community/Qwen3-ASR-1.7B-8bit", Revision: "a8379a2e2f9e313c9292cdf1af4055ab56d50d55",
-		Kind: kindQwen3ASR, Languages: qwenLanguages, ASR: qwenTuning(),
+		Kind: kindQwen3ASR, Live: true, Languages: qwenLanguages, ASR: qwenTuning(),
+	},
+	{
+		ID: ASRAccurate6bit, Repo: "mlx-community/Qwen3-ASR-1.7B-6bit", Revision: "edd077a475c4da058e25b6e6ec1199115ca1be2b",
+		Kind: kindQwen3ASR, Live: true, Languages: qwenLanguages, ASR: qwenTuning(),
 	},
 	{
 		ID: ASRFast, Repo: "mlx-community/Qwen3-ASR-0.6B-4bit", Revision: "313d850181767edf09f00a9c289becca70e58cd0",
-		Kind: kindQwen3ASR, Languages: qwenLanguages, ASR: fastTuning(),
+		Kind: kindQwen3ASR, Live: true, Languages: qwenLanguages, ASR: fastTuning(),
+	},
+	whisper(ASRWhisperTurbo, "mlx-community/whisper-large-v3-turbo", "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb"),
+	whisper(ASRWhisperLarge, "mlx-community/whisper-large-v3-mlx", "49e6aa286ad60c14352c404340ded53710378a11"),
+	whisper(ASRWhisperSmall, "mlx-community/whisper-small-mlx", "45f3915923c7a79a5a5b5a7d909d39aeb0e5630e"),
+	{
+		ID: ASRMoss, Repo: "OpenMOSS-Team/MOSS-Transcribe-Diarize", Revision: "704aa4a9c304e8520be88901e0d1960158ef5b15",
+		Kind: kindMoss, Binary: "moss_transcribe_diarize_server", Live: true, Languages: []string{"zh", "en"}, NoHint: true, ASR: wholeTuning(),
+	},
+	{
+		ID: ASRParakeet, Repo: "mlx-community/parakeet-tdt-0.6b-v3", Revision: "ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15",
+		Kind: kindParakeet, Binary: "parakeet_server", Languages: parakeetLanguages, NoHint: true, ASR: wholeTuning(),
+	},
+	{
+		ID: ASRSenseVoice, Repo: "mlx-community/SenseVoiceSmall", Revision: "8ddd966bd96243cff196422f81f0c5d955814792",
+		Kind: kindSenseVoice, Binary: "sensevoice_server", Languages: []string{"zh", "en", "yue", "ja", "ko"}, ASR: wholeTuning(),
 	},
 	{
 		ID: VADSilero, Repo: "mlx-community/silero-vad-v6", Revision: "2ebf4a5e10726a2e78ddd4d70eedfb6f1c33eb06",
@@ -191,9 +258,11 @@ func (s Spec) clone() Spec {
 
 // launchArgs are the server's flags for the model, after the common ones;
 // cacheLimit: the server knows --cache-limit-mb (Runtime.cacheLimitKnown).
+// Only qwen3_asr_server has the live cadence's and the cache's flags (the
+// others refuse a flag they do not know).
 func (s Spec) launchArgs(cacheLimit bool) []string {
 	args := []string{"--model-kind", s.Kind}
-	if a := s.ASR; a != nil {
+	if a := s.ASR; a != nil && s.Kind == kindQwen3ASR {
 		args = append(args,
 			"--first-decode-ms", itoa(int(a.FirstDecode/time.Millisecond)),
 			"--decode-interval-ms", itoa(int(a.DecodeInterval/time.Millisecond)),

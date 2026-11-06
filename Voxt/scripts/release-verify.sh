@@ -91,7 +91,9 @@ if ((want_runtimes)); then
   llm="$res/llm/voxtnew-llm"
   check "the Omni runtime is inside" test -x "$server" -a -f "$res/omni/bin/mlx.metallib"
   check "voxtnew-llm is inside" test -x "$llm" -a -f "$res/llm/mlx.metallib" -a -d "$res/llm/llama.framework"
-  check "the Omni server starts from the app (its libraries load)" bash -c "'$server' --model-kind none 2>&1 | grep -q -- '--model-kind must be'"
+  for s in "$res"/omni/bin/*_server; do
+    check "${s##*/} starts from the app (its libraries load)" bash -c "'$s' --model-kind none 2>&1 | grep -q -e '--model-kind must be' -e 'only --model-kind'"
+  done
   check "voxtnew-llm starts from the app (llm.hello)" bash -c "printf '%s\\n' '{\"id\":\"1\",\"method\":\"llm.hello\",\"params\":{\"protocol\":1,\"app\":\"release-verify\"}}' | '$llm' 2>/dev/null | grep -q '\"protocol\":1'"
 fi
 for c in "${code[@]:1}"; do

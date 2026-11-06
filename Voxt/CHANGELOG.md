@@ -27,6 +27,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Long dictations are recognised while you speak**: after a minute, finished stretches are recognised in the background, cut at pauses, so Stop leaves only the last half-minute or so (on a busy Mac, 104 s of speech: 26 s → 2.4 s after Stop).
 - **The overlay says what a recording is waiting for.** When the microphone is slow to start (the first dictation after Voxt starts on a Mac short of memory), the microphone icon pulses inside a ring and the overlay says "Starting the microphone…": what you say before the bars light up is not recorded. While the speech model is still loading (the first dictation, or after it was unloaded), only the icon pulses and the bars keep showing your voice: the recording works, and the live text comes once the model is ready.
 - **A customizable cancel shortcut**: Settings → Shortcuts lists Cancel transcription; change its key or turn it off on the Transcribe page (Escape by default). The key is taken only while a recording runs or the answer card shows, and a cancelled recording now stays in History, ready to Retry.
+- **More local speech models**: Qwen3-ASR 1.7B (6bit), Whisper large-v3 turbo, large-v3 and small, MOSS-Transcribe-Diarize, Parakeet TDT 0.6B v3 and SenseVoice Small, as in Voxt 1.x, beside Qwen3-ASR on the Local models page, which groups the models of a family (Qwen3-ASR, Whisper) in one card. MOSS shows the text as you speak; the others show it once you stop. A Whisper model downloads its tokenizer with it.
 
 ### Changed
 
@@ -80,6 +81,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **长口述边说边识别**：说到 1 分钟以后，已经说完的部分在停顿处切开、在后台识别，停止后只剩最后半分钟左右（Mac 内存紧张时，104 秒口述停止后的等待 26 秒 → 2.4 秒）。
 - **浮窗说明录音在等什么。** 麦克风启动慢时（Mac 内存紧张时 Voxt 启动后的第一次口述），麦克风图标在一个圆环里闪动，浮窗显示“正在启动麦克风…”：波形亮起之前说的话不会被录下。语音识别模型还在加载时（第一次口述，或者模型被卸载之后），只有图标在动，波形照常跟着你的声音：录音不受影响，模型就绪后实时文字随即出现。
 - **取消转录的按键可自定义**：设置→快捷键里新增“取消转录”一行，在转录页可以换成别的键或关掉（默认 Esc）。只在录音或答案卡片显示时拦截这个键；取消的录音现在会留在历史里，可以用“重试”找回。
+- **更多本地语音模型**：Qwen3-ASR 1.7B (6bit)，Whisper large-v3 turbo、large-v3 和 small，MOSS-Transcribe-Diarize，Parakeet TDT 0.6B v3，SenseVoice Small，和 Voxt 1.x 一样，在本地模型页里和 Qwen3-ASR 并列；同一系列的模型（Qwen3-ASR、Whisper）放在一张卡片里。MOSS 说话时实时显示文字，其他模型在停止录音后出文字。Whisper 模型会连同它的分词器一起下载。
 
 #### 变更
 

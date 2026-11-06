@@ -38,7 +38,7 @@ func TestCatalog(t *testing.T) {
 			if !hexRE.MatchString(f.SHA256) || f.Size <= 0 || f.Path == "" {
 				t.Errorf("%s: file %+v", m.ID, f)
 			}
-			weights = weights || f.LFS && (strings.HasSuffix(f.Path, ".safetensors") || strings.HasSuffix(f.Path, ".gguf"))
+			weights = weights || f.LFS && slices.ContainsFunc([]string{".safetensors", ".gguf", ".npz"}, func(ext string) bool { return strings.HasSuffix(f.Path, ext) })
 			if strings.HasPrefix(f.Path, "optiq/") {
 				t.Errorf("%s: %s (the vision tower and MTP head are not used)", m.ID, f.Path)
 			}
@@ -59,7 +59,8 @@ func TestCatalog(t *testing.T) {
 			t.Errorf("%d defaults of %s", defaults[k], k)
 		}
 	}
-	for _, id := range []string{ASRAccurate, ASRFast, VADSilero, LLMBalanced, LLMFast, LLMTranslate, LLMQwen3, LLMGemma4} {
+	for _, id := range []string{ASRAccurate, ASRAccurate6bit, ASRFast, ASRWhisperTurbo, ASRWhisperLarge, ASRWhisperSmall, ASRMoss, ASRParakeet, ASRSenseVoice,
+		VADSilero, LLMBalanced, LLMFast, LLMTranslate, LLMQwen3, LLMGemma4} {
 		if !seen[id] {
 			t.Errorf("%s missing", id)
 		}
@@ -73,9 +74,10 @@ func TestCatalog(t *testing.T) {
 }
 
 // TestFamilyPins: VoxtNew's models are the family pins table's rows of
-// voxtnew (same commit, family and quantisation, the files it lists); the
-// borrowed ones are rows of the apps that install them, and the language
-// models' alternatives are the family's Qwen3 and Gemma 4 E4B.
+// voxtnew (same commit, family and quantisation, the files it lists, its
+// aux repos); the borrowed ones are rows of the apps that install them,
+// and the language models' alternatives are the family's Qwen3 and Gemma 4
+// E4B.
 func TestFamilyPins(t *testing.T) {
 	mine := map[string]fammodels.Pin{}
 	for _, p := range fammodels.PinsOfApp("voxtnew") {
@@ -93,6 +95,13 @@ func TestFamilyPins(t *testing.T) {
 		if _, listed := mine[m.Repo]; listed == m.Borrowed {
 			t.Errorf("%s: borrowed %v, the pins table lists voxtnew %v", m.ID, m.Borrowed, listed)
 		}
+		var aux []fammodels.Ref
+		for _, a := range m.Aux {
+			aux = append(aux, fammodels.Ref{Repo: a.Repo, Revision: a.Revision})
+		}
+		if !slices.Equal(aux, p.Aux) {
+			t.Errorf("%s: aux %v, the pin %v", m.ID, aux, p.Aux)
+		}
 		if m.Borrowed && p.Bytes != m.Bytes {
 			t.Errorf("%s: %d bytes, the pin %d", m.ID, m.Bytes, p.Bytes)
 		}
@@ -107,7 +116,6 @@ func TestFamilyPins(t *testing.T) {
 		}
 		delete(mine, m.Repo)
 	}
-	delete(mine, "mlx-community/whisper-large-v3-turbo") // P1: not in the catalogue yet
 	for repo := range mine {
 		t.Errorf("the pins table has %s for voxtnew, the catalogue does not", repo)
 	}
@@ -126,18 +134,28 @@ func TestFamilyPins(t *testing.T) {
 }
 
 // TestOmniPins: the omni models are pinned as the native runtime's CI
-// pins them.
+// pins them (models.json, model_pins.json), Whisper's tokenizer as its
+// "tokenizer".
 func TestOmniPins(t *testing.T) {
-	b, err := os.ReadFile("../../../sglang_omni_mlx/native/ci/models.json")
-	if err != nil {
-		t.Skip("sglang_omni_mlx/native/ci/models.json not there:", err)
-	}
-	var pins map[string]struct {
+	type pin struct {
 		Revision string            `json:"revision"`
 		Files    map[string]string `json:"files"`
 	}
-	if err := json.Unmarshal(b, &pins); err != nil {
-		t.Fatal(err)
+	pins := map[string]struct {
+		pin
+		Tokenizer *struct {
+			Repo string `json:"repo"`
+			pin
+		} `json:"tokenizer"`
+	}{}
+	for _, f := range []string{"models.json", "model_pins.json"} {
+		b, err := os.ReadFile("../../../sglang_omni_mlx/native/ci/" + f)
+		if err != nil {
+			t.Skip("sglang_omni_mlx/native/ci not there:", err)
+		}
+		if err := json.Unmarshal(b, &pins); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for _, m := range Catalog() {
 		if m.Runtime != Omni {
@@ -150,7 +168,22 @@ func TestOmniPins(t *testing.T) {
 		}
 		for _, f := range m.Files {
 			if p.Files[f.Path] != f.SHA256 {
-				t.Errorf("%s: %s is %s in models.json", m.ID, f.Path, p.Files[f.Path])
+				t.Errorf("%s: %s is %s in the pins", m.ID, f.Path, p.Files[f.Path])
+			}
+		}
+		if (p.Tokenizer != nil) != (len(m.Aux) == 1) {
+			t.Errorf("%s: aux %+v, the tokenizer %+v", m.ID, m.Aux, p.Tokenizer)
+			continue
+		}
+		for _, a := range m.Aux {
+			tp := p.Tokenizer
+			if a.Repo != tp.Repo || a.Revision != tp.Revision || len(a.Files) != len(tp.Files) {
+				t.Errorf("%s: aux %s@%s, the tokenizer %+v", m.ID, a.Repo, a.Revision, tp)
+			}
+			for _, f := range a.Files {
+				if tp.Files[f.Path] != f.SHA256 {
+					t.Errorf("%s: %s:%s is %s in the pins", m.ID, a.Repo, f.Path, tp.Files[f.Path])
+				}
 			}
 		}
 	}

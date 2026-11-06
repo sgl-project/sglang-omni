@@ -92,6 +92,7 @@ func (m *Manager) Import(ctx context.Context, backup bool) (n int, bytes int64, 
 				want = append(want, mod.Claim(rev, fammodels.OriginImported))
 			}
 		}
+		want = append(want, mod.AuxClaims(fammodels.OriginImported)...)
 	}
 	res, err := m.store.Import(ctx, fammodels.LegacyHubs(m.store.Hub), backup, want...)
 	for _, r := range res {
@@ -112,7 +113,7 @@ func (m *Manager) claim(ctx context.Context, origin string, ids []string) error 
 			continue
 		}
 		if rev, _ := find(m.store.Hub, mod); rev != "" {
-			claims = append(claims, mod.Claim(rev, origin))
+			claims = append(append(claims, mod.Claim(rev, origin)), mod.AuxClaims(origin)...)
 		}
 	}
 	var err error
