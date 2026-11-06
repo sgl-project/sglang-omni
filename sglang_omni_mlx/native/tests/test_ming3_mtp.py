@@ -145,3 +145,13 @@ def test_cache_rejection_budget_and_repeated_requests(checkpoint: Path) -> None:
     assert sum(row["proposed"] for row in rows) > sum(row["accepted"] for row in rows)
     assert any(row["accepted"] > 0 for row in rows)
     assert all(row["tokens"] <= row["budget"] for row in rows)
+
+
+def test_immediate_eos(checkpoint: Path) -> None:
+    (checkpoint / "generation_config.json").write_text(
+        json.dumps({"eos_token_id": list(range(32))})
+    )
+    probe = Path(os.environ["NATIVE_RUNTIME_BIN"]) / "ming3_mtp_probe"
+    rows = json.loads(subprocess.check_output([str(probe), str(checkpoint)], text=True))
+    assert all(row["tokens"] == 1 and row["finish_reason"] == "stop" for row in rows)
+    assert all(row["proposed"] == 0 for row in rows)

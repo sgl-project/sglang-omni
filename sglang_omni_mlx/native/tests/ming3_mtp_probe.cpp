@@ -35,8 +35,9 @@ int main(int argc, char **argv) {
                       {"finish_reason", actual.finish_reason}});
     }
     int calls = 0;
+    const int cancel_after = expected.completion_tokens > 3 ? 5 : 2;
     try {
-      speculative.Generate(prepared, [&] { return ++calls >= 2; });
+      speculative.Generate(prepared, [&] { return ++calls >= cancel_after; });
       return 1;
     } catch (const ming3_audio::Cancelled &) {
     }
