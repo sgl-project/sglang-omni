@@ -196,8 +196,7 @@ def main() -> None:
                         arguments.timeout_seconds,
                     )
                     time.sleep(2)
-                    baseline_bytes = sampler.samples[-1]["footprint_bytes"]
-                    measured_start = len(sampler.samples)
+                    baseline = sampler.samples[-1]
                     sampler.phase = "long_recording"
                     if arguments.chunk_seconds is not None:
                         transcription = transcribe_chunks(
@@ -233,14 +232,15 @@ def main() -> None:
                             str(recording["reference"]), transcription["text"], language
                         )
                     )
+                    session_end = sampler.samples[-1]
                     result.update(
                         {
-                            "baseline_footprint_bytes": baseline_bytes,
-                            "peak_footprint_bytes": max(
-                                sample["footprint_bytes"]
-                                for sample in sampler.samples[measured_start:]
-                            ),
-                            "post_session_footprint_bytes": sampler.samples[-1][
+                            "baseline_footprint_bytes": baseline["footprint_bytes"],
+                            "warmup_peak_footprint_bytes": baseline[
+                                "peak_footprint_bytes"
+                            ],
+                            "peak_footprint_bytes": session_end["peak_footprint_bytes"],
+                            "post_session_footprint_bytes": session_end[
                                 "footprint_bytes"
                             ],
                             "rtf": transcription["wall_seconds"]
@@ -274,7 +274,7 @@ def main() -> None:
                     sampler.done.set()
                     sampler.thread.join(timeout=5)
                     result["process_peak_footprint_bytes"] = max(
-                        (sample["footprint_bytes"] for sample in sampler.samples),
+                        (sample["peak_footprint_bytes"] for sample in sampler.samples),
                         default=0,
                     )
                     server_exit_code = process.poll()

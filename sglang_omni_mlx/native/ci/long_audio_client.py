@@ -31,6 +31,7 @@ HTTP_TRANSCRIPTION_FIELDS = {
     "audio_layout": "voxt_swift",
 }
 MEMORY_SAMPLE_INTERVAL_SECONDS = 0.25
+RUSAGE_INFO_V4 = 4
 # The token budget of a Voxt Final request, from its Qwen3-ASR tuning.
 VOXT_TOKENS_PER_SECOND = 28
 VOXT_EXTRA_TOKENS = 64
@@ -57,6 +58,8 @@ class Measurement(TypedDict, total=False):
 
 
 class ProcessUsage(ctypes.Structure):
+    """The layout of rusage_info_v4 in sys/resource.h."""
+
     _fields_ = [("uuid", ctypes.c_uint8 * 16)] + [
         (name, ctypes.c_uint64)
         for name in (
@@ -70,6 +73,31 @@ class ProcessUsage(ctypes.Structure):
             "footprint_bytes",
             "start_time",
             "exit_time",
+            "child_user_time",
+            "child_system_time",
+            "child_idle_wakeups",
+            "child_interrupt_wakeups",
+            "child_pageins",
+            "child_elapsed_time",
+            "disk_bytes_read",
+            "disk_bytes_written",
+            "cpu_time_qos_default",
+            "cpu_time_qos_maintenance",
+            "cpu_time_qos_background",
+            "cpu_time_qos_utility",
+            "cpu_time_qos_legacy",
+            "cpu_time_qos_user_initiated",
+            "cpu_time_qos_user_interactive",
+            "billed_system_time",
+            "serviced_system_time",
+            "logical_writes",
+            "peak_footprint_bytes",
+            "instructions",
+            "cycles",
+            "billed_energy",
+            "serviced_energy",
+            "interval_peak_footprint_bytes",
+            "runnable_time",
         )
     ]
 
@@ -118,7 +146,7 @@ class MemorySampler:
                     usage = ProcessUsage()
                     if (
                         self.library.proc_pid_rusage(
-                            self.process.pid, 0, ctypes.byref(usage)
+                            self.process.pid, RUSAGE_INFO_V4, ctypes.byref(usage)
                         )
                         != 0
                     ):
@@ -131,6 +159,7 @@ class MemorySampler:
                             "phase": self.phase,
                             "elapsed_seconds": time.monotonic() - started,
                             "footprint_bytes": usage.footprint_bytes,
+                            "peak_footprint_bytes": usage.peak_footprint_bytes,
                             "resident_bytes": usage.resident_bytes,
                         }
                         self.samples.append(row)
@@ -139,7 +168,7 @@ class MemorySampler:
                     if time.monotonic() - started > self.limit_seconds:
                         self.stop_on_error("Case wall-clock deadline exceeded")
                         return
-                    elif usage.footprint_bytes > self.limit_bytes:
+                    elif usage.peak_footprint_bytes > self.limit_bytes:
                         self.exceeded = True
                         self.process.kill()
                         return

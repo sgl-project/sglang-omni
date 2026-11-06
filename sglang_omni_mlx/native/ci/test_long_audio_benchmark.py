@@ -316,6 +316,32 @@ def test_resource_guard_stops_its_child(
 
 
 @pytest.mark.skipif(platform.system() != "Darwin", reason="macOS process accounting")
+def test_peak_footprint_includes_a_spike_freed_before_the_first_sample(
+    tmp_path: Path,
+) -> None:
+    """A short allocation between samples must still reach the peak and the guard."""
+    spike_bytes = 256 * 1024**2
+    with subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            f"spike = bytearray(b'x') * {spike_bytes}; del spike; print('freed', flush=True); input()",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    ) as process:
+        process.stdout.readline()
+        sampler = MemorySampler(
+            process, tmp_path / "memory.jsonl", spike_bytes // 2, 60
+        )
+        sampler.sample()
+    assert sampler.exceeded
+    assert sampler.samples[0]["peak_footprint_bytes"] >= spike_bytes
+    assert sampler.samples[0]["footprint_bytes"] < spike_bytes // 2
+
+
+@pytest.mark.skipif(platform.system() != "Darwin", reason="macOS process accounting")
 def test_resource_guard_stops_child_when_trace_cannot_be_written(
     tmp_path: Path,
 ) -> None:
