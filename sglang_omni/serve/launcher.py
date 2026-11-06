@@ -849,6 +849,7 @@ async def run_server(
                 port=port,
                 log_level=log_level,
                 timeout_keep_alive=KEEP_ALIVE_S,
+                ws_per_message_deflate=pipeline_config.ws_per_message_deflate,
             )
             server = PipelineUvicornServer(config)
             # note (ratish): a wildcard bind address is not a destination, so the

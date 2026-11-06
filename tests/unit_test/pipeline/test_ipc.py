@@ -628,6 +628,33 @@ async def test_launcher_passes_moss_tts_speech_input_limit(
     assert app.state.create_app_kwargs["max_speech_input_chars"] is None
 
 
+@pytest.mark.parametrize(
+    ("update", "deflate"), [({}, True), ({"ws_per_message_deflate": False}, False)]
+)
+@pytest.mark.asyncio
+async def test_launcher_passes_ws_per_message_deflate_to_uvicorn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    update: dict[str, bool],
+    deflate: bool,
+) -> None:
+    uvicorn_kwargs = []
+    uvicorn_config = launcher.uvicorn.Config
+
+    def record_config(*args, **kwargs) -> uvicorn.Config:
+        uvicorn_kwargs.append(kwargs)
+        return uvicorn_config(*args, **kwargs)
+
+    monkeypatch.setattr(launcher.uvicorn, "Config", record_config)
+    await run_launcher_with_fake_runner(
+        config=make_config(tmp_path).model_copy(update=update),
+        serve_mock=AsyncMock(return_value=None),
+        monkeypatch=monkeypatch,
+    )
+
+    assert [kwargs["ws_per_message_deflate"] for kwargs in uvicorn_kwargs] == [deflate]
+
+
 def route_warmup_to(
     monkeypatch: pytest.MonkeyPatch, transport: httpx.AsyncBaseTransport
 ) -> None:
