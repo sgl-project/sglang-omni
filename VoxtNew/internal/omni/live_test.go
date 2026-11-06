@@ -77,6 +77,33 @@ func TestLive(t *testing.T) {
 	st.Close()
 }
 
+// TestLiveLargeFirstSend: when the model is slow to load, the audio
+// recorded meanwhile goes in the stream's first Send, a second or more of
+// it. The preview must take it and send partials. The fake server
+// refused a message over 32 KB (its websocket's default limit; the real
+// server takes it), so the preview stopped and no partial came: the app's
+// TestSessionOmni timed out whenever the model loaded slowly.
+func TestLiveLargeFirstSend(t *testing.T) {
+	f := newFake(t, omnitest.Opts{Text: "最终文本"}, nil)
+	a := f.asr(t, ASRFast)
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: 16000, Lang: "zh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.Send(tone(2*time.Second, 0.3)); err != nil { // 64 KB of PCM in one message
+		t.Fatal(err)
+	}
+	select {
+	case ev := <-st.Events():
+		if ev.Kind != asr.EventPartial || !strings.HasPrefix(ev.Text, "partial ") {
+			t.Fatalf("first event %+v", ev)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no partial: the preview did not take the first second of audio")
+	}
+}
+
 func TestLiveClose(t *testing.T) {
 	f := newFake(t, omnitest.Opts{}, func(c *Config) { c.IdleTimeout = 200 * time.Millisecond })
 	a := f.asr(t, ASRFast)
