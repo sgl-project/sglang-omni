@@ -246,6 +246,10 @@ def apply_thinker_result(
         thinker_out["weight_version"] = result.weight_version
     else:
         pass
+    if result.spec_tokens_details is not None:
+        thinker_out["spec_tokens_details"] = result.spec_tokens_details
+    else:
+        pass
     if result.output_token_logprobs is not None:
         thinker_out["output_token_logprobs"] = result.output_token_logprobs
     else:

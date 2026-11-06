@@ -41,6 +41,7 @@ from sglang_omni.proto.streams import (
     PCM_F32,
     REPLY_DELIVERED,
     REPLY_PROGRESS,
+    REPLY_SENTENCE,
     TEXT_DELTA,
     TRUNCATE,
     chunk_language,
@@ -167,7 +168,7 @@ async def probe_alignment_worker(config: AlignmentConfig) -> None:
 
 @dataclass(frozen=True)
 class SentenceAudio:
-    """A spoken sentence of `turn` for the forced aligner: `text` begins at character `start` of the reply and its audio at `start_ms`; `language` is the reply's, None while unknown."""
+    """A spoken sentence of `turn` for the forced aligner: `text` begins at character `start` of the reply and its audio at `start_ms`; `language` is the synthesizer's tag for it, or the reply's when it sent none, None while unknown."""
 
     turn: int
     text: str
@@ -191,7 +192,7 @@ class HeardAudio:
 
 @dataclass
 class SpokenReply:
-    """One reply's text, language and audio; `start` and `start_ms` open the sentence being spoken.
+    """One reply's text, language and audio; `start` and `start_ms` open the sentence being spoken, and `sentence_language` is the synthesizer's tag for it.
 
     With a transcription service the reply also keeps its ended sentences,
     the word ends the forced aligner found, the cut positions the client's
@@ -203,6 +204,7 @@ class SpokenReply:
     language: str | None = None
     start: int = 0
     start_ms: float = 0.0
+    sentence_language: str | None = None
     samples: list[np.ndarray] = field(default_factory=list)
     sentences: list[SentenceAudio] = field(default_factory=list)
     word_ends: list[tuple[int, float]] = field(default_factory=list)
@@ -294,6 +296,8 @@ class Alignment(StreamComponent):
             self.reply_of(chunk.turn).samples.append(
                 np.frombuffer(chunk.payload, dtype="<f4")
             )
+        elif event == REPLY_SENTENCE:
+            self.reply_of(chunk.turn).sentence_language = chunk.payload.get("language")
         elif event == REPLY_PROGRESS:
             self.end_sentence(
                 self.reply_of(chunk.turn),
@@ -339,7 +343,11 @@ class Alignment(StreamComponent):
                 reply.start + len(span) - len(span.lstrip()),
                 reply.start_ms,
                 np.concatenate(reply.samples),
-                reply.language,
+                (
+                    reply.language
+                    if reply.sentence_language is None
+                    else reply.sentence_language
+                ),
             )
             if self.config.method == "forced":
                 sentences.put_nowait(sentence)
@@ -545,21 +553,27 @@ def heard_audio(reply: SpokenReply, cut_ms: float) -> HeardAudio | None:
     ]
     if ended:
         sentence = ended[0]
-        text, start, start_ms, samples = (
+        text, start, start_ms, samples, language = (
             sentence.text,
             sentence.start,
             sentence.start_ms,
             sentence.samples,
+            sentence.language,
         )
     elif reply.samples and cut_ms > reply.start_ms:
         span = reply.text[reply.start :]
         text = span.strip()
         start = reply.start + len(span) - len(span.lstrip())
         start_ms, samples = reply.start_ms, np.concatenate(reply.samples)
+        language = (
+            reply.language
+            if reply.sentence_language is None
+            else reply.sentence_language
+        )
     else:
         return None
     cut = samples[: round((cut_ms - start_ms) * SPEECH_SAMPLE_RATE_HZ / 1000)]
     if text and len(cut):
-        return HeardAudio(reply.turn, text, start, cut_ms, cut, reply.language)
+        return HeardAudio(reply.turn, text, start, cut_ms, cut, language)
     else:
         return None

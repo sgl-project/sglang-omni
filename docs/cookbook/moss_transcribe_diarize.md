@@ -214,6 +214,38 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
 `start`, `end`, and speaker-prefixed `text` (for example `[S01]...`).
 `json` / `text` return the full transcript string without segment parsing.
 
+### Speculative Decoding
+
+The decoder can verify tokens proposed by the DFlash draft [`wilsonzheng0327/MOSS-Transcribe-Diarize-dflash`](https://huggingface.co/wilsonzheng0327/MOSS-Transcribe-Diarize-dflash) on one CUDA GPU.
+
+```bash
+sgl-omni serve \
+  --model-path OpenMOSS-Team/MOSS-Transcribe-Diarize \
+  --asr.engine.speculative_algorithm DFLASH \
+  --asr.engine.speculative_draft_model_path wilsonzheng0327/MOSS-Transcribe-Diarize-dflash \
+  --port 8000
+```
+
+- **Acceptance length.** Send the form field `return_spec_tokens_details=true` to get `sglext.spec_tokens_details` (`spec_accept_length`, `spec_accept_rate`, the draft counts and the per-verify histogram) on `json` and `verbose_json` responses and on the streamed `transcript.text.done` event. Audio long enough to be transcribed in chunks returns none. `spec_accept_rate` and `spec_num_proposed_drafts` are left out when no drafts were proposed or the draft width is adaptive.
+- **Transcripts.** The target verifies every proposed token, so accuracy stays at the target's level, but the text is not byte-identical to a run without the draft. MOSS-TD has many near-tied decisions, mostly the hundredths digits of timestamps and the odd filler word or comma, which any numeric change can flip. Without a draft, 229 of 800 `movies800times` clips differ between concurrency 1 and 16, and on an H200 all 20 `aishell4_long` transcripts differ between two identical runs, though they match on an H100.
+- **Context.** The duration-scaled budget leaves room for the few tokens each step reserves. An explicit `max_new_tokens` that leaves no such room is rejected instead of clamped.
+- **Capacity.** The draft's KV shares the pool, so one H100 80GB at `mem_fraction_static=0.80` holds about 480k tokens instead of 570k. Long audio at high concurrency fills it, and the scheduler then retracts requests and finishes them later: every `aishell4_long` file still completed at concurrency 16 and 32.
+- **Sampling.** Requests with `repetition_penalty`, `frequency_penalty`, `presence_penalty`, `min_p` or logprobs are rejected, because the draft worker applies penalties once per verify block, drops `min_p`, and skips the sampler that records logprobs.
+- **Scheduling.** Async decode and async prefill are turned off, because async decode under a draft means speculative overlap, which MOSS-TD has not opted into. Setting `enable_mixed_chunk` is rejected.
+
+Paired runs on one H200 140GB with FA3 and SGLang 0.5.22, `max_running_requests=16`, `cuda_graph_max_bs=16` and `mem_fraction_static=0.80`, each on a fresh server, in audio seconds per second. Concurrency 1 rows are the mean of both orders; the other rows are one pair.
+
+| Dataset | Concurrency | Baseline | DFlash | Speedup | Baseline CER / DER | DFlash CER / DER |
+|---|---:|---:|---:|---:|---:|---:|
+| movies800times | 1 | 45.1 | 92.5 | 2.05x | 5.87% / 21.11% | 5.82% / 21.01% |
+| movies800times | 16 | 97.3 | 253.7 | 2.61x | 5.82% / 21.06% | 5.80% / 21.06% |
+| aishell4_long | 1 | 63.8 | 167.2 | 2.62x | 13.79% / 9.80% | 13.85% / 10.01% |
+| aishell4_long | 4 | 103.8 | 323.8 | 3.12x | 13.75% / 10.20% | 13.88% / 10.33% |
+
+The draft accepts 5.4 tokens per verify on `movies800times` and 5.1 on `aishell4_long` at concurrency 1. DER is `speaker_timestamp_der` at collar 0, which counts every small boundary shift. On `aishell4_long` the draft adds 0.21 and 0.13 points at collar 0 and at most 0.11 at a 0.25 s collar, while batching alone adds 0.40 and 0.25. One meeting in the set flips between five and seven detected speakers, which moves that file's DER by about 11 points in either mode.
+
+On one H100 80GB with the same settings, `aishell4_long` goes from 58.0 to 159.0 audio seconds per second at concurrency 1 (2.74x), 100.0 to 355.3 at concurrency 16 (3.55x), and 96.0 to 356.5 at concurrency 32 with `max_running_requests=32` and `cuda_graph_max_bs=32` (3.71x). The last two fill the KV pool, so requests retract in both modes.
+
 ## Benchmarking
 
 Thanks to the Moss team for providing the benchmark datasets, we prepare movies800times, aishell4_long, and googletime as benchmark datasets for multi-speaker ASR. movies800times is a short-sequence dataset with 800 dialog clips, aishell4_long with googletime are long-sequence dataset of long-form meeting audio, and English podcasts. These datasets are right now under private license, and you can contact the Moss team for access.
