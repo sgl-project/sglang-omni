@@ -69,6 +69,20 @@ sgl-omni serve \
   --port 8000
 ```
 
+### Speculative Decoding
+
+ARK-ASR supports DFlash on CUDA with an ARK-trained, causal speculators checkpoint. Pass the draft through the shared speculative decoding flags:
+
+```bash
+sgl-omni serve \
+  --model-path AutoArk-AI/ARK-ASR-3B \
+  --speculative-algorithm DFLASH \
+  --speculative-draft-model-path /path/to/ark-dflash \
+  --port 8000
+```
+
+DFlash uses synchronous verification and disables async decode. The draft checkpoint sets the default block size; `--speculative-num-draft-tokens` overrides it. The default context budget includes speculative KV reserve; an explicit `--context-length` must leave room for that reserve as well as the prompt and output.
+
 ### Prefill Coalescing
 
 ARK-ASR holds newly built requests briefly by default so the scheduler can
