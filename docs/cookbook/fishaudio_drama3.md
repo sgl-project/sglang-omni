@@ -5,7 +5,7 @@
 - **35B parameters, 3B active per token**: MoE text backbone with hybrid (full + linear) attention
 - **Codebook-MTP audio decoder**: 10 codebooks decoded causally over the whole sequence
 - **FP8 MoE experts** with the remaining weights in bf16; an [int4 checkpoint](#int4-checkpoint) cuts the weight memory from 37.0 GB to 20.8 GB
-- **Speaker tags** `<|speaker:0|>` … `<|speaker:15|>` — one text can carry up to 16 characters
+- **Speaker tags** `<|speaker:0|>` … `<|speaker:15|>` are in the model vocabulary; the CUDA serving path currently supports only speaker 0 (see [Speaker Tags](#speaker-tags))
 - **Long text** is chunked automatically and can be streamed per chunk
 
 ## Installation and Startup
@@ -132,6 +132,10 @@ K5 chains a second edit: `by noon` becomes `by five`, with both earlier takes in
 </audio>
 
 ## Serving Limits
+
+### Speaker Tags
+
+The CUDA `/v1/audio/speech` serving path supports one speaker per request. Use plain text or `<|speaker:0|>` in both `input` and `references[].text`. Tags `<|speaker:1|>` through `<|speaker:15|>` in either field are rejected with HTTP 400 because only speaker 0 is supported by this serving path. The model's multi-speaker capability is not currently exposed by this endpoint.
 
 ### Reference Audio Length
 
