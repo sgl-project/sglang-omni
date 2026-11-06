@@ -1,6 +1,6 @@
 # NVIDIA
 
-Nemotron ASR / diarization, NemotronLabs VoiceChat, PersonaPlex, and Cosmos models from NVIDIA.
+Nemotron and Parakeet TDT ASR / diarization, NemotronLabs VoiceChat, PersonaPlex, and Cosmos models from NVIDIA.
 
 ```{toctree}
 ---
@@ -10,6 +10,7 @@ titlesonly: true
 
 ../nemotron3_5_asr.md
 ../nemotron_transcribe.md
+../parakeet_tdt.md
 ../nemotron_voicechat.md
 ../personaplex.md
 ../cosmos3_nano.md
