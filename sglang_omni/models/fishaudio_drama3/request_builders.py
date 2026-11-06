@@ -60,9 +60,15 @@ class Drama3GenerationResult:
 
 @dataclass
 class Drama3RequestData(SGLangARRequestData):
-    """frame_rows holds the prompt rows and then every sampled frame, eos included."""
+    """frame_rows holds the prompt rows and then every sampled frame, eos included.
+
+    prompt_frames holds the prompt rows again as an int64 CPU tensor, which a
+    prefill stages without rebuilding it from frame_rows; the prompt rows of both
+    never change after the request builder fills them.
+    """
 
     frame_rows: list[list[int]] = field(default_factory=list)
+    prompt_frames: torch.Tensor | None = None
     prompt_row_count: int = 0
     streamed_frame_count: int = 0
     epsilon_cutoff: float = 0.0
@@ -242,6 +248,9 @@ class Drama3RequestBuilder:
             top_k=generation_input.top_k,
             top_p=generation_input.top_p,
             frame_rows=frame_rows,
+            prompt_frames=prompt_rows.to(
+                device="cpu", memory_format=torch.contiguous_format, copy=True
+            ),
             prompt_row_count=len(frame_rows),
             epsilon_cutoff=epsilon_cutoff,
         )

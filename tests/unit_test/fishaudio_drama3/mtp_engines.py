@@ -158,6 +158,7 @@ class RecordingDrama3Model(Drama3ForCausalLM):
         )
         self.logits_processor = self.eos_controlled_logits
         self.backbone_hidden_states: torch.Tensor | None = None
+        self.gathered_decode_inputs: Drama3StepInputs | None = None
         self.model.register_forward_hook(self.keep_backbone_hidden_states)
         self.head_logits: list[torch.Tensor] = []
         for head in self.audio_decoder.codebook_heads:
@@ -238,10 +239,11 @@ class RecordingDrama3Model(Drama3ForCausalLM):
     ) -> LogitsProcessorOutput:
         self.head_logits.clear()
         self.moe_calls.clear()
+        self.gathered_decode_inputs = None
         row_count = input_ids.shape[0]
         decode_buffers = self.decode_buffers
+        staged_inputs = self.step_exchange.staged_inputs
         if forward_batch.forward_mode == ForwardMode.EXTEND:
-            staged_inputs = self.step_exchange.staged_inputs
             assert staged_inputs is not None
             self.step_exchange.stage(
                 replace(
@@ -252,29 +254,40 @@ class RecordingDrama3Model(Drama3ForCausalLM):
                 )
             )
         else:
-            assert decode_buffers is not None
-            staged_inputs = Drama3StepInputs(
-                request_ids=forward_batch.rids,
-                frames=decode_buffers.frames[:row_count].clone(),
-                ras_windows=decode_buffers.ras_windows[:row_count].clone(),
-                temperature=decode_buffers.temperature[:row_count].clone(),
-                top_k=decode_buffers.top_k[:row_count].clone(),
-                top_p=decode_buffers.top_p[:row_count].clone(),
-            )
-            decode_buffers.ras_windows[:row_count].fill_(EMPTY_RAS_SLOT)
-        # The staged frames carry the batch's tokens as their main tokens.
-        assert torch.equal(staged_inputs.frames[:, 0], input_ids)
+            pass
         output = super().forward(input_ids, positions, forward_batch)
         if forward_batch.forward_mode == ForwardMode.EXTEND:
             sampled_frames = self.step_exchange.sampled_frames
             assert sampled_frames is not None
         else:
             assert decode_buffers is not None
+            gathered_inputs = self.gathered_decode_inputs
+            assert gathered_inputs is not None
+            staged_inputs = replace(gathered_inputs, request_ids=forward_batch.rids)
             sampled_frames = decode_buffers.sampled_frames[:row_count]
+        assert staged_inputs is not None
+        # The staged frames carry the batch's tokens as their main tokens.
+        assert torch.equal(staged_inputs.frames[:, 0], input_ids)
         self.forwards.append(
             self.forward_record(forward_batch, positions, staged_inputs, sampled_frames)
         )
         return output
+
+    def stage_decode_rows(self, request_slots: torch.Tensor) -> None:
+        """Record the gathered rows, then empty the windows the decode samples with."""
+        super().stage_decode_rows(request_slots)
+        decode_buffers = self.decode_buffers
+        assert decode_buffers is not None
+        row_count = request_slots.shape[0]
+        self.gathered_decode_inputs = Drama3StepInputs(
+            request_ids=[],
+            frames=decode_buffers.frames[:row_count].clone(),
+            ras_windows=decode_buffers.ras_windows[:row_count].clone(),
+            temperature=decode_buffers.temperature[:row_count].clone(),
+            top_k=decode_buffers.top_k[:row_count].clone(),
+            top_p=decode_buffers.top_p[:row_count].clone(),
+        )
+        decode_buffers.ras_windows[:row_count].fill_(EMPTY_RAS_SLOT)
 
     def forward_record(
         self,
