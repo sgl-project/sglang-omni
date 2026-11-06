@@ -26,9 +26,12 @@ from sglang_omni.models.moss_tts.vocoder_kernels import (
     commit_streaming_kv_,
     gather_streaming_kv,
 )
+from sglang_omni.platforms import current_platform
 
 # note (Zhang Yiyang): Bound SDPA fallback memory with query chunks.
 _SDPA_QUERY_CHUNK_SIZE = 512
+# Match the source codec's NPU SDPA shapes; BF16 rounding changes reference codes.
+_NPU_SDPA_QUERY_CHUNK_SIZE = 1500
 # note (Zhang Yiyang): Keep 128-token local-causal tiles for A800 audio stability.
 _LOCAL_CAUSAL_FLASH_QUERY_CHUNK_SIZE = 128
 # note (Zhang Yiyang): Use the direct local-window kernel on Hopper and newer SMs.
@@ -43,6 +46,14 @@ _SUPPORTED_ATTENTION_BACKENDS: frozenset[str] = frozenset(
         SDPA_ATTENTION_BACKEND,
     }
 )
+
+
+def is_npu_graph_capture(device: torch.device) -> bool:
+    return (
+        current_platform.is_npu()
+        and device.type == current_platform.device_type
+        and torch.get_device_module(device).is_current_stream_capturing()
+    )
 
 
 def validate_attention_backend(attention_backend: str) -> str:
@@ -728,7 +739,7 @@ def apply_cached_streaming_rope(
     # note (Zhang Yiyang): Use the decoder stage's 30-minute position budget
     # so the RoPE table keeps a fixed address throughout graph replay.
     max_positions = cache.streaming_max_positions
-    if offset.device.type != "cuda":
+    if offset.device.type != "cuda" and not is_npu_graph_capture(offset.device):
         max_offset = int(offset.max().item())
         if max_offset + sequence_length > max_positions:
             raise ValueError(
@@ -798,10 +809,15 @@ def run_query_chunked_sdpa(
     """Run dense local attention without materializing the full score matrix."""
     batch_size, _, sequence_length, _ = q.shape
     positions = torch.arange(sequence_length, device=q.device, dtype=torch.long)
+    query_chunk_size = (
+        _NPU_SDPA_QUERY_CHUNK_SIZE
+        if current_platform.is_npu() and q.device.type == current_platform.device_type
+        else _SDPA_QUERY_CHUNK_SIZE
+    )
     output_chunks = []
-    for query_start in range(0, sequence_length, _SDPA_QUERY_CHUNK_SIZE):
+    for query_start in range(0, sequence_length, query_chunk_size):
         query_end = min(
-            query_start + _SDPA_QUERY_CHUNK_SIZE,
+            query_start + query_chunk_size,
             sequence_length,
         )
         key_end = query_end if causal else sequence_length
@@ -1068,6 +1084,14 @@ class MossAudioTokenizerAttention(MossAudioTokenizerStreamingModule):
     @staticmethod
     def get_backend_dtype(x: torch.Tensor) -> torch.dtype:
         backend_dtype = x.dtype
+        if current_platform.is_npu() and x.device.type == current_platform.device_type:
+            return (
+                torch.get_autocast_dtype(x.device.type)
+                if torch.is_autocast_enabled(x.device.type)
+                else backend_dtype
+            )
+        else:
+            pass
         if x.device.type != "cuda":
             return backend_dtype
         else:

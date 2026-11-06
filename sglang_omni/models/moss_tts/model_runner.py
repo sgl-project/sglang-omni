@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 import torch
-from sglang.srt.layers.sampler import multinomial_with_seed
 from sglang.srt.managers.schedule_batch import ScheduleBatch
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
@@ -24,6 +23,7 @@ from sglang_omni.models.moss_tts.request_builders import (
 from sglang_omni.models.moss_tts.sampler import DelayGraphBatch
 from sglang_omni.models.moss_tts.sampling_kernels import (
     multinomial_with_seed_and_token_ids,
+    sample_seeded_categorical,
 )
 from sglang_omni.scheduling.types import (
     RequestOutput,
@@ -955,7 +955,7 @@ class MossTTSModelRunner(ModelRunner):
                 # Note:(Chenchen Hong) post1's multinomial_with_seed is Gumbel-max
                 # and wants logits, not probs (probs lost the -inf masking and made
                 # MOSS emit only the pad code); the CPU fallback still needs probs.
-                sampled[sample_mask] = multinomial_with_seed(
+                sampled[sample_mask] = sample_seeded_categorical(
                     scores[sample_mask],
                     seeds_row[sample_mask],
                     positions_row[sample_mask],

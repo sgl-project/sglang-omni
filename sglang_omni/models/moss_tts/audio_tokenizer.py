@@ -7,6 +7,7 @@ import json
 import logging
 import math
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 from os import PathLike
 from pathlib import Path
@@ -30,6 +31,7 @@ from sglang_omni.models.moss_tts.attention import (
     MossPackedRopeCache,
     PositionIdsCache,
     StreamingExecutionContext,
+    is_npu_graph_capture,
     merge_attention_backend_resolutions,
     pack_padded_sequence,
     pack_padded_sequence_from_host_lengths,
@@ -48,6 +50,7 @@ from sglang_omni.models.weight_loader import (
     load_weights_by_prefix,
     resolve_model_path,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.utils.json import JsonValue
 
 logger = logging.getLogger(__name__)
@@ -1654,19 +1657,32 @@ class MossAudioTokenizerEncoder(nn.Module):
             lengths,
             lengths_cpu,
         )
+        autocast_enabled = (
+            current_platform.is_npu()
+            and hidden.device.type == current_platform.device_type
+            and self.compute_dtype is torch.bfloat16
+        )
+        # Match the source codec: NPU autocast keeps LayerNorm/residuals FP32.
+        # BF16 weights alone change reference codes and generated speech.
         hidden = hidden.to(dtype=self.encoder_dtype)
-        for stage in self.encoder:
-            if isinstance(stage, MossAudioTokenizerProjectedTransformer):
-                hidden, lengths = stage(
-                    hidden,
-                    lengths,
-                    input_lengths_cpu=lengths_cpu,
-                )
-            else:
-                hidden, lengths = stage(hidden, lengths)
-                lengths_cpu = [
-                    length // int(stage.downsample_ratio) for length in lengths_cpu
-                ]
+        encoder_context = (
+            torch.autocast(device_type=hidden.device.type, dtype=self.compute_dtype)
+            if autocast_enabled
+            else nullcontext()
+        )
+        with encoder_context:
+            for stage in self.encoder:
+                if isinstance(stage, MossAudioTokenizerProjectedTransformer):
+                    hidden, lengths = stage(
+                        hidden,
+                        lengths,
+                        input_lengths_cpu=lengths_cpu,
+                    )
+                else:
+                    hidden, lengths = stage(hidden, lengths)
+                    lengths_cpu = [
+                        length // int(stage.downsample_ratio) for length in lengths_cpu
+                    ]
         _, codes, code_lengths = self.quantizer(
             hidden.float(),
             lengths,
@@ -2252,7 +2268,7 @@ class MossAudioTokenizerVocoder(MossAudioTokenizerStreamingModule):
         # note (Zhang Yiyang): Scheduler and graph inputs are trusted device
         # tensors. CPU value checks also cover direct callers without adding
         # GPU synchronization.
-        if device.type != "cuda":
+        if device.type != "cuda" and not is_npu_graph_capture(device):
             if bool(torch.any(state_slot_ids < 0)) or bool(
                 torch.any(state_slot_ids >= self.decoder_state_capacity)
             ):
@@ -2344,7 +2360,13 @@ class MossAudioTokenizerVocoder(MossAudioTokenizerStreamingModule):
         # including FP32 LayerNorm. Casting decoder weights/inputs to BF16
         # alone changes streaming PCM.
         autocast_enabled = (
-            codes.device.type == "cuda"
+            (
+                codes.device.type == "cuda"
+                or (
+                    current_platform.is_npu()
+                    and codes.device.type == current_platform.device_type
+                )
+            )
             and self.compute_dtype in (torch.float16, torch.bfloat16)
         ) or (codes.device.type == "cpu" and self.compute_dtype is torch.bfloat16)
         hidden = self.quantizer.decode_codes(codes).to(
