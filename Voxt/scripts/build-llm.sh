@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds voxtnew-llm (llm/, Swift: mlx-swift-lm and llama.swift, release,
 # arm64) on a Mac and stages it where mygo ships it:
-# resources/darwin-arm64/llm/ becomes VoxtNew.app/Contents/Resources/llm/
+# resources/darwin-arm64/llm/ becomes Voxt.app/Contents/Resources/llm/
 # (go tool mygo build, mygo dev), with what it needs beside it:
 #
 #   voxtnew-llm                     the executable (llm protocol 1 on stdio)

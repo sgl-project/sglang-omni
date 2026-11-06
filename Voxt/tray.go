@@ -58,7 +58,7 @@ func (a *app) applyTray() {
 	live := a.sess.State.Live()
 	// Voxt's microphone, a 36 px template image MyGo shows 18 pt tall
 	// (Voxt: 18×18 pt, template); while recording it has a dot.
-	t, err := mygo.NewTray(mygo.TrayOptions{Icon: trayicon.Icon(live), IconIsTemplate: true, ToolTip: "VoxtNew"})
+	t, err := mygo.NewTray(mygo.TrayOptions{Icon: trayicon.Icon(live), IconIsTemplate: true, ToolTip: "Voxt"})
 	if err != nil {
 		a.toast(i18n.T("The menu bar icon could not be made: %v", err))
 		return
@@ -145,13 +145,13 @@ func (a *app) trayItems() []*mygo.MenuItem {
 	}
 	items = append(items,
 		mygo.Separator(),
-		&mygo.MenuItem{Label: i18n.T("Open VoxtNew"), Click: act(a.showMainWindow)},
+		&mygo.MenuItem{Label: i18n.T("Open Voxt"), Click: act(a.showMainWindow)},
 		&mygo.MenuItem{Label: i18n.T("Settings…"), Click: act(func() { a.showMainWindow(); a.navigate("/settings") })},
 	)
 	items = append(items, a.updateMenuItems(act)...) // updates.go
 	return append(items,
 		mygo.Separator(),
-		&mygo.MenuItem{Label: i18n.T("Quit VoxtNew"), Click: act(func() { a.quitting = true; mygo.App.Quit() })},
+		&mygo.MenuItem{Label: i18n.T("Quit Voxt"), Click: act(func() { a.quitting = true; mygo.App.Quit() })},
 	)
 }
 

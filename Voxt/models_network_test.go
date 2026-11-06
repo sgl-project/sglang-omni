@@ -36,7 +36,7 @@ func TestNetworkDialog(t *testing.T) {
 	if a.currentPage() != "models" || !a.netOpen || !has(tt, "How model downloads reach Hugging Face") {
 		t.Fatalf("deep link: page %q open %v %q", a.currentPage(), a.netOpen, tt.Texts())
 	}
-	if !has(tt, "Applies to all ActNow apps") || !has(tt, "The proxy in the Mac's network settings, or the one the environment names.") {
+	if !has(tt, "Applies to all apps that use this model library") || !has(tt, "The proxy in the Mac's network settings, or the one the environment names.") {
 		t.Fatalf("defaults: %q", tt.Texts())
 	}
 
@@ -66,7 +66,7 @@ func TestNetworkDialog(t *testing.T) {
 		t.Fatalf("form %+v", a.netForm)
 	}
 	click(t, tt, "Use a different setting for this app") // the proxy's
-	if a.prefs.Family.Follows(actnow.KeyProxy) || !a.prefs.Family.Follows(actnow.KeyHFEndpoints) || !has(tt, "Only VoxtNew uses this setting.") {
+	if a.prefs.Family.Follows(actnow.KeyProxy) || !a.prefs.Family.Follows(actnow.KeyHFEndpoints) || !has(tt, "Only Voxt uses this setting.") {
 		t.Fatalf("follow: %+v %q", a.prefs.Family.Follow, tt.Texts())
 	}
 	click(t, tt, "No proxy")
@@ -80,7 +80,7 @@ func TestNetworkDialog(t *testing.T) {
 
 	// Back to the family's.
 	a.openNetwork()
-	click(t, tt, "Use the same setting as the other ActNow apps")
+	click(t, tt, "Use the same setting as the other apps that share this model library")
 	if !a.prefs.Family.Follows(actnow.KeyProxy) || a.prefs.Network.Proxy != "socks5://127.0.0.1:1080" || a.netForm.proxyMode != proxyCustom {
 		t.Errorf("following again: %+v %+v", a.prefs.Network, a.netForm)
 	}
@@ -104,14 +104,14 @@ func TestNetworkUseTheirs(t *testing.T) {
 	})
 	a.navigate(modelsPath)
 	click(t, tt, "Network…")
-	if !has(tt, "Other ActNow apps use a different proxy.") || has(tt, "Other ActNow apps use a different download source.") {
+	if !has(tt, "Other apps that share this model library use a different proxy.") || has(tt, "Other apps that share this model library use a different download source.") {
 		t.Fatalf("no notice: %q", tt.Texts())
 	}
 	click(t, tt, "Use theirs")
 	if !a.prefs.Family.Follows(actnow.KeyProxy) || a.prefs.Network.Proxy != "http://10.0.0.1:8080" || len(a.prefs.Family.Conflicts) != 0 {
 		t.Errorf("theirs: %+v", a.prefs)
 	}
-	if a.netForm.proxyMode != proxyCustom || a.netForm.proxyURL != "http://10.0.0.1:8080" || !has(tt, "Applies to all ActNow apps") {
+	if a.netForm.proxyMode != proxyCustom || a.netForm.proxyURL != "http://10.0.0.1:8080" || !has(tt, "Applies to all apps that use this model library") {
 		t.Errorf("form %+v", a.netForm)
 	}
 
@@ -121,7 +121,7 @@ func TestNetworkUseTheirs(t *testing.T) {
 		s.Family.Conflicts = []string{actnow.KeyHFEndpoints}
 	})
 	a.openNetwork()
-	if !has(tt, "Other ActNow apps use a different download source.") {
+	if !has(tt, "Other apps that share this model library use a different download source.") {
 		t.Fatalf("no notice: %q", tt.Texts())
 	}
 	click(t, tt, "Cancel")
@@ -138,7 +138,7 @@ func TestNetworkUseTheirs(t *testing.T) {
 func TestFamilyLinesNeedAnotherApp(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.famStarted = true
-	family := []string{"Applies to all ActNow apps", "Only VoxtNew uses this setting.", "Use the same setting as the other ActNow apps",
+	family := []string{"Applies to all apps that use this model library", "Only Voxt uses this setting.", "Use the same setting as the other apps that share this model library",
 		"Use a different setting for this app"}
 	check := func(when string, want bool) {
 		t.Helper()
@@ -156,7 +156,7 @@ func TestFamilyLinesNeedAnotherApp(t *testing.T) {
 		click(t, tt, "Cancel")
 		a.navigate("/settings/storage")
 		frames(tt)
-		if has(tt, "Shared by all ActNow apps") != want || has(tt, "Shared with other ActNow apps") != want || has(tt, "Used by VoxtNew") == want {
+		if has(tt, "Shared by all apps that use this model library") != want || has(tt, "Shared with other apps that use this model library") != want || has(tt, "Used by Voxt") == want {
 			t.Errorf("%s: storage %q", when, tt.Texts())
 		}
 	}

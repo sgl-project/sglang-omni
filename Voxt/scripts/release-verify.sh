@@ -30,7 +30,7 @@ case "$mode" in
   developer-id | signed | ad-hoc) ;;
   *) echo "release-verify.sh: the mode is developer-id, signed or ad-hoc, not $mode" >&2; exit 2 ;;
 esac
-app="$dir/VoxtNew.app"
+app="$dir/Voxt.app"
 res="$app/Contents/Resources"
 helper="$app/Contents/Resources/helper/voxtnew-helper"
 fails=0
@@ -102,8 +102,8 @@ if [[ "$mode" != ad-hoc ]]; then
   team_app="$(details "$app" | sed -n 's/^TeamIdentifier=//p')"
   for c in "${code[@]}"; do
     name="${c#"$res"/}"
-    name="${name##*/VoxtNew.app}"
-    name="${name:-VoxtNew.app}"
+    name="${name##*/Voxt.app}"
+    name="${name:-Voxt.app}"
     [[ "$mode" == developer-id ]] && check "$name: Developer ID Application" has "$c" '^Authority=Developer ID Application: '
     check "$name: hardened runtime" has "$c" '^CodeDirectory .*flags=0x[0-9a-f]*\(.*runtime.*\)'
     check "$name: secure timestamp" has "$c" '^Timestamp='
@@ -120,9 +120,14 @@ if [[ "$mode" == developer-id ]]; then
   check "the app's ticket is stapled" xcrun stapler validate "$app"
   [[ -n "$dmg" ]] && check "the disk image's ticket is stapled" xcrun stapler validate "$dmg"
   [[ -n "$dmg" ]] && check "Gatekeeper accepts the disk image" spctl -a -vv -t open --context context:primary-signature "$dmg"
-  manifest="$dir/update-darwin-arm64.json"
-  check "the update archive" bash -c "compgen -G '$dir/*-$version-darwin-arm64.tar.gz'"
-  check "the update manifest says $version" bash -c "jq -e --arg v '$version' '.version == \$v and (.signature | length > 0)' '$manifest'"
+  # The update files, when the release has a feed (1.0.0 has none).
+  if jq -e .updates "$(dirname "$0")/../release/mygo.release.json" >/dev/null; then
+    manifest="$dir/update-darwin-arm64.json"
+    check "the update archive" bash -c "compgen -G '$dir/*-$version-darwin-arm64.tar.gz'"
+    check "the update manifest says $version" bash -c "jq -e --arg v '$version' '.version == \$v and (.signature | length > 0)' '$manifest'"
+  else
+    check "no update files (the release has no feed)" bash -c "! compgen -G '$dir/update-*.json'"
+  fi
 elif [[ "$mode" == ad-hoc ]]; then
   check "signed ad hoc" has "$app" '^Signature=adhoc$'
 fi

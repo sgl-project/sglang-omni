@@ -114,7 +114,7 @@ func (a *app) permissionsSettings(c *ui.Context) {
 			statusMark(c, icons.DangerTriangle, t.Warning, text)
 		}
 	}
-	caption(c, i18n.T("macOS asks you before VoxtNew may record or work with other apps. Each row says what needs it; you can change them any time in System Settings."))
+	caption(c, i18n.T("macOS asks you before Voxt may record or work with other apps. Each row says what needs it; you can change them any time in System Settings."))
 
 	micText, micOK := uitext.PermissionText(a.perms.mic)
 	settingRow(c, "perm-mic", i18n.T("Microphone"), i18n.T("Transcribe, translate and rewrite by voice record while you hold or tap their shortcut."), func() {
@@ -134,10 +134,10 @@ func (a *app) permissionsSettings(c *ui.Context) {
 	if accOK {
 		accText = i18n.T("Allowed")
 	}
-	settingRow(c, "perm-access", i18n.T("Accessibility"), i18n.T("Lets VoxtNew type results where your cursor is, read the selected text and the address of the browser tab in front, and use Right ⌥ and other single keys as shortcuts. Without it results are copied for you to paste."), func() {
+	settingRow(c, "perm-access", i18n.T("Accessibility"), i18n.T("Lets Voxt type results where your cursor is, read the selected text and the address of the browser tab in front, and use Right ⌥ and other single keys as shortcuts. Without it results are copied for you to paste."), func() {
 		badge(accText, accOK)
 		if !accOK {
-			if ghostButton(c.Key("perm-access-ask"), i18n.T("Ask")).Tooltip(i18n.T("Adds VoxtNew to the list in System Settings")).Clicked() {
+			if ghostButton(c.Key("perm-access-ask"), i18n.T("Ask")).Tooltip(i18n.T("Adds Voxt to the list in System Settings")).Clicked() {
 				a.askPermission(proto.PermissionAccessibility)
 			}
 			if ghostIconButton(c.Key("perm-access-open"), icons.SquareArrowRightUp, i18n.T("Open System Settings")).Label(i18n.T("Open System Settings")).Clicked() {
@@ -149,6 +149,6 @@ func (a *app) permissionsSettings(c *ui.Context) {
 		if secondaryIconButton(c.Key("perm-recheck"), icons.Refresh, i18n.T("Check again")).Label(i18n.T("Check again")).Clicked() {
 			a.recheckPermissions()
 		}
-		infoTip(c.Key("perm-note"), i18n.T("After you change a permission, macOS may ask to quit and reopen VoxtNew. Updating an ad hoc signed build can make macOS forget Accessibility: turn it off and on again."))
+		infoTip(c.Key("perm-note"), i18n.T("After you change a permission, macOS may ask to quit and reopen Voxt. Updating an ad hoc signed build can make macOS forget Accessibility: turn it off and on again."))
 	})
 }

@@ -2,7 +2,7 @@
 # The release build of VoxtNew, on an Apple silicon Mac (docs/release.md):
 # the helper, the Omni runtime (speech) and voxtnew-llm (language models)
 # are built and staged into resources/darwin-arm64/, then go tool mygo
-# build makes build/darwin-arm64/VoxtNew.app and its disk image with all
+# build makes build/darwin-arm64/Voxt.app and its disk image with all
 # of them inside, and scripts/release-verify.sh checks the result.
 #
 #   scripts/release.sh                                  # ad hoc: a release-style test build
@@ -31,9 +31,9 @@
 # LLM and then every Mach-O file and framework inside the app are signed
 # with it, with the hardened runtime and a secure timestamp (mygo build:
 # signNestedCode), and the build takes the update feed of
-# release/mygo.release.json (scripts/release-config.sh): actnow.dev's
-# /updates/voxtnew, or /updates/voxtnew/beta for a version with a "-".
-# The update files are signed with VoxtNew's update key:
+# release/mygo.release.json if it has one (scripts/release-config.sh; 1.0.0
+# has none and never updates itself), or its beta/ feed for a version with
+# a "-". With a feed, the update files are signed with VoxtNew's update key:
 # MYGO_UPDATER_PRIVATE_KEY (the key itself) or the file VOXTNEW_UPDATE_KEY
 # (default ~/.config/voxtnew-release/update-keys/mygo-update.key), which
 # must match the public key of release/mygo.release.json. Without an
@@ -78,9 +78,11 @@ KEYFILE="${VOXTNEW_UPDATE_KEY:-$HOME/.config/voxtnew-release/update-keys/mygo-up
 pub_of_key() { # the key's text on stdin → its public key (Ed25519: seed ‖ public)
   tr -d '[:space:]' | base64 --decode 2>/dev/null | tail -c 32 | base64
 }
-want_pub="$(jq -r .updates.publicKey release/mygo.release.json)"
+FEED=0
+jq -e .updates release/mygo.release.json >/dev/null && FEED=1
+want_pub="$(jq -r '.updates.publicKey // empty' release/mygo.release.json)"
 HAVE_KEY=0 KEY_ARG=()
-if [[ -n "$IDENTITY" ]]; then
+if [[ -n "$IDENTITY" ]] && ((FEED)); then
   if [[ -n "${MYGO_UPDATER_PRIVATE_KEY:-}" ]]; then
     [[ "$(printf '%s' "$MYGO_UPDATER_PRIVATE_KEY" | pub_of_key)" == "$want_pub" ]] ||
       { echo "MYGO_UPDATER_PRIVATE_KEY is not the key of $want_pub (release/mygo.release.json)" >&2; exit 2; }
@@ -90,6 +92,10 @@ if [[ -n "$IDENTITY" ]]; then
       { echo "$KEYFILE is not the key of $want_pub (release/mygo.release.json)" >&2; exit 2; }
     HAVE_KEY=1 KEY_ARG=(--update-key "$KEYFILE")
   fi
+fi
+if ((PUBLISH)) && ((FEED == 0)); then
+  echo "--publish needs an update feed: release/mygo.release.json has none (1.0.0 does not update itself; docs/release.md)" >&2
+  exit 2
 fi
 if ((PUBLISH)) && [[ -z "$PROFILE" || $HAVE_KEY == 0 || -z "${ACTNOW_INGEST_TOKEN:-}" ]]; then
   echo "--publish needs --notarize, the update key (MYGO_UPDATER_PRIVATE_KEY or $KEYFILE) and ACTNOW_INGEST_TOKEN" >&2
@@ -133,14 +139,15 @@ if [[ -z "${notes//[[:space:]]/}" ]]; then
 else
   :
 fi
-channel=stable feed="$(jq -r .updates.url release/mygo.release.json)"
+channel=stable feed="$(jq -r '.updates.url // empty' release/mygo.release.json)"
 if [[ "$version" == *-* ]]; then
   channel=beta feed="$feed/beta"
 else
   :
 fi
+((FEED)) || channel="no updates"
 echo "== VoxtNew $version ($channel), signed ${IDENTITY:-ad hoc}${PROFILE:+, notarized with $PROFILE}"
-[[ -n "$IDENTITY" ]] && echo "   update feed $feed$( ((HAVE_KEY)) && echo ", update files signed" || echo ", no update key: no update files")"
+[[ -n "$IDENTITY" ]] && ((FEED)) && echo "   update feed $feed$( ((HAVE_KEY)) && echo ", update files signed" || echo ", no update key: no update files")"
 
 RES="$ROOT/resources/darwin-arm64"
 saved="$(mktemp -d)"
@@ -180,7 +187,7 @@ echo "== configuration"
 if [[ -n "$IDENTITY" ]]; then
   scripts/release-config.sh --sign "$IDENTITY" ${PROFILE:+--notary-profile "$PROFILE"} ${KEYCHAIN:+--notary-keychain "$KEYCHAIN"} \
     ${KEY_ARG[@]+"${KEY_ARG[@]}"}
-  if ((HAVE_KEY == 0)); then
+  if ((FEED && HAVE_KEY == 0)); then
     echo "note: no update key (MYGO_UPDATER_PRIVATE_KEY or $KEYFILE): no update files (a release needs them)"
   else
     :
@@ -230,4 +237,4 @@ if compgen -G "build/darwin-arm64/update-*.json" >/dev/null; then
 else
   echo "no update files: nothing to publish"
 fi
-du -sh build/darwin-arm64/VoxtNew.app build/darwin-arm64/*.dmg 2>/dev/null | sed 's/^/built /'
+du -sh build/darwin-arm64/Voxt.app build/darwin-arm64/*.dmg 2>/dev/null | sed 's/^/built /'

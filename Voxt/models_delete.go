@@ -4,7 +4,7 @@ package main
 // rules (family spec §7.6, §7.10.3): VoxtNew first weighs what deleting
 // would do (models.Manager.Decide, off the main thread). When no other
 // app uses the model, the usual confirmation deletes it; when one does,
-// "Remove from VoxtNew" (the default) drops VoxtNew's claim and keeps
+// "Remove from Voxt" (the default) drops VoxtNew's claim and keeps
 // the files for it, and "Delete for all apps…" asks once more, then
 // deletes the files whoever uses them (the others see a tombstone). The
 // model's runtime lets it go first (local.Library.Delete).
@@ -99,7 +99,7 @@ func deleteOutcome(id string, res []fammodels.Result, err error) string {
 		return i18n.T("%s was removed. Its files stay: %s uses them too.", name, uitext.Names(names))
 	}
 	if apps := r.Decision.UserNames(); len(apps) > 0 {
-		return i18n.T("%s was removed from VoxtNew. Its files stay on this Mac for %s.", name, uitext.Names(apps))
+		return i18n.T("%s was removed from Voxt. Its files stay on this Mac for %s.", name, uitext.Names(apps))
 	}
 	return ""
 }
@@ -194,7 +194,7 @@ func (a *app) modelSharedDialog(c *ui.Context) {
 			})
 			return
 		}
-		ui.Text(c, i18n.T("Remove \"%s\" from VoxtNew?", name)).Bold()
+		ui.Text(c, i18n.T("Remove \"%s\" from Voxt?", name)).Bold()
 		ui.Text(c, i18n.N(len(sd.apps), "%s also uses this model, so its files (%s) stay on this Mac.",
 			"%s also use this model, so its files (%s) stay on this Mac.", apps, size)).Width(px(t, 400))
 		ui.Row(c).Gap(px(t, sp2)).Justify(ui.End).Wrap().Children(func() {
@@ -206,7 +206,7 @@ func (a *app) modelSharedDialog(c *ui.Context) {
 				next.forAll = true
 				a.modelShared = &next
 			}
-			if primaryButton(c.Key("model-shared-remove"), i18n.T("Remove from VoxtNew")).AutoFocus().Clicked() {
+			if primaryButton(c.Key("model-shared-remove"), i18n.T("Remove from Voxt")).AutoFocus().Clicked() {
 				a.modelShared = nil
 				a.deleteModel(sd.id, fammodels.ThisApp)
 			}
@@ -227,6 +227,6 @@ func keptModelsText(ids []string, bytes int64) string {
 	for _, id := range ids {
 		names = append(names, uitext.ModelName(id))
 	}
-	return i18n.T("These models are also used by other ActNow apps and will be kept: %s (%s)",
+	return i18n.T("These models are also used by other apps and will be kept: %s (%s)",
 		strings.Join(names, i18n.X("list", ", ")), uitext.HumanBytes(bytes))
 }

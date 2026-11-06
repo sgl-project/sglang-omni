@@ -23,7 +23,7 @@ func ModelErrorText(err error) (msg, more string) {
 		return i18n.T("The model is not installed."), more
 	}
 	if errors.Is(err, local.ErrNoRuntime) {
-		return i18n.T("This version of VoxtNew cannot run the model yet."), more
+		return i18n.T("This version of Voxt cannot run the model yet."), more
 	}
 	var ae *asr.Error
 	if errors.As(err, &ae) {
@@ -39,7 +39,7 @@ func ModelErrorText(err error) (msg, more string) {
 		case asr.KindConfig:
 			return i18n.T("The speech model is not set up correctly: check it on the Local models page."), more
 		}
-		return i18n.T("The speech model answered something VoxtNew does not understand."), more
+		return i18n.T("The speech model answered something Voxt does not understand."), more
 	}
 	var le *llm.Error
 	if errors.As(err, &le) {
@@ -53,7 +53,7 @@ func ModelErrorText(err error) (msg, more string) {
 		case llm.CodeCancelled:
 			return i18n.T("Cancelled."), more
 		}
-		return i18n.T("The language model answered something VoxtNew does not understand."), more
+		return i18n.T("The language model answered something Voxt does not understand."), more
 	}
 	return i18n.T("The model stopped or did not answer. Try again in a moment."), more
 }

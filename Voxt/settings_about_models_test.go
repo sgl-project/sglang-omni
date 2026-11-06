@@ -25,7 +25,7 @@ func TestAboutModels(t *testing.T) {
 		return out
 	}
 	a.runSelfCheck()
-	if s := status(); s["speech"] != "fail Its runtime is missing from this copy of VoxtNew." || !strings.HasPrefix(s["language"], "fail ") {
+	if s := status(); s["speech"] != "fail Its runtime is missing from this copy of Voxt." || !strings.HasPrefix(s["language"], "fail ") {
 		t.Errorf("no runtimes: %v", s)
 	}
 

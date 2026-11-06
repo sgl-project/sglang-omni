@@ -3,7 +3,7 @@ package proto
 // ---- permissions.* ----
 
 // PermissionsResult answers permissions.status and permissions.request.
-// macOS checks the helper's permissions against VoxtNew.app, its
+// macOS checks the helper's permissions against Voxt.app, its
 // responsible process: they are the app's.
 type PermissionsResult struct {
 	Microphone    string `json:"microphone"`    // a Perm* state

@@ -80,15 +80,15 @@ func TestModelDeleteShared(t *testing.T) {
 
 	// Remove from VoxtNew: the claim goes, the files stay for AudioSmith.
 	click(t, tt, "Delete Fast speech recognition…")
-	if !has(tt, `Remove "Fast speech recognition" from VoxtNew?`) ||
+	if !has(tt, `Remove "Fast speech recognition" from Voxt?`) ||
 		!has(tt, "AudioSmith also uses this model, so its files (712.8 MB) stay on this Mac.") {
 		t.Fatalf("no family dialog: %q", tt.Texts())
 	}
-	click(t, tt, "Remove from VoxtNew")
+	click(t, tt, "Remove from Voxt")
 	if !onDisk(a, models.ASRFast) || a.models.Status(models.ASRFast).Mine {
 		t.Errorf("after Remove from VoxtNew: on disk %v, %+v", onDisk(a, models.ASRFast), a.models.Status(models.ASRFast))
 	}
-	if msg := "Fast speech recognition was removed from VoxtNew. Its files stay on this Mac for AudioSmith."; !toasted(a, tt, msg) {
+	if msg := "Fast speech recognition was removed from Voxt. Its files stay on this Mac for AudioSmith."; !toasted(a, tt, msg) {
 		t.Errorf("no toast %q: %q", msg, tt.Texts())
 	}
 
@@ -314,10 +314,10 @@ func TestBorrowedModel(t *testing.T) {
 				}
 			}
 			click(t, tt, tc.remove+" "+name+"…")
-			if !has(tt, fmt.Sprintf("Remove %q from VoxtNew?", name)) {
+			if !has(tt, fmt.Sprintf("Remove %q from Voxt?", name)) {
 				t.Fatalf("dialog: %q", tt.Texts())
 			}
-			click(t, tt, "Remove from VoxtNew")
+			click(t, tt, "Remove from Voxt")
 			if st := a.models.Status(tc.id); st.Installed || !st.OnDisk || !has(tt, "Installed by Dicta") {
 				t.Errorf("removed: %+v %q", st, tt.Texts())
 			}

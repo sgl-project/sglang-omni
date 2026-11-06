@@ -42,8 +42,8 @@ echo "== build"
 nice -n 10 go build -tags logscheck -o "$app/Contents/MacOS/VoxtNewLogsCheck" .
 swiftc -O scripts/logs-shots/drive.swift -o "$out/drive"
 # The store's SQLite, which mygo build puts in an app: from a built one.
-for lib in "$HOME"/code/VoxtNew*/build/darwin-arm64/VoxtNew.app/Contents/Resources/libmygo-sqlite3.dylib \
-  /Applications/VoxtNew.app/Contents/Resources/libmygo-sqlite3.dylib; do
+for lib in "$HOME"/code/VoxtNew*/build/darwin-arm64/Voxt.app/Contents/Resources/libmygo-sqlite3.dylib \
+  /Applications/Voxt.app/Contents/Resources/libmygo-sqlite3.dylib; do
   [[ -f "$lib" ]] && { cp "$lib" "$app/Contents/Resources/"; break; }
 done
 cat >"$app/Contents/Info.plist" <<'PLIST'

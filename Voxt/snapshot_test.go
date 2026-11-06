@@ -193,7 +193,7 @@ func snapshotsMain(t *testing.T, out string) {
 		// An update installed while VoxtNew runs (updates.go): its card,
 		// and Settings → About.
 		a.clearNotices()
-		fs.set(helper.Status{State: helper.Failed, Reason: helper.FailUpdated, Err: "VoxtNew was updated"})
+		fs.set(helper.Status{State: helper.Failed, Reason: helper.FailUpdated, Err: "Voxt was updated"})
 		save("sidebar-notices-update")
 		a.navigate("/settings/about")
 		scrollToText(tt, i18n.T("Updates"))

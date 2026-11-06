@@ -292,7 +292,7 @@ func cardActionLabel(link string) string {
 	case linkRestartHelper:
 		return i18n.T("Restart the helper")
 	case linkRelaunch:
-		return i18n.T("Restart VoxtNew")
+		return i18n.T("Restart Voxt")
 	case modelsPath:
 		return i18n.T("Open Local models")
 	}

@@ -57,7 +57,7 @@ func TestTranscribePageRenders(t *testing.T) {
 	if !has(tt, "Open Permissions") {
 		t.Error("no Accessibility notice")
 	}
-	if _, ok := tt.Find("Works only while VoxtNew may use Accessibility."); !ok {
+	if _, ok := tt.Find("Works only while Voxt may use Accessibility."); !ok {
 		t.Error("Right ⌥ is not marked as needing Accessibility")
 	}
 	click(t, tt, "Open Permissions")

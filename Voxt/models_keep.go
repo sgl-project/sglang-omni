@@ -59,7 +59,7 @@ func (a *app) applyKeepLoaded(m settings.Models) {
 func keepLabels() []string {
 	return []string{
 		i18n.T("Automatic"), i18n.T("5 minutes"), i18n.T("15 minutes"),
-		i18n.T("30 minutes"), i18n.T("1 hour"), i18n.T("Until VoxtNew quits"),
+		i18n.T("30 minutes"), i18n.T("1 hour"), i18n.T("Until Voxt quits"),
 	}
 }
 
@@ -74,7 +74,7 @@ func keepLabel(v string) string {
 func (a *app) modelsAdvanced(c *ui.Context) {
 	t := c.Theme()
 	collapsible(c.Key("models-advanced"), i18n.T("Advanced"), &a.modelAdvanced, nil, func() {
-		help := i18n.T("Keeping models loaded lets each dictation start at once, but they keep using the memory shown on their cards. Automatic unloads a speech model after 10 minutes unused and a language model after 5. Other ActNow apps can still ask VoxtNew to free memory.")
+		help := i18n.T("Keeping models loaded lets each dictation start at once, but they keep using the memory shown on their cards. Automatic unloads a speech model after 10 minutes unused and a language model after 5. Other apps that use this model library can still ask Voxt to free memory.")
 		settingRow(c, "models-keep", i18n.T("Keep models loaded"), help, func() {
 			// The label follows the setting and the language, unless a
 			// choice of this select is on its way to the setting.

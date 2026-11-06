@@ -358,7 +358,7 @@ func (a *app) storageSettings(c *ui.Context) {
 			a.resetAsk = "settings"
 		}
 	})
-	settingRow(c, "st-erase", i18n.T("Erase everything"), i18n.T("Deletes your history, recordings, dictionary, app enhancement rules, the local models no other ActNow app uses, settings and logs, then restarts VoxtNew as new."), func() {
+	settingRow(c, "st-erase", i18n.T("Erase everything"), i18n.T("Deletes your history, recordings, dictionary, app enhancement rules, the local models no other app uses, settings and logs, then restarts Voxt as new."), func() {
 		if ui.Button(c.Key("st-erase"), i18n.T("Erase…")).Disabled(a.erasing).Clicked() {
 			a.askErase()
 		}
@@ -393,7 +393,7 @@ func (a *app) storageDialogs(c *ui.Context) {
 		panel.Width(px(t, 440)).Radius(px(t, radiusCard)).Background(t.Background).Border(1, t.Border).Padding(px(t, sp5)).Label(i18n.T("Moving the data folder"))
 		ui.Column(c).Gap(px(t, 10)).Children(func() {
 			ui.Text(c, i18n.T("Moving the data folder")).Bold()
-			ui.Text(c, i18n.T("Copying to %s. VoxtNew restarts when the copy is checked, and finishes the move as it starts.", uitext.ShortPath(a.moveTo))).FontSize(px(t, fsCaption))
+			ui.Text(c, i18n.T("Copying to %s. Voxt restarts when the copy is checked, and finishes the move as it starts.", uitext.ShortPath(a.moveTo))).FontSize(px(t, fsCaption))
 			frac := 0.0
 			if a.moveTotal > 0 {
 				frac = float64(a.moveDone) / float64(a.moveTotal)

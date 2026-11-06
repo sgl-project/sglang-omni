@@ -2,7 +2,9 @@
 
 VoxtNew is a macOS voice input app on local models only: Go + MyGo (native UI, no cgo) and a small Swift helper. Speech recognition and voice activity detection come from sglang-omni's native MLX servers (`sglang_omni_mlx/native`), the language models from a Swift process of their own (mlx-swift-lm and a few GGUF models). It started as a copy of Auralink, the same author's app on remote models (NOTICE). Read [docs/architecture.md](docs/architecture.md) first, then [docs/plan.md](docs/plan.md) for the milestones; [docs/behavior.md](docs/behavior.md) compares its behaviour with Voxt's.
 
-These rules apply inside `Voxt/`. The repository's root `AGENTS.md` and its coding style are for the Python tree; VoxtNew follows its own Go rules below.
+Users see the app as **Voxt**: a user-visible text says Voxt, never VoxtNew, ActNow or actnow.dev (`TestNoOldNames`). Some inside names stay VoxtNew: the Swift packages, the processes, the bundle id, the data folders and `voxtnew://` (docs/architecture.md, Names).
+
+These rules apply inside `Voxt/`. The repository's root `AGENTS.md` and its coding style are for the Python tree; Voxt follows its own Go rules below.
 
 ## Rules
 

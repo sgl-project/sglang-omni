@@ -48,7 +48,9 @@ func (a *app) commands() []command {
 	add("logs-panel", view, i18n.T("Show or hide the logs panel"), "Show or hide the logs panel", "⇧⌘L", true, func() { a.logsPanel = !a.logsPanel })
 	add("shortcuts", view, i18n.T("Keyboard shortcuts"), "Keyboard shortcuts", "?", true, func() { a.sheetOpen = true })
 	add("helper-restart", view, i18n.T("Restart the helper"), "Restart the helper", "", true, a.restartHelper)
-	add("check-updates", view, i18n.T("Check for Updates…"), "Check for Updates", "", a.upd != nil, a.checkForUpdates)
+	if a.upd != nil {
+		add("check-updates", view, i18n.T("Check for Updates…"), "Check for Updates", "", true, a.checkForUpdates)
+	}
 	add("setup-guide", view, i18n.T("Open the setup guide"), "Open the setup guide onboarding", "", true, a.openOnboarding)
 
 	look := i18n.T("Appearance")
@@ -315,19 +317,19 @@ func (a *app) buildMenu() {
 		}
 	}
 	// Check for Updates… goes after About (updates.go).
-	appItems := append([]*mygo.MenuItem{{Role: mygo.RoleAbout, Label: i18n.T("About VoxtNew")}}, a.updateMenuItems(act)...)
+	appItems := append([]*mygo.MenuItem{{Role: mygo.RoleAbout, Label: i18n.T("About Voxt")}}, a.updateMenuItems(act)...)
 	mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{
-		{Label: "VoxtNew", Submenu: append(appItems,
+		{Label: "Voxt", Submenu: append(appItems,
 			mygo.Separator(),
 			&mygo.MenuItem{Label: i18n.T("Settings…"), Accelerator: "CmdOrCtrl+,", Click: act(func() { a.navigate("/settings") })},
 			mygo.Separator(),
 			&mygo.MenuItem{Role: mygo.RoleServices, Label: i18n.T("Services")},
 			mygo.Separator(),
-			&mygo.MenuItem{Role: mygo.RoleHide, Label: i18n.T("Hide VoxtNew")},
+			&mygo.MenuItem{Role: mygo.RoleHide, Label: i18n.T("Hide Voxt")},
 			&mygo.MenuItem{Role: mygo.RoleHideOthers, Label: i18n.T("Hide Others")},
 			&mygo.MenuItem{Role: mygo.RoleUnhide, Label: i18n.T("Show All")},
 			mygo.Separator(),
-			&mygo.MenuItem{Role: mygo.RoleQuit, Label: i18n.T("Quit VoxtNew")},
+			&mygo.MenuItem{Role: mygo.RoleQuit, Label: i18n.T("Quit Voxt")},
 		)},
 		{Label: i18n.T("Edit"), Submenu: []*mygo.MenuItem{
 			{Role: mygo.RoleUndo, Label: i18n.T("Undo")},

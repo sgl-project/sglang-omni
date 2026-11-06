@@ -83,6 +83,13 @@ type Update struct {
 	current string
 }
 
+// HasFeed reports whether the app was built with updates (a feed and the
+// key updates are signed with), whether or not it can update itself where
+// it runs: an app without them never updates, wherever it is installed.
+func (u *UpdaterModule) HasFeed() bool {
+	return packageUpdateFeed != "" && packageUpdateKey != ""
+}
+
 // Enabled reports whether the app can update itself: it was built with
 // updates and can write where it is installed. Apps installed by a package
 // manager, such as a .deb in /opt, are updated by it instead.

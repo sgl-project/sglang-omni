@@ -36,6 +36,9 @@ type Update struct {
 	Date time.Time
 }
 
+// HasFeed reports whether the app was built with updates: not in browsers.
+func (u *UpdaterModule) HasFeed() bool { return false }
+
 // Enabled reports whether the app can update itself: not in browsers.
 func (u *UpdaterModule) Enabled() bool { return false }
 

@@ -27,7 +27,7 @@ func TestSessionSwitchedApp(t *testing.T) {
 		{name: "nothing focused", opts: "switch=com.apple.finder,focus=none", reason: deliver.ReasonNotEditable,
 			why: "No text field is focused: click where it should go, then insert, or copy it."},
 		{name: "a password field", opts: "switch=com.apple.TextEdit,focus=secure", reason: deliver.ReasonSecure,
-			why: "A password field is focused, and VoxtNew never types into one: copy it, or click another field and insert."},
+			why: "A password field is focused, and Voxt never types into one: copy it, or click another field and insert."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(400, "transcribe/0", proto.PhaseTrigger))

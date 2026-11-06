@@ -70,7 +70,7 @@ func (a *app) readinessList() []readiness {
 			fix: func() { a.askPermission(proto.PermissionMicrophone) }})
 	default:
 		out = append(out, readiness{key: "home-mic", title: i18n.T("Microphone"), kind: noticeError,
-			text: i18n.T("VoxtNew may not use the microphone: allow it in System Settings."), action: i18n.T("Open Permissions"), fix: openPerms})
+			text: i18n.T("Voxt may not use the microphone: allow it in System Settings."), action: i18n.T("Open Permissions"), fix: openPerms})
 	}
 	// Accessibility.
 	switch {
@@ -88,7 +88,7 @@ func (a *app) readinessList() []readiness {
 	case st.State == helper.Ready, st.State == helper.Starting:
 	case st.Reason == helper.FailUpdated:
 		out = append(out, readiness{key: "home-helper", title: i18n.T("Helper"), kind: noticeWarn,
-			text: uitext.HelperFailText(st), action: i18n.T("Restart VoxtNew"), fix: a.relaunch})
+			text: uitext.HelperFailText(st), action: i18n.T("Restart Voxt"), fix: a.relaunch})
 	default:
 		out = append(out, readiness{key: "home-helper", title: i18n.T("Helper"), kind: noticeError,
 			text: uitext.HelperFailText(st), action: i18n.T("Restart the helper"), fix: a.restartHelper})

@@ -1,7 +1,7 @@
 package main
 
 // The packaged app's smoke run (scripts/mac-regress.sh): started as
-// VoxtNew.app/Contents/MacOS/VoxtNew --smoke <dir>, it runs instead of the
+// Voxt.app/Contents/MacOS/Voxt --smoke <dir>, it runs instead of the
 // app, with no window, no menu bar icon and no single-instance lock, on a
 // data folder of its own (<dir>/data; the models are the model library's,
 // $HUB): it starts the bundled helper, opens the first installed speech and

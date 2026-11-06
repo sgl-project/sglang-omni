@@ -310,7 +310,7 @@ func TestShortcutPromptWaitsForGuide(t *testing.T) {
 			t.Errorf("more: no %q in %q", s, tt.Texts())
 		}
 	}
-	click(t, tt, "Start using VoxtNew")
+	click(t, tt, "Start using Voxt")
 	if !has(tt, "Change shortcut") {
 		t.Errorf("no prompt after the guide: %q", tt.Texts())
 	}

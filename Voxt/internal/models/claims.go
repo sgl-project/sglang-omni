@@ -13,7 +13,7 @@ import (
 )
 
 // Decide is what deleting model id would do: who else uses it (Users,
-// LoadedBy: the dialog's "Remove from VoxtNew" or "Delete for all
+// LoadedBy: the dialog's "Remove from Voxt" or "Delete for all
 // apps…"), what it frees. It reads the family's files: off the main
 // thread.
 func (m *Manager) Decide(id string) (fammodels.Decision, error) {

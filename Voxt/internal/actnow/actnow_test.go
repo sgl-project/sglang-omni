@@ -45,7 +45,7 @@ func TestManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.App != AppID || got.Variant != family.Release || got.Name != "VoxtNew" || got.Version != "0.1.0-beta.1" || got.URLScheme != "voxtnew" ||
+	if got.App != AppID || got.Variant != family.Release || got.Name != "Voxt" || got.Version != "0.1.0-beta.1" || got.URLScheme != "voxtnew" ||
 		got.Models == nil || got.Models.Root != fx.Hub || !slices.Equal(got.Capabilities, []string{"models.hf", "asr.local", "llm.local", "dictation"}) ||
 		got.Links["shortcuts"] != "voxtnew://settings/shortcuts" {
 		t.Errorf("manifest %+v", got)

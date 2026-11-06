@@ -262,7 +262,7 @@ func (a *app) keyRowView(c *ui.Context, feature string, i int, h settings.Hotkey
 				if !a.hotkeys.Installed {
 					col = k.Warning
 				}
-				iconMark(c, icons.Accessibility, col, i18n.T("Works only while VoxtNew may use Accessibility."))
+				iconMark(c, icons.Accessibility, col, i18n.T("Works only while Voxt may use Accessibility."))
 			}
 			if iconButton(c.Key("remove"), icons.TrashBinMinimalistic, i18n.T("Remove shortcut %d", n)).Clicked() {
 				a.setHotkeys(feature, true, func(hs []settings.Hotkey) []settings.Hotkey {
