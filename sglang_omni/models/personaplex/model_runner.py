@@ -369,7 +369,6 @@ class PersonaPlexModelRunner(ModelRunner):
         schedule_batch: ScheduleBatch,
         requests: list[SchedulerRequest],
     ) -> None:
-        """Embed every request's missing rows."""
         pieces: list[torch.Tensor | None] = []
         live_pieces: list[int] = []
         live_rows: list[tuple[torch.Tensor, torch.Tensor, np.ndarray]] = []
@@ -438,8 +437,6 @@ class PersonaPlexModelRunner(ModelRunner):
     def embed_live_rows(
         self, live_rows: list[tuple[torch.Tensor, torch.Tensor, np.ndarray]]
     ) -> torch.Tensor:
-        """Rows of (text token, agent codes) fed back on the device and caller codes
-        from the host timeline, copied over at once and embedded in one pass."""
         model = self.model
         rows = torch.empty(
             len(live_rows), NUM_STREAMS, dtype=torch.long, device=self.model_device
@@ -456,10 +453,8 @@ class PersonaPlexModelRunner(ModelRunner):
         return model.embed_rows(rows).to(model.fusion_buffer.dtype)
 
     def next_live_row_staging(self, batch_size: int) -> torch.Tensor:
-        """Host rows for a step's live caller codes, alternating between two buffers."""
-        # Note (Junnan Li): A step's copy from one buffer can still be in flight
-        # while the next step fills the other; the step's results are read back
-        # before its buffer comes round again.
+        # Note (Junnan Li): Two buffers, so filling the next step never overwrites a
+        # copy still in flight.
         if (
             self.live_row_staging is None
             or self.live_row_staging[0].shape[0] < batch_size

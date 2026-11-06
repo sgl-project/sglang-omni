@@ -46,8 +46,8 @@ REFERENCE_CACHE_POSITIONS = MAX_DELAY + 3
 
 UNKNOWN = -1
 
-# Note (Junnan Li): Caller rows past the prompt read frame p - delay_k in column k; a
-# session's prompt is longer than the largest delay, so no new row is an initial one.
+# Note (Junnan Li): The prompt is longer than the largest delay, so appended rows
+# never need initial padding.
 USER_STREAM_DELAYS = np.array(DELAYS[USER_STREAM_OFFSET:])
 USER_STREAM_COLUMNS = np.arange(len(DELAYS) - USER_STREAM_OFFSET)
 
@@ -166,9 +166,8 @@ class Timeline:
     prefill_embedding_positions: list[int]
     agent_row_before_start: torch.Tensor
     forced_agent_at_start: torch.Tensor
-    # Note (Junnan Li): numpy buffers with room to grow, so a session unit's append
-    # on the LM scheduler thread writes only its own rows and never releases and
-    # retakes the GIL that the stage's other threads hold.
+    # Note (Junnan Li): Growable numpy buffers, so an append copies only new rows
+    # and never releases the GIL.
     user_frames_buffer: np.ndarray
     user_rows_buffer: np.ndarray
     num_prompt_positions: int
@@ -211,8 +210,6 @@ class Timeline:
 
 
 def extend_rows(buffer: np.ndarray, count: int, new_rows: np.ndarray) -> np.ndarray:
-    """buffer with new_rows written after its first count rows, doubled first when
-    full."""
     total = count + new_rows.shape[0]
     if buffer.shape[0] < total:
         grown = np.empty((max(total, 2 * count), *buffer.shape[1:]), dtype=buffer.dtype)

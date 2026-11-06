@@ -61,7 +61,6 @@ def pcm16_to_waveform(chunk: TimedChunk) -> torch.Tensor:
 
 
 def pcm16_samples(waveform: torch.Tensor) -> np.ndarray:
-    """Float samples, any leading shape, as little-endian PCM16 in one host copy."""
     samples = (waveform.float().clamp(-1.0, 1.0) * (PCM16_SCALE - 1)).round()
     return samples.to(torch.int16).cpu().numpy().astype("<i2")
 
