@@ -323,6 +323,33 @@ func copyFile(from, to string) error {
 	return out.Close()
 }
 
+// linkImportLegacy is the link of the card that offers the previous Voxt's
+// data (offerLegacy): its action is the import.
+const linkImportLegacy = "action:import-legacy"
+
+// legacyOffered is that card's id, and the document that says it was
+// posted: once, so a dismissed card stays away.
+const legacyOffered = "legacy-import-offered"
+
+// offerLegacy posts, once, a card offering the previous Voxt's data to who
+// will not see the setup guide's: who set up a version without the import
+// (2.0.0) and then installed this one.
+func (a *app) offerLegacy() {
+	if a.notes == nil || !a.prefs.Setup.Done || legacyLibrary() == "" {
+		return
+	}
+	docs, ctx := a.lib.store.Documents(), context.Background()
+	if _, posted, err := docs.Get(ctx, legacyOffered); err != nil || posted {
+		return
+	}
+	if err := docs.Put(ctx, legacyOffered, []byte("true")); err != nil {
+		log.Printf("legacy import: %v", err)
+		return
+	}
+	a.notes.Post(core.Notification{ID: legacyOffered, Title: i18n.T("The previous Voxt is on this Mac"),
+		Body: i18n.T("Bring its dictionary and history over."), Link: linkImportLegacy})
+}
+
 // importLegacy merges the previous Voxt's data in: at once when it reads
 // without asking (legacyReadable), else after the user picks its data folder
 // (one click: the panel opens on it).

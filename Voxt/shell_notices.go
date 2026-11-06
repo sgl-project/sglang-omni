@@ -167,6 +167,10 @@ func (a *app) cardAction(n core.Notification) {
 	case linkRelaunch:
 		a.relaunch() // updates.go
 		return
+	case linkImportLegacy:
+		a.dismissNotice(n.ID)
+		a.importLegacy() // legacy_import.go
+		return
 	}
 	a.openURL(n.Link)
 }
@@ -295,6 +299,8 @@ func cardActionLabel(link string) string {
 		return i18n.T("Restart Voxt")
 	case modelsPath:
 		return i18n.T("Open Local models")
+	case linkImportLegacy:
+		return i18n.T("Import") // the card's title says from where
 	}
 	return i18n.T("Open")
 }

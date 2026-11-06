@@ -195,3 +195,45 @@ func TestLegacyReadable(t *testing.T) {
 		t.Error("a database that cannot be opened is readable")
 	}
 }
+
+// Who set up a version without the import (the guide's card never showed)
+// gets one card that offers it; dismissed, it does not come back on the next
+// start. A fresh install gets the guide's card instead.
+func TestOfferLegacyOnce(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "Library", "Containers", legacyBundleID), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("VOXTNEW_LEGACY_HOME", home)
+	dir := testDir(t)
+	ctx := context.Background()
+	offered := func(a *app) bool {
+		list, _ := a.notes.List(ctx)
+		for _, n := range list {
+			if n.ID == legacyOffered && n.Link == linkImportLegacy {
+				return true
+			}
+		}
+		return false
+	}
+	a, _, _ := newTestAppIn(t, dir)
+	a.offerLegacy()
+	if offered(a) {
+		t.Fatal("offered on a fresh install, where the guide has its card")
+	}
+	a.prefs.Setup.Done = true
+	a.offerLegacy()
+	if !offered(a) {
+		t.Fatal("no card for who set up without the guide's card")
+	}
+	if err := a.notes.Dismiss(ctx, legacyOffered); err != nil { // the card's ×, saved
+		t.Fatal(err)
+	}
+	a.quit()
+	b, _, _ := newTestAppIn(t, dir)
+	b.prefs.Setup.Done = true
+	b.offerLegacy()
+	if offered(b) {
+		t.Error("the dismissed card came back on the next start")
+	}
+}
