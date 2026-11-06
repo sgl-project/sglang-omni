@@ -632,9 +632,11 @@ the checkpoint:</p>
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
-<p>The provided configuration enables the AR and acoustic-tail CUDA graphs and a fixed-width CUDA
-graph for streaming AudioVAE transitions. Non-streaming full-sequence AudioVAE decode remains
-compact eager, and requests are non-streaming unless <code class="docutils literal notranslate"><span class="pre">stream</span></code> is set.</p>
+<p>The provided configuration enables the AR, acoustic-tail, and prefill CUDA graphs and a
+fixed-width CUDA graph for streaming AudioVAE transitions. Prefill uses the breakable backend
+(<code class="docutils literal notranslate"><span class="pre">cuda_graph_backend_prefill</span></code>) with token buckets up to 512; longer prefills run eager.
+Non-streaming full-sequence AudioVAE decode remains compact eager, and requests are non-streaming
+unless <code class="docutils literal notranslate"><span class="pre">stream</span></code> is set.</p>
 <p>For non-streaming requests, <code class="docutils literal notranslate"><span class="pre">audio_decode</span></code> sends the complete generated latent sequence through
 one full-sequence AudioVAE decode. Streaming requests use the separate incremental AudioVAE path
 with request-local cache and overlap state. Older configs need three changes, all enforced
@@ -854,7 +856,8 @@ flags used for generation:</p>
 <h2>Benchmark Results<a class="headerlink" href="#benchmark-results" title="Link to this heading">#</a></h2>
 <section id="recommended-single-h200-tp1">
 <h3>Recommended Single-H200 TP1<a class="headerlink" href="#recommended-single-h200-tp1" title="Link to this heading">#</a></h3>
-<p>The recommended TP1 configuration was evaluated on <strong>1× H200 141 GB</strong> with concurrency 8, eight warmup requests, and the full Seed-TTS-Eval EN and ZH splits. Streaming used two initial patches followed by four-patch steady groups, with the AR, acoustic-tail, and streaming AudioVAE CUDA graphs enabled. Non-streaming requests continued to use compact full-sequence AudioVAE eager decode.</p>
+<p>The recommended TP1 configuration was evaluated on <strong>1× H200 141 GB</strong> with concurrency 8, eight warmup requests, and the full Seed-TTS-Eval EN and ZH splits. Streaming used two initial patches followed by four-patch steady groups, with the AR, breakable prefill, acoustic-tail, and streaming AudioVAE CUDA graphs enabled. Non-streaming requests continued to use compact full-sequence AudioVAE eager decode.</p>
+<p><code class="docutils literal notranslate"><span class="pre">Corpus</span> <span class="pre">WER/CER</span></code> is the micro-averaged corpus rate over every sample, including outliers. The scorer splits Chinese into characters, so its ZH rate is a CER even though the log labels it WER.</p>
 <p>Streaming:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
@@ -875,45 +878,45 @@ flags used for generation:</p>
 <td><p>EN</p></td>
 <td class="text-right"><p>1088</p></td>
 <td class="text-right"><p>0</p></td>
-<td class="text-right"><p>0.95%</p></td>
-<td class="text-right"><p>0.1620</p></td>
-<td class="text-right"><p>0.764</p></td>
-<td class="text-right"><p>0.3380</p></td>
-<td class="text-right"><p>10.456</p></td>
-<td class="text-right"><p>49.428</p></td>
+<td class="text-right"><p>0.96%</p></td>
+<td class="text-right"><p>0.0950</p></td>
+<td class="text-right"><p>0.450</p></td>
+<td class="text-right"><p>0.1992</p></td>
+<td class="text-right"><p>17.743</p></td>
+<td class="text-right"><p>84.201</p></td>
 </tr>
 <tr class="row-odd"><td><p>text-only</p></td>
 <td><p>ZH</p></td>
 <td class="text-right"><p>2020</p></td>
 <td class="text-right"><p>0</p></td>
-<td class="text-right"><p>0.64%</p></td>
-<td class="text-right"><p>0.1577</p></td>
-<td class="text-right"><p>0.789</p></td>
-<td class="text-right"><p>0.3283</p></td>
-<td class="text-right"><p>10.124</p></td>
-<td class="text-right"><p>50.770</p></td>
+<td class="text-right"><p>0.70%</p></td>
+<td class="text-right"><p>0.0937</p></td>
+<td class="text-right"><p>0.470</p></td>
+<td class="text-right"><p>0.1999</p></td>
+<td class="text-right"><p>17.010</p></td>
+<td class="text-right"><p>85.302</p></td>
 </tr>
 <tr class="row-even"><td><p>reference</p></td>
 <td><p>EN</p></td>
 <td class="text-right"><p>1088</p></td>
 <td class="text-right"><p>0</p></td>
-<td class="text-right"><p>1.25%</p></td>
-<td class="text-right"><p>0.1942</p></td>
-<td class="text-right"><p>0.863</p></td>
-<td class="text-right"><p>0.4501</p></td>
-<td class="text-right"><p>9.247</p></td>
-<td class="text-right"><p>41.769</p></td>
+<td class="text-right"><p>1.03%</p></td>
+<td class="text-right"><p>0.1222</p></td>
+<td class="text-right"><p>0.541</p></td>
+<td class="text-right"><p>0.3091</p></td>
+<td class="text-right"><p>14.759</p></td>
+<td class="text-right"><p>66.595</p></td>
 </tr>
 <tr class="row-odd"><td><p>reference</p></td>
 <td><p>ZH</p></td>
 <td class="text-right"><p>2020</p></td>
 <td class="text-right"><p>0</p></td>
-<td class="text-right"><p>0.66%</p></td>
-<td class="text-right"><p>0.1659</p></td>
-<td class="text-right"><p>0.953</p></td>
-<td class="text-right"><p>0.4081</p></td>
-<td class="text-right"><p>8.381</p></td>
-<td class="text-right"><p>48.285</p></td>
+<td class="text-right"><p>0.62%</p></td>
+<td class="text-right"><p>0.1026</p></td>
+<td class="text-right"><p>0.587</p></td>
+<td class="text-right"><p>0.2780</p></td>
+<td class="text-right"><p>13.621</p></td>
+<td class="text-right"><p>78.198</p></td>
 </tr>
 </tbody>
 </table>
@@ -937,46 +940,46 @@ flags used for generation:</p>
 <td><p>EN</p></td>
 <td class="text-right"><p>1088</p></td>
 <td class="text-right"><p>0</p></td>
-<td class="text-right"><p>0.95%</p></td>
-<td class="text-right"><p>0.1413</p></td>
-<td class="text-right"><p>0.667</p></td>
-<td class="text-right"><p>11.965</p></td>
-<td class="text-right"><p>56.721</p></td>
+<td class="text-right"><p>0.92%</p></td>
+<td class="text-right"><p>0.0924</p></td>
+<td class="text-right"><p>0.433</p></td>
+<td class="text-right"><p>18.432</p></td>
+<td class="text-right"><p>86.966</p></td>
 </tr>
 <tr class="row-odd"><td><p>text-only</p></td>
 <td><p>ZH</p></td>
 <td class="text-right"><p>2020</p></td>
 <td class="text-right"><p>0</p></td>
 <td class="text-right"><p>0.64%</p></td>
-<td class="text-right"><p>0.1335</p></td>
-<td class="text-right"><p>0.668</p></td>
-<td class="text-right"><p>11.959</p></td>
-<td class="text-right"><p>60.040</p></td>
+<td class="text-right"><p>0.0895</p></td>
+<td class="text-right"><p>0.446</p></td>
+<td class="text-right"><p>17.920</p></td>
+<td class="text-right"><p>89.597</p></td>
 </tr>
 <tr class="row-even"><td><p>reference</p></td>
 <td><p>EN</p></td>
 <td class="text-right"><p>1088</p></td>
 <td class="text-right"><p>0</p></td>
-<td class="text-right"><p>1.26%</p></td>
-<td class="text-right"><p>0.1573</p></td>
-<td class="text-right"><p>0.696</p></td>
-<td class="text-right"><p>11.469</p></td>
-<td class="text-right"><p>51.688</p></td>
+<td class="text-right"><p>1.05%</p></td>
+<td class="text-right"><p>0.1162</p></td>
+<td class="text-right"><p>0.510</p></td>
+<td class="text-right"><p>15.668</p></td>
+<td class="text-right"><p>70.747</p></td>
 </tr>
 <tr class="row-odd"><td><p>reference</p></td>
 <td><p>ZH</p></td>
 <td class="text-right"><p>2020</p></td>
 <td class="text-right"><p>0</p></td>
-<td class="text-right"><p>0.67%</p></td>
-<td class="text-right"><p>0.1254</p></td>
-<td class="text-right"><p>0.718</p></td>
-<td class="text-right"><p>11.127</p></td>
-<td class="text-right"><p>63.931</p></td>
+<td class="text-right"><p>0.78%</p></td>
+<td class="text-right"><p>0.0923</p></td>
+<td class="text-right"><p>0.528</p></td>
+<td class="text-right"><p>15.131</p></td>
+<td class="text-right"><p>87.042</p></td>
 </tr>
 </tbody>
 </table>
 </div>
-<p>All 12,432 requests completed successfully. Streaming returned its first audio payload in 0.33-0.45 seconds, while non-streaming retained higher complete-response throughput. The worst corpus WER was 1.26%, and the worst corpus CER was 0.67%.</p>
+<p>All 12,432 requests completed successfully. Streaming returned its first audio payload in 0.20-0.31 seconds, while non-streaming retained higher complete-response throughput. The worst corpus WER was 1.05%, and the worst corpus CER was 0.78%.</p>
 <p>Streaming playback continuity:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
@@ -1014,8 +1017,8 @@ flags used for generation:</p>
 </tr>
 <tr class="row-even"><td><p>reference</p></td>
 <td><p>EN</p></td>
-<td class="text-right"><p>1072</p></td>
-<td class="text-right"><p>16</p></td>
+<td class="text-right"><p>1076</p></td>
+<td class="text-right"><p>12</p></td>
 <td class="text-right"><p>0.0000</p></td>
 <td class="text-right"><p>0.0000</p></td>
 <td class="text-right"><p>100.00%</p></td>
