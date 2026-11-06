@@ -248,3 +248,39 @@ def test_the_interval_chosen_passes_its_own_stall_test() -> None:
     )
     chosen = policy.latency_interval(1.0, 0.0208, 0.0658)
     assert chosen in smooth or chosen == policy.first_audio_interval(0.0208, 0.0658)
+
+
+def loaded(observations: list[tuple[float, int]]) -> tuple[PrefillCadence, float]:
+    """A policy fed those prefills and a second of decode steps at C16, as one H200 cell ran."""
+    policy = cadence(longest_interval=64, is_latency_driven=True)
+    for prefill_s, cohort in observations:
+        policy.observe_prefill(prefill_s, cohort)
+    for index in range(60):
+        policy.observe_decode_step(0.0093, 16, index / 60)
+    policy.requests_admitted = policy.frames_decoded / 82
+    return policy, 59 / 60
+
+
+def test_one_cohort_size_reads_the_prefill_as_all_fixed_cost() -> None:
+    """Under the arrival crossover every cohort is 1 and the two parts are not identifiable."""
+    policy, now_s = loaded([(0.030, 1)] * 40)
+    assert policy.prefill_estimate_s(0) == pytest.approx(0.030)
+    assert policy.prefill_estimate_s(20) == pytest.approx(0.030)
+    assert policy.latency_interval(now_s, 0.0093, 0.030) > 4
+
+
+def test_a_fixed_part_of_zero_is_what_made_the_policy_take_the_shortest_interval() -> None:
+    """The defect the guard removes: an identifiable fit whose fixed part is zero amortises nothing."""
+    policy, now_s = loaded([(0.030, 1), (0.120, 4), (0.240, 8)])
+    assert policy.prefill_estimate_s(0) == pytest.approx(0.0, abs=1e-6)
+    assert policy.latency_interval(now_s, 0.0093, 0.030) == 1
+
+
+def test_spread_in_the_cohorts_restores_the_fit() -> None:
+    policy = cadence()
+    for _ in range(20):
+        policy.observe_prefill(0.030, 1)
+    policy.observe_prefill(0.0515, 4)
+    policy.observe_prefill(0.1015, 14)
+    assert policy.prefill_estimate_s(0) == pytest.approx(0.0229, abs=2e-3)
+    assert policy.prefill_estimate_s(14) == pytest.approx(0.1015, abs=4e-3)

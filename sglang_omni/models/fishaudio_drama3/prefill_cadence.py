@@ -31,6 +31,9 @@ from dataclasses import dataclass, field
 
 AUDIO_FRAME_SECONDS = 2048 / 44100
 BATCH_BUCKET = 8
+# How far the cohorts seen must spread before the prefill's fixed and per-request parts are told
+# apart; below it the fit is not identifiable and the whole prefill is read as fixed.
+COHORT_SPREAD = 2
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -139,6 +142,8 @@ class PrefillCadence:
         default_factory=collections.deque
     )
     prefill_line: list[float] = field(default_factory=lambda: [0.0] * 5)
+    prefill_least_s: float = 0.0
+    cohort_seen: tuple[float, float] = (0.0, 0.0)
     frames_decoded: float = 0.0
     requests_admitted: float = 0.0
     chosen_targets: collections.Counter[str] = field(default_factory=collections.Counter)
@@ -165,6 +170,14 @@ class PrefillCadence:
         self.tally(self.prefill_by_count, request_count, prefill_s)
         self.prefill_s = self.smoothed(self.prefill_s, prefill_s)
         self.requests_admitted += request_count
+        self.prefill_least_s = (
+            prefill_s if self.prefill_least_s == 0 else min(self.prefill_least_s, prefill_s)
+        )
+        least, most = self.cohort_seen
+        self.cohort_seen = (
+            request_count if least == 0 else min(least, request_count),
+            max(most, request_count),
+        )
         weight, count, total, squares, products = self.prefill_line
         self.prefill_line = [
             weight + 1,
@@ -208,11 +221,21 @@ class PrefillCadence:
             return self.frames_decoded / self.requests_admitted
 
     def prefill_estimate_s(self, cohort: float) -> float:
-        """T_P(n) = fixed + per request * n, fitted on every prefill seen, not smoothed over time."""
+        """T_P(n) = fixed + per request * n, fitted on every prefill seen, not smoothed over time.
+
+        The split is only identifiable when the cohorts seen differ. Under the arrival crossover
+        every arrival gets its own prefill, so every cohort is 1, and a two-parameter fit on a
+        regressor with no spread puts the whole cost on the per-request term: a run at C16 fitted
+        `0.3 + 28.6 n` where the same engine under load fitted `20.6 + 7.15 n`. A fixed part of zero
+        says the interval can buy nothing, and the policy then takes the shortest interval there is.
+        So with no spread, read the prefill as **all** fixed cost, which is the side the measurements
+        fall on: the fixed part dominates at the small cohorts this regime produces.
+        """
         weight, count, total, squares, products = self.prefill_line
         spread = weight * squares - count**2
-        if weight < 2 or spread <= 0:
-            return self.prefill_s if self.prefill_s is not None else 0.0
+        least, most = self.cohort_seen
+        if weight < 2 or spread <= 0 or most - least < COHORT_SPREAD:
+            return self.prefill_least_s or (self.prefill_s or 0.0)
         else:
             per_request = (weight * products - count * total) / spread
             fixed = (total - per_request * count) / weight
