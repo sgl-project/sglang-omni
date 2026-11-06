@@ -23,6 +23,7 @@ SERVED_KINDS = {
     "cosyvoice3_server": ("cosyvoice3",),
     "fishaudio_drama3_server": ("fishaudio_drama3",),
     "music3_server": ("minimax_music3",),
+    "ming3_audio_server": ("ming3_audio",),
 }
 SYSTEM_LIBRARY_PREFIXES = ("/usr/lib/", "/System/Library/")
 
@@ -113,6 +114,7 @@ def test_a_load_without_a_checkpoint_reports_failed(
         ("music3_server", ("--stage-offload-components", "ar,dit,other"), "requires both ar,dit"),
         ("music3_server", ("--stage-offload-components", ""), "requires both ar,dit"),
         ("cosyvoice3_server", ("--max-queued-requests", "-1"), "--max-queued-requests must not be negative"),
+        ("ming3_audio_server", ("--context-length", "0"), "--context-length must be a positive integer"),
     ],
 )  # fmt: skip
 def test_invalid_server_flags_exit_before_the_load(
@@ -137,6 +139,7 @@ def test_invalid_server_flags_exit_before_the_load(
             for penalty in ("0", "-1", "nan", "inf")
         ],
         ("music3_synthesize", ("--stage-offload-components", "dit"), "requires both ar,dit"),
+        ("ming3_audio_chat", ("--context-length", "0"), "--context-length must be a positive integer"),
     ],
 )  # fmt: skip
 def test_invalid_tool_flags_fail_before_the_load(

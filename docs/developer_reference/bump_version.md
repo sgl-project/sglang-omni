@@ -389,9 +389,11 @@ commits and image digests, sample counts and the profiler attribution for
 any delta outside noise. Measurements and inferences are labeled as what
 they are.
 
-Run CI with `run-all-ci`. A stage without a model label draws its model at
-random, so give each preset its own run on the new image before merge: keep
-`run-all-ci` and add one model label per stage, for example
+Run CI on every H100 model stage with
+`/tag-and-rerun-ci asr tts mps omni full-duplex cascaded`. A stage without a
+model label draws its model at random, so give each preset its own run on the
+new image before merge: keep those stage labels and add one model label per
+stage, for example
 `run-moss-tts-local-transformer-v1.5`, `run-fun-asr-nano-2512` and
 `run-minicpm-o-4.5`. The model labels within a stage are exclusive. The
 CI section of the pull request template lists every label.
