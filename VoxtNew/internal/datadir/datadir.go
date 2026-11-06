@@ -409,22 +409,34 @@ func RemoveExcept(dir string) error {
 }
 
 // eraseEverything deletes the data (wherever it is), and the folders rs
-// names (caches, logs), at the start.
+// names (caches, logs), at the start. What cannot be deleted stays and
+// the log names it.
 func eraseEverything(def string, rs PendingReset) {
+	var left []string
+	removed := func(err error) {
+		if err != nil {
+			left = append(left, err.Error())
+		}
+	}
 	loc := ReadLocation(def)
 	if loc.Dir != "" {
-		os.RemoveAll(loc.Dir)
+		removed(os.RemoveAll(loc.Dir))
 	}
 	if loc.Previous != "" && loc.Previous != def {
-		os.RemoveAll(loc.Previous)
+		removed(os.RemoveAll(loc.Previous))
 	}
 	for _, d := range rs.Also {
 		if d != "" && d != "/" {
-			os.RemoveAll(d)
+			removed(os.RemoveAll(d))
 		}
 	}
-	RemoveExcept(def)
+	removed(RemoveExcept(def))
 	os.Remove(filepath.Join(def, LocationFile))
 	os.Remove(filepath.Join(def, ResetFile))
+	if len(left) > 0 {
+		// shortcut: not retried (a retry at the next start would also erase what is saved meanwhile), until it is decided how to tell the user.
+		log.Printf("data: erased as asked in Settings → Storage, but these stay: %s", strings.Join(left, "; "))
+		return
+	}
 	log.Printf("data: erased everything, as asked in Settings → Storage")
 }

@@ -147,6 +147,43 @@ func TestPruneByCount(t *testing.T) {
 	}
 }
 
+// TestDeleteAudioKeepsWhatStays: a recording that cannot be deleted (on
+// an external folder that went read-only) keeps its entry naming it, and
+// DeleteAudio says so. It used to clear every entry first, so such a file
+// stayed on disk with nothing pointing to it.
+func TestDeleteAudioKeepsWhatStays(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root deletes a read-only folder's files")
+	}
+	s := openTest(t, t.TempDir())
+	h := s.History()
+	locked := filepath.Join(t.TempDir(), "Recordings")
+	if err := os.Mkdir(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h.SetAudioDir(locked)
+	for _, id := range []string{"a", "b"} {
+		os.WriteFile(filepath.Join(locked, id+".wav"), []byte("RIFF"), 0o644)
+		e := entry(id, store.KindTranscribe, time.Now(), "x", "y")
+		e.Audio = id + ".wav"
+		h.Put(ctx, e)
+	}
+	if err := os.Chmod(locked, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0o755) })
+	n, err := h.DeleteAudio(ctx)
+	if err == nil {
+		t.Errorf("deleted %d, no error", n)
+	}
+	for _, id := range []string{"a", "b"} {
+		e, _ := h.Get(ctx, id)
+		if _, statErr := os.Stat(filepath.Join(locked, id+".wav")); statErr == nil && e.Audio == "" {
+			t.Errorf("%s.wav stays on disk, but its entry no longer names it", id)
+		}
+	}
+}
+
 // TestAudioDir: recordings go to the folder set, are found in the
 // store's own when kept there, and go from both; DeleteAudio keeps the
 // entries.

@@ -80,27 +80,38 @@ func (r *historyRepo) removeAudios(rows [][]any) error {
 }
 
 func (r *historyRepo) DeleteAudio(ctx context.Context) (int, error) {
-	// The names first, then one guarded update a row, in one transaction:
-	// a recording kept in between (a new entry, or one that changed) stays.
+	// The files first: one that cannot be deleted keeps its entry naming
+	// it. Then one guarded update a row, in one transaction: a recording
+	// kept in between (a new entry, or one that changed) stays.
 	rows, err := r.db.Query(ctx, `SELECT seq, audio FROM history WHERE audio != ''`)
 	if err != nil || len(rows.Values) == 0 {
 		return 0, wrap("history audio", err)
 	}
+	var first error
 	stmts := make([]sqlite.Statement, 0, len(rows.Values))
 	for _, row := range rows.Values {
+		if err := r.removeAudio(asString(row[1])); err != nil {
+			if first == nil {
+				first = err
+			}
+			continue
+		}
 		stmts = append(stmts, sqlite.Statement{SQL: `UPDATE history SET audio = '', audio_until = 0 WHERE seq = ? AND audio = ?`, Args: []any{row[0], row[1]}})
+	}
+	if len(stmts) == 0 {
+		return 0, first
 	}
 	res, err := r.db.Transaction(ctx, stmts)
 	if err != nil {
 		return 0, wrap("history audio", err)
 	}
-	var gone [][]any
-	for i, x := range res {
+	n := 0
+	for _, x := range res {
 		if x.Changes > 0 {
-			gone = append(gone, []any{rows.Values[i][1]})
+			n++
 		}
 	}
-	return len(gone), r.removeAudios(gone)
+	return n, first
 }
 
 // pruneWhere is the condition of the entries a retention drops, and its
