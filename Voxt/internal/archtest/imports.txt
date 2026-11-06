@@ -14,6 +14,7 @@ asr/doubao asr
 asr/gemini asr
 asr/mimo asr
 asr/openai asr
+asr/openai core
 compose lang
 datadir store/sqlitestore
 deliver helper/proto
@@ -92,6 +93,7 @@ providers asr/doubao
 providers asr/gemini
 providers asr/mimo
 providers asr/openai
+providers core
 providers llm
 providers local
 providers settings

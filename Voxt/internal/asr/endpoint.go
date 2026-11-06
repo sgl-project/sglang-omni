@@ -1,10 +1,11 @@
 package asr
 
 import (
-	"net"
 	"net/url"
 	"slices"
 	"strings"
+
+	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 )
 
 // CheckEndpoint parses a provider endpoint and checks it is safe to send a
@@ -31,7 +32,7 @@ func CheckEndpoint(provider, raw string, secure ...string) (*url.URL, error) {
 	ok := slices.Contains(secure, u.Scheme)
 	if !ok {
 		for _, s := range secure {
-			if plain[s] == u.Scheme && IsLoopback(u.Hostname()) {
+			if plain[s] == u.Scheme && core.IsLoopback(u.Hostname()) {
 				ok = true
 			}
 		}
@@ -41,17 +42,6 @@ func CheckEndpoint(provider, raw string, secure ...string) (*url.URL, error) {
 			strings.Join(secure, " or "), u.Scheme, SanitizeEndpoint(raw))
 	}
 	return u, nil
-}
-
-// IsLoopback reports whether host is this machine: localhost or a
-// loopback address.
-func IsLoopback(host string) bool {
-	host = strings.Trim(strings.ToLower(host), "[]")
-	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }
 
 // SanitizeEndpoint is an endpoint for the log: no user, query or fragment

@@ -15,9 +15,9 @@ import (
 	"strings"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -231,7 +231,7 @@ func whereText(sv service, p settings.Provider) string {
 // onThisMac says whether a service's address is a server on this Mac.
 func onThisMac(base string) bool {
 	u, err := url.Parse(base)
-	return err == nil && u.Host != "" && llm.IsLoopback(u.Hostname())
+	return err == nil && u.Host != "" && core.IsLoopback(u.Hostname())
 }
 
 // testStatus is a connection test's state: a spinner while it runs, a

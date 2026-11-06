@@ -4,12 +4,13 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
-	"net"
 	"net/url"
 	"slices"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 )
 
 // JSONMode is how a remote service is asked for JSON.
@@ -107,19 +108,10 @@ func (cfg ProviderConfig) Resolve() (Preset, error) {
 		return Preset{}, newErr(CodeConfig, "provider", p.ID, "field", "baseURL")
 	}
 	u, err := url.Parse(p.BaseURL)
-	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "https" && !(u.Scheme == "http" && IsLoopback(u.Hostname()))) {
+	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "https" && !(u.Scheme == "http" && core.IsLoopback(u.Hostname()))) {
 		return Preset{}, newErr(CodeConfig, "provider", p.ID, "field", "baseURL")
 	}
 	return p, nil
-}
-
-// IsLoopback says whether host is this Mac.
-func IsLoopback(host string) bool {
-	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }
 
 // ProbeTimeout bounds a Probe.

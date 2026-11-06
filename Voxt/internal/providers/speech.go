@@ -20,6 +20,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr/gemini"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr/mimo"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr/openai"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
@@ -132,7 +133,7 @@ func SpeechKeyOptional(p settings.Provider) bool {
 		return false
 	}
 	u, err := url.Parse(strings.TrimSpace(p.Endpoint))
-	return err == nil && u.Host != "" && asr.IsLoopback(u.Hostname())
+	return err == nil && u.Host != "" && core.IsLoopback(u.Hostname())
 }
 
 // NewASR is the client of a speech setup with its key, over client (nil:

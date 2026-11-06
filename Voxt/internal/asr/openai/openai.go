@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 )
 
 // ID is the provider's preset id.
@@ -64,7 +65,7 @@ func New(cfg asr.Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	if key == "" && !asr.IsLoopback(u.Hostname()) {
+	if key == "" && !core.IsLoopback(u.Hostname()) {
 		return nil, asr.Errorf(ID, asr.KindConfig, "no API key")
 	}
 	model := strings.TrimSpace(cfg.Model)
