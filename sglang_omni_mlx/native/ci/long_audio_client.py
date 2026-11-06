@@ -130,13 +130,7 @@ class MemorySampler:
 
     def stop_on_error(self, message: str) -> None:
         self.error = message
-        if self.process.poll() is None:
-            try:
-                self.process.kill()
-            except ProcessLookupError:
-                pass
-        else:
-            pass
+        self.process.kill()
 
     def sample(self) -> None:
         started = time.monotonic()

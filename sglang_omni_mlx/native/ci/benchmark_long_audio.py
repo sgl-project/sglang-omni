@@ -11,7 +11,6 @@ import platform
 import selectors
 import subprocess
 import time
-from contextlib import suppress
 from importlib.metadata import version
 from pathlib import Path
 
@@ -29,6 +28,29 @@ from sglang_omni_mlx.native.ci.long_audio_corpus import (
     chunk_frame_counts,
     load_clips,
 )
+
+SHUTDOWN_TIMEOUT_SECONDS = 10
+
+
+def stop_server(process: subprocess.Popen[str]) -> str | None:
+    """Stop the server and close its pipes; returns what went wrong, if anything."""
+    if process.poll() is not None:
+        process.communicate()
+        return f"Server exited before shutdown with code {process.returncode}"
+    else:
+        pass
+    try:
+        process.communicate(
+            '{"command":"shutdown"}\n', timeout=SHUTDOWN_TIMEOUT_SECONDS
+        )
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.communicate()
+        return f"Server did not shut down within {SHUTDOWN_TIMEOUT_SECONDS} seconds"
+    if process.returncode != 0:
+        return f"Server exited with code {process.returncode} during shutdown"
+    else:
+        return None
 
 
 def main() -> None:
@@ -277,49 +299,8 @@ def main() -> None:
                         (sample["peak_footprint_bytes"] for sample in sampler.samples),
                         default=0,
                     )
-                    server_exit_code = process.poll()
-                    shutdown_error = None
-                    if server_exit_code is None:
-                        try:
-                            process.stdin.write('{"command":"shutdown"}\n')
-                            process.stdin.flush()
-                        except BrokenPipeError:
-                            shutdown_error = (
-                                "Server closed its control pipe before shutdown"
-                            )
-                            if process.poll() is None:
-                                with suppress(ProcessLookupError):
-                                    process.kill()
-                            else:
-                                pass
-                            server_exit_code = process.wait(timeout=10)
-                        else:
-                            try:
-                                server_exit_code = process.wait(timeout=10)
-                            except subprocess.TimeoutExpired:
-                                shutdown_error = (
-                                    "Server did not shut down within 10 seconds"
-                                )
-                                with suppress(ProcessLookupError):
-                                    process.kill()
-                                server_exit_code = process.wait(timeout=10)
-                            else:
-                                if server_exit_code != 0:
-                                    shutdown_error = f"Server exited with code {server_exit_code} during shutdown"
-                                else:
-                                    pass
-                    else:
-                        shutdown_error = f"Server exited before shutdown with code {server_exit_code}"
-                    try:
-                        process.stdin.close()
-                    except BrokenPipeError:
-                        if shutdown_error is None:
-                            shutdown_error = (
-                                "Server closed its control pipe during shutdown"
-                            )
-                        else:
-                            pass
-                    result["server_exit_code"] = server_exit_code
+                    shutdown_error = stop_server(process)
+                    result["server_exit_code"] = process.returncode
                     if shutdown_error is not None:
                         result["status"] = "failed"
                         if "error" in result:
@@ -330,7 +311,6 @@ def main() -> None:
                     else:
                         pass
                     result["memory_limit_exceeded"] = sampler.exceeded
-                    process.stdout.close()
                     result["memory_sampling_error"] = sampler.error
                     if sampler.error or sampler.exceeded:
                         result["status"] = "failed"
