@@ -225,7 +225,7 @@ timeout 600 bash -c 'until [ $(nvidia-smi --query-gpu=memory.used --format=csv,n
 
 The server arguments and request settings match the CI test (`tests/test_model/test_asr_ci_multi_speaker.py`). Like CI, one server serves all four datasets. The checks are the same as in Step 5. Each client line must also print `CLIENT_OK`. The client exits with code 0, and so prints `CLIENT_OK`, only when every request succeeded. Otherwise it prints an error or an `Evaluation failed` line.
 
-For `movies800times` CI sends no `max_new_tokens`, so the server picks a budget scaled to the audio length, and the request timeout is 300 s. The client CLI always sends `--max-new-tokens` (default 65536) and has no flag to send none. So the two `movies800times` lines below call the client with that default set to `None`. The `aishell4_long` and `googletime` lines use the CLI defaults (65536 tokens, 1800 s), as CI does.
+For `movies800times` CI sends no `max_new_tokens`, so the server picks a budget scaled to the audio length, and the request timeout is 300 s. The client's dataset presets match CI: no budget for `movies800times`, and 65536 tokens with an 1800 s timeout for `aishell4_long` and `googletime`.
 
 ```bash
 mkdir -p $OUT/moss_td
@@ -235,10 +235,10 @@ setsid bash -c 'echo $$ > "$1"; shift; exec "$@"' _ $OUT/moss_td/server.pid \
     --asr.engine.max_running_requests 16 --asr.engine.cuda_graph_max_bs 16 --mem-fraction-static 0.8 \
     > $OUT/moss_td/server.log 2>&1 &
 timeout 1800 bash -c 'until curl -sf localhost:8000/health > /dev/null; do sleep 5; grep -q "^State:[[:space:]]*[A-Y]" /proc/$(cat "$1")/status 2>/dev/null || exit 1; done' _ $OUT/moss_td/server.pid && echo SERVER_READY || tail -n 20 $OUT/moss_td/server.log
-python -c 'import sys, benchmarks.eval.benchmark_asr_transcribe_diarize as b; b.DEFAULT_MAX_NEW_TOKENS = None; sys.exit(b.main(sys.argv[1:]))' \
+python -m benchmarks.eval.benchmark_asr_transcribe_diarize \
     --use-existing-server --port 8000 --dataset movies800times --max-concurrency 16 --request-timeout-s 300 \
     --output-dir $OUT/moss_td/movies800times && echo CLIENT_OK
-python -c 'import sys, benchmarks.eval.benchmark_asr_transcribe_diarize as b; b.DEFAULT_MAX_NEW_TOKENS = None; sys.exit(b.main(sys.argv[1:]))' \
+python -m benchmarks.eval.benchmark_asr_transcribe_diarize \
     --use-existing-server --port 8000 --dataset movies800times --stream --max-concurrency 16 --request-timeout-s 300 \
     --output-dir $OUT/moss_td/movies800times_stream && echo CLIENT_OK
 python -m benchmarks.eval.benchmark_asr_transcribe_diarize --use-existing-server --port 8000 \
