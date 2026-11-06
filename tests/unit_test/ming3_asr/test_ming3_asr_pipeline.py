@@ -3,6 +3,8 @@
 
 import pytest
 
+from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.runtime import resolve_stage_factory_args
 from sglang_omni.models.ming3_asr.config import (
     Ming3ASRFactoryArgs,
     Ming3ASRPipelineConfig,
@@ -37,6 +39,8 @@ def test_default_pipeline_ends_at_thinker() -> None:
     assert isinstance(thinker.factory, Ming3ASRFactoryArgs)
     assert thinker.factory.pre_lm_max_batch_size == 8
     assert thinker.factory.pre_lm_max_batch_wait_ms == 2
+    factory_arguments = resolve_stage_factory_args(thinker, config)
+    assert factory_arguments["enable_async_decode"] is True
 
 
 def two_stage_document(
@@ -72,12 +76,26 @@ def two_stage_document(
     }
 
 
-def test_two_stage_configuration_loads_pre_lm_knobs() -> None:
+def test_two_stage_configuration_resolves_thinker_overrides() -> None:
     config = Ming3ASRPipelineConfig.model_validate(two_stage_document())
+    config_manager = ConfigManager(config)
+    config = config_manager.merge_config(
+        config_manager.parse_extra_args(
+            [
+                "--thinker.factory.enable_async_decode",
+                "false",
+                "--thinker.factory.async_decode_min_batch_size",
+                "2",
+            ]
+        )
+    )
     assert [stage.name for stage in config.stages] == ["preprocessing", "thinker"]
     thinker = config.stages[1]
     assert thinker.factory.pre_lm_max_batch_size == 4
     assert thinker.factory.pre_lm_max_batch_wait_ms == 0
+    factory_arguments = resolve_stage_factory_args(thinker, config)
+    assert factory_arguments["enable_async_decode"] is False
+    assert factory_arguments["async_decode_min_batch_size"] == 2
 
 
 @pytest.mark.parametrize(
@@ -118,6 +136,8 @@ def test_thinker_factory_rejects_invalid_pre_lm_knobs_before_load(
             "missing-checkpoint",
             max_seq_len=8,
             max_new_tokens=4,
+            enable_async_decode=False,
+            async_decode_min_batch_size=1,
             stream_emit_interval_seconds=0.05,
             pre_lm_max_batch_size=batch_size,
             pre_lm_max_batch_wait_ms=wait_ms,
@@ -132,6 +152,8 @@ def test_thinker_factory_rejects_tensor_parallelism_before_load() -> None:
             "missing-checkpoint",
             max_seq_len=8,
             max_new_tokens=4,
+            enable_async_decode=False,
+            async_decode_min_batch_size=1,
             stream_emit_interval_seconds=0.05,
             pre_lm_max_batch_size=8,
             pre_lm_max_batch_wait_ms=2,
