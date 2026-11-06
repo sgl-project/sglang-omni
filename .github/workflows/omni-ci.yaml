@@ -12,11 +12,9 @@ name: Omni CI
 # so a failed or skipped suite never skips another one. Only setup blocks all
 # downstream model CI.
 #
-# mps-ci runs last on purpose: it checks out the PR head (exact_sha) while every
-# other job checks out the merge commit. When main changed pyproject.toml after
-# the PR branched, the two pin different dependencies, and the MPS job's
-# omni-setup rebuilds the shared PR home below with rm -rf. Running it last keeps
-# that rebuild away from stages that are still using the home.
+# mps-ci runs last because omni-setup may rebuild the shared OMNI_CI_HOME if its
+# environment validation fails. Running it last keeps that rebuild away from
+# stages that are still using the home.
 #
 # PR-scoped homes (/data/omni-ci/pr-<N>) persist on the runner for reuse across
 # pushes (runner TTL, e.g. 3 days). reconcile_omni_ci_env.sh validates fingerprint,
@@ -282,7 +280,7 @@ jobs:
     with:
       mps_ci_model: ${{ needs.preflight.outputs.mps_ci_model }}
       mps_ci_config: ${{ needs.preflight.outputs.mps_ci_config }}
-      exact_sha: ${{ github.event.pull_request.head.sha || github.sha }}
+      exact_sha: ${{ github.sha }}
       omni_ci_home: >-
         ${{ github.event_name == 'pull_request'
             && format('/data/omni-ci/pr-{0}', github.event.pull_request.number)
