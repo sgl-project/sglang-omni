@@ -34,9 +34,13 @@ from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
 from sglang.srt.runtime_context import get_exec, get_parallel, get_schedule
 from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 from sglang.srt.server_args import ServerArgs
+from sglang.srt.utils.common import get_available_gpu_memory
 from torch import nn
 
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
+from sglang_omni.platforms import current_platform
+from sglang_omni.scheduling.sglang_backend.request_data import DllmForwardBatch
+from sglang_omni.utils import ipc_weights
 from sglang_omni.utils.gpu_memory import (
     calculate_stage_budget_available_bytes,
     calculate_stage_load_delta_bytes,
@@ -140,8 +144,6 @@ def filter_weights_by_prefix(
 
 def free_gpu_memory_bytes(device: str, gpu_id: int) -> int:
     """Currently free GPU memory in bytes, min-reduced across the world group."""
-    from sglang.srt.utils.common import get_available_gpu_memory
-
     world_group = get_parallel().world_group
     free_gib = get_available_gpu_memory(
         device,
@@ -294,8 +296,6 @@ class OmniKVCacheConfigurator(KVCacheConfigurator):
         total_memory: int,
     ) -> int:
         """Profile colocated KV headroom from this stage's load-time delta."""
-        from sglang.srt.utils.common import get_available_gpu_memory
-
         world_group = get_parallel().world_group
         post_model_load_memory = get_available_gpu_memory(
             self.device,
@@ -350,8 +350,10 @@ class OmniKVCacheConfigurator(KVCacheConfigurator):
 class CFGCudaGraphRunner(DecodeCudaGraphRunner):
     """Replay DLLM blocks once CFG padding is entirely in the cached prefix."""
 
-    def can_run_graph(self, forward_batch: ForwardBatch) -> bool:
-        if any(
+    def can_run_graph(self, forward_batch: DllmForwardBatch) -> bool:
+        if any(request.is_dllm_prefill() for request in forward_batch.reqs):
+            return False
+        elif any(
             padding_length > prefix_length
             for padding_length, prefix_length in zip(
                 forward_batch.dllm_left_pad_lens_cpu,
@@ -460,8 +462,6 @@ class SGLModelRunner(ModelRunner):
         ModelRunner.__init__ and feeds to the loader, so the published
         load_format record is never touched.
         """
-        from sglang_omni.utils import ipc_weights
-
         ws = ipc_weights.get_weight_share_config()
         if ws is not None and ws.role == "follower":
             return "dummy"
@@ -480,8 +480,6 @@ class SGLModelRunner(ModelRunner):
         own storage. Both paths finish inside load_model, strictly before
         KV-pool profiling, warmup forwards, and CUDA graph capture.
         """
-        from sglang_omni.utils import ipc_weights
-
         ws = ipc_weights.get_weight_share_config()
         self.weight_share_config = ws
         self.weight_share_record = None
@@ -539,8 +537,6 @@ class SGLModelRunner(ModelRunner):
         # The exact handle file name needs the constructed model's class, so
         # this pre-wait polls for any export in the directory; follower_attach
         # below still waits on (and validates) the engine's own file.
-        import torch
-
         ipc_weights.wait_for_any_export(ws.dir_path, timeout_s=ws.attach_timeout_s)
         super().load_model()
         self.weight_share_record, self.weight_ipc_leader_monitor = (
@@ -593,8 +589,6 @@ class SGLModelRunner(ModelRunner):
         """
         record = self.weight_share_record
         if record is not None:
-            from sglang_omni.utils import ipc_weights
-
             ipc_weights.verify_attachment(self.model, record)
         else:
             pass
@@ -604,8 +598,6 @@ class SGLModelRunner(ModelRunner):
 
         get_flags().capture.enable_torch_compile = get_exec().graph.enable_torch_compile
         install_prefill_runner_dispatch()
-
-        from sglang_omni.platforms import current_platform
 
         with contextlib.ExitStack() as pins:
             if current_platform.is_xpu():

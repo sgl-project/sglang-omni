@@ -6,17 +6,39 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Generic, Protocol, SupportsIndex, SupportsInt
+from typing import (
+    TYPE_CHECKING,
+    Generic,
+    Protocol,
+    SupportsIndex,
+    SupportsInt,
+    runtime_checkable,
+)
 
 from typing_extensions import TypeVar
 
-from sglang_omni.scheduling.message import OutgoingMessage
+from sglang_omni.comm.kv_transfer import KVPool, KVReceiver
+from sglang_omni.scheduling.message import OutgoingMessage, StageScheduler
 
 if TYPE_CHECKING:
     import torch
     from sglang.srt.managers.schedule_batch import ScheduleBatch
 else:
     pass
+
+
+@runtime_checkable
+class TPWorkFanoutScheduler(StageScheduler, Protocol):
+    """Scheduler that declares how TP ranks receive work."""
+
+    requires_tp_work_fanout: bool
+
+
+@runtime_checkable
+class KVRegistrationScheduler(StageScheduler, Protocol):
+    """Scheduler that registers KV pools and optional receivers with its stage."""
+
+    kv_registrations: tuple[tuple[KVPool, KVReceiver | None], ...]
 
 
 class SchedulerStatus(Enum):

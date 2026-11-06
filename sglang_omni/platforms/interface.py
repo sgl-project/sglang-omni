@@ -5,24 +5,20 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from contextlib import AbstractContextManager, nullcontext
-from typing import TYPE_CHECKING, Protocol
+from typing import Protocol
 
+import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
+from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.platforms.device_mixin import DeviceMixin
+from sglang.srt.server_args import ServerArgs
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
+from sglang_omni.platforms.device_graph import DeviceGraphBackend
+from sglang_omni.profiler.base_profiler import ProfilerBase
+from sglang_omni.proto.messages import TransportKind
 from sglang_omni.utils.gpu_memory import narrow_visible_devices
 from sglang_omni.utils.misc import normalize_quantization
-
-if TYPE_CHECKING:
-    import torch
-    from torch.nn.attention import SDPBackend
-
-    from sglang_omni.comm.data_ref import TransportKind
-    from sglang_omni.pipeline.stage_workers import StageLaunchConfig
-    from sglang_omni.platforms.device_graph import DeviceGraphBackend
-    from sglang_omni.profiler.torch_profiler import TorchProfiler
-else:
-    pass
 
 
 # Note(yzxiao): Joint RoPE rotates all supplied Q/K heads in place. Same-dtype
@@ -45,8 +41,54 @@ class JointRopeInplaceKernel(Protocol):
     ) -> None: ...
 
 
+class StageLaunchSpec(Protocol):
+    stage_name: str
+    tp_size: int
+    gpu_id: int | None
+    allow_child_processes: bool
+    env_defaults: dict[str, str]
+
+    @property
+    def owned_gpu_ids(self) -> list[int]: ...
+
+
+class PackedQKNormRopeKernel(Protocol):
+    def __call__(
+        self,
+        qkv: torch.Tensor,
+        num_heads: int,
+        num_kv_heads: int,
+        num_qk_heads: int,
+        head_dim: int,
+        epsilon: float,
+        q_norm_weight: torch.Tensor,
+        k_norm_weight: torch.Tensor,
+        rope_theta: float,
+        is_neox_style: bool,
+        positions: torch.Tensor,
+        yarn_factor: float,
+        yarn_low: int,
+        yarn_high: int,
+        attention_factor: float,
+    ) -> None: ...
+
+
+class QKNormRopeWithCacheKernel(Protocol):
+    def __call__(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        query_norm_weight: torch.Tensor,
+        key_norm_weight: torch.Tensor,
+        cos_sin_cache: torch.Tensor,
+        positions: torch.Tensor,
+        is_neox_style: bool,
+        epsilon: float,
+    ) -> None: ...
+
+
 def build_cuda_compatible_stage_process_env(
-    spec: StageLaunchConfig,
+    spec: StageLaunchSpec,
     env: Mapping[str, str] | None,
     native_visibility_variable: str,
 ) -> dict[str, str]:
@@ -116,7 +158,7 @@ class OmniPlatform(DeviceMixin):
 
     def get_stage_process_env(
         self,
-        spec: StageLaunchConfig,
+        spec: StageLaunchSpec,
         env: Mapping[str, str] | None = None,
     ) -> dict[str, str]:
         """Return per-process environment overrides needed before child startup."""
@@ -124,15 +166,15 @@ class OmniPlatform(DeviceMixin):
 
     def get_intra_node_transport(self) -> TransportKind:
         """Get TransportKind between devices on the same node"""
-        from sglang_omni.comm.data_ref import TransportKind
-
         return TransportKind.SHM
 
-    def get_fused_qk_norm_rope(self):
+    def get_fused_qk_norm_rope(self) -> PackedQKNormRopeKernel | None:
         """Get the fused QK norm RoPE kernel if available, else return None."""
         return None
 
-    def get_fused_qk_norm_rope_with_cos_sin_cache(self):
+    def get_fused_qk_norm_rope_with_cos_sin_cache(
+        self,
+    ) -> QKNormRopeWithCacheKernel | None:
         """Get the cos/sin-cache fused QK norm RoPE kernel, else return None.
 
         Separate from get_fused_qk_norm_rope: this ABI takes q and k as their own
@@ -179,7 +221,7 @@ class OmniPlatform(DeviceMixin):
     def _get_device_graph_backend(self) -> DeviceGraphBackend | None:
         return None
 
-    def enable_code2wav_graph(self):
+    def enable_code2wav_graph(self) -> bool:
         """Check if current platform support Graph for code2wav in Qwen3-Omni"""
         return True
 
@@ -233,22 +275,20 @@ class OmniPlatform(DeviceMixin):
         """Whether a capture tolerates a body that reads a tensor on the host."""
         return True
 
-    def get_graph_capture_sdpa_backends(self) -> tuple["SDPBackend", ...]:
+    def get_graph_capture_sdpa_backends(self) -> tuple[SDPBackend, ...]:
         """Empty leaves dispatch alone."""
         return ()
 
-    def graph_capture_attention(self) -> AbstractContextManager[object]:
+    def graph_capture_attention(self) -> AbstractContextManager[None]:
         backends = self.get_graph_capture_sdpa_backends()
         if not backends:
             return nullcontext()
         else:
             pass
 
-        from torch.nn.attention import sdpa_kernel
-
         return sdpa_kernel(list(backends))
 
-    def get_torch_profiler(self) -> TorchProfiler:
+    def get_torch_profiler(self) -> type[ProfilerBase]:
         from sglang_omni.profiler.torch_profiler import TorchProfiler
 
         return TorchProfiler
