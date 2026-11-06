@@ -905,6 +905,7 @@ def run_s2pro_engine_with_fake_buffers(
     sm_version: int | None = 90,
     flashinfer_available: bool = True,
     server_args_overrides: dict[str, object] | None = None,
+    enable_async_decode: bool = False,
 ) -> SimpleNamespace:
     stages = importlib.import_module("sglang_omni.models.fishaudio_s2_pro.stages")
     from sglang_omni.models.fishaudio_s2_pro import bootstrap as fish_bootstrap
@@ -944,6 +945,7 @@ def run_s2pro_engine_with_fake_buffers(
         def init_cuda_graphs(self) -> None:
             assert get_exec().graph.enable_torch_compile is False
             assert get_exec().graph.torch_compile_max_bs == 64
+            assert self.model.async_decode_state_enabled is enable_async_decode
             init_graph_calls.append(True)
 
     class FakeWorker:
@@ -1079,6 +1081,7 @@ def run_s2pro_engine_with_fake_buffers(
         device="cuda",
         gpu_id=0,
         server_args_overrides=server_args_overrides,
+        enable_async_decode=enable_async_decode,
     )
     return SimpleNamespace(
         scheduler=scheduler,
@@ -1089,16 +1092,20 @@ def run_s2pro_engine_with_fake_buffers(
     )
 
 
+@pytest.mark.parametrize("enable_async_decode", [False, True])
 def test_s2pro_engine_disables_generic_compile_after_local_compile(
     run_s2pro_engine,
+    enable_async_decode: bool,
 ) -> None:
-    result = run_s2pro_engine()
+    result = run_s2pro_engine(enable_async_decode=enable_async_decode)
     scheduler = result.scheduler
     build_kwargs = result.build_kwargs
 
     # note (Gaokai): the Fish migration hinges on make_adapters() saving the
     # third adapter and extra_scheduler_kwargs() passing it into OmniScheduler.
     assert callable(scheduler.stream_output_builder)
+    assert scheduler.enable_async_decode is enable_async_decode
+    assert scheduler.async_decode_resolve_before_prefill is True
     assert build_kwargs["attention_backend"] == "fa3"
     assert build_kwargs["enable_torch_compile"] is True
     assert build_kwargs["max_running_requests"] == 64

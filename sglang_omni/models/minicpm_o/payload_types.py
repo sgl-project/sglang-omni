@@ -7,6 +7,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, NotRequired, TypedDict
 
+from sglang_omni.scheduling.types import SpecTokensDetailsDict
+
 if TYPE_CHECKING:
     import torch
 else:
@@ -31,6 +33,7 @@ class ThinkerOutput(TypedDict, total=False):
     extra_model_outputs: dict[str, torch.Tensor | list[torch.Tensor] | list[int]]
     finish_reason: str
     weight_version: str
+    spec_tokens_details: SpecTokensDetailsDict
     output_token_logprobs: list[list[float | int]]
 
 
