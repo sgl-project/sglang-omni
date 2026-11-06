@@ -237,6 +237,7 @@ type OutputHelper struct {
 	mu       sync.Mutex
 	claims   []proto.OutputDevice
 	journal  string
+	wrote    bool // wrote its journal: a file with its PID it did not write is a dead helper's
 	watching bool
 	last     proto.OutputState
 	once     sync.Once
@@ -325,18 +326,37 @@ func (h *OutputHelper) Mute(_ context.Context, p proto.OutputMuteParams) (proto.
 
 func (h *OutputHelper) Release(_ context.Context, p proto.OutputReleaseParams) (proto.OutputReleaseResult, error) {
 	h.mu.Lock()
-	i := slices.IndexFunc(h.claims, func(c proto.OutputDevice) bool { return c.UID == p.Device.UID })
-	if i < 0 {
-		h.mu.Unlock()
-		return proto.OutputReleaseResult{}, nil // not ours
+	ours := slices.ContainsFunc(h.claims, func(c proto.OutputDevice) bool { return c.UID == p.Device.UID })
+	h.mu.Unlock()
+	if !ours {
+		return proto.OutputReleaseResult{}, nil
 	}
-	h.claims = slices.Delete(slices.Clone(h.claims), i, i+1)
+	var unmuted bool
+	if p.Unmute {
+		var done bool
+		if unmuted, done = h.undo(p.Device.UID); !done {
+			return proto.OutputReleaseResult{}, nil // the claim stays, as the Swift helper's
+		}
+	}
+	h.mu.Lock()
+	h.claims = slices.DeleteFunc(slices.Clone(h.claims), func(c proto.OutputDevice) bool { return c.UID == p.Device.UID })
 	h.writeJournal(h.claims)
 	h.mu.Unlock()
-	if p.Unmute && h.Sys.Muted(p.Device.UID) {
-		return proto.OutputReleaseResult{Unmuted: h.Sys.set(p.Device.UID, false, true)}, nil
+	return proto.OutputReleaseResult{Unmuted: unmuted}, nil
+}
+
+// undo gives back a claim on uid's device: it unmutes it when muted.
+// done is false when the device is not there or would not unmute: the
+// claim stays. Not under h.mu (Sys's changes call back).
+func (h *OutputHelper) undo(uid string) (unmuted, done bool) {
+	if _, ok := h.Sys.Device(uid); !ok {
+		return false, false
 	}
-	return proto.OutputReleaseResult{}, nil
+	if !h.Sys.Muted(uid) {
+		return false, true
+	}
+	ok := h.Sys.set(uid, false, true)
+	return ok, ok
 }
 
 // ReleaseAll undoes every claim (stdin closed, helper.shutdown, sleep)
@@ -344,15 +364,20 @@ func (h *OutputHelper) Release(_ context.Context, p proto.OutputReleaseParams) (
 func (h *OutputHelper) ReleaseAll() []proto.OutputDevice {
 	h.mu.Lock()
 	claims := h.claims
-	h.claims = nil
-	h.writeJournal(nil)
 	h.mu.Unlock()
+	var gone, kept []proto.OutputDevice
 	for _, c := range claims {
-		if h.Sys.Muted(c.UID) {
-			h.Sys.set(c.UID, false, true)
+		if _, done := h.undo(c.UID); done {
+			gone = append(gone, c)
+		} else {
+			kept = append(kept, c)
 		}
 	}
-	return claims
+	h.mu.Lock()
+	h.claims = kept
+	h.writeJournal(kept)
+	h.mu.Unlock()
+	return gone
 }
 
 func (h *OutputHelper) Recover(_ context.Context, p proto.OutputRecoverParams) (proto.OutputRecoverResult, error) {
@@ -371,15 +396,26 @@ func (h *OutputHelper) Recover(_ context.Context, p proto.OutputRecoverParams) (
 			os.Remove(f) // unreadable: nothing to undo
 			continue
 		}
-		if h.alive(j.PID) {
+		h.mu.Lock()
+		own := j.PID == h.PID && h.wrote
+		h.mu.Unlock()
+		if own || j.PID != h.PID && h.alive(j.PID) {
 			continue // a helper that runs: its claims are its own
 		}
+		var left []proto.OutputDevice
 		for _, d := range j.Devices {
-			if h.Sys.Muted(d.UID) && h.Sys.set(d.UID, false, true) {
+			switch unmuted, done := h.undo(d.UID); {
+			case unmuted:
 				res.Restored = append(res.Restored, d)
+			case !done:
+				left = append(left, d) // not there, or refused: for the next recovery
 			}
 		}
-		os.Remove(f)
+		if len(left) == 0 {
+			os.Remove(f)
+		} else if data, err := json.Marshal(journalFile{PID: j.PID, Devices: left}); err == nil {
+			os.WriteFile(f, data, 0o644)
+		}
 	}
 	return res, nil
 }
@@ -408,6 +444,7 @@ func (h *OutputHelper) writeJournal(claims []proto.OutputDevice) error {
 	}
 	data, _ := json.Marshal(journalFile{PID: h.PID, Devices: claims})
 	tmp := path + ".tmp"
+	h.wrote = true
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return err
 	}
