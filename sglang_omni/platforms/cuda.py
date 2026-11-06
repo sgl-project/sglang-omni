@@ -2,27 +2,22 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
-import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
-from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.platforms.cuda import CudaDeviceMixin
-from sglang.srt.server_args import ServerArgs
 
-from sglang_omni.platforms.device_graph import DeviceGraphBackend
-from sglang_omni.platforms.interface import (
-    JointRopeInplaceKernel,
-    OmniPlatform,
-    PackedQKNormRopeKernel,
-    StageLaunchSpec,
-)
-from sglang_omni.proto.messages import TransportKind
+from sglang_omni.platforms.interface import JointRopeInplaceKernel, OmniPlatform
 from sglang_omni.quantization import resolve_quant_config
-from sglang_omni.utils.gpu_memory import narrow_visible_devices
 from sglang_omni.utils.misc import model_config_has_moe, normalize_quantization
 from sglang_omni.vendor.sglang.server_args import override_server_args
+
+if TYPE_CHECKING:
+    from sglang_omni.pipeline.stage_workers import StageLaunchConfig
+    from sglang_omni.platforms.device_graph import DeviceGraphBackend
+else:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +25,10 @@ logger = logging.getLogger(__name__)
 def is_h20_device() -> bool:
     """True only on NVIDIA H20 (word-boundary match so "H200" isn't caught)."""
     try:
+        import re
+
+        import torch
+
         if not torch.cuda.is_available():
             return False
         else:
@@ -65,12 +64,14 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
 
     def get_stage_process_env(
         self,
-        spec: StageLaunchSpec,
+        spec: StageLaunchConfig,
         env: Mapping[str, str] | None = None,
     ) -> dict[str, str]:
         if spec.allow_child_processes and spec.owned_gpu_ids:
             # Native children inherit this, and host threads that touch an
             # unpinned device stay on the stage's own GPUs.
+            from sglang_omni.utils.gpu_memory import narrow_visible_devices
+
             source_env = env if env is not None else os.environ
             return {
                 "CUDA_VISIBLE_DEVICES": narrow_visible_devices(
@@ -132,9 +133,11 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
         return env_updates
 
     def get_intra_node_transport(self) -> TransportKind:
+        from sglang_omni.comm.data_ref import TransportKind
+
         return TransportKind.CUDA_IPC
 
-    def get_fused_qk_norm_rope(self) -> PackedQKNormRopeKernel:
+    def get_fused_qk_norm_rope(self):
         from sgl_kernel import fused_qk_norm_rope
 
         return fused_qk_norm_rope
