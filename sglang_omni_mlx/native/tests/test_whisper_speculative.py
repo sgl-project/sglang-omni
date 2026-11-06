@@ -101,11 +101,27 @@ def checkpoints(tmp_path: Path) -> tuple[Path, Path, Path]:
     return tuple(paths)
 
 
-@pytest.mark.parametrize("budget", [1, 2, 7, 23])
+@pytest.mark.parametrize("budget", [1, 2, 7, 128])
+@pytest.mark.parametrize("multilingual", [False, True])
 def test_speculative_matches_greedy(
-    checkpoints: tuple[Path, Path, Path], tmp_path: Path, budget: int
+    checkpoints: tuple[Path, Path, Path],
+    tmp_path: Path,
+    budget: int,
+    multilingual: bool,
 ) -> None:
     target, identical, different = checkpoints
+    if multilingual:
+        for checkpoint in checkpoints:
+            path = checkpoint / "generation_config.json"
+            generation = json.loads(path.read_text())
+            generation.update(
+                is_multilingual=True,
+                lang_to_id={"<|en|>": 24, "<|zh|>": 25},
+                task_to_id={"transcribe": 28},
+            )
+            path.write_text(json.dumps(generation))
+    else:
+        pass
     audio = tmp_path / "silence.wav"
     with wave.open(str(audio), "wb") as output:
         output.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
@@ -118,6 +134,18 @@ def test_speculative_matches_greedy(
         str(budget),
     ]
     plain = json.loads(subprocess.check_output([*command, str(audio)], text=True))
+    if multilingual:
+        assert plain["language"] in ("en", "zh")
+        explicit = json.loads(
+            subprocess.check_output(
+                [*command, "--language", plain["language"], str(audio)], text=True
+            )
+        )
+        for field in ("text", "language", "generated_token_count", "finish_reason"):
+            assert plain[field] == explicit[field]
+        assert plain["generated_token_count"] <= min(budget, 27)
+    else:
+        assert plain["language"] is None
     for draft in (identical, different):
         rows = subprocess.check_output(
             [
@@ -133,7 +161,7 @@ def test_speculative_matches_greedy(
         )
         for line in rows.splitlines():
             actual = json.loads(line)
-            for field in ("text", "generated_token_count", "finish_reason"):
+            for field in ("text", "language", "generated_token_count", "finish_reason"):
                 assert actual[field] == plain[field]
             assert (
                 actual["accepted_draft_token_count"]
