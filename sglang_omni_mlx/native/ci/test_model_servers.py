@@ -152,6 +152,36 @@ def test_whisper_fp16_variant_server_transcribes(repo: str) -> None:
         server.stop()
 
 
+@pytest.mark.parametrize(
+    ("clip_id", "language"),
+    [("0006_en_short", "en"), ("0152_zh_short", "zh"), ("0283_mixed", "zh")],
+)
+def test_whisper_detected_language_matches_an_explicit_request(
+    clip_id: str, language: str
+) -> None:
+    """An omitted language previously dropped the prefix token and could return no text."""
+    server = ModelServer("whisper_server", "whisper", WHISPER_LARGE_V3_REPO)
+    fields = {"stream": "true", "include_generation_metadata": "true"}
+    try:
+        status, body = server.post_form({**fields, "language": language}, clip(clip_id))
+        assert status == 200
+        expected = sse_events(body)
+        assert expected[0]["text"].strip()
+        assert expected[0]["generation_metadata"]["language"] == language
+        for supplied in ({}, {"language": ""}, {"language": "unknown"}):
+            status, body = server.post_form({**fields, **supplied}, clip(clip_id))
+            assert status == 200
+            assert sse_events(body) == expected
+        override = "zh" if language == "en" else "en"
+        status, body = server.post_form(
+            {**fields, "language": override, "max_new_tokens": "1"}, clip(clip_id)
+        )
+        assert status == 200
+        assert sse_events(body)[0]["generation_metadata"]["language"] == override
+    finally:
+        server.stop()
+
+
 def corrupt_npz(path: Path, field: str) -> None:
     """A stored one-member archive whose directory lies about a size."""
     with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as archive:
@@ -228,8 +258,7 @@ def test_whisper_language_with_a_truncated_utf8_sequence_is_unknown(
         body,
         {"Content-Type": f"multipart/form-data; boundary={boundary}"},
     )
-    # Note (khazic): an unknown language sends no language token, as Swift does; the
-    # truncated sequence must not be read past.
+    # Note (khazic): the truncated sequence must not be read past.
     assert status == 200
     assert "text" in json.loads(response)
     assert whisper_server.request("GET", "/health")[0] == 200

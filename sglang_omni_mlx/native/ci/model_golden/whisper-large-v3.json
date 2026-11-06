@@ -11,7 +11,7 @@
   "none": "en"
  },
  "baseline": {
-  "source": "Swift-path reference on MLX 0.31.1 (the original Voxt cannot load this npz checkpoint; 392/392 texts identical to native)",
+  "source": "Legacy baseline before automatic language detection: Swift-path reference on MLX 0.31.1 (the original Voxt cannot load this npz checkpoint; 392/392 texts identical to native)",
   "wer_en": 0.08483,
   "cer_zh": 0.13264,
   "mer_mixed": 0.88603
@@ -21,11 +21,11 @@
   "min_identical": 0.8
  },
  "devices": {
-  "Apple M1 Pro": {
+  "Apple M4": {
    "metrics": {
-    "wer_en": 0.08483,
-    "cer_zh": 0.13264,
-    "mer_mixed": 0.88603
+    "wer_en": 0.08082,
+    "cer_zh": 0.14156,
+    "mer_mixed": 0.20651
    },
    "clips": {
     "0000_en_short": {
@@ -677,7 +677,7 @@
      "finish_reason": "stop"
     },
     "0108_en_mid": {
-     "text": "this at once compels you to understand that the work is to be imaginative and decorative that it represents beautiful things in the clearest way but not under existing conditions and that in fact you are producing jeweller's work rather than pictures",
+     "text": "this at once compels you to understand that the work is to be imaginative and decorative that it represents beautiful things in the clearest way but not under existing conditions and that in fact you are producing jeweler's work rather than pictures",
      "language": "en",
      "generated_token_count": 47,
      "finish_reason": "stop"
@@ -845,9 +845,9 @@
      "finish_reason": "stop"
     },
     "0136_zh_numbers": {
-     "text": "即使奈尔女士在阿根廷大致计划宣布她有意参加总统竞选2005年也是在这里她作为布宜诺斯爱丽省代表开始竞选参议员",
+     "text": "即使内尔女士在阿根廷大致计划宣布她有意参加总统竞选2005年也是在这里她作为布宜诺斯爱丽省代表开始竞选参议员",
      "language": "zh",
-     "generated_token_count": 69,
+     "generated_token_count": 68,
      "finish_reason": "stop"
     },
     "0137_zh_numbers": {
@@ -1385,9 +1385,9 @@
      "finish_reason": "stop"
     },
     "0226_zh_mid": {
-     "text": "Pan am oi是一种在夏天又为流行的简单晚餐面包搭配橄榄油番茄手上任何佐料都可以加入比如奶酪金枪鱼等",
+     "text": "Pan am oi,是一种在夏天又为流行的简单晚餐面包搭配橄榄油,番茄,手上任何佐料都可以加入,比如奶酪,金枪鱼等",
      "language": "zh",
-     "generated_token_count": 55,
+     "generated_token_count": 60,
      "finish_reason": "stop"
     },
     "0227_zh_mid": {
@@ -1541,7 +1541,7 @@
      "finish_reason": "stop"
     },
     "0252_zh_short": {
-     "text": "基本上一下课的时候点半下课你就要去听",
+     "text": "基本上一下课的时候你把下课你就要去听",
      "language": "zh",
      "generated_token_count": 15,
      "finish_reason": "stop"
@@ -1709,387 +1709,387 @@
      "finish_reason": "stop"
     },
     "0280_mixed": {
-     "text": "那你现在会不会去GYM打那个B球",
-     "language": null,
-     "generated_token_count": 14,
+     "text": "那你现在会不会去gym打那个壁球",
+     "language": "zh",
+     "generated_token_count": 13,
      "finish_reason": "stop"
     },
     "0281_mixed": {
-     "text": "I think I have to say that I think I have to say that self-driving and self-driving and self-driving",
-     "language": null,
-     "generated_token_count": 25,
+     "text": "Self-driving方面自動駕駛方面",
+     "language": "zh",
+     "generated_token_count": 14,
      "finish_reason": "stop"
     },
     "0282_mixed": {
-     "text": "但是如果你就是單純的 sell this technology 就是說告訴他就是我的 self-driving function is perfect",
-     "language": null,
-     "generated_token_count": 24,
+     "text": "但是如果你就是单纯的sell这个technology就是说告诉他就是我的我的self-driving这个function是perfect",
+     "language": "zh",
+     "generated_token_count": 26,
      "finish_reason": "stop"
     },
     "0283_mixed": {
-     "text": "",
-     "language": null,
-     "generated_token_count": 2,
+     "text": "然后准备了一个月考完之后又用了一个月准备GMAT",
+     "language": "zh",
+     "generated_token_count": 23,
      "finish_reason": "stop"
     },
     "0284_mixed": {
-     "text": "Because mistakes are made by humans.",
-     "language": null,
-     "generated_token_count": 8,
+     "text": "因為 錯誤是 即使人類也會做錯誤",
+     "language": "zh",
+     "generated_token_count": 17,
      "finish_reason": "stop"
     },
     "0285_mixed": {
-     "text": "I'm going to show you guys a video clip of me playing the piano.",
-     "language": null,
-     "generated_token_count": 16,
+     "text": "聽起來也蠻make sense我當初來",
+     "language": "zh",
+     "generated_token_count": 12,
      "finish_reason": "stop"
     },
     "0286_mixed": {
-     "text": "",
-     "language": null,
-     "generated_token_count": 2,
+     "text": "对,然后当时, that's the reason I know the famous player, McGrady.",
+     "language": "en",
+     "generated_token_count": 20,
      "finish_reason": "stop"
     },
     "0287_mixed": {
-     "text": "I think the food is still normal.",
-     "language": null,
+     "text": "就吃的方面還算是Normal",
+     "language": "zh",
      "generated_token_count": 9,
      "finish_reason": "stop"
     },
     "0288_mixed": {
-     "text": "So it will work slowly and slowly and then you should",
-     "language": null,
-     "generated_token_count": 14,
+     "text": "So it will work slowly and slowly and then you, you, you should, um,",
+     "language": "en",
+     "generated_token_count": 18,
      "finish_reason": "stop"
     },
     "0289_mixed": {
-     "text": "What are you doing now?",
-     "language": null,
-     "generated_token_count": 7,
+     "text": "聊一些你现在做什么research方向",
+     "language": "zh",
+     "generated_token_count": 10,
      "finish_reason": "stop"
     },
     "0290_mixed": {
-     "text": "",
-     "language": null,
-     "generated_token_count": 1,
+     "text": "但是跟major没关系的你说的major可能是我接下来要apply到graduate school的时候我要往Compassion Science我要往Electrical Engineering",
+     "language": "zh",
+     "generated_token_count": 38,
      "finish_reason": "stop"
     },
     "0291_mixed": {
-     "text": "",
-     "language": null,
-     "generated_token_count": 1,
+     "text": "是因为比较灵活吗,flaskbowl",
+     "language": "zh",
+     "generated_token_count": 14,
      "finish_reason": "stop"
     },
     "0292_mixed": {
-     "text": "I am a specialist in ISM",
-     "language": null,
-     "generated_token_count": 8,
-     "finish_reason": "stop"
-    },
-    "0293_mixed": {
-     "text": ",我就在那個群組上應付你們",
-     "language": null,
+     "text": "我专业是ISM Information Systems Management",
+     "language": "zh",
      "generated_token_count": 11,
      "finish_reason": "stop"
     },
+    "0293_mixed": {
+     "text": "我就在那个group info你们",
+     "language": "zh",
+     "generated_token_count": 6,
+     "finish_reason": "stop"
+    },
     "0294_mixed": {
-     "text": "I want to go",
-     "language": null,
+     "text": "Grundpersonalities.",
+     "language": "sv",
      "generated_token_count": 4,
      "finish_reason": "stop"
     },
     "0295_mixed": {
-     "text": "OK, so I come from Fujian",
-     "language": null,
+     "text": "OK,所以我come from 福建",
+     "language": "zh",
      "generated_token_count": 9,
      "finish_reason": "stop"
     },
     "0296_mixed": {
-     "text": "",
-     "language": null,
-     "generated_token_count": 2,
+     "text": "所以我現在主要在做就是dialog system相關就是對話系統的研究",
+     "language": "zh",
+     "generated_token_count": 23,
      "finish_reason": "stop"
     },
     "0297_mixed": {
-     "text": "You apply for those universities",
-     "language": null,
-     "generated_token_count": 5,
+     "text": "就是你申请那些University,你不是要apply就是,",
+     "language": "zh",
+     "generated_token_count": 17,
      "finish_reason": "stop"
     },
     "0298_mixed": {
-     "text": "Right, like basketball or soccer.",
-     "language": null,
-     "generated_token_count": 8,
+     "text": "对,就是那些一些basketball或者soccer,对。",
+     "language": "zh",
+     "generated_token_count": 16,
      "finish_reason": "stop"
     },
     "0299_mixed": {
-     "text": "You can ask for some of your female friends.",
-     "language": null,
-     "generated_token_count": 11,
+     "text": "你可以邀一些你的就是female friends",
+     "language": "zh",
+     "generated_token_count": 9,
      "finish_reason": "stop"
     },
     "0300_mixed": {
-     "text": "So it's a very important thing to remember",
-     "language": null,
-     "generated_token_count": 10,
+     "text": "所以当时候就很",
+     "language": "zh",
+     "generated_token_count": 5,
      "finish_reason": "stop"
     },
     "0301_mixed": {
-     "text": ", because it's very common that we have a lecture in the morning and then go to lunch at noon.",
-     "language": null,
-     "generated_token_count": 22,
+     "text": "对因为就是很经常就是我们早上上午有一个lecture刚上完然后中午去听一个lunch talk",
+     "language": "zh",
+     "generated_token_count": 28,
      "finish_reason": "stop"
     },
     "0302_mixed": {
-     "text": "M.I.G.",
-     "language": null,
+     "text": "我们之前有聊过一个AI robot",
+     "language": "zh",
      "generated_token_count": 8,
      "finish_reason": "stop"
     },
     "0303_mixed": {
-     "text": "",
-     "language": null,
-     "generated_token_count": 1,
+     "text": "还是做software的方向",
+     "language": "zh",
+     "generated_token_count": 7,
      "finish_reason": "stop"
     },
     "0304_mixed": {
-     "text": "",
-     "language": null,
-     "generated_token_count": 2,
+     "text": "他们之所以不用阿里佩的原因就是因为他们觉得阿里佩很轻易的就能",
+     "language": "zh",
+     "generated_token_count": 25,
      "finish_reason": "stop"
     },
     "0305_mixed": {
-     "text": "",
-     "language": null,
-     "generated_token_count": 2,
+     "text": "是不会有这意外发生的但是你碰到真实的scenario又是另一回事",
+     "language": "zh",
+     "generated_token_count": 25,
      "finish_reason": "stop"
     },
     "0306_mixed": {
-     "text": "I don't have a smartphone when I was young. But I got to know the computer earlier when I was young.",
-     "language": null,
+     "text": "那我小时候我也没有smartphone但是呢我是小时候比较早接触那个电脑",
+     "language": "zh",
      "generated_token_count": 25,
      "finish_reason": "stop"
     },
     "0307_mixed": {
-     "text": "或是你去參加lunch talk 就會請一些比如說fintech 或是AI",
-     "language": null,
-     "generated_token_count": 24,
+     "text": "或者是你去参加lunch talk就会请一些比如说fintech就是你感兴趣的fintech然后或者是AI啊",
+     "language": "zh",
+     "generated_token_count": 34,
      "finish_reason": "stop"
     },
     "0308_mixed": {
-     "text": "",
-     "language": null,
-     "generated_token_count": 1,
+     "text": "但我觉得3 pointer是一个非常efficient的一个方式去得分",
+     "language": "zh",
+     "generated_token_count": 16,
      "finish_reason": "stop"
     },
     "0309_mixed": {
-     "text": "",
-     "language": null,
-     "generated_token_count": 2,
+     "text": "那你有没有什么favorite food",
+     "language": "zh",
+     "generated_token_count": 8,
      "finish_reason": "stop"
     },
     "0310_mixed": {
-     "text": "",
-     "language": null,
-     "generated_token_count": 2,
+     "text": "是不是像欧西那种语音识别",
+     "language": "zh",
+     "generated_token_count": 13,
      "finish_reason": "stop"
     },
     "0311_mixed": {
-     "text": "",
-     "language": null,
-     "generated_token_count": 2,
+     "text": "认真地看那个协议条款就是你要他其实是要先拿到你的consent然后才就是说你同不同意我们去collect你的这些data",
+     "language": "zh",
+     "generated_token_count": 42,
      "finish_reason": "stop"
     },
     "0312_mixed": {
-     "text": "I can swim properly.",
-     "language": null,
+     "text": "就是我可以就是 swing properly",
+     "language": "zh",
      "generated_token_count": 6,
      "finish_reason": "stop"
     },
     "0313_mixed": {
      "text": "And then eat for dinner, eat for lunch, eat for breakfast, and then study and go to bed.",
-     "language": null,
-     "generated_token_count": 25,
+     "language": "en",
+     "generated_token_count": 22,
      "finish_reason": "stop"
     },
     "0314_mixed": {
-     "text": "",
-     "language": null,
-     "generated_token_count": 2,
+     "text": "嗯但是像running啊或者是举重这种东西就比较不可能男生肯定会比女生",
+     "language": "zh",
+     "generated_token_count": 29,
      "finish_reason": "stop"
     },
     "0315_mixed": {
-     "text": "因為你不可能邀你的女朋友去走我們去玩球",
-     "language": null,
-     "generated_token_count": 17,
+     "text": "因为你不可能邀你的female friends 去走走我们去play basketball",
+     "language": "zh",
+     "generated_token_count": 18,
      "finish_reason": "stop"
     },
     "0316_mixed": {
-     "text": "I think it was around June when I started preparing for IELTS.",
-     "language": null,
-     "generated_token_count": 16,
+     "text": "大四上学期好像是反正好像是六月份的时候才开始准备IELTS",
+     "language": "zh",
+     "generated_token_count": 23,
      "finish_reason": "stop"
     },
     "0317_mixed": {
-     "text": "",
-     "language": null,
-     "generated_token_count": 1,
+     "text": "也是英語方向為主整個亞洲這樣看下來不是Hong Kong就是Singapore",
+     "language": "zh",
+     "generated_token_count": 22,
      "finish_reason": "stop"
     },
     "0318_mixed": {
-     "text": "So my parents, my mom is a chemistry teacher and my dad is a history teacher.",
-     "language": null,
+     "text": "所以我的父母是科学老师,我的爸爸是历史老师。",
+     "language": "zh",
      "generated_token_count": 19,
      "finish_reason": "stop"
     },
     "0319_mixed": {
-     "text": "Then, McGrady is also a very handsome player.",
-     "language": null,
-     "generated_token_count": 13,
+     "text": "然后McGrady他本身打球就是也是特别帅的那一种",
+     "language": "zh",
+     "generated_token_count": 19,
      "finish_reason": "stop"
     },
     "0320_mixed": {
-     "text": "Yeah. Because I'm not good at sports.",
-     "language": null,
-     "generated_token_count": 11,
+     "text": "Yeah. Because I'm a little bit of a kid.",
+     "language": "en",
+     "generated_token_count": 12,
      "finish_reason": "stop"
     },
     "0321_mixed": {
-     "text": "Or go in the software direction",
-     "language": null,
-     "generated_token_count": 7,
+     "text": "或者就是放往那个 software 方向走",
+     "language": "zh",
+     "generated_token_count": 10,
      "finish_reason": "stop"
     },
     "0322_mixed": {
-     "text": "We still can't trust AI.",
-     "language": null,
+     "text": "我们还是不能够trust AI",
+     "language": "zh",
      "generated_token_count": 8,
      "finish_reason": "stop"
     },
     "0323_mixed": {
-     "text": "",
-     "language": null,
-     "generated_token_count": 3,
+     "text": "对,然后我们UG的时候我们会有分那个",
+     "language": "zh",
+     "generated_token_count": 12,
      "finish_reason": "stop"
     },
     "0324_mixed": {
-     "text": "I think Hong Kong is more of a western and eastern style",
-     "language": null,
-     "generated_token_count": 12,
+     "text": "我覺得香港這樣比較in between就是Western還有Eastern的那種",
+     "language": "zh",
+     "generated_token_count": 15,
      "finish_reason": "stop"
     },
     "0325_mixed": {
      "text": "but for iPhone it will be more",
-     "language": null,
-     "generated_token_count": 8,
+     "language": "en",
+     "generated_token_count": 7,
      "finish_reason": "stop"
     },
     "0326_mixed": {
-     "text": "",
-     "language": null,
-     "generated_token_count": 2,
+     "text": "其实呢,Benmington有一个,就是Benmington,因为basketball的话主要是,",
+     "language": "zh",
+     "generated_token_count": 23,
      "finish_reason": "stop"
     },
     "0327_mixed": {
-     "text": "",
-     "language": null,
-     "generated_token_count": 2,
+     "text": "我没有mention any drawback就是我就告诉你我这个这个function它能work它work properly",
+     "language": "zh",
+     "generated_token_count": 21,
      "finish_reason": "stop"
     },
     "0328_mixed": {
-     "text": "I will go to the studio and take a portrait",
-     "language": null,
-     "generated_token_count": 13,
+     "text": "正裝然後去拍Portrait拍個人的還有幾個",
+     "language": "zh",
+     "generated_token_count": 14,
      "finish_reason": "stop"
     },
     "0329_mixed": {
-     "text": "",
-     "language": null,
-     "generated_token_count": 1,
+     "text": "其实也是之前做的一个Project",
+     "language": "zh",
+     "generated_token_count": 8,
      "finish_reason": "stop"
     },
     "0330_mixed": {
-     "text": "",
-     "language": null,
-     "generated_token_count": 2,
+     "text": "做一些油画cleaning",
+     "language": "zh",
+     "generated_token_count": 6,
      "finish_reason": "stop"
     },
     "0331_mixed": {
-     "text": "",
-     "language": null,
-     "generated_token_count": 1,
+     "text": "对反正我们就只能做一些这种比较厌衰带过的东西",
+     "language": "zh",
+     "generated_token_count": 24,
      "finish_reason": "stop"
     },
     "0332_mixed": {
-     "text": "I think you are used to Hong Kong life",
-     "language": null,
-     "generated_token_count": 9,
+     "text": "所以你還蠻喜歡也蠻習慣Hong Kong life的嘛",
+     "language": "zh",
+     "generated_token_count": 20,
      "finish_reason": "stop"
     },
     "0333_mixed": {
-     "text": "",
-     "language": null,
-     "generated_token_count": 2,
+     "text": "大多数那一周是在床上睡觉",
+     "language": "zh",
+     "generated_token_count": 13,
      "finish_reason": "stop"
     },
     "0334_mixed": {
-     "text": ".",
-     "language": null,
-     "generated_token_count": 2,
+     "text": "因为GP不是一个硬性条件嘛",
+     "language": "zh",
+     "generated_token_count": 11,
      "finish_reason": "stop"
     },
     "0335_mixed": {
-     "text": "",
-     "language": null,
-     "generated_token_count": 2,
+     "text": "作业还是能让我们有对学到的一些concepts能有进一步的运用",
+     "language": "zh",
+     "generated_token_count": 25,
      "finish_reason": "stop"
     },
     "0336_mixed": {
-     "text": "So we are going to talk about our research topics",
-     "language": null,
+     "text": "So we are going to talk about our research topics.",
+     "language": "en",
      "generated_token_count": 11,
      "finish_reason": "stop"
     },
     "0337_mixed": {
-     "text": "这个又是另一回事,那就是第三方的那个take list responsibility",
-     "language": null,
-     "generated_token_count": 19,
+     "text": "那这个又是另一回事那就是第三方那个take this responsibility",
+     "language": "zh",
+     "generated_token_count": 16,
      "finish_reason": "stop"
     },
     "0338_mixed": {
-     "text": "I don't have to be so stressed when there's no daylight",
-     "language": null,
-     "generated_token_count": 13,
+     "text": "就是像那些就是没有灯类的时候也不会那么stress",
+     "language": "zh",
+     "generated_token_count": 16,
      "finish_reason": "stop"
     },
     "0339_mixed": {
-     "text": "She said that her task is to give you an article",
-     "language": null,
+     "text": "就是他的任务就是说给你一个article",
+     "language": "zh",
      "generated_token_count": 12,
      "finish_reason": "stop"
     },
     "0340_mixed": {
-     "text": "",
-     "language": null,
-     "generated_token_count": 2,
+     "text": "第二个呢它的测试也很复杂就是说你在测试的时候你只能simulate这个scenario",
+     "language": "zh",
+     "generated_token_count": 30,
      "finish_reason": "stop"
     },
     "0341_mixed": {
-     "text": "",
-     "language": null,
-     "generated_token_count": 2,
+     "text": "喔那是欸你們剛開始不會拍那個portrait嗎",
+     "language": "zh",
+     "generated_token_count": 13,
      "finish_reason": "stop"
     },
     "0342_mixed": {
-     "text": "AI can greatly improve our lives. For example, some translations,",
-     "language": null,
-     "generated_token_count": 14,
+     "text": "AI可以很大程度上改善我们的生活比如说什么一些translation还有一些",
+     "language": "zh",
+     "generated_token_count": 22,
      "finish_reason": "stop"
     },
     "0343_mixed": {
-     "text": ", but most of the luxury brands or malls",
-     "language": null,
-     "generated_token_count": 10,
+     "text": "可以用 mobile payments但是大多数一些奢侈品品牌或者是一些 mall 里面",
+     "language": "zh",
+     "generated_token_count": 24,
      "finish_reason": "stop"
     },
     "0344_en_long": {
@@ -2105,9 +2105,9 @@
      "finish_reason": "stop"
     },
     "0346_en_long": {
-     "text": "Also a popular contrivance whereby lovemaking may be suspended but not stopped during the picnic season. Heredity. Horse sense. Hose. Hotel. House cleaning. evil that makes it easy for the government to enlist all the soldiers it needs.",
+     "text": "Also a popular contrivance whereby lovemaking may be suspended but not stopped during the picnic season. The tiresome product of a tireless tongue. Painful to hear. A heart trouble caused by falling in love with a grass widow. Heredity. Horse sense. Hose. Hotel. House cleaning. evil that makes it easy for the government to enlist all the soldiers it needs.",
      "language": "en",
-     "generated_token_count": 52,
+     "generated_token_count": 80,
      "finish_reason": "stop"
     },
     "0347_en_long": {
@@ -2231,9 +2231,9 @@
      "finish_reason": "stop"
     },
     "0367_zh_long": {
-     "text": "他一直无法用药物来缓解疼痛,因为比赛禁止参赛者服用这些药物。 为什么某些人想要做他们所做的事以及他们所处的环境中哪些事情会让他们做或不做某些事情事故发生后基普森被送往医院但很快就一命呜呼搅动两种干粉使其混合然后用干净的湿手把它们揉成一个圈 好",
+     "text": "他一直无法用药物来缓解疼痛,因为比赛禁止参赛者服用这些药物。 为什么某些人想要做他们所做的事以及他们所处的环境中哪些事情会让他们做或不做某些事情事故发生后基普森被送往医院但很快就一命呜呼搅动两种干粉使其混合然后用干净的湿手把它们揉成一个球 好",
      "language": "zh",
-     "generated_token_count": 126,
+     "generated_token_count": 125,
      "finish_reason": "stop"
     },
     "0368_zh_long": {
@@ -2249,7 +2249,7 @@
      "finish_reason": "stop"
     },
     "0370_zh_long": {
-     "text": "这被称为化学物质的TH值你可以用红甘蓝脂制作指示剂20世纪的研究表明基因变异有两种库显性和隐性人们自古以来就知道金银铜等基本化学元素因为这些元素都能以自然形态在自然界中发现并且比较容易使用原始工具进行开采 此来自拉丁语civilis,意为公民的,与拉丁语civis,意为公民,及civitas,意为城市和城邦都有关,这也以某种方式定位了社会的规模。它让玩家可以通过在空中移动设备来控制电子游戏中的运动和操作。同理,有了深耕签证,你就不必分别向每个深耕成员国申请签证。 从而节省了时间、金钱和手续",
+     "text": "这被称为化学物质的TH值你可以用红甘蓝脂制作指示剂20世纪的研究表明基因变异有两种酷显性和隐性人们自古以来就知道金银铜等基本化学元素因为这些元素都能以自然形态在自然界中发现并且比较容易使用原始工具进行开采 此来自拉丁语civilis,意为公民的,与拉丁语civis,意为公民,及civitas,意为城市和城邦都有关,这也以某种方式定位了社会的规模。它让玩家可以通过在空中移动设备来控制电子游戏中的运动和操作。同理,有了深耕签证,你就不必分别向每个深耕成员国申请签证。 从而节省了时间、金钱和手续",
      "language": "zh",
      "generated_token_count": 268,
      "finish_reason": "stop"
@@ -2261,15 +2261,15 @@
      "finish_reason": "stop"
     },
     "0372_zh_long": {
-     "text": "较小的岛屿大多是独立国家,且所属于法国,他们以豪华海滩度假圣地而文明。人工智能有很强的科幻色彩,但它其实是计算机科学非常重要的一个分支,研究的是机器的行为、学习和智能适应。 周日晚些时候美国总统塔纳德特朗普通过其文秘书发表声明宣布美军将撤离叙利亚事实上即使知道它的存在也不容易找到一旦进入洞穴就完全以示隔绝了取消政策各不相同但截止3月末 台的取消政策并没有延长到2020年7月原定奥运会举办时间",
+     "text": "较小的岛屿大多是独立国家,且所属于法国,他们以豪华海滩度假圣地而文明。人工智能有很强的科幻色彩,但它其实是计算机科学非常重要的一个分支,研究的是机器的行为、学习和智能适应。 周日晚些时候美国总统塔纳德特朗普通过其文秘书发表声明宣布美军将撤离叙利亚事实上即使知道它的存在也不容易找到一旦进入洞穴就完全以世隔绝了取消政策各不相同但截止3月末 台的取消政策并没有延长到2020年7月原定奥运会举办时间",
      "language": "zh",
      "generated_token_count": 222,
      "finish_reason": "stop"
     },
     "0373_zh_long": {
-     "text": "表演开始五分钟后刮起了风约一分钟后风速达到了70公里每小时紧接着又下起了大雨雨势如此之大像针扎一样拍打在皮肤上随后天上下起了冰雹惊慌失措的人群尖叫着四散奔逃 货物的能力同时干扰敌人运输及其人员和货物的能力邓迪大学的Pamela Ferguson教授指出记者如果公布嫌疑人的照片等信息的话似乎确实存在危害性在某些地区水煮一分钟就足够了在其他地区则需要几分钟的时间西藏冥想的核心活动是天瑜伽 形象化、净化能量通道、激活轮穴从而达到顿悟的境界",
+     "text": "表演开始五分钟后刮起了风约一分钟后风速达到了70公里每小时紧接着又下起了大雨雨势如此之大像针扎一样拍打在皮肤上随后天上下起了冰雹惊慌失措的人群尖叫着四散奔逃 在某些地区,水煮一分钟就足够了,在其他地区则需要几分钟的时间。 形象化、净化能量通道、激活轮穴从而达到顿悟的境界",
      "language": "zh",
-     "generated_token_count": 249,
+     "generated_token_count": 159,
      "finish_reason": "stop"
     },
     "0374_zh_long": {
@@ -2345,9 +2345,9 @@
      "finish_reason": "stop"
     },
     "0386_snr10_zh": {
-     "text": "敌对行动爆发后不久,英国开始对德国实施海上封锁。",
+     "text": "敌略行动爆发后不久,英国开始对德国实施海上封锁。",
      "language": "zh",
-     "generated_token_count": 27,
+     "generated_token_count": 28,
      "finish_reason": "stop"
     },
     "0387_snr10_zh": {
