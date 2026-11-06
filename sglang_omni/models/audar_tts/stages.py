@@ -50,6 +50,25 @@ CODEC_HOP_LENGTH = 480
 _local_codec_construction_lock = threading.Lock()
 
 
+class LocalW2VModelLoader:
+    def __init__(self, model_class: type, local_path: Path) -> None:
+        self.model_class = model_class
+        self.local_path = local_path
+
+    def from_pretrained(
+        self,
+        model_name_or_path: str,
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        if model_name_or_path == "facebook/w2v-bert-2.0":
+            model_name_or_path = str(self.local_path)
+            kwargs["local_files_only"] = True
+        else:
+            pass
+        return self.model_class.from_pretrained(model_name_or_path, *args, **kwargs)
+
+
 @dataclass(frozen=True)
 class ReferenceInput:
     source_kind: str
@@ -66,69 +85,36 @@ def load_codec(model: str, revision: str, device: str) -> "NeuCodec":
             "Audar-TTS requires the 'audar-tts' optional dependencies"
         ) from exc
     local_codec_dir = Path(model).expanduser()
-    if not local_codec_dir.is_dir():
+    if local_codec_dir.is_dir():
+        weights_path = local_codec_dir / "pytorch_model.bin"
+        w2v_path = local_codec_dir.parent / "facebook_w2v_bert_2_0"
+        if weights_path.is_file() and w2v_path.is_dir():
+            import neucodec.model as neucodec_model
+
+            feature_extractor_class = neucodec_model.AutoFeatureExtractor
+            w2v_model_class = neucodec_model.Wav2Vec2BertModel
+            with _local_codec_construction_lock:
+                neucodec_model.AutoFeatureExtractor = LocalW2VModelLoader(
+                    feature_extractor_class, w2v_path
+                )
+                neucodec_model.Wav2Vec2BertModel = LocalW2VModelLoader(
+                    w2v_model_class, w2v_path
+                )
+                try:
+                    codec = NeuCodec(OUTPUT_SAMPLE_RATE, CODEC_HOP_LENGTH)
+                finally:
+                    neucodec_model.AutoFeatureExtractor = feature_extractor_class
+                    neucodec_model.Wav2Vec2BertModel = w2v_model_class
+            state_dict = torch.load(weights_path, map_location="cpu", weights_only=True)
+            codec.load_state_dict(state_dict, strict=False)
+            return codec.eval().to(device)
+        else:
+            raise FileNotFoundError(
+                "A local NeuCodec directory needs pytorch_model.bin and "
+                f"a sibling facebook_w2v_bert_2_0 directory: {local_codec_dir}"
+            )
+    else:
         return NeuCodec.from_pretrained(model, revision=revision).eval().to(device)
-    else:
-        pass
-    weights_path = local_codec_dir / "pytorch_model.bin"
-    w2v_path = local_codec_dir.parent / "facebook_w2v_bert_2_0"
-    if not weights_path.is_file() or not w2v_path.is_dir():
-        raise FileNotFoundError(
-            "A local NeuCodec directory needs pytorch_model.bin and "
-            f"a sibling facebook_w2v_bert_2_0 directory: {local_codec_dir}"
-        )
-    else:
-        pass
-    import neucodec.model as neucodec_model
-    from transformers import AutoFeatureExtractor, Wav2Vec2BertModel
-
-    original_feature_extractor = neucodec_model.AutoFeatureExtractor.from_pretrained
-    original_w2v_model = neucodec_model.Wav2Vec2BertModel.from_pretrained
-
-    def local_feature_extractor(
-        pretrained_model_name_or_path: str,
-        *args: object,
-        **kwargs: object,
-    ) -> AutoFeatureExtractor:
-        if pretrained_model_name_or_path == "facebook/w2v-bert-2.0":
-            return original_feature_extractor(
-                w2v_path, *args, local_files_only=True, **kwargs
-            )
-        else:
-            pass
-        return original_feature_extractor(
-            pretrained_model_name_or_path, *args, **kwargs
-        )
-
-    def local_w2v_model(
-        pretrained_model_name_or_path: str,
-        *args: object,
-        **kwargs: object,
-    ) -> Wav2Vec2BertModel:
-        if pretrained_model_name_or_path == "facebook/w2v-bert-2.0":
-            return original_w2v_model(w2v_path, *args, local_files_only=True, **kwargs)
-        else:
-            pass
-        return original_w2v_model(pretrained_model_name_or_path, *args, **kwargs)
-
-    with _local_codec_construction_lock:
-        neucodec_model.AutoFeatureExtractor.from_pretrained = local_feature_extractor
-        neucodec_model.Wav2Vec2BertModel.from_pretrained = local_w2v_model
-        try:
-            codec = NeuCodec(OUTPUT_SAMPLE_RATE, CODEC_HOP_LENGTH)
-        finally:
-            neucodec_model.AutoFeatureExtractor.from_pretrained = (
-                original_feature_extractor
-            )
-            neucodec_model.Wav2Vec2BertModel.from_pretrained = original_w2v_model
-    state_dict = torch.load(weights_path, map_location="cpu", weights_only=True)
-    state_dict = {
-        key: value
-        for key, value in state_dict.items()
-        if "fc_post_s" not in key and "SemanticDecoder" not in key
-    }
-    codec.load_state_dict(state_dict, strict=False)
-    return codec.eval().to(device)
 
 
 @lru_cache(maxsize=None)

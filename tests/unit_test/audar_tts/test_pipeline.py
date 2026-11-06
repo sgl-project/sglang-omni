@@ -594,6 +594,35 @@ def test_codec_model_and_lock_are_shared_between_stages(
     assert loads == 1
 
 
+def install_fake_neucodec(
+    monkeypatch: pytest.MonkeyPatch,
+    neu_codec: type,
+    feature_extractor: type,
+    w2v_model: type,
+) -> types.ModuleType:
+    model_module = types.ModuleType("neucodec.model")
+    model_module.NeuCodec = neu_codec
+    model_module.AutoFeatureExtractor = feature_extractor
+    model_module.Wav2Vec2BertModel = w2v_model
+    package = types.ModuleType("neucodec")
+    package.__path__ = []
+    package.NeuCodec = neu_codec
+    package.model = model_module
+    monkeypatch.setitem(sys.modules, "neucodec", package)
+    monkeypatch.setitem(sys.modules, "neucodec.model", model_module)
+    return model_module
+
+
+def recording_pretrained(name: str, calls: list[tuple[str, object, bool]]) -> type:
+    class RecordingPretrained:
+        @classmethod
+        def from_pretrained(cls, model: object, *args: Any, **kwargs: Any) -> object:
+            calls.append((name, model, kwargs["local_files_only"]))
+            return object()
+
+    return RecordingPretrained
+
+
 def test_load_codec_constructs_a_local_directory_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -602,88 +631,64 @@ def test_load_codec_constructs_a_local_directory_snapshot(
     w2v_dir = tmp_path / "facebook_w2v_bert_2_0"
     codec_dir.mkdir()
     w2v_dir.mkdir()
-    (codec_dir / "pytorch_model.bin").touch()
+    weights_path = codec_dir / "pytorch_model.bin"
+    weights_path.touch()
     constructed: list[tuple[int, int]] = []
+    pretrained_calls: list[tuple[str, object, bool]] = []
     loaded: list[tuple[dict[str, object], bool]] = []
-    loaded_device: list[str] = []
-    calls: list[tuple[str, object, bool]] = []
-    load_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    devices: list[str] = []
+    feature_extractor = recording_pretrained("feature_extractor", pretrained_calls)
+    w2v_model = recording_pretrained("w2v", pretrained_calls)
 
-    class FakeCodecWithState:
+    class RecordingCodec:
         def __init__(self, sample_rate: int, hop_length: int) -> None:
             constructed.append((sample_rate, hop_length))
-            FakeWav2Vec2BertModel.from_pretrained(
-                "facebook/w2v-bert-2.0", output_hidden_states=True
-            )
-            FakeFeatureExtractor.from_pretrained("facebook/w2v-bert-2.0")
+            model_module.Wav2Vec2BertModel.from_pretrained("facebook/w2v-bert-2.0")
+            model_module.AutoFeatureExtractor.from_pretrained("facebook/w2v-bert-2.0")
 
         def load_state_dict(self, state_dict: dict[str, object], strict: bool) -> None:
             loaded.append((state_dict, strict))
 
-        def eval(self) -> "FakeCodecWithState":
+        def eval(self) -> "RecordingCodec":
             return self
 
-        def to(self, device: str) -> "FakeCodecWithState":
-            loaded_device.append(device)
+        def to(self, device: str) -> "RecordingCodec":
+            devices.append(device)
             return self
 
-    class FakeWav2Vec2BertModel:
-        @classmethod
-        def from_pretrained(cls, model: object, *args: Any, **kwargs: Any) -> object:
-            calls.append(("w2v", model, kwargs["local_files_only"]))
-            return object()
+    model_module = install_fake_neucodec(
+        monkeypatch, RecordingCodec, feature_extractor, w2v_model
+    )
+    state_dict = {"kept": object(), "unexpected": object()}
+    torch_loads: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
-    class FakeFeatureExtractor:
-        @classmethod
-        def from_pretrained(cls, model: object, *args: Any, **kwargs: Any) -> object:
-            calls.append(("feature_extractor", model, kwargs["local_files_only"]))
-            return object()
+    def fake_torch_load(*args: object, **kwargs: object) -> dict[str, object]:
+        torch_loads.append((args, kwargs))
+        return state_dict
 
-    fake_model_module = types.ModuleType("neucodec.model")
-    fake_model_module.NeuCodec = FakeCodecWithState
-    fake_model_module.AutoFeatureExtractor = FakeFeatureExtractor
-    fake_model_module.Wav2Vec2BertModel = FakeWav2Vec2BertModel
-    fake_package = types.ModuleType("neucodec")
-    fake_package.__path__ = []
-    fake_package.NeuCodec = FakeCodecWithState
-    fake_package.model = fake_model_module
-    monkeypatch.setitem(sys.modules, "neucodec", fake_package)
-    monkeypatch.setitem(sys.modules, "neucodec.model", fake_model_module)
-    fake_w2v_from_pretrained = FakeWav2Vec2BertModel.from_pretrained.__func__
-    fake_feature_from_pretrained = FakeFeatureExtractor.from_pretrained.__func__
-
-    def fake_load(*args: object, **kwargs: object) -> dict[str, object]:
-        load_calls.append((args, kwargs))
-        return {
-            "kept": object(),
-            "model.fc_post_s.weight": object(),
-            "SemanticDecoder.weight": object(),
-        }
-
-    monkeypatch.setattr(stages.torch, "load", fake_load)
+    monkeypatch.setattr(stages.torch, "load", fake_torch_load)
     stages.load_codec.cache_clear()
     try:
         codec = stages.load_codec(str(codec_dir), "ignored", "cpu")
     finally:
         stages.load_codec.cache_clear()
 
-    assert isinstance(codec, FakeCodecWithState)
+    assert isinstance(codec, RecordingCodec)
     assert constructed == [(24000, 480)]
-    assert list(loaded[0][0]) == ["kept"]
-    assert loaded[0][1] is False
-    assert loaded_device == ["cpu"]
-    assert load_calls == [
-        (
-            (codec_dir / "pytorch_model.bin",),
-            {"map_location": "cpu", "weights_only": True},
-        )
+    assert torch_loads == [
+        ((weights_path,), {"map_location": "cpu", "weights_only": True})
     ]
-    assert calls == [("w2v", w2v_dir, True), ("feature_extractor", w2v_dir, True)]
-    assert FakeWav2Vec2BertModel.from_pretrained.__func__ is fake_w2v_from_pretrained
-    assert FakeFeatureExtractor.from_pretrained.__func__ is fake_feature_from_pretrained
+    assert loaded == [(state_dict, False)]
+    assert devices == ["cpu"]
+    assert pretrained_calls == [
+        ("w2v", str(w2v_dir), True),
+        ("feature_extractor", str(w2v_dir), True),
+    ]
+    assert model_module.AutoFeatureExtractor is feature_extractor
+    assert model_module.Wav2Vec2BertModel is w2v_model
 
 
-def test_load_codec_restores_pretrained_methods_after_constructor_failure(
+def test_load_codec_restores_pretrained_classes_after_constructor_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -691,28 +696,16 @@ def test_load_codec_restores_pretrained_methods_after_constructor_failure(
     (tmp_path / "facebook_w2v_bert_2_0").mkdir()
     codec_dir.mkdir()
     (codec_dir / "pytorch_model.bin").touch()
+    feature_extractor = recording_pretrained("feature_extractor", [])
+    w2v_model = recording_pretrained("w2v", [])
 
     class FailingCodec:
         def __init__(self, sample_rate: int, hop_length: int) -> None:
             raise RuntimeError("constructor failed")
 
-    class PretrainedModel:
-        @classmethod
-        def from_pretrained(cls, *args: Any, **kwargs: Any) -> object:
-            return object()
-
-    original_feature_extractor = PretrainedModel.from_pretrained
-    original_w2v_model = PretrainedModel.from_pretrained
-    fake_model_module = types.ModuleType("neucodec.model")
-    fake_model_module.NeuCodec = FailingCodec
-    fake_model_module.AutoFeatureExtractor = PretrainedModel
-    fake_model_module.Wav2Vec2BertModel = PretrainedModel
-    fake_package = types.ModuleType("neucodec")
-    fake_package.__path__ = []
-    fake_package.NeuCodec = FailingCodec
-    fake_package.model = fake_model_module
-    monkeypatch.setitem(sys.modules, "neucodec", fake_package)
-    monkeypatch.setitem(sys.modules, "neucodec.model", fake_model_module)
+    model_module = install_fake_neucodec(
+        monkeypatch, FailingCodec, feature_extractor, w2v_model
+    )
     stages.load_codec.cache_clear()
     try:
         with pytest.raises(RuntimeError, match="constructor failed"):
@@ -720,10 +713,8 @@ def test_load_codec_restores_pretrained_methods_after_constructor_failure(
     finally:
         stages.load_codec.cache_clear()
 
-    assert (
-        PretrainedModel.from_pretrained.__func__ is original_feature_extractor.__func__
-    )
-    assert PretrainedModel.from_pretrained.__func__ is original_w2v_model.__func__
+    assert model_module.AutoFeatureExtractor is feature_extractor
+    assert model_module.Wav2Vec2BertModel is w2v_model
 
 
 @pytest.mark.parametrize(
