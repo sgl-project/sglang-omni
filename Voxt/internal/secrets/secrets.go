@@ -5,6 +5,14 @@
 // "asr.<provider>" (settings.Provider.ID). Secrets never go into the settings, the
 // database or the logs.
 //
+// Who can read them: Set adds the items with /usr/bin/security and no
+// access list, so they trust that tool, and any process of the user can
+// read a key with no prompt (security find-generic-password -s VoxtNew
+// -a <account> -w), as it could a key in a config file. Making Voxt the
+// only app trusted (SecItemAdd with an access list) needs a signature
+// that stays the same: an ad hoc build would be asked again after every
+// rebuild.
+//
 // It is Auralink's (@748cf55), which runs /usr/bin/security as
 // AudioSmith's hub does (hub/token.go, without the Hugging Face token). Every
 // function may block: call them off the main thread. Off macOS there is
