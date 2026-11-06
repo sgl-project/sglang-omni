@@ -53,10 +53,11 @@ Classifier-free guidance is on in both stages and has no flag. See [Guidance](#g
 
 Follow [NPU installation](../get_started/installation_npu.md) and use a matching TorchAir installation for the compiled acoustic stage. Music3's deterministic AR path also requires the NPU batch-invariant operator package and its CANN vendor libraries; the validation environment used batch_invariant_ops 1.0.0 with the vendor operator library on LD_LIBRARY_PATH.
 
-The single-device configuration was exercised on an Ascend 910_9362 with 64 GiB memory, using PyTorch 2.10.0, torch_npu 2.10.0.post6, CANN 9.1.0 and SGLang 0.5.22. Expose one NPU so both stages use that device:
+The single-device configuration was exercised on an Ascend 910 with 64 GiB memory, using PyTorch 2.10.0, torch_npu 2.10.0.post6, CANN 9.1.0 and SGLang 0.5.22. Expose one NPU so both stages use that device:
 
 ```bash
-ASCEND_RT_VISIBLE_DEVICES=0 sgl-omni serve \
+ASCEND_RT_VISIBLE_DEVICES=0 ASCEND_USE_FIA=1 \
+SGLANG_OMNI_STARTUP_TIMEOUT=3600 sgl-omni serve \
   --model-path MiniMaxAI/MiniMax-Music3 --port 8000 \
   --minimax_music3_ar.engine.max_running_requests 16 \
   --minimax_music3_ar.engine.kv_cache_bytes 4294967296
