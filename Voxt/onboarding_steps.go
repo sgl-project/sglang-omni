@@ -30,7 +30,7 @@ func obRow(c *ui.Context, key string, ic icons.Icon, title, detail string) {
 
 // obWelcomeStep is the privacy promise.
 func (a *app) obWelcomeStep(c *ui.Context) {
-	obRow(c, "ob-p-local-models", modelsIcon, i18n.T("Your audio and text stay on this Mac"),
+	obRow(c, "ob-p-local-models", modelsIcon, i18n.T("Your audio stays on this Mac"),
 		i18n.T("Speech is recognised on this Mac; text goes only to the language model you set up. Voxt has no server of its own, no account and no analytics."))
 	obRow(c, "ob-p-local", icons.Database, i18n.T("History stays on this Mac"),
 		i18n.T("Results (and, if you choose, their recordings) are kept here only. Turn them off in Settings → Privacy."))

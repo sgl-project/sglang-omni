@@ -1088,7 +1088,7 @@
   "Writing %s": "生成 %s",
   "Writing…": "正在生成…",
   "You": "你",
-  "Your audio and text stay on this Mac": "你的音频和文字只留在这台 Mac 上",
+  "Your audio stays on this Mac": "你的音频只留在这台 Mac 上",
   "Your dictionary's terms and App enhancement's scene are added when they apply.": "适用时还会加入词典里的术语和应用增强的场景规则。",
   "Your history and its recordings, your dictionary and the database.": "历史及其录音、词典和数据库。",
   "Your history, dictionary and settings are kept in a database in %s. It could not be opened: %v": "你的历史、词典和设置保存在 %s 的数据库中，无法打开：%v",
