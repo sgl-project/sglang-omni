@@ -188,3 +188,32 @@ def test_staged_ids_keep_the_sampled_values_when_later_stream_work_overwrites_th
 
     assert runner.resolve_host_token_ids(result).tolist() == [7, 8]
     assert result.next_token_ids.tolist() == [-1, -1]
+
+
+def test_middle_prefill_batches_skip_predictor_until_a_frame_is_needed() -> None:
+    """Intermediate prompt chunks ran a predictor whose entire output was discarded."""
+    token_ids = torch.tensor([7, 9], dtype=torch.long)
+    batch_result, forward_batch, requests = step(token_ids)
+    for request in requests:
+        request.data.req.inflight_middle_chunks = 1
+    predicted_tokens: list[list[int]] = []
+
+    def code_predictor_forward(
+        layer0_codes: torch.Tensor,
+        hidden_states: torch.Tensor,
+        semantic_positions: torch.Tensor | None = None,
+    ) -> None:
+        predicted_tokens.append(layer0_codes.flatten().tolist())
+
+    runner = make_runner(code_predictor_forward, torch.device("cpu"))
+    runner.collect_codes(batch_result, forward_batch, object(), requests)
+
+    assert runner.resolve_host_token_ids(batch_result).tolist() == [7, 9]
+    assert predicted_tokens == []
+    assert runner.has_pending_code_step is False
+
+    requests[1].data.req.inflight_middle_chunks = 0
+    runner.collect_codes(batch_result, forward_batch, object(), requests)
+
+    assert predicted_tokens == [[7, 9]]
+    assert runner.has_pending_code_step is True
