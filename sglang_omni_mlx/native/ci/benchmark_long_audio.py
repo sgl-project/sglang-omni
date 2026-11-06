@@ -56,6 +56,11 @@ def main() -> None:
         help="Sampled soft guard for the server footprint; allocations can overshoot between samples",
     )
     parser.add_argument("--seed", type=int, default=2888)
+    parser.add_argument(
+        "server_arguments",
+        nargs="*",
+        help="Server flags after --, such as -- --cache-limit-mb 512",
+    )
     arguments = parser.parse_args()
     if (
         platform.system() != "Darwin"
@@ -145,6 +150,7 @@ def main() -> None:
                         "--supervised",
                         "--model-directory",
                         str(arguments.model_directory.resolve()),
+                        *arguments.server_arguments,
                     ],
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,

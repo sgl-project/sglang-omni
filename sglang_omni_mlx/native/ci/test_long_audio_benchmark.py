@@ -362,6 +362,7 @@ def test_unexpected_server_exit_fails_the_benchmark(
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 policy = EXIT_POLICY
+print(" ".join(sys.argv[1:]), file=sys.stderr, flush=True)
 post_count = 0
 lock = threading.Lock()
 
@@ -414,12 +415,16 @@ for line in sys.stdin:
             "0.001",
             "--languages",
             "en",
+            "--",
+            "--cache-limit-mb",
+            "512",
         ],
     )
     with pytest.raises(SystemExit) as stopped:
         benchmark_long_audio.main()
     result = json.loads((output / "en-0.001m.result.json").read_text())
     assert result["recovery_matches_warmup"] is True
+    assert "--cache-limit-mb 512" in (output / "en-0.001m.server.log").read_text()
     if exit_policy == "normal":
         assert stopped.value.code == 0
         assert result["status"] == "measured"

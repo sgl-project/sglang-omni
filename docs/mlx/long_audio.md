@@ -12,10 +12,11 @@ python -m sglang_omni_mlx.native.ci.benchmark_long_audio \
   --model-directory "$CI_DATA_ROOT/models/mlx-community_Qwen3-ASR-0.6B-4bit" \
   --corpus-directory "$CI_DATA_ROOT/corpus/v1" \
   --output "$ASR_RESULTS_DIRECTORY" \
-  --mode realtime --minutes 5 10 30 60 --languages en zh --speed 1
+  --mode realtime --minutes 5 10 30 60 --languages en zh --speed 1 \
+  -- --cache-limit-mb 512
 ```
 
-Supply --server, --model-directory, --corpus-directory and a new --output directory. Use --mode realtime --minutes 5 10 30 60 --languages en zh --speed 1 for live pacing. This matrix contains 210 minutes of audio. A speed greater than one is an accelerated input stress measurement: refresh decodes may be coalesced, and its accuracy and finalization latency are not equivalent to live dictation. Use --mode http separately to measure one whole-file request; this deliberately does not implement Voxt's client-side chunking. Start with five minutes before testing longer whole-file requests.
+Supply --server, --model-directory, --corpus-directory and a new --output directory. Flags after -- go to the server and are recorded in metadata.json. Voxt starts the server with --cache-limit-mb 512, so pass that flag to measure what the app runs; without it the server's default 2 GiB limit applies. Use --mode realtime --minutes 5 10 30 60 --languages en zh --speed 1 for live pacing. This matrix contains 210 minutes of audio. A speed greater than one is an accelerated input stress measurement: refresh decodes may be coalesced, and its accuracy and finalization latency are not equivalent to live dictation. Use --mode http separately to measure one whole-file request; this deliberately does not implement Voxt's client-side chunking. Start with five minutes before testing longer whole-file requests.
 
 Each case starts a dedicated server, warms it with a short clip, sends the long recording and transcribes the warmup clip again. The post-session transcript must match warmup exactly. Disconnection is covered by test_a_disconnected_stream_stops_its_decode in ci/test_server_api.py.
 
