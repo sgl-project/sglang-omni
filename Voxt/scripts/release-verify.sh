@@ -89,7 +89,7 @@ echo "code inside: ${#code[@]} (app, executables, libraries, frameworks)"
 if ((want_runtimes)); then
   server="$res/omni/bin/qwen3_asr_server"
   llm="$res/llm/voxtnew-llm"
-  check "the Omni runtime is inside" test -x "$server" -a -f "$res/omni/bin/mlx.metallib"
+  check "the Omni runtime is inside" test -x "$server" -a -x "$res/omni/bin/silero_vad_server" -a -f "$res/omni/bin/mlx.metallib"
   check "voxtnew-llm is inside" test -x "$llm" -a -f "$res/llm/mlx.metallib" -a -d "$res/llm/llama.framework"
   for s in "$res"/omni/bin/*_server; do
     check "${s##*/} starts from the app (its libraries load)" bash -c "'$s' --model-kind none 2>&1 | grep -q -e '--model-kind must be' -e 'only --model-kind'"

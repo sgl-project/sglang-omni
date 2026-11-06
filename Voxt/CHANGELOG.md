@@ -39,6 +39,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - With a dictionary of more than 30 terms, clean-up, translation and rewriting answer sooner: the first words come 1.4–1.9 s sooner on the balanced language model and 0.7 s on the fast one. The terms that a dictation mentions now go with the dictation instead of changing the model's instructions each time.
 - The fast speech model gets the 30 most recently changed terms of your dictionary. A longer list made it slower and less accurate; the accurate model still gets up to 500.
 - **The result goes where you are typing when it is ready.** If you switch to another app during or after the recording and click into a text field there, the text is inserted there; the app you started in is not brought back. Nothing is typed into a password field or into Voxt's own windows, and when no text field is focused (Finder's desktop, a web page you are reading), the result waits in the answer card with Insert and Copy, which now also inserts into the app in front. A selection is still replaced only in the app it was selected in, and app enhancement's auto key (Return…) is pressed only there. The history shows the app the text went into.
+- In Activity Monitor the voice detector (Silero VAD) runs as `silero_vad_server`, apart from the speech model's `qwen3_asr_server`, so that a recording no longer looks like two copies of the speech model.
 
 ### Fixed
 
@@ -93,6 +94,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - 词典超过 30 条时，整理、翻译和转写更快开始输出：均衡语言模型快 1.4–1.9 秒，快速模型约快 0.7 秒。口述里提到的词条现在随口述一起发给模型，不再每次改动模型的指令。
 - 快速语音识别模型只使用词典里最近修改的 30 条。更长的列表会让它更慢、更不准；精准模型仍可使用最多 500 条。
 - **结果插入到它出来时你正在输入的地方。** 录音中或录完后切到另一个 App、点进那里的输入框，文字就插到那里，不会再切回开始录音的 App。密码框和 Voxt 自己的窗口里不会输入任何东西；没有选中输入框时（访达的桌面、正在看的网页），结果留在答案卡片里，可以插入或复制，卡片的“插入”现在也插进当时在前台的 App。替换选区仍然只在选中文字的那个 App 里进行，应用增强的自动按键（Return 等）也只在那里按。历史记录仍记在开始录音的 App 下，详情里另外写明文字插入到了哪个 App（“已插入到 X”）。
+- 活动监视器里，声音检测（Silero VAD）的进程叫 `silero_vad_server`，和语音识别模型的 `qwen3_asr_server` 分开，录音时不再像是开了两个语音识别进程。
 
 #### 修复
 

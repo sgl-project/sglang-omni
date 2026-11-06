@@ -62,6 +62,11 @@ func spawn(cfg Config, spec Spec, dir string, cacheLimit bool) (*process, <-chan
 	bin := cfg.Binary
 	if spec.Binary != "" {
 		bin = filepath.Join(filepath.Dir(cfg.Binary), spec.Binary)
+		// A runtime without silero_vad_server (built before it, or
+		// sglang's own build) runs Silero on qwen3_asr_server.
+		if _, err := os.Stat(bin); err != nil && spec.Kind == kindSileroVAD {
+			bin = cfg.Binary
+		}
 	}
 	cmd := exec.Command(bin, append(args, spec.launchArgs(cacheLimit)...)...)
 	cmd.Env = append(serverEnv(os.Environ()), cfg.Env...)

@@ -33,7 +33,7 @@ scripts/mac-gui.sh scripts/release.sh（在 Mac 上，ssh 里经 mac-gui.sh 进�
 |---|---|---|
 | `MacOS/VoxtNew` | Go + MyGo 的 app | `helper/Support/app.entitlements`（`audio-input`） |
 | `Resources/helper/voxtnew-helper` | Swift 辅助进程：麦克风、快捷键、辅助功能、粘贴 | `helper/Support/helper.entitlements`（`audio-input`） |
-| `Resources/omni/bin/qwen3_asr_server`、`whisper_server`、`moss_transcribe_diarize_server`、`parakeet_server`、`sensevoice_server`、`*.dylib`、`mlx.metallib` | Omni 原生运行时（sglang_omni_mlx/native）：Qwen3-ASR 和 Silero VAD，Whisper、MOSS、Parakeet、SenseVoice | 保留原 entitlement（没有） |
+| `Resources/omni/bin/qwen3_asr_server`、`silero_vad_server`、`whisper_server`、`moss_transcribe_diarize_server`、`parakeet_server`、`sensevoice_server`、`*.dylib`、`mlx.metallib` | Omni 原生运行时（sglang_omni_mlx/native）：Qwen3-ASR；Silero VAD（`qwen3_asr_server` 的副本，换个名字好在活动监视器里分清）；Whisper、MOSS、Parakeet、SenseVoice | 保留原 entitlement（没有） |
 | `Resources/llm/voxtnew-llm`、`llama.framework`、`mlx.metallib`、`swift-transformers_Hub.bundle` | 语言模型进程（mlx-swift-lm 和 llama.cpp） | `llm/Support/llm.entitlements`（空：Metal 不需要） |
 
 `mlx.metallib` 不是代码，是资源，由 app 的签名封住。模型本身不在 app 里，用户在 app 里下载到 ActNow 家族的模型库 `$HUB`（默认 `~/Library/Application Support/ActNow/models/hub`，和家族其他 app 共用；见 [architecture.md](architecture.md)）。

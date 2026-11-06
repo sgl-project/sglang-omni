@@ -38,7 +38,8 @@ type Spec struct {
 	// files' SHA-256).
 	Repo, Revision string
 	// Kind is the server's --model-kind; Binary its file in the runtime's
-	// bin/ ("": qwen3_asr_server, Config.Binary).
+	// bin/ ("": qwen3_asr_server, Config.Binary; silero_vad_server is a
+	// copy of it, so that Activity Monitor tells Silero from Qwen3-ASR).
 	Kind, Binary string
 	// Live: the server has the realtime API (/v1/realtime), so the model
 	// shows partial text while the user speaks.
@@ -207,8 +208,8 @@ var specs = []Spec{
 	},
 	{
 		ID: VADSilero, Repo: "mlx-community/silero-vad-v6", Revision: "2ebf4a5e10726a2e78ddd4d70eedfb6f1c33eb06",
-		Kind: kindSileroVAD,
-		VAD:  &VADTuning{Threshold: 0.5, MinSpeech: 250 * time.Millisecond, MinSilence: 100 * time.Millisecond, SpeechPad: 30 * time.Millisecond, Chunk: 512},
+		Kind: kindSileroVAD, Binary: "silero_vad_server",
+		VAD: &VADTuning{Threshold: 0.5, MinSpeech: 250 * time.Millisecond, MinSilence: 100 * time.Millisecond, SpeechPad: 30 * time.Millisecond, Chunk: 512},
 	},
 }
 

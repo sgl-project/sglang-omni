@@ -22,7 +22,7 @@ func serverLinks(t *testing.T) func(*Config) {
 		t.Fatal(err)
 	}
 	bin := t.TempDir()
-	for _, name := range []string{"qwen3_asr_server", "whisper_server", "moss_transcribe_diarize_server", "parakeet_server", "sensevoice_server"} {
+	for _, name := range []string{"qwen3_asr_server", "silero_vad_server", "whisper_server", "moss_transcribe_diarize_server", "parakeet_server", "sensevoice_server"} {
 		if err := os.Symlink(exe, filepath.Join(bin, name)); err != nil {
 			t.Fatal(err)
 		}
@@ -94,6 +94,32 @@ func TestKinds(t *testing.T) {
 			if got := finals[i].Fields[k]; got != v {
 				t.Errorf("%s: %s %q, want %q", c.id, k, got, v)
 			}
+		}
+	}
+}
+
+// TestVADServer: Silero runs as silero_vad_server, so that Activity Monitor
+// tells it from the speech model's qwen3_asr_server; a runtime without that
+// copy runs it on qwen3_asr_server.
+func TestVADServer(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		tune func(*Config)
+		want string
+	}{{serverLinks(t), "silero_vad_server"}, {nil, filepath.Base(exe)}} {
+		f := newFake(t, omnitest.Opts{}, c.tune)
+		v, err := NewVAD(f.rt, f.model(VADSilero))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := v.Speech(context.Background(), tone(time.Second, 0.3), 16000); err != nil {
+			t.Fatal(err)
+		}
+		if l := f.records("launch"); len(l) != 1 || l[0].Binary != c.want || !strings.Contains(strings.Join(l[0].Args, " "), "--model-kind silero_vad") {
+			t.Errorf("launched %+v, want %s", l, c.want)
 		}
 	}
 }

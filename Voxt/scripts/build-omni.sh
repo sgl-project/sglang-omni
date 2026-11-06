@@ -3,8 +3,8 @@
 # Mac and stages what VoxtNew runs of it where mygo ships it:
 # resources/darwin-arm64/omni/bin/ becomes
 # Voxt.app/Contents/Resources/omni/bin/ (go tool mygo build, mygo dev):
-# the speech servers (qwen3_asr_server: Qwen3-ASR and, with --model-kind
-# silero_vad, Silero VAD; whisper_server, moss_transcribe_diarize_server,
+# the speech servers (qwen3_asr_server: Qwen3-ASR; its copy
+# silero_vad_server: Silero VAD; whisper_server, moss_transcribe_diarize_server,
 # parakeet_server, sensevoice_server), MLX's libraries and mlx.metallib,
 # which MLX loads from beside its library. mygo build signs the binaries and libraries with the app (they
 # keep the hardened runtime of a real identity); the metallib is a
@@ -68,12 +68,16 @@ if ! bash "$NATIVE/scripts/build_runtime.sh" "$WORK/runtime" "$WORK/work" >"$log
 fi
 
 # Only what VoxtNew runs: the servers of its speech models (internal/omni
-# models.go), and MLX beside them.
-SERVERS=(qwen3_asr_server whisper_server moss_transcribe_diarize_server parakeet_server sensevoice_server)
+# models.go), and MLX beside them. silero_vad_server is a copy of
+# qwen3_asr_server for Silero VAD, so that Activity Monitor tells the voice
+# detector from the speech model.
+SERVERS=(qwen3_asr_server silero_vad_server whisper_server moss_transcribe_diarize_server parakeet_server sensevoice_server)
 rm -rf "$OUT/bin"
 mkdir -p "$OUT/bin"
 for s in "${SERVERS[@]}"; do
-  cp -f "$WORK/runtime/bin/$s" "$OUT/bin/"
+  src="$s"
+  [[ $s == silero_vad_server ]] && src=qwen3_asr_server
+  cp -f "$WORK/runtime/bin/$src" "$OUT/bin/$s"
   chmod 0755 "$OUT/bin/$s"
 done
 cp -f "$WORK/runtime/bin/"*.dylib "$WORK/runtime/bin/mlx.metallib" "$OUT/bin/"

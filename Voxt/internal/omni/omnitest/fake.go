@@ -5,7 +5,8 @@
 // link to the test binary: whisper_server, moss_transcribe_diarize_server,
 // parakeet_server, sensevoice_server), it is that server: only its kind,
 // none of qwen3_asr_server's own flags, and the realtime API only for
-// MOSS. In the test package:
+// MOSS. As silero_vad_server (a copy of qwen3_asr_server) it is
+// qwen3_asr_server. In the test package:
 //
 //	func TestMain(m *testing.M) {
 //		if omnitest.Enabled() {

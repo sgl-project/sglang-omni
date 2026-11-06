@@ -16,7 +16,7 @@
 | 日志面板 | Voxt 里按 ⇧⌘L（来源 `session`、`omni`、`llm`、`helper`） |
 | 日志文件 | `~/Library/Logs/VoxtNew/voxtnew.log`（app，含 Omni 服务的启动、退出、卸载）、`helper.log`（辅助进程：热键、AX、粘贴、URL）、`llm.log`（voxtnew-llm 的 stderr） |
 | 模型文件 | 家族模型库 `$HUB`（默认 `~/Library/Application Support/ActNow/models/hub`）的 `models--<owner>--<name>/snapshots/<commit>/`；Voxt 的声明在 `~/Library/Application Support/ActNow/models/claims/dev.hehehai.voxtnew.json` |
-| 模型进程 | `pgrep -fl 'qwen3_asr_server\|voxtnew-llm\|voxtnew-helper'`：`qwen3_asr_server` 每个模型一个（命令行里的 `--model-directory …/models--<owner>--<name>/snapshots/<commit>` 说明是哪个：语音识别模型或 `vad.silero`），`voxtnew-llm` 最多一个 |
+| 模型进程 | `pgrep -fl '_server\|voxtnew-llm\|voxtnew-helper'`：语音识别模型一个服务（`qwen3_asr_server`、`whisper_server` 等，命令行里的 `--model-directory …/models--<owner>--<name>/snapshots/<commit>` 说明是哪个），声音检测（Silero VAD）一个 `silero_vad_server`，`voxtnew-llm` 最多一个 |
 | 历史详情 | 每次会话的识别原文、结果、交付方式、用的语音识别模型和语言模型、各阶段耗时、命中的规则 |
 | 系统设置 | 隐私与安全 → 辅助功能 / 麦克风；网络 → 代理 |
 
@@ -188,7 +188,7 @@
 - **应看到**：
   - 下拉里没有“翻译专用模型”（它只给翻译用）。“自动”一项写着它现在会用哪个（“自动：精准语音识别”）。
   - 第一次换模型要冷启动（快速语音识别约 0.7 秒），第二次明显更快：识别约 0.2 秒，整理约 1.2 秒。
-  - `pgrep -fl qwen3_asr_server` 里同一时间只有一个语音识别模型（另一个用完就停），外加一个 `vad.silero`。
+  - `pgrep -fl qwen3_asr_server` 里同一时间只有一个语音识别模型（另一个用完就停），外加一个 `silero_vad_server`（声音检测）。
 - **不对时看**：日志面板（来源 omni）：`… stopped: …`、`… ready on …`。
 
 **2.4 各种输入框**
@@ -481,7 +481,7 @@
 
 ## 7. 模型进程：删除、崩溃、空闲卸载、退出、内存（约 20 分钟，含两段等待）
 
-这一节一直开着终端，用 `pgrep -fl 'qwen3_asr_server|voxtnew-llm|voxtnew-helper'` 看进程。
+这一节一直开着终端，用 `pgrep -fl 'qwen3_asr_server|silero_vad_server|voxtnew-llm|voxtnew-helper'` 看进程。
 
 **7.1 内存**
 - **做**：转录一次（两个默认模型都加载了），打开本地模型页；再在“活动监视器”里看 `qwen3_asr_server` 和 `voxtnew-llm` 的内存。
@@ -509,7 +509,7 @@
   5. 删除“均衡语言模型”，转录一次；再翻译一次选中的文字。
   6. 把删掉的模型装回来（1.5 第 2 步的命令加上 `asr.accurate llm.balanced`，或者点“下载”），重启 Voxt。
 - **应看到**：
-  - 第 2 步：它的 `qwen3_asr_server` 几秒内退出（日志 `omni: asr.accurate stopped: …`），文件夹不见了；`vad.silero` 的服务可以还在。
+  - 第 2 步：它的 `qwen3_asr_server` 几秒内退出（日志 `omni: asr.accurate stopped: …`），文件夹不见了；`silero_vad_server` 可以还在。
   - 第 3 步：改用快速语音识别，正常出结果（第一次冷启动）；历史详情写的是快速语音识别。
   - 第 4 步：不录音，浮窗提示“语音识别模型未安装。”（›“打开本地模型”）；侧边栏底部出现“没有语音识别模型”的卡片，首页的就绪清单也提示。
   - 第 5 步：`voxtnew-llm` 退出（它加载的是被删的模型）；转录改用快速语言模型整理；翻译用剩下的模型中能翻译的那个（“自动”）。
@@ -541,10 +541,10 @@
 - **不对时看**：日志面板；历史详情的错误。
 
 **7.5 空闲卸载**
-- **做**：转录一次（两个模型都加载），然后不碰 Voxt，等 11 分钟，期间隔几分钟看一次 `pgrep -fl 'qwen3_asr_server|voxtnew-llm'`。然后再转录一次。
+- **做**：转录一次（两个模型都加载），然后不碰 Voxt，等 11 分钟，期间隔几分钟看一次 `pgrep -fl 'qwen3_asr_server|silero_vad_server|voxtnew-llm'`。然后再转录一次。
 - **应看到**：
   - 约 5 分钟后 `voxtnew-llm` 退出（日志 `voxtnew-llm unused for 5m0s: stopping it`）。
-  - 约 10 分钟后语音识别和 Silero 的 `qwen3_asr_server` 都退出（日志 `… unloaded after 10m0s unused`）。
+  - 约 10 分钟后 `qwen3_asr_server` 和 `silero_vad_server` 都退出（日志 `… unloaded after 10m0s unused`）。
   - `voxtnew-helper` 一直在。
   - 之后的转录照常，只是付一次冷启动（约 1 秒的语音识别加载和约 1 秒的语言模型加载；按下快捷键时就开始加载，和说话的时间重叠）。
 - **不对时看**：日志面板。
@@ -552,7 +552,7 @@
 **7.5a 保持模型载入（本地模型页 → 高级）**
 - **做**：
   1. 本地模型页拉到底，“高级”默认收起；展开，“保持模型载入”是“自动”，ⓘ 说明立即开始、占用卡片上的内存、使用这个模型库的其他 app 仍可请 Voxt 释放内存。
-  2. 选“5 分钟”，转录一次，然后不碰 Voxt 等 6 分钟，看 `pgrep -fl 'qwen3_asr_server|voxtnew-llm'`。
+  2. 选“5 分钟”，转录一次，然后不碰 Voxt 等 6 分钟，看 `pgrep -fl 'qwen3_asr_server|silero_vad_server|voxtnew-llm'`。
   3. 选“直到退出 Voxt”，转录一次，等 11 分钟再看一次；然后不重启 Voxt 改回“自动”。
   4. （有 AudioSmith 或 Dicta 时）仍是“直到退出 Voxt”，模型空闲满 1 分钟后，在另一个 ActNow app 里加载一个大模型，让它发出内存请求。
 - **应看到**：
@@ -574,7 +574,7 @@
 
 **7.6 退出时不留进程**
 - **做**：
-  1. 转录一次，`pgrep` 确认三类进程都在。用 ⌘Q 退出 Voxt，5 秒后再看 `pgrep -fl 'qwen3_asr_server|voxtnew-llm|voxtnew-helper'`。
+  1. 转录一次，`pgrep` 确认三类进程都在。用 ⌘Q 退出 Voxt，5 秒后再看 `pgrep -fl 'qwen3_asr_server|silero_vad_server|voxtnew-llm|voxtnew-helper'`。
   2. 重新打开，转录一次，关掉窗口（⌘W）：Voxt 留在菜单栏，快捷键还能用。再用菜单栏图标 →“退出 Voxt”退出，再看 `pgrep`。
   3. 〔可选〕重新打开，转录一次，`pkill -9 -x Voxt`（模拟 app 崩溃），10 秒后看 `pgrep`。
 - **应看到**：第 1、2 步退出后输出为空。第 3 步：辅助进程和模型进程发现 app 没了，自己退出，输出也为空。
@@ -828,7 +828,7 @@ MAC_DIR=code/VoxtNew-xyz scripts/mac.sh scripts/mac-regress.sh   # 真实模型�
 5. **本地模型页（1.5 分钟）**：看 1.5 的卡片（默认标签、大小、已加载模型的内存）；删除“快速语言模型”并确认，再克隆回来。
 6. **浏览器网址（2 分钟）**：做 5.3 的第 3、4 步，只做 Safari 和 Arc，**都放在前台**。在应用增强页看预览，或看 `helper.log` 里 `browser.url` 的 `via`，填进“结果怎么报”的浏览器表。Arc 要在 Voxt 启动之后切到前台过一次（辅助进程那时给它设置 `AXManualAccessibility`），读到的应是 `ax-focus` 或 `ax-weburl`；读不到时，记下它是否在输入框里有焦点，以及日志面板（debug 级别，来源 helper）里有没有 “AXManualAccessibility on company.thebrowser.Browser … set”（见 10.3）。
 7. **选中文字翻译（1 分钟）**：在 TextEdit 里选中一句英文按右 ⌥ ⇧（3.1），译文替换选区；再换成翻译专用模型做一次（3.2 第 2 步）。
-8. **退出（1 分钟）**：做 7.6 第 1 步：⌘Q 后 `pgrep -fl 'qwen3_asr_server|voxtnew-llm|voxtnew-helper'` 为空。
+8. **退出（1 分钟）**：做 7.6 第 1 步：⌘Q 后 `pgrep -fl 'qwen3_asr_server|silero_vad_server|voxtnew-llm|voxtnew-helper'` 为空。
 9. **引导（1 分钟）**：做 1.6 的前两步，再关掉引导，看界面是否正常。
 10. **录音时静音系统声音（4 分钟，需要扬声器或耳机）**：做 9.3b 的第 1–8 步（装着 Auralink 时加第 9 步）。
 
