@@ -250,7 +250,7 @@ func TestPermissionsSettings(t *testing.T) {
 	if a.shownPath() != "/settings/permissions" {
 		t.Fatalf("shown %s", a.shownPath())
 	}
-	for _, s := range []string{"Microphone", "Accessibility", "Not asked yet", "Check again"} {
+	for _, s := range []string{"Microphone", "Accessibility", "Speech Recognition", "Not asked yet", "Check again"} {
 		if !has(tt, s) {
 			t.Errorf("section lacks %q", s)
 		}
@@ -262,7 +262,7 @@ func TestPermissionsSettings(t *testing.T) {
 	}
 	// The helper's view of the permissions wins: the microphone is not
 	// asked yet there.
-	if !slices.Contains(fs.methods(), proto.MethodPermissionsStatus) || a.perms.mic != permission.NotDetermined || a.perms.access {
+	if !slices.Contains(fs.methods(), proto.MethodPermissionsStatus) || a.perms.mic != permission.NotDetermined || a.perms.access || a.perms.speech != permission.NotDetermined {
 		t.Errorf("permissions %+v after %v", a.perms, fs.methods())
 	}
 	if slices.ContainsFunc(fs.methods(), func(m string) bool { return strings.HasPrefix(m, "automation.") }) {
@@ -275,6 +275,11 @@ func TestPermissionsSettings(t *testing.T) {
 	}
 	if f := a.permSys.(*permission.Fake); f.Prompted != 0 {
 		t.Errorf("asked from the app: %d", f.Prompted)
+	}
+	// Speech Recognition is asked through the helper too, and its answer shows.
+	a.askPermission(proto.PermissionSpeechRecognition)
+	if a.perms.speech != permission.Granted {
+		t.Errorf("speech recognition after asking: %+v", a.perms)
 	}
 	// Without the helper, Accessibility is asked from the app.
 	fs.set(helper.Status{State: helper.Failed, Reason: helper.FailCrashed})

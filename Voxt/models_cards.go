@@ -5,6 +5,8 @@ package main
 // other apps that share it, another app downloading it, the app that
 // deleted it for all apps; and the models of other family apps VoxtNew
 // can run (models.Model.Borrowed), shown once they are on this Mac.
+// System dictation has a card of its own: built into macOS, with nothing
+// to download or delete.
 
 import (
 	"fmt"
@@ -14,6 +16,7 @@ import (
 	"github.com/hehehai/actnowkit/hfhub"
 	fammodels "github.com/hehehai/actnowkit/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/actnow"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/lang"
@@ -36,6 +39,7 @@ func (a *app) modelsPage(c *ui.Context) {
 			caption(c, i18n.T("Voxt recognises speech on this Mac: your audio never leaves it. Language models are remote: set one up on the Language models page."))
 			sectionTitleTip(c, i18n.T("Speech recognition"), i18n.T("Turns what you say into text. Every feature needs one to work by voice."))
 			a.modelCards(c, models.ASR)
+			a.dictationCard(c)
 			if a.anyModelShown(models.LLM) {
 				sectionTitleTip(c, i18n.T("Language models no longer used"), i18n.T("Voxt 2.0 ran these on this Mac; Voxt now uses the language models of the Language models page. Delete them to free the space: another app that uses one keeps it."))
 				a.modelCards(c, models.LLM)
@@ -92,6 +96,42 @@ func (a *app) anyModelShown(kind models.Kind) bool {
 		}
 	}
 	return false
+}
+
+// dictationCard is System dictation, while the helper can recognise.
+func (a *app) dictationCard(c *ui.Context) {
+	if !slices.ContainsFunc(a.installed(local.ASR), func(m local.Model) bool { return m.ID == dictation.ModelID }) {
+		return
+	}
+	t := c.Theme()
+	k := tok(t)
+	card(c.Key("model-" + dictation.ModelID)).Children(func() {
+		ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Start).Children(func() {
+			ui.Icon(c, icons.Soundwave.Linear).Size(px(t, 20), px(t, 20)).TextColor(k.Text2).Shrink(0).Margin(px(t, 1), 0, 0, 0)
+			// modelCard's order: the name, "Built-in" where a size would be and
+			// where it is used, what it is good at, then the labels at the foot.
+			ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp2)).Children(func() {
+				ui.Column(c).Gap(px(t, 2)).Children(func() {
+					ui.Text(c, uitext.ModelName(dictation.ModelID)).FontWeight(600)
+					meta := i18n.T("Built-in") // nothing to download
+					if used := a.usedBy(local.ASR, dictation.ModelID); used != "" {
+						meta += " · " + used
+					}
+					caption(c, meta)
+				})
+				ui.Text(c, uitext.ModelAbout(dictation.ModelID))
+				ui.Row(c).Gap(px(t, 4)).AlignItems(ui.Center).Children(func() {
+					ui.Icon(c, icons.Global.Linear).Size(px(t, 14), px(t, 14)).TextColor(k.Text2).Shrink(0)
+					caption(c, uitext.ModelLanguages(dictation.ModelID)).MinWidth(0)
+				})
+				ui.Row(c.Key("tags")).Gap(px(t, 6)).AlignItems(ui.Center).Wrap().Children(func() {
+					for _, tag := range uitext.ModelTags(dictation.ModelID) {
+						tagChip(c, tag)
+					}
+				})
+			})
+		})
+	})
 }
 
 // modelCard is one model: what it is good at, its languages, its size

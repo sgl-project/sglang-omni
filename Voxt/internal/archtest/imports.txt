@@ -13,6 +13,9 @@ compose lang
 datadir store/sqlitestore
 deliver helper/proto
 dict store
+dictation asr
+dictation helper/proto
+dictation local
 dsp vad
 helper core
 helper helper/proto
@@ -63,6 +66,7 @@ uitext compose
 uitext core
 uitext deliver
 uitext dict
+uitext dictation
 uitext helper
 uitext helper/proto
 uitext hotkey

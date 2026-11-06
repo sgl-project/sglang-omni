@@ -8,6 +8,7 @@ import (
 	"errors"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
@@ -25,6 +26,12 @@ func ModelErrorText(err error) (msg, more string) {
 	}
 	if errors.Is(err, local.ErrNoRuntime) {
 		return i18n.T("This version of Voxt cannot run the model yet."), more
+	}
+	if errors.Is(err, dictation.ErrNotAllowed) {
+		return i18n.T("Voxt may not use Speech Recognition: allow it in Settings → Permissions."), more
+	}
+	if errors.Is(err, dictation.ErrNoLanguage) {
+		return i18n.T("macOS cannot recognise your main language on this Mac: add it in System Settings → Keyboard → Dictation, or choose another speech model."), more
 	}
 	var ae *asr.Error
 	if errors.As(err, &ae) {

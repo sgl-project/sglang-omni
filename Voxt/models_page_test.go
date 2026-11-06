@@ -95,6 +95,27 @@ func TestModelsPage(t *testing.T) {
 	}
 }
 
+// TestModelsPageSystemDictation: System dictation's card says it is
+// built in and which features use it; once a speech model is downloaded,
+// Automatic moves the features to that one.
+func TestModelsPageSystemDictation(t *testing.T) {
+	a, fs, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 1600)
+	a.dictation.SetHelper(fs) // as helperChanged does for a helper with speech.*
+	a.navigate(modelsPath)
+	used := func() int {
+		return strings.Count(strings.Join(tt.Texts(), "\n"), "· Used by Transcribe · Translate · Rewrite")
+	}
+	if !has(tt, "System dictation") || !has(tt, "Built-in") || used() != 1 {
+		t.Fatalf("no dictation card, or not used: %q", tt.Texts())
+	}
+	seedModels(t, a, models.ASRFast, models.VADSilero)
+	a.dictation.SetHelper(fs) // seedModels made the services anew
+	if m, _ := a.featureModel(local.ASR, hotkey.Transcribe); m.ID != models.ASRFast || used() != 1 || !has(tt, "System dictation") {
+		t.Errorf("after a download: transcribe uses %s, %d cards used, %q", m.ID, used(), tt.Texts())
+	}
+}
+
 // TestModelDownloadStates: a download in progress (Cancel), stopped
 // (Resume), failed (Try again), against a fake Hub.
 func TestModelDownloadStates(t *testing.T) {

@@ -9,6 +9,7 @@ import (
 	"errors"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
@@ -35,6 +36,9 @@ func sessionProblemText(p *session.Problem) (text, more, action string) {
 				return i18n.T("Used the live text: full recognition took too long."), more, actionNone
 			}
 			return i18n.T("Used the live text: full recognition failed."), more, actionNone
+		}
+		if errors.Is(p.Err, dictation.ErrNotAllowed) {
+			return i18n.T("Speech recognition failed: %s", msg), more, actionPermissions
 		}
 		return i18n.T("Speech recognition failed: %s", msg), more, actionModels
 	case session.ProblemNoLLM:

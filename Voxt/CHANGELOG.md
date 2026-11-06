@@ -7,6 +7,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Added
 
 - **Remote language models** (the new Language models page): Transcribe's clean-up, Translate and Rewrite use a language model of a service you set up, over its OpenAI-compatible API: OpenAI, Anthropic, Google Gemini, DeepSeek, Qwen (Alibaba Cloud), Kimi, GLM, Doubao (Volcengine), MiniMax, StepFun, Xiaomi MiMo, xAI, OpenRouter, any other compatible server (Custom), or one on this Mac (Ollama, LM Studio, oMLX), so that the text stays here. Each service takes an API key, an address and a model, with Test connection; the key is kept in the macOS Keychain only, never in Voxt's settings or logs. Every feature's language model menu lists the services set up; Automatic uses the first one, and each card says which features use it. The page groups the servers that run on this Mac (free) apart from the online services. Only the recognised or selected text is sent, never audio.
+- **System dictation** is back as a speech model (Local models → Speech recognition): macOS's own speech recognition, on this Mac, with nothing to download, and the text shown as you speak. It hears your main language (Settings → General; without one, the Mac's dictation language), and your dictionary's terms help it. Choose it on a feature's page; Automatic still uses a speech model you downloaded. The first time, macOS asks for Speech Recognition (Settings → Permissions has it too); a language this Mac cannot recognise on device fails with a notice that says so.
 - Voxt 2.0.0, rebuilt from scratch: voice input for macOS on local models only. Press a shortcut in any app, speak, and the text appears where your cursor is. Audio and text never leave your Mac.
 - Local speech recognition: two models, accurate (recommended) and fast, with the text shown live as you speak, and a voice detector that sends only speech to them.
 - Local language models: a balanced one (recommended), a fast one and a translation model, for clean-up, translation and rewriting.
@@ -60,6 +61,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 新增
 
 - **远程语言模型**（新的“语言模型”页）：转录的整理、翻译和转写使用你设置的服务的语言模型，通过它的 OpenAI 兼容 API 调用：OpenAI、Anthropic、Google Gemini、DeepSeek、通义千问（阿里云百炼）、Kimi、智谱 GLM、豆包（火山方舟）、MiniMax、阶跃星辰、小米 MiMo、xAI、OpenRouter、其他兼容的服务（自定义），或者本机的服务（Ollama、LM Studio、oMLX），让文字留在这台 Mac 上。每个服务填 API Key、地址和模型，可以测试连接；Key 只保存在 macOS 钥匙串里，不会写进 Voxt 的设置或日志。各功能的语言模型菜单列出设置好的服务，“自动”用第一个，卡片上写明使用位置。页面把本机运行的服务（免费）和在线服务分开列出。只发送识别出的文字或选中的文字，不发送音频。
+- **系统听写**回来了，作为语音识别模型（本地模型 → 语音识别）：macOS 自带的语音识别，在这台 Mac 上运行，无需下载，说话时实时显示文字。它识别你的主要语言（设置 → 通用；没有设置时用这台 Mac 的听写语言），词典里的词条也会帮它识别。在功能页里选择它；“自动”仍然优先用你下载的语音识别模型。第一次使用时 macOS 会请求“语音识别”权限（设置 → 权限里也有）；这台 Mac 不能在本机识别的语言会提示失败原因。
 - Voxt 2.0.0，从头重写：只用本地模型的 macOS 语音输入。在任意 App 里按下快捷键说话，文字出现在光标处。音频和文字不会离开你的 Mac。
 - 本地语音识别：精准（推荐）和快速两个模型，说话时实时显示文字；声音检测只把说话的部分交给它们。
 - 本地语言模型：均衡（推荐）、快速和翻译专用三个模型，用于整理、翻译和改写。
