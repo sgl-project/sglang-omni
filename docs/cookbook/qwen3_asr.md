@@ -185,6 +185,18 @@ sgl-omni serve \
 
 Send the form field `return_spec_tokens_details=true` to get `sglext.spec_tokens_details` (`spec_accept_length`, `spec_accept_rate`, the draft counts and the per-verify histogram) on `json` and `verbose_json` responses and on the streamed `transcript.text.done` event. Audio long enough to be transcribed in chunks returns none. `spec_accept_rate` and `spec_num_proposed_drafts` are left out when no drafts were proposed or the draft width is adaptive.
 
+### Ascend NPU
+
+For one Ascend device, use the BF16 eager example below. It uses the same pinned draft and greedy, synchronous decoding policy as the CUDA example. Follow the [NPU installation guide](../get_started/installation_npu.md) for runtime setup and [graph queue requirements](../get_started/installation_npu.md#qwen3-asr-graph-execution).
+
+```bash
+sgl-omni serve --config examples/configs/qwen3_asr_1_7b_dflash_npu.yaml --port 8000
+```
+
+To enable draft and target verification decode graphs, select `examples/configs/qwen3_asr_1_7b_dflash_npu_graph.yaml` instead. Its request buckets are one and two; prefill and encoder remain eager, and Torch Compile stays disabled. Keep `SGLANG_DFLASH_EAGER_DRAFT_SAMPLER` unset or `0` to capture the reduced-vocabulary draft head. These buckets describe the validated example, not a platform concurrency limit or an optimal performance setting.
+
+Both NPU examples explicitly select `ascend` for target and draft attention. Direct factory callers must supply the same engine overrides and `enable_encoder_cuda_graph=False`. Keep effective `context_length`, including the audio/text prefix and verification reserve, within the pinned causal draft's 32768-token attention window; a larger output budget or context override can exceed it. For offline serving, pass local snapshots with `--model-path` and `--asr.engine.speculative_draft_model_path`. Overlap, realtime, TP>1, quantization and longer contexts remain outside this validation.
+
 ## Transcribe Audio
 
 ```bash
