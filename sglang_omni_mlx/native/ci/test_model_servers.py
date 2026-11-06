@@ -172,6 +172,12 @@ def test_whisper_detected_language_matches_an_explicit_request(
             status, body = server.post_form({**fields, **supplied}, clip(clip_id))
             assert status == 200
             assert sse_events(body) == expected
+        override = "zh" if language == "en" else "en"
+        status, body = server.post_form(
+            {**fields, "language": override, "max_new_tokens": "1"}, clip(clip_id)
+        )
+        assert status == 200
+        assert sse_events(body)[0]["generation_metadata"]["language"] == override
     finally:
         server.stop()
 
