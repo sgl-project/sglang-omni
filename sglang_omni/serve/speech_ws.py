@@ -521,7 +521,10 @@ class SpeechWebSocketSession:
         segments: list[str] = []
         start = 0
         for index, char in enumerate(self.buffer):
-            if char in boundaries:
+            # note (WenJing95): ASCII punctuation followed directly by a character, as in 3.5, 1,000 or example.com, does not end a segment.
+            if char in boundaries and (
+                not char.isascii() or not self.buffer[index + 1 : index + 2].strip()
+            ):
                 segment = self.buffer[start : index + 1].strip()
                 if segment:
                     segments.append(segment)
