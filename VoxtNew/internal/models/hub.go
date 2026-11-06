@@ -41,7 +41,10 @@ func (m Model) Entry(rev string) hfhub.Entry {
 }
 
 // Claim is VoxtNew's claim on m at rev ("": the pinned one), made with
-// origin (fammodels.OriginReused…).
+// origin (fammodels.OriginReused…). At the pinned commit it carries the
+// catalogue's sizes (not written to the claims file), so that Check finds
+// a file cut short even without .actnow/blobs.json; another commit's
+// files may have other sizes.
 func (m Model) Claim(rev, origin string) fammodels.Claim {
 	if rev == "" {
 		rev = m.Revision
@@ -49,6 +52,12 @@ func (m Model) Claim(rev, origin string) fammodels.Claim {
 	c := fammodels.Claim{Repo: m.Repo, Revision: rev, Model: m.ID, Family: m.Family, Role: m.Kind.Role(), Origin: origin}
 	for _, f := range m.Files {
 		c.Files = append(c.Files, f.Path)
+		if rev == m.Revision && f.Size > 0 {
+			if c.Sizes == nil {
+				c.Sizes = map[string]int64{}
+			}
+			c.Sizes[f.Path] = f.Size
+		}
 	}
 	return c
 }
@@ -62,14 +71,16 @@ func (m Model) Ref(rev string) fammodels.Ref {
 }
 
 // find is the commit of m on disk under hub: the pinned one, else the
-// first of Accept that is installed (fammodels.FindInstalled); "" when
-// none is.
+// first of Accept that is installed (as fammodels.FindInstalled, but each
+// commit with its own claim: the pinned one's has the catalogue's sizes);
+// "" when none is.
 func find(hub string, m Model) (rev string, st fammodels.Status) {
-	rev, st, ok := fammodels.FindInstalled(hub, m.Claim("", ""), m.Accept)
-	if !ok {
-		return "", st
+	for _, r := range append([]string{m.Revision}, m.Accept...) {
+		if st := fammodels.Check(hub, m.Claim(r, "")); st.State == fammodels.Installed {
+			return r, st
+		}
 	}
-	return rev, st
+	return "", fammodels.Status{}
 }
 
 // SnapshotDir is the folder a runtime loads m from when its commit rev is
