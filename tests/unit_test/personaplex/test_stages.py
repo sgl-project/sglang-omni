@@ -241,9 +241,7 @@ def test_realtime_session_stages_hold_max_sessions_calls_and_run_codecs_serially
     monkeypatch.setattr(stages, "load_codec", load_codec)
     decode_slots = Mock()
     monkeypatch.setattr(stages, "MimiDecodeSlots", decode_slots)
-    prompt = stages.create_session_preprocessing_executor(
-        str(tmp_path), max_open_sessions=3
-    )
+    prompt = stages.create_session_preprocessing_executor(max_open_sessions=3)
     codecs = [
         stages.create_session_mimi_encode_executor(str(tmp_path), max_open_sessions=3),
         stages.create_session_code2wav_executor(str(tmp_path), max_open_sessions=3),
@@ -314,8 +312,9 @@ def test_session_stage_settings_reach_their_factories(monkeypatch, tmp_path):
     monkeypatch.setattr(stages, "load_text_tokenizer", lambda _: FakeTokenizer())
     config = resolve_session_config(
         str(tmp_path),
-        preprocessing={"factory": {"voice_prompt_cache_bytes": 1024}},
-        mimi_encode={"factory": {"max_concurrency": 2}},
+        mimi_encode={
+            "factory": {"max_concurrency": 2, "voice_prompt_cache_bytes": 1024}
+        },
         code2wav={"factory": {"max_graph_frames": 0}},
         lm={"engine": {"max_running_requests": 8}},
     )
@@ -324,11 +323,11 @@ def test_session_stage_settings_reach_their_factories(monkeypatch, tmp_path):
         **resolve_stage_factory_args(stage, config)
     )
     assert encode.max_concurrency == 2
+    assert cache.call_args.kwargs["max_bytes"] == 1024
     stage = config.stage_named("preprocessing")
     stages.create_session_preprocessing_executor(
         **resolve_stage_factory_args(stage, config)
     )
-    assert cache.call_args.kwargs["max_bytes"] == 1024
     stage = config.stage_named("code2wav")
     stages.create_session_code2wav_executor(**resolve_stage_factory_args(stage, config))
     assert decode_slots.call_args.kwargs["max_graph_frames"] == 0
