@@ -1,2 +1,5 @@
+mlx==0.32.3
+mlx-metal==0.32.3
+numpy==2.3.5
 pytest==9.1.1
 websockets==17.2
