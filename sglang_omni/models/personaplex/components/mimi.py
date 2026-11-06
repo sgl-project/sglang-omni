@@ -27,7 +27,6 @@ from sglang_omni.models.personaplex.components.causal_conv import (
     StreamingModule,
 )
 from sglang_omni.models.personaplex.components.mimi_transformer import (
-    AttentionState,
     MimiTransformer,
     TransformerState,
 )
@@ -97,6 +96,7 @@ def select_stack_rows(state: SEANetState, rows: torch.Tensor) -> SEANetState:
             # Note (nightdecode): has_started is one flag per state, not per row.
             # Only replicate padding reads it and the decoder pads with zeros, so
             # the selection shares the flag rather than copying it.
+            # Note (Junnan Li): The SEANet encoder pads with zeros too.
             selected.append(
                 ConvState(
                     previous=module_state.previous.index_select(0, rows),
@@ -315,6 +315,41 @@ class MimiEncodeState:
     transformer: TransformerState
     downsample: ConvState
 
+    def reset(self) -> None:
+        """Back to a fresh stream, in place, so captured graphs keep their addresses."""
+        reset_stack(self.encoder)
+        self.transformer.reset()
+        self.downsample.reset()
+
+    def reset_row(self, row: int) -> None:
+        for tensor in self.row_tensors():
+            tensor[row].zero_()
+
+    def select_rows(self, rows: torch.Tensor) -> MimiEncodeState:
+        return MimiEncodeState(
+            encoder=select_stack_rows(self.encoder, rows),
+            transformer=self.transformer.select_rows(rows),
+            downsample=ConvState(
+                previous=self.downsample.previous.index_select(0, rows),
+                has_started=self.downsample.has_started.index_select(0, rows),
+            ),
+        )
+
+    def store_rows(self, rows: torch.Tensor, selected: MimiEncodeState) -> None:
+        for tensor, selected_tensor in zip(
+            self.row_tensors(), selected.row_tensors(), strict=True
+        ):
+            tensor.index_copy_(0, rows, selected_tensor)
+
+    def row_tensors(self) -> list[torch.Tensor]:
+        """Every tensor that holds one row per stream, in a fixed order."""
+        return [
+            *stack_row_tensors(self.encoder),
+            *self.transformer.row_tensors(),
+            self.downsample.previous,
+            self.downsample.has_started,
+        ]
+
 
 @dataclass
 class MimiDecodeState:
@@ -343,16 +378,7 @@ class MimiDecodeState:
             upsample=ConvTransposeState(
                 partial=self.upsample.partial.index_select(0, rows)
             ),
-            transformer=TransformerState(
-                offset=self.transformer.offset.index_select(0, rows),
-                layers=[
-                    AttentionState(
-                        keys=layer.keys.index_select(0, rows),
-                        values=layer.values.index_select(0, rows),
-                    )
-                    for layer in self.transformer.layers
-                ],
-            ),
+            transformer=self.transformer.select_rows(rows),
             decoder=select_stack_rows(self.decoder, rows),
         )
 
@@ -367,12 +393,7 @@ class MimiDecodeState:
         """Every tensor that holds one row per stream, in a fixed order."""
         return [
             self.upsample.partial,
-            self.transformer.offset,
-            *(
-                tensor
-                for layer in self.transformer.layers
-                for tensor in (layer.keys, layer.values)
-            ),
+            *self.transformer.row_tensors(),
             *stack_row_tensors(self.decoder),
         ]
 
