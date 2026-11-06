@@ -219,6 +219,7 @@ async def run_asr_seedtts_once(
     warmup: int = 0,
     disable_tqdm: bool = True,
     stream: bool = False,
+    fallback_percentage: int = 0,
 ) -> dict:
     """Run one SeedTTS ASR benchmark pass and return WER/speed/worker metrics."""
     before = _fetch_worker_snapshot(host, port)
@@ -232,6 +233,7 @@ async def run_asr_seedtts_once(
         warmup=warmup,
         disable_tqdm=disable_tqdm,
         stream=stream,
+        fallback_percentage=fallback_percentage,
     )
     after = _fetch_worker_snapshot(host, port)
     benchmark_result = build_asr_eval_results(
@@ -281,6 +283,7 @@ async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
             lang=args.lang,
             concurrency=concurrency,
             stream=args.stream,
+            fallback_percentage=getattr(args, "fallback_percentage", 0),
         )
     finally:
         resources = (
@@ -702,8 +705,17 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Limit samples (0 = full SeedTTS set; 1088 for EN).",
     )
+    parser.add_argument(
+        "--fallback-percentage",
+        type=int,
+        default=0,
+        help="Percentage of clips sent with repetition_penalty=1.2 to exercise plain fallback.",
+    )
     add_common_args(parser, default_output="asr_seedtts_results.json")
-    return finalize_args(parser.parse_args())
+    args = parser.parse_args()
+    if not 0 <= args.fallback_percentage <= 100:
+        parser.error("--fallback-percentage must be between 0 and 100")
+    return finalize_args(args)
 
 
 async def _run_profiled_pass(args, samples, concurrency: int) -> dict | None:
@@ -739,6 +751,7 @@ async def _sweep(args, samples, concurrencies: list[int]) -> list[dict]:
                 lang=args.lang,
                 concurrency=concurrency,
                 stream=args.stream,
+                fallback_percentage=getattr(args, "fallback_percentage", 0),
             )
         repeats: list[dict] = []
         for repeat in range(1, args.repeats + 1):
@@ -845,6 +858,7 @@ def main() -> None:
             "repeats": args.repeats,
             "warmup": args.warmup,
             "stream": args.stream,
+            "fallback_percentage": args.fallback_percentage,
             "declared_server": server_config,
             "resource_monitor": {
                 "enabled": not args.disable_resource_monitor,

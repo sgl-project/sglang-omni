@@ -246,6 +246,18 @@ The draft accepts 5.4 tokens per verify on `movies800times` and 5.1 on `aishell4
 
 On one H100 80GB with the same settings, `aishell4_long` goes from 58.0 to 159.0 audio seconds per second at concurrency 1 (2.74x), 100.0 to 355.3 at concurrency 16 (3.55x), and 96.0 to 356.5 at concurrency 32 with `max_running_requests=32` and `cuda_graph_max_bs=32` (3.71x). The last two fill the KV pool, so requests retract in both modes.
 
+### Per-request plain fallback
+
+Set `asr.factory.enable_plain_fallback` to route requests with unsupported sampling options, such as `repetition_penalty=1.2`, through ordinary decoding. Requests that fit the target context but leave too little room for draft KV also use ordinary decoding.
+
+```bash
+sgl-omni serve \
+  --config examples/configs/moss_td_plain_fallback.yaml \
+  --port 8000
+```
+
+The [Qwen3-ASR fallback restrictions](qwen3_asr.md#per-request-plain-fallback) also apply to MOSS-TD.
+
 ## Benchmarking
 
 Thanks to the Moss team for providing the benchmark datasets, we prepare movies800times, aishell4_long, and googletime as benchmark datasets for multi-speaker ASR. movies800times is a short-sequence dataset with 800 dialog clips, aishell4_long with googletime are long-sequence dataset of long-form meeting audio, and English podcasts. These datasets are right now under private license, and you can contact the Moss team for access.

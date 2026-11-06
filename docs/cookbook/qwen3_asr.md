@@ -185,6 +185,18 @@ sgl-omni serve \
 
 Send the form field `return_spec_tokens_details=true` to get `sglext.spec_tokens_details` (`spec_accept_length`, `spec_accept_rate`, the draft counts and the per-verify histogram) on `json` and `verbose_json` responses and on the streamed `transcript.text.done` event. Audio long enough to be transcribed in chunks returns none. `spec_accept_rate` and `spec_num_proposed_drafts` are left out when no drafts were proposed or the draft width is adaptive.
 
+### Per-request plain fallback
+
+Set `asr.factory.enable_plain_fallback` to route requests that DFlash cannot serve through ordinary decoding. For example, `repetition_penalty=1.2` uses ordinary decoding, and supported sampling temperatures can still use DFlash. Requests that fit the target context but leave too little room for draft KV also use ordinary decoding.
+
+```bash
+sgl-omni serve \
+  --config examples/configs/qwen3_asr_1_7b_plain_fallback.yaml \
+  --port 8000
+```
+
+This option requires synchronous DFlash on one CUDA GPU, with prefill CUDA graphs, mixed chunks, and DP attention disabled. Decode CUDA graphs and radix caching can stay enabled. Both paths share the target model and KV pool, and each path caches its prefixes separately.
+
 ## Transcribe Audio
 
 ```bash
