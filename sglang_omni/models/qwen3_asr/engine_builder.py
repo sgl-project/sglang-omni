@@ -69,6 +69,15 @@ logger = logging.getLogger(__name__)
 QWEN3_ASR_FULL_PREFILL_MAX_REQUESTS = 32
 
 
+class Qwen3ASRModelRunner(ModelRunner[Qwen3ASRRequestData]):
+    """The shared AR runner, opted into speculative overlap.
+
+    Audio embeddings enter only at prefill, so a decode round reads nothing but the tokens the previous round left on the device.
+    """
+
+    supports_speculative_async_decode: bool = True
+
+
 class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
     model_name = "Qwen3-ASR"
     model_arch_override = "Qwen3ASRForConditionalGeneration"
@@ -80,7 +89,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
         *,
         max_running_requests: int,
         max_new_tokens: int,
-        enable_async_decode: bool,
+        enable_async_decode: bool | None,
         async_decode_min_batch_size: int,
         mem_fraction_static: float | None,
         mm_embedding_cache_size_bytes: int,
@@ -265,7 +274,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             return self.torch_mps_model_runner
         else:
             pass
-        return super().make_model_runner(model_worker, output_proc)
+        return Qwen3ASRModelRunner(model_worker, output_proc)
 
     def setup_model(
         self,
@@ -384,7 +393,10 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
     def adjust_overrides(self, overrides: dict[str, object]) -> None:
         algorithm = overrides.get("speculative_algorithm")
         if algorithm is None:
-            pass
+            if self.enable_async_decode is None:
+                self.enable_async_decode = True
+            else:
+                pass
         elif algorithm != "DFLASH":
             raise ValueError(
                 "Qwen3-ASR speculative decoding currently supports DFLASH only"
@@ -412,9 +424,13 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             )
             overrides["speculative_draft_model_path"] = self.draft_checkpoint.name
             overrides["speculative_draft_model_revision"] = None
-            overrides["disable_overlap_schedule"] = True
+            # note (wilsonzheng0327): async decode under a draft means speculative overlap, so it stays off unless the operator asks for it.
+            if self.enable_async_decode is None:
+                self.enable_async_decode = False
+            else:
+                pass
+            overrides["disable_overlap_schedule"] = not self.enable_async_decode
             overrides["enable_mixed_chunk"] = False
-            self.enable_async_decode = False
         if "context_length" in overrides:
             self.context_length = int(overrides.pop("context_length"))
         else:
@@ -463,9 +479,11 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
                 ReducedVocabularyDFlashWorker,
             )
 
+            # note (wilsonzheng0327): the worker is built for overlap or for the synchronous verify loop, so the choice must reach it at construction.
             return {
                 "supports_speculative_decoding": True,
                 "speculative_worker_class": ReducedVocabularyDFlashWorker,
+                "enable_async_decode": bool(self.enable_async_decode),
             }
 
     def setup_model_resources(
@@ -549,7 +567,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder[Qwen3ASRRequestData]):
             context_length=self.context_length,
             audio_encoder_service=self.audio_encoder_service,
             should_wait_for_encode=self.should_wait_for_encode,
-            greedy_only=self.uses_torch_mps() or self.draft_checkpoint is not None,
+            greedy_only=self.uses_torch_mps(),
         )
 
     def make_abort_callback(self) -> Callable[[str], None] | None:
