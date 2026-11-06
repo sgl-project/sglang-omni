@@ -1,0 +1,192 @@
+MyGo patch 0005 (Auralink): Content.FontSmoothing turns font smoothing
+off for a window's text.
+
+On macOS MyGo rasterizes glyphs as AppKit draws text over an opaque
+background: with Core Text's font smoothing while the user leaves it on,
+which emboldens glyphs, the more the lighter the text (the shades of
+internal/text). Auralink's floating windows (the recording pill, the
+answer card, its language menu) are transparent panels whose white text
+lies over a dark, translucent HUD, where the user finds that weight
+heavy. A window can now draw its text as Flat glyphs, without smoothing,
+as browsers draw text styled -webkit-font-smoothing: antialiased.
+
+ui.View(v).FontSmoothing(false) sets it for the windows showing the
+content; Tester.SetFontSmoothing does for a tester. The painter draws
+every glyph of such a window in the Flat shade (Painter.shadeOf), whatever
+its color; thickened glyphs stay thick. The text system and its glyph
+cache are shared by all windows, and its keys hold the shade, so Flat
+glyphs are cached apart from the shaded ones and the other windows' text
+is unchanged (TestFlatCachedApart). Other
+platforms do not smooth fonts this way and draw Flat as other text.
+diff --git a/internal/text/text_test.go b/internal/text/text_test.go
+index 787a875..1efcdff 100644
+--- a/internal/text/text_test.go
++++ b/internal/text/text_test.go
+@@ -882,3 +882,38 @@ func TestSetLanguage(t *testing.T) {
+ 		t.Error("the same language made a new generation")
+ 	}
+ }
++
++// TestFlatCachedApart keeps Flat glyphs of a shaded font apart from its
++// glyphs of each shade in the cache, so that windows drawing without font
++// smoothing (ui.Content.FontSmoothing) leave the others' text as it is.
++func TestFlatCachedApart(t *testing.T) {
++	s := newSystem()
++	l := s.Layout(Params{Text: "O", Style: Style{Size: 13}})
++	g := l.Lines[0].Glyphs[0]
++	shaded := *g.Font
++	shaded.shaded = true
++	keys := map[Shade]glyphKey{}
++	for _, shade := range []Shade{0, Shades - 1, Flat} {
++		n := len(s.glyphs)
++		s.Glyph(&shaded, g.ID, 2, 0, shade, false)
++		if len(s.glyphs) != n+1 {
++			t.Fatalf("shade %d: %d glyphs cached, want %d", shade, len(s.glyphs), n+1)
++		}
++		for k := range s.glyphs {
++			if k.shade == shade {
++				keys[shade] = k
++			}
++		}
++	}
++	if keys[Flat] == keys[Shades-1] || keys[Flat] == keys[0] {
++		t.Errorf("Flat glyphs share a key with a shade: %v", keys)
++	}
++	// Again: each comes from the cache.
++	n := len(s.glyphs)
++	for _, shade := range []Shade{Flat, Shades - 1, 0} {
++		s.Glyph(&shaded, g.ID, 2, 0, shade, false)
++	}
++	if len(s.glyphs) != n {
++		t.Errorf("drawing the glyphs again cached %d more", len(s.glyphs)-n)
++	}
++}
+diff --git a/ui/glyphs.go b/ui/glyphs.go
+index 082ad1b..8733b28 100644
+--- a/ui/glyphs.go
++++ b/ui/glyphs.go
+@@ -88,7 +88,7 @@ func Shape(s string, f Font) []Glyph {
+ func (p *Painter) Glyphs(glyphs []Glyph, x, y float32, c Color) {
+ 	sys := p.rt.text
+ 	s := p.scale
+-	shade := text.ShadeOf(c.R, c.G, c.B)
++	shade := p.shadeOf(c)
+ 	c = c.Alpha(p.opacity)
+ 	color := c.scene()
+ 	baseline := sys.Baseline(y * s)
+@@ -161,7 +161,7 @@ func (p *Painter) TextLine(l *text.Layout, x, y float32, color func(cluster int)
+ 			continue
+ 		}
+ 		c := color(g.Cluster)
+-		shade := text.ShadeOf(c.R, c.G, c.B)
++		shade := p.shadeOf(c)
+ 		gi := sys.Glyph(g.Font, g.ID, s, pen, shade, p.opaque)
+ 		if !gi.OK {
+ 			continue
+diff --git a/ui/headless.go b/ui/headless.go
+index eb22e7c..8849acd 100644
+--- a/ui/headless.go
++++ b/ui/headless.go
+@@ -425,6 +425,14 @@ func (t *Tester) SetDirection(d Direction) {
+ 	t.Frame()
+ }
+ 
++// SetFontSmoothing turns font smoothing on or off for the window's text,
++// as Content.FontSmoothing does for a window's.
++func (t *Tester) SetFontSmoothing(on bool) {
++	t.rt.unsmoothed = !on
++	t.rt.themeChanged()
++	t.settle()
++}
++
+ // Frame renders another frame, as when the view's state changed.
+ func (t *Tester) Frame() { t.h.requested.Store(true); t.settle() }
+ 
+diff --git a/ui/paint.go b/ui/paint.go
+index e94601d..06ba457 100644
+--- a/ui/paint.go
++++ b/ui/paint.go
+@@ -682,7 +682,7 @@ func (p *Painter) textForeground(l *text.Layout, x, y float32, color Color, ts t
+ 	sys := p.rt.text
+ 	s := p.scale
+ 	deco := decoration{underline: ts.underline, wavy: ts.wavy, strike: ts.strike, color: ts.decoColor, thick: ts.decoThick}
+-	shade := text.ShadeOf(color.R, color.G, color.B)
++	shade := p.shadeOf(color)
+ 	start := int32(len(p.s.Glyphs))
+ 	var run *glyphRun
+ 	if sys.JoinsGlyphs() && !p.inlineTransforms() {
+@@ -705,7 +705,7 @@ func (p *Painter) textForeground(l *text.Layout, x, y float32, color Color, ts t
+ 			glyphColor, glyphShade := color, shade
+ 			if sp != nil {
+ 				if glyphColor = sp.color(sp.at(g.Cluster), color); glyphColor != color {
+-					glyphShade = text.ShadeOf(glyphColor.R, glyphColor.G, glyphColor.B)
++					glyphShade = p.shadeOf(glyphColor)
+ 				}
+ 			}
+ 			gi := sys.Glyph(g.Font, g.ID, s, pen, glyphShade, p.opaque && !p.inlineTransforms())
+@@ -740,6 +740,16 @@ func (p *Painter) textForeground(l *text.Layout, x, y float32, color Color, ts t
+ 	}
+ }
+ 
++// shadeOf returns the shade glyphs of text of color c are drawn in: Flat
++// in a window without font smoothing (Content.FontSmoothing), else the
++// color's.
++func (p *Painter) shadeOf(c Color) text.Shade {
++	if p.rt.unsmoothed {
++		return text.Flat
++	}
++	return text.ShadeOf(c.R, c.G, c.B)
++}
++
+ // glyphRun gathers glyphs of a line in one font and color whose
+ // antialiased edges share pixels, which the text system joins where the
+ // system's text stack draws them joined (System.JoinsGlyphs).
+diff --git a/ui/runtime.go b/ui/runtime.go
+index ca0803d..779634a 100644
+--- a/ui/runtime.go
++++ b/ui/runtime.go
+@@ -120,6 +120,9 @@ type engine struct {
+ 	// afterInputs whose containers are still building.
+ 	waitingInputs, waitingActions []int
+ 
++	// unsmoothed draws the window's text without font smoothing
++	// (Content.FontSmoothing).
++	unsmoothed bool
+ 	// measured are the last spans laid out outside elements (richParams).
+ 	measured     [8]measuredSpans
+ 	nextMeasured int
+diff --git a/ui/window.go b/ui/window.go
+index ce2cb22..78da246 100644
+--- a/ui/window.go
++++ b/ui/window.go
+@@ -19,6 +19,22 @@ import (
+ // mygo.WindowOptions.Content. Create it with View.
+ type Content struct {
+ 	view func(*context)
++	// unsmoothed is FontSmoothing(false).
++	unsmoothed bool
++}
++
++// FontSmoothing turns font smoothing off (or back on) for the text of the
++// windows showing the content. On macOS, Core Text's font smoothing, on
++// while the user leaves it on, emboldens glyphs, the more the lighter the
++// text; AppKit applies it to text over an opaque background. Text over a
++// window's material or a transparent window, as a floating HUD's, can
++// turn it off to draw as thin as text styled -webkit-font-smoothing:
++// antialiased (Flat glyphs). Thickened glyphs (Font.Thicken) stay thick.
++// Other platforms, which do not smooth fonts this way, ignore it. Set it
++// before the content is attached to a window.
++func (v *Content) FontSmoothing(on bool) *Content {
++	v.unsmoothed = !on
++	return v
+ }
+ 
+ // View returns the content of a window whose user interface view builds,
+@@ -76,6 +92,7 @@ func FontFamilies() []FontFamily {
+ func (v *Content) AttachContent(conn *surface.Conn) {
+ 	h := &windowHost{conn: conn}
+ 	rt := newRuntime(v.view, h)
++	rt.unsmoothed = v.unsmoothed
+ 	h.rt = rt
+ 	conn.Event = h.event
+ 	conn.ThemeChanged = func() {

@@ -6,7 +6,14 @@ import base64
 import binascii
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    field_validator,
+)
 from typing_extensions import TypedDict
 
 from sglang_omni.serve.realtime.reference_audio import (
@@ -64,6 +71,14 @@ class TimebaseConfig(TypedDict, total=False):
     native_unit_ms: int
 
 
+def disabled_or_positive_top_k(top_k: int) -> int:
+    # Note (ruoyu): The talker sampler takes -1 for disabled or a positive count; refusing 0 here keeps a hot update from failing inside the session after it was acknowledged.
+    if top_k == 0:
+        raise ValueError("talker_top_k must be -1 (disabled) or at least 1")
+    else:
+        return top_k
+
+
 class SamplingConfig(TypedDict, total=False):
     temperature: Annotated[float, Field(ge=0, le=2)]
     top_k: Annotated[int, Field(ge=-1)]
@@ -76,7 +91,9 @@ class SamplingConfig(TypedDict, total=False):
     repetition_window_size: Annotated[int, Field(ge=1)]
     talker_temperature: Annotated[float, Field(ge=0, le=2)]
     talker_repetition_penalty: Annotated[float, Field(ge=1)]
-    talker_top_k: Annotated[int, Field(ge=-1)]
+    talker_top_k: Annotated[
+        int, Field(ge=-1), AfterValidator(disabled_or_positive_top_k)
+    ]
     talker_top_p: Annotated[float, Field(gt=0, le=1)]
     talker_max_new_tokens: Annotated[int, Field(ge=1)]
     min_p: Annotated[float, Field(ge=0, le=1)]
@@ -155,12 +172,15 @@ class GrantedCapabilities(TypedDict, total=False):
     tail_policy: TailPolicy
     supports_server_interrupt: bool
     supports_truncate: bool
+    supports_cancel: bool
     supports_resume: bool
     partial_style: PartialStyle
     pressure_policy: Literal["reject"]
     strict_order: bool
     sampling_parameters: list[str]
     supports_reference_audio: bool
+    supports_instruction_updates: bool
+    supports_sampling_updates: bool
     voices: list[str]
     limits: dict[str, int | float]
     rejections: list[Rejection]

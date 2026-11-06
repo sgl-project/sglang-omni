@@ -3,11 +3,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
+import torch
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.platforms.rocm import RocmDeviceMixin
 
 from sglang_omni.platforms.interface import (
     OmniPlatform,
+    RMSNormKernel,
     build_cuda_compatible_stage_process_env,
 )
 
@@ -49,6 +51,18 @@ class ROCMOmniPlatform(RocmDeviceMixin, OmniPlatform):
         # sgl-kernel's AOT op is CUDA-only, while the native QK-norm + RoPE
         # path works through PyTorch's HIP backend.
         return None
+
+    def get_rmsnorm(self) -> RMSNormKernel:
+        from aiter import rmsnorm2d_fwd
+
+        def aiter_rmsnorm(
+            hidden_states: torch.Tensor, weight: torch.Tensor, variance_epsilon: float
+        ) -> torch.Tensor:
+            normalized = torch.empty_like(hidden_states)
+            rmsnorm2d_fwd(normalized, hidden_states, weight, variance_epsilon)
+            return normalized
+
+        return aiter_rmsnorm
 
     def apply_model_worker_backend_policy(
         self,

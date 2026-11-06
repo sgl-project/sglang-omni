@@ -81,7 +81,7 @@ int HandleTranscriptions(mg_connection *connection, void *data) {
   } else {
   }
   const char *content_type = mg_get_header(connection, "Content-Type");
-  const auto form = qwen3_asr::ParseMultipartForm(
+  const auto form = omni_common::ParseMultipartForm(
       content_type ? content_type : "", ReadBody(connection));
   if (!form.has_value() || form->count("file") == 0 ||
       !form->at("file").filename.has_value()) {
@@ -91,15 +91,15 @@ int HandleTranscriptions(mg_connection *connection, void *data) {
   Transcription transcription;
   try {
     transcription = state->model->Prepare(
-        qwen3_asr::DecodeWav(form->at("file").value), *form);
+        omni_common::DecodeWav(form->at("file").value), *form);
   } catch (const std::invalid_argument &error) {
     return BadRequest(connection, error.what());
   } catch (const std::out_of_range &) {
     return BadRequest(connection, "a numeric field is out of range");
   }
-  const bool stream = qwen3_asr::FormFlag(TextField(*form, "stream"));
+  const bool stream = omni_common::FormFlag(TextField(*form, "stream"));
   const bool include_generation_metadata =
-      qwen3_asr::FormFlag(TextField(*form, "include_generation_metadata"));
+      omni_common::FormFlag(TextField(*form, "include_generation_metadata"));
   if (include_generation_metadata && !stream) {
     return BadRequest(connection,
                       "include_generation_metadata requires stream=true");
@@ -228,7 +228,8 @@ class AsrService : public omni_server::Service {
 public:
   AsrService(const std::filesystem::path &directory, const ModelLoader &load) {
     worker_ = std::make_unique<TranscriptionWorker>(
-        [&]() { model_ = load(directory); });
+        [&]() { model_ = load(directory); },
+        [this]() { model_->ReleaseIdleMemory(); });
   }
 
   void SetModelName(const std::string &model_name,
@@ -259,6 +260,15 @@ private:
 };
 
 } // namespace
+
+void ServedModel::ReleaseIdleMemory() {
+  // Note (khazic): a decode keeps MLX's buffer cache, since freeing every
+  // step's buffers slows each token; an idle server returns it, so it
+  // holds only the model. The synchronize lets the step a decode queued
+  // before it stopped return its buffers first.
+  mx::synchronize();
+  mx::clear_cache();
+}
 
 std::optional<std::string> TextField(const FormFields &form,
                                      const std::string &name) {
@@ -313,17 +323,21 @@ void AddRealtimeHandler(mg_context *context, const RealtimeFactory &factory) {
                            const_cast<RealtimeFactory *>(&factory));
 }
 
+omni_server::ServedKind CreateServedKind(const ServedKind &kind) {
+  return {
+      kind.model_kind,
+      [load = kind.load](const std::filesystem::path &directory) {
+        return std::make_unique<AsrService>(directory, load);
+      },
+      kind.flags,
+      kind.check_flags,
+  };
+}
+
 int Serve(int argc, char **argv, const std::vector<ServedKind> &kinds) {
   std::vector<omni_server::ServedKind> services;
   for (const auto &kind : kinds) {
-    services.push_back({
-        kind.model_kind,
-        [load = kind.load](const std::filesystem::path &directory) {
-          return std::make_unique<AsrService>(directory, load);
-        },
-        kind.flags,
-        kind.check_flags,
-    });
+    services.push_back(CreateServedKind(kind));
   }
   return omni_server::Serve(argc, argv, services);
 }

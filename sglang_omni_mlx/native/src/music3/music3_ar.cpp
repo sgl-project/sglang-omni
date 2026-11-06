@@ -72,7 +72,7 @@ mx::array Model::Depth(const mx::array &embeddings) const {
     hidden =
         hidden +
         checkpoint_.Linear(
-            qwen3_asr::Silu(checkpoint_.Linear(mlp, prefix + ".gate_proj")) *
+            omni_common::Silu(checkpoint_.Linear(mlp, prefix + ".gate_proj")) *
                 checkpoint_.Linear(mlp, prefix + ".up_proj"),
             prefix + ".down_proj");
   }

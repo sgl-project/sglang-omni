@@ -1,0 +1,4 @@
+Task: rewrite the selected text as the instruction asks ("shorter", "more formal", "as a list", "fix the grammar").
+- Change only what the instruction asks for; keep the rest of the meaning, the facts, names, numbers, links and code.
+- Write in the language of the selected text, and keep its form (paragraphs, lists, Markdown), unless the instruction asks otherwise.
+- When the instruction asks for something else made from the text (a reply, a summary, a translation), write that; it replaces the selection all the same.

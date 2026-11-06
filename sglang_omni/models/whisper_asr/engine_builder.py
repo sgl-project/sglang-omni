@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
+from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Literal
 
 import torch
@@ -31,6 +32,7 @@ from sglang_omni.models.whisper_asr.text_streaming import (
 )
 from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
+from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 from sglang_omni.scheduling.engine_factory import (
     AsrEngineBuilder,
     GenerationDefaults,
@@ -286,6 +288,8 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
         self.decoder_context_len = 0
         self.audio_encoder_service: WhisperPreLMEncoderService | None = None
         self.sglang_runner: SGLModelRunner | None = None
+        self.draft_checkpoint: TemporaryDirectory[str] | None = None
+        self.speculative_num_steps = 0
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         from transformers import AutoConfig, AutoProcessor, GenerationConfig
@@ -449,6 +453,46 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
             overrides.setdefault("disable_decode_cuda_graph", True)
         else:
             pass
+        algorithm = overrides.get("speculative_algorithm")
+        if algorithm is None:
+            pass
+        elif algorithm != "STANDALONE":
+            raise ValueError(
+                "Whisper speculative decoding supports STANDALONE, with a Whisper "
+                "draft decoder that shares the target's encoder"
+            )
+        elif not current_platform.is_cuda() or overrides.get("tp_size", 1) != 1:
+            raise ValueError("Whisper speculative decoding requires one CUDA GPU")
+        else:
+            # note (wilsonzheng0327): the draft modules import SGLang's speculative
+            # workers, which need the CUDA kernels.
+            from sglang_omni.models.whisper_asr.speculative import (
+                materialize_draft_checkpoint,
+            )
+
+            draft_model_path = overrides.get("speculative_draft_model_path")
+            draft_revision = overrides.get("speculative_draft_model_revision")
+            if not isinstance(draft_model_path, str) or not draft_model_path:
+                raise ValueError(
+                    "Whisper speculative decoding requires speculative_draft_model_path"
+                )
+            else:
+                pass
+            self.draft_checkpoint = materialize_draft_checkpoint(
+                draft_model_path, draft_revision
+            )
+            overrides["speculative_draft_model_path"] = self.draft_checkpoint.name
+            overrides["speculative_draft_model_revision"] = None
+            overrides.setdefault("speculative_eagle_topk", 1)
+            self.speculative_num_steps = int(
+                overrides.setdefault("speculative_num_steps", 7)
+            )
+            overrides.setdefault(
+                "speculative_num_draft_tokens", self.speculative_num_steps + 1
+            )
+            overrides["disable_overlap_schedule"] = True
+            overrides["enable_mixed_chunk"] = False
+            self.enable_async_decode = False
         model_overrides = json.loads(overrides.get("json_model_override_args") or "{}")
         model_overrides["encoder_attention_backend"] = self.encoder_attention_backend
         overrides["json_model_override_args"] = json.dumps(model_overrides)
@@ -482,12 +526,25 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
             pass
         overrides["cuda_graph_bs_prefill"] = build_default_prefill_cuda_graph_bs(cap)
 
+    def infra_kwargs(self) -> InfrastructureOptions:
+        if self.draft_checkpoint is None:
+            return {}
+        else:
+            from sglang_omni.models.whisper_asr.speculative import (
+                WhisperSpeculativeWorker,
+            )
+
+            return {
+                "supports_speculative_decoding": True,
+                "speculative_worker_class": WhisperSpeculativeWorker,
+            }
+
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         defaults: GenerationDefaults = {
             "max_running_requests": self.max_running_requests,
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,
-            "enable_torch_compile": True,
+            "enable_torch_compile": not current_platform.is_cpu(),
             "mem_fraction_static": self.mem_fraction_static,
             "max_prefill_tokens": 6144,
             "chunked_prefill_size": 0,
@@ -519,6 +576,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
             max_new_tokens=self.max_new_tokens,
             decoder_context_len=self.decoder_context_len,
             audio_encoder_service=self.audio_encoder_service,
+            speculative_num_steps=self.speculative_num_steps,
         )
 
     def extra_scheduler_kwargs(self) -> SchedulerExtras[WhisperASRRequestData]:
@@ -526,7 +584,8 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
             "stream_output_builder": ExactWhisperStreamOutputBuilder(
                 self.tokenizer, self.stream_emit_interval_s
             ),
-            "enable_async_decode": self.enable_async_decode,
+            "enable_async_decode": self.enable_async_decode
+            and not current_platform.is_cpu(),
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
             "request_build_max_workers": self.request_build_max_workers,
             "request_build_max_pending": self.request_build_max_pending,

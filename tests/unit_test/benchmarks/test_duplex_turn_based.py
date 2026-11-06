@@ -942,6 +942,13 @@ def test_empty_turn_terminal_is_accepted() -> None:
     assert result["metrics"]["responses_created"] == 2
 
 
+def test_a_reply_cut_at_the_talker_budget_is_accepted() -> None:
+    """A Qwen3-Omni reply that stopped at its talker's token budget ends incomplete, which failed the recording as an unsupported terminal."""
+    trace = turn_based_trace()
+    finish_last_response("incomplete", "max_output_tokens")(trace)
+    assert evaluate_trace(trace, profile=TURN_BASED)["violations"] == []
+
+
 def test_responses_must_end_before_the_session_closes() -> None:
     trace = [
         r

@@ -9,7 +9,6 @@ import github
 from github import Auth, Github
 from resolve_ci_labels import (
     CI_STAGES,
-    RUN_ALL_LABEL,
     RUN_LINT_ONLY_LABEL,
     resolve_ci_plan,
     select_workflows,
@@ -59,11 +58,16 @@ def handle_tag_run_ci(
     user_permissions: dict[str, bool | str],
     requested_targets: frozenset[str],
     react_on_success: bool = True,
-    is_full_ci: bool = False,
 ) -> bool:
     """Apply CI stage and model labels."""
     if not user_permissions.get("can_tag_run_ci_label", False):
         print("Permission denied: can_tag_run_ci_label is false.")
+        comment.create_reaction("confused")
+        return False
+    elif not requested_targets:
+        pull_request.create_issue_comment(
+            "Specify CI targets, for example /tag-and-rerun-ci tts asr."
+        )
         comment.create_reaction("confused")
         return False
     else:
@@ -94,10 +98,6 @@ def handle_tag_run_ci(
     requested_labels = frozenset(
         label for target in requested_targets for label in labels_by_target[target]
     )
-    if is_full_ci or not requested_targets:
-        requested_labels |= {RUN_ALL_LABEL}
-    else:
-        pass
     current_labels = frozenset(label.name for label in pull_request.get_labels())
     removed_labels: set[str] = set()
     for stage in CI_STAGES:
@@ -256,15 +256,8 @@ def main():
     elif command == "/rerun-failed-ci":
         handle_rerun_failed_ci(repo, pr, comment, user_perms)
 
-    elif command in ("/tag-and-rerun-ci", "/tag-and-rerun-full-ci"):
-        if command == "/tag-and-rerun-ci" and not label_arguments:
-            pr.create_issue_comment(
-                "Specify CI targets, for example /tag-and-rerun-ci tts asr, "
-                "or use /tag-and-rerun-full-ci for all stages."
-            )
-            comment.create_reaction("confused")
-            return
-        elif not user_perms.get("can_rerun_failed_ci", False):
+    elif command == "/tag-and-rerun-ci":
+        if not user_perms.get("can_rerun_failed_ci", False):
             print("Permission denied: can_rerun_failed_ci is false.")
             comment.create_reaction("confused")
             return
@@ -276,7 +269,6 @@ def main():
             user_perms,
             frozenset(label_arguments),
             react_on_success=False,
-            is_full_ci=command == "/tag-and-rerun-full-ci",
         )
         if not tagged:
             return

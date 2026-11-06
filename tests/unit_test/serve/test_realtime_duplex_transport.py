@@ -34,7 +34,10 @@ from websockets.asyncio.client import (  # noqa: E402 - websockets version gate
     connect,
 )
 
+PING_INTERVAL_SECONDS = 0.2
 ADMISSION_TIMEOUT_SECONDS = 1.2
+# note (Haiyang Luo): The client answers several pings inside one idle window.
+IDLE_TIMEOUT_SECONDS = 3 * PING_INTERVAL_SECONDS
 RELEASE_MARGIN_SECONDS = 2.0
 SOCKET_WAIT_TIMEOUT_SECONDS = 5.0
 STARTUP_POLL_INTERVAL_SECONDS = 0.01
@@ -67,7 +70,8 @@ async def serve_live(limits: RuntimeLimits) -> AsyncIterator[LiveServer]:
         host="127.0.0.1",
         port=0,
         log_level="warning",
-        ws_ping_interval=None,
+        ws_ping_interval=PING_INTERVAL_SECONDS,
+        ws_ping_timeout=SOCKET_WAIT_TIMEOUT_SECONDS,
     )
     server = uvicorn.Server(config)
     serve_task = asyncio.create_task(server.serve())
@@ -102,6 +106,16 @@ async def receive_until(connection: ClientConnection, event_type: str) -> None:
             pass
 
 
+async def open_session(connection: ClientConnection) -> None:
+    await receive_until(connection, "session.created")
+    await connection.send(
+        json.dumps(
+            {"event_id": "client_update", "type": "session.update", "session": {}}
+        )
+    )
+    await receive_until(connection, "session.updated")
+
+
 async def assert_released(live_server: LiveServer, timeout_seconds: float) -> None:
     deadline_seconds = time.monotonic() + timeout_seconds
     while live_server.session_manager.sessions:
@@ -116,17 +130,7 @@ async def test_client_close_releases_session() -> None:
     """Client-requested closure must include client_closed in the WebSocket close frame."""
     async with serve_live(RuntimeLimits()) as live_server:
         async with connect(live_server.url, ping_interval=None) as connection:
-            await receive_until(connection, "session.created")
-            await connection.send(
-                json.dumps(
-                    {
-                        "event_id": "client_update",
-                        "type": "session.update",
-                        "session": {},
-                    }
-                )
-            )
-            await receive_until(connection, "session.updated")
+            await open_session(connection)
             await connection.send(
                 json.dumps({"event_id": "client_close", "type": "session.close"})
             )
@@ -140,7 +144,7 @@ async def test_client_close_releases_session() -> None:
 
 
 @pytest.mark.asyncio
-async def test_admission_timeout_reports_policy_close_over_socket() -> None:
+async def test_session_update_timeout_reports_policy_close_over_socket() -> None:
     """An initial session.update timeout must close the socket with 1008 policy violation."""
     limits = RuntimeLimits(session_update_timeout_s=ADMISSION_TIMEOUT_SECONDS)
     async with serve_live(limits) as live_server:
@@ -157,3 +161,25 @@ async def test_admission_timeout_reports_policy_close_over_socket() -> None:
         )
         await assert_released(live_server, RELEASE_MARGIN_SECONDS)
         assert not live_server.adapter.is_closed
+
+
+@pytest.mark.asyncio
+async def test_open_peer_answering_pings_is_closed_by_idle_timeout() -> None:
+    limits = RuntimeLimits(idle_timeout_s=IDLE_TIMEOUT_SECONDS)
+    async with serve_live(limits) as live_server:
+        async with connect(live_server.url, ping_interval=None) as connection:
+            started_at_seconds = time.monotonic()
+            await open_session(connection)
+            await asyncio.wait_for(
+                connection.wait_closed(),
+                IDLE_TIMEOUT_SECONDS + RELEASE_MARGIN_SECONDS,
+            )
+            closed_after_seconds = time.monotonic() - started_at_seconds
+
+        assert closed_after_seconds >= IDLE_TIMEOUT_SECONDS
+        assert (connection.close_code, connection.close_reason) == (
+            1008,
+            "idle_timeout",
+        )
+        await assert_released(live_server, RELEASE_MARGIN_SECONDS)
+        assert live_server.adapter.is_closed

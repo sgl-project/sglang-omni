@@ -21,6 +21,7 @@ import sglang_omni.scheduling.bootstrap as bootstrap
 import sglang_omni.scheduling.omni_scheduler as omni_scheduler
 import sglang_omni.scheduling.sglang_backend as sglang_backend
 import sglang_omni.utils.cuda_graph_batch_validator as cuda_graph_batch_validator
+from sglang_omni import platforms
 from sglang_omni.model_runner.whisper_prefill_cuda_graph_runner import (
     WhisperPrefillCudaGraphRunner,
 )
@@ -31,6 +32,7 @@ from sglang_omni.models.whisper_asr.config import (
     WhisperASRFactoryArgs,
     WhisperASRPipelineConfig,
 )
+from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
 from sglang_omni.models.whisper_asr.sglang_model import WhisperForConditionalGeneration
 from sglang_omni.models.whisper_asr.text_streaming import (
     ExactWhisperStreamOutputBuilder,
@@ -185,12 +187,12 @@ def test_whisper_disables_chunked_prefill_for_atomic_encoder_prefix() -> None:
 
 
 @pytest.mark.parametrize(
-    ("platform_type", "expected_backend", "default_memory_fraction"),
+    ("platform_type", "expected_backend", "expected_compile"),
     [
-        (CPUOmniPlatform, None, 0.85),
-        (XPUOmniPlatform, "torch_native", 0.85),
-        (CUDAOmniPlatform, None, 0.85),
-        (NPUOmniPlatform, None, 0.85),
+        (CPUOmniPlatform, None, False),
+        (XPUOmniPlatform, "torch_native", True),
+        (CUDAOmniPlatform, None, True),
+        (NPUOmniPlatform, None, True),
     ],
 )
 @pytest.mark.parametrize("explicit_memory_fraction", [None, 0.40, 0.50, 0.85])
@@ -198,7 +200,7 @@ def test_whisper_device_defaults_and_explicit_memory_override(
     monkeypatch: pytest.MonkeyPatch,
     platform_type: type[OmniPlatform],
     expected_backend: str | None,
-    default_memory_fraction: float,
+    expected_compile: bool,
     explicit_memory_fraction: float | None,
 ) -> None:
     platform = platform_type()
@@ -227,11 +229,9 @@ def test_whisper_device_defaults_and_explicit_memory_override(
     else:
         assert defaults["attention_backend"] == expected_backend
     assert defaults["disable_cuda_graph"] is False
-    assert defaults["enable_torch_compile"] is True
+    assert defaults["enable_torch_compile"] is expected_compile
     assert defaults["mem_fraction_static"] == (
-        default_memory_fraction
-        if explicit_memory_fraction is None
-        else explicit_memory_fraction
+        0.85 if explicit_memory_fraction is None else explicit_memory_fraction
     )
     merged = build_generation_batch_overrides(
         **defaults,
@@ -350,9 +350,10 @@ def test_whisper_prefill_graph_cap_covers_shorter_request_batches() -> None:
     assert merged["cuda_graph_bs_prefill"] == build_default_prefill_cuda_graph_bs(620)
 
 
-def test_whisper_prefill_coalescing_defaults_are_forwarded() -> None:
-    from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
-
+def test_whisper_prefill_coalescing_defaults_are_forwarded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(whisper_asr_builder, "current_platform", CUDAOmniPlatform())
     builder = WhisperASREngineBuilder(
         encoder_attention_backend="auto",
         max_running_requests=16,
@@ -439,6 +440,9 @@ def test_whisper_asr_config_uses_single_batched_stage() -> None:
 def test_whisper_asr_threads_explicit_cuda_graph_bs(
     monkeypatch: pytest.MonkeyPatch, encoder_attention_backend: str | None
 ) -> None:
+    cuda_platform = CUDAOmniPlatform()
+    monkeypatch.setattr(platforms, "current_platform", cuda_platform)
+    monkeypatch.setattr(whisper_asr_builder, "current_platform", cuda_platform)
     build_kwargs: dict[str, object] = {}
     scheduler_kwargs: dict[str, object] = {}
     graph_init_calls: list[object] = []
@@ -566,6 +570,8 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(
         factory_kwargs.pop("encoder_attention_backend")
     whisper_asr_stages.create_sglang_whisper_asr_executor(
         "dummy",
+        device="cuda",
+        gpu_id=0,
         **factory_kwargs,
         server_args_overrides={"json_model_override_args": '{"test_setting": 7}'},
     )

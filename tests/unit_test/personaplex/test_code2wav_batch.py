@@ -746,13 +746,14 @@ class CountingGraph:
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(
-    not current_platform.enable_codec_decode_graph(),
-    reason="the platform does not capture codec decode graphs",
+    not current_platform.enable_mimi_decode_graph(),
+    reason="the platform does not capture Mimi decode graphs",
 )
 def test_graph_replay_matches_eager_decode_through_the_scheduler(
     random_codec: MimiCodec,
 ) -> None:
-    codec = random_codec.cuda()
+    device = torch.device(current_platform.device_type)
+    codec = random_codec.to(device)
     # a and b run past the attention ring, eight frames apart, so their steady
     # chunks share steps at different offsets. A third stream arrives while
     # both slots are taken, ends before its payload, and decodes once b's
@@ -839,6 +840,6 @@ def test_graph_replay_matches_eager_decode_through_the_scheduler(
         assert torch.equal(streamed, streamed_audio(eager, request_id))
         assert torch.equal(result_audio(graphed, request_id), streamed)
         # Compare the same fixed codes to a whole-utterance decode, independent of scheduling.
-        reference = codec.decode(frames.T[None].cuda())[0, 0].float().cpu()
+        reference = codec.decode(frames.T[None].to(device))[0, 0].float().cpu()
         assert streamed.shape == reference.shape
         assert (streamed - reference).abs().max() <= 0.05 * reference.abs().max()

@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "common/form.h"
+#include "common/service.h"
 #include "qwen3_asr/realtime.h"
 #include "qwen3_asr/worker.h"
 
@@ -20,13 +21,14 @@ struct mg_context;
 
 namespace asr_service {
 
-using FormFields = std::map<std::string, qwen3_asr::FormField>;
+using FormFields = std::map<std::string, omni_common::FormField>;
 using qwen3_asr::Transcription;
 
 // A loaded checkpoint of the served kind.
 class ServedModel {
 public:
   virtual ~ServedModel() = default;
+  virtual void ReleaseIdleMemory();
   // Binds one request's form fields to its samples; throws
   // std::invalid_argument for a field it does not accept.
   virtual Transcription Prepare(std::vector<float> samples,
@@ -85,6 +87,8 @@ using RealtimeFactory =
 
 // Serves the realtime API on /v1/realtime; factory must outlive the server.
 void AddRealtimeHandler(mg_context *context, const RealtimeFactory &factory);
+
+omni_server::ServedKind CreateServedKind(const ServedKind &kind);
 
 // Runs the server for the kind --model-kind names (the first by default)
 // until it is stopped; returns the exit code.

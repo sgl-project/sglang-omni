@@ -51,6 +51,11 @@ def test_invalid_engine_mem_fraction_static_raises() -> None:
         EngineArgs(mem_fraction_static=1.0)
 
 
+def test_cpu_offload_gb_range_is_enforced_at_validation() -> None:
+    with pytest.raises(ValueError, match="cpu_offload_gb"):
+        EngineArgs(cpu_offload_gb=-1)
+
+
 def test_invalid_model_group_values_raise() -> None:
     with pytest.raises(ValueError, match="max_seq_len"):
         FactoryArgs(max_seq_len=0)

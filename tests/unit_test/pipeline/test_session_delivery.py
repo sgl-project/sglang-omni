@@ -137,6 +137,16 @@ def test_audio_that_comes_after_its_turn_started_leaves_within_the_lead_of_its_f
     assert sum(item.duration_ms for item, _ in second) == LEAD_MS
 
 
+def test_a_turns_done_waits_until_the_client_has_played_its_audio(pacer):
+    """A turn.done left with the turn's last audio, so a reply the client was still playing could no longer be interrupted."""
+    offer_reply(pacer, 5)
+    assert "turn.done" not in labels(pacer.release(100.0))
+    assert labels(pacer.release(100.25)) == ["pcm16"]
+    assert labels(list(pacer.items)) == ["turn.done"]
+    assert pacer.release(100.4) == []
+    assert labels(pacer.release(100.5)) == ["turn.done"]
+
+
 def test_an_interruption_drops_what_its_turn_still_holds(pacer):
     offer_reply(pacer, 10)
     pacer.release(100.0)
