@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
 import torch
 from sentencepiece import SentencePieceProcessor
 from sglang.srt.managers.schedule_batch import Req
@@ -171,7 +172,7 @@ class PersonaPlexSessionAdapter(ARSessionAdapter):
         text_ids = [history.next_text_id]
         text_ids.extend(int(token) for token in request_data.output_ids)
         history.next_text_id = text_ids.pop()
-        codes = torch.stack(frames).cpu()
+        codes = torch.from_numpy(np.stack([frame.numpy() for frame in frames]))
         frames.clear()
         history.model_inputs["frames"].clear()
         payload = request_data.stage_payload

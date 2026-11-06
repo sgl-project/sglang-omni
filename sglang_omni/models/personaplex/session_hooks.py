@@ -60,9 +60,14 @@ def pcm16_to_waveform(chunk: TimedChunk) -> torch.Tensor:
         return torch.from_numpy(samples / PCM16_SCALE)
 
 
-def waveform_to_pcm16(waveform: torch.Tensor) -> bytes:
+def pcm16_samples(waveform: torch.Tensor) -> np.ndarray:
+    """Float samples, any leading shape, as little-endian PCM16 in one host copy."""
     samples = (waveform.float().clamp(-1.0, 1.0) * (PCM16_SCALE - 1)).round()
-    return samples.to(torch.int16).cpu().numpy().astype("<i2").tobytes()
+    return samples.to(torch.int16).cpu().numpy().astype("<i2")
+
+
+def waveform_to_pcm16(waveform: torch.Tensor) -> bytes:
+    return pcm16_samples(waveform).tobytes()
 
 
 def encode_waveform(
@@ -203,8 +208,10 @@ class Code2WavHooks(BatchedSessionHooks):
                     for index in indices
                 ],
             )
-            for row, index in enumerate(indices):
-                pcm[index] = waveform_to_pcm16(waveform[row, 0])
+            for samples, index in zip(
+                pcm16_samples(waveform[:, 0]), indices, strict=True
+            ):
+                pcm[index] = samples.tobytes()
         for append, unit, unit_pcm in zip(appends, units, pcm, strict=True):
             session = self.states[append.context.session_identity]
             num_samples = len(unit_pcm) // PCM16_BYTES_PER_SAMPLE

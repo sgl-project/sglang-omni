@@ -773,3 +773,68 @@ def test_prefill_from_a_cached_prefix_embeds_only_the_missing_rows(cached: str):
     feedback = request.data.talker_model_inputs["decode_feedback"]
     assert torch.equal(feedback.agent_row, agent_rows[-1])
     assert (request.data.talker_model_inputs["prefill_forced"] == -1).all()
+
+
+def test_live_rows_build_together_and_apart_from_a_new_prompt() -> None:
+    runner = make_runner(FakeModel(max_batch=3))
+    live = [make_request(5, request_id="a"), make_request(5, request_id="b")]
+    tokens = [[77, 78, 79], [87, 88]]
+    for request, generated in zip(live, tokens, strict=True):
+        generate(runner, request, generated)
+    fresh = make_request(5, request_id="c")
+    prompt = fresh.data.talker_model_inputs["timeline"].num_prompt_positions
+    live_reqs = [
+        scheduled(request, generated, prefix_len=prompt + len(generated) - 1)
+        for request, generated in zip(live, tokens, strict=True)
+    ]
+    expected = [
+        runner.missing_rows(request.data, req)
+        for request, req in zip(live, live_reqs, strict=True)
+    ]
+
+    def rows_of(requests, reqs) -> torch.Tensor:
+        total = sum(
+            len(req.origin_input_ids) + len(req.output_ids) - req.prefix_len
+            for req in reqs
+        )
+        forward_batch = SimpleNamespace(
+            replace_embeds=None, input_ids=torch.zeros(total)
+        )
+        runner.before_prefill(forward_batch, SimpleNamespace(reqs=reqs), requests)
+        return get_omni_prefill_inputs(forward_batch).input_embeds
+
+    together = rows_of([*live, fresh], [*live_reqs, scheduled(fresh)])
+    assert torch.equal(together[:2], torch.cat(expected))
+    assert torch.equal(rows_of(live, live_reqs), together[:2])
+    assert torch.equal(rows_of([fresh], [scheduled(fresh)]), together[2:])
+    for request in live:
+        feedback = request.data.talker_model_inputs["decode_feedback"]
+        assert torch.equal(
+            feedback.agent_row, request.data.talker_model_inputs["agent_rows"][-1]
+        )
+        assert (request.data.talker_model_inputs["prefill_forced"] == -1).all()
+
+
+def test_a_step_reads_every_row_back_in_one_host_copy(monkeypatch) -> None:
+    runner = make_runner(FakeModel(max_batch=3))
+    requests = [make_request(4, request_id=name) for name in "abc"]
+    run_prefill(runner, requests, [70, 71, 72])
+    copies = []
+    to_host = torch.Tensor.cpu
+
+    def counted(tensor, *args, **kwargs):
+        copies.append(tuple(tensor.shape))
+        return to_host(tensor, *args, **kwargs)
+
+    monkeypatch.setattr(torch.Tensor, "cpu", counted)
+    runner.post_decode(
+        SimpleNamespace(next_token_ids=torch.tensor([80, 81, 82])),
+        None,
+        None,
+        requests,
+    )
+    assert copies == [(3, 9)]
+    for request, token in zip(requests, [80, 81, 82], strict=True):
+        frames = request.data.talker_model_inputs["frames"]
+        assert len(frames) == 2
+        assert request.data.talker_model_inputs["decode_feedback"].text_token == token
