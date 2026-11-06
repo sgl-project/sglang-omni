@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Resolve the CI stages and models that pull request labels select.
 
-A stage runs with its stage label or run-all-ci. A stage that is not
-calibrated yet runs only with its own label. run-lint-only satisfies the
+A stage runs only with its own stage label. run-lint-only satisfies the
 gate and runs no self-hosted job. A model label names a model, not a stage.
 It picks that model for every selected stage that accepts it, and never
 selects a stage. Higgs and MOSS labels are shared by TTS and MPS. A selected
@@ -18,7 +17,6 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-RUN_ALL_LABEL = "run-all-ci"
 RUN_LINT_ONLY_LABEL = "run-lint-only"
 HIGGS_TTS_MODEL_LABEL = "run-higgs-tts-3-4b"
 MOSS_TTS_MODEL_LABEL = "run-moss-tts-local-transformer-v1.5"
@@ -32,7 +30,6 @@ class CiStage:
     workflow: str
     preset_by_model_label: dict[str, str]
     random_presets: tuple[str, ...]
-    in_run_all: bool = True
 
 
 CI_STAGES: tuple[CiStage, ...] = (
@@ -96,15 +93,12 @@ CI_STAGES: tuple[CiStage, ...] = (
         preset_by_model_label={},
         random_presets=(),
     ),
-    # note (db-ol): turn based and cascaded fail by design until they are
-    # calibrated on the CI host, so run-all-ci leaves them out.
     CiStage(
         name="turn_based",
         label="run-turn-based-duplex",
         workflow=OMNI_CI_WORKFLOW,
         preset_by_model_label={},
         random_presets=(),
-        in_run_all=False,
     ),
     CiStage(
         name="cascaded",
@@ -112,7 +106,6 @@ CI_STAGES: tuple[CiStage, ...] = (
         workflow=OMNI_CI_WORKFLOW,
         preset_by_model_label={},
         random_presets=(),
-        in_run_all=False,
     ),
     CiStage(
         name="intel_cpu",
@@ -151,14 +144,7 @@ class CiPlan:
 
 
 def select_stage_names(labels: frozenset[str]) -> frozenset[str]:
-    if RUN_ALL_LABEL in labels:
-        return frozenset(
-            stage.name
-            for stage in CI_STAGES
-            if stage.in_run_all or stage.label in labels
-        )
-    else:
-        return frozenset(stage.name for stage in CI_STAGES if stage.label in labels)
+    return frozenset(stage.name for stage in CI_STAGES if stage.label in labels)
 
 
 def select_workflows(labels: frozenset[str]) -> frozenset[str]:
@@ -183,8 +169,7 @@ def resolve_ci_plan(labels: frozenset[str], seed: str) -> CiPlan:
     if not enabled_stage_names and RUN_LINT_ONLY_LABEL not in labels:
         stage_labels = ", ".join(stage.label for stage in CI_STAGES)
         raise ValueError(
-            "No CI label found. Add "
-            f"{RUN_ALL_LABEL}, {RUN_LINT_ONLY_LABEL}, "
+            f"No CI label found. Add {RUN_LINT_ONLY_LABEL} "
             f"or a stage label: {stage_labels}."
         )
     else:
@@ -283,10 +268,7 @@ def main() -> None:
         print(f"::error::{error}")
         sys.exit(1)
     for model_label in plan.ignored_model_labels:
-        print(
-            f"::warning::Ignoring {model_label}: its stage label and "
-            f"{RUN_ALL_LABEL} are both missing."
-        )
+        print(f"::warning::Ignoring {model_label}: its stage label is missing.")
     output_lines = format_github_outputs(plan)
     print("\n".join(output_lines))
     with arguments.github_output.open("a", encoding="utf-8") as output_file:

@@ -170,7 +170,20 @@ sgl-omni serve \
   --port 8000
 ```
 
-DFlash requires greedy decoding (`temperature=0`), uses synchronous scheduling, and retains CUDA graphs. Realtime sessions are not validated.
+DFlash serves any `temperature`. Above 0, verification accepts each drafted token with the target model's probability for it and otherwise samples from the target's remaining probabilities. ASR transcripts are confident, so sampling barely lowers acceptance: on one H100 with SeedTTS English and Chinese clips at 16 concurrent requests, each verification step committed 5.66 tokens at `temperature` 0, 5.66 at 0.7 and 5.62 at 1.0. On the same server at the default cap of 64 running requests, the speedup at 0.7 and 1.0 stayed close to its greedy speedup at every load tested, from 1 to 64 concurrent requests. DFlash retains CUDA graphs. Realtime sessions are not validated.
+
+Scheduling is synchronous by default. Add `--asr.factory.enable_async_decode true` to overlap it with host work. On one H100 with greedy decoding and the prefix cache off, overlap raised throughput over synchronous scheduling by 12–26% on 60-second recordings and by 1–15% on SeedTTS English clips, from 1 to 64 concurrent requests, with the same WER. On those clips it also removed the draft's loss under load: at 64 concurrent requests the synchronous draft ran at 0.94x the server without a draft, and the overlapped draft at 1.08x. Overlap runs one extra verify round per request, so the logged acceptance length drops (5.9 to 4.6 tokens on short clips), and streamed first text arrives about 2 ms later for one short clip at a time.
+
+The command above caps the server at 8 running requests. A load sweep at the default cap with the prefix cache off ([#3454](https://github.com/sgl-project/sglang-omni/pull/3454)), on one H200 over SeedTTS English clips, found that the draft gives no speedup at 32 concurrent requests and is about 10% slower at 64. To serve such a load, turn the draft off; `disable_speculative_decoding` drops every `speculative_*` key from the stage:
+
+```bash
+sgl-omni serve \
+  --config examples/configs/qwen3_asr_1_7b_dflash.yaml \
+  --asr.engine.disable_speculative_decoding true \
+  --port 8000
+```
+
+Send the form field `return_spec_tokens_details=true` to get `sglext.spec_tokens_details` (`spec_accept_length`, `spec_accept_rate`, the draft counts and the per-verify histogram) on `json` and `verbose_json` responses and on the streamed `transcript.text.done` event. Audio long enough to be transcribed in chunks returns none. `spec_accept_rate` and `spec_num_proposed_drafts` are left out when no drafts were proposed or the draft width is adaptive.
 
 ## Transcribe Audio
 

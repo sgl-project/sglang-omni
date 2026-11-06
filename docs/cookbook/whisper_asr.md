@@ -115,6 +115,41 @@ sgl-omni serve \
   --port 8000
 ```
 
+## Speculative Decoding
+
+Whisper large-v3 can draft with [wilsonzheng0327/Whisper-large-v3-distil-draft](https://huggingface.co/wilsonzheng0327/Whisper-large-v3-distil-draft), distil-large-v3 fine-tuned on large-v3's own transcripts in English, Chinese, Japanese and Cantonese. The draft shares the target's encoder, so it reads the target's encoder states through its own two-layer decoder. Each round it proposes `speculative_num_steps` tokens (7 by default) and the target checks them in one forward:
+
+```bash
+sgl-omni serve \
+  --config examples/configs/whisper_large_v3_speculative.yaml \
+  --port 8000
+```
+
+Speculative decoding is greedy: a request with a nonzero temperature or with segment timestamps is refused with 400. It runs synchronously, so async decode is off. The first startup compiles the verify graphs for every decode batch size, about 14 minutes on an H200 against 9 without a draft; with a warm compile cache both start in about 6 minutes.
+
+On one H200 with the default 64 running requests, 1,000 English clips of 1 to 16 s (pipecat-ai/stt-benchmark-data), one warmup and one measured pass per concurrency, against the same server without a draft. Fresh audio misses the encoder cache on every request; repeated audio is the warmup's clips again, so every request reuses its cached encoder output:
+
+| Audio | Concurrency | No draft req/s | Draft req/s | Throughput gain | No draft p95 latency (s) | Draft p95 latency (s) |
+|---|---:|---:|---:|---:|---:|---:|
+| Fresh | 1 | 8.76 | 11.14 | 27% | 0.151 | 0.125 |
+| | 8 | 35.66 | 40.21 | 13% | 0.322 | 0.299 |
+| | 32 | 64.25 | 69.41 | 8% | 0.720 | 0.664 |
+| | 64 | 73.19 | 77.19 | 6% | 1.331 | 1.214 |
+| Repeated | 1 | 10.51 | 13.79 | 31% | 0.132 | 0.106 |
+| | 8 | 43.90 | 53.34 | 22% | 0.270 | 0.234 |
+| | 32 | 84.75 | 117.03 | 38% | 0.556 | 0.424 |
+| | 64 | 114.63 | 139.59 | 22% | 0.843 | 0.712 |
+
+Corpus WER was 0.0365 in every run and no request failed. The draft accepted 7.0 tokens per round. 994 to 996 of the 1,000 transcripts matched the no-draft run, which matched itself on 995 to 1,000 across the two audio conditions. Fresh audio gains less because the encoder, which the draft does not shorten, is a larger share of each request. The draft's other languages and long audio, repeated audio, measured on SGLang 0.5.22:
+
+| Set | Concurrency | No draft req/s | Draft req/s | Throughput gain | Error rate, no draft / draft |
+|---|---:|---:|---:|---:|---:|
+| FLEURS ja test, 300 clips | 1 / 8 / 32 | 6.35 / 31.68 / 62.34 | 9.13 / 38.52 / 83.87 | 44% / 22% / 35% | CER 0.0496 / 0.0495 |
+| FLEURS yue test, 300 clips | 1 / 8 / 32 | 6.86 / 32.55 / 63.34 | 8.44 / 36.31 / 78.36 | 23% / 12% / 24% | CER 0.1074 / 0.1069 |
+| LongLibriHeavy 60 s, 200 clips | 1 / 4 | 3.35 / 9.53 | 4.54 / 12.63 | 36% / 33% | WER 0.1021 / 0.1022 |
+
+Chinese transcripts are shorter, so the gain is smaller: on 500 SeedTTS ZH clips with 16 running requests, 14% to 18% at concurrency 1 and none at 16. The draft was trained on transcription in these four languages only and has not been measured on translation or on other languages.
+
 ## Transcribe Audio
 
 ```bash
