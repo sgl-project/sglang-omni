@@ -35,7 +35,8 @@ struct Qwen3DecoderConfig {
   static Qwen3DecoderConfig FromJson(const nlohmann::json &text_config);
 };
 
-// Per-layer key/value cache that grows in fixed steps.
+// Per-layer key/value cache that grows in fixed steps. Keys and values may
+// differ in head width, as in MLA.
 class KVCache {
 public:
   std::pair<mlx::core::array, mlx::core::array>
