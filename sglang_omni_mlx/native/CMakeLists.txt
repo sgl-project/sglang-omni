@@ -344,6 +344,11 @@ add_executable(fishaudio_drama3_codec_test EXCLUDE_FROM_ALL
   ci/fishaudio_drama3_codec_test.cpp)
 target_link_libraries(fishaudio_drama3_codec_test PRIVATE fishaudio_drama3)
 
+add_executable(kv_cache_test EXCLUDE_FROM_ALL tests/kv_cache_test.cpp)
+target_link_libraries(kv_cache_test PRIVATE qwen3_asr)
+set_target_properties(kv_cache_test PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
+
 # The protocol tests' stand-in server (tests/stub_server.cpp); built only on
 # request and never installed.
 add_executable(stub_server EXCLUDE_FROM_ALL tests/stub_server.cpp)
