@@ -25,6 +25,7 @@ from sglang_omni.scheduling.pre_lm_encoder import (
     QueueSignal,
 )
 from sglang_omni.scheduling.stage_cache import StageOutputCache
+from sglang_omni.utils.device import device_guard
 
 if TYPE_CHECKING:
     from sglang_omni.models.fun_asr.configuration_fun_asr import (
@@ -315,7 +316,9 @@ class FunASRPreLMEncoderService(
     def attach_embedding(
         self, item: MultimodalDataItem, embedding: torch.Tensor
     ) -> None:
-        item.precomputed_embeddings = embedding.to(self.device, non_blocking=True)
+        item.precomputed_embeddings = embedding.to(
+            self.device, non_blocking=self.device.type != "npu"
+        )
         item.feature = None
         item.format = MultimodalInputFormat.PRECOMPUTED_EMBEDDING
 
@@ -355,7 +358,7 @@ class FunASRPreLMEncoderService(
 
     @contextlib.contextmanager
     def batch_context(self) -> Iterator[None]:
-        with torch.inference_mode():
+        with device_guard(self.device), torch.inference_mode():
             if self.stream is None:
                 yield
             else:
@@ -402,6 +405,10 @@ class FunASRPreLMEncoderService(
     def synchronize_batch(self) -> None:
         if self.stream is not None:
             self.stream.synchronize()
+        elif self.device.type == "npu":
+            # Wait for NPU's current stream before publishing results.
+            device_module = torch.get_device_module(self.device)
+            device_module.current_stream(self.device).synchronize()
         else:
             pass
 
