@@ -14,7 +14,7 @@ hf download nvidia/personaplex-7b-v1
 
 It ships the 7B weights, the Mimi codec, the SentencePiece text model and `voices.tgz`, which is unpacked into `voices/` next to the checkpoint on first use, or into the temp directory when that folder cannot be written. Recorded voice prompts (`--voice some.wav`) also need `pip install pyloudnorm`; the packaged `.pt` voices do not.
 
-Everything runs on one GPU. On an H200 the LM engine reserves `mem_fraction_static=0.3` and the two Mimi instances stay under 1 GB each. This value is a fraction of total device memory, so a smaller-memory device can need a higher fraction to fit the model weights.
+Everything runs on one GPU. On an H200 the offline LM engine reserves `mem_fraction_static=0.3` and the two Mimi instances stay under 1 GB each. This value is a fraction of total device memory, so a smaller-memory device can need a higher fraction to fit the model weights. The session variant uses the [session KV budget](#session-kv-budgets) described below.
 
 The Mimi encoder stage loads only its encoding path, and Code2Wav loads only its
 decoding path. Both retain the codebooks and quantizer projections their path
@@ -61,6 +61,32 @@ curl -s localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -
 ## Native Full-Duplex Ability
 
 PersonaPlex also serves live full-duplex voice sessions on `/v1/realtime` with its `session` variant. Launching, settings and the protocol are in [Full-Duplex Guide](../developer_reference/full_duplex_guide.md#native-full-duplex-personaplex).
+
+## Session KV budgets
+
+With no explicit LM memory setting, the session pipeline sizes its KV pool from `max_sessions` and the effective LM context length. The per-rank byte budget is:
+
+```text
+max_sessions * context_length * 2 * layers * KV heads on the rank * head dimension * bytes per KV element
+```
+
+The model and KV dtypes are resolved through SGLang, including dtype aliases and tensor-parallel head counts. BF16 PersonaPlex uses 524288 bytes per position on one rank, so the default 8192-position context reserves 4 GiB per session: 4 GiB at one session and 16 GiB at four. The extra request row retained by the session bridge is bookkeeping capacity and does not add another full-context KV reservation. Explicit `lm.engine.kv_cache_bytes`, `lm.engine.mem_fraction_static` or `lm.engine.max_total_tokens` settings keep their existing sizing behavior. Block-quantized caches require an explicit byte budget because packed element sizes exclude block scales.
+
+This default reserves full-context storage, including platforms or page sizes that use full KV. It deliberately exceeds the steady sliding-window requirement. With separate units, CUDA with `page_size=1` and window KV enabled retains 2999 positions per established session at completed-unit boundaries, approximately 1.464 GiB of BF16 KV. Admission reserves only the unallocated part of each pending append, including a queued request whose retained KV has not yet been attached by prefix matching. It does not reserve the retained history twice. A tighter budget must still leave room for in-flight steps, joining prompts and replay; completed-unit snapshots alone cannot bound those demands. Use `session_kv_snapshot` profiler events to validate a chosen workload, rather than deriving occupancy from the process's preallocated GPU memory.
+
+For a deployment whose prompts and replay behavior have been measured, an explicit budget overrides the conservative default:
+
+```bash
+python -m sglang_omni.cli serve \
+  --model-path nvidia/personaplex-7b-v1 --variant session --enable-realtime \
+  --max-sessions 4 --lm.engine.kv_cache_bytes 16GiB
+```
+
+On an RTX A6000 with SGLang 0.5.23, BF16 KV, `page_size=1` and the default packaged prompt, four calls completed 3200 input units each with an explicit 8 GiB pool. Completed-unit occupancy reached 11996 positions (about 5.86 GiB) across the pool. This validates this workload, not every prompt length, scheduling interleaving or longer call.
+
+On the same otherwise idle RTX A6000 48 GiB, the conservative default budget admitted seven simultaneous calls (28 GiB KV; 32-unit smoke test, approximately 45.35 GiB peak device memory). Eight calls requested 32 GiB KV and were rejected at startup by the existing free-memory check after model loading. These are memory-capacity observations with the tested software and prompt, not real-time concurrency limits.
+
+KV bytes cover the KV pool only. Model weights, codecs, graphs and temporary tensors also need memory. Startup's existing free-memory and post-capture checks still enforce that the requested pool fits. A successful memory-capacity test does not establish that all calls meet the 80 ms serving deadline.
 
 ## Request parameters
 
