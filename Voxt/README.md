@@ -16,7 +16,7 @@ With a history, the overlay, shortcuts, the menu bar, a setup guide, settings an
 
 **Website** [actnow.dev/voxtnew](https://actnow.dev/voxtnew) · **Download** [actnow.dev/download/voxtnew](https://actnow.dev/download/voxtnew) (sign in first) · updates come from actnow.dev.
 
-> **Status: 0.1.0** (first beta: `0.1.0-beta.1`). Every feature above works on the local models; see [CHANGELOG.md](CHANGELOG.md).
+> **Status: 1.0.0**. Every feature above works on the local models; see [CHANGELOG.md](CHANGELOG.md).
 
 ## What runs on your Mac
 

@@ -16,7 +16,7 @@
 
 **官网** [actnow.dev/voxtnew](https://actnow.dev/voxtnew) · **下载** [actnow.dev/download/voxtnew](https://actnow.dev/download/voxtnew)（需要先登录）· 更新也来自 actnow.dev。
 
-> **状态：0.1.0**（第一个 beta：`0.1.0-beta.1`）。上面的功能都已在本地模型上可用，见 [CHANGELOG.md](CHANGELOG.md)。
+> **状态：1.0.0**。上面的功能都已在本地模型上可用，见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 在你的 Mac 上运行什么
 

@@ -6,6 +6,16 @@ All notable changes to VoxtNew. The format follows [Keep a Changelog](https://ke
 
 ### Added
 
+- The first version of VoxtNew: voice input for macOS on local models only. Press a shortcut in any app, speak, and the text appears where your cursor is. Audio and text never leave your Mac.
+- Local speech recognition: two models, accurate (recommended) and fast, with the text shown live as you speak, and a voice detector that sends only speech to them.
+- Local language models: a balanced one (recommended), a fast one and a translation model, for clean-up, translation and rewriting.
+- Transcribe, with an optional clean-up of fillers, false starts and punctuation; Translate, the selected text or what you say; Rewrite, the selected text or new text from a spoken request, with follow-ups in the answer card.
+- App enhancement: groups of apps and websites with their own scene prompt and a key pressed after inserting.
+- Dictionary: its terms help the speech model hear your names and jargon, and the language model write them as you spell them.
+- The Local models page: download, pause and resume, every file verified, delete; the memory a loaded model uses. Downloads use the system's proxy, or a mirror when Hugging Face cannot be reached.
+- A setup guide that installs the two recommended models and tries each feature; history, the overlay, the menu bar, shortcuts and settings.
+- Shortcuts: tap the right Option key to transcribe, right Option with Shift to translate, Control with right Option to rewrite; Control-Option-V pastes the last result. They leave fn to Auralink, so the two apps run side by side.
+- Updates from actnow.dev, with a Beta channel (Settings → About). The app is signed and notarised.
 - History entries have a context menu: right-click (or Control-click) one to copy its result or its recognised text, show its details, show its recording in Finder, or delete it. Home's recent results have the same menu. In History a selected entry also takes ⌘C (copy) and Delete.
 - **Keep models loaded** (Local models → Advanced): how long a model stays in memory unused. Automatic, the default, is as before (speech 10 minutes, language models 5); you can choose 5, 15 or 30 minutes, 1 hour, or until VoxtNew quits, so that every dictation starts at once. Other ActNow apps can still ask VoxtNew to free the memory of models it is not using. A change applies at once.
 - **Sounds to choose** (Settings → Audio → Play sounds): the start and the stop sound are each chosen from the ActNow family's sound library (from React Bits Sound Lab, in the builds from actnow.dev; Tally and Wrap by default), or macOS's system sounds, or none. A compact picker searches them (names and tags), filters by type, plays each with ▶ (again to stop) and sets their volume in steps; a Try button plays the choice. A Voxt pair chosen in an earlier build is kept as those system sounds. A build from source without the library plays Pop and Tink.
@@ -44,6 +54,16 @@ All notable changes to VoxtNew. The format follows [Keep a Changelog](https://ke
 
 #### 新增
 
+- VoxtNew 的第一个版本：只用本地模型的 macOS 语音输入。在任意 App 里按下快捷键说话，文字出现在光标处。音频和文字不会离开你的 Mac。
+- 本地语音识别：精准（推荐）和快速两个模型，说话时实时显示文字；声音检测只把说话的部分交给它们。
+- 本地语言模型：均衡（推荐）、快速和翻译专用三个模型，用于整理、翻译和改写。
+- 转录，可以整理掉口头语、说了一半的话并补上标点；翻译，选中的文字或说的话；转写，改写选中的文字或按语音要求写新内容，并可在答案卡片里继续追问。
+- 应用增强：把 App 和网站分组，每组有自己的场景提示词和插入后的按键。
+- 词典：词条帮助语音识别模型听准你的人名和术语，并让语言模型照你的写法输出。
+- 本地模型页：下载、暂停和继续下载，每个文件都经过校验，可删除；显示已加载模型占用的内存。下载走系统代理，连不上 Hugging Face 时改用镜像。
+- 设置引导：安装推荐的两个模型，并把每个功能试一遍；还有历史、浮窗、菜单栏、快捷键和设置。
+- 快捷键：单按右 Option 转录，右 Option 加 Shift 翻译，Control 加右 Option 转写；Control-Option-V 粘贴上一条结果。fn 留给 Auralink，两个 app 可以同时使用。
+- 从 actnow.dev 更新，有 Beta 通道（设置 → 诊断与关于）。app 已签名并经过公证。
 - 历史记录有了右键菜单：右键（或按住 Control 点）一条记录，可以复制结果或识别原文、查看详情、在访达中显示录音，或者删除它。首页的最近结果也有同样的菜单。在历史页选中一条记录后，也可以按 ⌘C 复制、按 Delete 删除。
 - **保持模型载入**（本地模型 → 高级）：模型闲置多久后从内存卸载。默认“自动”与以前相同（语音识别 10 分钟、语言模型 5 分钟）；也可以选 5、15、30 分钟、1 小时或“直到退出 VoxtNew”，让每次口述都立即开始。其他 ActNow app 仍然可以请 VoxtNew 释放闲置模型占用的内存。修改立即生效。
 - **可选的提示音**（设置 → 音频 → 播放提示音）：开始和结束提示音分别从 ActNow 家族提示音库里选（来自 React Bits Sound Lab，只在 actnow.dev 的官方构建里；默认“开录”和“收工”），也可以选 macOS 系统声音或无声。选择器很紧凑：可以搜索（名字和标签）、按类型筛选、用 ▶ 逐个试听（再点一下停止）、按档位调音量；试听按钮播放当前选择。以前版本选的 Voxt 预设保留为对应的系统声音。没有提示音库的源码构建播放 Pop 和 Tink。
@@ -77,33 +97,3 @@ All notable changes to VoxtNew. The format follows [Keep a Changelog](https://ke
 - 翻译或改写的回答到了语言模型的长度上限就停了时，不再插入，也不再替换你选中的文字：它显示在答案卡片里，并提示可能不完整。
 - **清空历史**（设置 → 隐私）现在也会把清掉的文字从数据库文件里抹掉。以前它们留在文件的空闲空间里，直到被覆盖，打开文件的人都能读到。
 - 分段识别的长录音（历史里的“重新识别”和“重试”）在两段相接的地方不会再丢掉空格（“the Republic.Socrates begins”）；中文照旧不加空格。
-
-## [0.1.0-beta.1] - 2026-10-17
-
-### Added
-
-- The first version of VoxtNew: voice input for macOS on local models only. Press a shortcut in any app, speak, and the text appears where your cursor is. Audio and text never leave your Mac.
-- Local speech recognition: two models, accurate (recommended) and fast, with the text shown live as you speak, and a voice detector that sends only speech to them.
-- Local language models: a balanced one (recommended), a fast one and a translation model, for clean-up, translation and rewriting.
-- Transcribe, with an optional clean-up of fillers, false starts and punctuation; Translate, the selected text or what you say; Rewrite, the selected text or new text from a spoken request, with follow-ups in the answer card.
-- App enhancement: groups of apps and websites with their own scene prompt and a key pressed after inserting.
-- Dictionary: its terms help the speech model hear your names and jargon, and the language model write them as you spell them.
-- The Local models page: download, pause and resume, every file verified, delete; the memory a loaded model uses. Downloads use the system's proxy, or a mirror when Hugging Face cannot be reached.
-- A setup guide that installs the two recommended models and tries each feature; history, the overlay, the menu bar, shortcuts and settings.
-- Shortcuts: tap the right Option key to transcribe, right Option with Shift to translate, Control with right Option to rewrite; Control-Option-V pastes the last result. They leave fn to Auralink, so the two apps run side by side.
-- Updates from actnow.dev, with a Beta channel (Settings → About). The app is signed and notarised.
-
-### 中文
-
-#### 新增
-
-- VoxtNew 的第一个版本：只用本地模型的 macOS 语音输入。在任意 App 里按下快捷键说话，文字出现在光标处。音频和文字不会离开你的 Mac。
-- 本地语音识别：精准（推荐）和快速两个模型，说话时实时显示文字；声音检测只把说话的部分交给它们。
-- 本地语言模型：均衡（推荐）、快速和翻译专用三个模型，用于整理、翻译和改写。
-- 转录，可以整理掉口头语、说了一半的话并补上标点；翻译，选中的文字或说的话；转写，改写选中的文字或按语音要求写新内容，并可在答案卡片里继续追问。
-- 应用增强：把 App 和网站分组，每组有自己的场景提示词和插入后的按键。
-- 词典：词条帮助语音识别模型听准你的人名和术语，并让语言模型照你的写法输出。
-- 本地模型页：下载、暂停和继续下载，每个文件都经过校验，可删除；显示已加载模型占用的内存。下载走系统代理，连不上 Hugging Face 时改用镜像。
-- 设置引导：安装推荐的两个模型，并把每个功能试一遍；还有历史、浮窗、菜单栏、快捷键和设置。
-- 快捷键：单按右 Option 转录，右 Option 加 Shift 翻译，Control 加右 Option 转写；Control-Option-V 粘贴上一条结果。fn 留给 Auralink，两个 app 可以同时使用。
-- 从 actnow.dev 更新，有 Beta 通道（设置 → 诊断与关于）。app 已签名并经过公证。
