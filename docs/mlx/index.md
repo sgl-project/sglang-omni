@@ -14,7 +14,7 @@ Rules for Apple Silicon work. They write down what the native runtime PRs under
 | Path | Contents |
 | --- | --- |
 | `sglang_omni_mlx/native/` | C++ runtime on MLX: one server binary per model, a parity CLI per model in `tools/`. Each model's code is in `src/<model>/`; code shared across models (`audio`, `form`, `layers`, `npz`, `tokenizer`, built as the `common` library, plus `swift_port` and `http`) is in `src/common/`. The shared ASR server code (`asr_service`, `worker`, `realtime`) is still in `src/qwen3_asr/`, and so is the `/v1/audio/speech` API that `voxtral_tts_server` and `fishaudio_drama3_server` share (`speech_service`), built on `asr_service`. `ming3_audio_server` serves `/v1/chat/completions` from its own service in `src/ming3_audio/`. |
-| `sglang_omni_mlx/native/ci/` | Model pins, the 392-clip corpus, golden outputs, server API tests. |
+| `sglang_omni_mlx/native/ci/` | Model pins, the 392-clip corpus, golden outputs, server API tests and the [long-recording benchmark](long_audio.md). |
 | `sglang_omni_mlx/<model>/` | Python MLX servers, e.g. the Qwen3-ASR reference server. |
 | `Voxt/` | Voxt, the macOS app that runs the native servers. See [`Voxt/README.md`](https://github.com/sgl-project/sglang-omni/blob/main/Voxt/README.md). |
 
@@ -58,8 +58,6 @@ agree on it with a maintainer first.
 Both drafts are pinned in `ci/models.json`. A draft for another target is one pin and one golden whose request names it under `draft_model_path`. Verifying a block moves the target's low-precision logits slightly, so a few percent of clips differ from plain decoding in punctuation or a near-tie word; the goldens hold each chip's draft outputs like any other.
 
 ## Rule 2: Contribution requirements
-
-For reproducible long-session quality and memory measurements, see [Qwen3-ASR long recordings](long_audio.md).
 
 **Placement and reuse**
 
