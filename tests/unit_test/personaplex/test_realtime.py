@@ -35,11 +35,13 @@ from sglang_omni.serve.realtime.adapters import CoordinatorAdapter
 from sglang_omni.serve.realtime.output import (
     AudioDelta,
     AudioFinished,
+    OutputEvent,
     ResponseFinished,
     ResponseStarted,
     TextDelta,
     TextFinished,
 )
+from sglang_omni.serve.realtime.types import Unit
 from sglang_omni.utils.imports import import_string
 
 CALL = SessionIdentity("call")
@@ -229,6 +231,48 @@ class ScriptedPipeline:
 
     async def close_session(self, session_identity: SessionIdentity) -> None:
         self.outputs.put_nowait(None)
+
+
+@pytest.mark.asyncio
+async def test_coalesced_native_units_use_contiguous_pipeline_sequences(model_dir):
+    """Skipping native unit indices must not leave gaps in pipeline input sequences."""
+    pipeline = ScriptedPipeline()
+    deployment = create_realtime_deployment(
+        Client(pipeline), PersonaPlexSessionPipelineConfig(model_path=model_dir)
+    )
+    adapter = deployment.adapter_factory()
+    emitted: list[tuple[OutputEvent, Unit]] = []
+
+    async def emit(event: OutputEvent, unit: Unit | None = None) -> None:
+        assert unit is not None
+        emitted.append((event, unit))
+
+    await adapter.open(
+        "call",
+        {"audio": {"input": {"format": {"type": "audio/pcm", "rate": 24000}}}},
+        emit,
+    )
+    try:
+        for index, frame_count in [(0, 1), (1, 4), (5, 1)]:
+            consumed = await asyncio.wait_for(
+                adapter.process(
+                    Unit(
+                        index,
+                        index * SAMPLES_PER_FRAME,
+                        b"\0" * UNIT_BYTES * frame_count,
+                        frame_count * SAMPLES_PER_FRAME,
+                        eos=index == 5,
+                    )
+                ),
+                timeout=5,
+            )
+            assert consumed == frame_count * SAMPLES_PER_FRAME
+        assert [chunk.seq for chunk in pipeline.appended] == [0, 1, 2]
+        assert [
+            unit.index for event, unit in emitted if isinstance(event, AudioDelta)
+        ] == [0, 1, 5]
+    finally:
+        await adapter.close()
 
 
 def test_a_call_over_the_websocket_streams_speech_and_its_transcript(model_dir):

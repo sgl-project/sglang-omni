@@ -616,6 +616,30 @@ class SessionRuntime:
                         unit = None
                     else:
                         unit, receipt = self.cut_next_unit()
+                        receipts = [] if receipt is None else [receipt]
+                        if unit.index > 0 and self.capabilities.max_coalesced_units > 1:
+                            coalesced_units = [unit]
+                            while (
+                                len(coalesced_units)
+                                < self.capabilities.max_coalesced_units
+                                and not coalesced_units[-1].eos
+                                and len(self.pending_pcm)
+                                >= self.capabilities.native_unit_bytes
+                            ):
+                                following_unit, following_receipt = self.cut_next_unit()
+                                assert following_receipt is not None
+                                coalesced_units.append(following_unit)
+                                receipts.append(following_receipt)
+                            unit = replace(
+                                unit,
+                                pcm=b"".join(part.pcm for part in coalesced_units),
+                                real_samples=sum(
+                                    part.real_samples for part in coalesced_units
+                                ),
+                                eos=coalesced_units[-1].eos,
+                            )
+                        else:
+                            pass
                     self.is_unit_in_flight = True
                 if unit is None:
                     try:
@@ -658,10 +682,14 @@ class SessionRuntime:
                 self.discarded_samples += discarded_samples
                 if self.close_task is not None:
                     pass
-                elif receipt is not None:
-                    self.output_buffer.enqueue(
-                        Envelope(event=UnitCompleted(receipt.unit_id), unit=receipt)
-                    )
+                elif receipts:
+                    for completed_unit in receipts:
+                        self.output_buffer.enqueue(
+                            Envelope(
+                                event=UnitCompleted(completed_unit.unit_id),
+                                unit=completed_unit,
+                            )
+                        )
                 elif self.cleared_unit_receipt is not None:
                     self.output_buffer.enqueue(
                         Envelope(
