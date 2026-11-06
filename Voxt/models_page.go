@@ -19,6 +19,8 @@ package main
 // (checkModels, shell_notices.go).
 
 import (
+	"strings"
+
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
@@ -145,6 +147,25 @@ func (a *app) featureModel(kind local.Kind, feature string) (local.Model, bool) 
 		want = f.LLM
 	}
 	return local.Choose(local.ForFeature(a.installed(kind), feature), want)
+}
+
+// usedBy says which features use model id of kind now, as Voxt 1.x's
+// model list did ("Used by Transcribe · Rewrite"), "" for none. A
+// language model serves Transcribe only while its clean-up is on.
+func (a *app) usedBy(kind local.Kind, id string) string {
+	var names []string
+	for _, f := range []string{hotkey.Transcribe, hotkey.Translate, hotkey.Rewrite} {
+		if kind == local.LLM && f == hotkey.Transcribe && !a.prefs.Features.Transcribe.Enhance {
+			continue
+		}
+		if m, ok := a.featureModel(kind, f); ok && m.ID == id {
+			names = append(names, uitext.FeatureTitle(f))
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	return i18n.T("Used by %s", strings.Join(names, " · "))
 }
 
 // featureOf is a feature's part of the settings (hotkey.Transcribe…).

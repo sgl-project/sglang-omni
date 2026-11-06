@@ -118,7 +118,7 @@ func TestRemotePage(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate(remotePath)
 	frames(tt)
-	if !has(tt, "On this Mac") || !has(tt, "Remote") { // Ollama's card, DeepSeek's
+	if !has(tt, "On this Mac") || !has(tt, "Remote") || !has(tt, "Online services") { // Ollama's card and group, DeepSeek's
 		t.Errorf("no where labels: %q", tt.Texts())
 	}
 	click(t, tt, "DeepSeek")
@@ -136,8 +136,8 @@ func TestRemotePage(t *testing.T) {
 	if strings.Contains(string(raw), "sk-deep") {
 		t.Fatal("the key is in the settings")
 	}
-	if !has(tt, "sk-…6789") {
-		t.Errorf("no mask of the saved key")
+	if !has(tt, "sk-…6789") || !has(tt, "Used by Transcribe · Translate · Rewrite") {
+		t.Errorf("no mask of the saved key, or where it is used: %q", tt.Texts())
 	}
 	m, ok := a.featureModel(local.LLM, hotkey.Rewrite)
 	if !ok || m.ID != "deepseek" || m.Name != "DeepSeek · deepseek-flash" {

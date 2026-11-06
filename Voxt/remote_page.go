@@ -15,6 +15,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
@@ -25,22 +26,28 @@ func (a *app) remotePage(c *ui.Context) {
 	pageHeader(c, i18n.T("Language models"), nil)
 	ui.Scroll(c.Key("remote-scroll")).Grow(1).MinHeight(0).Children(func() {
 		ui.Column(c).Padding(0, px(t, sp6), px(t, sp6)).Gap(px(t, sp4)).MaxWidth(px(t, 880)).Children(func() {
-			caption(c, i18n.T("Transcribe's clean-up, Translate and Rewrite use a language model of a service you set up here, over its OpenAI-compatible API. To keep text on this Mac, run a model with Ollama, LM Studio or oMLX (free); or buy an API key from a provider. Voxt sends the service the recognised or selected text, never your audio. Keys stay in this Mac's Keychain."))
+			caption(c, i18n.T("Transcribe's clean-up, Translate and Rewrite use the language model you set up here, over its OpenAI-compatible API. Voxt sends it the recognised or selected text, never your audio; keys stay in this Mac's Keychain."))
 			a.providerCards(c)
 		})
 	})
 	a.providerDialogView(c) // remote_dialog.go
 }
 
-// providerCards lists the services: those set up first, then the rest.
+// providerCards lists the services: those set up first, then the
+// servers that run on this Mac (Voxt 1.x's 本地), then the online
+// services (远程), each group with what it takes.
 func (a *app) providerCards(c *ui.Context) {
 	t := c.Theme()
-	var mine, rest []llm.Preset
+	var mine, here, online []llm.Preset
 	for _, pr := range llm.Presets() {
-		if _, ok := providers.Setup(a.prefs, pr.ID); ok {
+		_, set := providers.Setup(a.prefs, pr.ID)
+		switch {
+		case set:
 			mine = append(mine, pr)
-		} else {
-			rest = append(rest, pr)
+		case onThisMac(pr.BaseURL):
+			here = append(here, pr)
+		default:
+			online = append(online, pr)
 		}
 	}
 	room := min(a.pageWidth(c), px(t, 880)) - px(t, 2*sp6) - 1 // the column's padding
@@ -59,12 +66,16 @@ func (a *app) providerCards(c *ui.Context) {
 		sectionTitle(c, i18n.T("Set up"))
 		grid("remote-mine", mine)
 	}
-	title := i18n.T("Services")
-	if len(mine) > 0 {
-		title = i18n.T("Available")
+	if len(here) > 0 {
+		sectionTitle(c, i18n.T("On this Mac"))
+		caption(c, i18n.T("Free, and the text stays here: install Ollama, LM Studio or oMLX, download a model in it, then set it up here."))
+		grid("remote-here", here)
 	}
-	sectionTitle(c, title)
-	grid("remote-rest", rest)
+	if len(online) > 0 {
+		sectionTitle(c, i18n.T("Online services"))
+		caption(c, i18n.T("Buy an API key from the service, then set it up here."))
+		grid("remote-online", online)
+	}
 }
 
 // providerState is a card's state line: its dot's colour and text.
@@ -117,6 +128,9 @@ func (a *app) providerCard(c *ui.Context, pr llm.Preset, w float32) {
 			if !configured {
 				return // the rest shows once it is set up
 			}
+			if used := a.usedBy(local.LLM, p.ID); used != "" {
+				truncText(c, used).FontSize(px(t, fsCaption)).TextColor(k.Text2)
+			}
 			ui.Row(c).Gap(px(t, sp1)).AlignItems(ui.Center).Height(px(t, 30)).Children(func() {
 				mask, read := a.keyMasks[p.ID]
 				keyText, keyCol := mask, k.Text2
@@ -157,10 +171,16 @@ func whereText(pr llm.Preset, p settings.Provider) string {
 	if resolved, err := providers.Config(p).Resolve(); err == nil {
 		pr = resolved
 	}
-	if u, err := url.Parse(pr.BaseURL); err == nil && u.Host != "" && llm.IsLoopback(u.Hostname()) {
+	if onThisMac(pr.BaseURL) {
 		return i18n.T("On this Mac")
 	}
 	return i18n.T("Remote")
+}
+
+// onThisMac says whether a service's address is a server on this Mac.
+func onThisMac(base string) bool {
+	u, err := url.Parse(base)
+	return err == nil && u.Host != "" && llm.IsLoopback(u.Hostname())
 }
 
 // testStatus is a connection test's state: a spinner while it runs, a

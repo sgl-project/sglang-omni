@@ -17,6 +17,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/lang"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
@@ -75,9 +76,9 @@ func (a *app) modelTags(m models.Model) []string {
 	tags := uitext.ModelTags(m.ID)
 	if spec, ok := omni.Lookup(m.ID); ok && len(spec.Languages) > 0 {
 		if slices.Contains(spec.Languages, lang.Canonical(session.MainLanguage(a.prefs, i18n.Locale()))) {
-			tags = append(tags, i18n.T("Supports your main language"))
+			tags = append(tags, i18n.T("Supports main language"))
 		} else {
-			tags = append(tags, i18n.T("Does not support your main language"))
+			tags = append(tags, i18n.T("Lacks main language"))
 		}
 	}
 	return tags
@@ -135,6 +136,9 @@ func (a *app) modelCard(c *ui.Context, m models.Model) {
 				}
 				ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
 					caption(c, size)
+					if used := a.usedBy(local.Kind(m.Kind), m.ID); used != "" {
+						caption(c.Key("used"), "· "+used)
+					}
 					if mem, ok := a.modelMem[m.ID]; ok && st.Installed { // models_memory.go
 						ui.Row(c.Key("loaded")).Gap(px(t, 6)).AlignItems(ui.Center).Children(func() {
 							statusDot(c, k.Accent)

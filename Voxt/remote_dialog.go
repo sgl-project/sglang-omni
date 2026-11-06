@@ -209,7 +209,7 @@ func (a *app) saveProviderDialog() {
 			a.updateSettings(func(s *settings.Settings) { providers.Put(s, p) })
 			a.syncRemote() // a new key: the settings may not have changed
 			a.provDlg = providerDialog{}
-			a.toast(i18n.T("%s saved: choose it as the language model of Transcribe, Translate or Rewrite.", uitext.ProviderName(p)))
+			a.toast(i18n.T("%s saved", uitext.ProviderName(p)))
 		})
 	})
 }
