@@ -38,7 +38,7 @@ jobs:
     env:
       IS_RELEASE: ${{ startsWith(github.ref, 'refs/tags/voxt-v') }}
       # The team of the voxt-release environment's Developer ID, as for the Swift Voxt 1.x.
-      TEAM_ID: TB2S44TFQS
+      TEAM_ID: RY2TQTYSKQ
       GIT_TERMINAL_PROMPT: "0"
     defaults:
       run:
