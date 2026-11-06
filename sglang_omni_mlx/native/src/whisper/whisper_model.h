@@ -52,7 +52,11 @@ public:
   // last position [vocabulary].
   mlx::core::array Decode(const mlx::core::array &token_ids, int start_position,
                           const mlx::core::array &encoder_states,
-                          std::vector<DecoderLayerCache> &caches) const;
+                          std::vector<DecoderLayerCache> &caches,
+                          bool all_positions = false) const;
+  void PrepareDraft(const WhisperModel &target);
+  static void TruncateCaches(std::vector<DecoderLayerCache> &caches,
+                             int token_count);
 
 private:
   const mlx::core::array &Weight(const std::string &name) const;

@@ -319,7 +319,8 @@ mx::array WhisperModel::DecoderLayer(const mx::array &x, int layer,
 
 mx::array WhisperModel::Decode(const mx::array &token_ids, int start_position,
                                const mx::array &encoder_states,
-                               std::vector<DecoderLayerCache> &caches) const {
+                               std::vector<DecoderLayerCache> &caches,
+                               bool all_positions) const {
   const int length = token_ids.shape(1);
   const int total_length = start_position + length;
   std::vector<int32_t> position_values(length);
@@ -350,12 +351,68 @@ mx::array WhisperModel::Decode(const mx::array &token_ids, int start_position,
   }
   hidden = LayerNorm(hidden, "decoder.ln");
   const int width = hidden.shape(2);
+  if (all_positions) {
+    return mx::matmul(mx::reshape(hidden, {length, width}),
+                      mx::transpose(Weight("decoder.token_embedding.weight")));
+  } else {
+  }
   const mx::array last = mx::reshape(
       mx::slice(hidden, {0, length - 1, 0}, {1, length, width}), {width});
   // Note (khazic): tied output projection: the token embedding used as a linear
   // layer.
   return mx::matmul(last,
                     mx::transpose(Weight("decoder.token_embedding.weight")));
+}
+
+void WhisperModel::PrepareDraft(const WhisperModel &target) {
+  const auto &expected = target.config();
+  if (config_.audio_width != expected.audio_width ||
+      config_.vocabulary_size != expected.vocabulary_size ||
+      config_.text_context_length != expected.text_context_length ||
+      config_.mel_bin_count != expected.mel_bin_count ||
+      config_.audio_layer_count != expected.audio_layer_count ||
+      config_.audio_head_count != expected.audio_head_count ||
+      config_.audio_context_length != expected.audio_context_length) {
+    throw std::invalid_argument(
+        "Whisper draft architecture differs from target");
+  } else {
+  }
+  // note (ruiling): Check every encoder tensor before sharing states across
+  // half precisions.
+  for (const auto &[name, expected_weight] : target.weights_) {
+    if (name.starts_with("encoder.")) {
+      const auto &weight = Weight(name);
+      if (weight.shape() != expected_weight.shape() ||
+          !mx::allclose(mx::astype(weight, mx::float32),
+                        mx::astype(expected_weight, mx::float32), 1e-2, 1e-5)
+               .item<bool>()) {
+        throw std::invalid_argument("Whisper draft encoder differs at " + name);
+      } else {
+      }
+    } else {
+    }
+  }
+  std::erase_if(weights_, [](const auto &parameter) {
+    return parameter.first.starts_with("encoder.");
+  });
+  for (auto &[name, weight] : weights_) {
+    weight = mx::astype(
+        weight, target.Weight("decoder.token_embedding.weight").dtype());
+  }
+}
+
+void WhisperModel::TruncateCaches(std::vector<DecoderLayerCache> &caches,
+                                  int token_count) {
+  for (auto &cache : caches) {
+    for (auto *values : {&cache.self_keys, &cache.self_values}) {
+      if (values->has_value()) {
+        auto shape = values->value().shape();
+        shape[2] = token_count;
+        *values = mx::slice(values->value(), {0, 0, 0, 0}, shape);
+      } else {
+      }
+    }
+  }
 }
 
 } // namespace whisper
