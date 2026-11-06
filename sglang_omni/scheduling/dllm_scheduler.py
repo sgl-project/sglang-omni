@@ -14,16 +14,18 @@ import time
 from array import array
 from collections.abc import Callable
 from copy import copy
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from sglang.srt.configs.model_config import ModelConfig
 from sglang.srt.dllm.config import DllmConfig
 from sglang.srt.managers.schedule_batch import FINISH_LENGTH, Req, ScheduleBatch
 from sglang.srt.managers.schedule_policy import AddReqResult, PrefillAdder
-from sglang.srt.managers.scheduler import GenerationBatchResult
 from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
 from sglang.srt.mem_cache.common import checkpoint_kv_cache, release_kv_cache
 from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
+from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.runtime_context import get_parallel, get_schedule
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.server_args import ServerArgs
@@ -35,12 +37,25 @@ from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.sglang_backend.request_data import (
-    DllmForwardBatch,
     DllmRequest,
     SGLangDLLMRequestData,
 )
 
+if TYPE_CHECKING:
+    from sglang.srt.managers.scheduler import GenerationBatchResult
+
+else:
+    pass
+
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class DllmForwardBatch(ForwardBatch):
+    """Keep DLLM metadata through the eager runner's dataclass batch rebuilds."""
+
+    reqs: list[DllmRequest] = field(default_factory=list)
+    dllm_left_pad_lens_cpu: list[int] = field(default_factory=list)
 
 
 def release_kv_once(req: Req, tree_cache: BasePrefixCache) -> None:

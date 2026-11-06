@@ -33,8 +33,7 @@ import sglang_omni.models.llada2_uni.cfg_attention_backend as cfg_attention_back
 from sglang_omni.model_runner.sglang_model_runner import CFGCudaGraphRunner
 from sglang_omni.models.llada2_uni.low_confidence_cfg import LowConfidenceCFG
 from sglang_omni.models.llada2_uni.request_builders import LLaDA2UniRequest
-from sglang_omni.scheduling.dllm_scheduler import DllmScheduler
-from sglang_omni.scheduling.sglang_backend.request_data import DllmForwardBatch
+from sglang_omni.scheduling.dllm_scheduler import DllmForwardBatch, DllmScheduler
 
 
 class RaggedWrapperStub:
