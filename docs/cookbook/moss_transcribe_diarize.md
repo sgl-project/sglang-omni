@@ -223,7 +223,6 @@ sgl-omni serve \
   --model-path OpenMOSS-Team/MOSS-Transcribe-Diarize \
   --asr.engine.speculative_algorithm DFLASH \
   --asr.engine.speculative_draft_model_path wilsonzheng0327/MOSS-Transcribe-Diarize-dflash \
-  --asr.engine.speculative_draft_model_revision 2e3f00b0932112e4f92a4ef67a4cd60ee855056c \
   --port 8000
 ```
 
@@ -233,28 +232,6 @@ sgl-omni serve \
 - **Capacity.** The draft's KV shares the pool, so one H100 80GB at `mem_fraction_static=0.80` holds about 480k tokens instead of 570k. Long audio at high concurrency fills it, and the scheduler then retracts requests and finishes them later: every `aishell4_long` file still completed at concurrency 16 and 32.
 - **Sampling.** Requests with `repetition_penalty`, `frequency_penalty`, `presence_penalty`, `min_p` or logprobs are rejected, because the draft worker applies penalties once per verify block, drops `min_p`, and skips the sampler that records logprobs.
 - **Scheduling.** Async decode and async prefill are turned off, because async decode under a draft means speculative overlap, which MOSS-TD has not opted into. Setting `enable_mixed_chunk` is rejected.
-
-The optional eager plain-fallback profile routes unsupported sampling options through the ordinary target runner from prefill onward. For example, a request with `repetition_penalty=1.2` takes the plain path while a compatible request uses DFlash in the same scheduler, sharing one target worker and the request/KV pools:
-
-```bash
-sgl-omni serve \
-  --config examples/configs/moss_td_plain_fallback.yaml \
-  --port 8000
-```
-
-This profile reuses the same admission, batch scheduling, token relay, and cleanup code as Qwen3-ASR. Internal requests with a sampling seed also select plain because DFlash verification does not consume that seed. The transcription HTTP form does not expose a seed field. With fallback enabled, the builder keeps the same duration-based output budget as standalone plain; shared admission chooses plain when the remaining context cannot also hold draft reserves. It requires one CUDA GPU and synchronous execution. The profile starts with graphs and radix disabled; ordinary-decode/verify graph separation and path-isolated radix reuse can be enabled with the same engine overrides as Qwen3-ASR. The H200 GPU probe verifies that repetition-penalty batches call the ordinary sampler with zero draft forwards, target verifies, or draft KV writes, then cancel, retract, resume, and recover every request/KV slot. See [per-request plain fallback](qwen3_asr.md#per-request-plain-fallback) for the probe, execution restrictions, graph/cache switches, and remaining validation scope. The earlier corpus measurements below describe the existing DFlash path.
-
-A subsequent H200 fallback qualification compared standalone plain with the prototype across all 800 Movies800 clips and all 20 AISHELL4 long recordings, both with default greedy sampling and with repetition_penalty=1.2. All 3,280 requests completed without errors or reported length truncation. Both servers enabled ordinary decode graphs and radix caching, with target prefill graphs disabled. Each cell lists standalone plain / prototype; these single-pass accuracy observations are not performance measurements.
-
-| Dataset | Request mode | Samples per server | CER without speaker labels | cpCER | Timestamp DER, collar 0 |
-| --- | --- | --- | --- | --- | --- |
-| Movies800 | greedy/spec | 800 | 5.8838% / 5.8949% | 13.0100% / 13.2055% | 21.0692% / 21.1436% |
-| Movies800 | repetition_penalty=1.2 | 800 | 6.4129% / 6.4192% | 13.6631% / 13.6694% | 21.7322% / 21.7436% |
-| AISHELL4 long | greedy/spec | 20 | 13.8312% / 13.8678% | 15.0148% / 14.4100% | 10.2419% / 9.8733% |
-| AISHELL4 long | repetition_penalty=1.2 | 20 | 15.2587% / 15.2715% | 15.3169% / 15.3463% | 9.7742% / 9.7899% |
-
-Movies800 metrics use 784 clips with reference segments; the benchmark reports the other 16 as skipped rather than request failures. AISHELL4 metrics cover all 20 recordings. Internal seeded fallback requests reproduced standalone plain tokens and selected-token logprobs, including a repeated seed; unseeded sampling does not promise identical transcripts. For valid inputs, transcription HTTP boundary checks retained the plain control's acceptance/rejection behavior for the tested temperature, repetition_penalty, and max_new_tokens cases. The shared HTTP form now rejects negative temperature with 422 before generation; zero remains valid.
-
 
 Paired runs on one H200 140GB with FA3 and SGLang 0.5.22, `max_running_requests=16`, `cuda_graph_max_bs=16` and `mem_fraction_static=0.80`, each on a fresh server, in audio seconds per second. Concurrency 1 rows are the mean of both orders; the other rows are one pair.
 
@@ -268,6 +245,18 @@ Paired runs on one H200 140GB with FA3 and SGLang 0.5.22, `max_running_requests=
 The draft accepts 5.4 tokens per verify on `movies800times` and 5.1 on `aishell4_long` at concurrency 1. DER is `speaker_timestamp_der` at collar 0, which counts every small boundary shift. On `aishell4_long` the draft adds 0.21 and 0.13 points at collar 0 and at most 0.11 at a 0.25 s collar, while batching alone adds 0.40 and 0.25. One meeting in the set flips between five and seven detected speakers, which moves that file's DER by about 11 points in either mode.
 
 On one H100 80GB with the same settings, `aishell4_long` goes from 58.0 to 159.0 audio seconds per second at concurrency 1 (2.74x), 100.0 to 355.3 at concurrency 16 (3.55x), and 96.0 to 356.5 at concurrency 32 with `max_running_requests=32` and `cuda_graph_max_bs=32` (3.71x). The last two fill the KV pool, so requests retract in both modes.
+
+### Per-request plain fallback
+
+Set `asr.factory.enable_plain_fallback` to route requests with unsupported sampling options, such as `repetition_penalty=1.2`, through ordinary decoding. Requests that fit the target context but leave too little room for draft KV also use ordinary decoding.
+
+```bash
+sgl-omni serve \
+  --config examples/configs/moss_td_plain_fallback.yaml \
+  --port 8000
+```
+
+The [Qwen3-ASR fallback restrictions](qwen3_asr.md#per-request-plain-fallback) also apply to MOSS-TD.
 
 ## Benchmarking
 

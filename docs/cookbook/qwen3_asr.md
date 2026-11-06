@@ -170,7 +170,9 @@ sgl-omni serve \
   --port 8000
 ```
 
-DFlash requires greedy decoding (`temperature=0`), uses synchronous scheduling, and retains CUDA graphs. Realtime sessions are not validated.
+DFlash serves any `temperature`. Above 0, verification accepts each drafted token with the target model's probability for it and otherwise samples from the target's remaining probabilities. ASR transcripts are confident, so sampling barely lowers acceptance: on one H100 with SeedTTS English and Chinese clips at 16 concurrent requests, each verification step committed 5.66 tokens at `temperature` 0, 5.66 at 0.7 and 5.62 at 1.0. On the same server at the default cap of 64 running requests, the speedup at 0.7 and 1.0 stayed close to its greedy speedup at every load tested, from 1 to 64 concurrent requests. DFlash retains CUDA graphs. Realtime sessions are not validated.
+
+Scheduling is synchronous by default. Add `--asr.factory.enable_async_decode true` to overlap it with host work. On one H100 with greedy decoding and the prefix cache off, overlap raised throughput over synchronous scheduling by 12–26% on 60-second recordings and by 1–15% on SeedTTS English clips, from 1 to 64 concurrent requests, with the same WER. On those clips it also removed the draft's loss under load: at 64 concurrent requests the synchronous draft ran at 0.94x the server without a draft, and the overlapped draft at 1.08x. Overlap runs one extra verify round per request, so the logged acceptance length drops (5.9 to 4.6 tokens on short clips), and streamed first text arrives about 2 ms later for one short clip at a time.
 
 The command above caps the server at 8 running requests. A load sweep at the default cap with the prefix cache off ([#3454](https://github.com/sgl-project/sglang-omni/pull/3454)), on one H200 over SeedTTS English clips, found that the draft gives no speedup at 32 concurrent requests and is about 10% slower at 64. To serve such a load, turn the draft off; `disable_speculative_decoding` drops every `speculative_*` key from the stage:
 
@@ -185,9 +187,7 @@ Send the form field `return_spec_tokens_details=true` to get `sglext.spec_tokens
 
 ### Per-request plain fallback
 
-The prototype keeps one target worker and one draft resident in a single scheduler. Admission fixes each request's `decode_path` before prefill and records its `fallback_reason`. A sampled Qwen3-ASR request uses the ordinary runner and sampler from prefill onward; compatible greedy requests use DFlash. Each batch contains one path, and ready paths alternate while sharing the request pool and KV allocator. Retracted requests retain their original path. Requests that fit the target context but leave no room for the speculative KV reserve also use plain, with `fallback_reason=speculative_kv_reserve`; requests that exceed the plain capacity still fail validation.
-
-Enable the prototype with the dedicated profile:
+Set `asr.factory.enable_plain_fallback` to route requests that DFlash cannot serve through ordinary decoding. For example, `repetition_penalty=1.2` uses ordinary decoding, and supported sampling temperatures can still use DFlash. Requests that fit the target context but leave too little room for draft KV also use ordinary decoding.
 
 ```bash
 sgl-omni serve \
@@ -195,68 +195,7 @@ sgl-omni serve \
   --port 8000
 ```
 
-`asr.factory.enable_plain_fallback` defaults to false. The prototype requires CUDA, TP=1, PP=1, synchronous DFlash execution, and disabled mixed chunks and DP attention. The checked-in profile starts with graphs and radix disabled. Other profiles continue to reject unsupported draft sampling options during shared admission.
-
-The H200 probe wraps the actual target sampler, draft forward, target verify, and draft KV writes. It checks Qwen3-ASR temperature fallback and MOSS-TD repetition-penalty fallback through the same scheduler, including streaming, cancellation followed by a replacement request, retraction, unchanged target identity and runtime configuration, and full request/KV slot recovery:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 pytest -s -x tests/test_model/test_plain_fallback.py
-```
-
-Enable independent ordinary-decode and target-verify graphs plus path-isolated radix caching with:
-
-```bash
-sgl-omni serve \
-  --config examples/configs/qwen3_asr_1_7b_plain_fallback.yaml \
-  --asr.engine.disable_cuda_graph false \
-  --asr.engine.cuda_graph_backend_prefill disabled \
-  --asr.engine.disable_radix_cache false \
-  --port 8000
-```
-
-Omni creates an ordinary-decode execution view with the same model object, request pool, KV pool, and sampler. It owns separate attention metadata, graph inputs, and an eager fallback runner. Forward dispatch chooses the view from the batch's algorithm; target verification keeps the original runner. The published runtime configuration stays unchanged, and SGLang source and dependencies remain unmodified. Plain graph capture memory/time are included in the owning runner's graph accounting.
-
-Radix namespaces combine `decode_path` with the caller's existing cache salt. A speculative request therefore cannot treat a plain-only target prefix as valid draft KV. Both paths can reuse their own prefixes, at the cost of storing separate prefix KV entries in the shared allocator. Retraction preserves the namespace; cache flush remains blocked while either path has live requests.
-
-The GPU suite runs both models across all four graph/radix switch combinations. With graphs enabled it counts real ordinary-decode and verify replays and forces one graph-eligibility rejection to exercise ordinary eager fallback. With radix enabled it completes a plain request before admitting the same audio to spec, asserts a cold first spec prefill, then requires cache hits for repeats of both paths. It also checks the reference words for cold and repeated greedy transcripts, cancellation/replacement, retraction, and complete slot recovery after cache flush. Target prefill graphs, overlap, and TP>1 remain outside this validation. Additional padded-batch checks run three plain requests through a four-row capture bucket while sharing the four-request admission cap with spec.
-
-The scheduler tries both decode paths before reporting an idle step, so a queued path blocked on request slots cannot stall runnable decode on the other path. If decode exhausts the shared KV pool while the other path still owns KV, both groups are retracted and requeued with their original paths and cache salts. Recovery prioritizes one previously active request until it completes or is cancelled, then resumes alternation; this conservative recovery avoids filling the pool again with two concurrent chunked re-prefills. The model-backed progress regressions cover slot-blocked admission and memory-driven recovery for both models in eager and graph modes. They remove internal EOS stop IDs to sustain decode and check completion and full slot recovery; they do not qualify HTTP throughput or ASR quality.
-
-An additional HTTP smoke run completed 1,200 measured Qwen3-ASR SSE requests across concurrency 1/16/32/64 and fallback 0%/5%/100%, with graphs and radix enabled. MOSS-TD completed 24 interleaved penalty-1.0/1.2 SSE requests at concurrency 8. The client requires a terminal transcript event and rejects stream errors; these runs use the repeated short fixture and establish endpoint completion for that workload.
-
-A subsequent H200 corpus comparison completed all 1,088 SeedTTS EN and 2,020 SeedTTS ZH samples on standalone plain and the prototype, both greedy and at temperature 0.7 (12,432 requests, no failures). Greedy EN WER was 1.2031% on both; greedy ZH CER was 0.5874% plain and 0.6053% prototype. Sampled EN WER was 1.3015% plain and 1.2182% prototype; sampled ZH CER was 0.6952% and 0.6563%. These are single-pass accuracy observations; sampled outputs were not seeded, and greedy CI thresholds do not qualify sampled runs.
-
-A 10,000-request SSE run at concurrency 64 and 5% fallback completed all 500 plain and 9,500 spec requests. Maximum TTFT was 0.598 seconds plain and 0.575 seconds spec. Separate eager pressure probes used 50.64-second repeated audio, 256-token prefill chunks, and a 1,024-token minimum decode to sustain KV occupancy. Two memory-driven retractions preserved request paths and completed all eight requests; all 3,584 KV slots and four request slots were recovered. A radix-enabled 2,816-slot probe reached one free slot, evicted two cached prefixes, and recovered every slot after flush. These controlled probes do not establish deployment capacity or performance.
-
-Internal scheduler/runner checks compared request seeds, top-k/top-p, min-p, penalties, selected-token logprobs, and output limits with standalone plain. Seeded fallback tokens and logprobs matched their plain controls; seeded min-p remained unsupported by both controls. The transcription HTTP form currently exposes temperature, repetition_penalty, and max_new_tokens, so the additional sampling checks do not imply those fields are available over HTTP.
-
-To measure sparse fallback latency, run the same audio against separately started plain, DFlash, and prototype servers on the same GPU. The client below interleaves 0%, 5%, and 100% sampled requests at concurrency 1, 16, 32, and 64. Its JSON retains each request's first-token latency, completion latency, sampling class, and WER. Repeating this short fixture checks routing and liveness; corpus accuracy and deployment performance require representative audio and repeated runs.
-
-```bash
-python -m benchmarks.eval.benchmark_plain_fallback \
-  --base-url http://127.0.0.1:8000 \
-  --model Qwen/Qwen3-ASR-1.7B \
-  --audio tests/data/query_to_draw.wav \
-  --reference-text 'What is happening in this video? Answer in ten words or fewer.' \
-  --output fallback-sweep.json
-```
-
-For the plain baseline, add `--asr.factory.enable_plain_fallback false --asr.engine.disable_speculative_decoding true` to the server command. For the existing DFlash baseline, add only `--asr.factory.enable_plain_fallback false` and pass `--fallback-percentages 0` to the client.
-
-The initial eager probes passed on H200 with SGLang 0.5.23 (`297e54fd105e974cdf401e5b4d20253a22c16f90`), Torch 2.14.1, and `hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a`. In the recorded runs, Qwen3-ASR's 20 plain batches called the ordinary sampler 20 times and MOSS-TD's 46 plain batches called it 46 times. Draft forward, target verify, and draft KV write counts were zero for every plain batch; speculative batches performed actual draft and verify work.
-
-A warmed, single-pass routing smoke sweep repeated `query_to_draw.wav` 100 times per cell. All three server configurations ran sequentially on H200 0, with the image above, FA3, disabled graphs/radix, and a 32,768-token KV cap. Throughput is requests per second. The 5% column measures the five sampled requests in each prototype cell; all five completed. These few observations establish liveness for this fixture, not a latency bound or a statistically established speed comparison.
-
-| Concurrency | Existing DFlash, 0% | Prototype, 0% | Plain baseline, 100% | Prototype, 100% | Prototype 5% plain TTFT p95, ms |
-|---:|---:|---:|---:|---:|---:|
-| 1 | 13.51 | 13.25 | 4.09 | 3.95 | 61 |
-| 16 | 99.99 | 95.09 | 44.28 | 42.45 | 206 |
-| 32 | 134.90 | 122.30 | 67.32 | 67.93 | 257 |
-| 64 | 146.08 | 145.71 | 81.62 | 79.36 | 578 |
-
-The 0% concurrency-32 cell measured about 9% lower throughput than existing DFlash and needs repeated representative runs before attributing the difference. Greedy fixture transcripts had zero WER; sampled fixture WER varied between runs. These measurements do not qualify corpus accuracy or default-on speculative decoding.
-
-The earlier single-graph experiment on SGLang 0.5.23 failed with a 16-versus-2 buffer length mismatch when plain decode selected the DFlash verify graph. The separate downstream execution views above resolve that dispatch boundary without changing SGLang. The table records the earlier eager-only sweep; it does not measure the new graph/radix configuration.
+This option requires synchronous DFlash on one CUDA GPU, with prefill CUDA graphs, mixed chunks, and DP attention disabled. Decode CUDA graphs and radix caching can stay enabled. Both paths share the target model and KV pool, and each path caches its prefixes separately.
 
 ## Transcribe Audio
 

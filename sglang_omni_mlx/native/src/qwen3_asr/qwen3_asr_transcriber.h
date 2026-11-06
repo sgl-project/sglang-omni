@@ -5,7 +5,6 @@
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
-#include <functional>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -97,14 +96,6 @@ public:
                                  const std::atomic<bool> &cancel) const;
 
 private:
-  // Greedy decoding with the draft: each round the target verifies the block
-  // the draft proposed, cut to the tokens remaining allows, and commits the
-  // accepted tokens plus one more. Tokens go to commit until it reports the
-  // output complete; returns the rounds.
-  int DecodeWithDraft(const mlx::core::array &embeddings,
-                      const std::function<bool(int)> &commit,
-                      const std::function<int()> &remaining,
-                      const std::atomic<bool> &cancel) const;
   std::pair<std::string, std::optional<std::string>>
   SplitOutput(const std::vector<int> &output_ids,
               const TranscriptionOptions &options) const;

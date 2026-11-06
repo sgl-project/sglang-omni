@@ -167,7 +167,6 @@ class ModelRunner(Generic[RequestDataInput]):
     speculative_verify_takes_logits_hooks: bool = False
     # True when the model's sampled DFlash or DSpark verify draws without the request seed.
     speculative_ignores_request_seed: bool = False
-    speculative_requires_greedy: bool = False
     # An EAGLE draft extends on the embeddings the target prefilled with, which a
     # runner composing multimodal inputs keeps here for one prefill.
     retain_prefill_input_embeds: bool = False
@@ -202,6 +201,8 @@ class ModelRunner(Generic[RequestDataInput]):
         self.suppress_tensor_cache: dict[
             tuple[tuple[int, ...], int, str], torch.Tensor | None
         ] = {}
+        self.sampling_seed_batch_key: tuple[tuple[str | None, int | None], ...] = ()
+        self.sampling_seed_batch_tensor: torch.Tensor | None = None
 
     def stage_token_ids(self, result: GenerationBatchResult, ids: torch.Tensor) -> None:
         # Note (wenyao): pinned host copy staged once at sample time so downstream
@@ -1161,14 +1162,31 @@ class ModelRunner(Generic[RequestDataInput]):
         else:
             pass
         self.validate_seeded_sampling_supported(sampling_info)
+        for sp in sampling_params:
+            if sp.sampling_seed is not None and not (
+                0 <= sp.sampling_seed <= SAMPLING_SEED_MASK
+            ):
+                sp.sampling_seed = resolve_row_seed(sp.sampling_seed)
+            else:
+                pass
+        # note (YifanLi3): the per-step sampling_info is a copy, so reuse the
+        # device tensor while the batch composition is unchanged instead of
+        # paying a host-to-device copy every decode step. The key holds the
+        # normalized seeds so an out-of-range user seed does not miss once.
+        batch_key = tuple(
+            (request.request_id, sp.sampling_seed)
+            for sp, request in zip(sampling_params, requests)
+        )
+        if batch_key == self.sampling_seed_batch_key:
+            sampling_info.sampling_seed = self.sampling_seed_batch_tensor
+            return
+        else:
+            pass
         row_seeds: list[int] = []
         for row_idx, (sp, request) in enumerate(zip(sampling_params, requests)):
             seed = sp.sampling_seed
             if seed is None:
                 seed = rank_shared_unseeded_sampling_seed(request, row_idx)
-            elif not (0 <= seed <= SAMPLING_SEED_MASK):
-                seed = resolve_row_seed(seed)  # mask and cache user seed
-                sp.sampling_seed = seed
             else:
                 pass
             row_seeds.append(seed)
@@ -1177,6 +1195,8 @@ class ModelRunner(Generic[RequestDataInput]):
             dtype=torch.long,
             pin_memory=is_pin_memory_available(sampling_info.device),
         ).to(sampling_info.device, non_blocking=True)
+        self.sampling_seed_batch_key = batch_key
+        self.sampling_seed_batch_tensor = sampling_info.sampling_seed
 
     @staticmethod
     def validate_seeded_sampling_supported(sampling_info: SamplingBatchInfo) -> None:

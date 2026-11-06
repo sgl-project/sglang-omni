@@ -323,17 +323,21 @@ void AddRealtimeHandler(mg_context *context, const RealtimeFactory &factory) {
                            const_cast<RealtimeFactory *>(&factory));
 }
 
+omni_server::ServedKind CreateServedKind(const ServedKind &kind) {
+  return {
+      kind.model_kind,
+      [load = kind.load](const std::filesystem::path &directory) {
+        return std::make_unique<AsrService>(directory, load);
+      },
+      kind.flags,
+      kind.check_flags,
+  };
+}
+
 int Serve(int argc, char **argv, const std::vector<ServedKind> &kinds) {
   std::vector<omni_server::ServedKind> services;
   for (const auto &kind : kinds) {
-    services.push_back({
-        kind.model_kind,
-        [load = kind.load](const std::filesystem::path &directory) {
-          return std::make_unique<AsrService>(directory, load);
-        },
-        kind.flags,
-        kind.check_flags,
-    });
+    services.push_back(CreateServedKind(kind));
   }
   return omni_server::Serve(argc, argv, services);
 }

@@ -45,7 +45,6 @@ def probe_plain_fallback(
         enable_cuda_graph=enable_cuda_graph,
         enable_radix_cache=enable_radix_cache,
         max_running_requests=4,
-        max_total_tokens=32768,
     )
     target_runner = scheduler.tp_worker.model_runner
     draft_runner = scheduler.draft_worker.draft_model_runner
@@ -58,19 +57,15 @@ def probe_plain_fallback(
     initial_cache_slot_count = scheduler.token_to_kv_pool_allocator.available_size()
     audio_path = Path(__file__).parents[2] / "data" / "query_to_draw.wav"
 
-    def build_payload(request_id: str, temperature: float) -> StagePayload:
+    def build_payload(request_id: str, use_plain: bool) -> StagePayload:
         return StagePayload(
             request_id=request_id,
             request=OmniRequest(
                 inputs={"audio_path": str(audio_path)},
-                params=(
-                    {"temperature": temperature, "stream": True}
-                    if model_family == "qwen3_asr"
-                    else {
-                        "repetition_penalty": 1.2 if temperature > 0 else 1.0,
-                        "stream": True,
-                    }
-                ),
+                params={
+                    "repetition_penalty": 1.2 if use_plain else 1.0,
+                    "stream": True,
+                },
             ),
             data=None,
         )
@@ -138,10 +133,10 @@ def probe_plain_fallback(
                 plain_graph_replay = None
                 verify_graph_replay = None
             initial_requests = [
-                build_payload("greedy", 0.0),
-                build_payload("sampled", 0.7),
-                build_payload("sampled-second", 0.7),
-                build_payload("cancel", 0.7),
+                build_payload("greedy", False),
+                build_payload("sampled", True),
+                build_payload("sampled-second", True),
+                build_payload("cancel", True),
             ]
             expected_request_ids = {
                 "greedy",
@@ -153,7 +148,7 @@ def probe_plain_fallback(
             has_submitted_repeated_requests = False
             has_seen_first_speculative_prefill = False
             scheduler.process_input_requests(
-                [build_payload("plain-seed", 0.7)]
+                [build_payload("plain-seed", True)]
                 if enable_radix_cache
                 else initial_requests
             )
@@ -284,7 +279,7 @@ def probe_plain_fallback(
                     ):
                         scheduler.abort("cancel", defer_running_cleanup=False)
                         scheduler.process_input_requests(
-                            [build_payload("replacement", 0.7)]
+                            [build_payload("replacement", True)]
                         )
                         has_cancelled_request = True
                     else:
@@ -340,8 +335,8 @@ def probe_plain_fallback(
                     expected_request_ids.update({"plain-repeat", "spec-repeat"})
                     scheduler.process_input_requests(
                         [
-                            build_payload("plain-repeat", 0.7),
-                            build_payload("spec-repeat", 0.0),
+                            build_payload("plain-repeat", True),
+                            build_payload("spec-repeat", False),
                         ]
                     )
                 elif (

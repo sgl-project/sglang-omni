@@ -30,7 +30,7 @@ def create_plain_fallback_scheduler(
     enable_cuda_graph: bool,
     enable_radix_cache: bool,
     max_running_requests: int,
-    max_total_tokens: int,
+    max_total_tokens: int | None = None,
 ) -> (
     OmniScheduler[Qwen3ASRRequestData] | OmniScheduler[MossTranscribeDiarizeRequestData]
 ):
@@ -45,8 +45,9 @@ def create_plain_fallback_scheduler(
         "cuda_graph_max_bs": max_running_requests,
         "disable_radix_cache": not enable_radix_cache,
         "enable_torch_compile": False,
-        "max_total_tokens": max_total_tokens,
     }
+    if max_total_tokens is not None:
+        server_overrides["max_total_tokens"] = max_total_tokens
     if model_family == "qwen3_asr":
         server_overrides.update(
             {
@@ -135,16 +136,7 @@ def probe_plain_fallback_progress(
             request=OmniRequest(
                 inputs={"audio_path": str(audio_path)},
                 params={
-                    "temperature": (
-                        0.7
-                        if model_family == "qwen3_asr" and request_id == "plain"
-                        else 0.0
-                    ),
-                    "repetition_penalty": (
-                        1.2
-                        if model_family == "moss_td" and request_id == "plain"
-                        else 1.0
-                    ),
+                    "repetition_penalty": 1.2 if request_id == "plain" else 1.0,
                     "max_new_tokens": max_new_tokens,
                     "stream": True,
                 },
@@ -161,8 +153,8 @@ def probe_plain_fallback_progress(
             patch.object(scheduler, "request_builder", side_effect=build_request),
             patch.object(
                 scheduler,
-                "retract_running_requests",
-                wraps=scheduler.retract_running_requests,
+                "retract_parked_decode_requests",
+                wraps=scheduler.retract_parked_decode_requests,
             ) as retractions,
         ):
             scheduler.new_token_ratio_tracker.current = (
@@ -228,7 +220,6 @@ def probe_plain_fallback_progress(
             for _ in range(4):
                 assert scheduler.get_next_batch_to_run() is None
                 scheduler.last_batch = None
-            assert scheduler.kv_recovery_request is None
             assert scheduler.flush_cache()
             assert (
                 scheduler.req_to_token_pool.available_size()

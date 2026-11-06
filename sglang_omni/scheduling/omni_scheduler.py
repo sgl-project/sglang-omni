@@ -100,6 +100,10 @@ from sglang_omni.proto.admin import (
 )
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.proto.session import find_session_operation
+from sglang_omni.scheduling.generation_batch_policy import (
+    CudaGraphBackend,
+    get_prefill_cuda_graph_backend,
+)
 from sglang_omni.scheduling.message import (
     IncomingMessage,
     OutgoingMessage,
@@ -347,7 +351,6 @@ class OmniScheduler(Generic[RequestDataT]):
     request_build_admission_wait_s: float = _REQUEST_BUILD_ADMISSION_WAIT_S
     enable_plain_fallback: bool = False
     decode_batch_states: dict[Literal["plain", "spec"], DecodeBatchState] | None = None
-    kv_recovery_request: Req | None = None
 
     def __init__(
         self,
@@ -696,12 +699,14 @@ class OmniScheduler(Generic[RequestDataT]):
                 or self.enable_overlap
                 or self.enable_async_decode
                 or server_args.enable_mixed_chunk
+                or get_prefill_cuda_graph_backend(server_args)
+                != CudaGraphBackend.DISABLED
                 or get_parallel().attn_dp_enabled
             ):
                 raise ValueError(
                     "Plain fallback requires DFLASH, CUDA, TP=1, PP=1, "
                     "synchronous execution, "
-                    "and disabled mixed chunks and DP attention"
+                    "and disabled prefill CUDA graphs, mixed chunks, and DP attention"
                 )
             else:
                 self.decode_batch_states = {
@@ -711,7 +716,15 @@ class OmniScheduler(Generic[RequestDataT]):
                     ),
                 }
                 if not server_args.disable_cuda_graph:
+                    free_bytes_before, _ = torch.cuda.mem_get_info(self.device)
                     tp_worker.model_runner.init_plain_decode_graphs()
+                    free_bytes_after, _ = torch.cuda.mem_get_info(self.device)
+                    logger.info(
+                        f"Plain decode CUDA graph: "
+                        f"gpu_memory_delta_bytes={free_bytes_before - free_bytes_after} "
+                        f"gpu_free_bytes={free_bytes_after} "
+                        f"kv_capacity_tokens={effective_max_total_num_tokens}"
+                    )
                 else:
                     pass
         else:
@@ -2165,10 +2178,7 @@ class OmniScheduler(Generic[RequestDataT]):
         sampling_params = request.sampling_params
         # note (0xtoward): the runner's own sampler draws a one-token request's token
         # on the target prefill, which never reaches a verify.
-        if sampling_params.max_new_tokens == 1 and not (
-            self.model_runner.speculative_requires_greedy
-            and request_data.temperature > 0.0
-        ):
+        if sampling_params.max_new_tokens == 1:
             return None
         else:
             pass
@@ -2179,11 +2189,6 @@ class OmniScheduler(Generic[RequestDataT]):
         unsupported_options = [
             option_name
             for option_name, is_set in (
-                (
-                    "temperature",
-                    self.model_runner.speculative_requires_greedy
-                    and request_data.temperature > 0.0,
-                ),
                 ("logprobs", request_data.return_logprob),
                 ("return_hidden_states", request.return_hidden_states),
                 ("min_p", sampling_params.min_p > 0.0),
@@ -2257,51 +2262,94 @@ class OmniScheduler(Generic[RequestDataT]):
         return None
 
     def update_running_batch(self, batch: ScheduleBatch) -> ScheduleBatch | None:
-        """Requeue both KV owners before a per-path OOM can abort its last row."""
+        if not self.enable_plain_fallback:
+            return _Upstream.update_running_batch(self, batch)
+        else:
+            pass
+
+        parked_requests = {
+            id(request): request
+            for pending_batch in self.pending_batches()
+            for request in pending_batch.reqs
+            if not request.finished()
+        }
         if (
-            self.enable_plain_fallback
-            and any(
-                request.kv.holds_kv and not request.finished()
-                for pending_batch in self.pending_batches()
-                for request in pending_batch.reqs
-            )
-            and not batch.check_decode_mem()
+            not any(request.kv.holds_kv for request in parked_requests.values())
+            or batch.check_decode_mem()
         ):
-            with self.request_admission_lock:
-                self.kv_recovery_request = batch.reqs[0]
-                requests_by_identity = {
-                    id(request): request
-                    for held_batch in (batch, *self.pending_batches())
-                    for request in held_batch.reqs
-                    if not request.finished()
-                }
-                retracted_request_count = self.retract_running_requests()
-                self.new_token_ratio_tracker.reset()
-                self.metrics_reporter.num_retracted_reqs = retracted_request_count
+            return _Upstream.update_running_batch(self, batch)
+        else:
+            pass
+
+        with self.request_admission_lock:
+            # Note (Akazaakane): Native retraction aborts the last row if its
+            # next step cannot fit. Give it access to the parked KV first.
+            remaining_indices = batch._get_decode_retraction_order(  # noqa: leading-underscore  # native retraction order
+                batch.reqs
+            )
+            retracted_requests: list[Req] = []
+            while len(remaining_indices) > 1:
+                request_index = remaining_indices.pop()
+                batch.release_req(
+                    request_index, len(remaining_indices), offload_kv=False
+                )
+                retracted_requests.append(batch.reqs[request_index])
+                if batch.check_decode_mem(selected_indices=remaining_indices):
+                    break
+                else:
+                    pass
+            batch.filter_batch(keep_indices=remaining_indices)
+            if len(remaining_indices) == 1 and not batch.check_decode_mem():
+                parked_rows = list(parked_requests.values())
+                self.retract_parked_decode_requests(parked_rows)
+                retracted_requests.extend(parked_rows)
+            else:
+                pass
+
+            for request in retracted_requests:
+                self._add_request_to_queue(request, is_retracted=True)
+            updated_batch = _Upstream.update_running_batch(self, batch)
+            if retracted_requests:
+                batch.batch_is_full = False
+                self.new_token_ratio_tracker.current = (
+                    self.new_token_ratio_tracker.estimate_new_token_ratio_after_retract(
+                        batch.reqs
+                    )
+                )
+                self.metrics_reporter.num_retracted_reqs = len(retracted_requests)
                 if self.metrics_reporter.enable_metrics:
                     self.metrics_reporter.metrics_collector.increment_retracted_reqs(
-                        num_retracted_reqs=retracted_request_count,
+                        num_retracted_reqs=len(retracted_requests),
                         num_retracted_input_tokens=sum(
                             len(request.origin_input_ids)
-                            for request in requests_by_identity.values()
+                            for request in retracted_requests
                         ),
                         num_retracted_output_tokens=sum(
-                            len(request.output_ids)
-                            for request in requests_by_identity.values()
+                            len(request.output_ids) for request in retracted_requests
                         ),
                     )
                 else:
                     pass
-                logger.warning(
-                    f"KV cache pool is full across decode paths; "
-                    f"requeued {retracted_request_count} requests"
-                )
-            return None
-        else:
-            return _Upstream.update_running_batch(self, batch)
+            else:
+                pass
+            return updated_batch
+
+    def retract_parked_decode_requests(self, requests: list[Req]) -> None:
+        retract_all(
+            reqs=requests,
+            req_to_token_pool=self.req_to_token_pool,
+            token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
+            tree_cache=self.tree_cache,
+            hisparse_coordinator=self.hisparse_coordinator,
+            offload_kv=False,
+        )
+        parked_path = "plain" if self.decode_path == "spec" else "spec"
+        self.decode_batch_states[parked_path] = DecodeBatchState(
+            running_batch=ScheduleBatch(reqs=[], batch_is_full=False)
+        )
 
     def select_next_decode_path(self) -> None:
-        """Prioritize a retracted request, otherwise alternate ready paths."""
+        """Alternate ready paths."""
         decode_batch_states = self.decode_batch_states
         assert decode_batch_states is not None
         decode_batch_states[self.decode_path] = DecodeBatchState(
@@ -2314,17 +2362,7 @@ class OmniScheduler(Generic[RequestDataT]):
             "plain" if self.decode_path == "spec" else "spec"
         )
         next_batch_state = decode_batch_states[next_decode_path]
-        recovery_request = self.kv_recovery_request
-        if recovery_request is not None and (
-            recovery_request.finished() or recovery_request.omni_data is None
-        ):
-            self.kv_recovery_request = None
-            recovery_request = None
-        else:
-            pass
-        if recovery_request is not None:
-            self.decode_path = recovery_request.omni_data.decode_path
-        elif (
+        if (
             next_batch_state.running_batch.reqs
             or (
                 next_batch_state.last_batch is not None
