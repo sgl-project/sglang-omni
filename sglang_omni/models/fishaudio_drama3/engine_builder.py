@@ -28,6 +28,7 @@ from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_ENABLE_ASYNC_DECODE,
     DEFAULT_FIRST_FRAME_CUDA_GRAPH_MAX_REQUESTS,
     DEFAULT_FIRST_FRAME_CUDA_GRAPHS,
+    DEFAULT_GDN_PREFILL_CUDA_GRAPHS,
     DEFAULT_MAX_NEW_TOKENS_CAP,
     DEFAULT_MAX_PROMPT_ROWS,
     DEFAULT_REFERENCE_SAMPLING,
@@ -41,6 +42,10 @@ from sglang_omni.models.fishaudio_drama3.config import (
 )
 from sglang_omni.models.fishaudio_drama3.first_frame_graphs import (
     Drama3FirstFrameGraphs,
+)
+from sglang_omni.models.fishaudio_drama3.gdn_prefill_graph import (
+    GDNPrefillGraphAttnBackend,
+    install_gdn_prefill_graph,
 )
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
 from sglang_omni.models.fishaudio_drama3.model_inputs import Drama3DecodeBuffers
@@ -110,6 +115,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         first_frame_cuda_graph_max_requests: int = (
             DEFAULT_FIRST_FRAME_CUDA_GRAPH_MAX_REQUESTS
         ),
+        gdn_prefill_cuda_graphs: bool = DEFAULT_GDN_PREFILL_CUDA_GRAPHS,
         triton_sampling: bool = DEFAULT_TRITON_SAMPLING,
         reference_sampling: bool = DEFAULT_REFERENCE_SAMPLING,
         reference_sampling_fallback: ReferenceSamplingFallback = (
@@ -128,6 +134,7 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         self.max_new_tokens_cap = max_new_tokens_cap
         self.first_frame_cuda_graphs = first_frame_cuda_graphs
         self.first_frame_cuda_graph_max_requests = first_frame_cuda_graph_max_requests
+        self.gdn_prefill_cuda_graphs = gdn_prefill_cuda_graphs
         self.triton_sampling = triton_sampling
         self.reference_sampling = reference_sampling
         self.reference_sampling_fallback = reference_sampling_fallback
@@ -146,6 +153,10 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         ModelRegistry.models[FISH_OMNI_ARCHITECTURE] = Drama3ForCausalLM
         QUANTIZATION_METHODS[QUANTIZATION_METHOD] = ExpertFp8Config
         QUANTIZATION_METHODS[INT4_QUANTIZATION_METHOD] = ExpertDenseInt4Config
+        install_gdn_prefill_graph(
+            FISH_OMNI_ARCHITECTURE,
+            max_seqs=self.max_running_requests if self.gdn_prefill_cuda_graphs else 0,
+        )
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         return {
@@ -325,6 +336,29 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         else:
             pass
 
+    def gdn_prefill_graph_status(self) -> str:
+        """Whether the breakable prefill graphs capture the GDN extend, and why not."""
+        sglang_runner = self.sglang_runner
+        assert sglang_runner is not None
+        attention_backend = sglang_runner.attn_backend
+        assert isinstance(attention_backend, HybridLinearAttnBackend)
+        linear_backend = attention_backend.linear_attn_backend
+        if not self.gdn_prefill_cuda_graphs:
+            return "off, tts_engine.factory.gdn_prefill_cuda_graphs is false"
+        elif not isinstance(linear_backend, GDNPrefillGraphAttnBackend):
+            return f"off, the linear backend is {type(linear_backend).__name__}"
+        elif (reason := linear_backend.prefill_graph_unsupported_reason()) is not None:
+            return f"off, {reason}"
+        elif (
+            not attention_backend.use_captured_forward_metadata_for_breakable_cuda_graph
+        ):
+            return "off, the prefill runs eager or without the breakable graph"
+        else:
+            return (
+                f"on, each prefill graph captures the linear-attention extend of up "
+                f"to {attention_backend.prefill_cuda_graph_max_batch_size} requests"
+            )
+
     def post_cuda_graph_setup(
         self, model: Drama3ForCausalLM, server_args: ServerArgs
     ) -> None:
@@ -333,6 +367,9 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         attention_backend = sglang_runner.attn_backend
         decode_graph_runner = sglang_runner.decode_cuda_graph_runner
         decode_graph_config = resolved_view(server_args).cuda_graph_config.decode
+        logger.info(
+            f"Drama 3 GDN prefill CUDA graphs: {self.gdn_prefill_graph_status()}"
+        )
         if not self.first_frame_cuda_graphs:
             logger.info(
                 "Drama 3 first-frame CUDA graphs: off, "
