@@ -9,13 +9,18 @@ import math
 import platform
 import subprocess
 import time
+from dataclasses import asdict, dataclass
 from importlib.metadata import version
 from pathlib import Path
+from typing import Literal
 
 from sglang_omni_mlx.native.ci.long_audio_client import (
     HTTP_TRANSCRIPTION_FIELDS,
     MEMORY_SAMPLE_INTERVAL_SECONDS,
+    HttpTranscription,
     MemorySampler,
+    RealtimeTranscription,
+    TranscriptScore,
     score,
     stream_recording,
     transcribe_chunks,
@@ -37,6 +42,27 @@ from sglang_omni_mlx.native.tests.native_server import (
 MEMORY_SETTLE_SECONDS = 2
 SAMPLER_JOIN_TIMEOUT_SECONDS = 5
 SHUTDOWN_TIMEOUT_SECONDS = 10
+
+
+@dataclass(kw_only=True)
+class CaseResult:
+    case: str
+    audio_seconds: float
+    status: Literal["measured", "failed"] = "failed"
+    error: str = ""
+    transcription: HttpTranscription | RealtimeTranscription | None = None
+    score: TranscriptScore | None = None
+    real_time_factor: float | None = None
+    recovery_matches_warmup: bool | None = None
+    baseline_footprint_bytes: int | None = None
+    warmup_peak_footprint_bytes: int | None = None
+    peak_footprint_bytes: int | None = None
+    post_session_footprint_bytes: int | None = None
+    post_recovery_footprint_bytes: int | None = None
+    process_peak_footprint_bytes: int = 0
+    server_exit_code: int | None = None
+    memory_limit_exceeded: bool = False
+    memory_sampling_error: str = ""
 
 
 def server_binary(arguments: argparse.Namespace) -> Path:
@@ -117,14 +143,10 @@ def run_case(
     wav_path = arguments.output / f"{name}.wav"
     recording = build_recording(clips, minutes * 60, arguments.seed, wav_path)
     (arguments.output / f"{name}.input.json").write_text(
-        json.dumps(recording, ensure_ascii=False, indent=2) + "\n"
+        json.dumps(asdict(recording), ensure_ascii=False, indent=2) + "\n"
     )
     warmup_wav = clips[0].path.read_bytes()
-    result = {
-        "case": name,
-        "status": "failed",
-        "audio_seconds": recording["audio_seconds"],
-    }
+    result = CaseResult(case=name, audio_seconds=recording.audio_seconds)
     errors: list[str] = []
     with (arguments.output / f"{name}.server.log").open("w") as log:
         process = subprocess.Popen(
@@ -144,7 +166,7 @@ def run_case(
         arguments.output / f"{name}.memory.jsonl",
         int(arguments.max_footprint_gib * 1024**3),
         EVENT_TIMEOUT_SECONDS
-        + recording["audio_seconds"] / arguments.speed
+        + recording.audio_seconds / arguments.speed
         + 3 * arguments.timeout_seconds,
     )
     sampler.thread.start()
@@ -163,7 +185,7 @@ def run_case(
             transcription = transcribe_chunks(
                 port,
                 wav_path,
-                chunk_frame_counts(recording["clip_frames"], arguments.chunk_seconds),
+                chunk_frame_counts(recording.clip_frames, arguments.chunk_seconds),
                 language,
                 arguments.timeout_seconds,
             )
@@ -183,19 +205,15 @@ def run_case(
         sampler.phase = "post_session"
         time.sleep(MEMORY_SETTLE_SECONDS)
         session_end = sampler.samples[-1]
-        result.update(transcription)
-        result.update(score(recording["reference"], transcription["text"], language))
-        result.update(
-            {
-                "baseline_footprint_bytes": baseline["footprint_bytes"],
-                "warmup_peak_footprint_bytes": baseline["peak_footprint_bytes"],
-                "peak_footprint_bytes": session_end["peak_footprint_bytes"],
-                "post_session_footprint_bytes": session_end["footprint_bytes"],
-            }
-        )
+        result.transcription = transcription
+        result.score = score(recording.reference, transcription.text, language)
+        result.baseline_footprint_bytes = baseline.footprint_bytes
+        result.warmup_peak_footprint_bytes = baseline.peak_footprint_bytes
+        result.peak_footprint_bytes = session_end.peak_footprint_bytes
+        result.post_session_footprint_bytes = session_end.footprint_bytes
         if arguments.mode == "http":
-            result["real_time_factor"] = (
-                transcription["wall_seconds"] / recording["audio_seconds"]
+            result.real_time_factor = (
+                transcription.wall_seconds / recording.audio_seconds
             )
         else:
             pass
@@ -203,13 +221,13 @@ def run_case(
         recovery = transcribe_http(
             port, warmup_wav, language, arguments.timeout_seconds
         )
-        result["recovery_matches_warmup"] = recovery["text"] == warmup["text"]
+        result.recovery_matches_warmup = recovery.text == warmup.text
         time.sleep(MEMORY_SETTLE_SECONDS)
-        result["post_recovery_footprint_bytes"] = sampler.samples[-1]["footprint_bytes"]
-        if recovery["text"] != warmup["text"]:
+        result.post_recovery_footprint_bytes = sampler.samples[-1].footprint_bytes
+        if recovery.text != warmup.text:
             raise RuntimeError("Post-session transcript differs from warmup")
         else:
-            result["status"] = "measured"
+            result.status = "measured"
     except Exception as error:
         errors.append(f"{type(error).__name__}: {error}")
     finally:
@@ -221,31 +239,26 @@ def run_case(
     else:
         pass
     if errors or sampler.error or sampler.exceeded:
-        result["status"] = "failed"
+        result.status = "failed"
     else:
         pass
-    result.update(
-        {
-            "error": "; ".join(errors),
-            "process_peak_footprint_bytes": max(
-                (sample["peak_footprint_bytes"] for sample in sampler.samples),
-                default=0,
-            ),
-            "server_exit_code": process.returncode,
-            "memory_limit_exceeded": sampler.exceeded,
-            "memory_sampling_error": sampler.error,
-        }
+    result.error = "; ".join(errors)
+    result.process_peak_footprint_bytes = max(
+        (sample.peak_footprint_bytes for sample in sampler.samples), default=0
     )
+    result.server_exit_code = process.returncode
+    result.memory_limit_exceeded = sampler.exceeded
+    result.memory_sampling_error = sampler.error
+    result_fields = asdict(result)
     (arguments.output / f"{name}.result.json").write_text(
-        json.dumps(result, ensure_ascii=False, indent=2) + "\n"
+        json.dumps(result_fields, ensure_ascii=False, indent=2) + "\n"
     )
-    print(
-        json.dumps(
-            {field: value for field, value in result.items() if field != "text"}
-        ),
-        flush=True,
-    )
-    return result["status"] == "measured"
+    if result_fields["transcription"] is not None:
+        result_fields["transcription"].pop("text")
+    else:
+        pass
+    print(json.dumps(result_fields), flush=True)
+    return result.status == "measured"
 
 
 def main() -> None:

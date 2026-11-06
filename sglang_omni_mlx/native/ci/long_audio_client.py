@@ -13,8 +13,9 @@ import subprocess
 import threading
 import time
 import wave
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TypedDict
+from typing import Literal
 
 from rapidfuzz.distance import Levenshtein
 from websockets.sync.client import connect
@@ -42,21 +43,45 @@ VOXT_MIN_TOKENS = 256
 VOXT_MAX_TOKENS = 8192
 
 
-class GenerationMetadata(TypedDict):
+@dataclass(frozen=True, kw_only=True)
+class GenerationMetadata:
     generated_token_count: int
-    language: str
+    language: str | None
     finish_reason: str
 
 
-class Measurement(TypedDict, total=False):
+@dataclass(frozen=True, kw_only=True)
+class HttpTranscription:
     text: str
-    type: str
-    generation_metadata: GenerationMetadata
-    chunk_generation_metadata: list[GenerationMetadata]
+    wall_seconds: float
+    generation_metadata: list[GenerationMetadata]
+
+
+@dataclass(frozen=True, kw_only=True)
+class RealtimeTranscription:
+    text: str
     wall_seconds: float
     finalization_seconds: float
-    final_segments: int
-    preview_events: int
+    final_segment_count: int
+    preview_event_count: int
+
+
+@dataclass(frozen=True, kw_only=True)
+class TranscriptScore:
+    metric: Literal["wer_en", "cer_zh"]
+    errors: int
+    reference_tokens: int
+    hypothesis_tokens: int
+    error_rate: float
+
+
+@dataclass(frozen=True, kw_only=True)
+class MemorySample:
+    phase: str
+    elapsed_seconds: float
+    footprint_bytes: int
+    peak_footprint_bytes: int
+    resident_bytes: int
 
 
 class ProcessUsage(ctypes.Structure):
@@ -116,7 +141,7 @@ class MemorySampler:
         self.destination = destination
         self.limit_bytes = limit_bytes
         self.limit_seconds = limit_seconds
-        self.samples: list[dict[str, float | int | str]] = []
+        self.samples: list[MemorySample] = []
         self.phase = "startup"
         self.exceeded = False
         self.error = ""
@@ -151,15 +176,15 @@ class MemorySampler:
                         )
                         return
                     else:
-                        row = {
-                            "phase": self.phase,
-                            "elapsed_seconds": time.monotonic() - started,
-                            "footprint_bytes": usage.footprint_bytes,
-                            "peak_footprint_bytes": usage.peak_footprint_bytes,
-                            "resident_bytes": usage.resident_bytes,
-                        }
-                        self.samples.append(row)
-                        output.write(json.dumps(row) + "\n")
+                        sample = MemorySample(
+                            phase=self.phase,
+                            elapsed_seconds=time.monotonic() - started,
+                            footprint_bytes=usage.footprint_bytes,
+                            peak_footprint_bytes=usage.peak_footprint_bytes,
+                            resident_bytes=usage.resident_bytes,
+                        )
+                        self.samples.append(sample)
+                        output.write(json.dumps(asdict(sample)) + "\n")
                         output.flush()
                     if time.monotonic() - started > self.limit_seconds:
                         self.stop_on_error("Case wall-clock deadline exceeded")
@@ -174,19 +199,17 @@ class MemorySampler:
             self.stop_on_error(f"Memory trace failed: {error}")
 
 
-def score(
-    reference: str, hypothesis: str, language: str
-) -> dict[str, float | int | str]:
+def score(reference: str, hypothesis: str, language: str) -> TranscriptScore:
     reference_tokens = tokens(reference, language)
     hypothesis_tokens = tokens(hypothesis, language)
     errors = Levenshtein.distance(reference_tokens, hypothesis_tokens)
-    return {
-        "metric": "wer_en" if language == "en" else "cer_zh",
-        "errors": errors,
-        "reference_tokens": len(reference_tokens),
-        "hypothesis_tokens": len(hypothesis_tokens),
-        "error_rate": errors / len(reference_tokens),
-    }
+    return TranscriptScore(
+        metric="wer_en" if language == "en" else "cer_zh",
+        errors=errors,
+        reference_tokens=len(reference_tokens),
+        hypothesis_tokens=len(hypothesis_tokens),
+        error_rate=errors / len(reference_tokens),
+    )
 
 
 def voxt_token_budget(audio_seconds: float) -> int:
@@ -200,7 +223,7 @@ def transcribe_http(
     language: str,
     timeout_seconds: float,
     max_new_tokens: int | None = None,
-) -> Measurement:
+) -> HttpTranscription:
     fields = {"language": language, **HTTP_TRANSCRIPTION_FIELDS}
     if max_new_tokens is not None:
         fields["max_new_tokens"] = str(max_new_tokens)
@@ -228,7 +251,13 @@ def transcribe_http(
                 elif line.startswith(b"data: "):
                     event = json.loads(line[6:])
                     if event.get("type") == "transcript.text.done":
-                        return {**event, "wall_seconds": time.monotonic() - started}
+                        return HttpTranscription(
+                            text=event["text"],
+                            wall_seconds=time.monotonic() - started,
+                            generation_metadata=[
+                                GenerationMetadata(**event["generation_metadata"])
+                            ],
+                        )
                     else:
                         raise RuntimeError(f"Unexpected SSE event: {event}")
                 else:
@@ -246,7 +275,7 @@ def transcribe_chunks(
     frame_counts: list[int],
     language: str,
     timeout_seconds: float,
-) -> Measurement:
+) -> HttpTranscription:
     """Send a recording as consecutive requests, each with its own Voxt budget."""
     started = time.monotonic()
     texts: list[str] = []
@@ -259,20 +288,20 @@ def transcribe_chunks(
                 writer.setsampwidth(SAMPLE_BYTES)
                 writer.setframerate(SAMPLE_RATE)
                 writer.writeframes(reader.readframes(frame_count))
-            measurement = transcribe_http(
+            transcription = transcribe_http(
                 port,
                 chunk.getvalue(),
                 language,
                 timeout_seconds,
                 voxt_token_budget(frame_count / SAMPLE_RATE),
             )
-            texts.append(measurement["text"])
-            generation_metadata.append(measurement["generation_metadata"])
-    return {
-        "text": " ".join(texts),
-        "chunk_generation_metadata": generation_metadata,
-        "wall_seconds": time.monotonic() - started,
-    }
+            texts.append(transcription.text)
+            generation_metadata.extend(transcription.generation_metadata)
+    return HttpTranscription(
+        text=" ".join(texts),
+        wall_seconds=time.monotonic() - started,
+        generation_metadata=generation_metadata,
+    )
 
 
 def stream_recording(
@@ -282,7 +311,7 @@ def stream_recording(
     speed: float,
     timeout_seconds: float,
     events_path: Path,
-) -> Measurement:
+) -> RealtimeTranscription:
     final_segment_ids: set[int] = set()
     previews = 0
     completed = ""
@@ -380,10 +409,10 @@ def stream_recording(
             raise RuntimeError(errors[0])
         else:
             finished = time.monotonic()
-            return {
-                "text": completed,
-                "wall_seconds": finished - started,
-                "finalization_seconds": finished - finished_sending,
-                "final_segments": len(final_segment_ids),
-                "preview_events": previews,
-            }
+            return RealtimeTranscription(
+                text=completed,
+                wall_seconds=finished - started,
+                finalization_seconds=finished - finished_sending,
+                final_segment_count=len(final_segment_ids),
+                preview_event_count=previews,
+            )

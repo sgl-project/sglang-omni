@@ -33,6 +33,23 @@ from sglang_omni_mlx.native.ci.long_audio_corpus import (
     load_clips,
 )
 
+GENERATION_METADATA = {
+    "generated_token_count": 2,
+    "language": "en",
+    "finish_reason": "stop",
+}
+DONE_EVENT = (
+    "data: "
+    + json.dumps(
+        {
+            "type": "transcript.text.done",
+            "text": "actual transcript",
+            "generation_metadata": GENERATION_METADATA,
+        }
+    )
+    + "\n\n"
+).encode()
+
 
 def test_recording_keeps_whole_clips_and_matching_references(tmp_path: Path) -> None:
     """Truncating the last clip would score words that were never sent."""
@@ -59,24 +76,24 @@ def test_recording_keeps_whole_clips_and_matching_references(tmp_path: Path) -> 
     clips = load_clips(tmp_path, "en")
     result = build_recording(clips, 7.5, 2888, tmp_path / "long.wav")
     reference_by_id = {clip.clip_id: clip.reference for clip in clips}
-    assert result["audio_seconds"] == 8
-    assert result["reference"] == " ".join(
-        reference_by_id[clip_id] for clip_id in result["clip_ids"]
+    assert result.audio_seconds == 8
+    assert result.reference == " ".join(
+        reference_by_id[clip_id] for clip_id in result.clip_ids
     )
-    assert len(set(result["clip_ids"][:3])) == 3
+    assert len(set(result.clip_ids[:3])) == 3
     assert all(
-        left != right for left, right in zip(result["clip_ids"], result["clip_ids"][1:])
+        left != right for left, right in zip(result.clip_ids, result.clip_ids[1:])
     )
     with wave.open(str(tmp_path / "long.wav"), "rb") as reader:
         assert reader.getnframes() == 8 * 16000
         expected = b"".join(
-            bytes([int(clip_id[:4]), 0]) * 16000 for clip_id in result["clip_ids"]
+            bytes([int(clip_id[:4]), 0]) * 16000 for clip_id in result.clip_ids
         )
         assert reader.readframes(reader.getnframes()) == expected
     repeated = build_recording(clips, 7.5, 2888, tmp_path / "again.wav")
     assert repeated == result
     assert (
-        result["wav_sha256"]
+        result.wav_sha256
         == hashlib.sha256((tmp_path / "long.wav").read_bytes()).hexdigest()
     )
 
@@ -121,7 +138,7 @@ def test_chunked_http_sends_each_chunk_with_its_own_budget(tmp_path: Path) -> No
             event = {
                 "type": "transcript.text.done",
                 "text": f"part{len(submitted)}",
-                "generation_metadata": {"finish_reason": "stop"},
+                "generation_metadata": GENERATION_METADATA,
             }
             self.send_response(200)
             self.end_headers()
@@ -137,8 +154,8 @@ def test_chunked_http_sends_each_chunk_with_its_own_budget(tmp_path: Path) -> No
         finally:
             server.shutdown()
             thread.join(timeout=5)
-    assert result["text"] == "part1 part2"
-    assert len(result["chunk_generation_metadata"]) == 2
+    assert result.text == "part1 part2"
+    assert len(result.generation_metadata) == 2
     assert first_pcm in submitted[0] and b"\xcc\xdd" not in submitted[0]
     assert second_pcm in submitted[1] and b"\xaa\xbb" not in submitted[1]
     assert b'name="max_new_tokens"\r\n\r\n256\r\n' in submitted[0]
@@ -156,9 +173,9 @@ def test_score_counts_dropped_tails_and_repeated_text(
     language: str, reference: str, hypothesis: str, errors: int, reference_tokens: int
 ) -> None:
     result = score(reference, hypothesis, language)
-    assert result["errors"] == errors
-    assert result["reference_tokens"] == reference_tokens
-    assert result["error_rate"] == errors / reference_tokens
+    assert result.errors == errors
+    assert result.reference_tokens == reference_tokens
+    assert result.error_rate == errors / reference_tokens
 
 
 @pytest.mark.parametrize("send_final", [True, False])
@@ -205,7 +222,7 @@ def test_realtime_silent_audio_does_not_time_out_before_input_ends(
                     1,
                     tmp_path / "events.jsonl",
                 )
-                assert result["text"] == ""
+                assert result.text == ""
             else:
                 with pytest.raises(TimeoutError, match="No completed transcript"):
                     stream_recording(
@@ -299,7 +316,7 @@ def test_resource_guard_stops_its_child(
             assert sampler.error == "Case wall-clock deadline exceeded"
         else:
             assert sampler.exceeded
-        assert sampler.samples[0]["footprint_bytes"] > 0
+        assert sampler.samples[0].footprint_bytes > 0
     finally:
         sampler.done.set()
         if process.poll() is None:
@@ -331,8 +348,8 @@ def test_peak_footprint_includes_a_spike_freed_before_the_first_sample(
         )
         sampler.sample()
     assert sampler.exceeded
-    assert sampler.samples[0]["peak_footprint_bytes"] >= spike_bytes
-    assert sampler.samples[0]["footprint_bytes"] < spike_bytes // 2
+    assert sampler.samples[0].peak_footprint_bytes >= spike_bytes
+    assert sampler.samples[0].footprint_bytes < spike_bytes // 2
 
 
 @pytest.mark.skipif(platform.system() != "Darwin", reason="macOS process accounting")
@@ -396,8 +413,8 @@ def test_invalid_duration_is_rejected_before_any_recording(
 @pytest.mark.parametrize(
     "reply",
     [
-        b'data: {"type":"transcript.text.done","text":"actual transcript"}\n\n',
-        b':\n\ndata: {"type":"transcript.text.done","text":"actual transcript"}\n\n',
+        DONE_EVENT,
+        b":\n\n" + DONE_EVENT,
         b'data: {"type":"error","error":"failed"}\n\n',
         b":\n\n",
     ],
@@ -418,7 +435,7 @@ def test_http_requires_a_successful_final_event(reply: bytes) -> None:
         try:
             if b"transcript.text.done" in reply:
                 result = transcribe_http(server.server_port, b"audio", "en", 2)
-                assert result["text"] == "actual transcript"
+                assert result.text == "actual transcript"
             else:
                 with pytest.raises(RuntimeError):
                     transcribe_http(server.server_port, b"audio", "en", 2)
@@ -480,7 +497,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
-        self.wfile.write(b":\n\ndata: {\"type\":\"transcript.text.done\",\"text\":\"hello\"}\n\n")
+        self.wfile.write(b":\n\ndata: {\"type\":\"transcript.text.done\",\"text\":\"hello\",\"generation_metadata\":{\"generated_token_count\":1,\"language\":\"en\",\"finish_reason\":\"stop\"}}\n\n")
         self.wfile.flush()
         if count == 3 and policy.startswith("early_"):
             os._exit(0 if policy == "early_zero" else 23)

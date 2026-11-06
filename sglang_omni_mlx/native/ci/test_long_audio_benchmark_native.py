@@ -54,8 +54,8 @@ def test_native_realtime_accepts_silent_audio_without_preview(tmp_path: Path) ->
         result = stream_recording(
             ready["port"], recording, "en", 1, 1, tmp_path / "events.jsonl"
         )
-        assert result["text"] == ""
-        assert result["final_segments"] == 1
+        assert result.text == ""
+        assert result.final_segment_count == 1
     finally:
         if server.poll() is None:
             try:

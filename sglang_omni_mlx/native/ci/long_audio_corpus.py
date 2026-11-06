@@ -23,8 +23,19 @@ class Clip:
     frames: int
 
 
+@dataclass(frozen=True, kw_only=True)
+class Recording:
+    requested_seconds: float
+    audio_seconds: float
+    seed: int
+    clip_ids: list[str]
+    clip_frames: list[int]
+    reference: str
+    wav_sha256: str
+
+
 def load_clips(corpus_directory: Path, language: str) -> list[Clip]:
-    clips = []
+    clips: list[Clip] = []
     for line in (corpus_directory / "manifest.jsonl").read_text().splitlines():
         record = json.loads(line)
         if record["lang"] == language and record["stratum"] in (
@@ -59,7 +70,7 @@ def load_clips(corpus_directory: Path, language: str) -> list[Clip]:
 
 def build_recording(
     clips: list[Clip], seconds: float, seed: int, destination: Path
-) -> dict[str, str | int | float | list[str] | list[int]]:
+) -> Recording:
     """End at a complete clip, at or just beyond the requested duration."""
     generator = random.Random(seed)
     selected: list[Clip] = []
@@ -83,15 +94,15 @@ def build_recording(
                     break
                 else:
                     pass
-    return {
-        "requested_seconds": seconds,
-        "audio_seconds": frame_count / SAMPLE_RATE,
-        "seed": seed,
-        "clip_ids": [clip.clip_id for clip in selected],
-        "clip_frames": [clip.frames for clip in selected],
-        "reference": " ".join(clip.reference for clip in selected),
-        "wav_sha256": sha256(destination),
-    }
+    return Recording(
+        requested_seconds=seconds,
+        audio_seconds=frame_count / SAMPLE_RATE,
+        seed=seed,
+        clip_ids=[clip.clip_id for clip in selected],
+        clip_frames=[clip.frames for clip in selected],
+        reference=" ".join(clip.reference for clip in selected),
+        wav_sha256=sha256(destination),
+    )
 
 
 def chunk_frame_counts(clip_frames: list[int], chunk_seconds: float) -> list[int]:
