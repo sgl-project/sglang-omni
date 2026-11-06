@@ -40,6 +40,12 @@ DRAFT_SERVE_FLAGS = {
         "true",
     ],
     "dflash": ["--config", "examples/configs/qwen3_asr_1_7b_dflash.yaml"],
+    "dflash_overlap": [
+        "--config",
+        "examples/configs/qwen3_asr_1_7b_dflash.yaml",
+        "--asr.factory.enable_async_decode",
+        "true",
+    ],
 }
 STARTUP_TIMEOUT = 600
 WS_TIMEOUT = 120
