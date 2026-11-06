@@ -557,8 +557,6 @@ struct PermissionsSettingsView: View {
         guard !isBrowserAutomationOperationInFlight else { return }
         browserAutomationRefreshTask?.cancel()
         browserAutomationRefreshTask = nil
-        let unsupportedBrowserReadMessage = AppLocalization.localizedString("This app does not support browser URL reading.")
-
         browserAutomationRequestsInFlight.insert(target.bundleID)
 
         let preflight = browserTargetPreflight(target)
@@ -567,56 +565,14 @@ struct PermissionsSettingsView: View {
             let result: BrowserAutomationRequestResult
             if let integrityError = preflight.appNotFoundError
                 ?? Self.browserTargetSignatureIntegrityError(appPath: preflight.appPath) {
-                result = BrowserAutomationRequestResult(
-                    integrityError: integrityError,
-                    enabled: false,
-                    permissionGranted: false,
-                    scriptProbe: nil,
-                    failureMessage: nil
-                )
+                result = BrowserAutomationRequestResult(integrityError: integrityError, status: OSStatus(errAEEventNotPermitted))
+            } else if !preflight.isRunning {
+                result = BrowserAutomationRequestResult(integrityError: nil, status: OSStatus(procNotFound))
             } else {
-                // Request and Test have different goals:
-                // - Request should confirm / trigger Automation permission.
-                // - Test should verify that URL reading works right now.
-                // If the browser is already running and a script succeeds, we
-                // can treat that as permission already working without showing
-                // an extra macOS prompt.
-                let initialProbe = preflight.isRunning
-                    ? Self.runAppleScriptCandidates(target.scripts)
-                    : ScriptProbeResult(success: false, permissionDenied: false, appNotRunning: true, lastErrorCode: nil)
-                if initialProbe.success {
-                    result = BrowserAutomationRequestResult(
-                        integrityError: nil,
-                        enabled: true,
-                        permissionGranted: true,
-                        scriptProbe: initialProbe,
-                        failureMessage: nil
-                    )
-                } else if initialProbe.appNotRunning {
-                    result = BrowserAutomationRequestResult(
-                        integrityError: nil,
-                        enabled: false,
-                        permissionGranted: false,
-                        scriptProbe: initialProbe,
-                        failureMessage: nil
-                    )
-                } else {
-                    let permissionProbe = Self.runAutomationPermissionProbe(bundleID: target.bundleID)
-                    guard !Task.isCancelled else { return }
-                    let scriptProbe = Self.runAppleScriptCandidates(target.scripts)
-                    let permissionGranted = permissionProbe.success
-                    result = BrowserAutomationRequestResult(
-                        integrityError: nil,
-                        enabled: permissionGranted || scriptProbe.success,
-                        permissionGranted: permissionGranted,
-                        scriptProbe: scriptProbe,
-                        failureMessage: permissionGranted
-                            ? nil
-                            : permissionProbe.permissionDenied
-                                ? nil
-                            : unsupportedBrowserReadMessage
-                    )
-                }
+                result = BrowserAutomationRequestResult(
+                    integrityError: nil,
+                    status: BrowserAutomationAccess.shared.permissionStatus(bundleID: target.bundleID, askUserIfNeeded: true)
+                )
             }
 
             guard !Task.isCancelled else { return }
@@ -630,25 +586,19 @@ struct PermissionsSettingsView: View {
                     return
                 }
 
-                guard let scriptProbe = result.scriptProbe else { return }
-                setBrowserAutomationState(result.enabled ? .enabled : .disabled, for: target)
-                if result.enabled {
+                switch result.status {
+                case OSStatus(noErr):
+                    setBrowserAutomationState(.enabled, for: target)
                     setKnownAuthorizedBrowser(target.bundleID, isAuthorized: true)
-                    if result.permissionGranted && scriptProbe.appNotRunning {
-                        showPermissionToast(AppLocalization.localizedString("Authorization granted. Open the browser and click Test if you want to verify URL reading."))
-                    } else if result.permissionGranted && !scriptProbe.success {
-                        showPermissionToast(AppLocalization.localizedString("Authorization granted. This app may not support browser URL reading. Click Test if you want to verify."))
-                    } else {
-                        showPermissionToast(AppLocalization.localizedString("Authorization granted."))
-                    }
-                } else if scriptProbe.appNotRunning {
+                    showPermissionToast(AppLocalization.localizedString("Authorization granted."))
+                case OSStatus(procNotFound):
                     showPermissionToast(AppLocalization.localizedString("Open the browser and try again to complete the authorization check."))
-                } else if scriptProbe.permissionDenied {
+                case OSStatus(errAEEventNotPermitted), OSStatus(errAEPrivilegeError):
+                    setBrowserAutomationState(.disabled, for: target)
                     setKnownAuthorizedBrowser(target.bundleID, isAuthorized: false)
                     showPermissionToast(AppLocalization.localizedString("Authorization denied by macOS. Open Automation settings or reset Apple Events permission and try again."), duration: 4.0)
-                } else if let failureMessage = result.failureMessage {
-                    showPermissionToast(failureMessage, duration: 4.0)
-                } else {
+                default:
+                    setBrowserAutomationState(.onDemand, for: target)
                     showPermissionToast(AppLocalization.localizedString("Authorization not granted."))
                 }
                 refreshBrowserAutomationStates()
@@ -675,7 +625,7 @@ struct PermissionsSettingsView: View {
                 result = BrowserAutomationTestResult(
                     integrityError: nil,
                     scriptProbe: preflight.isRunning
-                        ? Self.runAppleScriptCandidates(target.scripts)
+                        ? BrowserAutomationAccess.shared.testURLRead(bundleID: target.bundleID, scripts: target.scripts)
                         : ScriptProbeResult(success: false, permissionDenied: false, appNotRunning: true, lastErrorCode: nil)
                 )
             }
@@ -699,7 +649,11 @@ struct PermissionsSettingsView: View {
                     return
                 }
 
-                if scriptProbe.permissionDenied {
+                if scriptProbe.lastErrorCode == Int(errAEEventWouldRequireUserConsent) {
+                    setBrowserAutomationState(.disabled, for: target)
+                    setKnownAuthorizedBrowser(target.bundleID, isAuthorized: false)
+                    showPermissionToast(AppLocalization.localizedString("Authorization not granted."))
+                } else if scriptProbe.permissionDenied {
                     setBrowserAutomationState(.disabled, for: target)
                     setKnownAuthorizedBrowser(target.bundleID, isAuthorized: false)
                     showPermissionToast(AppLocalization.localizedString("Browser URL read test failed: permission denied."))
