@@ -64,7 +64,7 @@ from sglang_omni.serve.protocol import (
     CreateSpeechRequest,
 )
 from sglang_omni.serve.realtime.manager import RealtimeDeployment
-from sglang_omni.serve.realtime.types import ProtocolError, RuntimeLimits
+from sglang_omni.serve.realtime.types import MS_PER_SECOND, ProtocolError, RuntimeLimits
 from sglang_omni.serve.server_warmup import TranscriptionWarmupRequest
 from sglang_omni.serve.services import ServiceProcesses
 from sglang_omni.serve.stage_routes import (
@@ -773,6 +773,18 @@ async def run_server(
                 realtime_deployment: RealtimeDeployment | None = import_string(
                     deployment_factory
                 )(client, pipeline_config)
+                if pipeline_config.realtime_tick_groups:
+                    realtime_deployment = replace(
+                        realtime_deployment,
+                        tick_groups=pipeline_config.realtime_tick_groups,
+                        tick_openings_per_unit=pipeline_config.realtime_tick_openings_per_unit,
+                        tick_follow_arrivals=pipeline_config.realtime_tick_follow_arrivals,
+                        tick_arrivals_quiet_s=pipeline_config.realtime_tick_arrivals_quiet_ms
+                        / MS_PER_SECOND,
+                        tick_growth_margin=pipeline_config.realtime_tick_growth_margin,
+                    )
+                else:
+                    pass
                 if realtime_timeout_overrides_seconds:
                     realtime_deployment = replace(
                         realtime_deployment,

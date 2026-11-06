@@ -24,7 +24,7 @@ from collections import deque
 from collections.abc import Iterable, Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor
 from concurrent.futures import wait as wait_futures
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from functools import partial
 from itertools import islice
 from typing import Callable, Generic
@@ -99,7 +99,12 @@ from sglang_omni.proto.admin import (
     ADMIN_WEIGHTS_CHECKER,
 )
 from sglang_omni.proto.request import StagePayload
-from sglang_omni.proto.session import find_session_operation
+from sglang_omni.proto.session import (
+    LM_STEP_MS_KEY,
+    NS_PER_MS,
+    Cohort,
+    find_session_operation,
+)
 from sglang_omni.scheduling.message import (
     IncomingMessage,
     OutgoingMessage,
@@ -113,6 +118,7 @@ from sglang_omni.scheduling.sglang_backend.ar_session import (
     is_close_request,
 )
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+from sglang_omni.scheduling.tick import TickCohorts
 from sglang_omni.scheduling.types import (
     ARRequestData,
     DeferredAdmission,
@@ -146,6 +152,7 @@ _COMPLETED_REQUEST_ID_LIMIT = 10000
 _PENDING_STREAM_REQUEST_LIMIT = 10000
 _PENDING_STREAM_REQUEST_RETAINED = 5000
 _IDLE_WAIT_S = 0.02
+LM_STEP_EMA_WEIGHT = 0.1
 MAX_STREAM_ALLOCATION_ATTEMPTS = 65
 
 
@@ -164,6 +171,16 @@ class PendingDecode:
     batch: ScheduleBatch
     scheduler_output: SchedulerOutput
     device_step: PendingStep
+    launch_ns: int = field(default_factory=time.monotonic_ns)
+    is_tick_step: bool = False
+
+
+@dataclass(kw_only=True)
+class HeldPromptUnit:
+    payload: StagePayload
+    pending_stream_done: bool
+    req_data: ARRequestData
+    release_ns: int
 
 
 class PendingStreamIngress:
@@ -393,6 +410,13 @@ class OmniScheduler(Generic[RequestDataT]):
         # --- Request builder: StagePayload → SGLangARRequestData ----------
         self.session_adapter = session_adapter
         self.session_bridge: ARSessionBridge | None = None
+        self.tick_cohorts = TickCohorts()
+        self.is_on_tick_grid = False
+        # Note (Junnan Li): An average, so one slow step does not move the grid.
+        self.lm_step_ms: float | None = None
+        # Note (Junnan Li): A prompt unit off the grid costs a prefill, so it waits for
+        # the tick's batch, at most until the next tick.
+        self.held_prompt_units: dict[str, HeldPromptUnit] = {}
         self.continuation_aware_admission = continuation_aware_admission
         self.separate_session_openings = separate_session_openings
         self.steady_session_units_as_decode = steady_session_units_as_decode
@@ -1235,6 +1259,12 @@ class OmniScheduler(Generic[RequestDataT]):
             return False
         else:
             unit = bridge.accept(payload, operation)
+            if operation.tick is not None and unit.tick is None:
+                unit.tick = operation.tick
+                self.tick_cohorts.arrive(operation.tick)
+                self.is_on_tick_grid = True
+            else:
+                pass
             chunk = unit.chunk
             try:
                 bypass_generation = bridge.prepare_unit(unit, payload)
@@ -1415,6 +1445,21 @@ class OmniScheduler(Generic[RequestDataT]):
                 self.emit_request_error(req_id, exc)
                 self.abort(req_id)
                 continue
+            if (
+                session_unit is not None
+                and session_unit.tick is None
+                and req_data.req.origin_input_ids
+                and self.tick_cohorts.is_collecting(time.monotonic_ns())
+            ):
+                self.held_prompt_units[req_id] = HeldPromptUnit(
+                    payload=payload,
+                    pending_stream_done=pending_stream_done,
+                    req_data=req_data,
+                    release_ns=self.tick_cohorts.latest_due_ns(),
+                )
+                continue
+            else:
+                pass
             self.admit_or_defer_built_request(payload, pending_stream_done, req_data)
         if (
             submitted_build
@@ -2164,13 +2209,30 @@ class OmniScheduler(Generic[RequestDataT]):
             take, defer = opening, continuing
         else:
             take, defer = continuing, opening
+        took_continuing = take is continuing
+        last_batch = self.last_batch
+        # Note (Junnan Li): An extend arrives every tick and upstream runs extends
+        # first, so a unit's remaining step runs before the next extend.
+        hides_waiting = (
+            self.is_on_tick_grid
+            and last_batch is not None
+            and last_batch.forward_mode.is_extend()
+            and (
+                not running_batch.is_empty()
+                or any(not req.finished() for req in last_batch.reqs)
+            )
+        )
+        if hides_waiting:
+            take, defer = [], [*take, *defer]
+        else:
+            pass
         self.waiting_queue = take
         try:
-            plan = _Upstream.get_next_batch_to_run(self, running_batch, self.last_batch)
+            plan = _Upstream.get_next_batch_to_run(self, running_batch, last_batch)
         finally:
             self.waiting_queue = [*self.waiting_queue, *defer]
-        if defer and plan.batch_to_run is not None:
-            self.last_prefill_continued_sessions = take is continuing
+        if defer and not hides_waiting and plan.batch_to_run is not None:
+            self.last_prefill_continued_sessions = took_continuing
         else:
             pass
         self.running_batch = plan.running_batch
@@ -2442,6 +2504,8 @@ class OmniScheduler(Generic[RequestDataT]):
         self.drain_request_admission_results()
 
     def run_batch(self, batch, pp_proxy_tensors=None):
+        is_tick_step = self.note_tick_batch(batch)
+        launch_ns = time.monotonic_ns()
         try:
             return self._run_batch(batch, pp_proxy_tensors)
         except Exception as exc:
@@ -2451,6 +2515,8 @@ class OmniScheduler(Generic[RequestDataT]):
             else:
                 self.handle_batch_failure(batch, exc)
                 return _FAILED_BATCH_RESULT
+        finally:
+            self.note_step_cost(is_tick_step, launch_ns, time.monotonic_ns())
 
     def process_batch_result(self, batch, result) -> None:
         if self.enable_overlap and batch.forward_mode.is_extend():
@@ -2506,6 +2572,29 @@ class OmniScheduler(Generic[RequestDataT]):
         self.emit_prefill_end_for_batch(batch)
         self.emit_stream_output(sched_output, mr_output)
         return self.make_batch_result(mr_output)
+
+    def note_step_cost(
+        self, is_tick_step: bool, launch_ns: int, finish_ns: int
+    ) -> None:
+        if not is_tick_step:
+            return
+        else:
+            pass
+        step_ms = (finish_ns - launch_ns) / NS_PER_MS
+        if self.lm_step_ms is None:
+            self.lm_step_ms = step_ms
+        else:
+            self.lm_step_ms += LM_STEP_EMA_WEIGHT * (step_ms - self.lm_step_ms)
+
+    def with_step_cost(self, result: StagePayload) -> StagePayload:
+        if self.lm_step_ms is None:
+            return result
+        else:
+            result.request = replace(
+                result.request,
+                metadata={**result.request.metadata, LM_STEP_MS_KEY: self.lm_step_ms},
+            )
+            return result
 
     def run_speculative_batch(self, batch: ScheduleBatch) -> GenerationBatchResult:
         """Submit a draft/verify round; stream_output emits the committed tokens."""
@@ -2864,7 +2953,11 @@ class OmniScheduler(Generic[RequestDataT]):
         for request_id, result in results:
             if result is not None:
                 self.outbox.put(
-                    OutgoingMessage(request_id=request_id, type="result", data=result)
+                    OutgoingMessage(
+                        request_id=request_id,
+                        type="result",
+                        data=self.with_step_cost(result),
+                    )
                 )
             else:
                 pass
@@ -3014,7 +3107,9 @@ class OmniScheduler(Generic[RequestDataT]):
                 else:
                     bridge = self.session_bridge
                     assert bridge is not None
-                    result = bridge.adapter.result(session_unit.session_identity, data)
+                    result = self.with_step_cost(
+                        bridge.adapter.result(session_unit.session_identity, data)
+                    )
             except Exception as exc:
                 terminal_error = exc
                 logger.exception(
@@ -4068,8 +4163,11 @@ class OmniScheduler(Generic[RequestDataT]):
                 self.process_admin_requests()
                 time.sleep(0.001)
                 continue
+            elif self.wait_for_tick_cohort():
+                continue
             else:
                 pass
+            self.release_held_prompt_units()
 
             batch = self.get_next_batch_to_run()
             self.cur_batch = batch
@@ -4090,6 +4188,69 @@ class OmniScheduler(Generic[RequestDataT]):
                 self.self_check_during_busy()
             else:
                 pass
+
+    def wait_for_tick_cohort(self) -> bool:
+        hold_until_ns = self.tick_cohorts.hold_until_ns(time.monotonic_ns())
+        if hold_until_ns is None:
+            return False
+        elif self.tp_size > 1 and not self.is_entry_rank:
+            time.sleep(0.001)
+            return True
+        else:
+            try:
+                self.idle_wait_message = self.inbox.get(
+                    timeout=max(hold_until_ns - time.monotonic_ns(), 0) / 1e9
+                )
+            except _queue_mod.Empty:
+                self.idle_wait_message = None
+            return True
+
+    def release_held_prompt_units(self) -> None:
+        now_ns = time.monotonic_ns()
+        if not self.held_prompt_units:
+            return
+        else:
+            pass
+        is_collecting = self.tick_cohorts.is_collecting(now_ns)
+        for req_id, held in list(self.held_prompt_units.items()):
+            if is_collecting and now_ns < held.release_ns:
+                continue
+            else:
+                del self.held_prompt_units[req_id]
+            if self.active_session_unit(req_id) is None:
+                continue
+            else:
+                self.admit_or_defer_built_request(
+                    held.payload, held.pending_stream_done, held.req_data
+                )
+
+    def note_tick_batch(self, batch: ScheduleBatch) -> bool:
+        bridge = self.session_bridge
+        if bridge is None:
+            return False
+        else:
+            pass
+        ticks: list[Cohort] = []
+        for req in batch.reqs:
+            # Note (Junnan Li): A stepped request keeps its first unit's id, so its step
+            # serves the first unit still waiting on it.
+            session = bridge.stepped_by_request_id.get(req.rid)
+            if session is not None and session.stepped is not None:
+                units = session.stepped.units
+                unit = units[0].unit if units else None
+            else:
+                unit = bridge.units_by_request_id.get(req.rid)
+            if unit is not None and unit.tick is not None:
+                ticks.append(unit.tick)
+            else:
+                pass
+        if ticks:
+            self.tick_cohorts.ran(ticks)
+        else:
+            pass
+        # Note (Junnan Li): Only steps of grid units count toward the step cost; a
+        # prefill does not.
+        return len(ticks) == len(batch.reqs)
 
     def event_loop_overlap(self) -> None:
         # note (YzXiao): deleting this guard would let __getattr__ expose a loop without Omni's chunk boundary handling.
@@ -4324,6 +4485,11 @@ class OmniScheduler(Generic[RequestDataT]):
                     self.previous_pending_decode.batch,
                     self.previous_pending_decode.device_step,
                 )
+                self.note_step_cost(
+                    self.previous_pending_decode.is_tick_step,
+                    self.previous_pending_decode.launch_ns,
+                    time.monotonic_ns(),
+                )
                 pending_decode, self.previous_pending_decode = (
                     self.previous_pending_decode,
                     None,
@@ -4334,6 +4500,11 @@ class OmniScheduler(Generic[RequestDataT]):
             if self.async_pending is not None:
                 self.wait_async_device(
                     self.async_pending.batch, self.async_pending.device_step
+                )
+                self.note_step_cost(
+                    self.async_pending.is_tick_step,
+                    self.async_pending.launch_ns,
+                    time.monotonic_ns(),
                 )
                 pending_decode, self.async_pending = self.async_pending, None
                 self.process_owned_async(pending_decode)
@@ -4478,8 +4649,11 @@ class OmniScheduler(Generic[RequestDataT]):
                 self.resolve_pending_async()
                 time.sleep(0.001)
                 continue
+            elif self.wait_for_tick_cohort():
+                continue
             else:
                 pass
+            self.release_held_prompt_units()
 
             if (
                 self.async_pending is not None
@@ -4520,6 +4694,8 @@ class OmniScheduler(Generic[RequestDataT]):
             )
 
             if use_lookahead:
+                is_tick_step = self.note_tick_batch(batch)
+                launch_ns = time.monotonic_ns()
                 try:
                     sched_output, pending_step = self.run_batch_launch(batch)
                 except Exception as exc:
@@ -4530,12 +4706,19 @@ class OmniScheduler(Generic[RequestDataT]):
                         batch=batch.copy(),
                         scheduler_output=sched_output,
                         device_step=pending_step,
+                        launch_ns=launch_ns,
+                        is_tick_step=is_tick_step,
                     )
                     if prev_pending is not None:
                         if self.session_bridge is not None:
                             self.previous_pending_decode = prev_pending
                             self.wait_async_device(
                                 prev_pending.batch, prev_pending.device_step
+                            )
+                            self.note_step_cost(
+                                prev_pending.is_tick_step,
+                                prev_pending.launch_ns,
+                                time.monotonic_ns(),
                             )
                             self.previous_pending_decode = None
                             self.process_owned_async(prev_pending)

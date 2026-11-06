@@ -17,6 +17,7 @@ from sglang_omni.profiler.duplex_events import (
     SessionUnitReadyObservation,
     capture_session_unit_ready,
 )
+from sglang_omni.proto.session import Cohort
 from sglang_omni.serve.realtime.constants import (
     CLOSE_REASON_CLEANUP_TIMEOUT,
     CLOSE_REASON_CLIENT_CLOSED,
@@ -47,6 +48,7 @@ from sglang_omni.serve.realtime.schema import (
     SessionState,
 )
 from sglang_omni.serve.realtime.task_cleanup import cancel_local_tasks
+from sglang_omni.serve.realtime.tick_clock import TickClock
 from sglang_omni.serve.realtime.types import (
     PCM16_BYTES_PER_SAMPLE,
     AdapterFactory,
@@ -64,6 +66,9 @@ logger = logging.getLogger(__name__)
 
 MAX_FRAME_LOOKAHEAD_UNITS = 2
 MAX_FAILURE_MESSAGE_CHARS = 512
+# Note (Junnan Li): Catch up one extra frame per unit, so a late session rejoins without
+# one oversized step.
+CATCH_UP_UNITS_PER_TICK = 1
 MEDIA_TIME_TOLERANCE_MS = 1e-7
 
 
@@ -74,12 +79,14 @@ class SessionRuntime:
         capabilities: Capabilities,
         adapter_factory: AdapterFactory,
         limits: RuntimeLimits,
+        tick_clock: TickClock | None = None,
     ) -> None:
         self.session_id = "sess_" + uuid.uuid4().hex
         self.model = model
         self.capabilities = capabilities
         self.adapter_factory = adapter_factory
         self.limits = limits
+        self.tick_clock = tick_clock
         self.negotiation = SessionNegotiation(
             model=model, capabilities=capabilities, limits=limits
         )
@@ -515,12 +522,29 @@ class SessionRuntime:
             self.mark_activity()
             self.input_ready.set()
 
-    def cut_next_unit(self) -> tuple[Unit, Unit | None]:
+    def has_runnable_input(self) -> bool:
+        """On the grid a first unit may be partial, head-padded to join at once."""
+        if self.is_input_ended or self.pending_commits:
+            return True
+        elif self.forwards_partial_units:
+            return bool(self.pending_pcm)
+        elif (
+            self.tick_clock is not None
+            and self.next_unit_index == 0
+            and self.capabilities.tail_policy == "pad"
+        ):
+            return bool(self.pending_pcm)
+        else:
+            return len(self.pending_pcm) >= self.capabilities.native_unit_bytes
+
+    def cut_next_unit(
+        self, tick: Cohort | None = None, native_units: int = 1
+    ) -> tuple[Unit, Unit | None]:
         """The next audio for the adapter, and the receipt of its unit when that audio ends the unit.
 
-        A session forwarding partial units cuts the pending audio up to the end of its unit; any other session cuts whole units.
+        A session forwarding partial units cuts the pending audio up to the end of its unit; any other session cuts whole units, native_units of them at once.
         """
-        unit_bytes = self.capabilities.native_unit_bytes
+        unit_bytes = self.capabilities.native_unit_bytes * native_units
         unit_pcm_bytes = min(
             unit_bytes - self.open_unit_samples * PCM16_BYTES_PER_SAMPLE,
             len(self.pending_pcm),
@@ -548,7 +572,10 @@ class SessionRuntime:
         ):
             padding_bytes = unit_bytes - unit_pcm_bytes
             self.padding_samples += padding_bytes // PCM16_BYTES_PER_SAMPLE
-            pcm += b"\0" * padding_bytes
+            if self.tick_clock is not None and self.next_unit_index == 0 and not is_eos:
+                pcm = b"\0" * padding_bytes + pcm
+            else:
+                pcm += b"\0" * padding_bytes
         else:
             pass
         if self.ready_observations is None:
@@ -574,6 +601,7 @@ class SessionRuntime:
                 )
             ),
             ready_observation=ready_observation,
+            tick=tick,
         )
         if ends_unit:
             self.next_unit_index += 1
@@ -587,6 +615,15 @@ class SessionRuntime:
             receipt = None
         return unit, receipt
 
+    def take_next_input(
+        self, tick: Cohort | None = None, native_units: int = 1
+    ) -> tuple[Unit | None, Unit | None]:
+        if not self.pending_pcm and self.pending_commits and not self.open_unit_samples:
+            self.pending_commits -= 1
+            return None, None
+        else:
+            return self.cut_next_unit(tick, native_units)
+
     async def pump(self) -> None:
         assert self.adapter is not None
         try:
@@ -596,6 +633,11 @@ class SessionRuntime:
                     self.input_ready.clear()
                     if self.state != "OPEN":
                         return
+                    elif self.tick_clock is not None:
+                        if not self.has_runnable_input():
+                            continue
+                        else:
+                            is_waiting_for_tick = True
                     elif (
                         not self.is_input_ended
                         and not self.pending_commits
@@ -614,9 +656,38 @@ class SessionRuntime:
                     ):
                         self.pending_commits -= 1
                         unit = None
+                        is_waiting_for_tick = False
                     else:
                         unit, receipt = self.cut_next_unit()
-                    self.is_unit_in_flight = True
+                        is_waiting_for_tick = False
+                    self.is_unit_in_flight = not is_waiting_for_tick
+                if is_waiting_for_tick:
+                    slot = await self.tick_clock.wait(
+                        self, is_opening=self.next_unit_index == 0
+                    )
+                    async with self.command_lock:
+                        if self.state != "OPEN":
+                            return
+                        elif not self.has_runnable_input():
+                            continue
+                        else:
+                            pass
+                        # Note (Junnan Li): A first unit carries the prompt, so it is
+                        # not a row of the tick's batch; it leaves on the tick so that
+                        # later units align.
+                        if self.next_unit_index == 0:
+                            tick, native_units = None, 1
+                        else:
+                            tick = slot
+                            native_units = min(
+                                len(self.pending_pcm)
+                                // self.capabilities.native_unit_bytes,
+                                1 + CATCH_UP_UNITS_PER_TICK,
+                            )
+                        unit, receipt = self.take_next_input(tick, max(native_units, 1))
+                        self.is_unit_in_flight = True
+                else:
+                    pass
                 if unit is None:
                     try:
                         await self.adapter.commit()
@@ -633,6 +704,13 @@ class SessionRuntime:
                 finally:
                     self.is_unit_in_flight = False
                 self.mark_activity()
+                if (
+                    self.tick_clock is not None
+                    and self.adapter.model_step_ms is not None
+                ):
+                    self.tick_clock.observe_step_ms(self.adapter.model_step_ms)
+                else:
+                    pass
                 if isinstance(consumption, tuple):
                     consumed_samples, discarded_samples = consumption
                 else:

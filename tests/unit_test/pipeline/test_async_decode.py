@@ -28,6 +28,7 @@ from sglang_omni.model_runner.sglang_execution import SGLangExecutionBridge
 from sglang_omni.models.fishaudio_s2_pro.engine_builder import FishS2ProEngineBuilder
 from sglang_omni.scheduling import omni_scheduler
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler, PendingDecode
+from sglang_omni.scheduling.tick import TickCohorts
 from sglang_omni.scheduling.types import (
     ModelRunnerOutput,
     RequestOutput,
@@ -732,6 +733,9 @@ def new_scheduler_for_async_loop():
     s.request_admission_lock = threading.RLock()
     s.pending_request_builds = {}
     s.pending_request_admissions = {}
+    s.tick_cohorts = TickCohorts()
+    s.held_prompt_units = {}
+    s.lm_step_ms = None
     s.model_runner = None
     s.chunked_req = None
     s.is_mixed_chunk = False

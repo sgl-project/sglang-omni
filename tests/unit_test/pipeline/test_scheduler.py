@@ -65,6 +65,7 @@ from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestDa
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_cache import StageOutputCache
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
+from sglang_omni.scheduling.tick import TickCohorts
 from sglang_omni.scheduling.types import ModelRunnerOutput, RequestOutput
 from sglang_omni.serve.openai_errors import is_bad_request_error
 from tests.unit_test.pipeline.helpers import run_scheduler
@@ -395,6 +396,9 @@ def test_normal_event_loop_uses_request_build_aware_idle_sleep(monkeypatch) -> N
     scheduler.request_admission_lock = threading.RLock()
     scheduler.pending_request_builds = {"req": object()}
     scheduler.pending_request_admissions = {}
+    scheduler.tick_cohorts = TickCohorts()
+    scheduler.held_prompt_units = {}
+    scheduler.lm_step_ms = None
     scheduler.process_admin_requests = lambda: None
     scheduler.recv_requests = lambda: []
     scheduler.take_deferred_request_payloads = lambda: []
