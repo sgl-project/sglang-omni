@@ -11,8 +11,6 @@ from tokenizers import Tokenizer
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
 from sglang_omni.models.fishaudio_drama3.prompt import (
     SEMANTIC_BEGIN_TOKEN,
-    SPEAKER_IDS,
-    SPEAKER_TAG_PATTERN,
     ReferencePart,
     build_prompt_rows,
     with_speaker_tag,
@@ -231,20 +229,6 @@ class Drama3SpeechPreprocessor:
                 )
             else:
                 transcripts.append(transcript)
-        # Malformed tags, an unbounded run of digits included, are left to the builder.
-        other_speaker_ids = {
-            int(speaker_tag.group(1))
-            for speech_text in [text, *transcripts]
-            for speaker_tag in SPEAKER_TAG_PATTERN.finditer(speech_text)
-            if speaker_tag.group(1) in SPEAKER_IDS - {"0"}
-        }
-        if other_speaker_ids:
-            raise ValueError(
-                f"{REQUEST_ERROR_PREFIX} only speaker 0 is supported; got speaker "
-                f"tags {sorted(other_speaker_ids)}"
-            )
-        else:
-            pass
         references = [
             ReferencePart(
                 transcript=with_speaker_tag(transcript, 0),
