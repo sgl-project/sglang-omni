@@ -6,6 +6,28 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Added
 
+- **Import from the Swift Voxt 1.x.** When Voxt 1.x's data is on the Mac, the setup guide starts with a card that brings over its dictionary (replacement terms become "heard as" aliases, disabled terms stay disabled), its dictation, translation and rewrite history, and the models it downloaded that Voxt uses, so they are not downloaded again. Voxt 1.x's data is only read. If you set up 2.0.0, which had no import, a card in the sidebar offers it once; it is also in the dictionary's ••• menu ([docs/voxt-migration.md](docs/voxt-migration.md)).
+- Import terms takes the dictionary file Voxt 1.x exports (Dictionary → More → Export): its terms, with their replacement terms as aliases.
+
+### Fixed
+
+- Import terms no longer adds each line of a JSON file as a term: Voxt 1.x's export is read as a dictionary, and any other JSON file is refused.
+
+### 中文
+
+#### 新增
+
+- **从 Swift 版 Voxt 1.x 导入。** 这台 Mac 上有 Voxt 1.x 的数据时，设置引导第一页有一张卡片，把它的词典（替换词变成"可能被听成"，停用的词还是停用）、听写、翻译和改写的历史，以及它下载过、Voxt 也在用的模型带过来，模型不用再下载。Voxt 1.x 的数据只读不改。装过 2.0.0（那一版没有导入）的，侧栏会出一次卡片；词典的 ••• 菜单里也有（[docs/voxt-migration.md](docs/voxt-migration.md)）。
+- "导入词条"认 Voxt 1.x 导出的词典文件（词典 → 更多 → 导出）：词条，以及作为别名的替换词。
+
+#### 修复
+
+- "导入词条"不再把 JSON 文件的每一行当成一个词：Voxt 1.x 的导出文件按词典读，别的 JSON 文件会被拒绝。
+
+## [2.0.0] - 2026-11-06
+
+### Added
+
 - Voxt 2.0.0, rebuilt from scratch: voice input for macOS on local models only. Press a shortcut in any app, speak, and the text appears where your cursor is. Audio and text never leave your Mac.
 - Local speech recognition: two models, accurate (recommended) and fast, with the text shown live as you speak, and a voice detector that sends only speech to them.
 - Local language models: a balanced one (recommended), a fast one and a translation model, for clean-up, translation and rewriting.

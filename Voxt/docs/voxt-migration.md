@@ -1,55 +1,75 @@
-# From Voxt to VoxtNew
+# From Voxt 1.x to Voxt 2
 
-*Decided by the user, 2026-10-18.*
+Voxt 2 replaces the Swift Voxt 1.x at `/Applications/Voxt.app`. To macOS they are two apps: Voxt 2's bundle id is `dev.hehehai.voxtnew`, Voxt 1.x's is `com.voxt.Voxt`. Both are signed by the same team, RY2TQTYSKQ. Replacing the app leaves Voxt 1.x's data where it was, in its sandbox container `~/Library/Containers/com.voxt.Voxt`. Voxt 2 imports from there and never writes to it.
 
-VoxtNew is a **new app**: Voxt rebuilt from scratch on Go + MyGo with local models only (Qwen3-ASR on the Omni native runtime, MLX / GGUF language models in `voxtnew-llm`). It keeps Voxt's core, Transcribe, Translate, Rewrite, App enhancement and the Dictionary, and leaves out meetings, notes, file transcription, remote models and sync.
+## What a user does
 
-## What this means for Voxt's users
+1. **Quit Voxt 1.x** from its menu bar icon. If it does not quit, use Force Quit (⌥⌘⎋). Finder cannot replace an app that is running: it says Voxt is in use.
+2. **Drag Voxt from the disk image to Applications.** Finder asks what to do with the Voxt already there:
+   - **Replace** replaces the app only. Voxt 1.x's data stays, and reinstalling Voxt 1.x brings it back as it was.
+   - **Keep Both** installs Voxt 2 as "Voxt 2". Both apps run side by side; their default shortcuts do not overlap (Voxt 1.x: fn, ⇧fn, ⌃fn, ⌥fn; Voxt 2: right Option, right Option with Shift, Control with right Option).
+3. **Open Voxt.** The setup guide's first step starts with a card, "The previous Voxt is on this Mac". Click **Import from the previous Voxt**.
 
-- **No automatic update.** VoxtNew has its own bundle id (`dev.hehehai.voxtnew`), a different signing team (779M533DL5, that of the ActNow apps) and its own update feed (`https://actnow.dev/updates/voxtnew`). Voxt's updater never offers it.
-- **Voxt keeps working.** Nothing in VoxtNew changes or removes Voxt. Users can keep Voxt, switch, or run both: VoxtNew's default shortcuts are on Right Option, so they don't clash with Voxt's.
-- **They hear about it through Voxt's announcements.** Voxt fetches notices from `https://voxt.actnow.dev/api/app/notifications` (`VoxtNotificationStore`) and shows them in Settings → Notifications. The service and its admin panel are in the `voxt-service` repo (`notifications` table: title, content, cover image, version, published at, draft / published).
-- **Downloads** are at https://actnow.dev/voxtnew (login required), not on Voxt's site.
+   ![The setup guide's card](screenshots/migration-1-guide-card.png)
 
-## The announcement (draft for the voxt-service panel)
+   - When macOS lets Voxt read Voxt 1.x's data, which it should for the signed release since both apps share a team, the import runs at once.
+   - Otherwise an open panel opens on Voxt 1.x's data folder. Click **Import** without changing the folder: that click is the consent macOS asks for, and no other prompt follows.
 
-Voxt shows `content` as plain text (`Text(content)` in `SettingsNotificationDialog.swift`): links are not clickable, so the address is written out to be copied.
+   ![The open panel's message](screenshots/migration-2-panel.png)
+   ![The open panel's buttons](screenshots/migration-2-panel-buttons.png)
 
-**Title (zh):** Voxt 的下一代：VoxtNew 发布了
+4. **Read the result** on the card: how many terms are new or updated, how many history entries and which models came over. The button becomes **Import again**, which adds only what is new.
 
-**Content (zh):**
+   ![After the import](screenshots/migration-3-imported.png)
+   ![The dictionary after the import](screenshots/migration-4-dictionary.png)
 
-> 我们把 Voxt 从头重写了一遍，做成了一个全新的 App：VoxtNew。
->
-> · 全部本地运行：语音识别和语言模型都在你的 Mac 上，录音和文字不会离开电脑，不需要任何 API Key。
-> · 更快更轻：边说边出字；长段口述分段处理，几分钟的录音松开快捷键几秒就出结果。
-> · 保留你常用的：转录、翻译、转写、应用增强和词典。会议、笔记、文件转写和远程模型不再包含。
-> · 只给最合适的几个模型，参数已经调好，下载即用。
->
-> VoxtNew 是一个独立的新 App，Voxt 不会自动更新到它。你可以继续使用 Voxt，不受任何影响；也可以两个一起用（VoxtNew 默认快捷键是右 Option）。
->
-> 下载地址（需要登录）：actnow.dev/voxtnew
+5. **Grant the microphone and Accessibility again** in the setup guide's Permissions step. macOS keeps permissions per app, and Voxt 2 is a different app.
 
-**Title (en):** Meet VoxtNew, the next Voxt
+### If you set up 2.0.0 first
 
-**Content (en):**
+Voxt 2.0.0 had no import, and its setup guide does not open again once it is done or skipped. When the previous Voxt's data is on the Mac and the guide will not open, Voxt shows one card in the sidebar; its **Import** runs the import. The card does not come back once dismissed. The import is also in the dictionary's ••• menu, as **Import from the previous Voxt…**.
 
-> We rebuilt Voxt from scratch as a new app: VoxtNew.
->
-> · Fully local: speech recognition and the language models run on your Mac. Recordings and text never leave it, and no API key is needed.
-> · Faster and lighter: text appears as you speak, and a few minutes of dictation is ready seconds after you let go of the shortcut.
-> · The parts you use: Transcribe, Translate, Rewrite, App enhancement and the Dictionary. Meetings, notes, file transcription and remote models are not included.
-> · A few best models, already tuned: download and go.
->
-> VoxtNew is a separate app, and Voxt won't update to it. Keep using Voxt as before, or use both (VoxtNew's default shortcut is Right Option).
->
-> Download (sign-in required): actnow.dev/voxtnew
+![The card for who set up 2.0.0](screenshots/migration-5-upgrade-card.png)
 
-**Version:** the Voxt version the notice is for (the panel's `version` field), e.g. the current release.
+The setup guide's card in Simplified Chinese:
 
-Publish it only when VoxtNew's first beta is live on actnow.dev (notarised, published through `actnow-publish.sh`, the site's download page working).
+![The card in Simplified Chinese](screenshots/migration-zh-guide-card.png)
 
-## Open
+### Another Mac
 
-- **Importing Voxt's data** (dictionary, history, app enhancement groups) is not built. Voxt is sandboxed (`~/Library/Containers/com.voxt.Voxt`), so VoxtNew would need the user's consent to read another app's data (macOS asks). Decide whether it's worth it.
-- The name "VoxtNew" is still provisional on actnow.dev; a rename changes the bundle name, the docs and this notice.
+On the old Mac, export the dictionary from Voxt 1.x: Dictionary → More → Export. The file is `Voxt-Dictionary.json` (`Voxt-词典.json` in Chinese). On the new Mac, open Voxt's Dictionary → ••• → **Import…** and pick the file. The export holds the terms and their replacement terms only: no history, no models, and no disabled state, so disabled terms come in enabled.
+
+Voxt 2.0.0 reads this file as plain text and adds each line as a term. With 2.0.0, do not import it; if you did, delete the terms that look like JSON (`{`, `"version": 3`, …).
+
+### Going back
+
+Reinstall Voxt 1.16.3 from its release. Its dictionary, history and settings are where Voxt 1.x left them.
+
+## What comes over
+
+| Voxt 1.x (`voxt.sqlite`) | Voxt 2 |
+|---|---|
+| Dictionary terms | Terms. A term longer than 80 characters, or empty, is left out and counted in the result. |
+| Replacement terms | Aliases ("heard as"): the first 10, in order. |
+| Disabled terms | Disabled terms. |
+| History: dictation, translation, rewrite | Transcribe, Translate and Rewrite entries, with the app, the models, the time and the length. Their ids are `legacy-<old id>`, so importing again adds nothing. |
+| History: meeting transcripts | Left out: Voxt 2 has no meetings. |
+| Models in `model-storage/<owner>_<name>` | Hard-linked into the model library when every file matches the version Voxt pins (size, and SHA-256 for the large files); otherwise left alone, and Voxt downloads them as usual. |
+| Settings, shortcuts, app enhancement groups, notes | Not imported. |
+
+Terms merge by name, ignoring case: an existing term gains the aliases it lacks. An import that stops halfway, for example when Voxt is force-quit, leaves the database consistent; importing again adds what is missing.
+
+## How it works
+
+`legacy_import.go` holds the import; `legacy_import_test.go` tests it on databases Voxt 1.x wrote (`testdata/legacy`).
+
+- **Finding Voxt 1.x.** `legacyLibrary` checks that the container directory exists. Checking a container's existence needs no permission; reading inside it does. The card and the menu item show only when it exists.
+- **Reading without asking.** `legacyReadable` opens Voxt 1.x's `voxt.sqlite` and reads one byte. macOS lets apps signed by the same team read each other's containers, so the signed release should get through and import at once. An ad hoc build is refused with EPERM and no prompt, and falls back to the open panel. Reading a byte, not only finding the file, matters: a container can let a file be found and not opened.
+- **The open panel.** It opens on the container's `Data/Library` (`DefaultPath`), and the folder the user picks is readable for the rest of the run. Any of the three levels down to `Application Support/Voxt` works (`legacyDatabase`).
+- **The database** is read read-only together with its `-wal` and `-shm`: Voxt 1.x's rows can live only in the WAL, and opening the main file alone does not see them.
+- **The cards.** The setup guide's welcome step shows its card on a fresh install. `offerLegacy` posts the sidebar card at start when the guide will not open, once: the document `legacy-import-offered` records that it was posted.
+- **Tests and fake homes.** `VOXTNEW_LEGACY_HOME` replaces the home folder the container is looked for in, for tests that run the app with a fake `HOME`.
+
+## Telling Voxt 1.x users
+
+Voxt 1.x shows notices from `https://voxt.actnow.dev/api/app/notifications` (the `voxt-service` repo) in Settings → Notifications, as plain text. A notice is the way to reach users who never visit GitHub: tell them to quit Voxt 1.x before installing Voxt 2, and that Voxt 2 imports their dictionary and history.
