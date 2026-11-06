@@ -205,6 +205,7 @@ def test_whisper_device_defaults_and_explicit_memory_override(
 ) -> None:
     platform = platform_type()
     monkeypatch.setattr(whisper_asr_builder, "current_platform", platform)
+    monkeypatch.setattr(whisper_asr_stages, "current_platform", platform)
 
     def build_defaults(builder, checkpoint_dir, *, dtype, **kwargs):
         return builder.generation_defaults(dtype=dtype)
@@ -230,9 +231,10 @@ def test_whisper_device_defaults_and_explicit_memory_override(
         assert defaults["attention_backend"] == expected_backend
     assert defaults["disable_cuda_graph"] is False
     assert defaults["enable_torch_compile"] is expected_compile
-    assert defaults["mem_fraction_static"] == (
-        0.85 if explicit_memory_fraction is None else explicit_memory_fraction
-    )
+    if explicit_memory_fraction is None:
+        assert defaults["mem_fraction_static"] == (0.50 if platform.is_npu() else 0.85)
+    else:
+        assert defaults["mem_fraction_static"] == explicit_memory_fraction
     merged = build_generation_batch_overrides(
         **defaults,
         server_args_overrides={"mem_fraction_static": 0.30},
@@ -443,6 +445,7 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(
     cuda_platform = CUDAOmniPlatform()
     monkeypatch.setattr(platforms, "current_platform", cuda_platform)
     monkeypatch.setattr(whisper_asr_builder, "current_platform", cuda_platform)
+    monkeypatch.setattr(whisper_asr_stages, "current_platform", cuda_platform)
     build_kwargs: dict[str, object] = {}
     scheduler_kwargs: dict[str, object] = {}
     graph_init_calls: list[object] = []

@@ -40,9 +40,9 @@ export SGLANG_OMNI_PLATFORM_SPEC=sglang_omni.platforms.npu.NPUOmniPlatform
 sgl-omni serve --config whisper-npu.yaml --port 8000
 ```
 
-Whisper retains the default `mem_fraction_static=0.85` on all platforms. The `0.50` setting above is an explicit deployment choice, not an NPU-wide default. Set `stages.asr.engine.mem_fraction_static` in the pipeline YAML to choose the memory budget for your device or workload.
+When `mem_fraction_static` is omitted, Whisper selects `0.50` on NPU and `0.85` on other platforms. Explicit values always take precedence, including `0.85` on NPU. Set `stages.asr.engine.mem_fraction_static` in the pipeline YAML to choose the memory budget for your device or workload.
 
-Whisper defaults to `disable_decode_cuda_graph=True` on NPU because the existing encoder-decoder attention path cannot compile its data-dependent cache slicing during decode graph capture. Prefill graph and compilation settings are unchanged. Explicit `server_args_overrides` retain SGLang's configuration precedence, but enabling NPU decode graphs with the unmodified dependency is unsupported and may fail during startup. Decode graph support requires a separate SGLang backend fix; disabling decode graphs can reduce throughput.
+Whisper defaults to `disable_decode_cuda_graph=True` on NPU. This adaptation uses ordinary decode after compiled decode capture failed on data-dependent cache slicing in the previously tested SGLang 0.5.22 encoder-decoder attention path. Prefill graph and compilation settings are unchanged. Explicit `server_args_overrides` retain SGLang's configuration precedence; enabling NPU decode graphs is outside this adaptation's validation scope. Graph-compatible encoder-decoder attention is a separate follow-up; disabling decode graphs can reduce throughput.
 
 The encoder CUDA Graph section below describes the CUDA path; the NPU encoder uses device SDPA. The optional dense-prefill CUDA optimization is also CUDA-only. These paths are separate from the decoder prefill graph.
 
