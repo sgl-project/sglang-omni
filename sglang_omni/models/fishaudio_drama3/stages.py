@@ -33,6 +33,8 @@ from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_PREFILL_LONGEST_INTERVAL,
     DEFAULT_REFERENCE_SAMPLING,
     DEFAULT_REFERENCE_SAMPLING_FALLBACK,
+    DEFAULT_CONTINUITY_MARGIN_SHARE,
+    DEFAULT_RATE_WINDOW_S,
     DEFAULT_RELEASE_MIN_ADMIT,
     DEFAULT_SILENT_DECODE,
     DEFAULT_STREAM_FOLLOWUP_STRIDE,
@@ -186,6 +188,8 @@ def create_tts_engine_executor(
     prefill_continuity_margin_ms: int = DEFAULT_CONTINUITY_MARGIN_MS,
     prefill_vocoder_margin_ms: int = DEFAULT_VOCODER_MARGIN_MS,
     prefill_release_min_admit: int = DEFAULT_RELEASE_MIN_ADMIT,
+    prefill_continuity_margin_share: float = DEFAULT_CONTINUITY_MARGIN_SHARE,
+    prefill_rate_window_s: float = DEFAULT_RATE_WINDOW_S,
 ) -> OmniScheduler[Drama3RequestData]:
     overrides = dict(server_args_overrides or {})
     mem_fraction_static = overrides.get("mem_fraction_static")
@@ -225,6 +229,8 @@ def create_tts_engine_executor(
         prefill_continuity_margin_ms=prefill_continuity_margin_ms,
         prefill_vocoder_margin_ms=prefill_vocoder_margin_ms,
         prefill_release_min_admit=prefill_release_min_admit,
+        prefill_continuity_margin_share=prefill_continuity_margin_share,
+        prefill_rate_window_s=prefill_rate_window_s,
     ).build(
         model_path,
         device=device,

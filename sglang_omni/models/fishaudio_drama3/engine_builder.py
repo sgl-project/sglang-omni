@@ -37,6 +37,8 @@ from sglang_omni.models.fishaudio_drama3.config import (
     DEFAULT_PREFILL_LONGEST_INTERVAL,
     DEFAULT_REFERENCE_SAMPLING,
     DEFAULT_REFERENCE_SAMPLING_FALLBACK,
+    DEFAULT_CONTINUITY_MARGIN_SHARE,
+    DEFAULT_RATE_WINDOW_S,
     DEFAULT_RELEASE_MIN_ADMIT,
     DEFAULT_STREAM_FOLLOWUP_STRIDE,
     DEFAULT_STREAM_FOLLOWUP_STRIDE_RAMP,
@@ -141,6 +143,8 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
         prefill_continuity_margin_ms: int = DEFAULT_CONTINUITY_MARGIN_MS,
         prefill_vocoder_margin_ms: int = DEFAULT_VOCODER_MARGIN_MS,
         prefill_release_min_admit: int = DEFAULT_RELEASE_MIN_ADMIT,
+        prefill_continuity_margin_share: float = DEFAULT_CONTINUITY_MARGIN_SHARE,
+        prefill_rate_window_s: float = DEFAULT_RATE_WINDOW_S,
     ) -> None:
         self.context_length = context_length
         self.max_running_requests = max_running_requests
@@ -168,6 +172,8 @@ class Drama3EngineBuilder(SGLangGenerationEngineBuilder[Drama3RequestData]):
             window_ramp=stream_followup_stride_ramp,
             followup_window=stream_followup_stride,
             release_min_admit=prefill_release_min_admit,
+            continuity_margin=prefill_continuity_margin_share,
+            rate_window_s=prefill_rate_window_s,
             is_longest_only=prefill_interval_policy == "longest",
             is_latency_driven=prefill_interval_policy == "latency",
         )

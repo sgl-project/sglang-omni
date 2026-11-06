@@ -10,16 +10,18 @@ interval decode steps between prefills and a stream's frames come out every
 so a longer interval buys back decode duty cycle, and what it buys is the fixed part of a prefill,
 not the part that grows with the cohort.
 
-Two SLOs bound the interval from opposite sides. A stream plays the audio of the window it has
-while the next window is made, so the schedule tolerates frame intervals up to a critical interval
-before a stall exceeds max_stall: that is the shortest interval worth running. A request that
-arrives mid-run waits for the rest of the run before its prefill, so the first-audio SLO sets the
-longest. Between the two the longest wins, because a longer interval leaves more of the time to
-decode, which both raises throughput at a fixed number of streams and shortens the frame interval
-at a fixed arrival rate. Only first audio pays for it.
+Two SLOs bound the interval from opposite sides. A request that arrives mid-run waits for the rest
+of the run before its prefill, so the first-audio SLO sets the longest interval. Frames reach a
+stream in runs, a run at the decode step and then one prefill, and a window is decoded once its
+last frame is in, so the stall a stream sees is set by how many prefills fall before the window
+that binds; the stall budget admits some intervals and not others, in bands. Between the two the
+policy takes the interval with the shortest modelled wall time of one request: its admission wait
+plus its frames at the frame interval the prefill share leaves.
 
-Both bounds come from the measured decode step and prefill time, with no arrival rate in them, so
-the rule reads the same whether the load is a fixed arrival rate or a fixed number of streams.
+A prefill happens only when a request is waiting, so below the load where one cycle is shorter
+than the gap between arrivals a longer interval batches nothing and only adds wait. The rate that
+tells the two regimes apart is read from the frames the engine decodes: the same rate in steady
+state as counting arrivals, and far smoother under a fixed number of streams.
 """
 from __future__ import annotations
 
@@ -35,7 +37,7 @@ BATCH_BUCKET = 8
 class PrefillCadenceConfig:
     """The SLOs the interval follows, and the window schedule it reads them against."""
 
-    longest_interval: int = 32
+    longest_interval: int = 64
     first_audio_slo_s: float = 0.5
     max_stall_s: float = 0.1
     # Held back from the critical interval, for the jitter a measured mean does not carry.

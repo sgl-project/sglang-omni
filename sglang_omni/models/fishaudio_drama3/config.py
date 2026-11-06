@@ -43,12 +43,16 @@ DEFAULT_ASYNC_DECODE_MIN_BATCH_SIZE = 1
 # request, which is what a fixed concurrency rewards and what either bound alone misses.
 PrefillIntervalPolicy = Literal["fixed", "slo", "longest", "latency"]
 DEFAULT_PREFILL_INTERVAL_POLICY: PrefillIntervalPolicy = "fixed"
-DEFAULT_PREFILL_LONGEST_INTERVAL = 32
+DEFAULT_PREFILL_LONGEST_INTERVAL = 64
 DEFAULT_FIRST_AUDIO_SLO_MS = 500
 DEFAULT_MAX_STALL_MS = 100
 DEFAULT_CONTINUITY_MARGIN_MS = 8
 DEFAULT_VOCODER_MARGIN_MS = 30
 DEFAULT_RELEASE_MIN_ADMIT = 1
+# The latency policy's two knobs: the share of the stall budget held back for the spread between
+# the modelled worst stall and a measured percentile, and the window the request rate is read over.
+DEFAULT_CONTINUITY_MARGIN_SHARE = 0.35
+DEFAULT_RATE_WINDOW_S = 4.0
 # A timing run that measures the engine alone: the vocoder keeps the window schedule and returns
 # silence of each window's length instead of decoding it.
 DEFAULT_SILENT_DECODE = False
@@ -108,6 +112,10 @@ class Drama3EngineFactoryArgs(FactoryArgs):
     )
     prefill_vocoder_margin_ms: int = Field(default=DEFAULT_VOCODER_MARGIN_MS, ge=0)
     prefill_release_min_admit: int = Field(default=DEFAULT_RELEASE_MIN_ADMIT, ge=0)
+    prefill_continuity_margin_share: float = Field(
+        default=DEFAULT_CONTINUITY_MARGIN_SHARE, ge=0.0, lt=1.0
+    )
+    prefill_rate_window_s: float = Field(default=DEFAULT_RATE_WINDOW_S, gt=0)
 
 
 class Drama3EngineStageConfig(EngineStageConfig):
