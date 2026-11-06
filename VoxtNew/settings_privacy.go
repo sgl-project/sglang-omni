@@ -91,12 +91,14 @@ func (a *app) clearHistory() {
 	a.async(func() {
 		n, err := h.DeleteAll(context.Background(), "")
 		a.post(func() {
+			if n > 0 {
+				a.historyChanged() // history_page.go
+			}
 			if err != nil {
 				a.toast(i18n.T("Could not clear the history: %v", err))
 				return
 			}
 			a.toast(i18n.N(n, "Deleted %d entry", "Deleted %d entries", n))
-			a.historyChanged() // history_page.go
 		})
 	})
 }
