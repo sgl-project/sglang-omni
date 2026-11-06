@@ -10,7 +10,7 @@ from benchmarks.benchmarker.data import RequestResult
 from benchmarks.dataset.seedtts import SampleInput
 from benchmarks.eval import benchmark_tts_seedtts as tts
 from benchmarks.eval import speculative_tts
-from benchmarks.eval.speculative_workloads import LoadSettings, TtsWorkload
+from benchmarks.eval.speculative_workloads import WORKLOADS, LoadSettings, TtsWorkload
 from benchmarks.metrics.speculative import Leg, Side, compare, read_server_log
 from benchmarks.metrics.wer import SampleOutput, calculate_wer_metrics
 from benchmarks.tasks.tts import save_wer_results
@@ -54,6 +54,8 @@ async def test_k_uses_generation_wall_time_and_peak_uses_only_tts_repeats(
     settings = LoadSettings(
         concurrencies=[1], repeats=2, warmup=False, max_samples=1, client_arguments=[]
     )
+    workload = WORKLOADS["tts-seedtts-en"]
+    assert isinstance(workload, TtsWorkload)
     legs = []
     sides: tuple[Side, Side] = ("baseline", "draft")
     for side, rate in zip(sides, (0.10040, draft_rate), strict=True):
@@ -70,7 +72,7 @@ async def test_k_uses_generation_wall_time_and_peak_uses_only_tts_repeats(
             )
             await tts.run_tts_seedtts_benchmark(config, samples=[sample])
         loads = speculative_tts.measure_tts(
-            TtsWorkload(language="en", error_rate="WER"),
+            workload,
             settings,
             port=8700,
             model_path="tts",

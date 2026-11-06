@@ -18,6 +18,7 @@ from benchmarks.eval.benchmark_asr_transcribe_diarize import (
 from benchmarks.metrics.speculative import AccuracyMetric, LoadMeasurement, mean_or_none
 
 HOST = "127.0.0.1"
+TTS_CLIENT = "benchmarks.eval.benchmark_tts_seedtts"
 TRANSCRIBE_DIARIZE_CLIENT = "benchmarks.eval.benchmark_asr_transcribe_diarize"
 
 
@@ -41,13 +42,22 @@ class TranscribeDiarizeWorkload:
 class TtsWorkload:
     """SeedTTS synthesis followed by transcription after the TTS server stops."""
 
-    language: Literal["en", "zh"]
+    client: str
+    client_arguments: tuple[str, ...]
     error_rate: Literal["WER", "CER"]
 
 
 WORKLOADS: dict[str, AsrWorkload | TranscribeDiarizeWorkload | TtsWorkload] = {
-    "tts-seedtts-en": TtsWorkload(language="en", error_rate="WER"),
-    "tts-seedtts-zh": TtsWorkload(language="zh", error_rate="CER"),
+    "tts-seedtts-en": TtsWorkload(
+        client=TTS_CLIENT,
+        client_arguments=("--lang", "en"),
+        error_rate="WER",
+    ),
+    "tts-seedtts-zh": TtsWorkload(
+        client=TTS_CLIENT,
+        client_arguments=("--lang", "zh"),
+        error_rate="CER",
+    ),
     "seedtts-en": AsrWorkload(
         client="benchmarks.eval.benchmark_asr_seedtts",
         client_arguments=("--lang", "en"),

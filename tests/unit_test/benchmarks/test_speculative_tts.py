@@ -112,6 +112,7 @@ def test_tts_loads_read_every_repeat_and_keep_generation_timings(
 
     def transcribe(command: list[str], log_path: Path, *, check: bool) -> None:
         commands.append(command)
+        assert command[0] == "benchmarks.eval.benchmark_tts_seedtts"
         assert "--transcribe-only" in command
         assert "--generate-only" not in command
         assert "--repeats" not in command
@@ -188,8 +189,10 @@ def test_incomplete_repeat_cannot_hide_behind_valid_repeat(
     monkeypatch.setattr(
         speculative_tts, "run_client", lambda *arguments, **keywords: None
     )
+    workload = WORKLOADS["tts-seedtts-en"]
+    assert isinstance(workload, TtsWorkload)
     loads = speculative_tts.measure_tts(
-        TtsWorkload(language="en", error_rate="WER"),
+        workload,
         LoadSettings(
             concurrencies=[1],
             repeats=2,
@@ -230,9 +233,11 @@ def test_mismatched_quality_samples_fail_instead_of_scoring_another_run(
     monkeypatch.setattr(
         speculative_tts, "run_client", lambda *arguments, **keywords: None
     )
+    workload = WORKLOADS["tts-seedtts-en"]
+    assert isinstance(workload, TtsWorkload)
     with pytest.raises(ValueError, match="inconsistent TTS result coverage"):
         speculative_tts.measure_tts(
-            TtsWorkload(language="en", error_rate="WER"),
+            workload,
             LoadSettings(
                 concurrencies=[1],
                 repeats=1,
@@ -283,6 +288,8 @@ def test_leg_stops_tts_before_starting_asr_and_cleans_up_on_failure(
             events.append(f"stop {model_path}")
 
     def client(command: list[str], log_path: Path, *, check: bool) -> None:
+        assert command[0] == "benchmarks.eval.benchmark_tts_seedtts"
+        assert command[command.index("--lang") + 1] == "en"
         if "--generate-only" in command:
             assert active_models == ["test-tts"]
             assert "--use-existing-server" in command

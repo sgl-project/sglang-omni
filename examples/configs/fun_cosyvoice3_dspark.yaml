@@ -5,4 +5,5 @@ model_path: FunAudioLLM/Fun-CosyVoice3-0.5B-2512
 stages:
   tts_engine:
     engine:
+      speculative_algorithm: DSPARK
       speculative_draft_model_path: yuekai/cosyvoice3_llm_dspark

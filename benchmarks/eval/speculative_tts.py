@@ -17,8 +17,6 @@ from benchmarks.eval.speculative_workloads import (
 )
 from benchmarks.metrics.speculative import LoadMeasurement, mean_or_none
 
-TTS_CLIENT = "benchmarks.eval.benchmark_tts_seedtts"
-
 
 class TtsSpeedSummary(BaseModel):
     total_requests: int = Field(ge=0)
@@ -76,7 +74,7 @@ def generate_tts(
     """Save every concurrency and repeat on the running TTS server."""
     run_client(
         [
-            TTS_CLIENT,
+            workload.client,
             "--generate-only",
             "--measure-gpu-memory",
             "--use-existing-server",
@@ -88,8 +86,6 @@ def generate_tts(
             model_path,
             "--meta",
             SEEDTTS_DATASET_ID,
-            "--lang",
-            workload.language,
             "--output-dir",
             str(leg_dir),
             "--concurrencies",
@@ -103,6 +99,7 @@ def generate_tts(
                 if settings.max_samples is not None
                 else []
             ),
+            *workload.client_arguments,
             *settings.client_arguments,
         ],
         leg_dir / "generate.log",
@@ -144,7 +141,7 @@ def measure_tts(
                 pass
             run_client(
                 [
-                    TTS_CLIENT,
+                    workload.client,
                     "--transcribe-only",
                     "--use-existing-server",
                     "--host",
@@ -155,8 +152,6 @@ def measure_tts(
                     model_path,
                     "--meta",
                     SEEDTTS_DATASET_ID,
-                    "--lang",
-                    workload.language,
                     "--output-dir",
                     str(point_dir),
                     "--concurrency",
@@ -170,6 +165,7 @@ def measure_tts(
                         if settings.max_samples is not None
                         else []
                     ),
+                    *workload.client_arguments,
                     *settings.client_arguments,
                 ],
                 point_dir / "transcribe.log",
