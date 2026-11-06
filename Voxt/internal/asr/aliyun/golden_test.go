@@ -280,6 +280,23 @@ func TestCloseAbandons(t *testing.T) {
 }
 
 // A service that never answers run-task: Open gives up when ctx ends.
+// TestStreamErrorHidesKey: a task-failed event mid-stream that quotes the
+// API key ends the stream with the key blanked out.
+func TestStreamErrorHidesKey(t *testing.T) {
+	rec := newRecorder()
+	url := asrtest.WSServer(t, inferencePath, rec.handler(t, loadScript(t, "inference-key-echo.jsonl")))
+	c, err := New(asr.Config{Key: testKey, Model: "fun-asr-realtime", Endpoint: url})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = asr.StreamAll(ctx, c, asr.StreamRequest{}, make([]byte, 32000), asr.Feed{Pace: 4})
+	if err == nil || strings.Contains(err.Error(), testKey) || !strings.Contains(err.Error(), "[key]") {
+		t.Fatalf("the stream's error: %v", err)
+	}
+}
+
 func TestOpenCancelled(t *testing.T) {
 	url := asrtest.WSServer(t, inferencePath, func(c *asrtest.Conn) {
 		for {

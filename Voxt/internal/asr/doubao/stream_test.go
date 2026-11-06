@@ -387,6 +387,22 @@ func TestStreamErrorFrames(t *testing.T) {
 	}
 }
 
+// TestStreamErrorHidesToken: an error frame mid-stream that quotes the
+// access token ends the stream with the token blanked out.
+func TestStreamErrorHidesToken(t *testing.T) {
+	srv := newServer(t, asyncPath, script{Frames: []scriptFrame{
+		{After: 1, Seq: 1, Payload: json.RawMessage(`{"audio_info":{"duration":0},"result":{"text":""}}`)},
+		{After: 3, Kind: "error", Code: 45000001, Payload: json.RawMessage(`{"error":"invalid access token ` + testToken + `"}`)},
+	}})
+	_, evs := drive(t, testClient(t, srv.URL), asr.StreamRequest{}, pcm(time.Second))
+	if len(evs) == 0 || evs[len(evs)-1].Kind != asr.EventError {
+		t.Fatalf("events %+v", evs)
+	}
+	if err := evs[len(evs)-1].Err; strings.Contains(err.Error(), testToken) || !strings.Contains(err.Error(), "[key]") {
+		t.Fatalf("the stream's error: %v", err)
+	}
+}
+
 func TestHandshakeRefused(t *testing.T) {
 	cases := []struct {
 		status int
