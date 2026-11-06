@@ -111,7 +111,7 @@ def _load_from_meta_lst(path: str, max_samples: int | None) -> list[SampleInput]
             line = line.strip()
             if not line:
                 continue
-            parts = line.split("|")
+            parts = line.split("|", 3)
             if len(parts) < 4:
                 continue
             samples.append(
