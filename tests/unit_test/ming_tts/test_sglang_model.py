@@ -136,6 +136,7 @@ def test_ming_tts_owns_tail_execution_geometry(
         rope_max_batch_size=expected_aggregator_capacity,
         norm_layer=norm_layer,
         qkv_layer=PackedQKVLinear,
+        fuse_residual_norm=True,
     )
     assert dit_execution == TalkerExecutionConfig(
         attn_backend=sglang_model.MING_TTS_TAIL_ATTN_BACKEND,
@@ -144,6 +145,7 @@ def test_ming_tts_owns_tail_execution_geometry(
         rope_max_batch_size=2 * expected_tail_capacity,
         norm_layer=norm_layer,
         qkv_layer=PackedQKVLinear,
+        fuse_residual_norm=True,
     )
     assert model.decode_input_embedding.num_embeddings == expected_tail_capacity
     assert config.aggregator_config["execution_config"] is stale_execution_config
@@ -215,13 +217,24 @@ def test_ming_tts_tail_compute_owns_model_precision(
             )
             return sampled
 
+    class StopHead:
+        def __call__(self, hidden):
+            observed.append(
+                (
+                    "stop_head",
+                    torch.is_autocast_enabled("cpu"),
+                    torch.get_autocast_dtype("cpu"),
+                )
+            )
+            return torch.zeros(hidden.shape[0], 1, 2)
+
     owner = SimpleNamespace(
         decode_input_embedding=SimpleNamespace(
             weight=torch.empty(1, dtype=weight_dtype)
         ),
         flowloss=FlowLoss(),
         linear_proj_audio=Aggregator(),
-        stop_head=lambda hidden: torch.zeros(hidden.shape[0], 1, 2),
+        stop_head=StopHead(),
     )
     inputs = MingTTSTailInputs(
         hidden_states=torch.zeros(2, 1, 4),
@@ -239,10 +252,12 @@ def test_ming_tts_tail_compute_owns_model_precision(
             timesteps=torch.arange(2),
             sde_random=torch.zeros(1, 2, 1, 4),
         )
+        MingTTSSGLangModel.compute_stop_prob(owner, inputs.hidden_states)
 
     assert observed == [
         ("flow", autocast_enabled, weight_dtype),
         ("aggregator", autocast_enabled, weight_dtype),
+        ("stop_head", autocast_enabled, weight_dtype),
     ]
 
 
@@ -317,7 +332,6 @@ class TinyTailModel:
         return MingTTSTailOutputs(
             sampled=sampled,
             feedback_embeddings=feedback,
-            stop_prob=torch.sigmoid(sampled.mean((1, 2))),
         )
 
 
@@ -354,7 +368,6 @@ def test_ming_tts_tail_graph_replay_matches_eager_on_the_platform_accelerator() 
 
     torch.testing.assert_close(replayed.sampled, eager.sampled)
     torch.testing.assert_close(replayed.feedback_embeddings, eager.feedback_embeddings)
-    torch.testing.assert_close(replayed.stop_prob, eager.stop_prob)
 
 
 def test_ming_tts_tail_graph_rejects_a_device_without_a_graph_backend() -> None:

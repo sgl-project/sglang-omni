@@ -7,5 +7,4 @@ stages:
     engine:
       speculative_algorithm: STANDALONE
       speculative_draft_model_path: wilsonzheng0327/Whisper-large-v3-distil-draft
-      speculative_draft_model_revision: 257104348ea24677cf6338967592a9d6078b383b
       speculative_num_steps: 7
