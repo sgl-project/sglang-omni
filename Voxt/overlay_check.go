@@ -77,7 +77,7 @@ func ovCheckSteps(lang string) []ovCheckStep {
 	levels := previewSession().Levels
 	short, long := "Meet at three tomorrow", "So the plan for the release is to finish the onboarding first, then the history page, and after that the translation card"
 	if lang != "en" {
-		short, long = "明天三点开会", "那个我们明天，不对，后天下午三点开会，讨论一下 VoxtNew 的发布计划，然后把引导页和历史页先做完"
+		short, long = "明天三点开会", "那个我们明天，不对，后天下午三点开会，讨论一下 Voxt 的发布计划，然后把引导页和历史页先做完"
 	}
 	rec := func(id, partial string) func(*app) {
 		return func(a *app) {

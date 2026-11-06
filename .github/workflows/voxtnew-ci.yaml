@@ -1,4 +1,4 @@
-name: VoxtNew CI
+name: Voxt CI
 
 # Voxt (Voxt/: Go + MyGo, no cgo; VoxtNew inside) on Linux: gofmt, every Go test (the
 # views in MyGo's ui.Tester, the store, the session against fake models, the

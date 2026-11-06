@@ -1007,6 +1007,7 @@
   "Voxt cannot open its library": "Voxt 无法打开资料库",
   "Voxt collects no usage data, crash reports or identifiers.": "Voxt 不收集任何使用数据、崩溃报告或标识符。",
   "Voxt goes online only to check for updates and to download models: once the models are installed, it works offline.": "Voxt 只在检查更新和下载模型时联网：模型装好后，它可以离线使用。",
+  "Voxt goes online only to download models: once they are installed, it works offline.": "Voxt 只在下载模型时联网：模型装好后，它可以离线使用。",
   "Voxt is licensed under the Apache License 2.0 and comes with no warranty.": "Voxt 以 Apache License 2.0 授权，不提供任何担保。",
   "Voxt is ready. Two more things make it yours.": "Voxt 已经可以用了。下面两项能让它更贴合你。",
   "Voxt may not use the microphone.": "Voxt 没有麦克风权限。",

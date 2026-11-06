@@ -111,7 +111,7 @@ jobs:
           "$RUNNER_TEMP/test-venv/bin/python" -m pytest -q sglang_omni_mlx/native/tests
 
   voxtnew-swift:
-    name: VoxtNew helper and LLM runtime tests
+    name: Voxt helper and LLM runtime tests
     needs: [preflight]
     if: needs.preflight.outputs.run_mac == 'true'
     runs-on: macos-26
