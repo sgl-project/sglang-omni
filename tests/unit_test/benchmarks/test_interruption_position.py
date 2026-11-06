@@ -8,7 +8,9 @@ import json
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 import pytest
+import whisper
 from pydantic import JsonValue
 
 from benchmarks.duplex.interruption_position import (
@@ -373,3 +375,65 @@ def test_report_scores_transcribed_runs_and_refuses_other_inputs(
     write_run(tmp_path / "runs", "position_o000_truncating_r2", "b" * 64)
     with pytest.raises(ValueError, match="recorded from another input"):
         main(arguments)
+
+
+class CountPastTheCutModel:
+    """Whisper's result for a cut count: the words that played, then the count continued as zero-length words out of order."""
+
+    def transcribe(
+        self,
+        audio: npt.NDArray[np.float32],
+        *,
+        language: str,
+        word_timestamps: bool,
+        temperature: float,
+        fp16: bool,
+    ) -> dict[str, list[dict[str, list[dict[str, str | float]]]]]:
+        placed_words: list[dict[str, str | float]] = [
+            {"word": word.word, "start": word.start_s, "end": word.end_s}
+            for word in WORDS
+        ]
+        return {
+            "segments": [
+                {
+                    "words": [
+                        *placed_words,
+                        {"word": " five,", "start": 1.6, "end": 1.6},
+                    ]
+                },
+                {"words": [{"word": " 53,", "start": 1.58, "end": 1.58}]},
+            ]
+        }
+
+
+def test_transcribe_keeps_a_count_whisper_continued_past_the_cut(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Zero-length words Whisper added past a cut count failed the order check, so the run stayed untranscribed."""
+
+    def load_model(model_name: str, device: str) -> CountPastTheCutModel:
+        return CountPastTheCutModel()
+
+    monkeypatch.setattr(whisper, "load_model", load_model)
+    write_run(tmp_path / "runs", "position_o000_truncating_r1", "a" * 64)
+    words_dir = tmp_path / "words"
+
+    assert (
+        main(
+            [
+                "transcribe",
+                "--runs",
+                str(tmp_path / "runs"),
+                "--output",
+                str(words_dir),
+                "--model",
+                "large-v3",
+                "--device",
+                "cpu",
+            ]
+        )
+        == 0
+    )
+    assert TRANSCRIBED_WORDS.validate_json(
+        (words_dir / "position_o000_truncating_r1.json").read_bytes()
+    ) == [word.model_copy(update={"word": word.word.strip()}) for word in WORDS]

@@ -229,6 +229,7 @@ def transcribe(arguments: argparse.Namespace) -> int:
         "whisper_version": package_version("openai-whisper"),
         "options": transcription_options,
         "audio": f"the counting reply's delivered audio, resampled to {ASR_SAMPLE_RATE} Hz with scipy.signal.resample_poly",
+        "dropped_words": "zero-length, which have no speech to time",
     }
     if (
         transcription_path.exists()
@@ -264,9 +265,19 @@ def transcribe(arguments: argparse.Namespace) -> int:
                 ).astype(np.float32),
                 **transcription_options,
             )
+            # note (Jisen Li): Whisper continues a count past the cut as zero-length words out of order; Heard would drop them as speechless anyway.
+            placed_segments = [
+                {
+                    "words": [
+                        word for word in segment["words"] if word["start"] < word["end"]
+                    ]
+                }
+                for segment in recognized["segments"]
+            ]
             try:
                 word_chunks = normalize_words(
-                    recognized, len(reply_samples) / OUTPUT_SAMPLE_RATE
+                    {"segments": placed_segments},
+                    len(reply_samples) / OUTPUT_SAMPLE_RATE,
                 )
             except ValueError:
                 # note (Jisen Li): A run with unusable word times stays untranscribed; the rest still get theirs.

@@ -720,7 +720,7 @@ python -m benchmarks.eval.benchmark_interruption_position report \
     --words results/interruption-position/words
 ```
 
-`record` keeps finished runs and records failed or cut-off ones again, as the MiniCPM-o baselines do. `transcribe` times the words of each counting reply with Whisper, so what was heard comes from the audio rather than from the server's own alignment. `report` scores each run whose counting reply, the first reply that counts at least to one, was cancelled:
+`record` keeps finished runs and records failed or cut-off ones again, as the MiniCPM-o baselines do. `transcribe` times the words of each counting reply with Whisper, so what was heard comes from the audio rather than from the server's own alignment. Whisper often continues a count past the end of the cut audio and gives those words zero length, out of order; `transcribe` drops zero-length words, which have no speech to time, before checking that word times run in order. `report` scores each run whose counting reply, the first reply that counts at least to one, was cancelled:
 
 - Heard: the count up to the last word whose speech ended by the time the player stopped. Whisper ends each word where the next one starts, so a word's speech is taken as its 20 ms frames above -40 dBFS, the clips' own trim rule. A cut inside a word's speech leaves that number partly heard.
 - Kept: the count in the server's last `sglang.response.heard` prefix. The cascade reports it only after a client truncate, and the Qwen3-Omni session reports neither it nor progress, so those columns stay empty for the `silent` client and for Qwen3-Omni, and only the answer shows what was kept.
