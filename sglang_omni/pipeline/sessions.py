@@ -137,6 +137,10 @@ class Session:
     in_flight_append: Literal["accepted", "submitted"] | None = None
     # Note (Junnan Li): The appends the owners hold, by request id; an interrupt names those of its turn to every owner.
     submitted_appends: dict[str, TimedChunk] = field(default_factory=dict)
+    # Note (Junnan Li): The last grid append in flight; each reports done after the one
+    # before it.
+    ticked_append_finish: asyncio.Task[None] | None = None
+    ticked_appends_in_flight: int = 0
     outputs: deque[tuple[OutputChunk, int]] = field(default_factory=deque)
     output_bytes: int = 0
     pacer: DeliveryPacer | None = None
@@ -637,7 +641,12 @@ class CoordinatorSessions:
                     pass
                 pending_chunk = session.pending.popleft()
                 chunk = pending_chunk.chunk
+                if pending_chunk.tick is None or pending_chunk.continues:
+                    await self.settle_ticked_appends(session)
+                else:
+                    pass
                 session.in_flight_append = "accepted"
+                is_finished_in_background = False
                 try:
                     operation = "fragment" if pending_chunk.continues else "append"
                     tick_kwargs = (
@@ -659,31 +668,90 @@ class CoordinatorSessions:
                         pass
                     session.in_flight_append = "submitted"
                     session.wake.set()
-                    result = await self.finish_session_operation(
-                        session, operation, request_id
-                    )
-                    step_ms = (
-                        result.get(LM_STEP_MS_KEY) if isinstance(result, dict) else None
-                    )
-                    self.emit_session_output(
-                        session,
-                        pending_chunk.request_id,
-                        chunk.seq,
-                        replace(
-                            chunk,
-                            payload=(
-                                None if step_ms is None else {LM_STEP_MS_KEY: step_ms}
-                            ),
-                        ),
-                        kind="input_done",
-                    )
+                    if pending_chunk.tick is None or pending_chunk.continues:
+                        await self.finish_append(
+                            session, pending_chunk, operation, request_id
+                        )
+                    else:
+                        session.ticked_appends_in_flight += 1
+                        session.ticked_append_finish = self.owned_session_task(
+                            self.finish_ticked_append(
+                                session,
+                                pending_chunk,
+                                request_id,
+                                session.ticked_append_finish,
+                            )
+                        )
+                        is_finished_in_background = True
                 finally:
-                    session.in_flight_append = None
-                    session.pending_count -= 1
-                    session.pending_bytes -= pending_chunk.encoded_bytes
-                    session.wake.set()
+                    if not is_finished_in_background:
+                        self.release_pending_chunk(session, pending_chunk)
+                    else:
+                        pass
         except Exception as exc:
             self.fail_session(session, exc)
+
+    async def finish_append(
+        self,
+        session: Session,
+        pending_chunk: PendingSessionChunk,
+        operation: SessionOperationKind,
+        request_id: str,
+    ) -> None:
+        result = await self.finish_session_operation(session, operation, request_id)
+        step_ms = result.get(LM_STEP_MS_KEY) if isinstance(result, dict) else None
+        self.emit_session_output(
+            session,
+            pending_chunk.request_id,
+            pending_chunk.chunk.seq,
+            replace(
+                pending_chunk.chunk,
+                payload=None if step_ms is None else {LM_STEP_MS_KEY: step_ms},
+            ),
+            kind="input_done",
+        )
+
+    async def finish_ticked_append(
+        self,
+        session: Session,
+        pending_chunk: PendingSessionChunk,
+        request_id: str,
+        previous: asyncio.Task[None] | None,
+    ) -> None:
+        """Input done reaches the session's outputs in input order."""
+        try:
+            if previous is not None:
+                await previous
+            else:
+                pass
+            await self.finish_append(session, pending_chunk, "append", request_id)
+        except Exception as exc:
+            self.fail_session(session, exc)
+        finally:
+            session.ticked_appends_in_flight -= 1
+            self.release_pending_chunk(session, pending_chunk)
+
+    async def settle_ticked_appends(self, session: Session) -> None:
+        finish = session.ticked_append_finish
+        if finish is not None:
+            await asyncio.wait([finish])
+        else:
+            pass
+
+    def release_pending_chunk(
+        self, session: Session, pending_chunk: PendingSessionChunk
+    ) -> None:
+        if session.ticked_appends_in_flight and session.in_flight_append is None:
+            session.in_flight_append = "submitted"
+        elif session.ticked_appends_in_flight:
+            pass
+        elif session.in_flight_append != "accepted":
+            session.in_flight_append = None
+        else:
+            pass
+        session.pending_count -= 1
+        session.pending_bytes -= pending_chunk.encoded_bytes
+        session.wake.set()
 
     def fail_session(self, session: Session, error: BaseException) -> None:
         """End the session with its first error; its output stream raises it."""

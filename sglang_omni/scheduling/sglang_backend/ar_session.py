@@ -377,7 +377,16 @@ class ARSessionBridge:
         if session is None or session_identity != session.session_identity:
             raise ValueError("unknown or stale session open index")
         else:
-            if session.unit is None:
+            # Note (Junnan Li): A grid unit may leave while the previous one still waits
+            # on its steps; the running request takes both, in order.
+            is_fed_behind = (
+                session.stepped is not None
+                and not session.stepped.is_ended
+                and operation.tick is not None
+            )
+            if session.unit is None or (
+                session.unit.request_id != payload.request_id and is_fed_behind
+            ):
                 session.unit = SessionUnit(
                     request_id=payload.request_id,
                     session_identity=session_identity,
@@ -885,7 +894,10 @@ class ARSessionBridge:
             else:
                 pass
             session = self.sessions[unit.session_identity.id]
-            session.unit = None
+            if session.unit is unit:
+                session.unit = None
+            else:
+                pass
             session.embedding_spans.extend(unit.embedding_spans)
             if (
                 request_data is not None

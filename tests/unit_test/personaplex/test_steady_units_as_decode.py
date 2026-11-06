@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pytest
 import torch
 from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
@@ -46,11 +47,13 @@ def open_bridge():
     return bridge, engine
 
 
-def accept(bridge, index, codes):
+def accept(bridge, index, codes, tick=None):
     payload = unit_payload(index, codes)
     unit = bridge.accept(
         payload,
-        SimpleNamespace(chunk=unit_chunk(index), session_identity=CALL, stages=("lm",)),
+        SimpleNamespace(
+            chunk=unit_chunk(index), session_identity=CALL, stages=("lm",), tick=tick
+        ),
     )
     return unit, payload
 
@@ -211,6 +214,35 @@ def run_first_unit(bridge, runner):
     bridge.park(req)
     bridge.take_stepped_results(bridge.sessions[CALL.id])
     return request, req
+
+
+def test_a_grid_unit_fed_behind_a_waiting_one_takes_the_next_step_in_order():
+    bridge, _ = open_bridge()
+    runner = make_runner(FakeModel())
+    request, req = run_first_unit(bridge, runner)
+    codes = caller_codes(3)
+    tick = SimpleNamespace(index=1, size=1, due_ns=0)
+    first, first_payload = accept(bridge, 1, codes[1:2], tick=tick)
+    bridge.feed(first, first_payload)
+    with pytest.raises(ValueError, match="already has an active request"):
+        accept(bridge, 2, codes[2:3])
+    second, second_payload = accept(bridge, 2, codes[2:3], tick=tick)
+    bridge.feed(second, second_payload)
+    assert bridge.take_resumable() == [req]
+    results = []
+    for token in (72, 73):
+        runner.before_decode(None, None, [request])
+        runner.post_decode(
+            SimpleNamespace(next_token_ids=torch.tensor([token])), None, None, [request]
+        )
+        req.output_ids.append(token)
+        results.extend(bridge.take_stepped_results(bridge.sessions[CALL.id]))
+    assert bridge.should_park(req)
+    assert [request_id for request_id, _ in results] == [
+        first_payload.request_id,
+        second_payload.request_id,
+    ]
+    assert bridge.sessions[CALL.id].unit is None
 
 
 def test_a_two_frame_unit_takes_two_steps_and_none_past_its_frames(monkeypatch):
