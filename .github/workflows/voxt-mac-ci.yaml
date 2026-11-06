@@ -101,9 +101,7 @@ jobs:
       - name: Set up the test Python
         run: |
           uv venv -q -p 3.12 "$RUNNER_TEMP/test-venv"
-          VIRTUAL_ENV="$RUNNER_TEMP/test-venv" uv pip install -q \
-            -r sglang_omni_mlx/native/tests/requirements.lock \
-            -r sglang_omni_mlx/native/ci/requirements.lock
+          VIRTUAL_ENV="$RUNNER_TEMP/test-venv" uv pip install -q -r sglang_omni_mlx/native/tests/requirements.lock
 
       - name: Protocol and startup tests
         env:
@@ -111,10 +109,6 @@ jobs:
           NATIVE_RUNTIME_BIN: ${{ runner.temp }}/runtime/bin
         run: |
           "$RUNNER_TEMP/test-venv/bin/python" -m pytest -q sglang_omni_mlx/native/tests
-
-      - name: Long-audio benchmark tests
-        run: |
-          "$RUNNER_TEMP/test-venv/bin/python" -m pytest -q sglang_omni_mlx/native/ci/test_long_audio_benchmark.py
 
   voxtnew-swift:
     name: Voxt helper and LLM runtime tests

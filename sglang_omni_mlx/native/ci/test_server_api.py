@@ -21,6 +21,8 @@ from pathlib import Path
 import pytest
 from websockets.sync.client import connect
 
+from sglang_omni_mlx.native.ci.long_audio_client import stream_recording
+
 RUNTIME_BIN = os.environ.get("NATIVE_RUNTIME_BIN")
 DATA_ROOT = os.environ.get("CI_DATA_ROOT")
 pytestmark = pytest.mark.skipif(
@@ -343,6 +345,19 @@ def test_a_disconnected_stream_stops_its_decode(server: Server) -> None:
         ), "the decode kept running after its client left"
         time.sleep(0.05)
     assert server.post_form({}, clip("0006_en_short")) == transcript_before
+
+
+def test_realtime_accepts_silent_audio_without_a_preview(
+    server: Server, tmp_path: Path
+) -> None:
+    """A session with no preview events must stay open while audio is sent."""
+    recording = tmp_path / "silence.wav"
+    recording.write_bytes(wav_bytes(b"\x00\x00" * 64000))
+    result = stream_recording(
+        server.port, recording, "en", 1, 1, tmp_path / "events.jsonl"
+    )
+    assert result.text == ""
+    assert result.final_segment_count == 1
 
 
 def test_realtime_manual_session(server: Server) -> None:
