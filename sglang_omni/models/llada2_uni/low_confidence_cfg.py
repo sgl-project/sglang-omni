@@ -112,7 +112,18 @@ class LowConfidenceCFG(DllmAlgorithm):
             num_to_transfer = base + (step < remainder)
             for row, row_logits, row_mask in zip(active_ids, logits, mask):
                 if force_image_only:
-                    row_logits[:, : self.image_token_offset] = -torch.inf
+                    # PyTorch 2.10 rejects in-place writes into a view of a
+                    # multi-view output (CFG logits are indexed views).
+                    row_logits = torch.cat(
+                        (
+                            row_logits.new_full(
+                                (row_logits.shape[0], self.image_token_offset),
+                                -torch.inf,
+                            ),
+                            row_logits[:, self.image_token_offset :],
+                        ),
+                        dim=-1,
+                    )
                 else:
                     pass
                 predicted_ids = row_logits.argmax(dim=-1)
