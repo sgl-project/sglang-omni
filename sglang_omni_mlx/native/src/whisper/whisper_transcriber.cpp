@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <iterator>
 #include <stdexcept>
 
 #include "common/swift_port.h"
@@ -190,6 +191,11 @@ WhisperTranscriber::WhisperTranscriber(
   }
   is_multilingual_ =
       generation.value("is_multilingual", !language_ids_.empty());
+  if (is_multilingual_ && language_ids_.empty()) {
+    throw std::invalid_argument(
+        "multilingual Whisper needs language token IDs");
+  } else {
+  }
   for (const int id :
        {start_of_transcript_id_, end_of_text_id_, no_timestamps_id_}) {
     special_token_ids_.insert(id);
@@ -247,11 +253,10 @@ WhisperTranscriber::DecodeText(const std::vector<int> &token_ids) const {
 }
 
 WhisperTranscriber::WindowResult
-WhisperTranscriber::TranscribeWindow(const std::vector<float> &window_samples,
+WhisperTranscriber::TranscribeWindow(const mx::array &encoder_states,
                                      const std::vector<int> &prompt_ids,
                                      int max_new_tokens, float temperature,
                                      const std::atomic<bool> &cancel) const {
-  const mx::array encoder_states = model_.Encode(window_samples);
   if (draft_.has_value() && temperature == 0.0f) {
     return TranscribeWithDraft(encoder_states, prompt_ids, max_new_tokens,
                                cancel);
@@ -303,8 +308,8 @@ WhisperTranscriber::Transcribe(const std::vector<float> &samples,
                                const std::atomic<bool> &cancel) const {
   qwen3_asr::TranscriptionResult result;
   result.finish_reason = qwen3_asr::FinishReason::kStop;
-  // Note (khazic): start of transcript, then for multilingual checkpoints the
-  // language (when it resolves) and the transcribe task, then no timestamps.
+  // Note (ruiling): an unspecified language is inserted after detection on
+  // the first window, before the transcription decoder consumes this prefix.
   std::vector<int> prompt_ids = {start_of_transcript_id_};
   if (is_multilingual_) {
     result.language = LanguageCode(options.language);
@@ -325,9 +330,6 @@ WhisperTranscriber::Transcribe(const std::vector<float> &samples,
   const int requested_tokens = options.max_new_tokens != 0
                                    ? options.max_new_tokens
                                    : context_length - 16;
-  const int max_new_tokens = std::max(
-      1, std::min(requested_tokens,
-                  context_length - static_cast<int>(prompt_ids.size()) - 1));
 
   // Note (khazic): audio up to 30 s is one window; longer audio is cut every 30
   // s. Each window is padded with silence, or trimmed, to exactly 30 s and
@@ -346,8 +348,33 @@ WhisperTranscriber::Transcribe(const std::vector<float> &samples,
     std::vector<float> window_samples(kWindowSampleCount, 0.0f);
     std::copy(samples.begin() + start, samples.begin() + end,
               window_samples.begin());
+    const mx::array encoder_states = model_.Encode(window_samples);
+    if (is_multilingual_ && !result.language.has_value()) {
+      std::vector<DecoderLayerCache> detection_caches(
+          model_.config().text_layer_count);
+      const mx::array start_token(&start_of_transcript_id_, {1, 1}, mx::int32);
+      const auto logits =
+          model_.Decode(start_token, 0, encoder_states, detection_caches);
+      std::vector<int> language_token_ids;
+      for (const auto &[code, id] : language_ids_) {
+        language_token_ids.push_back(id);
+      }
+      const mx::array candidates(language_token_ids.data(),
+                                 {static_cast<int>(language_token_ids.size())},
+                                 mx::int32);
+      const auto selected = mx::argmax(mx::take(logits, candidates));
+      mx::eval(selected);
+      const auto language =
+          std::next(language_ids_.begin(), selected.item<uint32_t>());
+      result.language = language->first;
+      prompt_ids.insert(prompt_ids.begin() + 1, language->second);
+    } else {
+    }
+    const int max_new_tokens = std::max(
+        1, std::min(requested_tokens,
+                    context_length - static_cast<int>(prompt_ids.size()) - 1));
     const WindowResult window =
-        TranscribeWindow(window_samples, prompt_ids, max_new_tokens,
+        TranscribeWindow(encoder_states, prompt_ids, max_new_tokens,
                          options.temperature, cancel);
     const std::string text = swift_port::TrimWhitespace(window.text, true);
     if (!text.empty()) {
