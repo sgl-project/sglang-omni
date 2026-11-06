@@ -22,7 +22,7 @@ import (
 //	memoryState       models_memory.go  the loaded models' memory (the Local models page)
 //	omniState         models_omni.go  the speech models' runtime (internal/omni)
 //	llmState          llm_link.go     the language models' runtime (internal/llmrt)
-//	remoteState       remote_link.go  the remote language models, the Remote models page
+//	remoteState       remote_link.go  the remote language models, the Language models page
 //	sessionState      session_link.go  sessions, shortcuts, the answer card
 //	overlayState      overlay.go      the recording overlay
 //	transcribeState   feature_page.go  the feature pages (Transcribe, Translate, Rewrite)

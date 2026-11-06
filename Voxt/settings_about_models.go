@@ -87,10 +87,8 @@ func modelChecks(in modelCheckInput, add func(id, title, status, detail string))
 	}
 	title = i18n.T("Language models")
 	switch {
-	case llmLocate() == "":
-		add("language", title, "fail", missing)
 	case len(in.llm) == 0:
-		add("language", title, "warn", i18n.T("No model installed: Transcribe types the text as recognised."))
+		add("language", title, "warn", i18n.T("No model set up: Transcribe types the text as recognised."))
 	default:
 		add("language", title, "pass", strings.Join(in.llm, ", "))
 	}

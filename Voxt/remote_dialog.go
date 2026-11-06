@@ -1,6 +1,6 @@
 package main
 
-// The Remote models page's dialog (remote_page.go; Auralink's service
+// The Language models page's dialog (remote_page.go; Auralink's service
 // dialog): a service's key, address and model, with a connection test
 // before saving, and Remove.
 

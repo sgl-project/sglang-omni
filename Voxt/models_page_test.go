@@ -47,38 +47,31 @@ func TestModelsPage(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	tt.SetSize(windowWidth, 1600) // every card on screen
 	a.navigate(modelsPath)
-	for _, s := range []string{"Qwen3-ASR 1.7B (8bit)", "Qwen3-ASR 0.6B (4bit)", "Qwen3.5 4B OptiQ (4bit)",
-		"Qwen3.5 2B (4bit)", "Hy-MT2 1.8B (Q4_K_M)", "Default", "2.5 GB download", "3.3 GB download",
-		"30 languages and 22 Chinese dialects, including Chinese, English, Cantonese, Japanese and Korean",
-		"Translates between 33 languages, including Chinese, English, Japanese, Korean and Cantonese"} {
+	for _, s := range []string{"Qwen3-ASR 1.7B (8bit)", "Qwen3-ASR 0.6B (4bit)", "Default", "2.5 GB download",
+		"30 languages and 22 Chinese dialects, including Chinese, English, Cantonese, Japanese and Korean"} {
 		if !has(tt, s) {
 			t.Errorf("no %q in %q", s, tt.Texts())
 		}
 	}
-	if has(tt, "Silero VAD v6") || has(tt, "Installed") {
-		t.Error("the VAD is listed, or a model is installed")
+	if has(tt, "Silero VAD v6") || has(tt, "Installed") || has(tt, "Qwen3.5 4B OptiQ (4bit)") || has(tt, "Language models no longer used") {
+		t.Error("the VAD or a language model is listed, or a model is installed")
 	}
 
-	// Installed models: the page, the features' choices.
+	// Installed models: the page, the features' choices. A language model
+	// Voxt 2.0 downloaded is retired: listed, to be deleted, and offered
+	// to no feature.
 	seedModels(t, a, models.ASRFast, models.VADSilero, models.LLMTranslate)
-	if !has(tt, "Installed") || !has(tt, "712.8 MB on disk") {
+	if !has(tt, "Installed") || !has(tt, "712.8 MB on disk") || !has(tt, "Language models no longer used") || !has(tt, "Hy-MT2 1.8B (Q4_K_M)") {
 		t.Errorf("installed: %q", tt.Texts())
 	}
 	if m, ok := a.featureModel(local.ASR, hotkey.Transcribe); !ok || m.ID != models.ASRFast || m.Name != "Qwen3-ASR 0.6B (4bit)" {
 		t.Errorf("transcribe's speech model %+v", m)
 	}
-	if m, ok := a.featureModel(local.LLM, hotkey.Translate); !ok || m.ID != models.LLMTranslate {
-		t.Errorf("translate's language model %+v", m)
-	}
-	if m, ok := a.featureModel(local.LLM, hotkey.Rewrite); ok {
-		t.Errorf("rewrite uses the translation model: %+v", m)
-	}
-	a.navigate("/rewrite")
-	if !has(tt, "No language model is installed: install one to rewrite.") {
-		t.Errorf("rewrite: %q", tt.Texts())
+	if m, ok := a.featureModel(local.LLM, hotkey.Translate); ok {
+		t.Errorf("translate uses a retired model: %+v", m)
 	}
 	a.navigate("/translate")
-	if !has(tt, "Automatic: Hy-MT2 1.8B (Q4_K_M)") {
+	if !has(tt, "No language model is set up: set one up to translate.") || has(tt, "Automatic: Hy-MT2 1.8B (Q4_K_M)") {
 		t.Errorf("translate: %q", tt.Texts())
 	}
 
@@ -150,27 +143,28 @@ func TestModelDownloadStates(t *testing.T) {
 	tt.SetSize(windowWidth, 1600)
 	drain := queuePosts(a)
 	reopenModels(a)
+	seedModels(t, a, models.VADSilero) // the speech models' voice detection: only the model downloads
 	a.navigate(modelsPath)
 
 	mode.Store("hold")
-	click(t, tt, "Download Qwen3.5 2B (4bit)")
+	click(t, tt, "Download Qwen3-ASR 0.6B (4bit)")
 	deadline := time.Now().Add(5 * time.Second)
-	for !(has(tt, "Downloading: ") && partialBytes(a, models.LLMFast) > 0) && time.Now().Before(deadline) { // bytes came: a cancel keeps them
+	for !(has(tt, "Downloading: ") && partialBytes(a, models.ASRFast) > 0) && time.Now().Before(deadline) { // bytes came: a cancel keeps them
 		drain()
 	}
-	if !has(tt, "Cancel") || !a.modelStatus[models.LLMFast].Downloading {
-		t.Fatalf("downloading: %+v %+v %q", a.modelStatus[models.LLMFast], a.models.Status(models.LLMFast), tt.Texts()[25:])
+	if !has(tt, "Cancel") || !a.modelStatus[models.ASRFast].Downloading {
+		t.Fatalf("downloading: %+v %+v %q", a.modelStatus[models.ASRFast], a.models.Status(models.ASRFast), tt.Texts()[25:])
 	}
-	click(t, tt, "Cancel downloading Qwen3.5 2B (4bit)")
+	click(t, tt, "Cancel downloading Qwen3-ASR 0.6B (4bit)")
 	drain()
-	st := a.modelStatus[models.LLMFast]
+	st := a.modelStatus[models.ASRFast]
 	if st.Downloading || st.Done == 0 || st.Err != nil || !has(tt, "Resume") || !has(tt, "Stopped: ") {
 		t.Fatalf("stopped: %+v %q", st, tt.Texts())
 	}
 
 	// A failure: what the card says, and Try again.
 	mode.Store("missing")
-	click(t, tt, "Download Hy-MT2 1.8B (Q4_K_M)")
+	click(t, tt, "Download Qwen3-ASR 1.7B (8bit)")
 	deadline = time.Now().Add(5 * time.Second)
 	for !has(tt, "The download server does not have this model.") && time.Now().Before(deadline) {
 		drain()
@@ -180,9 +174,9 @@ func TestModelDownloadStates(t *testing.T) {
 	}
 
 	// Deleting what a stopped download kept.
-	click(t, tt, "Delete what was downloaded of Qwen3.5 2B (4bit)")
+	click(t, tt, "Delete what was downloaded of Qwen3-ASR 0.6B (4bit)")
 	drain()
-	if st := a.modelStatus[models.LLMFast]; st.Done != 0 || has(tt, "Resume") {
+	if st := a.modelStatus[models.ASRFast]; st.Done != 0 || has(tt, "Resume") {
 		t.Errorf("kept: %+v", st)
 	}
 }

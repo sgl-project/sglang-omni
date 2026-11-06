@@ -61,7 +61,7 @@ func TestMacModelMemory(t *testing.T) {
 	}
 
 	for _, id := range []string{models.LLMFast, models.LLMTranslate} {
-		chat, _, err := a.local.LLM(ctx, id)
+		chat, err := a.openLLM(ctx, id, a.models.Dir(id))
 		if err != nil {
 			t.Fatal(err)
 		}

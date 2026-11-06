@@ -109,7 +109,7 @@ func TestRemoteModelEndToEnd(t *testing.T) {
 	}
 }
 
-// TestRemotePage: setting a service up on the Remote models page saves
+// TestRemotePage: setting a service up on the Language models page saves
 // its key in the keyring (never the settings) and offers its model to the
 // features; Remove takes both away again.
 func TestRemotePage(t *testing.T) {

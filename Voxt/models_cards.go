@@ -28,11 +28,13 @@ func (a *app) modelsPage(c *ui.Context) {
 	})
 	ui.Scroll(c.Key("models-scroll")).Grow(1).MinHeight(0).Children(func() {
 		ui.Column(c).Padding(0, px(t, sp6), px(t, sp6)).Gap(px(t, sp3)).MaxWidth(px(t, 880)).Children(func() {
-			caption(c, i18n.T("Voxt recognises speech and runs its language models on this Mac: your audio and text never leave it."))
+			caption(c, i18n.T("Voxt recognises speech on this Mac: your audio never leaves it. Language models are remote: set one up on the Language models page."))
 			sectionTitleTip(c, i18n.T("Speech recognition"), i18n.T("Turns what you say into text. Every feature needs one to work by voice."))
 			a.modelCards(c, models.ASR)
-			sectionTitleTip(c, i18n.T("Language models"), i18n.T("Cleans up, translates and rewrites the text. Without one, Transcribe types the text as recognised."))
-			a.modelCards(c, models.LLM)
+			if a.anyModelShown(models.LLM) {
+				sectionTitleTip(c, i18n.T("Language models no longer used"), i18n.T("Voxt 2.0 ran these on this Mac; Voxt now uses the language models of the Language models page. Delete them to free the space: another app that uses one keeps it."))
+				a.modelCards(c, models.LLM)
+			}
 			a.modelsAdvanced(c) // models_keep.go
 		})
 	})
@@ -40,13 +42,37 @@ func (a *app) modelsPage(c *ui.Context) {
 	a.networkDialog(c)      // models_network.go
 }
 
-// modelCards are kind's models of the catalogue.
+// modelCards are kind's models of the catalogue that the page shows.
 func (a *app) modelCards(c *ui.Context, kind models.Kind) {
 	for _, m := range models.Catalog() {
-		if m.Kind == kind && (!m.Borrowed || a.modelStatus[m.ID].OnDisk) { // another app's: only when it is on this Mac
+		if m.Kind == kind && a.modelShown(m) {
 			a.modelCard(c, m)
 		}
 	}
+}
+
+// modelShown says whether the page shows m: a retired model only while
+// Voxt has some of it on this Mac (to delete it), another app's only when
+// it is on this Mac.
+func (a *app) modelShown(m models.Model) bool {
+	st := a.modelStatus[m.ID]
+	switch {
+	case m.Retired:
+		return st.Installed || st.Downloading || st.Done > 0
+	case m.Borrowed:
+		return st.OnDisk
+	}
+	return true
+}
+
+// anyModelShown says whether the page shows a model of kind.
+func (a *app) anyModelShown(kind models.Kind) bool {
+	for _, m := range models.Catalog() {
+		if m.Kind == kind && a.modelShown(m) {
+			return true
+		}
+	}
+	return false
 }
 
 // modelCard is one model: what it is good at, its languages, its size
@@ -194,6 +220,10 @@ func (a *app) modelActions(c *ui.Context, m models.Model, st models.Status) {
 		}
 		if ghostButton(c.Key("delete"), label).Label(tip).Disabled(a.modelDeciding == m.ID).Clicked() {
 			a.askDeleteModel(m.ID) // models_delete.go
+		}
+	case m.Retired:
+		if st.Done > 0 && ghostButton(c.Key("discard"), i18n.T("Delete")).Label(i18n.T("Delete what was downloaded of %s", name)).Clicked() {
+			a.deleteModel(m.ID, fammodels.ThisApp)
 		}
 	case m.Borrowed || st.OnDisk:
 		// On disk but not VoxtNew's: another app installed it. Download

@@ -88,7 +88,7 @@ func voxtnewClaim(t *testing.T, a *app, id string) (fammodels.Claim, bool) {
 
 // TestOnboardingReuse: the speech models AudioSmith installed make the
 // reuse card; Use them claims them for VoxtNew (origin reused) and
-// downloads nothing; the language model is still to download.
+// downloads nothing; the language model is still to set up.
 func TestOnboardingReuse(t *testing.T) {
 	asked := countingHub(t)
 	a, tt := obTester(t)
@@ -101,7 +101,7 @@ func TestOnboardingReuse(t *testing.T) {
 	a.obGo(obModels)
 	for _, s := range []string{"2 models are already on this Mac", "Installed by AudioSmith · 2.5 GB · no download needed",
 		"Qwen3-ASR 1.7B (8bit) · Silero VAD v6", "Use them", "Choose models…", "Installed · from AudioSmith",
-		"3.3 GB still to download", "Download (3.3 GB)"} {
+		"Set up a language model"} {
 		if !has(tt, s) {
 			t.Errorf("no %q in %q", s, tt.Texts())
 		}
@@ -115,7 +115,7 @@ func TestOnboardingReuse(t *testing.T) {
 			t.Errorf("%s: claim %+v %v", id, c, ok)
 		}
 	}
-	if has(tt, "Use them") || !has(tt, "Ready: Qwen3-ASR 1.7B (8bit)") || !has(tt, "Download (3.3 GB)") || has(tt, "3.3 GB still to download") {
+	if has(tt, "Use them") || !has(tt, "Ready: Qwen3-ASR 1.7B (8bit)") || !has(tt, "Set up a language model") || hasPrefix(tt, "Download (") {
 		t.Errorf("after Use them: %q", tt.Texts())
 	}
 	for _, m := range models.Catalog() {
@@ -169,13 +169,13 @@ func TestOnboardingAlternative(t *testing.T) {
 	drain()
 	line := "Qwen3-ASR 1.7B (8bit) isn't installed, but Qwen3-ASR 0.6B (4bit) (from AudioSmith) is. Use it for now?"
 	for _, s := range []string{line, "Download Qwen3-ASR 1.7B (8bit)", "Use Qwen3-ASR 0.6B (4bit)",
-		"1 model is already on this Mac", "Silero VAD v6", "Download (3.3 GB)"} {
+		"1 model is already on this Mac", "Silero VAD v6", "Set up a language model"} {
 		if !has(tt, s) {
 			t.Errorf("no %q in %q", s, tt.Texts())
 		}
 	}
-	if has(tt, "Download both") || has(tt, "Ready: Qwen3-ASR 0.6B (4bit)") {
-		t.Errorf("the speech model is in Download both, or ready: %q", tt.Texts())
+	if hasPrefix(tt, "Download (") || has(tt, "Ready: Qwen3-ASR 0.6B (4bit)") {
+		t.Errorf("the speech model is in the step's Download, or ready: %q", tt.Texts())
 	}
 
 	// Download (the default) starts the accurate one.

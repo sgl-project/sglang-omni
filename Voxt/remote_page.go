@@ -1,6 +1,6 @@
 package main
 
-// The Remote models page (/remote-models; Auralink's Model services page,
+// The Language models page (/language-models; Auralink's Model services page,
 // language models only): a card per OpenAI-compatible service, those set
 // up first, each with its state, model, saved key and a connection test.
 // A card opens the service's dialog (remote_dialog.go): its key, address
@@ -20,10 +20,10 @@ import (
 
 func (a *app) remotePage(c *ui.Context) {
 	t := c.Theme()
-	pageHeader(c, i18n.T("Remote models"), nil)
+	pageHeader(c, i18n.T("Language models"), nil)
 	ui.Scroll(c.Key("remote-scroll")).Grow(1).MinHeight(0).Children(func() {
 		ui.Column(c).Padding(0, px(t, sp6), px(t, sp6)).Gap(px(t, sp4)).MaxWidth(px(t, 880)).Children(func() {
-			caption(c, i18n.T("A language model of a service you set up here, over its OpenAI-compatible API. Voxt sends it the recognised or selected text, never your audio, and only for the features you choose it on (Transcribe, Translate, Rewrite). Keys stay in this Mac's Keychain."))
+			caption(c, i18n.T("Transcribe's clean-up, Translate and Rewrite use a language model of a service you set up here, over its OpenAI-compatible API. To keep text on this Mac, run a model with Ollama, LM Studio or oMLX (free); or buy an API key from a provider. Voxt sends the service the recognised or selected text, never your audio. Keys stay in this Mac's Keychain."))
 			a.providerCards(c)
 		})
 	})

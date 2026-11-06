@@ -103,6 +103,11 @@ type Model struct {
 	// does not download: it is on offer only when it is on disk, and is
 	// VoxtNew's once the user chose to use it (a claim).
 	Borrowed bool
+	// Retired: a model Voxt no longer offers (the local language models:
+	// Voxt's are remote since 2.1). It is never downloaded or opened; the
+	// Local models page shows it only while Voxt has it on this Mac, to
+	// delete it.
+	Retired bool
 }
 
 // Size is the size of the model's files.
@@ -182,7 +187,7 @@ var catalog = []Model{
 		},
 	},
 	{
-		ID: LLMBalanced, Name: "Qwen3.5 4B OptiQ (4bit)", Kind: LLM, Runtime: MLX, Default: true,
+		ID: LLMBalanced, Name: "Qwen3.5 4B OptiQ (4bit)", Kind: LLM, Retired: true, Runtime: MLX, Default: true,
 		Family: "qwen3.5", Quant: "4bit", Alternatives: []string{LLMQwen3, LLMGemma4},
 		Repo: "mlx-community/Qwen3.5-4B-OptiQ-4bit", Revision: "6cb5bdfd0bf15f484881fb9f1ab6d7c840fddde9",
 		Files: []File{
@@ -198,7 +203,7 @@ var catalog = []Model{
 		},
 	},
 	{
-		ID: LLMFast, Name: "Qwen3.5 2B (4bit)", Kind: LLM, Runtime: MLX,
+		ID: LLMFast, Name: "Qwen3.5 2B (4bit)", Kind: LLM, Retired: true, Runtime: MLX,
 		Family: "qwen3.5", Quant: "4bit", Alternatives: []string{LLMQwen3, LLMGemma4},
 		Repo: "mlx-community/Qwen3.5-2B-4bit", Revision: "674aaa7240b91e8012fcad5d791b7dfe5ba90207",
 		Files: []File{
@@ -215,7 +220,7 @@ var catalog = []Model{
 		},
 	},
 	{
-		ID: LLMTranslate, Name: "Hy-MT2 1.8B (Q4_K_M)", Kind: LLM, Runtime: GGUF, Features: []string{"translate"},
+		ID: LLMTranslate, Name: "Hy-MT2 1.8B (Q4_K_M)", Kind: LLM, Retired: true, Runtime: GGUF, Features: []string{"translate"},
 		Family: "hy-mt2", Quant: "Q4_K_M",
 		Repo: "tencent/Hy-MT2-1.8B-GGUF", Revision: "a0c709d9fac510f2c807aa3af52872340dc37a4a",
 		Files: []File{
@@ -223,12 +228,12 @@ var catalog = []Model{
 		},
 	},
 	{
-		ID: LLMQwen3, Name: "Qwen3 4B Instruct 2507 (4bit)", Kind: LLM, Runtime: MLX, Borrowed: true,
+		ID: LLMQwen3, Name: "Qwen3 4B Instruct 2507 (4bit)", Kind: LLM, Retired: true, Runtime: MLX, Borrowed: true,
 		Family: "qwen3", Quant: "4bit", Bytes: 2278969697,
 		Repo: "mlx-community/Qwen3-4B-Instruct-2507-4bit", Revision: "50d427756c6b1b2fe0c0a10f67fbda1fc8e82c1b",
 	},
 	{
-		ID: LLMGemma4, Name: "Gemma 4 E4B (4bit)", Kind: LLM, Runtime: MLX, Borrowed: true,
+		ID: LLMGemma4, Name: "Gemma 4 E4B (4bit)", Kind: LLM, Retired: true, Runtime: MLX, Borrowed: true,
 		Family: "gemma4", Quant: "4bit", Bytes: 5179239349,
 		Repo: "mlx-community/gemma-4-e4b-it-4bit", Revision: "475b9088d29754a3379866cf5aeb6b41acd313c2",
 	},

@@ -17,6 +17,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/hehehai/actnowkit/family"
 	fammodels "github.com/hehehai/actnowkit/models"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models/modelstest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
@@ -162,36 +163,36 @@ func TestModelElsewhere(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	tt.SetSize(windowWidth, 1600)
 	reopenModels(a)
-	fast, _ := models.Lookup(models.LLMFast)
-	lock, err := fammodels.TryLockRepo(a.models.Hub(), fast.Repo, family.Shared, fammodels.Owner{BundleID: audioSmithID, Op: fammodels.OpDownload})
+	accurate, _ := models.Lookup(models.ASRAccurate)
+	lock, err := fammodels.TryLockRepo(a.models.Hub(), accurate.Repo, family.Shared, fammodels.Owner{BundleID: audioSmithID, Op: fammodels.OpDownload})
 	if err != nil {
 		t.Fatal(err)
 	}
 	a.models.Refresh()
 	a.navigate(modelsPath)
-	if !has(tt, "Downloading in AudioSmith…") || a.modelStatus[models.LLMFast].Elsewhere != audioSmithID {
-		t.Fatalf("elsewhere: %+v %q", a.modelStatus[models.LLMFast], tt.Texts())
+	if !has(tt, "Downloading in AudioSmith…") || a.modelStatus[models.ASRAccurate].Elsewhere != audioSmithID {
+		t.Fatalf("elsewhere: %+v %q", a.modelStatus[models.ASRAccurate], tt.Texts())
 	}
-	click(t, tt, "Download Qwen3.5 2B (4bit)") // disabled
-	if st := a.models.Status(models.LLMFast); st.Downloading || st.Err != nil {
+	click(t, tt, "Download Qwen3-ASR 1.7B (8bit)") // disabled
+	if st := a.models.Status(models.ASRAccurate); st.Downloading || st.Err != nil {
 		t.Errorf("Download ran: %+v", st)
 	}
 	// AudioSmith finishes: installed on the next read of the family.
 	lock.Release()
-	modelstest.Seed(a.models.Hub(), models.LLMFast)
+	modelstest.Seed(a.models.Hub(), models.ASRAccurate)
 	a.models.Refresh()
-	if !a.modelStatus[models.LLMFast].Installed || has(tt, "Downloading in AudioSmith…") {
-		t.Errorf("not installed: %+v", a.modelStatus[models.LLMFast])
+	if !a.modelStatus[models.ASRAccurate].Installed || has(tt, "Downloading in AudioSmith…") {
+		t.Errorf("not installed: %+v", a.modelStatus[models.ASRAccurate])
 	}
 
 	// Deleted for all apps in AudioSmith.
-	useModels(t, a, models.LLMFast)
-	if _, err := otherApp(a, audioSmithID).Delete(context.Background(), fast.Ref(""), fammodels.AllApps); err != nil {
+	useModels(t, a, models.ASRAccurate)
+	if _, err := otherApp(a, audioSmithID).Delete(context.Background(), accurate.Ref(""), fammodels.AllApps); err != nil {
 		t.Fatal(err)
 	}
 	a.models.Refresh()
 	if !has(tt, "Deleted in AudioSmith") || !has(tt, "Download again") {
-		t.Errorf("deleted in: %+v %q", a.modelStatus[models.LLMFast], tt.Texts())
+		t.Errorf("deleted in: %+v %q", a.modelStatus[models.ASRAccurate], tt.Texts())
 	}
 }
 
@@ -215,6 +216,8 @@ func TestModelWaitingFor(t *testing.T) {
 	tt.SetSize(windowWidth, 1600)
 	drain := queuePosts(a)
 	reopenModels(a)
+	// A model of one file, the one locked: Hy-MT2 (retired: the page
+	// offers no Download, but shows its card while it downloads).
 	tr, _ := models.Lookup(models.LLMTranslate)
 	lock, err := fammodels.TryLockBlob(a.models.Hub(), tr.Repo, tr.Files[0].SHA256, fammodels.Owner{BundleID: dictaID, Op: fammodels.OpDownload})
 	if err != nil {
@@ -222,7 +225,7 @@ func TestModelWaitingFor(t *testing.T) {
 	}
 	defer lock.Release()
 	a.navigate(modelsPath)
-	click(t, tt, "Download Hy-MT2 1.8B (Q4_K_M)")
+	a.downloadModel(models.LLMTranslate)
 	deadline := time.Now().Add(5 * time.Second)
 	for !has(tt, "Downloading in Dicta… 0%") && time.Now().Before(deadline) {
 		drain()
@@ -257,19 +260,31 @@ func TestModelFamilyText(t *testing.T) {
 	}
 }
 
-// TestBorrowedModel: a model another app installed on this Mac, a
-// borrowed one or one of VoxtNew's own catalogue: Use it, then Remove
-// from VoxtNew (its files stay for the app). For a catalogue model the
-// card used to offer Download, which does nothing for a model already
-// on disk, so it never became VoxtNew's.
+// TestBorrowedModel: a model of VoxtNew's catalogue another app
+// installed on this Mac: Use it, then Remove from VoxtNew (its files stay
+// for the app). The card used to offer Download, which does nothing for a
+// model already on disk, so it never became VoxtNew's. A retired model
+// (the borrowed language models) another app installed is not listed.
 func TestBorrowedModel(t *testing.T) {
+	t.Run("retired", func(t *testing.T) {
+		a, _, tt := newTestApp(t)
+		tt.SetSize(windowWidth, 1600)
+		m, _ := models.Lookup(models.LLMQwen3)
+		if err := modelstest.SeedModel(a.models.Hub(), m); err != nil {
+			t.Fatal(err)
+		}
+		claimFor(t, a, dictaID, models.LLMQwen3)
+		a.navigate(modelsPath)
+		if has(tt, uitext.ModelName(models.LLMQwen3)) || len(a.installed(local.LLM)) != 0 {
+			t.Fatalf("a retired model of Dicta's is listed: %q", tt.Texts())
+		}
+	})
 	for _, tc := range []struct {
 		id         string
 		borrowed   bool
 		remove     string // the card's button once used
 		needsThere bool   // Dicta installed what it needs too
 	}{
-		{models.LLMQwen3, true, "Remove", false},
 		{models.ASRFast, false, "Delete", false},
 		{models.ASRFast, false, "Delete", true},
 	} {

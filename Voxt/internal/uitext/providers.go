@@ -1,6 +1,6 @@
 package uitext
 
-// The remote language models' words (the Remote models page, the
+// The remote language models' words (the Language models page, the
 // features' model menus, History).
 
 import (

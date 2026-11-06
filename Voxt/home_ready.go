@@ -40,22 +40,17 @@ func (a *app) readinessList() []readiness {
 	openPerms := func() { a.navigate("/settings/permissions") }
 	ma, okA := a.featureModel(local.ASR, hotkey.Transcribe)
 	ml, okL := a.featureModel(local.LLM, hotkey.Transcribe)
-	switch {
-	case !okA && !okL:
-		// Nothing installed: one line, one way.
-		out = append(out, readiness{key: "home-models", title: i18n.T("Models"), kind: noticeWarn,
-			text: i18n.T("No speech model or language model is installed: install one of each to start."), action: i18n.T("Open Local models"), fix: openModels})
-	case !okA:
+	if okA {
+		out = append(out, readiness{key: "home-asr", title: i18n.T("Speech recognition"), ok: true, text: ma.Name})
+	} else {
 		out = append(out, readiness{key: "home-asr", title: i18n.T("Speech recognition"), kind: noticeWarn,
 			text: i18n.T("No speech model is installed: install one to transcribe, translate and rewrite by voice."), action: i18n.T("Open Local models"), fix: openModels})
-	default:
-		out = append(out, readiness{key: "home-asr", title: i18n.T("Speech recognition"), ok: true, text: ma.Name})
 	}
 	switch {
-	case !okA && !okL:
 	case !okL:
 		out = append(out, readiness{key: "home-llm", title: i18n.T("Language model"), kind: noticeWarn,
-			text: i18n.T("No language model is installed: Translate and Rewrite need one, and Transcribe types the text as recognised."), action: i18n.T("Open Local models"), fix: openModels})
+			text: i18n.T("No language model is set up: Translate and Rewrite need one, and Transcribe types the text as recognised."), action: i18n.T("Open Language models"),
+			fix: func() { a.navigate(remotePath) }})
 	default:
 		out = append(out, readiness{key: "home-llm", title: i18n.T("Language model"), ok: true, text: ml.Name})
 	}

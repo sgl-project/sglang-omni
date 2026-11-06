@@ -35,7 +35,7 @@ var navGroups = []navGroup{
 	}},
 	{"Resources", []navPage{
 		{modelsPath, "Local models", modelsIcon},
-		{remotePath, "Remote models", remoteIcon},
+		{remotePath, "Language models", remoteIcon},
 		{"/dictionary", "Dictionary", dictionaryIcon},
 	}},
 	{"System", []navPage{
@@ -102,7 +102,7 @@ func pageTitle(path string) string {
 	case modelsPath:
 		return i18n.T("Local models")
 	case remotePath:
-		return i18n.T("Remote models")
+		return i18n.T("Language models")
 	case "/dictionary":
 		return i18n.T("Dictionary")
 	case "/logs":

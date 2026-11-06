@@ -185,7 +185,7 @@ func TestProblemCards(t *testing.T) {
 	if has(tt, "Helper ready") || has(tt, "No provider set up") {
 		t.Errorf("a status bar: %q", firstTexts(tt))
 	}
-	if !hasExact(tt, "No models installed") || !has(tt, "Install a speech model and a language model to start.") {
+	if !hasExact(tt, "No models") || !has(tt, "Install a speech model, then set up a language model, to start.") {
 		t.Fatalf("no models card: %q", firstTexts(tt))
 	}
 	click(t, tt, "Open Local models")
@@ -213,11 +213,11 @@ func TestProblemCards(t *testing.T) {
 	}
 	// Dismissed: not again while the problem lasts, even as settings change.
 	click(t, tt, "Dismiss")
-	if hasExact(tt, "No models installed") || len(a.notices) != 0 {
+	if hasExact(tt, "No models") || len(a.notices) != 0 {
 		t.Fatalf("dismissed: %+v", a.notices)
 	}
 	a.updateSettings(func(s *settings.Settings) { s.Appearance.Theme = "dark" })
-	if hasExact(tt, "No models installed") {
+	if hasExact(tt, "No models") {
 		t.Error("came back")
 	}
 	// Solved, then wrong again: it shows again, with the new text.
@@ -317,14 +317,14 @@ func TestPrivacyGoesOnline(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate("/settings/privacy")
 	frames(tt)
-	if !has(tt, "Voxt goes online only to check for updates and to download models: once the models are installed, it works offline.") {
+	if !has(tt, "Otherwise Voxt goes online only to check for updates and to download models.") {
 		t.Errorf("with an update feed: %q", firstTexts(tt))
 	}
 	a.upd = nil
 	a.navigate("/home")
 	a.navigate("/settings/privacy")
 	frames(tt)
-	if !has(tt, "Voxt goes online only to download models: once they are installed, it works offline.") || has(tt, "check for updates") {
+	if !has(tt, "Otherwise Voxt goes online only to download models.") || has(tt, "check for updates") {
 		t.Errorf("without an update feed: %q", firstTexts(tt))
 	}
 }

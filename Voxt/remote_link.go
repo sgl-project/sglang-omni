@@ -24,8 +24,8 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
-// remotePath is the Remote models page's path.
-const remotePath = "/remote-models"
+// remotePath is the Language models page's path.
+const remotePath = "/language-models"
 
 // keyring keeps the remote models' keys, by setup id ("openai"). Its
 // calls may block: off the main thread only.
@@ -43,7 +43,7 @@ func (keychain) Set(id, label, value string) error { return secrets.LLM(id, labe
 // newKeyring is the keyring a new app uses; tests swap in a memory one.
 var newKeyring = func() keyring { return keychain{} }
 
-// remoteState is the remote models and the Remote models page's state.
+// remoteState is the remote models and the Language models page's state.
 type remoteState struct {
 	// remote is a.local with the remote models (nil when tests set
 	// a.local themselves).

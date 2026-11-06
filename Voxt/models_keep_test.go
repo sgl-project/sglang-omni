@@ -92,7 +92,7 @@ func TestKeepLoadedLive(t *testing.T) {
 	if _, _, err := a.local.ASR(context.Background(), models.ASRFast); err != nil { // warms the servers
 		t.Fatal(err)
 	}
-	chat, _, err := a.local.LLM(context.Background(), models.LLMFast)
+	chat, err := a.openLLM(context.Background(), models.LLMFast, a.models.Dir(models.LLMFast))
 	if err != nil {
 		t.Fatal(err)
 	}

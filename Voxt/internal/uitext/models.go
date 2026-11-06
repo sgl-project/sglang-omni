@@ -46,7 +46,7 @@ func ModelErrorText(err error) (msg, more string) {
 	if errors.As(err, &le) {
 		switch le.Code {
 		case llm.CodeNoKey:
-			return i18n.T("No API key is saved for the remote model: add one on the Remote models page."), more
+			return i18n.T("No API key is saved for the remote model: add one on the Language models page."), more
 		case llm.CodeAuth:
 			return i18n.T("The remote service refused the API key."), more
 		case llm.CodeModelNotFound:

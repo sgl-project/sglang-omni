@@ -102,6 +102,7 @@ type answerCard struct {
 const (
 	actionNone        = ""
 	actionModels      = "models"
+	actionLanguage    = "language" // the Language models page (remote_page.go)
 	actionPermissions = "permissions"
 	actionHelper      = "helper"
 	actionRetry       = "retry" // the session's entry, in History (history_retry.go)
@@ -316,6 +317,9 @@ func (a *app) noticeAction(action string) {
 	case actionModels:
 		a.showMainWindow()
 		a.navigate(modelsPath)
+	case actionLanguage:
+		a.showMainWindow()
+		a.navigate(remotePath)
 	case actionPermissions:
 		a.showMainWindow()
 		a.navigate("/settings/permissions")

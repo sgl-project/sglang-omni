@@ -110,7 +110,7 @@ func TestModelsMemory(t *testing.T) {
 		t.Fatalf("processes %+v, loaded pid %d", ps, pid)
 	}
 	pm.set(pid, 1536<<20)
-	chat, _, err := a.local.LLM(context.Background(), models.LLMFast)
+	chat, err := a.openLLM(context.Background(), models.LLMFast, a.models.Dir(models.LLMFast))
 	if err != nil {
 		t.Fatal(err)
 	}
