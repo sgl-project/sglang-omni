@@ -301,14 +301,18 @@ def test_peak_footprint_includes_a_spike_freed_before_the_first_sample(
 ) -> None:
     """A short allocation between samples must still reach the peak and the guard."""
     spike_bytes = 256 * 1024**2
+    # Closing the map returns its pages at once; malloc would keep a freed block.
+    script = f"""
+import mmap
+spike = mmap.mmap(-1, {spike_bytes})
+for offset in range(0, {spike_bytes}, mmap.PAGESIZE):
+    spike[offset] = 1
+spike.close()
+print("freed", flush=True)
+input()
+"""
     with subprocess.Popen(
-        [
-            sys.executable,
-            "-c",
-            f"spike = bytearray(b'x') * {spike_bytes}; del spike; print('freed', flush=True); input()",
-        ],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
+        [sys.executable, "-c", script], stdin=subprocess.PIPE, stdout=subprocess.PIPE
     ) as process:
         process.stdout.readline()
         sampler = MemorySampler(process, tmp_path / "memory.jsonl", spike_bytes // 2)
