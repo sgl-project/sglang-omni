@@ -23,6 +23,7 @@ from sglang_omni.serve.realtime.output import (
     AudioFinished,
     InputTranscription,
     OutputEvent,
+    PluginChunk,
     ResponseFinished,
     ResponseHeard,
     ResponseProgress,
@@ -37,6 +38,7 @@ from sglang_omni.serve.realtime.output import (
 from sglang_omni.serve.realtime.schema import (
     AudioConfig,
     GrantedCapabilities,
+    PluginPorts,
     SessionExtension,
     SessionType,
     TailPolicy,
@@ -70,7 +72,7 @@ class WireResponse(TypedDict, total=False):
     usage: dict[str, int | float | None] | None
 
 
-class GrantedSessionExtension(SessionExtension, total=False):
+class GrantedSessionExtension(SessionExtension, PluginPorts, total=False):
     granted: GrantedCapabilities | None
 
 
@@ -110,7 +112,7 @@ class ServerEvent(TypedDict, total=False):
     type: str
     event_id: str
     response: WireResponse
-    response_id: str
+    response_id: str | None
     item_id: str
     output_index: int
     content_index: int
@@ -133,6 +135,13 @@ class ServerEvent(TypedDict, total=False):
     tail_policy: TailPolicy
     text_end: int
     audio_ms: float
+    modality: str
+    format: str
+    t_start_ms: float
+    duration_ms: float
+    turn: int | None
+    payload: dict[str, object] | None
+    payload_b64: str
 
 
 def project_output(
@@ -243,6 +252,23 @@ def project_output(
             item_id=event.item_id,
             audio_end_ms=event.audio_end_ms,
         )
+    elif isinstance(event, PluginChunk):
+        server_event = dict(
+            type="sglang.output_chunk",
+            response_id=event.response_id,
+            modality=event.modality,
+            format=event.format,
+            t_start_ms=event.t_start_ms,
+            duration_ms=event.duration_ms,
+            turn=event.turn,
+        )
+        if isinstance(event.payload, bytes):
+            server_event["payload_b64"] = base64.b64encode(event.payload).decode(
+                "ascii"
+            )
+        else:
+            server_event["payload"] = event.payload
+        return server_event
     elif isinstance(event, InputTranscription) and event.is_final:
         return dict(
             type="conversation.item.input_audio_transcription.completed",
@@ -272,7 +298,7 @@ def project_control(event: ControlEvent) -> ServerEvent:
                 object="realtime.session",
                 type=event.session_type,
                 model=event.model,
-                sglang=dict(granted=None),
+                sglang=dict(granted=None, **event.plugin_ports),
             ),
         )
     elif isinstance(event, Updated):
@@ -288,6 +314,7 @@ def project_control(event: ControlEvent) -> ServerEvent:
                 "sglang": {
                     **(event.config or {}).get("sglang", {}),
                     "granted": event.granted,
+                    **event.plugin_ports,
                 },
             },
         )
