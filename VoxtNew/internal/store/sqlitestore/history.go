@@ -2,8 +2,8 @@ package sqlitestore
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"log"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -187,18 +187,22 @@ func (r *historyRepo) DeleteAll(ctx context.Context, kind store.Kind) (int, erro
 	// A DELETE only frees the pages: the texts stay in the file (and the
 	// write-ahead log) until they are rewritten, and the search index
 	// keeps its trigrams of them until it is merged. Clearing the history
-	// should leave nothing to read there.
-	var compact error
+	// should leave nothing to read there. The entries are gone either way,
+	// so a failed compaction is logged, not returned.
 	if len(rows.Values) > 0 {
-		for _, q := range []string{"INSERT INTO history_fts(history_fts) VALUES('optimize')", "VACUUM", "PRAGMA wal_checkpoint(TRUNCATE)"} {
+		for _, q := range compaction {
 			if _, err := r.db.Query(ctx, q); err != nil {
-				compact = wrap("history: "+q, err)
+				log.Printf("history: cleared, but could not compact the database: %v", wrap(q, err))
 				break
 			}
 		}
 	}
-	return len(rows.Values), errors.Join(r.removeAudios(rows.Values), compact)
+	return len(rows.Values), r.removeAudios(rows.Values)
 }
+
+// compaction runs after a DeleteAll that removed entries (a var for the
+// test of a failure).
+var compaction = []string{"INSERT INTO history_fts(history_fts) VALUES('optimize')", "VACUUM", "PRAGMA wal_checkpoint(TRUNCATE)"}
 
 func (r *historyRepo) ExpireAudio(ctx context.Context, now time.Time) (int, error) {
 	// RETURNING gives the new values: the names first, then one guarded

@@ -292,6 +292,28 @@ func TestClearHistoryLeavesNoText(t *testing.T) {
 	}
 }
 
+// TestClearHistoryCompactionFails: a compaction that fails after Clear
+// history does not make it a failure: the entries are gone, so DeleteAll
+// reports them and no error, and the app says so and refreshes the
+// history instead of "Could not clear the history".
+func TestClearHistoryCompactionFails(t *testing.T) {
+	s := openTest(t, t.TempDir())
+	h := s.History()
+	for _, id := range []string{"a", "b"} {
+		if err := h.Put(ctx, store.Entry{ID: id, Kind: store.KindTranscribe, CreatedAt: time.Now(), Result: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer func(c []string) { compaction = c }(compaction)
+	compaction = []string{"VACUUM no_such_schema"}
+	if n, err := h.DeleteAll(ctx, ""); n != 2 || err != nil {
+		t.Errorf("clear, the compaction failing: %d %v", n, err)
+	}
+	if st, _ := s.Stats(ctx); st.History != 0 {
+		t.Errorf("stats %+v", st)
+	}
+}
+
 func TestDictionary(t *testing.T) {
 	s := openTest(t, t.TempDir())
 	d := s.Dictionary()
